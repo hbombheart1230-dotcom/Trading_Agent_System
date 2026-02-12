@@ -21,6 +21,11 @@ def load_env_file(path: str | Path = ".env") -> Dict[str, str]:
         k, v = line.split("=", 1)
         k = k.strip()
         v = v.strip()
+        # Strip inline comments for unquoted values like: KEY=value  # comment
+        if v and v[0] not in ("'", "\"") and "#" in v:
+            # If the value is not quoted, treat any unescaped # as the start of a comment
+            v = v.split("#", 1)[0].rstrip()
+
         if (len(v) >= 2) and ((v[0] == v[-1]) and v[0] in ("'", '"')):
             v = v[1:-1]
         if k and (k not in os.environ):

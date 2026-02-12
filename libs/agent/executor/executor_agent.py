@@ -1,48 +1,27 @@
 from __future__ import annotations
 
-import os
-import uuid
 import json
+import time
+import uuid
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 
 from libs.skills.runner import CompositeSkillRunner
 from libs.supervisor.two_phase import TwoPhaseSupervisor
 from libs.supervisor.intent_store import IntentStore
-
-from libs.agent.intent_parser import parse_nl
-from libs.agent.router import route
 
 
 def _new_run_id() -> str:
     return uuid.uuid4().hex
 
 
-def _mode() -> str:
-    # server mode (mock/real)
-    return (os.getenv("KIWOOM_MODE", "real") or "real").strip().lower()
-
-
-def _execution_enabled() -> bool:
-    v = (os.getenv("EXECUTION_ENABLED", "false") or "false").strip().lower()
-    return v in ("1", "true", "yes", "y", "on")
-
-
-def _approval_mode() -> str:
-    # manual|auto
-    v = (os.getenv("APPROVAL_MODE", "") or "").strip().lower()
-    if v:
-        return v
-    # backward compat: AUTO_APPROVE=true -> auto
-    legacy = (os.getenv("AUTO_APPROVE", "false") or "false").strip().lower()
-    if legacy in ("1", "true", "yes", "y", "on"):
-        return "auto"
-    return "manual"
-
-
 def _unwrap_intent(row: Any) -> Optional[Dict[str, Any]]:
-    """Accept either a raw intent dict or a wrapped record {ts,intent_id,intent:{...}}."""
+    """
+    Accept either:
+      - raw intent dict: {"intent_id":..., "action":..., ...}
+      - wrapped record: {"ts":..., "intent_id":..., "intent":{...}, "status":..., ...}
+    """
     if not isinstance(row, dict):
         return None
     if "intent" in row and isinstance(row.get("intent"), dict):
@@ -50,20 +29,31 @@ def _unwrap_intent(row: Any) -> Optional[Dict[str, Any]]:
     return row
 
 
-class ToolFacade:
+class ExecutorAgent:
+    """
+    Execution-facing agent:
+      - submit intent (two-phase)
+      - preview / approve / reject
+      - list intents (audit trail)
+
+    This is intentionally "dumb": it does not decide strategy.
+    It just enforces the two-phase gate and calls execution skills.
+    """
+
     def __init__(
         self,
         *,
-        catalog: str = "data/specs/api_catalog.jsonl",
-        event_log: str = "data/logs/events.jsonl",
-        intent_store: str = "data/logs/intents.jsonl",
+        runner: CompositeSkillRunner,
+        supervisor: TwoPhaseSupervisor,
+        intent_store: IntentStore,
+        intent_store_path: str | Path,
     ):
-        self.runner = CompositeSkillRunner(catalog_path=catalog, event_log_path=event_log)
-        self.supervisor = TwoPhaseSupervisor()
-        self.intent_store = IntentStore(intent_store)
-        self.intent_store_path = Path(intent_store)
+        self.runner = runner
+        self.supervisor = supervisor
+        self.intent_store = intent_store
+        self.intent_store_path = Path(intent_store_path)
 
-    # ---------- helpers ----------
+    # ---------- store helpers ----------
 
     def _load_all_rows(self) -> List[Dict[str, Any]]:
         if not self.intent_store_path.exists():
@@ -84,7 +74,7 @@ class ToolFacade:
         rows = self._load_all_rows()
         return rows[-1] if rows else None
 
-    def _last_intent(self) -> Optional[Dict[str, Any]]:
+    def last_intent(self) -> Optional[Dict[str, Any]]:
         row = self._last_row()
         return _unwrap_intent(row) if row else None
 
@@ -101,13 +91,9 @@ class ToolFacade:
             "created_epoch": intent.get("created_epoch"),
         }
 
-    # ---------- core tools ----------
+    # ---------- core: intent -> execute ----------
 
-    def market_quote(self, symbol: str) -> Dict[str, Any]:
-        out = self.runner.run(run_id=_new_run_id(), skill="market.quote", args={"symbol": symbol})
-        return asdict(out)
-
-    def order_place_intent(
+    def submit_order_intent(
         self,
         *,
         side: str,
@@ -116,7 +102,14 @@ class ToolFacade:
         order_type: str = "market",
         price: Optional[int] = None,
         rationale: str = "",
+        approval_mode: str = "manual",          # "manual" | "auto"
+        execution_enabled: bool = False,        # gate for real execution
     ) -> Dict[str, Any]:
+        """
+        Creates an order intent via supervisor.
+        If approval_mode=auto and execution_enabled=True, executes immediately.
+        Otherwise returns needs_approval decision.
+        """
         raw_intent = {
             "action": "BUY" if str(side).lower() == "buy" else "SELL",
             "symbol": symbol,
@@ -133,24 +126,34 @@ class ToolFacade:
         if isinstance(intent, dict):
             self.intent_store.save(intent)
 
-        # approval policy:
-        # - APPROVAL_MODE=manual: always return needs_approval (no auto execution)
-        # - APPROVAL_MODE=auto: execute immediately ONLY if EXECUTION_ENABLED=true
-        if _approval_mode() == "auto":
-            if not _execution_enabled():
-                # keep consistent: auto mode but execution disabled => still require manual approval/enable switch
+        if str(approval_mode).lower() == "auto":
+            if not execution_enabled:
                 return {
                     "decision": decision_dict,
                     "note": "APPROVAL_MODE=auto but EXECUTION_ENABLED=false, so execution is blocked.",
                 }
-            exec_res = self.order_execute(intent=intent or raw_intent)
+            exec_res = self.execute_order(intent=intent or raw_intent)
             return {"decision": decision_dict, "execution": exec_res}
 
         return {"decision": decision_dict}
 
-    def approve_intent(self, *, intent_id: Optional[str] = None) -> Dict[str, Any]:
+    def execute_order(self, *, intent: Dict[str, Any]) -> Dict[str, Any]:
+        intent = _unwrap_intent(intent) or {}
+        action = str(intent.get("action") or "").upper()
+
+        skill_args = {
+            "side": "buy" if action == "BUY" else "sell",
+            "symbol": intent.get("symbol"),
+            "qty": int(intent.get("qty") or 1),
+            "order_type": intent.get("order_type") or "market",
+            "price": intent.get("price"),
+        }
+        out = self.runner.run(run_id=_new_run_id(), skill="order.place", args=skill_args)
+        return asdict(out)
+
+    def approve(self, *, intent_id: Optional[str] = None) -> Dict[str, Any]:
         if not intent_id:
-            intent = self._last_intent()
+            intent = self.last_intent()
             if not intent:
                 return {"ok": False, "message": "No stored intents."}
             intent_id = str(intent.get("intent_id") or "")
@@ -161,12 +164,12 @@ class ToolFacade:
         if not intent:
             return {"ok": False, "message": f"intent_id not found: {intent_id}"}
 
-        exec_res = self.order_execute(intent=intent)
+        exec_res = self.execute_order(intent=intent)
         return {"ok": True, "intent_id": intent_id, "execution": exec_res}
 
-    def preview_intent(self, *, intent_id: Optional[str] = None) -> Dict[str, Any]:
+    def preview(self, *, intent_id: Optional[str] = None) -> Dict[str, Any]:
         if not intent_id:
-            intent = self._last_intent()
+            intent = self.last_intent()
             if not intent:
                 return {"ok": False, "message": "No stored intents."}
         else:
@@ -176,10 +179,9 @@ class ToolFacade:
                 return {"ok": False, "message": f"intent_id not found: {intent_id}"}
         return {"ok": True, "intent": self._summarize_intent(intent)}
 
-    def reject_intent(self, *, intent_id: Optional[str] = None, reason: str = "rejected") -> Dict[str, Any]:
-        """Soft reject: append a rejection marker line so you can audit decisions later."""
+    def reject(self, *, intent_id: Optional[str] = None, reason: str = "rejected") -> Dict[str, Any]:
         if not intent_id:
-            intent = self._last_intent()
+            intent = self.last_intent()
             if not intent:
                 return {"ok": False, "message": "No stored intents."}
             intent_id = str(intent.get("intent_id") or "")
@@ -190,7 +192,7 @@ class ToolFacade:
                 return {"ok": False, "message": f"intent_id not found: {intent_id}"}
 
         marker = {
-            "ts": int(__import__("time").time()),
+            "ts": int(time.time()),
             "intent_id": intent_id,
             "status": "rejected",
             "reason": reason,
@@ -202,34 +204,17 @@ class ToolFacade:
 
         return {"ok": True, "intent_id": intent_id, "status": "rejected", "reason": reason}
 
-
     def list_intents(self, limit: int = 5) -> Dict[str, Any]:
-        # Rows contain both stored intents and status markers (e.g., rejected). We want
-        # a stable "최근주문" view, so we aggregate by intent_id where the latest row wins.
         rows = self._load_all_rows()
+        recent = rows[-limit:]
+        out: List[Dict[str, Any]] = []
 
-        latest_by_id = {}
-        for r in rows:
+        for r in recent:
             intent = _unwrap_intent(r) or {}
-            intent_id = intent.get("intent_id") or r.get("intent_id")
-            if not intent_id:
-                continue
-            ts = int(r.get("ts") or 0)
-            prev = latest_by_id.get(intent_id)
-            if (prev is None) or (ts >= int(prev.get("ts") or 0)):
-                latest_by_id[intent_id] = {**r, "intent": intent, "ts": ts, "intent_id": intent_id}
-
-        # newest first
-        uniq = sorted(latest_by_id.values(), key=lambda x: int(x.get("ts") or 0), reverse=True)
-        uniq = uniq[: max(1, int(limit))]
-
-        out = []
-        for r in uniq:
-            intent = r.get("intent") or {}
             status = r.get("status") or "stored"
             out.append(
                 {
-                    "intent_id": r.get("intent_id"),
+                    "intent_id": intent.get("intent_id") or r.get("intent_id"),
                     "action": intent.get("action"),
                     "symbol": intent.get("symbol"),
                     "qty": intent.get("qty"),
@@ -243,55 +228,3 @@ class ToolFacade:
             )
 
         return {"ok": True, "count": len(out), "intents": out}
-
-    def order_execute(self, *, intent: Dict[str, Any]) -> Dict[str, Any]:
-        intent = _unwrap_intent(intent) or {}
-        action = str(intent.get("action") or "").upper()
-        skill_args = {
-            "side": "buy" if action == "BUY" else "sell",
-            "symbol": intent.get("symbol"),
-            "qty": int(intent.get("qty") or 1),
-            "order_type": intent.get("order_type") or "market",
-            "price": intent.get("price"),
-        }
-        out = self.runner.run(run_id=_new_run_id(), skill="order.place", args=skill_args)
-        return asdict(out)
-
-    # ---------- natural language ----------
-
-    def run(self, text: str) -> Dict[str, Any]:
-        t = text.strip()
-
-        # preview
-        if t in ("승인?", "미리보기", "프리뷰", "주문확인"):
-            return self.preview_intent()
-
-        if t.startswith("미리보기 "):
-            return self.preview_intent(intent_id=t.split(" ", 1)[1].strip())
-
-        # reject
-        if t in ("거절", "취소"):
-            return self.reject_intent()
-
-        if t.startswith("거절 "):
-            return self.reject_intent(intent_id=t.split(" ", 1)[1].strip())
-
-        # approve
-        if t == "승인":
-            return self.approve_intent()
-
-        if t.startswith("승인 "):
-            return self.approve_intent(intent_id=t.split(" ", 1)[1].strip())
-
-        # list
-        if t in ("최근주문", "대기주문"):
-            return self.list_intents()
-
-        intent = parse_nl(text)
-        call = route(intent)
-
-        fn = getattr(self, call.tool, None)
-        if fn is None:
-            return {"ok": False, "message": f"Unknown tool: {call.tool}"}
-
-        return fn(**call.kwargs)
