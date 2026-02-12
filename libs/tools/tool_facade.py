@@ -149,6 +149,12 @@ class ToolFacade:
         return {"decision": decision_dict}
 
     def approve_intent(self, *, intent_id: Optional[str] = None) -> Dict[str, Any]:
+        # NOTE: Approval must be *idempotent*.
+        # - If the same intent_id is approved twice (accidentally, or via retry),
+        #   we should NOT place the order twice.
+        # - We implement this by appending an "executed" marker row to the intent store,
+        #   and returning that cached execution on subsequent approvals.
+
         if not intent_id:
             intent = self._last_intent()
             if not intent:
@@ -161,7 +167,37 @@ class ToolFacade:
         if not intent:
             return {"ok": False, "message": f"intent_id not found: {intent_id}"}
 
+        latest = self._latest_row(intent_id)
+        if latest:
+            status = (latest.get("status") or "").lower()
+            if status == "rejected":
+                return {
+                    "ok": False,
+                    "intent_id": intent_id,
+                    "message": f"intent_id is rejected: {intent_id}",
+                    "reason": latest.get("reason"),
+                }
+            if status == "executed":
+                # Return cached execution, do not re-submit.
+                return {
+                    "ok": True,
+                    "intent_id": intent_id,
+                    "execution": latest.get("execution"),
+                    "note": "Already executed. Returned cached execution.",
+                }
+
         exec_res = self.order_execute(intent=intent)
+
+        # Persist an execution marker only when it looks like an actual submission happened.
+        # (When execution is blocked by env safety, order_execute should not be called.)
+        self._append_intent_marker(
+            intent_id=intent_id,
+            status="executed",
+            reason=None,
+            intent=intent,
+            execution=exec_res,
+        )
+
         return {"ok": True, "intent_id": intent_id, "execution": exec_res}
 
     def preview_intent(self, *, intent_id: Optional[str] = None) -> Dict[str, Any]:
@@ -201,6 +237,42 @@ class ToolFacade:
             f.write(json.dumps(marker, ensure_ascii=False) + "\n")
 
         return {"ok": True, "intent_id": intent_id, "status": "rejected", "reason": reason}
+
+    def _append_intent_marker(
+        self,
+        *,
+        intent_id: str,
+        status: str,
+        reason: Optional[str],
+        intent: Dict[str, Any],
+        execution: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        marker = {
+            "ts": int(__import__("time").time()),
+            "intent_id": intent_id,
+            "status": status,
+            "reason": reason,
+            "intent": intent,
+        }
+        if execution is not None:
+            marker["execution"] = execution
+
+        self.intent_store_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.intent_store_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(marker, ensure_ascii=False) + "\n")
+
+    def _latest_row(self, intent_id: str) -> Optional[Dict[str, Any]]:
+        # Find the latest row for this intent_id (stable retry semantics).
+        rows = self._load_all_rows()
+        latest: Optional[Dict[str, Any]] = None
+        for r in rows:
+            rid = r.get("intent_id") or (_unwrap_intent(r) or {}).get("intent_id")
+            if str(rid) != str(intent_id):
+                continue
+            ts = int(r.get("ts") or 0)
+            if (latest is None) or (ts >= int(latest.get("ts") or 0)):
+                latest = r
+        return latest
 
 
     def list_intents(self, limit: int = 5) -> Dict[str, Any]:

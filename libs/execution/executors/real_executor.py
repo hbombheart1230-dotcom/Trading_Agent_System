@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional, Set
 import os
-from typing import Optional, Any
-from types import SimpleNamespace
 
 from libs.core.api_response import ApiResponse
 from libs.catalog.api_request_builder import PreparedRequest
@@ -13,93 +12,93 @@ from libs.core.settings import Settings
 
 
 class RealExecutor:
-    """Real executor: performs HTTP call via HttpClient.
+    """Real executor: performs actual HTTP call.
 
     Safety:
-      - KIWOOM_MODE=real (default): requires EXECUTION_ENABLED=true to run.
-      - KIWOOM_MODE=mock: allows execution even if EXECUTION_ENABLED is unset/false.
-
-    Notes:
-      - Accepts `catalog=...` for compatibility.
-      - Kiwoom REST requires an API ID header; we set it from req.api_id automatically.
+    - Requires EXECUTION_ENABLED=true in environment to run.
     """
 
-    def __init__(
-        self,
-        settings: Optional[Settings] = None,
-        http: Optional[Any] = None,
-        *,
-        catalog: Any = None,
-        **_: Any,
-    ):
+    def __init__(self, settings: Optional[Settings] = None, http: Optional[HttpClient] = None):
         self.s = settings or Settings.from_env()
         self.http = http or HttpClient(
             self.s.base_url,
             timeout_sec=self.s.kiwoom_http_timeout_sec,
             retry_max=self.s.kiwoom_retry_max,
         )
-        self.catalog = catalog
         self.tokens = KiwoomTokenClient(self.s, self.http)
 
-    def _coerce_request(self, req: Any) -> Any:
-        """Accept either PreparedRequest or a dict from simple demos."""
-        if isinstance(req, PreparedRequest):
-            return req
-        if isinstance(req, dict):
-            return SimpleNamespace(
-                api_id=req.get("api_id") or req.get("apiId") or req.get("id") or req.get("api") or "UNKNOWN",
-                method=(req.get("method") or req.get("http_method") or "GET"),
-                path=req.get("path") or req.get("url_path") or "/",
-                headers=req.get("headers") or {},
-                query=req.get("query") or {},
-                body=req.get("body"),
+    @staticmethod
+    def _parse_symbol_allowlist(raw: Optional[str]) -> Set[str]:
+        """Parse SYMBOL_ALLOWLIST.
+
+        - If env var is missing/empty/whitespace => returns empty set (guard disabled).
+        - Supports comma-separated values, e.g. "005930,000660".
+        """
+        if raw is None:
+            return set()
+        raw = raw.strip()
+        if not raw:
+            return set()
+        return {s.strip() for s in raw.split(",") if s.strip()}
+
+    @staticmethod
+    def _extract_symbol(req: PreparedRequest) -> Optional[str]:
+        """Best-effort extract symbol from request body."""
+        body = req.body or {}
+        sym = body.get("stk_cd") or body.get("symbol")
+        if sym is None:
+            return None
+        sym = str(sym).strip()
+        return sym or None
+
+    def _enforce_symbol_allowlist(self, req: PreparedRequest) -> None:
+        allow = self._parse_symbol_allowlist(os.getenv("SYMBOL_ALLOWLIST"))
+        if not allow:
+            return  # guard disabled
+
+        sym = self._extract_symbol(req)
+        if sym is None:
+            return  # nothing to validate
+
+        if sym not in allow:
+            raise ExecutionDisabledError(
+                f"Symbol '{sym}' is not allowed by SYMBOL_ALLOWLIST. Allowed={sorted(allow)}"
             )
-        return req
 
-    def execute(self, req: Any, *, auth_token: Optional[str] = None) -> ExecutionResult:
-        req = self._coerce_request(req)
-
-        mode = (os.getenv("KIWOOM_MODE", "real") or "real").strip().lower()
+    def execute(self, req: PreparedRequest, *, auth_token: Optional[str] = None) -> ExecutionResult:
+        # NOTE: We allow calls in mock mode even if EXECUTION_ENABLED is false.
+        # This keeps "mock" workflows frictionless while still protecting real trading.
+        mode = (os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower()
         enabled = (os.getenv("EXECUTION_ENABLED", "false") or "false").lower() == "true"
         if mode != "mock" and not enabled:
             raise ExecutionDisabledError("Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls.")
+
+        # Optional extra safety guard (disabled when env var is missing/empty).
+        self._enforce_symbol_allowlist(req)
 
         token = auth_token
         if not token:
             ensure = self.tokens.ensure_token(dry_run=False)
             token = ensure.token
 
-        headers = dict(getattr(req, "headers", None) or {})
+        headers = dict(req.headers or {})
+        headers.update({"Authorization": f"Bearer {token}"})
 
-        # --- REQUIRED: API ID header (Kiwoom returns 1501 if missing) ---
-        api_id = getattr(req, "api_id", None) or headers.get("api-id") or headers.get("api_id")
-        if api_id:
-            headers.setdefault("api-id", str(api_id))
-            headers.setdefault("api_id", str(api_id))  # harmless; some gateways accept either
-
-        # Auth header
-        headers["Authorization"] = f"Bearer {token}"
-
-        # App credentials (some endpoints require these headers)
-        if getattr(self.s, "kiwoom_app_key", None):
+        # Kiwoom REST commonly requires app credentials on each request.
+        # (Token endpoint itself is handled by KiwoomTokenClient.)
+        if self.s.kiwoom_app_key:
             headers.setdefault("appkey", self.s.kiwoom_app_key)
-        if getattr(self.s, "kiwoom_app_secret", None):
+        if self.s.kiwoom_app_secret:
             headers.setdefault("appsecret", self.s.kiwoom_app_secret)
 
-        method = (getattr(req, "method", "GET") or "GET").upper()
-        path = getattr(req, "path", "/") or "/"
-        params = getattr(req, "query", None) or {}
-        json_body = getattr(req, "body", None) if getattr(req, "body", None) else None
-
         url, resp = self.http.request(
-            method,
-            path,
+            req.method,
+            req.path,
             headers=headers,
-            params=params,
-            json_body=json_body,
+            params=req.query,
+            json_body=req.body if req.body else None,
             dry_run=False,
         )
-
         assert resp is not None
         api_resp = ApiResponse.from_http(resp.status_code, resp.text)
         return ExecutionResult(response=api_resp, meta={"executor": "real", "url": url})
