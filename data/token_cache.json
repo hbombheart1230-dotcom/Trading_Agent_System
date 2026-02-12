@@ -1,0 +1,12 @@
+{
+  "access_token": "0zHqnO6qXa89hev63Iak2FKtintTvOhWpREhWVaKaN0H8vuqCQMGHbB2fmKkPgNUxuGuE0iCzbmcEjqRhPl0-Q",
+  "token_type": "Bearer",
+  "expires_at_epoch": 1770858354,
+  "raw": {
+    "expires_dt": "20260213090554",
+    "return_msg": "정상적으로 처리되었습니다",
+    "token_type": "Bearer",
+    "return_code": 0,
+    "token": "0zHqnO6qXa89hev63Iak2FKtintTvOhWpREhWVaKaN0H8vuqCQMGHbB2fmKkPgNUxuGuE0iCzbmcEjqRhPl0-Q"
+  }
+}

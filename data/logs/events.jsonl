@@ -1,0 +1,266 @@
+{"run_id": "a824c967973f418d8feb4057df1c33b5", "ts": "2026-02-10T07:39:42+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "a824c967973f418d8feb4057df1c33b5", "ts": "2026-02-10T07:39:42+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "type object 'Supervisor' has no attribute 'from_env'"}}
+{"run_id": "2165aa1d0cb14275883a0c868b90f2cc", "ts": "2026-02-10T07:39:42+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "2165aa1d0cb14275883a0c868b90f2cc", "ts": "2026-02-10T07:39:42+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "type object 'Supervisor' has no attribute 'from_env'"}}
+{"run_id": "1df8af878a8446208f49b99eec504d94", "ts": "2026-02-10T07:44:39+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "1df8af878a8446208f49b99eec504d94", "ts": "2026-02-10T07:44:39+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "OrderClient.__init__() got an unexpected keyword argument 'catalog'"}}
+{"run_id": "0dd3dd0024544109a0164eac79c91b3d", "ts": "2026-02-10T07:44:39+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "0dd3dd0024544109a0164eac79c91b3d", "ts": "2026-02-10T07:44:39+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "OrderClient.__init__() got an unexpected keyword argument 'catalog'"}}
+{"run_id": "ff895a0e95144e89898157bc72c481d5", "ts": "2026-02-10T08:19:21+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "ff895a0e95144e89898157bc72c481d5", "ts": "2026-02-10T08:19:21+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "'ApiCatalog' object has no attribute 'kiwoom_token_cache_path'"}}
+{"run_id": "ef9739aa4ff24ea082542fd2ec1834d1", "ts": "2026-02-10T08:19:21+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "ef9739aa4ff24ea082542fd2ec1834d1", "ts": "2026-02-10T08:19:21+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "'ApiCatalog' object has no attribute 'kiwoom_token_cache_path'"}}
+{"run_id": "8bb0b82d1c9c40188d1e8dc07bc92df2", "ts": "2026-02-10T08:22:57+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "8bb0b82d1c9c40188d1e8dc07bc92df2", "ts": "2026-02-10T08:22:57+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "Supervisor.allow() got an unexpected keyword argument 'order'"}}
+{"run_id": "f65bb9c189414a03bf589deb9eb86926", "ts": "2026-02-10T08:22:57+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "f65bb9c189414a03bf589deb9eb86926", "ts": "2026-02-10T08:22:57+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "Supervisor.allow() got an unexpected keyword argument 'order'"}}
+{"run_id": "33e6cd62e1c640e3b73b86ce13fe774c", "ts": "2026-02-10T08:25:24+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "33e6cd62e1c640e3b73b86ce13fe774c", "ts": "2026-02-10T08:25:24+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "'dict' object has no attribute 'lower'"}}
+{"run_id": "d4f984e8ca54427b865e0ab2585c0510", "ts": "2026-02-10T08:25:24+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "d4f984e8ca54427b865e0ab2585c0510", "ts": "2026-02-10T08:25:24+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "'dict' object has no attribute 'lower'"}}
+{"run_id": "67c893d17859498e9a671cfc9428ba2a", "ts": "2026-02-10T08:28:40+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "67c893d17859498e9a671cfc9428ba2a", "ts": "2026-02-10T08:28:40+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "'dict' object has no attribute 'path'"}}
+{"run_id": "675f7df2aa404fdcb93f08e75a0718ac", "ts": "2026-02-10T08:28:40+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "675f7df2aa404fdcb93f08e75a0718ac", "ts": "2026-02-10T08:28:40+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "b1c980bd922242d08da995bf42e97a90", "ts": "2026-02-10T08:33:41+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "b1c980bd922242d08da995bf42e97a90", "ts": "2026-02-10T08:33:41+00:00", "stage": "execute_from_packet", "event": "error", "payload": {"error": "'types.SimpleNamespace' object has no attribute 'query'"}}
+{"run_id": "a79c00b7b87e4a24b4949be3fb251367", "ts": "2026-02-10T08:33:41+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "a79c00b7b87e4a24b4949be3fb251367", "ts": "2026-02-10T08:33:41+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "7700ee75ab4347ea96f94314514a16ba", "ts": "2026-02-10T08:42:13+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "7700ee75ab4347ea96f94314514a16ba", "ts": "2026-02-10T08:42:13+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "12f019d13d5a4fcdb206343b11c79516", "ts": "2026-02-10T08:42:14+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "12f019d13d5a4fcdb206343b11c79516", "ts": "2026-02-10T08:42:14+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "a8843c9c31714863829a926026bb53a3", "ts": "2026-02-10T08:49:19+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "a8843c9c31714863829a926026bb53a3", "ts": "2026-02-10T08:49:19+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "86b32e65f2da4950a9a6ebd8b24c7dc6", "ts": "2026-02-10T08:49:20+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "86b32e65f2da4950a9a6ebd8b24c7dc6", "ts": "2026-02-10T08:49:20+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "62e7636e11b14b94a1fe5ff4827540f4", "ts": "2026-02-10T08:53:16+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "62e7636e11b14b94a1fe5ff4827540f4", "ts": "2026-02-10T08:53:16+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "f8c147b1d36243c5b82f1a4e0cd750f9", "ts": "2026-02-10T08:53:16+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "f8c147b1d36243c5b82f1a4e0cd750f9", "ts": "2026-02-10T08:53:16+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "b3da866901844413b9437be141526a73", "ts": "2026-02-10T13:07:01+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "b3da866901844413b9437be141526a73", "ts": "2026-02-10T13:07:01+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "e5844e8713c0406d8aca624db33da640", "ts": "2026-02-10T13:07:01+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "e5844e8713c0406d8aca624db33da640", "ts": "2026-02-10T13:07:01+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "e873fe891704406faf193c6fa61bc795", "ts": "2026-02-11T00:32:33+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "e873fe891704406faf193c6fa61bc795", "ts": "2026-02-11T00:32:33+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "204428c26b844af093cf5da0a32b2245", "ts": "2026-02-11T00:32:33+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "204428c26b844af093cf5da0a32b2245", "ts": "2026-02-11T00:32:33+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "fe5e569116684f309ae9b4cad9afd4c2", "ts": "2026-02-11T00:32:33+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "fe5e569116684f309ae9b4cad9afd4c2", "ts": "2026-02-11T00:32:33+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "7a9c7cb868ad4205accc98e69e38901d", "ts": "2026-02-11T00:54:08+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "7a9c7cb868ad4205accc98e69e38901d", "ts": "2026-02-11T00:54:09+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "33630781ed1a4273961b6ee1a7e89098", "ts": "2026-02-11T00:54:09+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "33630781ed1a4273961b6ee1a7e89098", "ts": "2026-02-11T00:54:09+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "2242d6faf08541f08c4e17dddecb15e1", "ts": "2026-02-11T00:54:09+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "2242d6faf08541f08c4e17dddecb15e1", "ts": "2026-02-11T00:54:09+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "837045aa33274f5883ea4bf39b2a7ad8", "ts": "2026-02-11T01:21:31+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "837045aa33274f5883ea4bf39b2a7ad8", "ts": "2026-02-11T01:21:31+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "84f0eb95f924437ca141fcf28084ad82", "ts": "2026-02-11T01:21:31+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "84f0eb95f924437ca141fcf28084ad82", "ts": "2026-02-11T01:21:31+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "1ff1717a27b3423b8efca2ba9fb94c82", "ts": "2026-02-11T01:21:31+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "1ff1717a27b3423b8efca2ba9fb94c82", "ts": "2026-02-11T01:21:31+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "77a34fc99b8d42d6943a0defe6b33cef", "ts": "2026-02-11T01:23:57+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "77a34fc99b8d42d6943a0defe6b33cef", "ts": "2026-02-11T01:23:57+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "c18eba15d10347528da02efbb3bba7b5", "ts": "2026-02-11T01:23:57+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "c18eba15d10347528da02efbb3bba7b5", "ts": "2026-02-11T01:23:57+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "316e1aad30fd4db09afa7ec0513922ce", "ts": "2026-02-11T01:23:57+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "316e1aad30fd4db09afa7ec0513922ce", "ts": "2026-02-11T01:23:57+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "80a1d52e01c7480b93839578e99594c3", "ts": "2026-02-11T01:25:57+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "80a1d52e01c7480b93839578e99594c3", "ts": "2026-02-11T01:25:57+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "bf84d749bea44175a0aef85eb0017ae5", "ts": "2026-02-11T01:25:57+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "bf84d749bea44175a0aef85eb0017ae5", "ts": "2026-02-11T01:25:57+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "2dd92442b2b3414891b3310d85698bc8", "ts": "2026-02-11T01:25:57+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "2dd92442b2b3414891b3310d85698bc8", "ts": "2026-02-11T01:25:57+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "18ab03ec442e4c86b07a3ba270863e90", "ts": "2026-02-11T01:38:20+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "18ab03ec442e4c86b07a3ba270863e90", "ts": "2026-02-11T01:38:20+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "c3976616e7a44002b8efce8190f0ab7c", "ts": "2026-02-11T01:38:20+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "c3976616e7a44002b8efce8190f0ab7c", "ts": "2026-02-11T01:38:20+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "5b55f2fae0b5488b9c5f8a025a5103f1", "ts": "2026-02-11T01:38:20+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "5b55f2fae0b5488b9c5f8a025a5103f1", "ts": "2026-02-11T01:38:20+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "97ee628c09dd4a84bd003c45019739d2", "ts": "2026-02-11T01:41:45+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "97ee628c09dd4a84bd003c45019739d2", "ts": "2026-02-11T01:41:45+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "1b257b4911bd4df0963df31ab82eb6fc", "ts": "2026-02-11T01:41:45+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "1b257b4911bd4df0963df31ab82eb6fc", "ts": "2026-02-11T01:41:45+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "f25cb98fbf4d49ed92d1314a203e2b51", "ts": "2026-02-11T01:41:45+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "f25cb98fbf4d49ed92d1314a203e2b51", "ts": "2026-02-11T01:41:45+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "59d87594181e4bd18c5174bb2cfbec23", "ts": "2026-02-11T01:44:56+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "59d87594181e4bd18c5174bb2cfbec23", "ts": "2026-02-11T01:44:56+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "50ba2dabf5004ed58843d6e848430b56", "ts": "2026-02-11T01:44:56+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "50ba2dabf5004ed58843d6e848430b56", "ts": "2026-02-11T01:44:56+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "4d04e9e8e35d44a293a45492525257b7", "ts": "2026-02-11T01:44:57+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "4d04e9e8e35d44a293a45492525257b7", "ts": "2026-02-11T01:44:57+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "0bb7be217d12422e8070f84bc59c5ee4", "ts": "2026-02-11T01:52:11+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "0bb7be217d12422e8070f84bc59c5ee4", "ts": "2026-02-11T01:52:11+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "7ce0213b58fb4f88bda55c9971bd295a", "ts": "2026-02-11T01:52:11+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "7ce0213b58fb4f88bda55c9971bd295a", "ts": "2026-02-11T01:52:11+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "0bcd819bd4b840c6b2ef0161e00ae811", "ts": "2026-02-11T01:52:11+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "0bcd819bd4b840c6b2ef0161e00ae811", "ts": "2026-02-11T01:52:11+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "687712322cdb4b4aba0d010b39e30cac", "ts": "2026-02-11T01:58:00+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "687712322cdb4b4aba0d010b39e30cac", "ts": "2026-02-11T01:58:01+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "ea7fff0d32174fa698bdf9f0e6a1d02d", "ts": "2026-02-11T01:58:01+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "ea7fff0d32174fa698bdf9f0e6a1d02d", "ts": "2026-02-11T01:58:01+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "6f91ce40296349e39812e75b9fcb4518", "ts": "2026-02-11T01:58:01+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "6f91ce40296349e39812e75b9fcb4518", "ts": "2026-02-11T01:58:01+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "dd6fe3ff0019425282b4fc94a881304c", "ts": "2026-02-11T02:29:10+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "dd6fe3ff0019425282b4fc94a881304c", "ts": "2026-02-11T02:29:10+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "d7d1150a16904f5daa5f73ea2fcef334", "ts": "2026-02-11T02:29:10+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "d7d1150a16904f5daa5f73ea2fcef334", "ts": "2026-02-11T02:29:10+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "1372473eaa864f978bf85423aa542c22", "ts": "2026-02-11T02:29:10+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "1372473eaa864f978bf85423aa542c22", "ts": "2026-02-11T02:29:10+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "d4ba144cab6a41e89ef4a529ea55c7e3", "ts": "2026-02-11T02:33:37+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "d4ba144cab6a41e89ef4a529ea55c7e3", "ts": "2026-02-11T02:33:37+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "c6d4b1c8d3b9414f9861abb645ccb3bb", "ts": "2026-02-11T02:33:37+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "c6d4b1c8d3b9414f9861abb645ccb3bb", "ts": "2026-02-11T02:33:37+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "9118fec0f0364276993f12b8937f3cd0", "ts": "2026-02-11T02:33:37+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "9118fec0f0364276993f12b8937f3cd0", "ts": "2026-02-11T02:33:37+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "a6ab19d8b01d487e82ab5ada0c7e1518", "ts": "2026-02-11T02:38:47+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "a6ab19d8b01d487e82ab5ada0c7e1518", "ts": "2026-02-11T02:38:47+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "39a679623b9f4cd0809570689d8700e6", "ts": "2026-02-11T02:38:47+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "39a679623b9f4cd0809570689d8700e6", "ts": "2026-02-11T02:38:47+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "2b46229004d64588a131fffb8d9f9a30", "ts": "2026-02-11T02:38:47+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "2b46229004d64588a131fffb8d9f9a30", "ts": "2026-02-11T02:38:47+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "3ff61b8910b046d380ea2280e12520f3", "ts": "2026-02-11T05:51:07+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "3ff61b8910b046d380ea2280e12520f3", "ts": "2026-02-11T05:51:07+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "74d6f20611594084b62425e0f427dc72", "ts": "2026-02-11T05:51:07+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "74d6f20611594084b62425e0f427dc72", "ts": "2026-02-11T05:51:07+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "59221432df254a7fa9a1d49b7f7cbd7e", "ts": "2026-02-11T05:51:07+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "59221432df254a7fa9a1d49b7f7cbd7e", "ts": "2026-02-11T05:51:07+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "b1a0cabcbd6b455eb425145bd16e6634", "ts": "2026-02-11T06:02:56+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "b1a0cabcbd6b455eb425145bd16e6634", "ts": "2026-02-11T06:02:56+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "eb47d5d7a608400ab96b308d3cf5924f", "ts": "2026-02-11T06:02:56+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "eb47d5d7a608400ab96b308d3cf5924f", "ts": "2026-02-11T06:02:56+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "7c0aa2ba2c08401a88cfed17da64c322", "ts": "2026-02-11T06:02:56+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "7c0aa2ba2c08401a88cfed17da64c322", "ts": "2026-02-11T06:02:56+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "b8df171d192744f28d40b50f5d478d6b", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "b8df171d192744f28d40b50f5d478d6b", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "b8df171d192744f28d40b50f5d478d6b", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": null, "qty": null, "price": null, "order_type": "limit", "tif": null, "rationale": "", "intent": "buy", "order_api_id": "ORDER_SUBMIT"}, "payload": {"status_code": 0, "text": null, "json": null, "meta": {"executor": "mock"}, "mode": "mock"}}}
+{"run_id": "b8df171d192744f28d40b50f5d478d6b", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "d056b8b0ee5c46b7a8c1d669a6815404", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "d056b8b0ee5c46b7a8c1d669a6815404", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "d056b8b0ee5c46b7a8c1d669a6815404", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "limit", "tif": null, "rationale": ""}, "payload": {"mode": "mock"}}}
+{"run_id": "d056b8b0ee5c46b7a8c1d669a6815404", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "e786716453c442f79366562fcdaa71b6", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "e786716453c442f79366562fcdaa71b6", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "e786716453c442f79366562fcdaa71b6", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 71200.0, "order_type": "limit", "tif": null, "rationale": "rule:cash_and_price_ok", "order_api_id": "ORDER_SUBMIT"}, "payload": {"mode": "mock"}}}
+{"run_id": "e786716453c442f79366562fcdaa71b6", "ts": "2026-02-11T06:20:19+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "e15b7fe5938d48e6bfc571744b7e9e6a", "ts": "2026-02-11T06:40:14+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "e15b7fe5938d48e6bfc571744b7e9e6a", "ts": "2026-02-11T06:40:15+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "e15b7fe5938d48e6bfc571744b7e9e6a", "ts": "2026-02-11T06:40:15+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": null, "qty": null, "price": null, "order_type": "limit", "tif": null, "rationale": "", "intent": "buy", "order_api_id": "ORDER_SUBMIT"}, "payload": {"status_code": 0, "text": null, "json": null, "meta": {"executor": "mock"}, "mode": "mock"}}}
+{"run_id": "e15b7fe5938d48e6bfc571744b7e9e6a", "ts": "2026-02-11T06:40:15+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "b7ef75501343465eb04b3cc502305a6b", "ts": "2026-02-11T06:40:15+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "b7ef75501343465eb04b3cc502305a6b", "ts": "2026-02-11T06:40:15+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "b7ef75501343465eb04b3cc502305a6b", "ts": "2026-02-11T06:40:15+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "limit", "tif": null, "rationale": ""}, "payload": {"mode": "real"}}}
+{"run_id": "b7ef75501343465eb04b3cc502305a6b", "ts": "2026-02-11T06:40:15+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "f6465685561e43cda5dae35be0488422", "ts": "2026-02-11T06:40:15+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "f6465685561e43cda5dae35be0488422", "ts": "2026-02-11T06:40:15+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "f6465685561e43cda5dae35be0488422", "ts": "2026-02-11T06:40:15+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 71200.0, "order_type": "limit", "tif": null, "rationale": "rule:cash_and_price_ok", "order_api_id": "ORDER_SUBMIT"}, "payload": {"mode": "mock"}}}
+{"run_id": "f6465685561e43cda5dae35be0488422", "ts": "2026-02-11T06:40:15+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "974f0b66f8ae43088b2e3cd1f775fdfa", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "974f0b66f8ae43088b2e3cd1f775fdfa", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "974f0b66f8ae43088b2e3cd1f775fdfa", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": null, "qty": null, "price": null, "order_type": "limit", "tif": null, "rationale": "", "intent": "buy", "order_api_id": "ORDER_SUBMIT"}, "payload": {"status_code": 0, "text": null, "json": null, "meta": {"executor": "mock"}, "mode": "mock"}}}
+{"run_id": "974f0b66f8ae43088b2e3cd1f775fdfa", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "88c21c754c074412afcbcc11a31f4a5d", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "88c21c754c074412afcbcc11a31f4a5d", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "88c21c754c074412afcbcc11a31f4a5d", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "limit", "tif": null, "rationale": ""}, "payload": {"mode": "real"}}}
+{"run_id": "88c21c754c074412afcbcc11a31f4a5d", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "415ef27e73b64883b578cdf4bdc06b62", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "415ef27e73b64883b578cdf4bdc06b62", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "415ef27e73b64883b578cdf4bdc06b62", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 71200.0, "order_type": "limit", "tif": null, "rationale": "rule:cash_and_price_ok", "order_api_id": "ORDER_SUBMIT"}, "payload": {"mode": "mock"}}}
+{"run_id": "415ef27e73b64883b578cdf4bdc06b62", "ts": "2026-02-11T07:16:09+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "73de96a7a0564095bc7a35877d42254e", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "73de96a7a0564095bc7a35877d42254e", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "73de96a7a0564095bc7a35877d42254e", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": null, "qty": null, "price": null, "order_type": "limit", "tif": null, "rationale": "", "intent": "buy", "order_api_id": "ORDER_SUBMIT"}, "payload": {"status_code": 0, "text": null, "json": null, "meta": {"executor": "mock"}, "mode": "mock"}}}
+{"run_id": "73de96a7a0564095bc7a35877d42254e", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "cf954b30fe4d4c658200b2a5037c62e6", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "cf954b30fe4d4c658200b2a5037c62e6", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "cf954b30fe4d4c658200b2a5037c62e6", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "limit", "tif": null, "rationale": ""}, "payload": {"mode": "real"}}}
+{"run_id": "cf954b30fe4d4c658200b2a5037c62e6", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "5dd1463f5c7242c8b34aa46a34c93bc4", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "5dd1463f5c7242c8b34aa46a34c93bc4", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "5dd1463f5c7242c8b34aa46a34c93bc4", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 71200.0, "order_type": "limit", "tif": null, "rationale": "rule:cash_and_price_ok", "order_api_id": "ORDER_SUBMIT"}, "payload": {"mode": "mock"}}}
+{"run_id": "5dd1463f5c7242c8b34aa46a34c93bc4", "ts": "2026-02-11T07:29:30+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "23542b5b774b4d469c8ecb271cc29099", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "23542b5b774b4d469c8ecb271cc29099", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "23542b5b774b4d469c8ecb271cc29099", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": null, "qty": null, "price": null, "order_type": "limit", "tif": null, "rationale": "", "intent": "buy", "order_api_id": "ORDER_SUBMIT"}, "payload": {"status_code": 0, "text": null, "json": null, "meta": {"executor": "mock"}, "mode": "mock"}}}
+{"run_id": "23542b5b774b4d469c8ecb271cc29099", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "ef3b87ea8aa34055829dafb59f78c6b4", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "ef3b87ea8aa34055829dafb59f78c6b4", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "ef3b87ea8aa34055829dafb59f78c6b4", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "limit", "tif": null, "rationale": ""}, "payload": {"mode": "real"}}}
+{"run_id": "ef3b87ea8aa34055829dafb59f78c6b4", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "e973203a7e454d78aeb9d1cba1a2bb87", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "e973203a7e454d78aeb9d1cba1a2bb87", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "e973203a7e454d78aeb9d1cba1a2bb87", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 71200.0, "order_type": "limit", "tif": null, "rationale": "rule:cash_and_price_ok", "order_api_id": "ORDER_SUBMIT"}, "payload": {"mode": "mock"}}}
+{"run_id": "e973203a7e454d78aeb9d1cba1a2bb87", "ts": "2026-02-11T08:09:13+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "2445239674fe4334860f64fb1feb74b0", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "2445239674fe4334860f64fb1feb74b0", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "2445239674fe4334860f64fb1feb74b0", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": null, "qty": null, "price": null, "order_type": "limit", "tif": null, "rationale": "", "intent": "buy", "order_api_id": "ORDER_SUBMIT"}, "payload": {"status_code": 0, "text": null, "json": null, "meta": {"executor": "mock"}, "mode": "mock"}}}
+{"run_id": "2445239674fe4334860f64fb1feb74b0", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "dd136b54dedb41b59fe481a28d53aae0", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "dd136b54dedb41b59fe481a28d53aae0", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "dd136b54dedb41b59fe481a28d53aae0", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "limit", "tif": null, "rationale": ""}, "payload": {"mode": "real"}}}
+{"run_id": "dd136b54dedb41b59fe481a28d53aae0", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "080f690571784fe3aba3f56fabfb33cf", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "080f690571784fe3aba3f56fabfb33cf", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "080f690571784fe3aba3f56fabfb33cf", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 71200.0, "order_type": "limit", "tif": null, "rationale": "rule:cash_and_price_ok", "order_api_id": "ORDER_SUBMIT"}, "payload": {"mode": "mock"}}}
+{"run_id": "080f690571784fe3aba3f56fabfb33cf", "ts": "2026-02-11T08:15:00+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "515224837ce043ac9e62f4a092e3cfd8", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "515224837ce043ac9e62f4a092e3cfd8", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "515224837ce043ac9e62f4a092e3cfd8", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": null, "qty": null, "price": null, "order_type": "limit", "tif": null, "rationale": "", "intent": "buy", "order_api_id": "ORDER_SUBMIT"}, "payload": {"status_code": 0, "text": null, "json": null, "meta": {"executor": "mock"}, "mode": "mock"}}}
+{"run_id": "515224837ce043ac9e62f4a092e3cfd8", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "83305dc148e549a9b558249a33f6fd3f", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "83305dc148e549a9b558249a33f6fd3f", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "83305dc148e549a9b558249a33f6fd3f", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "limit", "tif": null, "rationale": ""}, "payload": {"mode": "real"}}}
+{"run_id": "83305dc148e549a9b558249a33f6fd3f", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "93cb5c4945d04d1da240285f61096c6e", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "93cb5c4945d04d1da240285f61096c6e", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "93cb5c4945d04d1da240285f61096c6e", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 71200.0, "order_type": "limit", "tif": null, "rationale": "rule:cash_and_price_ok", "order_api_id": "ORDER_SUBMIT"}, "payload": {"mode": "mock"}}}
+{"run_id": "93cb5c4945d04d1da240285f61096c6e", "ts": "2026-02-11T08:17:47+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "5b8638571c8749348e4c4a5e739a49ae", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "5b8638571c8749348e4c4a5e739a49ae", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "5b8638571c8749348e4c4a5e739a49ae", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": null, "qty": null, "price": null, "order_type": "limit", "tif": null, "rationale": "", "intent": "buy", "order_api_id": "ORDER_SUBMIT"}, "payload": {"status_code": 0, "text": null, "json": null, "meta": {"executor": "mock"}, "mode": "mock"}}}
+{"run_id": "5b8638571c8749348e4c4a5e739a49ae", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "8611aaa23455404e8c4f420d63ea3979", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "8611aaa23455404e8c4f420d63ea3979", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "8611aaa23455404e8c4f420d63ea3979", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "limit", "tif": null, "rationale": ""}, "payload": {"mode": "real"}}}
+{"run_id": "8611aaa23455404e8c4f420d63ea3979", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "fc4f544abeee4408a4aff4f6cc836319", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "fc4f544abeee4408a4aff4f6cc836319", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "fc4f544abeee4408a4aff4f6cc836319", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 71200.0, "order_type": "limit", "tif": null, "rationale": "rule:cash_and_price_ok", "order_api_id": "ORDER_SUBMIT"}, "payload": {"mode": "mock"}}}
+{"run_id": "fc4f544abeee4408a4aff4f6cc836319", "ts": "2026-02-12T00:01:27+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "e3d4b77835b94cfeb373136ab6a19242", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "e3d4b77835b94cfeb373136ab6a19242", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "e3d4b77835b94cfeb373136ab6a19242", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": null, "qty": null, "price": null, "order_type": "limit", "tif": null, "rationale": "", "intent": "buy", "order_api_id": "ORDER_SUBMIT"}, "payload": {"status_code": 0, "text": null, "json": null, "meta": {"executor": "mock"}, "mode": "mock"}}}
+{"run_id": "e3d4b77835b94cfeb373136ab6a19242", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "95521d1931cc4709b8af57061c9e564e", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "95521d1931cc4709b8af57061c9e564e", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "95521d1931cc4709b8af57061c9e564e", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "limit", "tif": null, "rationale": ""}, "payload": {"mode": "real"}}}
+{"run_id": "95521d1931cc4709b8af57061c9e564e", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "9ee4dcb329c34ac994cb47f4678438a9", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "9ee4dcb329c34ac994cb47f4678438a9", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "9ee4dcb329c34ac994cb47f4678438a9", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 71200.0, "order_type": "limit", "tif": null, "rationale": "rule:cash_and_price_ok", "order_api_id": "ORDER_SUBMIT"}, "payload": {"mode": "mock"}}}
+{"run_id": "9ee4dcb329c34ac994cb47f4678438a9", "ts": "2026-02-12T00:05:49+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "2649fd86eae44117a1ae03a428556e02", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "2649fd86eae44117a1ae03a428556e02", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "2649fd86eae44117a1ae03a428556e02", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": null, "qty": null, "price": null, "order_type": "limit", "tif": null, "rationale": "", "intent": "buy", "order_api_id": "ORDER_SUBMIT"}, "payload": {"status_code": 0, "text": null, "json": null, "meta": {"executor": "mock"}, "mode": "mock"}}}
+{"run_id": "2649fd86eae44117a1ae03a428556e02", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "fca45222a78f4731be555542a820aa9f", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "fca45222a78f4731be555542a820aa9f", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "fca45222a78f4731be555542a820aa9f", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "limit", "tif": null, "rationale": ""}, "payload": {"mode": "real"}}}
+{"run_id": "fca45222a78f4731be555542a820aa9f", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "070fd34bab34412682b42f49b93a0071", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "070fd34bab34412682b42f49b93a0071", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "070fd34bab34412682b42f49b93a0071", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 71200.0, "order_type": "limit", "tif": null, "rationale": "rule:cash_and_price_ok", "order_api_id": "ORDER_SUBMIT"}, "payload": {"mode": "mock"}}}
+{"run_id": "070fd34bab34412682b42f49b93a0071", "ts": "2026-02-12T00:11:12+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "2d6350e551354337a85dea789e9b23ef", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "2d6350e551354337a85dea789e9b23ef", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "2d6350e551354337a85dea789e9b23ef", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": null, "qty": null, "price": null, "order_type": "limit", "tif": null, "rationale": "", "intent": "buy", "order_api_id": "ORDER_SUBMIT"}, "payload": {"status_code": 0, "text": null, "json": null, "meta": {"executor": "mock"}, "mode": "mock"}}}
+{"run_id": "2d6350e551354337a85dea789e9b23ef", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "c5e564b9d61345a3855d7a129f62c954", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "c5e564b9d61345a3855d7a129f62c954", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "c5e564b9d61345a3855d7a129f62c954", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "limit", "tif": null, "rationale": ""}, "payload": {"mode": "real"}}}
+{"run_id": "c5e564b9d61345a3855d7a129f62c954", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}
+{"run_id": "c64b4f69d871452aa31c98dc665dd76b", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "start", "payload": {}}
+{"run_id": "c64b4f69d871452aa31c98dc665dd76b", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": true}}
+{"run_id": "c64b4f69d871452aa31c98dc665dd76b", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": true, "reason": "Allowed", "order": {"api_id": "ORDER_SUBMIT", "action": "BUY", "symbol": "005930", "qty": 1, "price": 71200.0, "order_type": "limit", "tif": null, "rationale": "rule:cash_and_price_ok", "order_api_id": "ORDER_SUBMIT"}, "payload": {"mode": "mock"}}}
+{"run_id": "c64b4f69d871452aa31c98dc665dd76b", "ts": "2026-02-12T00:13:14+00:00", "stage": "execute_from_packet", "event": "end", "payload": {"ok": true}}

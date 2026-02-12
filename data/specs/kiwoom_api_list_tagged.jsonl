@@ -1,0 +1,207 @@
+{"no": 1, "api_id": "au10001", "name": "접근토큰 발급", "category_major": "OAuth 인증", "category_minor": "접근토큰발급", "endpoint": "/oauth2/token", "tags": []}
+{"no": 2, "api_id": "au10002", "name": "접근토큰폐기", "category_major": "OAuth 인증", "category_minor": "접근토큰폐기", "endpoint": "/oauth2/revoke", "tags": []}
+{"no": 3, "api_id": "ka00198", "name": "실시간종목조회순위", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["상위"]}
+{"no": 4, "api_id": "ka01690", "name": "일별잔고수익률", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["일봉"]}
+{"no": 5, "api_id": "ka10001", "name": "주식기본정보요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 6, "api_id": "ka10002", "name": "주식거래원요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 7, "api_id": "ka10003", "name": "체결정보요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["체결"]}
+{"no": 8, "api_id": "ka10004", "name": "주식호가요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["호가"]}
+{"no": 9, "api_id": "ka10005", "name": "주식일주월시분요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["분봉"]}
+{"no": 10, "api_id": "ka10006", "name": "주식시분요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["분봉"]}
+{"no": 11, "api_id": "ka10007", "name": "시세표성정보요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": []}
+{"no": 12, "api_id": "ka10008", "name": "주식외국인종목별매매동향", "category_major": "국내주식", "category_minor": "기관/외국인", "endpoint": "/api/dostk/frgnistt", "tags": ["외국인"]}
+{"no": 13, "api_id": "ka10009", "name": "주식기관요청", "category_major": "국내주식", "category_minor": "기관/외국인", "endpoint": "/api/dostk/frgnistt", "tags": ["기관"]}
+{"no": 14, "api_id": "ka10010", "name": "업종프로그램요청", "category_major": "국내주식", "category_minor": "업종", "endpoint": "/api/dostk/sect", "tags": ["프로그램", "업종"]}
+{"no": 15, "api_id": "ka10011", "name": "신주인수권전체시세요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": []}
+{"no": 16, "api_id": "ka10013", "name": "신용매매동향요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 17, "api_id": "ka10014", "name": "공매도추이요청", "category_major": "국내주식", "category_minor": "공매도", "endpoint": "/api/dostk/shsa", "tags": []}
+{"no": 18, "api_id": "ka10015", "name": "일별거래상세요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["일봉"]}
+{"no": 19, "api_id": "ka10016", "name": "신고저가요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 20, "api_id": "ka10017", "name": "상하한가요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 21, "api_id": "ka10018", "name": "고저가근접요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 22, "api_id": "ka10019", "name": "가격급등락요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["등락률"]}
+{"no": 23, "api_id": "ka10020", "name": "호가잔량상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["호가", "잔량", "상위"]}
+{"no": 24, "api_id": "ka10021", "name": "호가잔량급증요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["호가", "잔량", "급증"]}
+{"no": 25, "api_id": "ka10022", "name": "잔량율급증요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["잔량", "급증"]}
+{"no": 26, "api_id": "ka10023", "name": "거래량급증요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["거래량", "급증"]}
+{"no": 27, "api_id": "ka10024", "name": "거래량갱신요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["거래량"]}
+{"no": 28, "api_id": "ka10025", "name": "매물대집중요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 29, "api_id": "ka10026", "name": "고저PER요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 30, "api_id": "ka10027", "name": "전일대비등락률상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["등락률", "상위", "전일대비"]}
+{"no": 31, "api_id": "ka10028", "name": "시가대비등락률요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["등락률"]}
+{"no": 32, "api_id": "ka10029", "name": "예상체결등락률상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["등락률", "체결", "상위"]}
+{"no": 33, "api_id": "ka10030", "name": "당일거래량상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["거래량", "상위"]}
+{"no": 34, "api_id": "ka10031", "name": "전일거래량상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["거래량", "상위"]}
+{"no": 35, "api_id": "ka10032", "name": "거래대금상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["거래대금", "상위"]}
+{"no": 36, "api_id": "ka10033", "name": "신용비율상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["상위"]}
+{"no": 37, "api_id": "ka10034", "name": "외인기간별매매상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["외국인", "상위", "기간"]}
+{"no": 38, "api_id": "ka10035", "name": "외인연속순매매상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["외국인", "상위"]}
+{"no": 39, "api_id": "ka10036", "name": "외인한도소진율증가상위", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["외국인", "상위"]}
+{"no": 40, "api_id": "ka10037", "name": "외국계창구매매상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["상위"]}
+{"no": 41, "api_id": "ka10038", "name": "종목별증권사순위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["상위"]}
+{"no": 42, "api_id": "ka10039", "name": "증권사별매매상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["상위"]}
+{"no": 43, "api_id": "ka10040", "name": "당일주요거래원요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["상위"]}
+{"no": 44, "api_id": "ka10042", "name": "순매수거래원순위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["순매수", "상위"]}
+{"no": 45, "api_id": "ka10043", "name": "거래원매물대분석요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["분봉"]}
+{"no": 46, "api_id": "ka10044", "name": "일별기관매매종목요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["기관", "일봉"]}
+{"no": 47, "api_id": "ka10045", "name": "종목별기관매매추이요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["기관"]}
+{"no": 48, "api_id": "ka10046", "name": "체결강도추이시간별요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["체결"]}
+{"no": 49, "api_id": "ka10047", "name": "체결강도추이일별요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["체결", "일봉"]}
+{"no": 50, "api_id": "ka10048", "name": "ELW일별민감도지표요청", "category_major": "국내주식", "category_minor": "ELW", "endpoint": "/api/dostk/elw", "tags": ["ELW", "일봉"]}
+{"no": 51, "api_id": "ka10050", "name": "ELW민감도지표요청", "category_major": "국내주식", "category_minor": "ELW", "endpoint": "/api/dostk/elw", "tags": ["ELW"]}
+{"no": 52, "api_id": "ka10051", "name": "업종별투자자순매수요청", "category_major": "국내주식", "category_minor": "업종", "endpoint": "/api/dostk/sect", "tags": ["업종", "순매수"]}
+{"no": 53, "api_id": "ka10052", "name": "거래원순간거래량요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["거래량"]}
+{"no": 54, "api_id": "ka10053", "name": "당일상위이탈원요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["상위"]}
+{"no": 55, "api_id": "ka10054", "name": "변동성완화장치발동종목요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 56, "api_id": "ka10055", "name": "당일전일체결량요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["체결"]}
+{"no": 57, "api_id": "ka10058", "name": "투자자별일별매매종목요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["일봉"]}
+{"no": 58, "api_id": "ka10059", "name": "종목별투자자기관별요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["기관"]}
+{"no": 59, "api_id": "ka10060", "name": "종목별투자자기관별차트요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["기관"]}
+{"no": 60, "api_id": "ka10061", "name": "종목별투자자기관별합계요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["기관"]}
+{"no": 61, "api_id": "ka10062", "name": "동일순매매순위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["상위"]}
+{"no": 62, "api_id": "ka10063", "name": "장중투자자별매매요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": []}
+{"no": 63, "api_id": "ka10064", "name": "장중투자자별매매차트요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": []}
+{"no": 64, "api_id": "ka10065", "name": "장중투자자별매매상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["상위"]}
+{"no": 65, "api_id": "ka10066", "name": "장마감후투자자별매매요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": []}
+{"no": 66, "api_id": "ka10068", "name": "대차거래추이요청", "category_major": "국내주식", "category_minor": "대차거래", "endpoint": "/api/dostk/slb", "tags": []}
+{"no": 67, "api_id": "ka10069", "name": "대차거래상위10종목요청", "category_major": "국내주식", "category_minor": "대차거래", "endpoint": "/api/dostk/slb", "tags": ["상위"]}
+{"no": 68, "api_id": "ka10072", "name": "일자별종목별실현손익요청_일자", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["일봉"]}
+{"no": 69, "api_id": "ka10073", "name": "일자별종목별실현손익요청_기간", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["기간", "일봉"]}
+{"no": 70, "api_id": "ka10074", "name": "일자별실현손익요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["일봉"]}
+{"no": 71, "api_id": "ka10075", "name": "미체결요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["체결"]}
+{"no": 72, "api_id": "ka10076", "name": "체결요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["체결"]}
+{"no": 73, "api_id": "ka10077", "name": "당일실현손익상세요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 74, "api_id": "ka10078", "name": "증권사별종목매매동향요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": []}
+{"no": 75, "api_id": "ka10079", "name": "주식틱차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": []}
+{"no": 76, "api_id": "ka10080", "name": "주식분봉차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["분봉"]}
+{"no": 77, "api_id": "ka10081", "name": "주식일봉차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["일봉"]}
+{"no": 78, "api_id": "ka10082", "name": "주식주봉차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": []}
+{"no": 79, "api_id": "ka10083", "name": "주식월봉차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": []}
+{"no": 80, "api_id": "ka10084", "name": "당일전일체결요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["체결"]}
+{"no": 81, "api_id": "ka10085", "name": "계좌수익률요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 82, "api_id": "ka10086", "name": "일별주가요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["일봉"]}
+{"no": 83, "api_id": "ka10087", "name": "시간외단일가요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["시간외"]}
+{"no": 84, "api_id": "ka10088", "name": "미체결 분할주문 상세", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["체결", "분봉"]}
+{"no": 85, "api_id": "ka10094", "name": "주식년봉차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": []}
+{"no": 86, "api_id": "ka10095", "name": "관심종목정보요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 87, "api_id": "ka10098", "name": "시간외단일가등락율순위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["등락률", "시간외", "상위"]}
+{"no": 88, "api_id": "ka10099", "name": "종목정보 리스트", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 89, "api_id": "ka10100", "name": "종목정보 조회", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 90, "api_id": "ka10101", "name": "업종코드 리스트", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["업종"]}
+{"no": 91, "api_id": "ka10102", "name": "회원사 리스트", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 92, "api_id": "ka10131", "name": "기관외국인연속매매현황요청", "category_major": "국내주식", "category_minor": "기관/외국인", "endpoint": "/api/dostk/frgnistt", "tags": ["외국인", "기관"]}
+{"no": 93, "api_id": "ka10170", "name": "당일매매일지요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 94, "api_id": "ka10171", "name": "조건검색 목록조회", "category_major": "국내주식", "category_minor": "조건검색", "endpoint": "/api/dostk/websocket", "tags": []}
+{"no": 95, "api_id": "ka10172", "name": "조건검색 요청 일반", "category_major": "국내주식", "category_minor": "조건검색", "endpoint": "/api/dostk/websocket", "tags": []}
+{"no": 96, "api_id": "ka10173", "name": "조건검색 요청 실시간", "category_major": "국내주식", "category_minor": "조건검색", "endpoint": "/api/dostk/websocket", "tags": []}
+{"no": 97, "api_id": "ka10174", "name": "조건검색 실시간 해제", "category_major": "국내주식", "category_minor": "조건검색", "endpoint": "/api/dostk/websocket", "tags": []}
+{"no": 98, "api_id": "ka20001", "name": "업종현재가요청", "category_major": "국내주식", "category_minor": "업종", "endpoint": "/api/dostk/sect", "tags": ["업종"]}
+{"no": 99, "api_id": "ka20002", "name": "업종별주가요청", "category_major": "국내주식", "category_minor": "업종", "endpoint": "/api/dostk/sect", "tags": ["업종"]}
+{"no": 100, "api_id": "ka20003", "name": "전업종지수요청", "category_major": "국내주식", "category_minor": "업종", "endpoint": "/api/dostk/sect", "tags": ["업종", "지수"]}
+{"no": 101, "api_id": "ka20004", "name": "업종틱차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["업종"]}
+{"no": 102, "api_id": "ka20005", "name": "업종분봉조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["업종", "분봉"]}
+{"no": 103, "api_id": "ka20006", "name": "업종일봉조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["업종", "일봉"]}
+{"no": 104, "api_id": "ka20007", "name": "업종주봉조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["업종"]}
+{"no": 105, "api_id": "ka20008", "name": "업종월봉조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["업종"]}
+{"no": 106, "api_id": "ka20009", "name": "업종현재가일별요청", "category_major": "국내주식", "category_minor": "업종", "endpoint": "/api/dostk/sect", "tags": ["업종", "일봉"]}
+{"no": 107, "api_id": "ka20019", "name": "업종년봉조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["업종"]}
+{"no": 108, "api_id": "ka20068", "name": "대차거래추이요청(종목별)", "category_major": "국내주식", "category_minor": "대차거래", "endpoint": "/api/dostk/slb", "tags": []}
+{"no": 109, "api_id": "ka30001", "name": "ELW가격급등락요청", "category_major": "국내주식", "category_minor": "ELW", "endpoint": "/api/dostk/elw", "tags": ["ELW", "등락률"]}
+{"no": 110, "api_id": "ka30002", "name": "거래원별ELW순매매상위요청", "category_major": "국내주식", "category_minor": "ELW", "endpoint": "/api/dostk/elw", "tags": ["ELW", "상위"]}
+{"no": 111, "api_id": "ka30003", "name": "ELWLP보유일별추이요청", "category_major": "국내주식", "category_minor": "ELW", "endpoint": "/api/dostk/elw", "tags": ["ELW", "일봉"]}
+{"no": 112, "api_id": "ka30004", "name": "ELW괴리율요청", "category_major": "국내주식", "category_minor": "ELW", "endpoint": "/api/dostk/elw", "tags": ["ELW"]}
+{"no": 113, "api_id": "ka30005", "name": "ELW조건검색요청", "category_major": "국내주식", "category_minor": "ELW", "endpoint": "/api/dostk/elw", "tags": ["ELW"]}
+{"no": 114, "api_id": "ka30009", "name": "ELW등락율순위요청", "category_major": "국내주식", "category_minor": "ELW", "endpoint": "/api/dostk/elw", "tags": ["ELW", "등락률", "상위"]}
+{"no": 115, "api_id": "ka30010", "name": "ELW잔량순위요청", "category_major": "국내주식", "category_minor": "ELW", "endpoint": "/api/dostk/elw", "tags": ["ELW", "잔량", "상위"]}
+{"no": 116, "api_id": "ka30011", "name": "ELW근접율요청", "category_major": "국내주식", "category_minor": "ELW", "endpoint": "/api/dostk/elw", "tags": ["ELW"]}
+{"no": 117, "api_id": "ka30012", "name": "ELW종목상세정보요청", "category_major": "국내주식", "category_minor": "ELW", "endpoint": "/api/dostk/elw", "tags": ["ELW"]}
+{"no": 118, "api_id": "ka40001", "name": "ETF수익율요청", "category_major": "국내주식", "category_minor": "ETF", "endpoint": "/api/dostk/etf", "tags": ["ETF"]}
+{"no": 119, "api_id": "ka40002", "name": "ETF종목정보요청", "category_major": "국내주식", "category_minor": "ETF", "endpoint": "/api/dostk/etf", "tags": ["ETF"]}
+{"no": 120, "api_id": "ka40003", "name": "ETF일별추이요청", "category_major": "국내주식", "category_minor": "ETF", "endpoint": "/api/dostk/etf", "tags": ["ETF", "일봉"]}
+{"no": 121, "api_id": "ka40004", "name": "ETF전체시세요청", "category_major": "국내주식", "category_minor": "ETF", "endpoint": "/api/dostk/etf", "tags": ["ETF"]}
+{"no": 122, "api_id": "ka40006", "name": "ETF시간대별추이요청", "category_major": "국내주식", "category_minor": "ETF", "endpoint": "/api/dostk/etf", "tags": ["ETF"]}
+{"no": 123, "api_id": "ka40007", "name": "ETF시간대별체결요청", "category_major": "국내주식", "category_minor": "ETF", "endpoint": "/api/dostk/etf", "tags": ["ETF", "체결"]}
+{"no": 124, "api_id": "ka40008", "name": "ETF일자별체결요청", "category_major": "국내주식", "category_minor": "ETF", "endpoint": "/api/dostk/etf", "tags": ["ETF", "체결", "일봉"]}
+{"no": 125, "api_id": "ka40009", "name": "ETF시간대별체결요청", "category_major": "국내주식", "category_minor": "ETF", "endpoint": "/api/dostk/etf", "tags": ["ETF", "체결"]}
+{"no": 126, "api_id": "ka40010", "name": "ETF시간대별추이요청", "category_major": "국내주식", "category_minor": "ETF", "endpoint": "/api/dostk/etf", "tags": ["ETF"]}
+{"no": 127, "api_id": "ka50010", "name": "금현물체결추이", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["금현물", "체결"]}
+{"no": 128, "api_id": "ka50012", "name": "금현물일별추이", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["금현물", "일봉"]}
+{"no": 129, "api_id": "ka50079", "name": "금현물틱차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["금현물"]}
+{"no": 130, "api_id": "ka50080", "name": "금현물분봉차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["금현물", "분봉"]}
+{"no": 131, "api_id": "ka50081", "name": "금현물일봉차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["금현물", "일봉"]}
+{"no": 132, "api_id": "ka50082", "name": "금현물주봉차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["금현물"]}
+{"no": 133, "api_id": "ka50083", "name": "금현물월봉차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["금현물"]}
+{"no": 134, "api_id": "ka50087", "name": "금현물예상체결", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["금현물", "체결"]}
+{"no": 135, "api_id": "ka50091", "name": "금현물당일틱차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["금현물"]}
+{"no": 136, "api_id": "ka50092", "name": "금현물당일분봉차트조회요청", "category_major": "국내주식", "category_minor": "차트", "endpoint": "/api/dostk/chart", "tags": ["금현물", "분봉"]}
+{"no": 137, "api_id": "ka50100", "name": "금현물 시세정보", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["금현물"]}
+{"no": 138, "api_id": "ka50101", "name": "금현물 호가", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["금현물", "호가"]}
+{"no": 139, "api_id": "ka52301", "name": "금현물투자자현황", "category_major": "국내주식", "category_minor": "기관/외국인", "endpoint": "/api/dostk/frgnistt", "tags": ["금현물"]}
+{"no": 140, "api_id": "ka90001", "name": "테마그룹별요청", "category_major": "국내주식", "category_minor": "테마", "endpoint": "/api/dostk/thme", "tags": []}
+{"no": 141, "api_id": "ka90002", "name": "테마구성종목요청", "category_major": "국내주식", "category_minor": "테마", "endpoint": "/api/dostk/thme", "tags": []}
+{"no": 142, "api_id": "ka90003", "name": "프로그램순매수상위50요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["프로그램", "순매수", "상위"]}
+{"no": 143, "api_id": "ka90004", "name": "종목별프로그램매매현황요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": ["프로그램"]}
+{"no": 144, "api_id": "ka90005", "name": "프로그램매매추이요청 시간대별", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["프로그램"]}
+{"no": 145, "api_id": "ka90006", "name": "프로그램매매차익잔고추이요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["프로그램"]}
+{"no": 146, "api_id": "ka90007", "name": "프로그램매매누적추이요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["프로그램"]}
+{"no": 147, "api_id": "ka90008", "name": "종목시간별프로그램매매추이요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["프로그램"]}
+{"no": 148, "api_id": "ka90009", "name": "외국인기관매매상위요청", "category_major": "국내주식", "category_minor": "순위정보", "endpoint": "/api/dostk/rkinfo", "tags": ["외국인", "기관", "상위"]}
+{"no": 149, "api_id": "ka90010", "name": "프로그램매매추이요청 일자별", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["프로그램", "일봉"]}
+{"no": 150, "api_id": "ka90012", "name": "대차거래내역요청", "category_major": "국내주식", "category_minor": "대차거래", "endpoint": "/api/dostk/slb", "tags": []}
+{"no": 151, "api_id": "ka90013", "name": "종목일별프로그램매매추이요청", "category_major": "국내주식", "category_minor": "시세", "endpoint": "/api/dostk/mrkcond", "tags": ["프로그램", "일봉"]}
+{"no": 152, "api_id": "kt00001", "name": "예수금상세현황요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 153, "api_id": "kt00002", "name": "일별추정예탁자산현황요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["일봉"]}
+{"no": 154, "api_id": "kt00003", "name": "추정자산조회요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 155, "api_id": "kt00004", "name": "계좌평가현황요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 156, "api_id": "kt00005", "name": "체결잔고요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["체결"]}
+{"no": 157, "api_id": "kt00007", "name": "계좌별주문체결내역상세요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["체결"]}
+{"no": 158, "api_id": "kt00008", "name": "계좌별익일결제예정내역요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 159, "api_id": "kt00009", "name": "계좌별주문체결현황요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["체결"]}
+{"no": 160, "api_id": "kt00010", "name": "주문인출가능금액요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 161, "api_id": "kt00011", "name": "증거금율별주문가능수량조회요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 162, "api_id": "kt00012", "name": "신용보증금율별주문가능수량조회요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 163, "api_id": "kt00013", "name": "증거금세부내역조회요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 164, "api_id": "kt00015", "name": "위탁종합거래내역요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 165, "api_id": "kt00016", "name": "일별계좌수익률상세현황요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["일봉"]}
+{"no": 166, "api_id": "kt00017", "name": "계좌별당일현황요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 167, "api_id": "kt00018", "name": "계좌평가잔고내역요청", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": []}
+{"no": 168, "api_id": "kt10000", "name": "주식 매수주문", "category_major": "국내주식", "category_minor": "주문", "endpoint": "/api/dostk/ordr", "tags": []}
+{"no": 169, "api_id": "kt10001", "name": "주식 매도주문", "category_major": "국내주식", "category_minor": "주문", "endpoint": "/api/dostk/ordr", "tags": []}
+{"no": 170, "api_id": "kt10002", "name": "주식 정정주문", "category_major": "국내주식", "category_minor": "주문", "endpoint": "/api/dostk/ordr", "tags": []}
+{"no": 171, "api_id": "kt10003", "name": "주식 취소주문", "category_major": "국내주식", "category_minor": "주문", "endpoint": "/api/dostk/ordr", "tags": []}
+{"no": 172, "api_id": "kt10006", "name": "신용 매수주문", "category_major": "국내주식", "category_minor": "신용주문", "endpoint": "/api/dostk/crdordr", "tags": []}
+{"no": 173, "api_id": "kt10007", "name": "신용 매도주문", "category_major": "국내주식", "category_minor": "신용주문", "endpoint": "/api/dostk/crdordr", "tags": []}
+{"no": 174, "api_id": "kt10008", "name": "신용 정정주문", "category_major": "국내주식", "category_minor": "신용주문", "endpoint": "/api/dostk/crdordr", "tags": []}
+{"no": 175, "api_id": "kt10009", "name": "신용 취소주문", "category_major": "국내주식", "category_minor": "신용주문", "endpoint": "/api/dostk/crdordr", "tags": []}
+{"no": 176, "api_id": "kt20016", "name": "신용융자 가능종목요청", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 177, "api_id": "kt20017", "name": "신용융자 가능문의", "category_major": "국내주식", "category_minor": "종목정보", "endpoint": "/api/dostk/stkinfo", "tags": []}
+{"no": 178, "api_id": "kt50000", "name": "금현물 매수주문", "category_major": "국내주식", "category_minor": "주문", "endpoint": "/api/dostk/ordr", "tags": ["금현물"]}
+{"no": 179, "api_id": "kt50001", "name": "금현물 매도주문", "category_major": "국내주식", "category_minor": "주문", "endpoint": "/api/dostk/ordr", "tags": ["금현물"]}
+{"no": 180, "api_id": "kt50002", "name": "금현물 정정주문", "category_major": "국내주식", "category_minor": "주문", "endpoint": "/api/dostk/ordr", "tags": ["금현물"]}
+{"no": 181, "api_id": "kt50003", "name": "금현물 취소주문", "category_major": "국내주식", "category_minor": "주문", "endpoint": "/api/dostk/ordr", "tags": ["금현물"]}
+{"no": 182, "api_id": "kt50020", "name": "금현물 잔고확인", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["금현물"]}
+{"no": 183, "api_id": "kt50021", "name": "금현물 예수금", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["금현물"]}
+{"no": 184, "api_id": "kt50030", "name": "금현물 주문체결전체조회", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["금현물", "체결"]}
+{"no": 185, "api_id": "kt50031", "name": "금현물 주문체결조회", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["금현물", "체결"]}
+{"no": 186, "api_id": "kt50032", "name": "금현물 거래내역조회", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["금현물"]}
+{"no": 187, "api_id": "kt50075", "name": "금현물 미체결조회", "category_major": "국내주식", "category_minor": "계좌", "endpoint": "/api/dostk/acnt", "tags": ["금현물", "체결"]}
+{"no": 188, "api_id": "00", "name": "주문체결", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["체결"]}
+{"no": 189, "api_id": "04", "name": "잔고", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": []}
+{"no": 190, "api_id": "0A", "name": "주식기세", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": []}
+{"no": 191, "api_id": "0B", "name": "주식체결", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["체결"]}
+{"no": 192, "api_id": "0C", "name": "주식우선호가", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["호가"]}
+{"no": 193, "api_id": "0D", "name": "주식호가잔량", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["호가", "잔량"]}
+{"no": 194, "api_id": "0E", "name": "주식시간외호가", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["호가", "시간외"]}
+{"no": 195, "api_id": "0F", "name": "주식당일거래원", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": []}
+{"no": 196, "api_id": "0G", "name": "ETF NAV", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["ETF"]}
+{"no": 197, "api_id": "0H", "name": "주식예상체결", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["체결"]}
+{"no": 198, "api_id": "0I", "name": "국제금환산가격", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["금현물"]}
+{"no": 199, "api_id": "0J", "name": "업종지수", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["업종", "지수"]}
+{"no": 200, "api_id": "0U", "name": "업종등락", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["업종", "등락률"]}
+{"no": 201, "api_id": "0g", "name": "주식종목정보", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": []}
+{"no": 202, "api_id": "0m", "name": "ELW 이론가", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["ELW"]}
+{"no": 203, "api_id": "0s", "name": "장시작시간", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": []}
+{"no": 204, "api_id": "0u", "name": "ELW 지표", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["ELW"]}
+{"no": 205, "api_id": "0w", "name": "종목프로그램매매", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["프로그램"]}
+{"no": 206, "api_id": "1h", "name": "VI발동/해제", "category_major": "국내주식", "category_minor": "실시간시세", "endpoint": "/api/dostk/websocket", "tags": ["VI"]}
+{"no": 207, "api_id": "공통", "name": "오류코드", "tags": []}
