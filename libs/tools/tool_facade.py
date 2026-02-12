@@ -20,12 +20,25 @@ def _new_run_id() -> str:
 
 
 def _mode() -> str:
+    # server mode (mock/real)
     return (os.getenv("KIWOOM_MODE", "real") or "real").strip().lower()
 
 
-def _auto_approve_enabled() -> bool:
-    v = (os.getenv("AUTO_APPROVE", "false") or "false").strip().lower()
+def _execution_enabled() -> bool:
+    v = (os.getenv("EXECUTION_ENABLED", "false") or "false").strip().lower()
     return v in ("1", "true", "yes", "y", "on")
+
+
+def _approval_mode() -> str:
+    # manual|auto
+    v = (os.getenv("APPROVAL_MODE", "") or "").strip().lower()
+    if v:
+        return v
+    # backward compat: AUTO_APPROVE=true -> auto
+    legacy = (os.getenv("AUTO_APPROVE", "false") or "false").strip().lower()
+    if legacy in ("1", "true", "yes", "y", "on"):
+        return "auto"
+    return "manual"
 
 
 def _unwrap_intent(row: Any) -> Optional[Dict[str, Any]]:
@@ -67,11 +80,26 @@ class ToolFacade:
                     continue
         return rows
 
-    def _last_intent(self) -> Optional[Dict[str, Any]]:
+    def _last_row(self) -> Optional[Dict[str, Any]]:
         rows = self._load_all_rows()
-        if not rows:
-            return None
-        return _unwrap_intent(rows[-1])
+        return rows[-1] if rows else None
+
+    def _last_intent(self) -> Optional[Dict[str, Any]]:
+        row = self._last_row()
+        return _unwrap_intent(row) if row else None
+
+    def _summarize_intent(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        intent = _unwrap_intent(intent) or {}
+        return {
+            "intent_id": intent.get("intent_id"),
+            "action": intent.get("action"),
+            "symbol": intent.get("symbol"),
+            "qty": intent.get("qty"),
+            "order_type": intent.get("order_type"),
+            "price": intent.get("price"),
+            "rationale": intent.get("rationale", ""),
+            "created_epoch": intent.get("created_epoch"),
+        }
 
     # ---------- core tools ----------
 
@@ -105,7 +133,16 @@ class ToolFacade:
         if isinstance(intent, dict):
             self.intent_store.save(intent)
 
-        if _auto_approve_enabled() and _mode() == "mock":
+        # approval policy:
+        # - APPROVAL_MODE=manual: always return needs_approval (no auto execution)
+        # - APPROVAL_MODE=auto: execute immediately ONLY if EXECUTION_ENABLED=true
+        if _approval_mode() == "auto":
+            if not _execution_enabled():
+                # keep consistent: auto mode but execution disabled => still require manual approval/enable switch
+                return {
+                    "decision": decision_dict,
+                    "note": "APPROVAL_MODE=auto but EXECUTION_ENABLED=false, so execution is blocked.",
+                }
             exec_res = self.order_execute(intent=intent or raw_intent)
             return {"decision": decision_dict, "execution": exec_res}
 
@@ -127,12 +164,51 @@ class ToolFacade:
         exec_res = self.order_execute(intent=intent)
         return {"ok": True, "intent_id": intent_id, "execution": exec_res}
 
+    def preview_intent(self, *, intent_id: Optional[str] = None) -> Dict[str, Any]:
+        if not intent_id:
+            intent = self._last_intent()
+            if not intent:
+                return {"ok": False, "message": "No stored intents."}
+        else:
+            loaded = self.intent_store.load(intent_id)
+            intent = _unwrap_intent(loaded)
+            if not intent:
+                return {"ok": False, "message": f"intent_id not found: {intent_id}"}
+        return {"ok": True, "intent": self._summarize_intent(intent)}
+
+    def reject_intent(self, *, intent_id: Optional[str] = None, reason: str = "rejected") -> Dict[str, Any]:
+        """Soft reject: append a rejection marker line so you can audit decisions later."""
+        if not intent_id:
+            intent = self._last_intent()
+            if not intent:
+                return {"ok": False, "message": "No stored intents."}
+            intent_id = str(intent.get("intent_id") or "")
+        else:
+            loaded = self.intent_store.load(intent_id)
+            intent = _unwrap_intent(loaded)
+            if not intent:
+                return {"ok": False, "message": f"intent_id not found: {intent_id}"}
+
+        marker = {
+            "ts": int(__import__("time").time()),
+            "intent_id": intent_id,
+            "status": "rejected",
+            "reason": reason,
+            "intent": intent,
+        }
+        self.intent_store_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.intent_store_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(marker, ensure_ascii=False) + "\n")
+
+        return {"ok": True, "intent_id": intent_id, "status": "rejected", "reason": reason}
+
     def list_intents(self, limit: int = 5) -> Dict[str, Any]:
         rows = self._load_all_rows()
         recent = rows[-limit:]
         out: List[Dict[str, Any]] = []
         for r in recent:
             intent = _unwrap_intent(r) or {}
+            status = r.get("status") or "stored"
             out.append(
                 {
                     "intent_id": intent.get("intent_id") or r.get("intent_id"),
@@ -143,6 +219,8 @@ class ToolFacade:
                     "price": intent.get("price"),
                     "created_epoch": intent.get("created_epoch"),
                     "ts": r.get("ts"),
+                    "status": status,
+                    "reason": r.get("reason"),
                 }
             )
         return {"ok": True, "count": len(out), "intents": out}
@@ -165,12 +243,28 @@ class ToolFacade:
     def run(self, text: str) -> Dict[str, Any]:
         t = text.strip()
 
+        # preview
+        if t in ("승인?", "미리보기", "프리뷰", "주문확인"):
+            return self.preview_intent()
+
+        if t.startswith("미리보기 "):
+            return self.preview_intent(intent_id=t.split(" ", 1)[1].strip())
+
+        # reject
+        if t in ("거절", "취소"):
+            return self.reject_intent()
+
+        if t.startswith("거절 "):
+            return self.reject_intent(intent_id=t.split(" ", 1)[1].strip())
+
+        # approve
         if t == "승인":
             return self.approve_intent()
 
         if t.startswith("승인 "):
             return self.approve_intent(intent_id=t.split(" ", 1)[1].strip())
 
+        # list
         if t in ("최근주문", "대기주문"):
             return self.list_intents()
 
