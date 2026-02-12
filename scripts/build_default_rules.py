@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 
 def iter_jsonl(path: Path):
@@ -29,11 +30,9 @@ def main() -> int:
         print(f"[ERR] input not found: {inp}")
         return 2
 
-    # Tag-based grouping
     prefix_defaults: Dict[str, Dict[str, Any]] = {}
     api_overrides: Dict[str, Dict[str, Any]] = {}
 
-    # Sensible domain defaults keyed by tags (you can extend tags freely)
     TAG_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "account": {"stk_bond_tp": "1", "sell_tp": "0"},
         "order_status": {"mrkt_tp": "0"},
@@ -41,14 +40,12 @@ def main() -> int:
         "domestic": {"dmst_stex_tp": "KRX"},
     }
 
-    # Prefix heuristics (very stable)
     PREFIX_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "kt000": {"stk_bond_tp": "1", "sell_tp": "0"},
         "kt100": {"dmst_stex_tp": "KRX", "trde_tp": "3", "cond_uv": ""},
-        "ka100": {},  # market info; usually needs stk_cd
+        "ka100": {},
     }
 
-    # Build from records
     n = 0
     for rec in iter_jsonl(inp):
         n += 1
@@ -60,18 +57,14 @@ def main() -> int:
             tags = [tags]
         tags = [str(t).strip() for t in tags if str(t).strip()]
 
-        # Start with prefix rules
         for pref, d in PREFIX_DEFAULTS.items():
             if api_id.startswith(pref):
                 prefix_defaults.setdefault(pref, {}).update(d)
 
-        # Apply tag defaults to api overrides
         merged: Dict[str, Any] = {}
         for t in tags:
-            if t in TAG_DEFAULTS:
-                merged.update(TAG_DEFAULTS[t])
+            merged.update(TAG_DEFAULTS.get(t, {}))
 
-        # Special cases: a few APIs are known to have hard requirements
         if api_id == "kt00009":
             merged.setdefault("mrkt_tp", "0")
         if api_id in ("kt10000", "kt10001"):
@@ -84,11 +77,10 @@ def main() -> int:
         if merged:
             api_overrides[api_id] = {**api_overrides.get(api_id, {}), **merged}
 
-    # Normalize: for kt100* market order implies ord_uv empty (engine will enforce too)
     rules = {
         "version": 1,
         "generated_from": str(inp),
-        "generated_at": __import__("datetime").datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "prefix_defaults": prefix_defaults,
         "api_overrides": api_overrides,
     }
