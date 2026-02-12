@@ -39,6 +39,16 @@ class ApiRequestBuilder:
         "price": ["order_price", "단가", "가격"],
     }
 
+    # Headers that are injected/managed by executors (token/app credentials/api-id)
+    # These should NOT be required from the agent/context.
+    MANAGED_HEADERS = {
+        'authorization',
+        'appkey',
+        'appsecret',
+        'api-id',
+        'api_id',
+    }
+
     def prepare(self, spec: ApiSpec, context: Dict[str, Any]) -> PrepareResult:
         schema = self._normalize_params_schema(spec.params or {})
         headers, query, body = {}, {}, {}
@@ -50,6 +60,9 @@ class ApiRequestBuilder:
 
             value, found = self._find_value(name, context)
             if not found:
+                # Executor will inject auth/app headers automatically.
+                if loc == "header" and name.lower() in self.MANAGED_HEADERS:
+                    continue
                 if required:
                     missing.append(name)
                 continue
@@ -73,6 +86,22 @@ class ApiRequestBuilder:
                 question=q,
                 reason="Missing required parameters",
             )
+
+        # --- Pass-through: if spec lacks body schema (or is incomplete),
+        # include remaining context keys into body for POST/PUT/PATCH requests.
+        method = (spec.method or '').upper()
+        if method in ('POST','PUT','PATCH'):
+            known = set(schema.keys())
+            # Only add keys not already mapped to header/query/body
+            for k, v in context.items():
+                if k in known or k in headers or k in query or k in body:
+                    continue
+                if k.lower() in self.MANAGED_HEADERS:
+                    continue
+                # drop empty placeholders
+                if v is None or v == '':
+                    continue
+                body[k] = v
 
         req = PreparedRequest(
             api_id=spec.api_id,

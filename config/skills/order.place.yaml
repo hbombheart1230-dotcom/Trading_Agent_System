@@ -1,0 +1,9 @@
+skill: order.place
+description: (승인된) 주문 실행
+outputs: OrderPlaceDTO
+steps:
+  - api_id: kt10000  # buy default (runner switches to kt10001 when side=sell)
+    map:
+      stk_cd: "{symbol}"
+      ord_qty: "{qty}"
+      ord_uv: "{price}"

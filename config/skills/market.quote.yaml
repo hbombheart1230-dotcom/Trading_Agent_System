@@ -1,0 +1,7 @@
+skill: market.quote
+description: 종목의 현재가/호가 요약(체결정보 기반)
+outputs: QuoteDTO
+steps:
+  - api_id: ka10003
+    map:
+      stk_cd: "{symbol}"

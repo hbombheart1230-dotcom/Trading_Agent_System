@@ -1,0 +1,14 @@
+skill: order.status
+description: 주문번호 기반 상태/체결 조회 (kt00007 + kt00009)
+outputs: OrderStatusDTO
+steps:
+  - api_id: kt00007
+    map:
+      stk_cd: "{symbol}"
+      fr_ord_no: "{ord_no}"
+  - api_id: kt00009
+    map:
+      ord_dt: "{ord_dt}"
+      qry_tp: "{qry_tp}"
+      stk_cd: "{symbol}"
+      fr_ord_no: "{ord_no}"

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "generated_from": "data\\specs\\kiwoom_api_list_tagged.jsonl",
+  "generated_at": "2026-02-12T01:38:35Z",
+  "prefix_defaults": {
+    "ka100": {},
+    "kt000": {
+      "stk_bond_tp": "1",
+      "sell_tp": "0"
+    },
+    "kt100": {
+      "dmst_stex_tp": "KRX",
+      "trde_tp": "3",
+      "cond_uv": ""
+    }
+  },
+  "api_overrides": {
+    "kt00007": {
+      "qry_tp": "2"
+    },
+    "kt00009": {
+      "mrkt_tp": "0"
+    },
+    "kt10000": {
+      "dmst_stex_tp": "KRX",
+      "trde_tp": "3",
+      "cond_uv": ""
+    },
+    "kt10001": {
+      "dmst_stex_tp": "KRX",
+      "trde_tp": "3",
+      "cond_uv": ""
+    }
+  }
+}
