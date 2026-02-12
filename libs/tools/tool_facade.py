@@ -30,15 +30,26 @@ def _execution_enabled() -> bool:
 
 
 def _approval_mode() -> str:
-    # manual|auto
+    """Return approval mode: 'manual' or 'auto'.
+
+    Priority:
+      1) APPROVAL_MODE env (manual|auto)
+      2) AUTO_APPROVE env:
+         - if set to 'manual'|'auto' => treated as mode (new-style)
+         - if set to boolean true/false => backward-compatible (true => auto)
+      3) default: manual
+    """
     v = (os.getenv("APPROVAL_MODE", "") or "").strip().lower()
-    if v:
+    if v in ("manual", "auto"):
         return v
-    # backward compat: AUTO_APPROVE=true -> auto
-    legacy = (os.getenv("AUTO_APPROVE", "false") or "false").strip().lower()
+
+    legacy = (os.getenv("AUTO_APPROVE", "") or "").strip().lower()
+    if legacy in ("manual", "auto"):
+        return legacy
     if legacy in ("1", "true", "yes", "y", "on"):
         return "auto"
     return "manual"
+
 
 
 def _unwrap_intent(row: Any) -> Optional[Dict[str, Any]]:

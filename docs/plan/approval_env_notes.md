@@ -9,4 +9,6 @@
 # - KIWOOM_MODE=mock|real
 #
 # Backward compatibility
-# - AUTO_APPROVE=true is treated as APPROVAL_MODE=auto (deprecated; prefer APPROVAL_MODE)
+# - AUTO_APPROVE=auto|manual : treated as APPROVAL_MODE (compat)
+# - AUTO_APPROVE=true        : treated as APPROVAL_MODE=auto (legacy boolean)
+#   (운영/문서에서는 APPROVAL_MODE 사용 권장)

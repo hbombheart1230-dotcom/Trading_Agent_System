@@ -62,7 +62,25 @@ class TwoPhaseSupervisor:
 
         import os
 
-        auto = (str(getattr(self.s, "auto_approve_orders", os.getenv("AUTO_APPROVE_ORDERS", "false"))).lower() == "true")
-        if auto:
-            return Decision(status="approved", reason="AUTO_APPROVE_ORDERS=true", details={}, intent=intent)
+        # approval mode (manual|auto)
+        # Priority:
+        #   1) settings.approval_mode (if provided)
+        #   2) env APPROVAL_MODE
+        #   3) env AUTO_APPROVE (manual|auto or boolean legacy)
+        mode = str(getattr(self.s, "approval_mode", "") or "").strip().lower()
+        if mode not in ("manual", "auto"):
+            mode = (os.getenv("APPROVAL_MODE", "") or "").strip().lower()
+
+        if mode not in ("manual", "auto"):
+            legacy = (os.getenv("AUTO_APPROVE", "") or "").strip().lower()
+            if legacy in ("manual", "auto"):
+                mode = legacy
+            elif legacy in ("1", "true", "yes", "y", "on"):
+                mode = "auto"
+            else:
+                mode = "manual"
+
+        if mode == "auto":
+            return Decision(status="approved", reason="APPROVAL_MODE=auto", details={}, intent=intent)
+
         return Decision(status="needs_approval", reason="Supervisor approval required", details={}, intent=intent)

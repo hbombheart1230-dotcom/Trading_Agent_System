@@ -1,9 +1,9 @@
 # Project Tree – Trading_Agent_System
-*(M5 완료 시점 기준)*
+*(M15 구조 반영)*
 
 이 문서는 Trading_Agent_System 프로젝트의 **폴더 구조와 각 파일의 역할**을 한눈에 이해하기 위한 가이드이다.  
 본 프로젝트는 **Agentic AI 기반 자동매매 시스템**으로,  
-실행 이전 단계(M1~M5)에서는 **판단·계획·준비 로직만**을 다룬다.
+현재 문서는 **M15 구조(Agent Layer + Execution Layer + Guards/Approval)** 기준으로 업데이트되었다.
 
 ---
 
@@ -14,6 +14,39 @@ Trading_Agent_System/
 ```
 
 ---
+
+
+---
+
+## ✅ M15 핵심 구조
+
+### Agent Layer
+
+```
+libs/agent/
+ ├─ commander.py
+ ├─ strategist.py
+ ├─ scanner.py
+ ├─ monitor.py
+ ├─ reporter.py
+ └─ executor.py          # Agent 레벨 Executor
+```
+
+### Execution Layer
+
+```
+libs/execution/
+ └─ executor.py          # 실제 API 실행 전용
+```
+
+### Docs
+
+```
+docs/architecture/agent_layer.md
+docs/architecture/execution_model.md
+docs/plan/project_tree.md
+docs/plan/m15_structure.md
+```
 
 ## 1. 환경 / 설정
 
