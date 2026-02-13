@@ -1,0 +1,21 @@
+# =========================
+# Trading Agent System ENV
+# =========================
+# Copy this file to `.env` and uncomment what you need.
+
+# --- Runtime ---
+# DRY_RUN=1                  # 1: no external calls/order execution; 0: allow external data calls (still guarded by execution flags)
+# LOG_LEVEL=INFO
+
+# --- Kiwoom (Mock / Live) ---
+# KIWOOM_APP_KEY=your_key
+# KIWOOM_APP_SECRET=your_secret
+# KIWOOM_BASE_URL=https://mockapi.kiwoom.com   # mock: https://mockapi.kiwoom.com | live: https://api.kiwoom.com
+
+# --- News Provider (M19) ---
+# NAVER_CLIENT_ID=your_naver_client_id
+# NAVER_CLIENT_SECRET=your_naver_client_secret
+#
+# Optional: if you want to search by company name instead of symbol code
+# SYMBOL_QUERY_MAP_JSON={"005930":"삼성전자","000660":"SK하이닉스"}
+

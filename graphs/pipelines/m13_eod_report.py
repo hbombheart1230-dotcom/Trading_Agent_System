@@ -62,7 +62,32 @@ def run_m13_eod_report(
     report_dir = Path(os.getenv("REPORT_DIR", "./reports"))
 
     md, js = generate(events_path, report_dir, day=day)  # type: ignore[misc]
-    state["daily_report"] = {"day": day, "md": str(md), "js": str(js)}
+
+    report_obj: Dict[str, Any] = {"day": day, "md": str(md), "js": str(js)}
+
+    # Optional: LLM-based summary (M19-6)
+    try:
+        policy = dict(state.get("policy") or {})
+        if bool(policy.get("use_llm_daily_report")):
+            from libs.reporting.llm_daily_summary import summarize_daily_report
+
+            summary = summarize_daily_report(state=state, policy=policy)
+            if summary:
+                report_obj["llm_summary"] = summary
+                # append to markdown
+                try:
+                    md_path = Path(report_obj["md"])
+                    existing = md_path.read_text(encoding="utf-8")
+                    existing += "\n## LLM Summary\n" + summary.strip() + "\n"
+                    md_path.write_text(existing, encoding="utf-8")
+                except Exception:
+                    # do not fail EOD report for summary IO errors
+                    pass
+    except Exception:
+        # do not fail EOD report for summary errors
+        pass
+
+    state["daily_report"] = report_obj
     state["last_daily_report_day"] = day
     state["eod_skipped"] = False
     return state

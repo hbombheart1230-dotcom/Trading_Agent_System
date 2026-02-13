@@ -1,0 +1,23 @@
+# --- M19-4: OpenRouter (LLM Router) ---
+# OpenRouter API Key
+# OPENROUTER_API_KEY=...
+
+# Optional
+# OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+# OPENROUTER_TIMEOUT_SEC=15
+# OPENROUTER_HTTP_REFERER=https://your-app.example
+# OPENROUTER_X_TITLE=Trading_Agent_System
+
+# Default model (fallback)
+# OPENROUTER_DEFAULT_MODEL=openai/gpt-4o-mini
+# OPENROUTER_DEFAULT_TEMPERATURE=0.2
+# OPENROUTER_DEFAULT_MAX_TOKENS=512
+
+# Role-specific model override (examples)
+# OPENROUTER_MODEL_STRATEGIST=anthropic/claude-3.5-sonnet
+# OPENROUTER_MODEL_COMMANDER=openai/gpt-4o
+# OPENROUTER_MODEL_NEWS_SCORER=openai/gpt-4o-mini
+
+# --- M19-1: Naver Search News API (if not already) ---
+# NAVER_CLIENT_ID=...
+# NAVER_CLIENT_SECRET=...

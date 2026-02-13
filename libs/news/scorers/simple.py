@@ -59,3 +59,11 @@ class SimpleKeywordNewsScorer:
             if arr:
                 out[s] = max(-1.0, min(1.0, sum(arr) / len(arr)))
         return out
+
+class SimpleNewsSentimentScorer(SimpleKeywordNewsScorer):
+    """Backward-compatible name used by registry/tests."""
+
+
+# Backward alias (older name)
+SimpleNewsScorer = SimpleNewsSentimentScorer
+
