@@ -7,21 +7,28 @@ from typing import Protocol, Sequence, Optional, Dict, Any
 @dataclass(frozen=True)
 class NewsItem:
     title: str
-    published_at: Optional[str] = None
-    source: Optional[str] = None
+    # Optional metadata (kept flexible for providers/scorers)
     url: Optional[str] = None
+    source: Optional[str] = None
+    published_at: Optional[str] = None
+    summary: Optional[str] = None
+    symbol: Optional[str] = None  # provider may tag the related symbol
 
 
 class NewsProvider(Protocol):
-    """Provider interface for fetching news items per symbol/keyword.
+    """Provider interface for fetching news items.
 
-    IMPORTANT:
-      - Providers should be best-effort and may return an empty list.
-      - Providers MUST NOT raise for normal 'no data' conditions.
-      - Network access should be opt-in via policy/env; tests should inject mocks.
+    We fetch in *batch* to avoid per-symbol network chatter.
+    Providers MUST be best-effort and may return an empty list.
     """
 
     name: str
 
-    def fetch(self, symbol: str, *, state: Dict[str, Any] | None = None, policy: Dict[str, Any] | None = None) -> Sequence[NewsItem]:
+    def fetch(
+        self,
+        symbols: Sequence[str],
+        *,
+        state: Dict[str, Any] | None = None,
+        policy: Dict[str, Any] | None = None,
+    ) -> Sequence[NewsItem]:
         ...

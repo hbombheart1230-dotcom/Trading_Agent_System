@@ -1,80 +1,64 @@
-"""Global market sentiment signals.
-
-M18-3: Strategist can incorporate broad market regime (risk-on / risk-off)
-using external data sources (e.g., yfinance, rates, FX).
-
-In tests/DRY_RUN, callers should inject `state["mock_global_sentiment"]`
-in [-1.0, +1.0]. Live integration can be added later without changing callers.
-"""
-
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
+import os
+from typing import Any, Dict
 
 
-@dataclass(frozen=True)
-class GlobalSentiment:
-    """Normalized market sentiment in [-1, +1]."""
-    score: float
-    notes: str = ""
+def _is_dry_run() -> bool:
+    v = os.getenv("DRY_RUN", "").strip().lower()
+    return v in ("1", "true", "yes", "y", "on")
 
 
-def clamp(x: float, lo: float, hi: float) -> float:
-    return lo if x < lo else hi if x > hi else x
-
-
-def get_global_sentiment(state: Dict[str, Any]) -> GlobalSentiment:
-    """Return GlobalSentiment.
+def compute_global_sentiment(state: Dict[str, Any], policy: Dict[str, Any]) -> float:
+    """Compute global sentiment in [-1.0, +1.0].
 
     Priority:
-      1) state['mock_global_sentiment'] (tests / DRY_RUN)
-      2) state['global_sentiment'] (precomputed upstream)
-      3) default 0.0 (neutral)
+    1) state['mock_global_sentiment'] if present
+    2) DRY_RUN => 0.0 (neutral)
+    3) yfinance-based proxy (best-effort; if unavailable => 0.0)
+
+    Note: this function must be safe in environments without yfinance/network.
     """
-    if "mock_global_sentiment" in state:
+    if "mock_global_sentiment" in state and state["mock_global_sentiment"] is not None:
         try:
-            s = float(state["mock_global_sentiment"])
+            return float(state["mock_global_sentiment"])
         except Exception:
-            s = 0.0
-        return GlobalSentiment(score=clamp(s, -1.0, 1.0), notes="mock")
-    if isinstance(state.get("global_sentiment"), dict) and "score" in state["global_sentiment"]:
-        try:
-            s = float(state["global_sentiment"]["score"])
-        except Exception:
-            s = 0.0
-        notes = str(state["global_sentiment"].get("notes") or "precomputed")
-        return GlobalSentiment(score=clamp(s, -1.0, 1.0), notes=notes)
-    return GlobalSentiment(score=0.0, notes="default_neutral")
+            return 0.0
 
+    if _is_dry_run():
+        return 0.0
 
-def adjust_policy_by_sentiment(policy: Dict[str, Any], sentiment: GlobalSentiment) -> Dict[str, Any]:
-    """Adjust risk thresholds based on market regime.
+    # Best-effort live computation
+    try:
+        import yfinance as yf  # type: ignore
+    except Exception:
+        return 0.0
 
-    The intent is: in risk-off (score < 0), be more conservative:
-      - lower max_risk
-      - increase min_confidence
+    # Policy defaults (can be tuned later)
+    spx = str(policy.get("gs_ticker_spx") or "^GSPC")
+    ndx = str(policy.get("gs_ticker_ndx") or "^IXIC")
+    usdkrw = str(policy.get("gs_ticker_usdkrw") or "KRW=X")
 
-    In risk-on (score > 0), slightly relax:
-      - higher max_risk
-      - lower min_confidence
+    def _last_return(ticker: str) -> float:
+        data = yf.download(ticker, period="5d", interval="1d", progress=False)
+        if data is None or len(data) < 2:
+            return 0.0
+        close = data["Close"].dropna()
+        if len(close) < 2:
+            return 0.0
+        r = float((close.iloc[-1] / close.iloc[-2]) - 1.0)
+        return r
 
-    This returns a NEW dict (does not mutate input).
-    """
-    max_risk = float(policy.get("max_risk", 0.7))
-    min_conf = float(policy.get("min_confidence", 0.6))
+    # Simple proxy: equities up => risk-on, USDKRW up => risk-off for KR investors
+    try:
+        r_spx = _last_return(spx)
+        r_ndx = _last_return(ndx)
+        r_fx = _last_return(usdkrw)
+    except Exception:
+        return 0.0
 
-    # scale factor: up to 20% adjustment at extremes
-    k = 0.20 * float(sentiment.score)
+    raw = (0.45 * r_spx + 0.45 * r_ndx) - (0.10 * r_fx)
 
-    # risk-on -> increase max_risk, risk-off -> decrease
-    max_risk_adj = clamp(max_risk * (1.0 + k), 0.05, 1.0)
-
-    # risk-on -> decrease min_confidence, risk-off -> increase
-    min_conf_adj = clamp(min_conf * (1.0 - k), 0.05, 0.99)
-
-    out = dict(policy)
-    out["max_risk"] = max_risk_adj
-    out["min_confidence"] = min_conf_adj
-    out["global_sentiment"] = {"score": sentiment.score, "notes": sentiment.notes}
-    return out
+    # normalize roughly: +/-2% daily move ~ +/-1 sentiment
+    s = max(-1.0, min(1.0, raw / 0.02))
+    return float(s)
