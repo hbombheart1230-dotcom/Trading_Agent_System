@@ -11,6 +11,9 @@ from libs.skills.runner import CompositeSkillRunner
 from libs.supervisor.two_phase import TwoPhaseSupervisor
 from libs.supervisor.intent_store import IntentStore
 
+import os
+from libs.execution.executors.base import ExecutionDisabledError
+
 
 def _new_run_id() -> str:
     return uuid.uuid4().hex
@@ -140,6 +143,38 @@ class ExecutorAgent:
     def execute_order(self, *, intent: Dict[str, Any]) -> Dict[str, Any]:
         intent = _unwrap_intent(intent) or {}
         action = str(intent.get("action") or "").upper()
+        # ---------- Safety: MAX_ORDER_QTY / MAX_ORDER_NOTIONAL ----------
+        def _as_int_env(name: str) -> int:
+            raw = (os.getenv(name, "") or "").strip()
+            if not raw:
+                return 0
+            try:
+                return int(raw)
+            except Exception:
+                return 0
+
+        max_qty = _as_int_env("MAX_ORDER_QTY")
+        max_notional = _as_int_env("MAX_ORDER_NOTIONAL")
+
+        sym = intent.get("symbol") or intent.get("stk_cd")
+        qty = int(intent.get("qty") or 1)
+        price = intent.get("price")
+
+        if max_qty > 0 and qty > max_qty:
+            raise ExecutionDisabledError(f"Order qty {qty} exceeds MAX_ORDER_QTY={max_qty} (symbol={sym})")
+
+        # Notional check only when price is known (e.g., limit orders)
+        if max_notional > 0 and price is not None:
+            try:
+                px = int(price)
+                notional = qty * px
+                if notional > max_notional:
+                    raise ExecutionDisabledError(
+                        f"Order notional {notional} exceeds MAX_ORDER_NOTIONAL={max_notional} (qty={qty}, price={px}, symbol={sym})"
+                    )
+            except ValueError:
+                # if price is not numeric, be conservative: block
+                raise ExecutionDisabledError(f"Invalid price '{price}' for notional guard (symbol={sym})")
 
         skill_args = {
             "side": "buy" if action == "BUY" else "sell",

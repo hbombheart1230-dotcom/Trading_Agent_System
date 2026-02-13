@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import inspect
 import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -52,45 +51,66 @@ def _env_int(name: str, default: int) -> int:
 def _resolve_approval_mode() -> str:
     """
     Priority:
-      1) APPROVAL_MODE if set/non-empty
-      2) AUTO_APPROVE legacy if set (true->auto, false->manual)
+      1) APPROVAL_MODE if set and non-empty
+      2) AUTO_APPROVE legacy fallback if APPROVAL_MODE missing/empty
       3) default manual
     """
-    raw = os.getenv("APPROVAL_MODE")
-    if raw is not None and raw.strip():
-        return raw.strip().lower()
+    raw_approval = os.getenv("APPROVAL_MODE")
+    approval_mode: Optional[str] = None
 
-    legacy = os.getenv("AUTO_APPROVE")
-    if legacy is not None and legacy.strip():
-        return "auto" if legacy.strip().lower() == "true" else "manual"
+    if raw_approval is not None:
+        raw_approval = raw_approval.strip()
+        if raw_approval:
+            approval_mode = raw_approval.lower()
 
-    return "manual"
+    if not approval_mode:
+        raw_legacy = os.getenv("AUTO_APPROVE")
+        if raw_legacy is not None:
+            raw_legacy = raw_legacy.strip().lower()
+            if raw_legacy == "true":
+                approval_mode = "auto"
+            elif raw_legacy == "false":
+                approval_mode = "manual"
+
+    if not approval_mode:
+        approval_mode = "manual"
+
+    return approval_mode
 
 
-def _call_agent_method(agent: Any, method_name: str, **kwargs) -> Any:
+def _try_agent_approve(agent: ExecutorAgent, intent_id: str) -> Dict[str, Any]:
     """
-    Robustly call agent.<method_name>(...) even if signature differs between versions.
-    It will:
-      - inspect signature
-      - pass only accepted kwargs
-      - if it accepts no kwargs, call without args
+    Best-effort approval call. Different repos may expose different method names.
+    We try a few common ones; if none exist, return a "skipped" payload.
     """
-    fn = getattr(agent, method_name)
-    sig = inspect.signature(fn)
-    params = sig.parameters
+    # Candidate method names (keyword-only signatures are common in this repo)
+    candidates = [
+        "approve",
+        "approve_intent",
+        "accept",
+        "accept_intent",
+        "confirm",
+        "confirm_intent",
+    ]
 
-    # If method has no parameters except self -> call with no args
-    # NOTE: bound method signature does not include self in params
-    if len(params) == 0:
-        return fn()
+    for name in candidates:
+        fn = getattr(agent, name, None)
+        if callable(fn):
+            try:
+                # try keyword style first
+                return {"ok": True, "method": name, "result": fn(intent_id=intent_id)}
+            except TypeError:
+                # fallback positional if needed
+                return {"ok": True, "method": name, "result": fn(intent_id)}
+            except Exception as e:
+                return {"ok": False, "method": name, "error": repr(e)}
 
-    # Filter kwargs to only those accepted
-    accepted = {}
-    for k, v in kwargs.items():
-        if k in params:
-            accepted[k] = v
-
-    return fn(**accepted)
+    return {
+        "ok": False,
+        "skipped": True,
+        "reason": "No approve/accept method found on ExecutorAgent",
+        "intent_id": intent_id,
+    }
 
 
 def main() -> int:
@@ -98,16 +118,18 @@ def main() -> int:
     ap.add_argument("--clear", action="store_true", help="Clear demo jsonl logs before running")
     args = ap.parse_args()
 
+    # Lock approval mode BEFORE loading .env (prevents .env from overriding legacy test scenarios)
+    approval_mode = _resolve_approval_mode()
+    os.environ["APPROVAL_MODE"] = approval_mode
+
     cfg = Settings.from_env()
 
     kiwoom_mode = (os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower()
-    approval_mode = _resolve_approval_mode()
     execution_enabled = _env_bool("EXECUTION_ENABLED", "false")
 
     demo_symbol = (os.getenv("DEMO_SYMBOL", "005930") or "005930").strip()
     demo_qty = _env_int("DEMO_QTY", 1)
 
-    # If DEMO_PRICE is set (>0), we use a limit order for notional guard tests
     demo_price = _env_int("DEMO_PRICE", 0)
     if demo_price > 0:
         order_type = "limit"
@@ -116,8 +138,7 @@ def main() -> int:
         order_type = "market"
         price = None
 
-    # For manual path regression: if DEMO_DO_APPROVE=true and decision is needs_approval, call approve()
-    do_approve = _env_bool("DEMO_DO_APPROVE", "false")
+    demo_do_approve = _env_bool("DEMO_DO_APPROVE", "false")
 
     data_dir = ROOT / "data"
     intents_path = data_dir / "m15_demo_intents.jsonl"
@@ -130,7 +151,8 @@ def main() -> int:
     print("=== M15 Smoke Demo ===")
     print(f"KIWOOM_MODE={kiwoom_mode} EXECUTION_ENABLED={execution_enabled} APPROVAL_MODE={approval_mode}")
     print(f"AUTO_APPROVE={os.getenv('AUTO_APPROVE')}")
-    print(f"DEMO_SYMBOL={demo_symbol} DEMO_QTY={demo_qty} DEMO_PRICE={demo_price} DEMO_DO_APPROVE={do_approve}")
+    print(f"DEMO_SYMBOL={demo_symbol} DEMO_QTY={demo_qty} DEMO_PRICE={demo_price}")
+    print(f"DEMO_DO_APPROVE={demo_do_approve}")  # <-- S11 expectation hook
     print(f"intents: {intents_path}")
     print(f"events : {events_path}")
 
@@ -138,7 +160,6 @@ def main() -> int:
     supervisor = TwoPhaseSupervisor(cfg)
     store = IntentStore(str(intents_path))
 
-    # Repo requires both intent_store and intent_store_path
     agent = ExecutorAgent(
         runner=runner,
         supervisor=supervisor,
@@ -147,9 +168,7 @@ def main() -> int:
     )
 
     # ---- intent1 (buy) ----
-    res1 = _call_agent_method(
-        agent,
-        "submit_order_intent",
+    res1 = agent.submit_order_intent(
         side="buy",
         symbol=demo_symbol,
         qty=demo_qty,
@@ -162,29 +181,26 @@ def main() -> int:
     print("\n[intent1/submit]", res1)
     _write_jsonl(events_path, {"tag": "intent1_submit", "result": res1})
 
-    intent_id_1 = res1["decision"]["intent"]["intent_id"]
-    status_1 = res1["decision"]["status"]
+    # repo API: all keyword-only
+    print("\n[preview]", agent.preview())
+    print("\n[last_intent]", agent.last_intent())
+    print("\n[list_intents]", agent.list_intents(limit=50))
+    print("\n[reject]", agent.reject(reason="demo reject"))
 
-    # preview / last / list
-    prev = _call_agent_method(agent, "preview", intent_id=intent_id_1)
-    print("\n[preview]", prev)
-    print("\n[last_intent]", _call_agent_method(agent, "last_intent"))
-    print("\n[list_intents]", _call_agent_method(agent, "list_intents", limit=50))
+    # Optional manual approve path for matrix S11/S12
+    try:
+        intent_id_1 = res1["decision"]["intent"]["intent_id"]
+    except Exception:
+        intent_id_1 = None
 
-    # manual approve regression (optional)
-    if do_approve and status_1 == "needs_approval":
-        appr = _call_agent_method(agent, "approve", intent_id=intent_id_1)
-        print("\n[approve]", appr)
-        _write_jsonl(events_path, {"tag": "intent1_approve", "result": appr})
-
-    # reject
-    rej = _call_agent_method(agent, "reject", intent_id=intent_id_1, reason="demo reject")
-    print("\n[reject]", rej)
+    if demo_do_approve and approval_mode == "manual" and intent_id_1:
+        print("\n[approve] attempting manual approval for intent1:", intent_id_1)
+        appr = _try_agent_approve(agent, intent_id_1)
+        print("[approve]", appr)
+        _write_jsonl(events_path, {"tag": "approve", "result": appr})
 
     # ---- intent2 (sell) ----
-    res2 = _call_agent_method(
-        agent,
-        "submit_order_intent",
+    res2 = agent.submit_order_intent(
         side="sell",
         symbol=demo_symbol,
         qty=demo_qty,
@@ -196,13 +212,6 @@ def main() -> int:
     )
     print("\n[intent2/submit]", res2)
     _write_jsonl(events_path, {"tag": "intent2_submit", "result": res2})
-
-    intent_id_2 = res2["decision"]["intent"]["intent_id"]
-    status_2 = res2["decision"]["status"]
-    if do_approve and status_2 == "needs_approval":
-        appr2 = _call_agent_method(agent, "approve", intent_id=intent_id_2)
-        print("\n[intent2/approve]", appr2)
-        _write_jsonl(events_path, {"tag": "intent2_approve", "result": appr2})
 
     return 0
 

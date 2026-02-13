@@ -13,17 +13,18 @@ from libs.agent.executor import AgentExecutor
 @dataclass
 class CommandResult:
     """High-level result returned by Commander."""
-    run_id: str
-    decisions: List[Dict[str, Any]]
-    executions: List[Dict[str, Any]]
-    report: Optional[Dict[str, Any]] = None
+
+    plan: Dict[str, Any]
+    scan: Dict[str, Any]
+    intent: Optional[Dict[str, Any]]
+    execution: Optional[Dict[str, Any]]
+    report: Dict[str, Any]
 
 
 class Commander:
-    """Top-level orchestration for the Agent Layer (M15).
+    """Orchestrate one agent cycle (M15).
 
-    Commander does NOT call broker APIs directly.
-    It delegates execution to AgentExecutor, which then calls Execution Layer.
+    Strategist -> Scanner -> (optional) Executor -> Monitor -> Reporter
     """
 
     def __init__(
@@ -44,39 +45,25 @@ class Commander:
     def run(
         self,
         *,
-        run_id: str,
-        context: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None,
         approval_mode: str = "manual",
         execution_enabled: bool = False,
     ) -> CommandResult:
-        """Execute one full cycle.
+        context = context or {}
 
-        context: free-form runtime inputs (market snapshot, constraints, etc.)
-        """
-        # 1) strategy -> candidate universe / intent drafts
-        plan = self.strategist.plan(context=context)
+        plan = self.strategist.make_plan(context=context)
+        scan = self.scanner.scan(plan=plan, context=context)
 
-        # 2) scan -> filter + produce concrete intents
-        intents = self.scanner.scan(plan=plan, context=context)
+        intent = scan.get("intent") if isinstance(scan, dict) else None
+        execution: Optional[Dict[str, Any]] = None
+        if intent:
+            execution = self.executor.submit(
+                intent=intent,
+                approval_mode=approval_mode,
+                execution_enabled=execution_enabled,
+            )
 
-        # 3) execute (two-phase / approval-aware)
-        decisions: List[Dict[str, Any]] = []
-        executions: List[Dict[str, Any]] = []
-        for intent in intents:
-            res = self.executor.submit(intent=intent, approval_mode=approval_mode, execution_enabled=execution_enabled)
-            # normalize outputs
-            if isinstance(res, dict):
-                if "decision" in res:
-                    decisions.append(res["decision"])
-                else:
-                    decisions.append(res)
-                if "execution" in res:
-                    executions.append(res["execution"])
+        self.monitor.update(plan=plan, scan=scan, execution=execution, context=context)
+        report = self.reporter.build_report(plan=plan, scan=scan, execution=execution, context=context)
 
-        # 4) monitor -> update state (optional)
-        self.monitor.update(intents=intents, decisions=decisions, executions=executions, context=context)
-
-        # 5) reporter -> summarize
-        report = self.reporter.build(run_id=run_id, context=context, plan=plan, intents=intents, decisions=decisions, executions=executions)
-
-        return CommandResult(run_id=run_id, decisions=decisions, executions=executions, report=report)
+        return CommandResult(plan=plan, scan=scan, intent=intent, execution=execution, report=report)

@@ -15,7 +15,11 @@ class RealExecutor:
     """Real executor: performs actual HTTP call.
 
     Safety:
-    - Requires EXECUTION_ENABLED=true in environment to run.
+    - If KIWOOM_MODE=real:
+        - Requires EXECUTION_ENABLED=true
+        - Requires ALLOW_REAL_EXECUTION=true
+      (Must be enforced BEFORE token issuance / any HTTP call)
+    - Optional: SYMBOL_ALLOWLIST (if set) blocks disallowed symbols.
     """
 
     def __init__(self, settings: Optional[Settings] = None, http: Optional[HttpClient] = None):
@@ -65,17 +69,48 @@ class RealExecutor:
                 f"Symbol '{sym}' is not allowed by SYMBOL_ALLOWLIST. Allowed={sorted(allow)}"
             )
 
-    def execute(self, req: PreparedRequest, *, auth_token: Optional[str] = None) -> ExecutionResult:
-        # NOTE: We allow calls in mock mode even if EXECUTION_ENABLED is false.
-        # This keeps "mock" workflows frictionless while still protecting real trading.
-        mode = (os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower()
-        enabled = (os.getenv("EXECUTION_ENABLED", "false") or "false").lower() == "true"
-        if mode != "mock" and not enabled:
-            raise ExecutionDisabledError("Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls.")
+    @staticmethod
+    def _env_flag_true(name: str, default: str = "false") -> bool:
+        return (os.getenv(name, default) or default).strip().lower() == "true"
 
-        # Optional extra safety guard (disabled when env var is missing/empty).
+    def execute(self, req: PreparedRequest, *, auth_token: Optional[str] = None) -> ExecutionResult:
+        """
+        IMPORTANT ORDER:
+          1) Mode/Execution/Allow-Real guards
+          2) Allowlist guard
+          3) Token issuance
+          4) HTTP request
+        """
+        mode = (os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower()
+        enabled = self._env_flag_true("EXECUTION_ENABLED", "false")
+
+        # --- Hard safety gates (must run BEFORE token issuance / HTTP) ---
+        if mode == "real":
+            # 1) execution enabled
+            if not enabled:
+                raise ExecutionDisabledError(
+                    "Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls."
+                )
+
+            # 2) explicit allow for real trading (prevents accidental real calls during tests)
+            allow_real = self._env_flag_true("ALLOW_REAL_EXECUTION", "false")
+            if not allow_real:
+                raise ExecutionDisabledError(
+                    "Real execution is not allowed. Set ALLOW_REAL_EXECUTION=true to allow real calls."
+                )
+        else:
+            # Keep existing behavior:
+            # - mock workflows can run even when EXECUTION_ENABLED=false
+            # - if some other mode is introduced later, treat like real: require enabled
+            if mode != "mock" and not enabled:
+                raise ExecutionDisabledError(
+                    "Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls."
+                )
+
+        # --- Optional extra safety guard (disabled when env var is missing/empty). ---
         self._enforce_symbol_allowlist(req)
 
+        # --- Token issuance (only after all guards pass) ---
         token = auth_token
         if not token:
             ensure = self.tokens.ensure_token(dry_run=False)
