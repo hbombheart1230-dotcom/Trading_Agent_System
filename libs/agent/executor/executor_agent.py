@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from libs.skills.runner import CompositeSkillRunner
 from libs.supervisor.two_phase import TwoPhaseSupervisor
 from libs.supervisor.intent_store import IntentStore
+from libs.approval.service import ApprovalService
 
 import os
 from libs.execution.executors.base import ExecutionDisabledError
@@ -54,6 +55,7 @@ class ExecutorAgent:
         self.runner = runner
         self.supervisor = supervisor
         self.intent_store = intent_store
+        self.approvals = ApprovalService(intent_store)
         self.intent_store_path = Path(intent_store_path)
 
     # ---------- store helpers ----------
@@ -186,80 +188,33 @@ class ExecutorAgent:
         out = self.runner.run(run_id=_new_run_id(), skill="order.place", args=skill_args)
         return asdict(out)
 
-    def approve(self, *, intent_id: Optional[str] = None) -> Dict[str, Any]:
-        if not intent_id:
-            intent = self.last_intent()
-            if not intent:
-                return {"ok": False, "message": "No stored intents."}
-            intent_id = str(intent.get("intent_id") or "")
-        else:
-            loaded = self.intent_store.load(intent_id)
-            intent = _unwrap_intent(loaded)
+    def approve(
+        self,
+        *,
+        intent_id: Optional[str] = None,
+        execution_enabled: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """
+        M16 semantics:
+        - Approve marks the intent as approved.
+        - It executes only if execution_enabled=True (defaults to env EXECUTION_ENABLED).
+        - Idempotent: already executed intents return cached execution.
+        """
+        if execution_enabled is None:
+            v = (os.getenv("EXECUTION_ENABLED", "false") or "false").strip().lower()
+            execution_enabled = v in ("1", "true", "yes", "y", "on")
 
-        if not intent:
-            return {"ok": False, "message": f"intent_id not found: {intent_id}"}
-
-        exec_res = self.execute_order(intent=intent)
-        return {"ok": True, "intent_id": intent_id, "execution": exec_res}
+        return self.approvals.approve(
+            intent_id=intent_id,
+            execution_enabled=bool(execution_enabled),
+            execute_fn=lambda it: self.execute_order(intent=it),
+        )
 
     def preview(self, *, intent_id: Optional[str] = None) -> Dict[str, Any]:
-        if not intent_id:
-            intent = self.last_intent()
-            if not intent:
-                return {"ok": False, "message": "No stored intents."}
-        else:
-            loaded = self.intent_store.load(intent_id)
-            intent = _unwrap_intent(loaded)
-            if not intent:
-                return {"ok": False, "message": f"intent_id not found: {intent_id}"}
-        return {"ok": True, "intent": self._summarize_intent(intent)}
+        return self.approvals.preview(intent_id=intent_id)
 
     def reject(self, *, intent_id: Optional[str] = None, reason: str = "rejected") -> Dict[str, Any]:
-        if not intent_id:
-            intent = self.last_intent()
-            if not intent:
-                return {"ok": False, "message": "No stored intents."}
-            intent_id = str(intent.get("intent_id") or "")
-        else:
-            loaded = self.intent_store.load(intent_id)
-            intent = _unwrap_intent(loaded)
-            if not intent:
-                return {"ok": False, "message": f"intent_id not found: {intent_id}"}
+        return self.approvals.reject(intent_id=intent_id, reason=reason)
 
-        marker = {
-            "ts": int(time.time()),
-            "intent_id": intent_id,
-            "status": "rejected",
-            "reason": reason,
-            "intent": intent,
-        }
-        self.intent_store_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.intent_store_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(marker, ensure_ascii=False) + "\n")
-
-        return {"ok": True, "intent_id": intent_id, "status": "rejected", "reason": reason}
-
-    def list_intents(self, limit: int = 5) -> Dict[str, Any]:
-        rows = self._load_all_rows()
-        recent = rows[-limit:]
-        out: List[Dict[str, Any]] = []
-
-        for r in recent:
-            intent = _unwrap_intent(r) or {}
-            status = r.get("status") or "stored"
-            out.append(
-                {
-                    "intent_id": intent.get("intent_id") or r.get("intent_id"),
-                    "action": intent.get("action"),
-                    "symbol": intent.get("symbol"),
-                    "qty": intent.get("qty"),
-                    "order_type": intent.get("order_type"),
-                    "price": intent.get("price"),
-                    "created_epoch": intent.get("created_epoch"),
-                    "ts": r.get("ts"),
-                    "status": status,
-                    "reason": r.get("reason"),
-                }
-            )
-
-        return {"ok": True, "count": len(out), "intents": out}
+    def list_intents(self, limit: int = 10) -> Dict[str, Any]:
+        return self.approvals.list_intents(limit=limit)

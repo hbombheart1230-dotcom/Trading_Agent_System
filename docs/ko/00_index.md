@@ -16,3 +16,6 @@
 11. 11_testing_and_quality.md — 테스트/품질/회귀 전략
 12. 12_roadmap.md — 로드맵(M16+ 확장: approve API, LangGraph 정식화 등)
 13. 99_glossary.md — 용어집
+
+## 추가 문서
+- [13_project_tree.md](13_project_tree.md) — 프로젝트 전체 트리(Repo 기준) 및 M17 Graph Spine 확장 포인트

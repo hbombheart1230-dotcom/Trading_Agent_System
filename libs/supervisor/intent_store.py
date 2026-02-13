@@ -45,3 +45,30 @@ class IntentStore:
                 intent = rec.get("intent")
                 return intent if isinstance(intent, dict) else None
         return None
+
+
+    def append_row(self, row: Dict[str, Any]) -> None:
+        """Append a raw journal row (intent or marker)."""
+        if not isinstance(row, dict):
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    def load_all_rows(self, *, scan_limit: int = 200000) -> list[Dict[str, Any]]:
+        """Load all journal rows (best-effort)."""
+        if not self.path.exists():
+            return []
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        rows: list[Dict[str, Any]] = []
+        for line in lines[-scan_limit:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(r, dict):
+                rows.append(r)
+        return rows

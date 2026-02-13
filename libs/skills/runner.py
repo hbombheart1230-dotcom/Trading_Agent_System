@@ -49,6 +49,27 @@ class CompositeSkillRunner:
       - YAML provides defaults + mapping; builder enforces required params.
     """
 
+    @classmethod
+    def from_env(
+        cls,
+        *,
+        settings: Optional[Settings] = None,
+        catalog_path: Optional[str] = None,
+        skills_dir: Optional[str] = None,
+        event_log_path: Optional[str] = None,
+    ) -> "CompositeSkillRunner":
+        """Construct a runner using environment defaults.
+
+        This method exists for consistency across the codebase and tests.
+        """
+        s = settings or Settings.from_env()
+        return cls(
+            settings=s,
+            catalog_path=catalog_path or os.getenv("KIWOOM_API_CATALOG_JSONL", "data/specs/api_catalog.jsonl"),
+            skills_dir=skills_dir or os.getenv("SKILLS_DIR", "config/skills"),
+            event_log_path=event_log_path or os.getenv("EVENT_LOG_PATH", "data/logs/events.jsonl"),
+        )
+
     def __init__(
         self,
         *,

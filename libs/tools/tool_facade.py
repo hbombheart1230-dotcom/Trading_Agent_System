@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, List
 from libs.skills.runner import CompositeSkillRunner
 from libs.supervisor.two_phase import TwoPhaseSupervisor
 from libs.supervisor.intent_store import IntentStore
+from libs.approval.service import ApprovalService
 
 from libs.agent.intent_parser import parse_nl
 from libs.agent.router import route
@@ -73,6 +74,7 @@ class ToolFacade:
         self.supervisor = TwoPhaseSupervisor()
         self.intent_store = IntentStore(intent_store)
         self.intent_store_path = Path(intent_store)
+        self.approvals = ApprovalService(self.intent_store)
 
     # ---------- helpers ----------
 
@@ -160,94 +162,17 @@ class ToolFacade:
         return {"decision": decision_dict}
 
     def approve_intent(self, *, intent_id: Optional[str] = None) -> Dict[str, Any]:
-        # NOTE: Approval must be *idempotent*.
-        # - If the same intent_id is approved twice (accidentally, or via retry),
-        #   we should NOT place the order twice.
-        # - We implement this by appending an "executed" marker row to the intent store,
-        #   and returning that cached execution on subsequent approvals.
-
-        if not intent_id:
-            intent = self._last_intent()
-            if not intent:
-                return {"ok": False, "message": "No stored intents."}
-            intent_id = str(intent.get("intent_id") or "")
-        else:
-            loaded = self.intent_store.load(intent_id)
-            intent = _unwrap_intent(loaded)
-
-        if not intent:
-            return {"ok": False, "message": f"intent_id not found: {intent_id}"}
-
-        latest = self._latest_row(intent_id)
-        if latest:
-            status = (latest.get("status") or "").lower()
-            if status == "rejected":
-                return {
-                    "ok": False,
-                    "intent_id": intent_id,
-                    "message": f"intent_id is rejected: {intent_id}",
-                    "reason": latest.get("reason"),
-                }
-            if status == "executed":
-                # Return cached execution, do not re-submit.
-                return {
-                    "ok": True,
-                    "intent_id": intent_id,
-                    "execution": latest.get("execution"),
-                    "note": "Already executed. Returned cached execution.",
-                }
-
-        exec_res = self.order_execute(intent=intent)
-
-        # Persist an execution marker only when it looks like an actual submission happened.
-        # (When execution is blocked by env safety, order_execute should not be called.)
-        self._append_intent_marker(
+        return self.approvals.approve(
             intent_id=intent_id,
-            status="executed",
-            reason=None,
-            intent=intent,
-            execution=exec_res,
+            execution_enabled=_execution_enabled(),
+            execute_fn=lambda it: self.order_execute(intent=it),
         )
 
-        return {"ok": True, "intent_id": intent_id, "execution": exec_res}
-
     def preview_intent(self, *, intent_id: Optional[str] = None) -> Dict[str, Any]:
-        if not intent_id:
-            intent = self._last_intent()
-            if not intent:
-                return {"ok": False, "message": "No stored intents."}
-        else:
-            loaded = self.intent_store.load(intent_id)
-            intent = _unwrap_intent(loaded)
-            if not intent:
-                return {"ok": False, "message": f"intent_id not found: {intent_id}"}
-        return {"ok": True, "intent": self._summarize_intent(intent)}
+        return self.approvals.preview(intent_id=intent_id)
 
     def reject_intent(self, *, intent_id: Optional[str] = None, reason: str = "rejected") -> Dict[str, Any]:
-        """Soft reject: append a rejection marker line so you can audit decisions later."""
-        if not intent_id:
-            intent = self._last_intent()
-            if not intent:
-                return {"ok": False, "message": "No stored intents."}
-            intent_id = str(intent.get("intent_id") or "")
-        else:
-            loaded = self.intent_store.load(intent_id)
-            intent = _unwrap_intent(loaded)
-            if not intent:
-                return {"ok": False, "message": f"intent_id not found: {intent_id}"}
-
-        marker = {
-            "ts": int(__import__("time").time()),
-            "intent_id": intent_id,
-            "status": "rejected",
-            "reason": reason,
-            "intent": intent,
-        }
-        self.intent_store_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.intent_store_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(marker, ensure_ascii=False) + "\n")
-
-        return {"ok": True, "intent_id": intent_id, "status": "rejected", "reason": reason}
+        return self.approvals.reject(intent_id=intent_id, reason=reason)
 
     def _append_intent_marker(
         self,
