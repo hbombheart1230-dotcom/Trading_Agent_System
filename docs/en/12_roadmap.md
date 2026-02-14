@@ -1,4 +1,4 @@
-# 12. Roadmap (M16+)
+﻿# 12. Roadmap (M16+)
 
 ## M16: Formal approval API
 - approve(intent_id) / reject(intent_id) / preview(intent_id)
@@ -39,3 +39,18 @@
 - M20-6:
   - attach `prompt_version` / `schema_version` to strategist LLM telemetry
   - add version distribution metrics (`prompt_version_total`, `schema_version_total`)
+
+## M21-M30 (Program Plan)
+- M21: Commander-centric LangGraph consolidation (single canonical graph runtime)
+- M22: skill-native Scanner/Monitor upgrade (`market.quote`, `account.orders`, `order.status`)
+- M23: runtime resilience (circuit breaker + safe degrade mode)
+- M24: execution safety hardening (strict idempotency and guard precedence)
+- M25: observability and alerting operations (SLIs/SLO-ready metrics)
+- M26: strategy evaluation framework (replay/backtest + promotion gates)
+- M27: multi-strategy portfolio allocation and conflict resolution
+- M28: deployment/runtime platformization (container + scheduler + rollback)
+- M29: governance/audit/recovery readiness (archive, integrity, DR drills)
+- M30: production readiness gate (final safety/ops sign-off)
+
+Detailed plan:
+- `docs/plan/m20_to_m30_master_plan.md`
