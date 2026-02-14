@@ -28,6 +28,10 @@ Confirm:
 - No secrets in logs / CI output.
 - File permissions policy (local) respected.
 
+### E. Documentation
+- For every meaningful behavior/config/contract change, update relevant `docs/` files in the same task.
+- At minimum, update one implementation-facing note under `docs/plan/` and one canonical doc if behavior changed.
+
 ---
 
 ## 2) Required Regression Scenarios (M15 baseline)
@@ -48,6 +52,7 @@ Every completed task must produce:
 - Rationale (why these changes)
 - Risk notes (what could break)
 - How tests were validated (command + result)
+- Documentation delta (which `docs/` files were updated and why)
 - Any follow-up tasks (if postponed)
 
 ---

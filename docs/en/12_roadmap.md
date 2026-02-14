@@ -18,6 +18,12 @@
 - audit log archiving
 
 ## M20: LLM Strategist Reliability
-- provider smoke coverage (config/timeout/response-shape)
-- decide_trade integration smoke with safe fallback
-- operator smoke script for strategist-only validation (no execution)
+- M20-1:
+  - provider smoke coverage (config/timeout/response-shape)
+  - decide_trade integration smoke with safe fallback
+  - operator smoke script for strategist-only validation (no execution)
+- M20-2:
+  - OpenRouter chat-completions adapter parsing (content JSON extraction -> intent shape)
+  - canonical intent schema normalization before decision handoff
+  - transient retry/backoff policy with attempt metadata
+  - strategist LLM event telemetry (`stage=strategist_llm`)
