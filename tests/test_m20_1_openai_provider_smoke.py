@@ -9,6 +9,8 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_MODEL", "gpt-test")
     monkeypatch.setenv("AI_STRATEGIST_TIMEOUT_SEC", "7.5")
     monkeypatch.setenv("AI_STRATEGIST_MAX_TOKENS", "256")
+    monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "3")
+    monkeypatch.setenv("AI_STRATEGIST_RETRY_BACKOFF_SEC", "0.25")
 
     s = prov.OpenAIStrategist.from_env()
     assert s.api_key == "k"
@@ -16,6 +18,8 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     assert s.model == "gpt-test"
     assert abs(float(s.timeout_sec) - 7.5) < 1e-9
     assert s.max_tokens == 256
+    assert s.retry_max == 3
+    assert abs(float(s.retry_backoff_sec) - 0.25) < 1e-9
 
 
 def test_m20_1_decide_posts_payload_and_parses_response(monkeypatch):
@@ -121,6 +125,80 @@ def test_m20_1_decide_missing_config_returns_safe_noop():
     d = s.decide(x)
     assert d.intent["action"] == "NOOP"
     assert d.intent["reason"] == "missing_config"
+
+
+def test_m20_1_retry_then_success(monkeypatch):
+    calls = {"n": 0}
+    sleeps = []
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("temporary")
+        return {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "limit",
+            }
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+    monkeypatch.setattr(prov.time, "sleep", lambda s: sleeps.append(float(s)))
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://example.invalid/strategist",
+        retry_max=2,
+        retry_backoff_sec=0.1,
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d = s.decide(x)
+    assert d.intent["action"] == "BUY"
+    assert calls["n"] == 2
+    assert sleeps == [0.1]
+    assert d.meta["attempts"] == 2
+
+
+def test_m20_1_intent_is_schema_normalized(monkeypatch):
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {
+            "intent": {
+                "action": "BUY",
+                "qty": "2",
+                "order_type": "market",
+            },
+            "rationale": "raw-intent",
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://example.invalid/strategist",
+        model="gpt-test",
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d = s.decide(x)
+    assert d.intent["action"] == "BUY"
+    assert d.intent["symbol"] == "005930"
+    assert d.intent["qty"] == 2
+    assert d.intent["order_type"] == "market"
+    assert d.intent["order_api_id"] == "ORDER_SUBMIT"
 
 
 def test_m20_1_openrouter_chat_content_json_is_adapted(monkeypatch):

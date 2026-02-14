@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -19,16 +20,48 @@ def _rule_intent(symbol: Any, price: Any, cash: Any, open_positions: Any) -> Dic
         }
     return {"action": "NOOP", "reason": "conditions_not_met", "rationale": "rule:no_trade"}
 
+
+def _import_event_logger():
+    for mod in ("libs.event_logger", "libs.logging.event_logger", "libs.core.event_logger"):
+        try:
+            m = __import__(mod, fromlist=["EventLogger", "new_run_id"])
+            return getattr(m, "EventLogger"), getattr(m, "new_run_id")
+        except Exception:
+            continue
+    from libs.core.event_logger import EventLogger, new_run_id  # type: ignore
+    return EventLogger, new_run_id
+
+
+def _ensure_run_id(state: dict) -> str:
+    _EventLogger, new_run_id = _import_event_logger()
+    rid = str(state.get("run_id") or new_run_id())
+    state["run_id"] = rid
+    return rid
+
+
+def _make_logger():
+    EventLogger, _new_run_id = _import_event_logger()
+    log_path = os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl")
+    return EventLogger(log_path=Path(log_path))
+
+
 def _log_decision(state: dict, packet: dict, trace: dict) -> None:
     try:
-        from libs.event_logger import EventLogger, new_run_id  # type: ignore
-        log_path = os.getenv("EVENT_LOG_PATH", "./data/events.jsonl")
-        logger = EventLogger(log_path=Path(log_path))
-        run_id = state.get("run_id") or new_run_id()
-        state["run_id"] = run_id
+        logger = _make_logger()
+        run_id = _ensure_run_id(state)
         logger.log(run_id=run_id, stage="decision", event="trace", payload={"decision_packet": packet, "trace": trace})
     except Exception:
         return
+
+
+def _log_llm_call(state: dict, payload: Dict[str, Any]) -> None:
+    try:
+        logger = _make_logger()
+        run_id = _ensure_run_id(state)
+        logger.log(run_id=run_id, stage="strategist_llm", event="result", payload=payload)
+    except Exception:
+        return
+
 
 def decide_trade(state: dict) -> dict:
     market: Dict[str, Any] = state.get("market_snapshot", {}) or {}
@@ -71,8 +104,13 @@ def decide_trade(state: dict) -> dict:
     strategy_name = strategist.__class__.__name__ if strategist is not None else "builtin_rule"
     raw_intent: Dict[str, Any]
     error: str | None = None
+    llm_meta: Dict[str, Any] = {}
 
     if strategist is not None and hasattr(strategist, "decide"):
+        llm_t0 = 0.0
+        do_llm_log = strategy_name == "OpenAIStrategist"
+        if do_llm_log:
+            llm_t0 = time.perf_counter()
         try:
             # Accept both provider StrategyInput and libs.ai.strategist StrategyInput
             try:
@@ -84,6 +122,9 @@ def decide_trade(state: dict) -> dict:
 
             decision = strategist.decide(x)  # type: ignore[call-arg]
             raw_intent = dict(getattr(decision, "intent", {}) or {})
+            m = getattr(decision, "meta", None)
+            if isinstance(m, dict):
+                llm_meta = dict(m)
             if getattr(decision, "rationale", None) and "rationale" not in raw_intent:
                 raw_intent["rationale"] = getattr(decision, "rationale")
         except Exception as e:
@@ -97,6 +138,32 @@ def decide_trade(state: dict) -> dict:
                 state["strategist"] = strategist
                 strategy_name = "RuleStrategist"
                 raw_intent = _rule_intent(symbol, price, cash, open_positions)
+        finally:
+            if do_llm_log:
+                latency_ms = int((time.perf_counter() - llm_t0) * 1000)
+                intent_reason = str(raw_intent.get("reason") or "")
+                meta_error = str(llm_meta.get("error") or "")
+                llm_ok = not bool(error) and not bool(meta_error) and intent_reason != "strategist_error"
+                payload: Dict[str, Any] = {
+                    "strategy": strategy_name,
+                    "provider": str(os.getenv("AI_STRATEGIST_PROVIDER", "rule") or "rule"),
+                    "model": str(getattr(strategist, "model", "") or ""),
+                    "latency_ms": latency_ms,
+                    "ok": bool(llm_ok),
+                    "intent_action": str(raw_intent.get("action") or ""),
+                    "intent_reason": intent_reason,
+                }
+                if getattr(strategist, "endpoint", None):
+                    payload["endpoint"] = str(getattr(strategist, "endpoint"))
+                if llm_meta.get("attempts") is not None:
+                    payload["attempts"] = int(llm_meta.get("attempts") or 0)
+                if llm_meta.get("endpoint_type"):
+                    payload["endpoint_type"] = str(llm_meta.get("endpoint_type"))
+                if llm_meta.get("error_type"):
+                    payload["error_type"] = str(llm_meta.get("error_type"))
+                elif error:
+                    payload["error_type"] = "Exception"
+                _log_llm_call(state, payload)
     else:
         raw_intent = _rule_intent(symbol, price, cash, open_positions)
 

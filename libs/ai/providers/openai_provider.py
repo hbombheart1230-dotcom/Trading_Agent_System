@@ -4,7 +4,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 # NOTE: tests monkeypatch this symbol
 def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any], timeout: float = 15.0) -> Dict[str, Any]:
@@ -121,12 +121,16 @@ class OpenAIStrategist:
         model: str = "gpt-4.1-mini",
         timeout_sec: float = 15.0,
         max_tokens: Optional[int] = None,
+        retry_max: int = 1,
+        retry_backoff_sec: float = 0.5,
     ):
         self.api_key = api_key
         self.endpoint = endpoint
         self.model = model
         self.timeout_sec = timeout_sec
         self.max_tokens = max_tokens
+        self.retry_max = max(0, int(retry_max))
+        self.retry_backoff_sec = max(0.0, float(retry_backoff_sec))
 
     def _effective_model(self) -> str:
         model = str(self.model or "").strip()
@@ -164,16 +168,89 @@ class OpenAIStrategist:
                 max_tokens = v if v > 0 else None
             except Exception:
                 max_tokens = None
+
+        raw_retry_max = (os.getenv("AI_STRATEGIST_RETRY_MAX") or "1").strip()
+        retry_max = 1
+        try:
+            retry_max = max(0, int(raw_retry_max))
+        except Exception:
+            retry_max = 1
+
+        raw_backoff = (os.getenv("AI_STRATEGIST_RETRY_BACKOFF_SEC") or "0.5").strip()
+        retry_backoff_sec = 0.5
+        try:
+            retry_backoff_sec = max(0.0, float(raw_backoff))
+        except Exception:
+            retry_backoff_sec = 0.5
+
         return cls(
             api_key=api_key,
             endpoint=endpoint,
             model=model,
             timeout_sec=timeout_sec,
             max_tokens=max_tokens,
+            retry_max=retry_max,
+            retry_backoff_sec=retry_backoff_sec,
         )
+
+    @staticmethod
+    def _is_retryable_error(e: Exception) -> bool:
+        if isinstance(e, TimeoutError):
+            return True
+
+        try:
+            import urllib.error as ue
+
+            if isinstance(e, ue.URLError):
+                return True
+
+            if isinstance(e, ue.HTTPError):
+                code = int(getattr(e, "code", 0) or 0)
+                return code in (408, 409, 425, 429) or (500 <= code <= 599)
+        except Exception:
+            pass
+        return False
+
+    def _post_with_retry(
+        self,
+        url: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+        timeout: float,
+    ) -> Tuple[Dict[str, Any], int]:
+        max_attempts = max(1, int(self.retry_max) + 1)
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                return _post_json(url, headers, payload, timeout=timeout) or {}, attempts
+            except Exception as e:
+                if attempts >= max_attempts or not self._is_retryable_error(e):
+                    raise
+                backoff = float(self.retry_backoff_sec) * (2 ** (attempts - 1))
+                if backoff > 0:
+                    time.sleep(backoff)
+
+    @staticmethod
+    def _normalize_intent(raw: Dict[str, Any], x: StrategyInput) -> Dict[str, Any]:
+        # Canonical schema enforcement for strategist outputs.
+        from libs.ai.intent_schema import normalize_intent
+
+        default_symbol = str(x.symbol) if x.symbol is not None else None
+        default_price = None
+        if isinstance(x.market_snapshot, dict):
+            default_price = x.market_snapshot.get("price")
+
+        norm, _rationale = normalize_intent(
+            raw,
+            default_symbol=default_symbol,
+            default_price=default_price,
+        )
+        return dict(norm)
 
     def decide(self, x: StrategyInput) -> StrategyDecision:
         """Never raise. On any error, returns NOOP with error reason."""
+        attempts = 0
         try:
             if not self.api_key or not self.endpoint:
                 return StrategyDecision(
@@ -225,7 +302,12 @@ class OpenAIStrategist:
             if self.max_tokens is not None:
                 payload["max_tokens"] = int(self.max_tokens)
 
-            resp = _post_json(self.endpoint, headers, payload, timeout=self.timeout_sec) or {}
+            resp, attempts = self._post_with_retry(
+                self.endpoint,
+                headers,
+                payload,
+                timeout=self.timeout_sec,
+            )
 
             intent: Dict[str, Any] = {}
             rationale = ""
@@ -259,12 +341,23 @@ class OpenAIStrategist:
                 else:
                     raise ValueError("Invalid response JSON: missing intent/action")
 
+            intent = self._normalize_intent(intent, x)
             if not intent:
                 intent = {"action": "NOOP", "reason": "empty_intent"}
+            meta.setdefault("model", model)
+            meta.setdefault(
+                "endpoint_type",
+                "chat_completions" if _looks_like_chat_completions_endpoint(self.endpoint) else "custom",
+            )
+            meta["attempts"] = int(attempts or 1)
             return StrategyDecision(intent=intent, rationale=rationale, meta=meta)
         except Exception as e:
             return StrategyDecision(
                 intent={"action": "NOOP", "reason": "strategist_error"},
                 rationale=str(e),
-                meta={"error": str(e)},
+                meta={
+                    "error": str(e),
+                    "error_type": e.__class__.__name__,
+                    "attempts": int(attempts or 1),
+                },
             )
