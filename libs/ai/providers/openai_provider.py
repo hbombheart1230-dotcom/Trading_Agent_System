@@ -93,6 +93,39 @@ def _extract_chat_content(resp: Dict[str, Any]) -> str:
         return "".join(parts)
     return ""
 
+
+def _to_nonneg_int(v: Any) -> Optional[int]:
+    try:
+        x = int(float(v))
+    except Exception:
+        return None
+    if x < 0:
+        return None
+    return x
+
+
+def _extract_usage(resp: Dict[str, Any]) -> Dict[str, int]:
+    """Extract token usage from provider response (best-effort)."""
+    usage = resp.get("usage")
+    if not isinstance(usage, dict):
+        return {}
+
+    prompt_tokens = _to_nonneg_int(usage.get("prompt_tokens"))
+    completion_tokens = _to_nonneg_int(usage.get("completion_tokens"))
+    total_tokens = _to_nonneg_int(usage.get("total_tokens"))
+
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+        total_tokens = prompt_tokens + completion_tokens
+
+    out: Dict[str, int] = {}
+    if prompt_tokens is not None:
+        out["prompt_tokens"] = prompt_tokens
+    if completion_tokens is not None:
+        out["completion_tokens"] = completion_tokens
+    if total_tokens is not None:
+        out["total_tokens"] = total_tokens
+    return out
+
 @dataclass
 class StrategyInput:
     symbol: str
@@ -128,6 +161,8 @@ class OpenAIStrategist:
         retry_backoff_sec: float = 0.5,
         prompt_version: str = DEFAULT_PROMPT_VERSION,
         schema_version: str = DEFAULT_SCHEMA_VERSION,
+        prompt_cost_per_1k_usd: float = 0.0,
+        completion_cost_per_1k_usd: float = 0.0,
     ):
         self.api_key = api_key
         self.endpoint = endpoint
@@ -138,6 +173,8 @@ class OpenAIStrategist:
         self.retry_backoff_sec = max(0.0, float(retry_backoff_sec))
         self.prompt_version = str(prompt_version or "").strip() or DEFAULT_PROMPT_VERSION
         self.schema_version = str(schema_version or "").strip() or DEFAULT_SCHEMA_VERSION
+        self.prompt_cost_per_1k_usd = max(0.0, float(prompt_cost_per_1k_usd))
+        self.completion_cost_per_1k_usd = max(0.0, float(completion_cost_per_1k_usd))
 
     def _effective_model(self) -> str:
         model = str(self.model or "").strip()
@@ -191,6 +228,18 @@ class OpenAIStrategist:
             retry_backoff_sec = 0.5
         prompt_version = (os.getenv("AI_STRATEGIST_PROMPT_VERSION") or "").strip() or DEFAULT_PROMPT_VERSION
         schema_version = (os.getenv("AI_STRATEGIST_SCHEMA_VERSION") or "").strip() or DEFAULT_SCHEMA_VERSION
+        raw_prompt_cost = (os.getenv("AI_STRATEGIST_PROMPT_COST_PER_1K_USD") or "0").strip()
+        raw_completion_cost = (os.getenv("AI_STRATEGIST_COMPLETION_COST_PER_1K_USD") or "0").strip()
+        prompt_cost_per_1k_usd = 0.0
+        completion_cost_per_1k_usd = 0.0
+        try:
+            prompt_cost_per_1k_usd = max(0.0, float(raw_prompt_cost))
+        except Exception:
+            prompt_cost_per_1k_usd = 0.0
+        try:
+            completion_cost_per_1k_usd = max(0.0, float(raw_completion_cost))
+        except Exception:
+            completion_cost_per_1k_usd = 0.0
 
         return cls(
             api_key=api_key,
@@ -202,7 +251,29 @@ class OpenAIStrategist:
             retry_backoff_sec=retry_backoff_sec,
             prompt_version=prompt_version,
             schema_version=schema_version,
+            prompt_cost_per_1k_usd=prompt_cost_per_1k_usd,
+            completion_cost_per_1k_usd=completion_cost_per_1k_usd,
         )
+
+    def _estimate_cost_usd(
+        self,
+        *,
+        prompt_tokens: Optional[int],
+        completion_tokens: Optional[int],
+    ) -> Optional[float]:
+        if self.prompt_cost_per_1k_usd <= 0.0 and self.completion_cost_per_1k_usd <= 0.0:
+            return None
+        if prompt_tokens is None and completion_tokens is None:
+            return None
+        pt = int(prompt_tokens or 0)
+        ct = int(completion_tokens or 0)
+        if pt < 0:
+            pt = 0
+        if ct < 0:
+            ct = 0
+        cost = (float(pt) / 1000.0) * self.prompt_cost_per_1k_usd
+        cost += (float(ct) / 1000.0) * self.completion_cost_per_1k_usd
+        return float(cost)
 
     @staticmethod
     def _is_retryable_error(e: Exception) -> bool:
@@ -329,6 +400,7 @@ class OpenAIStrategist:
             intent: Dict[str, Any] = {}
             rationale = ""
             meta = dict(resp.get("meta") or {})
+            usage = _extract_usage(resp)
 
             # 1) Native/custom contract: {"intent": {...}, ...}
             raw_intent = resp.get("intent")
@@ -368,6 +440,18 @@ class OpenAIStrategist:
             )
             meta.setdefault("prompt_version", self.prompt_version)
             meta.setdefault("schema_version", self.schema_version)
+            if usage.get("prompt_tokens") is not None:
+                meta.setdefault("prompt_tokens", int(usage["prompt_tokens"]))
+            if usage.get("completion_tokens") is not None:
+                meta.setdefault("completion_tokens", int(usage["completion_tokens"]))
+            if usage.get("total_tokens") is not None:
+                meta.setdefault("total_tokens", int(usage["total_tokens"]))
+            estimated_cost_usd = self._estimate_cost_usd(
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+            )
+            if estimated_cost_usd is not None:
+                meta.setdefault("estimated_cost_usd", float(estimated_cost_usd))
             meta["attempts"] = int(attempts or 1)
             return StrategyDecision(intent=intent, rationale=rationale, meta=meta)
         except Exception as e:

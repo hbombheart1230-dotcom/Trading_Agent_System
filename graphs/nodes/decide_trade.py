@@ -159,6 +159,17 @@ def decide_trade(state: dict) -> dict:
                     payload["attempts"] = int(llm_meta.get("attempts") or 0)
                 if llm_meta.get("endpoint_type"):
                     payload["endpoint_type"] = str(llm_meta.get("endpoint_type"))
+                for tok_key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    if llm_meta.get(tok_key) is not None:
+                        try:
+                            payload[tok_key] = int(float(llm_meta.get(tok_key) or 0))
+                        except Exception:
+                            pass
+                if llm_meta.get("estimated_cost_usd") is not None:
+                    try:
+                        payload["estimated_cost_usd"] = float(llm_meta.get("estimated_cost_usd"))
+                    except Exception:
+                        pass
                 prompt_version = str(
                     llm_meta.get("prompt_version") or getattr(strategist, "prompt_version", "") or ""
                 )

@@ -27,6 +27,10 @@ payload should include:
 - strategist_llm.error_type_total
 - strategist_llm.prompt_version_total
 - strategist_llm.schema_version_total
+- strategist_llm.token_usage.prompt_tokens_total
+- strategist_llm.token_usage.completion_tokens_total
+- strategist_llm.token_usage.total_tokens_total
+- strategist_llm.token_usage.estimated_cost_usd_total
 
 ## 8.4 Audit
 - tag real executions explicitly

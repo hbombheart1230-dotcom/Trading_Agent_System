@@ -24,6 +24,8 @@ def test_m20_4_smoke_show_llm_event_in_openai_mode(monkeypatch, tmp_path: Path, 
     monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
     monkeypatch.setenv("AI_STRATEGIST_PROMPT_VERSION", "pv-smoke")
     monkeypatch.setenv("AI_STRATEGIST_SCHEMA_VERSION", "intent.v1-smoke")
+    monkeypatch.setenv("AI_STRATEGIST_PROMPT_COST_PER_1K_USD", "0.003")
+    monkeypatch.setenv("AI_STRATEGIST_COMPLETION_COST_PER_1K_USD", "0.015")
     monkeypatch.setenv("EVENT_LOG_PATH", str(events))
 
     def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
@@ -36,6 +38,7 @@ def test_m20_4_smoke_show_llm_event_in_openai_mode(monkeypatch, tmp_path: Path, 
                 "order_type": "limit",
                 "order_api_id": "ORDER_SUBMIT",
             },
+            "usage": {"prompt_tokens": 90, "completion_tokens": 60, "total_tokens": 150},
             "meta": {"provider": "fake"},
         }
 
@@ -59,6 +62,10 @@ def test_m20_4_smoke_show_llm_event_in_openai_mode(monkeypatch, tmp_path: Path, 
     assert "\"latency_ms\":" in out
     assert "\"prompt_version\": \"pv-smoke\"" in out
     assert "\"schema_version\": \"intent.v1-smoke\"" in out
+    assert "\"prompt_tokens\": 90" in out
+    assert "\"completion_tokens\": 60" in out
+    assert "\"total_tokens\": 150" in out
+    assert "\"estimated_cost_usd\":" in out
 
 
 def test_m20_4_smoke_require_llm_event_fails_when_missing(monkeypatch, tmp_path: Path):
@@ -112,3 +119,34 @@ def test_m20_4_query_script_missing_path_returns_error(tmp_path: Path):
     missing = tmp_path / "missing.jsonl"
     rc = query_main(["--path", str(missing)])
     assert rc == 2
+
+
+def test_m20_4_query_script_human_includes_token_and_cost_fields(tmp_path: Path, capsys):
+    events = tmp_path / "events.jsonl"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r1",
+                "ts": "2026-02-14T00:00:00+00:00",
+                "stage": "strategist_llm",
+                "event": "result",
+                "payload": {
+                    "ok": True,
+                    "intent_action": "BUY",
+                    "prompt_tokens": 111,
+                    "completion_tokens": 22,
+                    "total_tokens": 133,
+                    "estimated_cost_usd": 0.00123,
+                },
+            }
+        ],
+    )
+
+    rc = query_main(["--path", str(events), "--limit", "1"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "prompt_tokens=111" in out
+    assert "completion_tokens=22" in out
+    assert "total_tokens=133" in out
+    assert "estimated_cost_usd=0.00123" in out

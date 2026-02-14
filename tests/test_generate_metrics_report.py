@@ -92,6 +92,10 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
                             "latency_ms": 120,
                             "attempts": 1,
                             "intent_action": "BUY",
+                            "prompt_tokens": 100,
+                            "completion_tokens": 40,
+                            "total_tokens": 140,
+                            "estimated_cost_usd": 0.0009,
                             "prompt_version": "pv-1",
                             "schema_version": "intent.v1",
                         },
@@ -109,6 +113,10 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
                             "attempts": 2,
                             "intent_action": "NOOP",
                             "error_type": "TimeoutError",
+                            "prompt_tokens": 150,
+                            "completion_tokens": 60,
+                            "total_tokens": 210,
+                            "estimated_cost_usd": 0.00135,
                             "prompt_version": "pv-1",
                             "schema_version": "intent.v1",
                         },
@@ -154,6 +162,10 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
     assert data["strategist_llm"]["prompt_version_total"]["unknown"] == 1
     assert data["strategist_llm"]["schema_version_total"]["intent.v1"] == 2
     assert data["strategist_llm"]["schema_version_total"]["unknown"] == 1
+    assert data["strategist_llm"]["token_usage"]["prompt_tokens_total"] == 250
+    assert data["strategist_llm"]["token_usage"]["completion_tokens_total"] == 100
+    assert data["strategist_llm"]["token_usage"]["total_tokens_total"] == 350
+    assert abs(float(data["strategist_llm"]["token_usage"]["estimated_cost_usd_total"]) - 0.00225) < 1e-12
 
 
 def test_generate_metrics_report_supports_iso_ts_and_latest_day(tmp_path: Path):
@@ -209,3 +221,7 @@ def test_generate_metrics_report_empty_has_llm_summary_keys(tmp_path: Path):
     assert data["strategist_llm"]["success_rate"] == 0.0
     assert data["strategist_llm"]["prompt_version_total"] == {}
     assert data["strategist_llm"]["schema_version_total"] == {}
+    assert data["strategist_llm"]["token_usage"]["prompt_tokens_total"] == 0
+    assert data["strategist_llm"]["token_usage"]["completion_tokens_total"] == 0
+    assert data["strategist_llm"]["token_usage"]["total_tokens_total"] == 0
+    assert data["strategist_llm"]["token_usage"]["estimated_cost_usd_total"] == 0.0

@@ -40,6 +40,10 @@
 - M20-6:
   - strategist LLM 텔레메트리에 `prompt_version` / `schema_version` 필드 추가
   - 버전 분포 메트릭(`prompt_version_total`, `schema_version_total`) 집계 추가
+- M20-7:
+  - strategist LLM 토큰 사용량 텔레메트리(`prompt_tokens`, `completion_tokens`, `total_tokens`) 추가
+  - 토큰 단가(env 설정) 기반 `estimated_cost_usd` 추정 비용 텔레메트리 추가
+  - 운영 스크립트/일일 metrics 리포트에 토큰/비용 집계 추가
 
 ## M21-M30 (프로그램 플랜)
 - M21: Commander 중심 LangGraph 통합(단일 표준 런타임 경로)

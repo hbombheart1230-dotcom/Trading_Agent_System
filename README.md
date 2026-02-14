@@ -132,11 +132,12 @@ Implemented Milestones:
 - M20-2: adapter parsing + normalization + retry/telemetry
 - M20-3: legacy LLM router compatibility fix
 - M20-4: smoke visibility options + event query CLI
+- M20-5: daily metrics aggregation for strategist LLM reliability
+- M20-6: prompt/schema version telemetry and distribution metrics
+- M20-7: token usage + estimated cost telemetry in events/ops/metrics
 
 Next Steps:
 - Circuit breaker + safe fallback mode
-- Prompt versioning and contract freeze
-- Cost/token tracking
 - LangGraph formal state machine orchestration
 
 ------------------------------------------------------------------------

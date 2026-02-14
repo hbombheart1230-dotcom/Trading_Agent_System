@@ -39,6 +39,10 @@
 - M20-6:
   - attach `prompt_version` / `schema_version` to strategist LLM telemetry
   - add version distribution metrics (`prompt_version_total`, `schema_version_total`)
+- M20-7:
+  - add strategist LLM token usage telemetry (`prompt_tokens`, `completion_tokens`, `total_tokens`)
+  - add optional estimated cost telemetry (`estimated_cost_usd`) from env-configured token prices
+  - extend ops scripts and daily metrics report with token/cost aggregates
 
 ## M21-M30 (Program Plan)
 - M21: Commander-centric LangGraph consolidation (single canonical graph runtime)

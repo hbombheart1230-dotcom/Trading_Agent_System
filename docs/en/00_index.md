@@ -21,3 +21,4 @@ operations, security, governance, and extensibility.
 
 ## Program Plans
 - docs/plan/m20_to_m30_master_plan.md -> Integrated roadmap through M30
+- docs/plan/m20_7_token_cost_telemetry.md -> M20-7 token/cost telemetry milestone

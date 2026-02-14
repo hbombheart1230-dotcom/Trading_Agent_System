@@ -60,11 +60,17 @@ def _print_human(path: Path, rows: List[Dict[str, Any]]) -> None:
         attempts = p.get("attempts")
         prompt_version = str(p.get("prompt_version") or "")
         schema_version = str(p.get("schema_version") or "")
+        prompt_tokens = p.get("prompt_tokens")
+        completion_tokens = p.get("completion_tokens")
+        total_tokens = p.get("total_tokens")
+        estimated_cost_usd = p.get("estimated_cost_usd")
         err = str(p.get("error_type") or "")
         print(
             f"{ts} run_id={run_id} ok={ok} action={action} reason={reason} "
             f"latency_ms={latency} attempts={attempts} "
             f"prompt_version={prompt_version} schema_version={schema_version} "
+            f"prompt_tokens={prompt_tokens} completion_tokens={completion_tokens} "
+            f"total_tokens={total_tokens} estimated_cost_usd={estimated_cost_usd} "
             f"error_type={err}"
         )
 

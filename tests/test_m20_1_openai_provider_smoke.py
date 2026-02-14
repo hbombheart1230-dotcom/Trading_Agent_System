@@ -13,6 +13,8 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_RETRY_BACKOFF_SEC", "0.25")
     monkeypatch.setenv("AI_STRATEGIST_PROMPT_VERSION", "pv-test")
     monkeypatch.setenv("AI_STRATEGIST_SCHEMA_VERSION", "intent.v1-test")
+    monkeypatch.setenv("AI_STRATEGIST_PROMPT_COST_PER_1K_USD", "0.003")
+    monkeypatch.setenv("AI_STRATEGIST_COMPLETION_COST_PER_1K_USD", "0.015")
 
     s = prov.OpenAIStrategist.from_env()
     assert s.api_key == "k"
@@ -24,6 +26,8 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     assert abs(float(s.retry_backoff_sec) - 0.25) < 1e-9
     assert s.prompt_version == "pv-test"
     assert s.schema_version == "intent.v1-test"
+    assert abs(float(s.prompt_cost_per_1k_usd) - 0.003) < 1e-12
+    assert abs(float(s.completion_cost_per_1k_usd) - 0.015) < 1e-12
 
 
 def test_m20_1_decide_posts_payload_and_parses_response(monkeypatch):
@@ -44,6 +48,7 @@ def test_m20_1_decide_posts_payload_and_parses_response(monkeypatch):
             },
             "rationale": "llm-ok",
             "meta": {"provider": "fake"},
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
         }
 
     monkeypatch.setattr(prov, "_post_json", fake_post_json)
@@ -56,6 +61,8 @@ def test_m20_1_decide_posts_payload_and_parses_response(monkeypatch):
         max_tokens=128,
         prompt_version="pv-unit",
         schema_version="intent.v1-unit",
+        prompt_cost_per_1k_usd=0.003,
+        completion_cost_per_1k_usd=0.015,
     )
     x = prov.StrategyInput(
         symbol="005930",
@@ -71,6 +78,10 @@ def test_m20_1_decide_posts_payload_and_parses_response(monkeypatch):
     assert d.meta["provider"] == "fake"
     assert d.meta["prompt_version"] == "pv-unit"
     assert d.meta["schema_version"] == "intent.v1-unit"
+    assert d.meta["prompt_tokens"] == 100
+    assert d.meta["completion_tokens"] == 50
+    assert d.meta["total_tokens"] == 150
+    assert abs(float(d.meta["estimated_cost_usd"]) - 0.00105) < 1e-12
 
     assert captured["url"] == "https://example.invalid/strategist"
     assert captured["headers"]["Authorization"] == "Bearer k"
@@ -207,6 +218,74 @@ def test_m20_1_intent_is_schema_normalized(monkeypatch):
     assert d.intent["qty"] == 2
     assert d.intent["order_type"] == "market"
     assert d.intent["order_api_id"] == "ORDER_SUBMIT"
+
+
+def test_m20_1_usage_total_tokens_is_derived_when_missing(monkeypatch):
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://example.invalid/strategist",
+        prompt_cost_per_1k_usd=0.002,
+        completion_cost_per_1k_usd=0.004,
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d = s.decide(x)
+    assert d.meta["prompt_tokens"] == 10
+    assert d.meta["completion_tokens"] == 5
+    assert d.meta["total_tokens"] == 15
+    assert abs(float(d.meta["estimated_cost_usd"]) - 0.00004) < 1e-12
+
+
+def test_m20_1_cost_not_emitted_when_usage_missing(monkeypatch):
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            }
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://example.invalid/strategist",
+        prompt_cost_per_1k_usd=0.003,
+        completion_cost_per_1k_usd=0.015,
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d = s.decide(x)
+    assert "estimated_cost_usd" not in d.meta
 
 
 def test_m20_1_openrouter_chat_content_json_is_adapted(monkeypatch):

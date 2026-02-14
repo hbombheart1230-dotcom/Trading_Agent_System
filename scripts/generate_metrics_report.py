@@ -218,6 +218,12 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 "error_type_total": {},
                 "prompt_version_total": {},
                 "schema_version_total": {},
+                "token_usage": {
+                    "prompt_tokens_total": 0,
+                    "completion_tokens_total": 0,
+                    "total_tokens_total": 0,
+                    "estimated_cost_usd_total": 0.0,
+                },
             },
             "api_error_total_by_api_id": {},
         }
@@ -243,6 +249,10 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     llm_schema_version_total: Counter[str] = Counter()
     llm_latency_ms_values: List[float] = []
     llm_attempt_values: List[float] = []
+    llm_prompt_tokens_total = 0
+    llm_completion_tokens_total = 0
+    llm_total_tokens_total = 0
+    llm_estimated_cost_usd_total = 0.0
 
     for r in day_rows:
         stage = str(r.get("stage") or "")
@@ -294,6 +304,38 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             except Exception:
                 pass
 
+            prompt_tokens = payload.get("prompt_tokens")
+            try:
+                prompt_tokens_val = int(float(prompt_tokens))
+                if prompt_tokens_val >= 0:
+                    llm_prompt_tokens_total += prompt_tokens_val
+            except Exception:
+                pass
+
+            completion_tokens = payload.get("completion_tokens")
+            try:
+                completion_tokens_val = int(float(completion_tokens))
+                if completion_tokens_val >= 0:
+                    llm_completion_tokens_total += completion_tokens_val
+            except Exception:
+                pass
+
+            total_tokens = payload.get("total_tokens")
+            try:
+                total_tokens_val = int(float(total_tokens))
+                if total_tokens_val >= 0:
+                    llm_total_tokens_total += total_tokens_val
+            except Exception:
+                pass
+
+            estimated_cost_usd = payload.get("estimated_cost_usd")
+            try:
+                estimated_cost_usd_val = float(estimated_cost_usd)
+                if estimated_cost_usd_val >= 0.0:
+                    llm_estimated_cost_usd_total += estimated_cost_usd_val
+            except Exception:
+                pass
+
     latency = _latency_summary(day_rows)
     llm_latency_ms = _numeric_summary(llm_latency_ms_values)
     llm_attempts = _numeric_summary(llm_attempt_values)
@@ -318,6 +360,12 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             "error_type_total": dict(llm_error_by_type),
             "prompt_version_total": dict(llm_prompt_version_total),
             "schema_version_total": dict(llm_schema_version_total),
+            "token_usage": {
+                "prompt_tokens_total": int(llm_prompt_tokens_total),
+                "completion_tokens_total": int(llm_completion_tokens_total),
+                "total_tokens_total": int(llm_total_tokens_total),
+                "estimated_cost_usd_total": float(llm_estimated_cost_usd_total),
+            },
         },
         "api_error_total_by_api_id": dict(api_errors_by_id),
     }
@@ -377,6 +425,16 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             md_lines.append(f"- {v}: {cnt}")
     else:
         md_lines.append("- (none)")
+
+    md_lines += [
+        "",
+        "### Token Usage and Cost",
+        "",
+        f"- prompt_tokens_total: {int(llm_prompt_tokens_total)}",
+        f"- completion_tokens_total: {int(llm_completion_tokens_total)}",
+        f"- total_tokens_total: {int(llm_total_tokens_total)}",
+        f"- estimated_cost_usd_total: {llm_estimated_cost_usd_total:.8f}",
+    ]
 
     md_lines += [
         "",

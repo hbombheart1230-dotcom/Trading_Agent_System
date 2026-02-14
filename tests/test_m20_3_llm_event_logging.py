@@ -32,6 +32,8 @@ def test_m20_3_llm_event_logged_on_success(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
     monkeypatch.setenv("AI_STRATEGIST_PROMPT_VERSION", "pv-log")
     monkeypatch.setenv("AI_STRATEGIST_SCHEMA_VERSION", "intent.v1-log")
+    monkeypatch.setenv("AI_STRATEGIST_PROMPT_COST_PER_1K_USD", "0.003")
+    monkeypatch.setenv("AI_STRATEGIST_COMPLETION_COST_PER_1K_USD", "0.015")
 
     def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
         return {
@@ -42,7 +44,8 @@ def test_m20_3_llm_event_logged_on_success(monkeypatch, tmp_path: Path):
                 "price": 70000,
                 "order_type": "limit",
                 "order_api_id": "ORDER_SUBMIT",
-            }
+            },
+            "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200},
         }
 
     monkeypatch.setattr(prov, "_post_json", fake_post_json)
@@ -65,6 +68,10 @@ def test_m20_3_llm_event_logged_on_success(monkeypatch, tmp_path: Path):
     assert p.get("attempts") == 1
     assert p.get("prompt_version") == "pv-log"
     assert p.get("schema_version") == "intent.v1-log"
+    assert p.get("prompt_tokens") == 120
+    assert p.get("completion_tokens") == 80
+    assert p.get("total_tokens") == 200
+    assert abs(float(p.get("estimated_cost_usd") or 0.0) - 0.00156) < 1e-12
 
 
 def test_m20_3_llm_event_logged_on_error(monkeypatch, tmp_path: Path):

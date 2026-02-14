@@ -124,6 +124,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "intent_reason": pld.get("intent_reason"),
                 "prompt_version": pld.get("prompt_version"),
                 "schema_version": pld.get("schema_version"),
+                "prompt_tokens": pld.get("prompt_tokens"),
+                "completion_tokens": pld.get("completion_tokens"),
+                "total_tokens": pld.get("total_tokens"),
+                "estimated_cost_usd": pld.get("estimated_cost_usd"),
                 "error_type": pld.get("error_type"),
             }
             print("llm_event=", json.dumps(llm_summary, ensure_ascii=False))
