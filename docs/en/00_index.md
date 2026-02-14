@@ -16,4 +16,5 @@ operations, security, governance, and extensibility.
 10. 10_deployment_and_ops.md — Deployment / operations / runbooks (SLO/alerts)
 11. 11_testing_and_quality.md — Testing / quality / regression strategy
 12. 12_roadmap.md — Roadmap (M16+ approve API, LangGraph formalization, etc.)
-13. 99_glossary.md — Glossary
+13. 13_project_tree.md — Project tree and key implementation map
+14. 99_glossary.md — Glossary
