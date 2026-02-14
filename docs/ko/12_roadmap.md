@@ -27,3 +27,6 @@
   - `{"intent": ...}` 구조로 어댑트 후 표준 intent 스키마 정규화
   - 일시적 오류 재시도/백오프 + attempts 메타데이터
   - `stage=strategist_llm` 이벤트 텔레메트리 추가
+- M20-3:
+  - legacy `libs.llm.router` import 호환성 복구(`ChatMessage`)
+  - legacy router import/payload 회귀 테스트 추가

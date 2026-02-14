@@ -27,3 +27,6 @@
   - canonical intent schema normalization before decision handoff
   - transient retry/backoff policy with attempt metadata
   - strategist LLM event telemetry (`stage=strategist_llm`)
+- M20-3:
+  - restore legacy `libs.llm.router` compatibility import (`ChatMessage`)
+  - add regression tests for legacy router import/payload path

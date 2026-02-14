@@ -20,6 +20,9 @@ from typing import Any, Dict, List, Optional
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_TIMEOUT_SEC = 15
 
+# Backward-compatible message type alias used by legacy router import paths.
+ChatMessage = Dict[str, Any]
+
 
 @dataclass
 class OpenRouterConfig:
