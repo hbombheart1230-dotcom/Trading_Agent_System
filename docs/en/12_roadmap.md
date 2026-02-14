@@ -33,3 +33,6 @@
 - M20-4:
   - smoke CLI options for strategist LLM event visibility (`--show-llm-event`, `--require-llm-event`)
   - operator query CLI for `strategist_llm` result events
+- M20-5:
+  - include strategist LLM reliability metrics in daily metrics report
+  - add success-rate/latency/attempts/error-type aggregates for operator dashboards

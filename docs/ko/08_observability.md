@@ -21,6 +21,10 @@ payload에는:
 - intents_blocked_total (by guard_reason)
 - execution_latency_seconds
 - api_error_total (by api_id)
+- strategist_llm.success_rate
+- strategist_llm.latency_ms
+- strategist_llm.attempts
+- strategist_llm.error_type_total
 
 ## 8.4 감사(Audit)
 - real 실행은 항상 별도 audit tag 부여

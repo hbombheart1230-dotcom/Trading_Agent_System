@@ -128,6 +128,29 @@ def _extract_api_id(row: Dict[str, Any]) -> str:
     return "unknown"
 
 
+def _numeric_summary(values: List[float]) -> Dict[str, float]:
+    vals = sorted(float(v) for v in values if float(v) >= 0.0)
+    if not vals:
+        return {"count": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0}
+
+    n = len(vals)
+
+    def pct(p: float) -> float:
+        if n == 1:
+            return float(vals[0])
+        idx = int(round((n - 1) * p))
+        idx = max(0, min(n - 1, idx))
+        return float(vals[idx])
+
+    return {
+        "count": float(n),
+        "avg": float(sum(vals) / n),
+        "p50": pct(0.50),
+        "p95": pct(0.95),
+        "max": float(vals[-1]),
+    }
+
+
 def _latency_summary(rows: List[Dict[str, Any]]) -> Dict[str, float]:
     start_by_run: Dict[str, int] = {}
     latencies: List[float] = []
@@ -159,26 +182,7 @@ def _latency_summary(rows: List[Dict[str, Any]]) -> Dict[str, float]:
             if dt >= 0:
                 latencies.append(dt)
 
-    if not latencies:
-        return {"count": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0}
-
-    vals = sorted(latencies)
-    n = len(vals)
-
-    def pct(p: float) -> float:
-        if n == 1:
-            return float(vals[0])
-        idx = int(round((n - 1) * p))
-        idx = max(0, min(n - 1, idx))
-        return float(vals[idx])
-
-    return {
-        "count": float(n),
-        "avg": float(sum(vals) / n),
-        "p50": pct(0.50),
-        "p95": pct(0.95),
-        "max": float(vals[-1]),
-    }
+    return _numeric_summary(latencies)
 
 
 def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = None) -> Tuple[Path, Path]:
@@ -204,6 +208,15 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             "intents_blocked_total": 0,
             "intents_blocked_by_reason": {},
             "execution_latency_seconds": {"count": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0},
+            "strategist_llm": {
+                "total": 0,
+                "ok_total": 0,
+                "fail_total": 0,
+                "success_rate": 0.0,
+                "latency_ms": {"count": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0},
+                "attempts": {"count": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0},
+                "error_type_total": {},
+            },
             "api_error_total_by_api_id": {},
         }
         md_path.write_text(f"# Metrics Report ({day})\n\nNo events found.\n", encoding="utf-8")
@@ -220,6 +233,12 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     intents_blocked = 0
     blocks_by_reason: Counter[str] = Counter()
     api_errors_by_id: Counter[str] = Counter()
+    llm_total = 0
+    llm_ok_total = 0
+    llm_fail_total = 0
+    llm_error_by_type: Counter[str] = Counter()
+    llm_latency_ms_values: List[float] = []
+    llm_attempt_values: List[float] = []
 
     for r in day_rows:
         stage = str(r.get("stage") or "")
@@ -242,7 +261,36 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         if event == "error":
             api_errors_by_id[_extract_api_id(r)] += 1
 
+        if stage == "strategist_llm" and event == "result":
+            payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+            llm_total += 1
+            ok = payload.get("ok") is True
+            if ok:
+                llm_ok_total += 1
+            else:
+                llm_fail_total += 1
+                llm_error_by_type[str(payload.get("error_type") or "unknown")] += 1
+
+            latency_ms = payload.get("latency_ms")
+            try:
+                latency_val = float(latency_ms)
+                if latency_val >= 0:
+                    llm_latency_ms_values.append(latency_val)
+            except Exception:
+                pass
+
+            attempts = payload.get("attempts")
+            try:
+                attempts_val = float(attempts)
+                if attempts_val >= 0:
+                    llm_attempt_values.append(attempts_val)
+            except Exception:
+                pass
+
     latency = _latency_summary(day_rows)
+    llm_latency_ms = _numeric_summary(llm_latency_ms_values)
+    llm_attempts = _numeric_summary(llm_attempt_values)
+    llm_success_rate = (float(llm_ok_total) / float(llm_total)) if llm_total > 0 else 0.0
 
     summary = {
         "day": day,
@@ -253,6 +301,15 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         "intents_blocked_total": intents_blocked,
         "intents_blocked_by_reason": dict(blocks_by_reason),
         "execution_latency_seconds": latency,
+        "strategist_llm": {
+            "total": llm_total,
+            "ok_total": llm_ok_total,
+            "fail_total": llm_fail_total,
+            "success_rate": llm_success_rate,
+            "latency_ms": llm_latency_ms,
+            "attempts": llm_attempts,
+            "error_type_total": dict(llm_error_by_type),
+        },
         "api_error_total_by_api_id": dict(api_errors_by_id),
     }
 
@@ -264,6 +321,41 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         f"- intents_created_total: **{intents_created}**",
         f"- intents_approved_total: **{intents_approved}**",
         f"- intents_blocked_total: **{intents_blocked}**",
+        "",
+        "## Strategist LLM",
+        "",
+        f"- total: **{llm_total}**",
+        f"- ok_total: **{llm_ok_total}**",
+        f"- fail_total: **{llm_fail_total}**",
+        f"- success_rate: **{llm_success_rate:.2%}**",
+        "",
+        "### Latency (ms)",
+        "",
+        f"- count: {int(llm_latency_ms['count'])}",
+        f"- avg: {llm_latency_ms['avg']:.3f}ms",
+        f"- p50: {llm_latency_ms['p50']:.3f}ms",
+        f"- p95: {llm_latency_ms['p95']:.3f}ms",
+        f"- max: {llm_latency_ms['max']:.3f}ms",
+        "",
+        "### Attempts",
+        "",
+        f"- count: {int(llm_attempts['count'])}",
+        f"- avg: {llm_attempts['avg']:.3f}",
+        f"- p50: {llm_attempts['p50']:.3f}",
+        f"- p95: {llm_attempts['p95']:.3f}",
+        f"- max: {llm_attempts['max']:.3f}",
+        "",
+        "### Errors By Type",
+        "",
+    ]
+
+    if llm_error_by_type:
+        for et, cnt in llm_error_by_type.most_common():
+            md_lines.append(f"- {et}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += [
         "",
         "## Latency (execute_from_packet)",
         "",

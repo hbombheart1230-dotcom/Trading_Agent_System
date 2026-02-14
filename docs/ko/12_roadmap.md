@@ -34,3 +34,6 @@
   - smoke CLI에서 strategist LLM 이벤트 가시성 옵션 추가
     (`--show-llm-event`, `--require-llm-event`)
   - `strategist_llm` 결과 이벤트 운영 조회 CLI 추가
+- M20-5:
+  - 일일 metrics 리포트에 strategist LLM 신뢰성 지표 집계 추가
+  - 성공률/지연/재시도 횟수/오류 타입 요약 제공
