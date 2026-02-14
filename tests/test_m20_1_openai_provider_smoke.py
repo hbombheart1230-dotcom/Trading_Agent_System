@@ -121,3 +121,84 @@ def test_m20_1_decide_missing_config_returns_safe_noop():
     d = s.decide(x)
     assert d.intent["action"] == "NOOP"
     assert d.intent["reason"] == "missing_config"
+
+
+def test_m20_1_openrouter_chat_content_json_is_adapted(monkeypatch):
+    captured = {}
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        captured["payload"] = dict(payload)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "```json\n"
+                            "{\"intent\":{\"action\":\"BUY\",\"symbol\":\"005930\",\"qty\":1,"
+                            "\"price\":70000,\"order_type\":\"limit\",\"order_api_id\":\"ORDER_SUBMIT\"},"
+                            "\"rationale\":\"adapter-ok\"}\n"
+                            "```"
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+    monkeypatch.setenv("OPENROUTER_MODEL_STRATEGIST", "anthropic/claude-3.5-sonnet")
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://openrouter.ai/api/v1/chat/completions",
+        model="gpt-4.1-mini",  # non openrouter-style; adapter should switch from env
+        timeout_sec=9.0,
+        max_tokens=128,
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d = s.decide(x)
+    assert d.intent["action"] == "BUY"
+    assert d.intent["symbol"] == "005930"
+    assert d.rationale == "adapter-ok"
+
+    assert "messages" in captured["payload"]
+    assert "input" not in captured["payload"]
+    assert captured["payload"]["model"] == "anthropic/claude-3.5-sonnet"
+    assert captured["payload"]["max_tokens"] == 128
+
+
+def test_m20_1_openrouter_chat_content_without_json_is_safe_noop(monkeypatch):
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "I cannot comply."
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://openrouter.ai/api/v1/chat/completions",
+        model="anthropic/claude-3.5-sonnet",
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d = s.decide(x)
+    assert d.intent["action"] == "NOOP"
+    assert d.intent["reason"] == "strategist_error"
+    assert "json" in d.rationale.lower()

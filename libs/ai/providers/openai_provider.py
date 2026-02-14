@@ -21,6 +21,75 @@ def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any], timeo
         body = resp.read().decode("utf-8")
         return json.loads(body) if body else {}
 
+
+def _looks_like_chat_completions_endpoint(url: str) -> bool:
+    s = str(url or "").strip().lower()
+    return "/chat/completions" in s
+
+
+def _strip_fenced_block(text: str) -> str:
+    s = str(text or "").strip()
+    if not s.startswith("```"):
+        return s
+
+    lines = s.splitlines()
+    if not lines:
+        return s
+
+    # drop first fence line (` ``` ` or ` ```json `), and optional trailing fence
+    lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    s = _strip_fenced_block(text)
+    if not s:
+        return None
+
+    # 1) direct JSON
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+
+    # 2) best-effort: find first decodable JSON object in free text
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(s):
+        if ch != "{":
+            continue
+        try:
+            obj, _end = dec.raw_decode(s[i:])
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            continue
+    return None
+
+
+def _extract_chat_content(resp: Dict[str, Any]) -> str:
+    choices = resp.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    msg = choices[0] if isinstance(choices[0], dict) else {}
+    msg = msg.get("message") if isinstance(msg.get("message"), dict) else msg
+    content = msg.get("content") if isinstance(msg, dict) else ""
+
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for p in content:
+            if isinstance(p, str):
+                parts.append(p)
+            elif isinstance(p, dict) and isinstance(p.get("text"), str):
+                parts.append(p.get("text") or "")
+        return "".join(parts)
+    return ""
+
 @dataclass
 class StrategyInput:
     symbol: str
@@ -59,11 +128,33 @@ class OpenAIStrategist:
         self.timeout_sec = timeout_sec
         self.max_tokens = max_tokens
 
+    def _effective_model(self) -> str:
+        model = str(self.model or "").strip()
+        if _looks_like_chat_completions_endpoint(self.endpoint):
+            # OpenRouter often expects provider/model style names.
+            if (not model) or ("/" not in model):
+                env_model = (
+                    (os.getenv("OPENROUTER_MODEL_STRATEGIST") or "").strip()
+                    or (os.getenv("OPENROUTER_DEFAULT_MODEL") or "").strip()
+                )
+                if env_model:
+                    model = env_model
+        return model or "gpt-4.1-mini"
+
     @classmethod
     def from_env(cls) -> "OpenAIStrategist":
         api_key = (os.getenv("AI_STRATEGIST_API_KEY") or "").strip()
         endpoint = (os.getenv("AI_STRATEGIST_ENDPOINT") or "").strip()
-        model = (os.getenv("AI_STRATEGIST_MODEL") or "gpt-4.1-mini").strip()
+        model = (os.getenv("AI_STRATEGIST_MODEL") or "").strip()
+        if not model:
+            if _looks_like_chat_completions_endpoint(endpoint):
+                model = (
+                    (os.getenv("OPENROUTER_MODEL_STRATEGIST") or "").strip()
+                    or (os.getenv("OPENROUTER_DEFAULT_MODEL") or "").strip()
+                    or "openai/gpt-4o-mini"
+                )
+            else:
+                model = "gpt-4.1-mini"
         timeout_sec = float(os.getenv("AI_STRATEGIST_TIMEOUT_SEC") or "15")
         raw_max = (os.getenv("AI_STRATEGIST_MAX_TOKENS") or "").strip()
         max_tokens: Optional[int] = None
@@ -95,31 +186,79 @@ class OpenAIStrategist:
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
             }
-            payload = {
-                "model": self.model,
-                "ts": int(time.time()),
-                "input": {
+            model = self._effective_model()
+
+            if _looks_like_chat_completions_endpoint(self.endpoint):
+                system_prompt = (
+                    "You are a trading strategist. "
+                    "Return JSON only. "
+                    "Schema: {\"intent\": {\"action\":\"BUY|SELL|NOOP\", \"symbol\": string|null, "
+                    "\"qty\": int, \"price\": number|null, \"order_type\":\"limit|market\", "
+                    "\"order_api_id\":\"ORDER_SUBMIT\"}, \"rationale\": string, \"meta\": object}."
+                )
+                user_payload = {
                     "symbol": x.symbol,
                     "market_snapshot": x.market_snapshot,
                     "portfolio_snapshot": x.portfolio_snapshot,
                     "risk_context": x.risk_context,
-                },
-            }
+                }
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+                    ],
+                    "temperature": 0.1,
+                }
+            else:
+                # Legacy/custom strategist endpoint contract.
+                payload = {
+                    "model": model,
+                    "ts": int(time.time()),
+                    "input": {
+                        "symbol": x.symbol,
+                        "market_snapshot": x.market_snapshot,
+                        "portfolio_snapshot": x.portfolio_snapshot,
+                        "risk_context": x.risk_context,
+                    },
+                }
             if self.max_tokens is not None:
                 payload["max_tokens"] = int(self.max_tokens)
 
             resp = _post_json(self.endpoint, headers, payload, timeout=self.timeout_sec) or {}
 
-            raw_intent = resp.get("intent")
-            if raw_intent is None:
-                intent: Dict[str, Any] = {}
-            elif isinstance(raw_intent, dict):
-                intent = dict(raw_intent)
-            else:
-                raise ValueError("Invalid response: 'intent' must be an object")
-
-            rationale = str(resp.get("rationale") or intent.get("rationale") or "")
+            intent: Dict[str, Any] = {}
+            rationale = ""
             meta = dict(resp.get("meta") or {})
+
+            # 1) Native/custom contract: {"intent": {...}, ...}
+            raw_intent = resp.get("intent")
+            if raw_intent is not None:
+                if isinstance(raw_intent, dict):
+                    intent = dict(raw_intent)
+                    rationale = str(resp.get("rationale") or intent.get("rationale") or "")
+                else:
+                    raise ValueError("Invalid response: 'intent' must be an object")
+            else:
+                # 2) OpenRouter/OpenAI-style chat completions:
+                #    parse JSON in assistant content and adapt to {"intent": ...}.
+                content = _extract_chat_content(resp)
+                obj = _extract_json_object(content)
+                if obj is None:
+                    raise ValueError("Invalid response: no JSON object in model content")
+
+                if isinstance(obj.get("intent"), dict):
+                    intent = dict(obj.get("intent") or {})
+                    rationale = str(obj.get("rationale") or intent.get("rationale") or "")
+                    if isinstance(obj.get("meta"), dict):
+                        meta.update(dict(obj.get("meta") or {}))
+                elif obj.get("action") is not None:
+                    # Allow direct intent object response.
+                    intent = dict(obj)
+                    rationale = str(obj.get("rationale") or "")
+                else:
+                    raise ValueError("Invalid response JSON: missing intent/action")
+
             if not intent:
                 intent = {"action": "NOOP", "reason": "empty_intent"}
             return StrategyDecision(intent=intent, rationale=rationale, meta=meta)
