@@ -53,7 +53,7 @@ Trading_Agent_System/
 - `scripts/`: 운영/스모크/데모 스크립트
 - `tests/`: 회귀 및 마일스톤 테스트
 - `docs/ground_rules/`: 비타협 규칙과 품질 게이트
-- `docs/plan/`: 마일스톤 구현 메모
+- `docs/plan/`: 현재 마일스톤 구현 메모 (`docs/plan/archive/`에 M3-M7 레거시 문서 보관)
 
 ## M20 관련 문서
 

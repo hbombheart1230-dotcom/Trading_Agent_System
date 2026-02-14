@@ -53,7 +53,7 @@ Trading_Agent_System/
 - `scripts/`: smoke/demo/ops scripts.
 - `tests/`: regression and milestone tests.
 - `docs/ground_rules/`: non-negotiable rules and quality gates.
-- `docs/plan/`: milestone implementation notes.
+- `docs/plan/`: active milestone implementation notes (`docs/plan/archive/` stores legacy M3-M7 notes).
 
 ## M20-Related Documents
 
