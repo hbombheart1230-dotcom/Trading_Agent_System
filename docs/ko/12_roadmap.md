@@ -30,3 +30,7 @@
 - M20-3:
   - legacy `libs.llm.router` import 호환성 복구(`ChatMessage`)
   - legacy router import/payload 회귀 테스트 추가
+- M20-4:
+  - smoke CLI에서 strategist LLM 이벤트 가시성 옵션 추가
+    (`--show-llm-event`, `--require-llm-event`)
+  - `strategist_llm` 결과 이벤트 운영 조회 CLI 추가

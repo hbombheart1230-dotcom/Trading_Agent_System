@@ -30,3 +30,6 @@
 - M20-3:
   - restore legacy `libs.llm.router` compatibility import (`ChatMessage`)
   - add regression tests for legacy router import/payload path
+- M20-4:
+  - smoke CLI options for strategist LLM event visibility (`--show-llm-event`, `--require-llm-event`)
+  - operator query CLI for `strategist_llm` result events

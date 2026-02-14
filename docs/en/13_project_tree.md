@@ -60,6 +60,7 @@ Trading_Agent_System/
 - `docs/plan/m20_1_llm_smoke_and_fallback.md`
 - `docs/plan/m20_2_schema_retry_telemetry.md`
 - `docs/plan/m20_3_legacy_llm_router_compat.md`
+- `docs/plan/m20_4_smoke_and_llm_event_query.md`
 - `docs/en/12_roadmap.md`
 - `docs/ko/12_roadmap.md`
 - `docs/ground_rules/AGENT_RULES.md`
