@@ -1,5 +1,17 @@
 # Agents
 
+## Commander (지휘관)
+- orchestrates the full run cycle (state machine / graph)
+- decides **which agent to call next** based on current situation
+- defines high-level objective (scan / monitor / review / emergency stop)
+- routes outputs between agents (TradePlan → ScanResult → OrderIntent → Decision)
+- triggers approval → execution chain via Supervisor + AgentExecutor
+- handles abnormal events (guard block, API failure, retry/cancel, pause/stop)
+- **does NOT**:
+  - choose symbols directly (Scanner owns selection)
+  - compute indicators/features (Scanner/skills own)
+  - place orders (Execution Layer only)
+
 ## Supervisor (감독관)
 - owns risk limits
 - validates OrderIntent against policy

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+import uuid
 
 from libs.agent.strategist import Strategist
 from libs.agent.scanner import Scanner
@@ -51,10 +52,38 @@ class Commander:
     ) -> CommandResult:
         context = context or {}
 
-        plan = self.strategist.make_plan(context=context)
-        scan = self.scanner.scan(plan=plan, context=context)
+        # Strategist method name compatibility:
+        # - preferred: plan(...)
+        # - legacy: make_plan(...)
+        if hasattr(self.strategist, "plan"):
+            plan_obj = self.strategist.plan(context=context)  # type: ignore[attr-defined]
+        else:
+            plan_obj = self.strategist.make_plan(context=context)  # type: ignore[attr-defined]
 
-        intent = scan.get("intent") if isinstance(scan, dict) else None
+        scan_obj = self.scanner.scan(plan=plan_obj, context=context)
+
+        # Scanner contract compatibility:
+        # - list[intent]
+        # - {"intents":[...]} or {"intent": {...}}
+        if isinstance(scan_obj, list):
+            intents = [x for x in scan_obj if isinstance(x, dict)]
+            scan = {"intents": intents}
+        elif isinstance(scan_obj, dict):
+            scan = dict(scan_obj)
+            if isinstance(scan.get("intents"), list):
+                intents = [x for x in scan["intents"] if isinstance(x, dict)]
+            elif isinstance(scan.get("intent"), dict):
+                intents = [scan["intent"]]
+            else:
+                intents = []
+                if isinstance(scan.get("intent"), list):
+                    intents = [x for x in scan["intent"] if isinstance(x, dict)]
+            scan["intents"] = intents
+        else:
+            intents = []
+            scan = {"intents": intents}
+
+        intent = intents[0] if intents else None
         execution: Optional[Dict[str, Any]] = None
         if intent:
             execution = self.executor.submit(
@@ -63,7 +92,42 @@ class Commander:
                 execution_enabled=execution_enabled,
             )
 
-        self.monitor.update(plan=plan, scan=scan, execution=execution, context=context)
-        report = self.reporter.build_report(plan=plan, scan=scan, execution=execution, context=context)
+        decisions: List[Dict[str, Any]] = []
+        if isinstance(execution, dict):
+            d = execution.get("decision")
+            if isinstance(d, dict):
+                decisions.append(d)
 
+        # Monitor contract compatibility:
+        # - current: update(intents, decisions, executions, context)
+        # - legacy : update(plan=..., scan=..., execution=..., context=...)
+        try:
+            self.monitor.update(
+                intents=intents,
+                decisions=decisions,
+                executions=([execution] if execution else []),
+                context=context,
+            )
+        except TypeError:
+            self.monitor.update(plan=plan_obj, scan=scan, execution=execution, context=context)  # type: ignore[arg-type]
+
+        run_id = str(context.get("run_id") or uuid.uuid4().hex)
+
+        # Reporter contract compatibility:
+        # - current: build(run_id, context, plan, intents, decisions, executions)
+        # - legacy : build_report(plan=..., scan=..., execution=..., context=...)
+        try:
+            report = self.reporter.build(
+                run_id=run_id,
+                context=context,
+                plan=plan_obj,
+                intents=intents,
+                decisions=decisions,
+                executions=([execution] if execution else []),
+            )
+        except TypeError:
+            report = self.reporter.build_report(plan=plan_obj, scan=scan, execution=execution, context=context)  # type: ignore[arg-type]
+
+        # Keep CommandResult contracts as dict-shaped payloads.
+        plan = plan_obj if isinstance(plan_obj, dict) else dict(getattr(plan_obj, "__dict__", {}))
         return CommandResult(plan=plan, scan=scan, intent=intent, execution=execution, report=report)

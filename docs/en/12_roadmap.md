@@ -16,3 +16,8 @@
 - metrics dashboards
 - alerting policy (Slack/Email)
 - audit log archiving
+
+## M20: LLM Strategist Reliability
+- provider smoke coverage (config/timeout/response-shape)
+- decide_trade integration smoke with safe fallback
+- operator smoke script for strategist-only validation (no execution)

@@ -24,8 +24,18 @@ def update_state_after_execution(state: dict) -> dict:
     ps = state.get("persisted_state") or {}
     ex = state.get("execution") or {}
 
-    ok = bool(ex.get("ok", False))
-    blocked = bool(ex.get("blocked", False))
+    # Backward/forward compatible success shape:
+    # - legacy: execution["ok"]
+    # - current: execution["allowed"]
+    if "ok" in ex:
+        ok = bool(ex.get("ok", False))
+    else:
+        ok = bool(ex.get("allowed", False))
+
+    if "blocked" in ex:
+        blocked = bool(ex.get("blocked", False))
+    else:
+        blocked = not bool(ex.get("allowed", False))
 
     # update audit info always
     ps["last_execution_ok"] = ok
@@ -33,9 +43,12 @@ def update_state_after_execution(state: dict) -> dict:
 
     # Only set last_order_epoch when an order was actually sent.
     # Convention:
-    # - In dry-run mode, execution should NOT be treated as "order sent"
-    # - In real mode, ok=True implies it was sent
-    order_sent = ok and not bool(ex.get("dry_run", False))
+    # - In dry-run/mock mode, execution should NOT be treated as "order sent"
+    # - In real mode, success implies it was sent
+    payload = ex.get("payload") if isinstance(ex.get("payload"), dict) else {}
+    mode = str(payload.get("mode") or "").strip().lower()
+    is_dry = bool(ex.get("dry_run", False)) or (mode == "mock")
+    order_sent = ok and not is_dry
 
     if order_sent:
         ps["last_order_epoch"] = int(time.time())

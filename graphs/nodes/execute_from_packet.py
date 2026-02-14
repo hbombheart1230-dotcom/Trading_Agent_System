@@ -66,6 +66,21 @@ def _catalog_path_from_env() -> str:
     return "./data/specs/api_catalog.jsonl"
 
 
+def _resolve_execution_mode() -> str:
+    """Resolve effective execution mode consistently with executor factory."""
+    mode = (os.getenv("EXECUTION_MODE", "") or "").strip().lower()
+    if mode in ("mock", "real"):
+        return mode
+
+    try:
+        Settings = _import_settings()
+        s = Settings.from_env()
+        base = str(getattr(s, "kiwoom_mode", "mock") or "mock").strip().lower()
+        return "real" if base == "real" else "mock"
+    except Exception:
+        return "mock"
+
+
 def _build_order_from_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
     """Best-effort order dict. This is intentionally thin.
 
@@ -186,7 +201,7 @@ def _normalize_execution(
     reason: str = "",
 ) -> Dict[str, Any]:
     """Normalize to dict shape used by tests and reports."""
-    exec_mode = os.getenv("EXECUTION_MODE", "mock").lower().strip()
+    exec_mode = _resolve_execution_mode()
 
     payload: Dict[str, Any] = {}
     if execution_result is None:
@@ -269,8 +284,9 @@ def execute_from_packet(state: dict) -> dict:
         # Supervisor verdict
         allow_result = _supervisor_allow(supervisor, order, risk)
         allowed = bool(getattr(allow_result, "allowed", getattr(allow_result, "allow", False)))
-        # Tests assume mock execution always proceeds; real execution enforces Supervisor
-        if os.getenv("EXECUTION_MODE", "mock").lower().strip() == "mock":
+        # Mock mode bypasses supervisor gating for offline-safe test flows.
+        # Real mode must honor supervisor verdict.
+        if _resolve_execution_mode() == "mock":
             allowed = True
 
         if not allowed:

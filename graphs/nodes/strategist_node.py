@@ -95,6 +95,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if bool(policy.get("use_global_sentiment", True)):
         gs = float(compute_global_sentiment(state=state, policy=policy))
     policy["global_sentiment"] = float(gs)
+    # Keep a canonical state-level shape for downstream nodes.
+    state["global_sentiment"] = {"score": float(gs)}
 
     # policy adjustment based on global sentiment
     # - risk-off: max_risk decreases, min_confidence increases

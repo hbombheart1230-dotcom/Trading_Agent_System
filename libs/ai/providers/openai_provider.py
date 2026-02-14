@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 # NOTE: tests monkeypatch this symbol
@@ -32,7 +32,7 @@ class StrategyInput:
 class StrategyDecision:
     intent: Dict[str, Any]
     rationale: str = ""
-    meta: Dict[str, Any] = None  # type: ignore[assignment]
+    meta: Dict[str, Any] = field(default_factory=dict)
 
 class OpenAIStrategist:
     """HTTP strategist wrapper.
@@ -44,11 +44,20 @@ class OpenAIStrategist:
       - AI_STRATEGIST_TIMEOUT_SEC (optional)
     """
 
-    def __init__(self, *, api_key: str, endpoint: str, model: str = "gpt-4.1-mini", timeout_sec: float = 15.0):
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        endpoint: str,
+        model: str = "gpt-4.1-mini",
+        timeout_sec: float = 15.0,
+        max_tokens: Optional[int] = None,
+    ):
         self.api_key = api_key
         self.endpoint = endpoint
         self.model = model
         self.timeout_sec = timeout_sec
+        self.max_tokens = max_tokens
 
     @classmethod
     def from_env(cls) -> "OpenAIStrategist":
@@ -56,11 +65,32 @@ class OpenAIStrategist:
         endpoint = (os.getenv("AI_STRATEGIST_ENDPOINT") or "").strip()
         model = (os.getenv("AI_STRATEGIST_MODEL") or "gpt-4.1-mini").strip()
         timeout_sec = float(os.getenv("AI_STRATEGIST_TIMEOUT_SEC") or "15")
-        return cls(api_key=api_key, endpoint=endpoint, model=model, timeout_sec=timeout_sec)
+        raw_max = (os.getenv("AI_STRATEGIST_MAX_TOKENS") or "").strip()
+        max_tokens: Optional[int] = None
+        if raw_max:
+            try:
+                v = int(raw_max)
+                max_tokens = v if v > 0 else None
+            except Exception:
+                max_tokens = None
+        return cls(
+            api_key=api_key,
+            endpoint=endpoint,
+            model=model,
+            timeout_sec=timeout_sec,
+            max_tokens=max_tokens,
+        )
 
     def decide(self, x: StrategyInput) -> StrategyDecision:
         """Never raise. On any error, returns NOOP with error reason."""
         try:
+            if not self.api_key or not self.endpoint:
+                return StrategyDecision(
+                    intent={"action": "NOOP", "reason": "missing_config"},
+                    rationale="AI strategist config missing (api_key/endpoint)",
+                    meta={},
+                )
+
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
@@ -75,12 +105,27 @@ class OpenAIStrategist:
                     "risk_context": x.risk_context,
                 },
             }
+            if self.max_tokens is not None:
+                payload["max_tokens"] = int(self.max_tokens)
+
             resp = _post_json(self.endpoint, headers, payload, timeout=self.timeout_sec) or {}
-            intent = dict(resp.get("intent") or {})
+
+            raw_intent = resp.get("intent")
+            if raw_intent is None:
+                intent: Dict[str, Any] = {}
+            elif isinstance(raw_intent, dict):
+                intent = dict(raw_intent)
+            else:
+                raise ValueError("Invalid response: 'intent' must be an object")
+
             rationale = str(resp.get("rationale") or intent.get("rationale") or "")
             meta = dict(resp.get("meta") or {})
             if not intent:
                 intent = {"action": "NOOP", "reason": "empty_intent"}
             return StrategyDecision(intent=intent, rationale=rationale, meta=meta)
         except Exception as e:
-            return StrategyDecision(intent={"action": "NOOP", "reason": "strategist_error"}, rationale=str(e), meta={"error": str(e)})
+            return StrategyDecision(
+                intent={"action": "NOOP", "reason": "strategist_error"},
+                rationale=str(e),
+                meta={"error": str(e)},
+            )

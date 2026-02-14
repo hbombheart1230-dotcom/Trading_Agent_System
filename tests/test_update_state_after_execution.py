@@ -22,3 +22,25 @@ def test_update_state_does_not_update_last_order_on_ok_dry_run(monkeypatch):
     state = {"persisted_state": {"last_order_epoch": 10}, "execution": {"ok": True, "dry_run": True, "reason": "dry-run"}}
     out = update_state_after_execution(state)
     assert out["persisted_state"]["last_order_epoch"] == 10
+
+
+def test_update_state_handles_allowed_schema_real(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {"last_order_epoch": 10},
+        "execution": {"allowed": True, "payload": {"mode": "real"}, "reason": "Allowed"},
+    }
+    out = update_state_after_execution(state)
+    assert out["persisted_state"]["last_execution_ok"] is True
+    assert out["persisted_state"]["last_order_epoch"] == 1234
+
+
+def test_update_state_handles_allowed_schema_mock_without_order_sent(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {"last_order_epoch": 10},
+        "execution": {"allowed": True, "payload": {"mode": "mock"}, "reason": "Allowed"},
+    }
+    out = update_state_after_execution(state)
+    assert out["persisted_state"]["last_execution_ok"] is True
+    assert out["persisted_state"]["last_order_epoch"] == 10

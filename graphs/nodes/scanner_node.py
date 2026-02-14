@@ -28,6 +28,11 @@ def _get_global_sentiment_score(state: Dict[str, Any]) -> float:
             return _clamp(float(gs.get("score") or 0.0), -1.0, 1.0)
         except Exception:
             return 0.0
+    if isinstance(gs, (int, float, str)):
+        try:
+            return _clamp(float(gs), -1.0, 1.0)
+        except Exception:
+            return 0.0
 
     pol = state.get("policy")
     if isinstance(pol, dict):
@@ -35,6 +40,11 @@ def _get_global_sentiment_score(state: Dict[str, Any]) -> float:
         if isinstance(pgs, dict) and "score" in pgs:
             try:
                 return _clamp(float(pgs.get("score") or 0.0), -1.0, 1.0)
+            except Exception:
+                return 0.0
+        if isinstance(pgs, (int, float, str)):
+            try:
+                return _clamp(float(pgs), -1.0, 1.0)
             except Exception:
                 return 0.0
 
