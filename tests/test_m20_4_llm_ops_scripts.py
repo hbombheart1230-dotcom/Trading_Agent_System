@@ -22,6 +22,8 @@ def test_m20_4_smoke_show_llm_event_in_openai_mode(monkeypatch, tmp_path: Path, 
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
     monkeypatch.setenv("AI_STRATEGIST_MODEL", "test-model")
     monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
+    monkeypatch.setenv("AI_STRATEGIST_PROMPT_VERSION", "pv-smoke")
+    monkeypatch.setenv("AI_STRATEGIST_SCHEMA_VERSION", "intent.v1-smoke")
     monkeypatch.setenv("EVENT_LOG_PATH", str(events))
 
     def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
@@ -55,6 +57,8 @@ def test_m20_4_smoke_show_llm_event_in_openai_mode(monkeypatch, tmp_path: Path, 
     assert "llm_event=" in out
     assert "\"attempts\":" in out
     assert "\"latency_ms\":" in out
+    assert "\"prompt_version\": \"pv-smoke\"" in out
+    assert "\"schema_version\": \"intent.v1-smoke\"" in out
 
 
 def test_m20_4_smoke_require_llm_event_fails_when_missing(monkeypatch, tmp_path: Path):

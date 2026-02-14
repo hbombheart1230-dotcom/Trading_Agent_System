@@ -58,10 +58,14 @@ def _print_human(path: Path, rows: List[Dict[str, Any]]) -> None:
         reason = str(p.get("intent_reason") or "")
         latency = p.get("latency_ms")
         attempts = p.get("attempts")
+        prompt_version = str(p.get("prompt_version") or "")
+        schema_version = str(p.get("schema_version") or "")
         err = str(p.get("error_type") or "")
         print(
             f"{ts} run_id={run_id} ok={ok} action={action} reason={reason} "
-            f"latency_ms={latency} attempts={attempts} error_type={err}"
+            f"latency_ms={latency} attempts={attempts} "
+            f"prompt_version={prompt_version} schema_version={schema_version} "
+            f"error_type={err}"
         )
 
 

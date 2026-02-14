@@ -159,6 +159,16 @@ def decide_trade(state: dict) -> dict:
                     payload["attempts"] = int(llm_meta.get("attempts") or 0)
                 if llm_meta.get("endpoint_type"):
                     payload["endpoint_type"] = str(llm_meta.get("endpoint_type"))
+                prompt_version = str(
+                    llm_meta.get("prompt_version") or getattr(strategist, "prompt_version", "") or ""
+                )
+                if prompt_version:
+                    payload["prompt_version"] = prompt_version
+                schema_version = str(
+                    llm_meta.get("schema_version") or getattr(strategist, "schema_version", "") or ""
+                )
+                if schema_version:
+                    payload["schema_version"] = schema_version
                 if llm_meta.get("error_type"):
                     payload["error_type"] = str(llm_meta.get("error_type"))
                 elif error:

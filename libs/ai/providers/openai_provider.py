@@ -6,6 +6,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
+DEFAULT_PROMPT_VERSION = "m20-6"
+DEFAULT_SCHEMA_VERSION = "intent.v1"
+
 # NOTE: tests monkeypatch this symbol
 def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any], timeout: float = 15.0) -> Dict[str, Any]:
     """Very small HTTP helper. Kept minimal on purpose.
@@ -123,6 +126,8 @@ class OpenAIStrategist:
         max_tokens: Optional[int] = None,
         retry_max: int = 1,
         retry_backoff_sec: float = 0.5,
+        prompt_version: str = DEFAULT_PROMPT_VERSION,
+        schema_version: str = DEFAULT_SCHEMA_VERSION,
     ):
         self.api_key = api_key
         self.endpoint = endpoint
@@ -131,6 +136,8 @@ class OpenAIStrategist:
         self.max_tokens = max_tokens
         self.retry_max = max(0, int(retry_max))
         self.retry_backoff_sec = max(0.0, float(retry_backoff_sec))
+        self.prompt_version = str(prompt_version or "").strip() or DEFAULT_PROMPT_VERSION
+        self.schema_version = str(schema_version or "").strip() or DEFAULT_SCHEMA_VERSION
 
     def _effective_model(self) -> str:
         model = str(self.model or "").strip()
@@ -182,6 +189,8 @@ class OpenAIStrategist:
             retry_backoff_sec = max(0.0, float(raw_backoff))
         except Exception:
             retry_backoff_sec = 0.5
+        prompt_version = (os.getenv("AI_STRATEGIST_PROMPT_VERSION") or "").strip() or DEFAULT_PROMPT_VERSION
+        schema_version = (os.getenv("AI_STRATEGIST_SCHEMA_VERSION") or "").strip() or DEFAULT_SCHEMA_VERSION
 
         return cls(
             api_key=api_key,
@@ -191,6 +200,8 @@ class OpenAIStrategist:
             max_tokens=max_tokens,
             retry_max=retry_max,
             retry_backoff_sec=retry_backoff_sec,
+            prompt_version=prompt_version,
+            schema_version=schema_version,
         )
 
     @staticmethod
@@ -256,7 +267,11 @@ class OpenAIStrategist:
                 return StrategyDecision(
                     intent={"action": "NOOP", "reason": "missing_config"},
                     rationale="AI strategist config missing (api_key/endpoint)",
-                    meta={},
+                    meta={
+                        "prompt_version": self.prompt_version,
+                        "schema_version": self.schema_version,
+                        "attempts": 0,
+                    },
                 )
 
             headers = {
@@ -269,6 +284,8 @@ class OpenAIStrategist:
                 system_prompt = (
                     "You are a trading strategist. "
                     "Return JSON only. "
+                    f"Prompt-Version: {self.prompt_version}. "
+                    f"Schema-Version: {self.schema_version}. "
                     "Schema: {\"intent\": {\"action\":\"BUY|SELL|NOOP\", \"symbol\": string|null, "
                     "\"qty\": int, \"price\": number|null, \"order_type\":\"limit|market\", "
                     "\"order_api_id\":\"ORDER_SUBMIT\"}, \"rationale\": string, \"meta\": object}."
@@ -349,6 +366,8 @@ class OpenAIStrategist:
                 "endpoint_type",
                 "chat_completions" if _looks_like_chat_completions_endpoint(self.endpoint) else "custom",
             )
+            meta.setdefault("prompt_version", self.prompt_version)
+            meta.setdefault("schema_version", self.schema_version)
             meta["attempts"] = int(attempts or 1)
             return StrategyDecision(intent=intent, rationale=rationale, meta=meta)
         except Exception as e:
@@ -359,5 +378,7 @@ class OpenAIStrategist:
                     "error": str(e),
                     "error_type": e.__class__.__name__,
                     "attempts": int(attempts or 1),
+                    "prompt_version": self.prompt_version,
+                    "schema_version": self.schema_version,
                 },
             )

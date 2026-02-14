@@ -37,3 +37,6 @@
 - M20-5:
   - 일일 metrics 리포트에 strategist LLM 신뢰성 지표 집계 추가
   - 성공률/지연/재시도 횟수/오류 타입 요약 제공
+- M20-6:
+  - strategist LLM 텔레메트리에 `prompt_version` / `schema_version` 필드 추가
+  - 버전 분포 메트릭(`prompt_version_total`, `schema_version_total`) 집계 추가

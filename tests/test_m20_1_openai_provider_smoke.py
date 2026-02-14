@@ -11,6 +11,8 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_MAX_TOKENS", "256")
     monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "3")
     monkeypatch.setenv("AI_STRATEGIST_RETRY_BACKOFF_SEC", "0.25")
+    monkeypatch.setenv("AI_STRATEGIST_PROMPT_VERSION", "pv-test")
+    monkeypatch.setenv("AI_STRATEGIST_SCHEMA_VERSION", "intent.v1-test")
 
     s = prov.OpenAIStrategist.from_env()
     assert s.api_key == "k"
@@ -20,6 +22,8 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     assert s.max_tokens == 256
     assert s.retry_max == 3
     assert abs(float(s.retry_backoff_sec) - 0.25) < 1e-9
+    assert s.prompt_version == "pv-test"
+    assert s.schema_version == "intent.v1-test"
 
 
 def test_m20_1_decide_posts_payload_and_parses_response(monkeypatch):
@@ -50,6 +54,8 @@ def test_m20_1_decide_posts_payload_and_parses_response(monkeypatch):
         model="gpt-test",
         timeout_sec=9.0,
         max_tokens=128,
+        prompt_version="pv-unit",
+        schema_version="intent.v1-unit",
     )
     x = prov.StrategyInput(
         symbol="005930",
@@ -63,6 +69,8 @@ def test_m20_1_decide_posts_payload_and_parses_response(monkeypatch):
     assert d.intent["action"] == "BUY"
     assert d.rationale == "llm-ok"
     assert d.meta["provider"] == "fake"
+    assert d.meta["prompt_version"] == "pv-unit"
+    assert d.meta["schema_version"] == "intent.v1-unit"
 
     assert captured["url"] == "https://example.invalid/strategist"
     assert captured["headers"]["Authorization"] == "Bearer k"

@@ -216,6 +216,8 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 "latency_ms": {"count": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0},
                 "attempts": {"count": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0},
                 "error_type_total": {},
+                "prompt_version_total": {},
+                "schema_version_total": {},
             },
             "api_error_total_by_api_id": {},
         }
@@ -237,6 +239,8 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     llm_ok_total = 0
     llm_fail_total = 0
     llm_error_by_type: Counter[str] = Counter()
+    llm_prompt_version_total: Counter[str] = Counter()
+    llm_schema_version_total: Counter[str] = Counter()
     llm_latency_ms_values: List[float] = []
     llm_attempt_values: List[float] = []
 
@@ -270,6 +274,9 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             else:
                 llm_fail_total += 1
                 llm_error_by_type[str(payload.get("error_type") or "unknown")] += 1
+
+            llm_prompt_version_total[str(payload.get("prompt_version") or "unknown")] += 1
+            llm_schema_version_total[str(payload.get("schema_version") or "unknown")] += 1
 
             latency_ms = payload.get("latency_ms")
             try:
@@ -309,6 +316,8 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             "latency_ms": llm_latency_ms,
             "attempts": llm_attempts,
             "error_type_total": dict(llm_error_by_type),
+            "prompt_version_total": dict(llm_prompt_version_total),
+            "schema_version_total": dict(llm_schema_version_total),
         },
         "api_error_total_by_api_id": dict(api_errors_by_id),
     }
@@ -352,6 +361,20 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     if llm_error_by_type:
         for et, cnt in llm_error_by_type.most_common():
             md_lines.append(f"- {et}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### Prompt Versions", ""]
+    if llm_prompt_version_total:
+        for v, cnt in llm_prompt_version_total.most_common():
+            md_lines.append(f"- {v}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### Schema Versions", ""]
+    if llm_schema_version_total:
+        for v, cnt in llm_schema_version_total.most_common():
+            md_lines.append(f"- {v}: {cnt}")
     else:
         md_lines.append("- (none)")
 

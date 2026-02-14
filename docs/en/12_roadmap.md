@@ -36,3 +36,6 @@
 - M20-5:
   - include strategist LLM reliability metrics in daily metrics report
   - add success-rate/latency/attempts/error-type aggregates for operator dashboards
+- M20-6:
+  - attach `prompt_version` / `schema_version` to strategist LLM telemetry
+  - add version distribution metrics (`prompt_version_total`, `schema_version_total`)

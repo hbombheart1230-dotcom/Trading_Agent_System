@@ -25,6 +25,8 @@ payload should include:
 - strategist_llm.latency_ms
 - strategist_llm.attempts
 - strategist_llm.error_type_total
+- strategist_llm.prompt_version_total
+- strategist_llm.schema_version_total
 
 ## 8.4 Audit
 - tag real executions explicitly

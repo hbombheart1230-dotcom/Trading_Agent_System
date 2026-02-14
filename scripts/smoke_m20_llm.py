@@ -122,6 +122,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "attempts": pld.get("attempts"),
                 "intent_action": pld.get("intent_action"),
                 "intent_reason": pld.get("intent_reason"),
+                "prompt_version": pld.get("prompt_version"),
+                "schema_version": pld.get("schema_version"),
                 "error_type": pld.get("error_type"),
             }
             print("llm_event=", json.dumps(llm_summary, ensure_ascii=False))

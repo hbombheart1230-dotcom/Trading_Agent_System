@@ -92,6 +92,8 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
                             "latency_ms": 120,
                             "attempts": 1,
                             "intent_action": "BUY",
+                            "prompt_version": "pv-1",
+                            "schema_version": "intent.v1",
                         },
                     }
                 ),
@@ -107,6 +109,8 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
                             "attempts": 2,
                             "intent_action": "NOOP",
                             "error_type": "TimeoutError",
+                            "prompt_version": "pv-1",
+                            "schema_version": "intent.v1",
                         },
                     }
                 ),
@@ -146,6 +150,10 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
     assert data["strategist_llm"]["attempts"]["count"] == 2.0
     assert data["strategist_llm"]["error_type_total"]["TimeoutError"] == 1
     assert data["strategist_llm"]["error_type_total"]["unknown"] == 1
+    assert data["strategist_llm"]["prompt_version_total"]["pv-1"] == 2
+    assert data["strategist_llm"]["prompt_version_total"]["unknown"] == 1
+    assert data["strategist_llm"]["schema_version_total"]["intent.v1"] == 2
+    assert data["strategist_llm"]["schema_version_total"]["unknown"] == 1
 
 
 def test_generate_metrics_report_supports_iso_ts_and_latest_day(tmp_path: Path):
@@ -199,3 +207,5 @@ def test_generate_metrics_report_empty_has_llm_summary_keys(tmp_path: Path):
     assert data["strategist_llm"]["ok_total"] == 0
     assert data["strategist_llm"]["fail_total"] == 0
     assert data["strategist_llm"]["success_rate"] == 0.0
+    assert data["strategist_llm"]["prompt_version_total"] == {}
+    assert data["strategist_llm"]["schema_version_total"] == {}
