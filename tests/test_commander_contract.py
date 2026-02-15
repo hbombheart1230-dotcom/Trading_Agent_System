@@ -25,6 +25,25 @@ class DummyExecutor:
         }
 
 
+class _NoopLogger:
+    def log(
+        self,
+        *,
+        run_id: str,
+        stage: str,
+        event: str,
+        payload: Dict[str, Any],
+        ts: str | None = None,
+    ) -> Dict[str, Any]:
+        return {
+            "run_id": run_id,
+            "stage": stage,
+            "event": event,
+            "payload": payload,
+            "ts": ts,
+        }
+
+
 def _make_commander() -> Commander:
     return Commander(
         strategist=Strategist(),
@@ -64,3 +83,35 @@ def test_commander_run_executes_first_intent_from_scanner_list():
     assert isinstance(out.execution, dict)
     assert out.execution.get("decision", {}).get("status") == "approved"
     assert out.report.get("executions_count") == 1
+
+
+def test_commander_run_canonical_bridge_uses_graph_mode():
+    c = _make_commander()
+    called = {"graph": 0}
+
+    def graph_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["graph"] += 1
+        state["path"] = "graph_spine"
+        return state
+
+    out = c.run_canonical(state={"event_logger": _NoopLogger()}, mode="graph_spine", graph_runner=graph_runner)
+    assert out["path"] == "graph_spine"
+    assert called["graph"] == 1
+
+
+def test_commander_run_canonical_bridge_honors_pause_transition():
+    c = _make_commander()
+    called = {"graph": 0}
+
+    def graph_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["graph"] += 1
+        return state
+
+    out = c.run_canonical(
+        state={"runtime_control": "pause", "event_logger": _NoopLogger()},
+        mode="graph_spine",
+        graph_runner=graph_runner,
+    )
+
+    assert out["runtime_status"] == "paused"
+    assert called["graph"] == 0

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 import uuid
 
 from libs.agent.strategist import Strategist
@@ -9,6 +9,9 @@ from libs.agent.scanner import Scanner
 from libs.agent.monitor import Monitor
 from libs.agent.reporter import Reporter
 from libs.agent.executor import AgentExecutor
+
+if TYPE_CHECKING:
+    from graphs.commander_runtime import RuntimeMode
 
 
 @dataclass
@@ -131,3 +134,28 @@ class Commander:
         # Keep CommandResult contracts as dict-shaped payloads.
         plan = plan_obj if isinstance(plan_obj, dict) else dict(getattr(plan_obj, "__dict__", {}))
         return CommandResult(plan=plan, scan=scan, intent=intent, execution=execution, report=report)
+
+    def run_canonical(
+        self,
+        *,
+        state: Optional[Dict[str, Any]] = None,
+        mode: Optional["RuntimeMode"] = None,
+        graph_runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        decide: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        execute: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Bridge to canonical commander runtime for migration.
+
+        This method keeps legacy Commander instantiation usable while allowing
+        callers to route execution through the M21 canonical runtime entry.
+        """
+        from graphs.commander_runtime import run_commander_runtime
+
+        runtime_state = dict(state or {})
+        return run_commander_runtime(
+            runtime_state,
+            mode=mode,
+            graph_runner=graph_runner,
+            decide=decide,
+            execute=execute,
+        )
