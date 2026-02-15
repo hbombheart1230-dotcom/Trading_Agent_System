@@ -68,5 +68,8 @@ M21 implementation status (2026-02-15):
 - M21-9: legacy `Commander` bridge to canonical runtime (`run_canonical`)
 - M21-10: documentation sync and closeout
 
+M22 implementation status (2026-02-15, in progress):
+- M22-1: skill-native Scanner/Monitor baseline (`market.quote`, `account.orders`, `order.status`) + offline demo
+
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

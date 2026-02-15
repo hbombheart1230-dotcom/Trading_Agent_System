@@ -1,10 +1,97 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return lo if x < lo else hi if x > hi else x
+
+
+def _norm_symbol(v: Any) -> str:
+    s = str(v or "").strip()
+    if s.startswith("A") and len(s) > 1 and s[1:].isdigit():
+        return s[1:]
+    return s
+
+
+def _get_skill_root(state: Dict[str, Any]) -> Dict[str, Any]:
+    for k in ("skill_results", "skill_data", "skills"):
+        v = state.get(k)
+        if isinstance(v, dict):
+            return v
+    return {}
+
+
+def _extract_skill_quotes(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    root = _get_skill_root(state)
+    raw = root.get("market.quote")
+    if raw is None:
+        raw = root.get("market_quote")
+    if raw is None:
+        raw = state.get("market_quote")
+
+    out: Dict[str, Dict[str, Any]] = {}
+
+    def _save(sym: Any, rec: Dict[str, Any]) -> None:
+        key = _norm_symbol(sym)
+        if not key:
+            return
+        row = dict(rec)
+        if row.get("price") is None and row.get("cur") is not None:
+            row["price"] = row.get("cur")
+        out[key] = row
+
+    if isinstance(raw, dict):
+        # single DTO shape
+        if raw.get("symbol") is not None and any(k in raw for k in ("cur", "price", "best_bid", "best_ask")):
+            _save(raw.get("symbol"), raw)
+        else:
+            # map-by-symbol shape
+            for k, v in raw.items():
+                if not isinstance(v, dict):
+                    continue
+                if not any(x in v for x in ("cur", "price", "best_bid", "best_ask")):
+                    continue
+                _save(v.get("symbol") or k, v)
+    elif isinstance(raw, list):
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            if row.get("symbol") is None:
+                continue
+            _save(row.get("symbol"), row)
+
+    return out
+
+
+def _extract_account_open_order_counts(state: Dict[str, Any]) -> Tuple[Dict[str, int], int]:
+    root = _get_skill_root(state)
+    raw = root.get("account.orders")
+    if raw is None:
+        raw = root.get("account_orders")
+    if raw is None:
+        raw = state.get("account_orders")
+
+    rows: List[Any] = []
+    if isinstance(raw, dict):
+        if isinstance(raw.get("rows"), list):
+            rows = raw.get("rows") or []
+        elif isinstance(raw.get("acnt_ord_cntr_prps_dtl"), list):
+            rows = raw.get("acnt_ord_cntr_prps_dtl") or []
+        elif isinstance(raw.get("items"), list):
+            rows = raw.get("items") or []
+    elif isinstance(raw, list):
+        rows = raw
+
+    out: Dict[str, int] = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        symbol = _norm_symbol(r.get("symbol") or r.get("stk_cd") or r.get("code"))
+        if not symbol:
+            continue
+        out[symbol] = int(out.get(symbol, 0)) + 1
+    return out, len(rows)
 
 
 def _get_global_sentiment_score(state: Dict[str, Any]) -> float:
@@ -121,6 +208,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     w = _get_scanner_weights(policy)
     gs = _get_global_sentiment_score(state)
     news_by_sym = _get_news_sentiment_map(state)
+    skill_quotes = _extract_skill_quotes(state)
+    skill_order_counts, skill_order_rows = _extract_account_open_order_counts(state)
 
     scan_results: List[Dict[str, Any]] = []
 
@@ -158,21 +247,40 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         base_conf = float(row.get("confidence") or 0.0)
 
         news_s = float(news_by_sym.get(symbol, 0.0))
+        quote = skill_quotes.get(_norm_symbol(symbol), {})
+        quote_price = quote.get("price")
+        if quote_price is None:
+            quote_price = quote.get("cur")
+        try:
+            quote_price_num = float(quote_price) if quote_price is not None else None
+        except Exception:
+            quote_price_num = None
+        open_orders = int(skill_order_counts.get(_norm_symbol(symbol), 0))
+        order_penalty = min(open_orders, 3)
+        quote_bonus = 0.02 if (quote_price_num is not None and quote_price_num > 0) else 0.0
 
         # Score boost: positive news & risk-on regime lift score.
-        adj_score = base_score + w["weight_news"] * news_s + w["weight_global"] * gs
+        adj_score = base_score + w["weight_news"] * news_s + w["weight_global"] * gs + quote_bonus - 0.05 * order_penalty
 
         # Risk penalty: negative news and risk-off (global<0) increase risk.
         neg_news = max(-news_s, 0.0)
         neg_global = max(-gs, 0.0)
-        adj_risk = base_risk + w["risk_news_penalty"] * neg_news + w["risk_global_penalty"] * neg_global
+        adj_risk = base_risk + w["risk_news_penalty"] * neg_news + w["risk_global_penalty"] * neg_global + 0.10 * order_penalty
 
         # Confidence: small boost from positive news (kept tiny by default).
-        adj_conf = _clamp(base_conf + w["confidence_news_boost"] * max(news_s, 0.0), 0.0, 1.0)
+        adj_conf = _clamp(base_conf + w["confidence_news_boost"] * max(news_s, 0.0) - 0.05 * order_penalty, 0.0, 1.0)
 
         row["score"] = float(adj_score)
         row["risk_score"] = float(_clamp(adj_risk, 0.0, 1.0))
         row["confidence"] = float(adj_conf)
+        row.setdefault("features", {})
+        if isinstance(row.get("features"), dict):
+            row["features"].update(
+                {
+                    "skill_quote_price": quote_price_num,
+                    "skill_open_orders": open_orders,
+                }
+            )
         row.setdefault("components", {})
         if isinstance(row.get("components"), dict):
             row["components"].update(
@@ -186,6 +294,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "weight_global": w["weight_global"],
                     "risk_news_penalty": w["risk_news_penalty"],
                     "risk_global_penalty": w["risk_global_penalty"],
+                    "skill_quote_bonus": quote_bonus,
+                    "skill_open_orders": open_orders,
                 }
             )
 
@@ -214,5 +324,11 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         }
     else:
         state["risk"] = {"risk_score": 0.0, "confidence": 0.0}
+    state["scanner_skill"] = {
+        "used": bool(skill_quotes) or bool(skill_order_counts),
+        "quote_symbols": len(skill_quotes),
+        "account_open_order_symbols": len(skill_order_counts),
+        "account_order_rows": int(skill_order_rows),
+    }
 
     return state

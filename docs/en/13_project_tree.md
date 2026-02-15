@@ -80,6 +80,11 @@ Trading_Agent_System/
 - `docs/plan/m21_8_graph_spine_parity_tests.md`
 - `docs/plan/m21_9_commander_bridge_to_canonical_runtime.md`
 
+## M22-Related Documents
+
+- `docs/plan/m22_1_skill_native_scanner_monitor_baseline.md`
+- `scripts/demo_m22_skill_flow.py`
+
 ## Note
 
 - This document intentionally stays high-level.
