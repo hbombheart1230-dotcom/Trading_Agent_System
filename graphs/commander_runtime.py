@@ -13,6 +13,7 @@ Modes:
 Default mode is graph_spine for backward compatibility.
 """
 
+import os
 from typing import Any, Callable, Dict, Literal, Optional
 
 from graphs.trading_graph import run_trading_graph
@@ -21,6 +22,30 @@ from graphs.nodes.execute_from_packet import execute_from_packet
 
 
 RuntimeMode = Literal["graph_spine", "decision_packet"]
+
+
+def _normalize_mode(value: Any) -> RuntimeMode:
+    v = str(value or "").strip().lower()
+    if v == "decision_packet":
+        return "decision_packet"
+    return "graph_spine"
+
+
+def resolve_runtime_mode(state: Dict[str, Any], *, mode: Optional[RuntimeMode] = None) -> RuntimeMode:
+    """Resolve runtime mode with explicit precedence.
+
+    Priority:
+      1) explicit argument `mode`
+      2) `state["runtime_mode"]`
+      3) env `COMMANDER_RUNTIME_MODE`
+      4) default `graph_spine`
+    """
+    if mode is not None:
+        return _normalize_mode(mode)
+    if "runtime_mode" in state:
+        return _normalize_mode(state.get("runtime_mode"))
+    env_mode = os.getenv("COMMANDER_RUNTIME_MODE", "")
+    return _normalize_mode(env_mode or "graph_spine")
 
 
 def run_commander_runtime(
@@ -33,14 +58,9 @@ def run_commander_runtime(
 ) -> Dict[str, Any]:
     """Run one canonical commander runtime step.
 
-    Priority for mode selection:
-      1) explicit `mode` argument
-      2) state["runtime_mode"] when valid
-      3) default "graph_spine"
+    Mode selection uses `resolve_runtime_mode(...)`.
     """
-    selected = str(mode or state.get("runtime_mode") or "graph_spine").strip().lower()
-    if selected not in ("graph_spine", "decision_packet"):
-        selected = "graph_spine"
+    selected = resolve_runtime_mode(state, mode=mode)
 
     graph_runner = graph_runner or run_trading_graph
     decide = decide or decide_trade
@@ -52,4 +72,3 @@ def run_commander_runtime(
         return state
 
     return graph_runner(state)
-
