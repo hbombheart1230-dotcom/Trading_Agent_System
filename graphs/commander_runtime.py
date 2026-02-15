@@ -24,6 +24,10 @@ from graphs.nodes.execute_from_packet import execute_from_packet
 RuntimeMode = Literal["graph_spine", "decision_packet"]
 
 
+def _is_trueish(v: Any) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 def _normalize_mode(value: Any) -> RuntimeMode:
     v = str(value or "").strip().lower()
     if v == "decision_packet":
@@ -39,13 +43,30 @@ def resolve_runtime_mode(state: Dict[str, Any], *, mode: Optional[RuntimeMode] =
       2) `state["runtime_mode"]`
       3) env `COMMANDER_RUNTIME_MODE`
       4) default `graph_spine`
+
+    Safety guard:
+      - decision_packet via state/env requires activation:
+        state["allow_decision_packet_runtime"]=true OR
+        env COMMANDER_RUNTIME_ALLOW_DECISION_PACKET=true
+      - explicit `mode` bypasses this guard (caller-controlled override).
     """
     if mode is not None:
         return _normalize_mode(mode)
+
+    allow_decision_packet = _is_trueish(state.get("allow_decision_packet_runtime")) or _is_trueish(
+        os.getenv("COMMANDER_RUNTIME_ALLOW_DECISION_PACKET", "")
+    )
+
     if "runtime_mode" in state:
-        return _normalize_mode(state.get("runtime_mode"))
+        selected = _normalize_mode(state.get("runtime_mode"))
+        if selected == "decision_packet" and not allow_decision_packet:
+            return "graph_spine"
+        return selected
     env_mode = os.getenv("COMMANDER_RUNTIME_MODE", "")
-    return _normalize_mode(env_mode or "graph_spine")
+    selected = _normalize_mode(env_mode or "graph_spine")
+    if selected == "decision_packet" and not allow_decision_packet:
+        return "graph_spine"
+    return selected
 
 
 def run_commander_runtime(
