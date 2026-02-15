@@ -15,6 +15,8 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_SCHEMA_VERSION", "intent.v1-test")
     monkeypatch.setenv("AI_STRATEGIST_PROMPT_COST_PER_1K_USD", "0.003")
     monkeypatch.setenv("AI_STRATEGIST_COMPLETION_COST_PER_1K_USD", "0.015")
+    monkeypatch.setenv("AI_STRATEGIST_CB_FAIL_THRESHOLD", "4")
+    monkeypatch.setenv("AI_STRATEGIST_CB_COOLDOWN_SEC", "90")
 
     s = prov.OpenAIStrategist.from_env()
     assert s.api_key == "k"
@@ -28,6 +30,8 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     assert s.schema_version == "intent.v1-test"
     assert abs(float(s.prompt_cost_per_1k_usd) - 0.003) < 1e-12
     assert abs(float(s.completion_cost_per_1k_usd) - 0.015) < 1e-12
+    assert s.cb_fail_threshold == 4
+    assert abs(float(s.cb_cooldown_sec) - 90.0) < 1e-9
 
 
 def test_m20_1_decide_posts_payload_and_parses_response(monkeypatch):
@@ -367,3 +371,90 @@ def test_m20_1_openrouter_chat_content_without_json_is_safe_noop(monkeypatch):
     assert d.intent["action"] == "NOOP"
     assert d.intent["reason"] == "strategist_error"
     assert "json" in d.rationale.lower()
+
+
+def test_m20_1_circuit_breaker_opens_and_blocks_following_call(monkeypatch):
+    calls = {"n": 0}
+    now = {"t": 1000.0}
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        raise TimeoutError("cb-timeout")
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+    monkeypatch.setattr(prov.time, "time", lambda: now["t"])
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://example.invalid/strategist-cb-open",
+        retry_max=0,
+        cb_fail_threshold=2,
+        cb_cooldown_sec=60,
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d1 = s.decide(x)
+    d2 = s.decide(x)
+    d3 = s.decide(x)
+
+    assert d1.intent["reason"] == "strategist_error"
+    assert d2.intent["reason"] == "strategist_error"
+    assert d3.intent["reason"] == "circuit_open"
+    assert d3.meta["error_type"] == "CircuitOpen"
+    assert d3.meta["circuit_state"] == "open"
+    assert int(d3.meta["circuit_fail_count"]) >= 2
+    assert int(d3.meta["circuit_open_until_epoch"]) > int(now["t"])
+    assert calls["n"] == 2
+
+
+def test_m20_1_circuit_breaker_recovers_after_cooldown(monkeypatch):
+    calls = {"n": 0}
+    now = {"t": 2000.0}
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("cb-timeout")
+        return {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            }
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+    monkeypatch.setattr(prov.time, "time", lambda: now["t"])
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://example.invalid/strategist-cb-recover",
+        retry_max=0,
+        cb_fail_threshold=1,
+        cb_cooldown_sec=10,
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d1 = s.decide(x)
+    d2 = s.decide(x)
+    assert d1.intent["reason"] == "strategist_error"
+    assert d2.intent["reason"] == "circuit_open"
+    assert calls["n"] == 1
+
+    now["t"] = now["t"] + 11.0
+    d3 = s.decide(x)
+    assert d3.intent["action"] == "BUY"
+    assert calls["n"] == 2

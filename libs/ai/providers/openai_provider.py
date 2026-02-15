@@ -8,6 +8,8 @@ from typing import Any, Dict, Optional, Tuple
 
 DEFAULT_PROMPT_VERSION = "m20-6"
 DEFAULT_SCHEMA_VERSION = "intent.v1"
+DEFAULT_CB_FAIL_THRESHOLD = 0
+DEFAULT_CB_COOLDOWN_SEC = 60.0
 
 # NOTE: tests monkeypatch this symbol
 def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any], timeout: float = 15.0) -> Dict[str, Any]:
@@ -149,6 +151,8 @@ class OpenAIStrategist:
       - AI_STRATEGIST_TIMEOUT_SEC (optional)
     """
 
+    _CB_STATE: Dict[str, Dict[str, float]] = {}
+
     def __init__(
         self,
         *,
@@ -163,6 +167,8 @@ class OpenAIStrategist:
         schema_version: str = DEFAULT_SCHEMA_VERSION,
         prompt_cost_per_1k_usd: float = 0.0,
         completion_cost_per_1k_usd: float = 0.0,
+        cb_fail_threshold: int = DEFAULT_CB_FAIL_THRESHOLD,
+        cb_cooldown_sec: float = DEFAULT_CB_COOLDOWN_SEC,
     ):
         self.api_key = api_key
         self.endpoint = endpoint
@@ -175,6 +181,8 @@ class OpenAIStrategist:
         self.schema_version = str(schema_version or "").strip() or DEFAULT_SCHEMA_VERSION
         self.prompt_cost_per_1k_usd = max(0.0, float(prompt_cost_per_1k_usd))
         self.completion_cost_per_1k_usd = max(0.0, float(completion_cost_per_1k_usd))
+        self.cb_fail_threshold = max(0, int(cb_fail_threshold))
+        self.cb_cooldown_sec = max(0.0, float(cb_cooldown_sec))
 
     def _effective_model(self) -> str:
         model = str(self.model or "").strip()
@@ -230,8 +238,12 @@ class OpenAIStrategist:
         schema_version = (os.getenv("AI_STRATEGIST_SCHEMA_VERSION") or "").strip() or DEFAULT_SCHEMA_VERSION
         raw_prompt_cost = (os.getenv("AI_STRATEGIST_PROMPT_COST_PER_1K_USD") or "0").strip()
         raw_completion_cost = (os.getenv("AI_STRATEGIST_COMPLETION_COST_PER_1K_USD") or "0").strip()
+        raw_cb_fail_threshold = (os.getenv("AI_STRATEGIST_CB_FAIL_THRESHOLD") or str(DEFAULT_CB_FAIL_THRESHOLD)).strip()
+        raw_cb_cooldown_sec = (os.getenv("AI_STRATEGIST_CB_COOLDOWN_SEC") or str(DEFAULT_CB_COOLDOWN_SEC)).strip()
         prompt_cost_per_1k_usd = 0.0
         completion_cost_per_1k_usd = 0.0
+        cb_fail_threshold = DEFAULT_CB_FAIL_THRESHOLD
+        cb_cooldown_sec = DEFAULT_CB_COOLDOWN_SEC
         try:
             prompt_cost_per_1k_usd = max(0.0, float(raw_prompt_cost))
         except Exception:
@@ -240,6 +252,14 @@ class OpenAIStrategist:
             completion_cost_per_1k_usd = max(0.0, float(raw_completion_cost))
         except Exception:
             completion_cost_per_1k_usd = 0.0
+        try:
+            cb_fail_threshold = max(0, int(raw_cb_fail_threshold))
+        except Exception:
+            cb_fail_threshold = DEFAULT_CB_FAIL_THRESHOLD
+        try:
+            cb_cooldown_sec = max(0.0, float(raw_cb_cooldown_sec))
+        except Exception:
+            cb_cooldown_sec = DEFAULT_CB_COOLDOWN_SEC
 
         return cls(
             api_key=api_key,
@@ -253,7 +273,57 @@ class OpenAIStrategist:
             schema_version=schema_version,
             prompt_cost_per_1k_usd=prompt_cost_per_1k_usd,
             completion_cost_per_1k_usd=completion_cost_per_1k_usd,
+            cb_fail_threshold=cb_fail_threshold,
+            cb_cooldown_sec=cb_cooldown_sec,
         )
+
+    def _cb_enabled(self) -> bool:
+        return self.cb_fail_threshold > 0 and self.cb_cooldown_sec > 0.0
+
+    def _cb_key(self, model: str) -> str:
+        return f"{self.endpoint}|{model}"
+
+    @classmethod
+    def _cb_state_for_key(cls, key: str) -> Dict[str, float]:
+        st = cls._CB_STATE.get(key)
+        if st is None:
+            st = {"fail_count": 0.0, "open_until_epoch": 0.0}
+            cls._CB_STATE[key] = st
+        return st
+
+    def _cb_maybe_reset_after_cooldown(self, key: str, now_epoch: float) -> Dict[str, float]:
+        st = self._cb_state_for_key(key)
+        open_until = float(st.get("open_until_epoch") or 0.0)
+        if open_until > 0.0 and open_until <= now_epoch:
+            st["fail_count"] = 0.0
+            st["open_until_epoch"] = 0.0
+        return st
+
+    def _cb_is_open(self, key: str, now_epoch: float) -> bool:
+        if not self._cb_enabled():
+            return False
+        st = self._cb_maybe_reset_after_cooldown(key, now_epoch)
+        return float(st.get("open_until_epoch") or 0.0) > now_epoch
+
+    def _cb_on_success(self, key: str) -> None:
+        if not self._cb_enabled():
+            return
+        st = self._cb_state_for_key(key)
+        st["fail_count"] = 0.0
+        st["open_until_epoch"] = 0.0
+
+    def _cb_on_failure(self, key: str, now_epoch: float) -> Dict[str, float]:
+        if not self._cb_enabled():
+            return {"fail_count": 0.0, "open_until_epoch": 0.0}
+        st = self._cb_maybe_reset_after_cooldown(key, now_epoch)
+        fail_count = float(st.get("fail_count") or 0.0) + 1.0
+        st["fail_count"] = fail_count
+        if fail_count >= float(self.cb_fail_threshold):
+            st["open_until_epoch"] = max(
+                float(st.get("open_until_epoch") or 0.0),
+                float(now_epoch) + float(self.cb_cooldown_sec),
+            )
+        return st
 
     def _estimate_cost_usd(
         self,
@@ -333,6 +403,8 @@ class OpenAIStrategist:
     def decide(self, x: StrategyInput) -> StrategyDecision:
         """Never raise. On any error, returns NOOP with error reason."""
         attempts = 0
+        model = self._effective_model()
+        cb_key = self._cb_key(model)
         try:
             if not self.api_key or not self.endpoint:
                 return StrategyDecision(
@@ -344,12 +416,29 @@ class OpenAIStrategist:
                         "attempts": 0,
                     },
                 )
+            now_epoch = float(time.time())
+            if self._cb_is_open(cb_key, now_epoch):
+                st = self._cb_state_for_key(cb_key)
+                open_until = int(float(st.get("open_until_epoch") or 0.0))
+                return StrategyDecision(
+                    intent={"action": "NOOP", "reason": "circuit_open"},
+                    rationale="Strategist circuit breaker is open",
+                    meta={
+                        "error": "circuit_open",
+                        "error_type": "CircuitOpen",
+                        "attempts": 0,
+                        "prompt_version": self.prompt_version,
+                        "schema_version": self.schema_version,
+                        "circuit_state": "open",
+                        "circuit_fail_count": int(float(st.get("fail_count") or 0.0)),
+                        "circuit_open_until_epoch": open_until,
+                    },
+                )
 
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}",
             }
-            model = self._effective_model()
 
             if _looks_like_chat_completions_endpoint(self.endpoint):
                 system_prompt = (
@@ -453,8 +542,13 @@ class OpenAIStrategist:
             if estimated_cost_usd is not None:
                 meta.setdefault("estimated_cost_usd", float(estimated_cost_usd))
             meta["attempts"] = int(attempts or 1)
+            self._cb_on_success(cb_key)
             return StrategyDecision(intent=intent, rationale=rationale, meta=meta)
         except Exception as e:
+            now_epoch = float(time.time())
+            st = self._cb_on_failure(cb_key, now_epoch)
+            open_until_epoch = float(st.get("open_until_epoch") or 0.0)
+            circuit_state = "open" if open_until_epoch > now_epoch else "closed"
             return StrategyDecision(
                 intent={"action": "NOOP", "reason": "strategist_error"},
                 rationale=str(e),
@@ -464,5 +558,8 @@ class OpenAIStrategist:
                     "attempts": int(attempts or 1),
                     "prompt_version": self.prompt_version,
                     "schema_version": self.schema_version,
+                    "circuit_state": circuit_state,
+                    "circuit_fail_count": int(float(st.get("fail_count") or 0.0)),
+                    "circuit_open_until_epoch": int(open_until_epoch) if open_until_epoch > 0.0 else 0,
                 },
             )
