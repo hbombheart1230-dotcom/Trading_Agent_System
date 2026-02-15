@@ -77,6 +77,20 @@ def _apply_runtime_transition(state: Dict[str, Any]) -> Tuple[bool, Dict[str, An
     return True, state
 
 
+def _runtime_agent_chain(mode: RuntimeMode) -> Tuple[str, ...]:
+    if mode == "decision_packet":
+        return ("commander_router", "strategist", "supervisor", "executor", "reporter")
+    return ("commander_router", "strategist", "scanner", "monitor", "supervisor", "executor", "reporter")
+
+
+def _annotate_runtime_plan(state: Dict[str, Any], selected: RuntimeMode) -> Dict[str, Any]:
+    state["runtime_plan"] = {
+        "mode": selected,
+        "agents": list(_runtime_agent_chain(selected)),
+    }
+    return state
+
+
 def resolve_runtime_mode(state: Dict[str, Any], *, mode: Optional[RuntimeMode] = None) -> RuntimeMode:
     """Resolve runtime mode with explicit precedence.
 
@@ -123,11 +137,12 @@ def run_commander_runtime(
 
     Mode selection uses `resolve_runtime_mode(...)`.
     """
+    selected = resolve_runtime_mode(state, mode=mode)
+    state = _annotate_runtime_plan(state, selected)
+
     should_run, state = _apply_runtime_transition(state)
     if not should_run:
         return state
-
-    selected = resolve_runtime_mode(state, mode=mode)
 
     graph_runner = graph_runner or run_trading_graph
     decide = decide or decide_trade

@@ -29,6 +29,16 @@ def test_m21_runtime_entry_defaults_to_graph_spine():
     )
 
     assert out["path"] == "graph_spine"
+    assert out["runtime_plan"]["mode"] == "graph_spine"
+    assert out["runtime_plan"]["agents"] == [
+        "commander_router",
+        "strategist",
+        "scanner",
+        "monitor",
+        "supervisor",
+        "executor",
+        "reporter",
+    ]
     assert called == {"graph": 1, "decide": 0, "execute": 0}
 
 
@@ -59,6 +69,14 @@ def test_m21_runtime_entry_runs_decision_packet_mode():
 
     assert out["path"] == "decision_packet"
     assert out["execution"]["allowed"] is True
+    assert out["runtime_plan"]["mode"] == "decision_packet"
+    assert out["runtime_plan"]["agents"] == [
+        "commander_router",
+        "strategist",
+        "supervisor",
+        "executor",
+        "reporter",
+    ]
     assert called == {"graph": 0, "decide": 1, "execute": 1}
 
 
@@ -162,6 +180,7 @@ def test_m21_runtime_transition_pause_short_circuits_run():
 
     assert out["runtime_status"] == "paused"
     assert out["runtime_transition"] == "pause"
+    assert out["runtime_plan"]["mode"] == "graph_spine"
     assert called["graph"] == 0
 
 
