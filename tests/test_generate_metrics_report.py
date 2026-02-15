@@ -128,7 +128,14 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
                         "run_id": "r7",
                         "stage": "strategist_llm",
                         "event": "result",
-                        "payload": {"ok": False, "intent_action": "NOOP"},
+                        "payload": {
+                            "ok": False,
+                            "intent_action": "NOOP",
+                            "error_type": "CircuitOpen",
+                            "intent_reason": "circuit_open",
+                            "circuit_state": "open",
+                            "circuit_fail_count": 2,
+                        },
                     }
                 ),
             ]
@@ -153,11 +160,14 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
     assert data["strategist_llm"]["ok_total"] == 1
     assert data["strategist_llm"]["fail_total"] == 2
     assert abs(float(data["strategist_llm"]["success_rate"]) - (1.0 / 3.0)) < 1e-9
+    assert data["strategist_llm"]["circuit_open_total"] == 1
+    assert abs(float(data["strategist_llm"]["circuit_open_rate"]) - (1.0 / 3.0)) < 1e-9
+    assert data["strategist_llm"]["circuit_state_total"]["open"] == 1
     assert data["strategist_llm"]["latency_ms"]["count"] == 2.0
     assert abs(float(data["strategist_llm"]["latency_ms"]["avg"]) - 235.0) < 1e-9
     assert data["strategist_llm"]["attempts"]["count"] == 2.0
     assert data["strategist_llm"]["error_type_total"]["TimeoutError"] == 1
-    assert data["strategist_llm"]["error_type_total"]["unknown"] == 1
+    assert data["strategist_llm"]["error_type_total"]["CircuitOpen"] == 1
     assert data["strategist_llm"]["prompt_version_total"]["pv-1"] == 2
     assert data["strategist_llm"]["prompt_version_total"]["unknown"] == 1
     assert data["strategist_llm"]["schema_version_total"]["intent.v1"] == 2
@@ -219,6 +229,9 @@ def test_generate_metrics_report_empty_has_llm_summary_keys(tmp_path: Path):
     assert data["strategist_llm"]["ok_total"] == 0
     assert data["strategist_llm"]["fail_total"] == 0
     assert data["strategist_llm"]["success_rate"] == 0.0
+    assert data["strategist_llm"]["circuit_open_total"] == 0
+    assert data["strategist_llm"]["circuit_open_rate"] == 0.0
+    assert data["strategist_llm"]["circuit_state_total"] == {}
     assert data["strategist_llm"]["prompt_version_total"] == {}
     assert data["strategist_llm"]["schema_version_total"] == {}
     assert data["strategist_llm"]["token_usage"]["prompt_tokens_total"] == 0

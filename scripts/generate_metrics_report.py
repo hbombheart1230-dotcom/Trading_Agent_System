@@ -213,6 +213,9 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 "ok_total": 0,
                 "fail_total": 0,
                 "success_rate": 0.0,
+                "circuit_open_total": 0,
+                "circuit_open_rate": 0.0,
+                "circuit_state_total": {},
                 "latency_ms": {"count": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0},
                 "attempts": {"count": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0},
                 "error_type_total": {},
@@ -247,6 +250,8 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     llm_error_by_type: Counter[str] = Counter()
     llm_prompt_version_total: Counter[str] = Counter()
     llm_schema_version_total: Counter[str] = Counter()
+    llm_circuit_state_total: Counter[str] = Counter()
+    llm_circuit_open_total = 0
     llm_latency_ms_values: List[float] = []
     llm_attempt_values: List[float] = []
     llm_prompt_tokens_total = 0
@@ -284,6 +289,12 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             else:
                 llm_fail_total += 1
                 llm_error_by_type[str(payload.get("error_type") or "unknown")] += 1
+
+            c_state = str(payload.get("circuit_state") or "").strip().lower()
+            if c_state:
+                llm_circuit_state_total[c_state] += 1
+            if c_state == "open" or str(payload.get("error_type") or "") == "CircuitOpen":
+                llm_circuit_open_total += 1
 
             llm_prompt_version_total[str(payload.get("prompt_version") or "unknown")] += 1
             llm_schema_version_total[str(payload.get("schema_version") or "unknown")] += 1
@@ -340,6 +351,7 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     llm_latency_ms = _numeric_summary(llm_latency_ms_values)
     llm_attempts = _numeric_summary(llm_attempt_values)
     llm_success_rate = (float(llm_ok_total) / float(llm_total)) if llm_total > 0 else 0.0
+    llm_circuit_open_rate = (float(llm_circuit_open_total) / float(llm_total)) if llm_total > 0 else 0.0
 
     summary = {
         "day": day,
@@ -355,6 +367,9 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             "ok_total": llm_ok_total,
             "fail_total": llm_fail_total,
             "success_rate": llm_success_rate,
+            "circuit_open_total": int(llm_circuit_open_total),
+            "circuit_open_rate": float(llm_circuit_open_rate),
+            "circuit_state_total": dict(llm_circuit_state_total),
             "latency_ms": llm_latency_ms,
             "attempts": llm_attempts,
             "error_type_total": dict(llm_error_by_type),
@@ -385,6 +400,20 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         f"- ok_total: **{llm_ok_total}**",
         f"- fail_total: **{llm_fail_total}**",
         f"- success_rate: **{llm_success_rate:.2%}**",
+        f"- circuit_open_total: **{int(llm_circuit_open_total)}**",
+        f"- circuit_open_rate: **{llm_circuit_open_rate:.2%}**",
+        "",
+        "### Circuit Breaker",
+        "",
+    ]
+
+    if llm_circuit_state_total:
+        for st_name, cnt in llm_circuit_state_total.most_common():
+            md_lines.append(f"- state[{st_name}]: {cnt}")
+    else:
+        md_lines.append("- state[(none)]: 0")
+
+    md_lines += [
         "",
         "### Latency (ms)",
         "",
