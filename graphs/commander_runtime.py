@@ -14,6 +14,7 @@ Default mode is graph_spine for backward compatibility.
 """
 
 import os
+from pathlib import Path
 from typing import Any, Callable, Dict, Literal, Optional, Tuple
 
 from graphs.trading_graph import run_trading_graph
@@ -91,6 +92,42 @@ def _annotate_runtime_plan(state: Dict[str, Any], selected: RuntimeMode) -> Dict
     return state
 
 
+def _import_event_logger():
+    for mod in ("libs.event_logger", "libs.logging.event_logger", "libs.core.event_logger"):
+        try:
+            m = __import__(mod, fromlist=["EventLogger", "new_run_id"])
+            return getattr(m, "EventLogger"), getattr(m, "new_run_id")
+        except Exception:
+            continue
+    from libs.core.event_logger import EventLogger, new_run_id  # type: ignore
+    return EventLogger, new_run_id
+
+
+def _ensure_run_id(state: Dict[str, Any]) -> str:
+    _EventLogger, new_run_id = _import_event_logger()
+    rid = str(state.get("run_id") or new_run_id())
+    state["run_id"] = rid
+    return rid
+
+
+def _make_event_logger(state: Dict[str, Any]) -> Any:
+    injected = state.get("event_logger")
+    if injected is not None and hasattr(injected, "log"):
+        return injected
+    EventLogger, _new_run_id = _import_event_logger()
+    log_path = os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl")
+    return EventLogger(log_path=Path(log_path))
+
+
+def _log_commander_event(state: Dict[str, Any], event: str, payload: Dict[str, Any]) -> None:
+    try:
+        logger = _make_event_logger(state)
+        run_id = _ensure_run_id(state)
+        logger.log(run_id=run_id, stage="commander_router", event=event, payload=payload)
+    except Exception:
+        return
+
+
 def resolve_runtime_mode(state: Dict[str, Any], *, mode: Optional[RuntimeMode] = None) -> RuntimeMode:
     """Resolve runtime mode with explicit precedence.
 
@@ -139,9 +176,29 @@ def run_commander_runtime(
     """
     selected = resolve_runtime_mode(state, mode=mode)
     state = _annotate_runtime_plan(state, selected)
+    _log_commander_event(
+        state,
+        "route",
+        {"mode": selected, "agents": list(state.get("runtime_plan", {}).get("agents", []))},
+    )
 
     should_run, state = _apply_runtime_transition(state)
+    if state.get("runtime_transition"):
+        _log_commander_event(
+            state,
+            "transition",
+            {
+                "transition": state.get("runtime_transition"),
+                "status": state.get("runtime_status"),
+                "retry_count": state.get("runtime_retry_count"),
+            },
+        )
     if not should_run:
+        _log_commander_event(
+            state,
+            "end",
+            {"mode": selected, "status": state.get("runtime_status", "stopped"), "path": None},
+        )
         return state
 
     graph_runner = graph_runner or run_trading_graph
@@ -151,6 +208,17 @@ def run_commander_runtime(
     if selected == "decision_packet":
         state = decide(state)
         state = execute(state)
+        _log_commander_event(
+            state,
+            "end",
+            {"mode": selected, "status": state.get("runtime_status", "ok"), "path": "decision_packet"},
+        )
         return state
 
-    return graph_runner(state)
+    state = graph_runner(state)
+    _log_commander_event(
+        state,
+        "end",
+        {"mode": selected, "status": state.get("runtime_status", "ok"), "path": "graph_spine"},
+    )
+    return state

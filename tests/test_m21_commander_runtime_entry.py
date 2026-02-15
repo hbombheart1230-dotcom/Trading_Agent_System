@@ -202,3 +202,65 @@ def test_m21_runtime_transition_retry_marks_state_and_continues():
     assert out["runtime_retry_count"] == 3
     assert out["path"] == "graph_spine"
     assert called["graph"] == 1
+
+
+class _FakeEventLogger:
+    def __init__(self) -> None:
+        self.rows: list[Dict[str, Any]] = []
+
+    def log(
+        self,
+        *,
+        run_id: str,
+        stage: str,
+        event: str,
+        payload: Dict[str, Any],
+        ts: str | None = None,
+    ) -> Dict[str, Any]:
+        row = {
+            "run_id": run_id,
+            "stage": stage,
+            "event": event,
+            "payload": payload,
+            "ts": ts,
+        }
+        self.rows.append(row)
+        return row
+
+
+def test_m21_runtime_emits_route_and_end_events():
+    logger = _FakeEventLogger()
+
+    def graph_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["path"] = "graph_spine"
+        return state
+
+    out = run_commander_runtime({"event_logger": logger}, graph_runner=graph_runner)
+
+    router_rows = [r for r in logger.rows if r.get("stage") == "commander_router"]
+    assert [r["event"] for r in router_rows] == ["route", "end"]
+    assert router_rows[0]["payload"]["mode"] == "graph_spine"
+    assert router_rows[1]["payload"]["path"] == "graph_spine"
+    assert out.get("run_id")
+
+
+def test_m21_runtime_emits_transition_for_pause_control():
+    logger = _FakeEventLogger()
+    called = {"graph": 0}
+
+    def graph_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["graph"] += 1
+        return state
+
+    out = run_commander_runtime(
+        {"runtime_control": "pause", "event_logger": logger},
+        graph_runner=graph_runner,
+    )
+
+    router_rows = [r for r in logger.rows if r.get("stage") == "commander_router"]
+    assert [r["event"] for r in router_rows] == ["route", "transition", "end"]
+    assert router_rows[1]["payload"]["transition"] == "pause"
+    assert router_rows[1]["payload"]["status"] == "paused"
+    assert router_rows[2]["payload"]["path"] is None
+    assert called["graph"] == 0
+    assert out["runtime_status"] == "paused"
