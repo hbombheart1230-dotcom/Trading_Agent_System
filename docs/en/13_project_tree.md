@@ -1,6 +1,6 @@
 # 13. Project Tree
 
-- Last updated: 2026-02-14
+- Last updated: 2026-02-15
 - Scope: high-level repository layout for implementation and operations.
 
 ## Top-Level Layout
@@ -67,6 +67,18 @@ Trading_Agent_System/
 - `docs/ko/12_roadmap.md`
 - `docs/ground_rules/AGENT_RULES.md`
 - `docs/ground_rules/QUALITY_GATES.md`
+
+## M21-Related Documents
+
+- `docs/plan/m21_1_canonical_runtime_entry.md`
+- `docs/plan/m21_2_runtime_mode_resolution_policy.md`
+- `docs/plan/m21_3_decision_packet_activation_guard.md`
+- `docs/plan/m21_4_runtime_transitions.md`
+- `docs/plan/m21_5_runtime_agent_chain_mapping.md`
+- `docs/plan/m21_6_runtime_once_cli.md`
+- `docs/plan/m21_7_commander_router_event_logging.md`
+- `docs/plan/m21_8_graph_spine_parity_tests.md`
+- `docs/plan/m21_9_commander_bridge_to_canonical_runtime.md`
 
 ## Note
 

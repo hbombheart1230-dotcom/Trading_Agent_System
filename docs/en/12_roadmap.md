@@ -56,5 +56,17 @@
 - M29: governance/audit/recovery readiness (archive, integrity, DR drills)
 - M30: production readiness gate (final safety/ops sign-off)
 
+M21 implementation status (2026-02-15):
+- M21-1: canonical commander runtime entry (`graphs/commander_runtime.py`)
+- M21-2: deterministic runtime mode resolution policy (explicit > state > env > default)
+- M21-3: activation guard for `decision_packet` mode from state/env routing
+- M21-4: runtime transitions formalized (`retry/pause/cancel`)
+- M21-5: 7-agent runtime chain mapping in `runtime_plan`
+- M21-6: canonical runtime once CLI (safe smoke default)
+- M21-7: commander router event logging (`route/transition/end`)
+- M21-8: graph-spine parity tests against legacy path
+- M21-9: legacy `Commander` bridge to canonical runtime (`run_canonical`)
+- M21-10: documentation sync and closeout
+
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
