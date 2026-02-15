@@ -32,6 +32,7 @@ def test_m22_scanner_uses_skill_account_orders_for_penalty():
     assert out["selected"]["symbol"] == "BBB"
     assert out["scanner_skill"]["used"] is True
     assert out["scanner_skill"]["account_order_rows"] == 1
+    assert out["scanner_skill"]["fallback"] is False
 
     rows = {str(r.get("symbol")): r for r in out.get("scan_results", []) if isinstance(r, dict)}
     assert rows["AAA"]["features"]["skill_open_orders"] == 1
@@ -60,6 +61,7 @@ def test_m22_monitor_reads_order_status_dto_without_changing_intent_shape():
     assert out["monitor"]["order_status_loaded"] is True
     assert out["monitor"]["order_status"]["status"] == "PARTIAL"
     assert out["monitor"]["order_status"]["ord_no"] == "ord-1"
+    assert out["monitor"]["order_status_fallback"] is False
     assert out["monitor"]["order_lifecycle_loaded"] is True
     assert out["monitor"]["order_lifecycle"]["stage"] == "partial_fill"
     assert out["monitor"]["order_lifecycle"]["terminal"] is False
@@ -104,6 +106,44 @@ def test_m22_monitor_maps_cancelled_lifecycle_from_status_text():
     assert life["progress"] == 0.0
 
 
+def test_m22_scanner_falls_back_safely_on_skill_timeout_errors():
+    state = {
+        "candidates": [{"symbol": "AAA"}, {"symbol": "BBB"}],
+        "mock_scan_results": {
+            "AAA": {"score": 0.20, "risk_score": 0.20, "confidence": 0.80},
+            "BBB": {"score": 0.80, "risk_score": 0.20, "confidence": 0.80},
+        },
+        "skill_results": {
+            "market.quote": {"action": "error", "meta": {"error_type": "TimeoutError"}},
+            "account.orders": {"result": {"action": "ask", "question": "symbol required"}},
+        },
+    }
+
+    out = scanner_node(state)
+    assert out["selected"]["symbol"] == "BBB"  # baseline scoring still works
+    assert out["scanner_skill"]["fallback"] is True
+    assert out["scanner_skill"]["error_count"] == 2
+    reasons = out["scanner_skill"]["fallback_reasons"]
+    assert any("market.quote:error:TimeoutError" in x for x in reasons)
+    assert any("account.orders:ask" in x for x in reasons)
+
+
+def test_m22_monitor_falls_back_safely_on_order_status_timeout():
+    state = {
+        "selected": {"symbol": "AAA"},
+        "skill_results": {
+            "order.status": {"result": {"action": "error", "meta": {"error_type": "TimeoutError"}}}
+        },
+    }
+
+    out = monitor_node(state)
+    assert out["monitor"]["order_status_loaded"] is False
+    assert out["monitor"]["order_lifecycle_loaded"] is False
+    assert out["monitor"]["order_status_fallback"] is True
+    assert out["monitor"]["order_status_error_count"] == 1
+    assert out["monitor"]["order_status_fallback_reasons"][0].startswith("order.status:error:TimeoutError")
+
+
 def test_m22_demo_script_outputs_skill_visible_summary(capsys):
     rc = demo_main(["--json"])
     out = capsys.readouterr().out.strip()
@@ -115,3 +155,16 @@ def test_m22_demo_script_outputs_skill_visible_summary(capsys):
     assert isinstance(obj["top"], list) and len(obj["top"]) >= 1
     assert obj["monitor"]["order_status_loaded"] is True
     assert obj["order_lifecycle"]["stage"] == "partial_fill"
+
+
+def test_m22_demo_script_simulate_timeout_shows_fallbacks(capsys):
+    rc = demo_main(["--simulate-timeout", "--json"])
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+
+    assert rc == 0
+    assert obj["scanner_skill"]["fallback"] is True
+    assert obj["scanner_skill"]["error_count"] >= 1
+    assert obj["monitor"]["order_status_fallback"] is True
+    assert obj["monitor"]["order_status_loaded"] is False
+    assert obj["order_lifecycle"] is None

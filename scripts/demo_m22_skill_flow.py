@@ -14,8 +14,8 @@ from graphs.nodes.monitor_node import monitor_node
 from graphs.nodes.scanner_node import scanner_node
 
 
-def _build_demo_state() -> Dict[str, Any]:
-    return {
+def _build_demo_state(*, simulate_timeout: bool = False) -> Dict[str, Any]:
+    state: Dict[str, Any] = {
         "plan": {"thesis": "m22_skill_native_demo"},
         "candidates": [
             {"symbol": "005930", "why": "demo"},
@@ -51,6 +51,11 @@ def _build_demo_state() -> Dict[str, Any]:
             },
         },
     }
+    if simulate_timeout:
+        state["skill_results"]["market.quote"] = {"action": "error", "meta": {"error_type": "TimeoutError"}}
+        state["skill_results"]["account.orders"] = {"result": {"action": "ask", "question": "account missing"}}
+        state["skill_results"]["order.status"] = {"result": {"action": "error", "meta": {"error_type": "TimeoutError"}}}
+    return state
 
 
 def _to_summary(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -88,12 +93,13 @@ def _to_summary(state: Dict[str, Any]) -> Dict[str, Any]:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M22 skill-native scanner/monitor demo")
     p.add_argument("--json", action="store_true", help="Emit JSON output")
+    p.add_argument("--simulate-timeout", action="store_true", help="Show fallback behavior on skill timeout/error")
     return p
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
-    state = _build_demo_state()
+    state = _build_demo_state(simulate_timeout=bool(args.simulate_timeout))
     state = scanner_node(state)
     state = monitor_node(state)
     summary = _to_summary(state)

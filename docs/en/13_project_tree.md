@@ -84,6 +84,7 @@ Trading_Agent_System/
 
 - `docs/plan/m22_1_skill_native_scanner_monitor_baseline.md`
 - `docs/plan/m22_2_monitor_order_lifecycle.md`
+- `docs/plan/m22_3_skill_timeout_error_quality_gates.md`
 - `scripts/demo_m22_skill_flow.py`
 
 ## Note

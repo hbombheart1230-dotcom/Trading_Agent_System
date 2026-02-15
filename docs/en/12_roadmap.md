@@ -71,6 +71,7 @@ M21 implementation status (2026-02-15):
 M22 implementation status (2026-02-15, in progress):
 - M22-1: skill-native Scanner/Monitor baseline (`market.quote`, `account.orders`, `order.status`) + offline demo
 - M22-2: Monitor order lifecycle mapping (`working/partial_fill/filled/cancelled/rejected`) with progress/terminal flags
+- M22-3: skill timeout/error fallback quality gates with operator-visible fallback reasons
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

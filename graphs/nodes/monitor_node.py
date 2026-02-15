@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 
 def _norm_symbol(v: Any) -> str:
@@ -18,24 +18,79 @@ def _get_skill_root(state: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
-def _extract_order_status_summary(state: Dict[str, Any]) -> Dict[str, Any] | None:
+def _pick_skill_value(state: Dict[str, Any], keys: Tuple[str, ...], *, state_key: str | None = None) -> Tuple[Any, bool]:
     root = _get_skill_root(state)
-    raw = root.get("order.status")
-    if raw is None:
-        raw = root.get("order_status")
-    if raw is None:
-        raw = state.get("order_status")
-    if not isinstance(raw, dict):
-        return None
+    for k in keys:
+        if k in root:
+            return root.get(k), True
+    if state_key and state_key in state:
+        return state.get(state_key), True
+    return None, False
 
-    row = dict(raw)
+
+def _unwrap_skill_payload(raw: Any, *, skill_name: str) -> Tuple[Any, List[str]]:
+    errors: List[str] = []
+    if raw is None:
+        return None, errors
+
+    if isinstance(raw, dict):
+        action = str(raw.get("action") or "").strip().lower()
+        if action in ("error", "ask"):
+            meta = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}
+            error_type = str(
+                meta.get("error_type")
+                or raw.get("error_type")
+                or raw.get("reason")
+                or raw.get("question")
+                or "skill_not_ready"
+            )
+            errors.append(f"{skill_name}:{action}:{error_type}")
+            return None, errors
+
+        if raw.get("ok") is False:
+            error_type = str(raw.get("error_type") or raw.get("reason") or "skill_error")
+            errors.append(f"{skill_name}:error:{error_type}")
+            return None, errors
+
+        if isinstance(raw.get("result"), dict):
+            result = raw.get("result") or {}
+            result_action = str(result.get("action") or "").strip().lower()
+            if result_action in ("error", "ask"):
+                meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+                error_type = str(
+                    meta.get("error_type")
+                    or result.get("error_type")
+                    or result.get("reason")
+                    or result.get("question")
+                    or "skill_not_ready"
+                )
+                errors.append(f"{skill_name}:{result_action}:{error_type}")
+                return None, errors
+            if "data" in result:
+                return result.get("data"), errors
+
+        if "data" in raw:
+            return raw.get("data"), errors
+
+    return raw, errors
+
+
+def _extract_order_status_summary(state: Dict[str, Any]) -> Tuple[Dict[str, Any] | None, Dict[str, Any]]:
+    raw, present = _pick_skill_value(state, ("order.status", "order_status"), state_key="order_status")
+    unwrapped, errors = _unwrap_skill_payload(raw, skill_name="order.status")
+    if not isinstance(unwrapped, dict):
+        if present and not errors:
+            errors.append("order.status:invalid_shape")
+        return None, {"present": bool(present), "errors": errors, "used": False}
+
+    row = dict(unwrapped)
     if isinstance(row.get("result"), dict):
         data = row.get("result", {}).get("data")
         if isinstance(data, dict):
             row = dict(data)
 
     symbol = _norm_symbol(row.get("symbol") or row.get("stk_cd"))
-    return {
+    summary = {
         "ord_no": row.get("ord_no"),
         "symbol": symbol or None,
         "status": row.get("status") or row.get("acpt_tp"),
@@ -44,6 +99,7 @@ def _extract_order_status_summary(state: Dict[str, Any]) -> Dict[str, Any] | Non
         "filled_price": row.get("filled_price") or row.get("cntr_uv"),
         "order_price": row.get("order_price") or row.get("ord_uv"),
     }
+    return summary, {"present": bool(present), "errors": errors, "used": True}
 
 
 def _to_int(v: Any) -> int:
@@ -70,10 +126,10 @@ def _derive_order_lifecycle(order_status: Dict[str, Any] | None) -> Dict[str, An
     else:
         progress = 0.0
 
-    cancelled_keys = ("CANCEL", "CANCELED", "CANCELLED", "취소")
-    rejected_keys = ("REJECT", "DENY", "거부", "실패")
-    filled_keys = ("FILLED", "DONE", "체결완료", "체결")
-    partial_keys = ("PARTIAL", "부분", "체결중")
+    cancelled_keys = ("CANCEL", "CANCELED", "CANCELLED")
+    rejected_keys = ("REJECT", "DENY", "BLOCK")
+    filled_keys = ("FILLED", "DONE")
+    partial_keys = ("PARTIAL", "WORKING_PARTIAL")
 
     stage = "working"
     terminal = False
@@ -110,13 +166,9 @@ def _derive_order_lifecycle(order_status: Dict[str, Any] | None) -> Dict[str, An
 def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Graph node: Monitor.
 
-    책임: **OrderIntent만 생성**.
-    - 후보 평가/계산/선정은 Scanner에서 끝낸다.
-    - Monitor는 selected 1개를 바탕으로 intent draft를 만든다.
-
-    Writes:
-      - state['intents'] : list[dict] (0 또는 1개)
-      - state['monitor'] : dict (관측용)
+    Responsibility:
+      - emit at most one intent from selected candidate
+      - attach optional order status/lifecycle observation from skill DTOs
     """
     selected = state.get("selected")
     plan = state.get("plan") or {}
@@ -137,8 +189,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         }
         intents = [intent]
 
-    order_status = _extract_order_status_summary(state)
+    order_status, order_status_meta = _extract_order_status_summary(state)
     order_lifecycle = _derive_order_lifecycle(order_status)
+    fallback_reasons = list(order_status_meta.get("errors") or [])
+
     state["intents"] = intents
     state["monitor"] = {
         "has_intent": bool(intents),
@@ -146,6 +200,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "selected_symbol": (selected.get("symbol") if isinstance(selected, dict) else None),
         "order_status_loaded": bool(order_status),
         "order_status": order_status,
+        "order_status_present": bool(order_status_meta.get("present")),
+        "order_status_fallback": bool(fallback_reasons),
+        "order_status_fallback_reasons": fallback_reasons,
+        "order_status_error_count": len(fallback_reasons),
         "order_lifecycle_loaded": bool(order_lifecycle),
         "order_lifecycle": order_lifecycle,
     }

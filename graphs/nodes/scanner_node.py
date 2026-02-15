@@ -22,13 +22,67 @@ def _get_skill_root(state: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
-def _extract_skill_quotes(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+def _pick_skill_value(state: Dict[str, Any], keys: Tuple[str, ...], *, state_key: str | None = None) -> Tuple[Any, bool]:
     root = _get_skill_root(state)
-    raw = root.get("market.quote")
+    for k in keys:
+        if k in root:
+            return root.get(k), True
+    if state_key and state_key in state:
+        return state.get(state_key), True
+    return None, False
+
+
+def _unwrap_skill_payload(raw: Any, *, skill_name: str) -> Tuple[Any, List[str]]:
+    errors: List[str] = []
     if raw is None:
-        raw = root.get("market_quote")
-    if raw is None:
-        raw = state.get("market_quote")
+        return None, errors
+
+    if isinstance(raw, dict):
+        action = str(raw.get("action") or "").strip().lower()
+        if action in ("error", "ask"):
+            meta = raw.get("meta") if isinstance(raw.get("meta"), dict) else {}
+            error_type = str(
+                meta.get("error_type")
+                or raw.get("error_type")
+                or raw.get("reason")
+                or raw.get("question")
+                or "skill_not_ready"
+            )
+            errors.append(f"{skill_name}:{action}:{error_type}")
+            return None, errors
+
+        if raw.get("ok") is False:
+            error_type = str(raw.get("error_type") or raw.get("reason") or "skill_error")
+            errors.append(f"{skill_name}:error:{error_type}")
+            return None, errors
+
+        if isinstance(raw.get("result"), dict):
+            result = raw.get("result") or {}
+            result_action = str(result.get("action") or "").strip().lower()
+            if result_action in ("error", "ask"):
+                meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+                error_type = str(
+                    meta.get("error_type")
+                    or result.get("error_type")
+                    or result.get("reason")
+                    or result.get("question")
+                    or "skill_not_ready"
+                )
+                errors.append(f"{skill_name}:{result_action}:{error_type}")
+                return None, errors
+            if "data" in result:
+                return result.get("data"), errors
+
+        if "data" in raw:
+            return raw.get("data"), errors
+
+    return raw, errors
+
+
+def _extract_skill_quotes(state: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
+    root = _get_skill_root(state)
+    raw, present = _pick_skill_value(state, ("market.quote", "market_quote"), state_key="market_quote")
+    unwrapped, errors = _unwrap_skill_payload(raw, skill_name="market.quote")
 
     out: Dict[str, Dict[str, Any]] = {}
 
@@ -41,47 +95,47 @@ def _extract_skill_quotes(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             row["price"] = row.get("cur")
         out[key] = row
 
-    if isinstance(raw, dict):
+    if isinstance(unwrapped, dict):
         # single DTO shape
-        if raw.get("symbol") is not None and any(k in raw for k in ("cur", "price", "best_bid", "best_ask")):
-            _save(raw.get("symbol"), raw)
+        if unwrapped.get("symbol") is not None and any(k in unwrapped for k in ("cur", "price", "best_bid", "best_ask")):
+            _save(unwrapped.get("symbol"), unwrapped)
         else:
             # map-by-symbol shape
-            for k, v in raw.items():
+            for k, v in unwrapped.items():
                 if not isinstance(v, dict):
                     continue
                 if not any(x in v for x in ("cur", "price", "best_bid", "best_ask")):
                     continue
                 _save(v.get("symbol") or k, v)
-    elif isinstance(raw, list):
-        for row in raw:
+    elif isinstance(unwrapped, list):
+        for row in unwrapped:
             if not isinstance(row, dict):
                 continue
             if row.get("symbol") is None:
                 continue
             _save(row.get("symbol"), row)
 
-    return out
+    if present and not out and not errors:
+        errors.append("market.quote:invalid_shape")
+    meta = {"present": bool(present), "errors": errors, "used": bool(out)}
+    return out, meta
 
 
-def _extract_account_open_order_counts(state: Dict[str, Any]) -> Tuple[Dict[str, int], int]:
+def _extract_account_open_order_counts(state: Dict[str, Any]) -> Tuple[Dict[str, int], int, Dict[str, Any]]:
     root = _get_skill_root(state)
-    raw = root.get("account.orders")
-    if raw is None:
-        raw = root.get("account_orders")
-    if raw is None:
-        raw = state.get("account_orders")
+    raw, present = _pick_skill_value(state, ("account.orders", "account_orders"), state_key="account_orders")
+    unwrapped, errors = _unwrap_skill_payload(raw, skill_name="account.orders")
 
     rows: List[Any] = []
-    if isinstance(raw, dict):
-        if isinstance(raw.get("rows"), list):
-            rows = raw.get("rows") or []
-        elif isinstance(raw.get("acnt_ord_cntr_prps_dtl"), list):
-            rows = raw.get("acnt_ord_cntr_prps_dtl") or []
-        elif isinstance(raw.get("items"), list):
-            rows = raw.get("items") or []
-    elif isinstance(raw, list):
-        rows = raw
+    if isinstance(unwrapped, dict):
+        if isinstance(unwrapped.get("rows"), list):
+            rows = unwrapped.get("rows") or []
+        elif isinstance(unwrapped.get("acnt_ord_cntr_prps_dtl"), list):
+            rows = unwrapped.get("acnt_ord_cntr_prps_dtl") or []
+        elif isinstance(unwrapped.get("items"), list):
+            rows = unwrapped.get("items") or []
+    elif isinstance(unwrapped, list):
+        rows = unwrapped
 
     out: Dict[str, int] = {}
     for r in rows:
@@ -91,7 +145,10 @@ def _extract_account_open_order_counts(state: Dict[str, Any]) -> Tuple[Dict[str,
         if not symbol:
             continue
         out[symbol] = int(out.get(symbol, 0)) + 1
-    return out, len(rows)
+    if present and not rows and not errors:
+        errors.append("account.orders:invalid_shape")
+    meta = {"present": bool(present), "errors": errors, "used": bool(rows)}
+    return out, len(rows), meta
 
 
 def _get_global_sentiment_score(state: Dict[str, Any]) -> float:
@@ -208,8 +265,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     w = _get_scanner_weights(policy)
     gs = _get_global_sentiment_score(state)
     news_by_sym = _get_news_sentiment_map(state)
-    skill_quotes = _extract_skill_quotes(state)
-    skill_order_counts, skill_order_rows = _extract_account_open_order_counts(state)
+    skill_quotes, quote_meta = _extract_skill_quotes(state)
+    skill_order_counts, skill_order_rows, order_meta = _extract_account_open_order_counts(state)
 
     scan_results: List[Dict[str, Any]] = []
 
@@ -324,11 +381,17 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         }
     else:
         state["risk"] = {"risk_score": 0.0, "confidence": 0.0}
+    fallback_reasons: List[str] = list(quote_meta.get("errors") or []) + list(order_meta.get("errors") or [])
     state["scanner_skill"] = {
         "used": bool(skill_quotes) or bool(skill_order_counts),
         "quote_symbols": len(skill_quotes),
         "account_open_order_symbols": len(skill_order_counts),
         "account_order_rows": int(skill_order_rows),
+        "quote_present": bool(quote_meta.get("present")),
+        "account_orders_present": bool(order_meta.get("present")),
+        "fallback": bool(fallback_reasons),
+        "fallback_reasons": fallback_reasons,
+        "error_count": len(fallback_reasons),
     }
 
     return state
