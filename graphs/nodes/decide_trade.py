@@ -170,6 +170,18 @@ def decide_trade(state: dict) -> dict:
                         payload["estimated_cost_usd"] = float(llm_meta.get("estimated_cost_usd"))
                     except Exception:
                         pass
+                if llm_meta.get("circuit_state") is not None:
+                    payload["circuit_state"] = str(llm_meta.get("circuit_state") or "")
+                if llm_meta.get("circuit_fail_count") is not None:
+                    try:
+                        payload["circuit_fail_count"] = int(float(llm_meta.get("circuit_fail_count") or 0))
+                    except Exception:
+                        pass
+                if llm_meta.get("circuit_open_until_epoch") is not None:
+                    try:
+                        payload["circuit_open_until_epoch"] = int(float(llm_meta.get("circuit_open_until_epoch") or 0))
+                    except Exception:
+                        pass
                 prompt_version = str(
                     llm_meta.get("prompt_version") or getattr(strategist, "prompt_version", "") or ""
                 )

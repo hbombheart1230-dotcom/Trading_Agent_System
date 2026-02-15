@@ -108,3 +108,49 @@ def test_m20_3_llm_event_logged_on_error(monkeypatch, tmp_path: Path):
     assert p.get("error_type") in ("TimeoutError", "Exception")
     assert p.get("prompt_version") == "pv-log"
     assert p.get("schema_version") == "intent.v1-log"
+
+
+def test_m20_9_llm_event_logs_circuit_breaker_fields(monkeypatch, tmp_path: Path):
+    events = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(events))
+    monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist-cb-event")
+    monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
+    monkeypatch.setenv("AI_STRATEGIST_CB_FAIL_THRESHOLD", "1")
+    monkeypatch.setenv("AI_STRATEGIST_CB_COOLDOWN_SEC", "60")
+    monkeypatch.setenv("AI_STRATEGIST_PROMPT_VERSION", "pv-log")
+    monkeypatch.setenv("AI_STRATEGIST_SCHEMA_VERSION", "intent.v1-log")
+    monkeypatch.setattr(prov.time, "time", lambda: 1000.0)
+
+    # isolate breaker state for this test
+    prov.OpenAIStrategist._CB_STATE.clear()
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        raise TimeoutError("timeout")
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    state = {
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+    }
+
+    # 1st call: strategist_error + breaker open
+    out1 = decide_trade(dict(state))
+    assert out1["decision_packet"]["intent"]["action"] == "NOOP"
+
+    # 2nd call: circuit_open short-circuit
+    out2 = decide_trade(dict(state))
+    assert out2["decision_packet"]["intent"]["action"] == "NOOP"
+
+    rows = _load_events(events)
+    llm = [r for r in rows if r.get("stage") == "strategist_llm" and r.get("event") == "result"]
+    assert len(llm) >= 2
+    p = llm[-1].get("payload") or {}
+
+    assert p.get("error_type") == "CircuitOpen"
+    assert p.get("intent_reason") == "circuit_open"
+    assert p.get("circuit_state") == "open"
+    assert int(p.get("circuit_fail_count") or 0) >= 1
+    assert int(p.get("circuit_open_until_epoch") or 0) > 1000
