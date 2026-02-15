@@ -46,6 +46,67 @@ def _extract_order_status_summary(state: Dict[str, Any]) -> Dict[str, Any] | Non
     }
 
 
+def _to_int(v: Any) -> int:
+    try:
+        return int(float(v))
+    except Exception:
+        return 0
+
+
+def _normalize_status(v: Any) -> str:
+    return str(v or "").strip().upper()
+
+
+def _derive_order_lifecycle(order_status: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not isinstance(order_status, dict):
+        return None
+
+    status = _normalize_status(order_status.get("status"))
+    filled_qty = max(0, _to_int(order_status.get("filled_qty")))
+    order_qty = max(0, _to_int(order_status.get("order_qty")))
+
+    if order_qty > 0:
+        progress = min(1.0, float(filled_qty) / float(order_qty))
+    else:
+        progress = 0.0
+
+    cancelled_keys = ("CANCEL", "CANCELED", "CANCELLED", "취소")
+    rejected_keys = ("REJECT", "DENY", "거부", "실패")
+    filled_keys = ("FILLED", "DONE", "체결완료", "체결")
+    partial_keys = ("PARTIAL", "부분", "체결중")
+
+    stage = "working"
+    terminal = False
+
+    if any(k in status for k in cancelled_keys):
+        stage = "cancelled"
+        terminal = True
+    elif any(k in status for k in rejected_keys):
+        stage = "rejected"
+        terminal = True
+    elif (order_qty > 0 and filled_qty >= order_qty) or any(k in status for k in filled_keys):
+        stage = "filled"
+        terminal = True
+        progress = 1.0
+    elif (filled_qty > 0 and order_qty > 0 and filled_qty < order_qty) or any(k in status for k in partial_keys):
+        stage = "partial_fill"
+        terminal = False
+    elif not status:
+        stage = "unknown"
+        terminal = False
+
+    return {
+        "ord_no": order_status.get("ord_no"),
+        "symbol": order_status.get("symbol"),
+        "status_raw": order_status.get("status"),
+        "stage": stage,
+        "terminal": terminal,
+        "filled_qty": filled_qty,
+        "order_qty": order_qty,
+        "progress": float(progress),
+    }
+
+
 def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Graph node: Monitor.
 
@@ -77,6 +138,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         intents = [intent]
 
     order_status = _extract_order_status_summary(state)
+    order_lifecycle = _derive_order_lifecycle(order_status)
     state["intents"] = intents
     state["monitor"] = {
         "has_intent": bool(intents),
@@ -84,5 +146,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "selected_symbol": (selected.get("symbol") if isinstance(selected, dict) else None),
         "order_status_loaded": bool(order_status),
         "order_status": order_status,
+        "order_lifecycle_loaded": bool(order_lifecycle),
+        "order_lifecycle": order_lifecycle,
     }
     return state

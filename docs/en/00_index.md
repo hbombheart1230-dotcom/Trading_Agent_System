@@ -25,3 +25,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m21_1_canonical_runtime_entry.md -> M21 canonical runtime start
 - docs/plan/m21_10_docs_sync_closeout.md -> M21 closeout/documentation sync
 - docs/plan/m22_1_skill_native_scanner_monitor_baseline.md -> M22-1 skill-native scanner/monitor baseline
+- docs/plan/m22_2_monitor_order_lifecycle.md -> M22-2 monitor lifecycle mapping

@@ -83,6 +83,7 @@ Trading_Agent_System/
 ## M22-Related Documents
 
 - `docs/plan/m22_1_skill_native_scanner_monitor_baseline.md`
+- `docs/plan/m22_2_monitor_order_lifecycle.md`
 - `scripts/demo_m22_skill_flow.py`
 
 ## Note

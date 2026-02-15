@@ -80,6 +80,7 @@ def _to_summary(state: Dict[str, Any]) -> Dict[str, Any]:
         },
         "scanner_skill": state.get("scanner_skill"),
         "monitor": state.get("monitor"),
+        "order_lifecycle": (state.get("monitor") or {}).get("order_lifecycle"),
         "top": top,
     }
 
