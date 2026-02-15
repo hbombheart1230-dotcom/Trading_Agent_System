@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from graphs.trading_graph import run_trading_graph
+from graphs.commander_runtime import run_commander_runtime
 
 
 def commander_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Optional convenience node that runs the whole M17 baseline graph.
+    """Convenience node that runs canonical commander runtime.
 
-    This keeps a 'Commander-like' interface for callers that want a single entry.
+    For backward compatibility, this node defaults to M17 graph_spine mode.
     """
-    return run_trading_graph(state)
+    return run_commander_runtime(state, mode="graph_spine")
