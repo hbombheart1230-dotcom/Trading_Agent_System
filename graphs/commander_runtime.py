@@ -14,7 +14,7 @@ Default mode is graph_spine for backward compatibility.
 """
 
 import os
-from typing import Any, Callable, Dict, Literal, Optional
+from typing import Any, Callable, Dict, Literal, Optional, Tuple
 
 from graphs.trading_graph import run_trading_graph
 from graphs.nodes.decide_trade import decide_trade
@@ -33,6 +33,48 @@ def _normalize_mode(value: Any) -> RuntimeMode:
     if v == "decision_packet":
         return "decision_packet"
     return "graph_spine"
+
+
+def _normalize_transition(value: Any) -> str:
+    v = str(value or "").strip().lower()
+    if v in ("retry", "pause", "cancel"):
+        return v
+    return ""
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _apply_runtime_transition(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    """Apply runtime control transition.
+
+    Supported controls in `state["runtime_control"]`:
+      - cancel: stop run immediately
+      - pause: stop run immediately
+      - retry: increment retry counter and continue run
+    """
+    transition = _normalize_transition(state.get("runtime_control"))
+    if not transition:
+        return True, state
+
+    state["runtime_transition"] = transition
+
+    if transition == "cancel":
+        state["runtime_status"] = "cancelled"
+        return False, state
+
+    if transition == "pause":
+        state["runtime_status"] = "paused"
+        return False, state
+
+    # retry: mark status and continue the selected runtime path.
+    state["runtime_status"] = "retrying"
+    state["runtime_retry_count"] = _coerce_int(state.get("runtime_retry_count"), 0) + 1
+    return True, state
 
 
 def resolve_runtime_mode(state: Dict[str, Any], *, mode: Optional[RuntimeMode] = None) -> RuntimeMode:
@@ -81,6 +123,10 @@ def run_commander_runtime(
 
     Mode selection uses `resolve_runtime_mode(...)`.
     """
+    should_run, state = _apply_runtime_transition(state)
+    if not should_run:
+        return state
+
     selected = resolve_runtime_mode(state, mode=mode)
 
     graph_runner = graph_runner or run_trading_graph
