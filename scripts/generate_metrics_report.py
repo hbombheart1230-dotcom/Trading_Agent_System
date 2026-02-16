@@ -151,6 +151,23 @@ def _numeric_summary(values: List[float]) -> Dict[str, float]:
     }
 
 
+def _to_non_negative_int(v: Any) -> int:
+    try:
+        n = int(float(v))
+    except Exception:
+        return 0
+    return n if n >= 0 else 0
+
+
+def _extract_skill_error_tag(v: Any) -> str:
+    s = str(v or "").strip()
+    if not s:
+        return "unknown"
+    if "(" in s:
+        return (s.split("(", 1)[0] or "unknown").strip() or "unknown"
+    return (s.split(":", 1)[0] or "unknown").strip() or "unknown"
+
+
 def _latency_summary(rows: List[Dict[str, Any]]) -> Dict[str, float]:
     start_by_run: Dict[str, int] = {}
     latencies: List[float] = []
@@ -228,6 +245,17 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                     "estimated_cost_usd_total": 0.0,
                 },
             },
+            "skill_hydration": {
+                "total": 0,
+                "used_runner_total": 0,
+                "fallback_hint_total": 0,
+                "fallback_hint_rate": 0.0,
+                "errors_total_sum": 0,
+                "runner_source_total": {},
+                "attempted_total_by_skill": {},
+                "ready_total_by_skill": {},
+                "errors_total_by_skill": {},
+            },
             "api_error_total_by_api_id": {},
         }
         md_path.write_text(f"# Metrics Report ({day})\n\nNo events found.\n", encoding="utf-8")
@@ -258,6 +286,14 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     llm_completion_tokens_total = 0
     llm_total_tokens_total = 0
     llm_estimated_cost_usd_total = 0.0
+    skill_hydration_total = 0
+    skill_hydration_used_runner_total = 0
+    skill_hydration_fallback_hint_total = 0
+    skill_hydration_errors_total_sum = 0
+    skill_hydration_runner_source_total: Counter[str] = Counter()
+    skill_hydration_attempted_total: Counter[str] = Counter()
+    skill_hydration_ready_total: Counter[str] = Counter()
+    skill_hydration_errors_by_skill: Counter[str] = Counter()
 
     for r in day_rows:
         stage = str(r.get("stage") or "")
@@ -347,11 +383,47 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             except Exception:
                 pass
 
+        if stage == "skill_hydration" and event == "summary":
+            payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+            skill_hydration_total += 1
+            if payload.get("used_runner") is True:
+                skill_hydration_used_runner_total += 1
+
+            runner_source = str(payload.get("runner_source") or "unknown")
+            skill_hydration_runner_source_total[runner_source] += 1
+
+            errors_total = _to_non_negative_int(payload.get("errors_total"))
+            skill_hydration_errors_total_sum += errors_total
+
+            fallback_hint = bool(payload.get("fallback_hint")) or errors_total > 0
+            if fallback_hint:
+                skill_hydration_fallback_hint_total += 1
+
+            attempted = payload.get("attempted")
+            if isinstance(attempted, dict):
+                for k, v in attempted.items():
+                    skill_hydration_attempted_total[str(k)] += _to_non_negative_int(v)
+
+            ready = payload.get("ready")
+            if isinstance(ready, dict):
+                for k, v in ready.items():
+                    skill_hydration_ready_total[str(k)] += _to_non_negative_int(v)
+
+            errors = payload.get("errors")
+            if isinstance(errors, list):
+                for e in errors:
+                    skill_hydration_errors_by_skill[_extract_skill_error_tag(e)] += 1
+
     latency = _latency_summary(day_rows)
     llm_latency_ms = _numeric_summary(llm_latency_ms_values)
     llm_attempts = _numeric_summary(llm_attempt_values)
     llm_success_rate = (float(llm_ok_total) / float(llm_total)) if llm_total > 0 else 0.0
     llm_circuit_open_rate = (float(llm_circuit_open_total) / float(llm_total)) if llm_total > 0 else 0.0
+    skill_hydration_fallback_rate = (
+        float(skill_hydration_fallback_hint_total) / float(skill_hydration_total)
+        if skill_hydration_total > 0
+        else 0.0
+    )
 
     summary = {
         "day": day,
@@ -381,6 +453,17 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 "total_tokens_total": int(llm_total_tokens_total),
                 "estimated_cost_usd_total": float(llm_estimated_cost_usd_total),
             },
+        },
+        "skill_hydration": {
+            "total": int(skill_hydration_total),
+            "used_runner_total": int(skill_hydration_used_runner_total),
+            "fallback_hint_total": int(skill_hydration_fallback_hint_total),
+            "fallback_hint_rate": float(skill_hydration_fallback_rate),
+            "errors_total_sum": int(skill_hydration_errors_total_sum),
+            "runner_source_total": dict(skill_hydration_runner_source_total),
+            "attempted_total_by_skill": dict(skill_hydration_attempted_total),
+            "ready_total_by_skill": dict(skill_hydration_ready_total),
+            "errors_total_by_skill": dict(skill_hydration_errors_by_skill),
         },
         "api_error_total_by_api_id": dict(api_errors_by_id),
     }
@@ -464,6 +547,46 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         f"- total_tokens_total: {int(llm_total_tokens_total)}",
         f"- estimated_cost_usd_total: {llm_estimated_cost_usd_total:.8f}",
     ]
+
+    md_lines += [
+        "",
+        "## Skill Hydration",
+        "",
+        f"- total: **{int(skill_hydration_total)}**",
+        f"- used_runner_total: **{int(skill_hydration_used_runner_total)}**",
+        f"- fallback_hint_total: **{int(skill_hydration_fallback_hint_total)}**",
+        f"- fallback_hint_rate: **{skill_hydration_fallback_rate:.2%}**",
+        f"- errors_total_sum: **{int(skill_hydration_errors_total_sum)}**",
+        "",
+        "### Runner Sources",
+        "",
+    ]
+    if skill_hydration_runner_source_total:
+        for name, cnt in skill_hydration_runner_source_total.most_common():
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### Attempted By Skill", ""]
+    if skill_hydration_attempted_total:
+        for name, cnt in skill_hydration_attempted_total.most_common():
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### Ready By Skill", ""]
+    if skill_hydration_ready_total:
+        for name, cnt in skill_hydration_ready_total.most_common():
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### Errors By Skill", ""]
+    if skill_hydration_errors_by_skill:
+        for name, cnt in skill_hydration_errors_by_skill.most_common():
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
 
     md_lines += [
         "",

@@ -32,3 +32,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m22_6_graph_hydration_wiring.md -> M22-6 graph spine hydration wiring
 - docs/plan/m22_7_hydration_smoke_gate.md -> M22-7 hydration pass/fail smoke gate
 - docs/plan/m22_8_auto_composite_runner_connection.md -> M22-8 auto composite runner connection
+- docs/plan/m22_9_hydration_metrics_reporting.md -> M22-9 hydration/fallback metrics reporting integration

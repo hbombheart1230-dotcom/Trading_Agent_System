@@ -77,6 +77,7 @@ M22 implementation status (2026-02-15, in progress):
 - M22-6: graph-spine wiring for skill hydration (before scanner, including retry loop)
 - M22-7: operator smoke gate script for hydration/fallback pass-fail checks
 - M22-8: opt-in auto connection to `CompositeSkillRunner.from_env()` in hydration node
+- M22-9: hydration/fallback metrics integrated into daily metrics report
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

@@ -90,6 +90,7 @@ Trading_Agent_System/
 - `docs/plan/m22_6_graph_hydration_wiring.md`
 - `docs/plan/m22_7_hydration_smoke_gate.md`
 - `docs/plan/m22_8_auto_composite_runner_connection.md`
+- `docs/plan/m22_9_hydration_metrics_reporting.md`
 - `scripts/demo_m22_skill_flow.py`
 - `scripts/demo_m22_skill_hydration.py`
 - `scripts/demo_m22_graph_with_hydration.py`

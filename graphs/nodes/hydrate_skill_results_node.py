@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 import os
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 
@@ -47,6 +48,24 @@ def _to_plain(v: Any) -> Any:
 def _build_composite_skill_runner(state: Dict[str, Any]) -> Any:
     from libs.skills.runner import CompositeSkillRunner
     return CompositeSkillRunner.from_env()
+
+
+def _make_event_logger(state: Dict[str, Any]) -> Any:
+    injected = state.get("event_logger")
+    if injected is not None and hasattr(injected, "log"):
+        return injected
+    from libs.core.event_logger import EventLogger
+    log_path = os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl")
+    return EventLogger(log_path=Path(log_path))
+
+
+def _log_skill_fetch_summary(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    try:
+        logger = _make_event_logger(state)
+        run_id = str(state.get("run_id") or "m22-skill-fetch")
+        logger.log(run_id=run_id, stage="skill_hydration", event="summary", payload=dict(payload))
+    except Exception:
+        return
 
 
 def _resolve_runner(state: Dict[str, Any]) -> Tuple[Any, str, List[str]]:
@@ -231,6 +250,7 @@ def hydrate_skill_results_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "errors_total": len(errs),
             "errors": errs,
         }
+        _log_skill_fetch_summary(state, state["skill_fetch"])
         return state
 
     run_id = str(state.get("run_id") or "m22-skill-fetch")
@@ -273,4 +293,5 @@ def hydrate_skill_results_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "errors_total": len(errors),
         "errors": errors,
     }
+    _log_skill_fetch_summary(state, state["skill_fetch"])
     return state

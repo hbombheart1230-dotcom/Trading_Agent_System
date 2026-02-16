@@ -138,6 +138,44 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
                         },
                     }
                 ),
+                json.dumps(
+                    {
+                        "ts": 1700000023,
+                        "run_id": "r8",
+                        "stage": "skill_hydration",
+                        "event": "summary",
+                        "payload": {
+                            "used_runner": True,
+                            "runner_source": "state.skill_runner",
+                            "attempted": {"market.quote": 3, "account.orders": 1, "order.status": 1},
+                            "ready": {"market.quote": 3, "account.orders": 1, "order.status": 1},
+                            "errors_total": 0,
+                            "errors": [],
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": 1700000024,
+                        "run_id": "r9",
+                        "stage": "skill_hydration",
+                        "event": "summary",
+                        "payload": {
+                            "used_runner": True,
+                            "runner_source": "auto.composite_skill_runner",
+                            "attempted": {"market.quote": 3, "account.orders": 1, "order.status": 1},
+                            "ready": {"market.quote": 0, "account.orders": 0, "order.status": 0},
+                            "errors_total": 5,
+                            "errors": [
+                                "market.quote(005930):error:TimeoutError",
+                                "market.quote(000660):error:TimeoutError",
+                                "market.quote(035420):error:TimeoutError",
+                                "account.orders:ask:account required",
+                                "order.status:error:TimeoutError",
+                            ],
+                        },
+                    }
+                ),
             ]
         )
         + "\n",
@@ -176,6 +214,18 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
     assert data["strategist_llm"]["token_usage"]["completion_tokens_total"] == 100
     assert data["strategist_llm"]["token_usage"]["total_tokens_total"] == 350
     assert abs(float(data["strategist_llm"]["token_usage"]["estimated_cost_usd_total"]) - 0.00225) < 1e-12
+    assert data["skill_hydration"]["total"] == 2
+    assert data["skill_hydration"]["used_runner_total"] == 2
+    assert data["skill_hydration"]["fallback_hint_total"] == 1
+    assert abs(float(data["skill_hydration"]["fallback_hint_rate"]) - 0.5) < 1e-12
+    assert data["skill_hydration"]["errors_total_sum"] == 5
+    assert data["skill_hydration"]["runner_source_total"]["state.skill_runner"] == 1
+    assert data["skill_hydration"]["runner_source_total"]["auto.composite_skill_runner"] == 1
+    assert data["skill_hydration"]["attempted_total_by_skill"]["market.quote"] == 6
+    assert data["skill_hydration"]["ready_total_by_skill"]["market.quote"] == 3
+    assert data["skill_hydration"]["errors_total_by_skill"]["market.quote"] == 3
+    assert data["skill_hydration"]["errors_total_by_skill"]["account.orders"] == 1
+    assert data["skill_hydration"]["errors_total_by_skill"]["order.status"] == 1
 
 
 def test_generate_metrics_report_supports_iso_ts_and_latest_day(tmp_path: Path):
@@ -238,3 +288,12 @@ def test_generate_metrics_report_empty_has_llm_summary_keys(tmp_path: Path):
     assert data["strategist_llm"]["token_usage"]["completion_tokens_total"] == 0
     assert data["strategist_llm"]["token_usage"]["total_tokens_total"] == 0
     assert data["strategist_llm"]["token_usage"]["estimated_cost_usd_total"] == 0.0
+    assert data["skill_hydration"]["total"] == 0
+    assert data["skill_hydration"]["used_runner_total"] == 0
+    assert data["skill_hydration"]["fallback_hint_total"] == 0
+    assert data["skill_hydration"]["fallback_hint_rate"] == 0.0
+    assert data["skill_hydration"]["errors_total_sum"] == 0
+    assert data["skill_hydration"]["runner_source_total"] == {}
+    assert data["skill_hydration"]["attempted_total_by_skill"] == {}
+    assert data["skill_hydration"]["ready_total_by_skill"] == {}
+    assert data["skill_hydration"]["errors_total_by_skill"] == {}

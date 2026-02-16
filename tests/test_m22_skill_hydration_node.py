@@ -43,6 +43,30 @@ class _FakeSkillRunnerFail:
         return {"result": {"action": "error", "meta": {"error_type": "unknown_skill"}}}
 
 
+class _CaptureLogger:
+    def __init__(self) -> None:
+        self.rows: list[Dict[str, Any]] = []
+
+    def log(
+        self,
+        *,
+        run_id: str,
+        stage: str,
+        event: str,
+        payload: Dict[str, Any],
+        ts: str | None = None,
+    ) -> Dict[str, Any]:
+        row = {
+            "run_id": run_id,
+            "stage": stage,
+            "event": event,
+            "payload": payload,
+            "ts": ts,
+        }
+        self.rows.append(row)
+        return row
+
+
 def test_m22_hydration_node_populates_skill_results_for_scanner_monitor():
     state = {
         "run_id": "r-m22-5-ok",
@@ -72,6 +96,24 @@ def test_m22_hydration_node_populates_skill_results_for_scanner_monitor():
     assert out["monitor"]["order_status_loaded"] is True
     assert out["monitor"]["order_lifecycle_loaded"] is True
     assert out["monitor"]["order_lifecycle"]["stage"] == "partial_fill"
+
+
+def test_m22_hydration_logs_skill_hydration_summary_event():
+    logger = _CaptureLogger()
+    state = {
+        "run_id": "r-m22-9-log",
+        "event_logger": logger,
+        "skill_runner": _FakeSkillRunnerOk(),
+        "candidates": [{"symbol": "AAA"}],
+        "order_ref": {"ord_no": "ord-1", "symbol": "AAA", "ord_dt": "20260216", "qry_tp": "3"},
+    }
+    out = hydrate_skill_results_node(state)
+    rows = [r for r in logger.rows if r.get("stage") == "skill_hydration" and r.get("event") == "summary"]
+    assert len(rows) == 1
+    assert rows[0]["payload"]["used_runner"] is True
+    assert rows[0]["payload"]["runner_source"] == "state.skill_runner"
+    assert rows[0]["payload"]["errors_total"] == 0
+    assert out["skill_fetch"]["used_runner"] is True
 
 
 def test_m22_hydration_node_failure_keeps_pipeline_safe():
