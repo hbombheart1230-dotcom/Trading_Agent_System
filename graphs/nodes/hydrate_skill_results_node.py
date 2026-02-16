@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
+import os
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
 
@@ -10,6 +11,10 @@ def _norm_symbol(v: Any) -> str:
     if s.startswith("A") and len(s) > 1 and s[1:].isdigit():
         return s[1:]
     return s
+
+
+def _is_trueish(v: Any) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def _unique_symbols(candidates: Iterable[Any], *, limit: int = 5) -> List[str]:
@@ -37,6 +42,48 @@ def _to_plain(v: Any) -> Any:
     if isinstance(v, list):
         return [_to_plain(x) for x in v]
     return v
+
+
+def _build_composite_skill_runner(state: Dict[str, Any]) -> Any:
+    from libs.skills.runner import CompositeSkillRunner
+    return CompositeSkillRunner.from_env()
+
+
+def _resolve_runner(state: Dict[str, Any]) -> Tuple[Any, str, List[str]]:
+    errors: List[str] = []
+
+    runner = state.get("skill_runner")
+    if runner is not None and hasattr(runner, "run"):
+        return runner, "state.skill_runner", errors
+
+    factory = state.get("skill_runner_factory")
+    if callable(factory):
+        try:
+            try:
+                built = factory(state)
+            except TypeError:
+                built = factory()
+            if built is not None and hasattr(built, "run"):
+                state["skill_runner"] = built
+                return built, "state.skill_runner_factory", errors
+            errors.append("runner_factory:invalid_runner")
+        except Exception as e:
+            errors.append(f"runner_factory:exception:{type(e).__name__}")
+
+    auto_requested = _is_trueish(state.get("auto_skill_runner")) or _is_trueish(
+        os.getenv("M22_AUTO_SKILL_RUNNER", "")
+    )
+    if auto_requested:
+        try:
+            built = _build_composite_skill_runner(state)
+            if built is not None and hasattr(built, "run"):
+                state["skill_runner"] = built
+                return built, "auto.composite_skill_runner", errors
+            errors.append("auto_runner:invalid_runner")
+        except Exception as e:
+            errors.append(f"auto_runner:exception:{type(e).__name__}")
+
+    return None, "none", errors
 
 
 def _skill_output_to_record(out: Any) -> Dict[str, Any]:
@@ -173,14 +220,16 @@ def hydrate_skill_results_node(state: Dict[str, Any]) -> Dict[str, Any]:
       - `order_ref`: {ord_no, symbol, ord_dt, qry_tp} for order.status
       - `run_id`: existing run id
     """
-    runner = state.get("skill_runner")
+    runner, runner_source, runner_errors = _resolve_runner(state)
     if runner is None or not hasattr(runner, "run"):
+        errs = list(runner_errors)
         state["skill_fetch"] = {
             "used_runner": False,
+            "runner_source": runner_source,
             "attempted": {"market.quote": 0, "account.orders": 0, "order.status": 0},
             "ready": {"market.quote": 0, "account.orders": 0, "order.status": 0},
-            "errors_total": 0,
-            "errors": [],
+            "errors_total": len(errs),
+            "errors": errs,
         }
         return state
 
@@ -206,9 +255,10 @@ def hydrate_skill_results_node(state: Dict[str, Any]) -> Dict[str, Any]:
         skill_results["order.status"] = order_status_value
     state["skill_results"] = skill_results
 
-    errors = list(mq.get("errors") or []) + list(ao.get("errors") or []) + list(os.get("errors") or [])
+    errors = list(runner_errors) + list(mq.get("errors") or []) + list(ao.get("errors") or []) + list(os.get("errors") or [])
     state["skill_fetch"] = {
         "used_runner": True,
+        "runner_source": runner_source,
         "ts_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "attempted": {
             "market.quote": int(mq.get("attempted") or 0),

@@ -58,6 +58,7 @@ def test_m22_hydration_node_populates_skill_results_for_scanner_monitor():
 
     out = hydrate_skill_results_node(state)
     assert out["skill_fetch"]["used_runner"] is True
+    assert out["skill_fetch"]["runner_source"] == "state.skill_runner"
     assert out["skill_fetch"]["attempted"]["market.quote"] == 2
     assert out["skill_fetch"]["errors_total"] == 0
     assert isinstance(out.get("skill_results"), dict)
@@ -88,6 +89,7 @@ def test_m22_hydration_node_failure_keeps_pipeline_safe():
 
     out = hydrate_skill_results_node(state)
     assert out["skill_fetch"]["used_runner"] is True
+    assert out["skill_fetch"]["runner_source"] == "state.skill_runner"
     assert out["skill_fetch"]["errors_total"] >= 2
 
     out = scanner_node(out)
@@ -105,6 +107,7 @@ def test_m22_hydration_demo_script_outputs_fetch_summary(capsys):
     assert rc == 0
     obj = json.loads(out)
     assert obj["skill_fetch"]["used_runner"] is True
+    assert obj["skill_fetch"]["runner_source"] == "state.skill_runner"
     assert "attempted" in obj["skill_fetch"]
     assert "monitor" in obj
     assert "scanner_skill" in obj
@@ -118,3 +121,58 @@ def test_m22_hydration_demo_script_timeout_mode(capsys):
     assert obj["skill_fetch"]["errors_total"] >= 1
     assert obj["scanner_skill"]["fallback"] is True
     assert obj["monitor"]["order_status_fallback"] is True
+
+
+def test_m22_hydration_uses_state_runner_factory_when_runner_missing():
+    state = {
+        "run_id": "r-m22-8-factory",
+        "skill_runner_factory": lambda: _FakeSkillRunnerOk(),
+        "candidates": [{"symbol": "AAA"}],
+        "plan": {"thesis": "demo"},
+    }
+
+    out = hydrate_skill_results_node(state)
+    assert out["skill_fetch"]["used_runner"] is True
+    assert out["skill_fetch"]["runner_source"] == "state.skill_runner_factory"
+    assert out["skill_fetch"]["attempted"]["market.quote"] == 1
+
+
+def test_m22_hydration_can_auto_build_composite_runner(monkeypatch):
+    class _AutoRunner(_FakeSkillRunnerOk):
+        pass
+
+    monkeypatch.setattr(
+        "graphs.nodes.hydrate_skill_results_node._build_composite_skill_runner",
+        lambda state: _AutoRunner(),
+    )
+
+    state = {
+        "run_id": "r-m22-8-auto",
+        "auto_skill_runner": True,
+        "candidates": [{"symbol": "AAA"}],
+    }
+    out = hydrate_skill_results_node(state)
+    assert out["skill_fetch"]["used_runner"] is True
+    assert out["skill_fetch"]["runner_source"] == "auto.composite_skill_runner"
+    assert out["skill_fetch"]["attempted"]["market.quote"] == 1
+
+
+def test_m22_hydration_auto_runner_failure_is_safe(monkeypatch):
+    def _raise(state):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "graphs.nodes.hydrate_skill_results_node._build_composite_skill_runner",
+        _raise,
+    )
+
+    state = {
+        "run_id": "r-m22-8-auto-fail",
+        "auto_skill_runner": True,
+        "candidates": [{"symbol": "AAA"}],
+    }
+    out = hydrate_skill_results_node(state)
+    assert out["skill_fetch"]["used_runner"] is False
+    assert out["skill_fetch"]["runner_source"] == "none"
+    assert out["skill_fetch"]["errors_total"] >= 1
+    assert any("auto_runner:exception:RuntimeError" in x for x in out["skill_fetch"]["errors"])

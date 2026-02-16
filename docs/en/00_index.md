@@ -31,3 +31,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m22_5_skill_hydration_node.md -> M22-5 skill hydration node for scanner/monitor pipeline
 - docs/plan/m22_6_graph_hydration_wiring.md -> M22-6 graph spine hydration wiring
 - docs/plan/m22_7_hydration_smoke_gate.md -> M22-7 hydration pass/fail smoke gate
+- docs/plan/m22_8_auto_composite_runner_connection.md -> M22-8 auto composite runner connection
