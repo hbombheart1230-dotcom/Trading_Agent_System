@@ -88,9 +88,11 @@ Trading_Agent_System/
 - `docs/plan/m22_4_skill_dto_contract_standardization.md`
 - `docs/plan/m22_5_skill_hydration_node.md`
 - `docs/plan/m22_6_graph_hydration_wiring.md`
+- `docs/plan/m22_7_hydration_smoke_gate.md`
 - `scripts/demo_m22_skill_flow.py`
 - `scripts/demo_m22_skill_hydration.py`
 - `scripts/demo_m22_graph_with_hydration.py`
+- `scripts/smoke_m22_hydration.py`
 
 ## Note
 
