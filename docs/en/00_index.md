@@ -28,3 +28,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m22_2_monitor_order_lifecycle.md -> M22-2 monitor lifecycle mapping
 - docs/plan/m22_3_skill_timeout_error_quality_gates.md -> M22-3 skill timeout/error fallback quality gates
 - docs/plan/m22_4_skill_dto_contract_standardization.md -> M22-4 shared skill DTO contract adapter
+- docs/plan/m22_5_skill_hydration_node.md -> M22-5 skill hydration node for scanner/monitor pipeline

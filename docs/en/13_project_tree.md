@@ -86,7 +86,9 @@ Trading_Agent_System/
 - `docs/plan/m22_2_monitor_order_lifecycle.md`
 - `docs/plan/m22_3_skill_timeout_error_quality_gates.md`
 - `docs/plan/m22_4_skill_dto_contract_standardization.md`
+- `docs/plan/m22_5_skill_hydration_node.md`
 - `scripts/demo_m22_skill_flow.py`
+- `scripts/demo_m22_skill_hydration.py`
 
 ## Note
 
