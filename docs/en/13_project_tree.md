@@ -1,6 +1,6 @@
 # 13. Project Tree
 
-- Last updated: 2026-02-15
+- Last updated: 2026-02-16
 - Scope: high-level repository layout for implementation and operations.
 
 ## Top-Level Layout
@@ -91,10 +91,13 @@ Trading_Agent_System/
 - `docs/plan/m22_7_hydration_smoke_gate.md`
 - `docs/plan/m22_8_auto_composite_runner_connection.md`
 - `docs/plan/m22_9_hydration_metrics_reporting.md`
+- `docs/plan/m22_10_closeout_and_handover.md`
 - `scripts/demo_m22_skill_flow.py`
 - `scripts/demo_m22_skill_hydration.py`
 - `scripts/demo_m22_graph_with_hydration.py`
 - `scripts/smoke_m22_hydration.py`
+- `scripts/run_m22_closeout_check.py`
+- `tests/test_m22_10_closeout_check.py`
 
 ## Note
 

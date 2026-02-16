@@ -68,7 +68,7 @@ M21 implementation status (2026-02-15):
 - M21-9: legacy `Commander` bridge to canonical runtime (`run_canonical`)
 - M21-10: documentation sync and closeout
 
-M22 implementation status (2026-02-15, in progress):
+M22 implementation status (2026-02-16, complete):
 - M22-1: skill-native Scanner/Monitor baseline (`market.quote`, `account.orders`, `order.status`) + offline demo
 - M22-2: Monitor order lifecycle mapping (`working/partial_fill/filled/cancelled/rejected`) with progress/terminal flags
 - M22-3: skill timeout/error fallback quality gates with operator-visible fallback reasons
@@ -78,6 +78,7 @@ M22 implementation status (2026-02-15, in progress):
 - M22-7: operator smoke gate script for hydration/fallback pass-fail checks
 - M22-8: opt-in auto connection to `CompositeSkillRunner.from_env()` in hydration node
 - M22-9: hydration/fallback metrics integrated into daily metrics report
+- M22-10: closeout check script + handover documentation
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
