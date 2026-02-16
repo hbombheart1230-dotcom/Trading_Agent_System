@@ -74,6 +74,7 @@ M22 implementation status (2026-02-15, in progress):
 - M22-3: skill timeout/error fallback quality gates with operator-visible fallback reasons
 - M22-4: shared skill DTO contract adapter (`m22.skill.v1`) for Scanner/Monitor
 - M22-5: skill hydration node that fetches `market.quote`/`account.orders`/`order.status` into canonical `state["skill_results"]`
+- M22-6: graph-spine wiring for skill hydration (before scanner, including retry loop)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

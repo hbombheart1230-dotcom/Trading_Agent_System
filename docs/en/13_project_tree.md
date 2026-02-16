@@ -87,8 +87,10 @@ Trading_Agent_System/
 - `docs/plan/m22_3_skill_timeout_error_quality_gates.md`
 - `docs/plan/m22_4_skill_dto_contract_standardization.md`
 - `docs/plan/m22_5_skill_hydration_node.md`
+- `docs/plan/m22_6_graph_hydration_wiring.md`
 - `scripts/demo_m22_skill_flow.py`
 - `scripts/demo_m22_skill_hydration.py`
+- `scripts/demo_m22_graph_with_hydration.py`
 
 ## Note
 
