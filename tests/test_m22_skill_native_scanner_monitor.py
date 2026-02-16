@@ -30,6 +30,7 @@ def test_m22_scanner_uses_skill_account_orders_for_penalty():
 
     out = scanner_node(state)
     assert out["selected"]["symbol"] == "BBB"
+    assert out["scanner_skill"]["contract_version"] == "m22.skill.v1"
     assert out["scanner_skill"]["used"] is True
     assert out["scanner_skill"]["account_order_rows"] == 1
     assert out["scanner_skill"]["fallback"] is False
@@ -58,6 +59,7 @@ def test_m22_monitor_reads_order_status_dto_without_changing_intent_shape():
     out = monitor_node(state)
     assert isinstance(out.get("intents"), list) and len(out["intents"]) == 1
     assert out["intents"][0]["symbol"] == "AAA"
+    assert out["monitor"]["skill_contract_version"] == "m22.skill.v1"
     assert out["monitor"]["order_status_loaded"] is True
     assert out["monitor"]["order_status"]["status"] == "PARTIAL"
     assert out["monitor"]["order_status"]["ord_no"] == "ord-1"
@@ -150,6 +152,8 @@ def test_m22_demo_script_outputs_skill_visible_summary(capsys):
     obj = json.loads(out)
 
     assert rc == 0
+    assert obj["skill_contract_version"]["scanner"] == "m22.skill.v1"
+    assert obj["skill_contract_version"]["monitor"] == "m22.skill.v1"
     assert obj["scanner_skill"]["used"] is True
     assert obj["selected"]["symbol"] in ("005930", "000660", "035420")
     assert isinstance(obj["top"], list) and len(obj["top"]) >= 1

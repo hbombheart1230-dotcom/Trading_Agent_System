@@ -83,6 +83,10 @@ def _to_summary(state: Dict[str, Any]) -> Dict[str, Any]:
             "risk_score": selected.get("risk_score"),
             "confidence": selected.get("confidence"),
         },
+        "skill_contract_version": {
+            "scanner": (state.get("scanner_skill") or {}).get("contract_version"),
+            "monitor": (state.get("monitor") or {}).get("skill_contract_version"),
+        },
         "scanner_skill": state.get("scanner_skill"),
         "monitor": state.get("monitor"),
         "order_lifecycle": (state.get("monitor") or {}).get("order_lifecycle"),
