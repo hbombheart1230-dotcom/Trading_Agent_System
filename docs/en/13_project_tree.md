@@ -103,10 +103,12 @@ Trading_Agent_System/
 
 - `docs/plan/m23_1_runtime_resilience_state_contract.md`
 - `docs/plan/m23_2_runtime_circuit_breaker_core.md`
+- `docs/plan/m23_3_strategist_runtime_circuit_integration.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`
 - `tests/test_m23_1_runtime_resilience_state_contract.py`
 - `tests/test_m23_2_runtime_circuit_breaker_core.py`
+- `tests/test_m23_3_decide_trade_runtime_circuit_integration.py`
 
 ## Note
 

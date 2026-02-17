@@ -83,6 +83,7 @@ M22 implementation status (2026-02-16, complete):
 M23 implementation status (2026-02-17, in progress):
 - M23-1: runtime resilience state contract scaffold (`state["resilience"]`, `state["circuit"]["strategist"]`) + commander entry normalization
 - M23-2: runtime-shared circuit breaker core module (`gate/failure/success`) + transition regression tests
+- M23-3: strategist decision path runtime circuit integration (`decide_trade` gate + success/failure state updates)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
