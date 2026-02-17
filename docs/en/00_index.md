@@ -52,3 +52,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m24_6_guard_precedence_regression_bundle.md -> M24-6 guard precedence regression bundle
 - docs/plan/m24_7_intent_state_ops_visibility.md -> M24-7 intent state/journal ops visibility query and stuck-executing gate
 - docs/plan/m24_8_closeout_and_m25_handover.md -> M24-8 final closeout and M25 handover
+- docs/plan/m25_1_metric_schema_freeze_v1.md -> M25-1 metric schema freeze v1 and validation gate

@@ -56,6 +56,15 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
                 ),
                 json.dumps(
                     {
+                        "ts": 1700000004,
+                        "run_id": "r3",
+                        "stage": "execute_from_packet",
+                        "event": "execution",
+                        "payload": {"allowed": True},
+                    }
+                ),
+                json.dumps(
+                    {
                         "ts": 1700000005,
                         "run_id": "r3",
                         "stage": "execute_from_packet",
@@ -187,13 +196,24 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
     assert md.exists() and js.exists()
 
     data = json.loads(js.read_text(encoding="utf-8"))
+    assert data["schema_version"] == "metrics.v1"
     assert data["intents_created_total"] == 1
     assert data["intents_approved_total"] == 1
     assert data["intents_blocked_total"] == 1
+    assert data["intents_executed_total"] == 1
     assert data["intents_blocked_by_reason"]["Symbol blocked"] == 1
+    assert data["execution"]["intents_created"] == 1
+    assert data["execution"]["intents_approved"] == 1
+    assert data["execution"]["intents_blocked"] == 1
+    assert data["execution"]["intents_executed"] == 1
+    assert data["execution"]["blocked_reason_topN"][0]["reason"] == "Symbol blocked"
+    assert data["execution"]["blocked_reason_topN"][0]["count"] == 1
     assert data["execution_latency_seconds"]["count"] == 2.0
     assert abs(float(data["execution_latency_seconds"]["avg"]) - 4.5) < 1e-9
     assert data["api_error_total_by_api_id"]["kt10000"] == 1
+    assert data["broker_api"]["api_error_total_by_api_id"]["kt10000"] == 1
+    assert data["broker_api"]["api_429_total"] == 0
+    assert data["broker_api"]["api_429_rate"] == 0.0
     assert data["strategist_llm"]["total"] == 3
     assert data["strategist_llm"]["ok_total"] == 1
     assert data["strategist_llm"]["fail_total"] == 2
@@ -274,6 +294,7 @@ def test_generate_metrics_report_empty_has_llm_summary_keys(tmp_path: Path):
     _, js = generate_metrics_report(events, out_dir, day="2026-02-14")
     data = json.loads(js.read_text(encoding="utf-8"))
 
+    assert data["schema_version"] == "metrics.v1"
     assert data["events"] == 0
     assert data["strategist_llm"]["total"] == 0
     assert data["strategist_llm"]["ok_total"] == 0
@@ -297,3 +318,50 @@ def test_generate_metrics_report_empty_has_llm_summary_keys(tmp_path: Path):
     assert data["skill_hydration"]["attempted_total_by_skill"] == {}
     assert data["skill_hydration"]["ready_total_by_skill"] == {}
     assert data["skill_hydration"]["errors_total_by_skill"] == {}
+    assert data["intents_executed_total"] == 0
+    assert data["execution"]["intents_created"] == 0
+    assert data["execution"]["intents_approved"] == 0
+    assert data["execution"]["intents_blocked"] == 0
+    assert data["execution"]["intents_executed"] == 0
+    assert data["execution"]["blocked_reason_topN"] == []
+    assert data["broker_api"]["api_error_total_by_api_id"] == {}
+    assert data["broker_api"]["api_429_total"] == 0
+    assert data["broker_api"]["api_429_rate"] == 0.0
+
+
+def test_generate_metrics_report_broker_api_429_rate(tmp_path: Path):
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-02-17T00:00:00+00:00",
+                        "run_id": "r1",
+                        "stage": "execute_from_packet",
+                        "event": "error",
+                        "payload": {"api_id": "ORDER_SUBMIT", "status_code": 429, "error": "too many requests"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-02-17T00:00:01+00:00",
+                        "run_id": "r2",
+                        "stage": "execute_from_packet",
+                        "event": "error",
+                        "payload": {"api_id": "ORDER_SUBMIT", "status_code": 500, "error": "server error"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "reports"
+    _, js = generate_metrics_report(events, out_dir, day="2026-02-17")
+    data = json.loads(js.read_text(encoding="utf-8"))
+
+    assert data["broker_api"]["api_error_total_by_api_id"]["ORDER_SUBMIT"] == 2
+    assert data["broker_api"]["api_429_total"] == 1
+    assert abs(float(data["broker_api"]["api_429_rate"]) - 0.5) < 1e-12

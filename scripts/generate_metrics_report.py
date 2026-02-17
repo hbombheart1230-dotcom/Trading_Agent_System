@@ -128,6 +128,47 @@ def _extract_api_id(row: Dict[str, Any]) -> str:
     return "unknown"
 
 
+def _looks_like_429(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        if int(float(value)) == 429:
+            return True
+    except Exception:
+        pass
+
+    s = str(value).strip().lower()
+    if not s:
+        return False
+    if s == "429":
+        return True
+    if "429" in s:
+        return True
+    return False
+
+
+def _is_429_error_row(row: Dict[str, Any]) -> bool:
+    payload = row.get("payload")
+    if not isinstance(payload, dict):
+        return False
+
+    for key in ("status_code", "http_status", "http_status_code", "code", "error_code"):
+        if _looks_like_429(payload.get(key)):
+            return True
+
+    nested = payload.get("response")
+    if isinstance(nested, dict):
+        for key in ("status_code", "http_status", "code"):
+            if _looks_like_429(nested.get(key)):
+                return True
+
+    if _looks_like_429(payload.get("error")):
+        return True
+    if _looks_like_429(payload.get("error_type")):
+        return True
+    return False
+
+
 def _numeric_summary(values: List[float]) -> Dict[str, float]:
     vals = sorted(float(v) for v in values if float(v) >= 0.0)
     if not vals:
@@ -217,13 +258,22 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         md_path = out_dir / f"metrics_{day}.md"
         js_path = out_dir / f"metrics_{day}.json"
         empty = {
+            "schema_version": "metrics.v1",
             "day": day,
             "events": 0,
             "runs": 0,
             "intents_created_total": 0,
             "intents_approved_total": 0,
             "intents_blocked_total": 0,
+            "intents_executed_total": 0,
             "intents_blocked_by_reason": {},
+            "execution": {
+                "intents_created": 0,
+                "intents_approved": 0,
+                "intents_blocked": 0,
+                "intents_executed": 0,
+                "blocked_reason_topN": [],
+            },
             "execution_latency_seconds": {"count": 0.0, "avg": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0},
             "strategist_llm": {
                 "total": 0,
@@ -265,6 +315,11 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 "runtime_status_total": {},
                 "cooldown_reason_total": {},
             },
+            "broker_api": {
+                "api_error_total_by_api_id": {},
+                "api_429_total": 0,
+                "api_429_rate": 0.0,
+            },
             "api_error_total_by_api_id": {},
         }
         md_path.write_text(f"# Metrics Report ({day})\n\nNo events found.\n", encoding="utf-8")
@@ -279,8 +334,10 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     intents_created = 0
     intents_approved = 0
     intents_blocked = 0
+    intents_executed = 0
     blocks_by_reason: Counter[str] = Counter()
     api_errors_by_id: Counter[str] = Counter()
+    api_429_total = 0
     llm_total = 0
     llm_ok_total = 0
     llm_fail_total = 0
@@ -329,8 +386,13 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 intents_blocked += 1
                 blocks_by_reason[_extract_guard_reason(r)] += 1
 
+        if stage == "execute_from_packet" and event == "execution":
+            intents_executed += 1
+
         if event == "error":
             api_errors_by_id[_extract_api_id(r)] += 1
+            if _is_429_error_row(r):
+                api_429_total += 1
 
         if stage == "strategist_llm" and event == "result":
             payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
@@ -459,6 +521,8 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     llm_attempts = _numeric_summary(llm_attempt_values)
     llm_success_rate = (float(llm_ok_total) / float(llm_total)) if llm_total > 0 else 0.0
     llm_circuit_open_rate = (float(llm_circuit_open_total) / float(llm_total)) if llm_total > 0 else 0.0
+    api_error_total = int(sum(int(v) for v in api_errors_by_id.values()))
+    api_429_rate = (float(api_429_total) / float(api_error_total)) if api_error_total > 0 else 0.0
     skill_hydration_fallback_rate = (
         float(skill_hydration_fallback_hint_total) / float(skill_hydration_total)
         if skill_hydration_total > 0
@@ -466,13 +530,25 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     )
 
     summary = {
+        "schema_version": "metrics.v1",
         "day": day,
         "events": len(day_rows),
         "runs": len(run_ids),
         "intents_created_total": intents_created,
         "intents_approved_total": intents_approved,
         "intents_blocked_total": intents_blocked,
+        "intents_executed_total": intents_executed,
         "intents_blocked_by_reason": dict(blocks_by_reason),
+        "execution": {
+            "intents_created": int(intents_created),
+            "intents_approved": int(intents_approved),
+            "intents_blocked": int(intents_blocked),
+            "intents_executed": int(intents_executed),
+            "blocked_reason_topN": [
+                {"reason": str(reason), "count": int(cnt)}
+                for reason, cnt in blocks_by_reason.most_common(5)
+            ],
+        },
         "execution_latency_seconds": latency,
         "strategist_llm": {
             "total": llm_total,
@@ -514,17 +590,43 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             "runtime_status_total": dict(commander_runtime_status_total),
             "cooldown_reason_total": dict(commander_cooldown_reason_total),
         },
+        "broker_api": {
+            "api_error_total_by_api_id": dict(api_errors_by_id),
+            "api_429_total": int(api_429_total),
+            "api_429_rate": float(api_429_rate),
+        },
         "api_error_total_by_api_id": dict(api_errors_by_id),
     }
 
     md_lines = [
         f"# Metrics Report ({day})",
         "",
+        f"- schema_version: **{summary['schema_version']}**",
         f"- events: **{summary['events']}**",
         f"- runs: **{summary['runs']}**",
         f"- intents_created_total: **{intents_created}**",
         f"- intents_approved_total: **{intents_approved}**",
         f"- intents_blocked_total: **{intents_blocked}**",
+        f"- intents_executed_total: **{intents_executed}**",
+        "",
+        "## Execution (Schema v1)",
+        "",
+        f"- intents_created: **{intents_created}**",
+        f"- intents_approved: **{intents_approved}**",
+        f"- intents_blocked: **{intents_blocked}**",
+        f"- intents_executed: **{intents_executed}**",
+        "",
+        "### blocked_reason_topN",
+        "",
+    ]
+
+    if blocks_by_reason:
+        for reason, cnt in blocks_by_reason.most_common(5):
+            md_lines.append(f"- {reason}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += [
         "",
         "## Strategist LLM",
         "",
@@ -695,6 +797,15 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             md_lines.append(f"- {api_id}: {cnt}")
     else:
         md_lines.append("- (none)")
+
+    md_lines += [
+        "",
+        "## Broker API (Schema v1)",
+        "",
+        f"- api_error_total: **{api_error_total}**",
+        f"- api_429_total: **{int(api_429_total)}**",
+        f"- api_429_rate: **{api_429_rate:.2%}**",
+    ]
 
     md_path = out_dir / f"metrics_{day}.md"
     js_path = out_dir / f"metrics_{day}.json"
