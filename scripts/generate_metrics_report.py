@@ -256,6 +256,15 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 "ready_total_by_skill": {},
                 "errors_total_by_skill": {},
             },
+            "commander_resilience": {
+                "total": 0,
+                "cooldown_transition_total": 0,
+                "intervention_total": 0,
+                "error_total": 0,
+                "transition_total": {},
+                "runtime_status_total": {},
+                "cooldown_reason_total": {},
+            },
             "api_error_total_by_api_id": {},
         }
         md_path.write_text(f"# Metrics Report ({day})\n\nNo events found.\n", encoding="utf-8")
@@ -294,6 +303,13 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     skill_hydration_attempted_total: Counter[str] = Counter()
     skill_hydration_ready_total: Counter[str] = Counter()
     skill_hydration_errors_by_skill: Counter[str] = Counter()
+    commander_total = 0
+    commander_cooldown_transition_total = 0
+    commander_intervention_total = 0
+    commander_error_total = 0
+    commander_transition_total: Counter[str] = Counter()
+    commander_runtime_status_total: Counter[str] = Counter()
+    commander_cooldown_reason_total: Counter[str] = Counter()
 
     for r in day_rows:
         stage = str(r.get("stage") or "")
@@ -414,6 +430,30 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 for e in errors:
                     skill_hydration_errors_by_skill[_extract_skill_error_tag(e)] += 1
 
+        if stage == "commander_router":
+            payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+            commander_total += 1
+
+            status = str(payload.get("status") or "").strip()
+            if status:
+                commander_runtime_status_total[status] += 1
+
+            if event == "transition":
+                tr = str(payload.get("transition") or "unknown").strip().lower() or "unknown"
+                commander_transition_total[tr] += 1
+                if tr == "cooldown":
+                    commander_cooldown_transition_total += 1
+
+            if event == "intervention":
+                commander_intervention_total += 1
+
+            if event == "error":
+                commander_error_total += 1
+
+            if event == "resilience":
+                reason = str(payload.get("reason") or "unknown").strip() or "unknown"
+                commander_cooldown_reason_total[reason] += 1
+
     latency = _latency_summary(day_rows)
     llm_latency_ms = _numeric_summary(llm_latency_ms_values)
     llm_attempts = _numeric_summary(llm_attempt_values)
@@ -464,6 +504,15 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             "attempted_total_by_skill": dict(skill_hydration_attempted_total),
             "ready_total_by_skill": dict(skill_hydration_ready_total),
             "errors_total_by_skill": dict(skill_hydration_errors_by_skill),
+        },
+        "commander_resilience": {
+            "total": int(commander_total),
+            "cooldown_transition_total": int(commander_cooldown_transition_total),
+            "intervention_total": int(commander_intervention_total),
+            "error_total": int(commander_error_total),
+            "transition_total": dict(commander_transition_total),
+            "runtime_status_total": dict(commander_runtime_status_total),
+            "cooldown_reason_total": dict(commander_cooldown_reason_total),
         },
         "api_error_total_by_api_id": dict(api_errors_by_id),
     }
@@ -584,6 +633,38 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     md_lines += ["", "### Errors By Skill", ""]
     if skill_hydration_errors_by_skill:
         for name, cnt in skill_hydration_errors_by_skill.most_common():
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += [
+        "",
+        "## Commander Resilience",
+        "",
+        f"- total: **{int(commander_total)}**",
+        f"- cooldown_transition_total: **{int(commander_cooldown_transition_total)}**",
+        f"- intervention_total: **{int(commander_intervention_total)}**",
+        f"- error_total: **{int(commander_error_total)}**",
+        "",
+        "### Transition Total",
+        "",
+    ]
+    if commander_transition_total:
+        for name, cnt in commander_transition_total.most_common():
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### Runtime Status Total", ""]
+    if commander_runtime_status_total:
+        for name, cnt in commander_runtime_status_total.most_common():
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### Cooldown Reason Total", ""]
+    if commander_cooldown_reason_total:
+        for name, cnt in commander_cooldown_reason_total.most_common():
             md_lines.append(f"- {name}: {cnt}")
     else:
         md_lines.append("- (none)")

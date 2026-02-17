@@ -93,6 +93,7 @@ M23 implementation status (2026-02-17, in progress):
 - M23-6: operator intervention/resume control (`runtime_control=resume`) + intervention runbook/logging
 - M23-7: commander resilience ops query CLI (`query_commander_resilience_events.py`) for cooldown/error/intervention visibility
 - M23-8: resilience closeout check script and handover (`run_m23_resilience_closeout_check.py`)
+- M23-9: commander resilience metrics integrated into daily metrics report (`commander_resilience` block)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
