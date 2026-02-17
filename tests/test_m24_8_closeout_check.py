@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 from scripts.run_m24_closeout_check import main as closeout_main
@@ -54,3 +56,53 @@ def test_m24_8_closeout_check_fails_when_stuck_injected(tmp_path: Path, capsys):
     assert obj["query"]["rc"] == 3
     assert obj["state_summary"]["stuck_executing_total"] >= 1
     assert any("stuck_executing_total" in x for x in obj["failures"])
+
+
+def test_m24_8_guard_script_file_entrypoint_resolves_repo_imports(tmp_path: Path):
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "run_m24_guard_precedence_check.py"
+    intent_log_path = tmp_path / "intents.jsonl"
+    state_db_path = tmp_path / "intent_state.db"
+
+    cp = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--intent-log-path",
+            str(intent_log_path),
+            "--state-db-path",
+            str(state_db_path),
+            "--json",
+        ],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+    )
+    assert cp.returncode == 0, f"stdout={cp.stdout}\nstderr={cp.stderr}"
+    obj = json.loads(cp.stdout.strip())
+    assert obj["ok"] is True
+
+
+def test_m24_8_closeout_script_file_entrypoint_resolves_repo_imports(tmp_path: Path):
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "run_m24_closeout_check.py"
+    intent_log_path = tmp_path / "intents.jsonl"
+    state_db_path = tmp_path / "intent_state.db"
+
+    cp = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--intent-log-path",
+            str(intent_log_path),
+            "--state-db-path",
+            str(state_db_path),
+            "--json",
+        ],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+    )
+    assert cp.returncode == 0, f"stdout={cp.stdout}\nstderr={cp.stderr}"
+    obj = json.loads(cp.stdout.strip())
+    assert obj["ok"] is True
