@@ -76,6 +76,8 @@ M25_NOTIFY_STATE_PATH=data/state/m25_notify_state.json
 M25_NOTIFY_DEDUP_WINDOW_SEC=600
 M25_NOTIFY_RATE_LIMIT_WINDOW_SEC=600
 M25_NOTIFY_MAX_PER_WINDOW=3
+M25_NOTIFY_RETRY_MAX=1
+M25_NOTIFY_RETRY_BACKOFF_SEC=0.5
 M25_NOTIFY_DRY_RUN=false
 M25_NOTIFY_FAIL_ON_ERROR=false
 ```
@@ -83,6 +85,7 @@ M25_NOTIFY_FAIL_ON_ERROR=false
 Noise-control policy:
 - `M25_NOTIFY_DEDUP_WINDOW_SEC`: suppress same batch-alert signature in window.
 - `M25_NOTIFY_RATE_LIMIT_WINDOW_SEC` + `M25_NOTIFY_MAX_PER_WINDOW`: cap total sends in window.
+- `M25_NOTIFY_RETRY_MAX` + `M25_NOTIFY_RETRY_BACKOFF_SEC`: retry transient send failures (`429`/`5xx`/network).
 - suppress reasons are exposed in batch output as `notify.reason` (`dedup_suppressed` / `rate_limited`).
 - provider options: `none`, `webhook`, `slack_webhook` (Slack incoming webhook payload).
 

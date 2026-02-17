@@ -240,6 +240,10 @@ def test_m25_7_ops_batch_forwards_notify_noise_control_args(monkeypatch, tmp_pat
             "300",
             "--notify-max-per-window",
             "2",
+            "--notify-retry-max",
+            "2",
+            "--notify-retry-backoff-sec",
+            "0.2",
             "--json",
         ]
     )
@@ -253,3 +257,5 @@ def test_m25_7_ops_batch_forwards_notify_noise_control_args(monkeypatch, tmp_pat
     assert captured["dedup_window_sec"] == 120
     assert captured["rate_limit_window_sec"] == 300
     assert captured["max_per_window"] == 2
+    assert captured["retry_max"] == 2
+    assert captured["retry_backoff_sec"] == 0.2

@@ -35,6 +35,16 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = str(os.getenv(name, "") or "").strip().lower()
     if not raw:
@@ -108,6 +118,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--notify-max-per-window",
         type=int,
         default=_env_int("M25_NOTIFY_MAX_PER_WINDOW", 3),
+    )
+    p.add_argument(
+        "--notify-retry-max",
+        type=int,
+        default=_env_int("M25_NOTIFY_RETRY_MAX", 1),
+    )
+    p.add_argument(
+        "--notify-retry-backoff-sec",
+        type=float,
+        default=_env_float("M25_NOTIFY_RETRY_BACKOFF_SEC", 0.5),
     )
     p.add_argument(
         "--notify-dry-run",
@@ -283,6 +303,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         dedup_window_sec=max(0, int(args.notify_dedup_window_sec)),
         rate_limit_window_sec=max(0, int(args.notify_rate_limit_window_sec)),
         max_per_window=max(0, int(args.notify_max_per_window)),
+        retry_max=max(0, int(args.notify_retry_max)),
+        retry_backoff_sec=max(0.0, float(args.notify_retry_backoff_sec)),
         dry_run=bool(args.notify_dry_run),
         notify_on=str(args.notify_on),
     )

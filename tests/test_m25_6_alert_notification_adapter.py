@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from urllib import error as urllib_error
 
 import libs.reporting.alert_notifier as notifier
 
@@ -164,3 +165,37 @@ def test_m25_8_notify_slack_webhook_success(monkeypatch):
     assert out["sent"] is True
     assert out["provider"] == "slack_webhook"
     assert out["status_code"] == 200
+
+
+def test_m25_9_notify_webhook_retry_after_429(monkeypatch):
+    calls = {"n": 0}
+
+    def _fake_urlopen(req, timeout=5):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise urllib_error.HTTPError(
+                url="https://example.invalid/webhook",
+                code=429,
+                msg="too many requests",
+                hdrs=None,
+                fp=None,
+            )
+        return _DummyResp()
+
+    monkeypatch.setattr(notifier.urllib_request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(notifier.time, "sleep", lambda _: None)
+
+    out = notifier.notify_batch_result(
+        batch_result={"ok": False, "rc": 3, "day": "2026-02-17"},
+        provider="webhook",
+        webhook_url="https://example.invalid/webhook",
+        notify_on="failure",
+        timeout_sec=5,
+        retry_max=1,
+        retry_backoff_sec=0.01,
+        dry_run=False,
+    )
+    assert calls["n"] == 2
+    assert out["ok"] is True
+    assert out["sent"] is True
+    assert out["reason"] == "sent_after_retry"

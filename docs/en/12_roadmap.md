@@ -115,6 +115,7 @@ M25 implementation status (2026-02-17, in progress):
 - M25-6: webhook alert channel adapter + batch notification integration (`libs/reporting/alert_notifier.py`)
 - M25-7: notification noise control (dedup + rate-limit) with state-backed suppression (`dedup_suppressed`, `rate_limited`)
 - M25-8: Slack incoming webhook provider (`slack_webhook`) with shared noise-control policy
+- M25-9: bounded notification retry/backoff policy for transient delivery failures (`429`/`5xx`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

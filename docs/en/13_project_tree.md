@@ -127,6 +127,7 @@ Trading_Agent_System/
 - `docs/plan/m25_6_alert_channel_adapter.md`
 - `docs/plan/m25_7_notification_noise_control.md`
 - `docs/plan/m25_8_slack_webhook_provider.md`
+- `docs/plan/m25_9_notification_retry_policy.md`
 - `docs/runtime/alert_policy_runbook.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`

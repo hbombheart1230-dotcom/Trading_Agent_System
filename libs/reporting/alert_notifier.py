@@ -47,6 +47,13 @@ def _as_int(v: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _as_float(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except Exception:
+        return float(default)
+
+
 def _dedup_key_from_payload(payload: Dict[str, Any]) -> str:
     basis = {
         "day": payload.get("day"),
@@ -122,6 +129,11 @@ def _suppression_reason(
     return ""
 
 
+def _is_retryable_http_status(code: int) -> bool:
+    c = int(code or 0)
+    return c == 429 or (500 <= c < 600)
+
+
 def build_batch_notification_payload(batch_result: Dict[str, Any]) -> Dict[str, Any]:
     closeout = batch_result.get("closeout") if isinstance(batch_result.get("closeout"), dict) else {}
     alert_policy = closeout.get("alert_policy") if isinstance(closeout.get("alert_policy"), dict) else {}
@@ -186,6 +198,8 @@ def send_webhook_json(
     payload: Dict[str, Any],
     timeout_sec: int = 5,
     dry_run: bool = False,
+    retry_max: int = 0,
+    retry_backoff_sec: float = 0.5,
 ) -> NotifyResult:
     url = str(webhook_url or "").strip()
     if not url:
@@ -209,47 +223,73 @@ def send_webhook_json(
             error="",
         )
 
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib_request.Request(
-        url=url,
-        data=body,
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        method="POST",
+    attempts_max = 1 + max(0, _as_int(retry_max, 0))
+    backoff = max(0.0, _as_float(retry_backoff_sec, 0.5))
+    attempts = 0
+    last_err = ""
+    while attempts < attempts_max:
+        attempts += 1
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib_request.Request(
+            url=url,
+            data=body,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(req, timeout=max(1, int(timeout_sec))) as resp:
+                code = int(getattr(resp, "status", 0) or resp.getcode() or 0)
+            ok = 200 <= code < 300
+            return NotifyResult(
+                ok=ok,
+                provider=str(provider_name),
+                sent=True,
+                skipped=False,
+                reason="sent_after_retry" if (ok and attempts > 1) else ("sent" if ok else "non_2xx"),
+                status_code=code,
+                error="",
+            )
+        except urllib_error.HTTPError as e:
+            code = int(getattr(e, "code", 0) or 0)
+            last_err = str(e)
+            if attempts < attempts_max and _is_retryable_http_status(code):
+                if backoff > 0:
+                    time.sleep(backoff * attempts)
+                continue
+            return NotifyResult(
+                ok=False,
+                provider=str(provider_name),
+                sent=True,
+                skipped=False,
+                reason="http_error",
+                status_code=code,
+                error=last_err,
+            )
+        except Exception as e:
+            last_err = str(e)
+            if attempts < attempts_max:
+                if backoff > 0:
+                    time.sleep(backoff * attempts)
+                continue
+            return NotifyResult(
+                ok=False,
+                provider=str(provider_name),
+                sent=True,
+                skipped=False,
+                reason="send_error",
+                status_code=0,
+                error=last_err,
+            )
+
+    return NotifyResult(
+        ok=False,
+        provider=str(provider_name),
+        sent=True,
+        skipped=False,
+        reason="send_error",
+        status_code=0,
+        error=last_err,
     )
-    try:
-        with urllib_request.urlopen(req, timeout=max(1, int(timeout_sec))) as resp:
-            code = int(getattr(resp, "status", 0) or resp.getcode() or 0)
-        ok = 200 <= code < 300
-        return NotifyResult(
-            ok=ok,
-            provider=str(provider_name),
-            sent=True,
-            skipped=False,
-            reason="sent" if ok else "non_2xx",
-            status_code=code,
-            error="",
-        )
-    except urllib_error.HTTPError as e:
-        code = int(getattr(e, "code", 0) or 0)
-        return NotifyResult(
-            ok=False,
-            provider=str(provider_name),
-            sent=True,
-            skipped=False,
-            reason="http_error",
-            status_code=code,
-            error=str(e),
-        )
-    except Exception as e:
-        return NotifyResult(
-            ok=False,
-            provider=str(provider_name),
-            sent=True,
-            skipped=False,
-            reason="send_error",
-            status_code=0,
-            error=str(e),
-        )
 
 
 def notify_batch_result(
@@ -264,6 +304,8 @@ def notify_batch_result(
     dedup_window_sec: int = 600,
     rate_limit_window_sec: int = 600,
     max_per_window: int = 3,
+    retry_max: int = 0,
+    retry_backoff_sec: float = 0.5,
 ) -> Dict[str, Any]:
     p = str(provider or "none").strip().lower()
     trigger = str(notify_on or "failure").strip().lower()
@@ -337,6 +379,8 @@ def notify_batch_result(
             payload=payload,
             timeout_sec=timeout_sec,
             dry_run=_as_bool(dry_run, default=False),
+            retry_max=max(0, _as_int(retry_max, 0)),
+            retry_backoff_sec=max(0.0, _as_float(retry_backoff_sec, 0.5)),
         ).to_dict()
 
         if (
