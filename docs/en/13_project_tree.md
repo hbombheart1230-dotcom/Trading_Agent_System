@@ -125,6 +125,7 @@ Trading_Agent_System/
 - `docs/plan/m25_4_alert_policy_env_profile.md`
 - `docs/plan/m25_5_ops_batch_hook.md`
 - `docs/plan/m25_6_alert_channel_adapter.md`
+- `docs/plan/m25_7_notification_noise_control.md`
 - `docs/runtime/alert_policy_runbook.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`

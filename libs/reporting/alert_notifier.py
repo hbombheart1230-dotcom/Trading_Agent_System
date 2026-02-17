@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict
+from pathlib import Path
+import time
+from typing import Any, Dict, List
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -36,6 +38,88 @@ def _as_bool(v: Any, default: bool = False) -> bool:
     if not s:
         return bool(default)
     return s in ("1", "true", "yes", "y", "on")
+
+
+def _as_int(v: Any, default: int = 0) -> int:
+    try:
+        return int(float(v))
+    except Exception:
+        return int(default)
+
+
+def _dedup_key_from_payload(payload: Dict[str, Any]) -> str:
+    basis = {
+        "day": payload.get("day"),
+        "ok": payload.get("ok"),
+        "rc": payload.get("rc"),
+        "alert_total": ((payload.get("alert_policy") or {}).get("alert_total") if isinstance(payload.get("alert_policy"), dict) else 0),
+        "failures": payload.get("failures") if isinstance(payload.get("failures"), list) else [],
+    }
+    return json.dumps(basis, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _load_notify_state(path: Path) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    events = obj.get("events")
+    if not isinstance(events, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        ts = _as_int(ev.get("ts"), 0)
+        key = str(ev.get("key") or "")
+        if ts <= 0 or not key:
+            continue
+        out.append({"ts": ts, "key": key})
+    return out
+
+
+def _save_notify_state(path: Path, events: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    obj = {"version": 1, "events": events}
+    path.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+
+
+def _prune_events(events: List[Dict[str, Any]], *, now_epoch: int, keep_window_sec: int) -> List[Dict[str, Any]]:
+    if keep_window_sec <= 0:
+        # Keep bounded history for safety when no window is configured.
+        return events[-200:]
+    cutoff = now_epoch - keep_window_sec
+    return [ev for ev in events if _as_int(ev.get("ts"), 0) >= cutoff]
+
+
+def _suppression_reason(
+    *,
+    events: List[Dict[str, Any]],
+    now_epoch: int,
+    dedup_key: str,
+    dedup_window_sec: int,
+    rate_limit_window_sec: int,
+    max_per_window: int,
+) -> str:
+    if dedup_window_sec > 0:
+        dedup_cutoff = now_epoch - dedup_window_sec
+        for ev in events:
+            if str(ev.get("key") or "") != dedup_key:
+                continue
+            if _as_int(ev.get("ts"), 0) >= dedup_cutoff:
+                return "dedup_suppressed"
+
+    if rate_limit_window_sec > 0 and max_per_window > 0:
+        rl_cutoff = now_epoch - rate_limit_window_sec
+        cnt = 0
+        for ev in events:
+            if _as_int(ev.get("ts"), 0) >= rl_cutoff:
+                cnt += 1
+        if cnt >= max_per_window:
+            return "rate_limited"
+    return ""
 
 
 def build_batch_notification_payload(batch_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -152,6 +236,10 @@ def notify_batch_result(
     timeout_sec: int = 5,
     dry_run: bool = False,
     notify_on: str = "failure",
+    state_path: str = "",
+    dedup_window_sec: int = 600,
+    rate_limit_window_sec: int = 600,
+    max_per_window: int = 3,
 ) -> Dict[str, Any]:
     p = str(provider or "none").strip().lower()
     trigger = str(notify_on or "failure").strip().lower()
@@ -189,12 +277,53 @@ def notify_batch_result(
 
     if p == "webhook":
         payload = build_batch_notification_payload(batch_result)
-        return send_webhook_json(
+        now_epoch = int(time.time())
+        dedup_key = _dedup_key_from_payload(payload)
+        dedup_window = max(0, _as_int(dedup_window_sec, 600))
+        rl_window = max(0, _as_int(rate_limit_window_sec, 600))
+        rl_max = max(0, _as_int(max_per_window, 3))
+
+        st_path = Path(str(state_path or "").strip()) if str(state_path or "").strip() else None
+        events: List[Dict[str, Any]] = []
+        if st_path is not None:
+            events = _load_notify_state(st_path)
+            reason = _suppression_reason(
+                events=events,
+                now_epoch=now_epoch,
+                dedup_key=dedup_key,
+                dedup_window_sec=dedup_window,
+                rate_limit_window_sec=rl_window,
+                max_per_window=rl_max,
+            )
+            if reason:
+                return NotifyResult(
+                    ok=True,
+                    provider="webhook",
+                    sent=False,
+                    skipped=True,
+                    reason=reason,
+                    status_code=0,
+                    error="",
+                ).to_dict()
+
+        result = send_webhook_json(
             webhook_url=webhook_url,
             payload=payload,
             timeout_sec=timeout_sec,
             dry_run=_as_bool(dry_run, default=False),
         ).to_dict()
+
+        if (
+            st_path is not None
+            and not _as_bool(dry_run, default=False)
+            and bool(result.get("sent"))
+            and not bool(result.get("skipped"))
+        ):
+            events.append({"ts": now_epoch, "key": dedup_key})
+            keep_window = max(dedup_window, rl_window, 1)
+            events = _prune_events(events, now_epoch=now_epoch, keep_window_sec=keep_window)
+            _save_notify_state(st_path, events)
+        return result
 
     return NotifyResult(
         ok=False,

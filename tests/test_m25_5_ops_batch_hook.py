@@ -190,3 +190,65 @@ def test_m25_5_ops_batch_can_fail_on_notify_error(monkeypatch, tmp_path: Path, c
     assert obj["rc"] == 5
     assert obj["notify"]["ok"] is False
     assert obj["notify"]["skipped"] is False
+
+
+def test_m25_7_ops_batch_forwards_notify_noise_control_args(monkeypatch, tmp_path: Path, capsys):
+    events = tmp_path / "events.jsonl"
+    reports = tmp_path / "reports"
+    lock_path = tmp_path / "batch.lock"
+    status_path = tmp_path / "status_latest.json"
+    state_path = tmp_path / "notify_state.json"
+    captured: dict = {}
+
+    def _fake_notify_batch_result(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "provider": "webhook",
+            "sent": True,
+            "skipped": False,
+            "reason": "sent",
+            "status_code": 200,
+            "error": "",
+        }
+
+    monkeypatch.setattr(batch_mod, "notify_batch_result", _fake_notify_batch_result)
+
+    rc = batch_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(reports),
+            "--day",
+            "2026-02-17",
+            "--lock-path",
+            str(lock_path),
+            "--status-json-path",
+            str(status_path),
+            "--notify-provider",
+            "webhook",
+            "--notify-webhook-url",
+            "https://example.invalid/hook",
+            "--notify-on",
+            "always",
+            "--notify-state-path",
+            str(state_path),
+            "--notify-dedup-window-sec",
+            "120",
+            "--notify-rate-limit-window-sec",
+            "300",
+            "--notify-max-per-window",
+            "2",
+            "--json",
+        ]
+    )
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+
+    assert rc == 0
+    assert obj["notify"]["ok"] is True
+    assert captured["state_path"] == str(state_path)
+    assert captured["dedup_window_sec"] == 120
+    assert captured["rate_limit_window_sec"] == 300
+    assert captured["max_per_window"] == 2

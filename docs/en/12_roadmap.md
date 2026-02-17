@@ -113,6 +113,7 @@ M25 implementation status (2026-02-17, in progress):
 - M25-4: env-backed alert policy profile + runbook (`ALERT_POLICY_*`, `docs/runtime/alert_policy_runbook.md`)
 - M25-5: scheduler-ready ops batch hook with lock/status artifact (`run_m25_ops_batch.py`)
 - M25-6: webhook alert channel adapter + batch notification integration (`libs/reporting/alert_notifier.py`)
+- M25-7: notification noise control (dedup + rate-limit) with state-backed suppression (`dedup_suppressed`, `rate_limited`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

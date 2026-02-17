@@ -91,6 +91,25 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_env_int("M25_NOTIFY_TIMEOUT_SEC", 5),
     )
     p.add_argument(
+        "--notify-state-path",
+        default=_env_str("M25_NOTIFY_STATE_PATH", "data/state/m25_notify_state.json"),
+    )
+    p.add_argument(
+        "--notify-dedup-window-sec",
+        type=int,
+        default=_env_int("M25_NOTIFY_DEDUP_WINDOW_SEC", 600),
+    )
+    p.add_argument(
+        "--notify-rate-limit-window-sec",
+        type=int,
+        default=_env_int("M25_NOTIFY_RATE_LIMIT_WINDOW_SEC", 600),
+    )
+    p.add_argument(
+        "--notify-max-per-window",
+        type=int,
+        default=_env_int("M25_NOTIFY_MAX_PER_WINDOW", 3),
+    )
+    p.add_argument(
         "--notify-dry-run",
         action="store_true",
         default=_env_bool("M25_NOTIFY_DRY_RUN", False),
@@ -260,6 +279,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         provider=str(args.notify_provider),
         webhook_url=str(args.notify_webhook_url),
         timeout_sec=max(1, int(args.notify_timeout_sec)),
+        state_path=str(args.notify_state_path),
+        dedup_window_sec=max(0, int(args.notify_dedup_window_sec)),
+        rate_limit_window_sec=max(0, int(args.notify_rate_limit_window_sec)),
+        max_per_window=max(0, int(args.notify_max_per_window)),
         dry_run=bool(args.notify_dry_run),
         notify_on=str(args.notify_on),
     )
