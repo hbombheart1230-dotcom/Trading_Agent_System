@@ -98,6 +98,7 @@ M23 implementation status (2026-02-17, complete):
 
 M24 implementation status (2026-02-17, in progress):
 - M24-1: strict intent journal state machine + SQLite state/journal store scaffold
+- M24-2: ApprovalService integration with SQLite intent state transitions (`approved/executing/executed/failed/rejected`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
