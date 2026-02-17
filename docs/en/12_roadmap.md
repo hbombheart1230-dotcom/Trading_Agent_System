@@ -90,6 +90,7 @@ M23 implementation status (2026-02-17, in progress):
 - M23-3: strategist decision path runtime circuit integration (`decide_trade` gate + success/failure state updates)
 - M23-4: commander incident counter and cooldown routing policy (`cooldown_wait` short-circuit + runtime error incident registration)
 - M23-5: degrade execution policy enforcement (`manual approval required`, `allowlist required`, `degrade notional ratio`)
+- M23-6: operator intervention/resume control (`runtime_control=resume`) + intervention runbook/logging
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

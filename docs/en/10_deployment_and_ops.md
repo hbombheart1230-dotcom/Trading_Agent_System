@@ -20,6 +20,13 @@
 3) check allowlist mismatch
 4) check max notional exceeded
 
+### Commander cooldown / degrade recovery (M23-6)
+1) verify incident source and upstream health before restart
+2) keep hard guards strict (`EXECUTION_ENABLED`, allowlist, limits)
+3) run controlled resume with `runtime_control=resume`
+4) verify `commander_router/intervention` event exists in logs
+5) watch the next cycle for re-triggered incidents before normal cadence
+
 ### Risk of unintended execution
 1) immediately set EXECUTION_ENABLED=false
 2) query open orders and cancel (policy-gated)

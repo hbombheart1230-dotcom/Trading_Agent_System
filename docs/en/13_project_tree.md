@@ -106,14 +106,17 @@ Trading_Agent_System/
 - `docs/plan/m23_3_strategist_runtime_circuit_integration.md`
 - `docs/plan/m23_4_commander_incident_cooldown_routing.md`
 - `docs/plan/m23_5_safe_degrade_execution_policy.md`
+- `docs/plan/m23_6_operator_intervention_resume_runbook.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`
 - `graphs/nodes/execute_from_packet.py`
+- `graphs/commander_runtime.py`
 - `tests/test_m23_1_runtime_resilience_state_contract.py`
 - `tests/test_m23_2_runtime_circuit_breaker_core.py`
 - `tests/test_m23_3_decide_trade_runtime_circuit_integration.py`
 - `tests/test_m23_4_commander_incident_cooldown_routing.py`
 - `tests/test_m23_5_safe_degrade_execution_policy.py`
+- `tests/test_m23_6_operator_intervention_resume.py`
 
 ## Note
 

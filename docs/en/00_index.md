@@ -39,3 +39,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m23_3_strategist_runtime_circuit_integration.md -> M23-3 strategist runtime circuit integration in decide path
 - docs/plan/m23_4_commander_incident_cooldown_routing.md -> M23-4 commander incident counter and cooldown routing
 - docs/plan/m23_5_safe_degrade_execution_policy.md -> M23-5 degrade-mode execution tightening policy
+- docs/plan/m23_6_operator_intervention_resume_runbook.md -> M23-6 operator intervention/resume control and runbook

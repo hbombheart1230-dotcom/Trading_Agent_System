@@ -40,7 +40,7 @@ def _normalize_mode(value: Any) -> RuntimeMode:
 
 def _normalize_transition(value: Any) -> str:
     v = str(value or "").strip().lower()
-    if v in ("retry", "pause", "cancel"):
+    if v in ("retry", "pause", "cancel", "resume"):
         return v
     return ""
 
@@ -149,6 +149,43 @@ def _register_commander_incident(state: Dict[str, Any], *, error_type: str) -> D
     }
 
 
+def _apply_operator_resume_intervention(state: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """M23-6: explicit operator intervention to resume runtime from cooldown/degrade."""
+    transition = _normalize_transition(state.get("runtime_control"))
+    if transition != "resume":
+        return state, {}
+
+    resilience = state.get("resilience") if isinstance(state.get("resilience"), dict) else {}
+    before = {
+        "degrade_mode": bool(resilience.get("degrade_mode")),
+        "degrade_reason": str(resilience.get("degrade_reason") or ""),
+        "incident_count": _coerce_int(resilience.get("incident_count"), 0),
+        "cooldown_until_epoch": _coerce_int(resilience.get("cooldown_until_epoch"), 0),
+        "last_error_type": str(resilience.get("last_error_type") or ""),
+    }
+    now_epoch = _runtime_now_epoch(state)
+
+    resilience["degrade_mode"] = False
+    resilience["degrade_reason"] = ""
+    resilience["incident_count"] = 0
+    resilience["cooldown_until_epoch"] = 0
+    resilience["last_error_type"] = ""
+    state["resilience"] = resilience
+
+    return state, {
+        "type": "operator_resume",
+        "at_epoch": now_epoch,
+        "before": before,
+        "after": {
+            "degrade_mode": False,
+            "degrade_reason": "",
+            "incident_count": 0,
+            "cooldown_until_epoch": 0,
+            "last_error_type": "",
+        },
+    }
+
+
 def _apply_runtime_transition(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
     """Apply runtime control transition.
 
@@ -170,6 +207,10 @@ def _apply_runtime_transition(state: Dict[str, Any]) -> Tuple[bool, Dict[str, An
     if transition == "pause":
         state["runtime_status"] = "paused"
         return False, state
+
+    if transition == "resume":
+        state["runtime_status"] = "resuming"
+        return True, state
 
     # retry: mark status and continue the selected runtime path.
     state["runtime_status"] = "retrying"
@@ -300,6 +341,10 @@ def run_commander_runtime(
             {"mode": selected, "status": state.get("runtime_status", "stopped"), "path": None},
         )
         return state
+
+    state, intervention_payload = _apply_operator_resume_intervention(state)
+    if intervention_payload:
+        _log_commander_event(state, "intervention", intervention_payload)
 
     should_run, state, cooldown_payload = _apply_commander_cooldown_guard(state)
     if not should_run:

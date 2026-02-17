@@ -31,7 +31,7 @@ def _stub_execute(state: Dict[str, Any]) -> Dict[str, Any]:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run canonical commander runtime once.")
     p.add_argument("--mode", choices=["graph_spine", "decision_packet"], default=None)
-    p.add_argument("--runtime-control", choices=["retry", "pause", "cancel"], default=None)
+    p.add_argument("--runtime-control", choices=["retry", "pause", "cancel", "resume"], default=None)
     p.add_argument("--run-id", default="m21-runtime-once")
     p.add_argument("--live", action="store_true", help="Use real node path instead of offline smoke stubs.")
     p.add_argument("--json", action="store_true", help="Emit compact JSON summary.")
