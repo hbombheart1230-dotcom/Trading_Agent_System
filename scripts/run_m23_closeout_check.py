@@ -3,10 +3,15 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import sys
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from scripts.generate_metrics_report import generate_metrics_report
 from scripts.run_m23_resilience_closeout_check import main as resilience_closeout_main
