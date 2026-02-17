@@ -81,6 +81,128 @@ def _resolve_execution_mode() -> str:
         return "mock"
 
 
+def _is_trueish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _parse_symbol_allowlist(raw: Optional[str]) -> set[str]:
+    if raw is None:
+        return set()
+    v = raw.strip()
+    if not v:
+        return set()
+    return {x.strip() for x in v.split(",") if x.strip()}
+
+
+def _extract_order_symbol(order: Dict[str, Any]) -> str:
+    sym = order.get("symbol") or order.get("stk_cd")
+    if sym is None:
+        return ""
+    return str(sym).strip()
+
+
+def _is_degrade_mode(state: Dict[str, Any]) -> bool:
+    resilience = state.get("resilience")
+    if not isinstance(resilience, dict):
+        return False
+    return _is_trueish(resilience.get("degrade_mode"))
+
+
+def _is_manual_approved(state: Dict[str, Any], exec_context: Dict[str, Any]) -> bool:
+    if _is_trueish(state.get("execution_manual_approved")):
+        return True
+    if _is_trueish(state.get("manual_approved")):
+        return True
+    if _is_trueish(exec_context.get("manual_approved")):
+        return True
+    approval_status = str(exec_context.get("approval_status") or "").strip().lower()
+    return approval_status in ("approved", "manual_approved")
+
+
+def _degrade_notional_ratio(state: Dict[str, Any]) -> float:
+    policy = state.get("resilience_policy") if isinstance(state.get("resilience_policy"), dict) else {}
+    ratio = _coerce_float(policy.get("degrade_notional_ratio"), _coerce_float(os.getenv("DEGRADE_NOTIONAL_RATIO"), 0.25))
+    if ratio <= 0:
+        return 0.0
+    if ratio > 1.0:
+        return 1.0
+    return ratio
+
+
+def _evaluate_degrade_execution_policy(
+    *,
+    state: Dict[str, Any],
+    order: Dict[str, Any],
+    exec_context: Dict[str, Any],
+) -> Tuple[bool, str, Dict[str, Any]]:
+    if not _is_degrade_mode(state):
+        return True, "", {"degrade_mode": False}
+
+    details: Dict[str, Any] = {"degrade_mode": True}
+
+    # M23-5 policy: degrade mode disables effective auto-approval.
+    if not _is_manual_approved(state, exec_context):
+        details["required"] = "manual_approval"
+        return False, "degrade_manual_approval_required", details
+
+    # M23-5 policy: degrade mode requires non-empty allowlist.
+    allow = _parse_symbol_allowlist(os.getenv("SYMBOL_ALLOWLIST"))
+    details["allowlist_size"] = len(allow)
+    if not allow:
+        return False, "degrade_allowlist_required", details
+
+    sym = _extract_order_symbol(order)
+    if sym and sym not in allow:
+        details["symbol"] = sym
+        return False, "degrade_symbol_not_allowlisted", details
+
+    max_notional = _coerce_int(os.getenv("MAX_ORDER_NOTIONAL"), 0)
+    ratio = _degrade_notional_ratio(state)
+    details["degrade_notional_ratio"] = ratio
+    details["max_order_notional"] = max_notional
+    if max_notional <= 0 or ratio <= 0:
+        return True, "", details
+
+    effective_limit = max(1, int(max_notional * ratio))
+    details["effective_max_notional"] = effective_limit
+
+    qty = _coerce_int(order.get("qty"), 0)
+    if qty <= 0:
+        return True, "", details
+
+    px_raw = order.get("price")
+    if px_raw is None:
+        return True, "", details
+    try:
+        px = int(px_raw)
+    except Exception:
+        details["invalid_price"] = str(px_raw)
+        return False, "degrade_invalid_price_for_notional_guard", details
+
+    notional = qty * px
+    details["order_notional"] = notional
+    if notional > effective_limit:
+        return False, "degrade_notional_limit_exceeded", details
+
+    return True, "", details
+
+
 def _build_order_from_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
     """Best-effort order dict. This is intentionally thin.
 
@@ -202,6 +324,9 @@ def _normalize_execution(
 ) -> Dict[str, Any]:
     """Normalize to dict shape used by tests and reports."""
     exec_mode = _resolve_execution_mode()
+    resolved_reason = str(reason or "")
+    if not resolved_reason and allow_result is not None:
+        resolved_reason = str(getattr(allow_result, "reason", "") or "")
 
     payload: Dict[str, Any] = {}
     if execution_result is None:
@@ -225,7 +350,7 @@ def _normalize_execution(
 
     verdict = {
         "allowed": bool(allowed),
-        "reason": reason or getattr(allow_result, "reason", "") if allow_result is not None else "",
+        "reason": resolved_reason,
         "order": order,
         "payload": payload,
     }
@@ -280,6 +405,29 @@ def execute_from_packet(state: dict) -> dict:
             order = state["order_builder"](intent, catalog)  # type: ignore[call-arg]
         else:
             order = _build_order_from_intent(intent)
+
+        degrade_allowed, degrade_reason, degrade_details = _evaluate_degrade_execution_policy(
+            state=state,
+            order=order,
+            exec_context=exec_context,
+        )
+        if not degrade_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=degrade_reason,
+            )
+            state["execution"]["degrade_policy"] = degrade_details
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="degrade_policy_block",
+                payload={"reason": degrade_reason, **degrade_details},
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
 
         # Supervisor verdict
         allow_result = _supervisor_allow(supervisor, order, risk)
