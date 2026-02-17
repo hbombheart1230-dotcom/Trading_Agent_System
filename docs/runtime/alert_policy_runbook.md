@@ -63,6 +63,24 @@ Batch return codes:
 - `0`: closeout pass
 - `3`: closeout fail (alert/schema gate fail)
 - `4`: skipped due to active lock
+- `5`: notification send failed with `fail_on_notify_error=true`
+
+Notification channel options:
+
+```env
+M25_NOTIFY_PROVIDER=none
+M25_NOTIFY_ON=failure
+M25_NOTIFY_WEBHOOK_URL=
+M25_NOTIFY_TIMEOUT_SEC=5
+M25_NOTIFY_DRY_RUN=false
+M25_NOTIFY_FAIL_ON_ERROR=false
+```
+
+Example (webhook):
+
+```powershell
+python scripts/run_m25_ops_batch.py --notify-provider webhook --notify-webhook-url https://example.com/hook --notify-on failure --json
+```
 
 ## 5. Triage Rules
 

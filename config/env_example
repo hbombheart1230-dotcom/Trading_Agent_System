@@ -34,3 +34,11 @@
 # M25_BATCH_LOCK_PATH=data/state/m25_ops_batch.lock
 # M25_BATCH_LOCK_STALE_SEC=1800
 # M25_BATCH_STATUS_JSON_PATH=reports/m25_ops_batch/status_latest.json
+
+# --- M25 Notification Channel ---
+# M25_NOTIFY_PROVIDER=none
+# M25_NOTIFY_ON=failure
+# M25_NOTIFY_WEBHOOK_URL=
+# M25_NOTIFY_TIMEOUT_SEC=5
+# M25_NOTIFY_DRY_RUN=false
+# M25_NOTIFY_FAIL_ON_ERROR=false

@@ -124,6 +124,7 @@ Trading_Agent_System/
 - `docs/plan/m25_3_alert_reporting_closeout.md`
 - `docs/plan/m25_4_alert_policy_env_profile.md`
 - `docs/plan/m25_5_ops_batch_hook.md`
+- `docs/plan/m25_6_alert_channel_adapter.md`
 - `docs/runtime/alert_policy_runbook.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`
@@ -144,6 +145,7 @@ Trading_Agent_System/
 - `scripts/check_alert_policy_v1.py`
 - `scripts/run_m25_closeout_check.py`
 - `scripts/run_m25_ops_batch.py`
+- `libs/reporting/alert_notifier.py`
 - `tests/test_m23_1_runtime_resilience_state_contract.py`
 - `tests/test_m23_2_runtime_circuit_breaker_core.py`
 - `tests/test_m23_3_decide_trade_runtime_circuit_integration.py`
@@ -166,6 +168,7 @@ Trading_Agent_System/
 - `tests/test_m25_2_alert_policy_threshold_gate.py`
 - `tests/test_m25_3_alert_reporting_closeout.py`
 - `tests/test_m25_5_ops_batch_hook.py`
+- `tests/test_m25_6_alert_notification_adapter.py`
 
 ## Note
 

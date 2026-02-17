@@ -57,3 +57,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m25_3_alert_reporting_closeout.md -> M25-3 alert reporting artifacts and closeout gate
 - docs/plan/m25_4_alert_policy_env_profile.md -> M25-4 env-backed alert policy profile and runbook
 - docs/plan/m25_5_ops_batch_hook.md -> M25-5 scheduler-ready ops batch hook with lock/status artifact
+- docs/plan/m25_6_alert_channel_adapter.md -> M25-6 webhook alert channel adapter and batch notification integration

@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.core.settings import load_env_file
+from libs.reporting.alert_notifier import notify_batch_result
 from scripts.run_m25_closeout_check import main as m25_closeout_main
 
 
@@ -32,6 +33,13 @@ def _env_int(name: str, default: int) -> int:
         return int(float(raw))
     except Exception:
         return int(default)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.getenv(name, "") or "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in ("1", "true", "yes", "y", "on")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -62,6 +70,35 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--status-json-path",
         default=_env_str("M25_BATCH_STATUS_JSON_PATH", "reports/m25_ops_batch/status_latest.json"),
+    )
+    p.add_argument(
+        "--notify-provider",
+        choices=["none", "webhook"],
+        default=_env_str("M25_NOTIFY_PROVIDER", "none"),
+    )
+    p.add_argument(
+        "--notify-on",
+        choices=["always", "failure", "success"],
+        default=_env_str("M25_NOTIFY_ON", "failure"),
+    )
+    p.add_argument(
+        "--notify-webhook-url",
+        default=_env_str("M25_NOTIFY_WEBHOOK_URL", ""),
+    )
+    p.add_argument(
+        "--notify-timeout-sec",
+        type=int,
+        default=_env_int("M25_NOTIFY_TIMEOUT_SEC", 5),
+    )
+    p.add_argument(
+        "--notify-dry-run",
+        action="store_true",
+        default=_env_bool("M25_NOTIFY_DRY_RUN", False),
+    )
+    p.add_argument(
+        "--fail-on-notify-error",
+        action="store_true",
+        default=_env_bool("M25_NOTIFY_FAIL_ON_ERROR", False),
     )
     p.add_argument("--inject-critical-case", action="store_true")
     p.add_argument("--json", action="store_true")
@@ -217,6 +254,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         "status_json_path": str(status_path),
         "closeout": closeout,
     }
+
+    notify = notify_batch_result(
+        batch_result=out,
+        provider=str(args.notify_provider),
+        webhook_url=str(args.notify_webhook_url),
+        timeout_sec=max(1, int(args.notify_timeout_sec)),
+        dry_run=bool(args.notify_dry_run),
+        notify_on=str(args.notify_on),
+    )
+    out["notify"] = notify
+
+    final_rc = int(rc)
+    if bool(args.fail_on_notify_error) and (not bool(notify.get("skipped"))) and (not bool(notify.get("ok"))):
+        if final_rc == 0:
+            final_rc = 5
+            out["ok"] = False
+    out["rc"] = int(final_rc)
+
     _write_status(status_path, out)
 
     if bool(args.json):
@@ -224,9 +279,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         print(
             f"ok={out['ok']} rc={out['rc']} day={day} duration_sec={duration_sec} "
+            f"notify_provider={args.notify_provider} notify_ok={notify.get('ok')} "
             f"status_json_path={status_path}"
         )
-    return int(rc)
+    return int(final_rc)
 
 
 if __name__ == "__main__":

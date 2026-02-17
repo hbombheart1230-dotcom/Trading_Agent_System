@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import scripts.run_m25_ops_batch as batch_mod
 from scripts.run_m25_ops_batch import main as batch_main
 
 
@@ -138,3 +139,54 @@ def test_m25_5_ops_batch_script_file_entrypoint_resolves_repo_imports(tmp_path: 
     assert cp.returncode == 0, f"stdout={cp.stdout}\nstderr={cp.stderr}"
     obj = json.loads(cp.stdout.strip())
     assert obj["ok"] is True
+
+
+def test_m25_5_ops_batch_can_fail_on_notify_error(monkeypatch, tmp_path: Path, capsys):
+    events = tmp_path / "events.jsonl"
+    reports = tmp_path / "reports"
+    lock_path = tmp_path / "batch.lock"
+    status_path = tmp_path / "status_latest.json"
+
+    def _fake_notify_batch_result(**kwargs):  # type: ignore[no-untyped-def]
+        return {
+            "ok": False,
+            "provider": "webhook",
+            "sent": True,
+            "skipped": False,
+            "reason": "http_error",
+            "status_code": 500,
+            "error": "boom",
+        }
+
+    monkeypatch.setattr(batch_mod, "notify_batch_result", _fake_notify_batch_result)
+
+    rc = batch_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(reports),
+            "--day",
+            "2026-02-17",
+            "--lock-path",
+            str(lock_path),
+            "--status-json-path",
+            str(status_path),
+            "--notify-provider",
+            "webhook",
+            "--notify-webhook-url",
+            "https://example.invalid/hook",
+            "--notify-on",
+            "always",
+            "--fail-on-notify-error",
+            "--json",
+        ]
+    )
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+
+    assert rc == 5
+    assert obj["ok"] is False
+    assert obj["rc"] == 5
+    assert obj["notify"]["ok"] is False
+    assert obj["notify"]["skipped"] is False
