@@ -40,3 +40,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m23_4_commander_incident_cooldown_routing.md -> M23-4 commander incident counter and cooldown routing
 - docs/plan/m23_5_safe_degrade_execution_policy.md -> M23-5 degrade-mode execution tightening policy
 - docs/plan/m23_6_operator_intervention_resume_runbook.md -> M23-6 operator intervention/resume control and runbook
+- docs/plan/m23_7_commander_resilience_ops_visibility.md -> M23-7 commander resilience event query CLI for operator visibility
