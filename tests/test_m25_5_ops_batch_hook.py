@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from scripts.run_m25_ops_batch import main as batch_main
+
+
+def test_m25_5_ops_batch_pass_writes_latest_status(tmp_path: Path, capsys):
+    events = tmp_path / "events.jsonl"
+    reports = tmp_path / "reports"
+    lock_path = tmp_path / "batch.lock"
+    status_path = tmp_path / "status_latest.json"
+
+    rc = batch_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(reports),
+            "--day",
+            "2026-02-17",
+            "--lock-path",
+            str(lock_path),
+            "--status-json-path",
+            str(status_path),
+            "--json",
+        ]
+    )
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+    saved = json.loads(status_path.read_text(encoding="utf-8"))
+
+    assert rc == 0
+    assert obj["ok"] is True
+    assert obj["rc"] == 0
+    assert saved["ok"] is True
+    assert saved["rc"] == 0
+    assert lock_path.exists() is False
+
+
+def test_m25_5_ops_batch_fail_propagates_rc_3(tmp_path: Path, capsys):
+    events = tmp_path / "events.jsonl"
+    reports = tmp_path / "reports"
+    lock_path = tmp_path / "batch.lock"
+    status_path = tmp_path / "status_latest.json"
+
+    rc = batch_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(reports),
+            "--day",
+            "2026-02-17",
+            "--lock-path",
+            str(lock_path),
+            "--status-json-path",
+            str(status_path),
+            "--inject-critical-case",
+            "--json",
+        ]
+    )
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+
+    assert rc == 3
+    assert obj["ok"] is False
+    assert obj["rc"] == 3
+    assert obj["closeout"]["alert_policy"]["rc"] == 3
+
+
+def test_m25_5_ops_batch_lock_active_returns_4(tmp_path: Path, capsys):
+    events = tmp_path / "events.jsonl"
+    reports = tmp_path / "reports"
+    lock_path = tmp_path / "batch.lock"
+    status_path = tmp_path / "status_latest.json"
+
+    lock_path.write_text(
+        json.dumps({"pid": 99999, "started_epoch": 9999999999, "started_ts": "future"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    rc = batch_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(reports),
+            "--day",
+            "2026-02-17",
+            "--lock-path",
+            str(lock_path),
+            "--status-json-path",
+            str(status_path),
+            "--json",
+        ]
+    )
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+
+    assert rc == 4
+    assert obj["ok"] is False
+    assert obj["reason"] == "lock_active"
+    assert status_path.exists() is True
+
+
+def test_m25_5_ops_batch_script_file_entrypoint_resolves_repo_imports(tmp_path: Path):
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "run_m25_ops_batch.py"
+    events = tmp_path / "events.jsonl"
+    reports = tmp_path / "reports"
+    lock_path = tmp_path / "batch.lock"
+    status_path = tmp_path / "status_latest.json"
+
+    cp = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(reports),
+            "--day",
+            "2026-02-17",
+            "--lock-path",
+            str(lock_path),
+            "--status-json-path",
+            str(status_path),
+            "--json",
+        ],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+    )
+    assert cp.returncode == 0, f"stdout={cp.stdout}\nstderr={cp.stderr}"
+    obj = json.loads(cp.stdout.strip())
+    assert obj["ok"] is True

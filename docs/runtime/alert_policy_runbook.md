@@ -41,7 +41,30 @@ Artifacts:
 - `reports/m25_closeout/alert_policy_<day>.json`
 - `reports/m25_closeout/alert_policy_<day>.md`
 
-## 4. Triage Rules
+## 4. Run Scheduled Batch Hook
+
+Batch wrapper (single-instance lock + latest status JSON):
+
+```powershell
+python scripts/run_m25_ops_batch.py --event-log-path data/logs/m25_ops_batch_events.jsonl --report-dir reports/m25_ops_batch --status-json-path reports/m25_ops_batch/status_latest.json --json
+```
+
+Related env defaults:
+
+```env
+M25_BATCH_EVENT_LOG_PATH=data/logs/m25_ops_batch_events.jsonl
+M25_BATCH_REPORT_DIR=reports/m25_ops_batch
+M25_BATCH_LOCK_PATH=data/state/m25_ops_batch.lock
+M25_BATCH_LOCK_STALE_SEC=1800
+M25_BATCH_STATUS_JSON_PATH=reports/m25_ops_batch/status_latest.json
+```
+
+Batch return codes:
+- `0`: closeout pass
+- `3`: closeout fail (alert/schema gate fail)
+- `4`: skipped due to active lock
+
+## 5. Triage Rules
 
 - `strategist_success_rate_low` (critical):
   - verify strategist provider/API health and fallback path quality.
