@@ -116,6 +116,7 @@ M25 implementation status (2026-02-17, in progress):
 - M25-7: notification noise control (dedup + rate-limit) with state-backed suppression (`dedup_suppressed`, `rate_limited`)
 - M25-8: Slack incoming webhook provider (`slack_webhook`) with shared noise-control policy
 - M25-9: bounded notification retry/backoff policy for transient delivery failures (`429`/`5xx`)
+- M25-10: notification event log + day-level query CLI for delivery observability
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

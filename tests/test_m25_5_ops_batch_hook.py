@@ -14,6 +14,7 @@ def test_m25_5_ops_batch_pass_writes_latest_status(tmp_path: Path, capsys):
     reports = tmp_path / "reports"
     lock_path = tmp_path / "batch.lock"
     status_path = tmp_path / "status_latest.json"
+    notify_events = tmp_path / "notify_events.jsonl"
 
     rc = batch_main(
         [
@@ -27,6 +28,8 @@ def test_m25_5_ops_batch_pass_writes_latest_status(tmp_path: Path, capsys):
             str(lock_path),
             "--status-json-path",
             str(status_path),
+            "--notify-event-log-path",
+            str(notify_events),
             "--json",
         ]
     )
@@ -40,6 +43,13 @@ def test_m25_5_ops_batch_pass_writes_latest_status(tmp_path: Path, capsys):
     assert saved["ok"] is True
     assert saved["rc"] == 0
     assert lock_path.exists() is False
+    assert notify_events.exists() is True
+    lines = [x for x in notify_events.read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert len(lines) == 1
+    ev = json.loads(lines[0])
+    assert ev["stage"] == "ops_batch_notify"
+    assert ev["event"] == "result"
+    assert ev["payload"]["provider"] == "none"
 
 
 def test_m25_5_ops_batch_fail_propagates_rc_3(tmp_path: Path, capsys):

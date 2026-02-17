@@ -128,6 +128,7 @@ Trading_Agent_System/
 - `docs/plan/m25_7_notification_noise_control.md`
 - `docs/plan/m25_8_slack_webhook_provider.md`
 - `docs/plan/m25_9_notification_retry_policy.md`
+- `docs/plan/m25_10_notification_event_log_and_query.md`
 - `docs/runtime/alert_policy_runbook.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`
@@ -148,6 +149,7 @@ Trading_Agent_System/
 - `scripts/check_alert_policy_v1.py`
 - `scripts/run_m25_closeout_check.py`
 - `scripts/run_m25_ops_batch.py`
+- `scripts/query_m25_notification_events.py`
 - `libs/reporting/alert_notifier.py`
 - `tests/test_m23_1_runtime_resilience_state_contract.py`
 - `tests/test_m23_2_runtime_circuit_breaker_core.py`
@@ -172,6 +174,7 @@ Trading_Agent_System/
 - `tests/test_m25_3_alert_reporting_closeout.py`
 - `tests/test_m25_5_ops_batch_hook.py`
 - `tests/test_m25_6_alert_notification_adapter.py`
+- `tests/test_m25_10_notification_events_query.py`
 
 ## Note
 

@@ -57,6 +57,7 @@ M25_BATCH_REPORT_DIR=reports/m25_ops_batch
 M25_BATCH_LOCK_PATH=data/state/m25_ops_batch.lock
 M25_BATCH_LOCK_STALE_SEC=1800
 M25_BATCH_STATUS_JSON_PATH=reports/m25_ops_batch/status_latest.json
+M25_NOTIFY_EVENT_LOG_PATH=data/logs/m25_notify_events.jsonl
 ```
 
 Batch return codes:
@@ -101,7 +102,18 @@ Example (Slack incoming webhook):
 python scripts/run_m25_ops_batch.py --notify-provider slack_webhook --notify-webhook-url https://hooks.slack.com/services/... --notify-on failure --json
 ```
 
-## 5. Triage Rules
+## 5. Query Notification Delivery Summary
+
+```powershell
+python scripts/query_m25_notification_events.py --event-log-path data/logs/m25_notify_events.jsonl --day 2026-02-17 --json
+```
+
+Key output fields:
+- `total`, `ok_total`, `fail_total`
+- `sent_total`, `skipped_total`
+- `provider_total`, `reason_total`, `status_code_total`
+
+## 6. Triage Rules
 
 - `strategist_success_rate_low` (critical):
   - verify strategist provider/API health and fallback path quality.

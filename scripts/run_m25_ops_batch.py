@@ -82,6 +82,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_env_str("M25_BATCH_STATUS_JSON_PATH", "reports/m25_ops_batch/status_latest.json"),
     )
     p.add_argument(
+        "--notify-event-log-path",
+        default=_env_str("M25_NOTIFY_EVENT_LOG_PATH", "data/logs/m25_notify_events.jsonl"),
+    )
+    p.add_argument(
         "--notify-provider",
         choices=["none", "webhook", "slack_webhook"],
         default=_env_str("M25_NOTIFY_PROVIDER", "none"),
@@ -237,6 +241,12 @@ def _write_status(path: Path, obj: Dict[str, Any]) -> None:
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     load_env_file(".env")
     args = _build_parser().parse_args(argv)
@@ -246,6 +256,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     report_dir = Path(str(args.report_dir))
     lock_path = Path(str(args.lock_path))
     status_path = Path(str(args.status_json_path))
+    notify_event_log_path = Path(str(args.notify_event_log_path))
 
     acquired, lock_reason = _acquire_lock(lock_path, lock_stale_sec=max(1, int(args.lock_stale_sec)))
     if not acquired:
@@ -292,6 +303,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "lock_path": str(lock_path),
         "status_json_path": str(status_path),
         "closeout": closeout,
+        "notify_event_log_path": str(notify_event_log_path),
     }
 
     notify = notify_batch_result(
@@ -316,6 +328,32 @@ def main(argv: Optional[List[str]] = None) -> int:
             final_rc = 5
             out["ok"] = False
     out["rc"] = int(final_rc)
+
+    notify_event = {
+        "ts": finished_ts,
+        "run_id": f"m25-ops-batch-{day}-{started_epoch}",
+        "stage": "ops_batch_notify",
+        "event": "result",
+        "payload": {
+            "day": day,
+            "batch_rc": int(final_rc),
+            "closeout_rc": int(rc),
+            "provider": str(args.notify_provider),
+            "notify_on": str(args.notify_on),
+            "ok": bool(notify.get("ok")),
+            "sent": bool(notify.get("sent")),
+            "skipped": bool(notify.get("skipped")),
+            "reason": str(notify.get("reason") or ""),
+            "status_code": int(notify.get("status_code") or 0),
+            "error": str(notify.get("error") or ""),
+        },
+    }
+    try:
+        _append_jsonl(notify_event_log_path, notify_event)
+        out["notify_event_logged"] = True
+    except Exception as e:
+        out["notify_event_logged"] = False
+        out["notify_event_log_error"] = str(e)
 
     _write_status(status_path, out)
 
