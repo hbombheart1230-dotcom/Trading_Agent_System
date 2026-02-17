@@ -37,3 +37,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m23_1_runtime_resilience_state_contract.md -> M23-1 runtime resilience state contract scaffold
 - docs/plan/m23_2_runtime_circuit_breaker_core.md -> M23-2 runtime circuit breaker core and tests
 - docs/plan/m23_3_strategist_runtime_circuit_integration.md -> M23-3 strategist runtime circuit integration in decide path
+- docs/plan/m23_4_commander_incident_cooldown_routing.md -> M23-4 commander incident counter and cooldown routing

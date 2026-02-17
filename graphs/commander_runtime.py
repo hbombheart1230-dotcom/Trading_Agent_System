@@ -14,6 +14,7 @@ Default mode is graph_spine for backward compatibility.
 """
 
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Literal, Optional, Tuple
 
@@ -49,6 +50,103 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _runtime_now_epoch(state: Dict[str, Any]) -> int:
+    return _coerce_int(state.get("now_epoch"), int(time.time()))
+
+
+def _resolve_commander_cooldown_policy(state: Dict[str, Any]) -> Tuple[int, int]:
+    policy = state.get("resilience_policy") if isinstance(state.get("resilience_policy"), dict) else {}
+    threshold_default = _coerce_int(os.getenv("COMMANDER_INCIDENT_THRESHOLD", "0"), 0)
+    cooldown_default = _coerce_int(os.getenv("COMMANDER_COOLDOWN_SEC", "0"), 0)
+    threshold = _coerce_int(policy.get("incident_threshold"), threshold_default)
+    cooldown_sec = _coerce_int(policy.get("cooldown_sec"), cooldown_default)
+    return max(0, threshold), max(0, cooldown_sec)
+
+
+def _set_degrade_mode(state: Dict[str, Any], *, reason: str) -> None:
+    resilience = state.get("resilience")
+    if not isinstance(resilience, dict):
+        resilience = {}
+        state["resilience"] = resilience
+    resilience["degrade_mode"] = True
+    if not str(resilience.get("degrade_reason") or "").strip():
+        resilience["degrade_reason"] = str(reason or "")
+
+
+def _apply_commander_cooldown_guard(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any], Dict[str, Any]]:
+    """M23-4: apply incident/cooldown policy before running node path."""
+    resilience = state.get("resilience") if isinstance(state.get("resilience"), dict) else {}
+    threshold, cooldown_sec = _resolve_commander_cooldown_policy(state)
+    now_epoch = _runtime_now_epoch(state)
+
+    incident_count = max(0, _coerce_int(resilience.get("incident_count"), 0))
+    cooldown_until = max(0, _coerce_int(resilience.get("cooldown_until_epoch"), 0))
+
+    if cooldown_until > now_epoch:
+        state["runtime_status"] = "cooldown_wait"
+        state["runtime_transition"] = "cooldown"
+        _set_degrade_mode(state, reason="commander_cooldown_active")
+        return False, state, {
+            "reason": "cooldown_active",
+            "incident_count": incident_count,
+            "incident_threshold": threshold,
+            "cooldown_sec": cooldown_sec,
+            "cooldown_until_epoch": cooldown_until,
+            "now_epoch": now_epoch,
+        }
+
+    if threshold > 0 and cooldown_sec > 0 and incident_count >= threshold:
+        cooldown_until = now_epoch + cooldown_sec
+        resilience["cooldown_until_epoch"] = cooldown_until
+        state["resilience"] = resilience
+        state["runtime_status"] = "cooldown_wait"
+        state["runtime_transition"] = "cooldown"
+        _set_degrade_mode(state, reason="incident_threshold_cooldown")
+        return False, state, {
+            "reason": "incident_threshold_cooldown",
+            "incident_count": incident_count,
+            "incident_threshold": threshold,
+            "cooldown_sec": cooldown_sec,
+            "cooldown_until_epoch": cooldown_until,
+            "now_epoch": now_epoch,
+        }
+
+    return True, state, {
+        "reason": "cooldown_not_active",
+        "incident_count": incident_count,
+        "incident_threshold": threshold,
+        "cooldown_sec": cooldown_sec,
+        "cooldown_until_epoch": cooldown_until,
+        "now_epoch": now_epoch,
+    }
+
+
+def _register_commander_incident(state: Dict[str, Any], *, error_type: str) -> Dict[str, Any]:
+    """M23-4: increment incident counter and optionally open commander cooldown."""
+    resilience = state.get("resilience") if isinstance(state.get("resilience"), dict) else {}
+    now_epoch = _runtime_now_epoch(state)
+    threshold, cooldown_sec = _resolve_commander_cooldown_policy(state)
+
+    incident_count = max(0, _coerce_int(resilience.get("incident_count"), 0)) + 1
+    resilience["incident_count"] = incident_count
+    resilience["last_error_type"] = str(error_type or "")
+
+    cooldown_until = max(0, _coerce_int(resilience.get("cooldown_until_epoch"), 0))
+    if threshold > 0 and cooldown_sec > 0 and incident_count >= threshold:
+        cooldown_until = max(cooldown_until, now_epoch + cooldown_sec)
+        resilience["cooldown_until_epoch"] = cooldown_until
+        _set_degrade_mode(state, reason="incident_threshold_cooldown")
+
+    state["resilience"] = resilience
+    return {
+        "incident_count": incident_count,
+        "incident_threshold": threshold,
+        "cooldown_sec": cooldown_sec,
+        "cooldown_until_epoch": cooldown_until,
+        "last_error_type": str(error_type or ""),
+    }
 
 
 def _apply_runtime_transition(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
@@ -203,24 +301,56 @@ def run_commander_runtime(
         )
         return state
 
+    should_run, state, cooldown_payload = _apply_commander_cooldown_guard(state)
+    if not should_run:
+        _log_commander_event(
+            state,
+            "transition",
+            {
+                "transition": state.get("runtime_transition"),
+                "status": state.get("runtime_status"),
+                "reason": cooldown_payload.get("reason"),
+                "cooldown_until_epoch": cooldown_payload.get("cooldown_until_epoch"),
+                "incident_count": cooldown_payload.get("incident_count"),
+                "incident_threshold": cooldown_payload.get("incident_threshold"),
+            },
+        )
+        _log_commander_event(state, "resilience", cooldown_payload)
+        _log_commander_event(
+            state,
+            "end",
+            {"mode": selected, "status": state.get("runtime_status", "stopped"), "path": None},
+        )
+        return state
+
     graph_runner = graph_runner or run_trading_graph
     decide = decide or decide_trade
     execute = execute or execute_from_packet
 
-    if selected == "decision_packet":
-        state = decide(state)
-        state = execute(state)
+    try:
+        if selected == "decision_packet":
+            state = decide(state)
+            state = execute(state)
+            _log_commander_event(
+                state,
+                "end",
+                {"mode": selected, "status": state.get("runtime_status", "ok"), "path": "decision_packet"},
+            )
+            return state
+
+        state = graph_runner(state)
         _log_commander_event(
             state,
             "end",
-            {"mode": selected, "status": state.get("runtime_status", "ok"), "path": "decision_packet"},
+            {"mode": selected, "status": state.get("runtime_status", "ok"), "path": "graph_spine"},
         )
         return state
-
-    state = graph_runner(state)
-    _log_commander_event(
-        state,
-        "end",
-        {"mode": selected, "status": state.get("runtime_status", "ok"), "path": "graph_spine"},
-    )
-    return state
+    except Exception as e:
+        incident_payload = _register_commander_incident(state, error_type=type(e).__name__)
+        state["runtime_status"] = "error"
+        _log_commander_event(
+            state,
+            "error",
+            {"mode": selected, "error_type": type(e).__name__, "error": str(e), **incident_payload},
+        )
+        raise
