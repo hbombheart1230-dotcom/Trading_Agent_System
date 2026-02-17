@@ -89,6 +89,7 @@ class ApprovalService:
         *,
         intent_id: str,
         to_state: str,
+        expected_from_state: Optional[str] = None,
         reason: str = "",
         meta: Optional[Dict[str, Any]] = None,
         execution: Optional[Dict[str, Any]] = None,
@@ -99,6 +100,7 @@ class ApprovalService:
             self.state_store.transition(
                 intent_id=intent_id,
                 to_state=to_state,
+                expected_from_state=expected_from_state,
                 reason=reason,
                 meta=meta or {},
                 execution=execution,
@@ -106,6 +108,17 @@ class ApprovalService:
             return None
         except Exception as e:
             return f"intent state transition failed ({to_state}): {e}"
+
+    def _state_status(self, intent_id: str) -> str:
+        if self.state_store is None:
+            return ""
+        try:
+            row = self.state_store.get_state(intent_id)
+        except Exception:
+            return ""
+        if not isinstance(row, dict):
+            return ""
+        return str(row.get("state") or "").strip().lower()
 
     def _append_marker(
         self,
@@ -182,10 +195,11 @@ class ApprovalService:
         if err or not iid or not intent:
             return {"ok": False, "message": err or "Unknown error"}
         latest = self._latest_row(iid) or {}
+        status = self._state_status(iid) or str(latest.get("status") or "pending_approval")
         return {
             "ok": True,
             "intent_id": iid,
-            "status": (latest.get("status") or "pending_approval"),
+            "status": status,
             "reason": latest.get("reason"),
             "intent": intent,
             "execution": latest.get("execution"),
@@ -198,16 +212,23 @@ class ApprovalService:
 
         latest = self._latest_row(iid)
         latest_status = str((latest.get("status") or "")).lower() if latest else ""
-        if latest_status == "executed":
+        state_status = self._state_status(iid)
+        effective_status = state_status or latest_status
+        if effective_status == "executed":
             return {"ok": False, "intent_id": iid, "message": "Already executed. Reject is not allowed."}
-        if latest_status == "approved":
+        if effective_status == "approved":
             return {"ok": False, "intent_id": iid, "message": "Already approved. Reject is not allowed."}
-        if latest_status == "executing":
+        if effective_status == "executing":
             return {"ok": False, "intent_id": iid, "message": "Execution in progress. Reject is not allowed."}
+        if effective_status == "failed":
+            return {"ok": False, "intent_id": iid, "message": "Failed intent cannot be rejected."}
+        if effective_status == "rejected":
+            return {"ok": False, "intent_id": iid, "message": "Already rejected."}
 
         state_err = self._safe_state_transition(
             intent_id=iid,
             to_state=INTENT_STATE_REJECTED,
+            expected_from_state=INTENT_STATE_PENDING,
             reason=reason,
             meta={"source": "approval_service", "op": "reject"},
         )
@@ -229,16 +250,19 @@ class ApprovalService:
             return {"ok": False, "message": err or "Unknown error"}
 
         latest = self._latest_row(iid)
-        if latest:
-            status = str(latest.get("status") or "").lower()
-            if status == "rejected":
+        latest_status = str(latest.get("status") or "").lower() if latest else ""
+        state_status = self._state_status(iid)
+        effective_status = state_status or latest_status
+
+        if effective_status:
+            if effective_status == "rejected":
                 return {
                     "ok": False,
                     "intent_id": iid,
                     "message": "Intent is rejected.",
                     "reason": latest.get("reason"),
                 }
-            if status == "executed":
+            if effective_status == "executed":
                 return {
                     "ok": True,
                     "intent_id": iid,
@@ -246,20 +270,20 @@ class ApprovalService:
                     "execution": latest.get("execution"),
                     "note": "Already executed. Returned cached execution.",
                 }
-            if status == "failed":
+            if effective_status == "failed":
                 return {
                     "ok": False,
                     "intent_id": iid,
                     "message": "Intent previously failed. Create a new intent for retry.",
                     "reason": latest.get("reason"),
                 }
-            if status == "executing":
+            if effective_status == "executing":
                 return {
                     "ok": False,
                     "intent_id": iid,
                     "message": "Intent is executing.",
                 }
-            if status == "approved" and not execution_enabled:
+            if effective_status == "approved" and not execution_enabled:
                 return {
                     "ok": True,
                     "intent_id": iid,
@@ -267,11 +291,11 @@ class ApprovalService:
                     "note": "Already approved. Execution is still disabled.",
                 }
 
-        latest_status = str(latest.get("status") or "").lower() if latest else ""
-        if latest_status != "approved":
+        if effective_status != "approved":
             state_err = self._safe_state_transition(
                 intent_id=iid,
                 to_state=INTENT_STATE_APPROVED,
+                expected_from_state=INTENT_STATE_PENDING,
                 reason="manual approve",
                 meta={"source": "approval_service", "op": "approve"},
             )
@@ -291,10 +315,28 @@ class ApprovalService:
         state_err = self._safe_state_transition(
             intent_id=iid,
             to_state=INTENT_STATE_EXECUTING,
+            expected_from_state=INTENT_STATE_APPROVED,
             reason="execution started",
             meta={"source": "approval_service", "op": "execute_start"},
         )
         if state_err:
+            current = self._state_status(iid)
+            if current == INTENT_STATE_EXECUTING:
+                return {"ok": False, "intent_id": iid, "message": "Intent is executing."}
+            if current == INTENT_STATE_EXECUTED:
+                return {
+                    "ok": True,
+                    "intent_id": iid,
+                    "status": "executed",
+                    "execution": latest.get("execution") if latest else None,
+                    "note": "Already executed. Returned cached execution.",
+                }
+            if current == INTENT_STATE_FAILED:
+                return {
+                    "ok": False,
+                    "intent_id": iid,
+                    "message": "Intent previously failed. Create a new intent for retry.",
+                }
             return {"ok": False, "intent_id": iid, "message": state_err}
         self._append_marker(intent_id=iid, status="executing", reason="execution started", intent=intent)
 

@@ -46,3 +46,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m23_10_closeout_and_m24_handover.md -> M23-10 final closeout and M24 handover
 - docs/plan/m24_1_intent_journal_state_machine_sqlite.md -> M24-1 strict intent state machine and SQLite store scaffold
 - docs/plan/m24_2_approval_flow_sqlite_state_integration.md -> M24-2 ApprovalService integration with SQLite intent state transitions
+- docs/plan/m24_3_duplicate_execution_claim_guard.md -> M24-3 duplicate execution claim guard with SQLite CAS

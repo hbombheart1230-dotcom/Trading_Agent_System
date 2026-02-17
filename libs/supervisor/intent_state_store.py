@@ -199,6 +199,7 @@ class SQLiteIntentStateStore:
         *,
         intent_id: str,
         to_state: str,
+        expected_from_state: Optional[str] = None,
         reason: str = "",
         meta: Optional[Dict[str, Any]] = None,
         execution: Optional[Dict[str, Any]] = None,
@@ -212,6 +213,12 @@ class SQLiteIntentStateStore:
             cur = self.ensure_intent(iid)
 
         from_state = str(cur.get("state") or "")
+        expected = _as_state(expected_from_state) if expected_from_state is not None else ""
+        if expected_from_state is not None and not expected:
+            raise ValueError(f"Invalid expected_from_state: {expected_from_state}")
+        if expected and from_state != expected:
+            raise ValueError(f"State mismatch: expected={expected}, current={from_state}")
+
         tr = IntentStateMachine.apply(from_state, to_state, allow_terminal_idempotent=True)
         if not tr.ok:
             raise ValueError(f"Invalid intent state transition: {from_state} -> {to_state} ({tr.reason})")
@@ -223,10 +230,26 @@ class SQLiteIntentStateStore:
         with self._connect() as conn:
             if tr.changed:
                 next_version = int(cur.get("version") or 1) + 1
-                conn.execute(
-                    "UPDATE intent_state SET state = ?, updated_ts = ?, version = ? WHERE intent_id = ?",
-                    (tr.to_state, ts, next_version, iid),
-                )
+                if expected:
+                    c = conn.execute(
+                        """
+                        UPDATE intent_state
+                        SET state = ?, updated_ts = ?, version = ?
+                        WHERE intent_id = ? AND state = ?
+                        """,
+                        (tr.to_state, ts, next_version, iid, expected),
+                    )
+                    if int(c.rowcount or 0) != 1:
+                        conn.rollback()
+                        latest = self.get_state(iid) or {}
+                        raise ValueError(
+                            f"State mismatch during CAS update: expected={expected}, current={latest.get('state')}"
+                        )
+                else:
+                    conn.execute(
+                        "UPDATE intent_state SET state = ?, updated_ts = ?, version = ? WHERE intent_id = ?",
+                        (tr.to_state, ts, next_version, iid),
+                    )
             else:
                 next_version = int(cur.get("version") or 1)
                 conn.execute(
