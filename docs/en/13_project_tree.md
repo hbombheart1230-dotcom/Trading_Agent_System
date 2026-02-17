@@ -114,6 +114,7 @@ Trading_Agent_System/
 - `docs/plan/m24_1_intent_journal_state_machine_sqlite.md`
 - `docs/plan/m24_2_approval_flow_sqlite_state_integration.md`
 - `docs/plan/m24_3_duplicate_execution_claim_guard.md`
+- `docs/plan/m24_4_intent_state_reconciliation_tooling.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`
 - `libs/supervisor/intent_state_store.py`
@@ -124,6 +125,7 @@ Trading_Agent_System/
 - `scripts/run_m23_resilience_closeout_check.py`
 - `scripts/generate_metrics_report.py`
 - `scripts/run_m23_closeout_check.py`
+- `scripts/reconcile_intent_state_store.py`
 - `tests/test_m23_1_runtime_resilience_state_contract.py`
 - `tests/test_m23_2_runtime_circuit_breaker_core.py`
 - `tests/test_m23_3_decide_trade_runtime_circuit_integration.py`
@@ -137,6 +139,7 @@ Trading_Agent_System/
 - `tests/test_m24_1_intent_state_store.py`
 - `tests/test_m24_2_approval_state_store_integration.py`
 - `tests/test_m24_3_duplicate_execution_claim_guard.py`
+- `tests/test_m24_4_intent_state_reconcile_script.py`
 
 ## Note
 
