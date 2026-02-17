@@ -121,6 +121,7 @@ Trading_Agent_System/
 - `docs/plan/m24_8_closeout_and_m25_handover.md`
 - `docs/plan/m25_1_metric_schema_freeze_v1.md`
 - `docs/plan/m25_2_alert_policy_threshold_gate.md`
+- `docs/plan/m25_3_alert_reporting_closeout.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`
 - `libs/supervisor/intent_state_store.py`
@@ -138,6 +139,7 @@ Trading_Agent_System/
 - `scripts/run_m24_closeout_check.py`
 - `scripts/check_metrics_schema_v1.py`
 - `scripts/check_alert_policy_v1.py`
+- `scripts/run_m25_closeout_check.py`
 - `tests/test_m23_1_runtime_resilience_state_contract.py`
 - `tests/test_m23_2_runtime_circuit_breaker_core.py`
 - `tests/test_m23_3_decide_trade_runtime_circuit_integration.py`
@@ -158,6 +160,7 @@ Trading_Agent_System/
 - `tests/test_m24_8_closeout_check.py`
 - `tests/test_m25_1_metrics_schema_freeze_v1.py`
 - `tests/test_m25_2_alert_policy_threshold_gate.py`
+- `tests/test_m25_3_alert_reporting_closeout.py`
 
 ## Note
 
