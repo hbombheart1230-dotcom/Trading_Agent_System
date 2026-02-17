@@ -66,6 +66,10 @@
   - safe degrade mode (rule-only strategist fallback, execution tightening)
   - incident counters + cooldown policy in Commander routing
   - runbook entries for operator intervention/resume
+- Policy freeze (2026-02-17):
+  - when `degrade_mode=true`, force effective approval to manual (`auto` approval disabled)
+  - tighten execution notional in degrade mode to 25% of normal guardrail (`degrade_notional_ratio=0.25`)
+  - require non-empty symbol allowlist in degrade mode; if allowlist is missing/empty, block execution
 - Exit criteria:
   - repeated upstream errors do not trigger uncontrolled retries/execution attempts
 
@@ -78,6 +82,10 @@
   - duplicate-intent execution block + replay-safe semantics
   - stronger real-mode preflight checks and explicit denial reasons
   - regression tests for guard precedence and partial-failure scenarios
+- Storage strategy decision (2026-02-17):
+  - adopt a dedicated intent state store (SQLite-first; KV compatible) as primary source of truth
+  - keep event log (`JSONL`) append-only for audit/replay/rebuild, but not as the only live duplicate-check path
+  - provide reconciliation tooling (`intent_store` <-> event log) for recovery drills
 - Exit criteria:
   - idempotency and guard precedence proven by automated tests
 
@@ -90,6 +98,10 @@
   - alert policy for critical events (guard spikes, strategist failure rate, execution anomalies)
   - dashboard-ready exports and scheduled report artifacts
   - metric schema freeze for downstream tooling
+- Minimum metric set freeze (2026-02-17):
+  - strategist_llm: `success_rate`, `latency_p95`, `circuit_open_rate`
+  - execution: `intents_created`, `intents_approved`, `intents_blocked`, `intents_executed`, `blocked_reason_topN`
+  - broker/api: `api_error_total_by_api_id`, `api_429_rate`
 - Exit criteria:
   - operators can detect and triage incidents without code inspection
 
