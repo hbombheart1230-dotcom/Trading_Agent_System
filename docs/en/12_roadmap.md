@@ -84,7 +84,7 @@ M22 implementation status (2026-02-16, complete):
 - M22-9: hydration/fallback metrics integrated into daily metrics report
 - M22-10: closeout check script + handover documentation
 
-M23 implementation status (2026-02-17, in progress):
+M23 implementation status (2026-02-17, complete):
 - M23-1: runtime resilience state contract scaffold (`state["resilience"]`, `state["circuit"]["strategist"]`) + commander entry normalization
 - M23-2: runtime-shared circuit breaker core module (`gate/failure/success`) + transition regression tests
 - M23-3: strategist decision path runtime circuit integration (`decide_trade` gate + success/failure state updates)
@@ -94,6 +94,7 @@ M23 implementation status (2026-02-17, in progress):
 - M23-7: commander resilience ops query CLI (`query_commander_resilience_events.py`) for cooldown/error/intervention visibility
 - M23-8: resilience closeout check script and handover (`run_m23_resilience_closeout_check.py`)
 - M23-9: commander resilience metrics integrated into daily metrics report (`commander_resilience` block)
+- M23-10: final closeout script + M24 handover (`run_m23_closeout_check.py`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

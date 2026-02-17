@@ -110,6 +110,7 @@ Trading_Agent_System/
 - `docs/plan/m23_7_commander_resilience_ops_visibility.md`
 - `docs/plan/m23_8_resilience_closeout_and_handover.md`
 - `docs/plan/m23_9_commander_resilience_metrics_reporting.md`
+- `docs/plan/m23_10_closeout_and_m24_handover.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`
 - `graphs/nodes/execute_from_packet.py`
@@ -117,6 +118,7 @@ Trading_Agent_System/
 - `scripts/query_commander_resilience_events.py`
 - `scripts/run_m23_resilience_closeout_check.py`
 - `scripts/generate_metrics_report.py`
+- `scripts/run_m23_closeout_check.py`
 - `tests/test_m23_1_runtime_resilience_state_contract.py`
 - `tests/test_m23_2_runtime_circuit_breaker_core.py`
 - `tests/test_m23_3_decide_trade_runtime_circuit_integration.py`
@@ -126,6 +128,7 @@ Trading_Agent_System/
 - `tests/test_m23_7_commander_resilience_ops_script.py`
 - `tests/test_m23_8_resilience_closeout_check.py`
 - `tests/test_m23_9_commander_resilience_metrics_report.py`
+- `tests/test_m23_10_closeout_check.py`
 
 ## Note
 
