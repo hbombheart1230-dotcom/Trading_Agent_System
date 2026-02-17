@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Set
+from typing import Any, Dict, Optional, Set
 import os
 
 from libs.core.api_response import ApiResponse
@@ -73,6 +73,78 @@ class RealExecutor:
     def _env_flag_true(name: str, default: str = "false") -> bool:
         return (os.getenv(name, default) or default).strip().lower() == "true"
 
+    @staticmethod
+    def _deny(code: str, message: str) -> Dict[str, Any]:
+        return {"ok": False, "code": str(code or "").strip() or "UNKNOWN", "message": str(message or "")}
+
+    @staticmethod
+    def _allow() -> Dict[str, Any]:
+        return {"ok": True, "code": "OK", "message": "allowed"}
+
+    def preflight_check(self, req: Optional[PreparedRequest] = None) -> Dict[str, Any]:
+        """M24-5: explicit preflight check with stable denial reason codes.
+
+        This is a pure guard evaluation step. It performs no token issuance and no HTTP calls.
+        """
+        mode = (os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower()
+        enabled = self._env_flag_true("EXECUTION_ENABLED", "false")
+
+        if mode == "real":
+            if not enabled:
+                return self._deny(
+                    "EXECUTION_DISABLED",
+                    "Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls.",
+                )
+
+            allow_real = self._env_flag_true("ALLOW_REAL_EXECUTION", "false")
+            if not allow_real:
+                return self._deny(
+                    "REAL_EXECUTION_NOT_ALLOWED",
+                    "Real execution is not allowed. Set ALLOW_REAL_EXECUTION=true to allow real calls.",
+                )
+
+            if not str(self.s.kiwoom_app_key or "").strip():
+                return self._deny(
+                    "MISSING_APP_KEY",
+                    "KIWOOM_APP_KEY is required in real mode.",
+                )
+            if not str(self.s.kiwoom_app_secret or "").strip():
+                return self._deny(
+                    "MISSING_APP_SECRET",
+                    "KIWOOM_APP_SECRET is required in real mode.",
+                )
+            if not str(self.s.kiwoom_account_no or "").strip():
+                return self._deny(
+                    "MISSING_ACCOUNT_NO",
+                    "KIWOOM_ACCOUNT_NO is required in real mode.",
+                )
+            if not str(self.s.base_url or "").strip().lower().startswith("https://"):
+                return self._deny(
+                    "INVALID_BASE_URL",
+                    "Real mode requires https base URL.",
+                )
+        else:
+            # Keep compatibility:
+            # - mock mode can run with EXECUTION_ENABLED=false
+            # - unknown/non-mock mode behaves like real for execution_enabled guard
+            if mode != "mock" and not enabled:
+                return self._deny(
+                    "EXECUTION_DISABLED",
+                    "Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls.",
+                )
+
+        if req is not None:
+            allow = self._parse_symbol_allowlist(os.getenv("SYMBOL_ALLOWLIST"))
+            if allow:
+                sym = self._extract_symbol(req)
+                if sym is not None and sym not in allow:
+                    return self._deny(
+                        "ALLOWLIST_BLOCKED",
+                        f"Symbol '{sym}' is not allowed by SYMBOL_ALLOWLIST. Allowed={sorted(allow)}",
+                    )
+
+        return self._allow()
+
     def execute(self, req: PreparedRequest, *, auth_token: Optional[str] = None) -> ExecutionResult:
         """
         IMPORTANT ORDER:
@@ -81,34 +153,11 @@ class RealExecutor:
           3) Token issuance
           4) HTTP request
         """
-        mode = (os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower()
-        enabled = self._env_flag_true("EXECUTION_ENABLED", "false")
-
-        # --- Hard safety gates (must run BEFORE token issuance / HTTP) ---
-        if mode == "real":
-            # 1) execution enabled
-            if not enabled:
-                raise ExecutionDisabledError(
-                    "Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls."
-                )
-
-            # 2) explicit allow for real trading (prevents accidental real calls during tests)
-            allow_real = self._env_flag_true("ALLOW_REAL_EXECUTION", "false")
-            if not allow_real:
-                raise ExecutionDisabledError(
-                    "Real execution is not allowed. Set ALLOW_REAL_EXECUTION=true to allow real calls."
-                )
-        else:
-            # Keep existing behavior:
-            # - mock workflows can run even when EXECUTION_ENABLED=false
-            # - if some other mode is introduced later, treat like real: require enabled
-            if mode != "mock" and not enabled:
-                raise ExecutionDisabledError(
-                    "Execution is disabled. Set EXECUTION_ENABLED=true to allow real calls."
-                )
-
-        # --- Optional extra safety guard (disabled when env var is missing/empty). ---
-        self._enforce_symbol_allowlist(req)
+        pf = self.preflight_check(req)
+        if not bool(pf.get("ok")):
+            code = str(pf.get("code") or "UNKNOWN")
+            msg = str(pf.get("message") or "Execution preflight check failed.")
+            raise ExecutionDisabledError(f"[{code}] {msg}")
 
         # --- Token issuance (only after all guards pass) ---
         token = auth_token
