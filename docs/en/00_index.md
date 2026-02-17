@@ -50,3 +50,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m24_4_intent_state_reconciliation_tooling.md -> M24-4 JSONL/SQLite intent state reconciliation tooling
 - docs/plan/m24_5_real_execution_preflight_denial_reasons.md -> M24-5 real execution preflight and explicit denial reason codes
 - docs/plan/m24_6_guard_precedence_regression_bundle.md -> M24-6 guard precedence regression bundle
+- docs/plan/m24_7_intent_state_ops_visibility.md -> M24-7 intent state/journal ops visibility query and stuck-executing gate
