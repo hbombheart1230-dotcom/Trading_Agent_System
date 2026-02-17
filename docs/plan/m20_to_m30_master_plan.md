@@ -40,9 +40,12 @@
   - map nodes: commander_router -> strategist -> scanner -> monitor -> supervisor -> executor -> reporter
   - formalize retry/cancel/pause transitions in code (not docs-only)
   - deprecate duplicate orchestration path where possible
+- Phase split (2026-02-17):
+  - phase 1 (completed in M21): canonical runtime entry + bridge + parity test coverage
+  - phase 2 (scheduled across M23): internal runtime engine conversion to actual LangGraph `StateGraph`, with external contract compatibility preserved
 - Exit criteria:
-  - one canonical runtime entry for automated runs
-  - parity tests pass for existing M20 behavior
+  - phase 1: one canonical runtime entry for automated runs, and parity tests pass for existing M20 behavior
+  - phase 2: canonical runtime path runs on LangGraph `StateGraph` internals with no contract regression against phase-1 test suite
 
 ## M22: Skill-Native Scanner/Monitor Upgrade
 
@@ -114,6 +117,12 @@
   - comparable strategy scorecards (PnL proxy, risk-adjusted metrics, drawdown)
   - A/B evaluation support for prompt/schema versions
   - acceptance thresholds for promotion to live candidates
+- Fixed dataset minimum scope (v1, 2026-02-17):
+  - market: timestamped OHLCV candles (`1m`, `5m`, `1d`) with corporate-action adjustment metadata
+  - execution timeline: order intents, order status transitions, and fill events (for idempotency/replay validation)
+  - microstructure: best bid/ask snapshot (top-of-book), with optional depth levels when available
+  - features: scanner/monitor indicator snapshots used at decision time (to ensure deterministic replay)
+  - news/sentiment: timestamped headlines/articles + per-symbol sentiment + daily/global sentiment snapshot
 - Exit criteria:
   - strategy changes require measurable evidence before promotion
 

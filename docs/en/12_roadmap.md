@@ -68,6 +68,10 @@ M21 implementation status (2026-02-15):
 - M21-9: legacy `Commander` bridge to canonical runtime (`run_canonical`)
 - M21-10: documentation sync and closeout
 
+M21 phase note (2026-02-17):
+- phase 1 complete: canonical runtime entry + bridge + parity
+- phase 2 pending: internal runtime migration to LangGraph `StateGraph` while preserving canonical runtime contracts
+
 M22 implementation status (2026-02-16, complete):
 - M22-1: skill-native Scanner/Monitor baseline (`market.quote`, `account.orders`, `order.status`) + offline demo
 - M22-2: Monitor order lifecycle mapping (`working/partial_fill/filled/cancelled/rejected`) with progress/terminal flags
