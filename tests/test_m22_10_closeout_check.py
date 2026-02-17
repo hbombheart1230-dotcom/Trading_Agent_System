@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from scripts.run_m22_closeout_check import main as closeout_main
@@ -9,6 +10,7 @@ from scripts.run_m22_closeout_check import main as closeout_main
 def test_m22_10_closeout_check_passes_with_timeout_case(tmp_path: Path, capsys):
     events = tmp_path / "events.jsonl"
     reports = tmp_path / "reports"
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     rc = closeout_main(
         [
             "--event-log-path",
@@ -16,7 +18,7 @@ def test_m22_10_closeout_check_passes_with_timeout_case(tmp_path: Path, capsys):
             "--report-dir",
             str(reports),
             "--day",
-            "2026-02-16",
+            day,
             "--json",
         ]
     )
