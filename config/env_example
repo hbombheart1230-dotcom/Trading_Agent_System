@@ -36,7 +36,7 @@
 # M25_BATCH_STATUS_JSON_PATH=reports/m25_ops_batch/status_latest.json
 
 # --- M25 Notification Channel ---
-# M25_NOTIFY_PROVIDER=none
+# M25_NOTIFY_PROVIDER=none          # none | webhook | slack_webhook
 # M25_NOTIFY_ON=failure
 # M25_NOTIFY_WEBHOOK_URL=
 # M25_NOTIFY_TIMEOUT_SEC=5

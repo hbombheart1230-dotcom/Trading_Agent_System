@@ -59,3 +59,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m25_5_ops_batch_hook.md -> M25-5 scheduler-ready ops batch hook with lock/status artifact
 - docs/plan/m25_6_alert_channel_adapter.md -> M25-6 webhook alert channel adapter and batch notification integration
 - docs/plan/m25_7_notification_noise_control.md -> M25-7 notification dedup/rate-limit noise control
+- docs/plan/m25_8_slack_webhook_provider.md -> M25-8 Slack incoming-webhook provider integration

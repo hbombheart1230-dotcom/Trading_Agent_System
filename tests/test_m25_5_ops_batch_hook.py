@@ -173,7 +173,7 @@ def test_m25_5_ops_batch_can_fail_on_notify_error(monkeypatch, tmp_path: Path, c
             "--status-json-path",
             str(status_path),
             "--notify-provider",
-            "webhook",
+            "slack_webhook",
             "--notify-webhook-url",
             "https://example.invalid/hook",
             "--notify-on",
@@ -227,7 +227,7 @@ def test_m25_7_ops_batch_forwards_notify_noise_control_args(monkeypatch, tmp_pat
             "--status-json-path",
             str(status_path),
             "--notify-provider",
-            "webhook",
+            "slack_webhook",
             "--notify-webhook-url",
             "https://example.invalid/hook",
             "--notify-on",
@@ -248,6 +248,7 @@ def test_m25_7_ops_batch_forwards_notify_noise_control_args(monkeypatch, tmp_pat
 
     assert rc == 0
     assert obj["notify"]["ok"] is True
+    assert captured["provider"] == "slack_webhook"
     assert captured["state_path"] == str(state_path)
     assert captured["dedup_window_sec"] == 120
     assert captured["rate_limit_window_sec"] == 300

@@ -156,8 +156,32 @@ def build_batch_notification_payload(batch_result: Dict[str, Any]) -> Dict[str, 
     }
 
 
+def build_slack_webhook_payload(batch_payload: Dict[str, Any]) -> Dict[str, Any]:
+    alert_policy = batch_payload.get("alert_policy") if isinstance(batch_payload.get("alert_policy"), dict) else {}
+    alert_total = int(alert_policy.get("alert_total") or 0)
+    failures = batch_payload.get("failures") if isinstance(batch_payload.get("failures"), list) else []
+    text = (
+        "[M25 batch] "
+        f"day={batch_payload.get('day') or ''} "
+        f"ok={bool(batch_payload.get('ok'))} "
+        f"rc={int(batch_payload.get('rc') or 0)} "
+        f"alerts={alert_total} "
+        f"failures={len(failures)}"
+    )
+    return {
+        "text": text,
+        "metadata": {
+            "kind": "m25_ops_batch",
+            "day": str(batch_payload.get("day") or ""),
+            "rc": int(batch_payload.get("rc") or 0),
+            "ok": bool(batch_payload.get("ok")),
+        },
+    }
+
+
 def send_webhook_json(
     *,
+    provider_name: str = "webhook",
     webhook_url: str,
     payload: Dict[str, Any],
     timeout_sec: int = 5,
@@ -167,7 +191,7 @@ def send_webhook_json(
     if not url:
         return NotifyResult(
             ok=False,
-            provider="webhook",
+            provider=str(provider_name),
             sent=False,
             skipped=True,
             reason="missing_webhook_url",
@@ -177,7 +201,7 @@ def send_webhook_json(
     if bool(dry_run):
         return NotifyResult(
             ok=True,
-            provider="webhook",
+            provider=str(provider_name),
             sent=False,
             skipped=True,
             reason="dry_run",
@@ -198,7 +222,7 @@ def send_webhook_json(
         ok = 200 <= code < 300
         return NotifyResult(
             ok=ok,
-            provider="webhook",
+            provider=str(provider_name),
             sent=True,
             skipped=False,
             reason="sent" if ok else "non_2xx",
@@ -209,7 +233,7 @@ def send_webhook_json(
         code = int(getattr(e, "code", 0) or 0)
         return NotifyResult(
             ok=False,
-            provider="webhook",
+            provider=str(provider_name),
             sent=True,
             skipped=False,
             reason="http_error",
@@ -219,7 +243,7 @@ def send_webhook_json(
     except Exception as e:
         return NotifyResult(
             ok=False,
-            provider="webhook",
+            provider=str(provider_name),
             sent=True,
             skipped=False,
             reason="send_error",
@@ -275,13 +299,14 @@ def notify_batch_result(
             error="",
         ).to_dict()
 
-    if p == "webhook":
-        payload = build_batch_notification_payload(batch_result)
+    if p in ("webhook", "slack_webhook"):
+        batch_payload = build_batch_notification_payload(batch_result)
         now_epoch = int(time.time())
-        dedup_key = _dedup_key_from_payload(payload)
+        dedup_key = _dedup_key_from_payload(batch_payload)
         dedup_window = max(0, _as_int(dedup_window_sec, 600))
         rl_window = max(0, _as_int(rate_limit_window_sec, 600))
         rl_max = max(0, _as_int(max_per_window, 3))
+        payload = batch_payload if p == "webhook" else build_slack_webhook_payload(batch_payload)
 
         st_path = Path(str(state_path or "").strip()) if str(state_path or "").strip() else None
         events: List[Dict[str, Any]] = []
@@ -298,7 +323,7 @@ def notify_batch_result(
             if reason:
                 return NotifyResult(
                     ok=True,
-                    provider="webhook",
+                    provider=p,
                     sent=False,
                     skipped=True,
                     reason=reason,
@@ -307,6 +332,7 @@ def notify_batch_result(
                 ).to_dict()
 
         result = send_webhook_json(
+            provider_name=p,
             webhook_url=webhook_url,
             payload=payload,
             timeout_sec=timeout_sec,

@@ -139,3 +139,28 @@ def test_m25_7_notify_rate_limited(monkeypatch, tmp_path):
     assert out2["ok"] is True
     assert out2["skipped"] is True
     assert out2["reason"] == "rate_limited"
+
+
+def test_m25_8_notify_slack_webhook_success(monkeypatch):
+    def _fake_urlopen(req, timeout=5):  # type: ignore[no-untyped-def]
+        assert timeout == 5
+        body = req.data.decode("utf-8")
+        payload = json.loads(body)
+        assert "text" in payload
+        assert "metadata" in payload
+        assert payload["metadata"]["kind"] == "m25_ops_batch"
+        return _DummyResp()
+
+    monkeypatch.setattr(notifier.urllib_request, "urlopen", _fake_urlopen)
+    out = notifier.notify_batch_result(
+        batch_result={"ok": False, "rc": 3, "day": "2026-02-17"},
+        provider="slack_webhook",
+        webhook_url="https://example.invalid/slack-hook",
+        notify_on="failure",
+        timeout_sec=5,
+        dry_run=False,
+    )
+    assert out["ok"] is True
+    assert out["sent"] is True
+    assert out["provider"] == "slack_webhook"
+    assert out["status_code"] == 200

@@ -73,7 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--notify-provider",
-        choices=["none", "webhook"],
+        choices=["none", "webhook", "slack_webhook"],
         default=_env_str("M25_NOTIFY_PROVIDER", "none"),
     )
     p.add_argument(

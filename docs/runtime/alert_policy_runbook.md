@@ -84,11 +84,18 @@ Noise-control policy:
 - `M25_NOTIFY_DEDUP_WINDOW_SEC`: suppress same batch-alert signature in window.
 - `M25_NOTIFY_RATE_LIMIT_WINDOW_SEC` + `M25_NOTIFY_MAX_PER_WINDOW`: cap total sends in window.
 - suppress reasons are exposed in batch output as `notify.reason` (`dedup_suppressed` / `rate_limited`).
+- provider options: `none`, `webhook`, `slack_webhook` (Slack incoming webhook payload).
 
 Example (webhook):
 
 ```powershell
 python scripts/run_m25_ops_batch.py --notify-provider webhook --notify-webhook-url https://example.com/hook --notify-on failure --json
+```
+
+Example (Slack incoming webhook):
+
+```powershell
+python scripts/run_m25_ops_batch.py --notify-provider slack_webhook --notify-webhook-url https://hooks.slack.com/services/... --notify-on failure --json
 ```
 
 ## 5. Triage Rules
