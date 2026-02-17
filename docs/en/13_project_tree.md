@@ -111,8 +111,10 @@ Trading_Agent_System/
 - `docs/plan/m23_8_resilience_closeout_and_handover.md`
 - `docs/plan/m23_9_commander_resilience_metrics_reporting.md`
 - `docs/plan/m23_10_closeout_and_m24_handover.md`
+- `docs/plan/m24_1_intent_journal_state_machine_sqlite.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`
+- `libs/supervisor/intent_state_store.py`
 - `graphs/nodes/execute_from_packet.py`
 - `graphs/commander_runtime.py`
 - `scripts/query_commander_resilience_events.py`
@@ -129,6 +131,7 @@ Trading_Agent_System/
 - `tests/test_m23_8_resilience_closeout_check.py`
 - `tests/test_m23_9_commander_resilience_metrics_report.py`
 - `tests/test_m23_10_closeout_check.py`
+- `tests/test_m24_1_intent_state_store.py`
 
 ## Note
 

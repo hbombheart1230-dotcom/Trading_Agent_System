@@ -96,5 +96,8 @@ M23 implementation status (2026-02-17, complete):
 - M23-9: commander resilience metrics integrated into daily metrics report (`commander_resilience` block)
 - M23-10: final closeout script + M24 handover (`run_m23_closeout_check.py`)
 
+M24 implementation status (2026-02-17, in progress):
+- M24-1: strict intent journal state machine + SQLite state/journal store scaffold
+
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
