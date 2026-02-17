@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.core.settings import load_env_file
 from scripts.generate_metrics_report import generate_metrics_report
 
 _SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
@@ -29,6 +31,27 @@ def _to_int(v: Any, default: int = 0) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return float(default)
+    return _to_float(raw, float(default))
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return int(default)
+    return _to_int(raw, int(default))
+
+
+def _env_fail_on(default: str = "critical") -> str:
+    raw = str(os.getenv("ALERT_POLICY_FAIL_ON", "") or "").strip().lower()
+    if raw in ("none", "warning", "critical"):
+        return raw
+    return str(default)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Check alert policy threshold gates from metrics schema v1.")
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
@@ -36,13 +59,33 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--day", default=None)
     p.add_argument("--metrics-json-path", default="")
 
-    p.add_argument("--llm-success-rate-min", type=float, default=0.70)
-    p.add_argument("--llm-circuit-open-rate-max", type=float, default=0.30)
-    p.add_argument("--execution-blocked-rate-max", type=float, default=0.60)
-    p.add_argument("--execution-approved-executed-gap-max", type=int, default=0)
-    p.add_argument("--api-429-rate-max", type=float, default=0.20)
+    p.add_argument(
+        "--llm-success-rate-min",
+        type=float,
+        default=_env_float("ALERT_POLICY_LLM_SUCCESS_RATE_MIN", 0.70),
+    )
+    p.add_argument(
+        "--llm-circuit-open-rate-max",
+        type=float,
+        default=_env_float("ALERT_POLICY_LLM_CIRCUIT_OPEN_RATE_MAX", 0.30),
+    )
+    p.add_argument(
+        "--execution-blocked-rate-max",
+        type=float,
+        default=_env_float("ALERT_POLICY_EXECUTION_BLOCKED_RATE_MAX", 0.60),
+    )
+    p.add_argument(
+        "--execution-approved-executed-gap-max",
+        type=int,
+        default=_env_int("ALERT_POLICY_EXECUTION_APPROVED_EXECUTED_GAP_MAX", 0),
+    )
+    p.add_argument(
+        "--api-429-rate-max",
+        type=float,
+        default=_env_float("ALERT_POLICY_API_429_RATE_MAX", 0.20),
+    )
 
-    p.add_argument("--fail-on", choices=["none", "warning", "critical"], default="critical")
+    p.add_argument("--fail-on", choices=["none", "warning", "critical"], default=_env_fail_on("critical"))
     p.add_argument("--json", action="store_true")
     return p
 
@@ -177,6 +220,8 @@ def _evaluate_alerts(metrics: Dict[str, Any], args: argparse.Namespace) -> Dict[
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    # Load default .env profile before argument defaults are resolved.
+    load_env_file(".env")
     args = _build_parser().parse_args(argv)
     rc, metrics, metrics_path = _load_metrics(args)
     if rc != 0:

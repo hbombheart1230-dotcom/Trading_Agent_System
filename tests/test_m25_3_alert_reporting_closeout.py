@@ -57,3 +57,29 @@ def test_m25_3_closeout_fails_when_critical_injected(tmp_path: Path, capsys):
     assert obj["alert_policy"]["rc"] == 3
     assert obj["alert_policy"]["severity_total"]["critical"] >= 1
     assert any("alert_policy" in x for x in obj["failures"])
+
+
+def test_m25_3_closeout_uses_env_fail_on_default(monkeypatch, tmp_path: Path, capsys):
+    events = tmp_path / "events.jsonl"
+    reports = tmp_path / "reports"
+    monkeypatch.setenv("ALERT_POLICY_FAIL_ON", "none")
+
+    rc = closeout_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(reports),
+            "--day",
+            "2026-02-17",
+            "--inject-critical-case",
+            "--json",
+        ]
+    )
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+
+    assert rc == 0
+    assert obj["ok"] is True
+    assert obj["alert_policy"]["rc"] == 0
+    assert obj["alert_policy"]["severity_total"]["critical"] >= 1

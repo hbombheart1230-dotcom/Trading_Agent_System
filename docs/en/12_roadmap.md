@@ -110,6 +110,7 @@ M25 implementation status (2026-02-17, in progress):
 - M25-1: metric schema freeze v1 and validation gate (`check_metrics_schema_v1.py`)
 - M25-2: alert policy threshold gate (`check_alert_policy_v1.py`)
 - M25-3: alert reporting artifacts and M25 closeout gate (`run_m25_closeout_check.py`)
+- M25-4: env-backed alert policy profile + runbook (`ALERT_POLICY_*`, `docs/runtime/alert_policy_runbook.md`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

@@ -122,6 +122,8 @@ Trading_Agent_System/
 - `docs/plan/m25_1_metric_schema_freeze_v1.md`
 - `docs/plan/m25_2_alert_policy_threshold_gate.md`
 - `docs/plan/m25_3_alert_reporting_closeout.md`
+- `docs/plan/m25_4_alert_policy_env_profile.md`
+- `docs/runtime/alert_policy_runbook.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`
 - `libs/supervisor/intent_state_store.py`

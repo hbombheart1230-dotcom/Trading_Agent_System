@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import scripts.check_alert_policy_v1 as alert_mod
 from scripts.check_alert_policy_v1 import main as alert_main
 
 
@@ -186,3 +187,147 @@ def test_m25_2_alert_policy_warning_can_fail_with_fail_on_warning(tmp_path: Path
     assert obj["severity_total"]["warning"] >= 1
     codes = {str(a.get("code")) for a in obj["alerts"]}
     assert "execution_blocked_rate_high" in codes
+
+
+def test_m25_2_alert_policy_env_threshold_overrides(monkeypatch, tmp_path: Path, capsys):
+    events = tmp_path / "events.jsonl"
+    reports = tmp_path / "reports"
+    _write_jsonl(
+        events,
+        [
+            {
+                "ts": "2026-02-17T00:00:00+00:00",
+                "run_id": "r1",
+                "stage": "decision",
+                "event": "trace",
+                "payload": {"decision_packet": {"intent": {"action": "BUY"}}},
+            },
+            {
+                "ts": "2026-02-17T00:00:01+00:00",
+                "run_id": "r2",
+                "stage": "decision",
+                "event": "trace",
+                "payload": {"decision_packet": {"intent": {"action": "BUY"}}},
+            },
+            {
+                "ts": "2026-02-17T00:00:02+00:00",
+                "run_id": "r1",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": False, "reason": "blocked"},
+            },
+            {
+                "ts": "2026-02-17T00:00:03+00:00",
+                "run_id": "r2",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": True, "reason": "Allowed"},
+            },
+            {
+                "ts": "2026-02-17T00:00:04+00:00",
+                "run_id": "r3",
+                "stage": "strategist_llm",
+                "event": "result",
+                "payload": {"ok": True, "latency_ms": 100, "attempts": 1, "circuit_state": "closed"},
+            },
+        ],
+    )
+
+    # blocked_rate = 1/2 = 0.5, so lowering max to 0.4 should trigger warning.
+    monkeypatch.setenv("ALERT_POLICY_EXECUTION_BLOCKED_RATE_MAX", "0.4")
+    monkeypatch.setenv("ALERT_POLICY_FAIL_ON", "warning")
+
+    rc = alert_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(reports),
+            "--day",
+            "2026-02-17",
+            "--json",
+        ]
+    )
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+
+    assert rc == 3
+    assert obj["ok"] is False
+    assert obj["fail_on"] == "warning"
+    assert abs(float(obj["thresholds"]["execution_blocked_rate_max"]) - 0.4) < 1e-12
+    codes = {str(a.get("code")) for a in obj["alerts"]}
+    assert "execution_blocked_rate_high" in codes
+
+
+def test_m25_2_alert_policy_loads_dotenv_profile_defaults(monkeypatch, tmp_path: Path, capsys):
+    events = tmp_path / "events.jsonl"
+    reports = tmp_path / "reports"
+    _write_jsonl(
+        events,
+        [
+            {
+                "ts": "2026-02-17T00:00:00+00:00",
+                "run_id": "r1",
+                "stage": "decision",
+                "event": "trace",
+                "payload": {"decision_packet": {"intent": {"action": "BUY"}}},
+            },
+            {
+                "ts": "2026-02-17T00:00:01+00:00",
+                "run_id": "r2",
+                "stage": "decision",
+                "event": "trace",
+                "payload": {"decision_packet": {"intent": {"action": "BUY"}}},
+            },
+            {
+                "ts": "2026-02-17T00:00:02+00:00",
+                "run_id": "r1",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": False, "reason": "blocked"},
+            },
+            {
+                "ts": "2026-02-17T00:00:03+00:00",
+                "run_id": "r2",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": True, "reason": "Allowed"},
+            },
+            {
+                "ts": "2026-02-17T00:00:04+00:00",
+                "run_id": "r3",
+                "stage": "strategist_llm",
+                "event": "result",
+                "payload": {"ok": True, "latency_ms": 100, "attempts": 1, "circuit_state": "closed"},
+            },
+        ],
+    )
+
+    monkeypatch.delenv("ALERT_POLICY_EXECUTION_BLOCKED_RATE_MAX", raising=False)
+    monkeypatch.delenv("ALERT_POLICY_FAIL_ON", raising=False)
+
+    def _fake_load_env_file(_path):  # type: ignore[no-untyped-def]
+        monkeypatch.setenv("ALERT_POLICY_EXECUTION_BLOCKED_RATE_MAX", "0.4")
+        monkeypatch.setenv("ALERT_POLICY_FAIL_ON", "warning")
+        return {}
+
+    monkeypatch.setattr(alert_mod, "load_env_file", _fake_load_env_file)
+
+    rc = alert_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(reports),
+            "--day",
+            "2026-02-17",
+            "--json",
+        ]
+    )
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+
+    assert rc == 3
+    assert obj["ok"] is False
+    assert obj["fail_on"] == "warning"
+    assert abs(float(obj["thresholds"]["execution_blocked_rate_max"]) - 0.4) < 1e-12

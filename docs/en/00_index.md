@@ -55,3 +55,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m25_1_metric_schema_freeze_v1.md -> M25-1 metric schema freeze v1 and validation gate
 - docs/plan/m25_2_alert_policy_threshold_gate.md -> M25-2 alert policy threshold gate
 - docs/plan/m25_3_alert_reporting_closeout.md -> M25-3 alert reporting artifacts and closeout gate
+- docs/plan/m25_4_alert_policy_env_profile.md -> M25-4 env-backed alert policy profile and runbook

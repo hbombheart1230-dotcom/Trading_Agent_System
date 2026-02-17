@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import sys
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
@@ -13,9 +14,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.core.settings import load_env_file
 from scripts.check_alert_policy_v1 import main as alert_policy_main
 from scripts.check_metrics_schema_v1 import main as metrics_schema_main
 from scripts.generate_daily_report import generate_daily_report
+
+
+def _env_fail_on(default: str = "critical") -> str:
+    raw = str(os.getenv("ALERT_POLICY_FAIL_ON", "") or "").strip().lower()
+    if raw in ("none", "warning", "critical"):
+        return raw
+    return str(default)
 
 
 def _write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
@@ -173,7 +182,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--event-log-path", default="data/logs/m25_closeout_events.jsonl")
     p.add_argument("--report-dir", default="reports/m25_closeout")
     p.add_argument("--day", default=None)
-    p.add_argument("--fail-on", choices=["none", "warning", "critical"], default="critical")
+    p.add_argument("--fail-on", choices=["none", "warning", "critical"], default=_env_fail_on("critical"))
     p.add_argument("--inject-critical-case", action="store_true")
     p.add_argument("--no-clear", action="store_true")
     p.add_argument("--json", action="store_true")
@@ -181,6 +190,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    # Load default .env profile for alert policy defaults.
+    load_env_file(".env")
     args = _build_parser().parse_args(argv)
     day = str(args.day or datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
