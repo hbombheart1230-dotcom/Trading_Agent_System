@@ -104,6 +104,7 @@ M24 implementation status (2026-02-17, in progress):
 - M24-5: real execution preflight hardening with explicit denial reason codes (`check_real_execution_preflight.py`)
 - M24-6: guard precedence regression bundle (`run_m24_guard_precedence_check.py`)
 - M24-7: intent state/journal ops visibility query CLI with stuck `executing` gate (`query_intent_state_store.py`)
+- M24-8: final closeout check and M25 handover (`run_m24_closeout_check.py`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
