@@ -34,3 +34,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m22_8_auto_composite_runner_connection.md -> M22-8 auto composite runner connection
 - docs/plan/m22_9_hydration_metrics_reporting.md -> M22-9 hydration/fallback metrics reporting integration
 - docs/plan/m22_10_closeout_and_handover.md -> M22-10 closeout check and M23 handover
+- docs/plan/m23_1_runtime_resilience_state_contract.md -> M23-1 runtime resilience state contract scaffold

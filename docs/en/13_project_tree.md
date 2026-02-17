@@ -1,6 +1,6 @@
 # 13. Project Tree
 
-- Last updated: 2026-02-16
+- Last updated: 2026-02-17
 - Scope: high-level repository layout for implementation and operations.
 
 ## Top-Level Layout
@@ -98,6 +98,12 @@ Trading_Agent_System/
 - `scripts/smoke_m22_hydration.py`
 - `scripts/run_m22_closeout_check.py`
 - `tests/test_m22_10_closeout_check.py`
+
+## M23-Related Documents
+
+- `docs/plan/m23_1_runtime_resilience_state_contract.md`
+- `libs/runtime/resilience_state.py`
+- `tests/test_m23_1_runtime_resilience_state_contract.py`
 
 ## Note
 

@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, Literal, Optional, Tuple
 from graphs.trading_graph import run_trading_graph
 from graphs.nodes.decide_trade import decide_trade
 from graphs.nodes.execute_from_packet import execute_from_packet
+from libs.runtime.resilience_state import ensure_runtime_resilience_state
 
 
 RuntimeMode = Literal["graph_spine", "decision_packet"]
@@ -174,6 +175,7 @@ def run_commander_runtime(
 
     Mode selection uses `resolve_runtime_mode(...)`.
     """
+    state = ensure_runtime_resilience_state(state)
     selected = resolve_runtime_mode(state, mode=mode)
     state = _annotate_runtime_plan(state, selected)
     _log_commander_event(
