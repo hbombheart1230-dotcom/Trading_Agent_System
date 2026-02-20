@@ -14,6 +14,8 @@ ALERT_POLICY_LLM_CIRCUIT_OPEN_RATE_MAX=0.30
 ALERT_POLICY_EXECUTION_BLOCKED_RATE_MAX=0.60
 ALERT_POLICY_EXECUTION_APPROVED_EXECUTED_GAP_MAX=0
 ALERT_POLICY_API_429_RATE_MAX=0.20
+ALERT_POLICY_PORTFOLIO_GUARD_BLOCKED_RATIO_MAX=0.70
+ALERT_POLICY_PORTFOLIO_GUARD_STRATEGY_BUDGET_EXCEEDED_MAX=20
 ```
 
 ## 2. Validate Alert Policy
@@ -125,3 +127,7 @@ Key output fields:
   - check execution preflight, broker errors, and duplicate-claim handling.
 - `broker_api_429_rate_high` (warning):
   - apply backoff/rate control and re-run closeout.
+- `portfolio_guard_blocked_ratio_high` (warning):
+  - review strategy budget sizing and symbol concentration caps.
+- `portfolio_guard_strategy_budget_exceeded_high` (warning):
+  - investigate repeated budget clipping by strategy and rebalance allocation policy.

@@ -74,3 +74,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m27_3_portfolio_budget_boundary_guard.md -> M27-3 portfolio budget boundary guard
 - docs/plan/m27_4_runtime_portfolio_guard_integration.md -> M27-4 runtime portfolio guard integration
 - docs/plan/m27_5_portfolio_guard_metrics_reporting.md -> M27-5 portfolio guard metrics reporting
+- docs/plan/m27_6_portfolio_guard_alert_policy.md -> M27-6 portfolio guard alert policy

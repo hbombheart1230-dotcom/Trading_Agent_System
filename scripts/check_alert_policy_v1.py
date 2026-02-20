@@ -84,6 +84,16 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=_env_float("ALERT_POLICY_API_429_RATE_MAX", 0.20),
     )
+    p.add_argument(
+        "--portfolio-guard-blocked-ratio-max",
+        type=float,
+        default=_env_float("ALERT_POLICY_PORTFOLIO_GUARD_BLOCKED_RATIO_MAX", 0.70),
+    )
+    p.add_argument(
+        "--portfolio-guard-strategy-budget-exceeded-max",
+        type=int,
+        default=_env_int("ALERT_POLICY_PORTFOLIO_GUARD_STRATEGY_BUDGET_EXCEEDED_MAX", 20),
+    )
 
     p.add_argument("--fail-on", choices=["none", "warning", "critical"], default=_env_fail_on("critical"))
     p.add_argument("--json", action="store_true")
@@ -115,6 +125,7 @@ def _evaluate_alerts(metrics: Dict[str, Any], args: argparse.Namespace) -> Dict[
     strategist = metrics.get("strategist_llm") if isinstance(metrics.get("strategist_llm"), dict) else {}
     execution = metrics.get("execution") if isinstance(metrics.get("execution"), dict) else {}
     broker_api = metrics.get("broker_api") if isinstance(metrics.get("broker_api"), dict) else {}
+    portfolio_guard = metrics.get("portfolio_guard") if isinstance(metrics.get("portfolio_guard"), dict) else {}
 
     llm_success_rate = _to_float(strategist.get("success_rate"), 0.0)
     llm_circuit_open_rate = _to_float(strategist.get("circuit_open_rate"), 0.0)
@@ -128,6 +139,17 @@ def _evaluate_alerts(metrics: Dict[str, Any], args: argparse.Namespace) -> Dict[
     blocked_rate = float(blocked) / float(denom)
     approved_executed_gap = max(0, approved - executed)
     api_429_rate = _to_float(broker_api.get("api_429_rate"), 0.0)
+    portfolio_guard_applied_total = _to_int(portfolio_guard.get("applied_total"), 0)
+    portfolio_guard_approved_total_sum = _to_int(portfolio_guard.get("approved_total_sum"), 0)
+    portfolio_guard_blocked_total_sum = _to_int(portfolio_guard.get("blocked_total_sum"), 0)
+    portfolio_guard_den = portfolio_guard_approved_total_sum + portfolio_guard_blocked_total_sum
+    portfolio_guard_blocked_ratio = (
+        float(portfolio_guard_blocked_total_sum) / float(portfolio_guard_den) if portfolio_guard_den > 0 else 0.0
+    )
+    portfolio_guard_reason_total = (
+        portfolio_guard.get("blocked_reason_total") if isinstance(portfolio_guard.get("blocked_reason_total"), dict) else {}
+    )
+    portfolio_guard_strategy_budget_exceeded = _to_int(portfolio_guard_reason_total.get("strategy_budget_exceeded"), 0)
 
     alerts: List[Dict[str, Any]] = []
 
@@ -185,6 +207,30 @@ def _evaluate_alerts(metrics: Dict[str, Any], args: argparse.Namespace) -> Dict[
             }
         )
 
+    if portfolio_guard_applied_total > 0 and portfolio_guard_blocked_ratio > float(args.portfolio_guard_blocked_ratio_max):
+        alerts.append(
+            {
+                "severity": "warning",
+                "code": "portfolio_guard_blocked_ratio_high",
+                "value": float(portfolio_guard_blocked_ratio),
+                "threshold": float(args.portfolio_guard_blocked_ratio_max),
+                "portfolio_guard_applied_total": int(portfolio_guard_applied_total),
+                "portfolio_guard_approved_total_sum": int(portfolio_guard_approved_total_sum),
+                "portfolio_guard_blocked_total_sum": int(portfolio_guard_blocked_total_sum),
+            }
+        )
+
+    if portfolio_guard_strategy_budget_exceeded > int(args.portfolio_guard_strategy_budget_exceeded_max):
+        alerts.append(
+            {
+                "severity": "warning",
+                "code": "portfolio_guard_strategy_budget_exceeded_high",
+                "value": int(portfolio_guard_strategy_budget_exceeded),
+                "threshold": int(args.portfolio_guard_strategy_budget_exceeded_max),
+                "portfolio_guard_applied_total": int(portfolio_guard_applied_total),
+            }
+        )
+
     fail_on = str(args.fail_on or "critical").strip().lower()
     fail_rank = _SEVERITY_RANK.get(fail_on, _SEVERITY_RANK["critical"])
     should_fail = any(_SEVERITY_RANK.get(str(a.get("severity") or ""), -1) >= fail_rank for a in alerts)
@@ -208,6 +254,8 @@ def _evaluate_alerts(metrics: Dict[str, Any], args: argparse.Namespace) -> Dict[
             "execution_blocked_rate": blocked_rate,
             "execution_approved_executed_gap": int(approved_executed_gap),
             "api_429_rate": api_429_rate,
+            "portfolio_guard_blocked_ratio": float(portfolio_guard_blocked_ratio),
+            "portfolio_guard_strategy_budget_exceeded_total": int(portfolio_guard_strategy_budget_exceeded),
         },
         "thresholds": {
             "llm_success_rate_min": float(args.llm_success_rate_min),
@@ -215,6 +263,8 @@ def _evaluate_alerts(metrics: Dict[str, Any], args: argparse.Namespace) -> Dict[
             "execution_blocked_rate_max": float(args.execution_blocked_rate_max),
             "execution_approved_executed_gap_max": int(args.execution_approved_executed_gap_max),
             "api_429_rate_max": float(args.api_429_rate_max),
+            "portfolio_guard_blocked_ratio_max": float(args.portfolio_guard_blocked_ratio_max),
+            "portfolio_guard_strategy_budget_exceeded_max": int(args.portfolio_guard_strategy_budget_exceeded_max),
         },
     }
 
