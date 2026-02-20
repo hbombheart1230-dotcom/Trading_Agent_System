@@ -67,3 +67,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m26_2_replay_runner_scaffold.md -> M26-2 fixed dataset replay runner scaffold
 - docs/plan/m26_3_scorecard_metrics.md -> M26-3 scorecard metrics scaffold
 - docs/plan/m26_4_ab_evaluation_scaffold.md -> M26-4 A/B evaluation scaffold
+- docs/plan/m26_5_promotion_gate_check.md -> M26-5 promotion gate threshold check
