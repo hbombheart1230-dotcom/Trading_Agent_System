@@ -30,6 +30,30 @@ def _install_success_urlopen(monkeypatch):  # type: ignore[no-untyped-def]
     monkeypatch.setattr(notifier.urllib_request, "urlopen", _fake_urlopen)
 
 
+def _batch_with_portfolio_guard_alerts() -> dict:
+    return {
+        "ok": False,
+        "rc": 3,
+        "day": "2026-02-20",
+        "closeout": {
+            "metrics_schema": {"ok": True, "rc": 0, "failure_total": 0},
+            "alert_policy": {
+                "ok": False,
+                "rc": 3,
+                "alert_total": 3,
+                "severity_total": {"warning": 3},
+                "alert_codes": [
+                    "execution_blocked_rate_high",
+                    "portfolio_guard_blocked_ratio_high",
+                    "portfolio_guard_strategy_budget_exceeded_high",
+                ],
+            },
+            "daily_report": {"events": 10, "path_json": "reports/sample.json"},
+        },
+        "failures": ["alert_policy rc != 0"],
+    }
+
+
 def test_m25_6_notify_none_provider_skips():
     out = notifier.notify_batch_result(
         batch_result={"ok": True, "rc": 0, "day": "2026-02-17"},
@@ -199,3 +223,39 @@ def test_m25_9_notify_webhook_retry_after_429(monkeypatch):
     assert out["ok"] is True
     assert out["sent"] is True
     assert out["reason"] == "sent_after_retry"
+
+
+def test_m27_8_notify_escalates_provider_on_portfolio_guard_alerts():
+    out = notifier.notify_batch_result(
+        batch_result=_batch_with_portfolio_guard_alerts(),
+        provider="webhook",
+        webhook_url="https://example.invalid/default",
+        notify_on="always",
+        dry_run=True,
+        portfolio_guard_escalation_min=1,
+        portfolio_guard_provider="slack_webhook",
+        portfolio_guard_webhook_url="https://example.invalid/pg",
+    )
+    assert out["ok"] is True
+    assert out["skipped"] is True
+    assert out["reason"] == "dry_run"
+    assert out["selected_provider"] == "slack_webhook"
+    assert out["route_reason"] == "portfolio_guard_escalation"
+    assert out["escalated"] is True
+
+
+def test_m27_8_notify_keeps_default_provider_when_threshold_not_met():
+    out = notifier.notify_batch_result(
+        batch_result=_batch_with_portfolio_guard_alerts(),
+        provider="webhook",
+        webhook_url="https://example.invalid/default",
+        notify_on="always",
+        dry_run=True,
+        portfolio_guard_escalation_min=99,
+        portfolio_guard_provider="slack_webhook",
+        portfolio_guard_webhook_url="https://example.invalid/pg",
+    )
+    assert out["ok"] is True
+    assert out["selected_provider"] == "webhook"
+    assert out["route_reason"] == "default_provider"
+    assert out["escalated"] is False

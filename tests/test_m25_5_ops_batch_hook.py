@@ -240,6 +240,12 @@ def test_m25_7_ops_batch_forwards_notify_noise_control_args(monkeypatch, tmp_pat
             "slack_webhook",
             "--notify-webhook-url",
             "https://example.invalid/hook",
+            "--notify-portfolio-guard-escalation-min",
+            "1",
+            "--notify-portfolio-guard-provider",
+            "slack_webhook",
+            "--notify-portfolio-guard-webhook-url",
+            "https://example.invalid/pg-hook",
             "--notify-on",
             "always",
             "--notify-state-path",
@@ -269,3 +275,6 @@ def test_m25_7_ops_batch_forwards_notify_noise_control_args(monkeypatch, tmp_pat
     assert captured["max_per_window"] == 2
     assert captured["retry_max"] == 2
     assert captured["retry_backoff_sec"] == 0.2
+    assert captured["portfolio_guard_escalation_min"] == 1
+    assert captured["portfolio_guard_provider"] == "slack_webhook"
+    assert captured["portfolio_guard_webhook_url"] == "https://example.invalid/pg-hook"

@@ -91,6 +91,15 @@ def _extract_alert_codes(alert_policy: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _with_notify_route(result: Dict[str, Any], *, route: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(result)
+    out["selected_provider"] = str(route.get("provider") or "")
+    out["route_reason"] = str(route.get("route_reason") or "")
+    out["portfolio_guard_alert_total"] = int(_as_int(route.get("portfolio_guard_alert_total"), 0))
+    out["escalated"] = bool(route.get("escalated"))
+    return out
+
+
 def _dedup_key_from_payload(payload: Dict[str, Any]) -> str:
     alert_policy = payload.get("alert_policy") if isinstance(payload.get("alert_policy"), dict) else {}
     alert_codes = _normalize_alert_codes(alert_policy.get("alert_codes"), sort_codes=True)
@@ -106,6 +115,42 @@ def _dedup_key_from_payload(payload: Dict[str, Any]) -> str:
         "failures": payload.get("failures") if isinstance(payload.get("failures"), list) else [],
     }
     return json.dumps(basis, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _resolve_notify_profile(
+    *,
+    provider: str,
+    webhook_url: str,
+    batch_payload: Dict[str, Any],
+    portfolio_guard_escalation_min: int,
+    portfolio_guard_provider: str,
+    portfolio_guard_webhook_url: str,
+) -> Dict[str, Any]:
+    base_provider = str(provider or "none").strip().lower()
+    base_webhook_url = str(webhook_url or "").strip()
+
+    alert_policy = batch_payload.get("alert_policy") if isinstance(batch_payload.get("alert_policy"), dict) else {}
+    pg_total = _as_int(alert_policy.get("portfolio_guard_alert_total"), 0)
+    esc_min = max(0, _as_int(portfolio_guard_escalation_min, 0))
+    esc_provider = str(portfolio_guard_provider or "").strip().lower()
+    esc_url = str(portfolio_guard_webhook_url or "").strip()
+
+    resolved_provider = base_provider
+    resolved_url = base_webhook_url
+    escalated = False
+    if esc_min > 0 and pg_total >= esc_min and esc_provider not in ("", "none", "off", "disabled"):
+        resolved_provider = esc_provider
+        if esc_provider in ("webhook", "slack_webhook") and esc_url:
+            resolved_url = esc_url
+        escalated = True
+
+    return {
+        "provider": resolved_provider,
+        "webhook_url": resolved_url,
+        "route_reason": "portfolio_guard_escalation" if escalated else "default_provider",
+        "portfolio_guard_alert_total": int(pg_total),
+        "escalated": bool(escalated),
+    }
 
 
 def _load_notify_state(path: Path) -> List[Dict[str, Any]]:
@@ -365,6 +410,9 @@ def notify_batch_result(
     max_per_window: int = 3,
     retry_max: int = 0,
     retry_backoff_sec: float = 0.5,
+    portfolio_guard_escalation_min: int = 0,
+    portfolio_guard_provider: str = "none",
+    portfolio_guard_webhook_url: str = "",
 ) -> Dict[str, Any]:
     p = str(provider or "none").strip().lower()
     trigger = str(notify_on or "failure").strip().lower()
@@ -378,30 +426,47 @@ def notify_batch_result(
     elif trigger == "success":
         should_send = ok
 
+    batch_payload = build_batch_notification_payload(batch_result)
+    route = _resolve_notify_profile(
+        provider=p,
+        webhook_url=webhook_url,
+        batch_payload=batch_payload,
+        portfolio_guard_escalation_min=max(0, _as_int(portfolio_guard_escalation_min, 0)),
+        portfolio_guard_provider=portfolio_guard_provider,
+        portfolio_guard_webhook_url=portfolio_guard_webhook_url,
+    )
+    p = str(route.get("provider") or p).strip().lower()
+    webhook_url = str(route.get("webhook_url") or webhook_url)
+
     if p in ("", "none", "off", "disabled"):
-        return NotifyResult(
-            ok=True,
-            provider="none",
-            sent=False,
-            skipped=True,
-            reason="provider_none",
-            status_code=0,
-            error="",
-        ).to_dict()
+        return _with_notify_route(
+            NotifyResult(
+                ok=True,
+                provider="none",
+                sent=False,
+                skipped=True,
+                reason="provider_none",
+                status_code=0,
+                error="",
+            ).to_dict(),
+            route=route,
+        )
 
     if not should_send:
-        return NotifyResult(
-            ok=True,
-            provider=p,
-            sent=False,
-            skipped=True,
-            reason=f"notify_on_{trigger}_skip",
-            status_code=0,
-            error="",
-        ).to_dict()
+        return _with_notify_route(
+            NotifyResult(
+                ok=True,
+                provider=p,
+                sent=False,
+                skipped=True,
+                reason=f"notify_on_{trigger}_skip",
+                status_code=0,
+                error="",
+            ).to_dict(),
+            route=route,
+        )
 
     if p in ("webhook", "slack_webhook"):
-        batch_payload = build_batch_notification_payload(batch_result)
         now_epoch = int(time.time())
         dedup_key = _dedup_key_from_payload(batch_payload)
         dedup_window = max(0, _as_int(dedup_window_sec, 600))
@@ -422,25 +487,31 @@ def notify_batch_result(
                 max_per_window=rl_max,
             )
             if reason:
-                return NotifyResult(
-                    ok=True,
-                    provider=p,
-                    sent=False,
-                    skipped=True,
-                    reason=reason,
-                    status_code=0,
-                    error="",
-                ).to_dict()
+                return _with_notify_route(
+                    NotifyResult(
+                        ok=True,
+                        provider=p,
+                        sent=False,
+                        skipped=True,
+                        reason=reason,
+                        status_code=0,
+                        error="",
+                    ).to_dict(),
+                    route=route,
+                )
 
-        result = send_webhook_json(
-            provider_name=p,
-            webhook_url=webhook_url,
-            payload=payload,
-            timeout_sec=timeout_sec,
-            dry_run=_as_bool(dry_run, default=False),
-            retry_max=max(0, _as_int(retry_max, 0)),
-            retry_backoff_sec=max(0.0, _as_float(retry_backoff_sec, 0.5)),
-        ).to_dict()
+        result = _with_notify_route(
+            send_webhook_json(
+                provider_name=p,
+                webhook_url=webhook_url,
+                payload=payload,
+                timeout_sec=timeout_sec,
+                dry_run=_as_bool(dry_run, default=False),
+                retry_max=max(0, _as_int(retry_max, 0)),
+                retry_backoff_sec=max(0.0, _as_float(retry_backoff_sec, 0.5)),
+            ).to_dict(),
+            route=route,
+        )
 
         if (
             st_path is not None
@@ -454,12 +525,15 @@ def notify_batch_result(
             _save_notify_state(st_path, events)
         return result
 
-    return NotifyResult(
-        ok=False,
-        provider=p,
-        sent=False,
-        skipped=True,
-        reason="unsupported_provider",
-        status_code=0,
-        error="",
-    ).to_dict()
+    return _with_notify_route(
+        NotifyResult(
+            ok=False,
+            provider=p,
+            sent=False,
+            skipped=True,
+            reason="unsupported_provider",
+            status_code=0,
+            error="",
+        ).to_dict(),
+        route=route,
+    )

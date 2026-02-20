@@ -76,3 +76,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m27_5_portfolio_guard_metrics_reporting.md -> M27-5 portfolio guard metrics reporting
 - docs/plan/m27_6_portfolio_guard_alert_policy.md -> M27-6 portfolio guard alert policy
 - docs/plan/m27_7_portfolio_guard_notify_context.md -> M27-7 portfolio guard notify context
+- docs/plan/m27_8_portfolio_guard_notify_routing.md -> M27-8 portfolio guard notify routing escalation

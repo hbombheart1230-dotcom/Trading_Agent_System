@@ -100,6 +100,20 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_env_str("M25_NOTIFY_WEBHOOK_URL", ""),
     )
     p.add_argument(
+        "--notify-portfolio-guard-escalation-min",
+        type=int,
+        default=_env_int("M25_NOTIFY_PORTFOLIO_GUARD_ESCALATION_MIN", 0),
+    )
+    p.add_argument(
+        "--notify-portfolio-guard-provider",
+        choices=["none", "webhook", "slack_webhook"],
+        default=_env_str("M25_NOTIFY_PORTFOLIO_GUARD_PROVIDER", "none"),
+    )
+    p.add_argument(
+        "--notify-portfolio-guard-webhook-url",
+        default=_env_str("M25_NOTIFY_PORTFOLIO_GUARD_WEBHOOK_URL", ""),
+    )
+    p.add_argument(
         "--notify-timeout-sec",
         type=int,
         default=_env_int("M25_NOTIFY_TIMEOUT_SEC", 5),
@@ -319,6 +333,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         retry_backoff_sec=max(0.0, float(args.notify_retry_backoff_sec)),
         dry_run=bool(args.notify_dry_run),
         notify_on=str(args.notify_on),
+        portfolio_guard_escalation_min=max(0, int(args.notify_portfolio_guard_escalation_min)),
+        portfolio_guard_provider=str(args.notify_portfolio_guard_provider),
+        portfolio_guard_webhook_url=str(args.notify_portfolio_guard_webhook_url),
     )
     out["notify"] = notify
 
@@ -338,8 +355,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             "day": day,
             "batch_rc": int(final_rc),
             "closeout_rc": int(rc),
-            "provider": str(args.notify_provider),
+            "provider": str(notify.get("selected_provider") or args.notify_provider),
             "notify_on": str(args.notify_on),
+            "route_reason": str(notify.get("route_reason") or ""),
+            "portfolio_guard_alert_total": int(notify.get("portfolio_guard_alert_total") or 0),
+            "escalated": bool(notify.get("escalated")),
             "ok": bool(notify.get("ok")),
             "sent": bool(notify.get("sent")),
             "skipped": bool(notify.get("skipped")),

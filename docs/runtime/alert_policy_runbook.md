@@ -74,6 +74,9 @@ Notification channel options:
 M25_NOTIFY_PROVIDER=none
 M25_NOTIFY_ON=failure
 M25_NOTIFY_WEBHOOK_URL=
+M25_NOTIFY_PORTFOLIO_GUARD_ESCALATION_MIN=0
+M25_NOTIFY_PORTFOLIO_GUARD_PROVIDER=none
+M25_NOTIFY_PORTFOLIO_GUARD_WEBHOOK_URL=
 M25_NOTIFY_TIMEOUT_SEC=5
 M25_NOTIFY_STATE_PATH=data/state/m25_notify_state.json
 M25_NOTIFY_DEDUP_WINDOW_SEC=600
@@ -91,6 +94,7 @@ Noise-control policy:
 - `M25_NOTIFY_RETRY_MAX` + `M25_NOTIFY_RETRY_BACKOFF_SEC`: retry transient send failures (`429`/`5xx`/network).
 - suppress reasons are exposed in batch output as `notify.reason` (`dedup_suppressed` / `rate_limited`).
 - provider options: `none`, `webhook`, `slack_webhook` (Slack incoming webhook payload).
+- portfolio-guard escalation: when `M25_NOTIFY_PORTFOLIO_GUARD_ESCALATION_MIN > 0` and threshold is met, notify route can switch to `M25_NOTIFY_PORTFOLIO_GUARD_PROVIDER`.
 
 Example (webhook):
 
