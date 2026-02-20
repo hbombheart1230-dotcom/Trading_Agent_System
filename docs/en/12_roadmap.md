@@ -134,6 +134,9 @@ M26 implementation status (2026-02-20, in progress):
 - M26-5: promotion gate threshold check (`run_m26_promotion_gate_check.py`)
 - M26-6: closeout check and M27 handover (`run_m26_closeout_check.py`)
 
+M27 implementation status (2026-02-20, in progress):
+- M27-1: multi-strategy allocation policy scaffold (`libs/runtime/portfolio_allocation.py`, `run_m27_allocation_policy_check.py`)
+
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
 - `docs/plan/m31_to_m36_post_golive_plan.md`
