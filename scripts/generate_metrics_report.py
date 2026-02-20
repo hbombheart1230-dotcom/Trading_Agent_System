@@ -323,6 +323,18 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 "blocked_reason_total": {},
                 "blocked_reason_topN": [],
             },
+            "monitor_agent": {
+                "total": 0,
+                "exit_policy_enabled_total": 0,
+                "exit_evaluated_total": 0,
+                "exit_trigger_total": 0,
+                "exit_reason_total": {},
+                "position_sizing_enabled_total": 0,
+                "position_sizing_evaluated_total": 0,
+                "position_sizing_computed_qty_sum": 0,
+                "position_sizing_zero_qty_total": 0,
+                "position_sizing_reason_total": {},
+            },
             "broker_api": {
                 "api_error_total_by_api_id": {},
                 "api_429_total": 0,
@@ -380,6 +392,16 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     portfolio_guard_approved_total_sum = 0
     portfolio_guard_blocked_total_sum = 0
     portfolio_guard_reason_total: Counter[str] = Counter()
+    monitor_total = 0
+    monitor_exit_policy_enabled_total = 0
+    monitor_exit_evaluated_total = 0
+    monitor_exit_trigger_total = 0
+    monitor_exit_reason_total: Counter[str] = Counter()
+    monitor_position_sizing_enabled_total = 0
+    monitor_position_sizing_evaluated_total = 0
+    monitor_position_sizing_computed_qty_sum = 0
+    monitor_position_sizing_zero_qty_total = 0
+    monitor_position_sizing_reason_total: Counter[str] = Counter()
 
     for r in day_rows:
         stage = str(r.get("stage") or "")
@@ -541,6 +563,35 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 reason = str(payload.get("reason") or "unknown").strip() or "unknown"
                 commander_cooldown_reason_total[reason] += 1
 
+        if stage == "monitor" and event == "summary":
+            payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+            monitor_total += 1
+
+            if payload.get("exit_policy_enabled") is True:
+                monitor_exit_policy_enabled_total += 1
+            if payload.get("exit_evaluated") is True:
+                monitor_exit_evaluated_total += 1
+            if payload.get("exit_triggered") is True:
+                monitor_exit_trigger_total += 1
+
+            exit_reason = str(payload.get("exit_reason") or "").strip()
+            if exit_reason:
+                monitor_exit_reason_total[exit_reason] += 1
+
+            if payload.get("position_sizing_enabled") is True:
+                monitor_position_sizing_enabled_total += 1
+            if payload.get("position_sizing_evaluated") is True:
+                monitor_position_sizing_evaluated_total += 1
+
+            sizing_qty = _to_non_negative_int(payload.get("position_sizing_qty"))
+            monitor_position_sizing_computed_qty_sum += sizing_qty
+            if payload.get("position_sizing_evaluated") is True and sizing_qty == 0:
+                monitor_position_sizing_zero_qty_total += 1
+
+            sizing_reason = str(payload.get("position_sizing_reason") or "").strip()
+            if sizing_reason:
+                monitor_position_sizing_reason_total[sizing_reason] += 1
+
     latency = _latency_summary(day_rows)
     llm_latency_ms = _numeric_summary(llm_latency_ms_values)
     llm_attempts = _numeric_summary(llm_attempt_values)
@@ -625,6 +676,18 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 {"reason": str(reason), "count": int(cnt)}
                 for reason, cnt in portfolio_guard_reason_total.most_common(5)
             ],
+        },
+        "monitor_agent": {
+            "total": int(monitor_total),
+            "exit_policy_enabled_total": int(monitor_exit_policy_enabled_total),
+            "exit_evaluated_total": int(monitor_exit_evaluated_total),
+            "exit_trigger_total": int(monitor_exit_trigger_total),
+            "exit_reason_total": dict(monitor_exit_reason_total),
+            "position_sizing_enabled_total": int(monitor_position_sizing_enabled_total),
+            "position_sizing_evaluated_total": int(monitor_position_sizing_evaluated_total),
+            "position_sizing_computed_qty_sum": int(monitor_position_sizing_computed_qty_sum),
+            "position_sizing_zero_qty_total": int(monitor_position_sizing_zero_qty_total),
+            "position_sizing_reason_total": dict(monitor_position_sizing_reason_total),
         },
         "broker_api": {
             "api_error_total_by_api_id": dict(api_errors_by_id),
@@ -821,6 +884,35 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     ]
     if portfolio_guard_reason_total:
         for name, cnt in portfolio_guard_reason_total.most_common(5):
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += [
+        "",
+        "## Monitor Agent",
+        "",
+        f"- total: **{int(monitor_total)}**",
+        f"- exit_policy_enabled_total: **{int(monitor_exit_policy_enabled_total)}**",
+        f"- exit_evaluated_total: **{int(monitor_exit_evaluated_total)}**",
+        f"- exit_trigger_total: **{int(monitor_exit_trigger_total)}**",
+        f"- position_sizing_enabled_total: **{int(monitor_position_sizing_enabled_total)}**",
+        f"- position_sizing_evaluated_total: **{int(monitor_position_sizing_evaluated_total)}**",
+        f"- position_sizing_computed_qty_sum: **{int(monitor_position_sizing_computed_qty_sum)}**",
+        f"- position_sizing_zero_qty_total: **{int(monitor_position_sizing_zero_qty_total)}**",
+        "",
+        "### exit_reason_total",
+        "",
+    ]
+    if monitor_exit_reason_total:
+        for name, cnt in monitor_exit_reason_total.most_common(5):
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### position_sizing_reason_total", ""]
+    if monitor_position_sizing_reason_total:
+        for name, cnt in monitor_position_sizing_reason_total.most_common(5):
             md_lines.append(f"- {name}: {cnt}")
     else:
         md_lines.append("- (none)")

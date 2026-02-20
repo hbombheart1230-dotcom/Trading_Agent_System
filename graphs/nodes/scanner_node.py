@@ -8,6 +8,7 @@ from graphs.nodes.skill_contracts import (
     extract_market_quotes,
     norm_symbol,
 )
+from libs.runtime.feature_engine import build_feature_map
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -107,6 +108,9 @@ def _get_scanner_weights(policy: Any) -> Dict[str, float]:
         "risk_news_penalty": float(pol.get("risk_news_penalty", 0.30)),
         "risk_global_penalty": float(pol.get("risk_global_penalty", 0.20)),
         "confidence_news_boost": float(pol.get("confidence_news_boost", 0.05)),
+        "feature_score_weight": float(pol.get("feature_score_weight", 0.0)),
+        "feature_risk_penalty": float(pol.get("feature_risk_penalty", 0.0)),
+        "high_vol_risk_penalty": float(pol.get("high_vol_risk_penalty", 0.0)),
     }
 
 
@@ -120,6 +124,53 @@ def _stable_unit_hash(text: str) -> float:
     for ch in text:
         h = (h * 131 + ord(ch)) % 10_000
     return (h % 10_000) / 10_000.0
+
+
+def _extract_feature_engine_map(state: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, Any]], str, List[str]]:
+    errors: List[str] = []
+
+    # Priority 1: explicit features map injection.
+    direct = state.get("scanner_features")
+    if isinstance(direct, dict):
+        out: Dict[str, Dict[str, Any]] = {}
+        for k, v in direct.items():
+            if not isinstance(v, dict):
+                continue
+            sym = _norm_symbol(k)
+            if sym:
+                out[sym] = dict(v)
+        return out, "state.scanner_features", errors
+
+    # Priority 2: precomputed feature engine output.
+    fe = state.get("feature_engine")
+    if isinstance(fe, dict) and isinstance(fe.get("by_symbol"), dict):
+        out2: Dict[str, Dict[str, Any]] = {}
+        by_symbol = fe.get("by_symbol") or {}
+        for k, v in by_symbol.items():
+            if not isinstance(v, dict):
+                continue
+            sym = _norm_symbol(k)
+            if sym:
+                out2[sym] = dict(v)
+        return out2, "state.feature_engine.by_symbol", errors
+
+    # Priority 3: compute from OHLCV data if available.
+    ohlcv = state.get("ohlcv_by_symbol")
+    if isinstance(ohlcv, dict):
+        try:
+            policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+            trend_gap_threshold = float(policy.get("feature_trend_gap_threshold", 0.01))
+            high_vol_threshold = float(policy.get("feature_high_vol_threshold", 0.03))
+            built = build_feature_map(
+                ohlcv,
+                trend_gap_threshold=trend_gap_threshold,
+                high_vol_threshold=high_vol_threshold,
+            )
+            return {_norm_symbol(k): v for k, v in built.items() if _norm_symbol(k)}, "state.ohlcv_by_symbol", errors
+        except Exception as e:
+            errors.append(f"feature_engine:error:{type(e).__name__}")
+
+    return {}, "none", errors
 
 
 def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -152,6 +203,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     news_by_sym = _get_news_sentiment_map(state)
     skill_quotes, quote_meta = _extract_skill_quotes(state)
     skill_order_counts, skill_order_rows, order_meta = _extract_account_open_order_counts(state)
+    feature_map, feature_source, feature_errors = _extract_feature_engine_map(state)
 
     scan_results: List[Dict[str, Any]] = []
 
@@ -200,14 +252,38 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         open_orders = int(skill_order_counts.get(_norm_symbol(symbol), 0))
         order_penalty = min(open_orders, 3)
         quote_bonus = 0.02 if (quote_price_num is not None and quote_price_num > 0) else 0.0
+        feature_row = feature_map.get(_norm_symbol(symbol), {})
+        if not isinstance(feature_row, dict):
+            feature_row = {}
+        try:
+            feature_signal = _clamp(float(feature_row.get("signal_score") or 0.0), -1.0, 1.0)
+        except Exception:
+            feature_signal = 0.0
+        feature_regime = str(feature_row.get("regime") or "").strip().lower()
 
         # Score boost: positive news & risk-on regime lift score.
-        adj_score = base_score + w["weight_news"] * news_s + w["weight_global"] * gs + quote_bonus - 0.05 * order_penalty
+        adj_score = (
+            base_score
+            + w["weight_news"] * news_s
+            + w["weight_global"] * gs
+            + w["feature_score_weight"] * feature_signal
+            + quote_bonus
+            - 0.05 * order_penalty
+        )
 
         # Risk penalty: negative news and risk-off (global<0) increase risk.
         neg_news = max(-news_s, 0.0)
         neg_global = max(-gs, 0.0)
-        adj_risk = base_risk + w["risk_news_penalty"] * neg_news + w["risk_global_penalty"] * neg_global + 0.10 * order_penalty
+        feature_risk = w["feature_risk_penalty"] * max(-feature_signal, 0.0)
+        if feature_regime == "high_volatility":
+            feature_risk += w["high_vol_risk_penalty"]
+        adj_risk = (
+            base_risk
+            + w["risk_news_penalty"] * neg_news
+            + w["risk_global_penalty"] * neg_global
+            + feature_risk
+            + 0.10 * order_penalty
+        )
 
         # Confidence: small boost from positive news (kept tiny by default).
         adj_conf = _clamp(base_conf + w["confidence_news_boost"] * max(news_s, 0.0) - 0.05 * order_penalty, 0.0, 1.0)
@@ -221,6 +297,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 {
                     "skill_quote_price": quote_price_num,
                     "skill_open_orders": open_orders,
+                    "engine_rsi14": feature_row.get("rsi14"),
+                    "engine_ma20_gap": feature_row.get("ma20_gap"),
+                    "engine_atr14": feature_row.get("atr14"),
+                    "engine_volume_spike20": feature_row.get("volume_spike20"),
+                    "engine_volatility20": feature_row.get("volatility20"),
+                    "engine_regime": feature_row.get("regime"),
+                    "engine_signal_score": feature_signal,
                 }
             )
         row.setdefault("components", {})
@@ -236,6 +319,11 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "weight_global": w["weight_global"],
                     "risk_news_penalty": w["risk_news_penalty"],
                     "risk_global_penalty": w["risk_global_penalty"],
+                    "feature_signal": feature_signal,
+                    "feature_regime": feature_regime,
+                    "feature_score_weight": w["feature_score_weight"],
+                    "feature_risk_penalty": w["feature_risk_penalty"],
+                    "high_vol_risk_penalty": w["high_vol_risk_penalty"],
                     "skill_quote_bonus": quote_bonus,
                     "skill_open_orders": open_orders,
                 }
@@ -278,6 +366,14 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "fallback": bool(fallback_reasons),
         "fallback_reasons": fallback_reasons,
         "error_count": len(fallback_reasons),
+    }
+    state["scanner_feature"] = {
+        "used": bool(feature_map),
+        "source": feature_source,
+        "symbol_count": len(feature_map),
+        "fallback": bool(feature_errors),
+        "fallback_reasons": list(feature_errors),
+        "error_count": len(feature_errors),
     }
 
     return state
