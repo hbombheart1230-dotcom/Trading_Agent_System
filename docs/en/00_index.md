@@ -78,3 +78,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m27_7_portfolio_guard_notify_context.md -> M27-7 portfolio guard notify context
 - docs/plan/m27_8_portfolio_guard_notify_routing.md -> M27-8 portfolio guard notify routing escalation
 - docs/plan/m27_9_portfolio_guard_notify_ops_query.md -> M27-9 portfolio guard notify ops query
+- docs/plan/m27_10_closeout_and_m28_handover.md -> M27-10 closeout and M28 handover

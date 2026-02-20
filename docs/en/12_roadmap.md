@@ -144,6 +144,7 @@ M27 implementation status (2026-02-20, in progress):
 - M27-7: portfolio guard notify context (`alert_notifier.py`, `run_m27_portfolio_guard_notify_check.py`)
 - M27-8: portfolio guard notify routing escalation (`run_m25_ops_batch.py`, `run_m27_portfolio_guard_notify_routing_check.py`)
 - M27-9: portfolio guard notify ops query (`query_m25_notification_events.py`, `run_m27_portfolio_guard_notify_query_check.py`)
+- M27-10: closeout check and M28 handover (`run_m27_closeout_check.py`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

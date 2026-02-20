@@ -144,6 +144,7 @@ Trading_Agent_System/
 - `docs/plan/m27_7_portfolio_guard_notify_context.md`
 - `docs/plan/m27_8_portfolio_guard_notify_routing.md`
 - `docs/plan/m27_9_portfolio_guard_notify_ops_query.md`
+- `docs/plan/m27_10_closeout_and_m28_handover.md`
 - `docs/plan/m31_to_m36_post_golive_plan.md`
 - `docs/runtime/alert_policy_runbook.md`
 - `libs/runtime/resilience_state.py`
@@ -185,6 +186,7 @@ Trading_Agent_System/
 - `scripts/run_m27_portfolio_guard_notify_check.py`
 - `scripts/run_m27_portfolio_guard_notify_routing_check.py`
 - `scripts/run_m27_portfolio_guard_notify_query_check.py`
+- `scripts/run_m27_closeout_check.py`
 - `libs/reporting/alert_notifier.py`
 - `tests/test_m23_1_runtime_resilience_state_contract.py`
 - `tests/test_m23_2_runtime_circuit_breaker_core.py`
@@ -225,6 +227,7 @@ Trading_Agent_System/
 - `tests/test_m27_7_portfolio_guard_notify_context.py`
 - `tests/test_m27_8_portfolio_guard_notify_routing.py`
 - `tests/test_m27_9_portfolio_guard_notify_query.py`
+- `tests/test_m27_10_closeout_check.py`
 
 ## Note
 
