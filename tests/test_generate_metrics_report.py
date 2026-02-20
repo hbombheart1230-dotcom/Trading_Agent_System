@@ -365,3 +365,89 @@ def test_generate_metrics_report_broker_api_429_rate(tmp_path: Path):
     assert data["broker_api"]["api_error_total_by_api_id"]["ORDER_SUBMIT"] == 2
     assert data["broker_api"]["api_429_total"] == 1
     assert abs(float(data["broker_api"]["api_429_rate"]) - 0.5) < 1e-12
+
+
+def test_generate_metrics_report_aggregates_portfolio_guard_metrics(tmp_path: Path):
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-02-20T00:00:00+00:00",
+                        "run_id": "r1",
+                        "stage": "commander_router",
+                        "event": "end",
+                        "payload": {
+                            "status": "ok",
+                            "path": "graph_spine",
+                            "portfolio_guard": {
+                                "applied": True,
+                                "approved_total": 2,
+                                "blocked_total": 3,
+                                "blocked_reason_counts": {
+                                    "strategy_budget_exceeded": 2,
+                                    "opposite_side_conflict": 1,
+                                },
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-02-20T00:00:10+00:00",
+                        "run_id": "r2",
+                        "stage": "commander_router",
+                        "event": "end",
+                        "payload": {
+                            "status": "ok",
+                            "path": "graph_spine",
+                            "portfolio_guard": {
+                                "applied": True,
+                                "approved_total": 1,
+                                "blocked_total": 2,
+                                "blocked_reason_counts": {
+                                    "strategy_budget_exceeded": 1,
+                                    "symbol_notional_cap_exceeded": 1,
+                                },
+                            },
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "reports"
+    _, js = generate_metrics_report(events, out_dir, day="2026-02-20")
+    data = json.loads(js.read_text(encoding="utf-8"))
+
+    pg = data["portfolio_guard"]
+    assert pg["total"] == 2
+    assert pg["applied_total"] == 2
+    assert pg["approved_total_sum"] == 3
+    assert pg["blocked_total_sum"] == 5
+    assert pg["blocked_reason_total"]["strategy_budget_exceeded"] == 3
+    assert pg["blocked_reason_total"]["opposite_side_conflict"] == 1
+    assert pg["blocked_reason_total"]["symbol_notional_cap_exceeded"] == 1
+    assert pg["blocked_reason_topN"][0]["reason"] == "strategy_budget_exceeded"
+    assert pg["blocked_reason_topN"][0]["count"] == 3
+
+
+def test_generate_metrics_report_empty_has_portfolio_guard_keys(tmp_path: Path):
+    events = tmp_path / "events.jsonl"
+    events.write_text("", encoding="utf-8")
+
+    out_dir = tmp_path / "reports"
+    _, js = generate_metrics_report(events, out_dir, day="2026-02-20")
+    data = json.loads(js.read_text(encoding="utf-8"))
+
+    pg = data["portfolio_guard"]
+    assert pg["total"] == 0
+    assert pg["applied_total"] == 0
+    assert pg["approved_total_sum"] == 0
+    assert pg["blocked_total_sum"] == 0
+    assert pg["blocked_reason_total"] == {}
+    assert pg["blocked_reason_topN"] == []

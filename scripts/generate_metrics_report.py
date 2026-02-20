@@ -315,6 +315,14 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 "runtime_status_total": {},
                 "cooldown_reason_total": {},
             },
+            "portfolio_guard": {
+                "total": 0,
+                "applied_total": 0,
+                "approved_total_sum": 0,
+                "blocked_total_sum": 0,
+                "blocked_reason_total": {},
+                "blocked_reason_topN": [],
+            },
             "broker_api": {
                 "api_error_total_by_api_id": {},
                 "api_429_total": 0,
@@ -367,6 +375,11 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     commander_transition_total: Counter[str] = Counter()
     commander_runtime_status_total: Counter[str] = Counter()
     commander_cooldown_reason_total: Counter[str] = Counter()
+    portfolio_guard_total = 0
+    portfolio_guard_applied_total = 0
+    portfolio_guard_approved_total_sum = 0
+    portfolio_guard_blocked_total_sum = 0
+    portfolio_guard_reason_total: Counter[str] = Counter()
 
     for r in day_rows:
         stage = str(r.get("stage") or "")
@@ -500,6 +513,18 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             if status:
                 commander_runtime_status_total[status] += 1
 
+            pg = payload.get("portfolio_guard")
+            if isinstance(pg, dict):
+                portfolio_guard_total += 1
+                if pg.get("applied") is True:
+                    portfolio_guard_applied_total += 1
+                portfolio_guard_approved_total_sum += _to_non_negative_int(pg.get("approved_total"))
+                portfolio_guard_blocked_total_sum += _to_non_negative_int(pg.get("blocked_total"))
+                reason_counts = pg.get("blocked_reason_counts")
+                if isinstance(reason_counts, dict):
+                    for k, v in reason_counts.items():
+                        portfolio_guard_reason_total[str(k)] += _to_non_negative_int(v)
+
             if event == "transition":
                 tr = str(payload.get("transition") or "unknown").strip().lower() or "unknown"
                 commander_transition_total[tr] += 1
@@ -589,6 +614,17 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             "transition_total": dict(commander_transition_total),
             "runtime_status_total": dict(commander_runtime_status_total),
             "cooldown_reason_total": dict(commander_cooldown_reason_total),
+        },
+        "portfolio_guard": {
+            "total": int(portfolio_guard_total),
+            "applied_total": int(portfolio_guard_applied_total),
+            "approved_total_sum": int(portfolio_guard_approved_total_sum),
+            "blocked_total_sum": int(portfolio_guard_blocked_total_sum),
+            "blocked_reason_total": dict(portfolio_guard_reason_total),
+            "blocked_reason_topN": [
+                {"reason": str(reason), "count": int(cnt)}
+                for reason, cnt in portfolio_guard_reason_total.most_common(5)
+            ],
         },
         "broker_api": {
             "api_error_total_by_api_id": dict(api_errors_by_id),
@@ -767,6 +803,24 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     md_lines += ["", "### Cooldown Reason Total", ""]
     if commander_cooldown_reason_total:
         for name, cnt in commander_cooldown_reason_total.most_common():
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += [
+        "",
+        "## Portfolio Guard",
+        "",
+        f"- total: **{int(portfolio_guard_total)}**",
+        f"- applied_total: **{int(portfolio_guard_applied_total)}**",
+        f"- approved_total_sum: **{int(portfolio_guard_approved_total_sum)}**",
+        f"- blocked_total_sum: **{int(portfolio_guard_blocked_total_sum)}**",
+        "",
+        "### blocked_reason_topN",
+        "",
+    ]
+    if portfolio_guard_reason_total:
+        for name, cnt in portfolio_guard_reason_total.most_common(5):
             md_lines.append(f"- {name}: {cnt}")
     else:
         md_lines.append("- (none)")
