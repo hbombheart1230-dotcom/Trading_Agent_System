@@ -66,3 +66,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m26_1_fixed_dataset_manifest_scaffold.md -> M26-1 fixed dataset manifest scaffold and validation gate
 - docs/plan/m26_2_replay_runner_scaffold.md -> M26-2 fixed dataset replay runner scaffold
 - docs/plan/m26_3_scorecard_metrics.md -> M26-3 scorecard metrics scaffold
+- docs/plan/m26_4_ab_evaluation_scaffold.md -> M26-4 A/B evaluation scaffold
