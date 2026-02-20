@@ -132,6 +132,7 @@ M26 implementation status (2026-02-20, in progress):
 - M26-3: scorecard metrics scaffold (PnL proxy / risk-adjusted / drawdown) (`run_m26_scorecard.py`)
 - M26-4: A/B evaluation scaffold with promotion recommendation (`run_m26_ab_evaluation.py`)
 - M26-5: promotion gate threshold check (`run_m26_promotion_gate_check.py`)
+- M26-6: closeout check and M27 handover (`run_m26_closeout_check.py`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

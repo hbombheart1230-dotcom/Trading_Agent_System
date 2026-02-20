@@ -134,6 +134,7 @@ Trading_Agent_System/
 - `docs/plan/m26_3_scorecard_metrics.md`
 - `docs/plan/m26_4_ab_evaluation_scaffold.md`
 - `docs/plan/m26_5_promotion_gate_check.md`
+- `docs/plan/m26_6_closeout_and_m27_handover.md`
 - `docs/plan/m31_to_m36_post_golive_plan.md`
 - `docs/runtime/alert_policy_runbook.md`
 - `libs/runtime/resilience_state.py`
@@ -161,6 +162,7 @@ Trading_Agent_System/
 - `scripts/run_m26_scorecard.py`
 - `scripts/run_m26_ab_evaluation.py`
 - `scripts/run_m26_promotion_gate_check.py`
+- `scripts/run_m26_closeout_check.py`
 - `libs/reporting/alert_notifier.py`
 - `tests/test_m23_1_runtime_resilience_state_contract.py`
 - `tests/test_m23_2_runtime_circuit_breaker_core.py`
@@ -191,6 +193,7 @@ Trading_Agent_System/
 - `tests/test_m26_3_scorecard.py`
 - `tests/test_m26_4_ab_evaluation.py`
 - `tests/test_m26_5_promotion_gate_check.py`
+- `tests/test_m26_6_closeout_check.py`
 
 ## Note
 
