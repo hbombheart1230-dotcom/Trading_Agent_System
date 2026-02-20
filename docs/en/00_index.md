@@ -65,3 +65,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m25_10_notification_event_log_and_query.md -> M25-10 notification event log and query CLI
 - docs/plan/m26_1_fixed_dataset_manifest_scaffold.md -> M26-1 fixed dataset manifest scaffold and validation gate
 - docs/plan/m26_2_replay_runner_scaffold.md -> M26-2 fixed dataset replay runner scaffold
+- docs/plan/m26_3_scorecard_metrics.md -> M26-3 scorecard metrics scaffold
