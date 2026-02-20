@@ -71,3 +71,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m26_6_closeout_and_m27_handover.md -> M26-6 closeout check and M27 handover
 - docs/plan/m27_1_multi_strategy_allocation_policy_scaffold.md -> M27-1 multi-strategy allocation policy scaffold
 - docs/plan/m27_2_intent_conflict_resolution_policy.md -> M27-2 intent conflict resolution policy
+- docs/plan/m27_3_portfolio_budget_boundary_guard.md -> M27-3 portfolio budget boundary guard
