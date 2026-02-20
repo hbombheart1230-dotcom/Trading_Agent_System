@@ -8,6 +8,8 @@
 # LOG_LEVEL=INFO
 # RUNTIME_PROFILE=dev        # dev | staging | prod
 # M28_PROFILE_STRICT=false   # true => runtime profile warnings become blocking violations
+# M28_LIFECYCLE_STATE_PATH=data/state/m28_runtime_lifecycle.json
+# M28_LIFECYCLE_LOCK_STALE_SEC=1800
 
 # --- Kiwoom (Mock / Live) ---
 # KIWOOM_APP_KEY=your_key

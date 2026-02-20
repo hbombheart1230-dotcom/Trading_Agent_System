@@ -148,6 +148,7 @@ M27 implementation status (2026-02-20, in progress):
 
 M28 implementation status (2026-02-20, in progress):
 - M28-1: runtime profile scaffold and env validation gate (`libs/runtime/runtime_profile.py`, `check_runtime_profile.py`, `run_m28_runtime_profile_scaffold_check.py`)
+- M28-2: runtime lifecycle hooks (`libs/runtime/runtime_lifecycle.py`, `run_m28_runtime_lifecycle_hooks_check.py`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

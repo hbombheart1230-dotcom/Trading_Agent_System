@@ -146,15 +146,18 @@ Trading_Agent_System/
 - `docs/plan/m27_9_portfolio_guard_notify_ops_query.md`
 - `docs/plan/m27_10_closeout_and_m28_handover.md`
 - `docs/plan/m28_1_runtime_profile_scaffold.md`
+- `docs/plan/m28_2_runtime_lifecycle_hooks.md`
 - `docs/plan/m31_to_m36_post_golive_plan.md`
 - `docs/runtime/alert_policy_runbook.md`
 - `docs/runtime/runtime_profile_runbook.md`
+- `docs/runtime/runtime_lifecycle_runbook.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`
 - `libs/runtime/portfolio_allocation.py`
 - `libs/runtime/intent_conflict_resolver.py`
 - `libs/runtime/portfolio_budget_guard.py`
 - `libs/runtime/runtime_profile.py`
+- `libs/runtime/runtime_lifecycle.py`
 - `libs/supervisor/intent_state_store.py`
 - `libs/approval/service.py`
 - `graphs/nodes/execute_from_packet.py`
@@ -192,6 +195,7 @@ Trading_Agent_System/
 - `scripts/run_m27_closeout_check.py`
 - `scripts/check_runtime_profile.py`
 - `scripts/run_m28_runtime_profile_scaffold_check.py`
+- `scripts/run_m28_runtime_lifecycle_hooks_check.py`
 - `libs/reporting/alert_notifier.py`
 - `tests/test_m23_1_runtime_resilience_state_contract.py`
 - `tests/test_m23_2_runtime_circuit_breaker_core.py`
@@ -234,6 +238,7 @@ Trading_Agent_System/
 - `tests/test_m27_9_portfolio_guard_notify_query.py`
 - `tests/test_m27_10_closeout_check.py`
 - `tests/test_m28_1_runtime_profile_scaffold.py`
+- `tests/test_m28_2_runtime_lifecycle_hooks.py`
 
 ## Note
 

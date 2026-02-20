@@ -80,3 +80,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m27_9_portfolio_guard_notify_ops_query.md -> M27-9 portfolio guard notify ops query
 - docs/plan/m27_10_closeout_and_m28_handover.md -> M27-10 closeout and M28 handover
 - docs/plan/m28_1_runtime_profile_scaffold.md -> M28-1 runtime profile scaffold
+- docs/plan/m28_2_runtime_lifecycle_hooks.md -> M28-2 runtime lifecycle hooks
