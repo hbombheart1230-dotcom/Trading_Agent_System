@@ -128,6 +128,7 @@ M25 implementation status (2026-02-17, in progress):
 
 M26 implementation status (2026-02-20, in progress):
 - M26-1: fixed dataset manifest v1 scaffold + validation gate (`run_m26_dataset_manifest_check.py`)
+- M26-2: fixed dataset replay runner scaffold (`run_m26_replay_runner.py`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
