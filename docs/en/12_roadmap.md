@@ -138,6 +138,7 @@ M27 implementation status (2026-02-20, in progress):
 - M27-1: multi-strategy allocation policy scaffold (`libs/runtime/portfolio_allocation.py`, `run_m27_allocation_policy_check.py`)
 - M27-2: intent conflict resolution policy (`libs/runtime/intent_conflict_resolver.py`, `run_m27_conflict_resolution_check.py`)
 - M27-3: portfolio budget boundary guard (`libs/runtime/portfolio_budget_guard.py`, `run_m27_portfolio_budget_boundary_check.py`)
+- M27-4: runtime portfolio guard integration (`graphs/nodes/portfolio_guard_node.py`, `run_m27_runtime_portfolio_guard_check.py`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

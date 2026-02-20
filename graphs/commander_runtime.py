@@ -268,6 +268,22 @@ def _log_commander_event(state: Dict[str, Any], event: str, payload: Dict[str, A
         return
 
 
+def _portfolio_guard_event_summary(state: Dict[str, Any]) -> Dict[str, Any]:
+    pg = state.get("portfolio_guard")
+    if not isinstance(pg, dict):
+        return {}
+    return {
+        "portfolio_guard": {
+            "applied": bool(pg.get("applied")),
+            "approved_total": _coerce_int(pg.get("approved_total"), 0),
+            "blocked_total": _coerce_int(pg.get("blocked_total"), 0),
+            "blocked_reason_counts": pg.get("blocked_reason_counts")
+            if isinstance(pg.get("blocked_reason_counts"), dict)
+            else {},
+        }
+    }
+
+
 def resolve_runtime_mode(state: Dict[str, Any], *, mode: Optional[RuntimeMode] = None) -> RuntimeMode:
     """Resolve runtime mode with explicit precedence.
 
@@ -379,7 +395,12 @@ def run_commander_runtime(
             _log_commander_event(
                 state,
                 "end",
-                {"mode": selected, "status": state.get("runtime_status", "ok"), "path": "decision_packet"},
+                {
+                    "mode": selected,
+                    "status": state.get("runtime_status", "ok"),
+                    "path": "decision_packet",
+                    **_portfolio_guard_event_summary(state),
+                },
             )
             return state
 
@@ -387,7 +408,12 @@ def run_commander_runtime(
         _log_commander_event(
             state,
             "end",
-            {"mode": selected, "status": state.get("runtime_status", "ok"), "path": "graph_spine"},
+            {
+                "mode": selected,
+                "status": state.get("runtime_status", "ok"),
+                "path": "graph_spine",
+                **_portfolio_guard_event_summary(state),
+            },
         )
         return state
     except Exception as e:
