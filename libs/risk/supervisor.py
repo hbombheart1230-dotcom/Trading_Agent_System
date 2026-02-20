@@ -37,11 +37,12 @@ class Supervisor:
 
         # --- Daily loss limit ---
         daily_pnl = float(context.get("daily_pnl_ratio", 0.0))
-        if daily_pnl <= -float(self.s_value("RISK_DAILY_LOSS_LIMIT", 0.0)):
+        daily_limit = float(self.s_value("RISK_DAILY_LOSS_LIMIT", 0.0))
+        if daily_limit > 0 and daily_pnl <= -daily_limit:
             return AllowResult(
                 allow=False,
                 reason="Daily loss limit exceeded",
-                details={"daily_pnl_ratio": daily_pnl, "limit": float(self.s_value("RISK_DAILY_LOSS_LIMIT", 0.0))},
+                details={"daily_pnl_ratio": daily_pnl, "limit": daily_limit},
             )
 
         # --- Max positions ---

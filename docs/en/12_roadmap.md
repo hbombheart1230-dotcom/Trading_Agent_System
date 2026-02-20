@@ -126,6 +126,9 @@ M25 implementation status (2026-02-17, in progress):
 - M25-9: bounded notification retry/backoff policy for transient delivery failures (`429`/`5xx`)
 - M25-10: notification event log + day-level query CLI for delivery observability
 
+M26 implementation status (2026-02-20, in progress):
+- M26-1: fixed dataset manifest v1 scaffold + validation gate (`run_m26_dataset_manifest_check.py`)
+
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
 - `docs/plan/m31_to_m36_post_golive_plan.md`

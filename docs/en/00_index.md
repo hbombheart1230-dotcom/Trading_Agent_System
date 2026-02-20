@@ -63,3 +63,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m25_8_slack_webhook_provider.md -> M25-8 Slack incoming-webhook provider integration
 - docs/plan/m25_9_notification_retry_policy.md -> M25-9 bounded notification retry/backoff policy
 - docs/plan/m25_10_notification_event_log_and_query.md -> M25-10 notification event log and query CLI
+- docs/plan/m26_1_fixed_dataset_manifest_scaffold.md -> M26-1 fixed dataset manifest scaffold and validation gate

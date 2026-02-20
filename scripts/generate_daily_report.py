@@ -24,9 +24,26 @@ def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
 
 def _day_key(ts: Any) -> str:
     """Return YYYY-MM-DD in **UTC** for determinism across machines/timezones."""
+    if ts is None:
+        return date.today().isoformat()
+
+    s = str(ts).strip()
+    if not s:
+        return date.today().isoformat()
+
     try:
-        ts = int(ts)
-        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        epoch = int(float(s))
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        pass
+
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
     except Exception:
         return date.today().isoformat()
 
