@@ -141,6 +141,7 @@ M27 implementation status (2026-02-20, in progress):
 - M27-4: runtime portfolio guard integration (`graphs/nodes/portfolio_guard_node.py`, `run_m27_runtime_portfolio_guard_check.py`)
 - M27-5: portfolio guard metrics reporting (`generate_metrics_report.py`, `run_m27_portfolio_guard_metrics_check.py`)
 - M27-6: portfolio guard alert policy (`check_alert_policy_v1.py`, `run_m27_portfolio_guard_alert_policy_check.py`)
+- M27-7: portfolio guard notify context (`alert_notifier.py`, `run_m27_portfolio_guard_notify_check.py`)
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`

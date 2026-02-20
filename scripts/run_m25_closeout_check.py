@@ -177,6 +177,29 @@ def _write_alert_artifacts(*, report_dir: Path, day: str, alert_obj: Dict[str, A
     return md_path, js_path
 
 
+def _extract_alert_codes(alert_obj: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    alerts = alert_obj.get("alerts") if isinstance(alert_obj.get("alerts"), list) else []
+    all_codes: List[str] = []
+    portfolio_guard_codes: List[str] = []
+    seen: set[str] = set()
+    seen_pg: set[str] = set()
+
+    for row in alerts:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("code") or "").strip()
+        if not code:
+            continue
+        if code not in seen:
+            all_codes.append(code)
+            seen.add(code)
+        if code.startswith("portfolio_guard_") and code not in seen_pg:
+            portfolio_guard_codes.append(code)
+            seen_pg.add(code)
+
+    return all_codes, portfolio_guard_codes
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M25 closeout check (metrics schema freeze + alert policy + daily report).")
     p.add_argument("--event-log-path", default="data/logs/m25_closeout_events.jsonl")
@@ -243,6 +266,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         ok = False
         failures.append("daily_report.events < 1")
 
+    alert_codes, portfolio_guard_alert_codes = _extract_alert_codes(alert_obj if isinstance(alert_obj, dict) else {})
+
     out = {
         "ok": bool(ok),
         "day": day,
@@ -258,6 +283,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             "ok": bool(alert_obj.get("ok")) if isinstance(alert_obj, dict) else False,
             "alert_total": int(alert_obj.get("alert_total") or 0) if isinstance(alert_obj, dict) else 0,
             "severity_total": alert_obj.get("severity_total") if isinstance(alert_obj, dict) else {},
+            "alert_codes": alert_codes,
+            "portfolio_guard_alert_total": int(len(portfolio_guard_alert_codes)),
+            "portfolio_guard_alert_codes": portfolio_guard_alert_codes,
         },
         "daily_report": {
             "path_md": str(daily_md),

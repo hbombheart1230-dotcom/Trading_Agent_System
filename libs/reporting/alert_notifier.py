@@ -54,12 +54,55 @@ def _as_float(v: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _normalize_alert_codes(value: Any, *, sort_codes: bool = False) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+    for row in value:
+        code = str(row or "").strip()
+        if not code or code in seen:
+            continue
+        out.append(code)
+        seen.add(code)
+    if sort_codes:
+        out.sort()
+    return out
+
+
+def _extract_alert_codes(alert_policy: Dict[str, Any]) -> List[str]:
+    codes = _normalize_alert_codes(alert_policy.get("alert_codes"))
+    if codes:
+        return codes
+
+    alerts = alert_policy.get("alerts")
+    if not isinstance(alerts, list):
+        return []
+    out: List[str] = []
+    seen: set[str] = set()
+    for row in alerts:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("code") or "").strip()
+        if not code or code in seen:
+            continue
+        out.append(code)
+        seen.add(code)
+    return out
+
+
 def _dedup_key_from_payload(payload: Dict[str, Any]) -> str:
+    alert_policy = payload.get("alert_policy") if isinstance(payload.get("alert_policy"), dict) else {}
+    alert_codes = _normalize_alert_codes(alert_policy.get("alert_codes"), sort_codes=True)
+    pg_codes = _normalize_alert_codes(alert_policy.get("portfolio_guard_alert_codes"), sort_codes=True)
     basis = {
         "day": payload.get("day"),
         "ok": payload.get("ok"),
         "rc": payload.get("rc"),
-        "alert_total": ((payload.get("alert_policy") or {}).get("alert_total") if isinstance(payload.get("alert_policy"), dict) else 0),
+        "alert_total": _as_int(alert_policy.get("alert_total"), 0),
+        "alert_codes": alert_codes,
+        "portfolio_guard_alert_total": _as_int(alert_policy.get("portfolio_guard_alert_total"), len(pg_codes)),
+        "portfolio_guard_alert_codes": pg_codes,
         "failures": payload.get("failures") if isinstance(payload.get("failures"), list) else [],
     }
     return json.dumps(basis, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -140,6 +183,14 @@ def build_batch_notification_payload(batch_result: Dict[str, Any]) -> Dict[str, 
     metrics_schema = closeout.get("metrics_schema") if isinstance(closeout.get("metrics_schema"), dict) else {}
     daily_report = closeout.get("daily_report") if isinstance(closeout.get("daily_report"), dict) else {}
     severity_total = alert_policy.get("severity_total") if isinstance(alert_policy.get("severity_total"), dict) else {}
+    alert_codes = _extract_alert_codes(alert_policy)
+    portfolio_guard_alert_codes = _normalize_alert_codes(alert_policy.get("portfolio_guard_alert_codes"))
+    if not portfolio_guard_alert_codes:
+        portfolio_guard_alert_codes = [c for c in alert_codes if c.startswith("portfolio_guard_")]
+    portfolio_guard_alert_total = max(
+        _as_int(alert_policy.get("portfolio_guard_alert_total"), 0),
+        len(portfolio_guard_alert_codes),
+    )
 
     return {
         "kind": "m25_ops_batch",
@@ -159,6 +210,9 @@ def build_batch_notification_payload(batch_result: Dict[str, Any]) -> Dict[str, 
             "rc": int(alert_policy.get("rc") or 0),
             "alert_total": int(alert_policy.get("alert_total") or 0),
             "severity_total": severity_total,
+            "alert_codes": alert_codes,
+            "portfolio_guard_alert_total": int(portfolio_guard_alert_total),
+            "portfolio_guard_alert_codes": portfolio_guard_alert_codes,
         },
         "daily_report": {
             "events": int(daily_report.get("events") or 0),
@@ -171,6 +225,8 @@ def build_batch_notification_payload(batch_result: Dict[str, Any]) -> Dict[str, 
 def build_slack_webhook_payload(batch_payload: Dict[str, Any]) -> Dict[str, Any]:
     alert_policy = batch_payload.get("alert_policy") if isinstance(batch_payload.get("alert_policy"), dict) else {}
     alert_total = int(alert_policy.get("alert_total") or 0)
+    portfolio_guard_alert_total = int(alert_policy.get("portfolio_guard_alert_total") or 0)
+    portfolio_guard_alert_codes = _normalize_alert_codes(alert_policy.get("portfolio_guard_alert_codes"))
     failures = batch_payload.get("failures") if isinstance(batch_payload.get("failures"), list) else []
     text = (
         "[M25 batch] "
@@ -178,8 +234,11 @@ def build_slack_webhook_payload(batch_payload: Dict[str, Any]) -> Dict[str, Any]
         f"ok={bool(batch_payload.get('ok'))} "
         f"rc={int(batch_payload.get('rc') or 0)} "
         f"alerts={alert_total} "
+        f"pg_alerts={portfolio_guard_alert_total} "
         f"failures={len(failures)}"
     )
+    if portfolio_guard_alert_codes:
+        text = f"{text} pg_codes={','.join(portfolio_guard_alert_codes[:3])}"
     return {
         "text": text,
         "metadata": {
