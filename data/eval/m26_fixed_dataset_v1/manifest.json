@@ -1,0 +1,29 @@
+{
+  "schema_version": "m26.dataset_manifest.v1",
+  "dataset_id": "m26-fixed-demo-v1",
+  "generated_at": "2026-02-20T02:27:20.989168+00:00",
+  "components": {
+    "market": [
+      "market/ohlcv_1m.csv",
+      "market/ohlcv_5m.csv",
+      "market/ohlcv_1d.csv",
+      "market/corporate_actions.csv"
+    ],
+    "execution": [
+      "execution/intents.jsonl",
+      "execution/order_status.jsonl",
+      "execution/fills.jsonl"
+    ],
+    "microstructure": [
+      "microstructure/top_of_book.jsonl"
+    ],
+    "features": [
+      "features/scanner_monitor_features.jsonl"
+    ],
+    "news": [
+      "news/headlines.jsonl",
+      "news/sentiment_by_symbol.jsonl",
+      "news/sentiment_daily.jsonl"
+    ]
+  }
+}
