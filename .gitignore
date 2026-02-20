@@ -3,3 +3,11 @@ __pycache__/
 *.pyc
 .env
 *.db
+.pytest_cache/
+
+# Runtime/generated artifacts
+data/logs/
+data/state/
+reports/
+deploy/m28_launch_templates/
+deploy/m28_registration_helpers/
