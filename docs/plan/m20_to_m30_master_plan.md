@@ -202,3 +202,7 @@
 1. Start M21 implementation branch with one canonical StateGraph runtime entry.
 2. Freeze current node IO contracts before refactor.
 3. Add migration tests that assert behavior parity vs current M20 path.
+
+## Continuation
+
+- Post-go-live extension plan: `docs/plan/m31_to_m36_post_golive_plan.md`

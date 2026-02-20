@@ -56,6 +56,14 @@
 - M29: governance/audit/recovery readiness (archive, integrity, DR drills)
 - M30: production readiness gate (final safety/ops sign-off)
 
+## M31-M36 (Post-GoLive Program Plan)
+- M31: post-go-live stabilization (SLO calibration, on-call escalation, incident loop)
+- M32: performance and cost optimization (latency/token/API budget tuning)
+- M33: capital allocation and risk expansion (portfolio-aware sizing and budgets)
+- M34: market/broker expansion (multi-broker contract and failover policy)
+- M35: governance/compliance automation (policy-as-code and signed audit bundles)
+- M36: autonomous operations and self-healing (automated recovery and adaptive guards)
+
 M21 implementation status (2026-02-15):
 - M21-1: canonical commander runtime entry (`graphs/commander_runtime.py`)
 - M21-2: deterministic runtime mode resolution policy (explicit > state > env > default)
@@ -120,3 +128,4 @@ M25 implementation status (2026-02-17, in progress):
 
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
+- `docs/plan/m31_to_m36_post_golive_plan.md`

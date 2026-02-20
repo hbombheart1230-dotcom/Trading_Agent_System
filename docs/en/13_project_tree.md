@@ -1,6 +1,6 @@
 # 13. Project Tree
 
-- Last updated: 2026-02-17
+- Last updated: 2026-02-20
 - Scope: high-level repository layout for implementation and operations.
 
 ## Top-Level Layout
@@ -129,6 +129,7 @@ Trading_Agent_System/
 - `docs/plan/m25_8_slack_webhook_provider.md`
 - `docs/plan/m25_9_notification_retry_policy.md`
 - `docs/plan/m25_10_notification_event_log_and_query.md`
+- `docs/plan/m31_to_m36_post_golive_plan.md`
 - `docs/runtime/alert_policy_runbook.md`
 - `libs/runtime/resilience_state.py`
 - `libs/runtime/circuit_breaker.py`
