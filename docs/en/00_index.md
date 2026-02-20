@@ -70,3 +70,4 @@ operations, security, governance, and extensibility.
 - docs/plan/m26_5_promotion_gate_check.md -> M26-5 promotion gate threshold check
 - docs/plan/m26_6_closeout_and_m27_handover.md -> M26-6 closeout check and M27 handover
 - docs/plan/m27_1_multi_strategy_allocation_policy_scaffold.md -> M27-1 multi-strategy allocation policy scaffold
+- docs/plan/m27_2_intent_conflict_resolution_policy.md -> M27-2 intent conflict resolution policy
