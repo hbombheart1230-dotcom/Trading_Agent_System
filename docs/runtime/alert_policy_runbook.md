@@ -114,10 +114,18 @@ python scripts/run_m25_ops_batch.py --notify-provider slack_webhook --notify-web
 python scripts/query_m25_notification_events.py --event-log-path data/logs/m25_notify_events.jsonl --day 2026-02-17 --json
 ```
 
+Escalation-focused query:
+
+```powershell
+python scripts/query_m25_notification_events.py --event-log-path data/logs/m25_notify_events.jsonl --day 2026-02-17 --only-escalated --provider slack_webhook --min-portfolio-guard-alert-total 1 --json
+```
+
 Key output fields:
 - `total`, `ok_total`, `fail_total`
 - `sent_total`, `skipped_total`
 - `provider_total`, `reason_total`, `status_code_total`
+- `escalated_total`, `route_reason_total`
+- `portfolio_guard_alert_total_sum`, `portfolio_guard_alert_nonzero_total`, `portfolio_guard_alert_max`
 
 ## 6. Triage Rules
 
