@@ -146,6 +146,9 @@ M27 implementation status (2026-02-20, in progress):
 - M27-9: portfolio guard notify ops query (`query_m25_notification_events.py`, `run_m27_portfolio_guard_notify_query_check.py`)
 - M27-10: closeout check and M28 handover (`run_m27_closeout_check.py`)
 
+M28 implementation status (2026-02-20, in progress):
+- M28-1: runtime profile scaffold and env validation gate (`libs/runtime/runtime_profile.py`, `check_runtime_profile.py`, `run_m28_runtime_profile_scaffold_check.py`)
+
 Detailed plan:
 - `docs/plan/m20_to_m30_master_plan.md`
 - `docs/plan/m31_to_m36_post_golive_plan.md`

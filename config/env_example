@@ -6,6 +6,8 @@
 # --- Runtime ---
 # DRY_RUN=1                  # 1: no external calls/order execution; 0: allow external data calls (still guarded by execution flags)
 # LOG_LEVEL=INFO
+# RUNTIME_PROFILE=dev        # dev | staging | prod
+# M28_PROFILE_STRICT=false   # true => runtime profile warnings become blocking violations
 
 # --- Kiwoom (Mock / Live) ---
 # KIWOOM_APP_KEY=your_key
