@@ -4,6 +4,22 @@
 - Scope: post-M30 operating model for stability, scale, governance automation, and continuous improvement.
 - Entry gate: M30 production readiness sign-off completed.
 
+## Boundary (No Duplication)
+
+- `M30-3` owns post-go-live monitoring/escalation policy artifact generation.
+  - source: `scripts/run_m30_post_golive_monitoring_policy.py`
+  - artifact: `m30_post_golive_policy_<day>.json|md`
+- `M30-4` owns final go-live decision aggregation.
+  - source: `scripts/run_m30_final_golive_signoff.py`
+  - artifact: `m30_final_golive_signoff_<day>.json|md`
+- `M31` does not re-implement M30 policy/signoff logic.
+  - M31 starts from M30 artifacts and performs stabilization tuning, ownership, and incident-response operations.
+
+## M31 Structure (Execution Order)
+
+- M31-A: post-go-live stabilization operations (incident/SLO/on-call/alert noise).
+- M31-B: production-like mock investor exam and strategy validation (`manual approval + shadow auto`).
+
 ## M31: Post-GoLive Stabilization
 
 - Objective:
@@ -15,6 +31,18 @@
   - alert noise reduction pass (false-positive and duplicate suppression tuning)
 - Exit criteria:
   - incident triage/ownership is deterministic and error-budget consumption is measurable daily
+
+## M31-B: Mock Investor Exam and Strategy Validation
+
+- Objective:
+  - validate strategy and runtime behavior under production-like mock execution before approval automation expansion.
+- Deliverables:
+  - fixed strategy set (2-3) with explicit entry/exit/sizing/halt rules
+  - daily mock exam loop (replay + live-mock) with closeout reporting
+  - shadow auto-approval analysis while execution approval remains manual
+  - promotion criteria for moving from `manual` to scoped `auto` approval
+- Exit criteria:
+  - safety gates pass with zero critical violations and strategy scorecards meet baseline thresholds
 
 ## M32: Performance and Cost Optimization
 
@@ -78,11 +106,12 @@
 
 ## Suggested Cadence
 
-1. M31-M32: stabilize and optimize current stack.
+1. M31-A/M31-B/M32: stabilize, validate strategies in mock investor mode, then optimize.
 2. M33-M34: scale capital and market coverage safely.
 3. M35-M36: automate governance and recovery operations.
 
 ## Next Action
 
-1. Create `M31-1` implementation note for SLO baseline and incident-review workflow.
-2. Add one operator script that generates weekly post-go-live health summary from event and alert artifacts.
+1. Create `M31-1` implementation note for SLO baseline and incident-review workflow (consumes M30-3 policy artifact).
+2. Create `M31-2` implementation note for mock investor exam protocol and strategy scorecard schema.
+3. Add one operator script that generates weekly post-go-live health summary from event and alert artifacts.
