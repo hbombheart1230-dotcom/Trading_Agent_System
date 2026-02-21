@@ -114,4 +114,4 @@
 
 1. `M31-1` SLO baseline and incident-review workflow created: `docs/plan/m31_1_slo_baseline_and_incident_review_workflow.md`.
 2. `M31-2` mock investor exam protocol created: `docs/plan/m31_2_mock_investor_exam_protocol.md`.
-3. Add one operator script that generates weekly post-go-live health summary from event and alert artifacts (`M31-3`).
+3. `M31-3` weekly health summary operator script created: `scripts/run_m31_weekly_health_summary.py` and `docs/plan/m31_3_weekly_health_summary_operator_script.md`.
