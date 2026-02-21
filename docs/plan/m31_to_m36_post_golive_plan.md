@@ -113,5 +113,5 @@
 ## Next Action
 
 1. Create `M31-1` implementation note for SLO baseline and incident-review workflow (consumes M30-3 policy artifact).
-2. Create `M31-2` implementation note for mock investor exam protocol and strategy scorecard schema.
+2. `M31-2` mock investor exam protocol created: `docs/plan/m31_2_mock_investor_exam_protocol.md`.
 3. Add one operator script that generates weekly post-go-live health summary from event and alert artifacts.
