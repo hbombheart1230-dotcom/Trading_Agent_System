@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.core.settings import load_env_file
 from graphs.nodes.decide_trade import decide_trade
 
 
@@ -59,6 +60,9 @@ def _latest_llm_event_for_run(path: Path, run_id: str) -> Optional[Dict[str, Any
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    # Load .env before parser defaults are resolved.
+    load_env_file(".env")
+
     p = argparse.ArgumentParser(description="M20 LLM smoke: strategist->decide_trade only (no execution).")
     p.add_argument("--symbol", default=os.getenv("SMOKE_SYMBOL", "005930"))
     p.add_argument("--price", type=int, default=int(os.getenv("SMOKE_PRICE", "70000")))

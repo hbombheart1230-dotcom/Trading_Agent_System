@@ -37,8 +37,8 @@
 - File: `docs/runtime/alert_policy_runbook.md`
   - Added new threshold env vars and triage items.
 
-- Files: `config/.env.example`, `config/env_example`
-  - Added commented env examples for M27-6 threshold controls.
+- File: `config/.env.example`
+  - Added commented env examples for M27-6 threshold controls (single canonical template).
 
 ## Notes for M27-7
 

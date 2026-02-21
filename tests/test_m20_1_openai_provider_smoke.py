@@ -17,6 +17,7 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_COMPLETION_COST_PER_1K_USD", "0.015")
     monkeypatch.setenv("AI_STRATEGIST_CB_FAIL_THRESHOLD", "4")
     monkeypatch.setenv("AI_STRATEGIST_CB_COOLDOWN_SEC", "90")
+    monkeypatch.setenv("AI_STRATEGIST_JSON_RESPONSE_FORMAT", "false")
 
     s = prov.OpenAIStrategist.from_env()
     assert s.api_key == "k"
@@ -32,6 +33,17 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     assert abs(float(s.completion_cost_per_1k_usd) - 0.015) < 1e-12
     assert s.cb_fail_threshold == 4
     assert abs(float(s.cb_cooldown_sec) - 90.0) < 1e-9
+    assert s.json_response_format is False
+
+
+def test_m20_1_from_env_falls_back_to_openrouter_api_key(monkeypatch):
+    monkeypatch.delenv("AI_STRATEGIST_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
+    monkeypatch.delenv("AI_STRATEGIST_MODEL", raising=False)
+
+    s = prov.OpenAIStrategist.from_env()
+    assert s.api_key == "or-key"
 
 
 def test_m20_1_decide_posts_payload_and_parses_response(monkeypatch):
@@ -371,6 +383,211 @@ def test_m20_1_openrouter_chat_content_without_json_is_safe_noop(monkeypatch):
     assert d.intent["action"] == "NOOP"
     assert d.intent["reason"] == "strategist_error"
     assert "json" in d.rationale.lower()
+
+
+def test_m20_1_openrouter_chat_content_json_part_is_adapted(monkeypatch):
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "type": "output_json",
+                                "json": {
+                                    "intent": {
+                                        "action": "BUY",
+                                        "symbol": "005930",
+                                        "qty": 1,
+                                        "price": 70000,
+                                        "order_type": "limit",
+                                        "order_api_id": "ORDER_SUBMIT",
+                                    },
+                                    "rationale": "json-part-ok",
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://openrouter.ai/api/v1/chat/completions",
+        model="anthropic/claude-3.5-sonnet",
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d = s.decide(x)
+    assert d.intent["action"] == "BUY"
+    assert d.rationale == "json-part-ok"
+
+
+def test_m20_1_response_format_error_falls_back_without_response_format(monkeypatch):
+    captured = []
+    calls = {"n": 0}
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        captured.append(dict(payload))
+        if "response_format" in payload:
+            raise ValueError("unsupported parameter: response_format")
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "{\"intent\":{\"action\":\"BUY\",\"symbol\":\"005930\",\"qty\":1,"
+                            "\"price\":70000,\"order_type\":\"limit\",\"order_api_id\":\"ORDER_SUBMIT\"}}"
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://openrouter.ai/api/v1/chat/completions",
+        model="anthropic/claude-3.5-sonnet",
+        retry_max=0,
+        json_response_format=True,
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d = s.decide(x)
+    assert d.intent["action"] == "BUY"
+    assert calls["n"] == 2
+    assert "response_format" in captured[0]
+    assert "response_format" not in captured[1]
+
+
+def test_m20_1_retry_when_chat_output_is_truncated_reasoning_only(monkeypatch):
+    calls = {"n": 0}
+    captured = []
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        captured.append(dict(payload))
+        if calls["n"] == 1:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": "", "reasoning": "thinking..."},
+                    }
+                ]
+            }
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "{\"intent\":{\"action\":\"BUY\",\"symbol\":\"005930\",\"qty\":1,"
+                            "\"price\":70000,\"order_type\":\"limit\",\"order_api_id\":\"ORDER_SUBMIT\"}}"
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://openrouter.ai/api/v1/chat/completions",
+        model="anthropic/claude-3.5-sonnet",
+        max_tokens=128,
+        retry_max=0,
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d = s.decide(x)
+    assert d.intent["action"] == "BUY"
+    assert d.meta["attempts"] == 2
+    assert calls["n"] == 2
+    assert int(captured[1].get("max_tokens") or 0) >= 512
+
+
+def test_m20_1_decision_alias_is_mapped_to_action(monkeypatch):
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "{\"decision\":\"BUY\",\"symbol\":\"005930\",\"qty\":1,\"price\":70000}"
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://openrouter.ai/api/v1/chat/completions",
+        model="anthropic/claude-3.5-sonnet",
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d = s.decide(x)
+    assert d.intent["action"] == "BUY"
+    assert d.intent["symbol"] == "005930"
+
+
+def test_m20_1_noop_reason_defaults_to_model_no_signal(monkeypatch):
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "{\"intent\":{\"action\":\"NOOP\"}}"
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    s = prov.OpenAIStrategist(
+        api_key="k",
+        endpoint="https://openrouter.ai/api/v1/chat/completions",
+        model="anthropic/claude-3.5-sonnet",
+    )
+    x = prov.StrategyInput(
+        symbol="005930",
+        market_snapshot={"symbol": "005930", "price": 70000},
+        portfolio_snapshot={"cash": 2_000_000, "open_positions": 0},
+        risk_context={"open_positions": 0},
+    )
+
+    d = s.decide(x)
+    assert d.intent["action"] == "NOOP"
+    assert d.intent["reason"] == "model_no_signal"
 
 
 def test_m20_1_circuit_breaker_opens_and_blocks_following_call(monkeypatch):

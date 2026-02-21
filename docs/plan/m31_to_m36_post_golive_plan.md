@@ -112,6 +112,11 @@
 
 ## Next Action
 
-1. `M31-1` SLO baseline and incident-review workflow created: `docs/plan/m31_1_slo_baseline_and_incident_review_workflow.md`.
-2. `M31-2` mock investor exam protocol created: `docs/plan/m31_2_mock_investor_exam_protocol.md`.
+1. `M31-1` SLO baseline/incident workflow doc + execution check created:
+   - `docs/plan/m31_1_slo_baseline_and_incident_review_workflow.md`
+   - `scripts/run_m31_slo_incident_review_check.py`
+2. `M31-2` mock investor exam protocol doc + execution check created:
+   - `docs/plan/m31_2_mock_investor_exam_protocol.md`
+   - `scripts/run_m31_mock_investor_exam_check.py`
 3. `M31-3` weekly health summary operator script created: `scripts/run_m31_weekly_health_summary.py` and `docs/plan/m31_3_weekly_health_summary_operator_script.md`.
+4. `M31` agent-chain visibility probe created: `scripts/run_m31_agent_chain_probe.py` (strategist->scanner->monitor->decision->execute).

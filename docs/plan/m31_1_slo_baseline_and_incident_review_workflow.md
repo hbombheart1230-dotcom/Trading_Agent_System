@@ -114,6 +114,24 @@ set METRICS_DAY=2026-02-21
 python scripts/generate_metrics_report.py
 ```
 
+## Execution Artifact (Implemented)
+
+- script: `scripts/run_m31_slo_incident_review_check.py`
+- role: consumes M30 artifacts + event log and emits a daily M31-1 stabilization check artifact.
+- output:
+  - `reports/m31_slo_incident/m31_slo_incident_<day>.json`
+  - `reports/m31_slo_incident/m31_slo_incident_<day>.md`
+
+```bash
+python scripts/run_m31_slo_incident_review_check.py \
+  --event-log-path data/logs/events.jsonl \
+  --policy-report-dir reports/m30_post_golive \
+  --signoff-report-dir reports/m30_golive \
+  --report-dir reports/m31_slo_incident \
+  --day 2026-02-21 \
+  --json
+```
+
 ## Exit Criteria (M31-1 Complete)
 
 - SLO baseline and severity ladder are versioned in docs.

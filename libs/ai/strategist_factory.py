@@ -11,7 +11,9 @@ def get_strategist_from_env():
     Supported:
       - AI_STRATEGIST_PROVIDER=rule (default)
       - AI_STRATEGIST_PROVIDER=openai (HTTP endpoint wrapper)
-        Requires: AI_STRATEGIST_API_KEY + AI_STRATEGIST_ENDPOINT
+        Requires: API key + endpoint
+          - API key priority: AI_STRATEGIST_API_KEY -> OPENROUTER_API_KEY
+          - Endpoint: AI_STRATEGIST_ENDPOINT
         Missing either -> fallback to RuleStrategist (never crash)
     """
     provider = (os.getenv("AI_STRATEGIST_PROVIDER") or "rule").strip().lower()
@@ -20,7 +22,10 @@ def get_strategist_from_env():
         return RuleStrategist()
 
     if provider in ("openai", "http", "api"):
-        api_key = (os.getenv("AI_STRATEGIST_API_KEY") or "").strip()
+        api_key = (
+            (os.getenv("AI_STRATEGIST_API_KEY") or "").strip()
+            or (os.getenv("OPENROUTER_API_KEY") or "").strip()
+        )
         endpoint = (os.getenv("AI_STRATEGIST_ENDPOINT") or "").strip()
         if not api_key or not endpoint:
             return RuleStrategist()

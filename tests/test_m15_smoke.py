@@ -33,10 +33,10 @@ def _make_executor_agent(tmp_path: Path) -> ExecutorAgent:
     intent_store_path = tmp_path / "intents.jsonl"
     store = IntentStore(str(intent_store_path))
     runner = CompositeSkillRunner(
-        settings=Settings.from_env(),
+        settings=Settings.from_env(env_path="__missing__.env"),
         event_log_path=str(tmp_path / "events.jsonl"),
     )
-    sup = TwoPhaseSupervisor(Settings.from_env())
+    sup = TwoPhaseSupervisor(Settings.from_env(env_path="__missing__.env"))
     return ExecutorAgent(
         runner=runner,
         supervisor=sup,
@@ -50,13 +50,13 @@ def test_m15_two_phase_supervisor_manual_vs_auto(isolated_env: pytest.MonkeyPatc
 
     # manual -> needs_approval
     isolated_env.setenv("APPROVAL_MODE", "manual")
-    sup = TwoPhaseSupervisor(Settings.from_env())
+    sup = TwoPhaseSupervisor(Settings.from_env(env_path="__missing__.env"))
     d = sup.create_intent({"action": "BUY", "symbol": "005930", "qty": 1, "order_type": "market"})
     assert d.status == "needs_approval"
 
     # auto -> approved
     isolated_env.setenv("APPROVAL_MODE", "auto")
-    sup = TwoPhaseSupervisor(Settings.from_env())
+    sup = TwoPhaseSupervisor(Settings.from_env(env_path="__missing__.env"))
     d = sup.create_intent({"action": "BUY", "symbol": "005930", "qty": 1, "order_type": "market"})
     assert d.status == "approved"
 
@@ -67,7 +67,7 @@ def test_m15_auto_approve_legacy_env(isolated_env: pytest.MonkeyPatch):
     # No APPROVAL_MODE -> falls back to AUTO_APPROVE legacy
     isolated_env.delenv("APPROVAL_MODE", raising=False)
     isolated_env.setenv("AUTO_APPROVE", "true")
-    sup = TwoPhaseSupervisor(Settings.from_env())
+    sup = TwoPhaseSupervisor(Settings.from_env(env_path="__missing__.env"))
     d = sup.create_intent({"action": "BUY", "symbol": "005930", "qty": 1, "order_type": "market"})
     assert d.status == "approved"
 
@@ -145,7 +145,7 @@ def test_m15_real_mode_requires_execution_enabled(isolated_env: pytest.MonkeyPat
     isolated_env.setenv("KIWOOM_MODE", "real")
     isolated_env.setenv("EXECUTION_ENABLED", "false")
 
-    ex = RealExecutor(Settings.from_env())
+    ex = RealExecutor(Settings.from_env(env_path="__missing__.env"))
     req = PreparedRequest(
         api_id="DUMMY_API",
         method="GET",

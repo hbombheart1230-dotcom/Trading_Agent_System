@@ -36,9 +36,8 @@ policy = {
 ```
 
 ### env 예시 (추가)
-`config/env_example.m19_4_additions` 참고
+`config/.env.example` 참고
 
 ## 테스트
 - `tests/test_m19_4_openrouter_news_scorer.py`
   - DRY_RUN에서 mock/default 동작 검증
-

@@ -9,6 +9,8 @@ Modes:
   - graph_spine: run M17 graph spine (`run_trading_graph`)
   - decision_packet: run strategist decision + execution packet path
     (`decide_trade` -> `execute_from_packet`)
+  - integrated_chain: run visible chain
+    (`strategist_node -> scanner_node -> monitor_node -> decision_node -> execute_from_packet`)
 
 Default mode is graph_spine for backward compatibility.
 """
@@ -24,7 +26,7 @@ from graphs.nodes.execute_from_packet import execute_from_packet
 from libs.runtime.resilience_state import ensure_runtime_resilience_state
 
 
-RuntimeMode = Literal["graph_spine", "decision_packet"]
+RuntimeMode = Literal["graph_spine", "decision_packet", "integrated_chain"]
 
 
 def _is_trueish(v: Any) -> bool:
@@ -35,6 +37,8 @@ def _normalize_mode(value: Any) -> RuntimeMode:
     v = str(value or "").strip().lower()
     if v == "decision_packet":
         return "decision_packet"
+    if v in ("integrated_chain", "integrated", "chain"):
+        return "integrated_chain"
     return "graph_spine"
 
 
@@ -221,6 +225,8 @@ def _apply_runtime_transition(state: Dict[str, Any]) -> Tuple[bool, Dict[str, An
 def _runtime_agent_chain(mode: RuntimeMode) -> Tuple[str, ...]:
     if mode == "decision_packet":
         return ("commander_router", "strategist", "supervisor", "executor", "reporter")
+    if mode == "integrated_chain":
+        return ("commander_router", "strategist", "scanner", "monitor", "decision", "supervisor", "executor", "reporter")
     return ("commander_router", "strategist", "scanner", "monitor", "supervisor", "executor", "reporter")
 
 
@@ -284,6 +290,69 @@ def _portfolio_guard_event_summary(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _intent_from_monitor_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    intents = state.get("intents")
+    if not isinstance(intents, list) or not intents:
+        return {"action": "NOOP", "reason": "no_monitor_intent"}
+
+    it0 = intents[0] if isinstance(intents[0], dict) else {}
+    side = str(it0.get("side") or "BUY").strip().upper()
+    action = "BUY" if side == "BUY" else "SELL" if side == "SELL" else "NOOP"
+    symbol = str(it0.get("symbol") or state.get("symbol") or state.get("selected_symbol") or "").strip().upper()
+    qty = max(0, _coerce_int(it0.get("qty"), 0))
+
+    market = state.get("market_snapshot") if isinstance(state.get("market_snapshot"), dict) else {}
+    price = it0.get("price")
+    if price is None:
+        price = market.get("price")
+
+    return {
+        "action": action,
+        "symbol": symbol,
+        "qty": qty,
+        "price": price,
+        "order_type": "limit",
+        "order_api_id": "ORDER_SUBMIT",
+        "rationale": str(it0.get("thesis") or "monitor_intent"),
+    }
+
+
+def _build_packet_from_state(state: Dict[str, Any], *, intent: Dict[str, Any]) -> Dict[str, Any]:
+    risk = state.get("risk_context") if isinstance(state.get("risk_context"), dict) else {}
+    exec_context = state.get("exec_context") if isinstance(state.get("exec_context"), dict) else {}
+    return {
+        "intent": dict(intent),
+        "risk": dict(risk),
+        "exec_context": dict(exec_context),
+    }
+
+
+def _run_integrated_chain(
+    state: Dict[str, Any],
+    *,
+    execute_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Run a visible end-to-end chain inside canonical runtime."""
+    from graphs.nodes.strategist_node import strategist_node
+    from graphs.nodes.scanner_node import scanner_node
+    from graphs.nodes.monitor_node import monitor_node
+    from graphs.nodes.decision_node import decision_node
+
+    state = strategist_node(state)
+    state = scanner_node(state)
+    state = monitor_node(state)
+    state = decision_node(state)
+
+    decision = str(state.get("decision") or "").strip().lower()
+    if decision == "approve":
+        intent = _intent_from_monitor_state(state)
+        state["decision_packet"] = _build_packet_from_state(state, intent=intent)
+        state = execute_fn(state)
+
+    state["path"] = "integrated_chain"
+    return state
+
+
 def resolve_runtime_mode(state: Dict[str, Any], *, mode: Optional[RuntimeMode] = None) -> RuntimeMode:
     """Resolve runtime mode with explicit precedence.
 
@@ -323,6 +392,7 @@ def run_commander_runtime(
     *,
     mode: Optional[RuntimeMode] = None,
     graph_runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    integrated_runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     decide: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     execute: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
@@ -387,6 +457,7 @@ def run_commander_runtime(
     graph_runner = graph_runner or run_trading_graph
     decide = decide or decide_trade
     execute = execute or execute_from_packet
+    integrated_runner = integrated_runner or (lambda s: _run_integrated_chain(s, execute_fn=execute))
 
     try:
         if selected == "decision_packet":
@@ -399,6 +470,20 @@ def run_commander_runtime(
                     "mode": selected,
                     "status": state.get("runtime_status", "ok"),
                     "path": "decision_packet",
+                    **_portfolio_guard_event_summary(state),
+                },
+            )
+            return state
+
+        if selected == "integrated_chain":
+            state = integrated_runner(state)
+            _log_commander_event(
+                state,
+                "end",
+                {
+                    "mode": selected,
+                    "status": state.get("runtime_status", "ok"),
+                    "path": "integrated_chain",
                     **_portfolio_guard_event_summary(state),
                 },
             )

@@ -44,6 +44,27 @@ def test_m21_runtime_once_script_decision_packet_smoke_json(capsys):
     ]
 
 
+def test_m31_runtime_once_script_integrated_chain_smoke_json(capsys):
+    rc = main(["--mode", "integrated_chain", "--json"])
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+
+    assert rc == 0
+    assert obj["runtime_mode"] == "integrated_chain"
+    assert obj["path"] == "integrated_chain"
+    assert obj["execution_allowed"] is True
+    assert obj["runtime_agents"] == [
+        "commander_router",
+        "strategist",
+        "scanner",
+        "monitor",
+        "decision",
+        "supervisor",
+        "executor",
+        "reporter",
+    ]
+
+
 def test_m21_runtime_once_script_pause_control(capsys):
     rc = main(["--runtime-control", "pause", "--json"])
     out = capsys.readouterr().out.strip()

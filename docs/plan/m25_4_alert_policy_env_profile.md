@@ -27,9 +27,7 @@
 
 - File: `config/.env.example`
   - Added commented alert policy env variables.
-
-- File: `config/env_example`
-  - Added commented alert policy env variables.
+  - Canonical single env template.
 
 - File: `tests/test_m25_2_alert_policy_threshold_gate.py`
   - Added env-default override regression.

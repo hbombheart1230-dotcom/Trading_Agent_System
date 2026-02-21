@@ -58,7 +58,48 @@ python scripts/run_m28_launch_hook_integration_check.py --profile staging --env-
 
 python scripts/run_m13_live_loop.py --sleep-sec 60
 python scripts/run_m29_closeout_check.py --json
+python scripts/run_m31_agent_chain_probe.py --json
+python scripts/run_commander_runtime_once.py --mode integrated_chain --json
+python scripts/smoke_m20_llm.py --provider openai --require-openai --show-llm-event
 ```
+
+## Execution Artifact (Implemented)
+
+- script: `scripts/run_m31_mock_investor_exam_check.py`
+- role: validates fixed runtime-mode policy, guardrail configuration, market-hours contract, and tick behavior for M31-B exam operations.
+- output:
+  - `reports/m31_mock_exam/m31_mock_exam_<day>.json`
+  - `reports/m31_mock_exam/m31_mock_exam_<day>.md`
+
+- script: `scripts/run_m31_agent_chain_probe.py`
+- role: visualizes end-to-end agent chain (`strategist -> scanner -> monitor -> decision -> execute`) with one JSON artifact-like output for operator understanding.
+
+```bash
+python scripts/run_m31_mock_investor_exam_check.py \
+  --env-path .env \
+  --event-log-path data/logs/events.jsonl \
+  --report-dir reports/m31_mock_exam \
+  --day 2026-02-21 \
+  --json
+
+python scripts/run_m31_agent_chain_probe.py --json
+```
+
+## Verified Runtime Snapshot (2026-02-21)
+
+- `python scripts/run_m31_mock_investor_exam_check.py --json`
+  - `ok=true`
+  - required checks passed; `session_window_check` is informational when `--strict-session` is not used.
+- `python scripts/run_m31_mock_investor_exam_check.py --strict-session --json`
+  - fails outside weekday `09:00-15:30` KST by design.
+- `python scripts/run_m31_agent_chain_probe.py --json`
+  - `ok=true`
+  - chain: `commander_router -> strategist -> scanner -> monitor -> decision -> supervisor -> executor -> reporter`
+- `python scripts/run_commander_runtime_once.py --mode integrated_chain --json`
+  - `runtime_mode=integrated_chain`, `path=integrated_chain`, `execution_allowed=true` (non-live stub smoke)
+- `python scripts/smoke_m20_llm.py --provider openai --require-openai --show-llm-event`
+  - strategist selection can be validated as `OpenAIStrategist` directly from `.env` (script loads `.env` before argument defaults).
+  - current observed behavior (2026-02-21): LLM call succeeds (`ok=true`) and returns schema-normalized intent (currently `NOOP` on this sample input).
 
 ## Strategy Design Package (What To Fix Before Exam)
 
@@ -79,6 +120,9 @@ python scripts/run_m29_closeout_check.py --json
 - structured input fields only
 - strict JSON output
 - include confidence, risk reason, and fallback reason fields
+- provider JSON mode control:
+  - `AI_STRATEGIST_JSON_RESPONSE_FORMAT=true` (default)
+  - when provider rejects `response_format`, adapter retries once without it.
 
 5. Position sizing and exit policy
 - sizing source: `libs/runtime/position_sizing.py`

@@ -97,6 +97,51 @@ def test_m21_runtime_entry_invalid_mode_falls_back_to_graph_spine():
     assert called["graph"] == 1
 
 
+def test_m31_runtime_entry_runs_integrated_chain_mode():
+    called = {"graph": 0, "decide": 0, "execute": 0, "integrated": 0}
+
+    def graph_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["graph"] += 1
+        return state
+
+    def decide(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["decide"] += 1
+        return state
+
+    def execute(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["execute"] += 1
+        return state
+
+    def integrated_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["integrated"] += 1
+        state["path"] = "integrated_chain"
+        state["decision"] = "approve"
+        state["execution"] = {"allowed": True}
+        return state
+
+    out = run_commander_runtime(
+        {"runtime_mode": "integrated_chain"},
+        graph_runner=graph_runner,
+        integrated_runner=integrated_runner,
+        decide=decide,
+        execute=execute,
+    )
+
+    assert out["path"] == "integrated_chain"
+    assert out["runtime_plan"]["mode"] == "integrated_chain"
+    assert out["runtime_plan"]["agents"] == [
+        "commander_router",
+        "strategist",
+        "scanner",
+        "monitor",
+        "decision",
+        "supervisor",
+        "executor",
+        "reporter",
+    ]
+    assert called == {"graph": 0, "decide": 0, "execute": 0, "integrated": 1}
+
+
 def test_m21_runtime_mode_resolution_precedence(monkeypatch):
     monkeypatch.setenv("COMMANDER_RUNTIME_MODE", "decision_packet")
     monkeypatch.setenv("COMMANDER_RUNTIME_ALLOW_DECISION_PACKET", "true")
