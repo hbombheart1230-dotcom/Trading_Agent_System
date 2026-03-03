@@ -70,13 +70,18 @@ def build_portfolio_snapshot(state: dict) -> dict:
     if mock_mode:
         persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
         persisted_positions = _normalize_positions((persisted or {}).get("mock_positions"))
+        persisted_cash = _safe_float((persisted or {}).get("mock_cash"), 0.0)
+        persisted_realized = _safe_float((persisted or {}).get("mock_realized_pnl"), 0.0)
         snapshot_positions = _normalize_positions(snapshot.get("positions"))
 
-        # In mock mode, prefer persisted mock positions when API reader has no position data.
-        if persisted_positions and not snapshot_positions:
+        # In mock mode, prefer persisted mock ledger when available.
+        if persisted_positions:
             snapshot["positions"] = persisted_positions
         else:
             snapshot["positions"] = snapshot_positions
+        if persisted_cash > 0.0:
+            snapshot["cash"] = float(persisted_cash)
+        snapshot["realized_pnl"] = float(persisted_realized)
 
     positions = _normalize_positions(snapshot.get("positions"))
     snapshot["positions"] = positions

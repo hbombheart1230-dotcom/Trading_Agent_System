@@ -64,6 +64,8 @@ def test_update_state_mock_buy_updates_mock_positions(monkeypatch):
     assert ps["mock_positions"][0]["symbol"] == "005930"
     assert ps["mock_positions"][0]["qty"] == 2
     assert ps["mock_positions"][0]["avg_price"] == 70000.0
+    assert ps["mock_cash"] == 1860000.0
+    assert ps["mock_realized_pnl"] == 0.0
     assert ps["last_trade_side"] == "BUY"
     assert ps["last_trade_epoch"] == 1234
 
@@ -74,6 +76,8 @@ def test_update_state_mock_sell_closes_position(monkeypatch):
         "persisted_state": {
             "last_order_epoch": 10,
             "mock_positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "unrealized_pnl": 0.0}],
+            "mock_cash": 1860000.0,
+            "mock_realized_pnl": 0.0,
         },
         "execution": {
             "allowed": True,
@@ -86,5 +90,7 @@ def test_update_state_mock_sell_closes_position(monkeypatch):
     ps = out["persisted_state"]
     assert ps["open_positions"] == 0
     assert ps["mock_positions"] == []
+    assert ps["mock_cash"] == 2000400.0
+    assert ps["mock_realized_pnl"] == 400.0
     assert ps["last_trade_side"] == "SELL"
     assert ps["last_trade_epoch"] == 1234

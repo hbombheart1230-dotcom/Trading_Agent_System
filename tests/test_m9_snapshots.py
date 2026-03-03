@@ -75,3 +75,20 @@ def test_build_portfolio_snapshot_uses_persisted_mock_positions_when_reader_empt
     assert ps["positions"][0]["symbol"] == "005930"
     assert ps["positions"][0]["qty"] == 3
     assert ps["open_positions"] == 1
+
+
+def test_build_portfolio_snapshot_uses_persisted_mock_cash_when_available(monkeypatch):
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    state = {
+        "portfolio_reader": MockPortfolioReader(cash=2000000, positions=[]),
+        "persisted_state": {
+            "mock_cash": 1234567.0,
+            "mock_realized_pnl": 321.0,
+            "mock_positions": [],
+        },
+    }
+
+    out = build_portfolio_snapshot(state)
+    ps = out["portfolio_snapshot"]
+    assert ps["cash"] == 1234567.0
+    assert ps["realized_pnl"] == 321.0

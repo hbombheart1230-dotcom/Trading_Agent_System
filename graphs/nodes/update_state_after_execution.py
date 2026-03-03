@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 
@@ -39,6 +40,21 @@ def _normalize_mock_positions(raw):  # type: ignore[no-untyped-def]
     return out
 
 
+def _default_mock_cash() -> float:
+    raw = str(os.getenv("MOCK_CASH_FALLBACK", "2000000") or "2000000").strip()
+    v = _as_float(raw, 2000000.0)
+    return v if v > 0.0 else 2000000.0
+
+
+def _ensure_mock_cash(ps: dict) -> float:
+    cur = _as_float(ps.get("mock_cash"), 0.0)
+    if cur > 0.0:
+        return cur
+    base = _default_mock_cash()
+    ps["mock_cash"] = float(base)
+    return float(base)
+
+
 def _apply_mock_fill(ps: dict, ex: dict) -> None:
     order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
     action = str(order.get("action") or "").strip().upper()
@@ -51,6 +67,8 @@ def _apply_mock_fill(ps: dict, ex: dict) -> None:
     pos = _normalize_mock_positions(ps.get("mock_positions"))
     by_symbol = {str(r.get("symbol")): dict(r) for r in pos if isinstance(r, dict)}
     cur = dict(by_symbol.get(symbol) or {"symbol": symbol, "qty": 0, "avg_price": 0.0, "unrealized_pnl": 0.0})
+    cash = _ensure_mock_cash(ps)
+    realized_total = _as_float(ps.get("mock_realized_pnl"), 0.0)
 
     if action == "BUY":
         prev_qty = _as_int(cur.get("qty"), 0)
@@ -58,6 +76,8 @@ def _apply_mock_fill(ps: dict, ex: dict) -> None:
         new_qty = prev_qty + qty
         if new_qty <= 0:
             return
+        if price > 0.0:
+            cash -= float(qty) * float(price)
         if price > 0:
             weighted_avg = ((prev_qty * prev_avg) + (qty * price)) / float(new_qty)
         else:
@@ -67,7 +87,16 @@ def _apply_mock_fill(ps: dict, ex: dict) -> None:
         by_symbol[symbol] = cur
     else:
         prev_qty = _as_int(cur.get("qty"), 0)
-        new_qty = max(0, prev_qty - qty)
+        if prev_qty <= 0:
+            return
+        fill_qty = min(prev_qty, qty)
+        if fill_qty <= 0:
+            return
+        prev_avg = _as_float(cur.get("avg_price"), 0.0)
+        if price > 0.0:
+            cash += float(fill_qty) * float(price)
+            realized_total += float(fill_qty) * (float(price) - float(prev_avg))
+        new_qty = max(0, prev_qty - fill_qty)
         if new_qty <= 0:
             by_symbol.pop(symbol, None)
         else:
@@ -77,6 +106,8 @@ def _apply_mock_fill(ps: dict, ex: dict) -> None:
     final_positions = [v for v in by_symbol.values() if _as_int(v.get("qty"), 0) > 0]
     ps["mock_positions"] = final_positions
     ps["open_positions"] = len(final_positions)
+    ps["mock_cash"] = float(cash)
+    ps["mock_realized_pnl"] = float(realized_total)
 
 
 def _extract_trade_side(ex: dict) -> str:
