@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from libs.ai.intent_schema import normalize_intent
+from libs.runtime.exit_policy import evaluate_exit_policy
 from libs.runtime.circuit_breaker import (
     gate_runtime_circuit,
     mark_runtime_circuit_failure,
@@ -24,6 +25,56 @@ def _rule_intent(symbol: Any, price: Any, cash: Any, open_positions: Any) -> Dic
             "rationale": "rule:cash_and_price_ok",
         }
     return {"action": "NOOP", "reason": "conditions_not_met", "rationale": "rule:no_trade"}
+
+
+def _is_trueish(v: Any) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _to_float(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except Exception:
+        return float(default)
+
+
+def _extract_position_for_symbol(portfolio: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return {}
+    rows = portfolio.get("positions")
+    if not isinstance(rows, list):
+        return {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("symbol") or "").strip().upper() == sym:
+            return dict(row)
+    return {}
+
+
+def _resolve_exit_policy_enabled(state: Dict[str, Any]) -> bool:
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    if _is_trueish(state.get("use_exit_policy")):
+        return True
+    if _is_trueish(policy.get("use_exit_policy")):
+        return True
+    return _is_trueish(os.getenv("USE_EXIT_POLICY", "false"))
+
+
+def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    cfg = policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else {}
+    out = dict(cfg or {})
+
+    sl_raw = str(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "") or "").strip()
+    tp_raw = str(os.getenv("EXIT_POLICY_TAKE_PROFIT_PCT", "") or "").strip()
+
+    if sl_raw:
+        out["stop_loss_pct"] = _to_float(sl_raw, _to_float(out.get("stop_loss_pct"), 0.03))
+    if tp_raw:
+        out["take_profit_pct"] = _to_float(tp_raw, _to_float(out.get("take_profit_pct"), 0.05))
+    return out
 
 
 def _import_event_logger():
@@ -126,8 +177,46 @@ def decide_trade(state: dict) -> dict:
     raw_intent: Dict[str, Any]
     error: str | None = None
     llm_meta: Dict[str, Any] = {}
+    static_intent: Dict[str, Any] | None = None
 
-    if strategist is not None and hasattr(strategist, "decide"):
+    # Optional M29+ exit policy path for live loop:
+    # when a position is already open and exit policy is enabled,
+    # prefer deterministic hold/exit over repeated BUY intents.
+    use_exit_policy = _resolve_exit_policy_enabled(state)
+    position = _extract_position_for_symbol(portfolio, symbol)
+    if int(open_positions or 0) > 0 and use_exit_policy and isinstance(position, dict):
+        qty_pos = int(position.get("qty") or 0)
+        avg_price = _to_float(position.get("avg_price"), 0.0)
+        px = _to_float(price, 0.0) if price is not None else 0.0
+        if qty_pos > 0 and avg_price > 0.0 and px > 0.0:
+            exit_decision = evaluate_exit_policy(
+                price=px,
+                avg_price=avg_price,
+                qty=qty_pos,
+                policy=_resolve_exit_policy_config(state),
+            )
+            reason = str(exit_decision.get("reason") or "hold")
+            if bool(exit_decision.get("triggered")):
+                static_intent = {
+                    "action": "SELL",
+                    "symbol": symbol,
+                    "qty": qty_pos,
+                    "price": price,
+                    "order_type": "market",
+                    "order_api_id": "ORDER_SUBMIT",
+                    "rationale": f"exit_policy:{reason}",
+                }
+            else:
+                static_intent = {
+                    "action": "NOOP",
+                    "reason": "position_hold",
+                    "rationale": f"exit_policy:{reason}",
+                }
+            strategy_name = "ExitPolicyStrategist"
+
+    if static_intent is not None:
+        raw_intent = dict(static_intent)
+    elif strategist is not None and hasattr(strategist, "decide"):
         llm_t0 = 0.0
         do_llm_log = strategy_name == "OpenAIStrategist"
         runtime_gate: Dict[str, Any] = {}
