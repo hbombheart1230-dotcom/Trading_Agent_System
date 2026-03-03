@@ -38,12 +38,13 @@ Run:
 
 ```powershell
 python scripts/query_strategist_llm_events.py --limit 20
+python scripts/run_live_session_summary.py --event-log-path data/logs/events_live.jsonl --report-dir reports/live_summary --lookback-min 30 --json
 ```
 
 Also check:
 
 ```powershell
-Get-Content data/logs/events.jsonl -Tail 30
+Get-Content data/logs/events_live.jsonl -Tail 30
 ```
 
 ### Record Block (copy per checkpoint)
@@ -55,6 +56,7 @@ Get-Content data/logs/events.jsonl -Tail 30
 - LLM `model_no_signal` count (last 20): `__________`
 - Decision mix BUY/SELL/NOOP (last 20): `__________`
 - Execution flow health (`decision -> execute_from_packet`): `OK / FAIL`
+- 30m summary (`cooldown_noop`, `exit_policy_sell`, `insufficient_mock_cash`): `__________`
 - Guard/circuit alerts: `NONE / PRESENT`
 - Operator action taken: `__________`
 
