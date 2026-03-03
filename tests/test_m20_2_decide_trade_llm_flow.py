@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import libs.ai.providers.openai_provider as prov
 from graphs.nodes.decide_trade import decide_trade
 
@@ -144,3 +146,38 @@ def test_m20_2_decide_trade_exit_policy_triggers_sell(monkeypatch):
     assert out["decision_trace"]["strategy"] == "ExitPolicyStrategist"
     assert out["decision_packet"]["intent"]["action"] == "SELL"
     assert out["decision_packet"]["intent"]["qty"] == 2
+
+
+def test_m20_2_decide_trade_post_exit_cooldown_blocks_reentry(monkeypatch):
+    monkeypatch.setenv("POST_EXIT_COOLDOWN_SEC", "300")
+    monkeypatch.setattr(time, "time", lambda: 1500.0)
+
+    class AlwaysBuyStrategist:
+        def decide(self, x):  # type: ignore[no-untyped-def]
+            class Decision:
+                intent = {
+                    "action": "BUY",
+                    "symbol": "005930",
+                    "qty": 1,
+                    "price": 70000,
+                    "order_type": "limit",
+                    "order_api_id": "ORDER_SUBMIT",
+                }
+                rationale = "always-buy"
+                meta = {}
+
+            return Decision()
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 2_000_000, "positions": [], "open_positions": 0},
+        "risk_context": {"open_positions": 0, "daily_pnl_ratio": 0.0, "last_order_epoch": 0},
+        "persisted_state": {"last_trade_side": "SELL", "last_trade_epoch": 1400},
+        "strategist": AlwaysBuyStrategist(),
+    }
+    out = decide_trade(state)
+
+    assert out["decision_trace"]["strategy"] == "CooldownStrategist"
+    assert out["decision_packet"]["intent"]["action"] == "NOOP"
+    assert out["decision_packet"]["intent"]["reason"] == "post_exit_cooldown"

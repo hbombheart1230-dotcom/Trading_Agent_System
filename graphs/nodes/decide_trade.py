@@ -77,6 +77,41 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _resolve_post_exit_cooldown_sec(state: Dict[str, Any]) -> int:
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    raw = (
+        policy.get("post_exit_cooldown_sec")
+        if policy.get("post_exit_cooldown_sec") is not None
+        else os.getenv("POST_EXIT_COOLDOWN_SEC", "300")
+    )
+    try:
+        return max(0, int(float(raw)))
+    except Exception:
+        return 300
+
+
+def _post_exit_cooldown_remaining_sec(state: Dict[str, Any], open_positions: Any) -> int:
+    if int(open_positions or 0) > 0:
+        return 0
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    side = str((persisted or {}).get("last_trade_side") or "").strip().upper()
+    if side != "SELL":
+        return 0
+    last_epoch = 0
+    try:
+        last_epoch = int(float((persisted or {}).get("last_trade_epoch") or 0))
+    except Exception:
+        last_epoch = 0
+    if last_epoch <= 0:
+        return 0
+    cooldown = _resolve_post_exit_cooldown_sec(state)
+    if cooldown <= 0:
+        return 0
+    now_epoch = int(time.time())
+    remaining = (last_epoch + cooldown) - now_epoch
+    return max(0, int(remaining))
+
+
 def _import_event_logger():
     for mod in ("libs.event_logger", "libs.logging.event_logger", "libs.core.event_logger"):
         try:
@@ -179,12 +214,21 @@ def decide_trade(state: dict) -> dict:
     llm_meta: Dict[str, Any] = {}
     static_intent: Dict[str, Any] | None = None
 
+    cooldown_remaining = _post_exit_cooldown_remaining_sec(state, open_positions)
+    if cooldown_remaining > 0:
+        static_intent = {
+            "action": "NOOP",
+            "reason": "post_exit_cooldown",
+            "rationale": f"post_exit_cooldown:{cooldown_remaining}s",
+        }
+        strategy_name = "CooldownStrategist"
+
     # Optional M29+ exit policy path for live loop:
     # when a position is already open and exit policy is enabled,
     # prefer deterministic hold/exit over repeated BUY intents.
     use_exit_policy = _resolve_exit_policy_enabled(state)
     position = _extract_position_for_symbol(portfolio, symbol)
-    if int(open_positions or 0) > 0 and use_exit_policy and isinstance(position, dict):
+    if static_intent is None and int(open_positions or 0) > 0 and use_exit_policy and isinstance(position, dict):
         qty_pos = int(position.get("qty") or 0)
         avg_price = _to_float(position.get("avg_price"), 0.0)
         px = _to_float(price, 0.0) if price is not None else 0.0
@@ -359,6 +403,11 @@ def decide_trade(state: dict) -> dict:
         raw_intent = _rule_intent(symbol, price, cash, open_positions)
 
     intent, rationale = normalize_intent(raw_intent, default_symbol=str(symbol) if symbol else None, default_price=price)
+
+    if str(intent.get("action") or "").strip().upper() == "NOOP":
+        if not str(intent.get("reason") or "").strip():
+            if str(raw_intent.get("reason") or "").strip():
+                intent["reason"] = str(raw_intent.get("reason") or "").strip()
 
     # Safety: if a position is already open, block additional BUY intents.
     try:

@@ -79,6 +79,14 @@ def _apply_mock_fill(ps: dict, ex: dict) -> None:
     ps["open_positions"] = len(final_positions)
 
 
+def _extract_trade_side(ex: dict) -> str:
+    order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
+    side = str(order.get("action") or "").strip().upper()
+    if side in ("BUY", "SELL"):
+        return side
+    return ""
+
+
 def update_state_after_execution(state: dict) -> dict:
     """M10-3 node: update persisted_state after an execution attempt.
 
@@ -126,8 +134,17 @@ def update_state_after_execution(state: dict) -> dict:
     is_dry = bool(ex.get("dry_run", False)) or (mode == "mock")
     order_sent = ok and not is_dry
 
+    now_epoch = int(time.time())
+
     if order_sent:
-        ps["last_order_epoch"] = int(time.time())
+        ps["last_order_epoch"] = now_epoch
+
+    # Keep recent side/epoch for runtime cooldown and replay guards.
+    if ok:
+        side = _extract_trade_side(ex)
+        if side:
+            ps["last_trade_side"] = side
+            ps["last_trade_epoch"] = now_epoch
 
     # Keep mock portfolio position state in sync with successful mock executions.
     if ok and mode == "mock":
