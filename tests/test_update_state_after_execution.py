@@ -44,3 +44,43 @@ def test_update_state_handles_allowed_schema_mock_without_order_sent(monkeypatch
     out = update_state_after_execution(state)
     assert out["persisted_state"]["last_execution_ok"] is True
     assert out["persisted_state"]["last_order_epoch"] == 10
+
+
+def test_update_state_mock_buy_updates_mock_positions(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {"last_order_epoch": 10, "mock_positions": []},
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "mock"},
+            "reason": "Allowed",
+            "order": {"action": "BUY", "symbol": "005930", "qty": 2, "price": 70000},
+        },
+    }
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert ps["last_order_epoch"] == 10
+    assert ps["open_positions"] == 1
+    assert ps["mock_positions"][0]["symbol"] == "005930"
+    assert ps["mock_positions"][0]["qty"] == 2
+    assert ps["mock_positions"][0]["avg_price"] == 70000.0
+
+
+def test_update_state_mock_sell_closes_position(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {
+            "last_order_epoch": 10,
+            "mock_positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "unrealized_pnl": 0.0}],
+        },
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "mock"},
+            "reason": "Allowed",
+            "order": {"action": "SELL", "symbol": "005930", "qty": 2, "price": 70200},
+        },
+    }
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert ps["open_positions"] == 0
+    assert ps["mock_positions"] == []

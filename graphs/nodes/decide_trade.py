@@ -271,6 +271,17 @@ def decide_trade(state: dict) -> dict:
 
     intent, rationale = normalize_intent(raw_intent, default_symbol=str(symbol) if symbol else None, default_price=price)
 
+    # Safety: if a position is already open, block additional BUY intents.
+    try:
+        action = str(intent.get("action") or "").strip().upper()
+        if action == "BUY" and int(open_positions or 0) > 0:
+            intent["action"] = "NOOP"
+            intent["qty"] = 0
+            intent["reason"] = "position_already_open"
+            rationale = "position_already_open"
+    except Exception:
+        pass
+
     packet = {"intent": intent, "risk": risk, "exec_context": exec_context}
     trace = {
         "features": features,

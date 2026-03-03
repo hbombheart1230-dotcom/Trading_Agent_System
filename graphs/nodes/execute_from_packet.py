@@ -117,6 +117,47 @@ def _extract_order_symbol(order: Dict[str, Any]) -> str:
     return str(sym).strip()
 
 
+def _extract_open_symbols_from_state(state: Dict[str, Any]) -> set[str]:
+    symbols: set[str] = set()
+
+    port = state.get("portfolio_snapshot")
+    if isinstance(port, dict):
+        rows = port.get("positions")
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                sym = str(row.get("symbol") or "").strip()
+                qty = _coerce_int(row.get("qty"), 0)
+                if sym and qty > 0:
+                    symbols.add(sym)
+
+    persisted = state.get("persisted_state")
+    if isinstance(persisted, dict):
+        rows = persisted.get("mock_positions")
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                sym = str(row.get("symbol") or "").strip()
+                qty = _coerce_int(row.get("qty"), 0)
+                if sym and qty > 0:
+                    symbols.add(sym)
+    return symbols
+
+
+def _should_block_duplicate_mock_buy(state: Dict[str, Any], order: Dict[str, Any]) -> bool:
+    if _resolve_execution_mode() != "mock":
+        return False
+    action = str(order.get("action") or "").strip().upper()
+    if action != "BUY":
+        return False
+    sym = _extract_order_symbol(order)
+    if not sym:
+        return False
+    return sym in _extract_open_symbols_from_state(state)
+
+
 def _is_degrade_mode(state: Dict[str, Any]) -> bool:
     resilience = state.get("resilience")
     if not isinstance(resilience, dict):
@@ -420,6 +461,23 @@ def execute_from_packet(state: dict) -> dict:
                 stage="execute_from_packet",
                 event="verdict",
                 payload={"allowed": False, "reason": "noop_intent_skipped"},
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        if _should_block_duplicate_mock_buy(state, order):
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason="duplicate_buy_position_exists",
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="verdict",
+                payload={"allowed": False, "reason": "duplicate_buy_position_exists"},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state

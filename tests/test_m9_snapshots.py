@@ -26,6 +26,7 @@ def test_build_portfolio_snapshot_with_mock_portfolio():
     assert ps["cash"] == 10000000
     assert ps["positions"][0]["symbol"] == "005930"
     assert ps["positions"][0]["qty"] == 10
+    assert ps["open_positions"] == 1
 
 
 def test_build_market_snapshot_falls_back_when_mock_reader_returns_non_positive(monkeypatch):
@@ -56,3 +57,21 @@ def test_build_portfolio_snapshot_falls_back_when_mock_reader_returns_zero_cash(
 
     out = build_portfolio_snapshot(state)
     assert out["portfolio_snapshot"]["cash"] == 2500000.0
+
+
+def test_build_portfolio_snapshot_uses_persisted_mock_positions_when_reader_empty(monkeypatch):
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    state = {
+        "portfolio_reader": MockPortfolioReader(cash=2000000, positions=[]),
+        "persisted_state": {
+            "mock_positions": [
+                {"symbol": "005930", "qty": 3, "avg_price": 70000.0, "unrealized_pnl": 0.0},
+            ]
+        },
+    }
+
+    out = build_portfolio_snapshot(state)
+    ps = out["portfolio_snapshot"]
+    assert ps["positions"][0]["symbol"] == "005930"
+    assert ps["positions"][0]["qty"] == 3
+    assert ps["open_positions"] == 1

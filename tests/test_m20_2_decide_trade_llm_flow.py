@@ -72,3 +72,37 @@ def test_m20_2_decide_trade_non_openai_exception_falls_back_to_rule():
 
     assert out["decision_trace"]["strategy"] == "RuleStrategist"
     assert out["decision_packet"]["intent"]["action"] in ("BUY", "NOOP")
+
+
+def test_m20_2_decide_trade_blocks_buy_when_position_already_open():
+    class AlwaysBuyStrategist:
+        def decide(self, x):  # type: ignore[no-untyped-def]
+            class Decision:
+                intent = {
+                    "action": "BUY",
+                    "symbol": "005930",
+                    "qty": 1,
+                    "price": 70000,
+                    "order_type": "limit",
+                    "order_api_id": "ORDER_SUBMIT",
+                }
+                rationale = "always-buy"
+                meta = {}
+
+            return Decision()
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {
+            "cash": 2_000_000,
+            "positions": [{"symbol": "005930", "qty": 1, "avg_price": 70000.0}],
+            "open_positions": 1,
+        },
+        "risk_context": {"open_positions": 1, "daily_pnl_ratio": 0.0, "last_order_epoch": 0},
+        "strategist": AlwaysBuyStrategist(),
+    }
+    out = decide_trade(state)
+
+    assert out["decision_packet"]["intent"]["action"] == "NOOP"
+    assert out["decision_packet"]["intent"]["reason"] == "position_already_open"

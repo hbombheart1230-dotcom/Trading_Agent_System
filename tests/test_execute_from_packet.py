@@ -89,3 +89,30 @@ def test_execute_from_packet_skips_noop_intent(tmp_path, monkeypatch):
     out = execute_from_packet(state)
     assert out["execution"]["allowed"] is False
     assert out["execution"]["reason"] == "noop_intent_skipped"
+
+
+def test_execute_from_packet_blocks_duplicate_buy_in_mock(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "005930", "qty": 1, "avg_price": 70000.0}],
+        },
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 1},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "duplicate_buy_position_exists"
