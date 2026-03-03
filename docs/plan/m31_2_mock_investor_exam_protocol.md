@@ -61,6 +61,11 @@ python scripts/run_m29_closeout_check.py --json
 python scripts/run_m31_agent_chain_probe.py --json
 python scripts/run_commander_runtime_once.py --mode integrated_chain --json
 python scripts/smoke_m20_llm.py --provider openai --require-openai --show-llm-event
+
+powershell -ExecutionPolicy Bypass -File deploy/m31_registration_helpers/windows/register_mock_session_tasks.ps1
+schtasks /Query /TN TradingAgent-MockSession-Start /FO LIST
+schtasks /Query /TN TradingAgent-MockSession-Stop /FO LIST
+powershell -ExecutionPolicy Bypass -File deploy/m31_registration_helpers/windows/unregister_mock_session_tasks.ps1
 ```
 
 ## Execution Artifact (Implemented)
