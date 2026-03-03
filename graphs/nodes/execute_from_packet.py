@@ -158,6 +158,68 @@ def _should_block_duplicate_mock_buy(state: Dict[str, Any], order: Dict[str, Any
     return sym in _extract_open_symbols_from_state(state)
 
 
+def _resolve_mock_cash_available(state: Dict[str, Any]) -> float:
+    persisted = state.get("persisted_state")
+    if isinstance(persisted, dict):
+        cash = _coerce_float(persisted.get("mock_cash"), 0.0)
+        if cash > 0.0:
+            return cash
+
+    port = state.get("portfolio_snapshot")
+    if isinstance(port, dict):
+        cash = _coerce_float(port.get("cash"), 0.0)
+        if cash > 0.0:
+            return cash
+
+    return _coerce_float(os.getenv("MOCK_CASH_FALLBACK"), 0.0)
+
+
+def _resolve_order_price_for_notional(state: Dict[str, Any], order: Dict[str, Any]) -> float:
+    px = _coerce_float(order.get("price"), 0.0)
+    if px > 0.0:
+        return px
+
+    market = state.get("market_snapshot")
+    if isinstance(market, dict):
+        px = _coerce_float(market.get("price"), 0.0)
+        if px > 0.0:
+            return px
+    return 0.0
+
+
+def _evaluate_mock_cash_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    if _resolve_execution_mode() != "mock":
+        return True, "", {}
+
+    action = str(order.get("action") or "").strip().upper()
+    if action != "BUY":
+        return True, "", {}
+
+    qty = _coerce_int(order.get("qty"), 0)
+    if qty <= 0:
+        return True, "", {"qty_evaluable": False}
+
+    price = _resolve_order_price_for_notional(state, order)
+    if price <= 0.0:
+        # Cannot evaluate notional without price; keep existing behavior.
+        return True, "", {"price_evaluable": False}
+
+    cash = _resolve_mock_cash_available(state)
+    if cash <= 0.0:
+        return True, "", {"cash_evaluable": False}
+
+    notional = float(qty) * float(price)
+    details = {
+        "cash": float(cash),
+        "price": float(price),
+        "qty": int(qty),
+        "notional": float(notional),
+    }
+    if notional > cash:
+        return False, "insufficient_mock_cash", details
+    return True, "", details
+
+
 def _is_degrade_mode(state: Dict[str, Any]) -> bool:
     resilience = state.get("resilience")
     if not isinstance(resilience, dict):
@@ -478,6 +540,25 @@ def execute_from_packet(state: dict) -> dict:
                 stage="execute_from_packet",
                 event="verdict",
                 payload={"allowed": False, "reason": "duplicate_buy_position_exists"},
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        cash_allowed, cash_reason, cash_details = _evaluate_mock_cash_guard(state, order)
+        if not cash_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=cash_reason,
+            )
+            state["execution"]["cash_guard"] = cash_details
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="verdict",
+                payload={"allowed": False, "reason": cash_reason, **cash_details},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state

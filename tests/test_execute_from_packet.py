@@ -116,3 +116,51 @@ def test_execute_from_packet_blocks_duplicate_buy_in_mock(tmp_path, monkeypatch)
     out = execute_from_packet(state)
     assert out["execution"]["allowed"] is False
     assert out["execution"]["reason"] == "duplicate_buy_position_exists"
+
+
+def test_execute_from_packet_blocks_buy_when_mock_cash_insufficient(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "persisted_state": {"mock_cash": 10000.0, "mock_positions": []},
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "insufficient_mock_cash"
+
+
+def test_execute_from_packet_allows_buy_when_mock_cash_sufficient(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "persisted_state": {"mock_cash": 200000.0, "mock_positions": []},
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is True
+    assert out["execution"]["payload"]["mode"] == "mock"
