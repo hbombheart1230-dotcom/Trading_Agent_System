@@ -8,6 +8,8 @@ __pycache__/
 # Runtime/generated artifacts
 data/logs/
 data/state/
+data/state.json
+data/token_cache.json
 reports/
 deploy/m28_launch_templates/
 deploy/m28_registration_helpers/
