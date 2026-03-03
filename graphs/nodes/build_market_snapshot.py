@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
+
 from libs.read.price_reader import PriceReader
+from libs.read.price_reader import MockPriceReader
 from libs.read.kiwoom_price_reader import KiwoomPriceReader
 
 
@@ -18,6 +21,19 @@ def build_market_snapshot(state: dict) -> dict:
         # real reader (mock host when KIWOOM_MODE=mock)
         reader = KiwoomPriceReader.from_env()
 
-    snap = reader.get_market_snapshot(symbol)
+    mock_mode = (os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower() == "mock"
+    fallback_price = float(os.getenv("MOCK_PRICE_FALLBACK", "70000") or 70000)
+
+    try:
+        snap = reader.get_market_snapshot(symbol)
+    except Exception:
+        if not mock_mode:
+            raise
+        # In mock mode, keep runtime moving with deterministic fallback snapshot.
+        snap = MockPriceReader(prices={symbol: fallback_price}, default_price=fallback_price).get_market_snapshot(symbol)
+
+    if mock_mode and float(getattr(snap, "price", 0.0) or 0.0) <= 0.0:
+        snap = MockPriceReader(prices={symbol: fallback_price}, default_price=fallback_price).get_market_snapshot(symbol)
+
     state["market_snapshot"] = snap.to_dict()
     return state

@@ -66,3 +66,26 @@ def test_execute_from_packet_uses_real_mode_when_execution_mode_unset(tmp_path, 
     out = execute_from_packet(state)
     assert out["execution"]["allowed"] is False
     assert out["execution"]["reason"] == "denied_by_test"
+
+
+def test_execute_from_packet_skips_noop_intent(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "decision_packet": {
+            "intent": {"action": "NOOP", "symbol": "005930", "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "noop_intent_skipped"

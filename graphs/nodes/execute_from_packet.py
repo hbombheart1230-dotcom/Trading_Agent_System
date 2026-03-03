@@ -406,6 +406,24 @@ def execute_from_packet(state: dict) -> dict:
         else:
             order = _build_order_from_intent(intent)
 
+        action = str(order.get("action") or "").strip().upper()
+        if action == "NOOP":
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason="noop_intent_skipped",
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="verdict",
+                payload={"allowed": False, "reason": "noop_intent_skipped"},
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
         degrade_allowed, degrade_reason, degrade_details = _evaluate_degrade_execution_policy(
             state=state,
             order=order,

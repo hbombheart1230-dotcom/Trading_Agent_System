@@ -36,6 +36,10 @@ def run_m13_once(
 
     # Load persisted state first (state_store_path is read from env by node)
     state = load_state_fn(state)
+    # Each tick should produce a fresh decision/execution trace.
+    # Keep persisted risk/account fields, but clear per-run artifacts.
+    for k in ("run_id", "decision_packet", "decision_trace", "execution"):
+        state.pop(k, None)
     # One tick (runs M10 only if market open)
     state = tick_fn(state, dt=dt)  # type: ignore[arg-type]
     # End-of-day report trigger (runs only after close, once per day)
