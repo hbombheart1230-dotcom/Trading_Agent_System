@@ -19,6 +19,7 @@ def evaluate_exit_policy(
     price: Optional[float],
     avg_price: Optional[float],
     qty: int,
+    hold_sec: Optional[int] = None,
     policy: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Evaluate stop-loss / take-profit exit policy for one position.
@@ -34,12 +35,21 @@ def evaluate_exit_policy(
         "thresholds": {
             "stop_loss_pct": _clamp_non_negative(_to_float(p.get("stop_loss_pct"), 0.03)),
             "take_profit_pct": _clamp_non_negative(_to_float(p.get("take_profit_pct"), 0.05)),
+            "max_hold_sec": max(0, int(_to_float(p.get("max_hold_sec"), 0))),
         },
     }
 
     q = max(0, int(qty or 0))
     if q <= 0:
         out["reason"] = "no_position"
+        return out
+
+    max_hold_sec = int(out["thresholds"]["max_hold_sec"])
+    hs = None if hold_sec is None else max(0, int(hold_sec))
+    out["hold_sec"] = hs
+    if max_hold_sec > 0 and hs is not None and hs >= max_hold_sec:
+        out["triggered"] = True
+        out["reason"] = "max_hold"
         return out
 
     px = _to_float(price, 0.0) if price is not None else 0.0
@@ -66,4 +76,3 @@ def evaluate_exit_policy(
 
     out["reason"] = "hold"
     return out
-

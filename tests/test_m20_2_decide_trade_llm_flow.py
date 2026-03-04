@@ -181,3 +181,44 @@ def test_m20_2_decide_trade_post_exit_cooldown_blocks_reentry(monkeypatch):
     assert out["decision_trace"]["strategy"] == "CooldownStrategist"
     assert out["decision_packet"]["intent"]["action"] == "NOOP"
     assert out["decision_packet"]["intent"]["reason"] == "post_exit_cooldown"
+
+
+def test_m20_2_decide_trade_exit_policy_max_hold_triggers_sell(monkeypatch):
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "60")
+    monkeypatch.setattr(time, "time", lambda: 2000.0)
+
+    class AlwaysBuyStrategist:
+        def decide(self, x):  # type: ignore[no-untyped-def]
+            class Decision:
+                intent = {
+                    "action": "BUY",
+                    "symbol": "005930",
+                    "qty": 1,
+                    "price": 70000,
+                    "order_type": "limit",
+                    "order_api_id": "ORDER_SUBMIT",
+                }
+                rationale = "always-buy"
+                meta = {}
+
+            return Decision()
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {
+            "cash": 2_000_000,
+            "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0}],
+            "open_positions": 1,
+        },
+        "persisted_state": {"last_trade_side": "BUY", "last_trade_epoch": 1900},
+        "risk_context": {"open_positions": 1, "daily_pnl_ratio": 0.0, "last_order_epoch": 0},
+        "strategist": AlwaysBuyStrategist(),
+    }
+    out = decide_trade(state)
+
+    assert out["decision_trace"]["strategy"] == "ExitPolicyStrategist"
+    assert out["decision_packet"]["intent"]["action"] == "SELL"
+    assert out["decision_packet"]["intent"]["qty"] == 2
+    assert out["decision_packet"]["intent"]["rationale"] == "exit_policy:max_hold"

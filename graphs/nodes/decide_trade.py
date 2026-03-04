@@ -69,12 +69,30 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
 
     sl_raw = str(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "") or "").strip()
     tp_raw = str(os.getenv("EXIT_POLICY_TAKE_PROFIT_PCT", "") or "").strip()
+    mh_raw = str(os.getenv("EXIT_POLICY_MAX_HOLD_SEC", "") or "").strip()
 
     if sl_raw:
         out["stop_loss_pct"] = _to_float(sl_raw, _to_float(out.get("stop_loss_pct"), 0.03))
     if tp_raw:
         out["take_profit_pct"] = _to_float(tp_raw, _to_float(out.get("take_profit_pct"), 0.05))
+    if mh_raw:
+        out["max_hold_sec"] = int(_to_float(mh_raw, _to_float(out.get("max_hold_sec"), 0.0)))
     return out
+
+
+def _resolve_position_hold_sec(state: Dict[str, Any]) -> int | None:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    side = str((persisted or {}).get("last_trade_side") or "").strip().upper()
+    if side != "BUY":
+        return None
+    try:
+        last_epoch = int(float((persisted or {}).get("last_trade_epoch") or 0))
+    except Exception:
+        last_epoch = 0
+    if last_epoch <= 0:
+        return None
+    now_epoch = int(time.time())
+    return max(0, now_epoch - last_epoch)
 
 
 def _resolve_post_exit_cooldown_sec(state: Dict[str, Any]) -> int:
@@ -237,6 +255,7 @@ def decide_trade(state: dict) -> dict:
                 price=px,
                 avg_price=avg_price,
                 qty=qty_pos,
+                hold_sec=_resolve_position_hold_sec(state),
                 policy=_resolve_exit_policy_config(state),
             )
             reason = str(exit_decision.get("reason") or "hold")
