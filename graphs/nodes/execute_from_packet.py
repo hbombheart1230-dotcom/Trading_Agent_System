@@ -490,8 +490,45 @@ def _normalize_execution(
             if hasattr(execution_result, "response") and getattr(execution_result, "response") is not None:
                 r = getattr(execution_result, "response")
                 payload["status_code"] = getattr(r, "status_code", None)
-                payload["text"] = getattr(r, "text", None)
-                payload["json"] = getattr(r, "json", None)
+                payload["api_ok"] = bool(getattr(r, "ok", False))
+                raw_text = getattr(r, "raw_text", None)
+                if raw_text is None:
+                    raw_text = getattr(r, "text", None)
+                payload["text"] = raw_text
+
+                response_payload = getattr(r, "payload", None)
+                if isinstance(response_payload, dict):
+                    response_payload = dict(response_payload)
+                    payload["response_payload"] = response_payload
+                    payload["json"] = response_payload
+
+                    for k in ("ord_no", "order_id", "orderId", "odno", "ODNO", "ordNo"):
+                        v = response_payload.get(k)
+                        if v is not None and str(v).strip():
+                            payload["order_id"] = str(v).strip()
+                            break
+
+                    for k in ("msg_cd", "message_code", "code", "rt_cd", "error_code", "err_cd", "return_code"):
+                        v = response_payload.get(k)
+                        if v is not None and str(v).strip():
+                            payload["broker_code"] = str(v).strip()
+                            break
+
+                    for k in ("msg1", "msg", "message", "return_msg", "error_message"):
+                        v = response_payload.get(k)
+                        if v is not None and str(v).strip():
+                            payload["broker_message"] = str(v).strip()
+                            break
+                else:
+                    payload["json"] = getattr(r, "json", None)
+
+                err_code = getattr(r, "error_code", None)
+                if err_code is not None and str(err_code).strip():
+                    payload["error_code"] = str(err_code).strip()
+
+                err_msg = getattr(r, "error_message", None)
+                if err_msg is not None and str(err_msg).strip():
+                    payload["error_message"] = str(err_msg).strip()
             if hasattr(execution_result, "meta") and getattr(execution_result, "meta") is not None:
                 payload["meta"] = getattr(execution_result, "meta")
         payload.setdefault("mode", exec_mode)

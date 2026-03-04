@@ -1,4 +1,5 @@
 from libs.risk.intent import TradeIntent, RiskContext, ExecutionContext, TradeDecisionPacket
+from libs.core.api_response import ApiResponse
 from graphs.nodes.execute_from_packet import execute_from_packet
 
 
@@ -214,3 +215,50 @@ def test_execute_from_packet_maps_order_submit_to_kiwoom_buy_api_when_available(
     assert captured["body"]["stk_cd"] == "005930"
     assert int(captured["body"]["ord_qty"]) == 1
     assert str(captured["body"]["trde_tp"]) == "0"
+
+
+def test_execute_from_packet_extracts_order_id_and_broker_codes_from_response_payload(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            class Result:
+                response = ApiResponse.from_http(
+                    200,
+                    '{"ord_no":"A000123","msg_cd":"0000","msg1":"accepted"}',
+                )
+                meta = {"executor": "real", "url": "https://mockapi.kiwoom.com/api/dostk/ordr"}
+
+            return Result()
+
+    state = {
+        "catalog_path": str(cat),
+        "executor": CaptureExecutor(),
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    p = out["execution"]["payload"]
+    assert out["execution"]["allowed"] is True
+    assert int(p["status_code"]) == 200
+    assert p["order_id"] == "A000123"
+    assert p["broker_code"] == "0000"
+    assert p["broker_message"] == "accepted"
+    assert p["response_payload"]["ord_no"] == "A000123"
