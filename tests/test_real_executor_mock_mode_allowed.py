@@ -39,3 +39,4 @@ def test_real_executor_allows_mock_mode_without_execution_enabled(monkeypatch: p
     out = ex.execute(req, auth_token="dummy")
     assert out.meta.get("executor") == "real"
     assert http.calls and http.calls[0]["dry_run"] is False
+    assert http.calls[0]["headers"].get("api-id") == "X"

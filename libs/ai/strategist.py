@@ -37,8 +37,8 @@ class RuleStrategist:
                 "action": "BUY",
                 "symbol": x.symbol,
                 "qty": 1,
-                "price": price,
-                "order_type": "limit",
+                "price": None,
+                "order_type": "market",
                 "order_api_id": "ORDER_SUBMIT",
             }
             return StrategyDecision(intent=intent, rationale="rule:cash_and_price_ok")

@@ -168,6 +168,11 @@ class RealExecutor:
         headers = dict(req.headers or {})
         headers.update({"Authorization": f"Bearer {token}"})
 
+        # Kiwoom order/read endpoints commonly require API id header.
+        # Ensure runtime-prepared requests always carry it.
+        if getattr(req, "api_id", None):
+            headers.setdefault("api-id", str(getattr(req, "api_id")))
+
         # Kiwoom REST commonly requires app credentials on each request.
         # (Token endpoint itself is handled by KiwoomTokenClient.)
         if self.s.kiwoom_app_key:

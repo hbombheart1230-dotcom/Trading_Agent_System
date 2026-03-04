@@ -19,8 +19,8 @@ def _rule_intent(symbol: Any, price: Any, cash: Any, open_positions: Any) -> Dic
             "action": "BUY",
             "symbol": symbol,
             "qty": 1,
-            "price": price,
-            "order_type": "limit",
+            "price": None,
+            "order_type": "market",
             "order_api_id": "ORDER_SUBMIT",
             "rationale": "rule:cash_and_price_ok",
         }

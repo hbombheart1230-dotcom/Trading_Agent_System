@@ -46,6 +46,10 @@ def _default_mock_cash() -> float:
     return v if v > 0.0 else 2000000.0
 
 
+def _is_kiwoom_mock_mode() -> bool:
+    return str(os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower() == "mock"
+
+
 def _ensure_mock_cash(ps: dict) -> float:
     cur = _as_float(ps.get("mock_cash"), 0.0)
     if cur > 0.0:
@@ -177,8 +181,9 @@ def update_state_after_execution(state: dict) -> dict:
             ps["last_trade_side"] = side
             ps["last_trade_epoch"] = now_epoch
 
-    # Keep mock portfolio position state in sync with successful mock executions.
-    if ok and mode == "mock":
+    # Keep local mock ledger in sync when execution is explicitly mock, or when
+    # runtime uses real executor against Kiwoom mock host (KIWOOM_MODE=mock).
+    if ok and (mode == "mock" or _is_kiwoom_mock_mode()):
         _apply_mock_fill(ps, ex)
 
     state["persisted_state"] = ps

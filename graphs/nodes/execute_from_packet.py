@@ -322,12 +322,26 @@ def _build_order_from_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
     price = intent.get("price")
     symbol = intent.get("symbol")
 
+    qty_int = None
+    if qty is not None:
+        try:
+            qty_int = int(float(qty))
+        except Exception:
+            qty_int = None
+
+    price_int = None
+    if price is not None:
+        try:
+            price_int = int(float(price))
+        except Exception:
+            price_int = None
+
     order: Dict[str, Any] = {
         "api_id": api_id,
         "action": action,
         "symbol": symbol,
-        "qty": qty,
-        "price": price,
+        "qty": qty_int if qty_int is not None else qty,
+        "price": price_int if price_int is not None else price,
         "order_type": order_type,
         "tif": intent.get("tif") or intent.get("time_in_force"),
         "rationale": intent.get("rationale") or intent.get("reason") or "",
@@ -338,10 +352,13 @@ def _build_order_from_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
         trde_tp = intent.get("trde_tp")
         if trde_tp is None or not str(trde_tp).strip():
             trde_tp = "3" if order_type == "market" else "0"
-        ord_uv = "" if order_type == "market" else (price if price is not None else "")
+        ord_qty = "" if qty_int is None else str(max(0, int(qty_int)))
+        ord_uv = ""
+        if order_type != "market" and price_int is not None:
+            ord_uv = str(max(0, int(price_int)))
         order["dmst_stex_tp"] = intent.get("dmst_stex_tp") or intent.get("market") or "KRX"
         order["stk_cd"] = symbol
-        order["ord_qty"] = qty
+        order["ord_qty"] = ord_qty
         order["ord_uv"] = ord_uv
         order["trde_tp"] = str(trde_tp)
         order["cond_uv"] = intent.get("cond_uv") or ""

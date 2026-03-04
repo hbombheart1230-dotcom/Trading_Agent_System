@@ -94,3 +94,23 @@ def test_update_state_mock_sell_closes_position(monkeypatch):
     assert ps["mock_realized_pnl"] == 400.0
     assert ps["last_trade_side"] == "SELL"
     assert ps["last_trade_epoch"] == 1234
+
+
+def test_update_state_real_mode_still_updates_mock_ledger_when_kiwoom_mode_mock(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    state = {
+        "persisted_state": {"last_order_epoch": 10, "mock_positions": [], "mock_cash": 2000000.0},
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "real"},
+            "reason": "Allowed",
+            "order": {"action": "BUY", "symbol": "005930", "qty": 1, "price": 70000},
+        },
+    }
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert ps["last_order_epoch"] == 1234
+    assert ps["open_positions"] == 1
+    assert ps["mock_positions"][0]["symbol"] == "005930"
+    assert ps["mock_positions"][0]["qty"] == 1
