@@ -147,11 +147,22 @@ def validate_runtime_profile(
 
     execution_enabled = _as_bool(effective.get("EXECUTION_ENABLED"), default=False)
     allow_real = _as_bool(effective.get("ALLOW_REAL_EXECUTION"), default=False)
+    execution_mode = str(env.get("EXECUTION_MODE", "")).strip().lower()
 
-    if execution_enabled and (mode != "real"):
-        violations.append("EXECUTION_ENABLED=true requires KIWOOM_MODE=real")
-    if execution_enabled and not allow_real:
-        violations.append("EXECUTION_ENABLED=true requires ALLOW_REAL_EXECUTION=true")
+    if execution_enabled and mode == "real" and not allow_real:
+        violations.append("EXECUTION_ENABLED=true requires ALLOW_REAL_EXECUTION=true in KIWOOM_MODE=real")
+    if execution_enabled and mode == "mock":
+        # mock mode supports two execution paths:
+        # - EXECUTION_MODE=real : Kiwoom mock REST HTTP path (paper trading)
+        # - EXECUTION_MODE=mock or empty : local mock executor (no HTTP)
+        if execution_mode and execution_mode not in ("real", "mock"):
+            violations.append(
+                f"Unsupported EXECUTION_MODE for KIWOOM_MODE=mock: {execution_mode}"
+            )
+        if execution_mode == "mock":
+            warnings.append("EXECUTION_MODE=mock in KIWOOM_MODE=mock uses local MockExecutor (no broker HTTP).")
+        if allow_real:
+            warnings.append("ALLOW_REAL_EXECUTION is ignored when KIWOOM_MODE=mock.")
     if (spec.name in ("dev", "staging")) and execution_enabled:
         warnings.append(f"{spec.name} profile normally keeps EXECUTION_ENABLED=false")
 

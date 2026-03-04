@@ -20,6 +20,7 @@
 - Use staging/mock profile for exam:
   - `RUNTIME_PROFILE=staging`
   - `KIWOOM_MODE=mock`
+  - `EXECUTION_MODE=real` (route to Kiwoom mock REST path, not local MockExecutor)
   - `ALLOW_REAL_EXECUTION=false`
   - `EXECUTION_ENABLED=true`
   - `APPROVAL_MODE=manual` (mandatory in first phase)

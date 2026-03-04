@@ -35,6 +35,22 @@ def test_m28_1_validate_runtime_profile_prod_passes_with_required_keys():
     assert out["violations"] == []
 
 
+def test_m28_1_validate_runtime_profile_staging_allows_mock_broker_http_path():
+    env = {
+        "KIWOOM_MODE": "mock",
+        "EXECUTION_MODE": "real",
+        "DRY_RUN": "0",
+        "EXECUTION_ENABLED": "true",
+        "ALLOW_REAL_EXECUTION": "false",
+        "EVENT_LOG_PATH": "./data/logs/staging_events.jsonl",
+        "REPORT_DIR": "./reports/staging",
+    }
+    out = validate_runtime_profile("staging", env, strict=False)
+    assert out["ok"] is True
+    assert out["required_missing"] == []
+    assert out["violations"] == []
+
+
 def test_m28_1_check_runtime_profile_fails_when_prod_secret_missing(tmp_path: Path, capsys):
     env_path = tmp_path / "prod.env"
     _write_env(

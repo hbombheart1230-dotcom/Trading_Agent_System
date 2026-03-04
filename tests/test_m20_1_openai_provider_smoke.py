@@ -381,8 +381,9 @@ def test_m20_1_openrouter_chat_content_without_json_is_safe_noop(monkeypatch):
 
     d = s.decide(x)
     assert d.intent["action"] == "NOOP"
-    assert d.intent["reason"] == "strategist_error"
+    assert d.intent["reason"] == "model_no_signal"
     assert "json" in d.rationale.lower()
+    assert d.meta.get("adapter_fallback_reason") == "no_json_object"
 
 
 def test_m20_1_openrouter_chat_content_json_part_is_adapted(monkeypatch):

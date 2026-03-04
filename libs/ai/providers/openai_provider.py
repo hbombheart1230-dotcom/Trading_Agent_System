@@ -181,6 +181,10 @@ def _extract_chat_structured_object(resp: Dict[str, Any]) -> Optional[Dict[str, 
     return None
 
 
+def _safe_noop_intent(reason: str = "model_no_signal") -> Dict[str, Any]:
+    return {"action": "NOOP", "reason": str(reason or "model_no_signal")}
+
+
 def _to_nonneg_int(v: Any) -> Optional[int]:
     try:
         x = int(float(v))
@@ -658,57 +662,55 @@ class OpenAIStrategist:
                 obj = _extract_json_object(content)
                 if obj is None:
                     obj = _extract_chat_structured_object(resp)
+                adapter_fallback_reason = ""
                 if obj is None:
-                    preview = str(content or "").strip().replace("\r", " ").replace("\n", " ")
-                    if not preview:
-                        try:
-                            choices = resp.get("choices")
-                            first_choice = choices[0] if isinstance(choices, list) and choices else {}
-                            preview = json.dumps(first_choice, ensure_ascii=False)
-                        except Exception:
-                            preview = ""
-                    if len(preview) > 240:
-                        preview = preview[:240] + "..."
-                    raise ValueError(
-                        "Invalid response: no JSON object in model content"
-                        + (f" (preview={preview})" if preview else "")
-                    )
-
-                if isinstance(obj.get("intent"), dict):
-                    intent = dict(obj.get("intent") or {})
-                    rationale = str(obj.get("rationale") or intent.get("rationale") or "")
-                    if isinstance(obj.get("meta"), dict):
-                        meta.update(dict(obj.get("meta") or {}))
-                elif obj.get("action") is not None:
-                    # Allow direct intent object response.
-                    intent = dict(obj)
-                    rationale = str(obj.get("rationale") or "")
-                elif obj.get("decision") is not None:
-                    # Common alias in some models.
-                    intent = {
-                        "action": obj.get("decision"),
-                        "symbol": obj.get("symbol"),
-                        "qty": obj.get("qty"),
-                        "price": obj.get("price"),
-                        "order_type": obj.get("order_type"),
-                        "order_api_id": obj.get("order_api_id"),
-                        "reason": obj.get("reason"),
-                    }
-                    rationale = str(obj.get("rationale") or obj.get("reason") or "")
-                elif obj.get("signal") is not None:
-                    # Another common alias.
-                    intent = {
-                        "action": obj.get("signal"),
-                        "symbol": obj.get("symbol"),
-                        "qty": obj.get("qty"),
-                        "price": obj.get("price"),
-                        "order_type": obj.get("order_type"),
-                        "order_api_id": obj.get("order_api_id"),
-                        "reason": obj.get("reason"),
-                    }
-                    rationale = str(obj.get("rationale") or obj.get("reason") or "")
+                    # Soft-degrade: treat non-JSON assistant text as safe NOOP instead of strategist_error.
+                    # This avoids parser-only noise from inflating runtime error/circuit signals.
+                    adapter_fallback_reason = "no_json_object"
+                    intent = _safe_noop_intent("model_no_signal")
+                    rationale = "no_json_object_in_content"
                 else:
-                    raise ValueError("Invalid response JSON: missing intent/action")
+                    if isinstance(obj.get("intent"), dict):
+                        intent = dict(obj.get("intent") or {})
+                        rationale = str(obj.get("rationale") or intent.get("rationale") or "")
+                        if isinstance(obj.get("meta"), dict):
+                            meta.update(dict(obj.get("meta") or {}))
+                    elif obj.get("action") is not None:
+                        # Allow direct intent object response.
+                        intent = dict(obj)
+                        rationale = str(obj.get("rationale") or "")
+                    elif obj.get("decision") is not None:
+                        # Common alias in some models.
+                        intent = {
+                            "action": obj.get("decision"),
+                            "symbol": obj.get("symbol"),
+                            "qty": obj.get("qty"),
+                            "price": obj.get("price"),
+                            "order_type": obj.get("order_type"),
+                            "order_api_id": obj.get("order_api_id"),
+                            "reason": obj.get("reason"),
+                        }
+                        rationale = str(obj.get("rationale") or obj.get("reason") or "")
+                    elif obj.get("signal") is not None:
+                        # Another common alias.
+                        intent = {
+                            "action": obj.get("signal"),
+                            "symbol": obj.get("symbol"),
+                            "qty": obj.get("qty"),
+                            "price": obj.get("price"),
+                            "order_type": obj.get("order_type"),
+                            "order_api_id": obj.get("order_api_id"),
+                            "reason": obj.get("reason"),
+                        }
+                        rationale = str(obj.get("rationale") or obj.get("reason") or "")
+                    else:
+                        # Soft-degrade for malformed JSON payload shape.
+                        adapter_fallback_reason = "missing_intent_action"
+                        intent = _safe_noop_intent("model_no_signal")
+                        rationale = "missing_intent_action_in_json"
+
+                if adapter_fallback_reason:
+                    meta.setdefault("adapter_fallback_reason", adapter_fallback_reason)
 
             intent = self._normalize_intent(intent, x)
             if not intent:
