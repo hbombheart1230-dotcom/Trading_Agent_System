@@ -164,3 +164,53 @@ def test_execute_from_packet_allows_buy_when_mock_cash_sufficient(tmp_path, monk
     out = execute_from_packet(state)
     assert out["execution"]["allowed"] is True
     assert out["execution"]["payload"]["mode"] == "mock"
+
+
+def test_execute_from_packet_maps_order_submit_to_kiwoom_buy_api_when_available(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"kt10000","title":"buy","method":"POST","path":"/api/dostk/ordr","params":{"body":[{"name":"stk_cd","required":true},{"name":"ord_qty","required":true},{"name":"trde_tp","required":true},{"name":"ord_uv","required":false}]}, "_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    captured = {}
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            captured["api_id"] = getattr(req, "api_id", None)
+            captured["path"] = getattr(req, "path", None)
+            captured["body"] = dict(getattr(req, "body", {}) or {})
+
+            class Result:
+                payload = {"mode": "mock"}
+                response = None
+                meta = {}
+
+            return Result()
+
+    state = {
+        "catalog_path": str(cat),
+        "executor": CaptureExecutor(),
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is True
+    assert captured["api_id"] == "kt10000"
+    assert captured["path"] == "/api/dostk/ordr"
+    assert captured["body"]["stk_cd"] == "005930"
+    assert int(captured["body"]["ord_qty"]) == 1
+    assert str(captured["body"]["trde_tp"]) == "0"

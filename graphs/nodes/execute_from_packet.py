@@ -311,22 +311,41 @@ def _build_order_from_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
 
     Real request shaping should be done via ApiRequestBuilder + ApiSpec.
     """
-    api_id = intent.get("order_api_id") or intent.get("api_id") or "ORDER_SUBMIT"
-
     # Allow multiple intent schemas during transition
     action = intent.get("action") or intent.get("intent") or intent.get("type") or "NOOP"
     action = str(action).upper()
+    api_id = intent.get("order_api_id") or intent.get("api_id") or "ORDER_SUBMIT"
+    order_type = intent.get("order_type") or intent.get("type") or "limit"
+    order_type = str(order_type or "limit").strip().lower()
+
+    qty = intent.get("qty") or intent.get("quantity")
+    price = intent.get("price")
+    symbol = intent.get("symbol")
 
     order: Dict[str, Any] = {
         "api_id": api_id,
         "action": action,
-        "symbol": intent.get("symbol"),
-        "qty": intent.get("qty") or intent.get("quantity"),
-        "price": intent.get("price"),
-        "order_type": intent.get("order_type") or intent.get("type") or "limit",
+        "symbol": symbol,
+        "qty": qty,
+        "price": price,
+        "order_type": order_type,
         "tif": intent.get("tif") or intent.get("time_in_force"),
         "rationale": intent.get("rationale") or intent.get("reason") or "",
     }
+
+    # Add Kiwoom order-body aliases used by kt10000/kt10001 specs.
+    if action in ("BUY", "SELL"):
+        trde_tp = intent.get("trde_tp")
+        if trde_tp is None or not str(trde_tp).strip():
+            trde_tp = "3" if order_type == "market" else "0"
+        ord_uv = "" if order_type == "market" else (price if price is not None else "")
+        order["dmst_stex_tp"] = intent.get("dmst_stex_tp") or intent.get("market") or "KRX"
+        order["stk_cd"] = symbol
+        order["ord_qty"] = qty
+        order["ord_uv"] = ord_uv
+        order["trde_tp"] = str(trde_tp)
+        order["cond_uv"] = intent.get("cond_uv") or ""
+
     # Pass through any extra keys (so request builder can pick them up)
     for k, v in intent.items():
         if k not in order:
@@ -359,8 +378,35 @@ def _prepare_request(order: Dict[str, Any], catalog: Any) -> Any:
     - If api_id exists and catalog can load an ApiSpec, use ApiRequestBuilder.
     - Otherwise fall back to a SimpleNamespace with required attrs.
     """
-    api_id = order.get("api_id") or order.get("order_api_id")
-    if api_id:
+    api_id_raw = str(order.get("api_id") or order.get("order_api_id") or "").strip()
+    action = str(order.get("action") or "").strip().upper()
+    api_candidates = []
+    if api_id_raw:
+        api_candidates.append(api_id_raw)
+
+    # Resolve canonical order alias only when target API exists in current catalog.
+    if api_id_raw.upper() == "ORDER_SUBMIT":
+        alias = ""
+        if action == "BUY":
+            alias = "kt10000"
+        elif action == "SELL":
+            alias = "kt10001"
+        if alias:
+            try:
+                spec_alias = None
+                for meth in ("get", "get_api", "lookup"):
+                    if hasattr(catalog, meth):
+                        try:
+                            spec_alias = getattr(catalog, meth)(alias)
+                        except Exception:
+                            spec_alias = None
+                        break
+                if spec_alias is not None and alias not in api_candidates:
+                    api_candidates.append(alias)
+            except Exception:
+                pass
+
+    for api_id in api_candidates:
         # Build from spec + context (preferred)
         try:
             spec = None
@@ -384,7 +430,7 @@ def _prepare_request(order: Dict[str, Any], catalog: Any) -> Any:
                 rb = ApiRequestBuilder()
                 res = rb.prepare(spec, ctx)
 
-                if res.is_ready():
+                if str(getattr(res, "action", "")).strip().lower() == "ready" and getattr(res, "request", None) is not None:
                     req = res.request
                     # ensure attributes expected by executors exist
                     if getattr(req, "query", None) is None:
@@ -404,8 +450,7 @@ def _prepare_request(order: Dict[str, Any], catalog: Any) -> Any:
                     body={"missing": res.missing, "api_id": api_id},
                 )
         except Exception:
-            # fall back below
-            pass
+            continue
 
     # Fallback: minimal request
     return SimpleNamespace(
