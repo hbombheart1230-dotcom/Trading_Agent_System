@@ -257,8 +257,106 @@ def test_execute_from_packet_extracts_order_id_and_broker_codes_from_response_pa
     out = execute_from_packet(state)
     p = out["execution"]["payload"]
     assert out["execution"]["allowed"] is True
+    assert out["execution"]["ok"] is True
     assert int(p["status_code"]) == 200
     assert p["order_id"] == "A000123"
     assert p["broker_code"] == "0000"
     assert p["broker_message"] == "accepted"
     assert p["response_payload"]["ord_no"] == "A000123"
+
+
+def test_execute_from_packet_marks_ok_false_when_broker_code_nonzero(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            class Result:
+                response = ApiResponse.from_http(
+                    200,
+                    '{"return_code":20,"return_msg":"rejected by broker"}',
+                )
+                meta = {"executor": "real", "url": "https://mockapi.kiwoom.com/api/dostk/ordr"}
+
+            return Result()
+
+    state = {
+        "catalog_path": str(cat),
+        "executor": CaptureExecutor(),
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is True
+    assert out["execution"]["ok"] is False
+    assert out["execution"]["reason"] == "broker_rejected:20"
+
+
+def test_execute_from_packet_forces_market_order_in_mock_broker_http_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"kt10000","title":"buy","method":"POST","path":"/api/dostk/ordr","params":{"body":[{"name":"stk_cd","required":true},{"name":"ord_qty","required":true},{"name":"trde_tp","required":true},{"name":"ord_uv","required":false}]}, "_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class AllowSupervisor:
+        def allow(self, intent, context):  # type: ignore[no-untyped-def]
+            class R:
+                allow = True
+                reason = "Allowed"
+            return R()
+
+    captured = {}
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            captured["body"] = dict(getattr(req, "body", {}) or {})
+
+            class Result:
+                response = ApiResponse.from_http(200, '{"return_code":0,"return_msg":"ok"}')
+                meta = {"executor": "real"}
+
+            return Result()
+
+    state = {
+        "catalog_path": str(cat),
+        "executor": CaptureExecutor(),
+        "supervisor": AllowSupervisor(),
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is True
+    assert out["execution"]["ok"] is True
+    assert str(captured["body"]["trde_tp"]) == "3"
+    assert str(captured["body"].get("ord_uv") or "") == ""

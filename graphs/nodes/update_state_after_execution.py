@@ -122,6 +122,43 @@ def _extract_trade_side(ex: dict) -> str:
     return ""
 
 
+def _broker_code_success(value) -> bool | None:  # type: ignore[no-untyped-def]
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return int(float(s)) == 0
+    except Exception:
+        pass
+    t = s.lower()
+    if t in ("ok", "success", "accepted"):
+        return True
+    if t in ("error", "failed", "rejected"):
+        return False
+    return False
+
+
+def _resolve_execution_ok(ex: dict) -> bool:
+    if "ok" in ex:
+        return bool(ex.get("ok", False))
+
+    allowed = bool(ex.get("allowed", False))
+    if not allowed:
+        return False
+
+    payload = ex.get("payload") if isinstance(ex.get("payload"), dict) else {}
+    broker = _broker_code_success(payload.get("broker_code"))
+    if broker is not None:
+        return bool(broker)
+
+    if "api_ok" in payload:
+        return bool(payload.get("api_ok"))
+
+    return allowed
+
+
 def update_state_after_execution(state: dict) -> dict:
     """M10-3 node: update persisted_state after an execution attempt.
 
@@ -143,13 +180,10 @@ def update_state_after_execution(state: dict) -> dict:
     ps = state.get("persisted_state") or {}
     ex = state.get("execution") or {}
 
-    # Backward/forward compatible success shape:
-    # - legacy: execution["ok"]
-    # - current: execution["allowed"]
-    if "ok" in ex:
-        ok = bool(ex.get("ok", False))
-    else:
-        ok = bool(ex.get("allowed", False))
+    # Backward/forward compatible success shape with broker-level override:
+    # - execution["ok"] when present
+    # - else infer from allowed + payload(broker_code/api_ok)
+    ok = _resolve_execution_ok(ex)
 
     if "blocked" in ex:
         blocked = bool(ex.get("blocked", False))

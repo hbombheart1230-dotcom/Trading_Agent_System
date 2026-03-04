@@ -81,6 +81,15 @@ def _resolve_execution_mode() -> str:
         return "mock"
 
 
+def _is_kiwoom_mock_mode() -> bool:
+    return str(os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower() == "mock"
+
+
+def _is_kiwoom_mock_broker_http_mode() -> bool:
+    # Kiwoom mock REST path: KIWOOM_MODE=mock with EXECUTION_MODE=real.
+    return _is_kiwoom_mock_mode() and _resolve_execution_mode() == "real"
+
+
 def _is_trueish(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -370,6 +379,77 @@ def _build_order_from_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
     return order
 
 
+def _apply_mock_broker_order_safety(order: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize broker-facing order for Kiwoom mock REST compatibility.
+
+    In mock broker HTTP mode, market orders are safer/reproducible than limit
+    for LLM-generated intents. We coerce BUY/SELL orders to market semantics.
+    """
+    if not _is_kiwoom_mock_broker_http_mode():
+        return order
+
+    action = str(order.get("action") or "").strip().upper()
+    if action not in ("BUY", "SELL"):
+        return order
+
+    cur_type = str(order.get("order_type") or "limit").strip().lower()
+    if cur_type == "market":
+        return order
+
+    order["order_type"] = "market"
+    # Kiwoom body aliases
+    order["trde_tp"] = "3"
+    order["ord_uv"] = ""
+
+    rationale = str(order.get("rationale") or "").strip()
+    tag = "mock_broker_force_market"
+    if not rationale:
+        order["rationale"] = tag
+    elif tag not in rationale:
+        order["rationale"] = f"{rationale};{tag}"
+    return order
+
+
+def _broker_code_success(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return int(float(s)) == 0
+    except Exception:
+        pass
+    t = s.lower()
+    if t in ("ok", "success", "accepted"):
+        return True
+    if t in ("error", "failed", "rejected"):
+        return False
+    return False
+
+
+def _infer_execution_ok(payload: Dict[str, Any]) -> Tuple[bool, str]:
+    broker = _broker_code_success(payload.get("broker_code"))
+    if broker is not None:
+        return bool(broker), "broker_code"
+
+    if "api_ok" in payload:
+        return bool(payload.get("api_ok")), "api_ok"
+
+    status_code = payload.get("status_code")
+    try:
+        code = int(float(status_code))
+        return (200 <= code < 300), "status_code"
+    except Exception:
+        pass
+
+    if str(payload.get("mode") or "").strip().lower() == "mock":
+        return True, "mode_mock_default"
+
+    # Backward-compatible default when no execution signal exists.
+    return True, "default_true"
+
+
 def _supervisor_allow(supervisor: Any, order: Dict[str, Any], risk: Dict[str, Any]) -> Any:
     """Supervisor API changed during refactors.
 
@@ -550,8 +630,20 @@ def _normalize_execution(
                 payload["meta"] = getattr(execution_result, "meta")
         payload.setdefault("mode", exec_mode)
 
+    ok = bool(allowed)
+    ok_source = "allowed_gate"
+    if allowed and execution_result is not None:
+        ok, ok_source = _infer_execution_ok(payload)
+        if not ok:
+            cur = resolved_reason.strip().lower()
+            if cur in ("", "allowed"):
+                bcode = str(payload.get("broker_code") or "").strip()
+                resolved_reason = f"broker_rejected:{bcode}" if bcode else "broker_rejected"
+
     verdict = {
         "allowed": bool(allowed),
+        "ok": bool(ok),
+        "ok_source": str(ok_source),
         "reason": resolved_reason,
         "order": order,
         "payload": payload,
@@ -607,6 +699,7 @@ def execute_from_packet(state: dict) -> dict:
             order = state["order_builder"](intent, catalog)  # type: ignore[call-arg]
         else:
             order = _build_order_from_intent(intent)
+        order = _apply_mock_broker_order_safety(order)
 
         action = str(order.get("action") or "").strip().upper()
         if action == "NOOP":

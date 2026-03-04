@@ -76,6 +76,24 @@ def _safe_pct(num: float, den: float) -> float:
     return float(num) / float(den)
 
 
+def _broker_code_success(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return int(float(s)) == 0
+    except Exception:
+        pass
+    t = s.lower()
+    if t in ("ok", "success", "accepted"):
+        return True
+    if t in ("error", "failed", "rejected"):
+        return False
+    return False
+
+
 def _utc_iso(epoch: int) -> str:
     return datetime.fromtimestamp(int(epoch), tz=timezone.utc).isoformat()
 
@@ -120,6 +138,10 @@ def _build_markdown(out: Dict[str, Any]) -> str:
         f"- blocked_total: **{int(exe.get('blocked_total') or 0)}**",
         f"- blocked_reason_top: `{json.dumps(exe.get('blocked_reason_top') or {}, ensure_ascii=False)}`",
         f"- executed_total: **{int(exe.get('executed_total') or 0)}**",
+        f"- executed_broker_success_total: **{int(exe.get('executed_broker_success_total') or 0)}**",
+        f"- executed_broker_fail_total: **{int(exe.get('executed_broker_fail_total') or 0)}**",
+        f"- executed_broker_unknown_total: **{int(exe.get('executed_broker_unknown_total') or 0)}**",
+        f"- executed_broker_code_top: `{json.dumps(exe.get('executed_broker_code_top') or {}, ensure_ascii=False)}`",
         f"- executed_action_counts: `{json.dumps(exe.get('executed_action_counts') or {}, ensure_ascii=False)}`",
         f"- executed_notional_total: **{float(exe.get('executed_notional_total') or 0.0):.2f}**",
         "",
@@ -191,6 +213,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     verdict_block_reason_counts: Counter[str] = Counter()
 
     executed_total = 0
+    executed_broker_success_total = 0
+    executed_broker_fail_total = 0
+    executed_broker_unknown_total = 0
+    executed_broker_code_counts: Counter[str] = Counter()
     executed_action_counts: Counter[str] = Counter()
     executed_notional_total = 0.0
 
@@ -272,6 +298,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             if action == "SELL" and rationale.startswith("exit_policy:"):
                 exit_policy_sell_total += 1
 
+            ex_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+            broker_code = str(ex_payload.get("broker_code") or "").strip()
+            if broker_code:
+                executed_broker_code_counts[broker_code] += 1
+            broker_ok = _broker_code_success(ex_payload.get("broker_code"))
+            if broker_ok is None:
+                if "api_ok" in ex_payload:
+                    broker_ok = bool(ex_payload.get("api_ok"))
+                else:
+                    executed_broker_unknown_total += 1
+                    broker_ok = None
+            if broker_ok is True:
+                executed_broker_success_total += 1
+            elif broker_ok is False:
+                executed_broker_fail_total += 1
+
     llm_error_rate = _safe_pct(float(llm_error_total), float(llm_total))
     llm_latency_avg_ms = (sum(llm_latency_ms) / float(len(llm_latency_ms))) if llm_latency_ms else 0.0
 
@@ -309,6 +351,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             "blocked_total": int(verdict_blocked_total),
             "blocked_reason_top": dict(verdict_block_reason_counts.most_common(10)),
             "executed_total": int(executed_total),
+            "executed_broker_success_total": int(executed_broker_success_total),
+            "executed_broker_fail_total": int(executed_broker_fail_total),
+            "executed_broker_unknown_total": int(executed_broker_unknown_total),
+            "executed_broker_code_top": dict(executed_broker_code_counts.most_common(10)),
             "executed_action_counts": dict(executed_action_counts),
             "executed_notional_total": float(executed_notional_total),
         },
@@ -345,4 +391,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
