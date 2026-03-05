@@ -31,6 +31,23 @@ def _is_trueish(v: Any) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _enforce_rationale_for_trade_intent(raw_intent: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(raw_intent or {})
+    action = str(out.get("action") or "").strip().upper()
+    if action not in ("BUY", "SELL"):
+        return out
+    rationale = str(out.get("rationale") or out.get("reason") or "").strip()
+    if rationale:
+        return out
+
+    # Safety policy: no BUY/SELL without explicit rationale.
+    out["action"] = "NOOP"
+    out["qty"] = 0
+    out["reason"] = "missing_rationale"
+    out["rationale"] = "missing_rationale"
+    return out
+
+
 def _to_float(v: Any, default: float = 0.0) -> float:
     try:
         return float(v)
@@ -318,8 +335,9 @@ def decide_trade(state: dict) -> dict:
                 m = getattr(decision, "meta", None)
                 if isinstance(m, dict):
                     llm_meta = dict(m)
-                if getattr(decision, "rationale", None) and "rationale" not in raw_intent:
-                    raw_intent["rationale"] = getattr(decision, "rationale")
+                dec_rationale = str(getattr(decision, "rationale", "") or "").strip()
+                if dec_rationale and not str(raw_intent.get("rationale") or "").strip():
+                    raw_intent["rationale"] = dec_rationale
             except Exception as e:
                 error = str(e)
                 # If this is OpenAIStrategist, keep it and return NOOP (do not swap strategy)
@@ -331,6 +349,8 @@ def decide_trade(state: dict) -> dict:
                     state["strategist"] = strategist
                     strategy_name = "RuleStrategist"
                     raw_intent = _rule_intent(symbol, price, cash, open_positions)
+
+        raw_intent = _enforce_rationale_for_trade_intent(raw_intent)
 
         if do_llm_log:
             # M23-3: runtime circuit integration for strategist path.
@@ -420,6 +440,8 @@ def decide_trade(state: dict) -> dict:
             _log_llm_call(state, payload)
     else:
         raw_intent = _rule_intent(symbol, price, cash, open_positions)
+
+    raw_intent = _enforce_rationale_for_trade_intent(raw_intent)
 
     intent, rationale = normalize_intent(raw_intent, default_symbol=str(symbol) if symbol else None, default_price=price)
 

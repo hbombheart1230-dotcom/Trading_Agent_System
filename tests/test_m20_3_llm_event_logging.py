@@ -45,6 +45,7 @@ def test_m20_3_llm_event_logged_on_success(monkeypatch, tmp_path: Path):
                 "order_type": "limit",
                 "order_api_id": "ORDER_SUBMIT",
             },
+            "rationale": "llm-buy",
             "usage": {"prompt_tokens": 120, "completion_tokens": 80, "total_tokens": 200},
         }
 

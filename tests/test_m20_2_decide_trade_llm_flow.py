@@ -38,6 +38,37 @@ def test_m20_2_decide_trade_openai_success(monkeypatch):
     assert out["decision_packet"]["intent"]["symbol"] == "005930"
 
 
+def test_m20_2_decide_trade_openai_buy_without_rationale_is_forced_noop(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
+    monkeypatch.setenv("AI_STRATEGIST_MODEL", "test-model")
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            }
+        }
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    state = {
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+    }
+    out = decide_trade(state)
+
+    assert out["decision_trace"]["strategy"] == "OpenAIStrategist"
+    assert out["decision_packet"]["intent"]["action"] == "NOOP"
+    assert out["decision_packet"]["intent"]["reason"] == "missing_rationale"
+
+
 def test_m20_2_decide_trade_openai_timeout_is_safe_noop(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
