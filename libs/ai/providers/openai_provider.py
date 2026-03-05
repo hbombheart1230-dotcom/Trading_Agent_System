@@ -554,13 +554,18 @@ class OpenAIStrategist:
 
             if _looks_like_chat_completions_endpoint(self.endpoint):
                 system_prompt = (
-                    "You are a trading strategist. "
-                    "Return JSON only. "
+                    "You are a trading strategist for KRX mock trading. "
+                    "Return exactly one JSON object only (no markdown fence, no prose). "
                     f"Prompt-Version: {self.prompt_version}. "
                     f"Schema-Version: {self.schema_version}. "
                     "Schema: {\"intent\": {\"action\":\"BUY|SELL|NOOP\", \"symbol\": string|null, "
                     "\"qty\": int, \"price\": number|null, \"order_type\":\"limit|market\", "
-                    "\"order_api_id\":\"ORDER_SUBMIT\"}, \"rationale\": string, \"meta\": object}."
+                    "\"order_api_id\":\"ORDER_SUBMIT\", \"reason\": string}, \"rationale\": string, \"meta\": object}. "
+                    "Rules: "
+                    "1) action must be BUY, SELL, or NOOP. "
+                    "2) If action is BUY or SELL, symbol and qty must be valid and rationale must be non-empty. "
+                    "3) If action is NOOP, set intent.reason to one of: model_no_signal, risk_limit, missing_data. "
+                    "4) Use provided snapshots only; do not invent indicators."
                 )
                 user_payload = {
                     "symbol": x.symbol,

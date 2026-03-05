@@ -393,6 +393,7 @@ def decide_trade(state: dict) -> dict:
                 "ok": bool(llm_ok),
                 "intent_action": str(raw_intent.get("action") or ""),
                 "intent_reason": intent_reason,
+                "intent_rationale": str(raw_intent.get("rationale") or ""),
             }
             if getattr(strategist, "endpoint", None):
                 payload["endpoint"] = str(getattr(strategist, "endpoint"))
