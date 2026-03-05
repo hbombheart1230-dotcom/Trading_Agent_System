@@ -125,6 +125,96 @@ def _resolve_post_exit_cooldown_sec(state: Dict[str, Any]) -> int:
         return 300
 
 
+def _norm_symbol(v: Any) -> str:
+    return str(v or "").strip().upper()
+
+
+def _extract_symbol_feature_row(state: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
+    sym = _norm_symbol(symbol)
+    if not sym:
+        return {}
+
+    direct = state.get("scanner_features")
+    if isinstance(direct, dict):
+        row = direct.get(sym) or direct.get(str(symbol))
+        if isinstance(row, dict):
+            return dict(row)
+
+    fe = state.get("feature_engine")
+    if isinstance(fe, dict):
+        by_symbol = fe.get("by_symbol")
+        if isinstance(by_symbol, dict):
+            row = by_symbol.get(sym) or by_symbol.get(str(symbol))
+            if isinstance(row, dict):
+                return dict(row)
+
+    # Optional on-demand calculation when OHLCV is already injected.
+    ohlcv = state.get("ohlcv_by_symbol")
+    if isinstance(ohlcv, dict):
+        rows = ohlcv.get(sym) or ohlcv.get(str(symbol))
+        if isinstance(rows, list) and rows:
+            try:
+                from libs.runtime.feature_engine import build_feature_map
+
+                out = build_feature_map({sym: rows})
+                row = out.get(sym)
+                if isinstance(row, dict):
+                    return dict(row)
+            except Exception:
+                return {}
+    return {}
+
+
+def _extract_symbol_news_score(state: Dict[str, Any], symbol: Any) -> float:
+    sym = _norm_symbol(symbol)
+    if not sym:
+        return 0.0
+    raw = state.get("news_sentiment")
+    if not isinstance(raw, dict):
+        raw = state.get("mock_news_sentiment")
+    if not isinstance(raw, dict):
+        return 0.0
+    return _to_float(raw.get(sym) if sym in raw else raw.get(str(symbol)), 0.0)
+
+
+def _extract_global_sentiment_score(state: Dict[str, Any]) -> float:
+    gs = state.get("global_sentiment")
+    if isinstance(gs, dict):
+        return _to_float(gs.get("score"), 0.0)
+    if gs is not None:
+        return _to_float(gs, 0.0)
+    pol = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    pgs = pol.get("global_sentiment")
+    if isinstance(pgs, dict):
+        return _to_float(pgs.get("score"), 0.0)
+    if pgs is not None:
+        return _to_float(pgs, 0.0)
+    return 0.0
+
+
+def _build_llm_context(state: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
+    feat = _extract_symbol_feature_row(state, symbol)
+    news_score = _extract_symbol_news_score(state, symbol)
+    global_score = _extract_global_sentiment_score(state)
+
+    technical = {
+        "rsi14": feat.get("rsi14"),
+        "ma20_gap": feat.get("ma20_gap"),
+        "atr14": feat.get("atr14"),
+        "volume_spike20": feat.get("volume_spike20"),
+        "volatility20": feat.get("volatility20"),
+        "regime": feat.get("regime"),
+        "signal_score": feat.get("signal_score"),
+    }
+    return {
+        "technical": technical,
+        "news": {
+            "symbol_sentiment_score": float(news_score),
+            "global_sentiment_score": float(global_score),
+        },
+    }
+
+
 def _post_exit_cooldown_remaining_sec(state: Dict[str, Any], open_positions: Any) -> int:
     if int(open_positions or 0) > 0:
         return 0
@@ -242,6 +332,16 @@ def decide_trade(state: dict) -> dict:
         "has_price": price is not None,
         "no_open_positions": bool(int(open_positions or 0) == 0),
     }
+    llm_context = _build_llm_context(state, symbol)
+    market_for_llm = dict(market)
+    market_for_llm["llm_context"] = llm_context
+    risk_for_llm = dict(risk)
+    risk_for_llm["llm_context"] = {
+        "regime": llm_context.get("technical", {}).get("regime"),
+        "signal_score": llm_context.get("technical", {}).get("signal_score"),
+        "symbol_sentiment_score": llm_context.get("news", {}).get("symbol_sentiment_score"),
+        "global_sentiment_score": llm_context.get("news", {}).get("global_sentiment_score"),
+    }
 
     strategy_name = strategist.__class__.__name__ if strategist is not None else "builtin_rule"
     raw_intent: Dict[str, Any]
@@ -325,10 +425,20 @@ def decide_trade(state: dict) -> dict:
                 # Accept both provider StrategyInput and libs.ai.strategist StrategyInput
                 try:
                     from libs.ai.strategist import StrategyInput  # type: ignore
-                    x = StrategyInput(symbol=str(symbol), market_snapshot=market, portfolio_snapshot=portfolio, risk_context=risk)
+                    x = StrategyInput(
+                        symbol=str(symbol),
+                        market_snapshot=market_for_llm,
+                        portfolio_snapshot=portfolio,
+                        risk_context=risk_for_llm,
+                    )
                 except Exception:
                     from libs.ai.providers.openai_provider import StrategyInput  # type: ignore
-                    x = StrategyInput(symbol=str(symbol), market_snapshot=market, portfolio_snapshot=portfolio, risk_context=risk)
+                    x = StrategyInput(
+                        symbol=str(symbol),
+                        market_snapshot=market_for_llm,
+                        portfolio_snapshot=portfolio,
+                        risk_context=risk_for_llm,
+                    )
 
                 decision = strategist.decide(x)  # type: ignore[call-arg]
                 raw_intent = dict(getattr(decision, "intent", {}) or {})
@@ -394,6 +504,10 @@ def decide_trade(state: dict) -> dict:
                 "intent_action": str(raw_intent.get("action") or ""),
                 "intent_reason": intent_reason,
                 "intent_rationale": str(raw_intent.get("rationale") or ""),
+                "context_regime": llm_context.get("technical", {}).get("regime"),
+                "context_signal_score": llm_context.get("technical", {}).get("signal_score"),
+                "context_symbol_sentiment_score": llm_context.get("news", {}).get("symbol_sentiment_score"),
+                "context_global_sentiment_score": llm_context.get("news", {}).get("global_sentiment_score"),
             }
             if getattr(strategist, "endpoint", None):
                 payload["endpoint"] = str(getattr(strategist, "endpoint"))
@@ -469,6 +583,7 @@ def decide_trade(state: dict) -> dict:
         "rationale": rationale,
         "strategy": strategy_name,
         "raw_intent": raw_intent,
+        "llm_context": llm_context,
     }
     if error:
         trace["error"] = error

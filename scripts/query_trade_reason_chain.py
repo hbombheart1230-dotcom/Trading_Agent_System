@@ -100,6 +100,12 @@ def _build_rows(
             decision_packet = decision.get("decision_packet") if isinstance(decision.get("decision_packet"), dict) else {}
             decision_intent = decision_packet.get("intent") if isinstance(decision_packet.get("intent"), dict) else {}
             verdict = ctx.get("verdict") if isinstance(ctx.get("verdict"), dict) else {}
+            decision_rationale = str(decision_trace.get("rationale") or "")
+            if not decision_rationale:
+                decision_rationale = str(decision_intent.get("rationale") or "")
+            llm_intent_rationale = str(llm.get("intent_rationale") or "")
+            if not decision_rationale and llm_intent_rationale:
+                decision_rationale = llm_intent_rationale
 
             row = {
                 "ts": str(rec.get("ts") or ""),
@@ -117,13 +123,14 @@ def _build_rows(
                 "broker_message": str(ex_payload.get("broker_message") or ""),
                 "order_id": str(ex_payload.get("order_id") or ""),
                 "decision_strategy": str(decision_trace.get("strategy") or ""),
-                "decision_rationale": str(decision_trace.get("rationale") or ""),
+                "decision_rationale": decision_rationale,
                 "decision_reason": str(decision_intent.get("reason") or ""),
                 "llm_provider": str(llm.get("provider") or ""),
                 "llm_model": str(llm.get("model") or ""),
                 "llm_ok": llm.get("ok"),
                 "llm_intent_action": str(llm.get("intent_action") or ""),
                 "llm_intent_reason": str(llm.get("intent_reason") or ""),
+                "llm_intent_rationale": llm_intent_rationale,
                 "llm_latency_ms": llm.get("latency_ms"),
             }
             out.append(row)
@@ -143,7 +150,8 @@ def _print_human(path: Path, rows: List[Dict[str, Any]]) -> None:
             f"order_id={r.get('order_id')} strategy={r.get('decision_strategy')} "
             f"decision_rationale={r.get('decision_rationale')} "
             f"decision_reason={r.get('decision_reason')} "
-            f"llm_model={r.get('llm_model')} llm_reason={r.get('llm_intent_reason')}"
+            f"llm_model={r.get('llm_model')} llm_reason={r.get('llm_intent_reason')} "
+            f"llm_rationale={r.get('llm_intent_rationale')}"
         )
 
 
@@ -187,4 +195,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

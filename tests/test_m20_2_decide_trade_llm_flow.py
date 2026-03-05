@@ -38,6 +38,52 @@ def test_m20_2_decide_trade_openai_success(monkeypatch):
     assert out["decision_packet"]["intent"]["symbol"] == "005930"
 
 
+def test_m20_2_decide_trade_injects_feature_news_context_to_llm_input(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
+    monkeypatch.setenv("AI_STRATEGIST_MODEL", "test-model")
+
+    captured = {}
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        captured["payload"] = dict(payload)
+        return {"intent": {"action": "NOOP", "reason": "model_no_signal"}, "rationale": "hold"}
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+        "feature_engine": {
+            "by_symbol": {
+                "005930": {
+                    "rsi14": 61.2,
+                    "ma20_gap": 0.015,
+                    "atr14": 650.0,
+                    "volume_spike20": 1.3,
+                    "volatility20": 0.02,
+                    "regime": "trend",
+                    "signal_score": 0.7,
+                }
+            }
+        },
+        "news_sentiment": {"005930": 0.2},
+        "global_sentiment": {"score": 0.1},
+    }
+    out = decide_trade(state)
+
+    input_obj = captured["payload"]["input"]
+    llm_ctx = input_obj["market_snapshot"]["llm_context"]
+    assert llm_ctx["technical"]["regime"] == "trend"
+    assert abs(float(llm_ctx["technical"]["signal_score"]) - 0.7) < 1e-12
+    assert abs(float(llm_ctx["news"]["symbol_sentiment_score"]) - 0.2) < 1e-12
+    assert abs(float(llm_ctx["news"]["global_sentiment_score"]) - 0.1) < 1e-12
+    assert abs(float(input_obj["risk_context"]["llm_context"]["global_sentiment_score"]) - 0.1) < 1e-12
+    assert out["decision_trace"]["llm_context"]["technical"]["regime"] == "trend"
+
+
 def test_m20_2_decide_trade_openai_buy_without_rationale_is_forced_noop(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")

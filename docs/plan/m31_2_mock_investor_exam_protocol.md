@@ -136,6 +136,9 @@ python scripts/run_m31_agent_chain_probe.py --json
 - structured input fields only
 - strict JSON output
 - include confidence, risk reason, and fallback reason fields
+- runtime now injects `market_snapshot.llm_context` / `risk_context.llm_context`
+  with technical (`rsi14`, `ma20_gap`, `atr14`, `volume_spike20`, `volatility20`, `regime`, `signal_score`)
+  and sentiment (`symbol_sentiment_score`, `global_sentiment_score`) when available
 - provider JSON mode control:
   - `AI_STRATEGIST_JSON_RESPONSE_FORMAT=true` (default)
   - when provider rejects `response_format`, adapter retries once without it.

@@ -27,6 +27,7 @@ def test_query_trade_reason_chain_extracts_buy_and_sell_with_reason(tmp_path: Pa
                 "ok": True,
                 "intent_action": "BUY",
                 "intent_reason": "",
+                "intent_rationale": "llm-breakout",
                 "latency_ms": 1234,
             },
         },
@@ -103,6 +104,7 @@ def test_query_trade_reason_chain_extracts_buy_and_sell_with_reason(tmp_path: Pa
     assert buy["action"] == "BUY"
     assert buy["decision_strategy"] == "OpenAIStrategist"
     assert buy["decision_rationale"] == "breakout"
+    assert buy["llm_intent_rationale"] == "llm-breakout"
     assert buy["llm_model"] == "minimax/minimax-m2.5"
     assert buy["broker_code"] == "0"
     assert buy["order_id"] == "A1"
@@ -146,3 +148,53 @@ def test_query_trade_reason_chain_only_broker_success_filter(tmp_path: Path, cap
     assert rc == 0
     assert obj == []
 
+
+def test_query_trade_reason_chain_falls_back_to_llm_rationale(tmp_path: Path, capsys) -> None:
+    events = tmp_path / "events.jsonl"
+    rows = [
+        {
+            "run_id": "r-fallback",
+            "ts": "2026-03-05T01:00:00+00:00",
+            "stage": "strategist_llm",
+            "event": "result",
+            "payload": {
+                "provider": "openai",
+                "model": "minimax/minimax-m2.5",
+                "ok": True,
+                "intent_action": "BUY",
+                "intent_reason": "",
+                "intent_rationale": "llm-fallback-reason",
+            },
+        },
+        {
+            "run_id": "r-fallback",
+            "ts": "2026-03-05T01:00:01+00:00",
+            "stage": "decision",
+            "event": "trace",
+            "payload": {
+                "decision_packet": {"intent": {"action": "BUY", "reason": "", "rationale": ""}},
+                "trace": {"strategy": "OpenAIStrategist", "rationale": ""},
+            },
+        },
+        {
+            "run_id": "r-fallback",
+            "ts": "2026-03-05T01:00:03+00:00",
+            "stage": "execute_from_packet",
+            "event": "execution",
+            "payload": {
+                "reason": "Allowed",
+                "order": {"action": "BUY", "symbol": "005930", "qty": 1, "price": 70000, "order_type": "market"},
+                "payload": {"broker_code": "0", "order_id": "X1", "broker_message": "ok"},
+            },
+        },
+    ]
+    _write_jsonl(events, rows)
+
+    rc = reason_main(["--path", str(events), "--json"])
+    out = capsys.readouterr().out.strip()
+    obj = json.loads(out)
+
+    assert rc == 0
+    assert len(obj) == 1
+    assert obj[0]["decision_rationale"] == "llm-fallback-reason"
+    assert obj[0]["llm_intent_rationale"] == "llm-fallback-reason"
