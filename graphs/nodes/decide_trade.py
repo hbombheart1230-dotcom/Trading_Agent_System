@@ -197,14 +197,25 @@ def _build_llm_context(state: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
     news_score = _extract_symbol_news_score(state, symbol)
     global_score = _extract_global_sentiment_score(state)
 
+    def _v_float(name: str, default: float) -> float:
+        val = feat.get(name)
+        if val is None:
+            return float(default)
+        return _to_float(val, default)
+
+    regime_raw = feat.get("regime")
+    regime = str(regime_raw).strip().lower() if regime_raw is not None else "unknown"
+    if not regime:
+        regime = "unknown"
+
     technical = {
-        "rsi14": feat.get("rsi14"),
-        "ma20_gap": feat.get("ma20_gap"),
-        "atr14": feat.get("atr14"),
-        "volume_spike20": feat.get("volume_spike20"),
-        "volatility20": feat.get("volatility20"),
-        "regime": feat.get("regime"),
-        "signal_score": feat.get("signal_score"),
+        "rsi14": _v_float("rsi14", 50.0),
+        "ma20_gap": _v_float("ma20_gap", 0.0),
+        "atr14": _v_float("atr14", 0.0),
+        "volume_spike20": _v_float("volume_spike20", 1.0),
+        "volatility20": _v_float("volatility20", 0.0),
+        "regime": regime,
+        "signal_score": _v_float("signal_score", 0.0),
     }
     return {
         "technical": technical,
