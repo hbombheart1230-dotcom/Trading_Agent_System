@@ -57,7 +57,7 @@ python scripts/run_m28_startup_preflight_check.py --profile staging --env-path .
 python scripts/run_m28_scheduler_worker_launch_wrapper_check.py --profile staging --env-path .env --json
 python scripts/run_m28_launch_hook_integration_check.py --profile staging --env-path .env --json
 
-python scripts/run_m13_live_loop.py --sleep-sec 60
+python scripts/run_m13_live_loop.py --sleep-sec 60 --lock-path data/state/m13_live_loop.lock --lock-stale-sec 1800
 python scripts/run_m29_closeout_check.py --json
 python scripts/run_m31_agent_chain_probe.py --json
 python scripts/run_commander_runtime_once.py --mode integrated_chain --json
@@ -79,6 +79,16 @@ powershell -ExecutionPolicy Bypass -File deploy/m31_registration_helpers/windows
 
 - script: `scripts/run_m31_agent_chain_probe.py`
 - role: visualizes end-to-end agent chain (`strategist -> scanner -> monitor -> decision -> execute`) with one JSON artifact-like output for operator understanding.
+
+## Single-Instance Runtime Safety (M31+)
+
+- `scripts/run_m13_live_loop.py` now enforces single-instance lock by default.
+- default lock:
+  - `M13_LIVE_LOCK_PATH=data/state/m13_live_loop.lock`
+  - `M13_LIVE_LOCK_STALE_SEC=1800`
+- lock recovery policy:
+  - if lock owner pid is dead, lock is reclaimed immediately
+  - if lock owner is alive and lock age is within stale threshold, second launcher exits with `rc=4`
 
 ```bash
 python scripts/run_m31_mock_investor_exam_check.py \
