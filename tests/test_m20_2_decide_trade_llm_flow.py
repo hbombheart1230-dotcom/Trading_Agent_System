@@ -183,7 +183,9 @@ def test_m20_2_decide_trade_non_openai_exception_falls_back_to_rule():
     assert out["decision_packet"]["intent"]["action"] in ("BUY", "NOOP")
 
 
-def test_m20_2_decide_trade_blocks_buy_when_position_already_open():
+def test_m20_2_decide_trade_blocks_buy_when_position_already_open(monkeypatch):
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
     class AlwaysBuyStrategist:
         def decide(self, x):  # type: ignore[no-untyped-def]
             class Decision:

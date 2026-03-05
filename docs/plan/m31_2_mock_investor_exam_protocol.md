@@ -139,6 +139,12 @@ python scripts/run_m31_agent_chain_probe.py --json
 - runtime now injects `market_snapshot.llm_context` / `risk_context.llm_context`
   with technical (`rsi14`, `ma20_gap`, `atr14`, `volume_spike20`, `volatility20`, `regime`, `signal_score`)
   and sentiment (`symbol_sentiment_score`, `global_sentiment_score`) when available
+- M10 live pipeline now auto-hydrates sentiment context each tick via `build_decision_context`
+  (`global_sentiment`, `news_sentiment`) before `decide_trade`.
+  - env controls:
+    - `M10_USE_GLOBAL_SENTIMENT=true|false`
+    - `M10_USE_NEWS_SENTIMENT=true|false`
+    - `M10_DECISION_CONTEXT_REFRESH_SEC=300` (in-memory cache window)
 - provider JSON mode control:
   - `AI_STRATEGIST_JSON_RESPONSE_FORMAT=true` (default)
   - when provider rejects `response_format`, adapter retries once without it.
