@@ -130,8 +130,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         news_sent = {s: 0.0 for s in symbols}
         if bool(policy.get("use_news_analysis", False)):
             news_items_by_symbol = collect_news_items(symbols, state=state, policy=policy)
-            flat_items = [it for arr in news_items_by_symbol.values() for it in arr]
-            news_sent = score_news_sentiment(flat_items, symbols, state=state, policy=policy)
+            news_sent = score_news_sentiment(news_items_by_symbol, state=state, policy=policy)
             news_sent = {s: float(news_sent.get(s, 0.0)) for s in symbols}
 
     state["policy"] = policy

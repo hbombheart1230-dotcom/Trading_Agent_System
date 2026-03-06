@@ -11,6 +11,59 @@ import os
 # NEWS COLLECTION
 # -------------------------------------------------
 
+
+def _as_str(v: Any) -> str:
+    if v is None:
+        return ""
+    return str(v)
+
+
+def _to_news_item(obj: Any, *, symbol_hint: str | None = None) -> NewsItem | None:
+    """Normalize provider/test payloads into libs.news.models.NewsItem."""
+    if isinstance(obj, NewsItem):
+        if obj.symbol:
+            return obj
+        if symbol_hint:
+            return NewsItem(
+                title=obj.title,
+                url=obj.url,
+                source=obj.source,
+                published_at=obj.published_at,
+                symbol=str(symbol_hint),
+                summary=obj.summary,
+                raw=obj.raw,
+            )
+        return None
+
+    if isinstance(obj, dict):
+        title = _as_str(obj.get("title")).strip()
+        symbol = _as_str(obj.get("symbol") or symbol_hint).strip()
+        if not title or not symbol:
+            return None
+        return NewsItem(
+            title=title,
+            url=_as_str(obj.get("url")),
+            source=_as_str(obj.get("source")),
+            published_at=_as_str(obj.get("published_at")),
+            symbol=symbol,
+            summary=_as_str(obj.get("summary")),
+            raw=obj if isinstance(obj, dict) else None,
+        )
+
+    title = _as_str(getattr(obj, "title", "")).strip()
+    symbol = _as_str(getattr(obj, "symbol", None) or symbol_hint).strip()
+    if not title or not symbol:
+        return None
+    return NewsItem(
+        title=title,
+        url=_as_str(getattr(obj, "url", "")),
+        source=_as_str(getattr(obj, "source", "")),
+        published_at=_as_str(getattr(obj, "published_at", "")),
+        symbol=symbol,
+        summary=_as_str(getattr(obj, "summary", "")),
+        raw=None,
+    )
+
 def collect_news_items(
     symbols: Sequence[str],
     *,
@@ -23,23 +76,44 @@ def collect_news_items(
 
     # 1) test / dry-run mock
     if state.get("mock_news_items") is not None:
-        mock = state["mock_news_items"]
-        out = {}
+        mock = state["mock_news_items"] if isinstance(state.get("mock_news_items"), dict) else {}
+        out: Dict[str, List[NewsItem]] = {}
         for s in symbols:
-            out[s] = mock.get(s, [])
+            sym = str(s)
+            norm: List[NewsItem] = []
+            for row in list(mock.get(sym, []) or []):
+                item = _to_news_item(row, symbol_hint=sym)
+                if item is not None:
+                    norm.append(item)
+            out[sym] = norm
         return out
 
     provider_name = str(policy.get("news_provider") or "naver")
     provider = get_provider(provider_name)
+    try:
+        fetched = provider.fetch(symbols=list(symbols), state=state, policy=policy)
+    except TypeError:
+        try:
+            fetched = provider.fetch(symbols=list(symbols), policy=policy)
+        except TypeError:
+            fetched = provider.fetch(list(symbols), policy)
 
-    items = provider.fetch(symbols=list(symbols), policy=policy)
-
-    items_by_symbol = defaultdict(list)
-    for item in items:
-        items_by_symbol[item.symbol].append(item)
+    items_by_symbol: Dict[str, List[NewsItem]] = defaultdict(list)
+    if isinstance(fetched, Mapping):
+        for sym, rows in fetched.items():
+            sym_s = str(sym)
+            for row in list(rows or []):
+                item = _to_news_item(row, symbol_hint=sym_s)
+                if item is not None:
+                    items_by_symbol[sym_s].append(item)
+    else:
+        for row in list(fetched or []):
+            item = _to_news_item(row)
+            if item is not None:
+                items_by_symbol[str(item.symbol)].append(item)
 
     # ensure all symbols exist
-    return {s: items_by_symbol.get(s, []) for s in symbols}
+    return {str(s): list(items_by_symbol.get(str(s), [])) for s in symbols}
 
 
 # -------------------------------------------------
@@ -104,10 +178,10 @@ def score_news_sentiment(
         # group by symbol field (if missing, ignore)
         tmp: Dict[str, List[NewsItem]] = {}
         for it in items:
-            sym = getattr(it, "symbol", None)
-            if not sym:
+            norm_item = _to_news_item(it)
+            if norm_item is None:
                 continue
-            tmp.setdefault(str(sym), []).append(it)
+            tmp.setdefault(str(norm_item.symbol), []).append(norm_item)
         if symbols is not None:
             for s in symbols:
                 tmp.setdefault(str(s), [])
@@ -119,20 +193,9 @@ def score_news_sentiment(
             sym_s = str(sym)
             out_list: List[NewsItem] = []
             for x in (arr or []):
-                if isinstance(x, NewsItem):
-                    out_list.append(x)
-                elif isinstance(x, dict):
-                    # tolerate minimal dicts from tests
-                    out_list.append(
-                        NewsItem(
-                            title=str(x.get("title", "")),
-                            url=str(x.get("url", "")),
-                            source=str(x.get("source", "")),
-                            published_at=str(x.get("published_at", "")),
-                            symbol=sym_s,
-                            summary=str(x.get("summary", "")),
-                        )
-                    )
+                norm_item = _to_news_item(x, symbol_hint=sym_s)
+                if norm_item is not None:
+                    out_list.append(norm_item)
             norm[sym_s] = out_list
     else:
         norm = {}

@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     if not path.exists():
@@ -31,6 +38,7 @@ def _filtered_events(
     *,
     run_id: str = "",
     only_failures: bool = False,
+    only_nonzero_news: bool = False,
 ) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for rec in rows:
@@ -40,6 +48,8 @@ def _filtered_events(
             continue
         p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
         if only_failures and bool(p.get("ok")):
+            continue
+        if only_nonzero_news and abs(_to_float(p.get("context_symbol_sentiment_score"), 0.0)) <= 1e-12:
             continue
         out.append(rec)
     return out
@@ -64,6 +74,10 @@ def _print_human(path: Path, rows: List[Dict[str, Any]]) -> None:
         completion_tokens = p.get("completion_tokens")
         total_tokens = p.get("total_tokens")
         estimated_cost_usd = p.get("estimated_cost_usd")
+        regime = str(p.get("context_regime") or "")
+        signal_score = p.get("context_signal_score")
+        sym_sent = p.get("context_symbol_sentiment_score")
+        global_sent = p.get("context_global_sentiment_score")
         err = str(p.get("error_type") or "")
         print(
             f"{ts} run_id={run_id} ok={ok} action={action} reason={reason} "
@@ -71,6 +85,8 @@ def _print_human(path: Path, rows: List[Dict[str, Any]]) -> None:
             f"prompt_version={prompt_version} schema_version={schema_version} "
             f"prompt_tokens={prompt_tokens} completion_tokens={completion_tokens} "
             f"total_tokens={total_tokens} estimated_cost_usd={estimated_cost_usd} "
+            f"context_regime={regime} context_signal_score={signal_score} "
+            f"context_symbol_sentiment_score={sym_sent} context_global_sentiment_score={global_sent} "
             f"error_type={err}"
         )
 
@@ -81,6 +97,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--run-id", default="", help="Filter by exact run_id.")
     p.add_argument("--limit", type=int, default=20, help="Show last N matched rows.")
     p.add_argument("--only-failures", action="store_true", help="Only include rows where payload.ok is false.")
+    p.add_argument(
+        "--only-nonzero-news",
+        action="store_true",
+        help="Only include rows where payload.context_symbol_sentiment_score is non-zero.",
+    )
     p.add_argument("--json", action="store_true", help="Print JSON array instead of human-readable lines.")
     args = p.parse_args(argv)
 
@@ -94,6 +115,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         rows,
         run_id=str(args.run_id or "").strip(),
         only_failures=bool(args.only_failures),
+        only_nonzero_news=bool(args.only_nonzero_news),
     )
     limit = max(1, int(args.limit))
     shown = matched[-limit:]
