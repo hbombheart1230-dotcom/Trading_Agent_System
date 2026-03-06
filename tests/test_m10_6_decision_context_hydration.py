@@ -59,3 +59,35 @@ def test_m10_6_decision_context_cache_skips_refresh_within_window(monkeypatch):
     assert abs(float(out3["news_sentiment"]["005930"]) - 0.80) < 1e-12
     assert out3["decision_context_meta"]["cached"] is False
 
+
+def test_m10_6_symbol_query_map_is_injected_from_env(monkeypatch):
+    monkeypatch.setattr("graphs.nodes.build_decision_context.time.time", lambda: 2000.0)
+    monkeypatch.setenv("M10_SYMBOL_QUERY_MAP", "005930=Samsung Electronics,000660=SK hynix")
+    monkeypatch.setenv("SYMBOL_ALLOWLIST", "005930,000660")
+
+    captured = {}
+
+    def _fake_collect(symbols, *, state, policy):
+        captured["symbol_query_map"] = dict(policy.get("symbol_query_map") or {})
+        return {str(symbols[0]): []}
+
+    monkeypatch.setattr("graphs.nodes.build_decision_context.collect_news_items", _fake_collect)
+    monkeypatch.setattr(
+        "graphs.nodes.build_decision_context.score_news_sentiment",
+        lambda items_by_symbol, *, state, policy: {"005930": 0.0},
+    )
+
+    state = {
+        "symbol": "005930",
+        "policy": {
+            "use_global_sentiment": False,
+            "use_news_analysis": True,
+            "decision_context_refresh_sec": 300,
+        },
+    }
+    out = build_decision_context(state)
+
+    sqm = captured.get("symbol_query_map") or {}
+    assert sqm.get("005930") == "Samsung Electronics"
+    assert sqm.get("000660") == "SK hynix"
+    assert "news_sentiment" in out and "005930" in out["news_sentiment"]

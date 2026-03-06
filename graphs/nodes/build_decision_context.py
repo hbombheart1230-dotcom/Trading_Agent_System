@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Any, Dict
 
 from libs.market.global_sentiment import compute_global_sentiment
 from libs.news.news_pipeline import collect_news_items, score_news_sentiment
+
+
+_DEFAULT_SYMBOL_QUERY_MAP: Dict[str, str] = {
+    "005930": "삼성전자",
+    "000660": "SK하이닉스",
+    "035420": "NAVER",
+    "051910": "LG화학",
+    "005380": "현대차",
+}
 
 
 def _is_trueish(v: Any) -> bool:
@@ -34,6 +44,63 @@ def _resolve_symbol(state: Dict[str, Any]) -> str:
     return str(symbol or "").strip().upper()
 
 
+def _parse_symbol_query_map(raw: str) -> Dict[str, str]:
+    s = str(raw or "").strip()
+    if not s:
+        return {}
+
+    # JSON object format: {"005930":"삼성전자", ...}
+    if s.startswith("{"):
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                out: Dict[str, str] = {}
+                for k, v in obj.items():
+                    ks = str(k or "").strip().upper()
+                    vs = str(v or "").strip()
+                    if ks and vs:
+                        out[ks] = vs
+                return out
+        except Exception:
+            return {}
+
+    # CSV format: 005930=삼성전자,000660=SK하이닉스
+    out: Dict[str, str] = {}
+    for token in s.replace(";", ",").split(","):
+        part = str(token or "").strip()
+        if not part:
+            continue
+        if "=" in part:
+            k, v = part.split("=", 1)
+        elif ":" in part:
+            k, v = part.split(":", 1)
+        else:
+            continue
+        ks = str(k or "").strip().upper()
+        vs = str(v or "").strip()
+        if ks and vs:
+            out[ks] = vs
+    return out
+
+
+def _resolve_symbol_query_map() -> Dict[str, str]:
+    env_raw = str(os.getenv("M10_SYMBOL_QUERY_MAP", "") or "").strip()
+    if not env_raw:
+        env_raw = str(os.getenv("SYMBOL_QUERY_MAP_JSON", "") or "").strip()
+    env_map = _parse_symbol_query_map(env_raw)
+
+    allowlist = str(os.getenv("SYMBOL_ALLOWLIST", "") or "").strip()
+    out: Dict[str, str] = {}
+    for sym in allowlist.split(","):
+        code = str(sym or "").strip().upper()
+        if code in _DEFAULT_SYMBOL_QUERY_MAP:
+            out[code] = _DEFAULT_SYMBOL_QUERY_MAP[code]
+
+    # Explicit env map overrides defaults.
+    out.update(env_map)
+    return out
+
+
 def _policy_with_defaults(state: Dict[str, Any]) -> Dict[str, Any]:
     p = dict(state.get("policy") or {}) if isinstance(state.get("policy"), dict) else {}
     if "use_global_sentiment" not in p:
@@ -42,6 +109,10 @@ def _policy_with_defaults(state: Dict[str, Any]) -> Dict[str, Any]:
         p["use_news_analysis"] = _is_trueish(os.getenv("M10_USE_NEWS_SENTIMENT", "true"))
     p.setdefault("news_provider", str(os.getenv("M10_NEWS_PROVIDER", "naver") or "naver"))
     p.setdefault("news_scorer", str(os.getenv("M10_NEWS_SCORER", "simple") or "simple"))
+    if "symbol_query_map" not in p:
+        sqm = _resolve_symbol_query_map()
+        if sqm:
+            p["symbol_query_map"] = sqm
     return p
 
 
@@ -148,4 +219,3 @@ def build_decision_context(state: Dict[str, Any]) -> Dict[str, Any]:
         "news_sentiment_score": float(news_score),
     }
     return state
-
