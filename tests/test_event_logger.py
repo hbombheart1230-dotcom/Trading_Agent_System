@@ -34,6 +34,7 @@ def test_event_logger_writes_jsonl(tmp_path: Path) -> None:
     # schema fields exist
     assert obj["run_id"] == run_id
     assert obj["ts"] == "2026-02-07T00:00:00+00:00"
+    assert obj["ts_kst"] == "2026-02-07T09:00:00+09:00"
     assert obj["stage"] == "strategist_plan"
     assert obj["event"] == "decision"
     assert isinstance(obj["payload"], dict)
@@ -52,3 +53,8 @@ def test_event_logger_appends_multiple_lines(tmp_path: Path) -> None:
 
     lines = log_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 2
+
+    first = json.loads(lines[0])
+    second = json.loads(lines[1])
+    assert first["ts_kst"] == "2026-02-07T09:00:00+09:00"
+    assert second["ts_kst"] == "2026-02-07T09:00:01+09:00"
