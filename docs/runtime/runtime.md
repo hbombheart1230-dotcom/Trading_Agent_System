@@ -14,3 +14,8 @@
 - errors
 
 **Goal:** make every run replayable.
+
+## Operational Visibility
+
+- Runtime/agent visibility reference:
+  - `docs/runtime/agent_visibility_runbook.md`

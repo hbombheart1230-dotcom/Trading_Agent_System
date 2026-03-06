@@ -88,6 +88,7 @@ If a proposed change violates any item below, **STOP** and redesign.
 
 - Prefer **small PR-sized changes** (one goal, bounded files).
 - Update documentation in `docs/` for every meaningful behavior/config/contract change in the same task.
+- Every completed update must include at least one traceable `.md` update (plan/runtime/report) so progress remains visible without code diff inspection.
 - Run tests locally before “done”.
 - Never print secrets; never commit `.env`.
 - If you must touch frozen areas (Execution/Guards/Contracts), explain why and add regression tests.

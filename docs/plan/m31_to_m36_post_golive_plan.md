@@ -120,3 +120,5 @@
    - `scripts/run_m31_mock_investor_exam_check.py`
 3. `M31-3` weekly health summary operator script created: `scripts/run_m31_weekly_health_summary.py` and `docs/plan/m31_3_weekly_health_summary_operator_script.md`.
 4. `M31` agent-chain visibility probe created: `scripts/run_m31_agent_chain_probe.py` (strategist->scanner->monitor->decision->execute).
+5. Post-close progress and improvement summary (2026-03-06):
+   - `docs/plan/m31_plus_progress_summary_2026-03-06.md`
