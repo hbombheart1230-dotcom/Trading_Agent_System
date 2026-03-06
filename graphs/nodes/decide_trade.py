@@ -55,6 +55,42 @@ def _to_float(v: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _clip(v: float, lo: float, hi: float) -> float:
+    x = float(v)
+    if x < lo:
+        return float(lo)
+    if x > hi:
+        return float(hi)
+    return x
+
+
+def _read_env_float(name: str, default: float) -> float:
+    raw = str(os.getenv(name, str(default)) or str(default)).strip()
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _policy_thresholds() -> Dict[str, float]:
+    return {
+        "buy_threshold": _read_env_float("AI_STRATEGIST_BUY_THRESHOLD", 0.10),
+        "sell_threshold": _read_env_float("AI_STRATEGIST_SELL_THRESHOLD", -0.10),
+        "high_vol_abs_threshold": _read_env_float("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", 0.12),
+        "news_buy_threshold": _read_env_float("AI_STRATEGIST_NEWS_BUY_THRESHOLD", 0.15),
+        "news_sell_threshold": _read_env_float("AI_STRATEGIST_NEWS_SELL_THRESHOLD", -0.15),
+    }
+
+
+def _composite_score(technical: Dict[str, Any], news: Dict[str, Any]) -> float:
+    signal = _to_float(technical.get("signal_score"), 0.0)
+    ma_gap = _clip(_to_float(technical.get("ma20_gap"), 0.0), -0.20, 0.20)
+    sym_news = _to_float(news.get("symbol_sentiment_score"), 0.0)
+    global_news = _to_float(news.get("global_sentiment_score"), 0.0)
+    score = (0.55 * signal) + (0.20 * ma_gap) + (0.20 * sym_news) + (0.05 * global_news)
+    return float(_clip(score, -1.0, 1.0))
+
+
 def _extract_position_for_symbol(portfolio: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
     sym = str(symbol or "").strip().upper()
     if not sym:
@@ -217,11 +253,18 @@ def _build_llm_context(state: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
         "regime": regime,
         "signal_score": _v_float("signal_score", 0.0),
     }
+    news = {
+        "symbol_sentiment_score": float(news_score),
+        "global_sentiment_score": float(global_score),
+    }
+    policy = _policy_thresholds()
+    composite = _composite_score(technical, news)
     return {
         "technical": technical,
-        "news": {
-            "symbol_sentiment_score": float(news_score),
-            "global_sentiment_score": float(global_score),
+        "news": news,
+        "decision_policy": {
+            **policy,
+            "composite_score": float(composite),
         },
     }
 
@@ -519,6 +562,7 @@ def decide_trade(state: dict) -> dict:
                 "context_signal_score": llm_context.get("technical", {}).get("signal_score"),
                 "context_symbol_sentiment_score": llm_context.get("news", {}).get("symbol_sentiment_score"),
                 "context_global_sentiment_score": llm_context.get("news", {}).get("global_sentiment_score"),
+                "context_composite_score": llm_context.get("decision_policy", {}).get("composite_score"),
             }
             if getattr(strategist, "endpoint", None):
                 payload["endpoint"] = str(getattr(strategist, "endpoint"))

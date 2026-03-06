@@ -78,6 +78,7 @@ def _print_human(path: Path, rows: List[Dict[str, Any]]) -> None:
         signal_score = p.get("context_signal_score")
         sym_sent = p.get("context_symbol_sentiment_score")
         global_sent = p.get("context_global_sentiment_score")
+        composite = p.get("context_composite_score")
         err = str(p.get("error_type") or "")
         print(
             f"{ts} run_id={run_id} ok={ok} action={action} reason={reason} "
@@ -87,6 +88,7 @@ def _print_human(path: Path, rows: List[Dict[str, Any]]) -> None:
             f"total_tokens={total_tokens} estimated_cost_usd={estimated_cost_usd} "
             f"context_regime={regime} context_signal_score={signal_score} "
             f"context_symbol_sentiment_score={sym_sent} context_global_sentiment_score={global_sent} "
+            f"context_composite_score={composite} "
             f"error_type={err}"
         )
 

@@ -217,6 +217,38 @@ def _extract_usage(resp: Dict[str, Any]) -> Dict[str, int]:
         out["total_tokens"] = total_tokens
     return out
 
+
+def _to_float_env(name: str, default: float) -> float:
+    raw = str(os.getenv(name, str(default)) or str(default)).strip()
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
+def _strategy_policy_text() -> str:
+    buy_th = _to_float_env("AI_STRATEGIST_BUY_THRESHOLD", 0.10)
+    sell_th = _to_float_env("AI_STRATEGIST_SELL_THRESHOLD", -0.10)
+    high_vol_abs_th = _to_float_env("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", 0.12)
+    news_buy_th = _to_float_env("AI_STRATEGIST_NEWS_BUY_THRESHOLD", 0.15)
+    news_sell_th = _to_float_env("AI_STRATEGIST_NEWS_SELL_THRESHOLD", -0.15)
+
+    return (
+        "Action rubric: "
+        "Compute composite_score = "
+        "0.55*technical.signal_score + "
+        "0.20*clip(technical.ma20_gap,-0.20,0.20) + "
+        "0.20*news.symbol_sentiment_score + "
+        "0.05*news.global_sentiment_score. "
+        f"If open_positions==0 and composite_score >= {buy_th:.3f}, prefer BUY. "
+        f"If open_positions>0 and composite_score <= {sell_th:.3f}, prefer SELL. "
+        f"If regime==high_volatility, require abs(composite_score) >= {high_vol_abs_th:.3f} for BUY/SELL. "
+        f"If open_positions==0 and news.symbol_sentiment_score >= {news_buy_th:.3f}, allow small BUY (qty>=1) "
+        "unless clear risk_limit. "
+        f"If open_positions>0 and news.symbol_sentiment_score <= {news_sell_th:.3f}, prefer SELL. "
+        "If none of rules fire, return NOOP with reason model_no_signal."
+    )
+
 @dataclass
 class StrategyInput:
     symbol: str
@@ -565,7 +597,9 @@ class OpenAIStrategist:
                     "1) action must be BUY, SELL, or NOOP. "
                     "2) If action is BUY or SELL, symbol and qty must be valid and rationale must be non-empty. "
                     "3) If action is NOOP, set intent.reason to one of: model_no_signal, risk_limit, missing_data. "
-                    "4) Use provided snapshots only; do not invent indicators."
+                    "4) Use provided snapshots only; do not invent indicators. "
+                    "5) Do not return empty rationale for BUY/SELL. "
+                    + _strategy_policy_text()
                 )
                 user_payload = {
                     "symbol": x.symbol,
