@@ -3,8 +3,27 @@ from __future__ import annotations
 from graphs.nodes.build_decision_context import build_decision_context
 
 
+def _trend_up_candles(n: int = 50) -> list[dict]:
+    out: list[dict] = []
+    px = 100.0
+    for i in range(n):
+        px = px + 0.5
+        out.append(
+            {
+                "ts": 1700000000 + i * 60,
+                "open": px - 0.2,
+                "high": px + 0.3,
+                "low": px - 0.4,
+                "close": px,
+                "volume": 1000 + i * 10,
+            }
+        )
+    return out
+
+
 def test_m10_6_decision_context_hydrates_global_and_news_from_mocks(monkeypatch):
     monkeypatch.setattr("graphs.nodes.build_decision_context.time.time", lambda: 1000.0)
+    monkeypatch.setenv("M10_FEATURE_SEED_WITH_YF", "false")
 
     state = {
         "symbol": "005930",
@@ -28,6 +47,7 @@ def test_m10_6_decision_context_hydrates_global_and_news_from_mocks(monkeypatch)
 
 def test_m10_6_decision_context_cache_skips_refresh_within_window(monkeypatch):
     monkeypatch.setattr("graphs.nodes.build_decision_context.time.time", lambda: 1000.0)
+    monkeypatch.setenv("M10_FEATURE_SEED_WITH_YF", "false")
     state = {
         "symbol": "005930",
         "policy": {
@@ -62,6 +82,7 @@ def test_m10_6_decision_context_cache_skips_refresh_within_window(monkeypatch):
 
 def test_m10_6_symbol_query_map_is_injected_from_env(monkeypatch):
     monkeypatch.setattr("graphs.nodes.build_decision_context.time.time", lambda: 2000.0)
+    monkeypatch.setenv("M10_FEATURE_SEED_WITH_YF", "false")
     monkeypatch.setenv("M10_SYMBOL_QUERY_MAP", "005930=Samsung Electronics,000660=SK hynix")
     monkeypatch.setenv("SYMBOL_ALLOWLIST", "005930,000660")
 
@@ -91,3 +112,28 @@ def test_m10_6_symbol_query_map_is_injected_from_env(monkeypatch):
     assert sqm.get("005930") == "Samsung Electronics"
     assert sqm.get("000660") == "SK hynix"
     assert "news_sentiment" in out and "005930" in out["news_sentiment"]
+
+
+def test_m10_6_feature_engine_context_is_built_from_ohlcv(monkeypatch):
+    monkeypatch.setattr("graphs.nodes.build_decision_context.time.time", lambda: 2500.0)
+    monkeypatch.setenv("M10_FEATURE_SEED_WITH_YF", "false")
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 130.0},
+        "policy": {
+            "use_global_sentiment": False,
+            "use_news_analysis": False,
+            "decision_context_refresh_sec": 300,
+        },
+        "ohlcv_by_symbol": {"005930": _trend_up_candles(60)},
+    }
+    out = build_decision_context(state)
+
+    fe = out.get("feature_engine") or {}
+    by_symbol = fe.get("by_symbol") if isinstance(fe, dict) else {}
+    row = by_symbol.get("005930") if isinstance(by_symbol, dict) else {}
+    assert isinstance(row, dict)
+    assert row.get("rsi14") is not None
+    assert row.get("ma20_gap") is not None
+    assert row.get("regime") in ("trend", "range", "high_volatility")
+    assert "feature_regime" in out.get("decision_context_meta", {})
