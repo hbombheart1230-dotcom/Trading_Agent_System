@@ -331,3 +331,42 @@ def test_m20_2_decide_trade_exit_policy_max_hold_triggers_sell(monkeypatch):
     assert out["decision_packet"]["intent"]["action"] == "SELL"
     assert out["decision_packet"]["intent"]["qty"] == 2
     assert out["decision_packet"]["intent"]["rationale"] == "exit_policy:max_hold"
+
+
+def test_m20_2_decide_trade_score_override_converts_noop_to_buy(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
+    monkeypatch.setenv("AI_STRATEGIST_SCORE_OVERRIDE", "true")
+    monkeypatch.setenv("AI_STRATEGIST_BUY_THRESHOLD", "0.05")
+    monkeypatch.setenv("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", "0.06")
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {"intent": {"action": "NOOP", "reason": "model_no_signal"}, "rationale": "hold"}
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+        "feature_engine": {
+            "by_symbol": {
+                "005930": {
+                    "rsi14": 55.0,
+                    "ma20_gap": 0.015,
+                    "atr14": 650.0,
+                    "volume_spike20": 1.3,
+                    "volatility20": 0.05,
+                    "regime": "high_volatility",
+                    "signal_score": 0.2,
+                }
+            }
+        },
+        "news_sentiment": {"005930": 0.0},
+        "global_sentiment": {"score": 0.0},
+    }
+    out = decide_trade(state)
+
+    assert out["decision_packet"]["intent"]["action"] == "BUY"
+    assert out["decision_trace"]["score_override_applied"] is True

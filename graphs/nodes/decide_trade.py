@@ -82,6 +82,10 @@ def _policy_thresholds() -> Dict[str, float]:
     }
 
 
+def _score_override_enabled() -> bool:
+    return _is_trueish(os.getenv("AI_STRATEGIST_SCORE_OVERRIDE", "false"))
+
+
 def _composite_score(technical: Dict[str, Any], news: Dict[str, Any]) -> float:
     signal = _to_float(technical.get("signal_score"), 0.0)
     ma_gap = _clip(_to_float(technical.get("ma20_gap"), 0.0), -0.20, 0.20)
@@ -89,6 +93,78 @@ def _composite_score(technical: Dict[str, Any], news: Dict[str, Any]) -> float:
     global_news = _to_float(news.get("global_sentiment_score"), 0.0)
     score = (0.55 * signal) + (0.20 * ma_gap) + (0.20 * sym_news) + (0.05 * global_news)
     return float(_clip(score, -1.0, 1.0))
+
+
+def _maybe_override_noop_by_score(
+    *,
+    intent: Dict[str, Any],
+    llm_context: Dict[str, Any],
+    symbol: Any,
+    price: Any,
+    open_positions: Any,
+    portfolio: Dict[str, Any],
+) -> tuple[Dict[str, Any], bool]:
+    if not _score_override_enabled():
+        return dict(intent or {}), False
+
+    base = dict(intent or {})
+    action = str(base.get("action") or "").strip().upper()
+    reason = str(base.get("reason") or "").strip().lower()
+    if action != "NOOP":
+        return base, False
+    if reason not in ("", "model_no_signal", "conditions_not_met"):
+        return base, False
+
+    technical = llm_context.get("technical") if isinstance(llm_context.get("technical"), dict) else {}
+    news = llm_context.get("news") if isinstance(llm_context.get("news"), dict) else {}
+    policy = llm_context.get("decision_policy") if isinstance(llm_context.get("decision_policy"), dict) else {}
+
+    composite = _to_float(policy.get("composite_score"), _composite_score(technical, news))
+    regime = str(technical.get("regime") or "").strip().lower() or "unknown"
+    sym_news = _to_float(news.get("symbol_sentiment_score"), 0.0)
+    th = _policy_thresholds()
+
+    high_vol_ok = True
+    if regime == "high_volatility":
+        high_vol_ok = abs(composite) >= float(th["high_vol_abs_threshold"])
+
+    sym = str(symbol or "").strip().upper()
+    px = _to_float(price, 0.0) if price is not None else 0.0
+
+    if int(open_positions or 0) <= 0:
+        if high_vol_ok and (composite >= float(th["buy_threshold"]) or sym_news >= float(th["news_buy_threshold"])):
+            return (
+                {
+                    "action": "BUY",
+                    "symbol": sym,
+                    "qty": 1,
+                    "price": px if px > 0.0 else None,
+                    "order_type": "market",
+                    "order_api_id": "ORDER_SUBMIT",
+                    "rationale": f"score_override:buy composite={composite:.4f} regime={regime}",
+                },
+                True,
+            )
+        return base, False
+
+    pos = _extract_position_for_symbol(portfolio, sym)
+    qty = int(pos.get("qty") or 0) if isinstance(pos, dict) else 0
+    if qty <= 0:
+        return base, False
+    if high_vol_ok and (composite <= float(th["sell_threshold"]) or sym_news <= float(th["news_sell_threshold"])):
+        return (
+            {
+                "action": "SELL",
+                "symbol": sym,
+                "qty": qty,
+                "price": px if px > 0.0 else None,
+                "order_type": "market",
+                "order_api_id": "ORDER_SUBMIT",
+                "rationale": f"score_override:sell composite={composite:.4f} regime={regime}",
+            },
+            True,
+        )
+    return base, False
 
 
 def _extract_position_for_symbol(portfolio: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
@@ -402,6 +478,7 @@ def decide_trade(state: dict) -> dict:
     error: str | None = None
     llm_meta: Dict[str, Any] = {}
     static_intent: Dict[str, Any] | None = None
+    score_override_applied = False
 
     cooldown_remaining = _post_exit_cooldown_remaining_sec(state, open_positions)
     if cooldown_remaining > 0:
@@ -620,6 +697,18 @@ def decide_trade(state: dict) -> dict:
             if str(raw_intent.get("reason") or "").strip():
                 intent["reason"] = str(raw_intent.get("reason") or "").strip()
 
+    intent_overridden, score_override_applied = _maybe_override_noop_by_score(
+        intent=intent,
+        llm_context=llm_context,
+        symbol=symbol,
+        price=price,
+        open_positions=open_positions,
+        portfolio=portfolio,
+    )
+    if score_override_applied:
+        intent, rationale = normalize_intent(intent_overridden, default_symbol=str(symbol) if symbol else None, default_price=price)
+        raw_intent = dict(intent_overridden)
+
     # Safety: if a position is already open, block additional BUY intents.
     try:
         action = str(intent.get("action") or "").strip().upper()
@@ -639,6 +728,7 @@ def decide_trade(state: dict) -> dict:
         "strategy": strategy_name,
         "raw_intent": raw_intent,
         "llm_context": llm_context,
+        "score_override_applied": bool(score_override_applied),
     }
     if error:
         trace["error"] = error
