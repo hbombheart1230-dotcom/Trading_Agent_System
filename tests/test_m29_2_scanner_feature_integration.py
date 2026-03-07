@@ -74,4 +74,6 @@ def test_m29_2_scanner_uses_feature_engine_map_from_ohlcv():
     rows = {str(r.get("symbol")): r for r in out.get("scan_results", []) if isinstance(r, dict)}
     assert rows["AAA"]["features"]["engine_regime"] in ("trend", "range", "high_volatility")
     assert rows["BBB"]["features"]["engine_regime"] in ("trend", "range", "high_volatility")
+    assert "engine_trend_strength" in rows["AAA"]["features"]
+    assert "engine_cross_section_rank" in rows["AAA"]["features"]
     assert float(rows["AAA"]["components"]["feature_signal"]) >= float(rows["BBB"]["components"]["feature_signal"])

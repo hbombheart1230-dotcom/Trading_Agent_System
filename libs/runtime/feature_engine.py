@@ -242,6 +242,7 @@ def build_feature_row(
     market_breadth: Optional[float] = None,
     index_trend: Optional[float] = None,
     realized_vol: Optional[float] = None,
+    realized_volatility: Optional[float] = None,
 ) -> Dict[str, Any]:
     closes = _series(candles, "close")
     highs = _series(candles, "high")
@@ -278,11 +279,12 @@ def build_feature_row(
     vwap_distance = _vwap_distance(candles, closes, vols)
     rolling_drawdown20 = _rolling_drawdown(closes, 20)
 
+    vol_ctx_input = realized_volatility if realized_volatility is not None else realized_vol
     regime_obj = classify_regime_v2(
         ma20_gap=ma20_gap,
         volatility20=volatility20,
         index_trend=index_trend if index_trend is not None else ma20_gap,
-        realized_vol=realized_vol if realized_vol is not None else volatility20,
+        realized_vol=vol_ctx_input if vol_ctx_input is not None else volatility20,
         global_sentiment=global_sentiment,
         market_breadth=market_breadth,
         trend_gap_threshold=trend_gap_threshold,
@@ -290,6 +292,16 @@ def build_feature_row(
     )
     regime = str(regime_obj.get("regime") or "range")
     signal = _signal_score(ma20_gap=ma20_gap, rsi14=rsi14)
+    # Signed trend strength in [-1, 1], derived from ADX magnitude + trend direction.
+    trend_strength: Optional[float] = None
+    if adx14 is not None:
+        direction_ref = ma20_gap if ma20_gap is not None else index_trend
+        direction_num = _to_float(direction_ref)
+        direction = 1.0 if (direction_num is None or direction_num >= 0.0) else -1.0
+        trend_strength = max(-1.0, min(1.0, (float(adx14) / 100.0) * direction))
+    realized_vol_out = _to_float(vol_ctx_input)
+    if realized_vol_out is None:
+        realized_vol_out = _to_float(volatility20)
 
     return {
         "close_last": close_last,
@@ -302,12 +314,14 @@ def build_feature_row(
         "ma120_gap": ma120_gap,
         "atr14": atr14,
         "adx14": adx14,
+        "trend_strength": trend_strength,
         "gap_pct": gap_pct,
         "vwap_distance": vwap_distance,
         "return20": return20,
         "rolling_drawdown20": rolling_drawdown20,
         "volume_spike20": volume_spike20,
         "volatility20": volatility20,
+        "realized_volatility": realized_vol_out,
         "regime": regime,
         "regime_score": regime_obj.get("score"),
         "regime_factors": regime_obj.get("factors"),
@@ -328,6 +342,8 @@ def build_feature_map(
     breadth = _to_float(ctx.get("market_breadth")) if isinstance(ctx, dict) else None
     idx_trend = _to_float(ctx.get("index_trend")) if isinstance(ctx, dict) else None
     rv = _to_float(ctx.get("realized_vol")) if isinstance(ctx, dict) else None
+    if rv is None:
+        rv = _to_float(ctx.get("realized_volatility")) if isinstance(ctx, dict) else None
     for k, rows in ohlcv_by_symbol.items():
         sym = str(k or "").strip()
         if not sym or not isinstance(rows, list) or not rows:
@@ -340,6 +356,7 @@ def build_feature_map(
             market_breadth=breadth,
             index_trend=idx_trend,
             realized_vol=rv,
+            realized_volatility=rv,
         )
 
     if not out:
@@ -355,9 +372,11 @@ def build_feature_map(
     if n > 1:
         for i, (sym, _score) in enumerate(signal_pairs):
             out[sym]["cross_section_rank_signal"] = float(i / float(n - 1))
+            out[sym]["cross_section_rank"] = float(i / float(n - 1))
     else:
         only_sym = signal_pairs[0][0]
         out[only_sym]["cross_section_rank_signal"] = 1.0
+        out[only_sym]["cross_section_rank"] = 1.0
 
     returns = [float(v.get("return20")) for v in out.values() if v.get("return20") is not None]
     med_ret = _median(returns)

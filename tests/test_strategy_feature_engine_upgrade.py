@@ -32,9 +32,11 @@ def test_feature_engine_upgrade_adds_extended_feature_fields():
     assert "ma60_gap" in row
     assert "ma120_gap" in row
     assert "adx14" in row
+    assert "trend_strength" in row
     assert "gap_pct" in row
     assert "vwap_distance" in row
     assert "rolling_drawdown20" in row
+    assert "realized_volatility" in row
     assert "return20" in row
     assert "regime_score" in row
     assert "regime_factors" in row
@@ -49,7 +51,9 @@ def test_feature_engine_upgrade_build_feature_map_adds_cross_section_fields():
     )
     assert set(out.keys()) == {"AAA", "BBB"}
     assert "cross_section_rank_signal" in out["AAA"]
+    assert "cross_section_rank" in out["AAA"]
     assert "cross_section_rank_signal" in out["BBB"]
+    assert "cross_section_rank" in out["BBB"]
     assert "market_breadth" in out["AAA"]
     assert "relative_strength20" in out["AAA"]
     assert "sector_relative_strength" in out["AAA"]
@@ -67,3 +71,17 @@ def test_regime_v2_uses_realized_vol_context_for_high_vol():
     )
     assert obj["regime"] == "high_volatility"
     assert "factors" in obj
+
+
+def test_regime_v2_accepts_realized_volatility_alias():
+    obj = classify_regime_v2(
+        ma20_gap=0.015,
+        volatility20=0.01,
+        realized_volatility=0.04,
+        global_sentiment=0.1,
+        market_breadth=0.6,
+        trend_gap_threshold=0.01,
+        high_vol_threshold=0.03,
+    )
+    assert obj["regime"] == "high_volatility"
+    assert obj["factors"]["realized_volatility"] == 0.04
