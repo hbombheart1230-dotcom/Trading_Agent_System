@@ -807,12 +807,12 @@ def decide_trade(state: dict) -> dict:
     if static_intent is not None:
         raw_intent = dict(static_intent)
     elif _strategy_v1_enabled(state):
+        strategy_v1_name = "regime_momentum_v1"
         try:
-            from libs.strategies.v1.config import load_regime_momentum_v1_config
-            from libs.strategies.v1.regime_momentum_v1 import RegimeMomentumV1
+            from libs.strategies.v1.registry import build_strategy_v1, resolve_strategy_v1_name
 
-            cfg = load_regime_momentum_v1_config(policy=policy)
-            strategy = RegimeMomentumV1(config=cfg)
+            strategy_v1_name = resolve_strategy_v1_name(policy=policy, llm_context=llm_context)
+            strategy, strategy_v1_name = build_strategy_v1(name=strategy_v1_name, policy=policy)
             pos = _extract_position_for_symbol(portfolio, symbol)
             held_qty = int(pos.get("qty") or 0) if isinstance(pos, dict) else 0
             decision = strategy.decide(
@@ -829,9 +829,10 @@ def decide_trade(state: dict) -> dict:
             strategy_v1_decision = decision.to_dict()
             raw_intent = _raw_intent_from_strategy_decision(strategy_v1_decision, default_price=price)
             state["strategy_v1_decision"] = dict(strategy_v1_decision)
+            state["strategy_v1_name"] = str(strategy_v1_name)
             state["why"] = dict(strategy_v1_decision.get("evidence") or {})
             state["invalidation"] = dict(strategy_v1_decision.get("invalidation") or {})
-            strategy_name = "RegimeMomentumV1"
+            strategy_name = strategy.__class__.__name__
         except Exception as e:
             error = str(e)
             raw_intent = {
@@ -839,7 +840,7 @@ def decide_trade(state: dict) -> dict:
                 "reason": "strategy_v1_error",
                 "rationale": "strategy_v1_error",
             }
-            strategy_name = "RegimeMomentumV1"
+            strategy_name = "StrategyV1"
     elif strategist is not None and hasattr(strategist, "decide"):
         llm_t0 = 0.0
         do_llm_log = strategy_name == "OpenAIStrategist"
@@ -1051,6 +1052,7 @@ def decide_trade(state: dict) -> dict:
     }
     if strategy_v1_decision is not None:
         trace["strategy_v1_decision"] = dict(strategy_v1_decision)
+        trace["strategy_v1_name"] = str(state.get("strategy_v1_name") or "")
     if error:
         trace["error"] = error
 
