@@ -9,6 +9,7 @@ from libs.runtime.market_hours import MarketHours, now_kst
 from libs.runtime.dates import kst_day_str, to_kst
 
 GenerateFn = Callable[[Path, Path, str], Tuple[Path, Path]]
+OperatorBundleFn = Callable[..., Dict[str, Any]]
 
 def run_m13_eod_report(
     state: Dict[str, Any],
@@ -16,6 +17,7 @@ def run_m13_eod_report(
     dt: Optional[datetime] = None,
     market_hours: Optional[MarketHours] = None,
     generate: Optional[GenerateFn] = None,
+    generate_operator_reports: Optional[OperatorBundleFn] = None,
     grace_minutes: int = 5,
 ) -> Dict[str, Any]:
     """M13-2: end-of-day daily report trigger (test-first).
@@ -55,8 +57,10 @@ def run_m13_eod_report(
         state["eod_skip_reason"] = "before_close"
         return state
 
+    used_default_generate = False
     if generate is None:
         from libs.reporting.daily_report import generate_daily_report as generate  # lazy import
+        used_default_generate = True
 
     events_path = Path(os.getenv("EVENT_LOG_PATH", "./data/events.jsonl"))
     report_dir = Path(os.getenv("REPORT_DIR", "./reports"))
@@ -86,6 +90,26 @@ def run_m13_eod_report(
     except Exception:
         # do not fail EOD report for summary errors
         pass
+
+    # Operator visibility layer:
+    # - derive human-readable summaries from existing observability artifacts
+    # - keep raw logs untouched
+    # Only enable by default runtime path (skip custom-injected generate path used in unit tests).
+    if used_default_generate:
+        try:
+            if generate_operator_reports is None:
+                from libs.reporting.operator_visibility import (
+                    generate_operator_visibility_bundle as generate_operator_reports,
+                )
+            operator_bundle = generate_operator_reports(  # type: ignore[misc]
+                events_path=events_path,
+                report_root=report_dir,
+                day=day,
+            )
+            if isinstance(operator_bundle, dict):
+                report_obj["operator_visibility"] = operator_bundle
+        except Exception as e:
+            report_obj["operator_visibility_error"] = f"{type(e).__name__}: {e}"
 
     state["daily_report"] = report_obj
     state["last_daily_report_day"] = day
