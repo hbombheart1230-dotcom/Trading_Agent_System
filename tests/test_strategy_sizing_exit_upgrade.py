@@ -86,3 +86,18 @@ def test_exit_policy_emergency_and_eod_flat_triggers():
     )
     assert out_eod["triggered"] is True
     assert out_eod["reason"] == "eod_flat"
+
+
+def test_exit_policy_news_shock_triggers():
+    out = evaluate_exit_policy(
+        price=100.0,
+        avg_price=100.0,
+        qty=2,
+        policy={
+            "news_shock_threshold": 0.30,
+            "symbol_sentiment_score": -0.45,
+            "global_sentiment_score": 0.00,
+        },
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "news_shock"

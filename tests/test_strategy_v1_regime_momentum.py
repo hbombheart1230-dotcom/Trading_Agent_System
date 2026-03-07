@@ -23,6 +23,34 @@ def test_regime_momentum_v1_entry_buy_with_sizing():
     assert float(obj["confidence"]) > 0.0
     assert "evidence" in obj and obj["evidence"]["regime"] == "trend"
     assert "sizing_inputs" in obj
+    assert obj["sizing_inputs"]["inputs"]["regime"] == "trend"
+
+
+def test_regime_momentum_v1_sizing_respects_risk_context():
+    strategy = RegimeMomentumV1(config=RegimeMomentumV1Config())
+    base = StrategyInput(
+        symbol="005930",
+        regime="trend",
+        technical={"signal_score": 0.7, "ma20_gap": 0.03, "volatility20": 0.03, "rsi14": 58.0},
+        news={"symbol_sentiment_score": 0.20, "global_sentiment_score": 0.10},
+        portfolio={},
+        policy={},
+        risk_context={},
+    )
+    degraded = StrategyInput(
+        symbol="005930",
+        regime="high_volatility",
+        technical={"signal_score": 0.7, "ma20_gap": 0.03, "volatility20": 0.16, "rsi14": 58.0},
+        news={"symbol_sentiment_score": 0.20, "global_sentiment_score": 0.10},
+        portfolio={"exposure_ratio": 0.8, "daily_pnl_ratio": -0.02},
+        policy={"degrade_mode": True},
+        risk_context={"correlation_bucket": "high"},
+    )
+    out_base = strategy.decide(base, price=70000.0, cash=5_000_000.0, held_qty=0).to_dict()
+    out_degraded = strategy.decide(degraded, price=70000.0, cash=5_000_000.0, held_qty=0).to_dict()
+    assert out_base["action"] == "BUY"
+    assert out_degraded["action"] in ("BUY", "NOOP")
+    assert int(out_degraded["qty"]) <= int(out_base["qty"])
 
 
 def test_regime_momentum_v1_exit_sell_when_holding_and_signal_breaks():
@@ -70,5 +98,7 @@ def test_decide_trade_uses_strategy_v1_when_enabled(monkeypatch):
     assert out["decision_trace"]["strategy"] == "RegimeMomentumV1"
     assert out["decision_packet"]["intent"]["action"] == "BUY"
     assert "strategy_v1_decision" in out["decision_trace"]
-    assert "why" in out
-    assert "invalidation" in out
+    assert "why" in out["decision_packet"]
+    assert "invalidation" in out["decision_packet"]
+    assert "sizing_inputs" in out["decision_packet"]
+    assert out["decision_packet"]["why"]["regime"] == "trend"

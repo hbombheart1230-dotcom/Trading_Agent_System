@@ -24,9 +24,39 @@ Updated `libs/runtime/exit_policy.py`:
 - added optional exits:
   - `trailing_stop_pct` + `peak_price`
   - `vol_expansion_ratio` + (`current_volatility`, `baseline_volatility`)
+  - `news_shock_threshold` + (`symbol_sentiment_score`, `global_sentiment_score`)
   - `emergency_halt`
   - `use_eod_flat` + `minutes_to_close` + `eod_flat_cutoff_min`
 - existing stop-loss / take-profit / max-hold remain unchanged
+
+## Strategy Sizing Context Wiring
+
+Updated:
+
+- `libs/strategies/contracts.py`
+- `libs/strategies/v1/sizing_context.py` (new)
+- `libs/strategies/v1/regime_momentum_v1.py`
+- `libs/strategies/v1/mean_reversion_v1.py`
+- `libs/strategies/v1/news_momentum_v1.py`
+- `graphs/nodes/decide_trade.py`
+
+Changes:
+
+- added `StrategyInput.risk_context` as additive field
+- `decide_trade` now passes runtime risk context into strategy-v1 input
+- each strategy now forwards normalized sizing risk context into `evaluate_position_size`
+- sizing now reflects runtime state (`degrade_mode`, exposure, volatility percentile, loss state) without breaking old contracts
+
+## Decision Packet Explainability Wiring
+
+Updated `graphs/nodes/decide_trade.py`:
+
+- packet now consistently exposes additive explainability aliases:
+  - `action`, `symbol`, `qty`
+  - `why` (`regime` / `technical` / `news` / `policy`)
+  - `invalidation`
+  - `sizing_inputs` (when strategy-v1 decision exists)
+- trace includes `why` and `invalidation` for operator diagnostics
 
 ## Monitor Integration
 
@@ -43,3 +73,9 @@ Updated `graphs/nodes/monitor_node.py`:
   - trailing stop trigger
   - volatility expansion trigger
   - emergency halt / eod-flat trigger
+  - news shock trigger
+- `tests/test_strategy_v1_regime_momentum.py`
+  - strategy-v1 sizing uses risk-context inputs
+  - decision packet explainability fields present on strategy-v1 path
+- `tests/test_m20_2_decide_trade_llm_flow.py`
+  - exit policy `news_shock` integration in live decision flow

@@ -45,6 +45,7 @@ class StrategyInput:
     news: Dict[str, Any] = field(default_factory=dict)
     portfolio: Dict[str, Any] = field(default_factory=dict)
     policy: Dict[str, Any] = field(default_factory=dict)
+    risk_context: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -54,6 +55,7 @@ class StrategyInput:
             "news": dict(self.news or {}),
             "portfolio": dict(self.portfolio or {}),
             "policy": dict(self.policy or {}),
+            "risk_context": dict(self.risk_context or {}),
         }
 
 

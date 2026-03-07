@@ -206,6 +206,7 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
     mh_raw = str(os.getenv("EXIT_POLICY_MAX_HOLD_SEC", "") or "").strip()
     trail_raw = str(os.getenv("EXIT_POLICY_TRAILING_STOP_PCT", "") or "").strip()
     vol_exp_raw = str(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "") or "").strip()
+    news_shock_raw = str(os.getenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "") or "").strip()
     eod_flat_raw = str(os.getenv("EXIT_POLICY_USE_EOD_FLAT", "") or "").strip()
     eod_cutoff_raw = str(os.getenv("EXIT_POLICY_EOD_FLAT_CUTOFF_MIN", "") or "").strip()
     emergency_raw = str(os.getenv("EXIT_POLICY_EMERGENCY_HALT", "") or "").strip()
@@ -220,6 +221,8 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
         out["trailing_stop_pct"] = _to_float(trail_raw, _to_float(out.get("trailing_stop_pct"), 0.0))
     if vol_exp_raw:
         out["vol_expansion_ratio"] = _to_float(vol_exp_raw, _to_float(out.get("vol_expansion_ratio"), 0.0))
+    if news_shock_raw:
+        out["news_shock_threshold"] = _to_float(news_shock_raw, _to_float(out.get("news_shock_threshold"), 0.0))
     if eod_flat_raw:
         out["use_eod_flat"] = _is_trueish(eod_flat_raw)
     if eod_cutoff_raw:
@@ -555,6 +558,35 @@ def _build_llm_context(state: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
     }
 
 
+def _build_packet_why(*, state: Dict[str, Any], llm_context: Dict[str, Any]) -> Dict[str, Any]:
+    technical = llm_context.get("technical") if isinstance(llm_context.get("technical"), dict) else {}
+    news = llm_context.get("news") if isinstance(llm_context.get("news"), dict) else {}
+    decision_policy = llm_context.get("decision_policy") if isinstance(llm_context.get("decision_policy"), dict) else {}
+    base = {
+        "regime": str(technical.get("regime") or "unknown"),
+        "technical": dict(technical),
+        "news": dict(news),
+        "policy": dict(decision_policy),
+    }
+    override = state.get("why")
+    if isinstance(override, dict):
+        for k in ("regime", "technical", "news", "policy"):
+            if k in override:
+                base[k] = override.get(k)
+    return base
+
+
+def _build_packet_invalidation(*, state: Dict[str, Any]) -> Dict[str, Any]:
+    inv = state.get("invalidation")
+    if isinstance(inv, dict):
+        return {
+            "triggered": bool(inv.get("triggered", False)),
+            "reason": str(inv.get("reason") or ""),
+            "conditions": list(inv.get("conditions") or []),
+        }
+    return {"triggered": False, "reason": "", "conditions": []}
+
+
 def _strategy_v1_enabled(state: Dict[str, Any]) -> bool:
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
     if policy.get("use_strategy_v1") is not None:
@@ -568,11 +600,35 @@ def _to_strategy_v1_input(
     llm_context: Dict[str, Any],
     portfolio: Dict[str, Any],
     policy: Dict[str, Any],
+    risk_context: Dict[str, Any],
 ):
     from libs.strategies.contracts import StrategyInput
 
     technical = llm_context.get("technical") if isinstance(llm_context.get("technical"), dict) else {}
     news = llm_context.get("news") if isinstance(llm_context.get("news"), dict) else {}
+    rc = dict(risk_context or {})
+    if not str(rc.get("regime") or "").strip():
+        rc["regime"] = str(technical.get("regime") or "unknown")
+    if rc.get("volatility_percentile") is None:
+        vol = _to_float(technical.get("volatility20"), 0.0)
+        vol_ref = max(1e-9, _to_float(policy.get("volatility_percentile_ref"), 0.20))
+        rc["volatility_percentile"] = _clip(vol / vol_ref, 0.0, 1.0)
+    if rc.get("portfolio_exposure") is None:
+        rc["portfolio_exposure"] = _clip(
+            _to_float(portfolio.get("exposure_ratio", portfolio.get("portfolio_exposure", 0.0)), 0.0),
+            0.0,
+            1.0,
+        )
+    if rc.get("daily_loss_state") is None:
+        daily_pnl = _to_float(rc.get("daily_pnl_ratio", portfolio.get("daily_pnl_ratio", 0.0)), 0.0)
+        daily_loss_cut = _to_float(policy.get("daily_loss_state_threshold"), -0.01)
+        rc["daily_loss_state"] = bool(daily_pnl <= daily_loss_cut)
+    if rc.get("degrade_mode") is None:
+        rc["degrade_mode"] = _is_trueish(
+            rc.get("safe_degrade_mode", policy.get("degrade_mode", policy.get("safe_degrade_mode", False)))
+        )
+    if rc.get("correlation_bucket") is None:
+        rc["correlation_bucket"] = str(policy.get("correlation_bucket") or "medium").strip().lower() or "medium"
     return StrategyInput(
         symbol=_norm_symbol(symbol),
         regime=str(technical.get("regime") or "unknown"),
@@ -580,6 +636,7 @@ def _to_strategy_v1_input(
         news=dict(news),
         portfolio=dict(portfolio or {}),
         policy=dict(policy or {}),
+        risk_context=rc,
     )
 
 
@@ -778,12 +835,17 @@ def decide_trade(state: dict) -> dict:
         avg_price = _to_float(position.get("avg_price"), 0.0)
         px = _to_float(price, 0.0) if price is not None else 0.0
         if qty_pos > 0 and avg_price > 0.0 and px > 0.0:
+            exit_policy_cfg = _resolve_exit_policy_config(state)
+            news_ctx = llm_context.get("news") if isinstance(llm_context.get("news"), dict) else {}
+            if news_ctx:
+                exit_policy_cfg["symbol_sentiment_score"] = _to_float(news_ctx.get("symbol_sentiment_score"), 0.0)
+                exit_policy_cfg["global_sentiment_score"] = _to_float(news_ctx.get("global_sentiment_score"), 0.0)
             exit_decision = evaluate_exit_policy(
                 price=px,
                 avg_price=avg_price,
                 qty=qty_pos,
                 hold_sec=_resolve_position_hold_sec(state),
-                policy=_resolve_exit_policy_config(state),
+                policy=exit_policy_cfg,
             )
             reason = str(exit_decision.get("reason") or "hold")
             if bool(exit_decision.get("triggered")):
@@ -821,6 +883,7 @@ def decide_trade(state: dict) -> dict:
                     llm_context=llm_context,
                     portfolio=portfolio,
                     policy=policy,
+                    risk_context=risk,
                 ),
                 price=_to_float(price, 0.0) if price is not None else None,
                 cash=_to_float(cash, 0.0),
@@ -1040,7 +1103,24 @@ def decide_trade(state: dict) -> dict:
     except Exception:
         pass
 
-    packet = {"intent": intent, "risk": risk, "exec_context": exec_context}
+    packet_why = _build_packet_why(state=state, llm_context=llm_context)
+    packet_invalidation = _build_packet_invalidation(state=state)
+    packet_sizing_inputs = {}
+    if strategy_v1_decision is not None and isinstance(strategy_v1_decision.get("sizing_inputs"), dict):
+        packet_sizing_inputs = dict(strategy_v1_decision.get("sizing_inputs") or {})
+
+    packet = {
+        "intent": intent,
+        "risk": risk,
+        "exec_context": exec_context,
+        # additive explainability aliases for operator-facing consumers
+        "action": str(intent.get("action") or "").strip().upper(),
+        "symbol": str(intent.get("symbol") or "").strip().upper(),
+        "qty": int(intent.get("qty") or 0),
+        "why": packet_why,
+        "invalidation": packet_invalidation,
+        "sizing_inputs": packet_sizing_inputs,
+    }
     trace = {
         "features": features,
         "signals": signals,
@@ -1049,6 +1129,8 @@ def decide_trade(state: dict) -> dict:
         "raw_intent": raw_intent,
         "llm_context": llm_context,
         "score_override_applied": bool(score_override_applied),
+        "why": packet_why,
+        "invalidation": packet_invalidation,
     }
     if strategy_v1_decision is not None:
         trace["strategy_v1_decision"] = dict(strategy_v1_decision)

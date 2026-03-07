@@ -10,6 +10,7 @@ from libs.strategies.contracts import (
     StrategyInvalidation,
 )
 from .config import NewsMomentumV1Config
+from .sizing_context import build_sizing_risk_context
 
 
 def _to_float(v: Any, default: float = 0.0) -> float:
@@ -192,6 +193,13 @@ class NewsMomentumV1:
             float(self.config.base_position_notional_ratio) * max(confidence, 0.25),
             0.01,
         )
+        sizing_risk_context = build_sizing_risk_context(
+            risk_context=dict(data.risk_context or {}),
+            policy=dict(data.policy or {}),
+            portfolio=dict(data.portfolio or {}),
+            regime=regime,
+            volatility20=volatility,
+        )
         sizing = evaluate_position_size(
             price=_to_float(price, 0.0),
             cash=_to_float(cash, 0.0),
@@ -202,6 +210,7 @@ class NewsMomentumV1:
                 "min_position_qty": int(self.config.min_position_qty),
                 "lot_size": int(self.config.lot_size),
             },
+            risk_context=sizing_risk_context,
         )
         qty = int(sizing.get("qty") or 0)
         if qty <= 0:

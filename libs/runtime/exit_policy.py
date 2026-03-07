@@ -46,6 +46,7 @@ def evaluate_exit_policy(
             "max_hold_sec": max(0, int(_to_float(p.get("max_hold_sec"), 0))),
             "trailing_stop_pct": _clamp_non_negative(_to_float(p.get("trailing_stop_pct"), 0.0)),
             "vol_expansion_ratio": _clamp_non_negative(_to_float(p.get("vol_expansion_ratio"), 0.0)),
+            "news_shock_threshold": _clamp_non_negative(_to_float(p.get("news_shock_threshold"), 0.0)),
             "eod_flat_cutoff_min": max(0, int(_to_float(p.get("eod_flat_cutoff_min"), 10))),
         },
     }
@@ -77,6 +78,18 @@ def evaluate_exit_policy(
         out["triggered"] = True
         out["reason"] = "max_hold"
         return out
+
+    # News shock exit (optional): sentiment crash forces immediate flattening.
+    news_shock_th = float(out["thresholds"]["news_shock_threshold"])
+    if news_shock_th > 0.0:
+        symbol_sent = _to_float(p.get("symbol_sentiment_score"), 0.0)
+        global_sent = _to_float(p.get("global_sentiment_score"), 0.0)
+        out["symbol_sentiment_score"] = float(symbol_sent)
+        out["global_sentiment_score"] = float(global_sent)
+        if symbol_sent <= -news_shock_th or global_sent <= -news_shock_th:
+            out["triggered"] = True
+            out["reason"] = "news_shock"
+            return out
 
     px = _to_float(price, 0.0) if price is not None else 0.0
     apx = _to_float(avg_price, 0.0) if avg_price is not None else 0.0

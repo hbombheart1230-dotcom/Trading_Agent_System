@@ -464,3 +464,40 @@ def test_m20_2_decide_trade_eod_force_liquidation_emits_sell(monkeypatch):
     assert out["decision_packet"]["intent"]["symbol"] == "005930"
     assert out["decision_packet"]["intent"]["qty"] == 16
     assert str(out["decision_packet"]["intent"]["rationale"]).startswith("eod_force_liquidation:")
+
+
+def test_m20_2_decide_trade_exit_policy_news_shock_triggers_sell(monkeypatch):
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    monkeypatch.setenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "0.25")
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {
+            "cash": 2_000_000,
+            "positions": [{"symbol": "005930", "qty": 3, "avg_price": 69000.0}],
+            "open_positions": 1,
+        },
+        "risk_context": {"open_positions": 1, "daily_pnl_ratio": 0.0, "last_order_epoch": 0},
+        "news_sentiment_signal": {
+            "005930": {
+                "score": -0.50,
+                "status": "ok",
+                "source": "test",
+                "reason": "fixture",
+                "ts": 1772812800,
+            }
+        },
+        "global_sentiment_signal": {
+            "score": -0.10,
+            "status": "ok",
+            "source": "test",
+            "reason": "fixture",
+            "ts": 1772812800,
+        },
+    }
+    out = decide_trade(state)
+    assert out["decision_trace"]["strategy"] == "ExitPolicyStrategist"
+    assert out["decision_packet"]["intent"]["action"] == "SELL"
+    assert out["decision_packet"]["intent"]["qty"] == 3
+    assert out["decision_packet"]["intent"]["rationale"] == "exit_policy:news_shock"
