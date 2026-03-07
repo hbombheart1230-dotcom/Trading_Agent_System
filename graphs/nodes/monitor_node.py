@@ -74,6 +74,64 @@ def _resolve_cash(state: Dict[str, Any]) -> float:
     return 0.0
 
 
+def _portfolio_exposure(state: Dict[str, Any], price_fallback: float = 0.0) -> float:
+    cash = _resolve_cash(state)
+    pos_map = _position_by_symbol(state)
+    invested = 0.0
+    for row in pos_map.values():
+        qty = max(0, _to_int(row.get("qty")))
+        if qty <= 0:
+            continue
+        px = _to_float(row.get("price"))
+        if px <= 0.0:
+            px = _to_float(row.get("avg_price"))
+        if px <= 0.0:
+            px = price_fallback
+        if px <= 0.0:
+            continue
+        invested += float(qty) * float(px)
+    denom = cash + invested
+    if denom <= 0.0:
+        return 0.0
+    return float(invested / denom)
+
+
+def _build_sizing_risk_context(state: Dict[str, Any], selected: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    rc = dict(state.get("risk_context") or {}) if isinstance(state.get("risk_context"), dict) else {}
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    features = selected.get("features") if isinstance(selected.get("features"), dict) else {}
+    regime = str(features.get("engine_regime") or selected.get("regime") or policy.get("regime") or "").strip().lower()
+    vol20 = _to_float(features.get("engine_volatility20"))
+    vol_pct = _to_float(policy.get("volatility_percentile"))
+    if vol_pct <= 0.0 and vol20 > 0.0:
+        vol_pct = min(max(vol20 / 0.05, 0.0), 1.0)
+
+    price = _resolve_price(state, symbol, selected) or 0.0
+    exposure = _portfolio_exposure(state, price_fallback=float(price))
+    corr_bucket = str(policy.get("correlation_bucket") or "medium").strip().lower()
+    daily_pnl_ratio = _to_float(rc.get("daily_pnl_ratio"))
+    daily_loss_limit = abs(_to_float(policy.get("risk_daily_loss_limit")))
+    if daily_loss_limit <= 0.0:
+        daily_loss_limit = 0.02
+    daily_loss_state = daily_pnl_ratio <= -daily_loss_limit if daily_loss_limit > 0 else False
+    degrade_mode = bool(state.get("degrade_mode"))
+    rs = state.get("resilience_state") if isinstance(state.get("resilience_state"), dict) else {}
+    if str(rs.get("mode") or "").strip().lower() == "degrade":
+        degrade_mode = True
+
+    rc.update(
+        {
+            "regime": regime or None,
+            "volatility_percentile": float(vol_pct),
+            "portfolio_exposure": float(exposure),
+            "correlation_bucket": corr_bucket,
+            "daily_loss_state": bool(daily_loss_state),
+            "degrade_mode": bool(degrade_mode),
+        }
+    )
+    return rc
+
+
 def _position_by_symbol(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
     snapshot = state.get("portfolio_snapshot")
@@ -219,11 +277,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if use_position_sizing:
             px = _resolve_price(state, symbol, selected)
             cash = _resolve_cash(state)
+            sizing_risk_context = _build_sizing_risk_context(state, selected, symbol)
             sz = evaluate_position_size(
                 price=px,
                 cash=cash if cash > 0.0 else None,
                 policy=policy.get("position_sizing") if isinstance(policy.get("position_sizing"), dict) else policy,
-                risk_context=state.get("risk_context") if isinstance(state.get("risk_context"), dict) else {},
+                risk_context=sizing_risk_context,
             )
             qty = max(0, _to_int(sz.get("qty")))
             sizing_info = {
@@ -289,11 +348,31 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         qty = max(0, _to_int(pos.get("qty")))
         avg_price = _to_float(pos.get("avg_price"))
         price = _resolve_price(state, symbol, selected)
+        features = selected.get("features") if isinstance(selected.get("features"), dict) else {}
+        hold_sec = _to_int(pos.get("hold_sec"))
+        if hold_sec <= 0:
+            hold_sec = _to_int(state.get("position_hold_sec"))
+        exit_policy = policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else policy
+        exit_policy_map = dict(exit_policy or {})
+        if pos.get("peak_price") is not None:
+            exit_policy_map.setdefault("peak_price", pos.get("peak_price"))
+        elif pos.get("high_water_mark") is not None:
+            exit_policy_map.setdefault("peak_price", pos.get("high_water_mark"))
+        if features.get("engine_volatility20") is not None:
+            exit_policy_map.setdefault("current_volatility", features.get("engine_volatility20"))
+        if policy.get("exit_policy_baseline_volatility") is not None:
+            exit_policy_map.setdefault("baseline_volatility", policy.get("exit_policy_baseline_volatility"))
+        if state.get("emergency_halt") is not None:
+            exit_policy_map.setdefault("emergency_halt", state.get("emergency_halt"))
+        mctx = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+        if mctx.get("minutes_to_close") is not None:
+            exit_policy_map.setdefault("minutes_to_close", mctx.get("minutes_to_close"))
         decision = evaluate_exit_policy(
             price=price,
             avg_price=avg_price if avg_price > 0.0 else None,
             qty=qty,
-            policy=policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else policy,
+            hold_sec=hold_sec if hold_sec > 0 else None,
+            policy=exit_policy_map,
         )
         exit_info = {
             "enabled": True,
@@ -306,6 +385,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "price": price,
             "avg_price": avg_price if avg_price > 0.0 else None,
             "thresholds": decision.get("thresholds") if isinstance(decision.get("thresholds"), dict) else {},
+            "hold_sec": hold_sec if hold_sec > 0 else None,
+            "trailing_drawdown": decision.get("trailing_drawdown"),
+            "volatility_ratio": decision.get("volatility_ratio"),
+            "minutes_to_close": decision.get("minutes_to_close"),
         }
         if bool(decision.get("triggered")) and qty > 0:
             intents = [

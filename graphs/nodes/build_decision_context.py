@@ -6,8 +6,13 @@ import os
 import time
 from typing import Any, Dict, List, Mapping, Optional
 
-from libs.market.global_sentiment import compute_global_sentiment
-from libs.news.news_pipeline import collect_news_items, score_news_sentiment
+from libs.data_quality.signal_contract import (
+    SIGNAL_STATUS_FALLBACK,
+    SIGNAL_STATUS_UNAVAILABLE,
+    make_signal,
+)
+from libs.market.global_sentiment import compute_global_sentiment_signal
+from libs.news.news_pipeline import collect_news_items, score_news_sentiment, score_news_sentiment_signal
 from libs.runtime.feature_engine import build_feature_map
 
 
@@ -383,11 +388,42 @@ def build_decision_context(state: Dict[str, Any]) -> Dict[str, Any]:
     if last_epoch > 0 and (now - last_epoch) < refresh_sec:
         gs_cached = _to_float(cache_row.get("global_sentiment_score"), 0.0)
         ns_cached = _to_float(cache_row.get("news_sentiment_score"), 0.0)
+        gs_signal_cached = (
+            dict(cache_row.get("global_sentiment_signal"))
+            if isinstance(cache_row.get("global_sentiment_signal"), dict)
+            else make_signal(
+                score=gs_cached,
+                status=SIGNAL_STATUS_FALLBACK,
+                source="decision_context_cache",
+                reason="legacy_cache_missing_signal",
+                ts=last_epoch,
+            )
+        )
+        ns_signal_cached = (
+            dict(cache_row.get("news_sentiment_signal"))
+            if isinstance(cache_row.get("news_sentiment_signal"), dict)
+            else make_signal(
+                score=ns_cached,
+                status=SIGNAL_STATUS_FALLBACK,
+                source="decision_context_cache",
+                reason="legacy_cache_missing_signal",
+                ts=last_epoch,
+            )
+        )
         state["global_sentiment"] = {"score": float(gs_cached)}
+        state["global_sentiment_signal"] = gs_signal_cached
 
         ns_map = dict(state.get("news_sentiment") or {}) if isinstance(state.get("news_sentiment"), dict) else {}
         ns_map[symbol] = float(ns_cached)
         state["news_sentiment"] = ns_map
+
+        ns_signal_map = (
+            dict(state.get("news_sentiment_signal") or {})
+            if isinstance(state.get("news_sentiment_signal"), dict)
+            else {}
+        )
+        ns_signal_map[symbol] = ns_signal_cached
+        state["news_sentiment_signal"] = ns_signal_map
 
         ni_map = dict(state.get("news_items") or {}) if isinstance(state.get("news_items"), dict) else {}
         if isinstance(cache_row.get("news_items"), list):
@@ -401,20 +437,47 @@ def build_decision_context(state: Dict[str, Any]) -> Dict[str, Any]:
             "last_refreshed_epoch": int(last_epoch),
             "global_sentiment_score": float(gs_cached),
             "news_sentiment_score": float(ns_cached),
+            "global_sentiment_status": str(gs_signal_cached.get("status") or ""),
+            "global_sentiment_source": str(gs_signal_cached.get("source") or ""),
+            "global_sentiment_reason": str(gs_signal_cached.get("reason") or ""),
+            "news_sentiment_status": str(ns_signal_cached.get("status") or ""),
+            "news_sentiment_source": str(ns_signal_cached.get("source") or ""),
+            "news_sentiment_reason": str(ns_signal_cached.get("reason") or ""),
             "feature_regime": feature_regime,
             "feature_signal_score": float(feature_signal),
         }
         state["_decision_context_cache"] = cache_root
         return state
 
-    gs = 0.0
+    global_signal = make_signal(
+        score=0.0,
+        status=SIGNAL_STATUS_FALLBACK,
+        source="global_policy",
+        reason="global_sentiment_disabled",
+        ts=now,
+    )
     if bool(policy.get("use_global_sentiment", True)):
         try:
-            gs = float(compute_global_sentiment(state=state, policy=policy))
+            global_signal = dict(compute_global_sentiment_signal(state=state, policy=policy))
         except Exception:
-            gs = 0.0
+            global_signal = make_signal(
+                score=0.0,
+                status=SIGNAL_STATUS_UNAVAILABLE,
+                source="compute_global_sentiment_signal",
+                reason="global_sentiment_exception",
+                ts=now,
+            )
+    gs = _to_float(global_signal.get("score"), 0.0)
     state["global_sentiment"] = {"score": float(gs)}
+    state["global_sentiment_signal"] = global_signal
 
+    news_signal = make_signal(
+        score=0.0,
+        status=SIGNAL_STATUS_FALLBACK,
+        source="news_policy",
+        reason="news_analysis_disabled",
+        ts=now,
+    )
     news_score = 0.0
     news_items: List[Any] = []
     if bool(policy.get("use_news_analysis", True)):
@@ -422,16 +485,39 @@ def build_decision_context(state: Dict[str, Any]) -> Dict[str, Any]:
             items_by_symbol = collect_news_items([symbol], state=state, policy=policy)
             if isinstance(items_by_symbol, dict):
                 news_items = list(items_by_symbol.get(symbol) or [])
-            scores = score_news_sentiment(items_by_symbol, state=state, policy=policy)  # type: ignore[arg-type]
-            if isinstance(scores, dict):
-                news_score = _to_float(scores.get(symbol), 0.0)
+            signals = score_news_sentiment_signal(items_by_symbol, state=state, policy=policy)  # type: ignore[arg-type]
+            if isinstance(signals, dict) and isinstance(signals.get(symbol), dict):
+                news_signal = dict(signals.get(symbol) or {})
+            else:
+                news_signal = make_signal(
+                    score=0.0,
+                    status=SIGNAL_STATUS_UNAVAILABLE,
+                    source=f"scorer:{policy.get('news_scorer') or 'simple'}",
+                    reason="missing_symbol_signal",
+                    ts=now,
+                )
+            news_score = _to_float(news_signal.get("score"), 0.0)
         except Exception:
+            news_signal = make_signal(
+                score=0.0,
+                status=SIGNAL_STATUS_UNAVAILABLE,
+                source=f"scorer:{policy.get('news_scorer') or 'simple'}",
+                reason="news_scoring_exception",
+                ts=now,
+            )
             news_score = 0.0
             news_items = []
 
     ns_map = dict(state.get("news_sentiment") or {}) if isinstance(state.get("news_sentiment"), dict) else {}
     ns_map[symbol] = float(news_score)
     state["news_sentiment"] = ns_map
+    ns_signal_map = (
+        dict(state.get("news_sentiment_signal") or {})
+        if isinstance(state.get("news_sentiment_signal"), dict)
+        else {}
+    )
+    ns_signal_map[symbol] = news_signal
+    state["news_sentiment_signal"] = ns_signal_map
 
     ni_map = dict(state.get("news_items") or {}) if isinstance(state.get("news_items"), dict) else {}
     ni_map[symbol] = list(news_items)
@@ -441,6 +527,8 @@ def build_decision_context(state: Dict[str, Any]) -> Dict[str, Any]:
         "refreshed_epoch": int(now),
         "global_sentiment_score": float(gs),
         "news_sentiment_score": float(news_score),
+        "global_sentiment_signal": dict(global_signal),
+        "news_sentiment_signal": dict(news_signal),
         "news_items": list(news_items),
         "feature_regime": feature_regime,
         "feature_signal_score": float(feature_signal),
@@ -453,6 +541,12 @@ def build_decision_context(state: Dict[str, Any]) -> Dict[str, Any]:
         "last_refreshed_epoch": int(now),
         "global_sentiment_score": float(gs),
         "news_sentiment_score": float(news_score),
+        "global_sentiment_status": str(global_signal.get("status") or ""),
+        "global_sentiment_source": str(global_signal.get("source") or ""),
+        "global_sentiment_reason": str(global_signal.get("reason") or ""),
+        "news_sentiment_status": str(news_signal.get("status") or ""),
+        "news_sentiment_source": str(news_signal.get("source") or ""),
+        "news_sentiment_reason": str(news_signal.get("reason") or ""),
         "feature_regime": feature_regime,
         "feature_signal_score": float(feature_signal),
     }

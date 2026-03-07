@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any, Dict
 
 from libs.ai.intent_schema import normalize_intent
+from libs.data_quality.signal_contract import (
+    SIGNAL_STATUS_FALLBACK,
+    make_signal,
+)
 from libs.runtime.exit_policy import evaluate_exit_policy
 from libs.runtime.circuit_breaker import (
     gate_runtime_circuit,
@@ -200,6 +204,11 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
     sl_raw = str(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "") or "").strip()
     tp_raw = str(os.getenv("EXIT_POLICY_TAKE_PROFIT_PCT", "") or "").strip()
     mh_raw = str(os.getenv("EXIT_POLICY_MAX_HOLD_SEC", "") or "").strip()
+    trail_raw = str(os.getenv("EXIT_POLICY_TRAILING_STOP_PCT", "") or "").strip()
+    vol_exp_raw = str(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "") or "").strip()
+    eod_flat_raw = str(os.getenv("EXIT_POLICY_USE_EOD_FLAT", "") or "").strip()
+    eod_cutoff_raw = str(os.getenv("EXIT_POLICY_EOD_FLAT_CUTOFF_MIN", "") or "").strip()
+    emergency_raw = str(os.getenv("EXIT_POLICY_EMERGENCY_HALT", "") or "").strip()
 
     if sl_raw:
         out["stop_loss_pct"] = _to_float(sl_raw, _to_float(out.get("stop_loss_pct"), 0.03))
@@ -207,6 +216,16 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
         out["take_profit_pct"] = _to_float(tp_raw, _to_float(out.get("take_profit_pct"), 0.05))
     if mh_raw:
         out["max_hold_sec"] = int(_to_float(mh_raw, _to_float(out.get("max_hold_sec"), 0.0)))
+    if trail_raw:
+        out["trailing_stop_pct"] = _to_float(trail_raw, _to_float(out.get("trailing_stop_pct"), 0.0))
+    if vol_exp_raw:
+        out["vol_expansion_ratio"] = _to_float(vol_exp_raw, _to_float(out.get("vol_expansion_ratio"), 0.0))
+    if eod_flat_raw:
+        out["use_eod_flat"] = _is_trueish(eod_flat_raw)
+    if eod_cutoff_raw:
+        out["eod_flat_cutoff_min"] = int(_to_float(eod_cutoff_raw, _to_float(out.get("eod_flat_cutoff_min"), 10.0)))
+    if emergency_raw:
+        out["emergency_halt"] = _is_trueish(emergency_raw)
     return out
 
 
@@ -367,36 +386,128 @@ def _extract_symbol_feature_row(state: Dict[str, Any], symbol: Any) -> Dict[str,
 
 
 def _extract_symbol_news_score(state: Dict[str, Any], symbol: Any) -> float:
-    sym = _norm_symbol(symbol)
-    if not sym:
-        return 0.0
-    raw = state.get("news_sentiment")
-    if not isinstance(raw, dict):
-        raw = state.get("mock_news_sentiment")
-    if not isinstance(raw, dict):
-        return 0.0
-    return _to_float(raw.get(sym) if sym in raw else raw.get(str(symbol)), 0.0)
+    signal = _extract_symbol_news_signal(state, symbol)
+    return _to_float(signal.get("score"), 0.0)
 
 
 def _extract_global_sentiment_score(state: Dict[str, Any]) -> float:
+    signal = _extract_global_sentiment_signal(state)
+    return _to_float(signal.get("score"), 0.0)
+
+
+def _coerce_signal_dict(raw: Any, *, default_source: str, default_reason: str) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return make_signal(
+            score=raw.get("score", 0.0),
+            status=str(raw.get("status") or SIGNAL_STATUS_FALLBACK),
+            source=str(raw.get("source") or default_source),
+            reason=str(raw.get("reason") or default_reason),
+            ts=raw.get("ts"),
+        )
+    return make_signal(
+        score=0.0,
+        status=SIGNAL_STATUS_FALLBACK,
+        source=default_source,
+        reason=default_reason,
+    )
+
+
+def _extract_symbol_news_signal(state: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
+    sym = _norm_symbol(symbol)
+    if not sym:
+        return make_signal(
+            score=0.0,
+            status=SIGNAL_STATUS_FALLBACK,
+            source="decision_context",
+            reason="missing_symbol",
+        )
+
+    news_signal_root = state.get("news_sentiment_signal")
+    if isinstance(news_signal_root, dict):
+        raw_sig = news_signal_root.get(sym)
+        if raw_sig is None:
+            raw_sig = news_signal_root.get(str(symbol))
+        if raw_sig is not None:
+            return _coerce_signal_dict(
+                raw_sig,
+                default_source="news_sentiment_signal",
+                default_reason="signal_missing_fields",
+            )
+
+    raw = state.get("news_sentiment")
+    if not isinstance(raw, dict):
+        raw = state.get("mock_news_sentiment")
+    if isinstance(raw, dict):
+        score = raw.get(sym) if sym in raw else raw.get(str(symbol))
+        return make_signal(
+            score=score if score is not None else 0.0,
+            status=SIGNAL_STATUS_FALLBACK,
+            source="legacy_news_sentiment",
+            reason="signal_missing_using_legacy_score",
+        )
+
+    return make_signal(
+        score=0.0,
+        status=SIGNAL_STATUS_FALLBACK,
+        source="legacy_news_sentiment",
+        reason="signal_missing_no_score",
+    )
+
+
+def _extract_global_sentiment_signal(state: Dict[str, Any]) -> Dict[str, Any]:
+    raw_sig = state.get("global_sentiment_signal")
+    if raw_sig is not None:
+        return _coerce_signal_dict(
+            raw_sig,
+            default_source="global_sentiment_signal",
+            default_reason="signal_missing_fields",
+        )
+
     gs = state.get("global_sentiment")
     if isinstance(gs, dict):
-        return _to_float(gs.get("score"), 0.0)
+        return make_signal(
+            score=gs.get("score", 0.0),
+            status=SIGNAL_STATUS_FALLBACK,
+            source="legacy_global_sentiment",
+            reason="signal_missing_using_legacy_score",
+        )
     if gs is not None:
-        return _to_float(gs, 0.0)
+        return make_signal(
+            score=gs,
+            status=SIGNAL_STATUS_FALLBACK,
+            source="legacy_global_sentiment",
+            reason="signal_missing_using_legacy_score",
+        )
     pol = state.get("policy") if isinstance(state.get("policy"), dict) else {}
     pgs = pol.get("global_sentiment")
     if isinstance(pgs, dict):
-        return _to_float(pgs.get("score"), 0.0)
+        return make_signal(
+            score=pgs.get("score", 0.0),
+            status=SIGNAL_STATUS_FALLBACK,
+            source="legacy_policy_global_sentiment",
+            reason="signal_missing_using_policy_score",
+        )
     if pgs is not None:
-        return _to_float(pgs, 0.0)
-    return 0.0
+        return make_signal(
+            score=pgs,
+            status=SIGNAL_STATUS_FALLBACK,
+            source="legacy_policy_global_sentiment",
+            reason="signal_missing_using_policy_score",
+        )
+    return make_signal(
+        score=0.0,
+        status=SIGNAL_STATUS_FALLBACK,
+        source="legacy_global_sentiment",
+        reason="signal_missing_no_score",
+    )
 
 
 def _build_llm_context(state: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
     feat = _extract_symbol_feature_row(state, symbol)
-    news_score = _extract_symbol_news_score(state, symbol)
-    global_score = _extract_global_sentiment_score(state)
+    news_signal = _extract_symbol_news_signal(state, symbol)
+    global_signal = _extract_global_sentiment_signal(state)
+    news_score = _to_float(news_signal.get("score"), 0.0)
+    global_score = _to_float(global_signal.get("score"), 0.0)
 
     def _v_float(name: str, default: float) -> float:
         val = feat.get(name)
@@ -421,16 +532,86 @@ def _build_llm_context(state: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
     news = {
         "symbol_sentiment_score": float(news_score),
         "global_sentiment_score": float(global_score),
+        "symbol_sentiment_status": str(news_signal.get("status") or SIGNAL_STATUS_FALLBACK),
+        "symbol_sentiment_source": str(news_signal.get("source") or ""),
+        "symbol_sentiment_reason": str(news_signal.get("reason") or ""),
+        "global_sentiment_status": str(global_signal.get("status") or SIGNAL_STATUS_FALLBACK),
+        "global_sentiment_source": str(global_signal.get("source") or ""),
+        "global_sentiment_reason": str(global_signal.get("reason") or ""),
     }
     policy = _policy_thresholds()
     composite = _composite_score(technical, news)
     return {
         "technical": technical,
         "news": news,
+        "data_quality": {
+            "news_signal": dict(news_signal),
+            "global_signal": dict(global_signal),
+        },
         "decision_policy": {
             **policy,
             "composite_score": float(composite),
         },
+    }
+
+
+def _strategy_v1_enabled(state: Dict[str, Any]) -> bool:
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    if policy.get("use_strategy_v1") is not None:
+        return _is_trueish(policy.get("use_strategy_v1"))
+    return _is_trueish(os.getenv("USE_STRATEGY_V1", "false"))
+
+
+def _to_strategy_v1_input(
+    *,
+    symbol: Any,
+    llm_context: Dict[str, Any],
+    portfolio: Dict[str, Any],
+    policy: Dict[str, Any],
+):
+    from libs.strategies.contracts import StrategyInput
+
+    technical = llm_context.get("technical") if isinstance(llm_context.get("technical"), dict) else {}
+    news = llm_context.get("news") if isinstance(llm_context.get("news"), dict) else {}
+    return StrategyInput(
+        symbol=_norm_symbol(symbol),
+        regime=str(technical.get("regime") or "unknown"),
+        technical=dict(technical),
+        news=dict(news),
+        portfolio=dict(portfolio or {}),
+        policy=dict(policy or {}),
+    )
+
+
+def _raw_intent_from_strategy_decision(decision: Dict[str, Any], *, default_price: Any) -> Dict[str, Any]:
+    action = str(decision.get("action") or "").strip().upper()
+    symbol = _norm_symbol(decision.get("symbol"))
+    qty = max(0, int(decision.get("qty") or 0))
+    rationale = str(decision.get("rationale") or "").strip()
+    if action == "BUY":
+        return {
+            "action": "BUY",
+            "symbol": symbol,
+            "qty": max(1, qty),
+            "price": default_price,
+            "order_type": "market",
+            "order_api_id": "ORDER_SUBMIT",
+            "rationale": rationale or "strategy_v1_buy",
+        }
+    if action == "SELL":
+        return {
+            "action": "SELL",
+            "symbol": symbol,
+            "qty": max(1, qty),
+            "price": default_price,
+            "order_type": "market",
+            "order_api_id": "ORDER_SUBMIT",
+            "rationale": rationale or "strategy_v1_sell",
+        }
+    return {
+        "action": "NOOP",
+        "reason": "strategy_v1_noop",
+        "rationale": rationale or "strategy_v1_noop",
     }
 
 
@@ -526,6 +707,7 @@ def decide_trade(state: dict) -> dict:
         "last_order_epoch": portfolio.get("last_order_epoch", 0),
         "per_trade_risk_ratio": 0.0,
     }
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
 
     exec_context = state.get("exec_context") or {"mode": "mock"}
 
@@ -560,6 +742,8 @@ def decide_trade(state: dict) -> dict:
         "signal_score": llm_context.get("technical", {}).get("signal_score"),
         "symbol_sentiment_score": llm_context.get("news", {}).get("symbol_sentiment_score"),
         "global_sentiment_score": llm_context.get("news", {}).get("global_sentiment_score"),
+        "symbol_sentiment_status": llm_context.get("news", {}).get("symbol_sentiment_status"),
+        "global_sentiment_status": llm_context.get("news", {}).get("global_sentiment_status"),
     }
 
     strategy_name = strategist.__class__.__name__ if strategist is not None else "builtin_rule"
@@ -568,6 +752,7 @@ def decide_trade(state: dict) -> dict:
     llm_meta: Dict[str, Any] = {}
     static_intent: Dict[str, Any] | None = None
     score_override_applied = False
+    strategy_v1_decision: Dict[str, Any] | None = None
 
     cooldown_remaining = _post_exit_cooldown_remaining_sec(state, open_positions)
     if cooldown_remaining > 0:
@@ -621,6 +806,40 @@ def decide_trade(state: dict) -> dict:
 
     if static_intent is not None:
         raw_intent = dict(static_intent)
+    elif _strategy_v1_enabled(state):
+        try:
+            from libs.strategies.v1.config import load_regime_momentum_v1_config
+            from libs.strategies.v1.regime_momentum_v1 import RegimeMomentumV1
+
+            cfg = load_regime_momentum_v1_config(policy=policy)
+            strategy = RegimeMomentumV1(config=cfg)
+            pos = _extract_position_for_symbol(portfolio, symbol)
+            held_qty = int(pos.get("qty") or 0) if isinstance(pos, dict) else 0
+            decision = strategy.decide(
+                _to_strategy_v1_input(
+                    symbol=symbol,
+                    llm_context=llm_context,
+                    portfolio=portfolio,
+                    policy=policy,
+                ),
+                price=_to_float(price, 0.0) if price is not None else None,
+                cash=_to_float(cash, 0.0),
+                held_qty=held_qty,
+            )
+            strategy_v1_decision = decision.to_dict()
+            raw_intent = _raw_intent_from_strategy_decision(strategy_v1_decision, default_price=price)
+            state["strategy_v1_decision"] = dict(strategy_v1_decision)
+            state["why"] = dict(strategy_v1_decision.get("evidence") or {})
+            state["invalidation"] = dict(strategy_v1_decision.get("invalidation") or {})
+            strategy_name = "RegimeMomentumV1"
+        except Exception as e:
+            error = str(e)
+            raw_intent = {
+                "action": "NOOP",
+                "reason": "strategy_v1_error",
+                "rationale": "strategy_v1_error",
+            }
+            strategy_name = "RegimeMomentumV1"
     elif strategist is not None and hasattr(strategist, "decide"):
         llm_t0 = 0.0
         do_llm_log = strategy_name == "OpenAIStrategist"
@@ -733,6 +952,12 @@ def decide_trade(state: dict) -> dict:
                 "context_signal_score": llm_context.get("technical", {}).get("signal_score"),
                 "context_symbol_sentiment_score": llm_context.get("news", {}).get("symbol_sentiment_score"),
                 "context_global_sentiment_score": llm_context.get("news", {}).get("global_sentiment_score"),
+                "context_symbol_sentiment_status": llm_context.get("news", {}).get("symbol_sentiment_status"),
+                "context_symbol_sentiment_source": llm_context.get("news", {}).get("symbol_sentiment_source"),
+                "context_symbol_sentiment_reason": llm_context.get("news", {}).get("symbol_sentiment_reason"),
+                "context_global_sentiment_status": llm_context.get("news", {}).get("global_sentiment_status"),
+                "context_global_sentiment_source": llm_context.get("news", {}).get("global_sentiment_source"),
+                "context_global_sentiment_reason": llm_context.get("news", {}).get("global_sentiment_reason"),
                 "context_composite_score": llm_context.get("decision_policy", {}).get("composite_score"),
             }
             if getattr(strategist, "endpoint", None):
@@ -824,6 +1049,8 @@ def decide_trade(state: dict) -> dict:
         "llm_context": llm_context,
         "score_override_applied": bool(score_override_applied),
     }
+    if strategy_v1_decision is not None:
+        trace["strategy_v1_decision"] = dict(strategy_v1_decision)
     if error:
         trace["error"] = error
 

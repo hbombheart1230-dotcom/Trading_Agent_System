@@ -4,8 +4,16 @@ from collections import defaultdict
 from libs.news.models import NewsItem
 from libs.news.providers.registry import get_provider
 from libs.news.scorers.registry import get_scorer
+from libs.data_quality.signal_contract import (
+    SIGNAL_STATUS_FALLBACK,
+    SIGNAL_STATUS_OK,
+    SIGNAL_STATUS_UNAVAILABLE,
+    make_signal,
+    normalize_signal_score,
+)
 
 import os
+import time
 
 # -------------------------------------------------
 # NEWS COLLECTION
@@ -147,35 +155,16 @@ def score_news_sentiment_simple(
 # MAIN SENTIMENT ROUTER
 # -------------------------------------------------
 
-def score_news_sentiment(
+def _normalize_items_for_scoring(
     items_by_symbol=None,
     *,
-    state: Dict[str, Any],
-    policy: Dict[str, Any],
     items: List[NewsItem] | None = None,
     symbols: Sequence[str] | None = None,
-) -> Dict[str, float]:
-    """
-    Backward/forward compatible scorer entrypoint.
-
-    Supported calls:
-      1) score_news_sentiment(items_by_symbol, state=..., policy=...)
-         - items_by_symbol: {symbol: [NewsItem|dict, ...], ...}
-
-      2) score_news_sentiment(state=..., policy=..., items=[NewsItem...], symbols=[...])
-         - used by some earlier tests/paths
-
-    Priority:
-      A) state['mock_news_sentiment'] -> always wins (fills missing with 0.0)
-      B) DRY_RUN + openrouter -> returns 0.0 for all symbols (unless mock provided)
-      C) otherwise dispatch scorer via registry (simple/llm/openrouter)
-    """
-    # ---------- normalize items_by_symbol ----------
+) -> tuple[Dict[str, List[NewsItem]], List[str]]:
     norm: Dict[str, List[NewsItem]] = {}
 
     # case (2): items + symbols
     if items_by_symbol is None and items is not None:
-        # group by symbol field (if missing, ignore)
         tmp: Dict[str, List[NewsItem]] = {}
         for it in items:
             norm_item = _to_news_item(it)
@@ -197,8 +186,6 @@ def score_news_sentiment(
                 if norm_item is not None:
                     out_list.append(norm_item)
             norm[sym_s] = out_list
-    else:
-        norm = {}
 
     # if still no symbols, derive from norm keys
     all_symbols = list(norm.keys())
@@ -206,28 +193,121 @@ def score_news_sentiment(
         all_symbols = [str(s) for s in symbols]
         for s in all_symbols:
             norm.setdefault(str(s), [])
+    return norm, all_symbols
 
-    # ---------- mock wins ----------
+
+def score_news_sentiment(
+    items_by_symbol=None,
+    *,
+    state: Dict[str, Any],
+    policy: Dict[str, Any],
+    items: List[NewsItem] | None = None,
+    symbols: Sequence[str] | None = None,
+) -> Dict[str, float]:
+    signals = score_news_sentiment_signal(
+        items_by_symbol,
+        state=state,
+        policy=policy,
+        items=items,
+        symbols=symbols,
+    )
+    return {s: normalize_signal_score(v.get("score"), default=0.0) for s, v in signals.items()}
+
+
+def score_news_sentiment_signal(
+    items_by_symbol=None,
+    *,
+    state: Dict[str, Any],
+    policy: Dict[str, Any],
+    items: List[NewsItem] | None = None,
+    symbols: Sequence[str] | None = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Return per-symbol sentiment with data-quality state contract."""
+    norm, all_symbols = _normalize_items_for_scoring(
+        items_by_symbol,
+        items=items,
+        symbols=symbols,
+    )
+    now = int(time.time())
+
     mock = state.get("mock_news_sentiment")
     if isinstance(mock, dict):
-        out: Dict[str, float] = {}
+        out: Dict[str, Dict[str, Any]] = {}
         for s in all_symbols:
-            v = mock.get(s, 0.0)
-            try:
-                out[s] = float(v)
-            except Exception:
-                out[s] = 0.0
+            if s in mock:
+                out[s] = make_signal(
+                    score=mock.get(s, 0.0),
+                    status=SIGNAL_STATUS_OK,
+                    source="mock_news_sentiment",
+                    reason="",
+                    ts=now,
+                )
+            else:
+                out[s] = make_signal(
+                    score=0.0,
+                    status=SIGNAL_STATUS_FALLBACK,
+                    source="mock_news_sentiment",
+                    reason="mock_missing_symbol_default",
+                    ts=now,
+                )
         return out
 
-    # ---------- DRY_RUN behavior for openrouter ----------
     scorer_name = str(policy.get("news_scorer") or "simple")
     if os.getenv("DRY_RUN", "0") == "1" and scorer_name.lower() in ("openrouter",):
-        return {s: 0.0 for s in all_symbols}
+        return {
+            s: make_signal(
+                score=0.0,
+                status=SIGNAL_STATUS_FALLBACK,
+                source="dry_run_policy",
+                reason="dry_run_openrouter_neutral",
+                ts=now,
+            )
+            for s in all_symbols
+        }
 
-    # ---------- dispatch scorer ----------
     scorer = get_scorer(scorer_name)
-    # tolerate scorers that don't accept state/policy kwargs
     try:
-        return scorer.score(norm, state=state, policy=policy)
+        raw_scores = scorer.score(norm, state=state, policy=policy)
     except TypeError:
-        return scorer.score(norm)
+        raw_scores = scorer.score(norm)
+    except Exception as exc:
+        return {
+            s: make_signal(
+                score=0.0,
+                status=SIGNAL_STATUS_UNAVAILABLE,
+                source=f"scorer:{scorer_name}",
+                reason=f"scorer_error:{type(exc).__name__}",
+                ts=now,
+            )
+            for s in all_symbols
+        }
+
+    out: Dict[str, Dict[str, Any]] = {}
+    raw_map = raw_scores if isinstance(raw_scores, dict) else {}
+    for s in all_symbols:
+        if s not in raw_map:
+            out[s] = make_signal(
+                score=0.0,
+                status=SIGNAL_STATUS_FALLBACK,
+                source=f"scorer:{scorer_name}",
+                reason="missing_symbol_score",
+                ts=now,
+            )
+            continue
+        try:
+            out[s] = make_signal(
+                score=float(raw_map.get(s)),
+                status=SIGNAL_STATUS_OK,
+                source=f"scorer:{scorer_name}",
+                reason="",
+                ts=now,
+            )
+        except Exception:
+            out[s] = make_signal(
+                score=0.0,
+                status=SIGNAL_STATUS_FALLBACK,
+                source=f"scorer:{scorer_name}",
+                reason="invalid_symbol_score",
+                ts=now,
+            )
+    return out

@@ -75,6 +75,53 @@ def test_m20_3_llm_event_logged_on_success(monkeypatch, tmp_path: Path):
     assert abs(float(p.get("estimated_cost_usd") or 0.0) - 0.00156) < 1e-12
 
 
+def test_m20_3_llm_event_logs_signal_status_fields(monkeypatch, tmp_path: Path):
+    events = tmp_path / "events.jsonl"
+    monkeypatch.setenv("EVENT_LOG_PATH", str(events))
+    monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
+    monkeypatch.setenv("AI_STRATEGIST_MODEL", "test-model")
+    monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {"intent": {"action": "NOOP", "reason": "model_no_signal"}, "rationale": "hold"}
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+        "news_sentiment_signal": {
+            "005930": {
+                "score": 0.0,
+                "status": "unavailable",
+                "source": "scorer:simple",
+                "reason": "scorer_error:RuntimeError",
+                "ts": 1000,
+            }
+        },
+        "global_sentiment_signal": {
+            "score": 0.0,
+            "status": "fallback",
+            "source": "dry_run_policy",
+            "reason": "dry_run_neutral",
+            "ts": 1000,
+        },
+    }
+    decide_trade(state)
+
+    rows = _load_events(events)
+    llm = [r for r in rows if r.get("stage") == "strategist_llm" and r.get("event") == "result"]
+    assert llm
+    p = llm[-1].get("payload") or {}
+    assert p.get("context_symbol_sentiment_status") == "unavailable"
+    assert p.get("context_global_sentiment_status") == "fallback"
+    assert p.get("context_symbol_sentiment_source") == "scorer:simple"
+    assert p.get("context_global_sentiment_source") == "dry_run_policy"
+
+
 def test_m20_3_llm_event_logged_on_error(monkeypatch, tmp_path: Path):
     events = tmp_path / "events.jsonl"
     monkeypatch.setenv("EVENT_LOG_PATH", str(events))

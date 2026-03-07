@@ -26,6 +26,14 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return float(v)
 
 
+def _to_bool(v: Any, default: bool = False) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return bool(default)
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 def evaluate_position_size(
     *,
     price: Optional[float],
@@ -77,6 +85,57 @@ def evaluate_position_size(
     notional_ratio = _to_float(p.get("position_notional_ratio"), 0.10)
     notional_ratio = _clamp(notional_ratio, 0.0, 1.0)
 
+    # Strategy-aware optional context (additive, backward compatible).
+    regime = str(rc.get("regime") or p.get("regime") or "").strip().lower()
+    vol_pct = _clamp(
+        _to_float(rc.get("volatility_percentile", p.get("volatility_percentile", 0.5)), 0.5),
+        0.0,
+        1.0,
+    )
+    exposure = _clamp(
+        _to_float(rc.get("portfolio_exposure", p.get("portfolio_exposure", 0.0)), 0.0),
+        0.0,
+        1.0,
+    )
+    corr_bucket = str(rc.get("correlation_bucket") or p.get("correlation_bucket") or "medium").strip().lower()
+    daily_loss_state = _to_bool(rc.get("daily_loss_state", p.get("daily_loss_state", False)), False)
+    degrade_mode = _to_bool(rc.get("degrade_mode", p.get("degrade_mode", False)), False)
+
+    risk_mult = 1.0
+    notional_mult = 1.0
+    if regime == "high_volatility":
+        risk_mult *= 0.75
+        notional_mult *= 0.75
+    if vol_pct >= 0.80:
+        risk_mult *= 0.80
+        notional_mult *= 0.80
+    elif vol_pct <= 0.20:
+        risk_mult *= 1.05
+        notional_mult *= 1.05
+    if exposure >= 0.70:
+        risk_mult *= 0.60
+        notional_mult *= 0.60
+    elif exposure >= 0.40:
+        risk_mult *= 0.80
+        notional_mult *= 0.80
+    if corr_bucket == "high":
+        risk_mult *= 0.70
+        notional_mult *= 0.70
+    elif corr_bucket == "low":
+        risk_mult *= 1.05
+        notional_mult *= 1.05
+    if daily_loss_state:
+        risk_mult *= 0.60
+        notional_mult *= 0.60
+    if degrade_mode:
+        risk_mult *= 0.50
+        notional_mult *= 0.50
+
+    risk_mult = _clamp(risk_mult, 0.10, 1.25)
+    notional_mult = _clamp(notional_mult, 0.10, 1.25)
+    risk_per_trade_ratio = _clamp(risk_per_trade_ratio * risk_mult, 0.0, 1.0)
+    notional_ratio = _clamp(notional_ratio * notional_mult, 0.0, 1.0)
+
     max_qty = max(0, _to_int(p.get("max_position_qty"), 0))
     min_qty = max(1, _to_int(p.get("min_position_qty"), 1))
     lot_size = max(1, _to_int(p.get("lot_size"), 1))
@@ -113,6 +172,14 @@ def evaluate_position_size(
         "risk_per_trade_ratio": float(risk_per_trade_ratio),
         "stop_loss_pct": float(stop_loss_pct),
         "position_notional_ratio": float(notional_ratio),
+        "regime": regime or None,
+        "volatility_percentile": float(vol_pct),
+        "portfolio_exposure": float(exposure),
+        "correlation_bucket": corr_bucket,
+        "daily_loss_state": bool(daily_loss_state),
+        "degrade_mode": bool(degrade_mode),
+        "risk_multiplier": float(risk_mult),
+        "notional_multiplier": float(notional_mult),
         "risk_budget": float(risk_budget),
         "notional_budget": float(notional_budget),
         "qty_by_risk": int(max(0, qty_risk)),
@@ -127,4 +194,3 @@ def evaluate_position_size(
     else:
         out["reason"] = "ok"
     return out
-

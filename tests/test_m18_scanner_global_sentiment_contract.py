@@ -27,4 +27,8 @@ def test_scanner_consumes_global_sentiment_emitted_by_strategist():
     out = scanner_node(out)
 
     assert out["selected"]["symbol"] == "AAA"
-    assert abs(float(out["selected"]["score"]) - 0.70) < 1e-9
+    selected = out["selected"]
+    # M31+: scanner score now also includes strategist rank_score contribution.
+    # Keep this test focused on "global sentiment is consumed end-to-end".
+    assert float(selected["score"]) > 0.70
+    assert float((selected.get("components") or {}).get("global_sentiment") or 0.0) == 1.0

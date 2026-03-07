@@ -13,8 +13,16 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
+
+from libs.data_quality.signal_contract import (
+    SIGNAL_STATUS_FALLBACK,
+    SIGNAL_STATUS_OK,
+    SIGNAL_STATUS_UNAVAILABLE,
+    make_signal,
+)
 
 
 def _is_dry_run() -> bool:
@@ -114,18 +122,56 @@ def compute_global_sentiment(state: Dict[str, Any], policy: Optional[Dict[str, A
     - sentiment_norm: dict with key {scale} for tanh scale (default 5.0)
     - sentiment_ticker_sp500 / nasdaq / dxy / tnx: override tickers
     """
+    signal = compute_global_sentiment_signal(state=state, policy=policy)
+    try:
+        return _clamp(float(signal.get("score", 0.0)))
+    except Exception:
+        return 0.0
+
+
+def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Compute global sentiment as normalized signal contract.
+
+    Contract:
+      {
+        "score": float [-1, +1],
+        "status": "ok" | "fallback" | "unavailable",
+        "source": str,
+        "reason": str,
+        "ts": int(epoch)
+      }
+    """
     policy = dict(policy or {})
+    now = int(time.time())
 
     # 1) explicit mock (tests)
     if state.get("mock_global_sentiment") is not None:
         try:
-            return _clamp(float(state["mock_global_sentiment"]))
+            return make_signal(
+                score=_clamp(float(state["mock_global_sentiment"])),
+                status=SIGNAL_STATUS_OK,
+                source="mock_global_sentiment",
+                reason="",
+                ts=now,
+            )
         except Exception:
-            return 0.0
+            return make_signal(
+                score=0.0,
+                status=SIGNAL_STATUS_FALLBACK,
+                source="mock_global_sentiment",
+                reason="invalid_mock_value",
+                ts=now,
+            )
 
     # 2) DRY_RUN => no network
     if _is_dry_run():
-        return 0.0
+        return make_signal(
+            score=0.0,
+            status=SIGNAL_STATUS_FALLBACK,
+            source="dry_run_policy",
+            reason="dry_run_neutral",
+            ts=now,
+        )
 
     weights = dict(policy.get("sentiment_weights") or {})
     w_sp = float(weights.get("sp500", 0.4))
@@ -138,12 +184,22 @@ def compute_global_sentiment(state: Dict[str, Any], policy: Optional[Dict[str, A
 
     inputs = _fetch_inputs(policy)
     if inputs is None:
-        return 0.0
+        return make_signal(
+            score=0.0,
+            status=SIGNAL_STATUS_UNAVAILABLE,
+            source="yfinance",
+            reason="fetch_failed",
+            ts=now,
+        )
 
     raw = _compute_raw(inputs, w_sp=w_sp, w_nq=w_nq, w_dxy=w_dxy, w_tnx=w_tnx)
-
-    # Normalize: tanh
-    return _tanh_norm(raw, scale=scale)
+    return make_signal(
+        score=_tanh_norm(raw, scale=scale),
+        status=SIGNAL_STATUS_OK,
+        source="yfinance",
+        reason="",
+        ts=now,
+    )
 
 
 # Backward/alias (in case older code imports these names)

@@ -115,6 +115,54 @@ def test_m20_2_decide_trade_llm_context_defaults_when_features_missing(monkeypat
     assert out["decision_trace"]["llm_context"]["technical"]["regime"] == "unknown"
 
 
+def test_m20_2_decide_trade_propagates_signal_status_into_llm_context(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
+    monkeypatch.setenv("AI_STRATEGIST_MODEL", "test-model")
+
+    captured = {}
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        captured["payload"] = dict(payload)
+        return {"intent": {"action": "NOOP", "reason": "model_no_signal"}, "rationale": "hold"}
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+        "feature_engine": {"by_symbol": {"005930": {"regime": "trend", "signal_score": 0.2}}},
+        "news_sentiment_signal": {
+            "005930": {
+                "score": 0.0,
+                "status": "unavailable",
+                "source": "scorer:openrouter",
+                "reason": "scorer_error:TimeoutError",
+                "ts": 1000,
+            }
+        },
+        "global_sentiment_signal": {
+            "score": 0.0,
+            "status": "fallback",
+            "source": "dry_run_policy",
+            "reason": "dry_run_neutral",
+            "ts": 1000,
+        },
+    }
+    out = decide_trade(state)
+
+    llm_ctx = captured["payload"]["input"]["market_snapshot"]["llm_context"]
+    risk_llm_ctx = captured["payload"]["input"]["risk_context"]["llm_context"]
+
+    assert llm_ctx["news"]["symbol_sentiment_status"] == "unavailable"
+    assert llm_ctx["news"]["global_sentiment_status"] == "fallback"
+    assert risk_llm_ctx["symbol_sentiment_status"] == "unavailable"
+    assert risk_llm_ctx["global_sentiment_status"] == "fallback"
+    assert out["decision_trace"]["llm_context"]["news"]["symbol_sentiment_source"] == "scorer:openrouter"
+
+
 def test_m20_2_decide_trade_openai_buy_without_rationale_is_forced_noop(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")

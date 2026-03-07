@@ -161,10 +161,23 @@ def _extract_feature_engine_map(state: Dict[str, Any]) -> Tuple[Dict[str, Dict[s
             policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
             trend_gap_threshold = float(policy.get("feature_trend_gap_threshold", 0.01))
             high_vol_threshold = float(policy.get("feature_high_vol_threshold", 0.03))
+            ctx: Dict[str, Any] = {
+                "global_sentiment": _get_global_sentiment_score(state),
+            }
+            # Optional context hooks (already normalized in state when available).
+            if isinstance(state.get("market_context"), dict):
+                mc = state.get("market_context") or {}
+                if mc.get("market_breadth") is not None:
+                    ctx["market_breadth"] = mc.get("market_breadth")
+                if mc.get("index_trend") is not None:
+                    ctx["index_trend"] = mc.get("index_trend")
+                if mc.get("realized_vol") is not None:
+                    ctx["realized_vol"] = mc.get("realized_vol")
             built = build_feature_map(
                 ohlcv,
                 trend_gap_threshold=trend_gap_threshold,
                 high_vol_threshold=high_vol_threshold,
+                context=ctx,
             )
             return {_norm_symbol(k): v for k, v in built.items() if _norm_symbol(k)}, "state.ohlcv_by_symbol", errors
         except Exception as e:
@@ -208,8 +221,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     scan_results: List[Dict[str, Any]] = []
 
     for item in candidates:
+        candidate_meta: Dict[str, Any] = {}
         if isinstance(item, dict):
             symbol = str(item.get("symbol") or "")
+            candidate_meta = dict(item)
         else:
             symbol = str(item)
 
@@ -239,6 +254,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         base_score = float(row.get("score") or 0.0)
         base_risk = float(row.get("risk_score") or 0.0)
         base_conf = float(row.get("confidence") or 0.0)
+        candidate_rank_score = _clamp(float(candidate_meta.get("rank_score") or 0.0), -1.0, 1.0)
+        candidate_universe_score = _clamp(float(candidate_meta.get("universe_score") or 0.0), 0.0, 10.0)
 
         news_s = float(news_by_sym.get(symbol, 0.0))
         quote = skill_quotes.get(_norm_symbol(symbol), {})
@@ -267,6 +284,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             + w["weight_news"] * news_s
             + w["weight_global"] * gs
             + w["feature_score_weight"] * feature_signal
+            + 0.05 * candidate_rank_score
+            + 0.02 * candidate_universe_score
             + quote_bonus
             - 0.05 * order_penalty
         )
@@ -291,6 +310,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["score"] = float(adj_score)
         row["risk_score"] = float(_clamp(adj_risk, 0.0, 1.0))
         row["confidence"] = float(adj_conf)
+        row["why"] = str(candidate_meta.get("why") or row.get("why") or "")
+        row["candidate"] = {
+            "source_why": str(candidate_meta.get("why") or ""),
+            "sources": list(candidate_meta.get("sources") or []),
+            "rank_score": float(candidate_rank_score),
+            "universe_score": float(candidate_universe_score),
+        }
         row.setdefault("features", {})
         if isinstance(row.get("features"), dict):
             row["features"].update(
@@ -326,6 +352,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "high_vol_risk_penalty": w["high_vol_risk_penalty"],
                     "skill_quote_bonus": quote_bonus,
                     "skill_open_orders": open_orders,
+                    "candidate_rank_score": candidate_rank_score,
+                    "candidate_universe_score": candidate_universe_score,
                 }
             )
 

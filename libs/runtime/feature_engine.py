@@ -3,6 +3,8 @@ from __future__ import annotations
 from math import sqrt
 from typing import Any, Dict, List, Mapping, Optional
 
+from libs.runtime.regime import classify_regime_v2
+
 
 def _to_float(v: Any) -> Optional[float]:
     try:
@@ -36,6 +38,17 @@ def _std(values: List[float]) -> Optional[float]:
     mean = float(sum(values) / float(len(values)))
     var = float(sum((x - mean) ** 2 for x in values) / float(len(values)))
     return float(sqrt(var))
+
+
+def _median(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    arr = sorted(float(x) for x in values)
+    n = len(arr)
+    mid = n // 2
+    if n % 2 == 1:
+        return float(arr[mid])
+    return float((arr[mid - 1] + arr[mid]) / 2.0)
 
 
 def _rsi(closes: List[float], period: int = 14) -> Optional[float]:
@@ -83,6 +96,108 @@ def _pct_returns(closes: List[float], period: int) -> List[float]:
     return out
 
 
+def _pct_change(closes: List[float], period: int) -> Optional[float]:
+    p = max(1, int(period))
+    if len(closes) < p + 1:
+        return None
+    prev = float(closes[-(p + 1)])
+    cur = float(closes[-1])
+    if prev == 0.0:
+        return None
+    return float((cur / prev) - 1.0)
+
+
+def _adx(highs: List[float], lows: List[float], closes: List[float], period: int = 14) -> Optional[float]:
+    p = max(2, int(period))
+    if len(highs) < p + 1 or len(lows) < p + 1 or len(closes) < p + 1:
+        return None
+
+    trs: List[float] = []
+    plus_dm: List[float] = []
+    minus_dm: List[float] = []
+    for i in range(1, len(closes)):
+        up = float(highs[i] - highs[i - 1])
+        down = float(lows[i - 1] - lows[i])
+        pdm = up if (up > down and up > 0.0) else 0.0
+        mdm = down if (down > up and down > 0.0) else 0.0
+        tr = max(
+            float(highs[i] - lows[i]),
+            abs(float(highs[i] - closes[i - 1])),
+            abs(float(lows[i] - closes[i - 1])),
+        )
+        plus_dm.append(float(pdm))
+        minus_dm.append(float(mdm))
+        trs.append(float(tr))
+
+    # Use simple average over last period for deterministic behavior.
+    tr_n = sum(trs[-p:]) / float(p) if trs else 0.0
+    pdm_n = sum(plus_dm[-p:]) / float(p) if plus_dm else 0.0
+    mdm_n = sum(minus_dm[-p:]) / float(p) if minus_dm else 0.0
+    if tr_n <= 0.0:
+        return 0.0
+    pdi = (pdm_n / tr_n) * 100.0
+    mdi = (mdm_n / tr_n) * 100.0
+    den = pdi + mdi
+    if den <= 0.0:
+        return 0.0
+    dx = abs(pdi - mdi) / den * 100.0
+    return float(dx)
+
+
+def _gap_pct(candles: List[Mapping[str, Any]]) -> Optional[float]:
+    if len(candles) < 2:
+        return None
+    prev_close = _to_float(candles[-2].get("close"))
+    cur_open = _to_float(candles[-1].get("open"))
+    if prev_close is None or cur_open is None or prev_close == 0.0:
+        return None
+    return float((cur_open / prev_close) - 1.0)
+
+
+def _vwap_distance(candles: List[Mapping[str, Any]], closes: List[float], vols: List[float]) -> Optional[float]:
+    if not candles or not closes:
+        return None
+    last_close = float(closes[-1])
+    if last_close <= 0.0:
+        return None
+
+    # If candle has explicit vwap, use the latest value.
+    last = candles[-1]
+    vwap_raw = _to_float(last.get("vwap"))
+    if vwap_raw is not None and vwap_raw > 0.0:
+        return float((last_close / float(vwap_raw)) - 1.0)
+
+    if len(closes) != len(vols) or not vols:
+        return None
+    den = float(sum(v for v in vols if v > 0.0))
+    if den <= 0.0:
+        return None
+    num = 0.0
+    for i, c in enumerate(closes):
+        v = float(vols[i]) if i < len(vols) else 0.0
+        if v <= 0.0:
+            continue
+        num += float(c) * v
+    if num <= 0.0:
+        return None
+    vwap = num / den
+    if vwap <= 0.0:
+        return None
+    return float((last_close / vwap) - 1.0)
+
+
+def _rolling_drawdown(closes: List[float], lookback: int = 20) -> Optional[float]:
+    lb = max(2, int(lookback))
+    if len(closes) < lb:
+        return None
+    window = closes[-lb:]
+    peak = max(window)
+    cur = float(window[-1])
+    if peak <= 0.0:
+        return None
+    return float((cur / peak) - 1.0)
+
+
 def classify_regime(
     *,
     ma20_gap: Optional[float],
@@ -123,6 +238,10 @@ def build_feature_row(
     *,
     trend_gap_threshold: float = 0.01,
     high_vol_threshold: float = 0.03,
+    global_sentiment: Optional[float] = None,
+    market_breadth: Optional[float] = None,
+    index_trend: Optional[float] = None,
+    realized_vol: Optional[float] = None,
 ) -> Dict[str, Any]:
     closes = _series(candles, "close")
     highs = _series(candles, "high")
@@ -131,10 +250,14 @@ def build_feature_row(
 
     close_last = float(closes[-1]) if closes else None
     sma20 = _sma(closes, 20)
+    sma60 = _sma(closes, 60)
+    sma120 = _sma(closes, 120)
     rsi14 = _rsi(closes, 14)
     atr14 = _atr(highs, lows, closes, 14)
+    adx14 = _adx(highs, lows, closes, 14)
     vol_ret = _pct_returns(closes, 20)
     volatility20 = _std(vol_ret)
+    return20 = _pct_change(closes, 20)
 
     vol_avg20 = _sma(vols, 20)
     volume_spike20: Optional[float] = None
@@ -144,24 +267,50 @@ def build_feature_row(
     ma20_gap: Optional[float] = None
     if close_last is not None and sma20 is not None and sma20 != 0.0:
         ma20_gap = float((close_last / sma20) - 1.0)
+    ma60_gap: Optional[float] = None
+    if close_last is not None and sma60 is not None and sma60 != 0.0:
+        ma60_gap = float((close_last / sma60) - 1.0)
+    ma120_gap: Optional[float] = None
+    if close_last is not None and sma120 is not None and sma120 != 0.0:
+        ma120_gap = float((close_last / sma120) - 1.0)
 
-    regime = classify_regime(
+    gap_pct = _gap_pct(candles)
+    vwap_distance = _vwap_distance(candles, closes, vols)
+    rolling_drawdown20 = _rolling_drawdown(closes, 20)
+
+    regime_obj = classify_regime_v2(
         ma20_gap=ma20_gap,
         volatility20=volatility20,
+        index_trend=index_trend if index_trend is not None else ma20_gap,
+        realized_vol=realized_vol if realized_vol is not None else volatility20,
+        global_sentiment=global_sentiment,
+        market_breadth=market_breadth,
         trend_gap_threshold=trend_gap_threshold,
         high_vol_threshold=high_vol_threshold,
     )
+    regime = str(regime_obj.get("regime") or "range")
     signal = _signal_score(ma20_gap=ma20_gap, rsi14=rsi14)
 
     return {
         "close_last": close_last,
         "rsi14": rsi14,
         "ma20": sma20,
+        "ma60": sma60,
+        "ma120": sma120,
         "ma20_gap": ma20_gap,
+        "ma60_gap": ma60_gap,
+        "ma120_gap": ma120_gap,
         "atr14": atr14,
+        "adx14": adx14,
+        "gap_pct": gap_pct,
+        "vwap_distance": vwap_distance,
+        "return20": return20,
+        "rolling_drawdown20": rolling_drawdown20,
         "volume_spike20": volume_spike20,
         "volatility20": volatility20,
         "regime": regime,
+        "regime_score": regime_obj.get("score"),
+        "regime_factors": regime_obj.get("factors"),
         "signal_score": signal,
     }
 
@@ -171,8 +320,14 @@ def build_feature_map(
     *,
     trend_gap_threshold: float = 0.01,
     high_vol_threshold: float = 0.03,
+    context: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
+    ctx = dict(context or {})
+    gs = _to_float(ctx.get("global_sentiment")) if isinstance(ctx, dict) else None
+    breadth = _to_float(ctx.get("market_breadth")) if isinstance(ctx, dict) else None
+    idx_trend = _to_float(ctx.get("index_trend")) if isinstance(ctx, dict) else None
+    rv = _to_float(ctx.get("realized_vol")) if isinstance(ctx, dict) else None
     for k, rows in ohlcv_by_symbol.items():
         sym = str(k or "").strip()
         if not sym or not isinstance(rows, list) or not rows:
@@ -181,5 +336,43 @@ def build_feature_map(
             rows,
             trend_gap_threshold=trend_gap_threshold,
             high_vol_threshold=high_vol_threshold,
+            global_sentiment=gs,
+            market_breadth=breadth,
+            index_trend=idx_trend,
+            realized_vol=rv,
         )
+
+    if not out:
+        return out
+
+    # Cross-sectional enrichments (deterministic and additive).
+    signal_pairs = [
+        (sym, float(out[sym].get("signal_score") or 0.0))
+        for sym in out.keys()
+    ]
+    signal_pairs.sort(key=lambda x: x[1])
+    n = len(signal_pairs)
+    if n > 1:
+        for i, (sym, _score) in enumerate(signal_pairs):
+            out[sym]["cross_section_rank_signal"] = float(i / float(n - 1))
+    else:
+        only_sym = signal_pairs[0][0]
+        out[only_sym]["cross_section_rank_signal"] = 1.0
+
+    returns = [float(v.get("return20")) for v in out.values() if v.get("return20") is not None]
+    med_ret = _median(returns)
+    for sym, row in out.items():
+        r20 = row.get("return20")
+        if r20 is None or med_ret is None:
+            row["relative_strength20"] = None
+            row["sector_relative_strength"] = None
+        else:
+            rs = float(float(r20) - float(med_ret))
+            row["relative_strength20"] = rs
+            row["sector_relative_strength"] = rs
+
+    breadth_val = sum(1 for _sym, s in signal_pairs if s > 0.0) / float(len(signal_pairs))
+    for row in out.values():
+        row["market_breadth"] = float(breadth_val)
+
     return out

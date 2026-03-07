@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List
 
 from libs.market.global_sentiment import compute_global_sentiment
 from libs.news.news_pipeline import collect_news_items, score_news_sentiment
 from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
 from libs.strategies.candidates.market_rank import TopPicksCandidateGenerator
+from libs.strategies.universe_builder import build_candidate_universe
+
+
+def _is_trueish(v: Any) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
 def _default_policy(user_policy: Dict[str, Any] | None) -> Dict[str, Any]:
     p = dict(user_policy or {})
+    p.setdefault("use_universe_builder", _is_trueish(os.getenv("USE_UNIVERSE_BUILDER", "true")))
+    p.setdefault("universe_require_condition", _is_trueish(os.getenv("UNIVERSE_REQUIRE_CONDITION", "false")))
     # candidate generation
     p.setdefault("candidate_source", "top_picks")  # top_picks | market_rank
     p.setdefault("candidate_k", int(p.get("candidate_topk", 5) or 5))
@@ -59,6 +67,22 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # 1) candidates (injected or generated)
     candidates = _candidates_from_state(state, k)
+    universe_candidates: List[Dict[str, Any]] = []
+
+    if not candidates:
+        if bool(policy.get("use_universe_builder", True)):
+            universe_candidates = build_candidate_universe(state=state, policy=policy, topk=k)
+            if universe_candidates:
+                candidates = [
+                    {
+                        "symbol": str(r.get("symbol") or ""),
+                        "why": str(r.get("why") or "universe_builder"),
+                        "sources": list(r.get("sources") or []),
+                        "universe_score": float(r.get("score") or 0.0),
+                    }
+                    for r in universe_candidates
+                    if str(r.get("symbol") or "").strip()
+                ]
 
     if not candidates:
         source = str(policy.get("candidate_source") or "top_picks")
@@ -88,6 +112,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         fallback = ["005930", "000660", "035420", "051910", "068270"][:k]
         candidates = [{"symbol": s, "why": "fallback"} for s in fallback]
 
+    state["universe_candidates"] = universe_candidates
     symbols = [c["symbol"] for c in candidates]
 
     # 2) Global sentiment (store in policy for transparency + tests)
@@ -146,6 +171,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # assign candidate_score
     scored = []
+    candidate_meta = {str(c.get("symbol")): dict(c) for c in candidates if isinstance(c, dict)}
     for idx, c in enumerate(candidates):
         s = c["symbol"]
         rank_bias = (len(candidates) - idx) / max(len(candidates), 1) * 0.01  # small deterministic tie-break
@@ -158,7 +184,13 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         scored = filtered
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    candidates = [{"symbol": s, "why": why} for (s, _cs, _ns, why) in scored]
+    candidates = []
+    for (s, cs, _ns, why) in scored:
+        base = dict(candidate_meta.get(s) or {})
+        base["symbol"] = s
+        base["why"] = why
+        base["rank_score"] = float(cs)
+        candidates.append(base)
 
     # risk-off reduces count
     if gs <= float(policy.get("candidate_risk_off_threshold", -0.5)):
