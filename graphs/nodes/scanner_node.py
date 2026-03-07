@@ -316,6 +316,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "sources": list(candidate_meta.get("sources") or []),
             "rank_score": float(candidate_rank_score),
             "universe_score": float(candidate_universe_score),
+            "source_scores": dict(candidate_meta.get("source_scores") or {}),
+            "source_count": int(candidate_meta.get("source_count") or len(list(candidate_meta.get("sources") or []))),
         }
         row.setdefault("features", {})
         if isinstance(row.get("features"), dict):

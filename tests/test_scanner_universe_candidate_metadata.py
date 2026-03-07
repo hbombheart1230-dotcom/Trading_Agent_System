@@ -12,6 +12,8 @@ def test_scanner_preserves_universe_candidate_metadata():
                 "sources": ["held_position", "market_rank"],
                 "rank_score": 0.7,
                 "universe_score": 4.2,
+                "source_scores": {"held_position": 4.0, "market_rank": 0.2},
+                "source_count": 2,
             },
             {
                 "symbol": "BBB",
@@ -19,6 +21,8 @@ def test_scanner_preserves_universe_candidate_metadata():
                 "sources": ["market_rank"],
                 "rank_score": 0.2,
                 "universe_score": 1.1,
+                "source_scores": {"market_rank": 1.1},
+                "source_count": 1,
             },
         ],
         "mock_scan_results": {
@@ -32,3 +36,5 @@ def test_scanner_preserves_universe_candidate_metadata():
     assert rows["AAA"]["candidate"]["source_why"] == "held_position+market_rank"
     assert rows["AAA"]["candidate"]["sources"] == ["held_position", "market_rank"]
     assert float(rows["AAA"]["candidate"]["universe_score"]) == 4.2
+    assert float(rows["AAA"]["candidate"]["source_scores"]["held_position"]) == 4.0
+    assert int(rows["AAA"]["candidate"]["source_count"]) == 2

@@ -24,6 +24,8 @@ def test_universe_builder_merges_multi_sources_and_ranks_topk():
     assert out[0]["symbol"] == "005930"  # held + condition => highest precedence
     assert any("held_position" in row["sources"] for row in out if row["symbol"] == "005930")
     assert any("market_rank" in row["sources"] for row in out if row["symbol"] == "035420")
+    assert all(isinstance(row.get("source_scores"), dict) for row in out)
+    assert all(int(row.get("source_count") or 0) == len(list(row.get("sources") or [])) for row in out)
     assert all(isinstance(row.get("why"), str) and row["why"] for row in out)
 
 
@@ -49,3 +51,34 @@ def test_strategist_uses_universe_builder_without_breaking_candidate_contract(mo
     assert isinstance(out.get("universe_candidates"), list)
     assert out["universe_candidates"][0]["symbol"] == "AAA"
     assert all("symbol" in c and "why" in c for c in cands)
+    assert isinstance(cands[0].get("source_scores"), dict)
+    assert int(cands[0].get("source_count") or 0) >= 1
+
+
+def test_universe_builder_supports_sector_filter_and_source_weights():
+    state = {
+        "sector_filter": ["semiconductor"],
+        "sector_map": {
+            "semiconductor": ["AAA", "BBB"],
+            "bio": ["CCC"],
+        },
+        "mock_condition_symbols": ["AAA"],
+        "mock_rank_symbols": ["BBB", "DDD"],
+    }
+    policy = {
+        "candidate_source": "market_rank",
+        "candidate_rank_topn": 10,
+        "candidate_source_weights": {
+            "sector": 5.0,
+            "condition": 2.0,
+            "market_rank": 1.0,
+        },
+    }
+
+    out = build_candidate_universe(state=state, policy=policy, topk=4)
+    rows = {str(r.get("symbol")): r for r in out}
+    assert "AAA" in rows
+    assert "BBB" in rows
+    assert "CCC" not in rows  # excluded by sector_filter
+    assert "sector" in rows["AAA"]["sources"]
+    assert float(rows["AAA"]["source_scores"]["sector"]) == 5.0

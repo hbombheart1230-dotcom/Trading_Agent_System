@@ -79,6 +79,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "why": str(r.get("why") or "universe_builder"),
                         "sources": list(r.get("sources") or []),
                         "universe_score": float(r.get("score") or 0.0),
+                        "source_scores": dict(r.get("source_scores") or {}),
+                        "source_count": int(r.get("source_count") or len(list(r.get("sources") or []))),
                     }
                     for r in universe_candidates
                     if str(r.get("symbol") or "").strip()
