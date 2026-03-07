@@ -360,3 +360,68 @@ def test_execute_from_packet_forces_market_order_in_mock_broker_http_mode(tmp_pa
     assert out["execution"]["ok"] is True
     assert str(captured["body"]["trde_tp"]) == "3"
     assert str(captured["body"].get("ord_uv") or "") == ""
+
+
+def test_execute_from_packet_blocks_buy_when_portfolio_snapshot_reader_failed(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("PORTFOLIO_SNAPSHOT_HEALTH_GUARD_ENABLED", "true")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class AllowSupervisor:
+        def allow(self, intent, context):  # type: ignore[no-untyped-def]
+            class R:
+                allow = True
+                reason = "allowed"
+
+            return R()
+
+    called = {"execute": 0}
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            called["execute"] += 1
+
+            class Result:
+                response = ApiResponse.from_http(200, '{"return_code":0,"return_msg":"ok"}')
+                meta = {"executor": "real"}
+
+            return Result()
+
+    state = {
+        "catalog_path": str(cat),
+        "supervisor": AllowSupervisor(),
+        "executor": CaptureExecutor(),
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [],
+            "_health": {
+                "reader_ok": False,
+                "reader_error": "account_api_500",
+                "source": "mock_fallback_after_reader_error",
+            },
+        },
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "portfolio_snapshot_reader_error"
+    assert out["execution"]["portfolio_guard"]["reader_ok"] is False
+    assert called["execute"] == 0

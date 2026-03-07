@@ -92,3 +92,32 @@ def test_build_portfolio_snapshot_uses_persisted_mock_cash_when_available(monkey
     ps = out["portfolio_snapshot"]
     assert ps["cash"] == 1234567.0
     assert ps["realized_pnl"] == 321.0
+
+
+def test_build_portfolio_snapshot_includes_health_metadata(monkeypatch):
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    state = {
+        "portfolio_reader": MockPortfolioReader(cash=2000000, positions=[]),
+        "persisted_state": {"mock_positions": []},
+    }
+
+    out = build_portfolio_snapshot(state)
+    health = out["portfolio_snapshot"].get("_health")
+    assert isinstance(health, dict)
+    assert health.get("reader_ok") is True
+    assert isinstance(out.get("portfolio_snapshot_health"), dict)
+
+
+def test_build_portfolio_snapshot_marks_reader_error_health_in_mock_mode(monkeypatch):
+    class BrokenReader:
+        def get_portfolio_snapshot(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("account_api_500")
+
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    state = {"portfolio_reader": BrokenReader(), "persisted_state": {"mock_positions": []}}
+
+    out = build_portfolio_snapshot(state)
+    health = out["portfolio_snapshot"].get("_health")
+    assert isinstance(health, dict)
+    assert health.get("reader_ok") is False
+    assert "account_api_500" in str(health.get("reader_error") or "")

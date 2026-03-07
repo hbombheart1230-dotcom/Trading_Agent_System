@@ -43,6 +43,14 @@ def _normalize_positions(raw: object) -> list[dict]:
     return out
 
 
+def _resolve_execution_mode() -> str:
+    mode = str(os.getenv("EXECUTION_MODE", "") or "").strip().lower()
+    if mode in ("mock", "real"):
+        return mode
+    base = str(os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower()
+    return "real" if base == "real" else "mock"
+
+
 def build_portfolio_snapshot(state: dict) -> dict:
     """M9 node: build portfolio_snapshot.
     Default: KiwoomPortfolioReader (real HTTP; host depends on KIWOOM_MODE).
@@ -53,16 +61,32 @@ def build_portfolio_snapshot(state: dict) -> dict:
         reader = KiwoomPortfolioReader.from_env()
 
     mock_mode = (os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower() == "mock"
+    execution_mode = _resolve_execution_mode()
     fallback_cash = float(os.getenv("MOCK_CASH_FALLBACK", "2000000") or 2000000)
+    health = {
+        "reader_ok": True,
+        "reader_error": "",
+        "fallback_applied": False,
+        "source": "reader",
+        "kiwoom_mode": "mock" if mock_mode else "real",
+        "execution_mode": execution_mode,
+    }
 
     try:
         snap = reader.get_portfolio_snapshot()
-    except Exception:
+    except Exception as e:
+        health["reader_ok"] = False
+        health["reader_error"] = str(e)
+        health["fallback_applied"] = True
+        health["source"] = "mock_fallback_after_reader_error"
         if not mock_mode:
             raise
         snap = MockPortfolioReader(cash=fallback_cash, positions=[]).get_portfolio_snapshot()
 
     if mock_mode and float(getattr(snap, "cash", 0.0) or 0.0) <= 0.0:
+        health["fallback_applied"] = True
+        if health.get("source") == "reader":
+            health["source"] = "mock_fallback_after_non_positive_cash"
         snap = MockPortfolioReader(cash=fallback_cash, positions=[]).get_portfolio_snapshot()
 
     snapshot = snap.to_dict()
@@ -77,11 +101,19 @@ def build_portfolio_snapshot(state: dict) -> dict:
         # In mock mode, prefer persisted mock ledger when available.
         if persisted_positions:
             snapshot["positions"] = persisted_positions
+            health["positions_source"] = "persisted_mock_positions"
         else:
             snapshot["positions"] = snapshot_positions
+            health["positions_source"] = "reader_positions"
         if persisted_cash > 0.0:
             snapshot["cash"] = float(persisted_cash)
+            health["cash_source"] = "persisted_mock_cash"
+        else:
+            health["cash_source"] = "reader_cash_or_fallback"
         snapshot["realized_pnl"] = float(persisted_realized)
+    else:
+        health["positions_source"] = "reader_positions"
+        health["cash_source"] = "reader_cash"
 
     positions = _normalize_positions(snapshot.get("positions"))
     snapshot["positions"] = positions
@@ -90,5 +122,9 @@ def build_portfolio_snapshot(state: dict) -> dict:
     if snapshot["cash"] <= 0:
         snapshot["cash"] = float(fallback_cash)
 
+    health["open_positions"] = int(snapshot["open_positions"])
+    health["cash"] = float(snapshot["cash"])
+    snapshot["_health"] = dict(health)
+    state["portfolio_snapshot_health"] = dict(health)
     state["portfolio_snapshot"] = snapshot
     return state

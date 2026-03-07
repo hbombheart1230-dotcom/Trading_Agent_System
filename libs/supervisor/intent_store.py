@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -16,12 +17,34 @@ class IntentStore:
     def __init__(self, path: str = "data/logs/intents.jsonl"):
         self.path = Path(path)
 
+    @staticmethod
+    def _ts_iso_utc(ts_epoch: int) -> str:
+        dt = datetime.fromtimestamp(int(ts_epoch), tz=timezone.utc)
+        return dt.replace(microsecond=0).isoformat()
+
+    @staticmethod
+    def _ts_iso_kst(ts_epoch: int) -> str:
+        kst = timezone(timedelta(hours=9))
+        dt = datetime.fromtimestamp(int(ts_epoch), tz=timezone.utc).astimezone(kst)
+        return dt.replace(microsecond=0).isoformat()
+
+    def _ensure_ts_fields(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(row or {})
+        try:
+            ts_epoch = int(float(out.get("ts") or int(time.time())))
+        except Exception:
+            ts_epoch = int(time.time())
+        out["ts"] = ts_epoch
+        out.setdefault("ts_iso_utc", self._ts_iso_utc(ts_epoch))
+        out.setdefault("ts_kst", self._ts_iso_kst(ts_epoch))
+        return out
+
     def save(self, intent: Dict[str, Any]) -> None:
         intent_id = str(intent.get("intent_id") or "")
         if not intent_id:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        rec = {"ts": int(time.time()), "intent_id": intent_id, "intent": intent}
+        rec = self._ensure_ts_fields({"ts": int(time.time()), "intent_id": intent_id, "intent": intent})
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
@@ -51,6 +74,7 @@ class IntentStore:
         """Append a raw journal row (intent or marker)."""
         if not isinstance(row, dict):
             return
+        row = self._ensure_ts_fields(row)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")

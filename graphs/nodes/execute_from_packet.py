@@ -229,6 +229,48 @@ def _evaluate_mock_cash_guard(state: Dict[str, Any], order: Dict[str, Any]) -> T
     return True, "", details
 
 
+def _extract_portfolio_snapshot_health(state: Dict[str, Any]) -> Dict[str, Any]:
+    snap = state.get("portfolio_snapshot")
+    if isinstance(snap, dict):
+        h = snap.get("_health")
+        if isinstance(h, dict):
+            return dict(h)
+    h2 = state.get("portfolio_snapshot_health")
+    if isinstance(h2, dict):
+        return dict(h2)
+    return {}
+
+
+def _evaluate_portfolio_snapshot_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    # Guard only in real execution path; mock/offline flow remains unchanged.
+    if _resolve_execution_mode() != "real":
+        return True, "", {"enabled": False, "reason": "execution_mode_not_real"}
+
+    if not _is_trueish(os.getenv("PORTFOLIO_SNAPSHOT_HEALTH_GUARD_ENABLED", "true")):
+        return True, "", {"enabled": False, "reason": "guard_disabled"}
+
+    action = str(order.get("action") or "").strip().upper()
+    if action != "BUY":
+        return True, "", {"enabled": True, "action": action, "guard_applied": False}
+
+    health = _extract_portfolio_snapshot_health(state)
+    if not health:
+        return True, "", {"enabled": True, "health_present": False, "guard_applied": True}
+
+    reader_ok = _is_trueish(health.get("reader_ok"))
+    details: Dict[str, Any] = {
+        "enabled": True,
+        "health_present": True,
+        "reader_ok": bool(reader_ok),
+        "source": str(health.get("source") or ""),
+        "reader_error": str(health.get("reader_error") or ""),
+        "guard_applied": True,
+    }
+    if reader_ok:
+        return True, "", details
+    return False, "portfolio_snapshot_reader_error", details
+
+
 def _is_degrade_mode(state: Dict[str, Any]) -> bool:
     resilience = state.get("resilience")
     if not isinstance(resilience, dict):
@@ -715,6 +757,25 @@ def execute_from_packet(state: dict) -> dict:
                 stage="execute_from_packet",
                 event="verdict",
                 payload={"allowed": False, "reason": "noop_intent_skipped"},
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        portfolio_allowed, portfolio_reason, portfolio_details = _evaluate_portfolio_snapshot_guard(state, order)
+        if not portfolio_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=portfolio_reason,
+            )
+            state["execution"]["portfolio_guard"] = portfolio_details
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="portfolio_guard_block",
+                payload={"allowed": False, "reason": portfolio_reason, **portfolio_details},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state

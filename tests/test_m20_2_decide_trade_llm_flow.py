@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 
 import libs.ai.providers.openai_provider as prov
 from graphs.nodes.decide_trade import decide_trade
@@ -370,3 +371,48 @@ def test_m20_2_decide_trade_score_override_converts_noop_to_buy(monkeypatch):
 
     assert out["decision_packet"]["intent"]["action"] == "BUY"
     assert out["decision_trace"]["score_override_applied"] is True
+
+
+def test_m20_2_decide_trade_eod_force_liquidation_emits_sell(monkeypatch):
+    monkeypatch.setenv("USE_EOD_FORCE_LIQUIDATION", "true")
+    monkeypatch.setenv("EOD_FORCE_LIQUIDATION_START_HHMM", "1520")
+    monkeypatch.setenv("EOD_FORCE_LIQUIDATION_END_HHMM", "1530")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    class AlwaysBuyStrategist:
+        def decide(self, x):  # type: ignore[no-untyped-def]
+            class Decision:
+                intent = {
+                    "action": "BUY",
+                    "symbol": "005930",
+                    "qty": 1,
+                    "price": 70000,
+                    "order_type": "limit",
+                    "order_api_id": "ORDER_SUBMIT",
+                }
+                rationale = "always-buy"
+                meta = {}
+
+            return Decision()
+
+    kst = timezone(timedelta(hours=9))
+    tick_ts = int(datetime(2026, 2, 13, 15, 25, tzinfo=kst).timestamp())
+    state = {
+        "symbol": "005930",
+        "tick_ts": tick_ts,
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {
+            "cash": 2_000_000,
+            "positions": [{"symbol": "005930", "qty": 16, "avg_price": 70000.0}],
+            "open_positions": 1,
+        },
+        "risk_context": {"open_positions": 1, "daily_pnl_ratio": 0.0, "last_order_epoch": 0},
+        "strategist": AlwaysBuyStrategist(),
+    }
+
+    out = decide_trade(state)
+    assert out["decision_trace"]["strategy"] == "EODLiquidationStrategist"
+    assert out["decision_packet"]["intent"]["action"] == "SELL"
+    assert out["decision_packet"]["intent"]["symbol"] == "005930"
+    assert out["decision_packet"]["intent"]["qty"] == 16
+    assert str(out["decision_packet"]["intent"]["rationale"]).startswith("eod_force_liquidation:")

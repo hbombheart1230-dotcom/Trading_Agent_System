@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
 
@@ -235,6 +236,94 @@ def _resolve_post_exit_cooldown_sec(state: Dict[str, Any]) -> int:
         return max(0, int(float(raw)))
     except Exception:
         return 300
+
+
+KST = timezone(timedelta(hours=9))
+
+
+def _parse_hhmm(raw: Any, *, default_hhmm: str) -> dt_time:
+    src = str(raw or default_hhmm).strip()
+    digits = "".join(ch for ch in src if ch.isdigit())
+    if len(digits) != 4:
+        digits = default_hhmm
+    try:
+        hh = int(digits[:2])
+        mm = int(digits[2:])
+    except Exception:
+        hh, mm = int(default_hhmm[:2]), int(default_hhmm[2:])
+    hh = min(23, max(0, hh))
+    mm = min(59, max(0, mm))
+    return dt_time(hour=hh, minute=mm)
+
+
+def _resolve_now_kst(state: Dict[str, Any]) -> datetime:
+    tick_ts = state.get("tick_ts")
+    if tick_ts is not None:
+        try:
+            return datetime.fromtimestamp(float(tick_ts), tz=timezone.utc).astimezone(KST)
+        except Exception:
+            pass
+    return datetime.now(timezone.utc).astimezone(KST)
+
+
+def _pick_any_open_position_symbol(portfolio: Dict[str, Any]) -> str:
+    rows = portfolio.get("positions")
+    if not isinstance(rows, list):
+        return ""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sym = _norm_symbol(row.get("symbol"))
+        qty = int(row.get("qty") or 0)
+        if sym and qty > 0:
+            return sym
+    return ""
+
+
+def _resolve_eod_force_liquidation_intent(
+    *,
+    state: Dict[str, Any],
+    portfolio: Dict[str, Any],
+    symbol: Any,
+) -> Dict[str, Any] | None:
+    if not _is_trueish(os.getenv("USE_EOD_FORCE_LIQUIDATION", "false")):
+        return None
+
+    now_kst = _resolve_now_kst(state)
+    if now_kst.weekday() >= 5:
+        return None
+
+    start_t = _parse_hhmm(os.getenv("EOD_FORCE_LIQUIDATION_START_HHMM", "1520"), default_hhmm="1520")
+    end_t = _parse_hhmm(os.getenv("EOD_FORCE_LIQUIDATION_END_HHMM", "1530"), default_hhmm="1530")
+    now_t = now_kst.time().replace(second=0, microsecond=0)
+    if now_t < start_t or now_t > end_t:
+        return None
+
+    sym = _norm_symbol(symbol)
+    pos = _extract_position_for_symbol(portfolio, sym) if sym else {}
+    if not pos:
+        fallback_sym = _pick_any_open_position_symbol(portfolio)
+        if fallback_sym:
+            pos = _extract_position_for_symbol(portfolio, fallback_sym)
+            sym = fallback_sym
+    if not isinstance(pos, dict) or not pos:
+        return None
+
+    qty = int(pos.get("qty") or 0)
+    if qty <= 0 or not sym:
+        return None
+
+    mkt = state.get("market_snapshot") if isinstance(state.get("market_snapshot"), dict) else {}
+    px = mkt.get("price") if _norm_symbol(mkt.get("symbol")) == sym else None
+    return {
+        "action": "SELL",
+        "symbol": sym,
+        "qty": qty,
+        "price": px,
+        "order_type": "market",
+        "order_api_id": "ORDER_SUBMIT",
+        "rationale": f"eod_force_liquidation:{now_kst.strftime('%H:%M')}",
+    }
 
 
 def _norm_symbol(v: Any) -> str:
@@ -488,6 +577,11 @@ def decide_trade(state: dict) -> dict:
             "rationale": f"post_exit_cooldown:{cooldown_remaining}s",
         }
         strategy_name = "CooldownStrategist"
+
+    eod_intent = _resolve_eod_force_liquidation_intent(state=state, portfolio=portfolio, symbol=symbol)
+    if static_intent is None and isinstance(eod_intent, dict):
+        static_intent = dict(eod_intent)
+        strategy_name = "EODLiquidationStrategist"
 
     # Optional M29+ exit policy path for live loop:
     # when a position is already open and exit policy is enabled,
