@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import time
 from typing import Any, Dict
+from datetime import datetime, timezone
 
 DEFAULT_SIGNAL_SCORE = 0.0
 SIGNAL_STATUS_OK = "ok"
@@ -42,7 +43,21 @@ def make_signal(
     stat = str(status or SIGNAL_STATUS_OK).strip().lower()
     if stat not in _VALID_STATUSES:
         stat = SIGNAL_STATUS_FALLBACK
-    ts_epoch = int(time.time()) if ts is None else int(ts)
+    ts_epoch = int(time.time())
+    if ts is not None:
+        try:
+            if isinstance(ts, str):
+                s = str(ts).strip()
+                if s.endswith("Z"):
+                    s = s[:-1] + "+00:00"
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                ts_epoch = int(dt.timestamp())
+            else:
+                ts_epoch = int(float(ts))
+        except Exception:
+            ts_epoch = int(time.time())
     return {
         "score": normalize_signal_score(score, default=default_score),
         "status": stat,

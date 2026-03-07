@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Dict, List
 
-from libs.market.global_sentiment import compute_global_sentiment
-from libs.news.news_pipeline import collect_news_items, score_news_sentiment
+from libs.data_quality.signal_contract import SIGNAL_STATUS_FALLBACK, make_signal
+from libs.market.global_sentiment import compute_global_sentiment_signal
+from libs.news.news_pipeline import collect_news_items, score_news_sentiment_signal
 from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
 from libs.strategies.candidates.market_rank import TopPicksCandidateGenerator
 from libs.strategies.universe_builder import build_candidate_universe
@@ -59,6 +61,15 @@ def _candidates_from_state(state: Dict[str, Any], k: int) -> List[Dict[str, str]
         return [{"symbol": s, "why": "candidate_symbols"} for s in syms]
 
     return []
+
+
+def _signal_score(sig: Any) -> float:
+    if not isinstance(sig, dict):
+        return 0.0
+    try:
+        return float(sig.get("score") or 0.0)
+    except Exception:
+        return 0.0
 
 
 def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,13 +128,32 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["universe_candidates"] = universe_candidates
     symbols = [c["symbol"] for c in candidates]
 
-    # 2) Global sentiment (store in policy for transparency + tests)
-    gs = 0.0
+    # 2) Global sentiment (score + data-quality signal)
+    now = int(time.time())
     if bool(policy.get("use_global_sentiment", True)):
-        gs = float(compute_global_sentiment(state=state, policy=policy))
+        try:
+            global_signal = dict(compute_global_sentiment_signal(state=state, policy=policy))
+        except Exception:
+            global_signal = make_signal(
+                score=0.0,
+                status=SIGNAL_STATUS_FALLBACK,
+                source="strategist_node",
+                reason="global_sentiment_exception",
+                ts=now,
+            )
+    else:
+        global_signal = make_signal(
+            score=0.0,
+            status=SIGNAL_STATUS_FALLBACK,
+            source="global_policy",
+            reason="global_sentiment_disabled",
+            ts=now,
+        )
+    gs = _signal_score(global_signal)
     policy["global_sentiment"] = float(gs)
-    # Keep a canonical state-level shape for downstream nodes.
+    # Keep canonical state-level score and signal shape for downstream nodes.
     state["global_sentiment"] = {"score": float(gs)}
+    state["global_sentiment_signal"] = dict(global_signal)
 
     # policy adjustment based on global sentiment
     # - risk-off: max_risk decreases, min_confidence increases
@@ -143,28 +173,52 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         policy["max_risk"] = base_max_risk
         policy["min_confidence"] = base_min_conf
 
-    # 3) News analysis
-    # Tests often inject mock_news_sentiment directly; honor it regardless of use_news_analysis.
+    # 3) News analysis (score + data-quality signal)
     news_items_by_symbol = {s: [] for s in symbols}
-    if "mock_news_items" in state and state.get("mock_news_items") is not None:
-        news_items_by_symbol = collect_news_items(symbols, state=state, policy=policy)
+    news_signal_map: Dict[str, Dict[str, Any]] = {}
 
-    # Prefer injected mock scores (no provider call) for deterministic tests.
-    if "mock_news_sentiment" in state and state.get("mock_news_sentiment") is not None:
-        ms = dict(state.get("mock_news_sentiment") or {})
-        news_sent = {s: float(ms.get(s, 0.0)) for s in symbols}
-    else:
-        news_sent = {s: 0.0 for s in symbols}
-        if bool(policy.get("use_news_analysis", False)):
+    if bool(policy.get("use_news_analysis", False)) or state.get("mock_news_sentiment") is not None:
+        # mock_news_sentiment path is handled inside score_news_sentiment_signal.
+        if bool(policy.get("use_news_analysis", False)) or state.get("mock_news_items") is not None:
             news_items_by_symbol = collect_news_items(symbols, state=state, policy=policy)
-            news_sent = score_news_sentiment(news_items_by_symbol, state=state, policy=policy)
-            news_sent = {s: float(news_sent.get(s, 0.0)) for s in symbols}
+        try:
+            news_signal_map = score_news_sentiment_signal(
+                news_items_by_symbol,
+                state=state,
+                policy=policy,
+                symbols=symbols,
+            )
+        except Exception:
+            news_signal_map = {
+                s: make_signal(
+                    score=0.0,
+                    status=SIGNAL_STATUS_FALLBACK,
+                    source="strategist_node",
+                    reason="news_sentiment_exception",
+                    ts=now,
+                )
+                for s in symbols
+            }
+    else:
+        news_signal_map = {
+            s: make_signal(
+                score=0.0,
+                status=SIGNAL_STATUS_FALLBACK,
+                source="news_policy",
+                reason="news_analysis_disabled",
+                ts=now,
+            )
+            for s in symbols
+        }
+
+    news_sent = {s: _signal_score(news_signal_map.get(s)) for s in symbols}
 
     state["policy"] = policy
     state["candidates"] = candidates
     # store per-symbol news items (dict)
     state["news_items"] = news_items_by_symbol
     state["news_sentiment"] = news_sent
+    state["news_sentiment_signal"] = news_signal_map
 
     # 4) Candidate rerank (M18-5): apply weights and negative-news filter, then risk-off count reduction
     w_news = float(policy.get("candidate_news_weight", 0.2))

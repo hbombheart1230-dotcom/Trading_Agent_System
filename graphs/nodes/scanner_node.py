@@ -41,11 +41,19 @@ def _get_global_sentiment_score(state: Dict[str, Any]) -> float:
     """Return global sentiment score in [-1, +1].
 
     Priority:
-      1) state['mock_global_sentiment'] (tests)
-      2) state['global_sentiment']['score'] (precomputed)
-      3) state['policy']['global_sentiment']['score'] (set by strategist)
-      4) default 0.0
+      1) state['global_sentiment_signal']['score'] (normalized signal)
+      2) state['mock_global_sentiment'] (tests)
+      3) state['global_sentiment']['score'] (precomputed)
+      4) state['policy']['global_sentiment']['score'] (set by strategist)
+      5) default 0.0
     """
+    gsig = state.get("global_sentiment_signal")
+    if isinstance(gsig, dict):
+        try:
+            return _clamp(float(gsig.get("score") or 0.0), -1.0, 1.0)
+        except Exception:
+            return 0.0
+
     if "mock_global_sentiment" in state:
         try:
             return _clamp(float(state.get("mock_global_sentiment") or 0.0), -1.0, 1.0)
@@ -82,7 +90,25 @@ def _get_global_sentiment_score(state: Dict[str, Any]) -> float:
 
 
 def _get_news_sentiment_map(state: Dict[str, Any]) -> Dict[str, float]:
-    """Return per-symbol news sentiment map in [-1, +1]."""
+    """Return per-symbol news sentiment map in [-1, +1].
+
+    Priority:
+      1) state['news_sentiment_signal'][symbol]['score']
+      2) state['news_sentiment'][symbol]
+      3) state['mock_news_sentiment'][symbol]
+    """
+    raw_sig = state.get("news_sentiment_signal")
+    if isinstance(raw_sig, dict):
+        out_sig: Dict[str, float] = {}
+        for k, v in raw_sig.items():
+            if isinstance(v, dict):
+                try:
+                    out_sig[str(k)] = _clamp(float(v.get("score") or 0.0), -1.0, 1.0)
+                except Exception:
+                    out_sig[str(k)] = 0.0
+        if out_sig:
+            return out_sig
+
     raw = state.get("news_sentiment")
     if not isinstance(raw, dict):
         raw = state.get("mock_news_sentiment") if isinstance(state.get("mock_news_sentiment"), dict) else {}
@@ -92,6 +118,40 @@ def _get_news_sentiment_map(state: Dict[str, Any]) -> Dict[str, float]:
             out[str(k)] = _clamp(float(v), -1.0, 1.0)
         except Exception:
             out[str(k)] = 0.0
+    return out
+
+
+def _get_global_sentiment_signal(state: Dict[str, Any]) -> Dict[str, Any]:
+    sig = state.get("global_sentiment_signal")
+    if isinstance(sig, dict):
+        return dict(sig)
+    if "mock_global_sentiment" in state:
+        return {"status": "ok", "source": "mock_global_sentiment", "reason": ""}
+    gs = state.get("global_sentiment")
+    if isinstance(gs, dict) and gs.get("score") is not None:
+        return {"status": "fallback", "source": "legacy_global_sentiment", "reason": "signal_missing"}
+    return {"status": "fallback", "source": "scanner_node", "reason": "missing_global_signal"}
+
+
+def _get_news_sentiment_signal_map(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    raw = state.get("news_sentiment_signal")
+    if not isinstance(raw, dict):
+        raw_scores = state.get("news_sentiment")
+        if not isinstance(raw_scores, dict):
+            raw_scores = state.get("mock_news_sentiment") if isinstance(state.get("mock_news_sentiment"), dict) else {}
+        out_legacy: Dict[str, Dict[str, Any]] = {}
+        for k, _v in (raw_scores or {}).items():
+            source = "legacy_news_sentiment"
+            status = "fallback"
+            if isinstance(state.get("mock_news_sentiment"), dict) and str(k) in state.get("mock_news_sentiment", {}):
+                source = "mock_news_sentiment"
+                status = "ok"
+            out_legacy[str(k)] = {"status": status, "source": source, "reason": "signal_missing"}
+        return out_legacy
+    out: Dict[str, Dict[str, Any]] = {}
+    for k, v in raw.items():
+        if isinstance(v, dict):
+            out[str(k)] = dict(v)
     return out
 
 
@@ -213,7 +273,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
     w = _get_scanner_weights(policy)
     gs = _get_global_sentiment_score(state)
+    gs_signal = _get_global_sentiment_signal(state)
     news_by_sym = _get_news_sentiment_map(state)
+    news_signal_by_sym = _get_news_sentiment_signal_map(state)
     skill_quotes, quote_meta = _extract_skill_quotes(state)
     skill_order_counts, skill_order_rows, order_meta = _extract_account_open_order_counts(state)
     feature_map, feature_source, feature_errors = _extract_feature_engine_map(state)
@@ -257,7 +319,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         candidate_rank_score = _clamp(float(candidate_meta.get("rank_score") or 0.0), -1.0, 1.0)
         candidate_universe_score = _clamp(float(candidate_meta.get("universe_score") or 0.0), 0.0, 10.0)
 
-        news_s = float(news_by_sym.get(symbol, 0.0))
+        news_s = float(news_by_sym.get(symbol, news_by_sym.get(_norm_symbol(symbol), 0.0)))
+        news_sig = (
+            news_signal_by_sym.get(symbol)
+            if isinstance(news_signal_by_sym.get(symbol), dict)
+            else news_signal_by_sym.get(_norm_symbol(symbol), {})
+        )
         quote = skill_quotes.get(_norm_symbol(symbol), {})
         quote_price = quote.get("price")
         if quote_price is None:
@@ -365,6 +432,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "skill_open_orders": open_orders,
                     "candidate_rank_score": candidate_rank_score,
                     "candidate_universe_score": candidate_universe_score,
+                    "news_sentiment_status": str(news_sig.get("status") or "fallback"),
+                    "news_sentiment_source": str(news_sig.get("source") or ""),
+                    "news_sentiment_reason": str(news_sig.get("reason") or ""),
+                    "global_sentiment_status": str(gs_signal.get("status") or "fallback"),
+                    "global_sentiment_source": str(gs_signal.get("source") or ""),
+                    "global_sentiment_reason": str(gs_signal.get("reason") or ""),
                 }
             )
 
