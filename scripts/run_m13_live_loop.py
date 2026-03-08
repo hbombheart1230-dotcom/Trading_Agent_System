@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from argparse import ArgumentParser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from libs.core.settings import load_env_file
+from libs.runtime.market_hours import MarketHours
 from libs.runtime.market_hours import now_kst
 from graphs.pipelines.m13_live_loop import run_m13_once
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def _first_allowlist_symbol() -> str:
@@ -36,6 +40,21 @@ def _to_int(v: Any, default: int) -> int:
         return int(float(v))
     except Exception:
         return int(default)
+
+
+def _to_bool(v: Any, default: bool = False) -> bool:
+    raw = str(v if v is not None else "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in ("1", "true", "yes", "y", "on")
+
+
+def _session_hard_gate_enabled(*, session_hard_gate_flag: bool, allow_offhours_flag: bool) -> bool:
+    if bool(allow_offhours_flag):
+        return False
+    if bool(session_hard_gate_flag):
+        return True
+    return _to_bool(os.getenv("M31_MOCK_EXAM_SESSION_HARD_GATE", "true"), True)
 
 
 def _pid_exists(pid: int) -> bool:
@@ -134,6 +153,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     p.add_argument("--once", action="store_true", help="Run a single iteration and exit.")
     p.add_argument("--sleep-sec", type=int, default=int(os.getenv("SCAN_INTERVAL_SEC", "60")), help="Sleep seconds between iterations.")
+    p.add_argument("--session-hard-gate", action="store_true", help="Abort runtime if market session is closed.")
+    p.add_argument("--allow-offhours", action="store_true", help="Disable session hard gate for off-hours drills.")
     p.add_argument(
         "--lock-path",
         default=str(os.getenv("M13_LIVE_LOCK_PATH", "data/state/m13_live_loop.lock") or "data/state/m13_live_loop.lock"),
@@ -150,6 +171,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     state: Dict[str, Any] = _build_initial_state(str(args.symbol or "").strip())
     if not state.get("symbol"):
         raise SystemExit("symbol is required: set --symbol or SYMBOL/SYMBOL_ALLOWLIST env")
+
+    session_hard_gate = _session_hard_gate_enabled(
+        session_hard_gate_flag=bool(args.session_hard_gate),
+        allow_offhours_flag=bool(args.allow_offhours),
+    )
+    if session_hard_gate:
+        mh = MarketHours()
+        check_dt = now_kst()
+        if not mh.is_open(check_dt):
+            print(f"live_loop aborted: market_closed session_hard_gate=true now_kst={check_dt.isoformat()}")
+            return 5
 
     lock_path = _resolve_path_from_root(str(args.lock_path or ""), "data/state/m13_live_loop.lock")
     acquired, reason = _acquire_lock(lock_path, lock_stale_sec=max(1, int(args.lock_stale_sec)))

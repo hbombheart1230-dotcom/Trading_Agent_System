@@ -19,6 +19,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--report-dir", default="reports/run_cards")
     p.add_argument("--day", default=None)
     p.add_argument("--max-runs", type=int, default=120)
+    p.add_argument("--all-runs", action="store_true", help="Include non-trade utility runs (default: trade-only).")
     p.add_argument("--json", action="store_true")
     return p
 
@@ -34,6 +35,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report_dir,
         day=day,
         max_runs=max(0, int(args.max_runs)),
+        trade_only=(not bool(args.all_runs)),
     )
     out = dict(out or {})
     out["report_md_path"] = str(md_path)

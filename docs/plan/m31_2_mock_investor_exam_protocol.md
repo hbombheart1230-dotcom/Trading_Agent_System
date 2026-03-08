@@ -6,7 +6,7 @@
 
 ## Core Answer (Market Hours)
 
-- You can start the process before market open.
+- Mock exam runtime now uses hard session gate: outside weekday `09:00-15:30` (KST), runtime/check aborts by default.
 - Real-time mock exam quality is meaningful during regular market session.
 - Current market-hours contract in code:
   - source: `libs/runtime/market_hours.py`
@@ -14,6 +14,10 @@
 - Tick pipeline behavior:
   - source: `graphs/pipelines/m13_tick.py`
   - market closed -> `tick_skipped=True` and no trade pipeline execution.
+  - runtime launcher hard gate:
+    - source: `scripts/run_m13_live_loop.py`
+    - default: abort with `rc=5` when market is closed
+    - off-hours override: `--allow-offhours` (drill only)
 
 ## Runtime Mode Policy (Fixed)
 
@@ -105,9 +109,9 @@ python scripts/run_m31_agent_chain_probe.py --json
 
 - `python scripts/run_m31_mock_investor_exam_check.py --json`
   - `ok=true`
-  - required checks passed; `session_window_check` is informational when `--strict-session` is not used.
-- `python scripts/run_m31_mock_investor_exam_check.py --strict-session --json`
-  - fails outside weekday `09:00-15:30` KST by design.
+  - required checks passed including mandatory `session_window_check`.
+- `python scripts/run_m31_mock_investor_exam_check.py --allow-offhours --json`
+  - off-hours exception mode for post-close artifact drills only (not for exam runtime pass criteria).
 - `python scripts/run_m31_agent_chain_probe.py --json`
   - `ok=true`
   - chain: `commander_router -> strategist -> scanner -> monitor -> decision -> supervisor -> executor -> reporter`

@@ -1,0 +1,102 @@
+schema_version: strategy_v1_exam_baseline.v1
+baseline_version: m31.exam.baseline.2026-03-08
+
+primary_strategy:
+  name: regime_momentum_v1
+  version: regime_momentum_v1
+
+runtime_policy:
+  runtime_profile: staging
+  kiwoom_mode: mock
+  approval_mode: manual
+  execution_enabled: true
+  allow_real_execution: false
+
+universe_session_policy:
+  use_universe_builder: true
+  candidate_source: top_picks
+  candidate_topk: 5
+  candidate_rank_topn: 30
+  candidate_condition_limit: 200
+  universe_require_condition: false
+  candidate_source_weights:
+    held_position: 4.0
+    watchlist: 3.0
+    sector: 2.0
+    theme: 2.0
+    condition: 2.2
+    liquidity: 1.2
+    market_rank: 1.5
+
+feature_set:
+  deterministic: true
+  required_fields:
+    - signal_score
+    - regime
+    - rsi14
+    - ma20_gap
+    - volatility20
+    - atr14
+    - volume_spike20
+    - ma60
+    - ma120
+    - adx14
+    - trend_strength
+    - vwap_distance
+    - rolling_drawdown20
+    - sector_relative_strength
+    - cross_section_rank
+
+entry_exit_sizing_policy:
+  entry_rule:
+    buy_composite_threshold: 0.2
+    min_signal_for_entry: 0.15
+    min_news_for_entry: 0.0
+    max_volatility_for_entry: 0.12
+  exit_rule:
+    sell_composite_threshold: -0.12
+    invalidation_signal_floor: -0.08
+    stop_loss_pct: 0.03
+    take_profit_pct: 0.05
+    max_hold_sec: 0
+    trailing_stop_pct: 0.0
+    vol_expansion_ratio: 0.0
+    news_shock_threshold: 0.3
+  sizing_rule:
+    base_risk_per_trade_ratio: 0.01
+    base_position_notional_ratio: 0.1
+    min_confidence_for_entry: 0.35
+    max_position_qty: 10
+    min_position_qty: 1
+    lot_size: 1
+    risk_context_inputs:
+      - regime
+      - volatility_percentile
+      - portfolio_exposure
+      - correlation_bucket
+      - daily_loss_state
+      - degrade_mode
+
+invalidation_rule:
+  triggered_when:
+    - signal_score <= invalidation_signal_floor
+    - high_volatility and volatility20 >= max_volatility_for_entry
+
+reproducibility:
+  locked_env_keys:
+    - USE_STRATEGY_V1
+    - STRATEGY_V1_NAME
+    - USE_EXIT_POLICY
+    - EXIT_POLICY_STOP_LOSS_PCT
+    - EXIT_POLICY_TAKE_PROFIT_PCT
+    - EXIT_POLICY_NEWS_SHOCK_THRESHOLD
+    - AI_STRATEGIST_MODEL
+    - AI_STRATEGIST_PROMPT_VERSION
+    - APPROVAL_MODE
+    - RUNTIME_PROFILE
+    - KIWOOM_MODE
+  required_reports:
+    - reports/operator_summary/operator_summary_<day>.md
+    - reports/decision_story/decision_story_<day>.md
+    - reports/run_cards/run_cards_<day>.md
+    - reports/m31_mock_exam/m31_mock_exam_<day>.json

@@ -8,6 +8,10 @@ from pathlib import Path
 from scripts.run_m31_mock_investor_exam_check import main as m31_2_main
 
 
+OPEN_KST = "2026-02-16T09:10:00+09:00"
+CLOSED_KST = "2026-02-16T08:10:00+09:00"
+
+
 def _write_env(path: Path, pairs: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"{k}={v}" for k, v in pairs.items()]
@@ -69,6 +73,8 @@ def test_m31_2_mock_investor_exam_check_passes_default(tmp_path: Path, capsys):
             str(report_dir),
             "--day",
             day,
+            "--now-kst",
+            OPEN_KST,
             "--json",
         ]
     )
@@ -114,6 +120,8 @@ def test_m31_2_mock_investor_exam_check_fails_with_injected_case(tmp_path: Path,
             str(report_dir),
             "--day",
             day,
+            "--now-kst",
+            OPEN_KST,
             "--inject-fail",
             "--json",
         ]
@@ -172,6 +180,8 @@ def test_m31_2_script_file_entrypoint_resolves_repo_imports(tmp_path: Path):
             str(report_dir),
             "--day",
             day,
+            "--now-kst",
+            OPEN_KST,
             "--json",
         ],
         cwd=str(root),
@@ -180,4 +190,90 @@ def test_m31_2_script_file_entrypoint_resolves_repo_imports(tmp_path: Path):
     )
     assert cp.returncode == 0, f"stdout={cp.stdout}\nstderr={cp.stderr}"
     obj = json.loads(cp.stdout.strip())
+    assert obj["ok"] is True
+
+
+def test_m31_2_mock_investor_exam_check_fails_offhours_by_default(tmp_path: Path, capsys):
+    day = "2026-02-21"
+    env_path = tmp_path / ".env"
+    events = tmp_path / "events.jsonl"
+    report_dir = tmp_path / "reports"
+
+    _write_env(
+        env_path,
+        {
+            "RUNTIME_PROFILE": "staging",
+            "KIWOOM_MODE": "mock",
+            "ALLOW_REAL_EXECUTION": "false",
+            "EXECUTION_ENABLED": "true",
+            "APPROVAL_MODE": "manual",
+            "SYMBOL_ALLOWLIST": "005930",
+            "MAX_ORDER_NOTIONAL": "1000000",
+            "RISK_DAILY_LOSS_LIMIT": "0.02",
+        },
+    )
+    _write_jsonl(events, [])
+
+    rc = m31_2_main(
+        [
+            "--env-path",
+            str(env_path),
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(report_dir),
+            "--day",
+            day,
+            "--now-kst",
+            CLOSED_KST,
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 3
+    assert obj["ok"] is False
+    assert "check_failed:session_window_check" in (obj.get("failures") or [])
+
+
+def test_m31_2_mock_investor_exam_check_allows_offhours_with_flag(tmp_path: Path, capsys):
+    day = "2026-02-21"
+    env_path = tmp_path / ".env"
+    events = tmp_path / "events.jsonl"
+    report_dir = tmp_path / "reports"
+
+    _write_env(
+        env_path,
+        {
+            "RUNTIME_PROFILE": "staging",
+            "KIWOOM_MODE": "mock",
+            "ALLOW_REAL_EXECUTION": "false",
+            "EXECUTION_ENABLED": "true",
+            "APPROVAL_MODE": "manual",
+            "SYMBOL_ALLOWLIST": "005930",
+            "MAX_ORDER_NOTIONAL": "1000000",
+            "RISK_DAILY_LOSS_LIMIT": "0.02",
+        },
+    )
+    _write_jsonl(events, [])
+
+    rc = m31_2_main(
+        [
+            "--env-path",
+            str(env_path),
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(report_dir),
+            "--day",
+            day,
+            "--now-kst",
+            CLOSED_KST,
+            "--allow-offhours",
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
     assert obj["ok"] is True

@@ -47,3 +47,12 @@ def test_m13_lock_reclaims_dead_pid(monkeypatch, tmp_path: Path):
     obj = json.loads(lock.read_text(encoding="utf-8"))
     assert int(obj.get("pid") or 0) == int(os.getpid())
 
+
+def test_m13_session_hard_gate_defaults_true(monkeypatch):
+    monkeypatch.delenv("M31_MOCK_EXAM_SESSION_HARD_GATE", raising=False)
+    assert live._session_hard_gate_enabled(session_hard_gate_flag=False, allow_offhours_flag=False) is True
+
+
+def test_m13_session_hard_gate_can_be_disabled_for_offhours(monkeypatch):
+    monkeypatch.setenv("M31_MOCK_EXAM_SESSION_HARD_GATE", "true")
+    assert live._session_hard_gate_enabled(session_hard_gate_flag=False, allow_offhours_flag=True) is False

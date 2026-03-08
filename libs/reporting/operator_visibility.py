@@ -9,7 +9,10 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 _REASON_LABELS: Dict[str, str] = {
     "none": "none",
-    "unspecified": "unspecified",
+    "unspecified": "UNSPECIFIED",
+    "NO_CANDIDATE": "NO_CANDIDATE (no candidate met entry conditions)",
+    "MARKET_CLOSED": "MARKET_CLOSED (outside session window)",
+    "GUARD_BLOCK": "GUARD_BLOCK (blocked by safety guard)",
     "noop_intent_skipped": "NOOP intent skipped (no order sent)",
     "denied_by_test": "Blocked by supervisor test rule",
     "duplicate_buy_position_exists": "Blocked duplicate buy (position already open)",
@@ -169,10 +172,12 @@ def _reason_text(intent: Dict[str, Any], trace: Dict[str, Any], llm: Dict[str, A
 def _humanize_reason(raw: Any) -> str:
     reason = str(raw or "").strip()
     if not reason:
-        return "unspecified"
+        return _REASON_LABELS["unspecified"]
     low = reason.lower()
     if low in _REASON_LABELS:
         return _REASON_LABELS[low]
+    if reason in _REASON_LABELS:
+        return _REASON_LABELS[reason]
     if low.startswith("exit_policy:"):
         tail = reason.split(":", 1)[1].replace("_", " ").strip()
         return f"Exit policy triggered ({tail})"
@@ -182,6 +187,32 @@ def _humanize_reason(raw: Any) -> str:
     if low.startswith("eod_force_liquidation:"):
         return f"EOD force liquidation ({reason.split(':', 1)[1]})"
     return reason
+
+
+def _normalize_reason_code(
+    raw_reason: Any,
+    *,
+    action: str,
+    execution_status: str,
+    guard_status: str,
+) -> str:
+    reason = str(raw_reason or "").strip()
+    if reason:
+        low = reason.lower()
+        if any(k in low for k in ("allowlist", "notional", "guard", "blocked")):
+            return "GUARD_BLOCK"
+        if "market_closed" in low or ("market" in low and "closed" in low):
+            return "MARKET_CLOSED"
+        if low in ("unspecified", "none"):
+            reason = ""
+
+    if guard_status == "intervened" or execution_status == "BLOCKED":
+        return "GUARD_BLOCK"
+    if action == "NOOP":
+        return "NO_CANDIDATE"
+    if execution_status in ("UNKNOWN", "SKIPPED"):
+        return "MARKET_CLOSED"
+    return reason or "unspecified"
 
 
 def _health_badge(level: str) -> str:
@@ -258,6 +289,19 @@ def _run_context_default(run_id: str) -> Dict[str, Any]:
         "verdict": {},
         "execution": {},
     }
+
+
+def _is_trade_story(story: Dict[str, Any]) -> bool:
+    action = str(story.get("action") or "").strip().upper()
+    status = str(story.get("execution_status") or "").strip().upper()
+    guard_status = str(story.get("guard_status") or "").strip().lower()
+    if action in ("BUY", "SELL"):
+        return True
+    if status in ("EXECUTED", "EXECUTED_OK", "EXECUTED_FAIL", "BLOCKED", "INTENT_ONLY"):
+        return True
+    if guard_status == "intervened":
+        return True
+    return False
 
 
 def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -404,7 +448,15 @@ def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             llm = ctx.get("llm") if isinstance(ctx.get("llm"), dict) else {}
             raw_reason = str(llm.get("intent_reason") or llm.get("intent_rationale") or "unspecified")
             ctx["key_reason_raw"] = raw_reason
-            ctx["key_reason"] = _humanize_reason(raw_reason)
+
+        normalized_reason = _normalize_reason_code(
+            ctx.get("key_reason_raw"),
+            action=str(ctx.get("action") or "").strip().upper(),
+            execution_status=str(ctx.get("execution_status") or "").strip().upper(),
+            guard_status=str(ctx.get("guard_status") or "").strip().lower(),
+        )
+        ctx["key_reason_raw"] = normalized_reason
+        ctx["key_reason"] = _humanize_reason(normalized_reason)
 
         if not str(ctx.get("final_outcome") or "").strip():
             if str(ctx.get("execution_status")) == "EXECUTED_OK":
@@ -807,6 +859,7 @@ def generate_decision_story_report(
     *,
     day: Optional[str] = None,
     max_runs: Optional[int] = 120,
+    trade_only: bool = True,
 ) -> Tuple[Path, Dict[str, Any]]:
     report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -818,6 +871,8 @@ def generate_decision_story_report(
     target_day = _pick_day(rows, day)
     day_rows = [r for r in rows if str(r.get("_day") or "") == target_day]
     stories_all = _build_run_contexts(day_rows)
+    if bool(trade_only):
+        stories_all = [s for s in stories_all if _is_trade_story(s)]
     limit = int(max_runs or 0)
     stories = stories_all[:limit] if limit > 0 else stories_all
 
@@ -842,10 +897,10 @@ def generate_decision_story_report(
                 f"## Run {s.get('run_id')}",
                 "",
                 f"- run_id: `{s.get('run_id')}`",
-                f"- symbol: **{s.get('symbol') or '-'}**",
+                f"- symbol: **{s.get('symbol') or 'N/A'}**",
                 f"- final_action: **{final_action}**",
                 f"- execution_status: **{s.get('execution_status')}**",
-                f"- decision_reason_summary: {s.get('key_reason') or '-'}",
+                f"- decision_reason_summary: {s.get('key_reason') or _humanize_reason('unspecified')}",
                 f"- technical_evidence: {s.get('technical_evidence') or '-'}",
                 f"- sentiment_evidence: {s.get('sentiment_evidence') or '-'}",
                 f"- guard_intervention: {s.get('guard_reason_human') or _humanize_reason(s.get('guard_reason') or 'none')}",
@@ -863,6 +918,7 @@ def generate_decision_story_report(
         "story_total": int(len(stories_all)),
         "rendered_story_total": int(len(stories)),
         "truncated": bool(len(stories) < len(stories_all)),
+        "trade_only": bool(trade_only),
         "report_md_path": str(md_path),
     }
     return md_path, out
@@ -874,6 +930,7 @@ def generate_run_card_report(
     *,
     day: Optional[str] = None,
     max_runs: Optional[int] = 120,
+    trade_only: bool = True,
 ) -> Tuple[Path, Dict[str, Any]]:
     report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -885,6 +942,8 @@ def generate_run_card_report(
     target_day = _pick_day(rows, day)
     day_rows = [r for r in rows if str(r.get("_day") or "") == target_day]
     stories_all = _build_run_contexts(day_rows)
+    if bool(trade_only):
+        stories_all = [s for s in stories_all if _is_trade_story(s)]
     stories_all = sorted(stories_all, key=lambda s: int(s.get("first_epoch") or 0))
     limit = int(max_runs or 0)
     stories = stories_all[:limit] if limit > 0 else stories_all
@@ -909,11 +968,11 @@ def generate_run_card_report(
             action_text = f"{action} {qty}" if (action in ("BUY", "SELL") and qty > 0) else action
             lines += [
                 f"Run: {s.get('run_id')}",
-                f"Symbol: {s.get('symbol') or '-'}",
+                f"Symbol: {s.get('symbol') or 'N/A'}",
                 f"Action: {action_text}",
                 f"Status: {s.get('execution_status')}",
                 f"Guard: {s.get('guard_status')} ({s.get('guard_reason_human') or _humanize_reason(s.get('guard_reason') or 'none')})",
-                f"Reason: {s.get('key_reason') or '-'}",
+                f"Reason: {s.get('key_reason') or _humanize_reason('unspecified')}",
                 f"Risk Flags: {risk_text}",
                 "",
             ]
@@ -926,6 +985,7 @@ def generate_run_card_report(
         "card_total": int(len(stories_all)),
         "rendered_card_total": int(len(stories)),
         "truncated": bool(len(stories) < len(stories_all)),
+        "trade_only": bool(trade_only),
         "report_md_path": str(md_path),
     }
     return md_path, out

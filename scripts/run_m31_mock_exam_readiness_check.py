@@ -106,7 +106,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--m31-slo-report-dir", default="reports/m31_slo_incident")
     p.add_argument("--m31-mock-exam-report-dir", default="reports/m31_mock_exam")
     p.add_argument("--report-dir", default="reports/m31_mock_exam_readiness")
-    p.add_argument("--strict-session", action="store_true")
+    p.add_argument("--strict-session", action="store_true", help="Deprecated compatibility flag.")
+    p.add_argument("--allow-offhours", action="store_true", help="Allow off-hours pass for M31-2 gate.")
     p.add_argument("--json", action="store_true")
     return p
 
@@ -198,6 +199,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ]
     if bool(args.strict_session):
         m31_mock_argv.insert(-1, "--strict-session")
+    if bool(args.allow_offhours):
+        m31_mock_argv.insert(-1, "--allow-offhours")
     m31_mock_rc, m31_mock = _run_json(m31_mock_exam_main, m31_mock_argv)
 
     runtime = m31_mock.get("runtime_mode") if isinstance(m31_mock.get("runtime_mode"), dict) else {}
@@ -285,6 +288,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "ok": bool(ok),
         "day": day,
         "strict_session": bool(args.strict_session),
+        "allow_offhours": bool(args.allow_offhours),
         "inputs": {
             "env_path": str(env_path),
             "event_log_path": str(event_log_path),

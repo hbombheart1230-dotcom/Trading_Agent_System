@@ -76,6 +76,20 @@ def _to_epoch(ts: Any) -> Optional[int]:
         return None
 
 
+def _parse_kst_datetime(value: str) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    s = raw.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=KST)
+    return dt.astimezone(KST)
+
+
 def _utc_day(ts: Any) -> Optional[str]:
     e = _to_epoch(ts)
     if e is None:
@@ -187,7 +201,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
     p.add_argument("--report-dir", default="reports/m31_mock_exam")
     p.add_argument("--day", default="2026-02-21")
-    p.add_argument("--strict-session", action="store_true")
+    p.add_argument(
+        "--allow-offhours",
+        action="store_true",
+        help="Allow off-hours check pass (default is hard session gate).",
+    )
+    p.add_argument(
+        "--strict-session",
+        action="store_true",
+        help="Deprecated compatibility flag (session gate is hard by default).",
+    )
+    p.add_argument("--now-kst", default=None, help="Optional ISO datetime override for deterministic session checks.")
     p.add_argument("--inject-fail", action="store_true")
     p.add_argument("--json", action="store_true")
     return p
@@ -199,7 +223,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     event_log_path = Path(str(args.event_log_path).strip())
     report_dir = Path(str(args.report_dir).strip())
     day = str(args.day or "2026-02-21").strip()
-    strict_session = bool(args.strict_session)
+    strict_session = True
+    allow_offhours = bool(args.allow_offhours)
+    now_override = _parse_kst_datetime(str(args.now_kst or "")) if args.now_kst else None
     inject_fail = bool(args.inject_fail)
 
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -225,7 +251,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     daily_loss_limit = _to_float(env.get("RISK_DAILY_LOSS_LIMIT"), default=0.0)
 
     mh = MarketHours()
-    now = now_kst()
+    now = now_override or now_kst()
     market_open_now = bool(mh.is_open(now))
 
     open_dt = datetime(2026, 2, 16, 9, 0, tzinfo=KST)  # Monday
@@ -312,7 +338,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             title="Current time is within market session for live mock exam quality",
             passed=market_open_now,
             evidence=f"now_kst={now.isoformat()}, market_open_now={market_open_now}",
-            required=bool(strict_session),
+            required=(not allow_offhours),
         ),
         _item(
             item_id="session_evidence_trackable",
@@ -346,6 +372,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "event_log_path": str(event_log_path),
         "report_dir": str(report_dir),
         "strict_session": strict_session,
+        "allow_offhours": allow_offhours,
+        "now_kst_override": now_override.isoformat() if now_override is not None else None,
         "runtime_mode": {
             "RUNTIME_PROFILE": runtime_profile,
             "KIWOOM_MODE": kiwoom_mode,

@@ -253,6 +253,58 @@ def test_run_card_report_script_outputs_cards(tmp_path: Path, capsys) -> None:
     assert "Status: BLOCKED" in md_body
 
 
+def test_run_card_report_trade_only_filters_unknown_utility_runs(tmp_path: Path, capsys) -> None:
+    day = "2026-03-06"
+    events = tmp_path / "events.jsonl"
+    out_dir = tmp_path / "run_cards"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "utility-1",
+                "ts": f"{day}T00:59:00+00:00",
+                "stage": "commander_router",
+                "event": "transition",
+                "payload": {"transition": "cooldown"},
+            },
+            {
+                "run_id": "trade-1",
+                "ts": f"{day}T01:05:00+00:00",
+                "stage": "decision",
+                "event": "trace",
+                "payload": {"decision_packet": {"intent": {"action": "BUY", "symbol": "005930", "qty": 1, "reason": "signal"}}},
+            },
+            {
+                "run_id": "trade-1",
+                "ts": f"{day}T01:05:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": False, "reason": "allowlist_blocked"},
+            },
+        ],
+    )
+
+    rc = run_card_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(out_dir),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert obj["trade_only"] is True
+    assert obj["card_total"] == 1
+    md_body = Path(obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "Run: trade-1" in md_body
+    assert "Run: utility-1" not in md_body
+    assert "Status: UNKNOWN" not in md_body
+
+
 def test_m13_eod_report_auto_attaches_operator_visibility_bundle(tmp_path: Path, monkeypatch) -> None:
     events = tmp_path / "events.jsonl"
     reports = tmp_path / "reports"
@@ -295,4 +347,3 @@ def test_m13_eod_report_auto_attaches_operator_visibility_bundle(tmp_path: Path,
     assert called["n"] == 1
     assert out["daily_report"]["day"] == day
     assert out["daily_report"]["operator_visibility"]["day"] == day
-

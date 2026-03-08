@@ -19,7 +19,7 @@
 Run:
 
 ```powershell
-python scripts/run_m31_mock_investor_exam_check.py --strict-session --json
+python scripts/run_m31_mock_investor_exam_check.py --allow-offhours --json
 python scripts/run_m31_slo_incident_review_check.py --json
 python scripts/run_m31_agent_chain_probe.py --json
 python scripts/smoke_m20_llm.py --provider openai --require-openai --show-llm-event
@@ -27,10 +27,16 @@ python scripts/smoke_m20_llm.py --provider openai --require-openai --show-llm-ev
 
 Pass criteria:
 
-- `strict-session ok=true`
+- `mock exam check ok=true` (off-hours drill mode only)
 - `slo check ok=true`
 - `agent chain probe ok=true`
 - `smoke_m20_llm` shows `strategy=OpenAIStrategist`
+
+At session start (`09:00+` KST), run again without `--allow-offhours`:
+
+```powershell
+python scripts/run_m31_mock_investor_exam_check.py --json
+```
 
 ## 3. Intraday 5-minute Loop (repeat)
 
