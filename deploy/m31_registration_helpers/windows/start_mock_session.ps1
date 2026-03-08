@@ -1,8 +1,10 @@
 param(
-  [string]$Root = "C:\Trading_Agent_System",
+  [string]$Root = "",
   [string]$Symbol = "",
   [string]$SleepSec = "60",
   [string]$PidPath = "data\state\m13_live_loop.pid",
+  [string]$LockPath = "data\state\m13_live_loop.lock",
+  [string]$LockStaleSec = "1800",
   [string]$StdoutPath = "data\logs\m31_mock_session_stdout.log",
   [string]$StderrPath = "data\logs\m31_mock_session_stderr.log",
   [string]$ControlLogPath = "data\logs\m31_mock_session_control.log"
@@ -10,12 +12,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$pythonPath = Join-Path $Root "venv\Scripts\python.exe"
-$absPidPath = Join-Path $Root $PidPath
+if ([string]::IsNullOrWhiteSpace($Root)) {
+  $resolvedRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+} else {
+  $resolvedRoot = (Resolve-Path $Root).Path
+}
+
+$pythonPath = Join-Path $resolvedRoot "venv\Scripts\python.exe"
+$absPidPath = Join-Path $resolvedRoot $PidPath
+$absLockPath = Join-Path $resolvedRoot $LockPath
 $pidDir = Split-Path -Parent $absPidPath
-$absStdoutPath = Join-Path $Root $StdoutPath
-$absStderrPath = Join-Path $Root $StderrPath
-$absControlLogPath = Join-Path $Root $ControlLogPath
+$lockDir = Split-Path -Parent $absLockPath
+$absStdoutPath = Join-Path $resolvedRoot $StdoutPath
+$absStderrPath = Join-Path $resolvedRoot $StderrPath
+$absControlLogPath = Join-Path $resolvedRoot $ControlLogPath
 $stdoutDir = Split-Path -Parent $absStdoutPath
 $stderrDir = Split-Path -Parent $absStderrPath
 $controlDir = Split-Path -Parent $absControlLogPath
@@ -34,6 +44,9 @@ if (!(Test-Path $pythonPath)) {
 if (!(Test-Path $pidDir)) {
   New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
 }
+if (!(Test-Path $lockDir)) {
+  New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+}
 if (!(Test-Path $stdoutDir)) {
   New-Item -ItemType Directory -Path $stdoutDir -Force | Out-Null
 }
@@ -45,8 +58,14 @@ if (!(Test-Path $controlDir)) {
 }
 
 $existingLoop = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
-  ($_.CommandLine -like "*scripts/run_m13_live_loop.py*") -or
-  ($_.CommandLine -like "*-m scripts.run_m13_live_loop*")
+  $cmd = [string]$_.CommandLine
+  (
+    ($cmd -like "*scripts/run_m13_live_loop.py*") -or
+    ($cmd -like "*-m scripts.run_m13_live_loop*")
+  ) -and (
+    ($cmd -like "*$absLockPath*") -or
+    ($cmd -like "*$resolvedRoot*")
+  )
 } | Select-Object -First 1
 
 if ($existingLoop) {
@@ -79,7 +98,9 @@ if (Test-Path $absPidPath) {
 $args = @(
   "-m",
   "scripts.run_m13_live_loop",
-  "--sleep-sec", $SleepSec
+  "--sleep-sec", $SleepSec,
+  "--lock-path", $absLockPath,
+  "--lock-stale-sec", $LockStaleSec
 )
 if ([string]::IsNullOrWhiteSpace($Symbol) -eq $false) {
   $args += @("--symbol", $Symbol)
@@ -88,7 +109,7 @@ if ([string]::IsNullOrWhiteSpace($Symbol) -eq $false) {
 $proc = Start-Process `
   -FilePath $pythonPath `
   -ArgumentList $args `
-  -WorkingDirectory $Root `
+  -WorkingDirectory $resolvedRoot `
   -PassThru `
   -WindowStyle Hidden `
   -RedirectStandardOutput $absStdoutPath `
@@ -99,10 +120,10 @@ Start-Sleep -Seconds 2
 $alive = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
 if (!$alive) {
   Remove-Item -Path $absPidPath -Force -ErrorAction SilentlyContinue
-  Write-ControlLog "start_failed process_exited_early stdout=$absStdoutPath stderr=$absStderrPath"
+  Write-ControlLog "start_failed process_exited_early root=$resolvedRoot lock=$absLockPath stdout=$absStdoutPath stderr=$absStderrPath"
   Write-Error "start_failed process_exited_early stdout=$absStdoutPath stderr=$absStderrPath"
   exit 4
 }
 
-Write-ControlLog "started pid=$($proc.Id) sleep_sec=$SleepSec"
-Write-Output "started pid=$($proc.Id) sleep_sec=$SleepSec pid_path=$absPidPath stdout=$absStdoutPath stderr=$absStderrPath"
+Write-ControlLog "started pid=$($proc.Id) root=$resolvedRoot sleep_sec=$SleepSec lock=$absLockPath"
+Write-Output "started pid=$($proc.Id) root=$resolvedRoot sleep_sec=$SleepSec lock=$absLockPath pid_path=$absPidPath stdout=$absStdoutPath stderr=$absStderrPath"

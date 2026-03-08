@@ -1,12 +1,19 @@
 param(
-  [string]$Root = "C:\Trading_Agent_System",
+  [string]$Root = "",
   [string]$PidPath = "data\state\m13_live_loop.pid",
+  [string]$LockPath = "data\state\m13_live_loop.lock",
   [string]$ControlLogPath = "data\logs\m31_mock_session_control.log"
 )
 
 $ErrorActionPreference = "Stop"
-$absPidPath = Join-Path $Root $PidPath
-$absControlLogPath = Join-Path $Root $ControlLogPath
+if ([string]::IsNullOrWhiteSpace($Root)) {
+  $resolvedRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
+} else {
+  $resolvedRoot = (Resolve-Path $Root).Path
+}
+$absPidPath = Join-Path $resolvedRoot $PidPath
+$absLockPath = Join-Path $resolvedRoot $LockPath
+$absControlLogPath = Join-Path $resolvedRoot $ControlLogPath
 $controlDir = Split-Path -Parent $absControlLogPath
 $stopped = 0
 
@@ -47,8 +54,14 @@ if (Test-Path $absPidPath) {
 }
 
 $fallback = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
-  ($_.CommandLine -like "*scripts/run_m13_live_loop.py*") -or
-  ($_.CommandLine -like "*-m scripts.run_m13_live_loop*")
+  $cmd = [string]$_.CommandLine
+  (
+    ($cmd -like "*scripts/run_m13_live_loop.py*") -or
+    ($cmd -like "*-m scripts.run_m13_live_loop*")
+  ) -and (
+    ($cmd -like "*$absLockPath*") -or
+    ($cmd -like "*$resolvedRoot*")
+  )
 }
 
 foreach ($p in $fallback) {
@@ -58,5 +71,7 @@ foreach ($p in $fallback) {
   }
 }
 
-Write-ControlLog "stopped_total=$stopped pid_path=$absPidPath"
-Write-Output "stopped_total=$stopped pid_path=$absPidPath"
+Remove-Item -Path $absLockPath -Force -ErrorAction SilentlyContinue
+
+Write-ControlLog "stopped_total=$stopped pid_path=$absPidPath lock_path=$absLockPath"
+Write-Output "stopped_total=$stopped pid_path=$absPidPath lock_path=$absLockPath"
