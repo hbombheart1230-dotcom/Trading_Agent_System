@@ -272,13 +272,19 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
         out["failure_reason"] = "m30_final_signoff_failed"
         return out
 
+    step1_obj = _parse_stdout_json(str(step1.get("stdout_tail") or ""))
+    m30_2_signoff = step1_obj.get("m30_2_signoff") if isinstance(step1_obj.get("m30_2_signoff"), dict) else {}
+    m30_2_signoff_json_path = str(m30_2_signoff.get("report_json_path") or "").strip()
+    if not m30_2_signoff_json_path:
+        m30_2_signoff_json_path = str(ROOT / "reports" / "m30_signoff" / f"m30_release_signoff_{day}.json")
+
     step2 = _run_subprocess(
         step_id="preopen.m30_post_golive_policy",
         command=[
             py,
             str(ROOT / "scripts" / "run_m30_post_golive_monitoring_policy.py"),
             "--signoff-json-path",
-            str(ROOT / "reports" / "m30_signoff" / f"m30_release_signoff_{day}.json"),
+            str(m30_2_signoff_json_path),
             "--event-log-dir",
             str(ROOT / "data" / "logs" / "m30_golive"),
             "--quality-report-dir",
@@ -300,18 +306,18 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
         return out
 
     step3 = _run_subprocess(
-        step_id="preopen.m31_mock_exam_check",
+        step_id="preopen.m31_mock_exam_readiness_check",
         command=[
             py,
-            str(ROOT / "scripts" / "run_m31_mock_investor_exam_check.py"),
+            str(ROOT / "scripts" / "run_m31_mock_exam_readiness_check.py"),
+            "--day",
+            day,
             "--env-path",
             str(common["env_path"]),
             "--event-log-path",
             str(event_log_path),
             "--report-dir",
-            str(report_root / "m31_mock_exam"),
-            "--day",
-            day,
+            str(report_root / "m31_mock_exam_readiness"),
             "--allow-offhours",
             "--json",
         ],
@@ -320,9 +326,9 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
     )
     out["steps"].append(step3)
     obj3 = _parse_stdout_json(str(step3.get("stdout_tail") or ""))
-    out["m31_mock_check"] = obj3
+    out["m31_mock_exam_readiness"] = obj3
     if not (bool(step3.get("ok")) and bool(obj3.get("ok"))):
-        out["failure_reason"] = "m31_mock_exam_check_failed"
+        out["failure_reason"] = "m31_mock_exam_readiness_failed"
         return out
 
     env_obj = _read_env_file(Path(common["env_path"]))
