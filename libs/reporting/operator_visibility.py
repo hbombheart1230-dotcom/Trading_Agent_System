@@ -7,6 +7,23 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
+_REASON_LABELS: Dict[str, str] = {
+    "none": "none",
+    "unspecified": "unspecified",
+    "noop_intent_skipped": "NOOP intent skipped (no order sent)",
+    "denied_by_test": "Blocked by supervisor test rule",
+    "duplicate_buy_position_exists": "Blocked duplicate buy (position already open)",
+    "insufficient_mock_cash": "Insufficient mock cash",
+    "position_already_open": "Position already open",
+    "model_no_signal": "Model returned no trade signal",
+    "missing_rationale": "Trade rationale missing",
+    "strategist_error": "Strategist runtime error",
+    "post_exit_cooldown": "Post-exit cooldown active",
+    "strategy_v1_noop": "Strategy-v1 returned NOOP",
+    "conditions_not_met": "Rule entry conditions not met",
+}
+
+
 def _to_epoch(ts: Any) -> Optional[int]:
     if ts is None:
         return None
@@ -149,6 +166,53 @@ def _reason_text(intent: Dict[str, Any], trace: Dict[str, Any], llm: Dict[str, A
     return "unspecified"
 
 
+def _humanize_reason(raw: Any) -> str:
+    reason = str(raw or "").strip()
+    if not reason:
+        return "unspecified"
+    low = reason.lower()
+    if low in _REASON_LABELS:
+        return _REASON_LABELS[low]
+    if low.startswith("exit_policy:"):
+        tail = reason.split(":", 1)[1].replace("_", " ").strip()
+        return f"Exit policy triggered ({tail})"
+    if low.startswith("score_override:"):
+        tail = reason.split(":", 1)[1].strip()
+        return f"Score override applied ({tail})"
+    if low.startswith("eod_force_liquidation:"):
+        return f"EOD force liquidation ({reason.split(':', 1)[1]})"
+    return reason
+
+
+def _health_badge(level: str) -> str:
+    lv = str(level or "").strip().upper()
+    if lv not in ("GREEN", "YELLOW", "RED"):
+        return f"[{lv or 'UNKNOWN'}]"
+    return f"[{lv}]"
+
+
+def _render_reason_top(counter: Counter[str], *, topn: int = 5) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for reason, cnt in counter.most_common(topn):
+        out.append(
+            {
+                "reason": str(reason or ""),
+                "label": _humanize_reason(reason),
+                "count": int(cnt),
+            }
+        )
+    return out
+
+
+def _format_reason_rows(rows: List[Dict[str, Any]]) -> str:
+    if not rows:
+        return "none"
+    return "; ".join(
+        f"{str(r.get('label') or r.get('reason') or '-')} ({int(r.get('count') or 0)})"
+        for r in rows
+    )
+
+
 def _broker_code_success(value: Any) -> Optional[bool]:
     if value is None:
         return None
@@ -178,10 +242,13 @@ def _run_context_default(run_id: str) -> Dict[str, Any]:
         "execution_status": "UNKNOWN",
         "guard_status": "none",
         "guard_reason": "",
+        "guard_reason_human": "none",
         "key_reason": "",
+        "key_reason_raw": "",
         "technical_evidence": "",
         "sentiment_evidence": "",
         "policy_evidence": "",
+        "news_status": {"symbol_sentiment_status": "", "global_sentiment_status": ""},
         "invalidation": {},
         "operator_intervention": [],
         "final_outcome": "",
@@ -230,6 +297,8 @@ def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 news = llm_ctx.get("news") if isinstance(llm_ctx.get("news"), dict) else {}
             if not policy:
                 policy = llm_ctx.get("decision_policy") if isinstance(llm_ctx.get("decision_policy"), dict) else {}
+            symbol_status = str(news.get("symbol_sentiment_status") or "").strip().lower()
+            global_status = str(news.get("global_sentiment_status") or "").strip().lower()
 
             action = str(intent.get("action") or "").strip().upper()
             symbol = str(intent.get("symbol") or "").strip().upper()
@@ -242,11 +311,21 @@ def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             if qty > 0:
                 ctx["qty"] = qty
 
-            ctx["key_reason"] = _reason_text(intent, trace, ctx.get("llm") if isinstance(ctx.get("llm"), dict) else {})
+            reason_raw = _reason_text(intent, trace, ctx.get("llm") if isinstance(ctx.get("llm"), dict) else {})
+            ctx["key_reason_raw"] = reason_raw
+            ctx["key_reason"] = _humanize_reason(reason_raw)
             ctx["technical_evidence"] = _compact_kv_text(technical, topn=6)
             ctx["sentiment_evidence"] = _compact_kv_text(news, topn=6)
             ctx["policy_evidence"] = _compact_kv_text(policy, topn=6)
             ctx["invalidation"] = packet.get("invalidation") if isinstance(packet.get("invalidation"), dict) else {}
+            ctx["news_status"] = {
+                "symbol_sentiment_status": symbol_status,
+                "global_sentiment_status": global_status,
+            }
+            if symbol_status and symbol_status != "ok":
+                ctx["risk_flags"].append(f"symbol_sentiment_{symbol_status}")
+            if global_status and global_status != "ok":
+                ctx["risk_flags"].append(f"global_sentiment_{global_status}")
             ctx["decision"] = dict(payload)
             continue
 
@@ -257,6 +336,7 @@ def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 ctx["execution_status"] = "BLOCKED"
                 ctx["guard_status"] = "intervened"
                 ctx["guard_reason"] = str(payload.get("reason") or "blocked_by_guard")
+                ctx["guard_reason_human"] = _humanize_reason(ctx.get("guard_reason"))
             continue
 
         if stage == "execute_from_packet" and event == "execution":
@@ -319,9 +399,12 @@ def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         if not str(ctx.get("guard_reason") or "").strip():
             ctx["guard_reason"] = "none"
+        ctx["guard_reason_human"] = _humanize_reason(ctx.get("guard_reason") or "none")
         if not str(ctx.get("key_reason") or "").strip():
             llm = ctx.get("llm") if isinstance(ctx.get("llm"), dict) else {}
-            ctx["key_reason"] = str(llm.get("intent_reason") or llm.get("intent_rationale") or "unspecified")
+            raw_reason = str(llm.get("intent_reason") or llm.get("intent_rationale") or "unspecified")
+            ctx["key_reason_raw"] = raw_reason
+            ctx["key_reason"] = _humanize_reason(raw_reason)
 
         if not str(ctx.get("final_outcome") or "").strip():
             if str(ctx.get("execution_status")) == "EXECUTED_OK":
@@ -391,6 +474,8 @@ def generate_operator_daily_summary(
     action_counts: Counter[str] = Counter()
     strategy_counts: Counter[str] = Counter()
     blocked_reason_counts: Counter[str] = Counter()
+    noop_reason_counts: Counter[str] = Counter()
+    fallback_signal_status_counts: Counter[str] = Counter()
     stage_error_counts: Counter[str] = Counter()
     executions_ok = 0
     executions_fail = 0
@@ -558,11 +643,31 @@ def generate_operator_daily_summary(
         (metrics.get("strategist_llm") if isinstance(metrics.get("strategist_llm"), dict) else {}).get("success_rate"),
         0.0,
     )
+    for story in run_stories:
+        action = str(story.get("action") or "").strip().upper()
+        execution_status = str(story.get("execution_status") or "").strip().upper()
+        if action == "NOOP" or execution_status == "NOOP":
+            reason_raw = str(story.get("key_reason_raw") or story.get("key_reason") or "unspecified").strip() or "unspecified"
+            noop_reason_counts[reason_raw] += 1
+        news_status = story.get("news_status") if isinstance(story.get("news_status"), dict) else {}
+        symbol_status = str(news_status.get("symbol_sentiment_status") or "").strip().lower()
+        global_status = str(news_status.get("global_sentiment_status") or "").strip().lower()
+        if symbol_status and symbol_status != "ok":
+            fallback_signal_status_counts[f"symbol_sentiment_status:{symbol_status}"] += 1
+        if global_status and global_status != "ok":
+            fallback_signal_status_counts[f"global_sentiment_status:{global_status}"] += 1
+
+    blocked_reason_top_human = _render_reason_top(blocked_reason_counts, topn=5)
+    noop_reason_top_human = _render_reason_top(noop_reason_counts, topn=5)
+    fallback_signal_status_top = _render_reason_top(fallback_signal_status_counts, topn=5)
 
     summary_lines = [
-        f"Runs={run_total}, actions={dict(action_counts)}, executions={executions_total} (ok={executions_ok}, fail={executions_fail}).",
-        f"Guard blocks={blocked_total}, top_block_reason={top_block_text}, interventions={operator_intervention_total}.",
-        f"LLM success_rate={llm_success_rate:.2%}, health={health}.",
+        (
+            f"{_health_badge(health)} runs={run_total}, executions={executions_total} "
+            f"(ok={executions_ok}, fail={executions_fail}), blocks={blocked_total}."
+        ),
+        f"Top guard block: {_humanize_reason(top_block_reason[0][0])} ({top_block_reason[0][1]})" if top_block_reason else "Top guard block: none",
+        f"LLM success_rate={llm_success_rate:.2%}, interventions={operator_intervention_total}, cooldowns={cooldown_transition_total}.",
     ]
 
     reasoning_lines = [str(i.get("detail") or "") for i in issues if str(i.get("detail") or "").strip()]
@@ -596,10 +701,14 @@ def generate_operator_daily_summary(
             "executions_fail_total": int(executions_fail),
             "blocked_total": int(blocked_total),
             "blocked_reason_top": dict(blocked_reason_counts.most_common(5)),
+            "blocked_reason_top_human": blocked_reason_top_human,
+            "noop_reason_top_human": noop_reason_top_human,
+            "fallback_signal_status_top_human": fallback_signal_status_top,
         },
         "safety_guard_interventions": {
             "blocked_total": int(blocked_total),
             "blocked_reason_top": dict(blocked_reason_counts.most_common(5)),
+            "blocked_reason_top_human": blocked_reason_top_human,
             "operator_intervention_total": int(operator_intervention_total),
             "cooldown_transition_total": int(cooldown_transition_total),
             "duplicate_execution_total": int(duplicate_execution_total),
@@ -624,16 +733,26 @@ def generate_operator_daily_summary(
         "",
         "## Executive Summary",
         "",
-        f"- system_status: **{health}**",
+        f"- system_status: **{_health_badge(health)}**",
     ]
     for line in summary_lines:
         md_lines.append(f"- {line}")
+
+    md_lines += ["", "## Top Issues", ""]
+    for issue in out["top_issues"]:
+        md_lines.append(
+            f"- [{issue.get('severity')}] {issue.get('code')}: {_humanize_reason(issue.get('detail') or issue.get('code'))}"
+        )
+
+    md_lines += ["", "## Recommended Operator Actions", ""]
+    for action in out["recommended_operator_actions"]:
+        md_lines.append(f"- {action}")
 
     md_lines += [
         "",
         "## System Health Status",
         "",
-        f"- system_health_level: **{system_health_status['system_health_level']}**",
+        f"- system_health_level: **{_health_badge(system_health_status['system_health_level'])}**",
         "- reasoning:",
     ]
     if reasoning_lines:
@@ -655,6 +774,8 @@ def generate_operator_daily_summary(
         f"- strategy_counts: `{json.dumps(tas['strategy_counts'], ensure_ascii=False)}`",
         f"- executions_total: **{tas['executions_total']}**",
         f"- blocked_total: **{tas['blocked_total']}**",
+        f"- noop_reason_top_human: {_format_reason_rows(list(tas.get('noop_reason_top_human') or []))}",
+        f"- fallback_signal_status_top_human: {_format_reason_rows(list(tas.get('fallback_signal_status_top_human') or []))}",
     ]
 
     sgi = out["safety_guard_interventions"]
@@ -663,20 +784,12 @@ def generate_operator_daily_summary(
         "## Safety Guard Interventions",
         "",
         f"- blocked_total: **{sgi['blocked_total']}**",
-        f"- blocked_reason_top: `{json.dumps(sgi['blocked_reason_top'], ensure_ascii=False)}`",
+        f"- blocked_reason_top_human: {_format_reason_rows(list(sgi.get('blocked_reason_top_human') or []))}",
         f"- operator_intervention_total: **{sgi['operator_intervention_total']}**",
         f"- cooldown_transition_total: **{sgi['cooldown_transition_total']}**",
         f"- duplicate_execution_total: **{sgi['duplicate_execution_total']}**",
         f"- guard_precedence_violation_total: **{sgi['guard_precedence_violation_total']}**",
     ]
-
-    md_lines += ["", "## Top Issues", ""]
-    for issue in out["top_issues"]:
-        md_lines.append(f"- [{issue.get('severity')}] {issue.get('code')}: {issue.get('detail')}")
-
-    md_lines += ["", "## Recommended Operator Actions", ""]
-    for action in out["recommended_operator_actions"]:
-        md_lines.append(f"- {action}")
     md_lines.append("")
 
     js_path = report_dir / f"operator_summary_{target_day}.json"
@@ -693,6 +806,7 @@ def generate_decision_story_report(
     report_dir: Path,
     *,
     day: Optional[str] = None,
+    max_runs: Optional[int] = 120,
 ) -> Tuple[Path, Dict[str, Any]]:
     report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -703,16 +817,26 @@ def generate_decision_story_report(
 
     target_day = _pick_day(rows, day)
     day_rows = [r for r in rows if str(r.get("_day") or "") == target_day]
-    stories = _build_run_contexts(day_rows)
+    stories_all = _build_run_contexts(day_rows)
+    limit = int(max_runs or 0)
+    stories = stories_all[:limit] if limit > 0 else stories_all
 
     md_lines = [f"# Decision Story Report ({target_day})", ""]
+    md_lines += [
+        f"- story_total: **{int(len(stories_all))}**",
+        f"- rendered_story_total: **{int(len(stories))}**",
+    ]
+    if len(stories) < len(stories_all):
+        md_lines.append(f"- note: output truncated to first {len(stories)} runs")
+    md_lines.append("")
+
     if not stories:
         md_lines += ["No decision stories found.", ""]
     else:
         for s in stories:
             action = str(s.get("action") or "UNKNOWN")
             qty = _safe_int(s.get("qty"), 0)
-            final_action = f"{action} {qty}" if qty > 0 else action
+            final_action = f"{action} {qty}" if (qty > 0 and action in ("BUY", "SELL")) else action
             operator_int = s.get("operator_intervention") if isinstance(s.get("operator_intervention"), list) else []
             md_lines += [
                 f"## Run {s.get('run_id')}",
@@ -724,7 +848,7 @@ def generate_decision_story_report(
                 f"- decision_reason_summary: {s.get('key_reason') or '-'}",
                 f"- technical_evidence: {s.get('technical_evidence') or '-'}",
                 f"- sentiment_evidence: {s.get('sentiment_evidence') or '-'}",
-                f"- guard_intervention: {s.get('guard_reason') or 'none'}",
+                f"- guard_intervention: {s.get('guard_reason_human') or _humanize_reason(s.get('guard_reason') or 'none')}",
                 f"- operator_intervention: {', '.join(operator_int) if operator_int else 'none'}",
                 f"- final_outcome: {s.get('final_outcome') or '-'}",
                 "",
@@ -736,7 +860,9 @@ def generate_decision_story_report(
     out = {
         "schema_version": "decision_story.v1",
         "day": target_day,
-        "story_total": int(len(stories)),
+        "story_total": int(len(stories_all)),
+        "rendered_story_total": int(len(stories)),
+        "truncated": bool(len(stories) < len(stories_all)),
         "report_md_path": str(md_path),
     }
     return md_path, out
@@ -747,6 +873,7 @@ def generate_run_card_report(
     report_dir: Path,
     *,
     day: Optional[str] = None,
+    max_runs: Optional[int] = 120,
 ) -> Tuple[Path, Dict[str, Any]]:
     report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -757,22 +884,35 @@ def generate_run_card_report(
 
     target_day = _pick_day(rows, day)
     day_rows = [r for r in rows if str(r.get("_day") or "") == target_day]
-    stories = _build_run_contexts(day_rows)
-    stories = sorted(stories, key=lambda s: int(s.get("first_epoch") or 0))
+    stories_all = _build_run_contexts(day_rows)
+    stories_all = sorted(stories_all, key=lambda s: int(s.get("first_epoch") or 0))
+    limit = int(max_runs or 0)
+    stories = stories_all[:limit] if limit > 0 else stories_all
 
     lines = [f"# Run Cards ({target_day})", ""]
+    lines += [
+        f"- card_total: **{int(len(stories_all))}**",
+        f"- rendered_card_total: **{int(len(stories))}**",
+    ]
+    if len(stories) < len(stories_all):
+        lines.append(f"- note: output truncated to first {len(stories)} runs")
+    lines.append("")
+
     if not stories:
         lines += ["No run cards found.", ""]
     else:
         for s in stories:
             risk_flags = s.get("risk_flags") if isinstance(s.get("risk_flags"), list) else []
             risk_text = ", ".join(str(x) for x in risk_flags) if risk_flags else "none"
+            action = str(s.get("action") or "UNKNOWN")
+            qty = max(0, _safe_int(s.get("qty"), 0))
+            action_text = f"{action} {qty}" if (action in ("BUY", "SELL") and qty > 0) else action
             lines += [
                 f"Run: {s.get('run_id')}",
                 f"Symbol: {s.get('symbol') or '-'}",
-                f"Action: {s.get('action') or 'UNKNOWN'} {max(0, _safe_int(s.get('qty'), 0))}",
+                f"Action: {action_text}",
                 f"Status: {s.get('execution_status')}",
-                f"Guard: {s.get('guard_status')} ({s.get('guard_reason')})",
+                f"Guard: {s.get('guard_status')} ({s.get('guard_reason_human') or _humanize_reason(s.get('guard_reason') or 'none')})",
                 f"Reason: {s.get('key_reason') or '-'}",
                 f"Risk Flags: {risk_text}",
                 "",
@@ -783,7 +923,9 @@ def generate_run_card_report(
     out = {
         "schema_version": "run_cards.v1",
         "day": target_day,
-        "card_total": int(len(stories)),
+        "card_total": int(len(stories_all)),
+        "rendered_card_total": int(len(stories)),
+        "truncated": bool(len(stories) < len(stories_all)),
         "report_md_path": str(md_path),
     }
     return md_path, out
