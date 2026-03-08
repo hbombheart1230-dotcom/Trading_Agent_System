@@ -69,6 +69,7 @@ python scripts/smoke_m20_llm.py --provider openai --require-openai --show-llm-ev
 
 powershell -ExecutionPolicy Bypass -File deploy/m31_registration_helpers/windows/register_mock_session_tasks.ps1
 schtasks /Query /TN TradingAgent-MockSession-Start /FO LIST
+schtasks /Query /TN TradingAgent-MockSession-Ensure /FO LIST
 schtasks /Query /TN TradingAgent-MockSession-Stop /FO LIST
 powershell -ExecutionPolicy Bypass -File deploy/m31_registration_helpers/windows/unregister_mock_session_tasks.ps1
 ```

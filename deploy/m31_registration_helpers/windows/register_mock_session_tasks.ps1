@@ -3,6 +3,8 @@ param(
   [string]$Days = "MON,TUE,WED,THU,FRI",
   [string]$StartTime = "09:00",
   [string]$StopTime = "15:31",
+  [string]$EnsureIntervalMin = "5",
+  [string]$EnsureDuration = "",
   [string]$StartScriptPath = "",
   [string]$StopScriptPath = "",
   [string]$Root = "",
@@ -50,6 +52,7 @@ if (!(Test-Path $stopAbs)) {
 }
 
 $startTask = "$TaskPrefix-Start"
+$ensureTask = "$TaskPrefix-Ensure"
 $stopTask = "$TaskPrefix-Stop"
 
 $startParts = @(
@@ -97,9 +100,50 @@ if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }
 
+function Parse-TimeToMinutes {
+  param([string]$TimeText)
+  if ([string]::IsNullOrWhiteSpace($TimeText)) { return -1 }
+  $parts = $TimeText.Split(":")
+  if ($parts.Count -lt 2) { return -1 }
+  $h = 0
+  $m = 0
+  if (-not [int]::TryParse($parts[0], [ref]$h)) { return -1 }
+  if (-not [int]::TryParse($parts[1], [ref]$m)) { return -1 }
+  if ($h -lt 0 -or $h -gt 23 -or $m -lt 0 -or $m -gt 59) { return -1 }
+  return ($h * 60 + $m)
+}
+
+function Minutes-ToDuration {
+  param([int]$Minutes)
+  $mins = [Math]::Max(1, $Minutes)
+  $h = [int][Math]::Floor($mins / 60)
+  $m = [int]($mins % 60)
+  return ("{0:D2}:{1:D2}" -f $h, $m)
+}
+
+$ensureEvery = 0
+[void][int]::TryParse($EnsureIntervalMin, [ref]$ensureEvery)
+if ($ensureEvery -gt 0) {
+  $ensureDu = $EnsureDuration
+  if ([string]::IsNullOrWhiteSpace($ensureDu)) {
+    $startMin = Parse-TimeToMinutes -TimeText $StartTime
+    $stopMin = Parse-TimeToMinutes -TimeText $StopTime
+    if ($startMin -ge 0 -and $stopMin -gt $startMin) {
+      $ensureDu = Minutes-ToDuration -Minutes ($stopMin - $startMin)
+    } else {
+      $ensureDu = "06:31"
+    }
+  }
+
+  schtasks /Create /TN $ensureTask /SC WEEKLY /D $Days /ST $StartTime /RI $EnsureIntervalMin /DU $ensureDu /TR $startTr /RL $RunLevel /F | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+}
+
 schtasks /Create /TN $stopTask /SC WEEKLY /D $Days /ST $StopTime /TR $stopTr /RL $RunLevel /F | Out-Null
 if ($LASTEXITCODE -ne 0) {
   exit $LASTEXITCODE
 }
 
-Write-Output "ok start_task=$startTask stop_task=$stopTask days=$Days start=$StartTime stop=$StopTime root=$root run_level=$RunLevel"
+Write-Output "ok start_task=$startTask ensure_task=$ensureTask ensure_interval_min=$EnsureIntervalMin stop_task=$stopTask days=$Days start=$StartTime stop=$StopTime root=$root run_level=$RunLevel"

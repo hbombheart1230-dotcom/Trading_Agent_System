@@ -1,0 +1,612 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from libs.runtime.market_hours import KST
+from libs.runtime.market_hours import MarketHours
+from libs.runtime.market_hours import now_kst
+
+
+PHASE_PREOPEN = "preopen"
+PHASE_SESSION = "session"
+PHASE_CLOSEOUT = "closeout"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _to_int(v: Any, default: int) -> int:
+    try:
+        return int(float(v))
+    except Exception:
+        return int(default)
+
+
+def _to_bool(v: Any, default: bool = False) -> bool:
+    raw = str(v if v is not None else "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in ("1", "true", "yes", "y", "on")
+
+
+def _resolve_path(raw: str, default_rel: str) -> Path:
+    s = str(raw or "").strip() or str(default_rel)
+    p = Path(s)
+    if not p.is_absolute():
+        p = ROOT / p
+    return p
+
+
+def _read_env_file(path: Path) -> Dict[str, str]:
+    if not path.exists():
+        return {}
+    out: Dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        key = str(k).strip()
+        val = str(v).strip()
+        if val and val[0] not in ("'", '"') and "#" in val:
+            val = val.split("#", 1)[0].rstrip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+            val = val[1:-1]
+        if key:
+            out[key] = val
+    return out
+
+
+def _tail(s: str, max_chars: int = 4000) -> str:
+    txt = str(s or "")
+    if len(txt) <= max_chars:
+        return txt
+    return txt[-max_chars:]
+
+
+def _parse_stdout_json(stdout_text: str) -> Dict[str, Any]:
+    body = str(stdout_text or "").strip()
+    if not body:
+        return {}
+    try:
+        obj = json.loads(body)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        pass
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    for line in reversed(lines):
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            continue
+    return {}
+
+
+def _parse_kst_datetime(value: str) -> Optional[datetime]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    s = raw.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=KST)
+    return dt.astimezone(KST)
+
+
+def _run_subprocess(
+    *,
+    step_id: str,
+    command: Sequence[str],
+    cwd: Path,
+    env: Optional[Dict[str, str]] = None,
+    timeout_sec: int = 1800,
+) -> Dict[str, Any]:
+    started_at = _utc_now_iso()
+    t0 = time.time()
+    out: Dict[str, Any] = {
+        "step_id": str(step_id),
+        "command": [str(x) for x in command],
+        "cwd": str(cwd),
+        "started_at": started_at,
+        "rc": 1,
+        "ok": False,
+        "stdout_tail": "",
+        "stderr_tail": "",
+        "error": "",
+        "duration_sec": 0.0,
+    }
+    try:
+        cp = subprocess.run(
+            [str(x) for x in command],
+            cwd=str(cwd),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=max(1, int(timeout_sec)),
+        )
+        out["rc"] = int(cp.returncode)
+        out["ok"] = int(cp.returncode) == 0
+        out["stdout_tail"] = _tail(cp.stdout or "")
+        out["stderr_tail"] = _tail(cp.stderr or "")
+    except subprocess.TimeoutExpired as ex:
+        out["rc"] = 124
+        out["ok"] = False
+        out["stdout_tail"] = _tail(ex.stdout or "")
+        out["stderr_tail"] = _tail(ex.stderr or "")
+        out["error"] = f"timeout:{int(timeout_sec)}s"
+    except Exception as ex:
+        out["rc"] = 1
+        out["ok"] = False
+        out["error"] = f"{type(ex).__name__}: {ex}"
+    out["finished_at"] = _utc_now_iso()
+    out["duration_sec"] = round(max(0.0, float(time.time() - t0)), 3)
+    return out
+
+
+def _start_live_loop_background(
+    *,
+    command: Sequence[str],
+    env: Dict[str, str],
+    stdout_path: Path,
+    stderr_path: Path,
+) -> Dict[str, Any]:
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    stderr_path.parent.mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+    out: Dict[str, Any] = {
+        "step_id": "session.live_loop",
+        "command": [str(x) for x in command],
+        "mode": "background",
+        "rc": 1,
+        "ok": False,
+        "pid": 0,
+        "stdout_path": str(stdout_path),
+        "stderr_path": str(stderr_path),
+        "stderr_tail": "",
+        "error": "",
+        "duration_sec": 0.0,
+    }
+    try:
+        with stdout_path.open("a", encoding="utf-8") as out_f, stderr_path.open("a", encoding="utf-8") as err_f:
+            proc = subprocess.Popen(
+                [str(x) for x in command],
+                cwd=str(ROOT),
+                env=env,
+                stdout=out_f,
+                stderr=err_f,
+                text=True,
+            )
+        time.sleep(2.0)
+        polled = proc.poll()
+        if polled is None:
+            out["rc"] = 0
+            out["ok"] = True
+            out["pid"] = int(proc.pid)
+        else:
+            out["rc"] = int(polled)
+            out["ok"] = False
+            out["error"] = "live_loop_exited_early"
+            try:
+                out["stderr_tail"] = _tail(stderr_path.read_text(encoding="utf-8"))
+            except Exception:
+                out["stderr_tail"] = ""
+    except Exception as ex:
+        out["error"] = f"{type(ex).__name__}: {ex}"
+    out["duration_sec"] = round(max(0.0, float(time.time() - t0)), 3)
+    return out
+
+
+def _runtime_mode_checks(env_obj: Dict[str, str]) -> Dict[str, Any]:
+    runtime_profile = str(env_obj.get("RUNTIME_PROFILE", "")).strip().lower()
+    kiwoom_mode = str(env_obj.get("KIWOOM_MODE", "")).strip().lower()
+    approval_mode = str(env_obj.get("APPROVAL_MODE", "")).strip().lower()
+    allow_real_execution = _to_bool(env_obj.get("ALLOW_REAL_EXECUTION"), default=False)
+    return {
+        "RUNTIME_PROFILE": runtime_profile,
+        "KIWOOM_MODE": kiwoom_mode,
+        "APPROVAL_MODE": approval_mode,
+        "ALLOW_REAL_EXECUTION": bool(allow_real_execution),
+        "ok": (
+            runtime_profile == "staging"
+            and kiwoom_mode == "mock"
+            and approval_mode == "manual"
+            and (not allow_real_execution)
+        ),
+    }
+
+
+def _phase_template(name: str) -> Dict[str, Any]:
+    return {"phase": name, "ok": False, "failure_reason": "", "steps": []}
+
+
+def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, Any]:
+    out = _phase_template(PHASE_PREOPEN)
+    py = str(common["python_path"])
+    day = str(common["day"])
+    report_root = Path(common["report_root"])
+    event_log_path = Path(common["event_log_path"])
+
+    step1 = _run_subprocess(
+        step_id="preopen.m30_final_signoff",
+        command=[
+            py,
+            str(ROOT / "scripts" / "run_m30_final_golive_signoff.py"),
+            "--event-log-dir",
+            str(ROOT / "data" / "logs" / "m30_golive"),
+            "--quality-report-dir",
+            str(ROOT / "reports" / "m30_quality_gates"),
+            "--signoff-report-dir",
+            str(ROOT / "reports" / "m30_signoff"),
+            "--policy-report-dir",
+            str(ROOT / "reports" / "m30_post_golive"),
+            "--report-dir",
+            str(ROOT / "reports" / "m30_golive"),
+            "--day",
+            day,
+            "--no-clear",
+            "--json",
+        ],
+        cwd=ROOT,
+        timeout_sec=int(common["timeout_sec"]),
+    )
+    out["steps"].append(step1)
+    if not bool(step1.get("ok")):
+        out["failure_reason"] = "m30_final_signoff_failed"
+        return out
+
+    step2 = _run_subprocess(
+        step_id="preopen.m30_post_golive_policy",
+        command=[
+            py,
+            str(ROOT / "scripts" / "run_m30_post_golive_monitoring_policy.py"),
+            "--signoff-json-path",
+            str(ROOT / "reports" / "m30_signoff" / f"m30_release_signoff_{day}.json"),
+            "--event-log-dir",
+            str(ROOT / "data" / "logs" / "m30_golive"),
+            "--quality-report-dir",
+            str(ROOT / "reports" / "m30_quality_gates"),
+            "--signoff-report-dir",
+            str(ROOT / "reports" / "m30_signoff"),
+            "--report-dir",
+            str(ROOT / "reports" / "m30_post_golive"),
+            "--day",
+            day,
+            "--json",
+        ],
+        cwd=ROOT,
+        timeout_sec=int(common["timeout_sec"]),
+    )
+    out["steps"].append(step2)
+    if not bool(step2.get("ok")):
+        out["failure_reason"] = "m30_post_golive_policy_failed"
+        return out
+
+    step3 = _run_subprocess(
+        step_id="preopen.m31_mock_exam_check",
+        command=[
+            py,
+            str(ROOT / "scripts" / "run_m31_mock_investor_exam_check.py"),
+            "--env-path",
+            str(common["env_path"]),
+            "--event-log-path",
+            str(event_log_path),
+            "--report-dir",
+            str(report_root / "m31_mock_exam"),
+            "--day",
+            day,
+            "--allow-offhours",
+            "--json",
+        ],
+        cwd=ROOT,
+        timeout_sec=int(common["timeout_sec"]),
+    )
+    out["steps"].append(step3)
+    obj3 = _parse_stdout_json(str(step3.get("stdout_tail") or ""))
+    out["m31_mock_check"] = obj3
+    if not (bool(step3.get("ok")) and bool(obj3.get("ok"))):
+        out["failure_reason"] = "m31_mock_exam_check_failed"
+        return out
+
+    env_obj = _read_env_file(Path(common["env_path"]))
+    mode = _runtime_mode_checks(env_obj)
+    out["runtime_mode"] = mode
+    if not bool(mode.get("ok")):
+        out["failure_reason"] = "runtime_mode_policy_failed"
+        return out
+
+    out["ok"] = True
+    return out
+
+
+def _run_session(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, Any]:
+    out = _phase_template(PHASE_SESSION)
+    env_obj = _read_env_file(Path(common["env_path"]))
+    mode = _runtime_mode_checks(env_obj)
+    out["runtime_mode"] = mode
+    if not bool(mode.get("ok")):
+        out["failure_reason"] = "runtime_mode_policy_failed"
+        return out
+
+    dt_override = _parse_kst_datetime(str(args.now_kst or "")) if args.now_kst else None
+    dt = dt_override or now_kst()
+    if not bool(MarketHours().is_open(dt)):
+        out["failure_reason"] = f"market_closed:{dt.isoformat()}"
+        return out
+
+    cmd = [
+        str(common["python_path"]),
+        "-m",
+        "scripts.run_m13_live_loop",
+        "--sleep-sec",
+        str(int(args.sleep_sec)),
+        "--lock-path",
+        str(common["lock_path"]),
+        "--lock-stale-sec",
+        str(int(common["lock_stale_sec"])),
+    ]
+
+    proc_env = os.environ.copy()
+    proc_env["ENV_PATH"] = str(common["env_path"])
+    step = _start_live_loop_background(
+        command=cmd,
+        env=proc_env,
+        stdout_path=Path(common["session_stdout_path"]),
+        stderr_path=Path(common["session_stderr_path"]),
+    )
+    out["steps"].append(step)
+    out["ok"] = bool(step.get("ok"))
+    if not out["ok"]:
+        out["failure_reason"] = str(step.get("error") or "session_launch_failed")
+    return out
+
+
+def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, Any]:
+    out = _phase_template(PHASE_CLOSEOUT)
+    py = str(common["python_path"])
+    day = str(common["day"])
+    event_log_path = str(common["event_log_path"])
+    report_root = Path(common["report_root"])
+    timeout_sec = int(common["timeout_sec"])
+    steps: List[Dict[str, Any]] = []
+
+    steps.append(
+        _run_subprocess(
+            step_id="closeout.m31_slo_incident",
+            command=[
+                py,
+                str(ROOT / "scripts" / "run_m31_slo_incident_review_check.py"),
+                "--event-log-path",
+                event_log_path,
+                "--policy-report-dir",
+                str(ROOT / "reports" / "m30_post_golive"),
+                "--signoff-report-dir",
+                str(ROOT / "reports" / "m30_golive"),
+                "--report-dir",
+                str(report_root / "m31_slo_incident"),
+                "--day",
+                day,
+                "--json",
+            ],
+            cwd=ROOT,
+            timeout_sec=timeout_sec,
+        )
+    )
+
+    metrics_env = os.environ.copy()
+    metrics_env["EVENT_LOG_PATH"] = event_log_path
+    metrics_env["REPORT_DIR"] = str(report_root)
+    metrics_env["METRICS_DAY"] = day
+    steps.append(
+        _run_subprocess(
+            step_id="closeout.metrics",
+            command=[py, str(ROOT / "scripts" / "generate_metrics_report.py")],
+            cwd=ROOT,
+            env=metrics_env,
+            timeout_sec=timeout_sec,
+        )
+    )
+
+    steps.append(
+        _run_subprocess(
+            step_id="closeout.operator_summary",
+            command=[
+                py,
+                str(ROOT / "scripts" / "run_operator_daily_summary.py"),
+                "--event-log-path",
+                event_log_path,
+                "--metrics-report-dir",
+                str(report_root / "metrics"),
+                "--m30-post-golive-dir",
+                str(ROOT / "reports" / "m30_post_golive"),
+                "--m30-golive-dir",
+                str(ROOT / "reports" / "m30_golive"),
+                "--m31-slo-incident-dir",
+                str(report_root / "m31_slo_incident"),
+                "--report-dir",
+                str(report_root / "operator_summary"),
+                "--day",
+                day,
+                "--json",
+            ],
+            cwd=ROOT,
+            timeout_sec=timeout_sec,
+        )
+    )
+
+    steps.append(
+        _run_subprocess(
+            step_id="closeout.decision_story",
+            command=[
+                py,
+                str(ROOT / "scripts" / "run_decision_story_report.py"),
+                "--event-log-path",
+                event_log_path,
+                "--report-dir",
+                str(report_root / "decision_story"),
+                "--day",
+                day,
+                "--json",
+            ],
+            cwd=ROOT,
+            timeout_sec=timeout_sec,
+        )
+    )
+
+    steps.append(
+        _run_subprocess(
+            step_id="closeout.run_cards",
+            command=[
+                py,
+                str(ROOT / "scripts" / "run_run_card_report.py"),
+                "--event-log-path",
+                event_log_path,
+                "--report-dir",
+                str(report_root / "run_cards"),
+                "--day",
+                day,
+                "--json",
+            ],
+            cwd=ROOT,
+            timeout_sec=timeout_sec,
+        )
+    )
+
+    out["steps"] = steps
+    failed = [s for s in steps if not bool(s.get("ok"))]
+    out["ok"] = len(failed) == 0
+    if failed:
+        out["failure_reason"] = "closeout_failed:" + ",".join(str(s.get("step_id") or "") for s in failed)
+    return out
+
+
+def _render_report_md(obj: Dict[str, Any]) -> str:
+    lines = [
+        f"# Mock Exam Day Orchestration ({obj.get('day')})",
+        "",
+        f"- phase: **{obj.get('phase')}**",
+        f"- ok: **{bool(obj.get('ok'))}**",
+        f"- event_log_path: `{obj.get('event_log_path')}`",
+        f"- report_root: `{obj.get('report_root')}`",
+        "",
+    ]
+    phase_obj = obj.get("phase_result") if isinstance(obj.get("phase_result"), dict) else {}
+    lines += [
+        f"## {obj.get('phase')}",
+        "",
+        f"- ok: **{bool(phase_obj.get('ok'))}**",
+        f"- failure_reason: `{phase_obj.get('failure_reason')}`",
+        "",
+        "### Steps",
+        "",
+    ]
+    steps = phase_obj.get("steps") if isinstance(phase_obj.get("steps"), list) else []
+    if not steps:
+        lines.append("- (none)")
+    else:
+        for s in steps:
+            lines.append(
+                f"- `{s.get('step_id')}` ok={bool(s.get('ok'))} rc={int(s.get('rc') or 0)} "
+                f"duration={float(s.get('duration_sec') or 0.0):.3f}s"
+            )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Mock investor exam day orchestration by phase.")
+    p.add_argument("--phase", choices=[PHASE_PREOPEN, PHASE_SESSION, PHASE_CLOSEOUT], required=True)
+    p.add_argument("--day", default=None)
+    p.add_argument("--env-path", default=".env")
+    p.add_argument("--report-dir", default="reports/mock_exam_day")
+    p.add_argument("--event-log-path", default="data/logs/events.jsonl")
+    p.add_argument("--sleep-sec", type=int, default=_to_int(os.getenv("SCAN_INTERVAL_SEC", "60"), 60))
+    p.add_argument("--python-path", default=sys.executable)
+    p.add_argument("--timeout-sec", type=int, default=1800)
+    p.add_argument("--lock-path", default="data/state/m13_live_loop.lock")
+    p.add_argument("--lock-stale-sec", type=int, default=_to_int(os.getenv("M13_LIVE_LOCK_STALE_SEC", "1800"), 1800))
+    p.add_argument("--session-stdout-path", default="data/logs/mock_exam_day_session_stdout.log")
+    p.add_argument("--session-stderr-path", default="data/logs/mock_exam_day_session_stderr.log")
+    p.add_argument("--now-kst", default=None)
+    p.add_argument("--json", action="store_true")
+    return p
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = _build_parser().parse_args(argv)
+    day = str(args.day).strip() if args.day else now_kst().strftime("%Y-%m-%d")
+    report_root = _resolve_path(str(args.report_dir), "reports/mock_exam_day")
+    report_root.mkdir(parents=True, exist_ok=True)
+    orchestration_dir = report_root / "orchestration"
+    orchestration_dir.mkdir(parents=True, exist_ok=True)
+
+    common: Dict[str, Any] = {
+        "day": day,
+        "env_path": _resolve_path(str(args.env_path), ".env"),
+        "report_root": report_root,
+        "event_log_path": _resolve_path(str(args.event_log_path), "data/logs/events.jsonl"),
+        "python_path": _resolve_path(str(args.python_path), str(sys.executable)),
+        "timeout_sec": int(args.timeout_sec),
+        "lock_path": _resolve_path(str(args.lock_path), "data/state/m13_live_loop.lock"),
+        "lock_stale_sec": int(args.lock_stale_sec),
+        "session_stdout_path": _resolve_path(str(args.session_stdout_path), "data/logs/mock_exam_day_session_stdout.log"),
+        "session_stderr_path": _resolve_path(str(args.session_stderr_path), "data/logs/mock_exam_day_session_stderr.log"),
+    }
+
+    started_at = _utc_now_iso()
+    phase = str(args.phase).strip().lower()
+
+    if phase == PHASE_PREOPEN:
+        phase_result = _run_preopen(args, common)
+    elif phase == PHASE_SESSION:
+        phase_result = _run_session(args, common)
+    else:
+        phase_result = _run_closeout(args, common)
+
+    ok = bool(phase_result.get("ok"))
+    out: Dict[str, Any] = {
+        "schema_version": "mock_exam_day_orchestration.v1",
+        "phase": phase,
+        "day": day,
+        "ok": ok,
+        "started_at": started_at,
+        "finished_at": _utc_now_iso(),
+        "event_log_path": str(common["event_log_path"]),
+        "report_root": str(report_root),
+        "phase_result": phase_result,
+    }
+
+    json_path = orchestration_dir / f"mock_exam_day_{day}_{phase}.json"
+    md_path = orchestration_dir / f"mock_exam_day_{day}_{phase}.md"
+    out["report_json_path"] = str(json_path)
+    out["report_md_path"] = str(md_path)
+    json_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    md_path.write_text(_render_report_md(out), encoding="utf-8")
+
+    if bool(args.json):
+        print(json.dumps(out, ensure_ascii=False))
+    else:
+        print(f"ok={ok} phase={phase} day={day} report_json={json_path} report_md={md_path}")
+
+    return 0 if ok else 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
