@@ -88,6 +88,18 @@ def test_exit_policy_emergency_and_eod_flat_triggers():
     assert out_eod["reason"] == "eod_flat"
 
 
+def test_exit_policy_time_stop_alias_triggers():
+    out = evaluate_exit_policy(
+        price=100.0,
+        avg_price=100.0,
+        qty=1,
+        hold_sec=3700,
+        policy={"time_stop_sec": 3600},
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "time_stop"
+
+
 def test_exit_policy_news_shock_triggers():
     out = evaluate_exit_policy(
         price=100.0,

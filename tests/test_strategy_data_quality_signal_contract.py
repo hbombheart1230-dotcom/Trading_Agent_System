@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from libs.market.global_sentiment import compute_global_sentiment_signal
-from libs.news.news_pipeline import score_news_sentiment_signal
+import math
+
+from libs.news.news_pipeline import score_news_sentiment, score_news_sentiment_signal
 
 
 def test_global_sentiment_signal_reports_unavailable_on_fetch_failure(monkeypatch):
@@ -42,3 +44,18 @@ def test_news_sentiment_signal_reports_unavailable_on_scorer_exception(monkeypat
     assert signal_map["AAA"]["status"] == "unavailable"
     assert signal_map["AAA"]["source"] == "scorer:simple"
     assert str(signal_map["AAA"]["reason"]).startswith("scorer_error:")
+
+
+def test_news_sentiment_legacy_mode_can_preserve_unavailable_as_nan(monkeypatch):
+    class _BoomScorer:
+        def score(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("libs.news.news_pipeline.get_scorer", lambda _name: _BoomScorer())
+    out = score_news_sentiment(
+        {"AAA": []},
+        state={},
+        policy={"news_scorer": "simple"},
+        preserve_unavailable_nan=True,
+    )
+    assert math.isnan(float(out["AAA"]))

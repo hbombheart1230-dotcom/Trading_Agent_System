@@ -75,6 +75,7 @@ def evaluate_position_size(
         _to_float(rc.get("per_trade_risk_ratio"), 0.01),
     )
     risk_per_trade_ratio = _clamp(risk_per_trade_ratio, 0.0, 1.0)
+    base_risk_per_trade_ratio = float(risk_per_trade_ratio)
 
     stop_loss_pct = _to_float(
         p.get("stop_loss_pct"),
@@ -84,6 +85,7 @@ def evaluate_position_size(
 
     notional_ratio = _to_float(p.get("position_notional_ratio"), 0.10)
     notional_ratio = _clamp(notional_ratio, 0.0, 1.0)
+    base_position_notional_ratio = float(notional_ratio)
 
     # Strategy-aware optional context (additive, backward compatible).
     regime = str(rc.get("regime") or p.get("regime") or "").strip().lower()
@@ -169,8 +171,10 @@ def evaluate_position_size(
 
     out["qty"] = int(max(0, qty))
     out["inputs"] = {
+        "base_risk_per_trade_ratio": float(base_risk_per_trade_ratio),
         "risk_per_trade_ratio": float(risk_per_trade_ratio),
         "stop_loss_pct": float(stop_loss_pct),
+        "base_position_notional_ratio": float(base_position_notional_ratio),
         "position_notional_ratio": float(notional_ratio),
         "regime": regime or None,
         "volatility_percentile": float(vol_pct),

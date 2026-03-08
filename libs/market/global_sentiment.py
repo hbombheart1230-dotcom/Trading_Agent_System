@@ -123,6 +123,10 @@ def compute_global_sentiment(state: Dict[str, Any], policy: Optional[Dict[str, A
     - sentiment_ticker_sp500 / nasdaq / dxy / tnx: override tickers
     """
     signal = compute_global_sentiment_signal(state=state, policy=policy)
+    status = str(signal.get("status") or "").strip().lower()
+    # Do not silently collapse unavailable data into neutral value.
+    if status == SIGNAL_STATUS_UNAVAILABLE:
+        return float("nan")
     try:
         return _clamp(float(signal.get("score", 0.0)))
     except Exception:

@@ -203,7 +203,13 @@ def score_news_sentiment(
     policy: Dict[str, Any],
     items: List[NewsItem] | None = None,
     symbols: Sequence[str] | None = None,
+    preserve_unavailable_nan: bool = False,
 ) -> Dict[str, float]:
+    """Legacy float-only score map.
+
+    Prefer `score_news_sentiment_signal` for decision pipelines that require
+    clear fallback/unavailable status semantics.
+    """
     signals = score_news_sentiment_signal(
         items_by_symbol,
         state=state,
@@ -211,7 +217,14 @@ def score_news_sentiment(
         items=items,
         symbols=symbols,
     )
-    return {s: normalize_signal_score(v.get("score"), default=0.0) for s, v in signals.items()}
+    out: Dict[str, float] = {}
+    for s, v in signals.items():
+        status = str(v.get("status") or "").strip().lower()
+        if bool(preserve_unavailable_nan) and status == SIGNAL_STATUS_UNAVAILABLE:
+            out[s] = float("nan")
+            continue
+        out[s] = normalize_signal_score(v.get("score"), default=0.0)
+    return out
 
 
 def score_news_sentiment_signal(

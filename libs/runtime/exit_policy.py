@@ -44,6 +44,15 @@ def evaluate_exit_policy(
             "stop_loss_pct": _clamp_non_negative(_to_float(p.get("stop_loss_pct"), 0.03)),
             "take_profit_pct": _clamp_non_negative(_to_float(p.get("take_profit_pct"), 0.05)),
             "max_hold_sec": max(0, int(_to_float(p.get("max_hold_sec"), 0))),
+            "time_stop_sec": max(
+                0,
+                int(
+                    _to_float(
+                        p.get("time_stop_sec"),
+                        _to_float(p.get("max_hold_sec"), 0.0),
+                    )
+                ),
+            ),
             "trailing_stop_pct": _clamp_non_negative(_to_float(p.get("trailing_stop_pct"), 0.0)),
             "vol_expansion_ratio": _clamp_non_negative(_to_float(p.get("vol_expansion_ratio"), 0.0)),
             "news_shock_threshold": _clamp_non_negative(_to_float(p.get("news_shock_threshold"), 0.0)),
@@ -72,11 +81,13 @@ def evaluate_exit_policy(
         return out
 
     max_hold_sec = int(out["thresholds"]["max_hold_sec"])
+    time_stop_sec = int(out["thresholds"]["time_stop_sec"])
+    hold_limit = time_stop_sec if time_stop_sec > 0 else max_hold_sec
     hs = None if hold_sec is None else max(0, int(hold_sec))
     out["hold_sec"] = hs
-    if max_hold_sec > 0 and hs is not None and hs >= max_hold_sec:
+    if hold_limit > 0 and hs is not None and hs >= hold_limit:
         out["triggered"] = True
-        out["reason"] = "max_hold"
+        out["reason"] = "time_stop" if time_stop_sec > 0 else "max_hold"
         return out
 
     # News shock exit (optional): sentiment crash forces immediate flattening.

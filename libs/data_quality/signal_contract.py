@@ -64,4 +64,6 @@ def make_signal(
         "source": str(source or "").strip(),
         "reason": str(reason or "").strip(),
         "ts": ts_epoch,
+        # Human-facing alias. Keep `ts` for backward compatibility.
+        "timestamp": ts_epoch,
     }

@@ -313,6 +313,8 @@ def build_feature_row(
         "ma60_gap": ma60_gap,
         "ma120_gap": ma120_gap,
         "atr14": atr14,
+        # Alias kept for strategy contracts that refer to generic ADX.
+        "adx": adx14,
         "adx14": adx14,
         "trend_strength": trend_strength,
         "gap_pct": gap_pct,
@@ -393,5 +395,22 @@ def build_feature_map(
     breadth_val = sum(1 for _sym, s in signal_pairs if s > 0.0) / float(len(signal_pairs))
     for row in out.values():
         row["market_breadth"] = float(breadth_val)
+
+    # Cross-sectional volatility percentile for downstream sizing.
+    vol_pairs = [
+        (sym, float(out[sym].get("volatility20")))
+        for sym in out.keys()
+        if out[sym].get("volatility20") is not None
+    ]
+    vol_pairs.sort(key=lambda x: x[1])
+    m = len(vol_pairs)
+    if m > 1:
+        for i, (sym, _vol) in enumerate(vol_pairs):
+            out[sym]["volatility_percentile"] = float(i / float(m - 1))
+    elif m == 1:
+        out[vol_pairs[0][0]]["volatility_percentile"] = 0.5
+    for sym in out.keys():
+        if out[sym].get("volatility_percentile") is None:
+            out[sym]["volatility_percentile"] = 0.5
 
     return out

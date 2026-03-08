@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
 
-from libs.ai.strategist import RuleStrategist
+from libs.ai.strategist import RuleStrategist, StrategyV1Strategist
 
 def get_strategist_from_env():
     """Return a strategist instance based on env.
 
     Supported:
       - AI_STRATEGIST_PROVIDER=rule (default)
+      - AI_STRATEGIST_PROVIDER=strategy_v1 (deterministic strategy package)
       - AI_STRATEGIST_PROVIDER=openai (HTTP endpoint wrapper)
         Requires: API key + endpoint
           - API key priority: AI_STRATEGIST_API_KEY -> OPENROUTER_API_KEY
@@ -20,6 +20,9 @@ def get_strategist_from_env():
 
     if provider in ("rule", "rules", "local"):
         return RuleStrategist()
+
+    if provider in ("strategy_v1", "strategy-v1", "v1", "deterministic"):
+        return StrategyV1Strategist()
 
     if provider in ("openai", "http", "api"):
         api_key = (

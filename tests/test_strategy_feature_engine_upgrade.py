@@ -27,6 +27,7 @@ def _candles(px0: float, drift: float, n: int = 160) -> list[dict]:
 
 def test_feature_engine_upgrade_adds_extended_feature_fields():
     row = build_feature_row(_candles(100.0, 0.5))
+    assert "adx" in row
     assert "ma60" in row
     assert "ma120" in row
     assert "ma60_gap" in row
@@ -55,6 +56,7 @@ def test_feature_engine_upgrade_build_feature_map_adds_cross_section_fields():
     assert "cross_section_rank_signal" in out["BBB"]
     assert "cross_section_rank" in out["BBB"]
     assert "market_breadth" in out["AAA"]
+    assert "volatility_percentile" in out["AAA"]
     assert "relative_strength20" in out["AAA"]
     assert "sector_relative_strength" in out["AAA"]
 
