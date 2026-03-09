@@ -33,6 +33,16 @@ def _parse_kiwoom_number(x: Any) -> float:
         return float(m.group(0)) if m else 0.0
 
 
+def _extract_current_price(payload: Dict[str, Any]) -> float:
+    # Kiwoom payloads can vary by endpoint/version.
+    # Prefer cur_prc, then common alternates.
+    for key in ("cur_prc", "stck_prpr", "price", "cur"):
+        v = _parse_kiwoom_number(payload.get(key))
+        if v != 0.0:
+            return abs(v)
+    return 0.0
+
+
 @dataclass(frozen=True)
 class PriceFetchResult:
     url: str
@@ -75,6 +85,11 @@ class KiwoomPriceReader:
         headers: Dict[str, Any] = {}
         headers.update(self.token.auth_headers(tok.token))
         headers["Content-Type"] = "application/json;charset=UTF-8"
+        headers.setdefault("api-id", self.API_ID)
+        if self.s.kiwoom_app_key:
+            headers.setdefault("appkey", self.s.kiwoom_app_key)
+        if self.s.kiwoom_app_secret:
+            headers.setdefault("appsecret", self.s.kiwoom_app_secret)
 
         body = {"stk_cd": str(symbol)}
 
@@ -94,6 +109,12 @@ class KiwoomPriceReader:
         except Exception:
             payload = {}
 
-        # expected field: cur_prc
-        price = _parse_kiwoom_number(payload.get("cur_prc"))
+        rc = str(payload.get("return_code") or "").strip()
+        if rc and rc not in ("0",):
+            msg = str(payload.get("return_msg") or "").strip()
+            raise RuntimeError(f"kiwoom_price_error:return_code={rc} return_msg={msg}")
+
+        price = _extract_current_price(payload)
+        if price <= 0.0:
+            raise RuntimeError("kiwoom_price_missing_or_non_positive")
         return MarketSnapshot(symbol=str(symbol), price=price, ts=int(time.time()))

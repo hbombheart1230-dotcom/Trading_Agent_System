@@ -32,6 +32,7 @@ Checked files:
 - `scripts/unregister_mock_exam_tasks_example.bat`
 - `scripts/run_mock_exam_preopen.bat`
 - `scripts/run_mock_exam_session.bat`
+- `scripts/run_mock_exam_session_watchdog.bat`
 - `scripts/run_mock_exam_closeout.bat`
 
 Validation cycle executed:
@@ -41,6 +42,7 @@ Validation cycle executed:
 2. Query:
    - `schtasks /Query /TN TradingAgent-MockExamDay-Preopen /FO LIST`
    - `schtasks /Query /TN TradingAgent-MockExamDay-Session /FO LIST`
+   - `schtasks /Query /TN TradingAgent-MockExamDay-SessionWatchdog /FO LIST`
    - `schtasks /Query /TN TradingAgent-MockExamDay-Closeout /FO LIST`
 3. Cleanup:
    - `cmd /c scripts\unregister_mock_exam_tasks_example.bat`
@@ -49,7 +51,13 @@ Expected schedule template:
 
 - preopen: `08:55`
 - session: `09:00`
+- session watchdog: `09:05` start, every `5 min`, duration `06:20`
 - closeout: `15:35`
+
+Watchdog behavior:
+
+- if `scripts.run_m13_live_loop` process is alive: exit `0` (`ok session_loop_alive`)
+- if process is missing: trigger `run_mock_exam_session.bat` to restart session loop
 
 ## 3) Daily Dry-Run Procedure
 

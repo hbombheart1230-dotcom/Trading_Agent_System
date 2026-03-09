@@ -44,6 +44,45 @@ def test_build_market_snapshot_falls_back_when_mock_reader_returns_non_positive(
     assert out["market_snapshot"]["price"] == 71234.0
 
 
+def test_build_market_snapshot_reuses_last_valid_price_on_reader_error(monkeypatch):
+    class BrokenReader:
+        def get_market_snapshot(self, symbol):  # type: ignore[no-untyped-def]
+            raise RuntimeError("price_api_error")
+
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("MOCK_PRICE_FALLBACK", "71234")
+    state = {
+        "symbol": "005930",
+        "price_reader": BrokenReader(),
+        "market_snapshot": {"symbol": "005930", "price": 73500.0, "ts": 1},
+    }
+
+    out = build_market_snapshot(state)
+    assert out["market_snapshot"]["price"] == 73500.0
+    assert out["market_snapshot_health"]["fallback_source"] == "last_valid_market_price"
+    assert out["market_snapshot_health"]["reader_ok"] is False
+
+
+def test_build_market_snapshot_reuses_persisted_last_market_price(monkeypatch):
+    class ZeroPriceReader:
+        def get_market_snapshot(self, symbol):  # type: ignore[no-untyped-def]
+            from libs.read.snapshot_models import MarketSnapshot
+
+            return MarketSnapshot(symbol=symbol, price=0.0, ts=0)
+
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("MOCK_PRICE_FALLBACK", "71234")
+    state = {
+        "symbol": "005930",
+        "price_reader": ZeroPriceReader(),
+        "persisted_state": {"last_market_price": 73100.0},
+    }
+
+    out = build_market_snapshot(state)
+    assert out["market_snapshot"]["price"] == 73100.0
+    assert out["market_snapshot_health"]["fallback_source"] == "last_valid_market_price"
+
+
 def test_build_portfolio_snapshot_falls_back_when_mock_reader_returns_zero_cash(monkeypatch):
     class ZeroCashReader:
         def get_portfolio_snapshot(self):  # type: ignore[no-untyped-def]

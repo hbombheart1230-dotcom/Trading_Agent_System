@@ -59,6 +59,7 @@ def evaluate_exit_policy(
             "eod_flat_cutoff_min": max(0, int(_to_float(p.get("eod_flat_cutoff_min"), 10))),
         },
     }
+    has_explicit_time_stop = "time_stop_sec" in p
 
     q = max(0, int(qty or 0))
     if q <= 0:
@@ -87,7 +88,7 @@ def evaluate_exit_policy(
     out["hold_sec"] = hs
     if hold_limit > 0 and hs is not None and hs >= hold_limit:
         out["triggered"] = True
-        out["reason"] = "time_stop" if time_stop_sec > 0 else "max_hold"
+        out["reason"] = "time_stop" if has_explicit_time_stop and time_stop_sec > 0 else "max_hold"
         return out
 
     # News shock exit (optional): sentiment crash forces immediate flattening.

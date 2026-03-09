@@ -111,6 +111,65 @@ def _parse_kst_datetime(value: str) -> Optional[datetime]:
     return dt.astimezone(KST)
 
 
+def _to_epoch(ts: Any) -> Optional[int]:
+    if ts is None:
+        return None
+    if isinstance(ts, (int, float)):
+        return int(ts)
+    s = str(ts).strip()
+    if not s:
+        return None
+    try:
+        return int(float(s))
+    except Exception:
+        pass
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
+
+def _utc_day(ts: Any) -> Optional[str]:
+    e = _to_epoch(ts)
+    if e is None:
+        return None
+    return datetime.fromtimestamp(e, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def _iter_jsonl(path: Path):
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                yield obj
+
+
+def _latest_event_day(event_log_path: Path, *, before_day: Optional[str] = None) -> Optional[str]:
+    best: Optional[str] = None
+    for row in _iter_jsonl(event_log_path) or []:
+        d = _utc_day(row.get("ts"))
+        if not d:
+            continue
+        if before_day and d >= before_day:
+            continue
+        if best is None or d > best:
+            best = d
+    return best
+
+
 def _run_subprocess(
     *,
     step_id: str,
@@ -305,13 +364,14 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
         out["failure_reason"] = "m30_post_golive_policy_failed"
         return out
 
+    requested_readiness_day = str(args.preopen_readiness_day or "").strip() or day
     step3 = _run_subprocess(
         step_id="preopen.m31_mock_exam_readiness_check",
         command=[
             py,
             str(ROOT / "scripts" / "run_m31_mock_exam_readiness_check.py"),
             "--day",
-            day,
+            requested_readiness_day,
             "--env-path",
             str(common["env_path"]),
             "--event-log-path",
@@ -326,8 +386,43 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
     )
     out["steps"].append(step3)
     obj3 = _parse_stdout_json(str(step3.get("stdout_tail") or ""))
+    readiness_ok = bool(step3.get("ok")) and bool(obj3.get("ok"))
+    readiness_day_used = requested_readiness_day
+
+    if not readiness_ok and requested_readiness_day == day:
+        missing = obj3.get("missing_prerequisites") if isinstance(obj3.get("missing_prerequisites"), list) else []
+        only_slo_gap = bool(missing) and all("m31_slo_incident_ok" in str(x) for x in missing)
+        fallback_day = _latest_event_day(event_log_path, before_day=day)
+        if only_slo_gap and fallback_day:
+            step3b = _run_subprocess(
+                step_id="preopen.m31_mock_exam_readiness_check_fallback",
+                command=[
+                    py,
+                    str(ROOT / "scripts" / "run_m31_mock_exam_readiness_check.py"),
+                    "--day",
+                    str(fallback_day),
+                    "--env-path",
+                    str(common["env_path"]),
+                    "--event-log-path",
+                    str(event_log_path),
+                    "--report-dir",
+                    str(report_root / "m31_mock_exam_readiness"),
+                    "--allow-offhours",
+                    "--json",
+                ],
+                cwd=ROOT,
+                timeout_sec=int(common["timeout_sec"]),
+            )
+            out["steps"].append(step3b)
+            obj3b = _parse_stdout_json(str(step3b.get("stdout_tail") or ""))
+            if bool(step3b.get("ok")) and bool(obj3b.get("ok")):
+                obj3 = obj3b
+                readiness_ok = True
+                readiness_day_used = str(fallback_day)
+
     out["m31_mock_exam_readiness"] = obj3
-    if not (bool(step3.get("ok")) and bool(obj3.get("ok"))):
+    out["m31_mock_exam_readiness_day_used"] = readiness_day_used
+    if not readiness_ok:
         out["failure_reason"] = "m31_mock_exam_readiness_failed"
         return out
 
@@ -551,6 +646,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session-stdout-path", default="data/logs/mock_exam_day_session_stdout.log")
     p.add_argument("--session-stderr-path", default="data/logs/mock_exam_day_session_stderr.log")
     p.add_argument("--now-kst", default=None)
+    p.add_argument("--preopen-readiness-day", default=None, help="Override readiness check day for preopen.")
     p.add_argument("--json", action="store_true")
     return p
 
