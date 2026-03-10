@@ -3,8 +3,14 @@ from __future__ import annotations
 import time
 from datetime import datetime, timedelta, timezone
 
+import pytest
 import libs.ai.providers.openai_provider as prov
 from graphs.nodes.decide_trade import decide_trade
+
+
+@pytest.fixture(autouse=True)
+def _disable_strategy_v1(monkeypatch):
+    monkeypatch.setenv("USE_STRATEGY_V1", "false")
 
 
 def test_m20_2_decide_trade_openai_success(monkeypatch):
@@ -271,6 +277,8 @@ def test_m20_2_decide_trade_blocks_buy_when_position_already_open(monkeypatch):
 def test_m20_2_decide_trade_exit_policy_triggers_sell(monkeypatch):
     monkeypatch.setenv("USE_EXIT_POLICY", "true")
     monkeypatch.setenv("EXIT_POLICY_TAKE_PROFIT_PCT", "0.01")
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
 
     class AlwaysBuyStrategist:
         def decide(self, x):  # type: ignore[no-untyped-def]
@@ -344,6 +352,8 @@ def test_m20_2_decide_trade_post_exit_cooldown_blocks_reentry(monkeypatch):
 def test_m20_2_decide_trade_exit_policy_max_hold_triggers_sell(monkeypatch):
     monkeypatch.setenv("USE_EXIT_POLICY", "true")
     monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "60")
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
     monkeypatch.setattr(time, "time", lambda: 2000.0)
 
     class AlwaysBuyStrategist:
@@ -380,6 +390,37 @@ def test_m20_2_decide_trade_exit_policy_max_hold_triggers_sell(monkeypatch):
     assert out["decision_packet"]["intent"]["action"] == "SELL"
     assert out["decision_packet"]["intent"]["qty"] == 2
     assert out["decision_packet"]["intent"]["rationale"] == "exit_policy:max_hold"
+
+
+def test_m20_2_decide_trade_blocks_fast_sell_with_min_hold_guard(monkeypatch):
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "1")
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
+    monkeypatch.setattr(time, "time", lambda: 2000.0)
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {
+            "cash": 2_000_000,
+            "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0}],
+            "open_positions": 1,
+        },
+        "persisted_state": {"last_trade_side": "BUY", "last_trade_epoch": 1950},
+        "risk_context": {"open_positions": 1, "daily_pnl_ratio": 0.0, "last_order_epoch": 0},
+    }
+    out = decide_trade(state)
+
+    intent = out["decision_packet"]["intent"]
+    assert out["decision_trace"]["strategy"] == "ExitPolicyStrategist"
+    assert intent["action"] == "NOOP"
+    assert intent["reason"] == "sell_guard_min_hold"
+    assert "sell_guard_min_hold" in str(intent.get("rationale") or "")
+    assert intent["signal_source"] == "ExitPolicyStrategist"
+    assert int(intent["position_age_sec"]) == 50
+    assert intent["intent_id"] == out["run_id"]
+    assert out["decision_trace"]["sell_timing_guard"]["blocked"] is True
 
 
 def test_m20_2_decide_trade_score_override_converts_noop_to_buy(monkeypatch):
@@ -469,6 +510,8 @@ def test_m20_2_decide_trade_eod_force_liquidation_emits_sell(monkeypatch):
 def test_m20_2_decide_trade_exit_policy_news_shock_triggers_sell(monkeypatch):
     monkeypatch.setenv("USE_EXIT_POLICY", "true")
     monkeypatch.setenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "0.25")
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
 
     state = {
         "symbol": "005930",

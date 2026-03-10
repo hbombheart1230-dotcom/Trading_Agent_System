@@ -260,6 +260,96 @@ def _resolve_post_exit_cooldown_sec(state: Dict[str, Any]) -> int:
         return 300
 
 
+def _resolve_min_hold_sec(state: Dict[str, Any]) -> int:
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    raw = policy.get("min_hold_seconds")
+    if raw is None:
+        raw = os.getenv("MIN_HOLD_SECONDS", "600")
+    try:
+        return max(0, int(float(raw)))
+    except Exception:
+        return 600
+
+
+def _resolve_sell_cooldown_sec(state: Dict[str, Any]) -> int:
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    raw = policy.get("sell_cooldown_sec")
+    if raw is None:
+        raw = os.getenv("SELL_COOLDOWN", "")
+    if raw in (None, ""):
+        raw = os.getenv("SELL_COOLDOWN_SEC", "300")
+    try:
+        return max(0, int(float(raw)))
+    except Exception:
+        return 300
+
+
+def _sell_timing_guard_exempt(raw_intent: Dict[str, Any]) -> bool:
+    rationale = str(raw_intent.get("rationale") or raw_intent.get("reason") or "").strip().lower()
+    if rationale.startswith("eod_force_liquidation"):
+        return True
+    if rationale.startswith("exit_policy:emergency_halt"):
+        return True
+    if rationale.startswith("exit_policy:stop_loss"):
+        return True
+    if rationale.startswith("exit_policy:news_shock"):
+        return True
+    return False
+
+
+def _apply_sell_timing_guard(
+    *,
+    state: Dict[str, Any],
+    intent: Dict[str, Any],
+    raw_intent: Dict[str, Any],
+) -> tuple[Dict[str, Any], str, Dict[str, Any]]:
+    out = dict(intent or {})
+    action = str(out.get("action") or "").strip().upper()
+    if action != "SELL":
+        return out, str(out.get("rationale") or out.get("reason") or ""), {"applied": False}
+
+    position_age_sec = _resolve_position_hold_sec(state)
+    min_hold_sec = _resolve_min_hold_sec(state)
+    sell_cooldown_sec = _resolve_sell_cooldown_sec(state)
+    required_age_sec = max(min_hold_sec, sell_cooldown_sec)
+    guard_info: Dict[str, Any] = {
+        "applied": True,
+        "blocked": False,
+        "position_age_sec": position_age_sec,
+        "min_hold_sec": int(min_hold_sec),
+        "sell_cooldown_sec": int(sell_cooldown_sec),
+        "required_age_sec": int(required_age_sec),
+        "exempt": False,
+        "reason": "",
+    }
+
+    if _sell_timing_guard_exempt(raw_intent):
+        guard_info["exempt"] = True
+        guard_info["reason"] = "sell_timing_guard_exempt"
+        return out, str(out.get("rationale") or out.get("reason") or ""), guard_info
+
+    if required_age_sec <= 0 or position_age_sec is None:
+        return out, str(out.get("rationale") or out.get("reason") or ""), guard_info
+
+    if int(position_age_sec) >= int(required_age_sec):
+        return out, str(out.get("rationale") or out.get("reason") or ""), guard_info
+
+    rationale = f"sell_guard_min_hold:{int(position_age_sec)}s<{int(required_age_sec)}s"
+    blocked = {
+        "action": "NOOP",
+        "symbol": out.get("symbol"),
+        "qty": 0,
+        "price": None,
+        "order_type": out.get("order_type") or "market",
+        "order_api_id": out.get("order_api_id") or "ORDER_SUBMIT",
+        "reason": "sell_guard_min_hold",
+        "rationale": rationale,
+    }
+    guard_info["blocked"] = True
+    guard_info["reason"] = "sell_guard_min_hold"
+    return blocked, rationale, guard_info
+
+
 KST = timezone(timedelta(hours=9))
 
 
@@ -856,6 +946,7 @@ def decide_trade(state: dict) -> dict:
                     "price": price,
                     "order_type": "market",
                     "order_api_id": "ORDER_SUBMIT",
+                    "reason": f"exit_policy_{reason}",
                     "rationale": f"exit_policy:{reason}",
                 }
             else:
@@ -1092,6 +1183,12 @@ def decide_trade(state: dict) -> dict:
         intent, rationale = normalize_intent(intent_overridden, default_symbol=str(symbol) if symbol else None, default_price=price)
         raw_intent = dict(intent_overridden)
 
+    intent, rationale, sell_timing_guard = _apply_sell_timing_guard(
+        state=state,
+        intent=intent,
+        raw_intent=raw_intent,
+    )
+
     # Safety: if a position is already open, block additional BUY intents.
     try:
         action = str(intent.get("action") or "").strip().upper()
@@ -1102,6 +1199,16 @@ def decide_trade(state: dict) -> dict:
             rationale = "position_already_open"
     except Exception:
         pass
+
+    if not str(intent.get("reason") or "").strip():
+        fallback_reason = str(raw_intent.get("reason") or "").strip()
+        if fallback_reason:
+            intent["reason"] = fallback_reason
+    intent["signal_source"] = str(strategy_name or "")
+    pos_age = _resolve_position_hold_sec(state)
+    if pos_age is not None:
+        intent["position_age_sec"] = int(pos_age)
+    intent.setdefault("intent_id", _ensure_run_id(state))
 
     packet_why = _build_packet_why(state=state, llm_context=llm_context)
     packet_invalidation = _build_packet_invalidation(state=state)
@@ -1129,6 +1236,7 @@ def decide_trade(state: dict) -> dict:
         "raw_intent": raw_intent,
         "llm_context": llm_context,
         "score_override_applied": bool(score_override_applied),
+        "sell_timing_guard": sell_timing_guard,
         "why": packet_why,
         "invalidation": packet_invalidation,
     }

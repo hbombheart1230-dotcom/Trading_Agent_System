@@ -16,13 +16,77 @@ def _is_trueish(v: Any) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _to_int(v: Any, default: int) -> int:
+    try:
+        return int(float(v))
+    except Exception:
+        return int(default)
+
+
+def _resolve_top_n_candidates(policy: Dict[str, Any]) -> int:
+    raw = (
+        policy.get("candidate_k")
+        if policy.get("candidate_k") is not None
+        else policy.get("candidate_topk")
+    )
+    if raw is None:
+        raw = os.getenv("TOP_N_CANDIDATES", "5")
+    return max(1, _to_int(raw, 5))
+
+
+def _extract_themes(state: Dict[str, Any], policy: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+
+    def add_many(items: Any) -> None:
+        if not isinstance(items, list):
+            return
+        for x in items:
+            t = str(x or "").strip()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+
+    add_many(state.get("themes"))
+    add_many(state.get("top_themes"))
+    add_many(state.get("sector_filter"))
+    add_many(state.get("theme_filter"))
+    add_many(policy.get("themes"))
+    add_many(policy.get("top_themes"))
+    add_many(policy.get("sector_filter"))
+    add_many(policy.get("theme_filter"))
+
+    theme_scores = state.get("theme_scores") if isinstance(state.get("theme_scores"), dict) else {}
+    if theme_scores:
+        ranked = sorted(
+            ((str(k or "").strip(), float(v or 0.0)) for k, v in theme_scores.items()),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )
+        for name, _score in ranked:
+            if name and name not in seen:
+                seen.add(name)
+                out.append(name)
+
+    theme_map = policy.get("theme_map") if isinstance(policy.get("theme_map"), dict) else {}
+    for k in theme_map.keys():
+        name = str(k or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+
+    return out[:5]
+
+
 def _default_policy(user_policy: Dict[str, Any] | None) -> Dict[str, Any]:
     p = dict(user_policy or {})
+    default_topn = max(1, _to_int(os.getenv("TOP_N_CANDIDATES", "5"), 5))
     p.setdefault("use_universe_builder", _is_trueish(os.getenv("USE_UNIVERSE_BUILDER", "true")))
     p.setdefault("universe_require_condition", _is_trueish(os.getenv("UNIVERSE_REQUIRE_CONDITION", "false")))
     # candidate generation
     p.setdefault("candidate_source", "top_picks")  # top_picks | market_rank
-    p.setdefault("candidate_k", int(p.get("candidate_topk", 5) or 5))
+    p.setdefault("candidate_k", int(p.get("candidate_topk", default_topn) or default_topn))
     p.setdefault("candidate_rank_mode", "value")
     p.setdefault("candidate_rank_topn", 30)
     # sentiment toggles
@@ -74,7 +138,8 @@ def _signal_score(sig: Any) -> float:
 
 def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     policy = _default_policy(state.get("policy"))
-    k = int(policy.get("candidate_k", 5))
+    k = _resolve_top_n_candidates(policy)
+    policy["candidate_k"] = int(k)
 
     # 1) candidates (injected or generated)
     candidates = _candidates_from_state(state, k)
@@ -256,4 +321,13 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         candidates = candidates[:k]
 
     state["candidates"] = candidates
+    themes = _extract_themes(state, policy)
+    state["themes"] = themes
+    state["candidate_symbols"] = [str(c.get("symbol") or "") for c in candidates if str(c.get("symbol") or "").strip()]
+    state["strategist_output"] = {
+        "themes": list(themes),
+        "candidates": list(state["candidate_symbols"]),
+        "candidate_count": len(list(state["candidate_symbols"])),
+        "source": "strategist_node",
+    }
     return state

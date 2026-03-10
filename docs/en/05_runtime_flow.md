@@ -1,42 +1,30 @@
-# 5. Runtime Flow (Sequence / State Machine)
+# 5. Runtime Flow
 
-## 5.1 Run Cycle Sequence (Text Sequence Diagram)
+## 5.1 Integrated Chain Sequence
 
-Operator -> Commander: start_run(goal, config)
-Commander -> Strategist: build_trade_plan()
-Strategist -> Commander: TradePlan
-Commander -> Scanner: scan(plan)
-Scanner -> Commander: ScanResult
-Commander -> Monitor: monitor(scan_result)
-Monitor -> Commander: OrderIntent(s)
-Commander -> Supervisor: decide(intent)
-Supervisor -> Commander: SupervisorDecision (approve/reject/modify)
-Commander -> AgentExecutor: handle(decision, intent)
-AgentExecutor -> ExecutionLayer: execute(intent) [only if approved]
-ExecutionLayer -> Broker(Mock/Real): place/cancel/status
-Broker -> ExecutionLayer: OrderResult/OrderStatus
-ExecutionLayer -> EventLog: append events
-Commander -> Reporter: report(run_id)
+Operator -> Commander: start_run(goal, config)  
+Commander -> Strategist: build themes + candidate symbols (Top-N)  
+Strategist -> Commander: `strategist_output` (`themes`, `candidates`)  
+Commander -> Scanner: score strategist candidates  
+Scanner -> Commander: ranked list + `top_stock`  
+Commander -> Monitor: evaluate entry/exit for `top_stock`  
+Monitor -> Commander: `OrderIntent` (BUY/SELL/NOOP)  
+Commander -> Supervisor: approve/reject/modify  
+Supervisor -> Commander: `SupervisorDecision`  
+Commander -> Executor: execute only if approved  
+Executor -> Broker(Mock/Real): place/cancel/status  
+Broker -> Executor: order result/status  
+Executor -> EventLog: append events  
+Commander -> Reporter: generate reports  
 Reporter -> Operator: summary
 
-## 5.2 Intent State Machine (Text Diagram)
+## 5.2 Intent State Machine
 
-(created)
-   |
-   v
-(pending_approval) --reject--> (rejected)
-   |
-   +--approve--> (approved)
-                   |
-                   v
-               (executing)
-                   |
-         +---------+----------+
-         |                    |
-         v                    v
-     (executed)            (failed)
-         |
-         v
-     (settled/closed)  [optional]
+(created)  
+-> (pending_approval)  
+-> (approved | rejected)  
+-> (executing)  
+-> (executed | failed)  
+-> (settled/closed)
 
-Rule: the same intent_id must not re-enter (executing) twice.
+Rule: the same `intent_id` must not re-enter `executing`.

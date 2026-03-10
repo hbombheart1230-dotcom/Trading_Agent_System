@@ -246,6 +246,19 @@ def _extract_feature_engine_map(state: Dict[str, Any]) -> Tuple[Dict[str, Dict[s
     return {}, "none", errors
 
 
+def _extract_strategist_candidates(state: Dict[str, Any]) -> List[Any]:
+    candidates = state.get("candidates")
+    if isinstance(candidates, list) and candidates:
+        return list(candidates)
+
+    strategist_output = state.get("strategist_output")
+    if isinstance(strategist_output, dict):
+        from_output = strategist_output.get("candidates")
+        if isinstance(from_output, list):
+            return list(from_output)
+    return []
+
+
 def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Graph node: Scanner (Data + feature extraction).
 
@@ -263,9 +276,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
       - state['mock_scan_results'] : {symbol: {score, risk_score, confidence, features?}}
         If present, Scanner will use these values instead of generating.
     """
-    candidates = state.get("candidates") or []
-    if not isinstance(candidates, list):
-        candidates = []
+    candidates = _extract_strategist_candidates(state)
 
     mock: Optional[Mapping[str, Any]] = state.get("mock_scan_results")  # for tests
 
@@ -457,6 +468,22 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     selected = scan_results_sorted[0] if scan_results_sorted else None
     state["scan_results"] = scan_results_sorted
     state["selected"] = selected
+    state["top_stock"] = str(selected.get("symbol") or "") if isinstance(selected, dict) else ""
+    state["scanner_output"] = {
+        "top_stock": state["top_stock"] or None,
+        "score": (float(selected.get("score")) if isinstance(selected, dict) and selected.get("score") is not None else None),
+        "risk_score": (
+            float(selected.get("risk_score"))
+            if isinstance(selected, dict) and selected.get("risk_score") is not None
+            else None
+        ),
+        "confidence": (
+            float(selected.get("confidence"))
+            if isinstance(selected, dict) and selected.get("confidence") is not None
+            else None
+        ),
+        "candidate_count": int(len(scan_results_sorted)),
+    }
 
     # Provide a normalized risk snapshot for Decision Node.
     if isinstance(selected, dict):

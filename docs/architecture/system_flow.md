@@ -1,23 +1,35 @@
-# Trading Agent System – System Flow
+# Trading Agent System - System Flow
 
-## High-level Flow
+## Integrated Chain Flow
 
-1. Market Reader
-2. Portfolio Reader
-3. Strategist (Rule / LLM)
-4. Decision Packet
-5. Risk Supervisor
-6. Executor (mock / live)
-7. Event Logger
-8. Reports
+1. Strategist
+   - consumes global/news/sentiment context
+   - outputs `themes` + `candidates` (Top-N)
+2. Scanner
+   - evaluates strategist candidates only
+   - computes scores/features/risk
+   - outputs `selected` and `top_stock`
+3. Monitor
+   - entry/exit monitoring for selected stock only
+   - emits `OrderIntent` (BUY/SELL/NOOP)
+4. Supervisor
+   - applies approval + policy checks
+5. Executor
+   - executes only approved intents with guard precedence
+6. Reporter
+   - generates operator-facing summaries from logs/artifacts
 
 ## Pipeline Role
 
-Pipelines define **when** and **in what order** nodes run.
-Nodes define **what** happens.
+- `graphs/pipelines/*`: when and in what order nodes run.
+- `graphs/nodes/*`: node-level state transformation.
+- `libs/*`: reusable pure/domain logic.
 
-## libs vs graphs
+## Runtime Notes
 
-- libs/: pure logic, reusable, testable
-- graphs/nodes: glue layer (state in/out)
-- graphs/pipelines: orchestration scripts
+- Polling runtime (`scripts/run_m13_live_loop.py`) remains loop-based.
+- Guardrails are enforced in execution stage (`execute_from_packet`).
+- Sell timing protections are applied in monitor/decision logic:
+  - `MIN_HOLD_SECONDS`
+  - `SELL_COOLDOWN` or `SELL_COOLDOWN_SEC`
+  - `MONITOR_EXIT_CONFIRM_TICKS`

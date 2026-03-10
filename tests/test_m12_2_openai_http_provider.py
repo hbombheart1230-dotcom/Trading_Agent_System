@@ -1,4 +1,12 @@
+import pytest
+
 from graphs.nodes.decide_trade import decide_trade
+
+
+@pytest.fixture(autouse=True)
+def _disable_strategy_v1(monkeypatch):
+    monkeypatch.setenv("USE_STRATEGY_V1", "false")
+
 
 def test_openai_provider_success_via_monkeypatch(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")

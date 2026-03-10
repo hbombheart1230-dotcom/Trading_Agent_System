@@ -45,6 +45,35 @@ Key separation:
 - Execution Layer (Executor + Guards)
 - Observability Layer (Reporter + EventLog)
 
+### Runtime Candidate Flow (M31+ additive)
+
+The decision chain now uses explicit strategist outputs before scanner ranking:
+
+1. Global news/sentiment context
+2. Strategist picks `themes` and `candidates` (Top-N)
+3. Scanner evaluates only strategist candidates
+4. Scanner returns Top-1 (`top_stock`)
+5. Monitor handles entry/exit intent generation only
+6. Supervisor/Executor keep approval + guard + execution separation
+
+Example strategist output:
+
+```json
+{
+  "themes": ["semiconductor", "AI"],
+  "candidates": ["005930", "000660", "042700", "058470", "091990"]
+}
+```
+
+Example scanner output:
+
+```json
+{
+  "top_stock": "005930",
+  "score": 0.91
+}
+```
+
 ------------------------------------------------------------------------
 
 # 3. Agent Responsibilities

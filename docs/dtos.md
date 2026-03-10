@@ -152,3 +152,30 @@
 ## 권장 구현 메모
 - DTO는 Pydantic 모델로 만들되, `extra`/`raw`로 미래 확장을 흡수
 - Reporter는 DTO만 읽도록 강제(원본 응답 직접 참조 금지)
+---
+
+## M31+ Additive Runtime DTOs
+
+### StrategistOutput
+- `themes: list[str]`
+- `candidates: list[str]`
+- `candidate_count: int`
+- `source: str`
+
+### ScannerOutput
+- `top_stock: str | null`
+- `score: float | null`
+- `risk_score: float | null`
+- `confidence: float | null`
+- `candidate_count: int`
+
+### MonitorOutput
+- `selected_symbol: str | null`
+- `intent_side: "BUY" | "SELL" | "NOOP"`
+- `intent_qty: int`
+- `entry_exit_reason: str`
+
+### Intent Meta (sell-guard related)
+- `reason`
+- `signal_source`
+- `position_age_sec`

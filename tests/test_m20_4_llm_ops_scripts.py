@@ -3,9 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import libs.ai.providers.openai_provider as prov
 from scripts.query_strategist_llm_events import main as query_main
 from scripts.smoke_m20_llm import main as smoke_main
+
+
+@pytest.fixture(autouse=True)
+def _disable_strategy_v1(monkeypatch):
+    monkeypatch.setenv("USE_STRATEGY_V1", "false")
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:

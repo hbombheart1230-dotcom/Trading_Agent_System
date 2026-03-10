@@ -119,6 +119,31 @@ def _parse_symbol_allowlist(raw: Optional[str]) -> set[str]:
     return {x.strip() for x in v.split(",") if x.strip()}
 
 
+def _evaluate_symbol_allowlist_guard(order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    if action not in ("BUY", "SELL"):
+        return True, "", {"enabled": False, "guard_applied": False, "action": action}
+
+    allow = _parse_symbol_allowlist(os.getenv("SYMBOL_ALLOWLIST"))
+    symbol = _extract_order_symbol(order)
+    details: Dict[str, Any] = {
+        "enabled": bool(allow),
+        "guard_applied": True,
+        "action": action,
+        "symbol": symbol,
+        "allowlist_size": len(allow),
+    }
+    if not allow:
+        return True, "", details
+    if not symbol:
+        details["symbol_evaluable"] = False
+        return True, "", details
+    if symbol and symbol in allow:
+        return True, "", details
+    details["allowlist"] = sorted(allow)
+    return False, "symbol_not_allowlisted", details
+
+
 def _extract_order_symbol(order: Dict[str, Any]) -> str:
     sym = order.get("symbol") or order.get("stk_cd")
     if sym is None:
@@ -757,6 +782,25 @@ def execute_from_packet(state: dict) -> dict:
                 stage="execute_from_packet",
                 event="verdict",
                 payload={"allowed": False, "reason": "noop_intent_skipped"},
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        symbol_allowed, symbol_reason, symbol_details = _evaluate_symbol_allowlist_guard(order)
+        if not symbol_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=symbol_reason,
+            )
+            state["execution"]["symbol_guard"] = symbol_details
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="symbol_guard_block",
+                payload={"allowed": False, "reason": symbol_reason, **symbol_details},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state

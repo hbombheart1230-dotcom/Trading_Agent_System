@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import pytest
 import libs.ai.providers.openai_provider as prov
 from graphs.nodes.decide_trade import decide_trade
+
+
+@pytest.fixture(autouse=True)
+def _disable_strategy_v1(monkeypatch):
+    monkeypatch.setenv("USE_STRATEGY_V1", "false")
 
 
 def test_m23_3_runtime_circuit_blocks_second_call_and_skips_provider(monkeypatch):

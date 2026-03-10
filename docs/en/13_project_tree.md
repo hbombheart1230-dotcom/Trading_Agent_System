@@ -55,6 +55,21 @@ Trading_Agent_System/
 - `docs/ground_rules/`: non-negotiable rules and quality gates.
 - `docs/plan/`: active milestone implementation notes (`docs/plan/archive/` stores legacy M3-M7 notes).
 
+## Strategy Candidate Flow (Current)
+
+- `graphs/nodes/strategist_node.py`: outputs `themes`, `candidates`, `strategist_output`.
+- `graphs/nodes/scanner_node.py`: ranks strategist candidates and outputs `top_stock`, `scanner_output`.
+- `graphs/nodes/monitor_node.py`: entry/exit intent generation only (`monitor_output`, `monitor_exit`).
+- `graphs/nodes/execute_from_packet.py`: approval/guard/execution boundary.
+
+## Related Config Keys
+
+- `TOP_N_CANDIDATES`
+- `SYMBOL_ALLOWLIST`
+- `MIN_HOLD_SECONDS`
+- `SELL_COOLDOWN` / `SELL_COOLDOWN_SEC`
+- `MONITOR_EXIT_CONFIRM_TICKS`
+
 ## M20-Related Documents
 
 - `docs/plan/m20_1_llm_smoke_and_fallback.md`

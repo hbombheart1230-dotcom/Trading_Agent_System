@@ -35,6 +35,38 @@ def _is_trueish(v: Any) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _resolve_min_hold_sec(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
+    raw = policy.get("min_hold_seconds") if isinstance(policy, dict) else None
+    if raw is None:
+        raw = os.getenv("MIN_HOLD_SECONDS", "600")
+    try:
+        return max(0, int(float(raw)))
+    except Exception:
+        return 600
+
+
+def _resolve_sell_cooldown_sec(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
+    raw = policy.get("sell_cooldown_sec") if isinstance(policy, dict) else None
+    if raw is None:
+        raw = os.getenv("SELL_COOLDOWN", "")
+    if raw in (None, ""):
+        raw = os.getenv("SELL_COOLDOWN_SEC", "300")
+    try:
+        return max(0, int(float(raw)))
+    except Exception:
+        return 300
+
+
+def _resolve_exit_confirm_ticks(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
+    raw = policy.get("exit_confirm_ticks") if isinstance(policy, dict) else None
+    if raw is None:
+        raw = os.getenv("MONITOR_EXIT_CONFIRM_TICKS", "2")
+    try:
+        return max(1, int(float(raw)))
+    except Exception:
+        return 2
+
+
 def _norm_symbol(v: Any) -> str:
     return str(v or "").strip().upper()
 
@@ -346,6 +378,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         pos_map = _position_by_symbol(state)
         pos = pos_map.get(symbol, {})
         qty = max(0, _to_int(pos.get("qty")))
+        # When a position is already held for selected symbol, suppress fresh BUY intents.
+        if qty > 0:
+            intents = []
         avg_price = _to_float(pos.get("avg_price"))
         price = _resolve_price(state, symbol, selected)
         features = selected.get("features") if isinstance(selected.get("features"), dict) else {}
@@ -374,11 +409,49 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             hold_sec=hold_sec if hold_sec > 0 else None,
             policy=exit_policy_map,
         )
+        min_hold_sec = max(
+            _resolve_min_hold_sec(state, policy),
+            _resolve_sell_cooldown_sec(state, policy),
+        )
+        confirm_ticks = _resolve_exit_confirm_ticks(state, policy)
+        confirm_map = state.get("_monitor_exit_confirm")
+        if not isinstance(confirm_map, dict):
+            confirm_map = {}
+        confirm_key = f"{symbol}:{str(decision.get('reason') or '').strip()}"
+        confirm_count = 0
+        sell_guard_blocked = False
+        sell_guard_reason = ""
+
+        if bool(decision.get("triggered")):
+            if min_hold_sec > 0 and hold_sec > 0 and hold_sec < min_hold_sec:
+                sell_guard_blocked = True
+                sell_guard_reason = f"sell_guard_min_hold:{hold_sec}s<{min_hold_sec}s"
+            elif int(features.get("skill_open_orders") or 0) > 0:
+                sell_guard_blocked = True
+                sell_guard_reason = "sell_guard_open_order_pending"
+            elif confirm_ticks > 1:
+                confirm_count = _to_int(confirm_map.get(confirm_key)) + 1
+                confirm_map[confirm_key] = int(confirm_count)
+                if confirm_count < int(confirm_ticks):
+                    sell_guard_blocked = True
+                    sell_guard_reason = f"exit_confirmation_pending:{confirm_count}/{confirm_ticks}"
+        else:
+            if confirm_key in confirm_map:
+                confirm_map.pop(confirm_key, None)
+
+        if not sell_guard_blocked and bool(decision.get("triggered")) and confirm_key in confirm_map:
+            confirm_map.pop(confirm_key, None)
+        state["_monitor_exit_confirm"] = confirm_map
+
         exit_info = {
             "enabled": True,
             "evaluated": bool(decision.get("evaluated")),
-            "triggered": bool(decision.get("triggered")),
-            "reason": str(decision.get("reason") or ""),
+            "triggered": bool(decision.get("triggered")) and not bool(sell_guard_blocked),
+            "reason": (
+                str(sell_guard_reason)
+                if str(sell_guard_reason).strip()
+                else str(decision.get("reason") or "")
+            ),
             "symbol": symbol,
             "qty": int(qty),
             "pnl_ratio": decision.get("pnl_ratio"),
@@ -389,8 +462,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "trailing_drawdown": decision.get("trailing_drawdown"),
             "volatility_ratio": decision.get("volatility_ratio"),
             "minutes_to_close": decision.get("minutes_to_close"),
+            "min_hold_sec": int(min_hold_sec),
+            "exit_confirm_ticks": int(confirm_ticks),
+            "exit_confirm_count": int(confirm_count),
+            "sell_guard_blocked": bool(sell_guard_blocked),
+            "sell_guard_reason": str(sell_guard_reason),
         }
-        if bool(decision.get("triggered")) and qty > 0:
+        if bool(decision.get("triggered")) and not bool(sell_guard_blocked) and qty > 0:
             intents = [
                 {
                     "symbol": symbol,
@@ -403,6 +481,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "avg_price": avg_price if avg_price > 0.0 else None,
                         "price": price,
                         "source": "monitor_exit_policy",
+                        "reason": str(decision.get("reason") or ""),
+                        "signal_source": "monitor_exit_policy",
+                        "position_age_sec": hold_sec if hold_sec > 0 else None,
                     },
                 }
             ]
@@ -436,6 +517,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "position_sizing_evaluated": bool(sizing_info.get("evaluated")),
         "position_sizing_qty": int(sizing_info.get("qty") or 0),
         "position_sizing_reason": str(sizing_info.get("reason") or ""),
+    }
+    state["monitor_output"] = {
+        "selected_symbol": (selected.get("symbol") if isinstance(selected, dict) else None),
+        "intent_side": (str(intents[0].get("side")) if intents else "NOOP"),
+        "intent_qty": (int(intents[0].get("qty") or 0) if intents else 0),
+        "entry_exit_reason": (
+            str(exit_info.get("reason") or "")
+            if bool(exit_info.get("enabled"))
+            else "entry_candidate_selected"
+        ),
     }
     state["monitor_exit"] = exit_info
     state["monitor_sizing"] = sizing_info

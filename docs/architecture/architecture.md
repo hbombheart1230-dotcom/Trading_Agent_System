@@ -2,15 +2,18 @@
 
 ## Agents
 - **Supervisor**: policy/risk + *approval gate*
-- **Strategist**: decide *what to look at* and propose candidates/scenarios
-- **Scanner**: execute data collection + feature extraction + ranking
-- **Monitor**: watch signals and produce **OrderIntent** (no execution)
+- **Strategist**: decide themes/sectors and output candidate symbols (Top-N)
+- **Scanner**: evaluate strategist candidates only and rank to Top-1
+- **Monitor**: entry/exit monitoring only; emit **OrderIntent** (no execution)
 - **Reporter**: replay logs and produce post-mortems
 
 ## Order flow (2-phase commit)
-1) Monitor creates `OrderIntent`
-2) Supervisor returns `approve/reject/modify`
-3) Only on approve, Execution skill places/cancels orders
+1) News/global sentiment context is attached to strategist input.
+2) Strategist outputs `themes[]` + `candidates[]`.
+3) Scanner scores strategist candidates and selects `top_stock`.
+4) Monitor decides entry/exit for selected stock and creates `OrderIntent`.
+5) Supervisor returns `approve/reject/modify`.
+6) Only on approve, Execution skill places/cancels orders.
 
 ## Observability (Event Logging)
 
@@ -28,4 +31,3 @@
 - `start` and `end` are recommended for every node.
 
 - API selection follows a two-step process: discovery (Top-K) → decision.
-

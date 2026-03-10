@@ -1,42 +1,28 @@
-# 5. 런타임 플로우 (시퀀스/상태 머신)
+# 5. 런타임 플로우
 
-## 5.1 한 사이클(run) 시퀀스 (텍스트 시퀀스 다이어그램)
+## 5.1 통합 체인 순서
 
-Operator -> Commander: start_run(goal, config)
-Commander -> Strategist: build_trade_plan()
-Strategist -> Commander: TradePlan
-Commander -> Scanner: scan(plan)
-Scanner -> Commander: ScanResult
-Commander -> Monitor: monitor(scan_result)
-Monitor -> Commander: OrderIntent(s)
-Commander -> Supervisor: decide(intent)
-Supervisor -> Commander: SupervisorDecision (approve/reject/modify)
-Commander -> AgentExecutor: handle(decision, intent)
-AgentExecutor -> ExecutionLayer: execute(intent) [only if approved]
-ExecutionLayer -> Broker(Mock/Real): place/cancel/status
-Broker -> ExecutionLayer: OrderResult/OrderStatus
-ExecutionLayer -> EventLog: append events
-Commander -> Reporter: report(run_id)
-Reporter -> Operator: summary
+Operator -> Commander: run 시작  
+Commander -> Strategist: 테마/섹터 + 후보 종목 Top-N 생성  
+Strategist -> Commander: `strategist_output` (`themes`, `candidates`) 반환  
+Commander -> Scanner: 전략가 후보만 스코어링  
+Scanner -> Commander: 랭킹 + `top_stock` 반환  
+Commander -> Monitor: `top_stock` 진입/청산 판단  
+Monitor -> Commander: `OrderIntent` (BUY/SELL/NOOP)  
+Commander -> Supervisor: 승인 요청  
+Supervisor -> Commander: approve/reject/modify  
+Commander -> Executor: 승인된 경우만 실행  
+Executor -> Broker(Mock/Real): 주문/정정/상태 조회  
+Executor -> EventLog: 이벤트 기록  
+Commander -> Reporter: 보고서 생성
 
-## 5.2 Intent 상태 머신 (텍스트 다이어그램)
+## 5.2 Intent 상태 머신
 
-(created)
-   |
-   v
-(pending_approval) --reject--> (rejected)
-   |
-   +--approve--> (approved)
-                   |
-                   v
-               (executing)
-                   |
-         +---------+----------+
-         |                    |
-         v                    v
-     (executed)            (failed)
-         |
-         v
-     (settled/closed)  [optional]
+(created)  
+-> (pending_approval)  
+-> (approved | rejected)  
+-> (executing)  
+-> (executed | failed)  
+-> (settled/closed)
 
-규칙: 동일 intent_id는 (executing) 중복 진입 금지.
+규칙: 동일 `intent_id`는 `executing` 상태에 중복 진입하면 안 된다.

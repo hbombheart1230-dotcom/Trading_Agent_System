@@ -3,8 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import libs.ai.providers.openai_provider as prov
 from graphs.nodes.decide_trade import decide_trade
+
+
+@pytest.fixture(autouse=True)
+def _disable_strategy_v1(monkeypatch):
+    monkeypatch.setenv("USE_STRATEGY_V1", "false")
 
 
 def _load_events(path: Path):

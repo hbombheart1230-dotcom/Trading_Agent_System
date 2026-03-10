@@ -45,6 +45,13 @@ def _default_universe() -> List[str]:
 def _extract_injected_rows(state: Dict[str, Any], k: int) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
 
+    strategist_output = state.get("strategist_output")
+    if isinstance(strategist_output, dict):
+        strategist_candidates = _normalize_symbols(strategist_output.get("candidates"))
+        if strategist_candidates:
+            rows.extend({"symbol": s, "why": "strategist_candidates"} for s in strategist_candidates[:k])
+            return rows
+
     universe = _normalize_symbols(state.get("universe"))
     if universe:
         rows.extend({"symbol": s, "why": "state_universe"} for s in universe[:k])

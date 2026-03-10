@@ -92,6 +92,31 @@ def test_execute_from_packet_skips_noop_intent(tmp_path, monkeypatch):
     assert out["execution"]["reason"] == "noop_intent_skipped"
 
 
+def test_execute_from_packet_blocks_symbol_not_allowlisted(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+    monkeypatch.setenv("SYMBOL_ALLOWLIST", "005930")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "000660", "qty": 1, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "symbol_not_allowlisted"
+    assert int(out["execution"]["symbol_guard"]["allowlist_size"]) == 1
+
+
 def test_execute_from_packet_blocks_duplicate_buy_in_mock(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTION_MODE", "mock")
 
