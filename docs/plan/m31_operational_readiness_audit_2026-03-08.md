@@ -182,7 +182,7 @@ From `.env` snapshot during audit:
 - `EXECUTION_ENABLED=true`
 - `ALLOW_REAL_EXECUTION=false`
 - `APPROVAL_MODE=auto`  <- blocker for M31 exam contract
-- `SYMBOL_ALLOWLIST=005930,000660`
+- `SYMBOL_ALLOWLIST=005930,000660` (example from observed day; optional operational guard)
 - `MAX_ORDER_NOTIONAL=1000000`
 - `RISK_DAILY_LOSS_LIMIT=0.02`
 

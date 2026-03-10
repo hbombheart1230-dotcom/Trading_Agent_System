@@ -56,6 +56,11 @@ The decision chain now uses explicit strategist outputs before scanner ranking:
 5. Monitor handles entry/exit intent generation only
 6. Supervisor/Executor keep approval + guard + execution separation
 
+Notes:
+- Samsung-only trading is **not** the target architecture.
+- `005930` in examples is illustrative sample data.
+- `SYMBOL_ALLOWLIST` is an optional operational guard.
+
 Example strategist output:
 
 ```json
@@ -128,7 +133,7 @@ Execution occurs only when:
 - APPROVAL_MODE permits
 - EXECUTION_ENABLED = true
 - Real mode explicitly allowed
-- Symbol allowlist satisfied
+- If `SYMBOL_ALLOWLIST` is configured, symbol must be allowlisted
 - Max qty/notional limits respected
 - Intent not already executed
 

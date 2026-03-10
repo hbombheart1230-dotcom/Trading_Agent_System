@@ -6,7 +6,7 @@
 ## Scope (minimal)
 
 1. In degrade mode, block execution unless manual approval signal is explicitly present.
-2. In degrade mode, require non-empty `SYMBOL_ALLOWLIST`.
+2. In degrade mode, keep `SYMBOL_ALLOWLIST` as optional guard (if configured, enforce membership).
 3. In degrade mode, tighten effective notional guard to `25%` of `MAX_ORDER_NOTIONAL` (configurable ratio).
 
 ## Implemented
@@ -16,8 +16,7 @@
     - `_evaluate_degrade_execution_policy(...)`
   - Added policy checks:
     - manual approval required (`execution_manual_approved` / `manual_approved` / `exec_context.manual_approved`)
-    - non-empty allowlist required (`SYMBOL_ALLOWLIST`)
-    - allowlist symbol membership check in degrade mode
+    - optional allowlist membership check in degrade mode (`SYMBOL_ALLOWLIST` only when configured)
     - effective notional limit:
       - base: `MAX_ORDER_NOTIONAL`
       - ratio: `state["resilience_policy"]["degrade_notional_ratio"]` or `DEGRADE_NOTIONAL_RATIO` (default `0.25`)
@@ -28,7 +27,7 @@
 - File: `tests/test_m23_5_safe_degrade_execution_policy.py`
   - Added regression tests:
     - manual approval required in degrade mode
-    - allowlist required in degrade mode
+    - allowlist remains optional in degrade mode
     - tightened notional guard enforced in degrade mode
     - successful execution path when degrade policy passes
 
@@ -36,4 +35,5 @@
 
 - This patch changes behavior only when `degrade_mode=true`.
 - Normal mode execution path remains unchanged.
-- Policy is intentionally conservative: missing manual approval or missing allowlist blocks execution.
+- Policy is intentionally conservative: missing manual approval blocks execution.
+- Optional allowlist still blocks disallowed symbols when configured.

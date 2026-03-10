@@ -36,7 +36,7 @@
 
 ## Executor
 - Executes approved intents only.
-- Applies execution guards (`SYMBOL_ALLOWLIST`, max qty/notional, mode checks).
+- Applies execution guards (optional `SYMBOL_ALLOWLIST`, max qty/notional, mode checks).
 - Keeps mock/real separation.
 
 ## Reporter

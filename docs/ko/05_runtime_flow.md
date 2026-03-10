@@ -26,3 +26,6 @@ Commander -> Reporter: 보고서 생성
 -> (settled/closed)
 
 규칙: 동일 `intent_id`는 `executing` 상태에 중복 진입하면 안 된다.
+
+실행 가드 참고:
+- `SYMBOL_ALLOWLIST`는 선택 가드다. 비어 있으면 Strategist/Scanner 후보를 allowlist로 제한하지 않는다.

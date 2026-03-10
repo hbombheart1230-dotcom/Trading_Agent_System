@@ -65,7 +65,7 @@ Trading_Agent_System/
 ## Related Config Keys
 
 - `TOP_N_CANDIDATES`
-- `SYMBOL_ALLOWLIST`
+- `SYMBOL_ALLOWLIST` (optional execution guard)
 - `MIN_HOLD_SECONDS`
 - `SELL_COOLDOWN` / `SELL_COOLDOWN_SEC`
 - `MONITOR_EXIT_CONFIRM_TICKS`

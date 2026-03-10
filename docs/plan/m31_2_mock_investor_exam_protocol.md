@@ -29,7 +29,7 @@
   - `EXECUTION_ENABLED=true`
   - `APPROVAL_MODE=manual` (mandatory in first phase)
 - Keep guardrails fixed for whole exam window:
-  - allowlist required
+  - allowlist optional (recommended operational guard)
   - max notional cap
   - daily loss cap
   - degrade fallback policy enabled

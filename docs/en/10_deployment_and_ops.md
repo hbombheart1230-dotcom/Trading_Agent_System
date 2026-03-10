@@ -9,7 +9,7 @@
 - [ ] confirm KIWOOM_MODE (mock/real)
 - [ ] confirm EXECUTION_ENABLED
 - [ ] confirm ALLOW_REAL_EXECUTION
-- [ ] confirm SYMBOL_ALLOWLIST
+- [ ] confirm SYMBOL_ALLOWLIST (optional; empty means no symbol restriction)
 - [ ] confirm MAX_QTY / MAX_NOTIONAL
 - [ ] confirm log path/permissions
 
@@ -17,7 +17,7 @@
 ### Execution is blocked
 1) check EXECUTION_ENABLED=false
 2) check real mode guard
-3) check allowlist mismatch
+3) if allowlist is configured, check allowlist mismatch
 4) check max notional exceeded
 
 ### Commander cooldown / degrade recovery (M23-6)

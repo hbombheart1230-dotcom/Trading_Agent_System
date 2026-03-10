@@ -72,6 +72,7 @@ def _build_markdown(out: Dict[str, Any]) -> str:
         "## Guardrails",
         "",
         f"- allowlist_size: **{int(guard.get('allowlist_size') or 0)}**",
+        "- SYMBOL_ALLOWLIST policy: **optional operational guard (recommended but not mandatory)**",
         f"- max_notional_key: **{guard.get('max_notional_key')}**",
         f"- max_notional: **{float(guard.get('max_notional') or 0.0):.2f}**",
         f"- daily_loss_limit: **{float(guard.get('daily_loss_limit') or 0.0):.6f}**",
@@ -260,10 +261,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         ),
         _item(
             item_id="guardrails_fixed",
-            title="Allowlist/notional/daily-loss guardrails are configured",
+            title="Notional/daily-loss guardrails are configured (allowlist optional)",
             passed=(
-                int(guards.get("allowlist_size") or 0) > 0
-                and float(guards.get("max_notional") or 0.0) > 0.0
+                float(guards.get("max_notional") or 0.0) > 0.0
                 and float(guards.get("daily_loss_limit") or 0.0) > 0.0
             ),
             evidence=(

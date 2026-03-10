@@ -113,25 +113,15 @@ def _resolve_symbol_query_map() -> Dict[str, str]:
         env_raw = str(os.getenv("SYMBOL_QUERY_MAP_JSON", "") or "").strip()
     env_map = _parse_kv_map(env_raw)
 
-    allowlist = str(os.getenv("SYMBOL_ALLOWLIST", "") or "").strip()
-    out: Dict[str, str] = {}
-    for sym in allowlist.split(","):
-        code = str(sym or "").strip().upper()
-        if code in _DEFAULT_SYMBOL_QUERY_MAP:
-            out[code] = _DEFAULT_SYMBOL_QUERY_MAP[code]
-
+    # Keep strategy/news mapping independent from execution allowlist policy.
+    out: Dict[str, str] = dict(_DEFAULT_SYMBOL_QUERY_MAP)
     out.update(env_map)
     return out
 
 
 def _resolve_symbol_yf_map(policy: Dict[str, Any]) -> Dict[str, str]:
-    out: Dict[str, str] = {}
-
-    allowlist = str(os.getenv("SYMBOL_ALLOWLIST", "") or "").strip()
-    for sym in allowlist.split(","):
-        code = str(sym or "").strip().upper()
-        if code in _DEFAULT_SYMBOL_YF_MAP:
-            out[code] = _DEFAULT_SYMBOL_YF_MAP[code]
+    # Keep strategy/news mapping independent from execution allowlist policy.
+    out: Dict[str, str] = dict(_DEFAULT_SYMBOL_YF_MAP)
 
     env_raw = str(os.getenv("M10_SYMBOL_YF_MAP", "") or os.getenv("SYMBOL_YF_MAP_JSON", "") or "").strip()
     out.update(_parse_kv_map(env_raw))

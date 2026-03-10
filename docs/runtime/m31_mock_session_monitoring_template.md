@@ -11,7 +11,7 @@
 - Runtime profile: `staging`
 - Kiwoom mode: `mock`
 - Approval mode: `manual`
-- Symbol allowlist: `__________`
+- Symbol allowlist (optional): `__________`
 - Max order notional: `__________`
 
 ## 2. Pre-open Checks (once)

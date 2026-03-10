@@ -28,3 +28,6 @@ Reporter -> Operator: summary
 -> (settled/closed)
 
 Rule: the same `intent_id` must not re-enter `executing`.
+
+Execution note:
+- `SYMBOL_ALLOWLIST` is an optional guard. If unset, candidate symbols from Strategist/Scanner are not restricted by allowlist.

@@ -73,7 +73,7 @@ def test_m23_5_degrade_requires_manual_approval(monkeypatch, tmp_path: Path):
     assert ex.calls == 0
 
 
-def test_m23_5_degrade_requires_non_empty_allowlist(monkeypatch, tmp_path: Path):
+def test_m23_5_degrade_allowlist_is_optional(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("EXECUTION_MODE", "mock")
     monkeypatch.setenv("EVENT_LOG_PATH", str(tmp_path / "events.jsonl"))
     monkeypatch.delenv("SYMBOL_ALLOWLIST", raising=False)
@@ -90,9 +90,8 @@ def test_m23_5_degrade_requires_non_empty_allowlist(monkeypatch, tmp_path: Path)
 
     out = execute_from_packet(state)
 
-    assert out["execution"]["allowed"] is False
-    assert out["execution"]["reason"] == "degrade_allowlist_required"
-    assert ex.calls == 0
+    assert out["execution"]["allowed"] is True
+    assert ex.calls == 1
 
 
 def test_m23_5_degrade_tightens_notional_guard(monkeypatch, tmp_path: Path):

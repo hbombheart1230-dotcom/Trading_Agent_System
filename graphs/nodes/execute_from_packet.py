@@ -340,14 +340,11 @@ def _evaluate_degrade_execution_policy(
         details["required"] = "manual_approval"
         return False, "degrade_manual_approval_required", details
 
-    # M23-5 policy: degrade mode requires non-empty allowlist.
+    # Allowlist remains an optional guard; enforce membership only when configured.
     allow = _parse_symbol_allowlist(os.getenv("SYMBOL_ALLOWLIST"))
     details["allowlist_size"] = len(allow)
-    if not allow:
-        return False, "degrade_allowlist_required", details
-
     sym = _extract_order_symbol(order)
-    if sym and sym not in allow:
+    if allow and sym and sym not in allow:
         details["symbol"] = sym
         return False, "degrade_symbol_not_allowlisted", details
 

@@ -66,7 +66,7 @@ If a proposed change violates any item below, **STOP** and redesign.
 
 1) EXECUTION_ENABLED == false → always block  
 2) KIWOOM_MODE == real AND ALLOW_REAL_EXECUTION != true → block  
-3) SYMBOL_ALLOWLIST mismatch → block  
+3) SYMBOL_ALLOWLIST is configured and mismatch → block  
 4) MAX_QTY exceeded → block  
 5) MAX_NOTIONAL exceeded → block  
 6) Idempotency (intent_id already executed) → block  

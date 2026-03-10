@@ -21,6 +21,8 @@
 ### 2) Symbol Allowlist Guard
 - 환경변수 `SYMBOL_ALLOWLIST` 기반
 - 값이 비어 있으면 비활성(allow-all)
+- 기본 아키텍처는 theme/sector -> candidates -> scanner top-1이며,
+  allowlist는 선택적 운영 안전장치로만 사용
 
 ### 3) Execution Enabled Guard
 - 환경변수 `EXECUTION_ENABLED=false` 인 경우

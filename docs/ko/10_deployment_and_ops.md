@@ -9,7 +9,7 @@
 - [ ] KIWOOM_MODE 확인(mock/real)
 - [ ] EXECUTION_ENABLED 확인
 - [ ] ALLOW_REAL_EXECUTION 확인
-- [ ] SYMBOL_ALLOWLIST 확인
+- [ ] SYMBOL_ALLOWLIST 확인(선택: 비어 있으면 심볼 제한 없음)
 - [ ] MAX_QTY / MAX_NOTIONAL 확인
 - [ ] 로그 경로/권한 확인
 
@@ -17,7 +17,7 @@
 ### 실행이 안됨
 1) EXECUTION_ENABLED=false 확인
 2) real mode guard 차단 여부 확인
-3) allowlist mismatch 확인
+3) allowlist가 설정된 경우 mismatch 확인
 4) max notional 초과 확인
 
 ### 잘못된 실행이 발생할 위험

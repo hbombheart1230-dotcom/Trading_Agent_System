@@ -97,7 +97,7 @@ M23 implementation status (2026-02-17, complete):
 - M23-2: runtime-shared circuit breaker core module (`gate/failure/success`) + transition regression tests
 - M23-3: strategist decision path runtime circuit integration (`decide_trade` gate + success/failure state updates)
 - M23-4: commander incident counter and cooldown routing policy (`cooldown_wait` short-circuit + runtime error incident registration)
-- M23-5: degrade execution policy enforcement (`manual approval required`, `allowlist required`, `degrade notional ratio`)
+- M23-5: degrade execution policy enforcement (`manual approval required`, `optional allowlist enforcement when configured`, `degrade notional ratio`)
 - M23-6: operator intervention/resume control (`runtime_control=resume`) + intervention runbook/logging
 - M23-7: commander resilience ops query CLI (`query_commander_resilience_events.py`) for cooldown/error/intervention visibility
 - M23-8: resilience closeout check script and handover (`run_m23_resilience_closeout_check.py`)
