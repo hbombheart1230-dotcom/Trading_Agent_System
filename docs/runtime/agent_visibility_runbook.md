@@ -81,6 +81,7 @@ Optional:
 python -m scripts.query_strategist_llm_events --path data/logs/events.jsonl --limit 20
 python -m scripts.query_trade_reason_chain --path data/logs/events.jsonl --only-broker-success --limit 20
 python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jsonl --report-dir reports/trade_explain --day 2026-03-10 --json
+python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/reporter_analysis --day 2026-03-10 --json
 
 set EVENT_LOG_PATH=./data/logs/events.jsonl
 set REPORT_DAY=2026-03-06
@@ -102,3 +103,16 @@ python -m scripts.generate_metrics_report
   - Surface scanner/monitor/decision context in one place.
 - Known data gap:
   - Raw news headline text and scanner `score_breakdown` depend on current event payload policy and may be missing.
+
+## 7) Reporter Analysis Report
+
+- Output:
+  - `reports/reporter_analysis/reporter_analysis_<day>.md`
+  - `reports/reporter_analysis/reporter_analysis_<day>.json`
+- Purpose:
+  - Integrate trade/intent/operator reports into one passive post-run analysis bundle.
+  - Provide overtrading diagnostics and incident/post-mortem summaries.
+- Includes:
+  - Trade decision summary (buy/sell reasons, hold duration, exit trigger)
+  - Intent flow (`created/blocked/approved/executed`)
+  - Strategy effectiveness narrative (Strategist -> Scanner -> Monitor)

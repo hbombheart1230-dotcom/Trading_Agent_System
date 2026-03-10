@@ -1,0 +1,182 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from libs.agent.reporter import Reporter
+from scripts.run_reporter_analysis_report import main as reporter_analysis_main
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def test_reporter_analysis_script_builds_structured_sections(tmp_path: Path, capsys) -> None:
+    day = "2026-03-10"
+    events = tmp_path / "events.jsonl"
+    intents = tmp_path / "intents.jsonl"
+    reports_root = tmp_path / "reports"
+    out_dir = reports_root / "reporter_analysis"
+
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "strategist_llm",
+                "event": "result",
+                "payload": {"provider": "openrouter", "model": "minimax/minimax-m2.5", "themes": ["semiconductor", "AI"]},
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "scanner",
+                "event": "summary",
+                "payload": {"candidate_source": "kiwoom_market_data", "top_stock": "005930", "top_score": 0.91},
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:02+00:00",
+                "stage": "decision",
+                "event": "trace",
+                "payload": {
+                    "decision_packet": {
+                        "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "reason": "entry_signal"},
+                        "why": {"news": {"global_sentiment_score": 0.2, "symbol_sentiment_score": 0.3}},
+                    },
+                    "trace": {"strategy": "RegimeMomentumV1", "rationale": "entry"},
+                },
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:03+00:00",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": True},
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:04+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"order": {"action": "BUY", "symbol": "005930", "qty": 1, "price": 100}},
+            },
+            {
+                "run_id": "r_sell",
+                "ts": f"{day}T00:01:00+00:00",
+                "stage": "monitor",
+                "event": "summary",
+                "payload": {"exit_reason": "volatility_spike", "monitor_reason": "confirmed_exit_signal"},
+            },
+            {
+                "run_id": "r_sell",
+                "ts": f"{day}T00:01:01+00:00",
+                "stage": "decision",
+                "event": "trace",
+                "payload": {
+                    "decision_packet": {"intent": {"action": "SELL", "symbol": "005930", "qty": 1, "reason": "exit_signal"}},
+                    "trace": {"strategy": "ExitPolicyStrategist", "rationale": "exit"},
+                },
+            },
+            {
+                "run_id": "r_sell",
+                "ts": f"{day}T00:01:02+00:00",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": True},
+            },
+            {
+                "run_id": "r_sell",
+                "ts": f"{day}T00:01:03+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"order": {"action": "SELL", "symbol": "005930", "qty": 1, "price": 101}},
+            },
+            {
+                "run_id": "r_block",
+                "ts": f"{day}T00:02:00+00:00",
+                "stage": "monitor",
+                "event": "summary",
+                "payload": {"min_hold_blocked": True, "sell_cooldown_blocked": True, "monitor_reason": "cooldown_active"},
+            },
+            {
+                "run_id": "r_block",
+                "ts": f"{day}T00:02:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": False, "reason": "risk_guard"},
+            },
+        ],
+    )
+    _write_jsonl(
+        intents,
+        [
+            {"ts": f"{day}T00:00:05+00:00", "intent_id": "i1", "intent": {"intent_id": "i1", "action": "BUY", "symbol": "005930", "qty": 1}},
+            {"ts": f"{day}T00:00:06+00:00", "intent_id": "i1", "status": "approved", "reason": "manual", "intent": {"intent_id": "i1"}},
+            {"ts": f"{day}T00:00:07+00:00", "intent_id": "i1", "status": "executed", "reason": None, "intent": {"intent_id": "i1"}},
+            {"ts": f"{day}T00:02:02+00:00", "intent_id": "i2", "status": "rejected", "reason": "supervisor_reject", "intent": {"intent_id": "i2"}},
+        ],
+    )
+
+    rc = reporter_analysis_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--intents-path",
+            str(intents),
+            "--report-dir",
+            str(out_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--rapid-cycle-threshold-sec",
+            "120",
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert obj["day"] == day
+    assert int(obj["trade_decision_summaries"]["trade_summary_total"]) >= 1
+    flow = obj["intent_flow_analysis"]
+    assert int(flow["intents_created"]) >= 1
+    assert int(flow["intents_blocked"]) >= 1
+    assert "min_hold_blocked" in (flow.get("reason_top") or {})
+    assert int(obj["overtrading_diagnostics"]["rapid_buy_sell_cycles"]) >= 1
+    assert Path(obj["report_json_path"]).exists()
+    assert Path(obj["report_md_path"]).exists()
+
+
+def test_reporter_agent_can_run_passive_log_analysis(tmp_path: Path) -> None:
+    day = "2026-03-10"
+    events = tmp_path / "events.jsonl"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r1",
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": False, "reason": "risk_guard"},
+            }
+        ],
+    )
+    reporter = Reporter()
+    out = reporter.analyze_event_logs(
+        event_log_path=events,
+        report_dir=tmp_path / "reporter_analysis",
+        day=day,
+        intents_path=tmp_path / "missing_intents.jsonl",
+        reports_root=tmp_path / "reports",
+    )
+    assert out["schema_version"] == "reporter_analysis.v1"
+    assert out["day"] == day
+    assert "intent_flow_analysis" in out
+

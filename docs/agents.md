@@ -62,3 +62,8 @@
 - Works as a post-run/report script layer (not a runtime control node).
 - Does not change runtime decisions.
 - Runtime report generators: `libs/reporting/*`, `scripts/run_*report*.py`
+- Enhanced passive analysis output (`reporter_analysis.v1`) includes:
+  - trade decision summaries (buy/sell reason, hold duration, exit trigger)
+  - intent flow analysis (created/blocked/approved/executed + reason top)
+  - strategy effectiveness narrative (Strategist/Scanner/Monitor chain)
+  - overtrading diagnostics and incident/post-mortem sections
