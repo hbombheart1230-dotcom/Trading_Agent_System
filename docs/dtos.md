@@ -169,6 +169,11 @@
 - `risk_tone: "conservative" | "normal" | "aggressive"`
 - `monitor_guidance: "hold_through_noise" | "defensive_exit" | "quick_take_profit"`
 - `monitor_policy: object` (deterministic guard tuning derived from guidance)
+- `regime_score: float` (additive)
+- `sentiment_score: float` (additive)
+- `news_context: object` (additive quality summary)
+- `market_context_inputs: object` (additive market context summary)
+- `theme_strength: object` (additive theme-strength map)
 - `report_focus: list[str]`
 - `candidates: list[str]`
 - `candidate_count: int`
@@ -185,6 +190,7 @@
 - `candidate_count: int`
 - `candidate_pool_size: int`
 - `ranked_candidates: list[object]` (Top-N summary)
+- `strategist_playbook: str | null` (additive)
 
 ### RankedCandidate (scanner)
 - `symbol: str`
@@ -210,6 +216,7 @@
 - `sell_cooldown_blocked: bool`
 - `monitor_reason: str`
 - `emergency_exit: bool`
+- `playbook: str` (additive)
 
 ### Intent Meta (sell-guard related)
 - `reason`

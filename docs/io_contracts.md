@@ -33,6 +33,11 @@
   - `monitor_guidance`
   - `monitor_policy`
   - `report_focus[]`
+  - `regime_score` (additive)
+  - `sentiment_score` (additive)
+  - `news_context` (additive)
+  - `market_context_inputs` (additive)
+  - `theme_strength` (additive)
   - `candidates[]`
   - `candidate_count`
   - `candidate_hints[]`
@@ -59,6 +64,7 @@
   - `ranked_candidates` (Top-N summary rows)
   - `candidate_source`
   - `theme_filter_applied`
+  - `strategist_playbook` (additive)
 - Per-candidate score contract:
   - `score_total`
   - `score_breakdown`

@@ -16,6 +16,7 @@ This document defines agent responsibilities and handoff boundaries.
 - Does not select symbols directly and does not execute broker APIs.
 
 ### Strategist
+- AI-centered strategic brain for the run cycle.
 - Builds high-level plan from market/news/global context.
 - Emits:
   - `market_regime`
@@ -34,6 +35,11 @@ This document defines agent responsibilities and handoff boundaries.
   - `candidates` (Top-N, optional hint/fallback)
   - `strategist_output`
 - Strategist defines strategy frame; Scanner remains final symbol selector.
+- Additive context enrichment includes:
+  - global/news signal health
+  - market context inputs (`index_trend`, `realized_volatility`, `market_breadth`, `macro_risk`)
+  - optional `kiwoom_market_summary` / `macro_context`
+  - theme strength map
 
 ### Scanner
 - Builds candidate universe from Kiwoom market data in integrated chain path.
@@ -49,6 +55,7 @@ This document defines agent responsibilities and handoff boundaries.
   - liquidity thresholds (`MIN_TRADING_VALUE`, `MIN_VOLUME`)
 - Applies strategist theme/sector filtering when `theme_map` / `sector_map` is available.
 - Applies strategist ranking guidance (`scanner_priority`, aggressiveness/risk tone) additively.
+- Applies strategist `playbook` additively to score weighting.
 - Falls back to strategist candidate hints when Kiwoom pool is empty.
 - Produces:
   - `scan_results`
@@ -66,6 +73,7 @@ This document defines agent responsibilities and handoff boundaries.
   - `MONITOR_EXIT_CONFIRM_TICKS`
 - Prevents duplicate SELL intent emission using loop-persistent pending-exit lock/cooldown state.
 - Keeps emergency exits (`emergency_halt`, `news_shock`) explicit and separate from normal confirmation flow.
+- Consumes strategist `monitor_policy` deterministically when present.
 - Emits `intents` only.
 - Does not execute orders.
 - Must not rescan or re-rank stock universe.

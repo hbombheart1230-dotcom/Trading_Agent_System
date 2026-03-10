@@ -4,23 +4,28 @@
 
 1. Strategist
    - consumes global/news/sentiment context
+   - fuses macro/market context (`index_trend`, `realized_volatility`, `market_breadth`, `macro_risk`)
+   - can consume optional `kiwoom_market_summary` / `macro_context`
    - outputs structured strategic brief:
      - `market_regime`, `market_sentiment`, `key_events`
      - `themes`, `avoid_themes`, `playbook`
      - `scanner_bias` mode + `scanner_priority`, `trade_aggressiveness`, `risk_tone`
      - `monitor_guidance` mode (+ derived `monitor_policy`), `report_focus`
      - optional `candidates` hint
+     - additive context quality fields (`regime_score`, `sentiment_score`, `news_context`, `theme_strength`)
 2. Scanner
    - retrieves candidate universe from Kiwoom market data
    - source mix: condition search, top volume, top value, optional top change-rate, sector/theme map, watchlist
    - reduces pool before scoring (halt/abnormal/illiquid thresholds)
    - applies strategist theme/sector filter (`theme_map` / `sector_map`)
    - applies strategist scanner-priority guidance additively to ranking weights
+   - applies strategist `playbook` additively to ranking weights
    - computes explainable score breakdown + features/risk
    - outputs `selected` and `top_stock` (final symbol selector in current run)
 3. Monitor
    - entry/exit monitoring for selected stock only
    - emits `OrderIntent` (BUY/SELL/NOOP)
+   - consumes strategist `monitor_policy` when provided
    - normal SELL exits require min-hold/cooldown/confirmation guards
    - duplicate SELL intents are suppressed by monitor-side pending-exit lock
    - emergency exits (`emergency_halt`, `news_shock`) are explicit separate path

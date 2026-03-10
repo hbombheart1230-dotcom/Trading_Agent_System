@@ -38,6 +38,14 @@ def test_decision_trace_ledger_collects_strategist_scanner_monitor(monkeypatch):
     entries = ledger.get("entries") or []
     agents = {str(x.get("agent") or "") for x in entries if isinstance(x, dict)}
     assert {"strategist", "scanner", "monitor"}.issubset(agents)
+    latest = ledger.get("latest_by_agent") or {}
+    strategist_payload = latest.get("strategist") if isinstance(latest.get("strategist"), dict) else {}
+    assert "market_regime" in strategist_payload
+    assert isinstance(strategist_payload.get("scanner_priority"), list)
+    scanner_payload = latest.get("scanner") if isinstance(latest.get("scanner"), dict) else {}
+    assert "selected_symbol" in scanner_payload
+    monitor_payload = latest.get("monitor") if isinstance(latest.get("monitor"), dict) else {}
+    assert "monitor_reason" in monitor_payload
 
 
 def test_decision_trace_ledger_collects_supervisor_and_executor(tmp_path, monkeypatch):
@@ -67,4 +75,3 @@ def test_decision_trace_ledger_collects_supervisor_and_executor(tmp_path, monkey
     assert "executor" in latest
     assert latest["executor"]["execution_attempted"] is True
     assert str((latest["supervisor"] or {}).get("verdict") or "") in ("approve", "reject")
-

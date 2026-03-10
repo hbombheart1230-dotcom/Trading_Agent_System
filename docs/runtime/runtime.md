@@ -23,6 +23,7 @@
    - `scanner_bias` mode, `scanner_priority`
    - `trade_aggressiveness`, `risk_tone`
    - `monitor_guidance` mode (+ derived `monitor_policy`), `report_focus`
+   - `regime_score`, `sentiment_score`, `news_context`, `theme_strength` (additive quality fields)
    - `candidates` (Top-N, optional hint)
    - `strategist_output`
 2. Scanner uses Kiwoom market data as primary candidate source and writes:
@@ -36,8 +37,8 @@
      - top volume/value/change-rate + condition search
      - sector/theme map + operator watchlist sources
      - pre-score pool reduction (halt/abnormal/illiquid filters)
-     - optional theme/sector filter with `theme_map` / `sector_map`
-     - additive strategist priority bias (`scanner_priority`, aggressiveness/risk tone)
+    - optional theme/sector filter with `theme_map` / `sector_map`
+    - additive strategist frame bias (`playbook`, `scanner_priority`, aggressiveness/risk tone)
      - strategist candidate fallback when Kiwoom pool is empty
      - score output includes per-candidate `score_breakdown`
 3. Monitor handles entry/exit only and writes:
@@ -50,6 +51,7 @@
      - `MONITOR_EXIT_CONFIRM_TICKS` requires consecutive exit confirmations.
    - Explicit emergency exit path:
      - `emergency_halt` / `news_shock` bypass normal confirmation as intentional hard-risk exits.
+   - Strategist `monitor_policy` is consumed deterministically when present.
    - Monitor observability fields include:
      - `position_age_seconds`
      - `exit_signal_detected`

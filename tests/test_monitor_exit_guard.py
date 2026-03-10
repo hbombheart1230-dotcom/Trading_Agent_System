@@ -179,3 +179,34 @@ def test_monitor_applies_strategic_frame_guidance_to_exit_guards(monkeypatch):
     assert str(exit_info.get("monitor_guidance") or "") == "quick_take_profit"
     assert str(exit_info.get("risk_tone") or "") == "aggressive"
     assert str(exit_info.get("trade_aggressiveness") or "") == "high"
+
+
+def test_monitor_uses_strategist_monitor_policy_over_env(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "1200")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "600")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "3")
+
+    state = _base_state()
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "hold_sec": 200}],
+    }
+    state["strategist_output"] = {
+        "monitor_policy": {
+            "min_hold_seconds": 0,
+            "sell_cooldown_seconds": 30,
+            "exit_confirm_ticks": 1,
+        },
+        "monitor_guidance": "quick_take_profit",
+        "risk_tone": "normal",
+        "trade_aggressiveness": "medium",
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    exit_info = out.get("monitor_exit") or {}
+    # Effective values come from strategist monitor_policy first, then strategy-frame adjustments.
+    assert int(exit_info.get("min_hold_sec") or 0) <= 1
+    assert int(exit_info.get("exit_confirm_ticks") or 0) == 1

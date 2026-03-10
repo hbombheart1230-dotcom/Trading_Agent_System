@@ -120,6 +120,11 @@ Example strategist output:
   "risk_tone": "aggressive",
   "monitor_guidance": "hold_through_noise",
   "monitor_policy": {"min_hold_seconds": 900, "sell_cooldown_seconds": 360, "exit_confirm_ticks": 3},
+  "regime_score": 0.41,
+  "sentiment_score": 0.36,
+  "news_context": {"ok": 5, "fallback": 0, "unavailable": 0, "avg_score": 0.22},
+  "market_context_inputs": {"index_trend": 0.32, "realized_volatility": 0.019, "market_breadth": 0.58, "macro_risk": 0.22},
+  "theme_strength": {"semiconductor": 0.71, "AI": 0.63},
   "report_focus": ["theme_accuracy", "scanner_fit", "exit_quality", "overtrading"],
   "candidates": ["005930", "000660", "042700", "058470", "091990"]
 }
@@ -167,13 +172,20 @@ Example scanner output:
   - leading themes and avoid-themes
   - playbook, aggressiveness, and risk tone
   - scanner ranking priorities, monitor guidance, reporter focus
+- Strengthened context inputs (additive):
+  - global sentiment signal (status/source aware)
+  - news sentiment + signal health
+  - market context (`index_trend`, `realized_volatility`, `market_breadth`, `macro_risk`)
+  - optional `kiwoom_market_summary` / `macro_context`
+  - theme scores and candidate/theme-map fit
 - May provide candidate hints (optional compatibility path)
 - Writes additive guidance via `strategist_output`
 
 ## Scanner (스캐너)
 - Builds candidate universe from Kiwoom market data
 - Applies strategist theme/sector filters when mapping exists
-- Applies strategist scanner-priority bias additively to scoring weights
+- Applies strategist frame additively to ranking:
+  - `playbook`, `scanner_bias`, `scanner_priority`, `risk_tone`, `trade_aggressiveness`
 - Reduces pool with practical guards (halt/abnormal/illiquid thresholds)
 - Computes explainable scoring factors (value, momentum, trend, volume surge, intraday strength, risk penalties)
 - Ranks candidates with score breakdown and selects Top-1
@@ -181,6 +193,8 @@ Example scanner output:
 ## Monitor (모니터)
 - Watches selected primary symbol / active position state
 - Emits ActionProposal / OrderIntent only
+- Consumes strategist guidance deterministically:
+  - `monitor_guidance`, `risk_tone`, `trade_aggressiveness`, `monitor_policy`
 - Normal SELL exits are stabilized with:
   - `MIN_HOLD_SECONDS`
   - `SELL_COOLDOWN` (`SELL_COOLDOWN_SEC` alias)

@@ -12,6 +12,7 @@
 
 ## Strategist
 - Consumes market/news/global context.
+- AI-centered strategic brain for daily framing (not final stock picker).
 - Produces a structured strategic brief each run:
   - `market_regime`, `market_sentiment`, `key_events`
   - `themes`, `avoid_themes`, `playbook`
@@ -21,6 +22,11 @@
 - May provide candidate hints (Top-N) as an additive signal.
 - Strategist defines HOW to fight; final stock selection remains Scanner responsibility.
 - Emits additive strategist contract fields in `strategist_output`.
+- Strengthened context inputs include:
+  - global sentiment signal health
+  - news sentiment signal health + average score
+  - market context (`index_trend`, `realized_volatility`, `market_breadth`, `macro_risk`)
+  - optional `kiwoom_market_summary` and `macro_context`
 - Canonical implementation: `graphs/nodes/strategist_node.py`
 - Compatibility layer: `libs/agent/strategist.py` (normalizes strategist output for legacy `Plan` usage)
 
@@ -29,6 +35,7 @@
 - Candidate sources include condition search, top-volume, top-value, optional top-change-rate, sector/theme map, and operator watchlist.
 - Applies theme/sector filtering from strategist output (`themes`) with `theme_map` / `sector_map`.
 - Applies strategist ranking guidance (`scanner_priority`, aggressiveness/risk tone) additively to score weights.
+- Applies strategist `playbook` additively to scoring weights (scanner still performs final quantitative selection).
 - Falls back to strategist candidates when Kiwoom candidate pool is empty.
 - Scanner is the final Top-1 selector within strategist framing (not a blind picker).
 - Reduces candidate pool with practical filters (halted/abnormal/illiquid thresholds).
@@ -47,6 +54,7 @@
 - Must not rescan/re-rank market universe.
 - Emits buy/sell/noop intents from policy + position state.
 - Applies sell guards (min hold, sell cooldown, exit confirmation).
+- Consumes strategist `monitor_policy` when present (deterministic guard tuning).
 - Suppresses duplicate SELL intents with pending-exit lock/cooldown state across polling loops.
 - Keeps emergency exits (`emergency_halt`, `news_shock`) explicit and separate from normal exit confirmation flow.
 - Never executes orders.

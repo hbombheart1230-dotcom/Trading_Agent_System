@@ -571,6 +571,7 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "themes": list(strategist_output.get("themes") or []),
             "avoid_themes": list(strategist_output.get("avoid_themes") or []),
+            "playbook": str(strategist_output.get("playbook") or ""),
             "scanner_priority": list(strategist_output.get("scanner_priority") or []),
             "scanner_bias": str(raw_bias or "").strip().lower(),
             "trade_aggressiveness": strategist_output.get("trade_aggressiveness"),
@@ -596,6 +597,7 @@ def _normalize_priority_list(values: Any) -> List[str]:
 def _apply_scanner_guidance_weights(
     weights: Dict[str, float],
     *,
+    playbook: str,
     scanner_bias: str,
     scanner_priority: List[str],
     trade_aggressiveness: str,
@@ -604,6 +606,7 @@ def _apply_scanner_guidance_weights(
     out = dict(weights or {})
     bias = str(scanner_bias or "").strip().lower()
     priority_set = set(_normalize_priority_list(scanner_priority))
+    playbook_norm = str(playbook or "").strip().lower()
     aggr = str(trade_aggressiveness or "").strip().lower()
     tone = str(risk_tone or "").strip().lower()
 
@@ -632,6 +635,20 @@ def _apply_scanner_guidance_weights(
     if "risk_penalty" in priority_set or "drawdown_control" in priority_set:
         out["volatility_penalty"] = float(out.get("volatility_penalty", 0.0) * 1.15)
         out["gap_penalty"] = float(out.get("gap_penalty", 0.0) * 1.15)
+
+    # Playbook guidance remains additive (Scanner still does final quantitative ranking).
+    if playbook_norm == "breakout":
+        out["momentum"] = float(out.get("momentum", 0.0) * 1.10)
+        out["volume_surge"] = float(out.get("volume_surge", 0.0) * 1.06)
+    elif playbook_norm == "pullback":
+        out["trend"] = float(out.get("trend", 0.0) * 1.08)
+        out["intraday_strength"] = float(out.get("intraday_strength", 0.0) * 1.05)
+    elif playbook_norm == "reversal":
+        out["momentum"] = float(out.get("momentum", 0.0) * 0.92)
+        out["gap_penalty"] = float(out.get("gap_penalty", 0.0) * 1.10)
+    elif playbook_norm == "defensive":
+        out["trading_value"] = float(out.get("trading_value", 0.0) * 1.08)
+        out["volatility_penalty"] = float(out.get("volatility_penalty", 0.0) * 1.12)
 
     # Risk tone / aggressiveness final tuning.
     if aggr == "high" and tone in ("aggressive", "normal"):
@@ -911,12 +928,14 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     w = _get_scanner_weights(policy)
     practical_w = _resolve_scanner_score_weights(policy)
     scanner_guidance = _extract_scanner_guidance(state)
+    playbook = str(scanner_guidance.get("playbook") or "").strip().lower()
     scanner_bias = str(scanner_guidance.get("scanner_bias") or "").strip().lower()
     scanner_priority = _normalize_priority_list(scanner_guidance.get("scanner_priority"))
     trade_aggressiveness = str(scanner_guidance.get("trade_aggressiveness") or "").strip().lower()
     risk_tone = str(scanner_guidance.get("risk_tone") or "").strip().lower()
     practical_w = _apply_scanner_guidance_weights(
         practical_w,
+        playbook=playbook,
         scanner_bias=scanner_bias,
         scanner_priority=scanner_priority,
         trade_aggressiveness=trade_aggressiveness,
@@ -1242,6 +1261,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "score_weights": dict(practical_w),
         "source_mix": dict(pool_meta.get("pool_source_mix") or {}),
         "strategist_scanner_priority": list(scanner_priority),
+        "strategist_playbook": playbook or None,
         "strategist_scanner_bias": scanner_bias or None,
         "strategist_avoid_themes": list(pool_meta.get("avoid_themes") or []),
         "strategist_trade_aggressiveness": trade_aggressiveness or None,
@@ -1289,6 +1309,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "top_score": top_score,
             "top_ranked_symbols": [str(x.get("symbol") or "") for x in list(state.get("ranked_candidates") or [])[:5]],
             "strategist_scanner_priority": list(scanner_priority),
+            "strategist_playbook": playbook or "",
             "strategist_scanner_bias": scanner_bias or "",
             "strategist_avoid_themes": list(pool_meta.get("avoid_themes") or []),
             "strategist_trade_aggressiveness": trade_aggressiveness or "",
@@ -1312,6 +1333,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         agent="scanner",
         event="candidate_selection",
         payload={
+            "playbook": playbook or "",
+            "scanner_priority": list(scanner_priority),
             "candidate_pool_size": int(len(scan_results_sorted)),
             "top_candidates": top_candidates_summary,
             "selected_symbol": state.get("top_stock") or None,

@@ -11,12 +11,13 @@ Role boundary:
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from libs.data_quality.signal_contract import SIGNAL_STATUS_FALLBACK, make_signal
 from libs.market.global_sentiment import compute_global_sentiment_signal
 from libs.news.news_pipeline import collect_news_items, score_news_sentiment_signal
 from libs.runtime.decision_trace import append_decision_trace
+from libs.runtime.regime import classify_regime_v2
 from libs.strategies.contracts import StrategistOutput
 from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
 from libs.strategies.candidates.market_rank import TopPicksCandidateGenerator
@@ -154,6 +155,10 @@ def _to_float(v: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return lo if x < lo else hi if x > hi else x
+
+
 def _risk_regime_label(score: float) -> str:
     if score >= 0.20:
         return "risk_on"
@@ -170,16 +175,185 @@ def _market_sentiment_label(score: float) -> str:
     return "neutral"
 
 
-def _market_structure_label(*, state: Dict[str, Any]) -> str:
+def _extract_market_context_inputs(state: Dict[str, Any]) -> Dict[str, float]:
     market_ctx = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
-    idx_trend = _to_float(market_ctx.get("index_trend"), 0.0)
-    realized_vol = _to_float(market_ctx.get("realized_vol"), 0.0)
-    breadth = _to_float(market_ctx.get("market_breadth"), 0.0)
+    macro_ctx = state.get("macro_context") if isinstance(state.get("macro_context"), dict) else {}
+    kiwoom_summary = state.get("kiwoom_market_summary") if isinstance(state.get("kiwoom_market_summary"), dict) else {}
+    index_trend = _to_float(
+        market_ctx.get("index_trend") if market_ctx.get("index_trend") is not None else kiwoom_summary.get("index_trend"),
+        0.0,
+    )
+    realized_vol = _to_float(
+        market_ctx.get("realized_volatility")
+        if market_ctx.get("realized_volatility") is not None
+        else (
+            market_ctx.get("realized_vol")
+            if market_ctx.get("realized_vol") is not None
+            else kiwoom_summary.get("realized_volatility")
+        ),
+        0.0,
+    )
+    breadth_raw = market_ctx.get("market_breadth")
+    if breadth_raw is None:
+        breadth_raw = kiwoom_summary.get("market_breadth")
+    market_breadth = _to_float(breadth_raw, 0.0)
+    if market_breadth > 1.0:
+        market_breadth = _clamp(market_breadth / 100.0, -1.0, 1.0)
+    macro_risk = _to_float(
+        market_ctx.get("macro_risk")
+        if market_ctx.get("macro_risk") is not None
+        else (
+            macro_ctx.get("macro_risk")
+            if macro_ctx.get("macro_risk") is not None
+            else kiwoom_summary.get("macro_risk")
+        ),
+        0.0,
+    )
+    return {
+        "index_trend": float(_clamp(index_trend, -1.0, 1.0)),
+        "realized_volatility": float(max(0.0, realized_vol)),
+        "market_breadth": float(_clamp(market_breadth, -1.0, 1.0)),
+        "macro_risk": float(_clamp(macro_risk, 0.0, 1.0)),
+    }
+
+
+def _market_structure_label(
+    *,
+    state: Dict[str, Any],
+    global_score: float,
+    market_context_inputs: Dict[str, float],
+) -> Tuple[str, Dict[str, Any]]:
+    idx_trend = _to_float(market_context_inputs.get("index_trend"), 0.0)
+    realized_vol = _to_float(market_context_inputs.get("realized_volatility"), 0.0)
+    breadth = _to_float(market_context_inputs.get("market_breadth"), 0.0)
+    breadth_01 = _clamp((breadth + 1.0) / 2.0, 0.0, 1.0)
+    regime_obj = classify_regime_v2(
+        ma20_gap=idx_trend,
+        volatility20=realized_vol,
+        index_trend=idx_trend,
+        realized_volatility=realized_vol,
+        global_sentiment=global_score,
+        market_breadth=breadth_01,
+    )
+    regime = str(regime_obj.get("regime") or "").strip().lower()
+    if regime in ("trend", "range", "high_volatility"):
+        return regime, dict(regime_obj.get("factors") or {})
+    # fallback
     if realized_vol >= 0.040:
-        return "high_volatility"
-    elif abs(idx_trend) >= 0.25 and (breadth >= 0.50 or breadth <= -0.50):
-        return "trend"
-    return "range"
+        return "high_volatility", {}
+    if abs(idx_trend) >= 0.25 and abs(breadth) >= 0.50:
+        return "trend", {}
+    return "range", {}
+
+
+def _extract_theme_symbol_index(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, set[str]]:
+    out: Dict[str, set[str]] = {}
+
+    def add_map(raw: Any) -> None:
+        if not isinstance(raw, dict):
+            return
+        for k, symbols in raw.items():
+            name = str(k or "").strip().lower()
+            if not name:
+                continue
+            bucket = out.setdefault(name, set())
+            if isinstance(symbols, list):
+                for sym in symbols:
+                    s = str(sym or "").strip().upper()
+                    if s:
+                        bucket.add(s)
+
+    add_map(state.get("theme_map"))
+    add_map(state.get("sector_map"))
+    add_map(policy.get("theme_map"))
+    add_map(policy.get("sector_map"))
+    return out
+
+
+def _news_context_summary(
+    news_signal_map: Dict[str, Dict[str, Any]],
+    news_items_by_symbol: Dict[str, List[Any]],
+) -> Dict[str, Any]:
+    total = 0
+    unavailable = 0
+    fallback = 0
+    ok = 0
+    score_sum = 0.0
+    score_cnt = 0
+    headline_count = 0
+
+    for symbol, sig in news_signal_map.items():
+        _ = symbol
+        total += 1
+        st = str((sig or {}).get("status") or "").strip().lower()
+        if st == "ok":
+            ok += 1
+        elif st == "fallback":
+            fallback += 1
+        elif st == "unavailable":
+            unavailable += 1
+        try:
+            score_sum += float((sig or {}).get("score") or 0.0)
+            score_cnt += 1
+        except Exception:
+            pass
+
+    for rows in (news_items_by_symbol or {}).values():
+        if isinstance(rows, list):
+            headline_count += len(rows)
+
+    avg_score = (score_sum / float(score_cnt)) if score_cnt > 0 else 0.0
+    return {
+        "signal_total": int(total),
+        "ok": int(ok),
+        "fallback": int(fallback),
+        "unavailable": int(unavailable),
+        "avg_score": float(_clamp(avg_score, -1.0, 1.0)),
+        "headline_count": int(headline_count),
+    }
+
+
+def _theme_strength_map(
+    *,
+    themes: List[str],
+    candidates: List[Dict[str, Any]],
+    theme_scores: Dict[str, Any],
+    theme_index: Dict[str, set[str]],
+) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    candidate_symbols = [str((c or {}).get("symbol") or "").strip().upper() for c in list(candidates or [])]
+    candidate_symbols = [s for s in candidate_symbols if s]
+    denom = max(1, len(candidate_symbols))
+
+    for raw_theme in list(themes or []):
+        t = str(raw_theme or "").strip()
+        if not t:
+            continue
+        key = t.lower()
+        score_raw = _to_float(theme_scores.get(t, theme_scores.get(key, 0.0)), 0.0)
+        score_norm = _clamp(score_raw / 100.0, -1.0, 1.0) if abs(score_raw) > 1.0 else _clamp(score_raw, -1.0, 1.0)
+        mapped = theme_index.get(key, set())
+        hits = 0
+        if mapped:
+            mapped_upper = {str(x).strip().upper() for x in mapped if str(x).strip()}
+            hits = len([s for s in candidate_symbols if s in mapped_upper])
+        hit_ratio = float(hits) / float(denom)
+        out[t] = float(_clamp((0.70 * score_norm) + (0.30 * hit_ratio), -1.0, 1.0))
+
+    return out
+
+
+def _compose_regime_score(
+    *,
+    global_score: float,
+    news_score: float,
+    market_context_inputs: Dict[str, float],
+) -> float:
+    idx = _to_float(market_context_inputs.get("index_trend"), 0.0)
+    breadth = _to_float(market_context_inputs.get("market_breadth"), 0.0)
+    macro_risk = _to_float(market_context_inputs.get("macro_risk"), 0.0)
+    score = (0.45 * global_score) + (0.20 * news_score) + (0.20 * idx) + (0.15 * breadth) - (0.25 * macro_risk)
+    return float(_clamp(score, -1.0, 1.0))
 
 
 def _pick_playbook(*, market_structure: str, market_regime: str, market_sentiment: str) -> str:
@@ -194,7 +368,7 @@ def _pick_playbook(*, market_structure: str, market_regime: str, market_sentimen
     return "defensive"
 
 
-def _scanner_priority(playbook: str, market_sentiment: str) -> List[str]:
+def _scanner_priority(playbook: str, market_regime: str) -> List[str]:
     if playbook == "breakout":
         return ["momentum", "trend_strength", "volume_surge", "liquidity"]
     if playbook == "pullback":
@@ -203,7 +377,7 @@ def _scanner_priority(playbook: str, market_sentiment: str) -> List[str]:
         return ["oversold_reversal", "volume_confirmation", "risk_reward", "liquidity"]
     # defensive
     base = ["liquidity", "risk_penalty", "low_volatility", "drawdown_control"]
-    if market_sentiment == "risk_off":
+    if market_regime == "risk_off":
         base.insert(0, "capital_preservation")
     return base
 
@@ -221,7 +395,7 @@ def _scanner_bias(*, playbook: str, market_regime: str) -> str:
 
 
 def _avoid_themes(*, market_sentiment: str, playbook: str) -> List[str]:
-    if market_sentiment == "risk_off" or playbook == "defensive":
+    if market_sentiment == "bearish" or playbook == "defensive":
         return ["illiquid_microcap", "headline_only_momentum", "high_gap_speculative"]
     if playbook == "reversal":
         return ["overextended_breakout_without_volume", "late_chasing_moves"]
@@ -316,6 +490,47 @@ def _report_focus(*, playbook: str, themes: List[str]) -> List[str]:
     return ["theme_accuracy", "scanner_fit", "exit_quality", "overtrading"]
 
 
+def _augment_strategy_fields(
+    *,
+    themes: List[str],
+    avoid_themes: List[str],
+    scanner_priority: List[str],
+    report_focus: List[str],
+    market_context_inputs: Dict[str, float],
+    news_ctx: Dict[str, Any],
+) -> Tuple[List[str], List[str], List[str], List[str]]:
+    out_themes = list(themes or [])
+    out_avoid = list(avoid_themes or [])
+    out_priority = list(scanner_priority or [])
+    out_focus = list(report_focus or [])
+
+    macro_risk = _to_float(market_context_inputs.get("macro_risk"), 0.0)
+    realized_vol = _to_float(market_context_inputs.get("realized_volatility"), 0.0)
+    fallback_n = int(news_ctx.get("fallback") or 0)
+    unavailable_n = int(news_ctx.get("unavailable") or 0)
+
+    if macro_risk >= 0.65 or realized_vol >= 0.045:
+        for x in ("liquidity", "risk_penalty", "drawdown_control"):
+            if x not in out_priority:
+                out_priority.append(x)
+        for x in ("high_gap_speculative", "illiquid_microcap"):
+            if x not in out_avoid:
+                out_avoid.append(x)
+        if "guard_blocks" not in out_focus:
+            out_focus.append("guard_blocks")
+
+    if (fallback_n + unavailable_n) > 0:
+        if "data_quality" not in out_focus:
+            out_focus.append("data_quality")
+        if "headline_only_momentum" not in out_avoid:
+            out_avoid.append("headline_only_momentum")
+
+    if not out_themes:
+        out_themes = ["broad_market_leaders"]
+
+    return out_themes[:5], out_avoid[:6], out_priority[:6], out_focus[:6]
+
+
 def _key_events(
     *,
     state: Dict[str, Any],
@@ -323,6 +538,9 @@ def _key_events(
     news_signal_map: Dict[str, Dict[str, Any]],
     market_regime: str,
     playbook: str,
+    market_context_inputs: Dict[str, float],
+    news_ctx: Dict[str, Any],
+    theme_strength: Dict[str, float],
 ) -> List[str]:
     out: List[str] = []
 
@@ -337,30 +555,33 @@ def _key_events(
         if isinstance(vals, list):
             for row in vals:
                 add(row)
-            if out:
-                break
+            break
 
-    if not out:
-        add(
-            "global_sentiment "
-            f"score={_signal_score(global_signal):.3f} "
-            f"status={str(global_signal.get('status') or '')} "
-            f"source={str(global_signal.get('source') or '')}"
-        )
-
-        unavailable = 0
-        fallback = 0
-        for row in news_signal_map.values():
-            if not isinstance(row, dict):
-                continue
-            st = str(row.get("status") or "").strip().lower()
-            if st == "unavailable":
-                unavailable += 1
-            elif st == "fallback":
-                fallback += 1
-        add(f"news_signal_health unavailable={unavailable} fallback={fallback}")
-        add(f"market_regime={market_regime}")
-        add(f"playbook={playbook}")
+    add(
+        "global_sentiment "
+        f"score={_signal_score(global_signal):.3f} "
+        f"status={str(global_signal.get('status') or '')} "
+        f"source={str(global_signal.get('source') or '')}"
+    )
+    add(
+        "market_context "
+        f"index_trend={_to_float(market_context_inputs.get('index_trend'), 0.0):.3f} "
+        f"breadth={_to_float(market_context_inputs.get('market_breadth'), 0.0):.3f} "
+        f"realized_vol={_to_float(market_context_inputs.get('realized_volatility'), 0.0):.3f} "
+        f"macro_risk={_to_float(market_context_inputs.get('macro_risk'), 0.0):.3f}"
+    )
+    add(
+        "news_signal_health "
+        f"ok={int(news_ctx.get('ok') or 0)} "
+        f"unavailable={int(news_ctx.get('unavailable') or 0)} "
+        f"fallback={int(news_ctx.get('fallback') or 0)} "
+        f"avg_score={_to_float(news_ctx.get('avg_score'), 0.0):.3f}"
+    )
+    if theme_strength:
+        top_theme = sorted(theme_strength.items(), key=lambda kv: kv[1], reverse=True)[0]
+        add(f"theme_strength top={top_theme[0]} score={float(top_theme[1]):.3f}")
+    add(f"market_regime={market_regime}")
+    add(f"playbook={playbook}")
 
     return out[:5]
 
@@ -583,6 +804,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     news_sent = {s: _signal_score(news_signal_map.get(s)) for s in symbols}
+    news_avg_score = (sum(news_sent.values()) / float(len(news_sent))) if news_sent else 0.0
+    news_ctx = _news_context_summary(news_signal_map, news_items_by_symbol)
 
     state["policy"] = policy
     state["candidates"] = candidates
@@ -630,12 +853,44 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     themes = _extract_themes(state, policy)
     ai_overrides = _extract_ai_overrides(state, policy)
     themes = _merge_override_text_list(themes, ai_overrides.get("themes"), limit=5)
-    state["themes"] = themes
-    state["candidate_symbols"] = [str(c.get("symbol") or "") for c in candidates if str(c.get("symbol") or "").strip()]
+    candidate_symbols = [str(c.get("symbol") or "") for c in candidates if str(c.get("symbol") or "").strip()]
+    theme_index = _extract_theme_symbol_index(state, policy)
+    theme_scores = state.get("theme_scores") if isinstance(state.get("theme_scores"), dict) else {}
+    theme_strength = _theme_strength_map(
+        themes=list(themes),
+        candidates=list(candidates),
+        theme_scores=theme_scores,
+        theme_index=theme_index,
+    )
+    if theme_strength:
+        ranked_theme_names = [k for k, _v in sorted(theme_strength.items(), key=lambda kv: kv[1], reverse=True)]
+        themes = _merge_override_text_list(ranked_theme_names, themes, limit=5)
 
-    market_regime = _risk_regime_label(gs)
-    market_sentiment = _market_sentiment_label(gs)
-    market_structure = _market_structure_label(state=state)
+    state["themes"] = themes
+    state["candidate_symbols"] = list(candidate_symbols)
+
+    market_context_inputs = _extract_market_context_inputs(state)
+    regime_score = _compose_regime_score(
+        global_score=gs,
+        news_score=news_avg_score,
+        market_context_inputs=market_context_inputs,
+    )
+    sentiment_score = float(
+        _clamp(
+            (0.60 * gs)
+            + (0.30 * _to_float(news_ctx.get("avg_score"), 0.0))
+            + (0.10 * _to_float(market_context_inputs.get("index_trend"), 0.0)),
+            -1.0,
+            1.0,
+        )
+    )
+    market_regime = _risk_regime_label(regime_score)
+    market_sentiment = _market_sentiment_label(sentiment_score)
+    market_structure, regime_factors = _market_structure_label(
+        state=state,
+        global_score=gs,
+        market_context_inputs=market_context_inputs,
+    )
     playbook = _pick_playbook(
         market_structure=market_structure,
         market_regime=market_regime,
@@ -653,12 +908,23 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         risk_tone=risk_tone,
     )
     report_focus = _report_focus(playbook=playbook, themes=themes)
+    themes, avoid_themes, scanner_priority, report_focus = _augment_strategy_fields(
+        themes=themes,
+        avoid_themes=avoid_themes,
+        scanner_priority=scanner_priority,
+        report_focus=report_focus,
+        market_context_inputs=market_context_inputs,
+        news_ctx=news_ctx,
+    )
     key_events = _key_events(
         state=state,
         global_signal=global_signal,
         news_signal_map=news_signal_map,
         market_regime=market_regime,
         playbook=playbook,
+        market_context_inputs=market_context_inputs,
+        news_ctx=news_ctx,
+        theme_strength=theme_strength,
     )
 
     # Optional AI overrides are additive and bounded to keep deterministic fallback.
@@ -701,6 +967,9 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["market_regime"] = market_regime
     state["market_sentiment"] = market_sentiment
     state["market_structure"] = market_structure
+    state["market_context_inputs"] = dict(market_context_inputs)
+    state["regime_factors"] = dict(regime_factors)
+    state["theme_strength"] = dict(theme_strength)
     state["key_events"] = list(key_events)
     state["avoid_themes"] = list(avoid_themes)
     state["playbook"] = playbook
@@ -714,6 +983,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["scanner_guidance"] = {
         "themes": list(themes),
         "avoid_themes": list(avoid_themes),
+        "playbook": playbook,
         "scanner_bias": scanner_bias,
         "scanner_priority": list(scanner_priority),
         "trade_aggressiveness": trade_aggressiveness,
@@ -744,6 +1014,12 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     ).to_dict()
     strategist_output["monitor_policy"] = dict(monitor_policy)
     strategist_output["market_structure"] = market_structure
+    strategist_output["regime_score"] = float(regime_score)
+    strategist_output["sentiment_score"] = float(sentiment_score)
+    strategist_output["news_context"] = dict(news_ctx)
+    strategist_output["market_context_inputs"] = dict(market_context_inputs)
+    strategist_output["theme_strength"] = dict(theme_strength)
+    strategist_output["playbook"] = playbook
     state["strategist_output"] = strategist_output
     _log_strategist_summary(
         state,
@@ -759,6 +1035,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "risk_tone": risk_tone,
             "monitor_guidance": monitor_guidance,
             "candidate_count": len(list(state["candidate_symbols"])),
+            "regime_score": float(regime_score),
+            "sentiment_score": float(sentiment_score),
             "report_focus": list(report_focus)[:3],
         },
     )
@@ -770,10 +1048,17 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "market_regime": market_regime,
             "market_sentiment": market_sentiment,
             "themes": list(themes)[:5],
+            "avoid_themes": list(avoid_themes)[:5],
             "playbook": playbook,
             "scanner_bias": scanner_bias,
+            "scanner_priority": list(scanner_priority)[:5],
+            "trade_aggressiveness": trade_aggressiveness,
             "risk_tone": risk_tone,
             "monitor_guidance": monitor_guidance,
+            "report_focus": list(report_focus)[:5],
+            "regime_score": float(regime_score),
+            "sentiment_score": float(sentiment_score),
+            "key_events": list(key_events)[:3],
         },
     )
     return state

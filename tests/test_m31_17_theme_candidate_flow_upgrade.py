@@ -57,6 +57,7 @@ def test_m31_17_scanner_accepts_strategist_output_and_emits_top_stock():
         "strategist_output": {
             "themes": ["semiconductor"],
             "avoid_themes": ["high_gap_speculative"],
+            "playbook": "breakout",
             "candidates": ["005930", "000660"],
             "scanner_bias": "momentum",
             "scanner_priority": ["momentum", "trend_strength", "liquidity"],
@@ -76,6 +77,7 @@ def test_m31_17_scanner_accepts_strategist_output_and_emits_top_stock():
     assert scanner_output.get("top_stock") == "005930"
     assert float(scanner_output.get("score") or 0.0) == 0.91
     assert scanner_output.get("strategist_scanner_priority") == ["momentum", "trend_strength", "liquidity"]
+    assert scanner_output.get("strategist_playbook") == "breakout"
     assert scanner_output.get("strategist_scanner_bias") == "momentum"
     assert scanner_output.get("strategist_trade_aggressiveness") == "high"
     assert scanner_output.get("strategist_risk_tone") == "aggressive"
