@@ -157,9 +157,23 @@
 ## M31+ Additive Runtime DTOs
 
 ### StrategistOutput
+- `market_regime: "risk_on" | "neutral" | "risk_off"`
+- `market_sentiment: "bullish" | "neutral" | "bearish"`
+- `key_events: list[str]`
 - `themes: list[str]`
+- `avoid_themes: list[str]`
+- `playbook: str`
+- `scanner_bias: "large_cap" | "leader" | "momentum" | "value"`
+- `scanner_priority: list[str]`
+- `trade_aggressiveness: "low" | "medium" | "high"`
+- `risk_tone: "conservative" | "normal" | "aggressive"`
+- `monitor_guidance: "hold_through_noise" | "defensive_exit" | "quick_take_profit"`
+- `monitor_policy: object` (deterministic guard tuning derived from guidance)
+- `report_focus: list[str]`
 - `candidates: list[str]`
 - `candidate_count: int`
+- `candidate_hints: list[str]`
+- `strategic_answers: object`
 - `source: str`
 
 ### ScannerOutput
@@ -204,3 +218,14 @@
 - `position_age_seconds`
 - `monitor_reason`
 - `exit_confirm_count`
+
+### DecisionTraceLedger (additive observability)
+- `run_id: str | null`
+- `entries: list[DecisionTraceEntry]`
+- `latest_by_agent: object`
+
+### DecisionTraceEntry
+- `run_id: str | null`
+- `ts_epoch: int`
+- `agent: "strategist" | "scanner" | "monitor" | "supervisor" | "executor"`
+- `payload: object` (compact summary per agent)

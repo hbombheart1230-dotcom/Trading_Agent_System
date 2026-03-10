@@ -43,6 +43,7 @@ class Scanner:
     Canonical scanner behavior lives in `graphs/nodes/scanner_node.py`.
     This adapter keeps the old `libs.agent.Scanner` contract and returns
     ranking artifacts while leaving `intents` empty by design.
+    Strategist provides framing/hints; Scanner remains the final symbol selector.
     """
 
     def scan(self, *, plan: Plan, context: Dict[str, Any]) -> Dict[str, Any] | List[Dict[str, Any]]:

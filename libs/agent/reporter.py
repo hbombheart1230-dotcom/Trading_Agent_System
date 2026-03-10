@@ -9,6 +9,9 @@ class Reporter:
 
     - Runtime role: summarize current run payloads (`build`)
     - Post-run role: generate log-derived analysis artifacts (`analyze_event_logs`)
+    - Boundary: must not affect live trading decisions or execution flow.
+    - Note: AI-centered reporter enhancement is planned later; current role is
+      deterministic log summarization and operator-facing analysis.
     """
 
     def build(

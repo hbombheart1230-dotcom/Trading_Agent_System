@@ -244,6 +244,8 @@ def _build_strategy_effectiveness(
     scanner_top_counts: Counter[str] = Counter()
     strategy_counts: Counter[str] = Counter()
     exit_reason_counts: Counter[str] = Counter()
+    report_focus_counts: Counter[str] = Counter()
+    scanner_priority_counts: Counter[str] = Counter()
 
     for row in day_rows:
         stage = str(row.get("stage") or "").strip()
@@ -257,6 +259,25 @@ def _build_strategy_effectiveness(
                         t = str(item or "").strip().lower()
                         if t:
                             theme_counts[t] += 1
+        if stage == "strategist" and event == "summary":
+            v_themes = payload.get("themes")
+            if isinstance(v_themes, list):
+                for item in v_themes:
+                    t = str(item or "").strip().lower()
+                    if t:
+                        theme_counts[t] += 1
+            v_report_focus = payload.get("report_focus")
+            if isinstance(v_report_focus, list):
+                for item in v_report_focus:
+                    f = str(item or "").strip()
+                    if f:
+                        report_focus_counts[f] += 1
+            v_priority = payload.get("scanner_priority")
+            if isinstance(v_priority, list):
+                for item in v_priority:
+                    p = str(item or "").strip().lower()
+                    if p:
+                        scanner_priority_counts[p] += 1
         if stage == "scanner" and event == "summary":
             top_stock = str(payload.get("top_stock") or "").strip().upper()
             if top_stock:
@@ -292,13 +313,20 @@ def _build_strategy_effectiveness(
         if top_exit
         else "Monitor exit trigger evidence was limited for this day."
     )
+    focus_line = (
+        f"Reporter focus priority: {report_focus_counts.most_common(1)[0][0]}"
+        if report_focus_counts
+        else "Reporter focus guidance was limited."
+    )
 
     return {
         "theme_counts": dict(theme_counts.most_common(10)),
         "scanner_top_stock_counts": dict(scanner_top_counts.most_common(10)),
         "strategy_counts": dict(strategy_counts.most_common(10)),
         "monitor_exit_reason_counts": dict(exit_reason_counts.most_common(10)),
-        "narrative": [strategy_line, scanner_line, monitor_line],
+        "scanner_priority_counts": dict(scanner_priority_counts.most_common(10)),
+        "report_focus_counts": dict(report_focus_counts.most_common(10)),
+        "narrative": [strategy_line, scanner_line, monitor_line, focus_line],
     }
 
 
@@ -415,6 +443,366 @@ def _build_market_context(*, trade_explain_obj: Dict[str, Any], day_rows: List[D
     }
 
 
+def _extract_report_focus_targets(day_rows: List[Dict[str, Any]]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for row in day_rows:
+        if str(row.get("stage") or "").strip() != "strategist" or str(row.get("event") or "").strip() != "summary":
+            continue
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        focus = payload.get("report_focus")
+        if not isinstance(focus, list):
+            continue
+        for item in focus:
+            s = str(item or "").strip().lower()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+    return out[:12]
+
+
+def _build_decision_chains(day_rows: List[Dict[str, Any]], *, limit: int = 200) -> Dict[str, Any]:
+    by_run: Dict[str, Dict[str, Any]] = {}
+    ordered = sorted(day_rows, key=lambda r: _to_epoch(r.get("ts") or (r.get("payload") or {}).get("ts")) or 0)
+    for row in ordered:
+        run_id = str(row.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        chain = by_run.setdefault(
+            run_id,
+            {
+                "run_id": run_id,
+                "symbol": "",
+                "action": "",
+                "buy_reason": "",
+                "sell_reason": "",
+                "monitor_reason": "",
+                "execution_status": "UNKNOWN",
+                "supervisor_verdict": "UNKNOWN",
+                "guard_reason": "",
+                "events": [],
+            },
+        )
+        stage = str(row.get("stage") or "").strip()
+        event = str(row.get("event") or "").strip()
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        chain["events"].append(f"{stage}:{event}")
+
+        if stage == "decision" and event == "trace":
+            packet = payload.get("decision_packet") if isinstance(payload.get("decision_packet"), dict) else {}
+            intent = packet.get("intent") if isinstance(packet.get("intent"), dict) else {}
+            action = str(intent.get("action") or "").strip().upper()
+            symbol = str(intent.get("symbol") or "").strip().upper()
+            reason = _reason_text(intent.get("reason") or intent.get("rationale"))
+            if action:
+                chain["action"] = action
+            if symbol:
+                chain["symbol"] = symbol
+            if action == "BUY" and reason:
+                chain["buy_reason"] = reason
+            if action == "SELL" and reason:
+                chain["sell_reason"] = reason
+        elif stage == "monitor" and event == "summary":
+            mr = _reason_text(payload.get("monitor_reason") or payload.get("exit_reason"))
+            if mr:
+                chain["monitor_reason"] = mr
+        elif stage == "execute_from_packet" and event == "verdict":
+            allowed = payload.get("allowed")
+            if allowed is True:
+                chain["supervisor_verdict"] = "APPROVED"
+            elif allowed is False:
+                chain["supervisor_verdict"] = "BLOCKED"
+                chain["guard_reason"] = _reason_text(payload.get("reason"))
+                chain["execution_status"] = "BLOCKED"
+        elif stage == "execute_from_packet" and event == "execution":
+            ex_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+            order = payload.get("order") if isinstance(payload.get("order"), dict) else {}
+            symbol = str(order.get("symbol") or "").strip().upper()
+            action = str(order.get("action") or "").strip().upper()
+            if symbol:
+                chain["symbol"] = symbol
+            if action:
+                chain["action"] = action
+            broker_code = str(ex_payload.get("broker_code") or "").strip()
+            if broker_code == "0":
+                chain["execution_status"] = "EXECUTED_OK"
+            elif broker_code:
+                chain["execution_status"] = "EXECUTED_FAIL"
+            else:
+                chain["execution_status"] = "EXECUTED"
+
+    chains = list(by_run.values())
+    for c in chains:
+        if not c.get("buy_reason") and str(c.get("action") or "").upper() == "BUY":
+            c["buy_reason"] = "unspecified"
+        if not c.get("sell_reason") and str(c.get("action") or "").upper() == "SELL":
+            c["sell_reason"] = "unspecified"
+        c["events"] = list(c.get("events") or [])[:24]
+
+    chains = chains[: max(1, int(limit))]
+    return {
+        "run_total": int(len(by_run)),
+        "rendered_run_total": int(len(chains)),
+        "chains": chains,
+    }
+
+
+def _build_trade_summary_section(
+    *,
+    trade_decision: Dict[str, Any],
+    decision_chains: Dict[str, Any],
+) -> Dict[str, Any]:
+    trade_rows = trade_decision.get("trade_summaries") if isinstance(trade_decision.get("trade_summaries"), list) else []
+    symbols = sorted({str(r.get("symbol") or "").strip().upper() for r in trade_rows if isinstance(r, dict) and str(r.get("symbol") or "").strip()})
+    hold_rows: List[Dict[str, Any]] = []
+    for row in trade_rows:
+        if not isinstance(row, dict):
+            continue
+        hold_rows.append(
+            {
+                "symbol": str(row.get("symbol") or "").strip().upper(),
+                "holding_duration_sec": _safe_int(row.get("holding_duration_sec"), 0),
+                "buy_reason": _reason_text(row.get("buy_reason")),
+                "sell_reason": _reason_text(row.get("sell_reason")),
+            }
+        )
+    return {
+        "trade_count": int(_safe_int(trade_decision.get("trade_summary_total"), 0)),
+        "symbols_traded": symbols,
+        "symbol_hold_durations": hold_rows,
+        "decision_chain_run_total": int(_safe_int(decision_chains.get("run_total"), 0)),
+    }
+
+
+def _build_strategist_evaluation(day_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    theme_counts: Counter[str] = Counter()
+    leader_symbol_counts: Counter[str] = Counter()
+    theme_filter_applied_total = 0
+    scanner_summary_total = 0
+    for row in day_rows:
+        stage = str(row.get("stage") or "").strip()
+        event = str(row.get("event") or "").strip()
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if stage == "strategist" and event == "summary":
+            for t in payload.get("themes") or []:
+                s = str(t or "").strip().lower()
+                if s:
+                    theme_counts[s] += 1
+        if stage == "strategist_llm" and event == "result":
+            for key in ("themes", "top_themes"):
+                vals = payload.get(key)
+                if isinstance(vals, list):
+                    for t in vals:
+                        s = str(t or "").strip().lower()
+                        if s:
+                            theme_counts[s] += 1
+        if stage == "scanner" and event == "summary":
+            scanner_summary_total += 1
+            if bool(payload.get("theme_filter_applied")):
+                theme_filter_applied_total += 1
+            top = str(payload.get("top_stock") or "").strip().upper()
+            if top:
+                leader_symbol_counts[top] += 1
+
+    themes = [k for k, _ in theme_counts.most_common(8)]
+    leaders = [k for k, _ in leader_symbol_counts.most_common(8)]
+    if not themes or scanner_summary_total <= 0:
+        alignment = "insufficient_data"
+    elif theme_filter_applied_total > 0:
+        alignment = "aligned"
+    else:
+        alignment = "partial"
+    return {
+        "themes_proposed": themes,
+        "actual_market_leaders_by_scanner": leaders,
+        "theme_filter_applied_total": int(theme_filter_applied_total),
+        "scanner_summary_total": int(scanner_summary_total),
+        "theme_alignment_status": alignment,
+        "assessment": (
+            "Strategist themes were reflected in scanner filtering."
+            if alignment == "aligned"
+            else (
+                "Theme guidance existed but scanner theme-filter evidence was limited."
+                if alignment == "partial"
+                else "Insufficient strategist/scanner evidence to evaluate theme correctness."
+            )
+        ),
+    }
+
+
+def _build_scanner_evaluation(day_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    top_score_values: List[float] = []
+    candidate_pool_values: List[int] = []
+    top_stock_counts: Counter[str] = Counter()
+    no_candidate_total = 0
+    source_counts: Counter[str] = Counter()
+
+    for row in day_rows:
+        if str(row.get("stage") or "").strip() != "scanner" or str(row.get("event") or "").strip() != "summary":
+            continue
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        source = str(payload.get("candidate_source") or "").strip().lower()
+        if source:
+            source_counts[source] += 1
+        top = str(payload.get("top_stock") or "").strip().upper()
+        if top:
+            top_stock_counts[top] += 1
+        else:
+            no_candidate_total += 1
+        top_score = payload.get("top_score")
+        if top_score is not None:
+            top_score_values.append(_safe_float(top_score, 0.0))
+        pool = payload.get("candidate_pool_after_filter")
+        if pool is not None:
+            candidate_pool_values.append(_safe_int(pool, 0))
+
+    total = int(sum(source_counts.values()) + no_candidate_total)
+    avg_top_score = (sum(top_score_values) / len(top_score_values)) if top_score_values else None
+    avg_pool = (sum(candidate_pool_values) / len(candidate_pool_values)) if candidate_pool_values else None
+    status = "insufficient_data"
+    if total > 0:
+        status = "appropriate" if (no_candidate_total / max(1, total)) <= 0.40 else "needs_review"
+
+    return {
+        "scanner_summary_total": int(total),
+        "candidate_source_top": dict(source_counts.most_common(5)),
+        "selected_symbol_top": dict(top_stock_counts.most_common(10)),
+        "no_candidate_total": int(no_candidate_total),
+        "avg_top_score": float(round(avg_top_score, 6)) if avg_top_score is not None else None,
+        "avg_candidate_pool_after_filter": float(round(avg_pool, 3)) if avg_pool is not None else None,
+        "selection_status": status,
+        "assessment": (
+            "Scanner selected symbols consistently with sufficient candidate pool."
+            if status == "appropriate"
+            else (
+                "Scanner produced too many empty selections; candidate sourcing/filtering should be tuned."
+                if status == "needs_review"
+                else "Insufficient scanner summary events."
+            )
+        ),
+    }
+
+
+def _build_monitor_evaluation(
+    *,
+    day_rows: List[Dict[str, Any]],
+    overtrading: Dict[str, Any],
+) -> Dict[str, Any]:
+    monitor_total = 0
+    min_hold_blocked = 0
+    sell_cooldown_blocked = 0
+    confirm_pending = 0
+    confirmed_exit = 0
+    monitor_reason_counts: Counter[str] = Counter()
+    for row in day_rows:
+        if str(row.get("stage") or "").strip() != "monitor" or str(row.get("event") or "").strip() != "summary":
+            continue
+        monitor_total += 1
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if bool(payload.get("min_hold_blocked")):
+            min_hold_blocked += 1
+        if bool(payload.get("sell_cooldown_blocked")):
+            sell_cooldown_blocked += 1
+        reason = str(payload.get("monitor_reason") or "").strip().lower()
+        if reason:
+            monitor_reason_counts[reason] += 1
+            if reason == "exit_signal_pending_confirmation":
+                confirm_pending += 1
+            if reason in ("confirmed_exit_signal", "emergency_exit_signal"):
+                confirmed_exit += 1
+
+    rapid_cycles = _safe_int(overtrading.get("rapid_buy_sell_cycles"), 0)
+    status = "stable"
+    if rapid_cycles > 0:
+        status = "overtrading_risk"
+    elif monitor_total <= 0:
+        status = "insufficient_data"
+    return {
+        "monitor_summary_total": int(monitor_total),
+        "monitor_reason_top": dict(monitor_reason_counts.most_common(12)),
+        "min_hold_blocked_total": int(min_hold_blocked),
+        "sell_cooldown_blocked_total": int(sell_cooldown_blocked),
+        "exit_signal_pending_confirmation_total": int(confirm_pending),
+        "confirmed_exit_total": int(confirmed_exit),
+        "rapid_buy_sell_cycles": int(rapid_cycles),
+        "monitor_status": status,
+        "assessment": (
+            "Monitor shows overtrading risk; tighten exit confirmation or thresholds."
+            if status == "overtrading_risk"
+            else ("Monitor flow is stable under current guards." if status == "stable" else "Insufficient monitor summary events.")
+        ),
+    }
+
+
+def _build_supervisor_activity(day_rows: List[Dict[str, Any]], *, intent_flow: Dict[str, Any]) -> Dict[str, Any]:
+    verdict_total = 0
+    blocked_total = 0
+    approved_total = 0
+    reason_counts: Counter[str] = Counter()
+    for row in day_rows:
+        if str(row.get("stage") or "").strip() != "execute_from_packet" or str(row.get("event") or "").strip() != "verdict":
+            continue
+        verdict_total += 1
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if payload.get("allowed") is True:
+            approved_total += 1
+        elif payload.get("allowed") is False:
+            blocked_total += 1
+            reason_counts[_reason_text(payload.get("reason"))] += 1
+
+    if blocked_total <= 0:
+        blocked_total = _safe_int(intent_flow.get("intents_blocked"), blocked_total)
+    if approved_total <= 0:
+        approved_total = _safe_int(intent_flow.get("intents_approved"), approved_total)
+
+    block_rate = float(blocked_total / max(1, blocked_total + approved_total))
+    return {
+        "verdict_total": int(verdict_total),
+        "approved_total": int(approved_total),
+        "blocked_total": int(blocked_total),
+        "blocked_rate": float(round(block_rate, 6)),
+        "blocked_reason_top": dict(reason_counts.most_common(12)),
+        "assessment": (
+            "Supervisor blocks are elevated; review guard thresholds."
+            if block_rate >= 0.40
+            else "Supervisor activity within normal range."
+        ),
+    }
+
+
+def _build_improvement_suggestions(
+    *,
+    strategist_eval: Dict[str, Any],
+    scanner_eval: Dict[str, Any],
+    monitor_eval: Dict[str, Any],
+    supervisor_activity: Dict[str, Any],
+    incidents: Dict[str, Any],
+    report_focus_targets: List[str],
+) -> List[str]:
+    focus = {str(x or "").strip().lower() for x in list(report_focus_targets or [])}
+    wants_theme = bool(focus & {"theme_accuracy", "theme", "themes"})
+    wants_scanner = bool(focus & {"scanner_fit", "scanner", "selection"})
+    wants_exit = bool(focus & {"exit_quality", "exit", "overtrading"})
+    wants_guard = bool(focus & {"guard_blocks", "supervisor", "risk_guard"})
+    no_focus = len(focus) == 0
+
+    suggestions: List[str] = []
+    if (no_focus or wants_theme) and str(strategist_eval.get("theme_alignment_status") or "") in ("partial", "insufficient_data"):
+        suggestions.append("Improve strategist-to-market alignment evidence: add stronger theme mapping and leader validation inputs.")
+    if (no_focus or wants_scanner) and str(scanner_eval.get("selection_status") or "") == "needs_review":
+        suggestions.append("Tune scanner candidate pool reduction (TOP_CANDIDATE_POOL/MIN_TRADING_VALUE/MIN_VOLUME) to reduce empty selections.")
+    if (no_focus or wants_exit) and str(monitor_eval.get("monitor_status") or "") == "overtrading_risk":
+        suggestions.append("Reduce monitor flip risk by increasing confirmation strictness or widening non-emergency exit thresholds.")
+    if (no_focus or wants_guard) and _safe_float(supervisor_activity.get("blocked_rate"), 0.0) >= 0.40:
+        suggestions.append("High supervisor block rate: recalibrate strategy aggressiveness and guard limits for better intent quality.")
+    if _safe_int(incidents.get("incident_total"), 0) > 0:
+        suggestions.append("Run incident postmortem and convert top anomaly into explicit preopen/checklist gate before next session.")
+    if not suggestions:
+        suggestions.append("No critical gaps detected; keep current baseline and continue daily report-driven calibration.")
+    return suggestions[:8]
+
+
 def _to_markdown(out: Dict[str, Any]) -> str:
     day = str(out.get("day") or "")
     trade_section = out.get("trade_decision_summaries") if isinstance(out.get("trade_decision_summaries"), dict) else {}
@@ -424,6 +812,14 @@ def _to_markdown(out: Dict[str, Any]) -> str:
     market = out.get("market_context") if isinstance(out.get("market_context"), dict) else {}
     incidents = out.get("incident_postmortem") if isinstance(out.get("incident_postmortem"), dict) else {}
     operator = out.get("daily_operator_report") if isinstance(out.get("daily_operator_report"), dict) else {}
+    trade_summary = out.get("trade_summary") if isinstance(out.get("trade_summary"), dict) else {}
+    decision_chains = out.get("decision_chains") if isinstance(out.get("decision_chains"), dict) else {}
+    strategist_eval = out.get("strategist_evaluation") if isinstance(out.get("strategist_evaluation"), dict) else {}
+    scanner_eval = out.get("scanner_evaluation") if isinstance(out.get("scanner_evaluation"), dict) else {}
+    monitor_eval = out.get("monitor_evaluation") if isinstance(out.get("monitor_evaluation"), dict) else {}
+    supervisor_activity = out.get("supervisor_activity") if isinstance(out.get("supervisor_activity"), dict) else {}
+    improvement = out.get("improvement_suggestions") if isinstance(out.get("improvement_suggestions"), list) else []
+    report_focus_targets = out.get("report_focus_targets") if isinstance(out.get("report_focus_targets"), list) else []
 
     lines: List[str] = []
     lines.append(f"# Reporter Analysis ({day})")
@@ -448,6 +844,60 @@ def _to_markdown(out: Dict[str, Any]) -> str:
             f"| {row.get('symbol') or '-'} | {row.get('buy_reason') or '-'} | {row.get('sell_reason') or '-'} | "
             f"{_safe_int(row.get('holding_duration_sec'), 0)} | {row.get('exit_trigger') or '-'} |"
         )
+    lines.append("")
+    lines.append("## Trade Summary")
+    lines.append("")
+    lines.append(f"- trade_count: **{_safe_int(trade_summary.get('trade_count'), 0)}**")
+    lines.append(f"- symbols_traded: `{json.dumps(trade_summary.get('symbols_traded') or [], ensure_ascii=False)}`")
+    lines.append("")
+    lines.append("## Decision Chains")
+    lines.append("")
+    lines.append(f"- run_total: **{_safe_int(decision_chains.get('run_total'), 0)}**")
+    lines.append(f"- rendered_run_total: **{_safe_int(decision_chains.get('rendered_run_total'), 0)}**")
+    for chain in (decision_chains.get("chains") or [])[:10]:
+        if not isinstance(chain, dict):
+            continue
+        lines.append(
+            f"- run_id={chain.get('run_id')} symbol={chain.get('symbol') or '-'} action={chain.get('action') or '-'} "
+            f"supervisor={chain.get('supervisor_verdict') or '-'} execution={chain.get('execution_status') or '-'} "
+            f"buy_reason={chain.get('buy_reason') or '-'} sell_reason={chain.get('sell_reason') or '-'}"
+        )
+    lines.append("")
+    lines.append("## Strategist Evaluation")
+    lines.append("")
+    lines.append(f"- themes_proposed: `{json.dumps(strategist_eval.get('themes_proposed') or [], ensure_ascii=False)}`")
+    lines.append(
+        f"- actual_market_leaders_by_scanner: `{json.dumps(strategist_eval.get('actual_market_leaders_by_scanner') or [], ensure_ascii=False)}`"
+    )
+    lines.append(f"- theme_alignment_status: **{strategist_eval.get('theme_alignment_status') or 'unknown'}**")
+    lines.append(f"- assessment: {strategist_eval.get('assessment') or '-'}")
+    lines.append("")
+    lines.append("## Scanner Evaluation")
+    lines.append("")
+    lines.append(f"- scanner_summary_total: **{_safe_int(scanner_eval.get('scanner_summary_total'), 0)}**")
+    lines.append(f"- selected_symbol_top: `{json.dumps(scanner_eval.get('selected_symbol_top') or {}, ensure_ascii=False)}`")
+    lines.append(f"- no_candidate_total: **{_safe_int(scanner_eval.get('no_candidate_total'), 0)}**")
+    if scanner_eval.get("avg_top_score") is not None:
+        lines.append(f"- avg_top_score: **{_safe_float(scanner_eval.get('avg_top_score'), 0.0):.4f}**")
+    lines.append(f"- selection_status: **{scanner_eval.get('selection_status') or 'unknown'}**")
+    lines.append(f"- assessment: {scanner_eval.get('assessment') or '-'}")
+    lines.append("")
+    lines.append("## Monitor Evaluation")
+    lines.append("")
+    lines.append(f"- monitor_summary_total: **{_safe_int(monitor_eval.get('monitor_summary_total'), 0)}**")
+    lines.append(f"- monitor_reason_top: `{json.dumps(monitor_eval.get('monitor_reason_top') or {}, ensure_ascii=False)}`")
+    lines.append(f"- rapid_buy_sell_cycles: **{_safe_int(monitor_eval.get('rapid_buy_sell_cycles'), 0)}**")
+    lines.append(f"- monitor_status: **{monitor_eval.get('monitor_status') or 'unknown'}**")
+    lines.append(f"- assessment: {monitor_eval.get('assessment') or '-'}")
+    lines.append("")
+    lines.append("## Supervisor Activity")
+    lines.append("")
+    lines.append(f"- verdict_total: **{_safe_int(supervisor_activity.get('verdict_total'), 0)}**")
+    lines.append(f"- approved_total: **{_safe_int(supervisor_activity.get('approved_total'), 0)}**")
+    lines.append(f"- blocked_total: **{_safe_int(supervisor_activity.get('blocked_total'), 0)}**")
+    lines.append(f"- blocked_rate: **{_safe_float(supervisor_activity.get('blocked_rate'), 0.0):.2%}**")
+    lines.append(f"- blocked_reason_top: `{json.dumps(supervisor_activity.get('blocked_reason_top') or {}, ensure_ascii=False)}`")
+    lines.append(f"- assessment: {supervisor_activity.get('assessment') or '-'}")
     lines.append("")
     lines.append("## Intent Flow Analysis")
     lines.append("")
@@ -476,6 +926,12 @@ def _to_markdown(out: Dict[str, Any]) -> str:
         if not isinstance(item, dict):
             continue
         lines.append(f"- [{item.get('severity')}] {item.get('type')}: {item.get('detail')}")
+    lines.append("")
+    lines.append("## Improvement Suggestions")
+    lines.append("")
+    lines.append(f"- report_focus_targets: `{json.dumps(report_focus_targets, ensure_ascii=False)}`")
+    for item in improvement[:8]:
+        lines.append(f"- {item}")
     lines.append("")
     lines.append("## Source Artifacts")
     lines.append("")
@@ -545,6 +1001,7 @@ def generate_reporter_analysis_report(
         operator_summary_obj=op_obj,
     )
     strategy_eff = _build_strategy_effectiveness(day_rows=day_rows, trade_explain_obj=trade_obj)
+    report_focus_targets = _extract_report_focus_targets(day_rows)
     overtrading = _build_overtrading_diagnostics(
         trade_explain_obj=trade_obj,
         intent_flow=intent_flow,
@@ -552,6 +1009,20 @@ def generate_reporter_analysis_report(
     )
     incident = _build_incident_postmortem(overtrading=overtrading, intent_flow=intent_flow)
     market_context = _build_market_context(trade_explain_obj=trade_obj, day_rows=day_rows)
+    decision_chains = _build_decision_chains(day_rows, limit=200)
+    trade_summary = _build_trade_summary_section(trade_decision=trade_decision, decision_chains=decision_chains)
+    strategist_eval = _build_strategist_evaluation(day_rows)
+    scanner_eval = _build_scanner_evaluation(day_rows)
+    monitor_eval = _build_monitor_evaluation(day_rows=day_rows, overtrading=overtrading)
+    supervisor_activity = _build_supervisor_activity(day_rows, intent_flow=intent_flow)
+    improvement_suggestions = _build_improvement_suggestions(
+        strategist_eval=strategist_eval,
+        scanner_eval=scanner_eval,
+        monitor_eval=monitor_eval,
+        supervisor_activity=supervisor_activity,
+        incidents=incident,
+        report_focus_targets=report_focus_targets,
+    )
 
     trading_activity = (
         op_obj.get("trading_activity_summary") if isinstance(op_obj.get("trading_activity_summary"), dict) else {}
@@ -569,13 +1040,22 @@ def generate_reporter_analysis_report(
     out: Dict[str, Any] = {
         "schema_version": "reporter_analysis.v1",
         "day": target_day,
+        "trade_summary": trade_summary,
+        "decision_chains": decision_chains,
         "trade_decision_summaries": trade_decision,
+        "strategist_evaluation": strategist_eval,
+        "scanner_evaluation": scanner_eval,
+        "monitor_evaluation": monitor_eval,
+        "supervisor_activity": supervisor_activity,
         "intent_flow_analysis": intent_flow,
         "strategy_effectiveness": strategy_eff,
         "overtrading_diagnostics": overtrading,
         "daily_operator_report": daily_operator,
         "incident_postmortem": incident,
+        "incidents": incident,
+        "improvement_suggestions": improvement_suggestions,
         "market_context": market_context,
+        "report_focus_targets": list(report_focus_targets),
         "source_reports": {
             "trade_explain_json": str(trade_js),
             "trade_explain_md": str(trade_md),
@@ -595,4 +1075,3 @@ def generate_reporter_analysis_report(
     js_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(_to_markdown(out), encoding="utf-8")
     return md_path, js_path, out
-

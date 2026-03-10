@@ -113,6 +113,13 @@ python -m scripts.generate_metrics_report
   - Integrate trade/intent/operator reports into one passive post-run analysis bundle.
   - Provide overtrading diagnostics and incident/post-mortem summaries.
 - Includes:
+  - `trade_summary` (trade count, symbols traded, hold-duration table)
+  - `decision_chains` (run_id-level decision->supervisor->execution flow)
   - Trade decision summary (buy/sell reasons, hold duration, exit trigger)
+  - `strategist_evaluation` (themes vs scanner leader evidence)
+  - `scanner_evaluation` (selection appropriateness and candidate pool quality)
+  - `monitor_evaluation` (overtrading/guard behavior)
+  - `supervisor_activity` (block/approve frequency and top block reasons)
   - Intent flow (`created/blocked/approved/executed`)
   - Strategy effectiveness narrative (Strategist -> Scanner -> Monitor)
+  - incidents + improvement suggestions for next run

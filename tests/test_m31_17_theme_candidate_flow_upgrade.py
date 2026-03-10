@@ -24,13 +24,44 @@ def test_m31_17_strategist_outputs_themes_and_candidates_contract(monkeypatch):
     assert strategist_output["candidates"] == ["005930", "000660", "042700", "058470"]
     assert int(strategist_output["candidate_count"]) == 4
     assert out.get("themes") == ["semiconductor", "AI"]
+    for key in (
+        "market_regime",
+        "market_sentiment",
+        "key_events",
+        "avoid_themes",
+        "playbook",
+        "scanner_bias",
+        "scanner_priority",
+        "trade_aggressiveness",
+        "risk_tone",
+        "monitor_guidance",
+        "report_focus",
+        "strategic_answers",
+    ):
+        assert key in strategist_output
+    assert strategist_output["market_regime"] in ("risk_on", "neutral", "risk_off")
+    assert strategist_output["market_sentiment"] in ("bullish", "neutral", "bearish")
+    assert strategist_output["playbook"] in ("breakout", "pullback", "reversal", "defensive")
+    assert strategist_output["scanner_bias"] in ("large_cap", "leader", "momentum", "value")
+    assert strategist_output["risk_tone"] in ("conservative", "normal", "aggressive")
+    assert strategist_output["monitor_guidance"] in ("hold_through_noise", "defensive_exit", "quick_take_profit")
+    assert strategist_output["trade_aggressiveness"] in ("low", "medium", "high")
+    assert isinstance(strategist_output["scanner_priority"], list)
+    assert isinstance(strategist_output.get("monitor_policy"), dict)
+    assert isinstance(strategist_output["report_focus"], list)
+    assert isinstance(strategist_output["strategic_answers"], dict)
 
 
 def test_m31_17_scanner_accepts_strategist_output_and_emits_top_stock():
     state = {
         "strategist_output": {
             "themes": ["semiconductor"],
+            "avoid_themes": ["high_gap_speculative"],
             "candidates": ["005930", "000660"],
+            "scanner_bias": "momentum",
+            "scanner_priority": ["momentum", "trend_strength", "liquidity"],
+            "trade_aggressiveness": "high",
+            "risk_tone": "aggressive",
         },
         "mock_scan_results": {
             "005930": {"score": 0.91, "risk_score": 0.20, "confidence": 0.88},
@@ -44,6 +75,10 @@ def test_m31_17_scanner_accepts_strategist_output_and_emits_top_stock():
     scanner_output = out.get("scanner_output") or {}
     assert scanner_output.get("top_stock") == "005930"
     assert float(scanner_output.get("score") or 0.0) == 0.91
+    assert scanner_output.get("strategist_scanner_priority") == ["momentum", "trend_strength", "liquidity"]
+    assert scanner_output.get("strategist_scanner_bias") == "momentum"
+    assert scanner_output.get("strategist_trade_aggressiveness") == "high"
+    assert scanner_output.get("strategist_risk_tone") == "aggressive"
 
 
 def test_m31_17_monitor_sell_cooldown_env_alias_is_supported(monkeypatch):

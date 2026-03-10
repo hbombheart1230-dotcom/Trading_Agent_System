@@ -12,6 +12,8 @@ This document defines the **state dictionary contract** used across all graph no
 ## Canonical Keys
 - decision_packet
 - decision_trace
+- decision_trace_ledger (additive cross-agent reason ledger)
+- reason_ledger (alias of decision_trace_ledger)
 - market_snapshot
 - portfolio_snapshot
 - execution

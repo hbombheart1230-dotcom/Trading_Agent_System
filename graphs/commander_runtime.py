@@ -9,6 +9,7 @@ Implementation note:
   - This file is the primary commander/orchestrator implementation.
   - `graphs/nodes/commander_node.py` is a thin graph wrapper.
   - `libs/agent/commander.py` is legacy compatibility scaffolding.
+  - Commander only routes runtime flow; it does not select symbols or execute orders.
 
 Modes:
   - graph_spine: run M17 graph spine (`run_trading_graph`)

@@ -5,12 +5,38 @@
 - `risk.daily_loss_limit`, `risk.per_trade_limit`, `risk.max_positions`, `risk.cooldown`
 
 ## TradePlan / Strategist Output
+- `market_regime`
+- `market_sentiment`
+- `key_events[]`
 - `themes[]`
+- `avoid_themes[]`
+- `playbook`
+- `scanner_bias`
+- `scanner_priority[]`
+- `trade_aggressiveness`
+- `risk_tone`
+- `monitor_guidance`
+- `monitor_policy` (derived deterministic guard knobs)
+- `report_focus[]`
 - `candidates[]` (Top-N, optional hint/fallback path)
 - `strategist_output`
+  - `market_regime`
+  - `market_sentiment`
+  - `key_events[]`
   - `themes[]`
+  - `avoid_themes[]`
+  - `playbook`
+  - `scanner_bias`
+  - `scanner_priority[]`
+  - `trade_aggressiveness`
+  - `risk_tone`
+  - `monitor_guidance`
+  - `monitor_policy`
+  - `report_focus[]`
   - `candidates[]`
   - `candidate_count`
+  - `candidate_hints[]`
+  - `strategic_answers`
   - `source`
 - `scenarios[]` (optional)
 - `feature_requests[]` (optional)
@@ -67,3 +93,17 @@
 - `approve | reject | modify`
 - `why`
 - `modifications` (optional)
+
+## Minimal Decision Trace / Reason Ledger (additive)
+- Runtime keys:
+  - `decision_trace_ledger`
+  - `reason_ledger` (alias)
+- Contract:
+  - `run_id`
+  - `entries[]`
+    - `ts_epoch`
+    - `agent` (`strategist|scanner|monitor|supervisor|executor`)
+    - `payload` (compact per-agent summary)
+  - `latest_by_agent`
+- EventLog mirror:
+  - `stage=decision_trace`, `event=<snapshot_type>`

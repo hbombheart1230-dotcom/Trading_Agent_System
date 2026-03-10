@@ -18,6 +18,7 @@ from graphs.nodes.skill_contracts import (
     extract_market_quotes,
     extract_order_status,
 )
+from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.exit_policy import evaluate_exit_policy
 from libs.runtime.position_sizing import evaluate_position_size
 
@@ -56,6 +57,8 @@ def _resolve_min_hold_sec(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
 
 def _resolve_sell_cooldown_sec(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
     raw = policy.get("sell_cooldown_sec") if isinstance(policy, dict) else None
+    if raw is None and isinstance(policy, dict):
+        raw = policy.get("sell_cooldown_seconds")
     if raw is None:
         raw = os.getenv("SELL_COOLDOWN", "")
     if raw in (None, ""):
@@ -74,6 +77,84 @@ def _resolve_exit_confirm_ticks(state: Dict[str, Any], policy: Dict[str, Any]) -
         return max(1, int(float(raw)))
     except Exception:
         return 2
+
+
+def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, str]:
+    strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    return {
+        "monitor_guidance": str(
+            state.get("monitor_guidance")
+            or strategist_output.get("monitor_guidance")
+            or ""
+        ).strip().lower(),
+        "risk_tone": str(
+            state.get("risk_tone")
+            or strategist_output.get("risk_tone")
+            or ""
+        ).strip().lower(),
+        "trade_aggressiveness": str(
+            state.get("trade_aggressiveness")
+            or strategist_output.get("trade_aggressiveness")
+            or ""
+        ).strip().lower(),
+    }
+
+
+def _apply_monitor_strategy_frame(
+    *,
+    min_hold_sec: int,
+    sell_cooldown_sec: int,
+    confirm_ticks: int,
+    frame: Dict[str, str],
+) -> Dict[str, Any]:
+    min_hold = max(0, int(min_hold_sec))
+    cooldown = max(0, int(sell_cooldown_sec))
+    confirm = max(1, int(confirm_ticks))
+    adjustments: list[str] = []
+
+    mode = str(frame.get("monitor_guidance") or "").strip().lower()
+    if mode == "hold_through_noise":
+        min_hold += 300
+        confirm += 1
+        cooldown += 60
+        adjustments.append("monitor_guidance:hold_through_noise")
+    elif mode == "defensive_exit":
+        min_hold = max(0, min_hold - 120)
+        confirm = max(1, confirm - 1)
+        adjustments.append("monitor_guidance:defensive_exit")
+    elif mode == "quick_take_profit":
+        min_hold = max(0, min_hold - 300)
+        confirm = 1
+        cooldown = max(60, min(cooldown, 180))
+        adjustments.append("monitor_guidance:quick_take_profit")
+
+    tone = str(frame.get("risk_tone") or "").strip().lower()
+    if tone == "conservative":
+        min_hold += 120
+        confirm += 1
+        adjustments.append("risk_tone:conservative")
+    elif tone == "aggressive":
+        min_hold = max(0, min_hold - 60)
+        confirm = max(1, confirm - 1)
+        adjustments.append("risk_tone:aggressive")
+
+    aggr = str(frame.get("trade_aggressiveness") or "").strip().lower()
+    if aggr == "low":
+        confirm = max(confirm, 3)
+        adjustments.append("trade_aggressiveness:low")
+    elif aggr == "high":
+        confirm = max(1, confirm - 1)
+        adjustments.append("trade_aggressiveness:high")
+
+    return {
+        "min_hold_sec": max(0, int(min_hold)),
+        "sell_cooldown_sec": max(0, int(cooldown)),
+        "confirm_ticks": max(1, min(6, int(confirm))),
+        "monitor_guidance": mode,
+        "risk_tone": tone,
+        "trade_aggressiveness": aggr,
+        "adjustments": list(adjustments),
+    }
 
 
 def _resolve_now_epoch(state: Dict[str, Any]) -> int:
@@ -461,6 +542,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         min_hold_sec = _resolve_min_hold_sec(state, policy)
         sell_cooldown_sec = _resolve_sell_cooldown_sec(state, policy)
         confirm_ticks = _resolve_exit_confirm_ticks(state, policy)
+        strategy_frame = _extract_monitor_strategy_frame(state)
+        frame_applied = _apply_monitor_strategy_frame(
+            min_hold_sec=min_hold_sec,
+            sell_cooldown_sec=sell_cooldown_sec,
+            confirm_ticks=confirm_ticks,
+            frame=strategy_frame,
+        )
+        min_hold_sec = int(frame_applied.get("min_hold_sec") or min_hold_sec)
+        sell_cooldown_sec = int(frame_applied.get("sell_cooldown_sec") or sell_cooldown_sec)
+        confirm_ticks = int(frame_applied.get("confirm_ticks") or confirm_ticks)
         confirm_map = state.get("_monitor_exit_confirm")
         if not isinstance(confirm_map, dict):
             confirm_map = {}
@@ -595,6 +686,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "pending_exit_lock_until": (int(lock_until) if lock_until > 0 else None),
             "monitor_reason": str(monitor_reason or ""),
             "emergency_exit": bool(emergency_exit),
+            "monitor_guidance": str(frame_applied.get("monitor_guidance") or ""),
+            "risk_tone": str(frame_applied.get("risk_tone") or ""),
+            "trade_aggressiveness": str(frame_applied.get("trade_aggressiveness") or ""),
+            "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
         }
         if bool(exit_signal_detected) and not bool(sell_guard_blocked) and qty > 0:
             intents = [
@@ -619,6 +714,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "min_hold_blocked": bool(min_hold_blocked),
                         "sell_cooldown_blocked": bool(sell_cooldown_blocked),
                         "emergency_exit": bool(emergency_exit),
+                        "monitor_guidance": str(frame_applied.get("monitor_guidance") or ""),
+                        "risk_tone": str(frame_applied.get("risk_tone") or ""),
+                        "trade_aggressiveness": str(frame_applied.get("trade_aggressiveness") or ""),
+                        "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
                     },
                 }
             ]
@@ -677,10 +776,26 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "exit_triggered": bool(exit_info.get("triggered")),
             "exit_reason": str(exit_info.get("reason") or ""),
             "monitor_reason": str(exit_info.get("monitor_reason") or ""),
+            "monitor_guidance": str(exit_info.get("monitor_guidance") or ""),
+            "risk_tone": str(exit_info.get("risk_tone") or ""),
+            "trade_aggressiveness": str(exit_info.get("trade_aggressiveness") or ""),
             "position_sizing_enabled": bool(sizing_info.get("enabled")),
             "position_sizing_evaluated": bool(sizing_info.get("evaluated")),
             "position_sizing_qty": int(sizing_info.get("qty") or 0),
             "position_sizing_reason": str(sizing_info.get("reason") or ""),
+        },
+    )
+    append_decision_trace(
+        state,
+        agent="monitor",
+        event="entry_exit_decision",
+        payload={
+            "entry_reason": str((state.get("monitor_output") or {}).get("entry_exit_reason") or ""),
+            "exit_reason": str(exit_info.get("reason") or ""),
+            "position_age_seconds": exit_info.get("position_age_seconds"),
+            "min_hold_blocked": bool(exit_info.get("min_hold_blocked")),
+            "sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),
+            "monitor_reason": str(exit_info.get("monitor_reason") or ""),
         },
     )
     return state

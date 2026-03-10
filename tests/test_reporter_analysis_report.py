@@ -33,6 +33,17 @@ def test_reporter_analysis_script_builds_structured_sections(tmp_path: Path, cap
             },
             {
                 "run_id": "r_buy",
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "strategist",
+                "event": "summary",
+                "payload": {
+                    "themes": ["semiconductor", "AI"],
+                    "scanner_priority": ["momentum", "trend_strength", "liquidity"],
+                    "report_focus": ["Validate theme follow-through", "Check monitor exit quality"],
+                },
+            },
+            {
+                "run_id": "r_buy",
                 "ts": f"{day}T00:00:01+00:00",
                 "stage": "scanner",
                 "event": "summary",
@@ -144,11 +155,22 @@ def test_reporter_analysis_script_builds_structured_sections(tmp_path: Path, cap
     assert rc == 0
     assert obj["day"] == day
     assert int(obj["trade_decision_summaries"]["trade_summary_total"]) >= 1
+    assert int((obj.get("trade_summary") or {}).get("trade_count") or 0) >= 1
+    assert "005930" in ((obj.get("trade_summary") or {}).get("symbols_traded") or [])
+    assert int((obj.get("decision_chains") or {}).get("run_total") or 0) >= 1
+    assert isinstance((obj.get("strategist_evaluation") or {}).get("themes_proposed"), list)
+    assert isinstance((obj.get("scanner_evaluation") or {}).get("selected_symbol_top"), dict)
+    assert isinstance((obj.get("monitor_evaluation") or {}).get("monitor_reason_top"), dict)
+    assert int((obj.get("supervisor_activity") or {}).get("blocked_total") or 0) >= 1
+    assert isinstance(obj.get("improvement_suggestions"), list)
     flow = obj["intent_flow_analysis"]
     assert int(flow["intents_created"]) >= 1
     assert int(flow["intents_blocked"]) >= 1
     assert "min_hold_blocked" in (flow.get("reason_top") or {})
     assert int(obj["overtrading_diagnostics"]["rapid_buy_sell_cycles"]) >= 1
+    strategy_effectiveness = obj.get("strategy_effectiveness") or {}
+    assert (strategy_effectiveness.get("report_focus_counts") or {}).get("Validate theme follow-through") == 1
+    assert (strategy_effectiveness.get("scanner_priority_counts") or {}).get("momentum") == 1
     assert Path(obj["report_json_path"]).exists()
     assert Path(obj["report_md_path"]).exists()
 
@@ -179,4 +201,3 @@ def test_reporter_agent_can_run_passive_log_analysis(tmp_path: Path) -> None:
     assert out["schema_version"] == "reporter_analysis.v1"
     assert out["day"] == day
     assert "intent_flow_analysis" in out
-

@@ -12,12 +12,15 @@
 
 ## Strategist
 - Consumes market/news/global context.
-- Selects themes/sectors.
+- Produces a structured strategic brief each run:
+  - `market_regime`, `market_sentiment`, `key_events`
+  - `themes`, `avoid_themes`, `playbook`
+  - `scanner_bias` (`large_cap|leader|momentum|value`), `scanner_priority`
+  - `trade_aggressiveness`, `risk_tone`
+  - `monitor_guidance` (`hold_through_noise|defensive_exit|quick_take_profit`), `report_focus`
 - May provide candidate hints (Top-N) as an additive signal.
-- Emits additive strategist contract fields:
-  - `themes`
-  - `candidates`
-  - `strategist_output`
+- Strategist defines HOW to fight; final stock selection remains Scanner responsibility.
+- Emits additive strategist contract fields in `strategist_output`.
 - Canonical implementation: `graphs/nodes/strategist_node.py`
 - Compatibility layer: `libs/agent/strategist.py` (normalizes strategist output for legacy `Plan` usage)
 
@@ -25,7 +28,9 @@
 - Uses Kiwoom market data as primary candidate source in integrated chain.
 - Candidate sources include condition search, top-volume, top-value, optional top-change-rate, sector/theme map, and operator watchlist.
 - Applies theme/sector filtering from strategist output (`themes`) with `theme_map` / `sector_map`.
+- Applies strategist ranking guidance (`scanner_priority`, aggressiveness/risk tone) additively to score weights.
 - Falls back to strategist candidates when Kiwoom candidate pool is empty.
+- Scanner is the final Top-1 selector within strategist framing (not a blind picker).
 - Reduces candidate pool with practical filters (halted/abnormal/illiquid thresholds).
 - Computes practical score factors (trading-value, momentum, trend, volume-surge, intraday strength, penalties).
 - Returns ranked list and Top-1 selection:
@@ -39,6 +44,7 @@
 
 ## Monitor
 - Focuses on entry/exit only for the selected stock.
+- Must not rescan/re-rank market universe.
 - Emits buy/sell/noop intents from policy + position state.
 - Applies sell guards (min hold, sell cooldown, exit confirmation).
 - Suppresses duplicate SELL intents with pending-exit lock/cooldown state across polling loops.
@@ -61,9 +67,14 @@
 - Builds operator-facing summaries from event logs and reports.
 - Works as a post-run/report script layer (not a runtime control node).
 - Does not change runtime decisions.
+- Current implementation is deterministic/passive; AI-centered enhancement is planned later.
+- Reporter-ready reason inputs are now emitted via:
+  - `state["decision_trace_ledger"]` / `state["reason_ledger"]`
+  - EventLog `stage=decision_trace`
 - Runtime report generators: `libs/reporting/*`, `scripts/run_*report*.py`
 - Enhanced passive analysis output (`reporter_analysis.v1`) includes:
-  - trade decision summaries (buy/sell reason, hold duration, exit trigger)
-  - intent flow analysis (created/blocked/approved/executed + reason top)
-  - strategy effectiveness narrative (Strategist/Scanner/Monitor chain)
-  - overtrading diagnostics and incident/post-mortem sections
+  - `trade_summary` and per-trade decision summaries (buy/sell reason, hold duration, exit trigger)
+  - `decision_chains` (run_id-based decision -> supervisor -> execution trace)
+  - `strategist_evaluation`, `scanner_evaluation`, `monitor_evaluation`
+  - `supervisor_activity` (block/approve frequency + reasons)
+  - overtrading diagnostics, incidents/post-mortem, and `improvement_suggestions`

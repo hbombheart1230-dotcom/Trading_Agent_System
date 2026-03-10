@@ -150,3 +150,32 @@ def test_monitor_does_not_execute_orders_directly(monkeypatch):
     out = monitor_node(state)
     assert out.get("execution_result") == {"status": "unmodified"}
     assert (out.get("monitor") or {}).get("has_intent") in (True, False)
+
+
+def test_monitor_applies_strategic_frame_guidance_to_exit_guards(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "2")
+
+    state = _base_state()
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "hold_sec": 300}],
+    }
+    state["strategist_output"] = {
+        "monitor_guidance": "quick_take_profit",
+        "risk_tone": "aggressive",
+        "trade_aggressiveness": "high",
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+
+    exit_info = out.get("monitor_exit") or {}
+    assert int(exit_info.get("min_hold_sec") or 0) == 240
+    assert int(exit_info.get("exit_confirm_ticks") or 0) == 1
+    assert str(exit_info.get("monitor_guidance") or "") == "quick_take_profit"
+    assert str(exit_info.get("risk_tone") or "") == "aggressive"
+    assert str(exit_info.get("trade_aggressiveness") or "") == "high"

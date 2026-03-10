@@ -18,7 +18,11 @@
 ## Runtime Decision Chain (Current)
 
 1. Strategist writes:
-   - `themes`
+   - `market_regime`, `market_sentiment`, `key_events`
+   - `themes`, `avoid_themes`, `playbook`
+   - `scanner_bias` mode, `scanner_priority`
+   - `trade_aggressiveness`, `risk_tone`
+   - `monitor_guidance` mode (+ derived `monitor_policy`), `report_focus`
    - `candidates` (Top-N, optional hint)
    - `strategist_output`
 2. Scanner uses Kiwoom market data as primary candidate source and writes:
@@ -33,6 +37,7 @@
      - sector/theme map + operator watchlist sources
      - pre-score pool reduction (halt/abnormal/illiquid filters)
      - optional theme/sector filter with `theme_map` / `sector_map`
+     - additive strategist priority bias (`scanner_priority`, aggressiveness/risk tone)
      - strategist candidate fallback when Kiwoom pool is empty
      - score output includes per-candidate `score_breakdown`
 3. Monitor handles entry/exit only and writes:
@@ -53,6 +58,19 @@
      - `sell_cooldown_blocked`
      - `monitor_reason`
 4. Supervisor/Executor remain the only approval/execution path.
+
+## Minimal Decision Trace / Reason Ledger (Additive)
+
+- Runtime keys:
+  - `state["decision_trace_ledger"]`
+  - `state["reason_ledger"]` (alias)
+- Per-run snapshots are appended by:
+  - Strategist, Scanner, Monitor, Supervisor, Executor
+- Snapshot intent:
+  - compact, structured, parseable records for post-run analysis
+  - no control-flow impact, no trading-logic mutation
+- EventLog mirror:
+  - `stage=decision_trace`
 
 ## Canonical vs Compatibility Modules
 

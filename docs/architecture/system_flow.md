@@ -4,14 +4,20 @@
 
 1. Strategist
    - consumes global/news/sentiment context
-   - outputs `themes` (+ optional `candidates` hint)
+   - outputs structured strategic brief:
+     - `market_regime`, `market_sentiment`, `key_events`
+     - `themes`, `avoid_themes`, `playbook`
+     - `scanner_bias` mode + `scanner_priority`, `trade_aggressiveness`, `risk_tone`
+     - `monitor_guidance` mode (+ derived `monitor_policy`), `report_focus`
+     - optional `candidates` hint
 2. Scanner
    - retrieves candidate universe from Kiwoom market data
    - source mix: condition search, top volume, top value, optional top change-rate, sector/theme map, watchlist
    - reduces pool before scoring (halt/abnormal/illiquid thresholds)
    - applies strategist theme/sector filter (`theme_map` / `sector_map`)
+   - applies strategist scanner-priority guidance additively to ranking weights
    - computes explainable score breakdown + features/risk
-   - outputs `selected` and `top_stock`
+   - outputs `selected` and `top_stock` (final symbol selector in current run)
 3. Monitor
    - entry/exit monitoring for selected stock only
    - emits `OrderIntent` (BUY/SELL/NOOP)
@@ -24,6 +30,20 @@
    - executes only approved intents with guard precedence
 6. Reporter
    - generates operator-facing summaries from logs/artifacts
+
+## Minimal Decision Trace / Reason Ledger
+
+- Additive cross-agent trace is emitted per `run_id`:
+  - Strategist strategic frame snapshot
+  - Scanner candidate/ranking selection snapshot
+  - Monitor entry/exit decision snapshot
+  - Supervisor verdict + guard reason snapshot
+  - Executor execution attempt/result snapshot
+- Runtime keys:
+  - `decision_trace_ledger`
+  - `reason_ledger` (alias)
+- EventLog mirror:
+  - `stage=decision_trace`
 
 ## Pipeline Role
 

@@ -50,7 +50,8 @@ Key separation:
 The decision chain now uses Kiwoom market data as the primary candidate source:
 
 1. Global news/sentiment context
-2. Strategist decides market `themes` (and may provide optional candidate hints)
+2. Strategist builds a per-cycle strategic brief (`market_regime`, sentiment, playbook, scanner/monitor/reporter guidance)
+   and may provide optional candidate hints
 3. Scanner builds candidate pool from Kiwoom sources:
    - condition search
    - top volume ranking
@@ -104,7 +105,22 @@ Example strategist output:
 
 ```json
 {
+  "market_regime": "risk_on",
+  "market_sentiment": "bullish",
+  "key_events": [
+    "global_sentiment score=0.320 status=ok source=yfinance",
+    "news_signal_health unavailable=0 fallback=2"
+  ],
   "themes": ["semiconductor", "AI"],
+  "avoid_themes": ["thin_liquidity_names"],
+  "playbook": "breakout",
+  "scanner_bias": "momentum",
+  "scanner_priority": ["momentum", "trend_strength", "volume_surge", "liquidity"],
+  "trade_aggressiveness": "high",
+  "risk_tone": "aggressive",
+  "monitor_guidance": "hold_through_noise",
+  "monitor_policy": {"min_hold_seconds": 900, "sell_cooldown_seconds": 360, "exit_confirm_ticks": 3},
+  "report_focus": ["theme_accuracy", "scanner_fit", "exit_quality", "overtrading"],
   "candidates": ["005930", "000660", "042700", "058470", "091990"]
 }
 ```
@@ -145,15 +161,19 @@ Example scanner output:
 - Never executes trades
 
 ## Strategist (전략가)
-- Selects market themes/sectors (primary responsibility)
+- AI-centered strategic framing (no order execution)
+- Produces a structured run-cycle brief:
+  - market regime/sentiment and key events
+  - leading themes and avoid-themes
+  - playbook, aggressiveness, and risk tone
+  - scanner ranking priorities, monitor guidance, reporter focus
 - May provide candidate hints (optional compatibility path)
-- Defines scenarios (entry/add/stop/take-profit)
-- May consult LLM for scenario reasoning
-- Produces structured intent proposal
+- Writes additive guidance via `strategist_output`
 
 ## Scanner (스캐너)
 - Builds candidate universe from Kiwoom market data
 - Applies strategist theme/sector filters when mapping exists
+- Applies strategist scanner-priority bias additively to scoring weights
 - Reduces pool with practical guards (halt/abnormal/illiquid thresholds)
 - Computes explainable scoring factors (value, momentum, trend, volume surge, intraday strength, risk penalties)
 - Ranks candidates with score breakdown and selects Top-1
@@ -184,7 +204,12 @@ Example scanner output:
 - Reads EventLog
 - Produces script-driven daily / trade / operator reports from artifacts
 - Summarizes LLM quality and execution metrics
+- Produces passive post-run analysis sections:
+  - `trade_summary`, `decision_chains`
+  - `strategist_evaluation`, `scanner_evaluation`, `monitor_evaluation`
+  - `supervisor_activity`, `incidents`, `improvement_suggestions`
 - Does not participate in runtime decision routing
+- Current implementation is deterministic/passive; AI-centered reporter enhancement is planned later
 
 ------------------------------------------------------------------------
 
@@ -253,6 +278,16 @@ Event log (JSONL):
 - latency_ms (LLM/execution)
 
 LLM telemetry tracked separately from trading logic.
+
+Minimal Decision Trace / Reason Ledger (additive):
+- `state["decision_trace_ledger"]` (alias: `state["reason_ledger"]`)
+- linked by `run_id`
+- compact snapshots from:
+  - Strategist (`market_regime`, `themes`, `playbook`, `scanner_bias`, `risk_tone`, `monitor_guidance`)
+  - Scanner (`candidate_pool_size`, `top_candidates`, `selected_symbol`, `score_breakdown_summary`)
+  - Monitor (`entry_reason`, `exit_reason`, `position_age_seconds`, sell-guard flags, `monitor_reason`)
+  - Supervisor/Executor (`verdict`, `guard_reason`, execution attempt/result summary)
+- mirrored to EventLog as `stage=decision_trace` for post-run analysis and future reporter upgrades
 
 Operator-facing report scripts:
 - `python -m scripts.run_operator_daily_summary --event-log-path data/logs/events.jsonl --report-dir reports/operator_summary --day <YYYY-MM-DD>`

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 Role boundary:
 - builds/reduces/ranks candidate pool (Kiwoom-first, strategist-guided)
-- selects Top-1 candidate for monitor stage
+- selects final Top-1 candidate for monitor stage within strategist frame
 - does not create execution calls
 """
 
@@ -18,6 +18,7 @@ from graphs.nodes.skill_contracts import (
     extract_market_quotes,
     norm_symbol,
 )
+from libs.runtime.decision_trace import append_decision_trace
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 from libs.runtime.feature_engine import build_feature_map
 
@@ -329,6 +330,30 @@ def _extract_themes(state: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _extract_avoid_themes(state: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+
+    def add_many(values: Any) -> None:
+        if not isinstance(values, list):
+            return
+        for row in values:
+            t = str(row or "").strip().lower()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+
+    add_many(state.get("avoid_themes"))
+    strategist_output = state.get("strategist_output")
+    if isinstance(strategist_output, dict):
+        add_many(strategist_output.get("avoid_themes"))
+    scanner_guidance = state.get("scanner_guidance")
+    if isinstance(scanner_guidance, dict):
+        add_many(scanner_guidance.get("avoid_themes"))
+    return out
+
+
 def _extract_theme_symbol_index(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, set[str]]:
     idx: Dict[str, set[str]] = {}
 
@@ -405,6 +430,46 @@ def _apply_theme_filter(
         "theme_filter_reason": "",
         "matched_theme_count": int(matched_theme_count),
         "theme_matched_symbols": sorted(list(allowed)),
+    }
+
+
+def _apply_avoid_theme_filter(
+    rows: List[Dict[str, Any]],
+    *,
+    avoid_themes: List[str],
+    theme_symbol_index: Dict[str, set[str]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not rows:
+        return rows, {"avoid_filter_applied": False, "avoid_filter_reason": "no_rows", "avoid_theme_count": 0}
+    if not avoid_themes:
+        return rows, {"avoid_filter_applied": False, "avoid_filter_reason": "no_avoid_themes", "avoid_theme_count": 0}
+    if not theme_symbol_index:
+        return rows, {"avoid_filter_applied": False, "avoid_filter_reason": "theme_index_missing", "avoid_theme_count": 0}
+
+    excluded_symbols: set[str] = set()
+    matched = 0
+    for t in avoid_themes:
+        key = str(t or "").strip().lower()
+        syms = theme_symbol_index.get(key) or set()
+        if syms:
+            matched += 1
+            excluded_symbols.update(set(syms))
+
+    if not excluded_symbols:
+        return rows, {
+            "avoid_filter_applied": False,
+            "avoid_filter_reason": "avoid_theme_not_mapped",
+            "avoid_theme_count": int(matched),
+            "avoid_matched_symbols": [],
+        }
+
+    filtered = [r for r in rows if _norm_symbol(r.get("symbol")) not in excluded_symbols]
+    return filtered, {
+        "avoid_filter_applied": True,
+        "avoid_filter_reason": "",
+        "avoid_theme_count": int(matched),
+        "avoid_matched_symbols": sorted(list(excluded_symbols)),
+        "avoid_filtered_out_count": int(max(0, len(rows) - len(filtered))),
     }
 
 
@@ -488,6 +553,97 @@ def _resolve_scanner_score_weights(policy: Dict[str, Any]) -> Dict[str, float]:
         "gap_penalty": pf("score_weight_gap_penalty", "SCORE_WEIGHTS_GAP_PENALTY", 0.07),
         "open_order_penalty": pf("score_weight_open_order_penalty", "SCORE_WEIGHTS_OPEN_ORDER_PENALTY", 0.04),
     }
+
+
+def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
+    guidance = state.get("scanner_guidance")
+    if isinstance(guidance, dict):
+        out = dict(guidance)
+        raw_bias = out.get("scanner_bias")
+        if isinstance(raw_bias, dict):
+            out["scanner_bias"] = str(raw_bias.get("style") or "")
+        return out
+    strategist_output = state.get("strategist_output")
+    if isinstance(strategist_output, dict):
+        raw_bias = strategist_output.get("scanner_bias")
+        if isinstance(raw_bias, dict):
+            raw_bias = str(raw_bias.get("style") or "")
+        return {
+            "themes": list(strategist_output.get("themes") or []),
+            "avoid_themes": list(strategist_output.get("avoid_themes") or []),
+            "scanner_priority": list(strategist_output.get("scanner_priority") or []),
+            "scanner_bias": str(raw_bias or "").strip().lower(),
+            "trade_aggressiveness": strategist_output.get("trade_aggressiveness"),
+            "risk_tone": strategist_output.get("risk_tone"),
+        }
+    return {}
+
+
+def _normalize_priority_list(values: Any) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    if not isinstance(values, list):
+        return out
+    for row in values:
+        s = str(row or "").strip().lower()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def _apply_scanner_guidance_weights(
+    weights: Dict[str, float],
+    *,
+    scanner_bias: str,
+    scanner_priority: List[str],
+    trade_aggressiveness: str,
+    risk_tone: str,
+) -> Dict[str, float]:
+    out = dict(weights or {})
+    bias = str(scanner_bias or "").strip().lower()
+    priority_set = set(_normalize_priority_list(scanner_priority))
+    aggr = str(trade_aggressiveness or "").strip().lower()
+    tone = str(risk_tone or "").strip().lower()
+
+    if bias == "large_cap":
+        out["trading_value"] = float(out.get("trading_value", 0.0) * 1.10)
+        out["volatility_penalty"] = float(out.get("volatility_penalty", 0.0) * 1.12)
+    elif bias == "leader":
+        out["trend"] = float(out.get("trend", 0.0) * 1.08)
+        out["theme_boost"] = float(out.get("theme_boost", 0.0) * 1.08)
+    elif bias == "momentum":
+        out["momentum"] = float(out.get("momentum", 0.0) * 1.12)
+        out["volume_surge"] = float(out.get("volume_surge", 0.0) * 1.08)
+    elif bias == "value":
+        out["trading_value"] = float(out.get("trading_value", 0.0) * 1.10)
+        out["momentum"] = float(out.get("momentum", 0.0) * 0.94)
+
+    # Priority-driven mild boosts (additive-safe, scanner remains quantitative).
+    if "liquidity" in priority_set:
+        out["trading_value"] = float(out.get("trading_value", 0.0) * 1.10)
+    if "momentum" in priority_set or "breakout" in priority_set:
+        out["momentum"] = float(out.get("momentum", 0.0) * 1.12)
+    if "trend_strength" in priority_set or "trend" in priority_set:
+        out["trend"] = float(out.get("trend", 0.0) * 1.10)
+    if "volume_surge" in priority_set or "volume_confirmation" in priority_set:
+        out["volume_surge"] = float(out.get("volume_surge", 0.0) * 1.08)
+    if "risk_penalty" in priority_set or "drawdown_control" in priority_set:
+        out["volatility_penalty"] = float(out.get("volatility_penalty", 0.0) * 1.15)
+        out["gap_penalty"] = float(out.get("gap_penalty", 0.0) * 1.15)
+
+    # Risk tone / aggressiveness final tuning.
+    if aggr == "high" and tone in ("aggressive", "normal"):
+        out["momentum"] = float(out.get("momentum", 0.0) * 1.05)
+        out["intraday_strength"] = float(out.get("intraday_strength", 0.0) * 1.05)
+    if aggr == "low" or tone == "conservative":
+        out["volatility_penalty"] = float(out.get("volatility_penalty", 0.0) * 1.20)
+        out["gap_penalty"] = float(out.get("gap_penalty", 0.0) * 1.20)
+        out["intraday_strength"] = float(out.get("intraday_strength", 0.0) * 0.95)
+        out["momentum"] = float(out.get("momentum", 0.0) * 0.95)
+
+    return out
 
 
 def _candidate_quote_metrics(
@@ -645,6 +801,7 @@ def _build_kiwoom_candidates(
         include_watchlist=True,
     )
     themes = _extract_themes(state)
+    avoid_themes = _extract_avoid_themes(state)
     theme_symbol_index = _extract_theme_symbol_index(state, policy)
     rows, filter_meta = _apply_theme_filter(
         rows,
@@ -652,12 +809,19 @@ def _build_kiwoom_candidates(
         theme_symbol_index=theme_symbol_index,
         enable_theme_filter=enable_theme_filter,
     )
+    rows, avoid_meta = _apply_avoid_theme_filter(
+        rows,
+        avoid_themes=avoid_themes,
+        theme_symbol_index=theme_symbol_index,
+    )
     rows = rows[:candidate_limit]
     meta_out = dict(meta)
     meta_out.update(filter_meta)
+    meta_out.update(avoid_meta)
     meta_out.update(
         {
             "themes": list(themes),
+            "avoid_themes": list(avoid_themes),
             "candidate_limit": int(candidate_limit),
             "candidate_count": int(len(rows)),
             "condition_limit": int(condition_limit),
@@ -746,6 +910,18 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     w = _get_scanner_weights(policy)
     practical_w = _resolve_scanner_score_weights(policy)
+    scanner_guidance = _extract_scanner_guidance(state)
+    scanner_bias = str(scanner_guidance.get("scanner_bias") or "").strip().lower()
+    scanner_priority = _normalize_priority_list(scanner_guidance.get("scanner_priority"))
+    trade_aggressiveness = str(scanner_guidance.get("trade_aggressiveness") or "").strip().lower()
+    risk_tone = str(scanner_guidance.get("risk_tone") or "").strip().lower()
+    practical_w = _apply_scanner_guidance_weights(
+        practical_w,
+        scanner_bias=scanner_bias,
+        scanner_priority=scanner_priority,
+        trade_aggressiveness=trade_aggressiveness,
+        risk_tone=risk_tone,
+    )
     gs = _get_global_sentiment_score(state)
     gs_signal = _get_global_sentiment_signal(state)
     news_by_sym = _get_news_sentiment_map(state)
@@ -846,12 +1022,14 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         intraday_strength_component = max(0.0, _signed01(_to_float(metrics.get("change_pct")), 5.0))
 
         theme_matched_symbols = set(_norm_symbol(x) for x in list(pool_meta.get("theme_matched_symbols") or []))
+        avoid_theme_symbols = set(_norm_symbol(x) for x in list(pool_meta.get("avoid_matched_symbols") or []))
         theme_boost_component = 1.0 if (symbol in theme_matched_symbols and len(theme_matched_symbols) > 0) else 0.0
         sentiment_component = max(0.0, (0.7 * news_s) + (0.3 * gs))
 
         volatility_penalty = _norm01(volatility20, 0.03, 0.08)
         gap_penalty = _norm01(gap_pct, 0.03, 0.10)
         open_order_penalty = _norm01(float(order_penalty), 0.0, 3.0)
+        avoid_theme_penalty = 1.0 if (symbol in avoid_theme_symbols and len(avoid_theme_symbols) > 0) else 0.0
 
         positive_score = (
             practical_w["trading_value"] * trading_value_component
@@ -868,6 +1046,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             practical_w["volatility_penalty"] * volatility_penalty
             + practical_w["gap_penalty"] * gap_penalty
             + practical_w["open_order_penalty"] * open_order_penalty
+            + (0.20 * avoid_theme_penalty)
         ) * practical_scale
 
         # Keep backward compatibility with previous additive sentiment/risk knobs.
@@ -911,6 +1090,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "intraday_strength": float(practical_w["intraday_strength"] * intraday_strength_component),
             "theme_boost": float(practical_w["theme_boost"] * theme_boost_component),
             "sentiment": float(practical_w["sentiment"] * sentiment_component),
+            "avoid_theme_penalty": float(-0.20 * avoid_theme_penalty * practical_scale),
             "risk_penalty": float(-risk_penalty_score),
             "rank_bonus": float(rank_bonus),
         }
@@ -989,6 +1169,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "volatility_penalty_component": volatility_penalty,
                     "gap_penalty_component": gap_penalty,
                     "open_order_penalty_component": open_order_penalty,
+                    "avoid_theme_penalty_component": avoid_theme_penalty,
                     "news_sentiment_status": str(news_sig.get("status") or "fallback"),
                     "news_sentiment_source": str(news_sig.get("source") or ""),
                     "news_sentiment_reason": str(news_sig.get("reason") or ""),
@@ -1060,6 +1241,11 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
         "score_weights": dict(practical_w),
         "source_mix": dict(pool_meta.get("pool_source_mix") or {}),
+        "strategist_scanner_priority": list(scanner_priority),
+        "strategist_scanner_bias": scanner_bias or None,
+        "strategist_avoid_themes": list(pool_meta.get("avoid_themes") or []),
+        "strategist_trade_aggressiveness": trade_aggressiveness or None,
+        "strategist_risk_tone": risk_tone or None,
     }
 
     # Provide a normalized risk snapshot for Decision Node.
@@ -1102,6 +1288,38 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "top_stock": state.get("top_stock"),
             "top_score": top_score,
             "top_ranked_symbols": [str(x.get("symbol") or "") for x in list(state.get("ranked_candidates") or [])[:5]],
+            "strategist_scanner_priority": list(scanner_priority),
+            "strategist_scanner_bias": scanner_bias or "",
+            "strategist_avoid_themes": list(pool_meta.get("avoid_themes") or []),
+            "strategist_trade_aggressiveness": trade_aggressiveness or "",
+            "strategist_risk_tone": risk_tone or "",
+        },
+    )
+
+    top_candidates_summary: List[Dict[str, Any]] = []
+    for row in list(state.get("ranked_candidates") or [])[:3]:
+        if not isinstance(row, dict):
+            continue
+        top_candidates_summary.append(
+            {
+                "symbol": str(row.get("symbol") or ""),
+                "score_total": float(_to_float(row.get("score_total"))),
+                "risk_score": float(_to_float(row.get("risk_score"))),
+            }
+        )
+    append_decision_trace(
+        state,
+        agent="scanner",
+        event="candidate_selection",
+        payload={
+            "candidate_pool_size": int(len(scan_results_sorted)),
+            "top_candidates": top_candidates_summary,
+            "selected_symbol": state.get("top_stock") or None,
+            "score_breakdown_summary": (
+                dict(selected.get("score_breakdown") or {})
+                if isinstance(selected, dict)
+                else {}
+            ),
         },
     )
 

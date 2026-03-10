@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Tuple
 
+from libs.runtime.decision_trace import append_decision_trace
+
 
 def _import_api_catalog():
     from libs.catalog.api_catalog import ApiCatalog  # type: ignore
@@ -760,6 +762,66 @@ def _normalize_execution(
     return verdict
 
 
+def _append_execution_trace_entries(
+    state: Dict[str, Any],
+    *,
+    order: Dict[str, Any],
+    execution: Dict[str, Any],
+    allow_result: Any = None,
+) -> None:
+    action = str(order.get("action") or "").strip().upper()
+    reason = str(execution.get("reason") or "")
+    allowed = bool(execution.get("allowed"))
+    ok = bool(execution.get("ok"))
+    payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
+
+    supervisor_allow: Optional[bool] = None
+    supervisor_reason = ""
+    if allow_result is not None:
+        supervisor_allow = bool(getattr(allow_result, "allowed", getattr(allow_result, "allow", False)))
+        supervisor_reason = str(getattr(allow_result, "reason", "") or "")
+
+    append_decision_trace(
+        state,
+        agent="supervisor",
+        event="verdict",
+        payload={
+            "verdict": "approve" if allowed else "reject",
+            "guard_reason": reason or supervisor_reason,
+            "supervisor_allow": supervisor_allow,
+            "supervisor_reason": supervisor_reason,
+            "action": action,
+            "symbol": str(order.get("symbol") or ""),
+        },
+    )
+
+    execution_attempted = bool(allowed and action in ("BUY", "SELL"))
+    if not execution_attempted:
+        fill_status = "not_attempted"
+    elif ok:
+        fill_status = "accepted_or_filled"
+    else:
+        fill_status = "rejected"
+
+    append_decision_trace(
+        state,
+        agent="executor",
+        event="result",
+        payload={
+            "execution_attempted": execution_attempted,
+            "order_result": {
+                "ok": ok,
+                "reason": reason,
+                "mode": str(payload.get("mode") or ""),
+                "broker_code": str(payload.get("broker_code") or ""),
+                "broker_message": str(payload.get("broker_message") or ""),
+                "order_id": str(payload.get("order_id") or ""),
+            },
+            "fill_status_summary": fill_status,
+        },
+    )
+
+
 def execute_from_packet(state: dict) -> dict:
     """Execute directly from a TradeDecisionPacket.
 
@@ -785,6 +847,8 @@ def execute_from_packet(state: dict) -> dict:
     Supervisor = _import_supervisor()
     get_executor = _import_get_executor()
 
+    order: Dict[str, Any] = {}
+    allow_result: Any = None
     try:
         packet: Dict[str, Any] = state["decision_packet"]
 
@@ -819,6 +883,7 @@ def execute_from_packet(state: dict) -> dict:
                 order=order,
                 reason="noop_intent_skipped",
             )
+            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -838,6 +903,7 @@ def execute_from_packet(state: dict) -> dict:
                 reason=symbol_reason,
             )
             state["execution"]["symbol_guard"] = symbol_details
+            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -857,6 +923,7 @@ def execute_from_packet(state: dict) -> dict:
                 reason=limits_reason,
             )
             state["execution"]["order_limit_guard"] = limits_details
+            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -876,6 +943,7 @@ def execute_from_packet(state: dict) -> dict:
                 reason=portfolio_reason,
             )
             state["execution"]["portfolio_guard"] = portfolio_details
+            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -893,6 +961,7 @@ def execute_from_packet(state: dict) -> dict:
                 order=order,
                 reason="duplicate_buy_position_exists",
             )
+            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -912,6 +981,7 @@ def execute_from_packet(state: dict) -> dict:
                 reason=cash_reason,
             )
             state["execution"]["cash_guard"] = cash_details
+            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -935,6 +1005,7 @@ def execute_from_packet(state: dict) -> dict:
                 reason=degrade_reason,
             )
             state["execution"]["degrade_policy"] = degrade_details
+            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -960,6 +1031,7 @@ def execute_from_packet(state: dict) -> dict:
                 order=order,
                 reason=getattr(allow_result, "reason", "blocked"),
             )
+            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=allow_result)
             logger.log(run_id=run_id, stage="execute_from_packet", event="verdict", payload=state["execution"])
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -975,6 +1047,7 @@ def execute_from_packet(state: dict) -> dict:
             order=order,
         )
 
+        _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=allow_result)
         logger.log(run_id=run_id, stage="execute_from_packet", event="verdict", payload={"allowed": True})
         logger.log(run_id=run_id, stage="execute_from_packet", event="execution", payload=state["execution"])
         logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
@@ -982,5 +1055,6 @@ def execute_from_packet(state: dict) -> dict:
 
     except Exception as e:
         state["execution"] = {"allowed": False, "reason": str(e)}
+        _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=allow_result)
         logger.log(run_id=run_id, stage="execute_from_packet", event="error", payload={"error": str(e)})
         raise

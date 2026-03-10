@@ -18,9 +18,22 @@ This document defines agent responsibilities and handoff boundaries.
 ### Strategist
 - Builds high-level plan from market/news/global context.
 - Emits:
+  - `market_regime`
+  - `market_sentiment`
+  - `key_events`
   - `themes`
+  - `avoid_themes`
+  - `playbook`
+  - `scanner_bias` (`large_cap|leader|momentum|value`)
+  - `scanner_priority`
+  - `trade_aggressiveness`
+  - `risk_tone` (`conservative|normal|aggressive`)
+  - `monitor_guidance` (`hold_through_noise|defensive_exit|quick_take_profit`)
+  - `monitor_policy` (derived deterministic guard parameters)
+  - `report_focus`
   - `candidates` (Top-N, optional hint/fallback)
   - `strategist_output`
+- Strategist defines strategy frame; Scanner remains final symbol selector.
 
 ### Scanner
 - Builds candidate universe from Kiwoom market data in integrated chain path.
@@ -35,6 +48,7 @@ This document defines agent responsibilities and handoff boundaries.
   - halted/abnormal exclusion
   - liquidity thresholds (`MIN_TRADING_VALUE`, `MIN_VOLUME`)
 - Applies strategist theme/sector filtering when `theme_map` / `sector_map` is available.
+- Applies strategist ranking guidance (`scanner_priority`, aggressiveness/risk tone) additively.
 - Falls back to strategist candidate hints when Kiwoom pool is empty.
 - Produces:
   - `scan_results`
@@ -42,6 +56,7 @@ This document defines agent responsibilities and handoff boundaries.
   - `selected`
   - `top_stock`
   - `scanner_output`
+- Scanner must apply strategist framing (theme/bias/priority) and then select Top-1.
 
 ### Monitor
 - Handles entry/exit logic for selected stock.
@@ -53,6 +68,7 @@ This document defines agent responsibilities and handoff boundaries.
 - Keeps emergency exits (`emergency_halt`, `news_shock`) explicit and separate from normal confirmation flow.
 - Emits `intents` only.
 - Does not execute orders.
+- Must not rescan or re-rank stock universe.
 
 ### Supervisor
 - Evaluates approval/risk policy.
@@ -70,6 +86,19 @@ This document defines agent responsibilities and handoff boundaries.
 ### Reporter
 - Derives operator-readable summaries from logs/artifacts.
 - Does not alter runtime decisions.
+- Current implementation is deterministic/passive; AI-centered reporter upgrade is future work.
+
+## Minimal Decision Trace / Reason Ledger
+
+- Additive runtime ledger keys:
+  - `state["decision_trace_ledger"]`
+  - `state["reason_ledger"]` (alias)
+- Per-run (`run_id`) snapshots are appended by:
+  - Strategist, Scanner, Monitor, Supervisor, Executor
+- EventLog mirror:
+  - `stage=decision_trace`
+- Purpose:
+  - support post-run reporting and role-boundary audits without changing live decisions.
 
 ## Runtime Path Notes
 

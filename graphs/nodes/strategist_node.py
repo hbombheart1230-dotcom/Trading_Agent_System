@@ -10,11 +10,14 @@ Role boundary:
 
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, List
 
 from libs.data_quality.signal_contract import SIGNAL_STATUS_FALLBACK, make_signal
 from libs.market.global_sentiment import compute_global_sentiment_signal
 from libs.news.news_pipeline import collect_news_items, score_news_sentiment_signal
+from libs.runtime.decision_trace import append_decision_trace
+from libs.strategies.contracts import StrategistOutput
 from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
 from libs.strategies.candidates.market_rank import TopPicksCandidateGenerator
 from libs.strategies.universe_builder import build_candidate_universe
@@ -142,6 +145,301 @@ def _signal_score(sig: Any) -> float:
         return float(sig.get("score") or 0.0)
     except Exception:
         return 0.0
+
+
+def _to_float(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except Exception:
+        return float(default)
+
+
+def _risk_regime_label(score: float) -> str:
+    if score >= 0.20:
+        return "risk_on"
+    if score <= -0.20:
+        return "risk_off"
+    return "neutral"
+
+
+def _market_sentiment_label(score: float) -> str:
+    if score >= 0.15:
+        return "bullish"
+    if score <= -0.15:
+        return "bearish"
+    return "neutral"
+
+
+def _market_structure_label(*, state: Dict[str, Any]) -> str:
+    market_ctx = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    idx_trend = _to_float(market_ctx.get("index_trend"), 0.0)
+    realized_vol = _to_float(market_ctx.get("realized_vol"), 0.0)
+    breadth = _to_float(market_ctx.get("market_breadth"), 0.0)
+    if realized_vol >= 0.040:
+        return "high_volatility"
+    elif abs(idx_trend) >= 0.25 and (breadth >= 0.50 or breadth <= -0.50):
+        return "trend"
+    return "range"
+
+
+def _pick_playbook(*, market_structure: str, market_regime: str, market_sentiment: str) -> str:
+    if str(market_structure).startswith("high_volatility") or market_regime == "risk_off":
+        return "defensive"
+    if str(market_structure).startswith("trend") and market_regime == "risk_on" and market_sentiment == "bullish":
+        return "breakout"
+    if str(market_structure).startswith("trend"):
+        return "pullback"
+    if str(market_structure).startswith("range") and market_regime == "risk_on":
+        return "reversal"
+    return "defensive"
+
+
+def _scanner_priority(playbook: str, market_sentiment: str) -> List[str]:
+    if playbook == "breakout":
+        return ["momentum", "trend_strength", "volume_surge", "liquidity"]
+    if playbook == "pullback":
+        return ["trend_strength", "pullback_quality", "relative_strength", "liquidity"]
+    if playbook == "reversal":
+        return ["oversold_reversal", "volume_confirmation", "risk_reward", "liquidity"]
+    # defensive
+    base = ["liquidity", "risk_penalty", "low_volatility", "drawdown_control"]
+    if market_sentiment == "risk_off":
+        base.insert(0, "capital_preservation")
+    return base
+
+
+def _scanner_bias(*, playbook: str, market_regime: str) -> str:
+    if market_regime == "risk_off":
+        return "large_cap"
+    if playbook == "breakout":
+        return "momentum"
+    if playbook == "pullback":
+        return "leader"
+    if playbook == "reversal":
+        return "value"
+    return "leader"
+
+
+def _avoid_themes(*, market_sentiment: str, playbook: str) -> List[str]:
+    if market_sentiment == "risk_off" or playbook == "defensive":
+        return ["illiquid_microcap", "headline_only_momentum", "high_gap_speculative"]
+    if playbook == "reversal":
+        return ["overextended_breakout_without_volume", "late_chasing_moves"]
+    if playbook == "pullback":
+        return ["counter_trend_low_liquidity"]
+    return ["thin_liquidity_names"]
+
+
+def _trade_aggressiveness(*, market_regime: str, market_structure: str) -> str:
+    if market_regime == "risk_off" or str(market_structure).startswith("high_volatility"):
+        return "low"
+    if market_regime == "risk_on" and str(market_structure).startswith("trend"):
+        return "high"
+    return "medium"
+
+
+def _risk_tone(aggressiveness: str) -> str:
+    if aggressiveness == "low":
+        return "conservative"
+    if aggressiveness == "high":
+        return "aggressive"
+    return "normal"
+
+
+def _monitor_guidance(*, market_regime: str, playbook: str) -> str:
+    if market_regime == "risk_off" or playbook == "defensive":
+        return "defensive_exit"
+    if playbook == "breakout":
+        return "hold_through_noise"
+    return "quick_take_profit"
+
+
+def _monitor_policy(
+    *,
+    monitor_guidance: str,
+    trade_aggressiveness: str,
+    risk_tone: str,
+) -> Dict[str, Any]:
+    min_hold_sec = _to_int(os.getenv("MIN_HOLD_SECONDS", "600"), 600)
+    sell_cooldown = _to_int(os.getenv("SELL_COOLDOWN", os.getenv("SELL_COOLDOWN_SEC", "300")), 300)
+    confirm_ticks = _to_int(os.getenv("MONITOR_EXIT_CONFIRM_TICKS", "2"), 2)
+    adjustments: List[str] = []
+
+    mode = str(monitor_guidance or "").strip().lower()
+    if mode == "hold_through_noise":
+        min_hold_sec += 300
+        confirm_ticks += 1
+        sell_cooldown += 60
+        adjustments.append("mode:hold_through_noise")
+    elif mode == "defensive_exit":
+        confirm_ticks = max(1, confirm_ticks - 1)
+        min_hold_sec = max(0, min_hold_sec - 120)
+        adjustments.append("mode:defensive_exit")
+    elif mode == "quick_take_profit":
+        confirm_ticks = 1
+        min_hold_sec = max(0, min_hold_sec - 300)
+        sell_cooldown = max(60, min(sell_cooldown, 180))
+        adjustments.append("mode:quick_take_profit")
+
+    tone = str(risk_tone or "").strip().lower()
+    if tone == "conservative":
+        confirm_ticks += 1
+        min_hold_sec += 120
+        adjustments.append("risk_tone:conservative")
+    elif tone == "aggressive":
+        confirm_ticks = max(1, confirm_ticks - 1)
+        min_hold_sec = max(0, min_hold_sec - 60)
+        adjustments.append("risk_tone:aggressive")
+
+    aggr = str(trade_aggressiveness or "").strip().lower()
+    if aggr == "low":
+        confirm_ticks = max(confirm_ticks, 3)
+        adjustments.append("trade_aggressiveness:low")
+    elif aggr == "high":
+        confirm_ticks = max(1, confirm_ticks - 1)
+        adjustments.append("trade_aggressiveness:high")
+
+    return {
+        "min_hold_seconds": max(0, int(min_hold_sec)),
+        "sell_cooldown_seconds": max(0, int(sell_cooldown)),
+        "exit_confirm_ticks": max(1, min(6, int(confirm_ticks))),
+        "adjustments": list(adjustments),
+        "note": "monitor_manages_entry_exit_only",
+    }
+
+
+def _report_focus(*, playbook: str, themes: List[str]) -> List[str]:
+    if playbook == "defensive":
+        return ["theme_accuracy", "exit_quality", "overtrading", "guard_blocks"]
+    if playbook == "breakout":
+        return ["theme_accuracy", "scanner_fit", "exit_quality", "overtrading"]
+    return ["theme_accuracy", "scanner_fit", "exit_quality", "overtrading"]
+
+
+def _key_events(
+    *,
+    state: Dict[str, Any],
+    global_signal: Dict[str, Any],
+    news_signal_map: Dict[str, Dict[str, Any]],
+    market_regime: str,
+    playbook: str,
+) -> List[str]:
+    out: List[str] = []
+
+    def add(x: Any) -> None:
+        s = str(x or "").strip()
+        if s and s not in out:
+            out.append(s)
+
+    # highest priority: explicit externally-provided macro/event list
+    for key in ("macro_events", "global_events", "major_events"):
+        vals = state.get(key)
+        if isinstance(vals, list):
+            for row in vals:
+                add(row)
+            if out:
+                break
+
+    if not out:
+        add(
+            "global_sentiment "
+            f"score={_signal_score(global_signal):.3f} "
+            f"status={str(global_signal.get('status') or '')} "
+            f"source={str(global_signal.get('source') or '')}"
+        )
+
+        unavailable = 0
+        fallback = 0
+        for row in news_signal_map.values():
+            if not isinstance(row, dict):
+                continue
+            st = str(row.get("status") or "").strip().lower()
+            if st == "unavailable":
+                unavailable += 1
+            elif st == "fallback":
+                fallback += 1
+        add(f"news_signal_health unavailable={unavailable} fallback={fallback}")
+        add(f"market_regime={market_regime}")
+        add(f"playbook={playbook}")
+
+    return out[:5]
+
+
+def _extract_ai_overrides(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, Any]:
+    # External LLM strategists can inject this shape without breaking node contract.
+    for key in ("ai_strategist_output", "strategist_ai_output", "strategic_brief"):
+        raw = state.get(key)
+        if isinstance(raw, dict):
+            return dict(raw)
+    raw_policy = policy.get("strategist_ai_output") if isinstance(policy.get("strategist_ai_output"), dict) else {}
+    return dict(raw_policy)
+
+
+def _merge_override_text_list(base: List[str], override_values: Any, *, limit: int = 8) -> List[str]:
+    if not isinstance(override_values, list):
+        return list(base)[:limit]
+    merged: List[str] = []
+    seen = set()
+    for row in list(override_values) + list(base):
+        s = str(row or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        merged.append(s)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _build_strategic_answers(
+    *,
+    market_regime: str,
+    market_sentiment: str,
+    key_events: List[str],
+    themes: List[str],
+    avoid_themes: List[str],
+    playbook: str,
+    scanner_bias: str,
+    scanner_priority: List[str],
+    trade_aggressiveness: str,
+    risk_tone: str,
+    monitor_guidance: str,
+    report_focus: List[str],
+) -> Dict[str, Any]:
+    return {
+        "q1_market_mode": market_regime,
+        "q2_global_macro_events": list(key_events),
+        "q3_leading_themes": list(themes),
+        "q4_theme_strength_check": "use_scanner_score_breakdown_and_theme_boost",
+        "q5_preferred_playbook": playbook,
+        "q6_scanner_priority_stocks": list(scanner_priority),
+        "q7_avoid_conditions": list(avoid_themes),
+        "q8_trade_aggressiveness": trade_aggressiveness,
+        "q9_risk_tone": risk_tone,
+        "q10_scanner_ranking_priority": list(scanner_priority),
+        "q11_monitor_exit_guidance": monitor_guidance,
+        "q12_reporter_focus": list(report_focus),
+        "scanner_bias": scanner_bias,
+    }
+
+
+def _make_event_logger(state: Dict[str, Any]) -> Any:
+    injected = state.get("event_logger")
+    if injected is not None and hasattr(injected, "log"):
+        return injected
+    from libs.core.event_logger import EventLogger
+
+    log_path = os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl")
+    return EventLogger(log_path=Path(log_path))
+
+
+def _log_strategist_summary(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    try:
+        logger = _make_event_logger(state)
+        run_id = str(state.get("run_id") or "strategist-node")
+        logger.log(run_id=run_id, stage="strategist", event="summary", payload=dict(payload))
+    except Exception:
+        return
 
 
 def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -330,12 +628,152 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     state["candidates"] = candidates
     themes = _extract_themes(state, policy)
+    ai_overrides = _extract_ai_overrides(state, policy)
+    themes = _merge_override_text_list(themes, ai_overrides.get("themes"), limit=5)
     state["themes"] = themes
     state["candidate_symbols"] = [str(c.get("symbol") or "") for c in candidates if str(c.get("symbol") or "").strip()]
-    state["strategist_output"] = {
+
+    market_regime = _risk_regime_label(gs)
+    market_sentiment = _market_sentiment_label(gs)
+    market_structure = _market_structure_label(state=state)
+    playbook = _pick_playbook(
+        market_structure=market_structure,
+        market_regime=market_regime,
+        market_sentiment=market_sentiment,
+    )
+    scanner_priority = _scanner_priority(playbook, market_regime)
+    scanner_bias = _scanner_bias(playbook=playbook, market_regime=market_regime)
+    avoid_themes = _avoid_themes(market_sentiment=market_sentiment, playbook=playbook)
+    trade_aggressiveness = _trade_aggressiveness(market_regime=market_regime, market_structure=market_structure)
+    risk_tone = _risk_tone(trade_aggressiveness)
+    monitor_guidance = _monitor_guidance(market_regime=market_regime, playbook=playbook)
+    monitor_policy = _monitor_policy(
+        monitor_guidance=monitor_guidance,
+        trade_aggressiveness=trade_aggressiveness,
+        risk_tone=risk_tone,
+    )
+    report_focus = _report_focus(playbook=playbook, themes=themes)
+    key_events = _key_events(
+        state=state,
+        global_signal=global_signal,
+        news_signal_map=news_signal_map,
+        market_regime=market_regime,
+        playbook=playbook,
+    )
+
+    # Optional AI overrides are additive and bounded to keep deterministic fallback.
+    market_regime = str(ai_overrides.get("market_regime") or market_regime).strip() or market_regime
+    market_sentiment = str(ai_overrides.get("market_sentiment") or market_sentiment).strip() or market_sentiment
+    playbook = str(ai_overrides.get("playbook") or playbook).strip() or playbook
+    trade_aggressiveness = str(ai_overrides.get("trade_aggressiveness") or trade_aggressiveness).strip() or trade_aggressiveness
+    risk_tone = str(ai_overrides.get("risk_tone") or risk_tone).strip() or risk_tone
+    key_events = _merge_override_text_list(key_events, ai_overrides.get("key_events"), limit=5)
+    avoid_themes = _merge_override_text_list(avoid_themes, ai_overrides.get("avoid_themes"), limit=6)
+    scanner_priority = _merge_override_text_list(scanner_priority, ai_overrides.get("scanner_priority"), limit=6)
+    report_focus = _merge_override_text_list(report_focus, ai_overrides.get("report_focus"), limit=6)
+    scanner_bias = str(ai_overrides.get("scanner_bias") or scanner_bias).strip().lower() or scanner_bias
+    monitor_guidance = str(ai_overrides.get("monitor_guidance") or monitor_guidance).strip().lower() or monitor_guidance
+    monitor_policy_override = ai_overrides.get("monitor_policy")
+    if isinstance(monitor_policy_override, dict):
+        monitor_policy = {**monitor_policy, **dict(monitor_policy_override)}
+    else:
+        monitor_policy = _monitor_policy(
+            monitor_guidance=monitor_guidance,
+            trade_aggressiveness=trade_aggressiveness,
+            risk_tone=risk_tone,
+        )
+
+    strategic_answers = _build_strategic_answers(
+        market_regime=market_regime,
+        market_sentiment=market_sentiment,
+        key_events=key_events,
+        themes=themes,
+        avoid_themes=avoid_themes,
+        playbook=playbook,
+        scanner_bias=scanner_bias,
+        scanner_priority=scanner_priority,
+        trade_aggressiveness=trade_aggressiveness,
+        risk_tone=risk_tone,
+        monitor_guidance=monitor_guidance,
+        report_focus=report_focus,
+    )
+
+    state["market_regime"] = market_regime
+    state["market_sentiment"] = market_sentiment
+    state["market_structure"] = market_structure
+    state["key_events"] = list(key_events)
+    state["avoid_themes"] = list(avoid_themes)
+    state["playbook"] = playbook
+    state["scanner_bias"] = scanner_bias
+    state["scanner_priority"] = list(scanner_priority)
+    state["trade_aggressiveness"] = trade_aggressiveness
+    state["risk_tone"] = risk_tone
+    state["monitor_guidance"] = monitor_guidance
+    state["monitor_policy"] = dict(monitor_policy)
+    state["report_focus"] = list(report_focus)
+    state["scanner_guidance"] = {
         "themes": list(themes),
-        "candidates": list(state["candidate_symbols"]),
-        "candidate_count": len(list(state["candidate_symbols"])),
-        "source": "strategist_node",
+        "avoid_themes": list(avoid_themes),
+        "scanner_bias": scanner_bias,
+        "scanner_priority": list(scanner_priority),
+        "trade_aggressiveness": trade_aggressiveness,
+        "risk_tone": risk_tone,
     }
+    strategist_output = StrategistOutput(
+        market_regime=market_regime,
+        market_sentiment=market_sentiment,
+        key_events=list(key_events),
+        themes=list(themes),
+        avoid_themes=list(avoid_themes),
+        playbook=playbook,
+        scanner_bias=scanner_bias if scanner_bias in ("large_cap", "leader", "momentum", "value") else "leader",
+        scanner_priority=list(scanner_priority),
+        trade_aggressiveness=trade_aggressiveness,
+        risk_tone=risk_tone if risk_tone in ("conservative", "normal", "aggressive") else "normal",
+        monitor_guidance=(
+            monitor_guidance
+            if monitor_guidance in ("hold_through_noise", "defensive_exit", "quick_take_profit")
+            else "defensive_exit"
+        ),
+        report_focus=list(report_focus),
+        candidates=list(state["candidate_symbols"]),
+        candidate_count=len(list(state["candidate_symbols"])),
+        candidate_hints=list(state["candidate_symbols"]),
+        strategic_answers=dict(strategic_answers),
+        source="strategist_node",
+    ).to_dict()
+    strategist_output["monitor_policy"] = dict(monitor_policy)
+    strategist_output["market_structure"] = market_structure
+    state["strategist_output"] = strategist_output
+    _log_strategist_summary(
+        state,
+        {
+            "market_regime": market_regime,
+            "market_sentiment": market_sentiment,
+            "themes": list(themes),
+            "avoid_themes": list(avoid_themes),
+            "playbook": playbook,
+            "scanner_bias": scanner_bias,
+            "scanner_priority": list(scanner_priority),
+            "trade_aggressiveness": trade_aggressiveness,
+            "risk_tone": risk_tone,
+            "monitor_guidance": monitor_guidance,
+            "candidate_count": len(list(state["candidate_symbols"])),
+            "report_focus": list(report_focus)[:3],
+        },
+    )
+    append_decision_trace(
+        state,
+        agent="strategist",
+        event="strategic_frame",
+        payload={
+            "market_regime": market_regime,
+            "market_sentiment": market_sentiment,
+            "themes": list(themes)[:5],
+            "playbook": playbook,
+            "scanner_bias": scanner_bias,
+            "risk_tone": risk_tone,
+            "monitor_guidance": monitor_guidance,
+        },
+    )
     return state

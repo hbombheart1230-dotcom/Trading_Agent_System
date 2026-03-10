@@ -65,6 +65,7 @@ class Strategist:
 
     This class does not perform canonical candidate generation. It maps
     already-produced strategist fields into the legacy `Plan` contract.
+    Final symbol selection remains Scanner responsibility.
     """
 
     def plan(self, *, context: Dict[str, Any]) -> Plan:

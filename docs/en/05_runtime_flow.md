@@ -3,8 +3,8 @@
 ## 5.1 Integrated Chain Sequence
 
 Operator -> Commander: start_run(goal, config)  
-Commander -> Strategist: decide themes/sectors (+ optional candidate hints)  
-Strategist -> Commander: `strategist_output` (`themes`, optional `candidates`)  
+Commander -> Strategist: build strategic brief (regime/sentiment/themes/playbook/guidance)  
+Strategist -> Commander: `strategist_output` (`market_regime`, `market_sentiment`, `themes`, `scanner_bias`, `scanner_priority`, `monitor_guidance`, optional `candidates`)  
 Commander -> Scanner: build Kiwoom candidate pool, reduce/filter, then score/rank  
 Scanner -> Commander: ranked list + score breakdown + `top_stock`  
 Commander -> Monitor: evaluate entry/exit for `top_stock`  
@@ -15,6 +15,7 @@ Commander -> Executor: execute only if approved
 Executor -> Broker(Mock/Real): place/cancel/status  
 Broker -> Executor: order result/status  
 Executor -> EventLog: append events  
+All key agents -> Decision Trace: append compact per-run reason snapshots (`stage=decision_trace`)  
 Commander -> Reporter: generate reports  
 Reporter -> Operator: summary
 
@@ -32,6 +33,7 @@ Rule: the same `intent_id` must not re-enter `executing`.
 Execution note:
 - `SYMBOL_ALLOWLIST` is an optional guard. If unset, candidate symbols from Strategist/Scanner are not restricted by allowlist.
 - Scanner candidate source defaults to Kiwoom (`CANDIDATE_SOURCE=kiwoom`) with strategist fallback when Kiwoom pool is empty.
+- Scanner applies strategist ranking guidance additively (`scanner_priority`, aggressiveness/risk tone).
 - Scanner can be tuned with: `TOP_CANDIDATE_POOL`, `MIN_TRADING_VALUE`, `MIN_VOLUME`, `ENABLE_THEME_FILTER`, `SCORE_WEIGHTS_*`.
 - Monitor normal SELL exits are stabilized by:
   - `MIN_HOLD_SECONDS`
