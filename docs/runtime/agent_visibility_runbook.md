@@ -80,6 +80,7 @@ Optional:
 ```bash
 python -m scripts.query_strategist_llm_events --path data/logs/events.jsonl --limit 20
 python -m scripts.query_trade_reason_chain --path data/logs/events.jsonl --only-broker-success --limit 20
+python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jsonl --report-dir reports/trade_explain --day 2026-03-10 --json
 
 set EVENT_LOG_PATH=./data/logs/events.jsonl
 set REPORT_DAY=2026-03-06
@@ -89,3 +90,15 @@ set EVENT_LOG_PATH=./data/logs/events.jsonl
 set METRICS_DAY=2026-03-06
 python -m scripts.generate_metrics_report
 ```
+
+## 6) Trade Explain Report
+
+- Output:
+  - `reports/trade_explain/trade_explain_<day>.md`
+  - `reports/trade_explain/trade_explain_<day>.json`
+- Purpose:
+  - Show BUY/SELL execution timeline with reason chain.
+  - Build FIFO sell-pair analysis (hold duration + estimated realized PnL).
+  - Surface scanner/monitor/decision context in one place.
+- Known data gap:
+  - Raw news headline text and scanner `score_breakdown` depend on current event payload policy and may be missing.

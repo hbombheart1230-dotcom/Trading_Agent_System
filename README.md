@@ -232,6 +232,12 @@ Event log (JSONL):
 
 LLM telemetry tracked separately from trading logic.
 
+Operator-facing report scripts:
+- `python -m scripts.run_operator_daily_summary --event-log-path data/logs/events.jsonl --report-dir reports/operator_summary --day <YYYY-MM-DD>`
+- `python -m scripts.run_decision_story_report --event-log-path data/logs/events.jsonl --report-dir reports/decision_story --day <YYYY-MM-DD>`
+- `python -m scripts.run_run_card_report --event-log-path data/logs/events.jsonl --report-dir reports/run_cards --day <YYYY-MM-DD>`
+- `python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jsonl --report-dir reports/trade_explain --day <YYYY-MM-DD>`
+
 ------------------------------------------------------------------------
 
 # 8. Security & Governance

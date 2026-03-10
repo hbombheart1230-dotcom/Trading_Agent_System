@@ -6,3 +6,4 @@ from .operator_visibility import (
     generate_run_card_report,
     generate_operator_visibility_bundle,
 )
+from .trade_explain import generate_trade_explain_report
