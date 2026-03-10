@@ -21,3 +21,28 @@ def test_tick_runs_when_market_open():
     out = run_m13_tick(state, dt=dt, market_hours=MarketHours(), run_m10=fake_m10)
     assert out["tick_skipped"] is False
     assert out["ran_m10"] is True
+
+
+def test_tick_runs_integrated_chain_when_selected():
+    state = {"m13_tick_pipeline": "integrated_chain", "ran_chain": False}
+    dt = datetime(2026, 2, 13, 10, 0, tzinfo=KST)  # Fri 10:00
+
+    def fake_m10(s):
+        s["ran_m10"] = True
+        return s
+
+    def fake_integrated(s):
+        s["ran_chain"] = True
+        return s
+
+    out = run_m13_tick(
+        state,
+        dt=dt,
+        market_hours=MarketHours(),
+        run_m10=fake_m10,
+        run_integrated=fake_integrated,
+    )
+    assert out["tick_skipped"] is False
+    assert out["tick_pipeline"] == "integrated_chain"
+    assert out["ran_chain"] is True
+    assert "ran_m10" not in out

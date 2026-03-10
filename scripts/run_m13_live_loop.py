@@ -30,9 +30,19 @@ def _first_universe_symbol() -> str:
     return ""
 
 
-def _build_initial_state(symbol: str) -> Dict[str, Any]:
+def _normalize_tick_pipeline(v: Any) -> str:
+    raw = str(v or "").strip().lower()
+    if raw in ("integrated_chain", "integrated", "chain"):
+        return "integrated_chain"
+    return "legacy_m10"
+
+
+def _build_initial_state(symbol: str, *, tick_pipeline: str) -> Dict[str, Any]:
     # Minimal initial state; nodes/pipelines will enrich it.
-    return {"symbol": symbol} if symbol else {}
+    state: Dict[str, Any] = {"m13_tick_pipeline": _normalize_tick_pipeline(tick_pipeline)}
+    if symbol:
+        state["symbol"] = symbol
+    return state
 
 
 def _to_int(v: Any, default: int) -> int:
@@ -151,6 +161,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=os.getenv("SYMBOL", "").strip() or _first_universe_symbol(),
         help="Primary symbol for live loop; defaults to SYMBOL env or first UNIVERSE_SYMBOLS entry.",
     )
+    p.add_argument(
+        "--tick-pipeline",
+        choices=["legacy_m10", "integrated_chain"],
+        default=_normalize_tick_pipeline(os.getenv("M13_TICK_PIPELINE", "legacy_m10")),
+        help="Tick runtime path: legacy M10 pipeline or integrated strategist->scanner->monitor chain.",
+    )
     p.add_argument("--once", action="store_true", help="Run a single iteration and exit.")
     p.add_argument("--sleep-sec", type=int, default=int(os.getenv("SCAN_INTERVAL_SEC", "60")), help="Sleep seconds between iterations.")
     p.add_argument("--session-hard-gate", action="store_true", help="Abort runtime if market session is closed.")
@@ -168,9 +184,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     args = p.parse_args(argv)
 
-    state: Dict[str, Any] = _build_initial_state(str(args.symbol or "").strip())
-    if not state.get("symbol"):
-        raise SystemExit("symbol is required: set --symbol or SYMBOL/UNIVERSE_SYMBOLS env")
+    state: Dict[str, Any] = _build_initial_state(
+        str(args.symbol or "").strip(),
+        tick_pipeline=str(args.tick_pipeline or "legacy_m10"),
+    )
+    if state.get("m13_tick_pipeline") == "legacy_m10" and not state.get("symbol"):
+        raise SystemExit("symbol is required for legacy_m10: set --symbol or SYMBOL/UNIVERSE_SYMBOLS env")
 
     session_hard_gate = _session_hard_gate_enabled(
         session_hard_gate_flag=bool(args.session_hard_gate),

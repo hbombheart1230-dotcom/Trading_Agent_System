@@ -56,3 +56,14 @@ def test_m13_session_hard_gate_defaults_true(monkeypatch):
 def test_m13_session_hard_gate_can_be_disabled_for_offhours(monkeypatch):
     monkeypatch.setenv("M31_MOCK_EXAM_SESSION_HARD_GATE", "true")
     assert live._session_hard_gate_enabled(session_hard_gate_flag=False, allow_offhours_flag=True) is False
+
+
+def test_m13_initial_state_keeps_tick_pipeline():
+    st = live._build_initial_state("005930", tick_pipeline="integrated_chain")
+    assert st["symbol"] == "005930"
+    assert st["m13_tick_pipeline"] == "integrated_chain"
+
+
+def test_m13_initial_state_normalizes_unknown_pipeline_to_legacy():
+    st = live._build_initial_state("005930", tick_pipeline="unknown")
+    assert st["m13_tick_pipeline"] == "legacy_m10"

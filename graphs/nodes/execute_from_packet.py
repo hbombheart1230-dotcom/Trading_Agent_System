@@ -119,6 +119,16 @@ def _parse_symbol_allowlist(raw: Optional[str]) -> set[str]:
     return {x.strip() for x in v.split(",") if x.strip()}
 
 
+def _resolve_limit_env_value(primary: str, alias: str) -> Tuple[int, str]:
+    v = _coerce_int(os.getenv(primary), 0)
+    if v > 0:
+        return int(v), str(primary)
+    alt = _coerce_int(os.getenv(alias), 0)
+    if alt > 0:
+        return int(alt), str(alias)
+    return 0, str(primary)
+
+
 def _evaluate_symbol_allowlist_guard(order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
     action = str(order.get("action") or "").strip().upper()
     if action not in ("BUY", "SELL"):
@@ -142,6 +152,41 @@ def _evaluate_symbol_allowlist_guard(order: Dict[str, Any]) -> Tuple[bool, str, 
         return True, "", details
     details["allowlist"] = sorted(allow)
     return False, "symbol_not_allowlisted", details
+
+
+def _evaluate_order_limit_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    if action not in ("BUY", "SELL"):
+        return True, "", {"guard_applied": False, "action": action}
+
+    qty = _coerce_int(order.get("qty"), 0)
+    max_qty, qty_key = _resolve_limit_env_value("MAX_ORDER_QTY", "MAX_QTY")
+    max_notional, notional_key = _resolve_limit_env_value("MAX_ORDER_NOTIONAL", "MAX_NOTIONAL")
+    price = _resolve_order_price_for_notional(state, order)
+
+    details: Dict[str, Any] = {
+        "guard_applied": True,
+        "action": action,
+        "qty": int(qty),
+        "price": float(price) if price is not None else None,
+        "max_qty_key": str(qty_key),
+        "max_qty": int(max_qty),
+        "max_notional_key": str(notional_key),
+        "max_notional": int(max_notional),
+    }
+
+    if max_qty > 0 and qty > max_qty:
+        details["limit_exceeded"] = "qty"
+        return False, "order_qty_limit_exceeded", details
+
+    if max_notional > 0 and qty > 0 and price > 0:
+        notional = float(qty) * float(price)
+        details["order_notional"] = float(notional)
+        if notional > float(max_notional):
+            details["limit_exceeded"] = "notional"
+            return False, "order_notional_limit_exceeded", details
+
+    return True, "", details
 
 
 def _extract_order_symbol(order: Dict[str, Any]) -> str:
@@ -798,6 +843,25 @@ def execute_from_packet(state: dict) -> dict:
                 stage="execute_from_packet",
                 event="symbol_guard_block",
                 payload={"allowed": False, "reason": symbol_reason, **symbol_details},
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        limits_allowed, limits_reason, limits_details = _evaluate_order_limit_guard(state, order)
+        if not limits_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=limits_reason,
+            )
+            state["execution"]["order_limit_guard"] = limits_details
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="order_limit_guard_block",
+                payload={"allowed": False, "reason": limits_reason, **limits_details},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state

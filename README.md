@@ -60,6 +60,9 @@ Notes:
 - Samsung-only trading is **not** the target architecture.
 - `005930` in examples is illustrative sample data.
 - `SYMBOL_ALLOWLIST` is an optional operational guard.
+- Live loop tick path is selectable with `M13_TICK_PIPELINE`:
+  - `legacy_m10` (default compatibility path)
+  - `integrated_chain` (Strategist -> Scanner -> Monitor)
 
 Example strategist output:
 

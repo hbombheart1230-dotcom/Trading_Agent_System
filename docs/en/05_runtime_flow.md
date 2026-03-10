@@ -31,3 +31,12 @@ Rule: the same `intent_id` must not re-enter `executing`.
 
 Execution note:
 - `SYMBOL_ALLOWLIST` is an optional guard. If unset, candidate symbols from Strategist/Scanner are not restricted by allowlist.
+
+## 5.3 M13 Tick Runtime Path
+
+- `scripts/run_m13_live_loop.py` supports:
+  - `legacy_m10` (default compatibility path)
+  - `integrated_chain` (Strategist -> Scanner -> Monitor)
+- Control with:
+  - CLI `--tick-pipeline`
+  - ENV `M13_TICK_PIPELINE`

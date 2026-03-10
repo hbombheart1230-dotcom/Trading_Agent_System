@@ -29,3 +29,12 @@ Commander -> Reporter: 보고서 생성
 
 실행 가드 참고:
 - `SYMBOL_ALLOWLIST`는 선택 가드다. 비어 있으면 Strategist/Scanner 후보를 allowlist로 제한하지 않는다.
+
+## 5.3 M13 Tick Runtime Path
+
+- `scripts/run_m13_live_loop.py`:
+  - `legacy_m10` (default)
+  - `integrated_chain` (Strategist -> Scanner -> Monitor)
+- Control:
+  - CLI `--tick-pipeline`
+  - ENV `M13_TICK_PIPELINE`

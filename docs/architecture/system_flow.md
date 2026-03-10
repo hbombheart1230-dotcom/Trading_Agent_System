@@ -28,6 +28,9 @@
 ## Runtime Notes
 
 - Polling runtime (`scripts/run_m13_live_loop.py`) remains loop-based.
+- Tick pipeline can be selected:
+  - `M13_TICK_PIPELINE=legacy_m10` (default compatibility path)
+  - `M13_TICK_PIPELINE=integrated_chain` (Strategist -> Scanner -> Monitor chain)
 - Guardrails are enforced in execution stage (`execute_from_packet`).
 - Sell timing protections are applied in monitor/decision logic:
   - `MIN_HOLD_SECONDS`

@@ -1,55 +1,68 @@
-# Agent Layer (M15)
+# Agent Layer
 
-이 문서는 Trading_Agent_System의 **M15 Agent Layer 구조**를 설명한다.
+This document defines agent responsibilities and handoff boundaries.
 
-## 목표
+## Goal
 
-- 전략/탐색/모니터링/리포팅/실행 조정을 **분리된 책임**으로 구성
-- 실거래 API 호출은 **Execution Layer**로만 제한
-- 승인(approval) 및 안전장치는 Supervisor/Execution Layer에서 일관되게 적용
+- Keep decision and execution responsibilities separated.
+- Ensure agents create decisions/intents only.
+- Keep all real broker execution inside execution layer with guard precedence.
 
-## 구성
-
-```
-libs/agent/
-├── commander.py   # 오케스트레이션
-├── strategist.py  # 전략/계획 수립
-├── scanner.py     # 후보/신호 탐색 → intent 생성
-├── monitor.py     # 상태 추적(포지션/오픈 인텐트 등)
-├── reporter.py    # 요약/리포트 생성
-└── executor.py    # Agent 레벨 Executor (Execution Layer 호출 전 단계)
-```
-
-## 역할
+## Responsibility Split
 
 ### Commander
-- 한 사이클(run)을 오케스트레이션
-- Strategist → Scanner → AgentExecutor → Monitor → Reporter 흐름을 관리
+- Orchestrates runtime path and node order.
+- Owns transition/state routing and runtime-level events.
+- Does not select symbols directly and does not execute broker APIs.
 
 ### Strategist
-- 시장/제약 조건을 받아 **Plan** 생성
-- 향후 LLM/뉴스/정책을 붙이더라도 Strategist에 캡슐화
+- Builds high-level plan from market/news/global context.
+- Emits:
+  - `themes`
+  - `candidates` (Top-N)
+  - `strategist_output`
 
 ### Scanner
-- Plan을 받아 **구체적인 order intent** 목록을 생성
-- (초기에는 pass-through/룰 기반, 이후 점진 확장)
-
-### AgentExecutor
-- **승인 모드(approval_mode)** 와 **EXECUTION_ENABLED**를 반영
-- 기존 `ExecutorAgent`(two-phase + skill runner)를 감싸는 래퍼
+- Scores strategist candidates only in integrated chain path.
+- Produces:
+  - `scan_results`
+  - `selected`
+  - `top_stock`
+  - `scanner_output`
 
 ### Monitor
-- 실행 결과를 상태 저장소(repo/state_store 등)에 반영하는 위치
+- Handles entry/exit logic for selected stock.
+- Applies sell protections:
+  - `MIN_HOLD_SECONDS`
+  - `SELL_COOLDOWN` or `SELL_COOLDOWN_SEC`
+  - `MONITOR_EXIT_CONFIRM_TICKS`
+- Emits `intents` only.
+- Does not execute orders.
+
+### Supervisor
+- Evaluates approval/risk policy.
+- Can approve/reject/modify before execution.
+
+### Executor / Execution Layer
+- Converts approved decision packet into broker request.
+- Enforces execution guards and mode safety:
+  - `EXECUTION_ENABLED`
+  - `ALLOW_REAL_EXECUTION`
+  - optional `SYMBOL_ALLOWLIST`
+  - size/notional constraints
+- Performs the only actual broker call path.
 
 ### Reporter
-- 실행 결과/의사결정을 사용자/UI/로그에 전달 가능한 구조로 요약
+- Derives operator-readable summaries from logs/artifacts.
+- Does not alter runtime decisions.
 
-## 호출 흐름(개념)
+## Runtime Path Notes
 
-```
-Strategist → Scanner → AgentExecutor
-        ↓
-     Commander
-        ↓
-Monitor → Reporter
-```
+- Integrated chain path:
+  - Strategist -> Scanner -> Monitor -> Supervisor/Executor
+- Legacy live tick path still exists for compatibility (`m10` pipeline).
+- `scripts/run_m13_live_loop.py` can select tick pipeline with:
+  - `--tick-pipeline legacy_m10`
+  - `--tick-pipeline integrated_chain`
+  - env `M13_TICK_PIPELINE`
+

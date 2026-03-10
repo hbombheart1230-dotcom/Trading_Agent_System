@@ -32,6 +32,18 @@
    - `monitor_output`
 4. Supervisor/Executor remain the only approval/execution path.
 
+## M13 Tick Pipeline Selection
+
+- `scripts/run_m13_live_loop.py` supports two tick paths:
+  - `legacy_m10` (default): `m13_tick -> m10_live_pipeline -> decide_trade -> execute_from_packet`
+  - `integrated_chain`: `m13_tick -> commander_runtime(mode=integrated_chain)`
+- Control knobs:
+  - CLI: `--tick-pipeline legacy_m10|integrated_chain`
+  - ENV: `M13_TICK_PIPELINE`
+- Symbol requirement:
+  - `legacy_m10` requires `symbol`
+  - `integrated_chain` can run without a preselected symbol
+
 ## Operational Visibility
 
 - Runtime/agent visibility reference:
