@@ -4,7 +4,7 @@
 
 Operator -> Commander: start_run(goal, config)  
 Commander -> Strategist: build strategic brief (regime/sentiment/themes/playbook/guidance)  
-Strategist -> Commander: `strategist_output` (`market_regime`, `market_sentiment`, `themes`, `playbook`, `scanner_bias`, `scanner_priority`, `monitor_guidance`, optional `candidates`)  
+Strategist -> Commander: canonical `state["strategist_output"]` (DTO: `libs/strategies/contracts.py::StrategistOutput`) with (`market_regime`, `market_sentiment`, `themes`, `playbook`, `scanner_bias`, `scanner_priority`, `monitor_guidance`, optional `candidates`)  
 Commander -> Scanner: build Kiwoom candidate pool, reduce/filter, then score/rank  
 Scanner -> Commander: ranked list + score breakdown + `top_stock`  
 Commander -> Monitor: evaluate entry/exit for `top_stock`  
@@ -33,6 +33,7 @@ Rule: the same `intent_id` must not re-enter `executing`.
 Execution note:
 - `SYMBOL_ALLOWLIST` is an optional guard. If unset, candidate symbols from Strategist/Scanner are not restricted by allowlist.
 - Scanner candidate source defaults to Kiwoom (`CANDIDATE_SOURCE=kiwoom`) with strategist fallback when Kiwoom pool is empty.
+- Scanner guidance source is canonical `state["strategist_output"]` (with backward-compatible `scanner_guidance` overrides).
 - Scanner applies strategist ranking guidance additively (`scanner_priority`, aggressiveness/risk tone).
 - Scanner also applies strategist `playbook` additively to ranking weights.
 - Scanner can be tuned with: `TOP_CANDIDATE_POOL`, `MIN_TRADING_VALUE`, `MIN_VOLUME`, `ENABLE_THEME_FILTER`, `SCORE_WEIGHTS_*`.
@@ -41,6 +42,7 @@ Execution note:
   - `SELL_COOLDOWN` or `SELL_COOLDOWN_SEC`
   - `MONITOR_EXIT_CONFIRM_TICKS`
 - Emergency exits (`emergency_halt`, `news_shock`) are explicit separate monitor path.
+- Monitor guidance source is canonical `state["strategist_output"]`.
 
 ## 5.3 M13 Tick Runtime Path
 

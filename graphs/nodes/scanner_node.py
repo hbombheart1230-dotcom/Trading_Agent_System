@@ -21,6 +21,7 @@ from graphs.nodes.skill_contracts import (
 from libs.runtime.decision_trace import append_decision_trace
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 from libs.runtime.feature_engine import build_feature_map
+from libs.strategies.contracts import coerce_strategist_output
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -556,28 +557,42 @@ def _resolve_scanner_score_weights(policy: Dict[str, Any]) -> Dict[str, float]:
 
 
 def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
+    strategist_output_raw = state.get("strategist_output")
+    strategist_output = coerce_strategist_output(strategist_output_raw) if isinstance(strategist_output_raw, dict) else {}
+    raw_bias = strategist_output.get("scanner_bias")
+    if isinstance(raw_bias, dict):
+        raw_bias = str(raw_bias.get("style") or "")
+    base = {
+        "themes": list(strategist_output.get("themes") or []),
+        "avoid_themes": list(strategist_output.get("avoid_themes") or []),
+        "playbook": str(strategist_output.get("playbook") or ""),
+        "scanner_priority": list(strategist_output.get("scanner_priority") or []),
+        "scanner_bias": str(raw_bias or "").strip().lower(),
+        "trade_aggressiveness": strategist_output.get("trade_aggressiveness"),
+        "risk_tone": strategist_output.get("risk_tone"),
+    }
+
+    # Backward-compatible override hook; canonical source remains strategist_output.
     guidance = state.get("scanner_guidance")
     if isinstance(guidance, dict):
-        out = dict(guidance)
-        raw_bias = out.get("scanner_bias")
-        if isinstance(raw_bias, dict):
-            out["scanner_bias"] = str(raw_bias.get("style") or "")
+        out = dict(base)
+        for key in (
+            "themes",
+            "avoid_themes",
+            "playbook",
+            "scanner_priority",
+            "scanner_bias",
+            "trade_aggressiveness",
+            "risk_tone",
+        ):
+            if guidance.get(key) not in (None, ""):
+                out[key] = guidance.get(key)
+        raw_override_bias = out.get("scanner_bias")
+        if isinstance(raw_override_bias, dict):
+            out["scanner_bias"] = str(raw_override_bias.get("style") or "")
         return out
-    strategist_output = state.get("strategist_output")
-    if isinstance(strategist_output, dict):
-        raw_bias = strategist_output.get("scanner_bias")
-        if isinstance(raw_bias, dict):
-            raw_bias = str(raw_bias.get("style") or "")
-        return {
-            "themes": list(strategist_output.get("themes") or []),
-            "avoid_themes": list(strategist_output.get("avoid_themes") or []),
-            "playbook": str(strategist_output.get("playbook") or ""),
-            "scanner_priority": list(strategist_output.get("scanner_priority") or []),
-            "scanner_bias": str(raw_bias or "").strip().lower(),
-            "trade_aggressiveness": strategist_output.get("trade_aggressiveness"),
-            "risk_tone": strategist_output.get("risk_tone"),
-        }
-    return {}
+
+    return base
 
 
 def _normalize_priority_list(values: Any) -> List[str]:

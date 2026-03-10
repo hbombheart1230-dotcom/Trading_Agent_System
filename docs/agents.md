@@ -21,7 +21,8 @@
   - `monitor_guidance` (`hold_through_noise|defensive_exit|quick_take_profit`), `report_focus`
 - May provide candidate hints (Top-N) as an additive signal.
 - Strategist defines HOW to fight; final stock selection remains Scanner responsibility.
-- Emits additive strategist contract fields in `strategist_output`.
+- Emits additive strategist contract fields in canonical `state["strategist_output"]`.
+- Canonical DTO contract: `libs/strategies/contracts.py::StrategistOutput`.
 - Strengthened context inputs include:
   - global sentiment signal health
   - news sentiment signal health + average score
@@ -36,6 +37,7 @@
 - Applies theme/sector filtering from strategist output (`themes`) with `theme_map` / `sector_map`.
 - Applies strategist ranking guidance (`scanner_priority`, aggressiveness/risk tone) additively to score weights.
 - Applies strategist `playbook` additively to scoring weights (scanner still performs final quantitative selection).
+- Scanner reads strategist frame from canonical `state["strategist_output"]`.
 - Falls back to strategist candidates when Kiwoom candidate pool is empty.
 - Scanner is the final Top-1 selector within strategist framing (not a blind picker).
 - Reduces candidate pool with practical filters (halted/abnormal/illiquid thresholds).
@@ -55,6 +57,7 @@
 - Emits buy/sell/noop intents from policy + position state.
 - Applies sell guards (min hold, sell cooldown, exit confirmation).
 - Consumes strategist `monitor_policy` when present (deterministic guard tuning).
+- Monitor reads strategist frame from canonical `state["strategist_output"]`.
 - Suppresses duplicate SELL intents with pending-exit lock/cooldown state across polling loops.
 - Keeps emergency exits (`emergency_halt`, `news_shock`) explicit and separate from normal exit confirmation flow.
 - Never executes orders.

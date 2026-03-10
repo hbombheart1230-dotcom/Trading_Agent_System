@@ -41,10 +41,22 @@ def test_decision_trace_ledger_collects_strategist_scanner_monitor(monkeypatch):
     latest = ledger.get("latest_by_agent") or {}
     strategist_payload = latest.get("strategist") if isinstance(latest.get("strategist"), dict) else {}
     assert "market_regime" in strategist_payload
+    assert "themes" in strategist_payload
+    assert "playbook" in strategist_payload
+    assert "scanner_bias" in strategist_payload
+    assert "risk_tone" in strategist_payload
+    assert "monitor_guidance" in strategist_payload
     assert isinstance(strategist_payload.get("scanner_priority"), list)
     scanner_payload = latest.get("scanner") if isinstance(latest.get("scanner"), dict) else {}
+    assert "candidate_pool_size" in scanner_payload
+    assert isinstance(scanner_payload.get("top_candidates"), list)
     assert "selected_symbol" in scanner_payload
+    assert isinstance(scanner_payload.get("score_breakdown_summary"), dict)
     monitor_payload = latest.get("monitor") if isinstance(latest.get("monitor"), dict) else {}
+    assert "entry_reason" in monitor_payload
+    assert "exit_reason" in monitor_payload
+    assert "min_hold_blocked" in monitor_payload
+    assert "sell_cooldown_blocked" in monitor_payload
     assert "monitor_reason" in monitor_payload
 
 

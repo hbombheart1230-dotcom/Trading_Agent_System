@@ -179,13 +179,15 @@ Example scanner output:
   - optional `kiwoom_market_summary` / `macro_context`
   - theme scores and candidate/theme-map fit
 - May provide candidate hints (optional compatibility path)
-- Writes additive guidance via `strategist_output`
+- Writes additive guidance via canonical `state["strategist_output"]`
+- Canonical strategist contract is defined at `libs/strategies/contracts.py::StrategistOutput`
 
 ## Scanner (스캐너)
 - Builds candidate universe from Kiwoom market data
 - Applies strategist theme/sector filters when mapping exists
 - Applies strategist frame additively to ranking:
   - `playbook`, `scanner_bias`, `scanner_priority`, `risk_tone`, `trade_aggressiveness`
+- Scanner guidance is sourced from canonical `state["strategist_output"]` (with backward-compatible `scanner_guidance` override hook)
 - Reduces pool with practical guards (halt/abnormal/illiquid thresholds)
 - Computes explainable scoring factors (value, momentum, trend, volume surge, intraday strength, risk penalties)
 - Ranks candidates with score breakdown and selects Top-1
@@ -195,6 +197,7 @@ Example scanner output:
 - Emits ActionProposal / OrderIntent only
 - Consumes strategist guidance deterministically:
   - `monitor_guidance`, `risk_tone`, `trade_aggressiveness`, `monitor_policy`
+- Monitor guidance is sourced from canonical `state["strategist_output"]`
 - Normal SELL exits are stabilized with:
   - `MIN_HOLD_SECONDS`
   - `SELL_COOLDOWN` (`SELL_COOLDOWN_SEC` alias)

@@ -21,6 +21,7 @@ from graphs.nodes.skill_contracts import (
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.exit_policy import evaluate_exit_policy
 from libs.runtime.position_sizing import evaluate_position_size
+from libs.strategies.contracts import coerce_strategist_output
 
 
 def _to_int(v: Any) -> int:
@@ -80,7 +81,12 @@ def _resolve_exit_confirm_ticks(state: Dict[str, Any], policy: Dict[str, Any]) -
 
 
 def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, str]:
-    strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    strategist_output_raw = state.get("strategist_output")
+    strategist_output = (
+        coerce_strategist_output(strategist_output_raw)
+        if isinstance(strategist_output_raw, dict)
+        else {}
+    )
     return {
         "playbook": str(
             state.get("playbook")

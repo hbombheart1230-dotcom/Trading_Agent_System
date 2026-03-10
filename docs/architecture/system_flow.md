@@ -13,6 +13,7 @@
      - `monitor_guidance` mode (+ derived `monitor_policy`), `report_focus`
      - optional `candidates` hint
      - additive context quality fields (`regime_score`, `sentiment_score`, `news_context`, `theme_strength`)
+     - canonical runtime key: `state["strategist_output"]` (DTO: `libs/strategies/contracts.py::StrategistOutput`)
 2. Scanner
    - retrieves candidate universe from Kiwoom market data
    - source mix: condition search, top volume, top value, optional top change-rate, sector/theme map, watchlist
@@ -20,12 +21,14 @@
    - applies strategist theme/sector filter (`theme_map` / `sector_map`)
    - applies strategist scanner-priority guidance additively to ranking weights
    - applies strategist `playbook` additively to ranking weights
+   - strategist guidance source: `state["strategist_output"]` (with backward-compatible override hooks)
    - computes explainable score breakdown + features/risk
    - outputs `selected` and `top_stock` (final symbol selector in current run)
 3. Monitor
    - entry/exit monitoring for selected stock only
    - emits `OrderIntent` (BUY/SELL/NOOP)
    - consumes strategist `monitor_policy` when provided
+   - strategist guidance source: `state["strategist_output"]`
    - normal SELL exits require min-hold/cooldown/confirmation guards
    - duplicate SELL intents are suppressed by monitor-side pending-exit lock
    - emergency exits (`emergency_halt`, `news_shock`) are explicit separate path

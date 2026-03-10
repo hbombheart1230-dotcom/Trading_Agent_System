@@ -144,3 +144,38 @@ class StrategistOutput:
             "strategic_answers": dict(self.strategic_answers or {}),
             "source": str(self.source or "strategist_node"),
         }
+
+
+def coerce_strategist_output(raw: Any) -> Dict[str, Any]:
+    """Normalize strategist output into canonical StrategistOutput contract shape.
+
+    This is additive and backward-compatible:
+    - required strategist-frame fields are always present and normalized
+    - unknown/additive keys from upstream are preserved
+    """
+    if not isinstance(raw, dict):
+        return StrategistOutput().to_dict()
+
+    dto = StrategistOutput(
+        market_regime=raw.get("market_regime", "neutral"),  # type: ignore[arg-type]
+        market_sentiment=raw.get("market_sentiment", "neutral"),  # type: ignore[arg-type]
+        key_events=list(raw.get("key_events") or []),
+        themes=list(raw.get("themes") or []),
+        avoid_themes=list(raw.get("avoid_themes") or []),
+        playbook=raw.get("playbook", "defensive"),  # type: ignore[arg-type]
+        scanner_bias=raw.get("scanner_bias", "leader"),  # type: ignore[arg-type]
+        scanner_priority=list(raw.get("scanner_priority") or []),
+        trade_aggressiveness=raw.get("trade_aggressiveness", "medium"),  # type: ignore[arg-type]
+        risk_tone=raw.get("risk_tone", "normal"),  # type: ignore[arg-type]
+        monitor_guidance=raw.get("monitor_guidance", "defensive_exit"),  # type: ignore[arg-type]
+        report_focus=list(raw.get("report_focus") or []),
+        candidates=list(raw.get("candidates") or []),
+        candidate_count=int(raw.get("candidate_count") or 0),
+        candidate_hints=list(raw.get("candidate_hints") or []),
+        strategic_answers=dict(raw.get("strategic_answers") or {}),
+        source=str(raw.get("source") or "strategist_node"),
+    ).to_dict()
+
+    out = dict(raw)
+    out.update(dto)
+    return out

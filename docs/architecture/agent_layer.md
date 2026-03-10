@@ -33,7 +33,7 @@ This document defines agent responsibilities and handoff boundaries.
   - `monitor_policy` (derived deterministic guard parameters)
   - `report_focus`
   - `candidates` (Top-N, optional hint/fallback)
-  - `strategist_output`
+  - canonical `state["strategist_output"]` (`libs/strategies/contracts.py::StrategistOutput`)
 - Strategist defines strategy frame; Scanner remains final symbol selector.
 - Additive context enrichment includes:
   - global/news signal health
@@ -56,6 +56,7 @@ This document defines agent responsibilities and handoff boundaries.
 - Applies strategist theme/sector filtering when `theme_map` / `sector_map` is available.
 - Applies strategist ranking guidance (`scanner_priority`, aggressiveness/risk tone) additively.
 - Applies strategist `playbook` additively to score weighting.
+- Scanner consumes strategist frame from `state["strategist_output"]` and remains final Top-1 selector.
 - Falls back to strategist candidate hints when Kiwoom pool is empty.
 - Produces:
   - `scan_results`
@@ -74,6 +75,7 @@ This document defines agent responsibilities and handoff boundaries.
 - Prevents duplicate SELL intent emission using loop-persistent pending-exit lock/cooldown state.
 - Keeps emergency exits (`emergency_halt`, `news_shock`) explicit and separate from normal confirmation flow.
 - Consumes strategist `monitor_policy` deterministically when present.
+- Monitor consumes strategist guidance (`monitor_guidance`, `risk_tone`, `trade_aggressiveness`) from `state["strategist_output"]`.
 - Emits `intents` only.
 - Does not execute orders.
 - Must not rescan or re-rank stock universe.

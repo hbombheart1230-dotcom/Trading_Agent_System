@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from graphs.nodes.monitor_node import monitor_node
+from graphs.nodes.monitor_node import _extract_monitor_strategy_frame, monitor_node
 
 
 def _base_state() -> dict:
@@ -210,3 +210,20 @@ def test_monitor_uses_strategist_monitor_policy_over_env(monkeypatch):
     # Effective values come from strategist monitor_policy first, then strategy-frame adjustments.
     assert int(exit_info.get("min_hold_sec") or 0) <= 1
     assert int(exit_info.get("exit_confirm_ticks") or 0) == 1
+
+
+def test_monitor_extract_frame_reads_strategist_output():
+    state = {
+        "strategist_output": {
+            "playbook": "defensive",
+            "monitor_guidance": "defensive_exit",
+            "risk_tone": "conservative",
+            "trade_aggressiveness": "low",
+        }
+    }
+    frame = _extract_monitor_strategy_frame(state)
+
+    assert frame["playbook"] == "defensive"
+    assert frame["monitor_guidance"] == "defensive_exit"
+    assert frame["risk_tone"] == "conservative"
+    assert frame["trade_aggressiveness"] == "low"

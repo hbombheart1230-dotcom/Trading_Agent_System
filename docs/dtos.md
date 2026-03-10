@@ -157,6 +157,8 @@
 ## M31+ Additive Runtime DTOs
 
 ### StrategistOutput
+- Canonical contract implementation: `libs/strategies/contracts.py::StrategistOutput`
+- Canonical runtime state key: `state["strategist_output"]`
 - `market_regime: "risk_on" | "neutral" | "risk_off"`
 - `market_sentiment: "bullish" | "neutral" | "bearish"`
 - `key_events: list[str]`

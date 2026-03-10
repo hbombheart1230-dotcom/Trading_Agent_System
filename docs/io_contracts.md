@@ -5,6 +5,7 @@
 - `risk.daily_loss_limit`, `risk.per_trade_limit`, `risk.max_positions`, `risk.cooldown`
 
 ## TradePlan / Strategist Output
+- Canonical strategist DTO contract: `libs/strategies/contracts.py::StrategistOutput`
 - `market_regime`
 - `market_sentiment`
 - `key_events[]`
@@ -20,6 +21,7 @@
 - `report_focus[]`
 - `candidates[]` (Top-N, optional hint/fallback path)
 - `strategist_output`
+  - canonical runtime strategic frame key used by Scanner/Monitor
   - `market_regime`
   - `market_sentiment`
   - `key_events[]`

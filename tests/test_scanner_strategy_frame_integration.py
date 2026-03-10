@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from graphs.nodes.scanner_node import _apply_scanner_guidance_weights
+from graphs.nodes.scanner_node import _apply_scanner_guidance_weights, _extract_scanner_guidance
 
 
 def test_scanner_playbook_additively_changes_weights():
@@ -36,3 +36,26 @@ def test_scanner_playbook_additively_changes_weights():
     assert breakout["momentum"] > defensive["momentum"]
     assert defensive["volatility_penalty"] > breakout["volatility_penalty"]
     assert defensive["trading_value"] >= base["trading_value"]
+
+
+def test_scanner_extract_guidance_reads_strategist_output_contract():
+    state = {
+        "strategist_output": {
+            "themes": ["semiconductor", "ai"],
+            "avoid_themes": ["biotech_smallcap"],
+            "playbook": "breakout",
+            "scanner_bias": "momentum",
+            "scanner_priority": ["momentum", "trend_strength"],
+            "trade_aggressiveness": "high",
+            "risk_tone": "aggressive",
+        }
+    }
+    out = _extract_scanner_guidance(state)
+
+    assert out["themes"] == ["semiconductor", "ai"]
+    assert out["avoid_themes"] == ["biotech_smallcap"]
+    assert out["playbook"] == "breakout"
+    assert out["scanner_bias"] == "momentum"
+    assert out["scanner_priority"] == ["momentum", "trend_strength"]
+    assert out["trade_aggressiveness"] == "high"
+    assert out["risk_tone"] == "aggressive"
