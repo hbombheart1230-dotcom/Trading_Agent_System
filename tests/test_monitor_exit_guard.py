@@ -50,3 +50,103 @@ def test_monitor_exit_requires_confirmation_ticks(monkeypatch):
     assert len(intents) == 1
     assert intents[0]["side"] == "SELL"
     assert out2["monitor_exit"]["triggered"] is True
+
+
+def test_monitor_exit_cooldown_suppresses_duplicate_sell_intents(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    base = _base_state()
+    base["tick_ts"] = 1772850000
+    out1 = monitor_node(base)
+    intents1 = out1.get("intents") or []
+    assert len(intents1) == 1
+    assert intents1[0]["side"] == "SELL"
+
+    out2 = monitor_node(out1)
+    assert out2.get("intents") == []
+    reason = str((out2.get("monitor_exit") or {}).get("sell_guard_reason") or "")
+    assert "sell_guard_pending_exit_lock" in reason
+
+
+def test_monitor_exit_cooldown_applies_after_position_closed(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    s1 = _base_state()
+    s1["tick_ts"] = 1772850000
+    out1 = monitor_node(s1)
+    assert (out1.get("intents") or [{}])[0].get("side") == "SELL"
+
+    s2 = dict(out1)
+    s2["portfolio_snapshot"] = {"cash": 0.0, "positions": []}
+    s2["use_position_sizing"] = True
+    s2["tick_ts"] = 1772850001
+    out2 = monitor_node(s2)
+    assert out2.get("intents") == []
+
+    s3 = dict(out2)
+    s3["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "hold_sec": 800}],
+    }
+    s3["tick_ts"] = 1772850002
+    out3 = monitor_node(s3)
+    assert out3.get("intents") == []
+    reason = str((out3.get("monitor_exit") or {}).get("sell_guard_reason") or "")
+    assert "sell_guard_cooldown" in reason
+    assert (out3.get("monitor_exit") or {}).get("sell_cooldown_blocked") is True
+
+
+def test_monitor_does_not_select_symbol_when_selected_missing(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": None,
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "hold_sec": 900}],
+        },
+        "policy": {"use_exit_policy": True},
+    }
+    out = monitor_node(state)
+    assert out.get("intents") == []
+    assert (out.get("monitor_output") or {}).get("selected_symbol") is None
+
+
+def test_monitor_emergency_exit_bypasses_min_hold_and_confirmation(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "3")
+
+    state = _base_state()
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "hold_sec": 30}],
+    }
+    state["emergency_halt"] = True
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("emergency_exit") is True
+    assert exit_info.get("monitor_reason") == "emergency_exit_signal"
+
+
+def test_monitor_does_not_execute_orders_directly(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = _base_state()
+    state["execution_result"] = {"status": "unmodified"}
+    out = monitor_node(state)
+    assert out.get("execution_result") == {"status": "unmodified"}
+    assert (out.get("monitor") or {}).get("has_intent") in (True, False)

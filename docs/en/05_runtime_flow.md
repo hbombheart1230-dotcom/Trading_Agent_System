@@ -5,8 +5,8 @@
 Operator -> Commander: start_run(goal, config)  
 Commander -> Strategist: decide themes/sectors (+ optional candidate hints)  
 Strategist -> Commander: `strategist_output` (`themes`, optional `candidates`)  
-Commander -> Scanner: build candidate pool from Kiwoom market data, then apply theme filter  
-Scanner -> Commander: ranked list + `top_stock`  
+Commander -> Scanner: build Kiwoom candidate pool, reduce/filter, then score/rank  
+Scanner -> Commander: ranked list + score breakdown + `top_stock`  
 Commander -> Monitor: evaluate entry/exit for `top_stock`  
 Monitor -> Commander: `OrderIntent` (BUY/SELL/NOOP)  
 Commander -> Supervisor: approve/reject/modify  
@@ -32,6 +32,12 @@ Rule: the same `intent_id` must not re-enter `executing`.
 Execution note:
 - `SYMBOL_ALLOWLIST` is an optional guard. If unset, candidate symbols from Strategist/Scanner are not restricted by allowlist.
 - Scanner candidate source defaults to Kiwoom (`CANDIDATE_SOURCE=kiwoom`) with strategist fallback when Kiwoom pool is empty.
+- Scanner can be tuned with: `TOP_CANDIDATE_POOL`, `MIN_TRADING_VALUE`, `MIN_VOLUME`, `ENABLE_THEME_FILTER`, `SCORE_WEIGHTS_*`.
+- Monitor normal SELL exits are stabilized by:
+  - `MIN_HOLD_SECONDS`
+  - `SELL_COOLDOWN` or `SELL_COOLDOWN_SEC`
+  - `MONITOR_EXIT_CONFIRM_TICKS`
+- Emergency exits (`emergency_halt`, `news_shock`) are explicit separate monitor path.
 
 ## 5.3 M13 Tick Runtime Path
 

@@ -3,15 +3,17 @@
 ## Agents
 - **Supervisor**: policy/risk + *approval gate*
 - **Strategist**: decide themes/sectors and output optional candidate hints (Top-N)
-- **Scanner**: retrieve Kiwoom candidates, apply theme filters, and rank to Top-1
+- **Scanner**: retrieve Kiwoom candidates, reduce candidate pool, score/rank with breakdown, and select Top-1
 - **Monitor**: entry/exit monitoring only; emit **OrderIntent** (no execution)
+  - normal SELL stabilization: `MIN_HOLD_SECONDS`, `SELL_COOLDOWN`/`SELL_COOLDOWN_SEC`, `MONITOR_EXIT_CONFIRM_TICKS`
+  - emergency exits (`emergency_halt`, `news_shock`) stay explicit and separate from normal exit confirmation
 - **Reporter**: replay logs and produce post-mortems
 
 ## Order flow (2-phase commit)
 1) News/global sentiment context is attached to strategist input.
 2) Strategist outputs `themes[]` (+ optional `candidates[]` hints).
-3) Scanner builds candidate pool from Kiwoom market data (condition/rank sources).
-4) Scanner applies theme/sector mapping filter, scores candidates, and selects `top_stock`.
+3) Scanner builds candidate pool from Kiwoom market data (condition/rank/theme/watchlist sources).
+4) Scanner reduces pool (halt/abnormal/illiquid guards), applies theme guidance, scores candidates, and selects `top_stock`.
 5) Monitor decides entry/exit for selected stock and creates `OrderIntent`.
 6) Supervisor returns `approve/reject/modify`.
 7) Only on approve, Execution skill places/cancels orders.

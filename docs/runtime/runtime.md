@@ -24,17 +24,34 @@
 2. Scanner uses Kiwoom market data as primary candidate source and writes:
    - `scanner_candidate_pool` (source, counts, theme-filter metadata)
    - `scan_results`
+   - `ranked_candidates`
    - `selected`
    - `top_stock`
    - `scanner_output`
    - Candidate flow:
      - top volume/value/change-rate + condition search
+     - sector/theme map + operator watchlist sources
+     - pre-score pool reduction (halt/abnormal/illiquid filters)
      - optional theme/sector filter with `theme_map` / `sector_map`
      - strategist candidate fallback when Kiwoom pool is empty
+     - score output includes per-candidate `score_breakdown`
 3. Monitor handles entry/exit only and writes:
    - `intents`
    - `monitor_exit`
    - `monitor_output`
+   - Normal exit stabilization:
+     - `MIN_HOLD_SECONDS` blocks premature SELL after entry fill.
+     - `SELL_COOLDOWN`/`SELL_COOLDOWN_SEC` suppresses repeated SELL across loops.
+     - `MONITOR_EXIT_CONFIRM_TICKS` requires consecutive exit confirmations.
+   - Explicit emergency exit path:
+     - `emergency_halt` / `news_shock` bypass normal confirmation as intentional hard-risk exits.
+   - Monitor observability fields include:
+     - `position_age_seconds`
+     - `exit_signal_detected`
+     - `exit_confirm_count`
+     - `min_hold_blocked`
+     - `sell_cooldown_blocked`
+     - `monitor_reason`
 4. Supervisor/Executor remain the only approval/execution path.
 
 ## M13 Tick Pipeline Selection

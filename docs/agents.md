@@ -17,12 +17,14 @@
 
 ## Scanner
 - Uses Kiwoom market data as primary candidate source in integrated chain.
-- Candidate sources include condition search, top-volume, top-value, and optional top-change-rate.
+- Candidate sources include condition search, top-volume, top-value, optional top-change-rate, sector/theme map, and operator watchlist.
 - Applies theme/sector filtering from strategist output (`themes`) with `theme_map` / `sector_map`.
 - Falls back to strategist candidates when Kiwoom candidate pool is empty.
-- Computes feature/risk/confidence scores per candidate.
+- Reduces candidate pool with practical filters (halted/abnormal/illiquid thresholds).
+- Computes practical score factors (trading-value, momentum, trend, volume-surge, intraday strength, penalties).
 - Returns ranked list and Top-1 selection:
   - `scan_results`
+  - `ranked_candidates`
   - `selected`
   - `top_stock`
   - `scanner_output`
@@ -31,6 +33,8 @@
 - Focuses on entry/exit only for the selected stock.
 - Emits buy/sell/noop intents from policy + position state.
 - Applies sell guards (min hold, sell cooldown, exit confirmation).
+- Suppresses duplicate SELL intents with pending-exit lock/cooldown state across polling loops.
+- Keeps emergency exits (`emergency_halt`, `news_shock`) explicit and separate from normal exit confirmation flow.
 - Never executes orders.
 
 ## Supervisor

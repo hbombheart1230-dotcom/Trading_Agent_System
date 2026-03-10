@@ -18,17 +18,24 @@
 
 ## ScanResult / Scanner Output
 - `ranked[]` (`scan_results`)
+- `ranked_candidates[]` (operator-facing ranked rows)
 - `selected` (Top-1 row)
 - `top_stock`
 - `scanner_candidate_pool` (candidate-source observability metadata)
 - `scanner_output`
   - `top_stock`
   - `score`
+  - `top_score`
   - `risk_score`
   - `confidence`
   - `candidate_count`
+  - `candidate_pool_size`
+  - `ranked_candidates` (Top-N summary rows)
   - `candidate_source`
   - `theme_filter_applied`
+- Per-candidate score contract:
+  - `score_total`
+  - `score_breakdown`
 - `data_gaps[]` (optional)
 
 ## OrderIntent (Monitor output -> Supervisor input)
@@ -36,7 +43,24 @@
 - `symbol`, `side`, `type(limit/market)`, `qty`, `price`, `tif`
 - `reason`, `rationale`, `signal_source`
 - `position_age_sec` (when available)
+- `position_age_seconds` (alias; when available)
+- `monitor_reason` (e.g. `confirmed_exit_signal`, `emergency_exit_signal`)
+- `exit_confirm_count` (normal exit confirmation progress)
 - `risk_check_inputs` (entry/stop/expected_loss/position_size_after)
+
+## Monitor Exit Observability (`monitor_exit`)
+- `triggered`
+- `reason`
+- `position_age_seconds`
+- `exit_signal_detected`
+- `exit_confirm_ticks`
+- `exit_confirm_count`
+- `min_hold_sec`
+- `sell_cooldown_sec`
+- `min_hold_blocked`
+- `sell_cooldown_blocked`
+- `monitor_reason`
+- `emergency_exit`
 
 ## SupervisorDecision
 - `intent_id`

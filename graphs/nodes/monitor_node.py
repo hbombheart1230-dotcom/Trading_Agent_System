@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -67,8 +68,30 @@ def _resolve_exit_confirm_ticks(state: Dict[str, Any], policy: Dict[str, Any]) -
         return 2
 
 
+def _resolve_now_epoch(state: Dict[str, Any]) -> int:
+    tick_ts = state.get("tick_ts")
+    try:
+        if tick_ts is not None:
+            return int(float(tick_ts))
+    except Exception:
+        pass
+    return int(time.time())
+
+
 def _norm_symbol(v: Any) -> str:
     return str(v or "").strip().upper()
+
+
+def _clear_symbol_confirm_keys(confirm_map: Dict[str, Any], symbol: str) -> None:
+    prefix = f"{_norm_symbol(symbol)}:"
+    for key in list(confirm_map.keys()):
+        if str(key).startswith(prefix):
+            confirm_map.pop(key, None)
+
+
+def _is_emergency_exit_reason(reason: str) -> bool:
+    r = str(reason or "").strip().lower()
+    return r in ("emergency_halt", "news_shock")
 
 
 def _make_event_logger(state: Dict[str, Any]) -> Any:
@@ -372,6 +395,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "pnl_ratio": None,
         "price": None,
         "avg_price": None,
+        "position_age_seconds": None,
+        "exit_signal_detected": False,
+        "exit_confirm_count": 0,
+        "min_hold_blocked": False,
+        "sell_cooldown_blocked": False,
+        "sell_cooldown_until": None,
+        "pending_exit_lock_active": False,
+        "pending_exit_lock_until": None,
+        "monitor_reason": "hold",
+        "emergency_exit": False,
     }
     if use_exit_policy and isinstance(selected, dict) and selected.get("symbol"):
         symbol = _norm_symbol(selected.get("symbol"))
@@ -409,44 +442,120 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             hold_sec=hold_sec if hold_sec > 0 else None,
             policy=exit_policy_map,
         )
-        min_hold_sec = max(
-            _resolve_min_hold_sec(state, policy),
-            _resolve_sell_cooldown_sec(state, policy),
-        )
+        now_epoch = _resolve_now_epoch(state)
+        if hold_sec <= 0:
+            persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+            last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
+            last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
+            if last_trade_side == "BUY" and last_trade_epoch > 0:
+                hold_sec = max(0, int(now_epoch - last_trade_epoch))
+        min_hold_sec = _resolve_min_hold_sec(state, policy)
+        sell_cooldown_sec = _resolve_sell_cooldown_sec(state, policy)
         confirm_ticks = _resolve_exit_confirm_ticks(state, policy)
         confirm_map = state.get("_monitor_exit_confirm")
         if not isinstance(confirm_map, dict):
             confirm_map = {}
+        cooldown_map = state.get("_monitor_sell_cooldown_until")
+        if not isinstance(cooldown_map, dict):
+            cooldown_map = {}
+        pending_exit_lock = state.get("_monitor_pending_exit_lock")
+        if not isinstance(pending_exit_lock, dict):
+            pending_exit_lock = {}
+        prev_qty_map = state.get("_monitor_prev_position_qty")
+        if not isinstance(prev_qty_map, dict):
+            prev_qty_map = {}
+
+        prev_qty = max(0, _to_int(prev_qty_map.get(symbol)))
+        if prev_qty > 0 and qty <= 0 and sell_cooldown_sec > 0:
+            cooldown_map[symbol] = int(now_epoch + sell_cooldown_sec)
+        prev_qty_map[symbol] = int(qty)
+
+        cooldown_until = max(0, _to_int(cooldown_map.get(symbol)))
+        if cooldown_until > 0 and cooldown_until <= now_epoch:
+            cooldown_map.pop(symbol, None)
+            cooldown_until = 0
+
+        lock_until = max(0, _to_int(pending_exit_lock.get(symbol)))
+        if lock_until > 0 and lock_until <= now_epoch:
+            pending_exit_lock.pop(symbol, None)
+            lock_until = 0
+
         confirm_key = f"{symbol}:{str(decision.get('reason') or '').strip()}"
         confirm_count = 0
         sell_guard_blocked = False
         sell_guard_reason = ""
+        monitor_reason = "hold"
+        min_hold_blocked = False
+        sell_cooldown_blocked = False
+        exit_signal_detected = bool(decision.get("triggered"))
+        emergency_exit = _is_emergency_exit_reason(str(decision.get("reason") or ""))
 
-        if bool(decision.get("triggered")):
-            if min_hold_sec > 0 and hold_sec > 0 and hold_sec < min_hold_sec:
+        if exit_signal_detected:
+            if qty <= 0:
                 sell_guard_blocked = True
-                sell_guard_reason = f"sell_guard_min_hold:{hold_sec}s<{min_hold_sec}s"
+                sell_guard_reason = "sell_guard_no_position"
+                monitor_reason = "no_position"
+            elif _is_trueish(state.get("execution_pending")):
+                sell_guard_blocked = True
+                sell_guard_reason = "sell_guard_execution_pending"
+                monitor_reason = "pending_exit_lock"
             elif int(features.get("skill_open_orders") or 0) > 0:
                 sell_guard_blocked = True
                 sell_guard_reason = "sell_guard_open_order_pending"
-            elif confirm_ticks > 1:
+                monitor_reason = "pending_exit_lock"
+            elif lock_until > now_epoch:
+                sell_guard_blocked = True
+                sell_guard_reason = "sell_guard_pending_exit_lock"
+                monitor_reason = "pending_exit_lock"
+            elif not emergency_exit and min_hold_sec > 0 and hold_sec > 0 and hold_sec < min_hold_sec:
+                sell_guard_blocked = True
+                min_hold_blocked = True
+                sell_guard_reason = f"sell_guard_min_hold:{hold_sec}s<{min_hold_sec}s"
+                monitor_reason = "min_hold_active"
+            elif not emergency_exit and sell_cooldown_sec > 0 and cooldown_until > now_epoch:
+                sell_guard_blocked = True
+                sell_cooldown_blocked = True
+                sell_guard_reason = f"sell_guard_cooldown:{max(0, cooldown_until - now_epoch)}s_remaining"
+                monitor_reason = "cooldown_active"
+            elif not emergency_exit and confirm_ticks > 1:
                 confirm_count = _to_int(confirm_map.get(confirm_key)) + 1
                 confirm_map[confirm_key] = int(confirm_count)
                 if confirm_count < int(confirm_ticks):
                     sell_guard_blocked = True
                     sell_guard_reason = f"exit_confirmation_pending:{confirm_count}/{confirm_ticks}"
+                    monitor_reason = "exit_signal_pending_confirmation"
+            if not sell_guard_blocked and not monitor_reason:
+                monitor_reason = "confirmed_exit_signal"
         else:
-            if confirm_key in confirm_map:
-                confirm_map.pop(confirm_key, None)
+            _clear_symbol_confirm_keys(confirm_map, symbol)
+            monitor_reason = "hold" if qty > 0 else "no_position"
 
-        if not sell_guard_blocked and bool(decision.get("triggered")) and confirm_key in confirm_map:
-            confirm_map.pop(confirm_key, None)
+        if not sell_guard_blocked and exit_signal_detected:
+            _clear_symbol_confirm_keys(confirm_map, symbol)
+            lock_sec = max(30, int(sell_cooldown_sec))
+            pending_exit_lock[symbol] = int(now_epoch + lock_sec)
+            lock_until = int(now_epoch + lock_sec)
+            if sell_cooldown_sec > 0:
+                cooldown_until = int(now_epoch + sell_cooldown_sec)
+                cooldown_map[symbol] = int(cooldown_until)
+            if emergency_exit:
+                monitor_reason = "emergency_exit_signal"
+            elif monitor_reason not in ("confirmed_exit_signal", "emergency_exit_signal"):
+                monitor_reason = "confirmed_exit_signal"
+
+        if qty <= 0:
+            pending_exit_lock.pop(symbol, None)
+            lock_until = 0
+
         state["_monitor_exit_confirm"] = confirm_map
+        state["_monitor_sell_cooldown_until"] = cooldown_map
+        state["_monitor_pending_exit_lock"] = pending_exit_lock
+        state["_monitor_prev_position_qty"] = prev_qty_map
 
         exit_info = {
             "enabled": True,
             "evaluated": bool(decision.get("evaluated")),
-            "triggered": bool(decision.get("triggered")) and not bool(sell_guard_blocked),
+            "triggered": bool(exit_signal_detected) and not bool(sell_guard_blocked),
             "reason": (
                 str(sell_guard_reason)
                 if str(sell_guard_reason).strip()
@@ -463,12 +572,22 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "volatility_ratio": decision.get("volatility_ratio"),
             "minutes_to_close": decision.get("minutes_to_close"),
             "min_hold_sec": int(min_hold_sec),
+            "sell_cooldown_sec": int(sell_cooldown_sec),
             "exit_confirm_ticks": int(confirm_ticks),
             "exit_confirm_count": int(confirm_count),
             "sell_guard_blocked": bool(sell_guard_blocked),
             "sell_guard_reason": str(sell_guard_reason),
+            "position_age_seconds": hold_sec if hold_sec > 0 else None,
+            "exit_signal_detected": bool(exit_signal_detected),
+            "min_hold_blocked": bool(min_hold_blocked),
+            "sell_cooldown_blocked": bool(sell_cooldown_blocked),
+            "sell_cooldown_until": (int(cooldown_until) if cooldown_until > 0 else None),
+            "pending_exit_lock_active": bool(lock_until > now_epoch),
+            "pending_exit_lock_until": (int(lock_until) if lock_until > 0 else None),
+            "monitor_reason": str(monitor_reason or ""),
+            "emergency_exit": bool(emergency_exit),
         }
-        if bool(decision.get("triggered")) and not bool(sell_guard_blocked) and qty > 0:
+        if bool(exit_signal_detected) and not bool(sell_guard_blocked) and qty > 0:
             intents = [
                 {
                     "symbol": symbol,
@@ -484,6 +603,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "reason": str(decision.get("reason") or ""),
                         "signal_source": "monitor_exit_policy",
                         "position_age_sec": hold_sec if hold_sec > 0 else None,
+                        "position_age_seconds": hold_sec if hold_sec > 0 else None,
+                        "monitor_reason": str(monitor_reason or ""),
+                        "exit_signal_detected": bool(exit_signal_detected),
+                        "exit_confirm_count": int(confirm_count),
+                        "min_hold_blocked": bool(min_hold_blocked),
+                        "sell_cooldown_blocked": bool(sell_cooldown_blocked),
+                        "emergency_exit": bool(emergency_exit),
                     },
                 }
             ]
@@ -541,6 +667,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "exit_evaluated": bool(exit_info.get("evaluated")),
             "exit_triggered": bool(exit_info.get("triggered")),
             "exit_reason": str(exit_info.get("reason") or ""),
+            "monitor_reason": str(exit_info.get("monitor_reason") or ""),
             "position_sizing_enabled": bool(sizing_info.get("enabled")),
             "position_sizing_evaluated": bool(sizing_info.get("evaluated")),
             "position_sizing_qty": int(sizing_info.get("qty") or 0),

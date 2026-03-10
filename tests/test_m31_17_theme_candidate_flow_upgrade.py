@@ -71,8 +71,14 @@ def test_m31_17_monitor_sell_cooldown_env_alias_is_supported(monkeypatch):
         },
     }
 
-    out = monitor_node(state)
-    assert out.get("intents") == []
-    exit_info = out.get("monitor_exit") or {}
+    out1 = monitor_node(state)
+    intents1 = out1.get("intents") or []
+    assert len(intents1) == 1
+    assert intents1[0]["side"] == "SELL"
+
+    out2 = monitor_node(out1)
+    assert out2.get("intents") == []
+    exit_info = out2.get("monitor_exit") or {}
     assert bool(exit_info.get("sell_guard_blocked")) is True
-    assert "sell_guard_min_hold" in str(exit_info.get("sell_guard_reason") or "")
+    reason = str(exit_info.get("sell_guard_reason") or "")
+    assert ("sell_guard_pending_exit_lock" in reason) or ("sell_guard_cooldown" in reason)

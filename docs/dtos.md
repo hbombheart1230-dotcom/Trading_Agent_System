@@ -165,9 +165,17 @@
 ### ScannerOutput
 - `top_stock: str | null`
 - `score: float | null`
+- `top_score: float | null`
 - `risk_score: float | null`
 - `confidence: float | null`
 - `candidate_count: int`
+- `candidate_pool_size: int`
+- `ranked_candidates: list[object]` (Top-N summary)
+
+### RankedCandidate (scanner)
+- `symbol: str`
+- `score_total: float`
+- `score_breakdown: object`
 
 ### MonitorOutput
 - `selected_symbol: str | null`
@@ -175,7 +183,24 @@
 - `intent_qty: int`
 - `entry_exit_reason: str`
 
+### MonitorExit
+- `triggered: bool`
+- `reason: str`
+- `position_age_seconds: int | null`
+- `exit_signal_detected: bool`
+- `exit_confirm_ticks: int`
+- `exit_confirm_count: int`
+- `min_hold_sec: int`
+- `sell_cooldown_sec: int`
+- `min_hold_blocked: bool`
+- `sell_cooldown_blocked: bool`
+- `monitor_reason: str`
+- `emergency_exit: bool`
+
 ### Intent Meta (sell-guard related)
 - `reason`
 - `signal_source`
 - `position_age_sec`
+- `position_age_seconds`
+- `monitor_reason`
+- `exit_confirm_count`

@@ -90,7 +90,15 @@ class Scanner:
                 score = float(candidate_scores.get(symbol, row.get("score", 0.0)))
             except Exception:
                 score = 0.0
-            ranked.append({"symbol": symbol, "score": score, "source": str(row.get("why") or row.get("source") or source)})
+            ranked.append(
+                {
+                    "symbol": symbol,
+                    "score": score,
+                    "score_total": score,
+                    "score_breakdown": dict(row.get("score_breakdown") or {}),
+                    "source": str(row.get("why") or row.get("source") or source),
+                }
+            )
 
         ranked.sort(key=lambda r: float(r.get("score") or 0.0), reverse=True)
         top = ranked[0] if ranked else None
@@ -99,8 +107,11 @@ class Scanner:
         return {
             "intents": [],
             "ranked": ranked,
+            "ranked_candidates": ranked,
+            "candidate_pool_size": int(len(ranked)),
             "top_stock": (top.get("symbol") if isinstance(top, dict) else None),
             "score": (top.get("score") if isinstance(top, dict) else None),
+            "top_score": (top.get("score_total") if isinstance(top, dict) else None),
             "candidate_source": source,
             "themes": list(getattr(plan, "themes", []) or []),
             "candidates": [str(r.get("symbol") or "") for r in candidate_rows],

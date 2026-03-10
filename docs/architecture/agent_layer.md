@@ -29,10 +29,16 @@ This document defines agent responsibilities and handoff boundaries.
   - top volume
   - top trading value
   - top change-rate (optional)
+  - sector/theme map symbols
+  - operator watchlist
+- Reduces candidate pool before scoring:
+  - halted/abnormal exclusion
+  - liquidity thresholds (`MIN_TRADING_VALUE`, `MIN_VOLUME`)
 - Applies strategist theme/sector filtering when `theme_map` / `sector_map` is available.
 - Falls back to strategist candidate hints when Kiwoom pool is empty.
 - Produces:
   - `scan_results`
+  - `ranked_candidates`
   - `selected`
   - `top_stock`
   - `scanner_output`
@@ -43,6 +49,8 @@ This document defines agent responsibilities and handoff boundaries.
   - `MIN_HOLD_SECONDS`
   - `SELL_COOLDOWN` or `SELL_COOLDOWN_SEC`
   - `MONITOR_EXIT_CONFIRM_TICKS`
+- Prevents duplicate SELL intent emission using loop-persistent pending-exit lock/cooldown state.
+- Keeps emergency exits (`emergency_halt`, `news_shock`) explicit and separate from normal confirmation flow.
 - Emits `intents` only.
 - Does not execute orders.
 

@@ -56,6 +56,8 @@ The decision chain now uses Kiwoom market data as the primary candidate source:
    - top volume ranking
    - top trading value ranking
    - top change-rate ranking (optional)
+   - sector/theme mapped symbols
+   - operator watchlist shortlist (optional)
 4. Scanner applies theme/sector filtering (`theme_map`/`sector_map`) and ranks candidates
 5. Scanner returns Top-1 (`top_stock`)
 6. Monitor handles entry/exit intent generation only
@@ -67,6 +69,12 @@ Notes:
 - `SYMBOL_ALLOWLIST` is an optional operational guard.
 - `CANDIDATE_SOURCE=kiwoom` is the default path.
 - Strategist candidates remain a compatibility fallback when Kiwoom pool is empty.
+- Candidate reduction knobs:
+  - `TOP_CANDIDATE_POOL`
+  - `MIN_TRADING_VALUE`
+  - `MIN_VOLUME`
+  - `ENABLE_THEME_FILTER`
+- Practical score weights can be tuned with `SCORE_WEIGHTS_*`.
 - Live loop tick path is selectable with `M13_TICK_PIPELINE`:
   - `legacy_m10` (default compatibility path)
   - `integrated_chain` (Strategist -> Scanner -> Monitor)
@@ -84,8 +92,22 @@ Example scanner output:
 
 ```json
 {
+  "candidate_pool_size": 24,
+  "ranked_candidates": [
+    {
+      "symbol": "005930",
+      "score_total": 0.87,
+      "score_breakdown": {
+        "trading_value": 0.18,
+        "momentum": 0.24,
+        "trend": 0.20,
+        "volume_surge": 0.15,
+        "risk_penalty": -0.10
+      }
+    }
+  ],
   "top_stock": "005930",
-  "score": 0.91
+  "top_score": 0.87
 }
 ```
 
@@ -111,13 +133,19 @@ Example scanner output:
 ## Scanner (스캐너)
 - Builds candidate universe from Kiwoom market data
 - Applies strategist theme/sector filters when mapping exists
-- Computes indicators (volatility, momentum, volume spike, etc.)
-- Ranks candidates and selects Top-1
+- Reduces pool with practical guards (halt/abnormal/illiquid thresholds)
+- Computes explainable scoring factors (value, momentum, trend, volume surge, intraday strength, risk penalties)
+- Ranks candidates with score breakdown and selects Top-1
 
 ## Monitor (모니터)
-- Watches selected primary symbol
-- Emits ActionProposal / OrderIntent
-- Never places orders
+- Watches selected primary symbol / active position state
+- Emits ActionProposal / OrderIntent only
+- Normal SELL exits are stabilized with:
+  - `MIN_HOLD_SECONDS`
+  - `SELL_COOLDOWN` (`SELL_COOLDOWN_SEC` alias)
+  - `MONITOR_EXIT_CONFIRM_TICKS`
+- Emergency exits (`emergency_halt`, `news_shock`) are handled as explicit separate path
+- Never selects stocks and never places orders
 
 ## Supervisor (감독관)
 - Owns risk limits and policy

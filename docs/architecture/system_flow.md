@@ -7,13 +7,17 @@
    - outputs `themes` (+ optional `candidates` hint)
 2. Scanner
    - retrieves candidate universe from Kiwoom market data
-   - source mix: condition search, top volume, top value, optional top change-rate
+   - source mix: condition search, top volume, top value, optional top change-rate, sector/theme map, watchlist
+   - reduces pool before scoring (halt/abnormal/illiquid thresholds)
    - applies strategist theme/sector filter (`theme_map` / `sector_map`)
-   - computes scores/features/risk
+   - computes explainable score breakdown + features/risk
    - outputs `selected` and `top_stock`
 3. Monitor
    - entry/exit monitoring for selected stock only
    - emits `OrderIntent` (BUY/SELL/NOOP)
+   - normal SELL exits require min-hold/cooldown/confirmation guards
+   - duplicate SELL intents are suppressed by monitor-side pending-exit lock
+   - emergency exits (`emergency_halt`, `news_shock`) are explicit separate path
 4. Supervisor
    - applies approval + policy checks
 5. Executor
@@ -37,6 +41,12 @@
 - Candidate source defaults to Kiwoom:
   - `CANDIDATE_SOURCE=kiwoom` (default)
   - fallback to strategist candidates when Kiwoom pool is empty
+- Practical scanner tuning keys:
+  - `TOP_CANDIDATE_POOL`
+  - `MIN_TRADING_VALUE`
+  - `MIN_VOLUME`
+  - `ENABLE_THEME_FILTER`
+  - `SCORE_WEIGHTS_*`
 - Sell timing protections are applied in monitor/decision logic:
   - `MIN_HOLD_SECONDS`
   - `SELL_COOLDOWN` or `SELL_COOLDOWN_SEC`
