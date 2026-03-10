@@ -2,18 +2,19 @@
 
 ## Agents
 - **Supervisor**: policy/risk + *approval gate*
-- **Strategist**: decide themes/sectors and output candidate symbols (Top-N)
-- **Scanner**: evaluate strategist candidates only and rank to Top-1
+- **Strategist**: decide themes/sectors and output optional candidate hints (Top-N)
+- **Scanner**: retrieve Kiwoom candidates, apply theme filters, and rank to Top-1
 - **Monitor**: entry/exit monitoring only; emit **OrderIntent** (no execution)
 - **Reporter**: replay logs and produce post-mortems
 
 ## Order flow (2-phase commit)
 1) News/global sentiment context is attached to strategist input.
-2) Strategist outputs `themes[]` + `candidates[]`.
-3) Scanner scores strategist candidates and selects `top_stock`.
-4) Monitor decides entry/exit for selected stock and creates `OrderIntent`.
-5) Supervisor returns `approve/reject/modify`.
-6) Only on approve, Execution skill places/cancels orders.
+2) Strategist outputs `themes[]` (+ optional `candidates[]` hints).
+3) Scanner builds candidate pool from Kiwoom market data (condition/rank sources).
+4) Scanner applies theme/sector mapping filter, scores candidates, and selects `top_stock`.
+5) Monitor decides entry/exit for selected stock and creates `OrderIntent`.
+6) Supervisor returns `approve/reject/modify`.
+7) Only on approve, Execution skill places/cancels orders.
 
 ## Observability (Event Logging)
 

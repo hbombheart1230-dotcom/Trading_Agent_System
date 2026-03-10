@@ -19,13 +19,18 @@
 
 1. Strategist writes:
    - `themes`
-   - `candidates` (Top-N)
+   - `candidates` (Top-N, optional hint)
    - `strategist_output`
-2. Scanner consumes strategist candidates only and writes:
+2. Scanner uses Kiwoom market data as primary candidate source and writes:
+   - `scanner_candidate_pool` (source, counts, theme-filter metadata)
    - `scan_results`
    - `selected`
    - `top_stock`
    - `scanner_output`
+   - Candidate flow:
+     - top volume/value/change-rate + condition search
+     - optional theme/sector filter with `theme_map` / `sector_map`
+     - strategist candidate fallback when Kiwoom pool is empty
 3. Monitor handles entry/exit only and writes:
    - `intents`
    - `monitor_exit`

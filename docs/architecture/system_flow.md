@@ -4,9 +4,11 @@
 
 1. Strategist
    - consumes global/news/sentiment context
-   - outputs `themes` + `candidates` (Top-N)
+   - outputs `themes` (+ optional `candidates` hint)
 2. Scanner
-   - evaluates strategist candidates only
+   - retrieves candidate universe from Kiwoom market data
+   - source mix: condition search, top volume, top value, optional top change-rate
+   - applies strategist theme/sector filter (`theme_map` / `sector_map`)
    - computes scores/features/risk
    - outputs `selected` and `top_stock`
 3. Monitor
@@ -32,6 +34,9 @@
   - `M13_TICK_PIPELINE=legacy_m10` (default compatibility path)
   - `M13_TICK_PIPELINE=integrated_chain` (Strategist -> Scanner -> Monitor chain)
 - Guardrails are enforced in execution stage (`execute_from_packet`).
+- Candidate source defaults to Kiwoom:
+  - `CANDIDATE_SOURCE=kiwoom` (default)
+  - fallback to strategist candidates when Kiwoom pool is empty
 - Sell timing protections are applied in monitor/decision logic:
   - `MIN_HOLD_SECONDS`
   - `SELL_COOLDOWN` or `SELL_COOLDOWN_SEC`

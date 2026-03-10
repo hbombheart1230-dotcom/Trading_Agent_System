@@ -19,11 +19,18 @@ This document defines agent responsibilities and handoff boundaries.
 - Builds high-level plan from market/news/global context.
 - Emits:
   - `themes`
-  - `candidates` (Top-N)
+  - `candidates` (Top-N, optional hint/fallback)
   - `strategist_output`
 
 ### Scanner
-- Scores strategist candidates only in integrated chain path.
+- Builds candidate universe from Kiwoom market data in integrated chain path.
+- Candidate sources:
+  - condition search
+  - top volume
+  - top trading value
+  - top change-rate (optional)
+- Applies strategist theme/sector filtering when `theme_map` / `sector_map` is available.
+- Falls back to strategist candidate hints when Kiwoom pool is empty.
 - Produces:
   - `scan_results`
   - `selected`
@@ -65,4 +72,3 @@ This document defines agent responsibilities and handoff boundaries.
   - `--tick-pipeline legacy_m10`
   - `--tick-pipeline integrated_chain`
   - env `M13_TICK_PIPELINE`
-

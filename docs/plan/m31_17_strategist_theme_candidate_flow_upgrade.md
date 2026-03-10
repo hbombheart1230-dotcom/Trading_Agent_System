@@ -5,10 +5,14 @@
 
 ## Objective
 
-Align runtime outputs with operator-facing architecture:
+Align runtime outputs with operator-facing architecture.
+
+Note (2026-03-10 update):
+- Scanner candidate acquisition is now Kiwoom-market-data-first.
+- Strategist candidates remain optional hints/fallback only.
 
 1. Strategist emits `themes` and Top-N `candidates`.
-2. Scanner evaluates strategist candidates only and exposes `top_stock`.
+2. Scanner builds/ranks Kiwoom candidate pool (with theme filter) and exposes `top_stock`.
 3. Monitor remains entry/exit-only and keeps execution separation unchanged.
 
 ## Code Changes
@@ -21,13 +25,16 @@ Align runtime outputs with operator-facing architecture:
     - `state["strategist_output"]`
 
 - `graphs/nodes/scanner_node.py`
-  - Reads candidates from `strategist_output.candidates` when `state["candidates"]` is absent.
+  - Uses Kiwoom candidate provider by default.
+  - Applies theme/sector filtering via `theme_map` / `sector_map`.
+  - Reads candidates from `strategist_output.candidates` as fallback when Kiwoom pool is empty.
   - Added additive outputs:
     - `state["top_stock"]`
     - `state["scanner_output"]`
 
 - `graphs/nodes/scan_candidates.py`
-  - Added strategist-output candidate injection priority for compatibility paths.
+  - Added Kiwoom candidate source path (`CANDIDATE_SOURCE=kiwoom` default).
+  - Keeps strategist-output candidate injection as compatibility fallback.
 
 - `graphs/nodes/monitor_node.py`
   - Added `SELL_COOLDOWN` env alias support (`SELL_COOLDOWN_SEC` remains valid).

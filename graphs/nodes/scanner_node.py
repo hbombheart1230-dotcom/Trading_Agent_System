@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from graphs.nodes.skill_contracts import (
@@ -8,6 +9,7 @@ from graphs.nodes.skill_contracts import (
     extract_market_quotes,
     norm_symbol,
 )
+from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 from libs.runtime.feature_engine import build_feature_map
 
 
@@ -17,6 +19,17 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 def _norm_symbol(v: Any) -> str:
     return norm_symbol(v)
+
+
+def _is_trueish(v: Any) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _to_int(v: Any, default: int) -> int:
+    try:
+        return int(float(v))
+    except Exception:
+        return int(default)
 
 
 def _extract_skill_quotes(state: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
@@ -259,11 +272,218 @@ def _extract_strategist_candidates(state: Dict[str, Any]) -> List[Any]:
     return []
 
 
+def _extract_themes(state: Dict[str, Any]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+
+    def add_many(values: Any) -> None:
+        if not isinstance(values, list):
+            return
+        for row in values:
+            t = str(row or "").strip().lower()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+
+    add_many(state.get("themes"))
+    add_many(state.get("top_themes"))
+    strategist_output = state.get("strategist_output")
+    if isinstance(strategist_output, dict):
+        add_many(strategist_output.get("themes"))
+    return out
+
+
+def _extract_theme_symbol_index(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, set[str]]:
+    idx: Dict[str, set[str]] = {}
+
+    def add_map(raw: Any) -> None:
+        if not isinstance(raw, dict):
+            return
+        for theme_name, symbols in raw.items():
+            key = str(theme_name or "").strip().lower()
+            if not key:
+                continue
+            bucket = idx.setdefault(key, set())
+            if isinstance(symbols, list):
+                for sym in symbols:
+                    s = _norm_symbol(sym)
+                    if s:
+                        bucket.add(s)
+
+    add_map(state.get("theme_map"))
+    add_map(policy.get("theme_map"))
+    add_map(state.get("sector_map"))
+    add_map(policy.get("sector_map"))
+    return idx
+
+
+def _apply_theme_filter(
+    rows: List[Dict[str, Any]],
+    *,
+    themes: List[str],
+    theme_symbol_index: Dict[str, set[str]],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    if not rows:
+        return rows, {"theme_filter_applied": False, "theme_filter_reason": "no_rows", "matched_theme_count": 0}
+    if not themes:
+        return rows, {"theme_filter_applied": False, "theme_filter_reason": "no_themes", "matched_theme_count": 0}
+    if not theme_symbol_index:
+        return rows, {"theme_filter_applied": False, "theme_filter_reason": "theme_index_missing", "matched_theme_count": 0}
+
+    matched_theme_count = 0
+    allowed: set[str] = set()
+    for theme in themes:
+        syms = theme_symbol_index.get(str(theme or "").strip().lower()) or set()
+        if syms:
+            matched_theme_count += 1
+            allowed.update(set(syms))
+
+    if not allowed:
+        return rows, {
+            "theme_filter_applied": False,
+            "theme_filter_reason": "theme_not_mapped",
+            "matched_theme_count": int(matched_theme_count),
+        }
+
+    filtered = [r for r in rows if _norm_symbol(r.get("symbol")) in allowed]
+    if not filtered:
+        return rows, {
+            "theme_filter_applied": False,
+            "theme_filter_reason": "empty_after_filter_fallback",
+            "matched_theme_count": int(matched_theme_count),
+        }
+
+    return filtered, {
+        "theme_filter_applied": True,
+        "theme_filter_reason": "",
+        "matched_theme_count": int(matched_theme_count),
+    }
+
+
+def _resolve_candidate_source(state: Dict[str, Any], policy: Dict[str, Any]) -> str:
+    raw = state.get("candidate_source")
+    if raw in (None, ""):
+        raw = policy.get("candidate_source")
+    if raw in (None, ""):
+        raw = os.getenv("CANDIDATE_SOURCE", "kiwoom")
+    v = str(raw or "").strip().lower()
+    if v in ("strategist", "strategist_candidates", "provided"):
+        return "strategist"
+    if v in ("auto", "hybrid"):
+        return "auto"
+    return "kiwoom"
+
+
+def _resolve_candidate_limit(policy: Dict[str, Any]) -> int:
+    env_topn = _to_int(os.getenv("TOP_N_CANDIDATES", "5"), 5)
+    return max(1, _to_int(policy.get("candidate_k", policy.get("candidate_topk", env_topn)), env_topn))
+
+
+def _resolve_top_candidate_pool(policy: Dict[str, Any], *, candidate_limit: int) -> int:
+    env_pool = _to_int(os.getenv("TOP_CANDIDATE_POOL", "30"), 30)
+    return max(candidate_limit, _to_int(policy.get("top_candidate_pool", env_pool), env_pool))
+
+
+def _resolve_condition_limit(policy: Dict[str, Any], *, top_pool: int) -> int:
+    env_cond = _to_int(os.getenv("KIWOOM_CANDIDATE_CONDITION_LIMIT", "200"), 200)
+    return max(top_pool, _to_int(policy.get("candidate_condition_limit", env_cond), env_cond))
+
+
+def _resolve_include_change_rate(policy: Dict[str, Any]) -> bool:
+    if policy.get("kiwoom_include_change_rate") is not None:
+        return _is_trueish(policy.get("kiwoom_include_change_rate"))
+    return _is_trueish(os.getenv("KIWOOM_CANDIDATE_INCLUDE_CHANGE_RATE", "true"))
+
+
+def _build_kiwoom_candidates(
+    state: Dict[str, Any],
+    *,
+    policy: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    candidate_limit = _resolve_candidate_limit(policy)
+    top_pool = _resolve_top_candidate_pool(policy, candidate_limit=candidate_limit)
+    condition_limit = _resolve_condition_limit(policy, top_pool=top_pool)
+    include_change_rate = _resolve_include_change_rate(policy)
+
+    rows, meta = build_kiwoom_candidate_rows(
+        state=state,
+        top_pool=top_pool,
+        condition_limit=condition_limit,
+        include_change_rate=include_change_rate,
+    )
+    themes = _extract_themes(state)
+    theme_symbol_index = _extract_theme_symbol_index(state, policy)
+    rows, filter_meta = _apply_theme_filter(rows, themes=themes, theme_symbol_index=theme_symbol_index)
+    rows = rows[:candidate_limit]
+    meta_out = dict(meta)
+    meta_out.update(filter_meta)
+    meta_out.update(
+        {
+            "themes": list(themes),
+            "candidate_limit": int(candidate_limit),
+            "candidate_count": int(len(rows)),
+            "condition_limit": int(condition_limit),
+            "top_candidate_pool": int(top_pool),
+        }
+    )
+    return rows, meta_out
+
+
+def _resolve_scanner_candidates(state: Dict[str, Any], policy: Dict[str, Any]) -> Tuple[List[Any], Dict[str, Any]]:
+    source = _resolve_candidate_source(state, policy)
+    strategist_candidates = _extract_strategist_candidates(state)
+
+    if source == "strategist":
+        return strategist_candidates, {
+            "candidate_source": "strategist",
+            "candidate_count": int(len(strategist_candidates)),
+            "fallback_used": False,
+        }
+
+    kiwoom_rows, kiwoom_meta = _build_kiwoom_candidates(state, policy=policy)
+    if kiwoom_rows:
+        return kiwoom_rows, dict(kiwoom_meta)
+
+    if strategist_candidates:
+        fallback_meta = dict(kiwoom_meta)
+        fallback_meta.update(
+            {
+                "candidate_source": "strategist_fallback",
+                "candidate_count": int(len(strategist_candidates)),
+                "fallback_used": True,
+                "fallback_reason": "kiwoom_candidate_pool_empty",
+            }
+        )
+        return strategist_candidates, fallback_meta
+
+    if source == "auto":
+        return strategist_candidates, {
+            "candidate_source": "auto",
+            "candidate_count": int(len(strategist_candidates)),
+            "fallback_used": False,
+            "fallback_reason": "no_kiwoom_and_no_strategist_candidates",
+        }
+
+    empty_meta = dict(kiwoom_meta)
+    empty_meta.update(
+        {
+            "candidate_source": "kiwoom",
+            "candidate_count": 0,
+            "fallback_used": False,
+            "fallback_reason": "kiwoom_candidate_pool_empty",
+        }
+    )
+    return [], empty_meta
+
+
 def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Graph node: Scanner (Data + feature extraction).
 
-    M17-3 contract:
-      - Reads state['candidates'] produced by strategist_node
+    M17-3 contract (additive):
+      - Builds candidate pool from Kiwoom market data (default)
+      - Applies strategist theme hints when mapping data exists
+      - Falls back to strategist candidates when Kiwoom pool is empty
       - Computes per-candidate features/risk/confidence
       - Selects exactly 1 candidate into state['selected'] (or None)
 
@@ -276,12 +496,17 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
       - state['mock_scan_results'] : {symbol: {score, risk_score, confidence, features?}}
         If present, Scanner will use these values instead of generating.
     """
-    candidates = _extract_strategist_candidates(state)
-
-    mock: Optional[Mapping[str, Any]] = state.get("mock_scan_results")  # for tests
-
     # M18-4: sentiment-aware scoring (offline-friendly)
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    candidates, pool_meta = _resolve_scanner_candidates(state, policy)
+    state["scanner_candidate_pool"] = dict(pool_meta)
+
+    mock: Optional[Mapping[str, Any]] = state.get("mock_scan_results")  # for tests
+    mock_by_sym: Dict[str, Any] = {}
+    if isinstance(mock, Mapping):
+        for k, v in mock.items():
+            mock_by_sym[_norm_symbol(k)] = v
+
     w = _get_scanner_weights(policy)
     gs = _get_global_sentiment_score(state)
     gs_signal = _get_global_sentiment_signal(state)
@@ -296,16 +521,16 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     for item in candidates:
         candidate_meta: Dict[str, Any] = {}
         if isinstance(item, dict):
-            symbol = str(item.get("symbol") or "")
+            symbol = _norm_symbol(item.get("symbol"))
             candidate_meta = dict(item)
         else:
-            symbol = str(item)
+            symbol = _norm_symbol(item)
 
         if not symbol:
             continue
 
-        if isinstance(mock, Mapping) and symbol in mock:
-            row = dict(mock[symbol])
+        if symbol in mock_by_sym:
+            row = dict(mock_by_sym[symbol])
             row.setdefault("symbol", symbol)
         else:
             base = _stable_unit_hash(symbol)
@@ -483,6 +708,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             else None
         ),
         "candidate_count": int(len(scan_results_sorted)),
+        "candidate_source": str(pool_meta.get("candidate_source") or ""),
+        "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
     }
 
     # Provide a normalized risk snapshot for Decision Node.

@@ -57,14 +57,17 @@ Trading_Agent_System/
 
 ## Strategy Candidate Flow (Current)
 
-- `graphs/nodes/strategist_node.py`: outputs `themes`, `candidates`, `strategist_output`.
-- `graphs/nodes/scanner_node.py`: ranks strategist candidates and outputs `top_stock`, `scanner_output`.
+- `graphs/nodes/strategist_node.py`: outputs `themes` (+ optional `candidates` hints), `strategist_output`.
+- `graphs/nodes/scanner_node.py`: builds Kiwoom candidate pool, applies theme/sector filters, ranks, and outputs `top_stock`, `scanner_output`.
 - `graphs/nodes/monitor_node.py`: entry/exit intent generation only (`monitor_output`, `monitor_exit`).
 - `graphs/nodes/execute_from_packet.py`: approval/guard/execution boundary.
 
 ## Related Config Keys
 
 - `TOP_N_CANDIDATES`
+- `CANDIDATE_SOURCE` (`kiwoom | strategist | auto`)
+- `TOP_CANDIDATE_POOL`
+- `KIWOOM_CANDIDATE_CONDITION_LIMIT`
 - `SYMBOL_ALLOWLIST` (optional execution guard)
 - `MIN_HOLD_SECONDS`
 - `SELL_COOLDOWN` / `SELL_COOLDOWN_SEC`

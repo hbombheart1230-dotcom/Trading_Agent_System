@@ -47,19 +47,26 @@ Key separation:
 
 ### Runtime Candidate Flow (M31+ additive)
 
-The decision chain now uses explicit strategist outputs before scanner ranking:
+The decision chain now uses Kiwoom market data as the primary candidate source:
 
 1. Global news/sentiment context
-2. Strategist picks `themes` and `candidates` (Top-N)
-3. Scanner evaluates only strategist candidates
-4. Scanner returns Top-1 (`top_stock`)
-5. Monitor handles entry/exit intent generation only
-6. Supervisor/Executor keep approval + guard + execution separation
+2. Strategist decides market `themes` (and may provide optional candidate hints)
+3. Scanner builds candidate pool from Kiwoom sources:
+   - condition search
+   - top volume ranking
+   - top trading value ranking
+   - top change-rate ranking (optional)
+4. Scanner applies theme/sector filtering (`theme_map`/`sector_map`) and ranks candidates
+5. Scanner returns Top-1 (`top_stock`)
+6. Monitor handles entry/exit intent generation only
+7. Supervisor/Executor keep approval + guard + execution separation
 
 Notes:
 - Samsung-only trading is **not** the target architecture.
 - `005930` in examples is illustrative sample data.
 - `SYMBOL_ALLOWLIST` is an optional operational guard.
+- `CANDIDATE_SOURCE=kiwoom` is the default path.
+- Strategist candidates remain a compatibility fallback when Kiwoom pool is empty.
 - Live loop tick path is selectable with `M13_TICK_PIPELINE`:
   - `legacy_m10` (default compatibility path)
   - `integrated_chain` (Strategist -> Scanner -> Monitor)
@@ -95,15 +102,17 @@ Example scanner output:
 - Never executes trades
 
 ## Strategist (전략가)
-- Selects candidate symbols (3~5)
+- Selects market themes/sectors (primary responsibility)
+- May provide candidate hints (optional compatibility path)
 - Defines scenarios (entry/add/stop/take-profit)
 - May consult LLM for scenario reasoning
 - Produces structured intent proposal
 
 ## Scanner (스캐너)
-- Fetches market/account data via skills
+- Builds candidate universe from Kiwoom market data
+- Applies strategist theme/sector filters when mapping exists
 - Computes indicators (volatility, momentum, volume spike, etc.)
-- Ranks candidates
+- Ranks candidates and selects Top-1
 
 ## Monitor (모니터)
 - Watches selected primary symbol

@@ -8,14 +8,18 @@
 
 ## Strategist
 - Consumes market/news/global context.
-- Selects themes/sectors and candidate symbols (Top-N).
+- Selects themes/sectors.
+- May provide candidate hints (Top-N) as an additive signal.
 - Emits additive strategist contract fields:
   - `themes`
   - `candidates`
   - `strategist_output`
 
 ## Scanner
-- Evaluates strategist-provided candidates only in the integrated chain.
+- Uses Kiwoom market data as primary candidate source in integrated chain.
+- Candidate sources include condition search, top-volume, top-value, and optional top-change-rate.
+- Applies theme/sector filtering from strategist output (`themes`) with `theme_map` / `sector_map`.
+- Falls back to strategist candidates when Kiwoom candidate pool is empty.
 - Computes feature/risk/confidence scores per candidate.
 - Returns ranked list and Top-1 selection:
   - `scan_results`

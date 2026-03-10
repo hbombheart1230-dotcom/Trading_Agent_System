@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List
 
+from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 from libs.strategies.candidates.market_rank import (
     MarketRankCandidateGenerator,
     TopPicksCandidateGenerator,
@@ -119,6 +120,37 @@ def _build_rows_with_legacy_generators(state: Dict[str, Any], policy: Dict[str, 
     return [{"symbol": s, "why": "top_picks"} for s in symbols[:k]]
 
 
+def _build_rows_with_kiwoom_source(state: Dict[str, Any], policy: Dict[str, Any], k: int) -> List[Dict[str, Any]]:
+    top_pool = max(k, _to_int(policy.get("top_candidate_pool", os.getenv("TOP_CANDIDATE_POOL", "30")), 30))
+    cond_limit = max(top_pool, _to_int(policy.get("candidate_condition_limit", os.getenv("KIWOOM_CANDIDATE_CONDITION_LIMIT", "200")), 200))
+    include_change_rate = _is_trueish(policy.get("kiwoom_include_change_rate", os.getenv("KIWOOM_CANDIDATE_INCLUDE_CHANGE_RATE", "true")))
+    rows, _meta = build_kiwoom_candidate_rows(
+        state=state,
+        top_pool=top_pool,
+        condition_limit=cond_limit,
+        include_change_rate=include_change_rate,
+    )
+    out: List[Dict[str, Any]] = []
+    for row in rows[:k]:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol") or "").strip().upper()
+        if not sym:
+            continue
+        out.append(
+            {
+                "symbol": sym,
+                "why": str(row.get("why") or "kiwoom_market_data"),
+                "sources": list(row.get("sources") or []),
+                "universe_score": float(row.get("universe_score") or 0.0),
+                "rank_score": float(row.get("rank_score") or 0.0),
+                "source_scores": dict(row.get("source_scores") or {}),
+                "source_count": int(row.get("source_count") or 0),
+            }
+        )
+    return out
+
+
 def scan_candidates(state: dict) -> dict:
     """Produce ranked candidate symbols for M11+ scan stage.
 
@@ -128,14 +160,18 @@ def scan_candidates(state: dict) -> dict:
     """
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
     k = max(1, _to_int(policy.get("candidate_k", policy.get("candidate_topk", 5)), 5))
+    source = str(policy.get("candidate_source") or os.getenv("CANDIDATE_SOURCE", "kiwoom")).strip().lower()
 
     rows = _extract_injected_rows(state, k)
     if not rows:
-        use_builder = _is_trueish(policy.get("use_universe_builder", os.getenv("USE_UNIVERSE_BUILDER", "true")))
-        if use_builder:
-            rows = _build_rows_with_universe_builder(state=state, policy=policy, k=k)
+        if source in ("kiwoom", "market_data"):
+            rows = _build_rows_with_kiwoom_source(state=state, policy=policy, k=k)
         if not rows:
-            rows = _build_rows_with_legacy_generators(state=state, policy=policy, k=k)
+            use_builder = _is_trueish(policy.get("use_universe_builder", os.getenv("USE_UNIVERSE_BUILDER", "true")))
+            if use_builder:
+                rows = _build_rows_with_universe_builder(state=state, policy=policy, k=k)
+            if not rows:
+                rows = _build_rows_with_legacy_generators(state=state, policy=policy, k=k)
     if not rows:
         rows = [{"symbol": s, "why": "env_or_fallback"} for s in _default_universe()[:k]]
     elif len(rows) < k:

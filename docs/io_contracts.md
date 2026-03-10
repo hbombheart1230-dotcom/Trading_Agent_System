@@ -6,7 +6,7 @@
 
 ## TradePlan / Strategist Output
 - `themes[]`
-- `candidates[]` (Top-N)
+- `candidates[]` (Top-N, optional hint/fallback path)
 - `strategist_output`
   - `themes[]`
   - `candidates[]`
@@ -20,12 +20,15 @@
 - `ranked[]` (`scan_results`)
 - `selected` (Top-1 row)
 - `top_stock`
+- `scanner_candidate_pool` (candidate-source observability metadata)
 - `scanner_output`
   - `top_stock`
   - `score`
   - `risk_score`
   - `confidence`
   - `candidate_count`
+  - `candidate_source`
+  - `theme_filter_applied`
 - `data_gaps[]` (optional)
 
 ## OrderIntent (Monitor output -> Supervisor input)

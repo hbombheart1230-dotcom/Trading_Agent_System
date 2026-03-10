@@ -3,9 +3,9 @@
 ## 5.1 Integrated Chain Sequence
 
 Operator -> Commander: start_run(goal, config)  
-Commander -> Strategist: build themes + candidate symbols (Top-N)  
-Strategist -> Commander: `strategist_output` (`themes`, `candidates`)  
-Commander -> Scanner: score strategist candidates  
+Commander -> Strategist: decide themes/sectors (+ optional candidate hints)  
+Strategist -> Commander: `strategist_output` (`themes`, optional `candidates`)  
+Commander -> Scanner: build candidate pool from Kiwoom market data, then apply theme filter  
 Scanner -> Commander: ranked list + `top_stock`  
 Commander -> Monitor: evaluate entry/exit for `top_stock`  
 Monitor -> Commander: `OrderIntent` (BUY/SELL/NOOP)  
@@ -31,6 +31,7 @@ Rule: the same `intent_id` must not re-enter `executing`.
 
 Execution note:
 - `SYMBOL_ALLOWLIST` is an optional guard. If unset, candidate symbols from Strategist/Scanner are not restricted by allowlist.
+- Scanner candidate source defaults to Kiwoom (`CANDIDATE_SOURCE=kiwoom`) with strategist fallback when Kiwoom pool is empty.
 
 ## 5.3 M13 Tick Runtime Path
 
