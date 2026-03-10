@@ -38,10 +38,11 @@ def _extract_theme_map(context: Dict[str, Any]) -> Dict[str, set[str]]:
 
 
 class Scanner:
-    """Turns a Plan into concrete order intents.
+    """Legacy scanner adapter.
 
-    NOTE: This is a placeholder scaffold. Real scanning logic (signals, ranking, etc.)
-    can be added incrementally.
+    Canonical scanner behavior lives in `graphs/nodes/scanner_node.py`.
+    This adapter keeps the old `libs.agent.Scanner` contract and returns
+    ranking artifacts while leaving `intents` empty by design.
     """
 
     def scan(self, *, plan: Plan, context: Dict[str, Any]) -> Dict[str, Any] | List[Dict[str, Any]]:

@@ -9,6 +9,17 @@
   - emergency exits (`emergency_halt`, `news_shock`) stay explicit and separate from normal exit confirmation
 - **Reporter**: replay logs and produce post-mortems
 
+## Canonical Implementation Entry Points
+- **Commander/orchestration**: `graphs/commander_runtime.py`
+  - wrapper: `graphs/nodes/commander_node.py`
+  - legacy adapter: `libs/agent/commander.py`
+- **Strategist**: `graphs/nodes/strategist_node.py`
+  - compatibility adapter: `libs/agent/strategist.py`
+- **Scanner**: `graphs/nodes/scanner_node.py`
+  - compatibility helper: `graphs/nodes/scan_candidates.py`
+- **Monitor**: `graphs/nodes/monitor_node.py`
+  - legacy interface: `libs/agent/monitor.py`
+
 ## Order flow (2-phase commit)
 1) News/global sentiment context is attached to strategist input.
 2) Strategist outputs `themes[]` (+ optional `candidates[]` hints).

@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Canonical Strategist node for integrated runtime.
+
+Role boundary:
+- owns strategic framing (themes/sectors, sentiment context, candidate hints)
+- prepares strategist outputs for scanner/monitor handoff
+- does not execute orders
+"""
+
 import os
 import time
 from typing import Any, Dict, List

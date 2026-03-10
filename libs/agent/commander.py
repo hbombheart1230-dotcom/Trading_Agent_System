@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Legacy commander compatibility layer.
+
+Canonical orchestration entry is `graphs/commander_runtime.py`.
+This module is retained for compatibility tests and adapter-style wiring.
+"""
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 import uuid
@@ -26,8 +32,10 @@ class CommandResult:
 
 
 class Commander:
-    """Orchestrate one agent cycle (M15).
+    """Legacy M15-style orchestrator.
 
+    For production/runtime routing use `graphs.commander_runtime.run_commander_runtime`.
+    This class is preserved for backward compatibility:
     Strategist -> Scanner -> (optional) Executor -> Monitor -> Reporter
     """
 

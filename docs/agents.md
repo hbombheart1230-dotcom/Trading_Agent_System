@@ -5,6 +5,10 @@
 - Routes state between Strategist, Scanner, Monitor, Supervisor, and Executor.
 - Handles retry/pause/cancel transitions and runtime mode selection.
 - Never sends orders directly.
+- Canonical implementation: `graphs/commander_runtime.py`
+- Compatibility layers:
+  - `graphs/nodes/commander_node.py` (thin runtime wrapper)
+  - `libs/agent/commander.py` (legacy adapter/scaffolding)
 
 ## Strategist
 - Consumes market/news/global context.
@@ -14,6 +18,8 @@
   - `themes`
   - `candidates`
   - `strategist_output`
+- Canonical implementation: `graphs/nodes/strategist_node.py`
+- Compatibility layer: `libs/agent/strategist.py` (normalizes strategist output for legacy `Plan` usage)
 
 ## Scanner
 - Uses Kiwoom market data as primary candidate source in integrated chain.
@@ -28,6 +34,8 @@
   - `selected`
   - `top_stock`
   - `scanner_output`
+- Canonical implementation: `graphs/nodes/scanner_node.py`
+- Compatibility stage helper: `graphs/nodes/scan_candidates.py`
 
 ## Monitor
 - Focuses on entry/exit only for the selected stock.
@@ -36,6 +44,8 @@
 - Suppresses duplicate SELL intents with pending-exit lock/cooldown state across polling loops.
 - Keeps emergency exits (`emergency_halt`, `news_shock`) explicit and separate from normal exit confirmation flow.
 - Never executes orders.
+- Canonical implementation: `graphs/nodes/monitor_node.py`
+- Compatibility interface: `libs/agent/monitor.py` (legacy placeholder)
 
 ## Supervisor
 - Owns approval and risk policy checks.
@@ -49,4 +59,6 @@
 
 ## Reporter
 - Builds operator-facing summaries from event logs and reports.
+- Works as a post-run/report script layer (not a runtime control node).
 - Does not change runtime decisions.
+- Runtime report generators: `libs/reporting/*`, `scripts/run_*report*.py`

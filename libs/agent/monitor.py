@@ -4,7 +4,11 @@ from typing import Any, Dict, List
 
 
 class Monitor:
-    """Tracks state across cycles (positions, open intents, etc.)."""
+    """Legacy monitor interface placeholder.
+
+    Canonical monitor behavior is implemented in `graphs/nodes/monitor_node.py`.
+    This class remains for compatibility with legacy commander tests/wiring.
+    """
 
     def update(
         self,

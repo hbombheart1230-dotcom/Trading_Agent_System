@@ -51,3 +51,15 @@
   - `MIN_HOLD_SECONDS`
   - `SELL_COOLDOWN` or `SELL_COOLDOWN_SEC`
   - `MONITOR_EXIT_CONFIRM_TICKS`
+
+## Implementation Reference
+
+- Canonical orchestrator: `graphs/commander_runtime.py`
+- Canonical chain nodes:
+  - Strategist: `graphs/nodes/strategist_node.py`
+  - Scanner: `graphs/nodes/scanner_node.py`
+  - Monitor: `graphs/nodes/monitor_node.py`
+- Legacy compatibility modules remain for adapter/test support:
+  - `libs/agent/commander.py`
+  - `libs/agent/strategist.py`
+  - `libs/agent/monitor.py`

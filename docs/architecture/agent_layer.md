@@ -80,3 +80,15 @@ This document defines agent responsibilities and handoff boundaries.
   - `--tick-pipeline legacy_m10`
   - `--tick-pipeline integrated_chain`
   - env `M13_TICK_PIPELINE`
+
+## Implementation Ownership Map
+
+- Commander (canonical): `graphs/commander_runtime.py`
+  - wrappers: `graphs/nodes/commander_node.py`
+  - legacy adapter: `libs/agent/commander.py`
+- Strategist (canonical): `graphs/nodes/strategist_node.py`
+  - legacy adapter: `libs/agent/strategist.py`
+- Scanner (canonical): `graphs/nodes/scanner_node.py`
+  - compatibility stage helper: `graphs/nodes/scan_candidates.py`
+- Monitor (canonical): `graphs/nodes/monitor_node.py`
+  - legacy interface: `libs/agent/monitor.py`

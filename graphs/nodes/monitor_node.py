@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Canonical Monitor node for integrated runtime.
+
+Role boundary:
+- monitors selected stock / active position state
+- emits entry/exit intents only
+- never re-ranks symbol universe and never executes orders
+"""
+
 import os
 import time
 from pathlib import Path
@@ -309,6 +317,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     Responsibility:
       - emit at most one intent from selected candidate
       - attach optional order status/lifecycle observation from skill DTOs
+      - keep stock-selection and execution out of monitor scope
     """
     selected = state.get("selected")
     plan = state.get("plan") or {}

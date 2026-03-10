@@ -79,6 +79,27 @@ Notes:
   - `legacy_m10` (default compatibility path)
   - `integrated_chain` (Strategist -> Scanner -> Monitor)
 
+### Canonical Implementation Map (Role Boundaries)
+
+- Commander (canonical orchestrator):
+  - `graphs/commander_runtime.py`
+  - `graphs/nodes/commander_node.py` is a thin wrapper around canonical runtime
+  - `libs/agent/commander.py` is legacy compatibility scaffolding
+- Strategist (canonical):
+  - `graphs/nodes/strategist_node.py`
+  - `libs/agent/strategist.py` is a thin compatibility adapter for legacy `Plan` contract
+- Scanner (canonical):
+  - `graphs/nodes/scanner_node.py` (Kiwoom-first candidate retrieval/ranking, strategist-guided)
+  - `graphs/nodes/scan_candidates.py` remains compatibility stage wiring
+- Monitor (canonical):
+  - `graphs/nodes/monitor_node.py` (entry/exit intent logic only)
+  - `libs/agent/monitor.py` is legacy placeholder interface
+- Supervisor / Executor:
+  - approval/risk via `libs/risk/supervisor.py` and execution guards in `graphs/nodes/execute_from_packet.py`
+  - broker execution adapters in `libs/execution/executors/*`
+- Reporter:
+  - report generation in `libs/reporting/*` and scripts under `scripts/run_*report*.py`
+
 Example strategist output:
 
 ```json
@@ -161,8 +182,9 @@ Example scanner output:
 
 ## Reporter (리포터)
 - Reads EventLog
-- Produces daily / trade / system reports
+- Produces script-driven daily / trade / operator reports from artifacts
 - Summarizes LLM quality and execution metrics
+- Does not participate in runtime decision routing
 
 ------------------------------------------------------------------------
 

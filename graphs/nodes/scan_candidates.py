@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Compatibility candidate-stage helper.
+
+Integrated-chain canonical scanning/ranking is implemented in
+`graphs/nodes/scanner_node.py`. This module is kept for legacy stage
+contracts that still expect `state["candidates"]`.
+"""
+
 import os
 from typing import Any, Dict, List
 
@@ -152,7 +159,7 @@ def _build_rows_with_kiwoom_source(state: Dict[str, Any], policy: Dict[str, Any]
 
 
 def scan_candidates(state: dict) -> dict:
-    """Produce ranked candidate symbols for M11+ scan stage.
+    """Produce candidate symbols for compatibility scan stage.
 
     Output compatibility:
       - state['candidates']: list[str] (legacy contract kept)

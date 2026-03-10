@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+"""Canonical Scanner node for integrated runtime.
+
+Role boundary:
+- builds/reduces/ranks candidate pool (Kiwoom-first, strategist-guided)
+- selects Top-1 candidate for monitor stage
+- does not create execution calls
+"""
+
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple

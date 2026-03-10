@@ -10,5 +10,7 @@ def commander_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     Mode resolution is delegated to commander runtime policy:
       explicit > state["runtime_mode"] > env COMMANDER_RUNTIME_MODE > graph_spine(default)
+    This node is a wrapper only; orchestration logic lives in
+    `graphs/commander_runtime.py`.
     """
     return run_commander_runtime(state)

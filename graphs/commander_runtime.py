@@ -5,6 +5,11 @@ from __future__ import annotations
 This module provides one stable entry for orchestration while preserving
 existing runtime behavior.
 
+Implementation note:
+  - This file is the primary commander/orchestrator implementation.
+  - `graphs/nodes/commander_node.py` is a thin graph wrapper.
+  - `libs/agent/commander.py` is legacy compatibility scaffolding.
+
 Modes:
   - graph_spine: run M17 graph spine (`run_trading_graph`)
   - decision_packet: run strategist decision + execution packet path

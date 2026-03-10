@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+"""Legacy strategist compatibility adapter.
+
+Canonical strategist behavior lives in `graphs/nodes/strategist_node.py`.
+This module keeps the old `libs.agent.Strategist` interface for M15/M20
+compatibility (tests, legacy commander wiring, and thin DTO normalization).
+"""
+
 import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
@@ -7,7 +14,7 @@ from typing import Any, Dict, List
 
 @dataclass
 class Plan:
-    """Strategist output: describes what to look for, not how to execute."""
+    """Compatibility plan DTO used by legacy commander/scanner paths."""
     thesis: str
     constraints: Dict[str, Any]
     themes: List[str] = field(default_factory=list)
@@ -54,21 +61,27 @@ def _normalize_text_list(values: Any, *, limit: int) -> List[str]:
 
 
 class Strategist:
-    """Produces a high-level plan for a run.
+    """Thin compatibility wrapper for strategist output normalization.
 
-    In M15 we keep this deterministic/minimal by default.
-    You can later plug in LLM reasoning, news context, etc.
+    This class does not perform canonical candidate generation. It maps
+    already-produced strategist fields into the legacy `Plan` contract.
     """
 
     def plan(self, *, context: Dict[str, Any]) -> Plan:
         thesis = str(context.get("thesis") or "default_thesis")
         constraints = dict(context.get("constraints") or {})
         topn = max(1, _to_int(context.get("top_n_candidates"), _to_int(os.getenv("TOP_N_CANDIDATES"), 5)))
-        themes = _normalize_text_list(context.get("themes"), limit=5)
+        strategist_output = context.get("strategist_output") if isinstance(context.get("strategist_output"), dict) else {}
+
+        themes = _normalize_text_list(strategist_output.get("themes"), limit=5)
+        if not themes:
+            themes = _normalize_text_list(context.get("themes"), limit=5)
         if not themes:
             themes = _normalize_text_list(context.get("top_themes"), limit=5)
 
-        candidates = _normalize_symbols(context.get("candidates"), limit=topn)
+        candidates = _normalize_symbols(strategist_output.get("candidates"), limit=topn)
+        if not candidates:
+            candidates = _normalize_symbols(context.get("candidates"), limit=topn)
         if not candidates:
             candidates = _normalize_symbols(context.get("candidate_symbols"), limit=topn)
         if not candidates:

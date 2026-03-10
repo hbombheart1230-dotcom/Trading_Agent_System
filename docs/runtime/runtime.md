@@ -54,6 +54,19 @@
      - `monitor_reason`
 4. Supervisor/Executor remain the only approval/execution path.
 
+## Canonical vs Compatibility Modules
+
+- Canonical runtime orchestrator: `graphs/commander_runtime.py`
+- Canonical strategist/scanner/monitor nodes:
+  - `graphs/nodes/strategist_node.py`
+  - `graphs/nodes/scanner_node.py`
+  - `graphs/nodes/monitor_node.py`
+- Compatibility modules kept for legacy contracts/tests:
+  - `libs/agent/commander.py`
+  - `libs/agent/strategist.py`
+  - `libs/agent/scanner.py`
+  - `libs/agent/monitor.py`
+
 ## M13 Tick Pipeline Selection
 
 - `scripts/run_m13_live_loop.py` supports two tick paths:
