@@ -12,7 +12,8 @@ def _relax_monitor_exit_guards(monkeypatch):
     monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
 
 
-def test_m29_3_monitor_exit_policy_disabled_keeps_buy_intent():
+def test_m29_3_monitor_exit_policy_disabled_keeps_buy_intent(monkeypatch):
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
     state = {
         "plan": {"thesis": "demo"},
         "selected": {"symbol": "AAA", "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
@@ -70,3 +71,21 @@ def test_m29_3_monitor_exit_policy_take_profit_emits_sell_intent():
     assert out["intents"][0]["meta"]["exit_reason"] == "take_profit"
     assert out["monitor"]["exit_triggered"] is True
     assert out["monitor"]["exit_reason"] == "take_profit"
+
+
+def test_m29_3_monitor_exit_policy_env_fallback_enables_exit(monkeypatch):
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    state = {
+        "plan": {"thesis": "demo"},
+        "selected": {"symbol": "AAA", "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
+        "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0}]},
+        "market_snapshot": {"symbol": "AAA", "price": 106.0},
+        "policy": {
+            "stop_loss_pct": 0.10,
+            "take_profit_pct": 0.05,
+        },
+    }
+    out = monitor_node(state)
+    assert out["monitor"]["exit_policy_enabled"] is True
+    assert len(out["intents"]) == 1
+    assert out["intents"][0]["side"] == "SELL"

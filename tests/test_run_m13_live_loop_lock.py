@@ -67,3 +67,9 @@ def test_m13_initial_state_keeps_tick_pipeline():
 def test_m13_initial_state_normalizes_unknown_pipeline_to_legacy():
     st = live._build_initial_state("005930", tick_pipeline="unknown")
     assert st["m13_tick_pipeline"] == "legacy_m10"
+
+
+def test_m13_initial_state_propagates_use_exit_policy_from_env(monkeypatch):
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    st = live._build_initial_state("005930", tick_pipeline="integrated_chain")
+    assert st["use_exit_policy"] is True

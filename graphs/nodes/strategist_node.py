@@ -104,6 +104,7 @@ def _default_policy(user_policy: Dict[str, Any] | None) -> Dict[str, Any]:
     # sentiment toggles
     p.setdefault("use_global_sentiment", True)
     p.setdefault("use_news_analysis", False)
+    p.setdefault("use_exit_policy", _is_trueish(os.getenv("USE_EXIT_POLICY", "false")))
     # news plugin
     p.setdefault("news_provider", "naver")
     p.setdefault("news_scorer", "simple")

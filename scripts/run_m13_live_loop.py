@@ -39,7 +39,11 @@ def _normalize_tick_pipeline(v: Any) -> str:
 
 def _build_initial_state(symbol: str, *, tick_pipeline: str) -> Dict[str, Any]:
     # Minimal initial state; nodes/pipelines will enrich it.
-    state: Dict[str, Any] = {"m13_tick_pipeline": _normalize_tick_pipeline(tick_pipeline)}
+    state: Dict[str, Any] = {
+        "m13_tick_pipeline": _normalize_tick_pipeline(tick_pipeline),
+        # Keep integrated runtime exit behavior deterministic from env-driven runtime profile.
+        "use_exit_policy": _to_bool(os.getenv("USE_EXIT_POLICY", "false"), False),
+    }
     if symbol:
         state["symbol"] = symbol
     return state

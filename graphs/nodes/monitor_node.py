@@ -80,6 +80,14 @@ def _resolve_exit_confirm_ticks(state: Dict[str, Any], policy: Dict[str, Any]) -
         return 2
 
 
+def _resolve_use_exit_policy(state: Dict[str, Any], policy: Dict[str, Any]) -> bool:
+    if state.get("use_exit_policy") is not None:
+        return _is_trueish(state.get("use_exit_policy"))
+    if isinstance(policy, dict) and policy.get("use_exit_policy") is not None:
+        return _is_trueish(policy.get("use_exit_policy"))
+    return _is_trueish(os.getenv("USE_EXIT_POLICY", "false"))
+
+
 def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, str]:
     strategist_output_raw = state.get("strategist_output")
     strategist_output = (
@@ -510,7 +518,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             intents = [intent]
 
     # Optional M29-2 exit policy (default disabled for backward compatibility).
-    use_exit_policy = _is_trueish(state.get("use_exit_policy")) or _is_trueish(policy.get("use_exit_policy"))
+    use_exit_policy = _resolve_use_exit_policy(state, policy)
     exit_info: Dict[str, Any] = {
         "enabled": bool(use_exit_policy),
         "evaluated": False,
