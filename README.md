@@ -70,6 +70,9 @@ Notes:
 - `SYMBOL_ALLOWLIST` is an optional operational guard.
 - `CANDIDATE_SOURCE=kiwoom` is the default path.
 - Strategist candidates remain a compatibility fallback when Kiwoom pool is empty.
+- Pure static fallback pools can be blocked with `BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY=true` (default).
+- All strategist fallback can be disabled with `STRICT_KIWOOM_CANDIDATES_ONLY=true` (strict mode).
+- Fallback candidate symbols can be overridden with `FALLBACK_CANDIDATE_SYMBOLS`.
 - Candidate reduction knobs:
   - `TOP_CANDIDATE_POOL`
   - `MIN_TRADING_VALUE`
@@ -180,6 +183,11 @@ Example scanner output:
   - theme scores and candidate/theme-map fit
 - May provide candidate hints (optional compatibility path)
 - Writes additive guidance via canonical `state["strategist_output"]`
+- Optional LLM strategic-frame stage (additive):
+  - when enabled, Strategist calls LLM with news/global sentiment + market context
+  - LLM returns frame overrides (`themes`, `playbook`, `scanner_priority`, `monitor_guidance`, etc.)
+  - deterministic strategist logic remains baseline fallback on error/parse-fail
+  - observability: EventLog `stage=strategist_llm`, `event=result`
 - Canonical strategist contract is defined at `libs/strategies/contracts.py::StrategistOutput`
 
 ## Scanner (스캐너)

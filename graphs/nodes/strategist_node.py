@@ -9,16 +9,19 @@ Role boundary:
 """
 
 import os
+import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from libs.data_quality.signal_contract import SIGNAL_STATUS_FALLBACK, make_signal
+from libs.llm.llm_router import LLMRouter
 from libs.market.global_sentiment import compute_global_sentiment_signal
 from libs.news.news_pipeline import collect_news_items, score_news_sentiment_signal
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.regime import classify_regime_v2
-from libs.strategies.contracts import StrategistOutput
+from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
+from libs.strategies.contracts import StrategistOutput, coerce_strategist_output
 from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
 from libs.strategies.candidates.market_rank import TopPicksCandidateGenerator
 from libs.strategies.universe_builder import build_candidate_universe
@@ -28,11 +31,28 @@ def _is_trueish(v: Any) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0") or "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in ("1", "true", "yes", "y", "on")
+
+
 def _to_int(v: Any, default: int) -> int:
     try:
         return int(float(v))
     except Exception:
         return int(default)
+
+
+def _env_int(key: str) -> int | None:
+    raw = os.getenv(key)
+    if raw in (None, ""):
+        return None
+    try:
+        return int(float(str(raw).strip()))
+    except Exception:
+        return None
 
 
 def _resolve_top_n_candidates(policy: Dict[str, Any]) -> int:
@@ -41,9 +61,228 @@ def _resolve_top_n_candidates(policy: Dict[str, Any]) -> int:
         if policy.get("candidate_k") is not None
         else policy.get("candidate_topk")
     )
-    if raw is None:
-        raw = os.getenv("TOP_N_CANDIDATES", "5")
-    return max(1, _to_int(raw, 5))
+    if raw is not None:
+        return max(1, _to_int(raw, 10))
+
+    env_topn = _env_int("TOP_N_CANDIDATES")
+    if isinstance(env_topn, int) and env_topn > 0:
+        return max(1, env_topn)
+
+    # If TOP_N_CANDIDATES is not explicitly configured, keep strategist hints
+    # broader than 5 by default so scanner can rank a practical pool.
+    env_pool = _env_int("TOP_CANDIDATE_POOL")
+    if isinstance(env_pool, int) and env_pool > 0:
+        return max(1, min(10, env_pool))
+    return 10
+
+
+def _strip_fenced_block(text: str) -> str:
+    s = str(text or "").strip()
+    if not s.startswith("```"):
+        return s
+    lines = s.splitlines()
+    if not lines:
+        return s
+    lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    s = _strip_fenced_block(text)
+    if not s:
+        return {}
+    try:
+        obj = json.loads(s)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(s):
+        if ch != "{":
+            continue
+        try:
+            obj, _end = dec.raw_decode(s[i:])
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            continue
+    return {}
+
+
+def _resolve_strategist_frame_llm_enabled(policy: Dict[str, Any]) -> bool:
+    if policy.get("strategist_frame_use_llm") is not None:
+        return _is_trueish(policy.get("strategist_frame_use_llm"))
+
+    env_raw = str(os.getenv("STRATEGIST_FRAME_USE_LLM", "") or "").strip()
+    if env_raw:
+        return _is_trueish(env_raw)
+
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return False
+
+    provider = str(os.getenv("AI_STRATEGIST_PROVIDER", "") or "").strip().lower()
+    if provider not in ("openai", "http", "api"):
+        return False
+
+    has_key = bool(
+        (os.getenv("OPENROUTER_API_KEY", "") or "").strip()
+        or (os.getenv("AI_STRATEGIST_API_KEY", "") or "").strip()
+    )
+    return has_key
+
+
+def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    normalized = coerce_strategist_output(raw)
+    allowed = {
+        "market_regime",
+        "market_sentiment",
+        "key_events",
+        "themes",
+        "avoid_themes",
+        "playbook",
+        "scanner_bias",
+        "scanner_priority",
+        "trade_aggressiveness",
+        "risk_tone",
+        "monitor_guidance",
+        "report_focus",
+    }
+    out: Dict[str, Any] = {}
+    for key in allowed:
+        if key in raw:
+            out[key] = normalized.get(key)
+    if isinstance(raw.get("monitor_policy"), dict):
+        out["monitor_policy"] = dict(raw.get("monitor_policy") or {})
+    return out
+
+
+def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, str]]:
+    system = (
+        "You are the Strategist agent for an automated trading system. "
+        "You must output a strategic frame only. "
+        "Do not select final stock and do not produce order instructions. "
+        "Return strict JSON only."
+    )
+    contract = {
+        "market_regime": "risk_on|neutral|risk_off",
+        "market_sentiment": "bullish|neutral|bearish",
+        "key_events": ["string"],
+        "themes": ["string"],
+        "avoid_themes": ["string"],
+        "playbook": "breakout|pullback|reversal|defensive",
+        "scanner_bias": "large_cap|leader|momentum|value",
+        "scanner_priority": ["trading_value", "trend_strength", "volume_surge", "leader_quality"],
+        "trade_aggressiveness": "low|medium|high",
+        "risk_tone": "conservative|normal|aggressive",
+        "monitor_guidance": "hold_through_noise|defensive_exit|quick_take_profit",
+        "report_focus": ["theme_accuracy", "exit_quality", "overtrading"],
+    }
+    user = (
+        "Use the provided market context, news/global sentiment, and candidate hints. "
+        "Produce a realistic strategic frame for scanner/monitor guidance.\n"
+        "JSON contract:\n"
+        f"{json.dumps(contract, ensure_ascii=False)}\n\n"
+        "Input:\n"
+        f"{json.dumps(payload, ensure_ascii=False)}"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def _run_strategist_frame_llm(
+    *,
+    state: Dict[str, Any],
+    policy: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    if not _resolve_strategist_frame_llm_enabled(policy):
+        return {}, {"enabled": False, "status": "disabled", "reason": "strategist_frame_llm_disabled"}
+
+    if _env_bool("DRY_RUN", False):
+        return {}, {"enabled": True, "status": "dry_run", "reason": "dry_run"}
+
+    model = str(
+        policy.get("strategist_frame_llm_model")
+        or os.getenv("STRATEGIST_FRAME_LLM_MODEL", "")
+        or os.getenv("AI_STRATEGIST_MODEL", "")
+        or os.getenv("OPENROUTER_DEFAULT_MODEL", "")
+        or ""
+    ).strip()
+    temp_raw = (
+        policy.get("strategist_frame_llm_temperature")
+        if policy.get("strategist_frame_llm_temperature") is not None
+        else os.getenv("STRATEGIST_FRAME_LLM_TEMPERATURE", "0.1")
+    )
+    max_tokens_raw = (
+        policy.get("strategist_frame_llm_max_tokens")
+        if policy.get("strategist_frame_llm_max_tokens") is not None
+        else os.getenv("STRATEGIST_FRAME_LLM_MAX_TOKENS", "900")
+    )
+    try:
+        temperature = float(temp_raw)
+    except Exception:
+        temperature = 0.1
+    try:
+        max_tokens = max(256, int(float(max_tokens_raw)))
+    except Exception:
+        max_tokens = 900
+
+    router = LLMRouter.from_env()
+    if router.client is None:
+        return {}, {"enabled": True, "status": "unavailable", "reason": "llm_client_unavailable"}
+
+    route_policy: Dict[str, Any] = {"temperature": float(temperature), "max_tokens": int(max_tokens)}
+    if model:
+        route_policy["model"] = model
+    route = router.resolve("strategist", policy=route_policy)
+
+    t0 = time.perf_counter()
+    try:
+        raw = router.chat("strategist", _build_strategist_llm_messages(payload), policy=route_policy)
+    except Exception as e:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        return {}, {
+            "enabled": True,
+            "status": "error",
+            "reason": str(e),
+            "error_type": type(e).__name__,
+            "latency_ms": latency_ms,
+            "model": route.model,
+        }
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+
+    obj = _extract_json_object(raw)
+    if not isinstance(obj, dict) or not obj:
+        return {}, {
+            "enabled": True,
+            "status": "parse_error",
+            "reason": "strategist_llm_response_not_json",
+            "latency_ms": latency_ms,
+            "model": route.model,
+            "raw_preview": str(raw or "")[:220],
+        }
+
+    overrides = _normalize_llm_overrides(obj)
+    if not overrides:
+        return {}, {
+            "enabled": True,
+            "status": "parse_error",
+            "reason": "strategist_llm_response_missing_contract_fields",
+            "latency_ms": latency_ms,
+            "model": route.model,
+            "raw_preview": str(raw or "")[:220],
+        }
+
+    return overrides, {
+        "enabled": True,
+        "status": "ok",
+        "latency_ms": latency_ms,
+        "model": route.model,
+    }
 
 
 def _extract_themes(state: Dict[str, Any], policy: Dict[str, Any]) -> List[str]:
@@ -93,7 +332,7 @@ def _extract_themes(state: Dict[str, Any], policy: Dict[str, Any]) -> List[str]:
 
 def _default_policy(user_policy: Dict[str, Any] | None) -> Dict[str, Any]:
     p = dict(user_policy or {})
-    default_topn = max(1, _to_int(os.getenv("TOP_N_CANDIDATES", "5"), 5))
+    default_topn = _resolve_top_n_candidates(p)
     p.setdefault("use_universe_builder", _is_trueish(os.getenv("USE_UNIVERSE_BUILDER", "true")))
     p.setdefault("universe_require_condition", _is_trueish(os.getenv("UNIVERSE_REQUIRE_CONDITION", "false")))
     # candidate generation
@@ -664,6 +903,15 @@ def _log_strategist_summary(state: Dict[str, Any], payload: Dict[str, Any]) -> N
         return
 
 
+def _log_strategist_llm_result(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    try:
+        logger = _make_event_logger(state)
+        run_id = str(state.get("run_id") or "strategist-node")
+        logger.log(run_id=run_id, stage="strategist_llm", event="result", payload=dict(payload))
+    except Exception:
+        return
+
+
 def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     policy = _default_policy(state.get("policy"))
     k = _resolve_top_n_candidates(policy)
@@ -713,10 +961,14 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             symbols = gen.generate(state=state)
             candidates = [{"symbol": str(s), "why": "top_picks"} for s in symbols[:k]]
 
-    # absolute fallback: never return empty in DRY_RUN tests
+    # Absolute fallback:
+    # - source is configurable (`fallback_candidate_symbols`, `FALLBACK_CANDIDATE_SYMBOLS`)
+    # - static default remains as last-resort compatibility path
     if not candidates:
-        fallback = ["005930", "000660", "035420", "051910", "068270"][:k]
-        candidates = [{"symbol": s, "why": "fallback"} for s in fallback]
+        fallback, fallback_source = resolve_fallback_symbols(state=state, policy=policy, limit=k)
+        fallback_why = "fallback_static" if fallback_source == "static_default" else "fallback_configured"
+        candidates = [{"symbol": s, "why": fallback_why, "fallback_source": fallback_source} for s in fallback]
+        state["strategist_fallback_source"] = fallback_source
 
     state["universe_candidates"] = universe_candidates
     symbols = [c["symbol"] for c in candidates]
@@ -852,8 +1104,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     state["candidates"] = candidates
     themes = _extract_themes(state, policy)
-    ai_overrides = _extract_ai_overrides(state, policy)
-    themes = _merge_override_text_list(themes, ai_overrides.get("themes"), limit=5)
+    pre_ai_overrides = _extract_ai_overrides(state, policy)
+    themes = _merge_override_text_list(themes, pre_ai_overrides.get("themes"), limit=5)
     candidate_symbols = [str(c.get("symbol") or "") for c in candidates if str(c.get("symbol") or "").strip()]
     theme_index = _extract_theme_symbol_index(state, policy)
     theme_scores = state.get("theme_scores") if isinstance(state.get("theme_scores"), dict) else {}
@@ -928,12 +1180,61 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         theme_strength=theme_strength,
     )
 
+    llm_payload = {
+        "global_sentiment_signal": {
+            "score": _signal_score(global_signal),
+            "status": str(global_signal.get("status") or ""),
+            "source": str(global_signal.get("source") or ""),
+            "reason": str(global_signal.get("reason") or ""),
+        },
+        "news_context": dict(news_ctx),
+        "market_context_inputs": dict(market_context_inputs),
+        "market_regime_hint": market_regime,
+        "market_sentiment_hint": market_sentiment,
+        "market_structure_hint": market_structure,
+        "playbook_hint": playbook,
+        "theme_strength": dict(theme_strength),
+        "themes_hint": list(themes),
+        "candidate_symbols_hint": list(candidate_symbols)[:10],
+        "key_events_hint": list(key_events),
+    }
+    llm_overrides, llm_meta = _run_strategist_frame_llm(state=state, policy=policy, payload=llm_payload)
+    manual_overrides = _extract_ai_overrides(state, policy)
+    ai_overrides = {**dict(llm_overrides or {}), **dict(manual_overrides or {})}
+
+    if _resolve_strategist_frame_llm_enabled(policy):
+        llm_payload_log: Dict[str, Any] = {
+            "provider": "openrouter",
+            "model": str(llm_meta.get("model") or ""),
+            "ok": str(llm_meta.get("status") or "") == "ok",
+            "status": str(llm_meta.get("status") or ""),
+            "latency_ms": int(llm_meta.get("latency_ms") or 0),
+            "prompt_version": str(os.getenv("STRATEGIST_FRAME_LLM_PROMPT_VERSION", "m31-strategic-frame-v1") or "m31-strategic-frame-v1"),
+            "schema_version": "strategist_output.v1",
+            "themes": list((llm_overrides or {}).get("themes") or [])[:5],
+            "avoid_themes": list((llm_overrides or {}).get("avoid_themes") or [])[:5],
+            "playbook": str((llm_overrides or {}).get("playbook") or ""),
+            "scanner_bias": str((llm_overrides or {}).get("scanner_bias") or ""),
+            "risk_tone": str((llm_overrides or {}).get("risk_tone") or ""),
+            "monitor_guidance": str((llm_overrides or {}).get("monitor_guidance") or ""),
+            "candidate_hint_count": len(list(candidate_symbols)),
+        }
+        if llm_meta.get("reason"):
+            llm_payload_log["error"] = str(llm_meta.get("reason"))
+        if llm_meta.get("error_type"):
+            llm_payload_log["error_type"] = str(llm_meta.get("error_type"))
+        _log_strategist_llm_result(state, llm_payload_log)
+
     # Optional AI overrides are additive and bounded to keep deterministic fallback.
     market_regime = str(ai_overrides.get("market_regime") or market_regime).strip() or market_regime
     market_sentiment = str(ai_overrides.get("market_sentiment") or market_sentiment).strip() or market_sentiment
     playbook = str(ai_overrides.get("playbook") or playbook).strip() or playbook
     trade_aggressiveness = str(ai_overrides.get("trade_aggressiveness") or trade_aggressiveness).strip() or trade_aggressiveness
     risk_tone = str(ai_overrides.get("risk_tone") or risk_tone).strip() or risk_tone
+    if isinstance(ai_overrides.get("themes"), list) and list(ai_overrides.get("themes") or []):
+        themes = _merge_override_text_list([], ai_overrides.get("themes"), limit=5)
+    else:
+        themes = _merge_override_text_list(themes, ai_overrides.get("themes"), limit=5)
     key_events = _merge_override_text_list(key_events, ai_overrides.get("key_events"), limit=5)
     avoid_themes = _merge_override_text_list(avoid_themes, ai_overrides.get("avoid_themes"), limit=6)
     scanner_priority = _merge_override_text_list(scanner_priority, ai_overrides.get("scanner_priority"), limit=6)
@@ -1021,7 +1322,17 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["market_context_inputs"] = dict(market_context_inputs)
     strategist_output["theme_strength"] = dict(theme_strength)
     strategist_output["playbook"] = playbook
+    strategist_output["llm_frame_status"] = str(llm_meta.get("status") or "disabled")
+    strategist_output["llm_frame_applied"] = bool(llm_overrides)
+    strategist_output["llm_frame_model"] = str(llm_meta.get("model") or "")
     state["strategist_output"] = strategist_output
+    state["strategist_llm"] = {
+        "status": str(llm_meta.get("status") or "disabled"),
+        "model": str(llm_meta.get("model") or ""),
+        "applied": bool(llm_overrides),
+        "latency_ms": int(llm_meta.get("latency_ms") or 0),
+        "error": str(llm_meta.get("reason") or ""),
+    }
     _log_strategist_summary(
         state,
         {
@@ -1039,6 +1350,9 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "regime_score": float(regime_score),
             "sentiment_score": float(sentiment_score),
             "report_focus": list(report_focus)[:3],
+            "llm_frame_status": str(llm_meta.get("status") or "disabled"),
+            "llm_frame_applied": bool(llm_overrides),
+            "llm_frame_model": str(llm_meta.get("model") or ""),
         },
     )
     append_decision_trace(
@@ -1060,6 +1374,9 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "regime_score": float(regime_score),
             "sentiment_score": float(sentiment_score),
             "key_events": list(key_events)[:3],
+            "llm_frame_status": str(llm_meta.get("status") or "disabled"),
+            "llm_frame_applied": bool(llm_overrides),
+            "llm_frame_model": str(llm_meta.get("model") or ""),
         },
     )
     return state

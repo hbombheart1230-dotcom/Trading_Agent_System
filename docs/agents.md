@@ -22,6 +22,9 @@
 - May provide candidate hints (Top-N) as an additive signal.
 - Strategist defines HOW to fight; final stock selection remains Scanner responsibility.
 - Emits additive strategist contract fields in canonical `state["strategist_output"]`.
+- Optional LLM strategic-frame pass can override strategist fields additively.
+  - bounded by strategist contract normalization + deterministic fallback
+  - observability via EventLog `stage=strategist_llm`, `event=result`
 - Canonical DTO contract: `libs/strategies/contracts.py::StrategistOutput`.
 - Strengthened context inputs include:
   - global sentiment signal health

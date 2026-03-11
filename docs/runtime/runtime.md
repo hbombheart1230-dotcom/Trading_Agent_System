@@ -26,6 +26,7 @@
    - `regime_score`, `sentiment_score`, `news_context`, `theme_strength` (additive quality fields)
    - `candidates` (Top-N, optional hint)
    - canonical `state["strategist_output"]` (contract: `libs/strategies/contracts.py::StrategistOutput`)
+   - optional `strategist_llm` result snapshot (`status/model/applied/latency`) + EventLog `stage=strategist_llm`
 2. Scanner uses Kiwoom market data as primary candidate source and writes:
    - `scanner_candidate_pool` (source, counts, theme-filter metadata)
    - `scan_results`
@@ -40,6 +41,8 @@
     - optional theme/sector filter with `theme_map` / `sector_map`
     - additive strategist frame bias from `state["strategist_output"]` (`playbook`, `scanner_priority`, aggressiveness/risk tone)
      - strategist candidate fallback when Kiwoom pool is empty
+     - static fallback-only pools can be blocked with `BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY=true`
+     - strict mode (`STRICT_KIWOOM_CANDIDATES_ONLY=true`) blocks all strategist fallback on Kiwoom-empty
      - score output includes per-candidate `score_breakdown`
 3. Monitor handles entry/exit only and writes:
    - `intents`

@@ -44,7 +44,16 @@
   - `candidate_count`
   - `candidate_hints[]`
   - `strategic_answers`
+  - `llm_frame_status` (`disabled|dry_run|unavailable|ok|parse_error|error`, additive)
+  - `llm_frame_applied` (bool, additive)
+  - `llm_frame_model` (additive)
   - `source`
+- `strategist_llm` (additive runtime snapshot)
+  - `status`
+  - `model`
+  - `applied`
+  - `latency_ms`
+  - `error`
 - `scenarios[]` (optional)
 - `feature_requests[]` (optional)
 - `constraints` (optional)
