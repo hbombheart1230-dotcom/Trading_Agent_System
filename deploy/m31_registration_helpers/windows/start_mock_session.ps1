@@ -1,6 +1,7 @@
 param(
   [string]$Root = "",
   [string]$Symbol = "",
+  [string]$TickPipeline = "",
   [string]$SleepSec = "60",
   [string]$PidPath = "data\state\m13_live_loop.pid",
   [string]$LockPath = "data\state\m13_live_loop.lock",
@@ -95,9 +96,26 @@ if (Test-Path $absPidPath) {
   }
 }
 
+$resolvedTickPipeline = [string]$TickPipeline
+if ([string]::IsNullOrWhiteSpace($resolvedTickPipeline)) {
+  $resolvedTickPipeline = [string]$env:M13_TICK_PIPELINE
+}
+if ([string]::IsNullOrWhiteSpace($resolvedTickPipeline)) {
+  $resolvedTickPipeline = "integrated_chain"
+}
+$resolvedTickPipeline = $resolvedTickPipeline.Trim().ToLowerInvariant()
+if (($resolvedTickPipeline -ne "legacy_m10") -and ($resolvedTickPipeline -ne "integrated_chain")) {
+  $resolvedTickPipeline = "integrated_chain"
+}
+if (($resolvedTickPipeline -eq "legacy_m10") -and [string]::IsNullOrWhiteSpace($Symbol)) {
+  $resolvedTickPipeline = "integrated_chain"
+  Write-ControlLog "tick_pipeline_fallback reason=missing_symbol selected=integrated_chain"
+}
+
 $args = @(
   "-m",
   "scripts.run_m13_live_loop",
+  "--tick-pipeline", $resolvedTickPipeline,
   "--sleep-sec", $SleepSec,
   "--lock-path", $absLockPath,
   "--lock-stale-sec", $LockStaleSec
