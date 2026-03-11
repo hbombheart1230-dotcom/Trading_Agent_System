@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from libs.agent.reporter import Reporter
+import libs.reporting.reporter_analysis as reporter_analysis_module
 from scripts.run_reporter_analysis_report import main as reporter_analysis_main
 
 
@@ -237,6 +238,14 @@ def test_reporter_analysis_script_builds_structured_sections(tmp_path: Path, cap
     assert isinstance((obj.get("monitor_evaluation") or {}).get("monitor_reason_top"), dict)
     assert int((obj.get("supervisor_activity") or {}).get("blocked_total") or 0) >= 1
     assert isinstance(obj.get("improvement_suggestions"), list)
+    assert isinstance(obj.get("ai_review"), dict)
+    assert str((obj.get("ai_review") or {}).get("status") or "") in ("disabled", "dry_run", "unavailable", "ok", "parse_error", "error")
+    assert "ai_summary" in obj
+    assert "ai_findings" in obj
+    assert "ai_root_causes" in obj
+    assert "ai_improvement_suggestions" in obj
+    assert "ai_run_grade" in obj
+    assert "ai_agent_evaluations" in obj
     flow = obj["intent_flow_analysis"]
     assert int(flow["intents_created"]) >= 1
     assert int(flow["intents_blocked"]) >= 1
@@ -279,3 +288,103 @@ def test_reporter_agent_can_run_passive_log_analysis(tmp_path: Path) -> None:
     assert out["schema_version"] == "reporter_analysis.v1"
     assert out["day"] == day
     assert "intent_flow_analysis" in out
+
+
+def test_reporter_analysis_ai_review_enabled_integration(monkeypatch, tmp_path: Path, capsys) -> None:
+    day = "2026-03-10"
+    events = tmp_path / "events.jsonl"
+    reports_root = tmp_path / "reports"
+    out_dir = reports_root / "reporter_analysis"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r1",
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "scanner",
+                "event": "summary",
+                "payload": {"top_stock": "005930", "top_score": 0.91},
+            }
+        ],
+    )
+
+    def _fake_ai_review(**kwargs):
+        return {
+            "enabled": True,
+            "status": "ok",
+            "model": "fake/reporter-model",
+            "reason": "",
+            "ai_summary": "AI review summary",
+            "ai_findings": ["finding_1"],
+            "ai_root_causes": ["root_1"],
+            "ai_improvement_suggestions": ["improve_1"],
+            "ai_run_grade": "B+",
+            "ai_agent_evaluations": {"strategist": "good", "scanner": "good", "monitor": "needs_improvement"},
+        }
+
+    monkeypatch.setattr(reporter_analysis_module, "build_ai_reporter_review", _fake_ai_review)
+
+    rc = reporter_analysis_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(out_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--ai-review",
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert (obj.get("ai_review") or {}).get("status") == "ok"
+    assert obj.get("ai_summary") == "AI review summary"
+    assert obj.get("ai_run_grade") == "B+"
+    assert (obj.get("ai_agent_evaluations") or {}).get("monitor") == "needs_improvement"
+
+
+def test_reporter_analysis_ai_review_failure_fallback(monkeypatch, tmp_path: Path, capsys) -> None:
+    day = "2026-03-10"
+    events = tmp_path / "events.jsonl"
+    reports_root = tmp_path / "reports"
+    out_dir = reports_root / "reporter_analysis"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r1",
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": False, "reason": "risk_guard"},
+            }
+        ],
+    )
+
+    def _raise_ai_review(**kwargs):
+        raise RuntimeError("ai boom")
+
+    monkeypatch.setattr(reporter_analysis_module, "build_ai_reporter_review", _raise_ai_review)
+
+    rc = reporter_analysis_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(out_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--ai-review",
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert (obj.get("ai_review") or {}).get("status") == "error"
+    assert "trade_summary" in obj
+    assert "intent_flow_analysis" in obj

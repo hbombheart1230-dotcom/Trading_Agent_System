@@ -223,6 +223,7 @@
 ### ReporterAnalysis (passive post-run)
 - `schema_version: "reporter_analysis.v1"`
 - `day: YYYY-MM-DD`
+- deterministic baseline sections
 - `trade_summary: object`
 - `decision_chains: object`
 - `decision_trace_chain_summary: object`
@@ -234,6 +235,14 @@
 - `improvement_suggestions: list[str]`
 - `operator_facing_summary: object`
 - `developer_facing_summary: object`
+- optional AI review (post-run/read-only)
+  - `ai_review: object`
+  - `ai_summary: str`
+  - `ai_findings: list[str]`
+  - `ai_root_causes: list[str]`
+  - `ai_improvement_suggestions: list[str]`
+  - `ai_run_grade: str`
+  - `ai_agent_evaluations: object`
 
 ### Intent Meta (sell-guard related)
 - `reason`

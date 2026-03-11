@@ -104,8 +104,13 @@
 - Runtime/agent visibility reference:
   - `docs/runtime/agent_visibility_runbook.md`
 - Reporter passive analysis artifacts (`scripts/run_reporter_analysis_report.py`):
+  - deterministic baseline remains canonical
+  - optional AI review layer can be enabled without changing runtime decisions
   - `trade_summary`, `decision_chains`
   - `decision_trace_chain_summary`
   - `strategist_evaluation`, `scanner_evaluation`, `monitor_evaluation`
   - `supervisor_activity`, `incident_postmortem`, `improvement_suggestions`
   - `operator_facing_summary`, `developer_facing_summary`
+  - optional AI fields:
+    - `ai_summary`, `ai_findings`, `ai_root_causes`
+    - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`

@@ -11,6 +11,7 @@ from .operator_visibility import (
     generate_operator_daily_summary,
     generate_run_card_report,
 )
+from .reporter_ai_review import build_ai_reporter_review
 from .trade_explain import generate_trade_explain_report
 
 
@@ -1068,6 +1069,7 @@ def _to_markdown(out: Dict[str, Any]) -> str:
     report_focus_targets = out.get("report_focus_targets") if isinstance(out.get("report_focus_targets"), list) else []
     operator_view = out.get("operator_facing_summary") if isinstance(out.get("operator_facing_summary"), dict) else {}
     developer_view = out.get("developer_facing_summary") if isinstance(out.get("developer_facing_summary"), dict) else {}
+    ai_review = out.get("ai_review") if isinstance(out.get("ai_review"), dict) else {}
 
     lines: List[str] = []
     lines.append(f"# Reporter Analysis ({day})")
@@ -1203,6 +1205,23 @@ def _to_markdown(out: Dict[str, Any]) -> str:
     for item in improvement[:8]:
         lines.append(f"- {item}")
     lines.append("")
+    lines.append("## AI Review (Passive Optional Layer)")
+    lines.append("")
+    lines.append(f"- ai_review_status: **{ai_review.get('status') or 'disabled'}**")
+    if ai_review.get("model"):
+        lines.append(f"- ai_review_model: `{ai_review.get('model')}`")
+    if ai_review.get("reason"):
+        lines.append(f"- ai_review_reason: {ai_review.get('reason')}")
+    lines.append(f"- ai_run_grade: **{out.get('ai_run_grade') or 'N/A'}**")
+    if out.get("ai_summary"):
+        lines.append(f"- ai_summary: {out.get('ai_summary')}")
+    lines.append(f"- ai_findings: `{json.dumps(out.get('ai_findings') or [], ensure_ascii=False)}`")
+    lines.append(f"- ai_root_causes: `{json.dumps(out.get('ai_root_causes') or [], ensure_ascii=False)}`")
+    lines.append(
+        f"- ai_improvement_suggestions: `{json.dumps(out.get('ai_improvement_suggestions') or [], ensure_ascii=False)}`"
+    )
+    lines.append(f"- ai_agent_evaluations: `{json.dumps(out.get('ai_agent_evaluations') or {}, ensure_ascii=False)}`")
+    lines.append("")
     lines.append("## Developer Summary")
     lines.append("")
     for txt in (developer_view.get("summary_lines") or [])[:8]:
@@ -1227,6 +1246,10 @@ def generate_reporter_analysis_report(
     intents_path: Optional[Path] = None,
     reports_root: Optional[Path] = None,
     rapid_cycle_threshold_sec: int = 120,
+    ai_review_enabled: Optional[bool] = None,
+    ai_review_model: Optional[str] = None,
+    ai_review_temperature: Optional[float] = None,
+    ai_review_max_tokens: int = 900,
 ) -> Tuple[Path, Path, Dict[str, Any]]:
     """Generate enhanced reporter analysis from append-only logs.
 
@@ -1357,6 +1380,36 @@ def generate_reporter_analysis_report(
             "run_card_total": int(rc_obj.get("card_total") or 0),
         },
     }
+
+    try:
+        ai_review = build_ai_reporter_review(
+            day=target_day,
+            reporter_output=out,
+            enabled=ai_review_enabled,
+            model=ai_review_model,
+            temperature=ai_review_temperature,
+            max_tokens=max(256, int(ai_review_max_tokens)),
+        )
+    except Exception as e:
+        ai_review = {
+            "enabled": bool(ai_review_enabled),
+            "status": "error",
+            "reason": f"ai_review_exception:{e}",
+            "model": str(ai_review_model or ""),
+            "ai_summary": "",
+            "ai_findings": [],
+            "ai_root_causes": [],
+            "ai_improvement_suggestions": [],
+            "ai_run_grade": "N/A",
+            "ai_agent_evaluations": {},
+        }
+    out["ai_review"] = dict(ai_review)
+    out["ai_summary"] = str(ai_review.get("ai_summary") or "")
+    out["ai_findings"] = list(ai_review.get("ai_findings") or [])
+    out["ai_root_causes"] = list(ai_review.get("ai_root_causes") or [])
+    out["ai_improvement_suggestions"] = list(ai_review.get("ai_improvement_suggestions") or [])
+    out["ai_run_grade"] = str(ai_review.get("ai_run_grade") or "N/A")
+    out["ai_agent_evaluations"] = dict(ai_review.get("ai_agent_evaluations") or {})
 
     js_path = report_dir / f"reporter_analysis_{target_day}.json"
     md_path = report_dir / f"reporter_analysis_{target_day}.md"

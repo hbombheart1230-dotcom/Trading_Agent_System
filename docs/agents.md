@@ -78,7 +78,10 @@
 - Builds operator-facing summaries from event logs and reports.
 - Works as a post-run/report script layer (not a runtime control node).
 - Does not change runtime decisions.
-- Current implementation is deterministic/passive; AI-centered enhancement is planned later.
+- Two-layer passive analysis:
+  - deterministic structured analysis (baseline)
+  - optional AI review layer on top of deterministic outputs
+- AI review is post-run/read-only and never writes execution/runtime control state.
 - Reporter-ready reason inputs are now emitted via:
   - `state["decision_trace_ledger"]` / `state["reason_ledger"]`
   - EventLog `stage=decision_trace`
@@ -91,3 +94,6 @@
   - `supervisor_activity` (block/approve frequency + reasons)
   - `operator_facing_summary` and `developer_facing_summary`
   - overtrading diagnostics, incidents/post-mortem, and `improvement_suggestions`
+  - optional AI review fields:
+    - `ai_summary`, `ai_findings`, `ai_root_causes`
+    - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`

@@ -7,7 +7,7 @@
 - **Monitor**: entry/exit monitoring only; emit **OrderIntent** (no execution)
   - normal SELL stabilization: `MIN_HOLD_SECONDS`, `SELL_COOLDOWN`/`SELL_COOLDOWN_SEC`, `MONITOR_EXIT_CONFIRM_TICKS`
   - emergency exits (`emergency_halt`, `news_shock`) stay explicit and separate from normal exit confirmation
-- **Reporter**: replay logs and produce post-mortems (current: deterministic/passive; future: AI-centered enhancement)
+- **Reporter**: replay logs and produce post-mortems (deterministic baseline + optional passive AI review layer)
 
 ## Canonical Implementation Entry Points
 - **Commander/orchestration**: `graphs/commander_runtime.py`

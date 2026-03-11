@@ -221,14 +221,20 @@ Example scanner output:
 - Reads EventLog
 - Produces script-driven daily / trade / operator reports from artifacts
 - Summarizes LLM quality and execution metrics
+- Two-layer post-run model:
+  - deterministic structured analysis baseline
+  - optional AI review layer (`reporter_ai_review`) over deterministic artifacts
 - Produces passive post-run analysis sections:
   - `trade_summary`, `decision_chains`
   - `decision_trace_chain_summary` (run_id chain completeness + per-agent summary)
   - `strategist_evaluation`, `scanner_evaluation`, `monitor_evaluation`
   - `supervisor_activity`, `incidents`, `improvement_suggestions`
   - `operator_facing_summary`, `developer_facing_summary`
+- Optional AI review output fields:
+  - `ai_summary`, `ai_findings`, `ai_root_causes`
+  - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`
 - Does not participate in runtime decision routing
-- Current implementation is deterministic/passive; AI-centered reporter enhancement is planned later
+- AI review remains passive/post-run only and never influences live trading decisions
 
 ------------------------------------------------------------------------
 
@@ -314,6 +320,10 @@ Operator-facing report scripts:
 - `python -m scripts.run_run_card_report --event-log-path data/logs/events.jsonl --report-dir reports/run_cards --day <YYYY-MM-DD>`
 - `python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jsonl --report-dir reports/trade_explain --day <YYYY-MM-DD>`
 - `python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/reporter_analysis --day <YYYY-MM-DD>`
+- Reporter AI review optional flags:
+  - `--ai-review` (enable passive AI review stage)
+  - `--no-ai-review` (force deterministic-only mode)
+  - `--ai-review-model <model>` (override reporter model route)
 
 ------------------------------------------------------------------------
 

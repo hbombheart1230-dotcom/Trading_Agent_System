@@ -96,11 +96,17 @@ This document defines agent responsibilities and handoff boundaries.
 ### Reporter
 - Derives operator-readable summaries from logs/artifacts.
 - Does not alter runtime decisions.
-- Current implementation is deterministic/passive; AI-centered reporter upgrade is future work.
+- Two-layer passive model:
+  - deterministic structured analysis baseline
+  - optional AI review stage for post-run interpretation
+- AI review is read-only/post-run and does not write to live runtime control state.
 - `reporter_analysis.v1` adds:
   - `decision_trace_chain_summary` (run_id chain completeness across strategist/scanner/monitor/supervisor/executor)
   - `operator_facing_summary` (health + immediate actions)
   - `developer_facing_summary` (debug-first counters/reasons)
+  - optional AI review fields:
+    - `ai_summary`, `ai_findings`, `ai_root_causes`
+    - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`
 
 ## Minimal Decision Trace / Reason Ledger
 

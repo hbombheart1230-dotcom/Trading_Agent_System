@@ -118,6 +118,9 @@
 
 ## ReporterAnalysis (`reporter_analysis.v1`)
 - Passive post-run output generated from logs and derived artifacts.
+- Two-layer structure:
+  - deterministic baseline analysis
+  - optional AI review interpretation on top of deterministic outputs
 - Core sections:
   - `trade_summary`
   - `decision_chains`
@@ -131,3 +134,21 @@
   - `improvement_suggestions[]`
   - `operator_facing_summary`
   - `developer_facing_summary`
+  - `ai_review`
+    - `enabled`
+    - `status` (`disabled|dry_run|unavailable|ok|parse_error|error`)
+    - `model`
+    - `reason`
+    - `ai_summary`
+    - `ai_findings[]`
+    - `ai_root_causes[]`
+    - `ai_improvement_suggestions[]`
+    - `ai_run_grade`
+    - `ai_agent_evaluations`
+  - top-level convenience aliases:
+    - `ai_summary`
+    - `ai_findings[]`
+    - `ai_root_causes[]`
+    - `ai_improvement_suggestions[]`
+    - `ai_run_grade`
+    - `ai_agent_evaluations`

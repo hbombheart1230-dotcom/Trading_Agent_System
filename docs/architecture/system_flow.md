@@ -38,7 +38,10 @@
    - executes only approved intents with guard precedence
 6. Reporter
    - generates operator-facing summaries from logs/artifacts
-   - `reporter_analysis.v1` produces `decision_trace_chain_summary`, `operator_facing_summary`, and `developer_facing_summary`
+   - `reporter_analysis.v1` keeps deterministic analysis as baseline
+   - optional AI review stage can be enabled post-run (passive/read-only)
+   - output includes `decision_trace_chain_summary`, `operator_facing_summary`, `developer_facing_summary`
+   - optional AI fields: `ai_summary`, `ai_findings`, `ai_root_causes`, `ai_improvement_suggestions`, `ai_run_grade`
 
 ## Minimal Decision Trace / Reason Ledger
 

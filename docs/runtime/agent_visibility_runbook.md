@@ -82,6 +82,7 @@ python -m scripts.query_strategist_llm_events --path data/logs/events.jsonl --li
 python -m scripts.query_trade_reason_chain --path data/logs/events.jsonl --only-broker-success --limit 20
 python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jsonl --report-dir reports/trade_explain --day 2026-03-10 --json
 python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/reporter_analysis --day 2026-03-10 --json
+python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/reporter_analysis --day 2026-03-10 --ai-review --json
 
 set EVENT_LOG_PATH=./data/logs/events.jsonl
 set REPORT_DAY=2026-03-06
@@ -112,6 +113,7 @@ python -m scripts.generate_metrics_report
 - Purpose:
   - Integrate trade/intent/operator reports into one passive post-run analysis bundle.
   - Provide overtrading diagnostics and incident/post-mortem summaries.
+  - Optional second-stage AI interpretation over deterministic outputs (post-run/read-only).
 - Includes:
   - `trade_summary` (trade count, symbols traded, hold-duration table)
   - `decision_chains` (run_id-level decision->supervisor->execution flow)
@@ -125,3 +127,6 @@ python -m scripts.generate_metrics_report
   - Strategy effectiveness narrative (Strategist -> Scanner -> Monitor)
   - `operator_facing_summary` + `developer_facing_summary`
   - incidents + improvement suggestions for next run
+  - optional AI review:
+    - `ai_summary`, `ai_findings`, `ai_root_causes`
+    - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`
