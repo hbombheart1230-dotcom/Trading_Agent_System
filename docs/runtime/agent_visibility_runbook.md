@@ -115,6 +115,7 @@ python -m scripts.generate_metrics_report
 - Includes:
   - `trade_summary` (trade count, symbols traded, hold-duration table)
   - `decision_chains` (run_id-level decision->supervisor->execution flow)
+  - `decision_trace_chain_summary` (per-run strategist/scanner/monitor/supervisor/executor chain status)
   - Trade decision summary (buy/sell reasons, hold duration, exit trigger)
   - `strategist_evaluation` (themes vs scanner leader evidence)
   - `scanner_evaluation` (selection appropriateness and candidate pool quality)
@@ -122,4 +123,5 @@ python -m scripts.generate_metrics_report
   - `supervisor_activity` (block/approve frequency and top block reasons)
   - Intent flow (`created/blocked/approved/executed`)
   - Strategy effectiveness narrative (Strategist -> Scanner -> Monitor)
+  - `operator_facing_summary` + `developer_facing_summary`
   - incidents + improvement suggestions for next run

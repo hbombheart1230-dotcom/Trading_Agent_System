@@ -103,3 +103,9 @@
 
 - Runtime/agent visibility reference:
   - `docs/runtime/agent_visibility_runbook.md`
+- Reporter passive analysis artifacts (`scripts/run_reporter_analysis_report.py`):
+  - `trade_summary`, `decision_chains`
+  - `decision_trace_chain_summary`
+  - `strategist_evaluation`, `scanner_evaluation`, `monitor_evaluation`
+  - `supervisor_activity`, `incident_postmortem`, `improvement_suggestions`
+  - `operator_facing_summary`, `developer_facing_summary`

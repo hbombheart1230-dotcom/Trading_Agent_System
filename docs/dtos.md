@@ -220,6 +220,21 @@
 - `emergency_exit: bool`
 - `playbook: str` (additive)
 
+### ReporterAnalysis (passive post-run)
+- `schema_version: "reporter_analysis.v1"`
+- `day: YYYY-MM-DD`
+- `trade_summary: object`
+- `decision_chains: object`
+- `decision_trace_chain_summary: object`
+- `strategist_evaluation: object`
+- `scanner_evaluation: object`
+- `monitor_evaluation: object`
+- `supervisor_activity: object`
+- `incident_postmortem: object`
+- `improvement_suggestions: list[str]`
+- `operator_facing_summary: object`
+- `developer_facing_summary: object`
+
 ### Intent Meta (sell-guard related)
 - `reason`
 - `signal_source`

@@ -115,3 +115,19 @@
   - `latest_by_agent`
 - EventLog mirror:
   - `stage=decision_trace`, `event=<snapshot_type>`
+
+## ReporterAnalysis (`reporter_analysis.v1`)
+- Passive post-run output generated from logs and derived artifacts.
+- Core sections:
+  - `trade_summary`
+  - `decision_chains`
+  - `decision_trace_chain_summary`
+  - `strategist_evaluation`
+  - `scanner_evaluation`
+  - `monitor_evaluation`
+  - `supervisor_activity`
+  - `intent_flow_analysis`
+  - `incident_postmortem`
+  - `improvement_suggestions[]`
+  - `operator_facing_summary`
+  - `developer_facing_summary`

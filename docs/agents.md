@@ -86,6 +86,8 @@
 - Enhanced passive analysis output (`reporter_analysis.v1`) includes:
   - `trade_summary` and per-trade decision summaries (buy/sell reason, hold duration, exit trigger)
   - `decision_chains` (run_id-based decision -> supervisor -> execution trace)
+  - `decision_trace_chain_summary` (strategist/scanner/monitor/supervisor/executor chain completeness by run_id)
   - `strategist_evaluation`, `scanner_evaluation`, `monitor_evaluation`
   - `supervisor_activity` (block/approve frequency + reasons)
+  - `operator_facing_summary` and `developer_facing_summary`
   - overtrading diagnostics, incidents/post-mortem, and `improvement_suggestions`

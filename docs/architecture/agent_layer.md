@@ -97,6 +97,10 @@ This document defines agent responsibilities and handoff boundaries.
 - Derives operator-readable summaries from logs/artifacts.
 - Does not alter runtime decisions.
 - Current implementation is deterministic/passive; AI-centered reporter upgrade is future work.
+- `reporter_analysis.v1` adds:
+  - `decision_trace_chain_summary` (run_id chain completeness across strategist/scanner/monitor/supervisor/executor)
+  - `operator_facing_summary` (health + immediate actions)
+  - `developer_facing_summary` (debug-first counters/reasons)
 
 ## Minimal Decision Trace / Reason Ledger
 

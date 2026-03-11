@@ -101,6 +101,21 @@ def _reason_text(reason: Any) -> str:
     return s if s else "unspecified"
 
 
+def _decision_trace_agent_payload(row: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """Return (agent, payload) from `stage=decision_trace` rows.
+
+    Expected event payload shape:
+    {
+      "agent": "strategist|scanner|monitor|supervisor|executor",
+      "payload": {...}
+    }
+    """
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    agent = str(payload.get("agent") or "").strip().lower()
+    agent_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    return agent, dict(agent_payload or {})
+
+
 def _execution_rows_by_run(executions: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
     for row in executions:
@@ -372,6 +387,7 @@ def _build_incident_postmortem(
     *,
     overtrading: Dict[str, Any],
     intent_flow: Dict[str, Any],
+    day_rows: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     incidents: List[Dict[str, Any]] = []
 
@@ -400,6 +416,40 @@ def _build_incident_postmortem(
                 "type": "high_block_rate",
                 "severity": "RED",
                 "detail": f"guard_block_rate={_safe_float(overtrading.get('guard_block_rate'), 0.0):.2%}",
+            }
+        )
+
+    execution_anomaly_total = 0
+    for row in day_rows:
+        stage = str(row.get("stage") or "").strip()
+        event = str(row.get("event") or "").strip()
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if stage == "execute_from_packet" and event == "execution":
+            if payload.get("ok") is False:
+                execution_anomaly_total += 1
+                continue
+            px = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+            broker_code = str(px.get("broker_code") or "").strip()
+            if broker_code and broker_code != "0":
+                execution_anomaly_total += 1
+                continue
+        if stage == "decision_trace" and event == "result":
+            agent, ap = _decision_trace_agent_payload(row)
+            if agent != "executor":
+                continue
+            if bool(ap.get("execution_attempted")) and str(ap.get("fill_status_summary") or "").strip().lower() in (
+                "failed",
+                "rejected",
+                "error",
+            ):
+                execution_anomaly_total += 1
+
+    if execution_anomaly_total > 0:
+        incidents.append(
+            {
+                "type": "execution_anomaly",
+                "severity": "RED",
+                "detail": f"execution_anomaly_total={execution_anomaly_total}",
             }
         )
 
@@ -481,6 +531,9 @@ def _build_decision_chains(day_rows: List[Dict[str, Any]], *, limit: int = 200) 
                 "execution_status": "UNKNOWN",
                 "supervisor_verdict": "UNKNOWN",
                 "guard_reason": "",
+                "strategist_frame": {},
+                "scanner_selection": {},
+                "monitor_decision": {},
                 "events": [],
             },
         )
@@ -531,6 +584,51 @@ def _build_decision_chains(day_rows: List[Dict[str, Any]], *, limit: int = 200) 
                 chain["execution_status"] = "EXECUTED_FAIL"
             else:
                 chain["execution_status"] = "EXECUTED"
+        elif stage == "decision_trace":
+            agent, ap = _decision_trace_agent_payload(row)
+            if agent == "strategist":
+                chain["strategist_frame"] = {
+                    "market_regime": str(ap.get("market_regime") or ""),
+                    "themes": list(ap.get("themes") or []),
+                    "playbook": str(ap.get("playbook") or ""),
+                    "scanner_bias": str(ap.get("scanner_bias") or ""),
+                    "risk_tone": str(ap.get("risk_tone") or ""),
+                    "monitor_guidance": str(ap.get("monitor_guidance") or ""),
+                }
+            elif agent == "scanner":
+                chain["scanner_selection"] = {
+                    "candidate_pool_size": _safe_int(ap.get("candidate_pool_size"), 0),
+                    "selected_symbol": str(ap.get("selected_symbol") or ""),
+                    "top_candidates": list(ap.get("top_candidates") or [])[:3],
+                }
+                if not chain.get("symbol"):
+                    sel = str(ap.get("selected_symbol") or "").strip().upper()
+                    if sel:
+                        chain["symbol"] = sel
+            elif agent == "monitor":
+                chain["monitor_decision"] = {
+                    "entry_reason": _reason_text(ap.get("entry_reason")),
+                    "exit_reason": _reason_text(ap.get("exit_reason")),
+                    "monitor_reason": _reason_text(ap.get("monitor_reason")),
+                    "min_hold_blocked": bool(ap.get("min_hold_blocked")),
+                    "sell_cooldown_blocked": bool(ap.get("sell_cooldown_blocked")),
+                }
+                mr = _reason_text(ap.get("monitor_reason"))
+                if mr != "unspecified":
+                    chain["monitor_reason"] = mr
+            elif agent == "supervisor":
+                verdict = str(ap.get("verdict") or "").strip().upper()
+                if verdict:
+                    chain["supervisor_verdict"] = verdict
+                gr = _reason_text(ap.get("guard_reason"))
+                if gr != "unspecified":
+                    chain["guard_reason"] = gr
+                if verdict in ("REJECT", "BLOCKED"):
+                    chain["execution_status"] = "BLOCKED"
+            elif agent == "executor":
+                fs = str(ap.get("fill_status_summary") or "").strip().upper()
+                if fs:
+                    chain["execution_status"] = fs
 
     chains = list(by_run.values())
     for c in chains:
@@ -544,6 +642,91 @@ def _build_decision_chains(day_rows: List[Dict[str, Any]], *, limit: int = 200) 
     return {
         "run_total": int(len(by_run)),
         "rendered_run_total": int(len(chains)),
+        "chains": chains,
+    }
+
+
+def _build_decision_trace_chain_summary(day_rows: List[Dict[str, Any]], *, limit: int = 200) -> Dict[str, Any]:
+    by_run: Dict[str, Dict[str, Any]] = {}
+    for row in sorted(day_rows, key=lambda r: _to_epoch(r.get("ts") or (r.get("payload") or {}).get("ts")) or 0):
+        if str(row.get("stage") or "").strip() != "decision_trace":
+            continue
+        run_id = str(row.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        agent, ap = _decision_trace_agent_payload(row)
+        if not agent:
+            continue
+        chain = by_run.setdefault(
+            run_id,
+            {
+                "run_id": run_id,
+                "strategist": {},
+                "scanner": {},
+                "monitor": {},
+                "supervisor": {},
+                "executor": {},
+                "agent_sequence": [],
+            },
+        )
+        chain["agent_sequence"].append(agent)
+        if agent == "strategist":
+            chain["strategist"] = {
+                "market_regime": str(ap.get("market_regime") or ""),
+                "themes": list(ap.get("themes") or [])[:5],
+                "playbook": str(ap.get("playbook") or ""),
+                "scanner_bias": str(ap.get("scanner_bias") or ""),
+                "risk_tone": str(ap.get("risk_tone") or ""),
+                "monitor_guidance": str(ap.get("monitor_guidance") or ""),
+            }
+        elif agent == "scanner":
+            chain["scanner"] = {
+                "candidate_pool_size": _safe_int(ap.get("candidate_pool_size"), 0),
+                "selected_symbol": str(ap.get("selected_symbol") or ""),
+                "top_candidates": list(ap.get("top_candidates") or [])[:3],
+                "score_breakdown_summary": dict(ap.get("score_breakdown_summary") or {}),
+            }
+        elif agent == "monitor":
+            chain["monitor"] = {
+                "entry_reason": _reason_text(ap.get("entry_reason")),
+                "exit_reason": _reason_text(ap.get("exit_reason")),
+                "monitor_reason": _reason_text(ap.get("monitor_reason")),
+                "min_hold_blocked": bool(ap.get("min_hold_blocked")),
+                "sell_cooldown_blocked": bool(ap.get("sell_cooldown_blocked")),
+            }
+        elif agent == "supervisor":
+            chain["supervisor"] = {
+                "verdict": str(ap.get("verdict") or ""),
+                "guard_reason": _reason_text(ap.get("guard_reason")),
+            }
+        elif agent == "executor":
+            chain["executor"] = {
+                "execution_attempted": bool(ap.get("execution_attempted")),
+                "fill_status_summary": str(ap.get("fill_status_summary") or ""),
+                "order_result": dict(ap.get("order_result") or {}),
+            }
+
+    chains = list(by_run.values())
+    complete_total = 0
+    for chain in chains:
+        seq = list(chain.get("agent_sequence") or [])
+        chain["agent_sequence"] = seq[:16]
+        complete = (
+            bool(chain.get("strategist"))
+            and bool(chain.get("scanner"))
+            and bool(chain.get("monitor"))
+            and bool(chain.get("supervisor"))
+            and bool(chain.get("executor"))
+        )
+        if complete:
+            complete_total += 1
+        chain["complete_chain"] = bool(complete)
+
+    chains = chains[: max(1, int(limit))]
+    return {
+        "run_total": int(len(by_run)),
+        "rendered_run_total": int(len(chains)),
+        "complete_chain_total": int(complete_total),
         "chains": chains,
     }
 
@@ -741,15 +924,28 @@ def _build_supervisor_activity(day_rows: List[Dict[str, Any]], *, intent_flow: D
     approved_total = 0
     reason_counts: Counter[str] = Counter()
     for row in day_rows:
-        if str(row.get("stage") or "").strip() != "execute_from_packet" or str(row.get("event") or "").strip() != "verdict":
-            continue
-        verdict_total += 1
+        stage = str(row.get("stage") or "").strip()
+        event = str(row.get("event") or "").strip()
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-        if payload.get("allowed") is True:
-            approved_total += 1
-        elif payload.get("allowed") is False:
-            blocked_total += 1
-            reason_counts[_reason_text(payload.get("reason"))] += 1
+        if stage == "execute_from_packet" and event == "verdict":
+            verdict_total += 1
+            if payload.get("allowed") is True:
+                approved_total += 1
+            elif payload.get("allowed") is False:
+                blocked_total += 1
+                reason_counts[_reason_text(payload.get("reason"))] += 1
+            continue
+        if stage == "decision_trace" and event == "verdict":
+            agent, ap = _decision_trace_agent_payload(row)
+            if agent != "supervisor":
+                continue
+            verdict_total += 1
+            verdict = str(ap.get("verdict") or "").strip().upper()
+            if verdict in ("APPROVE", "APPROVED", "ALLOW"):
+                approved_total += 1
+            elif verdict in ("REJECT", "BLOCKED", "DENY"):
+                blocked_total += 1
+                reason_counts[_reason_text(ap.get("guard_reason"))] += 1
 
     if blocked_total <= 0:
         blocked_total = _safe_int(intent_flow.get("intents_blocked"), blocked_total)
@@ -768,6 +964,55 @@ def _build_supervisor_activity(day_rows: List[Dict[str, Any]], *, intent_flow: D
             if block_rate >= 0.40
             else "Supervisor activity within normal range."
         ),
+    }
+
+
+def _build_report_views(
+    *,
+    day: str,
+    trade_summary: Dict[str, Any],
+    monitor_eval: Dict[str, Any],
+    scanner_eval: Dict[str, Any],
+    supervisor_activity: Dict[str, Any],
+    incidents: Dict[str, Any],
+    improvement_suggestions: List[str],
+) -> Dict[str, Any]:
+    incident_total = _safe_int(incidents.get("incident_total"), 0)
+    blocked_rate = _safe_float(supervisor_activity.get("blocked_rate"), 0.0)
+    monitor_status = str(monitor_eval.get("monitor_status") or "unknown")
+    scanner_status = str(scanner_eval.get("selection_status") or "unknown")
+    health = "GREEN"
+    if incident_total > 0 or monitor_status == "overtrading_risk":
+        health = "YELLOW"
+    if blocked_rate >= 0.5:
+        health = "RED"
+    operator_lines: List[str] = [
+        f"{day}: health={health}",
+        f"trade_count={_safe_int(trade_summary.get('trade_count'), 0)} symbols={len(trade_summary.get('symbols_traded') or [])}",
+        f"monitor_status={monitor_status} scanner_status={scanner_status} supervisor_blocked_rate={blocked_rate:.2%}",
+    ]
+    if incident_total > 0:
+        operator_lines.append(f"incident_total={incident_total}")
+    if improvement_suggestions:
+        operator_lines.append(f"next_action={improvement_suggestions[0]}")
+
+    developer_lines: List[str] = [
+        f"decision_chain_run_total={_safe_int(trade_summary.get('decision_chain_run_total'), 0)}",
+        f"blocked_total={_safe_int(supervisor_activity.get('blocked_total'), 0)} approved_total={_safe_int(supervisor_activity.get('approved_total'), 0)}",
+        f"monitor_confirmed_exit_total={_safe_int(monitor_eval.get('confirmed_exit_total'), 0)}",
+        f"scanner_no_candidate_total={_safe_int(scanner_eval.get('no_candidate_total'), 0)}",
+    ]
+    return {
+        "operator_facing_summary": {
+            "system_health": health,
+            "summary_lines": operator_lines[:4],
+            "recommended_actions": improvement_suggestions[:3],
+        },
+        "developer_facing_summary": {
+            "summary_lines": developer_lines,
+            "blocked_reason_top": dict((supervisor_activity.get("blocked_reason_top") or {})),
+            "monitor_reason_top": dict((monitor_eval.get("monitor_reason_top") or {})),
+        },
     }
 
 
@@ -814,17 +1059,25 @@ def _to_markdown(out: Dict[str, Any]) -> str:
     operator = out.get("daily_operator_report") if isinstance(out.get("daily_operator_report"), dict) else {}
     trade_summary = out.get("trade_summary") if isinstance(out.get("trade_summary"), dict) else {}
     decision_chains = out.get("decision_chains") if isinstance(out.get("decision_chains"), dict) else {}
+    trace_summary = out.get("decision_trace_chain_summary") if isinstance(out.get("decision_trace_chain_summary"), dict) else {}
     strategist_eval = out.get("strategist_evaluation") if isinstance(out.get("strategist_evaluation"), dict) else {}
     scanner_eval = out.get("scanner_evaluation") if isinstance(out.get("scanner_evaluation"), dict) else {}
     monitor_eval = out.get("monitor_evaluation") if isinstance(out.get("monitor_evaluation"), dict) else {}
     supervisor_activity = out.get("supervisor_activity") if isinstance(out.get("supervisor_activity"), dict) else {}
     improvement = out.get("improvement_suggestions") if isinstance(out.get("improvement_suggestions"), list) else []
     report_focus_targets = out.get("report_focus_targets") if isinstance(out.get("report_focus_targets"), list) else []
+    operator_view = out.get("operator_facing_summary") if isinstance(out.get("operator_facing_summary"), dict) else {}
+    developer_view = out.get("developer_facing_summary") if isinstance(out.get("developer_facing_summary"), dict) else {}
 
     lines: List[str] = []
     lines.append(f"# Reporter Analysis ({day})")
     lines.append("")
     lines.append("## Daily Operator Report")
+    lines.append("")
+    lines.append(f"- system_health: **{operator_view.get('system_health') or 'UNKNOWN'}**")
+    for txt in (operator_view.get("summary_lines") or [])[:4]:
+        lines.append(f"- {txt}")
+    lines.append(f"- recommended_actions: `{json.dumps(operator_view.get('recommended_actions') or [], ensure_ascii=False)}`")
     lines.append("")
     lines.append(f"- market_context: `{json.dumps(market, ensure_ascii=False)}`")
     lines.append(f"- trades_executed: **{_safe_int(operator.get('trades_executed'), 0)}**")
@@ -861,6 +1114,23 @@ def _to_markdown(out: Dict[str, Any]) -> str:
             f"- run_id={chain.get('run_id')} symbol={chain.get('symbol') or '-'} action={chain.get('action') or '-'} "
             f"supervisor={chain.get('supervisor_verdict') or '-'} execution={chain.get('execution_status') or '-'} "
             f"buy_reason={chain.get('buy_reason') or '-'} sell_reason={chain.get('sell_reason') or '-'}"
+        )
+    lines.append("")
+    lines.append("## Decision Trace Chain Summary")
+    lines.append("")
+    lines.append(f"- run_total: **{_safe_int(trace_summary.get('run_total'), 0)}**")
+    lines.append(f"- complete_chain_total: **{_safe_int(trace_summary.get('complete_chain_total'), 0)}**")
+    for chain in (trace_summary.get("chains") or [])[:10]:
+        if not isinstance(chain, dict):
+            continue
+        scanner = chain.get("scanner") if isinstance(chain.get("scanner"), dict) else {}
+        monitor = chain.get("monitor") if isinstance(chain.get("monitor"), dict) else {}
+        supervisor = chain.get("supervisor") if isinstance(chain.get("supervisor"), dict) else {}
+        executor = chain.get("executor") if isinstance(chain.get("executor"), dict) else {}
+        lines.append(
+            f"- run_id={chain.get('run_id')} selected={scanner.get('selected_symbol') or '-'} "
+            f"monitor={monitor.get('monitor_reason') or '-'} supervisor={supervisor.get('verdict') or '-'} "
+            f"executor={executor.get('fill_status_summary') or '-'} complete={bool(chain.get('complete_chain'))}"
         )
     lines.append("")
     lines.append("## Strategist Evaluation")
@@ -932,6 +1202,13 @@ def _to_markdown(out: Dict[str, Any]) -> str:
     lines.append(f"- report_focus_targets: `{json.dumps(report_focus_targets, ensure_ascii=False)}`")
     for item in improvement[:8]:
         lines.append(f"- {item}")
+    lines.append("")
+    lines.append("## Developer Summary")
+    lines.append("")
+    for txt in (developer_view.get("summary_lines") or [])[:8]:
+        lines.append(f"- {txt}")
+    lines.append(f"- blocked_reason_top: `{json.dumps(developer_view.get('blocked_reason_top') or {}, ensure_ascii=False)}`")
+    lines.append(f"- monitor_reason_top: `{json.dumps(developer_view.get('monitor_reason_top') or {}, ensure_ascii=False)}`")
     lines.append("")
     lines.append("## Source Artifacts")
     lines.append("")
@@ -1007,9 +1284,10 @@ def generate_reporter_analysis_report(
         intent_flow=intent_flow,
         rapid_threshold_sec=max(1, int(rapid_cycle_threshold_sec)),
     )
-    incident = _build_incident_postmortem(overtrading=overtrading, intent_flow=intent_flow)
+    incident = _build_incident_postmortem(overtrading=overtrading, intent_flow=intent_flow, day_rows=day_rows)
     market_context = _build_market_context(trade_explain_obj=trade_obj, day_rows=day_rows)
     decision_chains = _build_decision_chains(day_rows, limit=200)
+    decision_trace_chain_summary = _build_decision_trace_chain_summary(day_rows, limit=200)
     trade_summary = _build_trade_summary_section(trade_decision=trade_decision, decision_chains=decision_chains)
     strategist_eval = _build_strategist_evaluation(day_rows)
     scanner_eval = _build_scanner_evaluation(day_rows)
@@ -1022,6 +1300,15 @@ def generate_reporter_analysis_report(
         supervisor_activity=supervisor_activity,
         incidents=incident,
         report_focus_targets=report_focus_targets,
+    )
+    report_views = _build_report_views(
+        day=target_day,
+        trade_summary=trade_summary,
+        monitor_eval=monitor_eval,
+        scanner_eval=scanner_eval,
+        supervisor_activity=supervisor_activity,
+        incidents=incident,
+        improvement_suggestions=improvement_suggestions,
     )
 
     trading_activity = (
@@ -1042,6 +1329,7 @@ def generate_reporter_analysis_report(
         "day": target_day,
         "trade_summary": trade_summary,
         "decision_chains": decision_chains,
+        "decision_trace_chain_summary": decision_trace_chain_summary,
         "trade_decision_summaries": trade_decision,
         "strategist_evaluation": strategist_eval,
         "scanner_evaluation": scanner_eval,
@@ -1054,6 +1342,8 @@ def generate_reporter_analysis_report(
         "incident_postmortem": incident,
         "incidents": incident,
         "improvement_suggestions": improvement_suggestions,
+        "operator_facing_summary": report_views.get("operator_facing_summary", {}),
+        "developer_facing_summary": report_views.get("developer_facing_summary", {}),
         "market_context": market_context,
         "report_focus_targets": list(report_focus_targets),
         "source_reports": {

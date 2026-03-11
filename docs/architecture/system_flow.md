@@ -38,6 +38,7 @@
    - executes only approved intents with guard precedence
 6. Reporter
    - generates operator-facing summaries from logs/artifacts
+   - `reporter_analysis.v1` produces `decision_trace_chain_summary`, `operator_facing_summary`, and `developer_facing_summary`
 
 ## Minimal Decision Trace / Reason Ledger
 

@@ -51,6 +51,71 @@ def test_reporter_analysis_script_builds_structured_sections(tmp_path: Path, cap
             },
             {
                 "run_id": "r_buy",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "decision_trace",
+                "event": "snapshot",
+                "payload": {
+                    "agent": "strategist",
+                    "payload": {
+                        "market_regime": "risk_on",
+                        "themes": ["semiconductor"],
+                        "playbook": "breakout",
+                        "scanner_bias": "leader",
+                        "risk_tone": "normal",
+                        "monitor_guidance": "hold_through_noise",
+                    },
+                },
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "decision_trace",
+                "event": "snapshot",
+                "payload": {
+                    "agent": "scanner",
+                    "payload": {
+                        "candidate_pool_size": 12,
+                        "selected_symbol": "005930",
+                        "top_candidates": ["005930", "000660"],
+                        "score_breakdown_summary": {"momentum": 0.4, "trend": 0.3},
+                    },
+                },
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "decision_trace",
+                "event": "snapshot",
+                "payload": {
+                    "agent": "monitor",
+                    "payload": {
+                        "entry_reason": "entry_signal",
+                        "exit_reason": "hold",
+                        "monitor_reason": "hold",
+                        "min_hold_blocked": False,
+                        "sell_cooldown_blocked": False,
+                    },
+                },
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:03+00:00",
+                "stage": "decision_trace",
+                "event": "verdict",
+                "payload": {"agent": "supervisor", "payload": {"verdict": "APPROVED", "guard_reason": ""}},
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:04+00:00",
+                "stage": "decision_trace",
+                "event": "result",
+                "payload": {
+                    "agent": "executor",
+                    "payload": {"execution_attempted": True, "fill_status_summary": "executed"},
+                },
+            },
+            {
+                "run_id": "r_buy",
                 "ts": f"{day}T00:00:02+00:00",
                 "stage": "decision",
                 "event": "trace",
@@ -121,6 +186,13 @@ def test_reporter_analysis_script_builds_structured_sections(tmp_path: Path, cap
                 "event": "verdict",
                 "payload": {"allowed": False, "reason": "risk_guard"},
             },
+            {
+                "run_id": "r_fail",
+                "ts": f"{day}T00:02:11+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"ok": False, "payload": {"broker_code": "500"}},
+            },
         ],
     )
     _write_jsonl(
@@ -158,6 +230,8 @@ def test_reporter_analysis_script_builds_structured_sections(tmp_path: Path, cap
     assert int((obj.get("trade_summary") or {}).get("trade_count") or 0) >= 1
     assert "005930" in ((obj.get("trade_summary") or {}).get("symbols_traded") or [])
     assert int((obj.get("decision_chains") or {}).get("run_total") or 0) >= 1
+    assert int((obj.get("decision_trace_chain_summary") or {}).get("run_total") or 0) >= 1
+    assert int((obj.get("decision_trace_chain_summary") or {}).get("complete_chain_total") or 0) >= 1
     assert isinstance((obj.get("strategist_evaluation") or {}).get("themes_proposed"), list)
     assert isinstance((obj.get("scanner_evaluation") or {}).get("selected_symbol_top"), dict)
     assert isinstance((obj.get("monitor_evaluation") or {}).get("monitor_reason_top"), dict)
@@ -168,6 +242,10 @@ def test_reporter_analysis_script_builds_structured_sections(tmp_path: Path, cap
     assert int(flow["intents_blocked"]) >= 1
     assert "min_hold_blocked" in (flow.get("reason_top") or {})
     assert int(obj["overtrading_diagnostics"]["rapid_buy_sell_cycles"]) >= 1
+    assert isinstance((obj.get("operator_facing_summary") or {}).get("summary_lines"), list)
+    assert isinstance((obj.get("developer_facing_summary") or {}).get("summary_lines"), list)
+    incident_types = [str(x.get("type") or "") for x in (obj.get("incident_postmortem") or {}).get("incidents", []) if isinstance(x, dict)]
+    assert "execution_anomaly" in incident_types
     strategy_effectiveness = obj.get("strategy_effectiveness") or {}
     assert (strategy_effectiveness.get("report_focus_counts") or {}).get("Validate theme follow-through") == 1
     assert (strategy_effectiveness.get("scanner_priority_counts") or {}).get("momentum") == 1

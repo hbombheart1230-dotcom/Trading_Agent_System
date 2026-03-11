@@ -223,8 +223,10 @@ Example scanner output:
 - Summarizes LLM quality and execution metrics
 - Produces passive post-run analysis sections:
   - `trade_summary`, `decision_chains`
+  - `decision_trace_chain_summary` (run_id chain completeness + per-agent summary)
   - `strategist_evaluation`, `scanner_evaluation`, `monitor_evaluation`
   - `supervisor_activity`, `incidents`, `improvement_suggestions`
+  - `operator_facing_summary`, `developer_facing_summary`
 - Does not participate in runtime decision routing
 - Current implementation is deterministic/passive; AI-centered reporter enhancement is planned later
 
