@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from scripts.run_m31_mock_investor_exam_check import main as m31_2_main
 
 
@@ -330,3 +332,52 @@ def test_m31_2_mock_investor_exam_check_allows_offhours_with_flag(tmp_path: Path
 
     assert rc == 0
     assert obj["ok"] is True
+
+
+def test_m31_2_mock_investor_exam_check_tick_contract_passes_integrated_chain(
+    tmp_path: Path,
+    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    day = "2026-02-21"
+    env_path = tmp_path / ".env"
+    events = tmp_path / "events.jsonl"
+    report_dir = tmp_path / "reports"
+
+    _write_env(
+        env_path,
+        {
+            "RUNTIME_PROFILE": "staging",
+            "KIWOOM_MODE": "mock",
+            "ALLOW_REAL_EXECUTION": "false",
+            "EXECUTION_ENABLED": "true",
+            "APPROVAL_MODE": "manual",
+            "MAX_ORDER_NOTIONAL": "1000000",
+            "RISK_DAILY_LOSS_LIMIT": "0.02",
+        },
+    )
+    _write_jsonl(events, [])
+    monkeypatch.setenv("M13_TICK_PIPELINE", "integrated_chain")
+
+    rc = m31_2_main(
+        [
+            "--env-path",
+            str(env_path),
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(report_dir),
+            "--day",
+            day,
+            "--now-kst",
+            OPEN_KST,
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert obj["ok"] is True
+    tick_item = next((x for x in (obj.get("checklist") or []) if x.get("id") == "tick_pipeline_contract"), {})
+    assert tick_item.get("passed") is True
+    assert "open_run_integrated_called=True" in str(tick_item.get("evidence") or "")

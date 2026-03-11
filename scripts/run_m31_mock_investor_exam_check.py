@@ -266,11 +266,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         state["run_m10_called"] = True
         return state
 
-    closed_state = run_m13_tick({}, dt=closed_dt, market_hours=mh, run_m10=_run_marker)
-    open_state = run_m13_tick({}, dt=open_dt, market_hours=mh, run_m10=_run_marker)
-    tick_contract_ok = bool(closed_state.get("tick_skipped")) and (not bool(open_state.get("tick_skipped"))) and bool(
-        open_state.get("run_m10_called")
+    def _run_integrated_marker(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["run_integrated_called"] = True
+        return state
+
+    closed_state = run_m13_tick(
+        {},
+        dt=closed_dt,
+        market_hours=mh,
+        run_m10=_run_marker,
+        run_integrated=_run_integrated_marker,
     )
+    open_state = run_m13_tick(
+        {},
+        dt=open_dt,
+        market_hours=mh,
+        run_m10=_run_marker,
+        run_integrated=_run_integrated_marker,
+    )
+    open_run_called = bool(open_state.get("run_m10_called")) or bool(open_state.get("run_integrated_called"))
+    tick_contract_ok = bool(closed_state.get("tick_skipped")) and (not bool(open_state.get("tick_skipped"))) and open_run_called
 
     event_total = 0
     verdict_total = 0
@@ -331,7 +346,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             evidence=(
                 f"closed_tick_skipped={bool(closed_state.get('tick_skipped'))}, "
                 f"open_tick_skipped={bool(open_state.get('tick_skipped'))}, "
-                f"open_run_called={bool(open_state.get('run_m10_called'))}"
+                f"open_run_called={open_run_called}, "
+                f"open_run_m10_called={bool(open_state.get('run_m10_called'))}, "
+                f"open_run_integrated_called={bool(open_state.get('run_integrated_called'))}"
             ),
         ),
         _item(
