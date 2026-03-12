@@ -13,6 +13,7 @@ from .operator_visibility import (
 )
 from .reporter_ai_review import build_ai_reporter_review
 from .trade_explain import generate_trade_explain_report
+from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -1258,12 +1259,29 @@ def generate_reporter_analysis_report(
     report_dir.mkdir(parents=True, exist_ok=True)
     root = reports_root or report_dir.parent
     target_day = str(day or _latest_day(event_log_path) or date.today().isoformat())
+    reporter_run_id = f"reporter-{target_day}"
 
     rows = []
     for row in _iter_jsonl(event_log_path):
         ts = row.get("ts") or (row.get("payload") or {}).get("ts")
         rows.append({**row, "_day": _utc_day(ts)})
     day_rows = [r for r in rows if str(r.get("_day") or "") == target_day]
+    try:
+        record_raw_input(
+            run_id=reporter_run_id,
+            agent="reporter",
+            stage="post_run_analysis",
+            raw_input={
+                "target_day": target_day,
+                "event_log_path": str(event_log_path),
+                "day_row_count": int(len(day_rows)),
+                "rapid_cycle_threshold_sec": int(rapid_cycle_threshold_sec),
+                "reports_root": str(root),
+            },
+            decision_link={"stage": "reporter_analysis_start"},
+        )
+    except Exception:
+        pass
 
     trade_md, trade_js, trade_obj = generate_trade_explain_report(
         event_log_path,
@@ -1410,6 +1428,33 @@ def generate_reporter_analysis_report(
     out["ai_improvement_suggestions"] = list(ai_review.get("ai_improvement_suggestions") or [])
     out["ai_run_grade"] = str(ai_review.get("ai_run_grade") or "N/A")
     out["ai_agent_evaluations"] = dict(ai_review.get("ai_agent_evaluations") or {})
+    try:
+        record_decision_bridge(
+            run_id=reporter_run_id,
+            agent="reporter",
+            stage="post_run_analysis",
+            raw_input={
+                "source_reports": dict(out.get("source_reports") or {}),
+                "report_focus_targets": list(out.get("report_focus_targets") or []),
+            },
+            parsed_output={
+                "trade_summary": dict(out.get("trade_summary") or {}),
+                "decision_trace_chain_summary": dict(out.get("decision_trace_chain_summary") or {}),
+                "monitor_evaluation": dict(out.get("monitor_evaluation") or {}),
+                "supervisor_activity": dict(out.get("supervisor_activity") or {}),
+                "ai_review": dict(out.get("ai_review") or {}),
+            },
+            decision_link={
+                "decision_chain": {
+                    "theme": str(((out.get("strategist_evaluation") or {}).get("themes_proposed") or [""])[0] if isinstance((out.get("strategist_evaluation") or {}).get("themes_proposed"), list) and ((out.get("strategist_evaluation") or {}).get("themes_proposed") or []) else ""),
+                    "scanner_selected": str(((out.get("scanner_evaluation") or {}).get("selected_symbol_top") or {}).get("symbol") or ""),
+                    "entry_reason": str(((out.get("monitor_evaluation") or {}).get("monitor_reason_top") or {}).get("entry_signal") or ""),
+                    "exit_reason": str(((out.get("monitor_evaluation") or {}).get("monitor_reason_top") or {}).get("confirmed_exit_signal") or ""),
+                }
+            },
+        )
+    except Exception:
+        pass
 
     js_path = report_dir / f"reporter_analysis_{target_day}.json"
     md_path = report_dir / f"reporter_analysis_{target_day}.md"

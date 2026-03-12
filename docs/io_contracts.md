@@ -125,6 +125,20 @@
 - EventLog mirror:
   - `stage=decision_trace`, `event=<snapshot_type>`
 
+## EvidenceLedgerRecord (additive)
+- File: `data/evidence_ledger/events.jsonl` (override: `EVIDENCE_LEDGER_PATH`)
+- Contract:
+  - `run_id`
+  - `timestamp` (UTC ISO8601)
+  - `agent` (`strategist|scanner|monitor|reporter`)
+  - `stage`
+  - `raw_input` (structured raw evidence snapshot)
+  - `llm_prompt` (when applicable)
+  - `llm_response` (when applicable)
+  - `parsed_output` (structured interpretation)
+  - `decision_link` (cross-agent bridge hints: theme -> selected -> entry/exit)
+- Append-only and passive: no control-flow side effects.
+
 ## ReporterAnalysis (`reporter_analysis.v1`)
 - Passive post-run output generated from logs and derived artifacts.
 - Two-layer structure:

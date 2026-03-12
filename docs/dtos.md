@@ -262,3 +262,15 @@
 - `ts_epoch: int`
 - `agent: "strategist" | "scanner" | "monitor" | "supervisor" | "executor"`
 - `payload: object` (compact summary per agent)
+
+### EvidenceLedgerRecord (raw reasoning trace, additive)
+- storage: `data/evidence_ledger/events.jsonl` (override: `EVIDENCE_LEDGER_PATH`)
+- `run_id: str`
+- `timestamp: ISO8601(UTC)`
+- `agent: "strategist" | "scanner" | "monitor" | "reporter"`
+- `stage: str`
+- `raw_input: object`
+- `llm_prompt: str`
+- `llm_response: str`
+- `parsed_output: object`
+- `decision_link: object`

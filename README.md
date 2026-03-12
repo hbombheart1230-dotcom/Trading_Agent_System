@@ -322,6 +322,19 @@ Minimal Decision Trace / Reason Ledger (additive):
   - Supervisor/Executor (`verdict`, `guard_reason`, execution attempt/result summary)
 - mirrored to EventLog as `stage=decision_trace` for post-run analysis and future reporter upgrades
 
+Evidence Ledger (raw reasoning trace, additive):
+- append-only JSONL: `data/evidence_ledger/events.jsonl`
+- override path: `EVIDENCE_LEDGER_PATH`
+- schema keys:
+  - `run_id`, `timestamp`, `agent`, `stage`
+  - `raw_input`, `llm_prompt`, `llm_response`, `parsed_output`, `decision_link`
+- integrated agents:
+  - Strategist: collected context + strategist LLM prompt/response + parsed output bridge
+  - Scanner: candidate retrieval/ranking input + selected symbol bridge
+  - Monitor: entry/exit snapshot + trigger/guard bridge
+  - Reporter: post-run analysis input + optional AI review prompt/response
+- safety boundary: logging only, never affects runtime decisions/execution
+
 Operator-facing report scripts:
 - `python -m scripts.run_operator_daily_summary --event-log-path data/logs/events.jsonl --report-dir reports/operator_summary --day <YYYY-MM-DD>`
 - `python -m scripts.run_decision_story_report --event-log-path data/logs/events.jsonl --report-dir reports/decision_story --day <YYYY-MM-DD>`

@@ -18,6 +18,7 @@ from graphs.nodes.skill_contracts import (
     extract_market_quotes,
     extract_order_status,
 )
+from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.exit_policy import evaluate_exit_policy
 from libs.runtime.position_sizing import evaluate_position_size
@@ -677,6 +678,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
       - attach optional order status/lifecycle observation from skill DTOs
       - keep stock-selection and execution out of monitor scope
     """
+    run_id = str(state.get("run_id") or "").strip() or "monitor-unknown"
     selected = state.get("selected")
     plan = state.get("plan") or {}
 
@@ -694,6 +696,44 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     open_position_count = sum(1 for row in all_pos_map.values() if max(0, _to_int((row or {}).get("qty"))) > 0)
     block_buy_open_position = _resolve_block_buy_when_open_position(state, policy, monitor_policy)
     buy_blocked_open_position = False
+    try:
+        record_raw_input(
+            run_id=run_id,
+            agent="monitor",
+            stage="entry_exit_decision",
+            raw_input={
+                "selected_symbol": (
+                    str(selected.get("symbol") or "")
+                    if isinstance(selected, dict)
+                    else ""
+                ),
+                "selected_snapshot": (
+                    {
+                        "symbol": str(selected.get("symbol") or ""),
+                        "score": selected.get("score"),
+                        "risk_score": selected.get("risk_score"),
+                        "confidence": selected.get("confidence"),
+                    }
+                    if isinstance(selected, dict)
+                    else {}
+                ),
+                "open_position_count": int(open_position_count),
+                "positions": {
+                    str(k): {"qty": _to_int((v or {}).get("qty")), "avg_price": (v or {}).get("avg_price")}
+                    for k, v in list(all_pos_map.items())[:20]
+                },
+                "monitor_policy": dict(monitor_policy),
+                "strategist_guidance": {
+                    "playbook": str(strategist_output.get("playbook") or ""),
+                    "monitor_guidance": str(strategist_output.get("monitor_guidance") or ""),
+                    "risk_tone": str(strategist_output.get("risk_tone") or ""),
+                    "trade_aggressiveness": str(strategist_output.get("trade_aggressiveness") or ""),
+                },
+            },
+            decision_link={"stage": "monitor_input_snapshot"},
+        )
+    except Exception:
+        pass
 
     intents = []
     sizing_info: Dict[str, Any] = {
@@ -1110,4 +1150,48 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "trade_aggressiveness": str(exit_info.get("trade_aggressiveness") or ""),
         },
     )
+    try:
+        record_decision_bridge(
+            run_id=run_id,
+            agent="monitor",
+            stage="decision_bridge",
+            raw_input={
+                "selected_symbol": (
+                    str(selected.get("symbol") or "")
+                    if isinstance(selected, dict)
+                    else ""
+                ),
+                "monitor_policy": dict(monitor_policy),
+                "intents_preview": [
+                    {
+                        "symbol": str(x.get("symbol") or ""),
+                        "side": str(x.get("side") or ""),
+                        "qty": _to_int(x.get("qty")),
+                    }
+                    for x in list(intents)[:3]
+                    if isinstance(x, dict)
+                ],
+            },
+            parsed_output={
+                "entry_reason": str((state.get("monitor_output") or {}).get("entry_exit_reason") or ""),
+                "exit_reason": str(exit_info.get("reason") or ""),
+                "monitor_reason": str(exit_info.get("monitor_reason") or ""),
+                "position_age_seconds": exit_info.get("position_age_seconds"),
+                "exit_signal_detected": bool(exit_info.get("exit_signal_detected")),
+                "min_hold_blocked": bool(exit_info.get("min_hold_blocked")),
+                "sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),
+            },
+            decision_link={
+                "decision_chain": {
+                    "theme": str((state.get("themes") or [""])[0] if isinstance(state.get("themes"), list) and state.get("themes") else ""),
+                    "scanner_selected": state.get("top_stock") or (
+                        str(selected.get("symbol") or "") if isinstance(selected, dict) else ""
+                    ),
+                    "entry_reason": str((state.get("monitor_output") or {}).get("entry_exit_reason") or ""),
+                    "exit_reason": str(exit_info.get("reason") or ""),
+                }
+            },
+        )
+    except Exception:
+        pass
     return state

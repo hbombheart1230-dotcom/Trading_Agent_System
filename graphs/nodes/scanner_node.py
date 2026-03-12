@@ -18,6 +18,7 @@ from graphs.nodes.skill_contracts import (
     extract_market_quotes,
     norm_symbol,
 )
+from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 from libs.runtime.decision_trace import append_decision_trace
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 from libs.strategies.candidates.fallback_pool import is_static_fallback_pool
@@ -1022,6 +1023,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # M18-4: sentiment-aware scoring (offline-friendly)
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
     candidates, pool_meta = _resolve_scanner_candidates(state, policy)
+    run_id = str(state.get("run_id") or "").strip() or "scanner-unknown"
 
     mock: Optional[Mapping[str, Any]] = state.get("mock_scan_results")  # for tests
     mock_by_sym: Dict[str, Any] = {}
@@ -1052,6 +1054,46 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     skill_quotes, quote_meta = _extract_skill_quotes(state)
     skill_order_counts, skill_order_rows, order_meta = _extract_account_open_order_counts(state)
     feature_map, feature_source, feature_errors = _extract_feature_engine_map(state)
+    try:
+        raw_candidates = []
+        for item in list(candidates)[:50]:
+            if isinstance(item, dict):
+                raw_candidates.append(
+                    {
+                        "symbol": _norm_symbol(item.get("symbol")),
+                        "why": str(item.get("why") or ""),
+                        "sources": list(item.get("sources") or [])[:5],
+                        "rank_score": _to_float(item.get("rank_score") or 0.0),
+                    }
+                )
+            else:
+                raw_candidates.append({"symbol": _norm_symbol(item), "why": "raw_candidate"})
+        record_raw_input(
+            run_id=run_id,
+            agent="scanner",
+            stage="symbol_selection",
+            raw_input={
+                "candidate_pool_before_filter": int(len(candidates)),
+                "candidates": raw_candidates,
+                "candidate_source": str(pool_meta.get("candidate_source") or ""),
+                "strategist_guidance": {
+                    "themes": list(scanner_guidance.get("themes") or []),
+                    "avoid_themes": list(scanner_guidance.get("avoid_themes") or []),
+                    "playbook": playbook,
+                    "scanner_bias": scanner_bias,
+                    "scanner_priority": list(scanner_priority),
+                    "trade_aggressiveness": trade_aggressiveness,
+                    "risk_tone": risk_tone,
+                },
+                "global_sentiment_score": float(gs),
+                "feature_source": str(feature_source),
+                "feature_symbol_count": int(len(feature_map)),
+                "feature_errors": list(feature_errors),
+            },
+            decision_link={"stage": "scanner_candidate_retrieval"},
+        )
+    except Exception:
+        pass
 
     # Practical pool reduction before scoring.
     reduced_candidates, reduction_meta = _reduce_candidates_by_practical_filters(
@@ -1460,5 +1502,29 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             ),
         },
     )
+    try:
+        record_decision_bridge(
+            run_id=run_id,
+            agent="scanner",
+            stage="decision_bridge",
+            raw_input={
+                "candidate_pool_size": int(len(scan_results_sorted)),
+                "candidate_source": str(pool_meta.get("candidate_source") or ""),
+                "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
+            },
+            parsed_output={
+                "selected_symbol": state.get("top_stock") or None,
+                "top_score": float(_to_float(top_score) if top_score is not None else 0.0),
+                "ranked_candidates": list(state.get("ranked_candidates") or [])[:5],
+            },
+            decision_link={
+                "decision_chain": {
+                    "theme": str((state.get("themes") or [""])[0] if isinstance(state.get("themes"), list) and state.get("themes") else ""),
+                    "scanner_selected": state.get("top_stock") or None,
+                }
+            },
+        )
+    except Exception:
+        pass
 
     return state

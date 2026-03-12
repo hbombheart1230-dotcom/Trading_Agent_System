@@ -77,6 +77,22 @@
 - EventLog mirror:
   - `stage=decision_trace`
 
+## Evidence Ledger (Raw Reasoning Trace, Additive)
+
+- Append-only JSONL:
+  - default `data/evidence_ledger/events.jsonl`
+  - override `EVIDENCE_LEDGER_PATH`
+- Canonical record keys:
+  - `run_id`, `timestamp`, `agent`, `stage`
+  - `raw_input`, `llm_prompt`, `llm_response`, `parsed_output`, `decision_link`
+- Current runtime hooks:
+  - Strategist: context snapshot + strategist LLM prompt/response + strategic bridge
+  - Scanner: candidate retrieval/ranking snapshot + selected symbol bridge
+  - Monitor: entry/exit snapshot + guard/trigger bridge
+  - Reporter: post-run analysis input + optional AI review prompt/response
+- Safety boundary:
+  - Evidence ledger is observability-only and must not mutate runtime state or execution behavior.
+
 ## Canonical vs Compatibility Modules
 
 - Canonical runtime orchestrator: `graphs/commander_runtime.py`

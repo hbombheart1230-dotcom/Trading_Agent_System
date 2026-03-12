@@ -88,6 +88,10 @@
 - Reporter-ready reason inputs are now emitted via:
   - `state["decision_trace_ledger"]` / `state["reason_ledger"]`
   - EventLog `stage=decision_trace`
+- Reporter/agent raw reasoning trace is additionally captured in Evidence Ledger:
+  - JSONL path: `data/evidence_ledger/events.jsonl` (`EVIDENCE_LEDGER_PATH` override)
+  - per-entry keys: `raw_input`, `llm_prompt`, `llm_response`, `parsed_output`, `decision_link`
+  - passive only (no runtime control impact)
 - Runtime report generators: `libs/reporting/*`, `scripts/run_*report*.py`
 - Enhanced passive analysis output (`reporter_analysis.v1`) includes:
   - `trade_summary` and per-trade decision summaries (buy/sell reason, hold duration, exit trigger)

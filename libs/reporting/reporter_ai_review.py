@@ -5,6 +5,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from libs.llm.llm_router import LLMRouter
+from libs.research.evidence_ledger import record_llm_prompt, record_llm_response, record_raw_input
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -263,6 +264,7 @@ def build_ai_reporter_review(
     max_tokens: int = 900,
 ) -> Dict[str, Any]:
     """Optional passive AI review stage layered on deterministic reporter analysis."""
+    run_id = f"reporter-{str(day)}"
     is_enabled = _env_bool("REPORTER_AI_REVIEW_ENABLED", False) if enabled is None else bool(enabled)
     if not is_enabled:
         return _default_result(enabled=False, status="disabled", reason="REPORTER_AI_REVIEW_ENABLED is false")
@@ -303,17 +305,71 @@ def build_ai_reporter_review(
 
     compact_input = _build_compact_input(day, reporter_output)
     messages = _build_messages(day, compact_input)
+    prompt_text = "\n\n".join(
+        [f"[{str(m.get('role') or '').strip().lower() or 'unknown'}]\n{str(m.get('content') or '')}" for m in messages]
+    ).strip()
+    try:
+        record_raw_input(
+            run_id=run_id,
+            agent="reporter",
+            stage="post_run_analysis",
+            raw_input={"compact_input": compact_input},
+            decision_link={"stage": "ai_review_input"},
+        )
+        record_llm_prompt(
+            run_id=run_id,
+            agent="reporter",
+            stage="post_run_analysis",
+            llm_prompt=prompt_text,
+            raw_input={"compact_input": compact_input},
+            decision_link={"model": str(route.model or ""), "provider": "reporter_router"},
+        )
+    except Exception:
+        pass
     try:
         raw = router.chat("reporter", messages, policy=policy)
     except Exception as e:
+        try:
+            record_llm_response(
+                run_id=run_id,
+                agent="reporter",
+                stage="post_run_analysis",
+                llm_response=f"ERROR:{type(e).__name__}:{e}",
+                parsed_output={},
+                decision_link={"status": "error"},
+            )
+        except Exception:
+            pass
         return _default_result(enabled=True, status="error", reason=f"ai_call_failed:{e}", model=route.model)
 
     obj = _extract_json_object(raw)
     if not isinstance(obj, dict):
+        try:
+            record_llm_response(
+                run_id=run_id,
+                agent="reporter",
+                stage="post_run_analysis",
+                llm_response=str(raw or ""),
+                parsed_output={},
+                decision_link={"status": "parse_error"},
+            )
+        except Exception:
+            pass
         return _default_result(
             enabled=True,
             status="parse_error",
             reason=f"ai_response_not_json:{_clip_str(raw, max_len=220)}",
             model=route.model,
         )
+    try:
+        record_llm_response(
+            run_id=run_id,
+            agent="reporter",
+            stage="post_run_analysis",
+            llm_response=str(raw or ""),
+            parsed_output=dict(obj),
+            decision_link={"status": "ok", "model": str(route.model or "")},
+        )
+    except Exception:
+        pass
     return _normalize_result(obj, enabled=True, model=route.model)

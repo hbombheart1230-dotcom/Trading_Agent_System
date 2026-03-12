@@ -18,6 +18,12 @@ from libs.data_quality.signal_contract import SIGNAL_STATUS_FALLBACK, make_signa
 from libs.llm.llm_router import LLMRouter
 from libs.market.global_sentiment import compute_global_sentiment_signal
 from libs.news.news_pipeline import collect_news_items, score_news_sentiment_signal
+from libs.research.evidence_ledger import (
+    record_decision_bridge,
+    record_llm_prompt,
+    record_llm_response,
+    record_raw_input,
+)
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.regime import classify_regime_v2
 from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
@@ -193,12 +199,22 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def _messages_to_prompt_text(messages: List[Dict[str, str]]) -> str:
+    rows: List[str] = []
+    for m in messages:
+        role = str(m.get("role") or "").strip().lower() or "unknown"
+        content = str(m.get("content") or "")
+        rows.append(f"[{role}]\n{content}")
+    return "\n\n".join(rows).strip()
+
+
 def _run_strategist_frame_llm(
     *,
     state: Dict[str, Any],
     policy: Dict[str, Any],
     payload: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    run_id = str(state.get("run_id") or "").strip() or "strategist-unknown"
     if not _resolve_strategist_frame_llm_enabled(policy):
         return {}, {"enabled": False, "status": "disabled", "reason": "strategist_frame_llm_disabled"}
 
@@ -239,12 +255,41 @@ def _run_strategist_frame_llm(
     if model:
         route_policy["model"] = model
     route = router.resolve("strategist", policy=route_policy)
+    messages = _build_strategist_llm_messages(payload)
+    prompt_text = _messages_to_prompt_text(messages)
+    try:
+        record_llm_prompt(
+            run_id=run_id,
+            agent="strategist",
+            stage="theme_selection",
+            raw_input=dict(payload),
+            llm_prompt=prompt_text,
+            decision_link={
+                "model": str(route.model or ""),
+                "provider": "strategist_router",
+                "temperature": float(temperature),
+                "max_tokens": int(max_tokens),
+            },
+        )
+    except Exception:
+        pass
 
     t0 = time.perf_counter()
     try:
-        raw = router.chat("strategist", _build_strategist_llm_messages(payload), policy=route_policy)
+        raw = router.chat("strategist", messages, policy=route_policy)
     except Exception as e:
         latency_ms = int((time.perf_counter() - t0) * 1000)
+        try:
+            record_llm_response(
+                run_id=run_id,
+                agent="strategist",
+                stage="theme_selection",
+                llm_response=f"ERROR:{type(e).__name__}:{e}",
+                parsed_output={},
+                decision_link={"status": "error"},
+            )
+        except Exception:
+            pass
         return {}, {
             "enabled": True,
             "status": "error",
@@ -257,6 +302,17 @@ def _run_strategist_frame_llm(
 
     obj = _extract_json_object(raw)
     if not isinstance(obj, dict) or not obj:
+        try:
+            record_llm_response(
+                run_id=run_id,
+                agent="strategist",
+                stage="theme_selection",
+                llm_response=str(raw or ""),
+                parsed_output={},
+                decision_link={"status": "parse_error"},
+            )
+        except Exception:
+            pass
         return {}, {
             "enabled": True,
             "status": "parse_error",
@@ -268,6 +324,17 @@ def _run_strategist_frame_llm(
 
     overrides = _normalize_llm_overrides(obj)
     if not overrides:
+        try:
+            record_llm_response(
+                run_id=run_id,
+                agent="strategist",
+                stage="theme_selection",
+                llm_response=str(raw or ""),
+                parsed_output=dict(obj),
+                decision_link={"status": "parse_error", "reason": "missing_contract_fields"},
+            )
+        except Exception:
+            pass
         return {}, {
             "enabled": True,
             "status": "parse_error",
@@ -276,6 +343,18 @@ def _run_strategist_frame_llm(
             "model": route.model,
             "raw_preview": str(raw or "")[:220],
         }
+
+    try:
+        record_llm_response(
+            run_id=run_id,
+            agent="strategist",
+            stage="theme_selection",
+            llm_response=str(raw or ""),
+            parsed_output=dict(overrides),
+            decision_link={"status": "ok", "model": str(route.model or ""), "latency_ms": int(latency_ms)},
+        )
+    except Exception:
+        pass
 
     return overrides, {
         "enabled": True,
@@ -912,6 +991,31 @@ def _log_strategist_llm_result(state: Dict[str, Any], payload: Dict[str, Any]) -
         return
 
 
+def _sample_news_for_evidence(
+    news_items_by_symbol: Dict[str, List[Any]],
+    *,
+    max_symbols: int = 8,
+    max_items_per_symbol: int = 3,
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for symbol, rows in list(news_items_by_symbol.items())[:max_symbols]:
+        sample: List[Any] = []
+        if isinstance(rows, list):
+            for item in rows[:max_items_per_symbol]:
+                if isinstance(item, dict):
+                    sample.append(
+                        {
+                            "title": str(item.get("title") or ""),
+                            "source": str(item.get("source") or ""),
+                            "published_at": str(item.get("published_at") or ""),
+                        }
+                    )
+                else:
+                    sample.append(str(item))
+        out[str(symbol)] = {"count": len(rows) if isinstance(rows, list) else 0, "sample": sample}
+    return out
+
+
 def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     policy = _default_policy(state.get("policy"))
     k = _resolve_top_n_candidates(policy)
@@ -1198,6 +1302,32 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "candidate_symbols_hint": list(candidate_symbols)[:10],
         "key_events_hint": list(key_events),
     }
+    try:
+        record_raw_input(
+            run_id=str(state.get("run_id") or "strategist-unknown"),
+            agent="strategist",
+            stage="theme_selection",
+            raw_input={
+                "collected_news": _sample_news_for_evidence(news_items_by_symbol),
+                "global_sentiment_inputs": {
+                    "score": _signal_score(global_signal),
+                    "status": str(global_signal.get("status") or ""),
+                    "source": str(global_signal.get("source") or ""),
+                    "reason": str(global_signal.get("reason") or ""),
+                },
+                "macro_indicators": dict(market_context_inputs),
+                "market_summary": {
+                    "market_regime_hint": market_regime,
+                    "market_sentiment_hint": market_sentiment,
+                    "market_structure_hint": market_structure,
+                    "candidate_symbols_hint": list(candidate_symbols)[:10],
+                },
+                "llm_payload": dict(llm_payload),
+            },
+            decision_link={"stage": "strategist_input_collection"},
+        )
+    except Exception:
+        pass
     llm_overrides, llm_meta = _run_strategist_frame_llm(state=state, policy=policy, payload=llm_payload)
     manual_overrides = _extract_ai_overrides(state, policy)
     ai_overrides = {**dict(llm_overrides or {}), **dict(manual_overrides or {})}
@@ -1379,4 +1509,32 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "llm_frame_model": str(llm_meta.get("model") or ""),
         },
     )
+    try:
+        record_decision_bridge(
+            run_id=str(state.get("run_id") or "strategist-unknown"),
+            agent="strategist",
+            stage="decision_bridge",
+            parsed_output={
+                "market_regime": market_regime,
+                "market_sentiment": market_sentiment,
+                "themes": list(themes),
+                "avoid_themes": list(avoid_themes),
+                "playbook": playbook,
+                "scanner_bias": scanner_bias,
+                "scanner_priority": list(scanner_priority),
+                "trade_aggressiveness": trade_aggressiveness,
+                "risk_tone": risk_tone,
+                "monitor_guidance": monitor_guidance,
+                "report_focus": list(report_focus),
+                "candidate_symbols": list(state.get("candidate_symbols") or []),
+            },
+            decision_link={
+                "decision_chain": {
+                    "theme": (list(themes)[0] if list(themes) else ""),
+                    "candidate_symbols": list(state.get("candidate_symbols") or []),
+                }
+            },
+        )
+    except Exception:
+        pass
     return state
