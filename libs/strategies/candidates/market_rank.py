@@ -20,14 +20,41 @@ from typing import Any, Dict, List, Optional
 
 from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
 
+_DRY_RUN_SYNTHETIC_UNIVERSE: List[str] = [
+    "TEST001",
+    "TEST002",
+    "TEST003",
+    "TEST004",
+    "TEST005",
+]
+
 
 def _is_dry_run() -> bool:
     return str(os.getenv("DRY_RUN", "")).strip() in {"1", "true", "True", "YES", "yes"}
 
 
+def _is_live_fetch_allowed() -> bool:
+    if _is_dry_run():
+        return False
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return str(os.getenv("PYTEST_ALLOW_LIVE_KIWOOM_FETCH", "")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+    return True
+
+
 def _fallback_universe(state: Dict[str, Any], topn: int) -> List[str]:
     syms, _source = resolve_fallback_symbols(state=state, policy=_get_policy(state), limit=max(1, int(topn)))
-    return [str(x) for x in syms]
+    if syms:
+        return [str(x) for x in syms]
+    if _is_dry_run():
+        k = max(1, int(topn))
+        return [str(x) for x in _DRY_RUN_SYNTHETIC_UNIVERSE[:k]]
+    return []
 
 
 def _get_policy(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -69,6 +96,8 @@ class MarketRankCandidateGenerator:
             return _take_unique(_fallback_universe(state, topn), min(topn, 20))
 
         # Best-effort live fetch (kept tolerant; if anything fails, fallback)
+        if not _is_live_fetch_allowed():
+            return _take_unique(_fallback_universe(state, topn), min(topn, 20))
         try:
             # This module exists from M18-1 in this project
             from libs.read.kiwoom_rank_reader import KiwoomRankReader  # type: ignore

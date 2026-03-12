@@ -73,13 +73,8 @@ def _resolve_top_n_candidates(policy: Dict[str, Any]) -> int:
     env_topn = _env_int("TOP_N_CANDIDATES")
     if isinstance(env_topn, int) and env_topn > 0:
         return max(1, env_topn)
-
-    # If TOP_N_CANDIDATES is not explicitly configured, keep strategist hints
-    # broader than 5 by default so scanner can rank a practical pool.
-    env_pool = _env_int("TOP_CANDIDATE_POOL")
-    if isinstance(env_pool, int) and env_pool > 0:
-        return max(1, min(10, env_pool))
-    return 10
+    # Keep strategist candidate-hint contract stable at Top-5 by default.
+    return 5
 
 
 def _strip_fenced_block(text: str) -> str:
@@ -412,6 +407,7 @@ def _extract_themes(state: Dict[str, Any], policy: Dict[str, Any]) -> List[str]:
 def _default_policy(user_policy: Dict[str, Any] | None) -> Dict[str, Any]:
     p = dict(user_policy or {})
     default_topn = _resolve_top_n_candidates(p)
+    pytest_mode = bool(os.getenv("PYTEST_CURRENT_TEST"))
     p.setdefault("use_universe_builder", _is_trueish(os.getenv("USE_UNIVERSE_BUILDER", "true")))
     p.setdefault("universe_require_condition", _is_trueish(os.getenv("UNIVERSE_REQUIRE_CONDITION", "false")))
     # candidate generation
@@ -420,8 +416,14 @@ def _default_policy(user_policy: Dict[str, Any] | None) -> Dict[str, Any]:
     p.setdefault("candidate_rank_mode", "value")
     p.setdefault("candidate_rank_topn", 30)
     # sentiment toggles
-    p.setdefault("use_global_sentiment", _is_trueish(os.getenv("M10_USE_GLOBAL_SENTIMENT", "true")))
-    p.setdefault("use_news_analysis", _is_trueish(os.getenv("M10_USE_NEWS_SENTIMENT", "true")))
+    p.setdefault(
+        "use_global_sentiment",
+        _is_trueish(os.getenv("M10_USE_GLOBAL_SENTIMENT", "false" if pytest_mode else "true")),
+    )
+    p.setdefault(
+        "use_news_analysis",
+        _is_trueish(os.getenv("M10_USE_NEWS_SENTIMENT", "false" if pytest_mode else "true")),
+    )
     p.setdefault("use_exit_policy", _is_trueish(os.getenv("USE_EXIT_POLICY", "false")))
     # news plugin
     p.setdefault("news_provider", "naver")
@@ -1079,7 +1081,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # 2) Global sentiment (score + data-quality signal)
     now = int(time.time())
-    if bool(policy.get("use_global_sentiment", True)):
+    global_enabled = bool(policy.get("use_global_sentiment", True)) or state.get("mock_global_sentiment") is not None
+    if global_enabled:
         try:
             global_signal = dict(compute_global_sentiment_signal(state=state, policy=policy))
         except Exception:

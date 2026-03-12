@@ -107,6 +107,22 @@ def _resolve_exit_policy_config(policy: Dict[str, Any]) -> Dict[str, Any]:
     cfg = policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else {}
     out = dict(cfg or {})
 
+    # Backward-compatible flat policy aliases.
+    alias_map = {
+        "stop_loss_pct": "stop_loss_pct",
+        "take_profit_pct": "take_profit_pct",
+        "max_hold_sec": "max_hold_sec",
+        "trailing_stop_pct": "trailing_stop_pct",
+        "vol_expansion_ratio": "vol_expansion_ratio",
+        "news_shock_threshold": "news_shock_threshold",
+        "use_eod_flat": "use_eod_flat",
+        "eod_flat_cutoff_min": "eod_flat_cutoff_min",
+        "emergency_halt": "emergency_halt",
+    }
+    for src_key, dst_key in alias_map.items():
+        if out.get(dst_key) in (None, "") and policy.get(src_key) not in (None, ""):
+            out[dst_key] = policy.get(src_key)
+
     sl_raw = str(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "") or "").strip()
     tp_raw = str(os.getenv("EXIT_POLICY_TAKE_PROFIT_PCT", "") or "").strip()
     mh_raw = str(os.getenv("EXIT_POLICY_MAX_HOLD_SEC", "") or "").strip()

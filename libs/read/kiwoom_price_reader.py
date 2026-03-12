@@ -86,10 +86,8 @@ class KiwoomPriceReader:
         headers.update(self.token.auth_headers(tok.token))
         headers["Content-Type"] = "application/json;charset=UTF-8"
         headers.setdefault("api-id", self.API_ID)
-        if self.s.kiwoom_app_key:
-            headers.setdefault("appkey", self.s.kiwoom_app_key)
-        if self.s.kiwoom_app_secret:
-            headers.setdefault("appsecret", self.s.kiwoom_app_secret)
+        headers.setdefault("appkey", self.s.kiwoom_app_key or "")
+        headers.setdefault("appsecret", self.s.kiwoom_app_secret or "")
 
         body = {"stk_cd": str(symbol)}
 

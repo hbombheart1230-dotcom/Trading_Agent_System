@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from graphs.commander_runtime import run_commander_runtime
+from libs.read.portfolio_reader import MockPortfolioReader
 
 
 @dataclass
@@ -66,6 +67,8 @@ def _build_state(symbol: str, price: float, cash: float) -> Dict[str, Any]:
         "selected_symbol": sym,
         "market_snapshot": {"symbol": sym, "price": px},
         "portfolio_snapshot": {"cash": cs, "open_positions": 0, "positions": []},
+        # Keep probe deterministic regardless of local persisted/account state.
+        "portfolio_reader": MockPortfolioReader(cash=cs, positions=[]),
         "risk_context": {"daily_pnl_ratio": 0.0, "open_positions": 0, "per_trade_risk_ratio": 0.0},
         "exec_context": {"mode": "mock", "manual_approved": True, "probe": "m31_chain"},
         "policy": {

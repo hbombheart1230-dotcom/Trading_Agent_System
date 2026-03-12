@@ -99,6 +99,8 @@ def _extract_theme_symbol_index(state: Dict[str, Any]) -> Dict[str, set[str]]:
 def _live_fetch_enabled() -> bool:
     # Keep network-safe default for tests/offline.
     # Operators can enable real Kiwoom candidate fetch explicitly.
+    if os.getenv("PYTEST_CURRENT_TEST") and not _is_trueish(os.getenv("PYTEST_ALLOW_LIVE_KIWOOM_FETCH", "false")):
+        return False
     return _is_trueish(os.getenv("KIWOOM_CANDIDATE_LIVE_FETCH", "false"))
 
 

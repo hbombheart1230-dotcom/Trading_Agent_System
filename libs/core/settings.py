@@ -6,8 +6,40 @@ from typing import Optional, Dict
 import os
 
 
+def _is_trueish(v: str | None) -> bool:
+    return str(v or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _repo_root_env_path() -> Path:
+    # libs/core/settings.py -> repo root is parents[2]
+    return (Path(__file__).resolve().parents[2] / ".env").resolve()
+
+
+def _should_skip_env_file(path: Path) -> bool:
+    """Avoid loading repository default .env during pytest runs.
+
+    This prevents cross-test environment contamination from operational values
+    (e.g. live-fetch flags) while still allowing explicit temporary env files.
+    Opt-in override:
+      PYTEST_LOAD_REPO_ENV=true
+    """
+    if not os.getenv("PYTEST_CURRENT_TEST"):
+        return False
+    if _is_trueish(os.getenv("PYTEST_LOAD_REPO_ENV")):
+        return False
+    try:
+        resolved = path.resolve()
+    except Exception:
+        resolved = path
+    repo_env = _repo_root_env_path()
+    cwd_env = (Path.cwd() / ".env").resolve()
+    return resolved == repo_env or resolved == cwd_env
+
+
 def load_env_file(path: str | Path = ".env") -> Dict[str, str]:
     p = Path(path)
+    if _should_skip_env_file(p):
+        return {}
     if not p.exists():
         return {}
 
