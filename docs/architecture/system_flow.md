@@ -73,6 +73,9 @@
 - Candidate source defaults to Kiwoom:
   - `CANDIDATE_SOURCE=kiwoom` (default)
   - fallback to strategist candidates when Kiwoom pool is empty
+  - static fallback-only candidate pools can be blocked via `BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY=true`
+  - strict Kiwoom-only mode: `STRICT_KIWOOM_CANDIDATES_ONLY=true`
+  - fallback symbols can be overridden via `FALLBACK_CANDIDATE_SYMBOLS`
 - Practical scanner tuning keys:
   - `TOP_CANDIDATE_POOL`
   - `MIN_TRADING_VALUE`

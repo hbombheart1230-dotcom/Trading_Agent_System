@@ -33,6 +33,9 @@ Rule: the same `intent_id` must not re-enter `executing`.
 Execution note:
 - `SYMBOL_ALLOWLIST` is an optional guard. If unset, candidate symbols from Strategist/Scanner are not restricted by allowlist.
 - Scanner candidate source defaults to Kiwoom (`CANDIDATE_SOURCE=kiwoom`) with strategist fallback when Kiwoom pool is empty.
+- Pure static fallback pools can be blocked with `BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY=true` (default).
+- `STRICT_KIWOOM_CANDIDATES_ONLY=true` blocks all strategist fallback when Kiwoom pool is empty.
+- Fallback symbols can be overridden with `FALLBACK_CANDIDATE_SYMBOLS`.
 - Scanner guidance source is canonical `state["strategist_output"]` (with backward-compatible `scanner_guidance` overrides).
 - Scanner applies strategist ranking guidance additively (`scanner_priority`, aggressiveness/risk tone).
 - Scanner also applies strategist `playbook` additively to ranking weights.

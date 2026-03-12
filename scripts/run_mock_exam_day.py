@@ -449,7 +449,36 @@ def _run_session(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
     dt_override = _parse_kst_datetime(str(args.now_kst or "")) if args.now_kst else None
     dt = dt_override or now_kst()
     if not bool(MarketHours().is_open(dt)):
-        out["failure_reason"] = f"market_closed:{dt.isoformat()}"
+        if not bool(getattr(args, "allow_offhours_session_probe", False)):
+            out["failure_reason"] = f"market_closed:{dt.isoformat()}"
+            return out
+
+        probe_symbol = str(getattr(args, "probe_symbol", "") or os.getenv("SYMBOL", "005930")).strip() or "005930"
+        probe_price = float(getattr(args, "probe_price", 70000.0))
+        probe_cash = float(getattr(args, "probe_cash", 2000000.0))
+        step = _run_subprocess(
+            step_id="session.offhours_probe",
+            command=[
+                str(common["python_path"]),
+                str(ROOT / "scripts" / "run_m31_agent_chain_probe.py"),
+                "--symbol",
+                probe_symbol,
+                "--price",
+                str(probe_price),
+                "--cash",
+                str(probe_cash),
+                "--json",
+            ],
+            cwd=ROOT,
+            timeout_sec=int(common["timeout_sec"]),
+        )
+        out["steps"].append(step)
+        probe_obj = _parse_stdout_json(str(step.get("stdout_tail") or ""))
+        out["probe_mode"] = "offhours_session_probe"
+        out["probe_result"] = probe_obj
+        out["ok"] = bool(step.get("ok")) and bool(probe_obj.get("ok"))
+        if not out["ok"]:
+            out["failure_reason"] = "offhours_probe_failed"
         return out
 
     cmd = [
@@ -646,6 +675,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session-stdout-path", default="data/logs/mock_exam_day_session_stdout.log")
     p.add_argument("--session-stderr-path", default="data/logs/mock_exam_day_session_stderr.log")
     p.add_argument("--now-kst", default=None)
+    p.add_argument(
+        "--allow-offhours-session-probe",
+        action="store_true",
+        help="When market is closed, run one-shot integrated-chain probe instead of failing session phase.",
+    )
+    p.add_argument("--probe-symbol", default=os.getenv("SYMBOL", "005930"))
+    p.add_argument("--probe-price", type=float, default=70000.0)
+    p.add_argument("--probe-cash", type=float, default=2000000.0)
     p.add_argument("--preopen-readiness-day", default=None, help="Override readiness check day for preopen.")
     p.add_argument("--json", action="store_true")
     return p

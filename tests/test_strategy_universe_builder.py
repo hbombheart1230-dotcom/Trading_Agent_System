@@ -82,3 +82,19 @@ def test_universe_builder_supports_sector_filter_and_source_weights():
     assert "CCC" not in rows  # excluded by sector_filter
     assert "sector" in rows["AAA"]["sources"]
     assert float(rows["AAA"]["source_scores"]["sector"]) == 5.0
+
+
+def test_universe_builder_backfills_when_watchlist_is_smaller_than_topk(monkeypatch):
+    monkeypatch.setenv("FALLBACK_CANDIDATE_SYMBOLS", "444444,555555,666666,777777,888888,999999")
+    state = {
+        "watchlist_symbols": ["111111", "222222", "333333"],
+    }
+    policy = {
+        "universe_require_condition": False,
+    }
+
+    out = build_candidate_universe(state=state, policy=policy, topk=8)
+    symbols = [str(r.get("symbol") or "") for r in out]
+    assert len(out) == 8
+    assert symbols[:3] == ["111111", "222222", "333333"]
+    assert any("fallback" in list(r.get("sources") or []) for r in out[3:])

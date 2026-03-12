@@ -18,15 +18,16 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
+
 
 def _is_dry_run() -> bool:
     return str(os.getenv("DRY_RUN", "")).strip() in {"1", "true", "True", "YES", "yes"}
 
 
-def _fallback_universe() -> List[str]:
-    # Reasonable KR equities examples (kept small for tests).
-    # Using strings so both "AAA/BBB" tests and real tickers can coexist.
-    return ["005930", "000660", "035420", "051910", "068270"]
+def _fallback_universe(state: Dict[str, Any], topn: int) -> List[str]:
+    syms, _source = resolve_fallback_symbols(state=state, policy=_get_policy(state), limit=max(1, int(topn)))
+    return [str(x) for x in syms]
 
 
 def _get_policy(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -65,7 +66,7 @@ class MarketRankCandidateGenerator:
             return _take_unique([str(x) for x in symbols], topn)
 
         if _is_dry_run():
-            return _take_unique(_fallback_universe(), min(topn, 20))
+            return _take_unique(_fallback_universe(state, topn), min(topn, 20))
 
         # Best-effort live fetch (kept tolerant; if anything fails, fallback)
         try:
@@ -81,7 +82,7 @@ class MarketRankCandidateGenerator:
         except Exception:
             pass
 
-        return _take_unique(_fallback_universe(), min(topn, 20))
+        return _take_unique(_fallback_universe(state, topn), min(topn, 20))
 
 
 @dataclass
@@ -119,7 +120,7 @@ class TopPicksCandidateGenerator:
             return _take_unique(picked, topk)
 
         if _is_dry_run():
-            return _take_unique(_fallback_universe(), topk)
+            return _take_unique(_fallback_universe(state, topk), topk)
 
         # Live best-effort: rank list from MarketRank generator
         rank_list = MarketRankCandidateGenerator().generate(state)

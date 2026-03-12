@@ -219,3 +219,61 @@ def test_session_success_starts_background_loop(tmp_path: Path, capsys, monkeypa
     assert out["ok"] is True
     step = (out["phase_result"]["steps"] or [])[0]
     assert int(step["pid"]) == 12345
+
+
+def test_session_offhours_probe_mode_when_enabled(tmp_path: Path, capsys, monkeypatch):
+    env_path = tmp_path / ".env"
+    events = tmp_path / "events.jsonl"
+    report_dir = tmp_path / "reports"
+    _write_env(
+        env_path,
+        {
+            "RUNTIME_PROFILE": "staging",
+            "KIWOOM_MODE": "mock",
+            "APPROVAL_MODE": "manual",
+            "ALLOW_REAL_EXECUTION": "false",
+        },
+    )
+    events.write_text("", encoding="utf-8")
+
+    def fake_run_subprocess(*, step_id, command, cwd, env=None, timeout_sec=1800):  # type: ignore[no-untyped-def]
+        if str(step_id) != "session.offhours_probe":
+            raise AssertionError(f"unexpected step_id={step_id}")
+        return {
+            "step_id": step_id,
+            "command": list(command),
+            "cwd": str(cwd),
+            "rc": 0,
+            "ok": True,
+            "stdout_tail": '{"ok": true, "decision": {"decision": "approve"}}',
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.01,
+        }
+
+    monkeypatch.setattr(mod, "_run_subprocess", fake_run_subprocess)
+
+    rc = mod.main(
+        [
+            "--phase",
+            "session",
+            "--day",
+            "2026-03-09",
+            "--env-path",
+            str(env_path),
+            "--report-dir",
+            str(report_dir),
+            "--event-log-path",
+            str(events),
+            "--now-kst",
+            "2026-03-08T10:00:00+09:00",
+            "--allow-offhours-session-probe",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert out["ok"] is True
+    assert out["phase_result"]["probe_mode"] == "offhours_session_probe"
+    step = (out["phase_result"]["steps"] or [])[0]
+    assert step["step_id"] == "session.offhours_probe"

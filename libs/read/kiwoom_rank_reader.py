@@ -82,6 +82,8 @@ class KiwoomRankReader:
     """
 
     ENDPOINT = "/api/dostk/rkinfo"
+    API_ID_VOLUME_VALUE = "ka10030"  # 당일거래량상위요청
+    API_ID_CHANGE_RATE = "ka10027"   # 전일대비등락률상위요청
 
     def __init__(self, settings: Settings, http: HttpClient, token: KiwoomTokenClient):
         self.s = settings
@@ -108,11 +110,19 @@ class KiwoomRankReader:
         headers: Dict[str, Any] = {}
         headers.update(self.token.auth_headers(tok.token))
         headers["Content-Type"] = "application/json;charset=UTF-8"
+        headers["api-id"] = (
+            self.API_ID_CHANGE_RATE if mode == RankMode.CHANGE_RATE else self.API_ID_VOLUME_VALUE
+        )
+        if self.s.kiwoom_app_key:
+            headers.setdefault("appkey", self.s.kiwoom_app_key)
+        if self.s.kiwoom_app_secret:
+            headers.setdefault("appsecret", self.s.kiwoom_app_secret)
 
         # Default filters (safe): exclude preferred shares/ETFs where possible.
         # See api_catalog for details; keep minimal required fields.
         if mode in (RankMode.VOLUME, RankMode.VALUE):
             body = {
+                "mrkt_tp": "000",
                 "sort_tp": "1" if mode == RankMode.VOLUME else "3",
                 "mang_stk_incls": "1",
                 "crd_tp": "0",
@@ -123,10 +133,16 @@ class KiwoomRankReader:
                 "stex_tp": "1",  # KRX
             }
         else:
-            # CHANGE_RATE: best-effort (uses same endpoint in catalog; parameters may differ by api_id)
+            # CHANGE_RATE (ka10027): 전일대비등락률상위요청
             body = {
+                "mrkt_tp": "000",
                 "sort_tp": "1",
-                "mang_stk_incls": "1",
+                "trde_qty_cnd": "0000",
+                "stk_cnd": "1",
+                "crd_cnd": "0",
+                "updown_incls": "0",
+                "pric_cnd": "0",
+                "trde_prica_cnd": "0",
                 "stex_tp": "1",
             }
 

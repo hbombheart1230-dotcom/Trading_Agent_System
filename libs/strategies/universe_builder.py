@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Set
 
 from libs.read.kiwoom_condition_reader import KiwoomConditionReader
 from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
+from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
 
 
 def _is_trueish(v: Any) -> bool:
@@ -249,11 +250,37 @@ def build_candidate_universe(
         cond_set = set(cond)
         rows = {k: v for k, v in rows.items() if k in cond_set}
 
-    if not rows:
-        # Never return empty in DRY_RUN / no-source scenarios.
-        fallback = _unique_symbols(["005930", "000660", "035420", "051910", "068270"])
+    if len(rows) < k:
+        # Keep candidate set non-empty and avoid a hard fixed-size watchlist-only
+        # universe by filling missing slots with configured fallback symbols.
+        fallback, _fallback_source = resolve_fallback_symbols(
+            state=state,
+            policy=policy,
+            limit=max(k, k * 2),
+        )
+        existing = set(rows.keys())
         for idx, sym in enumerate(fallback):
-            add(sym, "fallback", max(0.1, 1.0 - 0.1 * idx))
+            if sym in existing:
+                continue
+            add(sym, "fallback", max(0.05, 0.60 - (0.02 * idx)))
+            existing.add(sym)
+            if len(rows) >= k:
+                break
+        if len(rows) < k:
+            # If watchlist-derived fallback duplicates current rows, extend with
+            # static/env fallback baseline as a final fill-up path.
+            baseline, _baseline_source = resolve_fallback_symbols(
+                state={},
+                policy={},
+                limit=max(k, k * 2),
+            )
+            for idx, sym in enumerate(baseline):
+                if sym in existing:
+                    continue
+                add(sym, "fallback", max(0.03, 0.40 - (0.01 * idx)))
+                existing.add(sym)
+                if len(rows) >= k:
+                    break
 
     out = list(rows.values())
     out.sort(

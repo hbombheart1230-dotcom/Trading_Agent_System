@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from graphs.commander_runtime import resolve_runtime_mode, run_commander_runtime
+from graphs.commander_runtime import _run_integrated_chain, resolve_runtime_mode, run_commander_runtime
 
 
 def test_m21_runtime_entry_defaults_to_graph_spine():
@@ -309,3 +309,79 @@ def test_m21_runtime_emits_transition_for_pause_control():
     assert router_rows[2]["payload"]["path"] is None
     assert called["graph"] == 0
     assert out["runtime_status"] == "paused"
+
+
+def test_m31_integrated_chain_hydrates_portfolio_and_updates_execution_state(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {"cash": 1000.0, "positions": []}
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        state["risk_context"] = {"open_positions": 0}
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        state["selected"] = {"symbol": "AAA"}
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = [{"symbol": "AAA", "side": "BUY", "qty": 1}]
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "approve"
+        return state
+
+    def fake_update_state_after_execution(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("update_state_after_execution")
+        state["persisted_state"] = {"last_execution_ok": True}
+        return state
+
+    def fake_execute(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("execute")
+        state["execution"] = {
+            "allowed": True,
+            "ok": True,
+            "order": {"action": "BUY", "symbol": "AAA", "qty": 1},
+            "payload": {"mode": "real"},
+        }
+        return state
+
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+    monkeypatch.setattr(
+        "graphs.nodes.update_state_after_execution.update_state_after_execution",
+        fake_update_state_after_execution,
+    )
+
+    out = _run_integrated_chain({}, execute_fn=fake_execute)
+
+    assert out["path"] == "integrated_chain"
+    assert out["persisted_state"]["last_execution_ok"] is True
+    assert isinstance(out.get("snapshots"), dict)
+    assert out["snapshots"]["portfolio"] == {"cash": 1000.0, "positions": []}
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "strategist",
+        "scanner",
+        "monitor",
+        "decision",
+        "execute",
+        "update_state_after_execution",
+    ]

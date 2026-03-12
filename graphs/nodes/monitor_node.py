@@ -88,6 +88,75 @@ def _resolve_use_exit_policy(state: Dict[str, Any], policy: Dict[str, Any]) -> b
     return _is_trueish(os.getenv("USE_EXIT_POLICY", "false"))
 
 
+def _resolve_block_buy_when_open_position(
+    state: Dict[str, Any],
+    policy: Dict[str, Any],
+    monitor_policy: Dict[str, Any],
+) -> bool:
+    if state.get("monitor_block_buy_when_open_position") is not None:
+        return _is_trueish(state.get("monitor_block_buy_when_open_position"))
+    if isinstance(monitor_policy, dict) and monitor_policy.get("block_buy_when_open_position") is not None:
+        return _is_trueish(monitor_policy.get("block_buy_when_open_position"))
+    if isinstance(policy, dict) and policy.get("block_buy_when_open_position") is not None:
+        return _is_trueish(policy.get("block_buy_when_open_position"))
+    return _is_trueish(os.getenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false"))
+
+
+def _resolve_exit_policy_config(policy: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else {}
+    out = dict(cfg or {})
+
+    sl_raw = str(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "") or "").strip()
+    tp_raw = str(os.getenv("EXIT_POLICY_TAKE_PROFIT_PCT", "") or "").strip()
+    mh_raw = str(os.getenv("EXIT_POLICY_MAX_HOLD_SEC", "") or "").strip()
+    trail_raw = str(os.getenv("EXIT_POLICY_TRAILING_STOP_PCT", "") or "").strip()
+    vol_exp_raw = str(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "") or "").strip()
+    news_shock_raw = str(os.getenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "") or "").strip()
+    eod_flat_raw = str(os.getenv("EXIT_POLICY_USE_EOD_FLAT", "") or "").strip()
+    eod_cutoff_raw = str(os.getenv("EXIT_POLICY_EOD_FLAT_CUTOFF_MIN", "") or "").strip()
+    emergency_raw = str(os.getenv("EXIT_POLICY_EMERGENCY_HALT", "") or "").strip()
+
+    if sl_raw:
+        base = _to_float(out.get("stop_loss_pct"))
+        if base <= 0.0:
+            base = 0.03
+        x = _to_float(sl_raw)
+        out["stop_loss_pct"] = float(x if x > 0.0 else base)
+    if tp_raw:
+        base = _to_float(out.get("take_profit_pct"))
+        if base <= 0.0:
+            base = 0.05
+        x = _to_float(tp_raw)
+        out["take_profit_pct"] = float(x if x > 0.0 else base)
+    if mh_raw:
+        base = _to_float(out.get("max_hold_sec"))
+        x = _to_float(mh_raw)
+        out["max_hold_sec"] = int(x if x > 0.0 else base)
+    if trail_raw:
+        base = _to_float(out.get("trailing_stop_pct"))
+        x = _to_float(trail_raw)
+        out["trailing_stop_pct"] = float(x if x > 0.0 else base)
+    if vol_exp_raw:
+        base = _to_float(out.get("vol_expansion_ratio"))
+        x = _to_float(vol_exp_raw)
+        out["vol_expansion_ratio"] = float(x if x > 0.0 else base)
+    if news_shock_raw:
+        base = _to_float(out.get("news_shock_threshold"))
+        x = _to_float(news_shock_raw)
+        out["news_shock_threshold"] = float(x if x > 0.0 else base)
+    if eod_flat_raw:
+        out["use_eod_flat"] = _is_trueish(eod_flat_raw)
+    if eod_cutoff_raw:
+        base = _to_float(out.get("eod_flat_cutoff_min"))
+        if base <= 0.0:
+            base = 10.0
+        x = _to_float(eod_cutoff_raw)
+        out["eod_flat_cutoff_min"] = int(x if x > 0.0 else base)
+    if emergency_raw:
+        out["emergency_halt"] = _is_trueish(emergency_raw)
+    return out
+
+
 def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, str]:
     strategist_output_raw = state.get("strategist_output")
     strategist_output = (
@@ -215,6 +284,20 @@ def _is_emergency_exit_reason(reason: str) -> bool:
     return r in ("emergency_halt", "news_shock")
 
 
+def _is_hard_exit_reason(reason: str) -> bool:
+    r = str(reason or "").strip().lower()
+    return r in (
+        "emergency_halt",
+        "news_shock",
+        "eod_flat",
+        "time_stop",
+        "max_hold",
+        "stop_loss",
+        "volatility_expansion",
+        "trailing_stop",
+    )
+
+
 def _make_event_logger(state: Dict[str, Any]) -> Any:
     injected = state.get("event_logger")
     if injected is not None and hasattr(injected, "log"):
@@ -339,6 +422,147 @@ def _position_by_symbol(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _preview_exit_decision_for_symbol(
+    *,
+    state: Dict[str, Any],
+    symbol: str,
+    position: Dict[str, Any],
+    selected: Dict[str, Any] | None,
+    exit_policy_base: Dict[str, Any],
+) -> Dict[str, Any]:
+    qty = max(0, _to_int(position.get("qty")))
+    avg_price = _to_float(position.get("avg_price"))
+    selected_for_exit = selected if isinstance(selected, dict) else {"symbol": symbol}
+    price = _resolve_price(state, symbol, selected_for_exit)
+    if price is None or _to_float(price) <= 0.0:
+        pos_mark = _position_mark_price(position)
+        if pos_mark is not None and pos_mark > 0.0:
+            price = float(pos_mark)
+
+    features = selected_for_exit.get("features") if isinstance(selected_for_exit.get("features"), dict) else {}
+    hold_sec = _to_int(position.get("hold_sec"))
+    if hold_sec <= 0:
+        hold_sec = _to_int(state.get("position_hold_sec"))
+    if hold_sec <= 0:
+        persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+        last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
+        last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
+        if last_trade_side == "BUY" and last_trade_epoch > 0:
+            now_epoch = _resolve_now_epoch(state)
+            hold_sec = max(0, int(now_epoch - last_trade_epoch))
+
+    exit_policy_map = dict(exit_policy_base or {})
+    if position.get("peak_price") is not None:
+        exit_policy_map.setdefault("peak_price", position.get("peak_price"))
+    elif position.get("high_water_mark") is not None:
+        exit_policy_map.setdefault("peak_price", position.get("high_water_mark"))
+    if features.get("engine_volatility20") is not None:
+        exit_policy_map.setdefault("current_volatility", features.get("engine_volatility20"))
+    if state.get("policy") and isinstance(state.get("policy"), dict):
+        policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+        if policy.get("exit_policy_baseline_volatility") is not None:
+            exit_policy_map.setdefault("baseline_volatility", policy.get("exit_policy_baseline_volatility"))
+    if state.get("emergency_halt") is not None:
+        exit_policy_map.setdefault("emergency_halt", state.get("emergency_halt"))
+    mctx = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    if mctx.get("minutes_to_close") is not None:
+        exit_policy_map.setdefault("minutes_to_close", mctx.get("minutes_to_close"))
+
+    decision = evaluate_exit_policy(
+        price=price,
+        avg_price=avg_price if avg_price > 0.0 else None,
+        qty=qty,
+        hold_sec=hold_sec if hold_sec > 0 else None,
+        policy=exit_policy_map,
+    )
+    decision["_qty"] = int(qty)
+    decision["_price"] = float(price) if price is not None and _to_float(price) > 0.0 else None
+    decision["_avg_price"] = float(avg_price) if avg_price > 0.0 else None
+    decision["_hold_sec"] = int(hold_sec) if hold_sec > 0 else None
+    decision["_pnl_ratio"] = _to_float(decision.get("pnl_ratio"))
+    return decision
+
+
+def _exit_reason_priority(reason: str) -> int:
+    r = str(reason or "").strip().lower()
+    order = {
+        "emergency_halt": 100,
+        "news_shock": 95,
+        "eod_flat": 90,
+        "time_stop": 80,
+        "max_hold": 75,
+        "stop_loss": 70,
+        "volatility_expansion": 65,
+        "trailing_stop": 60,
+        "take_profit": 50,
+        "hold": 10,
+        "price_unavailable": 5,
+        "no_position": 0,
+    }
+    return int(order.get(r, 1))
+
+
+def _select_exit_symbol(
+    selected_symbol: str,
+    pos_map: Dict[str, Dict[str, Any]],
+    *,
+    state: Dict[str, Any] | None = None,
+    selected: Dict[str, Any] | None = None,
+    policy: Dict[str, Any] | None = None,
+    exit_policy_base: Dict[str, Any] | None = None,
+) -> str:
+    sel = _norm_symbol(selected_symbol)
+    if sel and max(0, _to_int((pos_map.get(sel) or {}).get("qty"))) > 0:
+        return sel
+
+    held_symbols = [
+        _norm_symbol(sym)
+        for sym, row in pos_map.items()
+        if max(0, _to_int((row or {}).get("qty"))) > 0
+    ]
+    held_symbols = [s for s in held_symbols if s]
+    if not held_symbols:
+        return sel
+
+    if state is None:
+        # Backward-compatible fallback.
+        best_symbol = ""
+        best_qty = 0
+        for sym, row in pos_map.items():
+            qty = max(0, _to_int((row or {}).get("qty")))
+            if qty > best_qty:
+                best_qty = qty
+                best_symbol = _norm_symbol(sym)
+        return best_symbol or sel
+
+    base = exit_policy_base if isinstance(exit_policy_base, dict) else {}
+    selected_raw = selected if isinstance(selected, dict) else {}
+    selected_raw_symbol = _norm_symbol(selected_raw.get("symbol"))
+    best_symbol = held_symbols[0]
+    best_rank = (-1, -1, -1.0, -1)
+    for sym in held_symbols:
+        pos = dict(pos_map.get(sym) or {})
+        selected_for_exit = selected_raw if selected_raw_symbol == sym else {"symbol": sym}
+        decision = _preview_exit_decision_for_symbol(
+            state=state,
+            symbol=sym,
+            position=pos,
+            selected=selected_for_exit,
+            exit_policy_base=base,
+        )
+        triggered = 1 if bool(decision.get("triggered")) else 0
+        reason_priority = _exit_reason_priority(str(decision.get("reason") or ""))
+        pnl_mag = abs(_to_float(decision.get("_pnl_ratio")))
+        qty = max(0, _to_int(decision.get("_qty")))
+        rank = (triggered, reason_priority, pnl_mag, qty)
+        if rank > best_rank:
+            best_rank = rank
+            best_symbol = sym
+    if best_symbol:
+        return best_symbol
+    return sel
+
+
 def _resolve_price(state: Dict[str, Any], symbol: str, selected: Dict[str, Any] | None) -> float | None:
     sym = _norm_symbol(symbol)
     if not sym:
@@ -375,6 +599,23 @@ def _resolve_price(state: Dict[str, Any], symbol: str, selected: Dict[str, Any] 
                 p = _to_float(q.get(k))
                 if p > 0.0:
                     return p
+    return None
+
+
+def _position_mark_price(position: Dict[str, Any] | None) -> float | None:
+    if not isinstance(position, dict):
+        return None
+    for key in ("price", "cur_price", "last_price", "current_price"):
+        p = _to_float(position.get(key))
+        if p > 0.0:
+            return p
+    qty = max(0, _to_int(position.get("qty")))
+    avg_price = _to_float(position.get("avg_price"))
+    unrealized = _to_float(position.get("unrealized_pnl"))
+    if qty > 0 and avg_price > 0.0:
+        mark = avg_price + (unrealized / float(qty))
+        if mark > 0.0:
+            return mark
     return None
 
 
@@ -449,6 +690,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(state.get("monitor_policy"), dict):
         monitor_policy.update(dict(state.get("monitor_policy") or {}))
 
+    all_pos_map = _position_by_symbol(state)
+    open_position_count = sum(1 for row in all_pos_map.values() if max(0, _to_int((row or {}).get("qty"))) > 0)
+    block_buy_open_position = _resolve_block_buy_when_open_position(state, policy, monitor_policy)
+    buy_blocked_open_position = False
+
     intents = []
     sizing_info: Dict[str, Any] = {
         "enabled": False,
@@ -516,9 +762,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "inputs": sizing_info.get("inputs"),
                 }
             intents = [intent]
+    if bool(intents) and block_buy_open_position and open_position_count > 0:
+        intents = []
+        buy_blocked_open_position = True
 
     # Optional M29-2 exit policy (default disabled for backward compatibility).
     use_exit_policy = _resolve_use_exit_policy(state, policy)
+    exit_policy_base = _resolve_exit_policy_config(policy)
     exit_info: Dict[str, Any] = {
         "enabled": bool(use_exit_policy),
         "evaluated": False,
@@ -541,41 +791,35 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "emergency_exit": False,
     }
     if use_exit_policy and isinstance(selected, dict) and selected.get("symbol"):
-        symbol = _norm_symbol(selected.get("symbol"))
-        pos_map = _position_by_symbol(state)
+        selected_symbol = _norm_symbol(selected.get("symbol"))
+        pos_map = all_pos_map
+        symbol = _select_exit_symbol(
+            selected_symbol,
+            pos_map,
+            state=state,
+            selected=selected,
+            policy=policy,
+            exit_policy_base=exit_policy_base,
+        )
+        selected_for_exit: Dict[str, Any] = selected
+        if symbol and symbol != selected_symbol:
+            selected_for_exit = {"symbol": symbol}
+        features = selected_for_exit.get("features") if isinstance(selected_for_exit.get("features"), dict) else {}
         pos = pos_map.get(symbol, {})
         qty = max(0, _to_int(pos.get("qty")))
-        # When a position is already held for selected symbol, suppress fresh BUY intents.
+        # When a position is already held for monitored symbol, suppress fresh BUY intents.
         if qty > 0:
             intents = []
-        avg_price = _to_float(pos.get("avg_price"))
-        price = _resolve_price(state, symbol, selected)
-        features = selected.get("features") if isinstance(selected.get("features"), dict) else {}
-        hold_sec = _to_int(pos.get("hold_sec"))
-        if hold_sec <= 0:
-            hold_sec = _to_int(state.get("position_hold_sec"))
-        exit_policy = policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else policy
-        exit_policy_map = dict(exit_policy or {})
-        if pos.get("peak_price") is not None:
-            exit_policy_map.setdefault("peak_price", pos.get("peak_price"))
-        elif pos.get("high_water_mark") is not None:
-            exit_policy_map.setdefault("peak_price", pos.get("high_water_mark"))
-        if features.get("engine_volatility20") is not None:
-            exit_policy_map.setdefault("current_volatility", features.get("engine_volatility20"))
-        if policy.get("exit_policy_baseline_volatility") is not None:
-            exit_policy_map.setdefault("baseline_volatility", policy.get("exit_policy_baseline_volatility"))
-        if state.get("emergency_halt") is not None:
-            exit_policy_map.setdefault("emergency_halt", state.get("emergency_halt"))
-        mctx = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
-        if mctx.get("minutes_to_close") is not None:
-            exit_policy_map.setdefault("minutes_to_close", mctx.get("minutes_to_close"))
-        decision = evaluate_exit_policy(
-            price=price,
-            avg_price=avg_price if avg_price > 0.0 else None,
-            qty=qty,
-            hold_sec=hold_sec if hold_sec > 0 else None,
-            policy=exit_policy_map,
+        decision = _preview_exit_decision_for_symbol(
+            state=state,
+            symbol=symbol,
+            position=pos,
+            selected=selected_for_exit,
+            exit_policy_base=exit_policy_base,
         )
+        avg_price = _to_float(decision.get("_avg_price"))
+        price = decision.get("_price")
+        hold_sec = _to_int(decision.get("_hold_sec"))
         now_epoch = _resolve_now_epoch(state)
         if hold_sec <= 0:
             persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
@@ -633,6 +877,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         sell_cooldown_blocked = False
         exit_signal_detected = bool(decision.get("triggered"))
         emergency_exit = _is_emergency_exit_reason(str(decision.get("reason") or ""))
+        hard_exit = _is_hard_exit_reason(str(decision.get("reason") or ""))
 
         if exit_signal_detected:
             if qty <= 0:
@@ -651,17 +896,17 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 sell_guard_blocked = True
                 sell_guard_reason = "sell_guard_pending_exit_lock"
                 monitor_reason = "pending_exit_lock"
-            elif not emergency_exit and min_hold_sec > 0 and hold_sec > 0 and hold_sec < min_hold_sec:
+            elif not emergency_exit and not hard_exit and min_hold_sec > 0 and hold_sec > 0 and hold_sec < min_hold_sec:
                 sell_guard_blocked = True
                 min_hold_blocked = True
                 sell_guard_reason = f"sell_guard_min_hold:{hold_sec}s<{min_hold_sec}s"
                 monitor_reason = "min_hold_active"
-            elif not emergency_exit and sell_cooldown_sec > 0 and cooldown_until > now_epoch:
+            elif not emergency_exit and not hard_exit and sell_cooldown_sec > 0 and cooldown_until > now_epoch:
                 sell_guard_blocked = True
                 sell_cooldown_blocked = True
                 sell_guard_reason = f"sell_guard_cooldown:{max(0, cooldown_until - now_epoch)}s_remaining"
                 monitor_reason = "cooldown_active"
-            elif not emergency_exit and confirm_ticks > 1:
+            elif not emergency_exit and not hard_exit and confirm_ticks > 1:
                 confirm_count = _to_int(confirm_map.get(confirm_key)) + 1
                 confirm_map[confirm_key] = int(confirm_count)
                 if confirm_count < int(confirm_ticks):
@@ -706,6 +951,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 else str(decision.get("reason") or "")
             ),
             "symbol": symbol,
+            "selected_symbol": selected_symbol,
+            "exit_symbol_fallback": bool(symbol and symbol != selected_symbol),
             "qty": int(qty),
             "pnl_ratio": decision.get("pnl_ratio"),
             "price": price,
@@ -730,6 +977,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "pending_exit_lock_until": (int(lock_until) if lock_until > 0 else None),
             "monitor_reason": str(monitor_reason or ""),
             "emergency_exit": bool(emergency_exit),
+            "hard_exit": bool(hard_exit),
             "playbook": str(frame_applied.get("playbook") or ""),
             "monitor_guidance": str(frame_applied.get("monitor_guidance") or ""),
             "risk_tone": str(frame_applied.get("risk_tone") or ""),
@@ -792,11 +1040,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_reason": str(exit_info.get("reason") or ""),
         "exit_pnl_ratio": exit_info.get("pnl_ratio"),
         "exit_symbol": exit_info.get("symbol"),
+        "exit_symbol_fallback": bool(exit_info.get("exit_symbol_fallback")),
         "exit_qty": int(exit_info.get("qty") or 0),
         "position_sizing_enabled": bool(sizing_info.get("enabled")),
         "position_sizing_evaluated": bool(sizing_info.get("evaluated")),
         "position_sizing_qty": int(sizing_info.get("qty") or 0),
         "position_sizing_reason": str(sizing_info.get("reason") or ""),
+        "open_position_count": int(open_position_count),
+        "block_buy_when_open_position": bool(block_buy_open_position),
+        "buy_blocked_open_position": bool(buy_blocked_open_position),
     }
     state["monitor_output"] = {
         "selected_symbol": (selected.get("symbol") if isinstance(selected, dict) else None),
@@ -805,7 +1057,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_exit_reason": (
             str(exit_info.get("reason") or "")
             if bool(exit_info.get("enabled"))
-            else "entry_candidate_selected"
+            else (
+                "buy_blocked_open_position"
+                if bool(buy_blocked_open_position)
+                else "entry_candidate_selected"
+            )
         ),
     }
     state["monitor_exit"] = exit_info
@@ -822,6 +1078,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "exit_triggered": bool(exit_info.get("triggered")),
             "exit_reason": str(exit_info.get("reason") or ""),
             "monitor_reason": str(exit_info.get("monitor_reason") or ""),
+            "exit_symbol_fallback": bool(exit_info.get("exit_symbol_fallback")),
             "playbook": str(exit_info.get("playbook") or ""),
             "monitor_guidance": str(exit_info.get("monitor_guidance") or ""),
             "risk_tone": str(exit_info.get("risk_tone") or ""),
@@ -830,6 +1087,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "position_sizing_evaluated": bool(sizing_info.get("evaluated")),
             "position_sizing_qty": int(sizing_info.get("qty") or 0),
             "position_sizing_reason": str(sizing_info.get("reason") or ""),
+            "open_position_count": int(open_position_count),
+            "block_buy_when_open_position": bool(block_buy_open_position),
+            "buy_blocked_open_position": bool(buy_blocked_open_position),
         },
     )
     append_decision_trace(
@@ -843,6 +1103,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "min_hold_blocked": bool(exit_info.get("min_hold_blocked")),
             "sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),
             "monitor_reason": str(exit_info.get("monitor_reason") or ""),
+            "exit_symbol_fallback": bool(exit_info.get("exit_symbol_fallback")),
             "playbook": str(exit_info.get("playbook") or ""),
             "monitor_guidance": str(exit_info.get("monitor_guidance") or ""),
             "risk_tone": str(exit_info.get("risk_tone") or ""),

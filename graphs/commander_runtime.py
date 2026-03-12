@@ -339,10 +339,19 @@ def _run_integrated_chain(
     execute_fn: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
     """Run a visible end-to-end chain inside canonical runtime."""
+    from graphs.nodes.build_portfolio_snapshot import build_portfolio_snapshot
+    from graphs.nodes.build_risk_context import build_risk_context
     from graphs.nodes.strategist_node import strategist_node
     from graphs.nodes.scanner_node import scanner_node
     from graphs.nodes.monitor_node import monitor_node
     from graphs.nodes.decision_node import decision_node
+    from graphs.nodes.update_state_after_execution import update_state_after_execution
+
+    # Keep integrated chain position/risk context aligned with live state.
+    state = build_portfolio_snapshot(state)
+    snaps = state.get("snapshots") if isinstance(state.get("snapshots"), dict) else {}
+    state["snapshots"] = {**dict(snaps or {}), "portfolio": state.get("portfolio_snapshot")}
+    state = build_risk_context(state)
 
     state = strategist_node(state)
     state = scanner_node(state)
@@ -354,6 +363,7 @@ def _run_integrated_chain(
         intent = _intent_from_monitor_state(state)
         state["decision_packet"] = _build_packet_from_state(state, intent=intent)
         state = execute_fn(state)
+        state = update_state_after_execution(state)
 
     state["path"] = "integrated_chain"
     return state

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 
 
@@ -122,6 +123,54 @@ def _extract_trade_side(ex: dict) -> str:
     return ""
 
 
+def _extract_broker_code(ex: dict) -> str:
+    payload = ex.get("payload") if isinstance(ex.get("payload"), dict) else {}
+    code = payload.get("broker_code")
+    if code is not None and str(code).strip():
+        return str(code).strip()
+    reason = str(ex.get("reason") or "")
+    m = re.search(r"broker_rejected:([-\d]+)", reason)
+    if m:
+        return str(m.group(1)).strip()
+    return ""
+
+
+def _reconcile_mock_sell_reject_no_position(ps: dict, ex: dict) -> bool:
+    """When broker rejects SELL with no-position code, drop stale local mock position."""
+    side = _extract_trade_side(ex)
+    if side != "SELL":
+        return False
+
+    code = _extract_broker_code(ex)
+    if code not in ("20",):
+        return False
+
+    order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
+    symbol = str(order.get("symbol") or "").strip()
+    if not symbol:
+        return False
+    req_qty = max(0, _as_int(order.get("qty"), 0))
+
+    pos = _normalize_mock_positions(ps.get("mock_positions"))
+    by_symbol = {str(r.get("symbol")): dict(r) for r in pos if isinstance(r, dict)}
+    cur = dict(by_symbol.get(symbol) or {})
+    cur_qty = max(0, _as_int(cur.get("qty"), 0))
+    if cur_qty <= 0:
+        return False
+
+    if req_qty <= 0 or req_qty >= cur_qty:
+        by_symbol.pop(symbol, None)
+    else:
+        cur["qty"] = int(cur_qty - req_qty)
+        by_symbol[symbol] = cur
+
+    final_positions = [v for v in by_symbol.values() if _as_int(v.get("qty"), 0) > 0]
+    ps["mock_positions"] = final_positions
+    ps["open_positions"] = len(final_positions)
+    ps["mock_position_desync_reconciled"] = True
+    return True
+
+
 def _broker_code_success(value) -> bool | None:  # type: ignore[no-untyped-def]
     if value is None:
         return None
@@ -219,6 +268,8 @@ def update_state_after_execution(state: dict) -> dict:
     # runtime uses real executor against Kiwoom mock host (KIWOOM_MODE=mock).
     if ok and (mode == "mock" or _is_kiwoom_mock_mode()):
         _apply_mock_fill(ps, ex)
+    elif not ok and _is_kiwoom_mock_mode():
+        _reconcile_mock_sell_reject_no_position(ps, ex)
 
     state["persisted_state"] = ps
     return state

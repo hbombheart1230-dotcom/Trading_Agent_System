@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +55,33 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _rotate_locked_path(path: Path) -> Path:
+    stamp = int(time.time())
+    pid = int(os.getpid())
+    return path.with_name(f"{path.stem}.{stamp}.{pid}{path.suffix}")
+
+
+def _prepare_writable_path(path: Path, *, clear: bool) -> tuple[Path, Dict[str, Any]]:
+    meta: Dict[str, Any] = {"requested_path": str(path), "used_path": str(path), "rotated": False, "reason": ""}
+    if (not clear) or (not path.exists()):
+        return path, meta
+    try:
+        path.unlink()
+        return path, meta
+    except PermissionError:
+        rotated = _rotate_locked_path(path)
+        meta["used_path"] = str(rotated)
+        meta["rotated"] = True
+        meta["reason"] = "locked_file_rotated"
+        return rotated, meta
+    except Exception as ex:
+        rotated = _rotate_locked_path(path)
+        meta["used_path"] = str(rotated)
+        meta["rotated"] = True
+        meta["reason"] = f"unlink_error_rotated:{type(ex).__name__}"
+        return rotated, meta
+
+
 def _run_preflight_case() -> Dict[str, Any]:
     # isolate env mutation
     old = {
@@ -90,10 +118,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     intent_log_path.parent.mkdir(parents=True, exist_ok=True)
     state_db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if (not args.no_clear) and intent_log_path.exists():
-        intent_log_path.unlink()
-    if (not args.no_clear) and state_db_path.exists():
-        state_db_path.unlink()
+    intent_log_path, intent_path_meta = _prepare_writable_path(intent_log_path, clear=(not bool(args.no_clear)))
+    state_db_path, state_path_meta = _prepare_writable_path(state_db_path, clear=(not bool(args.no_clear)))
 
     store = IntentStore(str(intent_log_path))
     state = SQLiteIntentStateStore(str(state_db_path))
@@ -153,6 +179,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         "ok": len(failures) == 0,
         "intent_log_path": str(intent_log_path),
         "state_db_path": str(state_db_path),
+        "path_prepare": {
+            "intent_log": intent_path_meta,
+            "state_db": state_path_meta,
+        },
         "checks": {
             "reject_after_approved_blocked": bool(reject_blocked),
             "executing_state_blocked": bool(executing_blocked),

@@ -20,6 +20,7 @@ from graphs.nodes.skill_contracts import (
 )
 from libs.runtime.decision_trace import append_decision_trace
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
+from libs.strategies.candidates.fallback_pool import is_static_fallback_pool
 from libs.runtime.feature_engine import build_feature_map
 from libs.strategies.contracts import coerce_strategist_output
 
@@ -488,9 +489,33 @@ def _resolve_candidate_source(state: Dict[str, Any], policy: Dict[str, Any]) -> 
     return "kiwoom"
 
 
+def _resolve_block_static_fallback(policy: Dict[str, Any]) -> bool:
+    raw = policy.get("block_static_fallback_when_kiwoom_empty")
+    if raw in (None, ""):
+        raw = os.getenv("BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY", "true")
+    return _is_trueish(raw)
+
+
+def _resolve_strict_kiwoom_only(policy: Dict[str, Any]) -> bool:
+    raw = policy.get("strict_kiwoom_candidates_only")
+    if raw in (None, ""):
+        raw = os.getenv("STRICT_KIWOOM_CANDIDATES_ONLY", "false")
+    return _is_trueish(raw)
+
+
 def _resolve_candidate_limit(policy: Dict[str, Any]) -> int:
-    env_topn = _to_int(os.getenv("TOP_N_CANDIDATES", "5"), 5)
-    return max(1, _to_int(policy.get("candidate_k", policy.get("candidate_topk", env_topn)), env_topn))
+    raw = policy.get("candidate_k", policy.get("candidate_topk"))
+    if raw not in (None, ""):
+        return max(1, _to_int(raw, 10))
+
+    # Preserve explicit TOP_N_CANDIDATES if set by operator.
+    env_topn_raw = os.getenv("TOP_N_CANDIDATES")
+    if env_topn_raw not in (None, ""):
+        return max(1, _to_int(env_topn_raw, 10))
+
+    # Default behavior: use full candidate pool size instead of fixed 5.
+    env_pool = _to_int(os.getenv("TOP_CANDIDATE_POOL", "30"), 30)
+    return max(1, env_pool)
 
 
 def _resolve_top_candidate_pool(policy: Dict[str, Any], *, candidate_limit: int) -> int:
@@ -832,6 +857,7 @@ def _build_kiwoom_candidates(
         include_sector_candidates=True,
         include_watchlist=True,
     )
+    raw_kiwoom_count = int(len(rows))
     themes = _extract_themes(state)
     avoid_themes = _extract_avoid_themes(state)
     theme_symbol_index = _extract_theme_symbol_index(state, policy)
@@ -847,6 +873,40 @@ def _build_kiwoom_candidates(
         theme_symbol_index=theme_symbol_index,
     )
     rows = rows[:candidate_limit]
+    backfill_count = 0
+    backfill_skipped = ""
+    if raw_kiwoom_count > 0 and len(rows) < candidate_limit and not _resolve_strict_kiwoom_only(policy):
+        strategist_candidates = _extract_strategist_candidates(state)
+        if strategist_candidates and _resolve_block_static_fallback(policy) and is_static_fallback_pool(strategist_candidates):
+            strategist_candidates = []
+            backfill_skipped = "static_fallback_blocked"
+        existing = {_norm_symbol(r.get("symbol")) for r in rows if isinstance(r, dict)}
+        for cand in strategist_candidates:
+            if isinstance(cand, dict):
+                sym = _norm_symbol(cand.get("symbol"))
+                why = str(cand.get("why") or "strategist_backfill")
+            else:
+                sym = _norm_symbol(cand)
+                why = "strategist_backfill"
+            if not sym or sym in existing:
+                continue
+            rows.append(
+                {
+                    "symbol": sym,
+                    "why": why,
+                    "sources": ["strategist_backfill"],
+                    "source_scores": {"strategist_backfill": 0.10},
+                    "source_count": 1,
+                    "rank_score": 0.0,
+                    "universe_score": 0.0,
+                    "trading_value_source_score": 0.0,
+                    "trading_volume_source_score": 0.0,
+                }
+            )
+            existing.add(sym)
+            backfill_count += 1
+            if len(rows) >= candidate_limit:
+                break
     meta_out = dict(meta)
     meta_out.update(filter_meta)
     meta_out.update(avoid_meta)
@@ -859,6 +919,10 @@ def _build_kiwoom_candidates(
             "condition_limit": int(condition_limit),
             "top_candidate_pool": int(top_pool),
             "enable_theme_filter": bool(enable_theme_filter),
+            "raw_kiwoom_count": int(raw_kiwoom_count),
+            "backfill_used": bool(backfill_count > 0),
+            "backfill_count": int(backfill_count),
+            "backfill_skipped_reason": str(backfill_skipped or ""),
         }
     )
     return rows, meta_out
@@ -879,7 +943,32 @@ def _resolve_scanner_candidates(state: Dict[str, Any], policy: Dict[str, Any]) -
     if kiwoom_rows:
         return kiwoom_rows, dict(kiwoom_meta)
 
+    if source == "kiwoom" and _resolve_strict_kiwoom_only(policy):
+        strict_meta = dict(kiwoom_meta)
+        strict_meta.update(
+            {
+                "candidate_source": "kiwoom",
+                "candidate_count": 0,
+                "fallback_used": False,
+                "fallback_reason": "kiwoom_candidate_pool_empty_strict_mode",
+                "strict_kiwoom_only": True,
+            }
+        )
+        return [], strict_meta
+
     if strategist_candidates:
+        if _resolve_block_static_fallback(policy) and is_static_fallback_pool(strategist_candidates):
+            blocked_meta = dict(kiwoom_meta)
+            blocked_meta.update(
+                {
+                    "candidate_source": "kiwoom",
+                    "candidate_count": 0,
+                    "fallback_used": False,
+                    "fallback_reason": "kiwoom_candidate_pool_empty_static_fallback_blocked",
+                    "blocked_static_fallback": True,
+                }
+            )
+            return [], blocked_meta
         fallback_meta = dict(kiwoom_meta)
         fallback_meta.update(
             {
@@ -1272,7 +1361,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "candidate_pool_size": int(len(scan_results_sorted)),
         "ranked_candidates": list(state.get("ranked_candidates") or [])[:5],
         "candidate_source": str(pool_meta.get("candidate_source") or ""),
+        "fallback_reason": str(pool_meta.get("fallback_reason") or ""),
+        "blocked_static_fallback": bool(pool_meta.get("blocked_static_fallback")),
+        "strict_kiwoom_only": bool(pool_meta.get("strict_kiwoom_only")),
         "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
+        "backfill_used": bool(pool_meta.get("backfill_used")),
+        "backfill_count": int(pool_meta.get("backfill_count") or 0),
+        "backfill_skipped_reason": str(pool_meta.get("backfill_skipped_reason") or ""),
         "score_weights": dict(practical_w),
         "source_mix": dict(pool_meta.get("pool_source_mix") or {}),
         "strategist_scanner_priority": list(scanner_priority),
@@ -1320,6 +1415,11 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "candidate_pool_before_filter": int(pool_meta.get("candidate_pool_before_filter") or 0),
             "candidate_pool_after_filter": int(pool_meta.get("candidate_pool_after_filter") or len(scan_results_sorted)),
             "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
+            "fallback_reason": str(pool_meta.get("fallback_reason") or ""),
+            "blocked_static_fallback": bool(pool_meta.get("blocked_static_fallback")),
+            "strict_kiwoom_only": bool(pool_meta.get("strict_kiwoom_only")),
+            "backfill_used": bool(pool_meta.get("backfill_used")),
+            "backfill_count": int(pool_meta.get("backfill_count") or 0),
             "top_stock": state.get("top_stock"),
             "top_score": top_score,
             "top_ranked_symbols": [str(x.get("symbol") or "") for x in list(state.get("ranked_candidates") or [])[:5]],

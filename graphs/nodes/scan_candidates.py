@@ -47,7 +47,7 @@ def _default_universe() -> List[str]:
     raw = os.getenv("UNIVERSE_SYMBOLS", "").strip()
     if raw:
         return _normalize_symbols([s.strip() for s in raw.split(",") if s.strip()])
-    return ["005930", "000660"]
+    return []
 
 
 def _extract_injected_rows(state: Dict[str, Any], k: int) -> List[Dict[str, Any]]:
@@ -180,14 +180,14 @@ def scan_candidates(state: dict) -> dict:
             if not rows:
                 rows = _build_rows_with_legacy_generators(state=state, policy=policy, k=k)
     if not rows:
-        rows = [{"symbol": s, "why": "env_or_fallback"} for s in _default_universe()[:k]]
+        rows = [{"symbol": s, "why": "env_universe"} for s in _default_universe()[:k]]
     elif len(rows) < k:
         existing = {str(r.get("symbol") or "").strip().upper() for r in rows}
         for sym in _default_universe():
             s = str(sym or "").strip().upper()
             if not s or s in existing:
                 continue
-            rows.append({"symbol": s, "why": "fill_default"})
+            rows.append({"symbol": s, "why": "fill_env_universe"})
             existing.add(s)
             if len(rows) >= k:
                 break

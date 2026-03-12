@@ -15,8 +15,10 @@ def test_scan_candidates_uses_universe_builder_multi_source():
         },
     }
     out = scan_candidates(state)
-    assert len(out["candidates"]) == 4
+    assert len(out["candidates"]) >= 3
     assert out["candidates"][0] == "AAA"
+    assert "BBB" in out["candidates"]
+    assert "CCC" in out["candidates"]
     assert isinstance(out.get("candidate_rows"), list)
     assert out["candidate_rows"][0]["symbol"] == "AAA"
     assert out["candidate_rows"][0]["why"]
@@ -27,4 +29,3 @@ def test_scan_candidates_falls_back_to_env_universe(monkeypatch):
     out = scan_candidates({})
     assert out["candidates"] == ["005930", "000660", "035420"]
     assert all(isinstance(x, str) for x in out["candidates"])
-

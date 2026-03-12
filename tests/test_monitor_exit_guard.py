@@ -119,6 +119,180 @@ def test_monitor_does_not_select_symbol_when_selected_missing(monkeypatch):
     assert (out.get("monitor_output") or {}).get("selected_symbol") is None
 
 
+def test_monitor_blocks_new_buy_when_open_position_guard_enabled(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "true")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0}],
+        },
+        "policy": {},
+    }
+    out = monitor_node(state)
+    assert out.get("intents") == []
+    mon = out.get("monitor") or {}
+    assert mon.get("open_position_count") == 1
+    assert mon.get("buy_blocked_open_position") is True
+    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "buy_blocked_open_position"
+
+
+def test_monitor_allows_buy_when_open_position_guard_disabled(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 2, "avg_price": 100.0}],
+        },
+        "policy": {},
+    }
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
+    assert (out.get("monitor") or {}).get("buy_blocked_open_position") is False
+
+
+def test_monitor_falls_back_to_held_symbol_for_exit_when_selected_has_no_position(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 3, "avg_price": 100.0, "hold_sec": 900}],
+        },
+        "market_snapshot": {"symbol": "AAA", "price": 95.0},
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.03},
+    }
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    assert intents[0]["symbol"] == "AAA"
+    assert (out.get("monitor") or {}).get("exit_symbol_fallback") is True
+    assert (out.get("monitor_exit") or {}).get("selected_symbol") == "BBB"
+    assert (out.get("monitor_exit") or {}).get("symbol") == "AAA"
+
+
+def test_monitor_uses_position_mark_price_when_quote_unavailable(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [
+                {
+                    "symbol": "AAA",
+                    "qty": 3,
+                    "avg_price": 100.0,
+                    "unrealized_pnl": -15.0,
+                    "hold_sec": 900,
+                }
+            ],
+        },
+        # quote intentionally unavailable for AAA to force position mark fallback.
+        "market_snapshot": {"symbol": "BBB", "price": 120.0},
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.03},
+    }
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    assert intents[0]["symbol"] == "AAA"
+    assert str((out.get("monitor_exit") or {}).get("reason") or "") == "stop_loss"
+    assert (out.get("monitor_exit") or {}).get("exit_symbol_fallback") is True
+
+
+def test_monitor_selects_held_symbol_with_triggered_exit_among_multiple_positions(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [
+                {"symbol": "AAA", "qty": 2, "avg_price": 100.0, "unrealized_pnl": -20.0, "hold_sec": 900},
+                {"symbol": "CCC", "qty": 5, "avg_price": 100.0, "unrealized_pnl": 0.0, "hold_sec": 900},
+            ],
+        },
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.05, "take_profit_pct": 0.05},
+    }
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    assert intents[0]["symbol"] == "AAA"
+    exit_info = out.get("monitor_exit") or {}
+    assert str(exit_info.get("reason") or "") == "stop_loss"
+    assert bool(exit_info.get("exit_symbol_fallback")) is True
+
+
+def test_monitor_applies_exit_policy_env_overrides(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+    monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "60")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "AAA"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0, "hold_sec": 120}],
+        },
+        "policy": {"use_exit_policy": True},
+    }
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    assert str((out.get("monitor_exit") or {}).get("reason") or "") == "max_hold"
+
+
+def test_monitor_hard_exit_bypasses_confirmation_ticks(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "6")
+    monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "60")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "AAA"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0, "hold_sec": 120}],
+        },
+        "policy": {"use_exit_policy": True},
+    }
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    assert str((out.get("monitor_exit") or {}).get("reason") or "") == "max_hold"
+    assert bool((out.get("monitor_exit") or {}).get("hard_exit")) is True
+
+
 def test_monitor_emergency_exit_bypasses_min_hold_and_confirmation(monkeypatch):
     monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")

@@ -134,3 +134,27 @@ def test_update_state_does_not_apply_fill_when_broker_rejected(monkeypatch):
     assert ps["last_order_epoch"] == 10
     assert ps.get("mock_positions") == []
     assert ps.get("mock_cash") == 2000000.0
+
+
+def test_update_state_reconciles_stale_mock_position_on_sell_reject_code20(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    state = {
+        "persisted_state": {
+            "last_order_epoch": 10,
+            "mock_positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "unrealized_pnl": 0.0}],
+            "mock_cash": 2000000.0,
+        },
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "real", "api_ok": True, "broker_code": "20"},
+            "reason": "broker_rejected:20",
+            "order": {"action": "SELL", "symbol": "005930", "qty": 2, "price": 70200},
+        },
+    }
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert ps["last_execution_ok"] is False
+    assert ps.get("mock_positions") == []
+    assert ps.get("open_positions") == 0
+    assert ps.get("mock_position_desync_reconciled") is True

@@ -106,6 +106,34 @@ Fail criteria (expected off-hours):
 
 - `failure_reason` starts with `market_closed:`
 
+Off-hours probe mode (pipeline verification without market session):
+
+```powershell
+C:\Trading_Agent_System\venv\Scripts\python.exe -m scripts.run_mock_exam_day `
+  --phase session `
+  --day 2026-03-09 `
+  --env-path .env `
+  --report-dir reports/mock_exam_day `
+  --event-log-path data/logs/events.jsonl `
+  --allow-offhours-session-probe `
+  --probe-symbol 005930 `
+  --json
+```
+
+Probe pass criteria:
+
+- `ok=true`
+- `phase_result.probe_mode=offhours_session_probe`
+- `phase_result.steps[0].step_id=session.offhours_probe`
+- `phase_result.probe_result.ok=true`
+
+Batch helper (same behavior):
+
+```bat
+cmd /c scripts\run_mock_exam_session_probe.bat
+```
+(`run_mock_exam_session_probe.bat` internally sets `MOCK_EXAM_OFFHOURS_PROBE=1`)
+
 ### C. Closeout
 
 Run:
@@ -136,6 +164,7 @@ Pass criteria:
   - market-hours gate
   - runtime safety mode gate (`staging/mock/manual/allow_real_execution=false`)
 - off-hours dry-runs should execute `preopen` + `closeout`, and accept `session market_closed` as expected.
+- optional off-hours session probe can verify integrated chain execution (`--allow-offhours-session-probe`) without starting live loop.
 - orchestration report JSON contains:
   - per-step `rc`
   - `duration_sec`
