@@ -420,8 +420,8 @@ def _default_policy(user_policy: Dict[str, Any] | None) -> Dict[str, Any]:
     p.setdefault("candidate_rank_mode", "value")
     p.setdefault("candidate_rank_topn", 30)
     # sentiment toggles
-    p.setdefault("use_global_sentiment", True)
-    p.setdefault("use_news_analysis", False)
+    p.setdefault("use_global_sentiment", _is_trueish(os.getenv("M10_USE_GLOBAL_SENTIMENT", "true")))
+    p.setdefault("use_news_analysis", _is_trueish(os.getenv("M10_USE_NEWS_SENTIMENT", "true")))
     p.setdefault("use_exit_policy", _is_trueish(os.getenv("USE_EXIT_POLICY", "false")))
     # news plugin
     p.setdefault("news_provider", "naver")

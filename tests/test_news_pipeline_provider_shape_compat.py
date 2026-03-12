@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from graphs.nodes.strategist_node import strategist_node
-from libs.news.news_pipeline import collect_news_items, score_news_sentiment
+from libs.news.news_pipeline import _fetch_yfinance_news_items, collect_news_items, score_news_sentiment
 from libs.news.providers.base import NewsItem as ProviderNewsItem
 
 
@@ -21,7 +21,11 @@ def test_collect_news_items_accepts_mapping_provider_shape(monkeypatch):
 
     monkeypatch.setattr("libs.news.news_pipeline.get_provider", lambda _name: DictProvider())
 
-    out = collect_news_items(["AAA", "BBB"], state={}, policy={"news_provider": "naver"})
+    out = collect_news_items(
+        ["AAA", "BBB"],
+        state={},
+        policy={"news_provider": "naver", "news_yf_fallback_enabled": False},
+    )
     assert set(out.keys()) == {"AAA", "BBB"}
     assert len(out["AAA"]) == 1
     assert out["AAA"][0].symbol == "AAA"
@@ -38,7 +42,11 @@ def test_collect_news_items_accepts_flat_provider_shape(monkeypatch):
 
     monkeypatch.setattr("libs.news.news_pipeline.get_provider", lambda _name: FlatProvider())
 
-    out = collect_news_items(["AAA", "BBB", "CCC"], state={}, policy={"news_provider": "naver"})
+    out = collect_news_items(
+        ["AAA", "BBB", "CCC"],
+        state={},
+        policy={"news_provider": "naver", "news_yf_fallback_enabled": False},
+    )
     assert len(out["AAA"]) == 1
     assert len(out["BBB"]) == 1
     assert len(out["CCC"]) == 0
@@ -71,3 +79,79 @@ def test_strategist_node_news_analysis_path_does_not_raise_with_mock_items():
     out = strategist_node(state)
     assert "news_sentiment" in out
     assert set(out["news_sentiment"].keys()) == {"AAA", "BBB"}
+
+
+def test_collect_news_items_uses_yfinance_fallback_when_provider_empty(monkeypatch):
+    class EmptyProvider:
+        def fetch(self, symbols, *, state=None, policy=None):
+            return {str(s): [] for s in symbols}
+
+    monkeypatch.setattr("libs.news.news_pipeline.get_provider", lambda _name: EmptyProvider())
+    monkeypatch.setattr(
+        "libs.news.news_pipeline._fetch_yfinance_news_items",
+        lambda sym, _policy: [ProviderNewsItem(title=f"{sym} yf", symbol=str(sym), source="yfinance")],
+    )
+
+    out = collect_news_items(
+        ["AAA", "BBB"],
+        state={},
+        policy={"news_provider": "naver", "news_yf_fallback_enabled": True},
+    )
+    assert len(out["AAA"]) == 1
+    assert out["AAA"][0].source == "yfinance"
+    assert len(out["BBB"]) == 1
+    assert out["BBB"][0].title == "BBB yf"
+
+
+def test_collect_news_items_skips_yfinance_fallback_when_disabled(monkeypatch):
+    class EmptyProvider:
+        def fetch(self, symbols, *, state=None, policy=None):
+            return {str(s): [] for s in symbols}
+
+    monkeypatch.setattr("libs.news.news_pipeline.get_provider", lambda _name: EmptyProvider())
+    monkeypatch.setattr(
+        "libs.news.news_pipeline._fetch_yfinance_news_items",
+        lambda sym, _policy: [ProviderNewsItem(title=f"{sym} yf", symbol=str(sym), source="yfinance")],
+    )
+
+    out = collect_news_items(
+        ["AAA"],
+        state={},
+        policy={"news_provider": "naver", "news_yf_fallback_enabled": False},
+    )
+    assert out["AAA"] == []
+
+
+def test_fetch_yfinance_news_items_parses_nested_content_shape(monkeypatch):
+    import sys
+
+    class _FakeTicker:
+        def __init__(self, _ticker):
+            self._ticker = _ticker
+
+        @property
+        def news(self):
+            return [
+                {
+                    "id": "abc",
+                    "content": {
+                        "title": "Nested title",
+                        "summary": "Nested summary",
+                        "pubDate": "2026-03-12T03:37:07Z",
+                        "provider": {"displayName": "Reuters"},
+                        "canonicalUrl": {"url": "https://example.com/news"},
+                    },
+                }
+            ]
+
+    class _FakeYF:
+        @staticmethod
+        def Ticker(ticker):
+            return _FakeTicker(ticker)
+
+    monkeypatch.setitem(sys.modules, "yfinance", _FakeYF)
+    items = _fetch_yfinance_news_items("005930", policy={})
+    assert len(items) == 1
+    assert items[0].title == "Nested title"
+    assert items[0].source == "Reuters"
+    assert items[0].url == "https://example.com/news"

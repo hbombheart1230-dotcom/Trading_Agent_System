@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from graphs.nodes.scanner_node import scanner_node
-from graphs.nodes.strategist_node import strategist_node
+from graphs.nodes.strategist_node import _default_policy, strategist_node
 
 
 def test_strategist_emits_signal_contract_for_global_and_news_when_disabled():
@@ -86,3 +86,13 @@ def test_scanner_components_include_signal_status_fields():
     assert comp["news_sentiment_status"] == "unavailable"
     assert comp["global_sentiment_status"] == "fallback"
     assert comp["global_sentiment_reason"] == "dry_run_neutral"
+
+
+def test_strategist_default_policy_reads_news_sentiment_env(monkeypatch):
+    monkeypatch.setenv("M10_USE_NEWS_SENTIMENT", "true")
+    p_true = _default_policy({})
+    assert bool(p_true.get("use_news_analysis")) is True
+
+    monkeypatch.setenv("M10_USE_NEWS_SENTIMENT", "false")
+    p_false = _default_policy({})
+    assert bool(p_false.get("use_news_analysis")) is False

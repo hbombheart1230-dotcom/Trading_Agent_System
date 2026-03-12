@@ -15,6 +15,89 @@ from libs.data_quality.signal_contract import (
 import os
 import time
 
+
+def _is_trueish(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    s = str(v or "").strip().lower()
+    return s in ("1", "true", "yes", "y", "on")
+
+
+def _parse_symbol_yf_map_env() -> Dict[str, str]:
+    raw = str(os.getenv("M10_SYMBOL_YF_MAP", "") or "").strip()
+    out: Dict[str, str] = {}
+    if not raw:
+        return out
+    for token in raw.split(","):
+        part = str(token or "").strip()
+        if not part or "=" not in part:
+            continue
+        sym, ticker = part.split("=", 1)
+        sym_s = str(sym or "").strip()
+        tick_s = str(ticker or "").strip()
+        if sym_s and tick_s:
+            out[sym_s] = tick_s
+    return out
+
+
+def _resolve_yf_ticker(symbol: str, policy: Dict[str, Any]) -> str:
+    sym = str(symbol or "").strip()
+    mapping = dict(policy.get("symbol_yf_map") or {})
+    if not mapping:
+        mapping = _parse_symbol_yf_map_env()
+    if sym in mapping:
+        return str(mapping[sym])
+    if sym.isdigit() and len(sym) == 6:
+        return f"{sym}.KS"
+    return sym
+
+
+def _fetch_yfinance_news_items(symbol: str, policy: Dict[str, Any]) -> List[NewsItem]:
+    try:
+        import yfinance as yf  # type: ignore
+    except Exception:
+        return []
+
+    ticker = _resolve_yf_ticker(symbol, policy)
+    try:
+        raw_news = yf.Ticker(ticker).news or []
+    except Exception:
+        return []
+
+    out: List[NewsItem] = []
+    max_items = int(policy.get("news_max_items_per_symbol") or 5)
+    for row in list(raw_news)[:max_items]:
+        if not isinstance(row, dict):
+            continue
+        content = row.get("content") if isinstance(row.get("content"), dict) else {}
+        title = _as_str(row.get("title") or content.get("title")).strip()
+        if not title:
+            continue
+        canonical = content.get("canonicalUrl") if isinstance(content.get("canonicalUrl"), dict) else {}
+        click = content.get("clickThroughUrl") if isinstance(content.get("clickThroughUrl"), dict) else {}
+        provider = content.get("provider") if isinstance(content.get("provider"), dict) else {}
+        url = _as_str(
+            row.get("link")
+            or canonical.get("url")
+            or click.get("url")
+        )
+        published_at = _as_str(row.get("providerPublishTime") or content.get("pubDate") or content.get("displayTime"))
+        summary = _as_str(row.get("summary") or content.get("summary") or content.get("description"))
+        source = _as_str(row.get("publisher") or provider.get("displayName") or "yfinance")
+        out.append(
+            NewsItem(
+                title=title,
+                url=url,
+                source=source,
+                published_at=published_at,
+                symbol=str(symbol),
+                summary=summary,
+                raw=row,
+            )
+        )
+    return out
+
+
 # -------------------------------------------------
 # NEWS COLLECTION
 # -------------------------------------------------
@@ -121,7 +204,21 @@ def collect_news_items(
                 items_by_symbol[str(item.symbol)].append(item)
 
     # ensure all symbols exist
-    return {str(s): list(items_by_symbol.get(str(s), [])) for s in symbols}
+    out = {str(s): list(items_by_symbol.get(str(s), [])) for s in symbols}
+
+    # Optional yfinance fallback when provider returns no news.
+    yf_fallback_enabled = policy.get("news_yf_fallback_enabled")
+    if yf_fallback_enabled is None:
+        yf_fallback_enabled = os.getenv("M10_NEWS_YF_FALLBACK", "true")
+    if _is_trueish(yf_fallback_enabled):
+        for s in symbols:
+            sym = str(s)
+            if out.get(sym):
+                continue
+            yf_items = _fetch_yfinance_news_items(sym, policy)
+            if yf_items:
+                out[sym] = yf_items
+    return out
 
 
 # -------------------------------------------------
