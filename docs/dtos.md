@@ -244,6 +244,18 @@
   - `ai_run_grade: str`
   - `ai_agent_evaluations: object`
 
+### AgentPipelineTrace (single-run visibility)
+- `schema_version: "agent_pipeline_trace.v1"`
+- `run_id: str`
+- `day: YYYY-MM-DD`
+- `commander: object`
+- `strategist: object`
+- `scanner: object`
+- `monitor: object`
+- `supervisor: object`
+- `executor: object`
+- `reporter: object`
+
 ### Intent Meta (sell-guard related)
 - `reason`
 - `signal_source`

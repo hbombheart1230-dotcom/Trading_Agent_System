@@ -175,3 +175,22 @@
     - `ai_improvement_suggestions[]`
     - `ai_run_grade`
     - `ai_agent_evaluations`
+
+## AgentPipelineTrace (`agent_pipeline_trace.v1`)
+- Single-run, cross-agent visibility artifact.
+- Generated from:
+  - `data/logs/events.jsonl`
+  - `data/evidence_ledger/events.jsonl`
+- Core keys:
+  - `schema_version`
+  - `run_id`
+  - `day`
+  - `commander`
+  - `strategist`
+  - `scanner`
+  - `monitor`
+  - `supervisor`
+  - `executor`
+  - `reporter`
+- Intended use:
+  - fast operator/developer diagnosis of one run's full decision chain.

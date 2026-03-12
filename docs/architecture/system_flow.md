@@ -38,6 +38,7 @@
    - executes only approved intents with guard precedence
 6. Reporter
    - generates operator-facing summaries from logs/artifacts
+   - generates one-run full-chain artifact (`agent_pipeline_trace.v1`) from event log + evidence ledger
    - `reporter_analysis.v1` keeps deterministic analysis as baseline
    - optional AI review stage can be enabled post-run (passive/read-only)
    - output includes `decision_trace_chain_summary`, `operator_facing_summary`, `developer_facing_summary`

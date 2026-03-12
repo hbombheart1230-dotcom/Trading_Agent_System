@@ -341,6 +341,7 @@ Operator-facing report scripts:
 - `python -m scripts.run_run_card_report --event-log-path data/logs/events.jsonl --report-dir reports/run_cards --day <YYYY-MM-DD>`
 - `python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jsonl --report-dir reports/trade_explain --day <YYYY-MM-DD>`
 - `python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/reporter_analysis --day <YYYY-MM-DD>`
+- `python -m scripts.run_agent_pipeline_trace_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/agent_pipeline_trace --run-id <RUN_ID>`
 - Reporter AI review optional flags:
   - `--ai-review` (enable passive AI review stage)
   - `--no-ai-review` (force deterministic-only mode)

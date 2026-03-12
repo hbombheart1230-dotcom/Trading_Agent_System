@@ -93,6 +93,9 @@
   - per-entry keys: `raw_input`, `llm_prompt`, `llm_response`, `parsed_output`, `decision_link`
   - passive only (no runtime control impact)
 - Runtime report generators: `libs/reporting/*`, `scripts/run_*report*.py`
+- Single-run full-chain trace report:
+  - `scripts/run_agent_pipeline_trace_report.py` -> `agent_pipeline_trace.v1`
+  - summarizes Commander/Strategist/Scanner/Monitor/Supervisor/Executor/Reporter in one artifact
 - Enhanced passive analysis output (`reporter_analysis.v1`) includes:
   - `trade_summary` and per-trade decision summaries (buy/sell reason, hold duration, exit trigger)
   - `decision_chains` (run_id-based decision -> supervisor -> execution trace)
