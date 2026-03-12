@@ -35,7 +35,19 @@ def _first_present(d: Dict[str, Any], keys: List[str]) -> Any:
 def _extract_cash(payload: Dict[str, Any]) -> float:
     for root in (payload, payload.get("output") or {}, payload.get("output1") or {}, payload.get("result") or {}):
         if isinstance(root, dict):
-            v = _first_present(root, ["cash", "dnca_tot_amt", "prvs_rcdl_excc_amt", "tot_evlu_amt"])
+            v = _first_present(
+                root,
+                [
+                    "cash",
+                    "dnca_tot_amt",
+                    "prvs_rcdl_excc_amt",
+                    "tot_evlu_amt",
+                    "tot_evlt_amt",
+                    "dbst_bal",
+                    "day_stk_asst",
+                    "prsm_dpst_aset_amt",
+                ],
+            )
             if v is not None:
                 return _num(v)
         if isinstance(root, list) and root:
@@ -45,9 +57,25 @@ def _extract_cash(payload: Dict[str, Any]) -> float:
     return 0.0
 
 
+def _normalize_symbol(symbol: Any) -> str:
+    raw = str(symbol or "").strip().upper()
+    if len(raw) == 7 and raw[0].isalpha() and raw[1:].isdigit():
+        return raw[1:]
+    return raw
+
+
 def _extract_positions(payload: Dict[str, Any]) -> List[PositionSnapshot]:
     candidates: List[Any] = []
-    for k in ["positions", "output2", "output", "data", "items"]:
+    for k in [
+        "positions",
+        "acnt_evlt_remn_indv_tot",
+        "day_bal_rt",
+        "output2",
+        "output",
+        "output1",
+        "data",
+        "items",
+    ]:
         v = payload.get(k)
         if isinstance(v, list):
             candidates = v
@@ -57,12 +85,18 @@ def _extract_positions(payload: Dict[str, Any]) -> List[PositionSnapshot]:
     for it in candidates or []:
         if not isinstance(it, dict):
             continue
-        symbol = str(_first_present(it, ["symbol", "stk_cd", "pdno", "code"]) or "").strip()
+        symbol = _normalize_symbol(_first_present(it, ["symbol", "stk_cd", "pdno", "code"]))
         if not symbol:
             continue
         qty = int(_num(_first_present(it, ["qty", "hldg_qty", "qty_avlb", "ord_psbl_qty"]) or 0))
-        avg_price = _num(_first_present(it, ["avg_price", "pchs_avg_pric", "avg_pric", "buy_avg"]) or 0)
+        if qty <= 0:
+            qty = int(_num(_first_present(it, ["rmnd_qty"]) or 0))
+        avg_price = _num(_first_present(it, ["avg_price", "pchs_avg_pric", "avg_pric", "buy_avg", "pur_pric"]) or 0)
+        if avg_price <= 0.0:
+            avg_price = _num(_first_present(it, ["buy_uv"]) or 0)
         upnl = _num(_first_present(it, ["unrealized_pnl", "evlu_pfls_amt", "pnl", "prft"]) or 0)
+        if upnl == 0.0:
+            upnl = _num(_first_present(it, ["evltv_prft"]) or 0)
         pos.append(PositionSnapshot(symbol=symbol, qty=qty, avg_price=avg_price, unrealized_pnl=upnl))
     return pos
 
@@ -89,6 +123,10 @@ class KiwoomPortfolioReader:
     def get_portfolio_snapshot(self) -> PortfolioSnapshot:
         # AccountBalanceResult type differs by project version; use duck-typing.
         res = self.account.get_account_balance(dry_run=False)  # type: ignore
+        if not bool(getattr(res, "ok", False)):
+            code = getattr(res, "status_code", None)
+            message = getattr(res, "error_message", None) or "account_balance_api_failed"
+            raise RuntimeError(f"account_balance_api_failed(status={code}, message={message})")
         payload = getattr(res, "payload", None) or {}
         cash = _extract_cash(payload)
         positions = _extract_positions(payload)

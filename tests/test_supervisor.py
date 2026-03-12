@@ -19,6 +19,13 @@ def test_daily_loss_blocks(monkeypatch):
     assert "Daily loss" in res.reason
 
 
+def test_daily_loss_does_not_block_sell(monkeypatch):
+    s = make_settings(monkeypatch)
+    sup = Supervisor(s)
+    res = sup.allow("sell", {"daily_pnl_ratio": -0.03})
+    assert res.allow is True
+
+
 def test_max_positions_blocks(monkeypatch):
     s = make_settings(monkeypatch)
     sup = Supervisor(s)
@@ -34,6 +41,14 @@ def test_cooldown_blocks(monkeypatch):
     res = sup.allow("buy", {"last_order_epoch": now - 10, "now_epoch": now})
     assert res.allow is False
     assert "cooldown" in res.reason.lower()
+
+
+def test_cooldown_does_not_block_sell(monkeypatch):
+    s = make_settings(monkeypatch)
+    sup = Supervisor(s)
+    now = int(time.time())
+    res = sup.allow("sell", {"last_order_epoch": now - 10, "now_epoch": now})
+    assert res.allow is True
 
 
 def test_allow_ok(monkeypatch):

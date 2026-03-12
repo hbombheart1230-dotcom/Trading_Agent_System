@@ -34,11 +34,12 @@ class Supervisor:
     def allow(self, intent: str, context: Dict[str, Any]) -> AllowResult:
         intent = (intent or "").lower().strip()
         now = int(context.get("now_epoch") or time.time())
+        is_entry_intent = intent in ("buy", "open", "enter")
 
         # --- Daily loss limit ---
         daily_pnl = float(context.get("daily_pnl_ratio", 0.0))
         daily_limit = float(self.s_value("RISK_DAILY_LOSS_LIMIT", 0.0))
-        if daily_limit > 0 and daily_pnl <= -daily_limit:
+        if is_entry_intent and daily_limit > 0 and daily_pnl <= -daily_limit:
             return AllowResult(
                 allow=False,
                 reason="Daily loss limit exceeded",
@@ -58,7 +59,7 @@ class Supervisor:
         # --- Per-trade risk limit (expected worst-case loss ratio for intended trade) ---
         per_trade_risk = float(context.get("per_trade_risk_ratio", 0.0))
         per_trade_limit = float(self.s_value("RISK_PER_TRADE_LOSS_LIMIT", 0.0))
-        if per_trade_limit > 0 and per_trade_risk > per_trade_limit:
+        if is_entry_intent and per_trade_limit > 0 and per_trade_risk > per_trade_limit:
             return AllowResult(
                 allow=False,
                 reason="Per-trade risk limit exceeded",
@@ -68,7 +69,7 @@ class Supervisor:
         # --- Cooldown ---
         cooldown = int(self.s_value("RISK_ORDER_COOLDOWN_SEC", 0))
         last_order = int(context.get("last_order_epoch", 0))
-        if cooldown > 0 and last_order > 0 and (now - last_order) < cooldown:
+        if is_entry_intent and cooldown > 0 and last_order > 0 and (now - last_order) < cooldown:
             return AllowResult(
                 allow=False,
                 reason="Order cooldown active",

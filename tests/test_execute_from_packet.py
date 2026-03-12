@@ -169,6 +169,37 @@ def test_execute_from_packet_blocks_notional_limit_with_max_notional_alias(tmp_p
     assert out["execution"]["order_limit_guard"]["max_notional_key"] == "MAX_NOTIONAL"
 
 
+def test_execute_from_packet_allows_sell_even_when_qty_exceeds_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+    monkeypatch.setenv("MAX_ORDER_QTY", "")
+    monkeypatch.setenv("MAX_QTY", "1")
+    monkeypatch.setenv("MAX_ORDER_NOTIONAL", "")
+    monkeypatch.setenv("MAX_NOTIONAL", "100000")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "portfolio_snapshot": {
+            "cash": 1_000_000.0,
+            "positions": [{"symbol": "005930", "qty": 20, "avg_price": 70000.0}],
+        },
+        "decision_packet": {
+            "intent": {"action": "SELL", "symbol": "005930", "qty": 20, "price": 70000, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 1},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is True
+    assert out["execution"]["payload"]["mode"] == "mock"
+
+
 def test_execute_from_packet_blocks_duplicate_buy_in_mock(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTION_MODE", "mock")
 

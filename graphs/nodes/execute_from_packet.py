@@ -160,6 +160,8 @@ def _evaluate_order_limit_guard(state: Dict[str, Any], order: Dict[str, Any]) ->
     action = str(order.get("action") or "").strip().upper()
     if action not in ("BUY", "SELL"):
         return True, "", {"guard_applied": False, "action": action}
+    if action == "SELL":
+        return True, "", {"guard_applied": True, "action": action, "risk_reducing": True}
 
     qty = _coerce_int(order.get("qty"), 0)
     max_qty, qty_key = _resolve_limit_env_value("MAX_ORDER_QTY", "MAX_QTY")

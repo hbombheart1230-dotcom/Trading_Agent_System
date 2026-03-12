@@ -98,13 +98,17 @@ def build_portfolio_snapshot(state: dict) -> dict:
         persisted_realized = _safe_float((persisted or {}).get("mock_realized_pnl"), 0.0)
         snapshot_positions = _normalize_positions(snapshot.get("positions"))
 
-        # In mock mode, prefer persisted mock ledger when available.
-        if persisted_positions:
+        # In mock mode, prefer live reader positions when available.
+        # Fall back to persisted mock ledger only when reader positions are unavailable.
+        if snapshot_positions:
+            snapshot["positions"] = snapshot_positions
+            health["positions_source"] = "reader_positions"
+        elif persisted_positions:
             snapshot["positions"] = persisted_positions
             health["positions_source"] = "persisted_mock_positions"
         else:
-            snapshot["positions"] = snapshot_positions
-            health["positions_source"] = "reader_positions"
+            snapshot["positions"] = []
+            health["positions_source"] = "reader_positions_empty"
         if persisted_cash > 0.0:
             snapshot["cash"] = float(persisted_cash)
             health["cash_source"] = "persisted_mock_cash"

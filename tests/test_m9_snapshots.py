@@ -116,6 +116,30 @@ def test_build_portfolio_snapshot_uses_persisted_mock_positions_when_reader_empt
     assert ps["open_positions"] == 1
 
 
+def test_build_portfolio_snapshot_prefers_reader_positions_over_persisted_when_available(monkeypatch):
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    state = {
+        "portfolio_reader": MockPortfolioReader(
+            cash=2000000,
+            positions=[
+                {"symbol": "051910", "qty": 2, "avg_price": 300000.0, "unrealized_pnl": 0.0},
+            ],
+        ),
+        "persisted_state": {
+            "mock_positions": [
+                {"symbol": "005930", "qty": 3, "avg_price": 70000.0, "unrealized_pnl": 0.0},
+            ]
+        },
+    }
+
+    out = build_portfolio_snapshot(state)
+    ps = out["portfolio_snapshot"]
+    assert ps["positions"][0]["symbol"] == "051910"
+    assert ps["positions"][0]["qty"] == 2
+    assert ps["open_positions"] == 1
+    assert ps.get("_health", {}).get("positions_source") == "reader_positions"
+
+
 def test_build_portfolio_snapshot_uses_persisted_mock_cash_when_available(monkeypatch):
     monkeypatch.setenv("KIWOOM_MODE", "mock")
     state = {
