@@ -154,6 +154,52 @@ def _summarize_scanner_sources(candidates: List[Dict[str, Any]]) -> Dict[str, in
     return counts
 
 
+def _read_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _reporter_analysis_has_run(report_obj: Dict[str, Any], run_id: str) -> bool:
+    rid = str(run_id or "").strip()
+    if not rid:
+        return False
+
+    trace_summary = report_obj.get("decision_trace_chain_summary")
+    if isinstance(trace_summary, dict):
+        chains = trace_summary.get("chains")
+        if isinstance(chains, list):
+            for row in chains:
+                if isinstance(row, dict) and str(row.get("run_id") or "").strip() == rid:
+                    return True
+
+    decision_chains = report_obj.get("decision_chains")
+    if isinstance(decision_chains, dict):
+        chains = decision_chains.get("chains")
+        if isinstance(chains, list):
+            for row in chains:
+                if isinstance(row, dict) and str(row.get("run_id") or "").strip() == rid:
+                    return True
+
+    trade_summaries = report_obj.get("trade_decision_summaries")
+    if isinstance(trade_summaries, dict):
+        summaries = trade_summaries.get("trade_summaries")
+        if isinstance(summaries, list):
+            for row in summaries:
+                if not isinstance(row, dict):
+                    continue
+                buy_run = str(row.get("buy_run_id") or "").strip()
+                sell_run = str(row.get("sell_run_id") or "").strip()
+                if buy_run == rid or sell_run == rid:
+                    return True
+
+    return False
+
+
 def _build_markdown(out: Dict[str, Any]) -> str:
     commander = out.get("commander") if isinstance(out.get("commander"), dict) else {}
     strategist = out.get("strategist") if isinstance(out.get("strategist"), dict) else {}
@@ -242,6 +288,7 @@ def _build_markdown(out: Dict[str, Any]) -> str:
     lines.append("")
     lines.append("## Reporter")
     lines.append(f"- in_run_trace_available: **{reporter.get('in_run_trace_available')}**")
+    lines.append(f"- reporter_analysis_day_file_found: **{reporter.get('reporter_analysis_day_file_found')}**")
     lines.append(f"- reporter_analysis_found: **{reporter.get('reporter_analysis_found')}**")
     lines.append(f"- reporter_analysis_path: `{reporter.get('reporter_analysis_path')}`")
     lines.append("")
@@ -362,6 +409,7 @@ def generate_agent_pipeline_trace_report(
     reporter_rows = [r for r in evidence_rows if str(r.get("agent") or "").lower() == "reporter"]
     reporter_in_run = bool(reporter_rows)
     reporter_analysis_path = ""
+    reporter_analysis_day_file_found = False
     reporter_analysis_found = False
     if reports_root is None:
         reports_root = Path("reports")
@@ -369,7 +417,9 @@ def generate_agent_pipeline_trace_report(
         candidate = reports_root / "reporter_analysis" / f"reporter_analysis_{run_day}.json"
         if candidate.exists():
             reporter_analysis_path = str(candidate)
-            reporter_analysis_found = True
+            reporter_analysis_day_file_found = True
+            report_obj = _read_json(candidate)
+            reporter_analysis_found = _reporter_analysis_has_run(report_obj, rid)
 
     out: Dict[str, Any] = {
         "schema_version": "agent_pipeline_trace.v1",
@@ -470,6 +520,7 @@ def generate_agent_pipeline_trace_report(
         },
         "reporter": {
             "in_run_trace_available": reporter_in_run,
+            "reporter_analysis_day_file_found": reporter_analysis_day_file_found,
             "reporter_analysis_found": reporter_analysis_found,
             "reporter_analysis_path": reporter_analysis_path,
         },

@@ -173,7 +173,19 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
 
     (reports_root / "reporter_analysis").mkdir(parents=True, exist_ok=True)
     (reports_root / "reporter_analysis" / f"reporter_analysis_{day}.json").write_text(
-        json.dumps({"ok": True}, ensure_ascii=False),
+        json.dumps(
+            {
+                "schema_version": "reporter_analysis.v1",
+                "day": day,
+                "decision_trace_chain_summary": {
+                    "run_total": 1,
+                    "rendered_run_total": 1,
+                    "complete_chain_total": 1,
+                    "chains": [{"run_id": run_id}],
+                },
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
@@ -207,6 +219,8 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert out["supervisor"]["verdict"] == "APPROVE"
     assert out["executor"]["execution_attempted"] is True
     assert out["reporter"]["in_run_trace_available"] is True
+    assert out["reporter"]["reporter_analysis_day_file_found"] is True
+    assert out["reporter"]["reporter_analysis_found"] is True
 
     md_path = report_dir / "agent_pipeline_trace_run_trace_1.md"
     js_path = report_dir / "agent_pipeline_trace_run_trace_1.json"
@@ -245,3 +259,69 @@ def test_agent_pipeline_trace_report_returns_error_when_no_run_id(tmp_path: Path
     assert rc == 3
     assert out["ok"] is False
     assert "No run_id could be resolved" in str(out["error"])
+
+
+def test_agent_pipeline_trace_report_marks_reporter_analysis_false_when_run_not_present(
+    tmp_path: Path, capsys
+) -> None:
+    day = "2026-03-10"
+    run_id = "run_trace_1"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "agent_pipeline_trace"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {
+                "run_id": run_id,
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "commander_router",
+                "event": "route",
+                "payload": {"mode": "integrated_chain", "agents": []},
+            }
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    (reports_root / "reporter_analysis").mkdir(parents=True, exist_ok=True)
+    (reports_root / "reporter_analysis" / f"reporter_analysis_{day}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "reporter_analysis.v1",
+                "day": day,
+                "decision_trace_chain_summary": {
+                    "run_total": 1,
+                    "rendered_run_total": 1,
+                    "complete_chain_total": 1,
+                    "chains": [{"run_id": "another_run_id"}],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    rc = trace_main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--run-id",
+            run_id,
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert out["reporter"]["reporter_analysis_day_file_found"] is True
+    assert out["reporter"]["reporter_analysis_found"] is False
