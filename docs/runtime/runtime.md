@@ -159,6 +159,14 @@
 - Single-run full-chain trace artifact:
   - generator: `scripts/run_agent_pipeline_trace_report.py`
   - outputs: `reports/dev/analysis/agent_pipeline_trace/agent_pipeline_trace_<run>.md|json`
+- Read-only operator web UI:
+  - launcher: `scripts/run_operator_ui.py`
+  - default URL: `http://127.0.0.1:8010`
+  - pages:
+    - `/` latest daily/operator/reporter/reconciliation overview
+    - `/runs` recent commander-routed cycles
+    - `/runs/{run_id}` single-run commander -> strategist -> scanner -> monitor -> supervisor -> executor trace
+    - `/healthz` machine-readable health endpoint
 - Reporter passive analysis artifacts (`scripts/run_reporter_analysis_report.py`):
   - deterministic baseline remains canonical
   - optional AI review layer can be enabled without changing runtime decisions

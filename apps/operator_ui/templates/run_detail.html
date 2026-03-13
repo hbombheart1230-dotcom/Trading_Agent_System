@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">Cross-agent trace</div>
+    <h1>Run {{ detail.run_id }}</h1>
+    <p class="lede">Commander, strategist, scanner, monitor, supervisor, executor, and reporter evidence for a single cycle.</p>
+  </div>
+  <div class="hero-meta">
+    <div class="metric">
+      <span class="metric-label">Started</span>
+      <span class="metric-value">{{ detail.started_at or "-" }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Completed</span>
+      <span class="metric-value">{{ detail.completed_at or "-" }}</span>
+    </div>
+  </div>
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <h2>Commander</h2>
+    <pre class="code">{{ detail.commander | tojson(indent=2) }}</pre>
+  </article>
+  <article class="card">
+    <h2>Reporter</h2>
+    <pre class="code">{{ detail.reporter | tojson(indent=2) }}</pre>
+  </article>
+  <article class="card">
+    <h2>Strategist</h2>
+    <pre class="code">{{ detail.strategist.summary | tojson(indent=2) }}</pre>
+    <h3>LLM</h3>
+    <pre class="code">{{ detail.strategist.llm | tojson(indent=2) }}</pre>
+    <h3>Decision Trace</h3>
+    <pre class="code">{{ detail.strategist.decision_trace | tojson(indent=2) }}</pre>
+  </article>
+  <article class="card">
+    <h2>Strategist Evidence</h2>
+    <h3>Prompt</h3>
+    <pre class="code tall">{{ detail.strategist.evidence.llm_prompt }}</pre>
+    <h3>Response</h3>
+    <pre class="code tall">{{ detail.strategist.evidence.llm_response }}</pre>
+  </article>
+  <article class="card">
+    <h2>Scanner</h2>
+    <pre class="code">{{ detail.scanner.summary | tojson(indent=2) }}</pre>
+    <h3>Decision Trace</h3>
+    <pre class="code">{{ detail.scanner.decision_trace | tojson(indent=2) }}</pre>
+    <h3>Feature Coverage</h3>
+    <p class="meta-line">
+      quality={{ detail.scanner.feature_coverage.quality }}
+      present={{ detail.scanner.feature_coverage.present }}/{{ detail.scanner.feature_coverage.total }}
+      ratio={{ "%.0f"|format(detail.scanner.feature_coverage.coverage_ratio * 100) }}%
+    </p>
+    <pre class="code">{{ detail.scanner.feature_coverage | tojson(indent=2) }}</pre>
+  </article>
+  <article class="card">
+    <h2>Monitor</h2>
+    <pre class="code">{{ detail.monitor.summary | tojson(indent=2) }}</pre>
+    <h3>Decision Trace</h3>
+    <pre class="code">{{ detail.monitor.decision_trace | tojson(indent=2) }}</pre>
+  </article>
+  <article class="card">
+    <h2>Supervisor</h2>
+    <pre class="code">{{ detail.supervisor.verdict | tojson(indent=2) }}</pre>
+  </article>
+  <article class="card">
+    <h2>Executor</h2>
+    <pre class="code">{{ detail.executor.execution | tojson(indent=2) }}</pre>
+  </article>
+</section>
+
+<section class="card">
+  <h2>Raw Event Preview</h2>
+  <p class="meta-line">raw_event_count={{ detail.raw_event_count }} stage_counts={{ detail.stage_counts | tojson }}</p>
+  <div class="timeline">
+    {% for row in detail.event_preview %}
+    <div class="timeline-row">
+      <div class="timeline-meta">{{ row.ts }} · {{ row.stage }} · {{ row.event }}</div>
+      <pre class="code">{{ row.payload }}</pre>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

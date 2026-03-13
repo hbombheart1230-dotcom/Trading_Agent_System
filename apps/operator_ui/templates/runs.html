@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">Execution trace index</div>
+    <h1>Recent Runs</h1>
+    <p class="lede">Latest commander-routed cycles with strategist, scanner, monitor, supervisor, and executor summaries.</p>
+  </div>
+  <div class="hero-meta">
+    <div class="metric">
+      <span class="metric-label">Rows</span>
+      <span class="metric-value">{{ runs|length }}</span>
+    </div>
+  </div>
+</section>
+
+<section class="card table-card">
+  <table>
+    <thead>
+      <tr>
+        <th>ts</th>
+        <th>run_id</th>
+        <th>phase</th>
+        <th>playbook</th>
+        <th>top stock</th>
+        <th>macro stress</th>
+        <th>feature coverage</th>
+        <th>monitor</th>
+        <th>guard</th>
+        <th>execution</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in runs %}
+      <tr>
+        <td>{{ row.ts }}</td>
+        <td><a href="/runs/{{ row.run_id }}">{{ row.run_id }}</a></td>
+        <td>{{ row.phase or row.mode }}</td>
+        <td>{{ row.strategist_playbook or "-" }}</td>
+        <td>{{ row.scanner_top_stock or "-" }}</td>
+        <td>
+          {% if row.macro_stress_active %}
+          active {{ row.macro_stress_flags | join(", ") }}
+          {% else %}
+          normal
+          {% endif %}
+        </td>
+        <td>{{ row.feature_coverage_quality }} ({{ "%.0f"|format(row.feature_coverage_ratio * 100) }}%)</td>
+        <td>{{ row.monitor_reason or row.exit_reason or "-" }}</td>
+        <td>{{ row.guard_reason or "-" }}</td>
+        <td>{{ row.execution_action or "-" }} {{ row.execution_status or "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -387,13 +387,20 @@ Operator-facing report scripts:
 - `python -m scripts.run_operator_daily_summary --event-log-path data/logs/events.jsonl --report-dir reports/operator_summary --day <YYYY-MM-DD>`
 - `python -m scripts.run_decision_story_report --event-log-path data/logs/events.jsonl --report-dir reports/decision_story --day <YYYY-MM-DD>`
 - `python -m scripts.run_run_card_report --event-log-path data/logs/events.jsonl --report-dir reports/run_cards --day <YYYY-MM-DD>`
-- `python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jsonl --report-dir reports/trade_explain --day <YYYY-MM-DD>`
-- `python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/reporter_analysis --day <YYYY-MM-DD>`
-- `python -m scripts.run_agent_pipeline_trace_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/agent_pipeline_trace --run-id <RUN_ID>`
+- `python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jsonl --report-dir reports/dev/analysis/trade_explain --day <YYYY-MM-DD>`
+- `python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/dev/analysis/reporter_analysis --day <YYYY-MM-DD>`
+- `python -m scripts.run_agent_pipeline_trace_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/dev/analysis/agent_pipeline_trace --run-id <RUN_ID>`
 - Reporter AI review optional flags:
   - `--ai-review` (enable passive AI review stage)
   - `--no-ai-review` (force deterministic-only mode)
   - `--ai-review-model <model>` (override reporter model route)
+- Operator UI:
+  - `python -m scripts.run_operator_ui --env-path .env --host 127.0.0.1 --port 8010`
+  - pages:
+    - `/` overview
+    - `/runs` recent run table
+    - `/runs/{run_id}` single run trace
+    - `/healthz` machine-readable health summary
 
 Off-hours validation mode (continuous non-broker evaluation):
 - Goal: keep validating Strategist -> Scanner -> Monitor -> Supervisor/Executor flow after market close without sending broker-side mock/live orders.

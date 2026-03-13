@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">Read-only operations surface</div>
+    <h1>Session Overview</h1>
+    <p class="lede">Latest daily report, operator status, reporter review, and broker reconciliation in one view.</p>
+  </div>
+  <div class="hero-meta">
+    <div class="metric">
+      <span class="metric-label">Latest Day</span>
+      <span class="metric-value">{{ overview.latest_day or "-" }}</span>
+    </div>
+  </div>
+</section>
+
+<section class="grid grid-2">
+  <article class="card status-card">
+    <h2>Operator Status</h2>
+    <div class="pill">{{ overview.operator_summary.system_status }}</div>
+    <ul class="summary-list">
+      {% for line in overview.operator_summary.summary_lines %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+    <p class="meta-line">health={{ overview.operator_summary.health_level }} runs={{ overview.operator_summary.run_total }} executions={{ overview.operator_summary.executions_total }} blocked={{ overview.operator_summary.blocked_total }}</p>
+    <p class="path">{{ overview.operator_summary.path }}</p>
+  </article>
+
+  <article class="card">
+    <h2>Daily Totals</h2>
+    <div class="stats">
+      <div><span>events</span><strong>{{ overview.daily.events }}</strong></div>
+      <div><span>approvals</span><strong>{{ overview.daily.approvals }}</strong></div>
+      <div><span>blocks</span><strong>{{ overview.daily.blocks }}</strong></div>
+    </div>
+    <pre class="code">{{ overview.daily.decision_actions | tojson(indent=2) }}</pre>
+    <p class="path">{{ overview.daily.path }}</p>
+  </article>
+
+  <article class="card">
+    <h2>Reporter Review</h2>
+    <div class="stats">
+      <div><span>ai status</span><strong>{{ overview.reporter.ai_status }}</strong></div>
+      <div><span>run grade</span><strong>{{ overview.reporter.ai_run_grade }}</strong></div>
+      <div><span>trades</span><strong>{{ overview.reporter.trade_count }}</strong></div>
+    </div>
+    <p>{{ overview.reporter.ai_summary or "No AI summary available." }}</p>
+    <pre class="code">{{ overview.reporter.symbols_traded | tojson(indent=2) }}</pre>
+    <p class="path">{{ overview.reporter.path }}</p>
+  </article>
+
+  <article class="card">
+    <h2>Broker Reconciliation</h2>
+    <div class="stats">
+      <div><span>local</span><strong>{{ overview.reconciliation.local_total }}</strong></div>
+      <div><span>broker</span><strong>{{ overview.reconciliation.broker_total }}</strong></div>
+      <div><span>matched</span><strong>{{ overview.reconciliation.matched_by_ord_no }}</strong></div>
+    </div>
+    <p>broker_window_limited={{ overview.reconciliation.broker_window_limited }}</p>
+    <p class="path">{{ overview.reconciliation.path }}</p>
+  </article>
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <h2>Today Trades</h2>
+    {% if overview.today_trades %}
+    <div class="timeline">
+      {% for trade in overview.today_trades %}
+      <div class="timeline-row">
+        <div class="timeline-meta">{{ trade.ts }} / {{ trade.action }} {{ trade.symbol }} x{{ trade.qty }}</div>
+        <p class="meta-line">status={{ trade.status or "-" }} ord_no={{ trade.ord_no or "-" }} run_id={{ trade.run_id }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p>No BUY/SELL executions found for the latest day.</p>
+    {% endif %}
+  </article>
+
+  <article class="card">
+    <h2>Latest Strategist Prompt</h2>
+    {% if overview.latest_strategist_prompt %}
+    <p class="meta-line">{{ overview.latest_strategist_prompt.timestamp }} / run_id={{ overview.latest_strategist_prompt.run_id }}</p>
+    <p class="meta-line">regime={{ overview.latest_strategist_prompt.market_regime or "-" }} playbook={{ overview.latest_strategist_prompt.playbook or "-" }}</p>
+    <pre class="code">{{ overview.latest_strategist_prompt.news_query_targets | tojson(indent=2) }}</pre>
+    <pre class="code">{{ overview.latest_strategist_prompt.themes | tojson(indent=2) }}</pre>
+    <pre class="code">{{ overview.latest_strategist_prompt.prompt_excerpt }}</pre>
+    {% else %}
+    <p>No strategist prompt evidence found for the latest day.</p>
+    {% endif %}
+  </article>
+</section>
+
+<section class="card">
+  <h2>Recommended Action</h2>
+  <ul class="summary-list">
+    {% for line in overview.operator_summary.recommended_action %}
+    <li>{{ line }}</li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section class="card">
+  <h2>Strategy Memory Timeline</h2>
+  <div class="timeline">
+    {% for row in overview.strategy_memory_timeline %}
+    <div class="timeline-row">
+      <div class="timeline-meta">{{ row.day }} / {{ row.updated_at }} / {{ row.latest_run_id }}</div>
+      <p class="meta-line">trade_count={{ row.trade_count }} theme_alignment={{ row.theme_alignment_status or "-" }} monitor_status={{ row.monitor_status or "-" }}</p>
+      <ul class="summary-list">
+        {% for finding in row.ai_findings %}
+        <li>{{ finding }}</li>
+        {% endfor %}
+      </ul>
+      <p class="path">{{ row.path }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}
