@@ -246,6 +246,13 @@ def _build_markdown(out: Dict[str, Any]) -> str:
         lines.append(
             f"- fear_index: `{json.dumps(strategist.get('fear_index') or {}, ensure_ascii=False)}`"
         )
+    if strategist.get("macro_stress_overlay"):
+        overlay = strategist.get("macro_stress_overlay") or {}
+        lines.append(
+            f"- macro_stress: active={bool(overlay.get('active'))} "
+            f"flags=`{json.dumps(overlay.get('stress_flags') or [], ensure_ascii=False)}` "
+            f"reason=`{overlay.get('reason')}`"
+        )
     lines.append(
         f"- llm: provider={strategist.get('llm_provider')} model={strategist.get('llm_model')} "
         f"ok={strategist.get('llm_ok')} latency_ms={strategist.get('llm_latency_ms')}"
@@ -527,6 +534,7 @@ def generate_agent_pipeline_trace_report(
             "global_index_moves": dict(global_index_moves),
             "global_macro_moves": dict(global_macro_moves),
             "fear_index": dict(fear_index),
+            "macro_stress_overlay": dict(strategist_summary_payload.get("macro_stress_overlay") or {}),
             "llm_provider": str(strategist_llm_payload.get("provider") or ""),
             "llm_model": str(strategist_llm_payload.get("model") or ""),
             "llm_ok": bool(strategist_llm_payload.get("ok")),

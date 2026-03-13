@@ -36,6 +36,11 @@ def test_offhours_full_trace_bundle_builds_single_run_bundle(tmp_path: Path, cap
                 "global_sentiment_status": "ok",
                 "global_sentiment_source": "yfinance",
                 "global_index_moves": {"sp500_pct": 0.9, "nasdaq_pct": 1.4, "dow_pct": 0.5},
+                "macro_stress_overlay": {
+                    "active": True,
+                    "stress_flags": ["elevated_vix", "dollar_strength"],
+                    "reason": "vix=27.10 pressure=0.355 dxy_pct=0.31 tnx_delta=0.0040",
+                },
                 "llm_model": "minimax/minimax-m2.5",
                 "llm_ok": True,
                 "themes": ["semiconductor"],
@@ -129,5 +134,6 @@ def test_offhours_full_trace_bundle_builds_single_run_bundle(tmp_path: Path, cap
     assert Path(out["report_json_path"]).exists()
     assert Path(out["report_md_path"]).exists()
     assert "global_index_moves:" in Path(out["report_md_path"]).read_text(encoding="utf-8")
+    assert "macro_stress:" in Path(out["report_md_path"]).read_text(encoding="utf-8")
     assert "news_query_reasoning:" in Path(out["report_md_path"]).read_text(encoding="utf-8")
     assert "effective_mode=mock_broker_http" in Path(out["report_md_path"]).read_text(encoding="utf-8")

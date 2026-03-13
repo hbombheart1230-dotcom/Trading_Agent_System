@@ -95,6 +95,13 @@ def _render_markdown(out: Dict[str, Any]) -> str:
         lines.append(f"- global_index_moves: `{json.dumps(strategist.get('global_index_moves') or {}, ensure_ascii=False)}`")
     if strategist.get("fear_index"):
         lines.append(f"- fear_index: `{json.dumps(strategist.get('fear_index') or {}, ensure_ascii=False)}`")
+    if strategist.get("macro_stress_overlay"):
+        overlay = strategist.get("macro_stress_overlay") or {}
+        lines.append(
+            f"- macro_stress: active={bool(overlay.get('active'))} "
+            f"flags=`{json.dumps(overlay.get('stress_flags') or [], ensure_ascii=False)}` "
+            f"reason=`{overlay.get('reason')}`"
+        )
     lines.append(f"- llm_model: `{strategist.get('llm_model')}` ok={strategist.get('llm_ok')}")
     lines.append(f"- themes: `{json.dumps(strategist.get('themes') or [], ensure_ascii=False)}`")
     lines.append(f"- playbook: **{strategist.get('playbook')}**")

@@ -48,6 +48,11 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                     "playbook": "breakout",
                     "scanner_bias": "leader",
                     "scanner_priority": ["momentum", "volume_surge"],
+                    "macro_stress_overlay": {
+                        "active": True,
+                        "stress_flags": ["elevated_vix", "dollar_strength"],
+                        "reason": "vix=27.10 pressure=0.355 dxy_pct=0.31 tnx_delta=0.0040",
+                    },
                     "scanner_source_policy": {
                         "preferred_sources": ["top_change_rate", "condition_search", "top_volume"],
                         "include_change_rate": True,
@@ -187,6 +192,7 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                         "source": "yfinance",
                         "reason": "market_ok",
                         "index_moves": {"sp500_pct": 1.2, "nasdaq_pct": 1.8, "dow_pct": 0.7},
+                        "fear_index": {"level": 27.1, "level_pressure": 0.355, "change_pct": -1.2},
                     },
                     "llm_payload": {"news_context": {"summary": "semiconductor rotation"}},
                 },
@@ -254,6 +260,7 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert out["strategist"]["llm_provider"] == "openrouter"
     assert out["strategist"]["global_sentiment_source"] == "yfinance"
     assert out["strategist"]["global_index_moves"]["nasdaq_pct"] == 1.8
+    assert out["strategist"]["macro_stress_overlay"]["active"] is True
     assert "theme hints expanded" in out["strategist"]["news_query_reasoning"]
     assert out["strategist"]["scanner_source_policy"]["preferred_sources"][0] == "top_change_rate"
     assert out["scanner"]["top_stock"] == "005930"
@@ -281,6 +288,7 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert "## Commander" in md_body
     assert "## Strategist" in md_body
     assert "global_index_moves:" in md_body
+    assert "macro_stress:" in md_body
     assert "news_query_reasoning:" in md_body
     assert "scanner_source_policy:" in md_body
     assert "## Scanner" in md_body

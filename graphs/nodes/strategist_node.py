@@ -1245,6 +1245,98 @@ def _monitor_guidance(*, market_regime: str, playbook: str) -> str:
     return "quick_take_profit"
 
 
+def _macro_stress_overlay(global_signal: Dict[str, Any]) -> Dict[str, Any]:
+    macro_moves = global_signal.get("macro_moves") if isinstance(global_signal.get("macro_moves"), dict) else {}
+    fear_index = global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {}
+    vix_level = _to_float(fear_index.get("level"), _to_float(macro_moves.get("vix_level"), 0.0))
+    vix_pressure = _to_float(fear_index.get("level_pressure"), _to_float(macro_moves.get("vix_level_pressure"), 0.0))
+    dxy_pct = _to_float(macro_moves.get("dxy_pct"), 0.0)
+    tnx_delta = _to_float(macro_moves.get("tnx_delta"), 0.0)
+
+    flags: List[str] = []
+    if vix_level >= 25.0 or vix_pressure >= 0.25:
+        flags.append("elevated_vix")
+    if dxy_pct >= 0.25:
+        flags.append("dollar_strength")
+    if tnx_delta >= 0.005:
+        flags.append("yield_rise")
+
+    return {
+        "stress_flags": list(flags),
+        "stress_count": len(flags),
+        "vix_level": vix_level,
+        "vix_pressure": vix_pressure,
+        "dxy_pct": dxy_pct,
+        "tnx_delta": tnx_delta,
+        "active": len(flags) >= 2,
+    }
+
+
+def _apply_macro_stress_to_monitor_frame(
+    *,
+    global_signal: Dict[str, Any],
+    monitor_guidance: str,
+    risk_tone: str,
+    trade_aggressiveness: str,
+    exit_policy: Dict[str, Any],
+    report_focus: List[str],
+) -> Tuple[str, str, str, Dict[str, Any], List[str], Dict[str, Any]]:
+    overlay = _macro_stress_overlay(global_signal)
+    if not overlay.get("active"):
+        return (
+            monitor_guidance,
+            risk_tone,
+            trade_aggressiveness,
+            dict(exit_policy or {}),
+            list(report_focus or []),
+            overlay,
+        )
+
+    next_guidance = str(monitor_guidance or "").strip().lower() or "defensive_exit"
+    next_tone = str(risk_tone or "").strip().lower() or "normal"
+    next_aggr = str(trade_aggressiveness or "").strip().lower() or "medium"
+    adjusted_exit_policy = dict(exit_policy or {})
+    adjusted_focus = list(report_focus or [])
+    adjustments: List[str] = []
+
+    if next_guidance != "defensive_exit":
+        next_guidance = "defensive_exit"
+        adjustments.append("macro_stress:monitor_guidance=defensive_exit")
+    if next_tone != "conservative":
+        next_tone = "conservative"
+        adjustments.append("macro_stress:risk_tone=conservative")
+
+    stress_count = int(overlay.get("stress_count") or 0)
+    target_aggr = "low" if stress_count >= 3 else "medium"
+    if next_aggr != target_aggr:
+        next_aggr = target_aggr
+        adjustments.append(f"macro_stress:trade_aggressiveness={target_aggr}")
+
+    stop_loss_pct = _to_float(adjusted_exit_policy.get("stop_loss_pct"), 0.0)
+    take_profit_pct = _to_float(adjusted_exit_policy.get("take_profit_pct"), 0.0)
+    trailing_stop_pct = _to_float(adjusted_exit_policy.get("trailing_stop_pct"), 0.0)
+    if stop_loss_pct > 0.0:
+        adjusted_exit_policy["stop_loss_pct"] = stop_loss_pct * 0.90
+    if take_profit_pct > 0.0:
+        adjusted_exit_policy["take_profit_pct"] = take_profit_pct * 0.88
+    if trailing_stop_pct > 0.0:
+        adjusted_exit_policy["trailing_stop_pct"] = max(trailing_stop_pct, _to_float(adjusted_exit_policy.get("stop_loss_pct"), 0.0) * 0.75)
+    adjustments.append("macro_stress:tightened_exit_policy")
+
+    for item in ("macro_stress", "exit_quality", "guard_blocks"):
+        if item not in adjusted_focus:
+            adjusted_focus.append(item)
+
+    overlay["adjustments"] = list(adjustments)
+    overlay["reason"] = (
+        f"vix={_to_float(overlay.get('vix_level'), 0.0):.2f} "
+        f"pressure={_to_float(overlay.get('vix_pressure'), 0.0):.3f} "
+        f"dxy_pct={_to_float(overlay.get('dxy_pct'), 0.0):.2f} "
+        f"tnx_delta={_to_float(overlay.get('tnx_delta'), 0.0):.4f}"
+    )
+    return next_guidance, next_tone, next_aggr, adjusted_exit_policy, adjusted_focus[:8], overlay
+
+
 def _condition_search_source_enabled() -> bool:
     return _env_bool("KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH", False)
 
@@ -2169,6 +2261,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         trade_aggressiveness=trade_aggressiveness,
         risk_tone=risk_tone,
     )
+    macro_stress_overlay = _macro_stress_overlay(global_signal)
     report_focus = _report_focus(playbook=playbook, themes=themes)
     themes, avoid_themes, scanner_priority, report_focus = _augment_strategy_fields(
         themes=themes,
@@ -2201,6 +2294,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "news_context": dict(news_ctx),
         "market_context_inputs": dict(market_context_inputs),
         "recent_strategy_feedback": dict(recent_strategy_feedback),
+        "macro_stress_overlay_hint": dict(macro_stress_overlay),
         "market_regime_hint": market_regime,
         "market_sentiment_hint": market_sentiment,
         "market_structure_hint": market_structure,
@@ -2314,6 +2408,19 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             trade_aggressiveness=trade_aggressiveness,
             risk_tone=risk_tone,
         )
+    monitor_guidance, risk_tone, trade_aggressiveness, exit_policy, report_focus, macro_stress_overlay = _apply_macro_stress_to_monitor_frame(
+        global_signal=global_signal,
+        monitor_guidance=monitor_guidance,
+        risk_tone=risk_tone,
+        trade_aggressiveness=trade_aggressiveness,
+        exit_policy=exit_policy,
+        report_focus=report_focus,
+    )
+    monitor_policy = _monitor_policy(
+        monitor_guidance=monitor_guidance,
+        trade_aggressiveness=trade_aggressiveness,
+        risk_tone=risk_tone,
+    )
     scanner_source_policy = _scanner_source_policy(
         playbook=playbook,
         risk_tone=risk_tone,
@@ -2369,6 +2476,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["trade_aggressiveness"] = trade_aggressiveness
     state["risk_tone"] = risk_tone
     state["monitor_guidance"] = monitor_guidance
+    state["macro_stress_overlay"] = dict(macro_stress_overlay)
     state["monitor_policy"] = dict(monitor_policy)
     state["strategist_exit_policy"] = dict(exit_policy)
     state["report_focus"] = list(report_focus)
@@ -2409,6 +2517,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     ).to_dict()
     strategist_output["monitor_policy"] = dict(monitor_policy)
     strategist_output["exit_policy"] = dict(exit_policy)
+    strategist_output["macro_stress_overlay"] = dict(macro_stress_overlay)
     strategist_output["market_structure"] = market_structure
     strategist_output["regime_score"] = float(regime_score)
     strategist_output["sentiment_score"] = float(sentiment_score)
@@ -2455,6 +2564,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "regime_score": float(regime_score),
             "sentiment_score": float(sentiment_score),
             "report_focus": list(report_focus)[:3],
+            "macro_stress_overlay": dict(macro_stress_overlay),
             "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
             "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
             "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
@@ -2482,6 +2592,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "risk_tone": risk_tone,
             "monitor_guidance": monitor_guidance,
             "report_focus": list(report_focus)[:5],
+            "macro_stress_overlay": dict(macro_stress_overlay),
             "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
             "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
             "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
@@ -2514,6 +2625,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "risk_tone": risk_tone,
                 "monitor_guidance": monitor_guidance,
                 "report_focus": list(report_focus),
+                "macro_stress_overlay": dict(macro_stress_overlay),
                 "recent_strategy_feedback": {
                     "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
                     "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],

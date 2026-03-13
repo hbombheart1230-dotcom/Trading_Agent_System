@@ -156,6 +156,78 @@ def test_strategist_reasoning_becomes_defensive_on_risk_off_context(monkeypatch)
     ]
 
 
+def test_strategist_macro_stress_overlay_makes_monitor_frame_more_defensive(monkeypatch):
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.compute_global_sentiment_signal",
+        lambda **_: {
+            "score": 0.55,
+            "status": "ok",
+            "source": "mock_global",
+            "reason": "",
+            "ts": 1,
+            "macro_moves": {
+                "vix_pct": 1.2,
+                "vix_level": 29.0,
+                "vix_level_pressure": 0.45,
+                "dxy_pct": 0.35,
+                "tnx_delta": 0.007,
+            },
+            "fear_index": {
+                "provider": "mock",
+                "ticker": "^VIX",
+                "level": 29.0,
+                "change_pct": 1.2,
+                "neutral_level": 20.0,
+                "level_pressure": 0.45,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.collect_news_items",
+        lambda symbols, **_: {str(s): [] for s in list(symbols or [])},
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.score_news_sentiment_signal",
+        lambda _items, symbols, **_: {
+            str(s): {"score": 0.2, "status": "ok", "source": "mock_news", "reason": "", "ts": 1}
+            for s in list(symbols or [])
+        },
+    )
+
+    state = {
+        "themes": ["semiconductor"],
+        "candidate_symbols": ["005930", "000660"],
+        "market_context": {
+            "index_trend": 0.45,
+            "realized_volatility": 0.018,
+            "market_breadth": 0.55,
+            "macro_risk": 0.10,
+        },
+        "policy": {
+            "use_global_sentiment": True,
+            "use_news_analysis": True,
+            "use_universe_builder": False,
+        },
+    }
+
+    out = strategist_node(state)
+    strategist_output = out.get("strategist_output") or {}
+    overlay = strategist_output.get("macro_stress_overlay") or {}
+    exit_policy = strategist_output.get("exit_policy") or {}
+
+    assert strategist_output.get("market_regime") == "risk_on"
+    assert strategist_output.get("playbook") == "breakout"
+    assert strategist_output.get("monitor_guidance") == "defensive_exit"
+    assert strategist_output.get("risk_tone") == "conservative"
+    assert strategist_output.get("trade_aggressiveness") == "low"
+    assert overlay.get("active") is True
+    assert "elevated_vix" in list(overlay.get("stress_flags") or [])
+    assert "dollar_strength" in list(overlay.get("stress_flags") or [])
+    assert "yield_rise" in list(overlay.get("stress_flags") or [])
+    assert "macro_stress:tightened_exit_policy" in list(overlay.get("adjustments") or [])
+    assert "macro_stress" in list(strategist_output.get("report_focus") or [])
+
+
 def test_strategist_collects_market_news_queries_without_candidate_symbols(monkeypatch):
     captured_queries = []
 
