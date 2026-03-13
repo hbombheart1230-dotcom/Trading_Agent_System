@@ -289,10 +289,14 @@ def test_monitor_max_hold_respects_min_hold_guard(monkeypatch):
     assert out.get("intents") == []
     exit_info = out.get("monitor_exit") or {}
     assert exit_info.get("triggered") is False
-    assert exit_info.get("sell_guard_blocked") is True
-    assert exit_info.get("min_hold_blocked") is True
-    assert "sell_guard_min_hold" in str(exit_info.get("sell_guard_reason") or "")
-    assert exit_info.get("monitor_reason") == "min_hold_active"
+    assert exit_info.get("sell_guard_blocked") is False
+    assert exit_info.get("min_hold_blocked") is False
+    assert str(exit_info.get("reason") or "") == "hold"
+    assert exit_info.get("monitor_reason") == "hold"
+    thresholds = exit_info.get("thresholds") or {}
+    assert int(thresholds.get("max_hold_sec") or 0) == 600
+    adjustments = exit_info.get("exit_policy_guard_adjustments") or []
+    assert "max_hold_sec_raised_to_min_hold:60->600" in adjustments
     assert exit_info.get("hard_exit") is False
 
 
@@ -324,6 +328,31 @@ def test_monitor_max_hold_requires_confirmation_ticks(monkeypatch):
     assert intents[0]["side"] == "SELL"
     assert str((out2.get("monitor_exit") or {}).get("reason") or "") == "max_hold"
     assert bool((out2.get("monitor_exit") or {}).get("hard_exit")) is False
+
+
+def test_monitor_harmonizes_max_hold_when_shorter_than_min_hold(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+    monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "60")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "AAA"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0, "hold_sec": 620}],
+        },
+        "policy": {"use_exit_policy": True},
+    }
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("triggered") is True
+    assert str(exit_info.get("reason") or "") == "max_hold"
+    thresholds = exit_info.get("thresholds") or {}
+    assert int(thresholds.get("max_hold_sec") or 0) == 600
+    adjustments = exit_info.get("exit_policy_guard_adjustments") or []
+    assert "max_hold_sec_raised_to_min_hold:60->600" in adjustments
 
 
 def test_monitor_emergency_exit_bypasses_min_hold_and_confirmation(monkeypatch):

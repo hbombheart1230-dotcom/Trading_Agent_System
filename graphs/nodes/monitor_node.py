@@ -275,6 +275,35 @@ def _apply_monitor_strategy_frame(
     }
 
 
+def _harmonize_exit_policy_with_monitor_guards(
+    *,
+    exit_policy_base: Dict[str, Any],
+    min_hold_sec: int,
+) -> Dict[str, Any]:
+    """Raise time-based exits that conflict with min-hold.
+
+    Without this, `max_hold_sec < min_hold_sec` makes the runtime exit on the
+    first post-min-hold tick. That is coherent in code but incoherent in policy.
+    """
+    out = dict(exit_policy_base or {})
+    adjustments: list[str] = []
+    min_hold = max(0, int(min_hold_sec or 0))
+    if min_hold <= 0:
+        return {"policy": out, "adjustments": adjustments}
+
+    max_hold = _to_int(out.get("max_hold_sec"))
+    if max_hold > 0 and max_hold < min_hold:
+        out["max_hold_sec"] = int(min_hold)
+        adjustments.append(f"max_hold_sec_raised_to_min_hold:{max_hold}->{min_hold}")
+
+    time_stop = _to_int(out.get("time_stop_sec"))
+    if time_stop > 0 and time_stop < min_hold:
+        out["time_stop_sec"] = int(min_hold)
+        adjustments.append(f"time_stop_sec_raised_to_min_hold:{time_stop}->{min_hold}")
+
+    return {"policy": out, "adjustments": adjustments}
+
+
 def _resolve_now_epoch(state: Dict[str, Any]) -> int:
     tick_ts = state.get("tick_ts")
     try:
@@ -846,13 +875,32 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if use_exit_policy and isinstance(selected, dict) and selected.get("symbol"):
         selected_symbol = _norm_symbol(selected.get("symbol"))
         pos_map = all_pos_map
+        min_hold_sec = _resolve_min_hold_sec(state, monitor_policy)
+        sell_cooldown_sec = _resolve_sell_cooldown_sec(state, monitor_policy)
+        confirm_ticks = _resolve_exit_confirm_ticks(state, monitor_policy)
+        strategy_frame = _extract_monitor_strategy_frame(state)
+        frame_applied = _apply_monitor_strategy_frame(
+            min_hold_sec=min_hold_sec,
+            sell_cooldown_sec=sell_cooldown_sec,
+            confirm_ticks=confirm_ticks,
+            frame=strategy_frame,
+        )
+        min_hold_sec = int(frame_applied.get("min_hold_sec") or min_hold_sec)
+        sell_cooldown_sec = int(frame_applied.get("sell_cooldown_sec") or sell_cooldown_sec)
+        confirm_ticks = int(frame_applied.get("confirm_ticks") or confirm_ticks)
+        exit_policy_harmonized = _harmonize_exit_policy_with_monitor_guards(
+            exit_policy_base=exit_policy_base,
+            min_hold_sec=min_hold_sec,
+        )
+        effective_exit_policy_base = dict(exit_policy_harmonized.get("policy") or {})
+        exit_policy_guard_adjustments = list(exit_policy_harmonized.get("adjustments") or [])
         symbol = _select_exit_symbol(
             selected_symbol,
             pos_map,
             state=state,
             selected=selected,
             policy=policy,
-            exit_policy_base=exit_policy_base,
+            exit_policy_base=effective_exit_policy_base,
         )
         selected_for_exit: Dict[str, Any] = selected
         if symbol and symbol != selected_symbol:
@@ -868,7 +916,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             symbol=symbol,
             position=pos,
             selected=selected_for_exit,
-            exit_policy_base=exit_policy_base,
+            exit_policy_base=effective_exit_policy_base,
         )
         avg_price = _to_float(decision.get("_avg_price"))
         price = decision.get("_price")
@@ -880,19 +928,6 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
             if last_trade_side == "BUY" and last_trade_epoch > 0:
                 hold_sec = max(0, int(now_epoch - last_trade_epoch))
-        min_hold_sec = _resolve_min_hold_sec(state, monitor_policy)
-        sell_cooldown_sec = _resolve_sell_cooldown_sec(state, monitor_policy)
-        confirm_ticks = _resolve_exit_confirm_ticks(state, monitor_policy)
-        strategy_frame = _extract_monitor_strategy_frame(state)
-        frame_applied = _apply_monitor_strategy_frame(
-            min_hold_sec=min_hold_sec,
-            sell_cooldown_sec=sell_cooldown_sec,
-            confirm_ticks=confirm_ticks,
-            frame=strategy_frame,
-        )
-        min_hold_sec = int(frame_applied.get("min_hold_sec") or min_hold_sec)
-        sell_cooldown_sec = int(frame_applied.get("sell_cooldown_sec") or sell_cooldown_sec)
-        confirm_ticks = int(frame_applied.get("confirm_ticks") or confirm_ticks)
         confirm_map = state.get("_monitor_exit_confirm")
         if not isinstance(confirm_map, dict):
             confirm_map = {}
@@ -1036,6 +1071,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "risk_tone": str(frame_applied.get("risk_tone") or ""),
             "trade_aggressiveness": str(frame_applied.get("trade_aggressiveness") or ""),
             "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
+            "exit_policy_guard_adjustments": list(exit_policy_guard_adjustments),
         }
         if bool(exit_signal_detected) and not bool(sell_guard_blocked) and qty > 0:
             intents = [
@@ -1065,6 +1101,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "risk_tone": str(frame_applied.get("risk_tone") or ""),
                         "trade_aggressiveness": str(frame_applied.get("trade_aggressiveness") or ""),
                         "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
+                        "exit_policy_guard_adjustments": list(exit_policy_guard_adjustments),
                     },
                 }
             ]
@@ -1095,6 +1132,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_symbol": exit_info.get("symbol"),
         "exit_symbol_fallback": bool(exit_info.get("exit_symbol_fallback")),
         "exit_qty": int(exit_info.get("qty") or 0),
+        "exit_position_age_seconds": exit_info.get("position_age_seconds"),
+        "exit_min_hold_sec": int(exit_info.get("min_hold_sec") or 0),
+        "exit_sell_cooldown_sec": int(exit_info.get("sell_cooldown_sec") or 0),
+        "exit_confirm_ticks": int(exit_info.get("exit_confirm_ticks") or 0),
+        "exit_confirm_count": int(exit_info.get("exit_confirm_count") or 0),
+        "exit_min_hold_blocked": bool(exit_info.get("min_hold_blocked")),
+        "exit_sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),
+        "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
         "position_sizing_enabled": bool(sizing_info.get("enabled")),
         "position_sizing_evaluated": bool(sizing_info.get("evaluated")),
         "position_sizing_qty": int(sizing_info.get("qty") or 0),
@@ -1131,6 +1176,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "exit_triggered": bool(exit_info.get("triggered")),
             "exit_reason": str(exit_info.get("reason") or ""),
             "monitor_reason": str(exit_info.get("monitor_reason") or ""),
+            "position_age_seconds": exit_info.get("position_age_seconds"),
+            "min_hold_sec": int(exit_info.get("min_hold_sec") or 0),
+            "sell_cooldown_sec": int(exit_info.get("sell_cooldown_sec") or 0),
+            "exit_confirm_ticks": int(exit_info.get("exit_confirm_ticks") or 0),
+            "exit_confirm_count": int(exit_info.get("exit_confirm_count") or 0),
+            "min_hold_blocked": bool(exit_info.get("min_hold_blocked")),
+            "sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),
+            "sell_guard_reason": str(exit_info.get("sell_guard_reason") or ""),
+            "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
             "exit_symbol_fallback": bool(exit_info.get("exit_symbol_fallback")),
             "playbook": str(exit_info.get("playbook") or ""),
             "monitor_guidance": str(exit_info.get("monitor_guidance") or ""),
@@ -1167,6 +1221,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "risk_tone": str(exit_info.get("risk_tone") or ""),
             "trade_aggressiveness": str(exit_info.get("trade_aggressiveness") or ""),
             "strategy_frame_adjustments": list(exit_info.get("strategy_frame_adjustments") or []),
+            "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
         },
     )
     try:
@@ -1199,6 +1254,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "exit_signal_detected": bool(exit_info.get("exit_signal_detected")),
                 "min_hold_blocked": bool(exit_info.get("min_hold_blocked")),
                 "sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),
+                "sell_guard_reason": str(exit_info.get("sell_guard_reason") or ""),
+                "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
             },
             decision_link={
                 "decision_chain": {
