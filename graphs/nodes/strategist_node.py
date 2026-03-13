@@ -1930,6 +1930,22 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         themes=list(themes),
     )
 
+    if isinstance(ai_overrides.get("themes"), list) and list(ai_overrides.get("themes") or []):
+        # Keep runtime theme/sector maps aligned with the final strategist frame
+        # only when AI/manual overrides actually replace themes. Unconditionally
+        # syncing broad fallback themes makes scanner sector-theme sourcing too
+        # aggressive in deterministic baseline paths.
+        state["theme_map"] = _merge_theme_symbol_map(
+            state.get("theme_map"),
+            themes=list(themes),
+            candidate_symbols=list(state.get("candidate_symbols") or []),
+        )
+        state["sector_map"] = _merge_theme_symbol_map(
+            state.get("sector_map"),
+            themes=list(themes),
+            candidate_symbols=list(state.get("candidate_symbols") or []),
+        )
+
     strategic_answers = _build_strategic_answers(
         market_regime=market_regime,
         market_sentiment=market_sentiment,

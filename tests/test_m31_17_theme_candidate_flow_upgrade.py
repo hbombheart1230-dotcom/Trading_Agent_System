@@ -171,6 +171,63 @@ def test_m31_17_runtime_theme_map_enables_sector_theme_candidates():
     assert out.get("top_stock") == "AAA"
 
 
+def test_m31_17_llm_override_themes_enable_sector_theme_candidates(monkeypatch):
+    class _Route:
+        def __init__(self, model: str) -> None:
+            self.model = model
+
+    class _FakeRouterOk:
+        def __init__(self) -> None:
+            self.client = object()
+
+        @staticmethod
+        def from_env() -> "_FakeRouterOk":
+            return _FakeRouterOk()
+
+        def resolve(self, role, *, policy=None):
+            return _Route(model=str((policy or {}).get("model") or "minimax/minimax-m2.5"))
+
+        def chat(self, role, messages, *, policy=None):
+            return (
+                '{"market_regime":"risk_on","market_sentiment":"bullish","themes":["semiconductor","ai"],'
+                '"avoid_themes":["high_gap_speculative"],"playbook":"breakout","scanner_bias":"momentum",'
+                '"scanner_priority":["momentum","trend_strength","trading_value"],'
+                '"trade_aggressiveness":"high","risk_tone":"aggressive","monitor_guidance":"hold_through_noise",'
+                '"report_focus":["theme_accuracy","exit_quality"]}'
+            )
+
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterOk)
+
+    base = strategist_node(
+        {
+            "candidate_symbols": ["AAA", "BBB", "CCC"],
+            "policy": {
+                "use_global_sentiment": False,
+                "use_news_analysis": False,
+                "use_universe_builder": False,
+            },
+        }
+    )
+    base["mock_scan_results"] = {
+        "AAA": {"score": 0.91, "risk_score": 0.20, "confidence": 0.88},
+        "BBB": {"score": 0.75, "risk_score": 0.21, "confidence": 0.84},
+        "CCC": {"score": 0.72, "risk_score": 0.22, "confidence": 0.80},
+    }
+    base["mock_top_value_symbols"] = []
+    base["mock_top_volume_symbols"] = []
+    base["mock_top_change_symbols"] = []
+    base["mock_condition_symbols"] = []
+
+    out = scanner_node(base)
+    scanner_output = out.get("scanner_output") or {}
+    source_mix = scanner_output.get("source_mix") or {}
+
+    assert int(source_mix.get("sector_theme") or 0) == 3
+    assert out.get("top_stock") == "AAA"
+
+
 def test_m31_17_monitor_sell_cooldown_env_alias_is_supported(monkeypatch):
     monkeypatch.delenv("SELL_COOLDOWN_SEC", raising=False)
     monkeypatch.setenv("SELL_COOLDOWN", "900")

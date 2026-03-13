@@ -126,6 +126,9 @@ def test_strategist_frame_llm_overrides_are_applied(monkeypatch):
     strategist_llm = out.get("strategist_llm") or {}
     assert strategist_llm.get("status") == "ok"
     assert strategist_llm.get("applied") is True
+    assert "semiconductor" in list(out.get("theme_map", {}).keys())
+    assert "ai" in list(out.get("sector_map", {}).keys())
+    assert out.get("theme_map", {}).get("semiconductor") == ["005930", "000660", "035420"]
 
     llm_rows = [r for r in logger.rows if r.get("stage") == "strategist_llm" and r.get("event") == "result"]
     assert len(llm_rows) == 1
