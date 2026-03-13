@@ -67,7 +67,7 @@ class LLMRouter:
         }
         # allow advanced OpenRouter passthrough fields
         if policy:
-            for k in ("top_p", "presence_penalty", "frequency_penalty", "seed"):
+            for k in ("top_p", "presence_penalty", "frequency_penalty", "seed", "response_format"):
                 if k in policy:
                     payload[k] = policy[k]
         resp = self.client.chat_completions(payload)

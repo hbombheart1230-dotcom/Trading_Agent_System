@@ -236,6 +236,76 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def _compact_news_sample_for_llm(sample: Any, *, max_symbols: int = 6, max_titles: int = 2, max_title_len: int = 160) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    if not isinstance(sample, dict):
+        return out
+    for symbol, value in list(sample.items())[:max_symbols]:
+        if not isinstance(value, dict):
+            continue
+        rows = value.get("sample") if isinstance(value.get("sample"), list) else []
+        titles: List[str] = []
+        for row in rows[:max_titles]:
+            if isinstance(row, dict):
+                title = str(row.get("title") or "").strip()
+            else:
+                title = str(row or "").strip()
+            if not title:
+                continue
+            if len(title) > max_title_len:
+                title = title[: max_title_len - 3] + "..."
+            titles.append(title)
+        out[str(symbol)] = {
+            "count": int(value.get("count") or len(rows)),
+            "titles": titles,
+        }
+    return out
+
+
+def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    compact = dict(payload or {})
+    compact["market_news_sample"] = _compact_news_sample_for_llm(compact.get("market_news_sample"))
+    compact["candidate_news_sample"] = _compact_news_sample_for_llm(compact.get("candidate_news_sample"))
+    compact["candidate_symbols_hint"] = list(compact.get("candidate_symbols_hint") or [])[:5]
+    compact["key_events_hint"] = [str(x or "") for x in list(compact.get("key_events_hint") or [])[:5]]
+    compact["themes_hint"] = [str(x or "") for x in list(compact.get("themes_hint") or [])[:5]]
+    return compact
+
+
+def _build_strategist_llm_repair_messages(payload: Dict[str, Any], raw_response: Any) -> List[Dict[str, str]]:
+    compact_payload = _build_compact_strategist_llm_payload(payload)
+    system = (
+        "You repair strategist outputs for an automated trading system. "
+        "Return strict JSON only, matching the required contract exactly. "
+        "Do not add commentary, markdown, or explanations."
+    )
+    contract = {
+        "market_regime": "risk_on|neutral|risk_off",
+        "market_sentiment": "bullish|neutral|bearish",
+        "key_events": ["string"],
+        "themes": ["string"],
+        "avoid_themes": ["string"],
+        "playbook": "breakout|pullback|reversal|defensive",
+        "scanner_bias": "large_cap|leader|momentum|value",
+        "scanner_priority": ["trading_value", "trend_strength", "volume_surge", "leader_quality"],
+        "trade_aggressiveness": "low|medium|high",
+        "risk_tone": "conservative|normal|aggressive",
+        "monitor_guidance": "hold_through_noise|defensive_exit|quick_take_profit",
+        "report_focus": ["theme_accuracy", "exit_quality", "overtrading"],
+    }
+    raw = str(raw_response or "").strip()
+    user = (
+        "Fix or regenerate the strategist response as valid JSON.\n"
+        "JSON contract:\n"
+        f"{json.dumps(contract, ensure_ascii=False)}\n\n"
+        "Compact input:\n"
+        f"{json.dumps(compact_payload, ensure_ascii=False)}\n\n"
+        "Draft response to repair:\n"
+        f"{raw}"
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
 def _messages_to_prompt_text(messages: List[Dict[str, str]]) -> str:
     rows: List[str] = []
     for m in messages:
@@ -289,17 +359,20 @@ def _run_strategist_frame_llm(
         return {}, {"enabled": True, "status": "unavailable", "reason": "llm_client_unavailable"}
 
     route_policy: Dict[str, Any] = {"temperature": float(temperature), "max_tokens": int(max_tokens)}
+    if _env_bool("STRATEGIST_FRAME_LLM_JSON_RESPONSE_FORMAT", True):
+        route_policy["response_format"] = {"type": "json_object"}
     if model:
         route_policy["model"] = model
     route = router.resolve("strategist", policy=route_policy)
-    messages = _build_strategist_llm_messages(payload)
+    compact_payload = _build_compact_strategist_llm_payload(payload)
+    messages = _build_strategist_llm_messages(compact_payload)
     prompt_text = _messages_to_prompt_text(messages)
     try:
         record_llm_prompt(
             run_id=run_id,
             agent="strategist",
             stage="theme_selection",
-            raw_input=dict(payload),
+            raw_input=dict(compact_payload),
             llm_prompt=prompt_text,
             decision_link={
                 "model": str(route.model or ""),
@@ -337,9 +410,89 @@ def _run_strategist_frame_llm(
         }
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
+    attempts = 1
+    repair_used = False
     obj = _extract_json_object(raw)
     if not isinstance(obj, dict) or not obj:
         reason = _classify_llm_parse_failure(raw)
+        retry_raw = ""
+        if _env_bool("STRATEGIST_FRAME_LLM_REPAIR_RETRY", True):
+            repair_used = True
+            repair_messages = _build_strategist_llm_repair_messages(compact_payload, raw)
+            repair_prompt_text = _messages_to_prompt_text(repair_messages)
+            repair_policy = dict(route_policy)
+            repair_policy["temperature"] = 0.0
+            repair_policy["max_tokens"] = min(max(384, int(max_tokens)), 768)
+            try:
+                record_llm_prompt(
+                    run_id=run_id,
+                    agent="strategist",
+                    stage="theme_selection_repair",
+                    raw_input={"parse_error_reason": reason, "raw_preview": str(raw or "")[:400]},
+                    llm_prompt=repair_prompt_text,
+                    decision_link={
+                        "model": str(route.model or ""),
+                        "provider": "strategist_router",
+                        "repair": True,
+                    },
+                )
+            except Exception:
+                pass
+            try:
+                retry_raw = router.chat("strategist", repair_messages, policy=repair_policy)
+                attempts += 1
+                obj = _extract_json_object(retry_raw)
+                if isinstance(obj, dict) and obj:
+                    overrides = _normalize_llm_overrides(obj)
+                    if overrides:
+                        try:
+                            record_llm_response(
+                                run_id=run_id,
+                                agent="strategist",
+                                stage="theme_selection_repair",
+                                llm_response=str(retry_raw or ""),
+                                parsed_output=dict(overrides),
+                                decision_link={
+                                    "status": "ok",
+                                    "repair": True,
+                                    "attempts": int(attempts),
+                                    "model": str(route.model or ""),
+                                },
+                            )
+                        except Exception:
+                            pass
+                        return overrides, {
+                            "enabled": True,
+                            "status": "ok",
+                            "latency_ms": latency_ms,
+                            "model": route.model,
+                            "attempts": int(attempts),
+                            "repair_used": True,
+                        }
+                try:
+                    record_llm_response(
+                        run_id=run_id,
+                        agent="strategist",
+                        stage="theme_selection_repair",
+                        llm_response=str(retry_raw or ""),
+                        parsed_output=dict(obj) if isinstance(obj, dict) else {},
+                        decision_link={"status": "parse_error", "repair": True},
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                attempts += 1
+                try:
+                    record_llm_response(
+                        run_id=run_id,
+                        agent="strategist",
+                        stage="theme_selection_repair",
+                        llm_response=f"ERROR:{type(e).__name__}:{e}",
+                        parsed_output={},
+                        decision_link={"status": "error", "repair": True},
+                    )
+                except Exception:
+                    pass
         try:
             record_llm_response(
                 run_id=run_id,
@@ -347,7 +500,7 @@ def _run_strategist_frame_llm(
                 stage="theme_selection",
                 llm_response=str(raw or ""),
                 parsed_output={},
-                decision_link={"status": "parse_error", "reason": reason},
+                decision_link={"status": "parse_error", "reason": reason, "attempts": int(attempts), "repair_used": bool(repair_used)},
             )
         except Exception:
             pass
@@ -358,6 +511,8 @@ def _run_strategist_frame_llm(
             "latency_ms": latency_ms,
             "model": route.model,
             "raw_preview": str(raw or "")[:220],
+            "attempts": int(attempts),
+            "repair_used": bool(repair_used),
         }
 
     overrides = _normalize_llm_overrides(obj)
@@ -369,7 +524,7 @@ def _run_strategist_frame_llm(
                 stage="theme_selection",
                 llm_response=str(raw or ""),
                 parsed_output=dict(obj),
-                decision_link={"status": "parse_error", "reason": "missing_contract_fields"},
+                decision_link={"status": "parse_error", "reason": "missing_contract_fields", "attempts": int(attempts)},
             )
         except Exception:
             pass
@@ -380,6 +535,8 @@ def _run_strategist_frame_llm(
             "latency_ms": latency_ms,
             "model": route.model,
             "raw_preview": str(raw or "")[:220],
+            "attempts": int(attempts),
+            "repair_used": bool(repair_used),
         }
 
     try:
@@ -389,7 +546,7 @@ def _run_strategist_frame_llm(
             stage="theme_selection",
             llm_response=str(raw or ""),
             parsed_output=dict(overrides),
-            decision_link={"status": "ok", "model": str(route.model or ""), "latency_ms": int(latency_ms)},
+            decision_link={"status": "ok", "model": str(route.model or ""), "latency_ms": int(latency_ms), "attempts": int(attempts)},
         )
     except Exception:
         pass
@@ -399,6 +556,8 @@ def _run_strategist_frame_llm(
         "status": "ok",
         "latency_ms": latency_ms,
         "model": route.model,
+        "attempts": int(attempts),
+        "repair_used": bool(repair_used),
     }
 
 
@@ -1881,6 +2040,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "ok": str(llm_meta.get("status") or "") == "ok",
             "status": str(llm_meta.get("status") or ""),
             "latency_ms": int(llm_meta.get("latency_ms") or 0),
+            "attempts": int(llm_meta.get("attempts") or 1),
+            "repair_used": bool(llm_meta.get("repair_used")),
             "prompt_version": str(os.getenv("STRATEGIST_FRAME_LLM_PROMPT_VERSION", "m31-strategic-frame-v1") or "m31-strategic-frame-v1"),
             "schema_version": "strategist_output.v1",
             "themes": list((llm_overrides or {}).get("themes") or [])[:5],
@@ -2034,6 +2195,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "model": str(llm_meta.get("model") or ""),
         "applied": bool(llm_overrides),
         "latency_ms": int(llm_meta.get("latency_ms") or 0),
+        "attempts": int(llm_meta.get("attempts") or 1),
+        "repair_used": bool(llm_meta.get("repair_used")),
         "reason": str(llm_meta.get("reason") or ""),
         "error": str(llm_meta.get("reason") or ""),
     }

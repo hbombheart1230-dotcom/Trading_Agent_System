@@ -58,6 +58,8 @@ This is kept only for compatibility with older code paths.
             "temperature": route.temperature,
             "max_tokens": route.max_tokens,
         }
+        if "response_format" in (policy or {}):
+            payload["response_format"] = policy.get("response_format")
         if extra:
             payload.update(extra)
         return self.client.chat_completions(payload)

@@ -45,3 +45,30 @@ def test_m20_3_legacy_router_chat_builds_payload_with_new_resolver():
     assert int(client.payload["max_tokens"]) == 111
     assert client.payload["messages"][0]["role"] == "system"
     assert client.payload["top_p"] == 0.8
+
+
+def test_m20_3_legacy_router_passes_response_format():
+    from libs.llm.router import LLMRouter
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.payload = None
+
+        def chat_completions(self, payload):  # type: ignore[no-untyped-def]
+            self.payload = dict(payload)
+            return {"id": "resp-1", "choices": [{"message": {"content": "{}"}}]}
+
+    client = FakeClient()
+    router = LLMRouter(client=client)  # type: ignore[arg-type]
+
+    router.chat(
+        role="STRATEGIST",
+        policy={
+            "model": "anthropic/claude-3.5-sonnet",
+            "response_format": {"type": "json_object"},
+        },
+        messages=[{"role": "user", "content": "Return json"}],
+    )
+
+    assert client.payload is not None
+    assert client.payload["response_format"] == {"type": "json_object"}

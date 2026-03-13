@@ -74,6 +74,28 @@ class _FakeRouterTruncatedJson(_FakeRouterOk):
         return '{"market_regime":"risk_off","themes":["defensive"],"playbook":"defensive"'
 
 
+class _FakeRouterRepairSuccess(_FakeRouterOk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    @staticmethod
+    def from_env() -> "_FakeRouterRepairSuccess":
+        return _FakeRouterRepairSuccess()
+
+    def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+        self.calls += 1
+        if self.calls == 1:
+            return "not-json-response"
+        return (
+            '{"market_regime":"risk_on","market_sentiment":"bullish","themes":["semiconductor"],'
+            '"avoid_themes":["high_gap_speculative"],"playbook":"breakout","scanner_bias":"momentum",'
+            '"scanner_priority":["momentum","trend_strength"],'
+            '"trade_aggressiveness":"high","risk_tone":"aggressive","monitor_guidance":"hold_through_noise",'
+            '"report_focus":["theme_accuracy","exit_quality"]}'
+        )
+
+
 class _FakeRouterNestedJson(_FakeRouterOk):
     @staticmethod
     def from_env() -> "_FakeRouterNestedJson":
@@ -152,6 +174,8 @@ def test_strategist_frame_llm_parse_error_falls_back_to_deterministic(monkeypatc
     assert strategist_llm.get("status") == "parse_error"
     assert strategist_llm.get("applied") is False
     assert strategist_llm.get("reason") == "strategist_llm_response_not_json"
+    assert strategist_llm.get("attempts") == 2
+    assert strategist_llm.get("repair_used") is True
 
 
 def test_strategist_frame_llm_empty_response_is_classified(monkeypatch):
@@ -169,6 +193,8 @@ def test_strategist_frame_llm_empty_response_is_classified(monkeypatch):
     strategist_llm = out.get("strategist_llm") or {}
     assert strategist_llm.get("status") == "parse_error"
     assert strategist_llm.get("reason") == "strategist_llm_response_empty"
+    assert strategist_llm.get("attempts") == 2
+    assert strategist_llm.get("repair_used") is True
 
 
 def test_strategist_frame_llm_truncated_json_is_classified(monkeypatch):
@@ -186,6 +212,28 @@ def test_strategist_frame_llm_truncated_json_is_classified(monkeypatch):
     strategist_llm = out.get("strategist_llm") or {}
     assert strategist_llm.get("status") == "parse_error"
     assert strategist_llm.get("reason") == "strategist_llm_response_truncated_json"
+    assert strategist_llm.get("attempts") == 2
+    assert strategist_llm.get("repair_used") is True
+
+
+def test_strategist_frame_llm_repair_retry_can_recover(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterRepairSuccess)
+
+    logger = _MemoryLogger()
+    out = strategist_node(_base_state(logger))
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("themes") == ["semiconductor"]
+    assert strategist_output.get("playbook") == "breakout"
+    assert strategist_output.get("llm_frame_applied") is True
+    assert strategist_output.get("llm_frame_status") == "ok"
+
+    strategist_llm = out.get("strategist_llm") or {}
+    assert strategist_llm.get("status") == "ok"
+    assert strategist_llm.get("attempts") == 2
+    assert strategist_llm.get("repair_used") is True
 
 
 def test_strategist_frame_llm_nested_output_and_string_lists_are_normalized(monkeypatch):
