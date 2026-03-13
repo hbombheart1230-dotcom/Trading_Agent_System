@@ -15,6 +15,7 @@
      - optional `candidates` hint
      - additive context quality fields (`regime_score`, `sentiment_score`, `news_context`, `theme_strength`)
      - canonical runtime key: `state["strategist_output"]` (DTO: `libs/strategies/contracts.py::StrategistOutput`)
+     - additive advisory memory key: `state["recent_strategy_feedback"]`
 2. Scanner
    - retrieves candidate universe from Kiwoom market data
    - source mix: condition search, top volume, top value, optional top change-rate, sector/theme map, watchlist
@@ -42,6 +43,7 @@
    - generates operator-facing summaries from logs/artifacts
    - generates one-run full-chain artifact (`agent_pipeline_trace.v1`) from event log + evidence ledger
    - `reporter_analysis.v1` keeps deterministic analysis as baseline
+   - appends compact strategy-memory records for future Strategist advisory context only
    - optional AI review stage can be enabled post-run (passive/read-only)
    - output includes `decision_trace_chain_summary`, `operator_facing_summary`, `developer_facing_summary`
    - optional AI fields: `ai_summary`, `ai_findings`, `ai_root_causes`, `ai_improvement_suggestions`, `ai_run_grade`

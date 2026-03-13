@@ -220,6 +220,9 @@ Example scanner output:
   - derived search targets are stored as `news_query_targets`
   - candidate-specific news remains separate from market-news context
 - Canonical strategist contract is defined at `libs/strategies/contracts.py::StrategistOutput`
+- Strategist also reads passive advisory memory from recent Reporter runs via `state["recent_strategy_feedback"]`
+  - append-only store: `data/strategy_memory/feedback.jsonl`
+  - advisory only; no automatic live parameter mutation
 
 ## Scanner (스캐너)
 - Builds candidate universe from Kiwoom market data
@@ -386,6 +389,10 @@ Operator-facing report scripts:
 
 Off-hours validation mode (continuous non-broker evaluation):
 - Goal: keep validating Strategist -> Scanner -> Monitor -> Supervisor/Executor flow after market close without sending broker-side mock/live orders.
+- Reporter can also persist compact strategy feedback for future Strategist context:
+  - strategist/scanner/monitor/supervisor evaluations
+  - incidents + AI findings/root causes/improvement suggestions
+  - compact trade summary only
 - Entry points:
   - `python -m scripts.run_offhours_validation_loop --env-path .env --event-log-path data/logs/events.jsonl --state-path data/state/offhours_validation.json --sleep-sec 60`
   - `python -m scripts.run_mock_exam_day --phase session --env-path .env --event-log-path data/logs/events.jsonl --state-path data/state/offhours_validation.json --allow-offhours-simulated-session`

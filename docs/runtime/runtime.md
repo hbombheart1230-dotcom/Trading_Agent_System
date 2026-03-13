@@ -29,6 +29,9 @@
    - `regime_score`, `sentiment_score`, `news_context`, `candidate_news_context`, `market_news_context`, `theme_strength` (additive quality fields)
    - `candidates` (Top-N, optional hint)
    - canonical `state["strategist_output"]` (contract: `libs/strategies/contracts.py::StrategistOutput`)
+   - advisory `state["recent_strategy_feedback"]` loaded from `data/strategy_memory/feedback.jsonl`
+     - compact recent theme/playbook/monitor/scanner findings
+     - advisory only; no hard runtime override
    - additive runtime `theme_map` / `sector_map` seeded from strategist candidate hints so scanner `sector_theme` source can remain non-zero even without a static operator map
    - optional `strategist_llm` result snapshot (`status/model/applied/latency`) + EventLog `stage=strategist_llm`
 2. Scanner uses Kiwoom market data as primary candidate source and writes:
@@ -159,6 +162,7 @@
   - optional AI fields:
     - `ai_summary`, `ai_findings`, `ai_root_causes`
     - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`
+  - reporter also appends compact feedback records to `data/strategy_memory/feedback.jsonl`
 
 ## Off-Hours Validation Loop
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 from graphs.nodes.strategist_node import strategist_node
+from libs.research.strategy_memory_store import save_strategy_feedback
 
 
 class _MemoryLogger:
@@ -256,3 +257,118 @@ def test_strategist_frame_llm_nested_output_and_string_lists_are_normalized(monk
     assert "theme_accuracy" in report_focus
     assert "exit_quality" in report_focus
     assert strategist_output.get("llm_frame_applied") is True
+
+
+def test_strategist_reads_recent_strategy_feedback_when_available(monkeypatch, tmp_path):
+    memory_path = tmp_path / "strategy_memory" / "feedback.jsonl"
+    save_strategy_feedback(
+        "reporter-2026-03-10",
+        {
+            "day": "2026-03-10",
+            "strategy_frame_summary": {
+                "theme_top": {"semiconductor": 1},
+                "playbook_top": {"breakout": 1},
+                "risk_tone_top": {"aggressive": 1},
+                "monitor_guidance_top": {"hold_through_noise": 1},
+                "report_focus_top": {"theme_accuracy": 1},
+            },
+            "strategist_evaluation": {
+                "themes_proposed": ["semiconductor"],
+                "theme_alignment_status": "aligned",
+                "assessment": "aligned",
+            },
+            "scanner_evaluation": {
+                "candidate_source_top": {"kiwoom_market_data": 1},
+                "selection_status": "stable",
+                "assessment": "ok",
+                "no_candidate_total": 0,
+            },
+            "monitor_evaluation": {
+                "monitor_status": "stable",
+                "monitor_reason_top": {"hold": 1},
+                "rapid_buy_sell_cycles": 0,
+                "assessment": "stable",
+            },
+            "supervisor_activity": {"blocked_rate": 0.0, "blocked_reason_top": {}},
+            "incident_postmortem": {"incidents": []},
+            "trade_summary": {"trade_count": 1, "symbols_traded": ["005930"], "symbol_hold_durations": []},
+            "trade_decision_summaries": {"trade_summaries": [{"estimated_realized_pnl": 1.0}]},
+            "operator_facing_summary": {"summary_lines": ["good run"]},
+            "report_focus_targets": ["theme_accuracy"],
+        },
+        path=memory_path,
+        timestamp="2026-03-10T15:30:00+00:00",
+    )
+    monkeypatch.setenv("STRATEGY_MEMORY_PATH", str(memory_path))
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterOk)
+
+    logger = _MemoryLogger()
+    out = strategist_node(_base_state(logger))
+
+    feedback = out.get("recent_strategy_feedback") or {}
+    assert feedback.get("feedback_window_size") == 1
+    assert "semiconductor" in (feedback.get("recent_theme_performance") or {})
+    strategist_output = out.get("strategist_output") or {}
+    assert (strategist_output.get("recent_strategy_feedback") or {}).get("feedback_window_size") == 1
+
+    trace_rows = [r for r in logger.rows if r.get("stage") == "decision_trace" and r.get("event") == "strategic_frame"]
+    assert len(trace_rows) == 1
+    trace_payload = ((trace_rows[0].get("payload") or {}).get("payload") or {})
+    assert trace_payload.get("feedback_window_size") == 1
+
+
+def test_strategist_recent_feedback_is_advisory_not_hard_override(monkeypatch, tmp_path):
+    memory_path = tmp_path / "strategy_memory" / "feedback.jsonl"
+    save_strategy_feedback(
+        "reporter-2026-03-10",
+        {
+            "day": "2026-03-10",
+            "strategy_frame_summary": {"theme_top": {"defense": 1}, "playbook_top": {"defensive": 1}},
+            "strategist_evaluation": {
+                "themes_proposed": ["defense"],
+                "theme_alignment_status": "aligned",
+                "assessment": "aligned",
+            },
+            "scanner_evaluation": {"selection_status": "stable"},
+            "monitor_evaluation": {"monitor_status": "stable"},
+            "supervisor_activity": {"blocked_rate": 0.0},
+            "incident_postmortem": {"incidents": []},
+            "trade_summary": {"trade_count": 1, "symbols_traded": ["069500"], "symbol_hold_durations": []},
+            "trade_decision_summaries": {"trade_summaries": [{"estimated_realized_pnl": 0.5}]},
+            "operator_facing_summary": {"summary_lines": ["good run"]},
+            "report_focus_targets": ["theme_accuracy"],
+        },
+        path=memory_path,
+        timestamp="2026-03-10T15:30:00+00:00",
+    )
+    monkeypatch.setenv("STRATEGY_MEMORY_PATH", str(memory_path))
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterOk)
+
+    logger = _MemoryLogger()
+    out = strategist_node(_base_state(logger))
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("themes") == ["semiconductor", "ai"]
+    assert strategist_output.get("playbook") == "breakout"
+    feedback = strategist_output.get("recent_strategy_feedback") or {}
+    assert feedback.get("feedback_window_size") == 1
+    assert "defense" in (feedback.get("recent_theme_performance") or {})
+
+
+def test_strategist_produces_feedback_field_even_when_memory_empty(monkeypatch, tmp_path):
+    memory_path = tmp_path / "strategy_memory" / "feedback.jsonl"
+    monkeypatch.setenv("STRATEGY_MEMORY_PATH", str(memory_path))
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "false")
+
+    logger = _MemoryLogger()
+    out = strategist_node(_base_state(logger))
+
+    feedback = out.get("recent_strategy_feedback") or {}
+    assert feedback.get("feedback_window_size") == 0
+    strategist_output = out.get("strategist_output") or {}
+    assert (strategist_output.get("recent_strategy_feedback") or {}).get("feedback_window_size") == 0
+    assert strategist_output.get("playbook") in ("breakout", "pullback", "reversal", "defensive")

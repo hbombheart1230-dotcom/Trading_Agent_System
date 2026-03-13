@@ -14,6 +14,7 @@ from .operator_visibility import (
 from .reporter_ai_review import build_ai_reporter_review
 from .trade_explain import generate_trade_explain_report
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
+from libs.research.strategy_memory_store import resolve_strategy_memory_path, save_strategy_feedback
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -760,6 +761,53 @@ def _build_trade_summary_section(
     }
 
 
+def _build_strategy_frame_summary(day_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    theme_counts: Counter[str] = Counter()
+    playbook_counts: Counter[str] = Counter()
+    risk_tone_counts: Counter[str] = Counter()
+    monitor_guidance_counts: Counter[str] = Counter()
+    report_focus_counts: Counter[str] = Counter()
+
+    def _consume(payload: Dict[str, Any]) -> None:
+        for theme in list(payload.get("themes") or []):
+            text = str(theme or "").strip().lower()
+            if text:
+                theme_counts[text] += 1
+        playbook = str(payload.get("playbook") or "").strip().lower()
+        if playbook:
+            playbook_counts[playbook] += 1
+        risk_tone = str(payload.get("risk_tone") or "").strip().lower()
+        if risk_tone:
+            risk_tone_counts[risk_tone] += 1
+        monitor_guidance = str(payload.get("monitor_guidance") or "").strip().lower()
+        if monitor_guidance:
+            monitor_guidance_counts[monitor_guidance] += 1
+        for focus in list(payload.get("report_focus") or []):
+            text = str(focus or "").strip()
+            if text:
+                report_focus_counts[text] += 1
+
+    for row in day_rows:
+        stage = str(row.get("stage") or "").strip()
+        event = str(row.get("event") or "").strip()
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if stage == "strategist" and event == "summary":
+            _consume(payload)
+            continue
+        if stage == "decision_trace" and event == "strategic_frame":
+            agent, agent_payload = _decision_trace_agent_payload(row)
+            if agent == "strategist":
+                _consume(agent_payload)
+
+    return {
+        "theme_top": dict(theme_counts.most_common(8)),
+        "playbook_top": dict(playbook_counts.most_common(6)),
+        "risk_tone_top": dict(risk_tone_counts.most_common(6)),
+        "monitor_guidance_top": dict(monitor_guidance_counts.most_common(6)),
+        "report_focus_top": dict(report_focus_counts.most_common(8)),
+    }
+
+
 def _build_strategist_evaluation(day_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     theme_counts: Counter[str] = Counter()
     leader_symbol_counts: Counter[str] = Counter()
@@ -1327,6 +1375,7 @@ def generate_reporter_analysis_report(
     )
     incident = _build_incident_postmortem(overtrading=overtrading, intent_flow=intent_flow, day_rows=day_rows)
     market_context = _build_market_context(trade_explain_obj=trade_obj, day_rows=day_rows)
+    strategy_frame_summary = _build_strategy_frame_summary(day_rows)
     decision_chains = _build_decision_chains(day_rows, limit=200)
     decision_trace_chain_summary = _build_decision_trace_chain_summary(day_rows, limit=200)
     trade_summary = _build_trade_summary_section(trade_decision=trade_decision, decision_chains=decision_chains)
@@ -1364,6 +1413,8 @@ def generate_reporter_analysis_report(
         else [],
         "anomalies": [i.get("type") for i in (incident.get("incidents") or []) if isinstance(i, dict)],
     }
+    js_path = report_dir / f"reporter_analysis_{target_day}.json"
+    md_path = report_dir / f"reporter_analysis_{target_day}.md"
 
     out: Dict[str, Any] = {
         "schema_version": "reporter_analysis.v1",
@@ -1372,6 +1423,7 @@ def generate_reporter_analysis_report(
         "decision_chains": decision_chains,
         "decision_trace_chain_summary": decision_trace_chain_summary,
         "trade_decision_summaries": trade_decision,
+        "strategy_frame_summary": strategy_frame_summary,
         "strategist_evaluation": strategist_eval,
         "scanner_evaluation": scanner_eval,
         "monitor_evaluation": monitor_eval,
@@ -1397,6 +1449,8 @@ def generate_reporter_analysis_report(
             "decision_story_total": int(ds_obj.get("story_total") or 0),
             "run_card_total": int(rc_obj.get("card_total") or 0),
         },
+        "report_json_path": str(js_path),
+        "report_md_path": str(md_path),
     }
 
     try:
@@ -1429,6 +1483,21 @@ def generate_reporter_analysis_report(
     out["ai_run_grade"] = str(ai_review.get("ai_run_grade") or "N/A")
     out["ai_agent_evaluations"] = dict(ai_review.get("ai_agent_evaluations") or {})
     try:
+        memory_record = save_strategy_feedback(run_id=reporter_run_id, reporter_output=out)
+        out["strategy_memory_record"] = {
+            "strategy_memory_path": str(resolve_strategy_memory_path()),
+            "run_id": str(memory_record.get("run_id") or reporter_run_id),
+            "timestamp": str(memory_record.get("timestamp") or ""),
+            "feedback_window_day": target_day,
+        }
+    except Exception as exc:
+        out["strategy_memory_record"] = {
+            "strategy_memory_path": str(resolve_strategy_memory_path()),
+            "run_id": str(reporter_run_id),
+            "timestamp": "",
+            "error": f"strategy_memory_save_failed:{exc}",
+        }
+    try:
         record_decision_bridge(
             run_id=reporter_run_id,
             agent="reporter",
@@ -1439,10 +1508,12 @@ def generate_reporter_analysis_report(
             },
             parsed_output={
                 "trade_summary": dict(out.get("trade_summary") or {}),
+                "strategy_frame_summary": dict(out.get("strategy_frame_summary") or {}),
                 "decision_trace_chain_summary": dict(out.get("decision_trace_chain_summary") or {}),
                 "monitor_evaluation": dict(out.get("monitor_evaluation") or {}),
                 "supervisor_activity": dict(out.get("supervisor_activity") or {}),
                 "ai_review": dict(out.get("ai_review") or {}),
+                "strategy_memory_record": dict(out.get("strategy_memory_record") or {}),
             },
             decision_link={
                 "decision_chain": {
@@ -1456,10 +1527,6 @@ def generate_reporter_analysis_report(
     except Exception:
         pass
 
-    js_path = report_dir / f"reporter_analysis_{target_day}.json"
-    md_path = report_dir / f"reporter_analysis_{target_day}.md"
-    out["report_json_path"] = str(js_path)
-    out["report_md_path"] = str(md_path)
     js_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(_to_markdown(out), encoding="utf-8")
     return md_path, js_path, out

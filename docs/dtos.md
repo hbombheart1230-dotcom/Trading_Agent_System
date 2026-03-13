@@ -186,6 +186,7 @@
 - `monitor_guidance: "hold_through_noise" | "defensive_exit" | "quick_take_profit"`
 - `monitor_policy: object` (deterministic guard tuning derived from guidance)
 - `exit_policy: object` (strategist-derived exit baseline; monitor applies final feature/position-aware adjustments)
+- `recent_strategy_feedback: object` (compact Reporter memory summary; advisory only)
 - `regime_score: float` (additive)
 - `sentiment_score: float` (additive)
 - `news_context: object` (additive quality summary)
@@ -197,6 +198,19 @@
 - `candidate_hints: list[str]`
 - `strategic_answers: object`
 - `source: str`
+
+### RecentStrategyFeedback
+- `feedback_window_size: int`
+- `recent_theme_performance: object`
+- `recent_playbook_performance: object`
+- `recent_monitor_issues: list[str]`
+- `recent_scanner_issues: list[str]`
+- `recent_guard_patterns: list[str]`
+- `recent_reporter_summary: list[str]`
+- `top_recent_strengths: list[str]`
+- `top_recent_weaknesses: list[str]`
+- `suggested_report_focus: list[str]`
+- advisory only; must not hard-force Strategist outputs
 
 ### ScannerOutput
 - `top_stock: str | null`
@@ -259,6 +273,8 @@
   - `ai_improvement_suggestions: list[str]`
   - `ai_run_grade: str`
   - `ai_agent_evaluations: object`
+- additive persistence metadata
+  - `strategy_memory_record: object`
 
 ### AgentPipelineTrace (single-run visibility)
 - `schema_version: "agent_pipeline_trace.v1"`

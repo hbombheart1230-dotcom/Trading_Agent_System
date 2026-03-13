@@ -32,9 +32,11 @@ This document defines agent responsibilities and handoff boundaries.
   - `monitor_guidance` (`hold_through_noise|defensive_exit|quick_take_profit`)
   - `monitor_policy` (derived deterministic guard parameters)
   - `report_focus`
+  - `recent_strategy_feedback` (compact Reporter-memory advisory summary)
   - `candidates` (Top-N, optional hint/fallback)
   - canonical `state["strategist_output"]` (`libs/strategies/contracts.py::StrategistOutput`)
 - Strategist defines strategy frame; Scanner remains final symbol selector.
+- Strategist can read recent Reporter findings from `data/strategy_memory/feedback.jsonl` as advisory context only.
 - Additive context enrichment includes:
   - global/news signal health
   - market context inputs (`index_trend`, `realized_volatility`, `market_breadth`, `macro_risk`)
@@ -100,6 +102,7 @@ This document defines agent responsibilities and handoff boundaries.
   - deterministic structured analysis baseline
   - optional AI review stage for post-run interpretation
 - AI review is read-only/post-run and does not write to live runtime control state.
+- Reporter can persist compact strategy-memory records for future Strategist advisory context.
 - `reporter_analysis.v1` adds:
   - `decision_trace_chain_summary` (run_id chain completeness across strategist/scanner/monitor/supervisor/executor)
   - `operator_facing_summary` (health + immediate actions)

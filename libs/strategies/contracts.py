@@ -113,6 +113,7 @@ class StrategistOutput:
     risk_tone: StrategistRiskTone = "normal"
     monitor_guidance: StrategistMonitorGuidance = "defensive_exit"
     report_focus: List[str] = field(default_factory=list)
+    recent_strategy_feedback: Dict[str, Any] = field(default_factory=dict)
     candidates: List[str] = field(default_factory=list)
     candidate_count: int = 0
     candidate_hints: List[str] = field(default_factory=list)
@@ -142,6 +143,7 @@ class StrategistOutput:
                 "defensive_exit",
             ),
             "report_focus": [str(x) for x in list(self.report_focus or [])][:8],
+            "recent_strategy_feedback": dict(self.recent_strategy_feedback or {}),
             "candidates": [str(x) for x in list(self.candidates or [])][:32],
             "candidate_count": int(self.candidate_count),
             "candidate_hints": [str(x) for x in list(self.candidate_hints or [])][:32],
@@ -210,6 +212,7 @@ def _coerce_nested_output(raw: Dict[str, Any]) -> Dict[str, Any]:
         "risk_tone",
         "monitor_guidance",
         "report_focus",
+        "recent_strategy_feedback",
         "candidates",
         "candidate_count",
         "candidate_hints",
@@ -253,6 +256,11 @@ def coerce_strategist_output(raw: Any) -> Dict[str, Any]:
         risk_tone=raw.get("risk_tone", "normal"),  # type: ignore[arg-type]
         monitor_guidance=raw.get("monitor_guidance", "defensive_exit"),  # type: ignore[arg-type]
         report_focus=_coerce_text_list(raw.get("report_focus")),
+        recent_strategy_feedback=(
+            dict(raw.get("recent_strategy_feedback") or {})
+            if isinstance(raw.get("recent_strategy_feedback"), dict)
+            else {}
+        ),
         candidates=_coerce_text_list(raw.get("candidates")),
         candidate_count=int(raw.get("candidate_count") or len(_coerce_text_list(raw.get("candidates"))) or 0),
         candidate_hints=_coerce_text_list(raw.get("candidate_hints")),

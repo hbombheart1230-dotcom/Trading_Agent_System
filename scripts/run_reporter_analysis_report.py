@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.core.settings import load_env_file
 from libs.reporting.reporter_analysis import generate_reporter_analysis_report
 
 
@@ -19,6 +20,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--intents-path", default="data/logs/intents.jsonl")
     p.add_argument("--report-dir", default="reports/dev/analysis/reporter_analysis")
     p.add_argument("--reports-root", default="reports")
+    p.add_argument("--env-path", default=".env")
     p.add_argument("--day", default=None, help="UTC day (YYYY-MM-DD). If omitted, latest day in event log is used.")
     p.add_argument("--rapid-cycle-threshold-sec", type=int, default=120)
     ai = p.add_mutually_exclusive_group()
@@ -34,6 +36,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
+    load_env_file(str(args.env_path).strip() or ".env")
     event_log_path = Path(str(args.event_log_path).strip())
     intents_path = Path(str(args.intents_path).strip())
     report_dir = Path(str(args.report_dir).strip())

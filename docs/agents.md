@@ -22,6 +22,9 @@
 - May provide candidate hints (Top-N) as an additive signal.
 - Strategist defines HOW to fight; final stock selection remains Scanner responsibility.
 - Emits additive strategist contract fields in canonical `state["strategist_output"]`.
+- Reads recent passive Reporter feedback from `state["recent_strategy_feedback"]`.
+  - backed by append-only strategy memory store `data/strategy_memory/feedback.jsonl`
+  - advisory only; does not hard-force themes/playbooks or mutate runtime configs
 - Optional LLM strategic-frame pass can override strategist fields additively.
   - bounded by strategist contract normalization + deterministic fallback
   - observability via EventLog `stage=strategist_llm`, `event=result`
@@ -93,6 +96,9 @@
   - deterministic structured analysis (baseline)
   - optional AI review layer on top of deterministic outputs
 - AI review is post-run/read-only and never writes execution/runtime control state.
+- Reporter also persists compact feedback snapshots into strategy memory:
+  - append-only store: `data/strategy_memory/feedback.jsonl`
+  - consumed later by Strategist as advisory context only
 - Reporter-ready reason inputs are now emitted via:
   - `state["decision_trace_ledger"]` / `state["reason_ledger"]`
   - EventLog `stage=decision_trace`

@@ -19,6 +19,7 @@
 - `risk_tone`
 - `monitor_guidance`
 - `monitor_policy` (derived deterministic guard knobs)
+- `recent_strategy_feedback` (compact Reporter-memory advisory summary)
 - `report_focus[]`
 - `candidates[]` (Top-N, optional hint/fallback path)
 - `strategist_output`
@@ -36,6 +37,7 @@
   - `risk_tone`
   - `monitor_guidance`
   - `monitor_policy`
+  - `recent_strategy_feedback`
   - `report_focus[]`
   - `regime_score` (additive)
   - `sentiment_score` (additive)
@@ -50,6 +52,18 @@
   - `llm_frame_applied` (bool, additive)
   - `llm_frame_model` (additive)
   - `source`
+  - `recent_strategy_feedback`
+    - `feedback_window_size`
+    - `recent_theme_performance`
+    - `recent_playbook_performance`
+    - `recent_monitor_issues[]`
+    - `recent_scanner_issues[]`
+    - `recent_guard_patterns[]`
+    - `recent_reporter_summary[]`
+    - `top_recent_strengths[]`
+    - `top_recent_weaknesses[]`
+    - `suggested_report_focus[]`
+    - advisory only
 - `strategist_llm` (additive runtime snapshot)
   - `status`
   - `model`
@@ -179,6 +193,32 @@
     - `ai_improvement_suggestions[]`
     - `ai_run_grade`
     - `ai_agent_evaluations`
+  - `strategy_memory_record`
+    - `strategy_memory_path`
+    - `run_id`
+    - `timestamp`
+
+## StrategyFeedbackRecord (`strategy_feedback.v1`)
+- File: `data/strategy_memory/feedback.jsonl` (`STRATEGY_MEMORY_PATH` override)
+- Compact append-only strategy memory built from Reporter outputs
+- Keys:
+  - `run_id`
+  - `timestamp`
+  - `day`
+  - `strategy_frame_summary`
+  - `strategist_evaluation`
+  - `scanner_evaluation`
+  - `monitor_evaluation`
+  - `supervisor_activity`
+  - `incidents[]`
+  - `ai_findings[]`
+  - `ai_root_causes[]`
+  - `ai_improvement_suggestions[]`
+  - `trade_summary`
+  - `performance_summary`
+  - `report_focus_targets[]`
+  - `operator_facing_summary`
+  - advisory only; no live runtime control side effects
 
 ## AgentPipelineTrace (`agent_pipeline_trace.v1`)
 - Single-run, cross-agent visibility artifact.

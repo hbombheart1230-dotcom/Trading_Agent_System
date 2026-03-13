@@ -8,6 +8,7 @@
   - normal SELL stabilization: `MIN_HOLD_SECONDS`, `SELL_COOLDOWN`/`SELL_COOLDOWN_SEC`, `MONITOR_EXIT_CONFIRM_TICKS`
   - emergency exits (`emergency_halt`, `news_shock`) stay explicit and separate from normal exit confirmation
 - **Reporter**: replay logs and produce post-mortems (deterministic baseline + optional passive AI review layer)
+  - persists compact strategy-memory records for future Strategist advisory context
 
 ## Canonical Implementation Entry Points
 - **Commander/orchestration**: `graphs/commander_runtime.py`
@@ -25,6 +26,7 @@
 2) Strategist outputs strategic frame (`regime/sentiment/themes/playbook/bias/risk/monitor/report`) + optional `candidates[]` hints.
    - includes additive `scanner_source_policy` so Scanner can change which Kiwoom candidate sources are active for the run.
    - Canonical runtime key: `state["strategist_output"]` (DTO contract: `libs/strategies/contracts.py::StrategistOutput`).
+   - Strategist also reads additive advisory memory from `state["recent_strategy_feedback"]`.
 3) Scanner builds candidate pool from Kiwoom market data (condition/rank/theme/watchlist sources).
 4) Scanner reduces pool (halt/abnormal/illiquid guards), applies theme guidance, scores candidates, and selects `top_stock`.
 5) Monitor decides entry/exit for selected stock and creates `OrderIntent`.

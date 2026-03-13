@@ -5,6 +5,7 @@
 Operator -> Commander: start_run(goal, config)  
 Commander -> Strategist: build strategic brief (regime/sentiment/themes/playbook/guidance)  
 Strategist -> Commander: canonical `state["strategist_output"]` (DTO: `libs/strategies/contracts.py::StrategistOutput`) with (`market_regime`, `market_sentiment`, `themes`, `playbook`, `scanner_bias`, `scanner_priority`, `monitor_guidance`, optional `candidates`)  
+Strategist -> Commander: additive advisory `state["recent_strategy_feedback"]` from compact Reporter memory  
 Commander -> Scanner: build Kiwoom candidate pool, reduce/filter, then score/rank  
 Scanner -> Commander: ranked list + score breakdown + `top_stock`  
 Commander -> Monitor: evaluate entry/exit for `top_stock`  
@@ -18,6 +19,7 @@ Executor -> EventLog: append events
 All key agents -> Decision Trace: append compact per-run reason snapshots (`stage=decision_trace`)  
 Commander -> Reporter: generate reports  
 Reporter -> Operator: summary
+Reporter -> StrategyMemory: append compact advisory feedback (`data/strategy_memory/feedback.jsonl`)
 
 ## 5.2 Intent State Machine
 

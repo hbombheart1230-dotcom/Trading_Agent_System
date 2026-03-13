@@ -5,6 +5,7 @@ from pathlib import Path
 
 from libs.agent.reporter import Reporter
 import libs.reporting.reporter_analysis as reporter_analysis_module
+from libs.research.strategy_memory_store import load_recent_strategy_feedback
 from scripts.run_reporter_analysis_report import main as reporter_analysis_main
 
 
@@ -258,8 +259,96 @@ def test_reporter_analysis_script_builds_structured_sections(tmp_path: Path, cap
     strategy_effectiveness = obj.get("strategy_effectiveness") or {}
     assert (strategy_effectiveness.get("report_focus_counts") or {}).get("Validate theme follow-through") == 1
     assert (strategy_effectiveness.get("scanner_priority_counts") or {}).get("momentum") == 1
-    assert Path(obj["report_json_path"]).exists()
-    assert Path(obj["report_md_path"]).exists()
+
+
+def test_reporter_analysis_persists_compact_strategy_memory(monkeypatch, tmp_path: Path) -> None:
+    day = "2026-03-10"
+    events = tmp_path / "events.jsonl"
+    reports_root = tmp_path / "reports"
+    out_dir = reports_root / "reporter_analysis"
+    memory_path = tmp_path / "strategy_memory" / "feedback.jsonl"
+    monkeypatch.setenv("STRATEGY_MEMORY_PATH", str(memory_path))
+
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "strategist",
+                "event": "summary",
+                "payload": {
+                    "themes": ["semiconductor"],
+                    "playbook": "breakout",
+                    "risk_tone": "aggressive",
+                    "monitor_guidance": "hold_through_noise",
+                    "report_focus": ["theme_accuracy"],
+                },
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "scanner",
+                "event": "summary",
+                "payload": {"candidate_source": "kiwoom_market_data", "top_stock": "005930", "top_score": 0.91},
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:02+00:00",
+                "stage": "monitor",
+                "event": "summary",
+                "payload": {"monitor_reason": "hold", "exit_reason": "hold"},
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:03+00:00",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": True},
+            },
+            {
+                "run_id": "r_buy",
+                "ts": f"{day}T00:00:04+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"order": {"action": "BUY", "symbol": "005930", "qty": 1, "price": 100}},
+            },
+            {
+                "run_id": "r_sell",
+                "ts": f"{day}T00:05:00+00:00",
+                "stage": "decision",
+                "event": "trace",
+                "payload": {
+                    "decision_packet": {"intent": {"action": "SELL", "symbol": "005930", "qty": 1, "reason": "exit_signal"}},
+                },
+            },
+            {
+                "run_id": "r_sell",
+                "ts": f"{day}T00:05:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"order": {"action": "SELL", "symbol": "005930", "qty": 1, "price": 101}},
+            },
+        ],
+    )
+
+    md_path, js_path, out = reporter_analysis_module.generate_reporter_analysis_report(
+        events,
+        out_dir,
+        day=day,
+        reports_root=reports_root,
+    )
+
+    assert md_path.exists() is True
+    assert js_path.exists() is True
+    assert (out.get("strategy_memory_record") or {}).get("strategy_memory_path") == str(memory_path)
+    rows = load_recent_strategy_feedback(10, path=memory_path)
+    assert len(rows) == 1
+    assert rows[0]["run_id"] == "reporter-2026-03-10"
+    assert rows[0]["strategist_evaluation"]["themes_proposed"] == ["semiconductor"]
+    assert rows[0]["strategy_frame_summary"]["playbook_top"]["breakout"] == 1
+    assert Path(out["report_json_path"]).exists()
+    assert Path(out["report_md_path"]).exists()
 
 
 def test_reporter_agent_can_run_passive_log_analysis(tmp_path: Path) -> None:

@@ -24,6 +24,7 @@ from libs.research.evidence_ledger import (
     record_llm_response,
     record_raw_input,
 )
+from libs.research.strategy_feedback_builder import build_recent_strategy_feedback
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.regime import classify_regime_v2
 from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
@@ -59,6 +60,41 @@ def _env_int(key: str) -> int | None:
         return int(float(str(raw).strip()))
     except Exception:
         return None
+
+
+def _load_recent_strategy_feedback(policy: Dict[str, Any]) -> Dict[str, Any]:
+    enabled_raw = (
+        policy.get("use_strategy_memory_feedback")
+        if policy.get("use_strategy_memory_feedback") is not None
+        else os.getenv("USE_STRATEGY_MEMORY_FEEDBACK", "true")
+    )
+    enabled = _is_trueish(enabled_raw)
+    if not enabled:
+        return {
+            "feedback_window_size": 0,
+            "recent_theme_performance": {},
+            "recent_playbook_performance": {},
+            "recent_monitor_issues": [],
+            "recent_scanner_issues": [],
+            "recent_guard_patterns": [],
+            "recent_overtrading_patterns": [],
+            "recent_reporter_summary": [],
+            "top_recent_strengths": [],
+            "top_recent_weaknesses": [],
+            "suggested_report_focus": [],
+            "advisory_only": True,
+            "status": "disabled",
+        }
+    raw_window = (
+        policy.get("strategy_memory_recent_runs")
+        if policy.get("strategy_memory_recent_runs") is not None
+        else os.getenv("STRATEGY_MEMORY_RECENT_RUNS", "12")
+    )
+    last_n_runs = max(1, _to_int(raw_window, 12))
+    feedback = build_recent_strategy_feedback(last_n_runs)
+    feedback["status"] = "ok" if int(feedback.get("feedback_window_size") or 0) > 0 else "empty"
+    feedback["requested_window_size"] = int(last_n_runs)
+    return feedback
 
 
 def _resolve_top_n_candidates(policy: Dict[str, Any]) -> int:
@@ -1646,6 +1682,7 @@ def _build_strategic_answers(
     risk_tone: str,
     monitor_guidance: str,
     report_focus: List[str],
+    recent_strategy_feedback: Dict[str, Any],
 ) -> Dict[str, Any]:
     return {
         "q1_market_mode": market_regime,
@@ -1660,6 +1697,12 @@ def _build_strategic_answers(
         "q10_scanner_ranking_priority": list(scanner_priority),
         "q11_monitor_exit_guidance": monitor_guidance,
         "q12_reporter_focus": list(report_focus),
+        "q13_recent_strategy_feedback": {
+            "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
+            "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
+            "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
+            "recent_reporter_summary": list(recent_strategy_feedback.get("recent_reporter_summary") or [])[:2],
+        },
         "scanner_bias": scanner_bias,
     }
 
@@ -2077,11 +2120,19 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         news_ctx=news_ctx,
         theme_strength=theme_strength,
     )
+    recent_strategy_feedback = _load_recent_strategy_feedback(policy)
+    report_focus = _merge_override_text_list(
+        report_focus,
+        recent_strategy_feedback.get("suggested_report_focus"),
+        limit=8,
+    )
+    state["recent_strategy_feedback"] = dict(recent_strategy_feedback)
 
     llm_payload = {
         "global_sentiment_signal": dict(global_signal),
         "news_context": dict(news_ctx),
         "market_context_inputs": dict(market_context_inputs),
+        "recent_strategy_feedback": dict(recent_strategy_feedback),
         "market_regime_hint": market_regime,
         "market_sentiment_hint": market_sentiment,
         "market_structure_hint": market_structure,
@@ -2124,6 +2175,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "news_query_reasoning": news_query_reasoning,
                     "candidate_symbols_hint": list(candidate_symbols)[:10],
                 },
+                "recent_strategy_feedback": dict(recent_strategy_feedback),
                 "llm_payload": dict(llm_payload),
             },
             decision_link={"stage": "strategist_input_collection"},
@@ -2231,6 +2283,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         risk_tone=risk_tone,
         monitor_guidance=monitor_guidance,
         report_focus=report_focus,
+        recent_strategy_feedback=recent_strategy_feedback,
     )
 
     state["market_regime"] = market_regime
@@ -2278,6 +2331,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             else "defensive_exit"
         ),
         report_focus=list(report_focus),
+        recent_strategy_feedback=dict(recent_strategy_feedback),
         candidates=list(state["candidate_symbols"]),
         candidate_count=len(list(state["candidate_symbols"])),
         candidate_hints=list(state["candidate_symbols"]),
@@ -2296,6 +2350,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["news_query_reasoning"] = news_query_reasoning
     strategist_output["market_context_inputs"] = dict(market_context_inputs)
     strategist_output["theme_strength"] = dict(theme_strength)
+    strategist_output["recent_strategy_feedback"] = dict(recent_strategy_feedback)
     strategist_output["playbook"] = playbook
     strategist_output["llm_frame_status"] = str(llm_meta.get("status") or "disabled")
     strategist_output["llm_frame_applied"] = bool(llm_overrides)
@@ -2331,6 +2386,9 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "regime_score": float(regime_score),
             "sentiment_score": float(sentiment_score),
             "report_focus": list(report_focus)[:3],
+            "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
+            "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
+            "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
             "news_query_targets": list(news_query_targets)[:6],
             "news_query_reasoning": news_query_reasoning,
             "llm_frame_status": str(llm_meta.get("status") or "disabled"),
@@ -2355,6 +2413,10 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "risk_tone": risk_tone,
             "monitor_guidance": monitor_guidance,
             "report_focus": list(report_focus)[:5],
+            "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
+            "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
+            "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
+            "recent_reporter_summary": list(recent_strategy_feedback.get("recent_reporter_summary") or [])[:2],
             "news_query_targets": list(news_query_targets)[:6],
             "news_query_reasoning": news_query_reasoning,
             "regime_score": float(regime_score),
@@ -2383,6 +2445,11 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "risk_tone": risk_tone,
                 "monitor_guidance": monitor_guidance,
                 "report_focus": list(report_focus),
+                "recent_strategy_feedback": {
+                    "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
+                    "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
+                    "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
+                },
                 "news_query_targets": list(news_query_targets),
                 "news_query_reasoning": news_query_reasoning,
                 "candidate_symbols": list(state.get("candidate_symbols") or []),
