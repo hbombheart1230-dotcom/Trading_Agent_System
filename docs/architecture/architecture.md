@@ -23,6 +23,7 @@
 ## Order flow (2-phase commit)
 1) News/global sentiment context is attached to strategist input.
 2) Strategist outputs strategic frame (`regime/sentiment/themes/playbook/bias/risk/monitor/report`) + optional `candidates[]` hints.
+   - includes additive `scanner_source_policy` so Scanner can change which Kiwoom candidate sources are active for the run.
    - Canonical runtime key: `state["strategist_output"]` (DTO contract: `libs/strategies/contracts.py::StrategistOutput`).
 3) Scanner builds candidate pool from Kiwoom market data (condition/rank/theme/watchlist sources).
 4) Scanner reduces pool (halt/abnormal/illiquid guards), applies theme guidance, scores candidates, and selects `top_stock`.

@@ -4,12 +4,13 @@
 
 1. Strategist
    - consumes global/news/sentiment context
+   - derives market-news query targets before final stock selection when no stock symbols are yet available
    - fuses macro/market context (`index_trend`, `realized_volatility`, `market_breadth`, `macro_risk`)
    - can consume optional `kiwoom_market_summary` / `macro_context`
    - outputs structured strategic brief:
      - `market_regime`, `market_sentiment`, `key_events`
      - `themes`, `avoid_themes`, `playbook`
-     - `scanner_bias` mode + `scanner_priority`, `trade_aggressiveness`, `risk_tone`
+     - `scanner_bias` mode + `scanner_priority`, `scanner_source_policy`, `trade_aggressiveness`, `risk_tone`
      - `monitor_guidance` mode (+ derived `monitor_policy`), `report_focus`
      - optional `candidates` hint
      - additive context quality fields (`regime_score`, `sentiment_score`, `news_context`, `theme_strength`)
@@ -17,6 +18,7 @@
 2. Scanner
    - retrieves candidate universe from Kiwoom market data
    - source mix: condition search, top volume, top value, optional top change-rate, sector/theme map, watchlist
+   - strategist can change the source mix itself through `scanner_source_policy`
    - reduces pool before scoring (halt/abnormal/illiquid thresholds)
    - applies strategist theme/sector filter (`theme_map` / `sector_map`)
    - applies strategist scanner-priority guidance additively to ranking weights

@@ -10,6 +10,11 @@ rem   set MOCK_EXAM_OFFHOURS_PROBE=1
 if /I "%MOCK_EXAM_OFFHOURS_PROBE%"=="1" (
   set "SESSION_EXTRA=%SESSION_EXTRA% --allow-offhours-session-probe"
 )
+rem Optional off-hours continuous simulated session:
+rem   set MOCK_EXAM_OFFHOURS_SIMULATED=1
+if /I "%MOCK_EXAM_OFFHOURS_SIMULATED%"=="1" (
+  set "SESSION_EXTRA=%SESSION_EXTRA% --allow-offhours-simulated-session"
+)
 if not "%MOCK_EXAM_PROBE_SYMBOL%"=="" (
   set "SESSION_EXTRA=%SESSION_EXTRA% --probe-symbol %MOCK_EXAM_PROBE_SYMBOL%"
 )
@@ -18,6 +23,9 @@ if not "%MOCK_EXAM_PROBE_PRICE%"=="" (
 )
 if not "%MOCK_EXAM_PROBE_CASH%"=="" (
   set "SESSION_EXTRA=%SESSION_EXTRA% --probe-cash %MOCK_EXAM_PROBE_CASH%"
+)
+if not "%MOCK_EXAM_STATE_PATH%"=="" (
+  set "SESSION_EXTRA=%SESSION_EXTRA% --state-path %MOCK_EXAM_STATE_PATH%"
 )
 
 if not exist "%PY%" (

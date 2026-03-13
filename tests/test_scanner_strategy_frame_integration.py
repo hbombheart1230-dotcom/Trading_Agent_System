@@ -46,6 +46,10 @@ def test_scanner_extract_guidance_reads_strategist_output_contract():
             "playbook": "breakout",
             "scanner_bias": "momentum",
             "scanner_priority": ["momentum", "trend_strength"],
+            "scanner_source_policy": {
+                "include_change_rate": True,
+                "preferred_sources": ["top_change_rate", "condition_search"],
+            },
             "trade_aggressiveness": "high",
             "risk_tone": "aggressive",
         }
@@ -57,5 +61,7 @@ def test_scanner_extract_guidance_reads_strategist_output_contract():
     assert out["playbook"] == "breakout"
     assert out["scanner_bias"] == "momentum"
     assert out["scanner_priority"] == ["momentum", "trend_strength"]
+    assert out["scanner_source_policy"]["include_change_rate"] is True
+    assert out["scanner_source_policy"]["preferred_sources"] == ["top_change_rate", "condition_search"]
     assert out["trade_aggressiveness"] == "high"
     assert out["risk_tone"] == "aggressive"

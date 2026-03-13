@@ -16,7 +16,7 @@
 - Produces a structured strategic brief each run:
   - `market_regime`, `market_sentiment`, `key_events`
   - `themes`, `avoid_themes`, `playbook`
-  - `scanner_bias` (`large_cap|leader|momentum|value`), `scanner_priority`
+  - `scanner_bias` (`large_cap|leader|momentum|value`), `scanner_priority`, `scanner_source_policy`
   - `trade_aggressiveness`, `risk_tone`
   - `monitor_guidance` (`hold_through_noise|defensive_exit|quick_take_profit`), `report_focus`
 - May provide candidate hints (Top-N) as an additive signal.
@@ -28,7 +28,8 @@
 - Canonical DTO contract: `libs/strategies/contracts.py::StrategistOutput`.
 - Strengthened context inputs include:
   - global sentiment signal health
-  - news sentiment signal health + average score
+  - market-news query targets derived before stock selection (`news_query_targets`)
+  - market-news sample + candidate-news sentiment signal health / average score
   - market context (`index_trend`, `realized_volatility`, `market_breadth`, `macro_risk`)
   - optional `kiwoom_market_summary` and `macro_context`
 - Canonical implementation: `graphs/nodes/strategist_node.py`
@@ -40,6 +41,9 @@
 - Applies theme/sector filtering from strategist output (`themes`) with `theme_map` / `sector_map`.
 - Applies strategist ranking guidance (`scanner_priority`, aggressiveness/risk tone) additively to score weights.
 - Applies strategist `playbook` additively to scoring weights (scanner still performs final quantitative selection).
+- Applies strategist `scanner_source_policy` to the Kiwoom source mix itself.
+  - `defensive` can suppress `top_change_rate` / `condition_search`
+  - `breakout` can emphasize `top_change_rate` / `condition_search` / `top_volume`
 - Scanner reads strategist frame from canonical `state["strategist_output"]`.
 - Falls back to strategist candidates when Kiwoom candidate pool is empty.
 - Scanner is the final Top-1 selector within strategist framing (not a blind picker).

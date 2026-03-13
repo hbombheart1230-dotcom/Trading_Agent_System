@@ -1153,9 +1153,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         agent="monitor",
         event="entry_exit_decision",
         payload={
+            "selected_symbol": str((selected.get("symbol") if isinstance(selected, dict) else "") or ""),
             "entry_reason": str((state.get("monitor_output") or {}).get("entry_exit_reason") or ""),
             "exit_reason": str(exit_info.get("reason") or ""),
+            "thresholds": dict(exit_info.get("thresholds") or {}),
             "position_age_seconds": exit_info.get("position_age_seconds"),
+            "min_hold_sec": int(exit_info.get("min_hold_sec") or 0),
+            "sell_cooldown_sec": int(exit_info.get("sell_cooldown_sec") or 0),
+            "exit_confirm_ticks": int(exit_info.get("exit_confirm_ticks") or 0),
             "min_hold_blocked": bool(exit_info.get("min_hold_blocked")),
             "sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),
             "monitor_reason": str(exit_info.get("monitor_reason") or ""),
@@ -1164,6 +1169,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "monitor_guidance": str(exit_info.get("monitor_guidance") or ""),
             "risk_tone": str(exit_info.get("risk_tone") or ""),
             "trade_aggressiveness": str(exit_info.get("trade_aggressiveness") or ""),
+            "strategy_frame_adjustments": list(exit_info.get("strategy_frame_adjustments") or []),
         },
     )
     try:

@@ -51,7 +51,11 @@ The decision chain now uses Kiwoom market data as the primary candidate source:
 
 1. Global news/sentiment context
 2. Strategist builds a per-cycle strategic brief (`market_regime`, sentiment, playbook, scanner/monitor/reporter guidance)
-   and may provide optional candidate hints
+   and may provide optional candidate hints.
+   When no stock symbols are available yet, Strategist first derives `news_query_targets` from
+   global sentiment/macro context and collects market-level news before Scanner selects stocks.
+   Strategist also emits `scanner_source_policy` so Scanner can change which Kiwoom sources are
+   actually enabled or suppressed for that run.
 3. Scanner builds candidate pool from Kiwoom sources:
    - condition search
    - top volume ranking
@@ -119,6 +123,24 @@ Example strategist output:
   "playbook": "breakout",
   "scanner_bias": "momentum",
   "scanner_priority": ["momentum", "trend_strength", "volume_surge", "liquidity"],
+  "scanner_source_policy": {
+    "preferred_sources": ["top_change_rate", "condition_search", "top_volume", "sector_theme"],
+    "include_top_value": true,
+    "include_top_volume": true,
+    "include_change_rate": true,
+    "include_condition_search": true,
+    "include_sector_candidates": true,
+    "include_watchlist": false,
+    "top_candidate_pool": 32,
+    "condition_limit": 240,
+    "source_weights": {
+      "top_change_rate": 2.2,
+      "condition_search": 2.4,
+      "top_volume": 1.9,
+      "top_value": 1.4
+    },
+    "reason": "breakout frame prioritizes fast movers, condition hits, and volume expansion"
+  },
   "trade_aggressiveness": "high",
   "risk_tone": "aggressive",
   "monitor_guidance": "hold_through_noise",
@@ -177,6 +199,7 @@ Example scanner output:
   - scanner ranking priorities, monitor guidance, reporter focus
 - Strengthened context inputs (additive):
   - global sentiment signal (status/source aware)
+  - global sentiment preserves `S&P500 / Nasdaq / Dow` daily change rates plus DXY / US10Y move details
   - news sentiment + signal health
   - market context (`index_trend`, `realized_volatility`, `market_breadth`, `macro_risk`)
   - optional `kiwoom_market_summary` / `macro_context`
@@ -185,9 +208,14 @@ Example scanner output:
 - Writes additive guidance via canonical `state["strategist_output"]`
 - Optional LLM strategic-frame stage (additive):
   - when enabled, Strategist calls LLM with news/global sentiment + market context
+  - the strategist prompt includes detailed US index moves, not just a compressed global sentiment score
   - LLM returns frame overrides (`themes`, `playbook`, `scanner_priority`, `monitor_guidance`, etc.)
   - deterministic strategist logic remains baseline fallback on error/parse-fail
   - observability: EventLog `stage=strategist_llm`, `event=result`
+- Market-first news flow:
+  - Strategist can collect market/topic news even when `candidate_symbols` is empty
+  - derived search targets are stored as `news_query_targets`
+  - candidate-specific news remains separate from market-news context
 - Canonical strategist contract is defined at `libs/strategies/contracts.py::StrategistOutput`
 
 ## Scanner (스캐너)
@@ -196,6 +224,9 @@ Example scanner output:
 - Applies strategist frame additively to ranking:
   - `playbook`, `scanner_bias`, `scanner_priority`, `risk_tone`, `trade_aggressiveness`
 - Scanner guidance is sourced from canonical `state["strategist_output"]` (with backward-compatible `scanner_guidance` override hook)
+- Strategist can also steer the actual Kiwoom source mix via `scanner_source_policy`
+  - example: `defensive` suppresses `top_change_rate` / `condition_search`
+  - example: `breakout` emphasizes `top_change_rate` / `condition_search` / `top_volume`
 - Reduces pool with practical guards (halt/abnormal/illiquid thresholds)
 - Computes explainable scoring factors (value, momentum, trend, volume surge, intraday strength, risk penalties)
 - Ranks candidates with score breakdown and selects Top-1
@@ -346,6 +377,35 @@ Operator-facing report scripts:
   - `--ai-review` (enable passive AI review stage)
   - `--no-ai-review` (force deterministic-only mode)
   - `--ai-review-model <model>` (override reporter model route)
+
+Off-hours validation mode (continuous non-broker evaluation):
+- Goal: keep validating Strategist -> Scanner -> Monitor -> Supervisor/Executor flow after market close without sending broker-side mock/live orders.
+- Entry points:
+  - `python -m scripts.run_offhours_validation_loop --env-path .env --event-log-path data/logs/events.jsonl --state-path data/state/offhours_validation.json --sleep-sec 60`
+  - `python -m scripts.run_mock_exam_day --phase session --env-path .env --event-log-path data/logs/events.jsonl --state-path data/state/offhours_validation.json --allow-offhours-simulated-session`
+- Behavior:
+  - forces `EXECUTION_MODE=mock`
+  - forces `ALLOW_REAL_EXECUTION=false`
+  - uses local persisted mock state (`STATE_STORE_PATH`) plus local mock fills
+  - keeps event logging/report generation intact for after-hours evaluation
+- Boundary:
+  - this is for pipeline validation only
+  - broker-side mock investor execution remains market-session gated
+
+Single-run full trace bundle (recommended for off-hours tuning):
+- Goal: produce one complete explainable artifact from
+  - collected news/global sentiment
+  - strategist LLM prompt/response
+  - scanner Kiwoom-source candidate reduction + selected top stock
+  - monitor entry/exit basis
+  - reporter improvement suggestions
+- Entry point:
+  - `python -m scripts.run_offhours_full_trace_bundle --env-path .env --state-path data/state/offhours_full_trace.json --event-log-path data/logs/offhours_full_trace.jsonl --evidence-log-path data/evidence_ledger/offhours_full_trace.jsonl --report-dir reports/offhours_full_trace --json`
+- Main artifacts:
+  - `reports/offhours_full_trace/offhours_full_trace_<run>.md|json`
+  - `reports/offhours_full_trace/agent_pipeline_trace/*`
+  - `reports/offhours_full_trace/trade_explain/*`
+  - `reports/offhours_full_trace/reporter_analysis/*`
 
 ------------------------------------------------------------------------
 

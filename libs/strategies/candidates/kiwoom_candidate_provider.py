@@ -259,18 +259,22 @@ def build_kiwoom_candidate_rows(
     top_pool: int,
     condition_limit: int,
     include_change_rate: bool = True,
+    include_top_value: bool = True,
+    include_top_volume: bool = True,
+    include_condition_search: bool = True,
     themes: List[str] | None = None,
     include_sector_candidates: bool = True,
     include_watchlist: bool = True,
+    source_weights: Dict[str, float] | None = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Build scanner candidate pool from Kiwoom market data sources."""
     pool_k = max(1, int(top_pool))
     cond_k = max(1, int(condition_limit))
 
-    top_volume = get_top_volume_stocks(state, topk=pool_k)
-    top_value = get_top_trading_value_stocks(state, topk=pool_k)
+    top_volume = get_top_volume_stocks(state, topk=pool_k) if bool(include_top_volume) else []
+    top_value = get_top_trading_value_stocks(state, topk=pool_k) if bool(include_top_value) else []
     top_change = get_top_gainers(state, topk=pool_k) if bool(include_change_rate) else []
-    cond_rows = get_condition_candidates(state, limit=cond_k)
+    cond_rows = get_condition_candidates(state, limit=cond_k) if bool(include_condition_search) and cond_k > 0 else []
     sector_rows = (
         get_sector_candidates(state, themes=themes, limit=pool_k)
         if bool(include_sector_candidates)
@@ -278,16 +282,20 @@ def build_kiwoom_candidate_rows(
     )
     watch_rows = get_watchlist_candidates(state, limit=pool_k) if bool(include_watchlist) else []
 
+    source_weight_map = dict(source_weights or {})
     rows: Dict[str, Dict[str, Any]] = {}
-    _add_ranked_source(rows, symbols=top_value, source="top_value", weight=2.0, decay=0.02)
-    _add_ranked_source(rows, symbols=top_volume, source="top_volume", weight=1.7, decay=0.02)
-    _add_ranked_source(rows, symbols=cond_rows, source="condition_search", weight=2.3, decay=0.01)
-    if bool(include_sector_candidates):
-        _add_ranked_source(rows, symbols=sector_rows, source="sector_theme", weight=1.6, decay=0.02)
-    if bool(include_watchlist):
-        _add_ranked_source(rows, symbols=watch_rows, source="operator_watchlist", weight=0.8, decay=0.01)
-    if bool(include_change_rate):
-        _add_ranked_source(rows, symbols=top_change, source="top_change_rate", weight=1.3, decay=0.02)
+    if bool(include_top_value) and float(source_weight_map.get("top_value", 2.0)) > 0.0:
+        _add_ranked_source(rows, symbols=top_value, source="top_value", weight=float(source_weight_map.get("top_value", 2.0)), decay=0.02)
+    if bool(include_top_volume) and float(source_weight_map.get("top_volume", 1.7)) > 0.0:
+        _add_ranked_source(rows, symbols=top_volume, source="top_volume", weight=float(source_weight_map.get("top_volume", 1.7)), decay=0.02)
+    if bool(include_condition_search) and cond_k > 0 and float(source_weight_map.get("condition_search", 2.3)) > 0.0:
+        _add_ranked_source(rows, symbols=cond_rows, source="condition_search", weight=float(source_weight_map.get("condition_search", 2.3)), decay=0.01)
+    if bool(include_sector_candidates) and float(source_weight_map.get("sector_theme", 1.6)) > 0.0:
+        _add_ranked_source(rows, symbols=sector_rows, source="sector_theme", weight=float(source_weight_map.get("sector_theme", 1.6)), decay=0.02)
+    if bool(include_watchlist) and float(source_weight_map.get("operator_watchlist", 0.8)) > 0.0:
+        _add_ranked_source(rows, symbols=watch_rows, source="operator_watchlist", weight=float(source_weight_map.get("operator_watchlist", 0.8)), decay=0.01)
+    if bool(include_change_rate) and float(source_weight_map.get("top_change_rate", 1.3)) > 0.0:
+        _add_ranked_source(rows, symbols=top_change, source="top_change_rate", weight=float(source_weight_map.get("top_change_rate", 1.3)), decay=0.02)
 
     out = list(rows.values())
     out.sort(
@@ -338,6 +346,14 @@ def build_kiwoom_candidate_rows(
             "condition_search": len(cond_rows),
             "sector_theme": len(sector_rows),
             "operator_watchlist": len(watch_rows),
+        },
+        "source_weights": {
+            "top_value": float(source_weight_map.get("top_value", 2.0)),
+            "top_volume": float(source_weight_map.get("top_volume", 1.7)),
+            "condition_search": float(source_weight_map.get("condition_search", 2.3)),
+            "sector_theme": float(source_weight_map.get("sector_theme", 1.6)),
+            "operator_watchlist": float(source_weight_map.get("operator_watchlist", 0.8)),
+            "top_change_rate": float(source_weight_map.get("top_change_rate", 1.3)),
         },
     }
     return normalized, meta

@@ -6,6 +6,7 @@ from libs.strategies.candidates.kiwoom_candidate_provider import (
     get_top_volume_stocks,
 )
 from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
+from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
 
 
 def test_get_top_volume_stocks_uses_env_injection(monkeypatch):
@@ -36,6 +37,41 @@ def test_build_kiwoom_candidate_rows_aggregates_multi_source_scores():
     assert "top_value" in rows[0]["sources"]
     assert "condition_search" in rows[0]["sources"]
     assert rows[0]["rank_score"] <= 1.0
+
+
+def test_build_kiwoom_candidate_rows_respects_source_flags_and_weights():
+    state = {
+        "mock_top_value_symbols": ["AAA", "BBB"],
+        "mock_top_volume_symbols": ["AAA", "CCC"],
+        "mock_top_change_symbols": ["DDD", "EEE"],
+        "mock_condition_symbols": ["FFF", "GGG"],
+    }
+
+    rows, meta = build_kiwoom_candidate_rows(
+        state=state,
+        top_pool=5,
+        condition_limit=10,
+        include_change_rate=False,
+        include_top_value=True,
+        include_top_volume=True,
+        include_condition_search=False,
+        source_weights={
+            "top_value": 2.5,
+            "top_volume": 1.0,
+            "top_change_rate": 0.0,
+            "condition_search": 0.0,
+        },
+    )
+
+    assert meta["pool_source_mix"]["top_value"] == 2
+    assert meta["pool_source_mix"]["top_volume"] == 2
+    assert meta["pool_source_mix"]["top_change_rate"] == 0
+    assert meta["pool_source_mix"]["condition_search"] == 0
+    assert meta["source_weights"]["top_value"] == 2.5
+    assert meta["source_weights"]["top_change_rate"] == 0.0
+    assert rows[0]["symbol"] == "AAA"
+    assert "top_change_rate" not in rows[0]["sources"]
+    assert "condition_search" not in rows[0]["sources"]
 
 
 def test_scanner_node_uses_kiwoom_candidates_and_theme_filter():
@@ -207,3 +243,33 @@ def test_scanner_kiwoom_pool_can_backfill_from_strategist_candidates(monkeypatch
     assert int(scanner_output.get("candidate_count") or 0) == 6
     assert bool(scanner_output.get("backfill_used")) is True
     assert int(scanner_output.get("backfill_count") or 0) >= 4
+
+
+def test_market_rank_candidate_generator_uses_reader_topk_signature(monkeypatch):
+    calls = {}
+
+    class _FakeReader:
+        def get_top_symbols(self, *, mode, topk=5):  # noqa: ANN001
+            calls["mode"] = getattr(mode, "value", str(mode))
+            calls["topk"] = int(topk)
+            return ["111111", "222222", "333333"]
+
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.setenv("PYTEST_ALLOW_LIVE_KIWOOM_FETCH", "true")
+    monkeypatch.setattr(
+        "libs.read.kiwoom_rank_reader.KiwoomRankReader.from_env",
+        staticmethod(lambda: _FakeReader()),
+    )
+
+    out = MarketRankCandidateGenerator().generate(
+        {
+            "policy": {
+                "candidate_rank_topn": 2,
+                "candidate_rank_mode": "change_rate",
+            }
+        }
+    )
+
+    assert out == ["111111", "222222"]
+    assert calls["topk"] == 2
+    assert calls["mode"] == "change_rate"

@@ -167,6 +167,20 @@
 - `playbook: str`
 - `scanner_bias: "large_cap" | "leader" | "momentum" | "value"`
 - `scanner_priority: list[str]`
+- `scanner_source_policy: object`
+  - additive Kiwoom candidate-source policy derived by Strategist
+  - example keys:
+    - `preferred_sources`
+    - `include_top_value`
+    - `include_top_volume`
+    - `include_change_rate`
+    - `include_condition_search`
+    - `include_sector_candidates`
+    - `include_watchlist`
+    - `top_candidate_pool`
+    - `condition_limit`
+    - `source_weights`
+    - `reason`
 - `trade_aggressiveness: "low" | "medium" | "high"`
 - `risk_tone: "conservative" | "normal" | "aggressive"`
 - `monitor_guidance: "hold_through_noise" | "defensive_exit" | "quick_take_profit"`
@@ -193,6 +207,7 @@
 - `candidate_pool_size: int`
 - `ranked_candidates: list[object]` (Top-N summary)
 - `strategist_playbook: str | null` (additive)
+- `scanner_source_policy: object` (applied strategist source policy snapshot)
 
 ### RankedCandidate (scanner)
 - `symbol: str`

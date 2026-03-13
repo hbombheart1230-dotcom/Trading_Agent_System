@@ -404,6 +404,182 @@ def _extract_themes(state: Dict[str, Any], policy: Dict[str, Any]) -> List[str]:
     return out[:5]
 
 
+def _append_unique_text(out: List[str], seen: set[str], raw: Any) -> None:
+    s = str(raw or "").strip()
+    if not s:
+        return
+    key = s.lower()
+    if key in seen:
+        return
+    seen.add(key)
+    out.append(s)
+
+
+def _theme_to_news_queries(theme: Any) -> List[str]:
+    raw = str(theme or "").strip()
+    if not raw:
+        return []
+    key = raw.lower().replace("-", "_").replace(" ", "_")
+    direct_map: Dict[str, List[str]] = {
+        "semiconductor": ["반도체", "HBM", "메모리"],
+        "semiconductors_hbm": ["반도체", "HBM", "메모리"],
+        "ai": ["AI", "인공지능"],
+        "battery": ["2차전지", "배터리"],
+        "secondary_battery": ["2차전지", "배터리"],
+        "defense": ["방산"],
+        "energy_security": ["에너지", "국제유가", "천연가스"],
+        "renewable_energy": ["재생에너지", "태양광"],
+        "bio": ["바이오", "제약"],
+        "healthcare": ["헬스케어", "바이오"],
+        "finance": ["금융", "은행"],
+        "banks": ["금융", "은행"],
+        "internet": ["인터넷", "플랫폼"],
+        "platform": ["플랫폼", "인터넷"],
+        "shipbuilding": ["조선"],
+        "autos": ["자동차"],
+        "robotics": ["로봇"],
+        "broad_market_leaders": ["시가총액 상위", "주도주"],
+        "quality_factor": ["실적주", "대형주"],
+        "low_volatility": ["방어주", "저변동성"],
+    }
+    if key in direct_map:
+        return list(direct_map[key])
+    terms: List[str] = []
+    if "semiconductor" in key or "memory" in key:
+        terms.extend(["반도체", "HBM"])
+    if key == "ai" or "artificial_intelligence" in key:
+        terms.extend(["AI", "인공지능"])
+    if "energy" in key:
+        terms.extend(["에너지", "국제유가"])
+    if "defense" in key:
+        terms.append("방산")
+    if "battery" in key:
+        terms.extend(["2차전지", "배터리"])
+    if "bank" in key or "finance" in key:
+        terms.extend(["금융", "은행"])
+    if not terms:
+        terms.append(raw)
+    return terms
+
+
+def _build_market_news_query_targets(
+    *,
+    state: Dict[str, Any],
+    policy: Dict[str, Any],
+    global_signal: Dict[str, Any],
+    market_context_inputs: Dict[str, float],
+    theme_hints: List[str],
+) -> List[str]:
+    limit = max(
+        3,
+        _to_int(
+            policy.get("strategist_news_query_limit")
+            if policy.get("strategist_news_query_limit") is not None
+            else os.getenv("STRATEGIST_NEWS_QUERY_LIMIT", "10"),
+            10,
+        ),
+    )
+    out: List[str] = []
+    seen: set[str] = set()
+
+    explicit_targets: List[Any] = []
+    if isinstance(state.get("news_query_targets"), list):
+        explicit_targets.extend(list(state.get("news_query_targets") or []))
+    if isinstance(policy.get("news_query_targets"), list):
+        explicit_targets.extend(list(policy.get("news_query_targets") or []))
+    env_targets = str(os.getenv("NEWS_QUERY_TARGETS", "") or "").strip()
+    if env_targets:
+        explicit_targets.extend([x.strip() for x in env_targets.split(",") if str(x).strip()])
+    for raw in explicit_targets:
+        _append_unique_text(out, seen, raw)
+
+    global_score = _signal_score(global_signal)
+    macro_risk = _to_float(market_context_inputs.get("macro_risk"), 0.0)
+    index_trend = _to_float(market_context_inputs.get("index_trend"), 0.0)
+    if global_score <= -0.20 or macro_risk >= 0.65:
+        base_queries = ["코스피", "미국 증시", "국제유가", "환율", "중동"]
+    elif global_score >= 0.20 and index_trend >= -0.05:
+        base_queries = ["코스피", "코스닥", "미국 증시", "위험선호", "주도주"]
+    else:
+        base_queries = ["코스피", "코스닥", "미국 증시", "증시 전망", "거시경제"]
+    for raw in base_queries:
+        _append_unique_text(out, seen, raw)
+
+    for raw in list(theme_hints or [])[:5]:
+        for q in _theme_to_news_queries(raw):
+            _append_unique_text(out, seen, q)
+
+    if macro_risk >= 0.65:
+        for raw in ("국제유가", "환율", "달러", "중동", "방산", "금"):
+            _append_unique_text(out, seen, raw)
+    elif global_score <= -0.20:
+        for raw in ("환율", "달러", "국채금리", "금", "방어주"):
+            _append_unique_text(out, seen, raw)
+    elif global_score >= 0.20 and index_trend >= 0.10:
+        for raw in ("주도주", "실적주", "수출주"):
+            _append_unique_text(out, seen, raw)
+
+    for key in ("macro_events", "global_events", "major_events"):
+        values = state.get(key)
+        if not isinstance(values, list):
+            continue
+        for raw in list(values)[:3]:
+            _append_unique_text(out, seen, raw)
+        if values:
+            break
+
+    return out[:limit]
+
+
+def _build_market_news_query_reasoning(
+    *,
+    state: Dict[str, Any],
+    policy: Dict[str, Any],
+    global_signal: Dict[str, Any],
+    market_context_inputs: Dict[str, float],
+    theme_hints: List[str],
+) -> str:
+    explicit_targets: List[str] = []
+    if isinstance(state.get("news_query_targets"), list):
+        explicit_targets.extend([str(x).strip() for x in list(state.get("news_query_targets") or []) if str(x).strip()])
+    if isinstance(policy.get("news_query_targets"), list):
+        explicit_targets.extend([str(x).strip() for x in list(policy.get("news_query_targets") or []) if str(x).strip()])
+    env_targets = str(os.getenv("NEWS_QUERY_TARGETS", "") or "").strip()
+    if env_targets:
+        explicit_targets.extend([x.strip() for x in env_targets.split(",") if str(x).strip()])
+
+    global_score = _signal_score(global_signal)
+    macro_risk = _to_float(market_context_inputs.get("macro_risk"), 0.0)
+    index_trend = _to_float(market_context_inputs.get("index_trend"), 0.0)
+
+    reasons: List[str] = [
+        f"global_score={global_score:.2f} macro_risk={macro_risk:.2f} index_trend={index_trend:.2f}"
+    ]
+    if explicit_targets:
+        reasons.append(f"explicit_targets_first={', '.join(explicit_targets[:4])}")
+
+    if global_score <= -0.20 or macro_risk >= 0.65:
+        reasons.append("risk-off macro context added oil/fx/geopolitics market queries")
+    elif global_score >= 0.20 and index_trend >= -0.05:
+        reasons.append("risk-on context added leader/risk-appetite market queries")
+    else:
+        reasons.append("neutral context kept broad market and macro queries")
+
+    normalized_themes = [str(x).strip() for x in list(theme_hints or []) if str(x).strip()]
+    if normalized_themes:
+        reasons.append(f"theme hints expanded queries from {', '.join(normalized_themes[:3])}")
+
+    for key in ("macro_events", "global_events", "major_events"):
+        values = state.get(key)
+        if isinstance(values, list):
+            normalized = [str(x).strip() for x in list(values or []) if str(x).strip()]
+            if normalized:
+                reasons.append(f"macro events appended {', '.join(normalized[:2])}")
+                break
+
+    return "; ".join(reasons)
+
+
 def _default_policy(user_policy: Dict[str, Any] | None) -> Dict[str, Any]:
     p = dict(user_policy or {})
     default_topn = _resolve_top_n_candidates(p)
@@ -634,6 +810,30 @@ def _news_context_summary(
     }
 
 
+def _merge_news_contexts(candidate_ctx: Dict[str, Any], market_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    cand_total = int(candidate_ctx.get("signal_total") or 0)
+    market_total = int(market_ctx.get("signal_total") or 0)
+    total = cand_total + market_total
+    avg_score = 0.0
+    if total > 0:
+        avg_score = (
+            (_to_float(candidate_ctx.get("avg_score"), 0.0) * float(cand_total))
+            + (_to_float(market_ctx.get("avg_score"), 0.0) * float(market_total))
+        ) / float(total)
+    return {
+        "signal_total": int(total),
+        "ok": int(candidate_ctx.get("ok") or 0) + int(market_ctx.get("ok") or 0),
+        "fallback": int(candidate_ctx.get("fallback") or 0) + int(market_ctx.get("fallback") or 0),
+        "unavailable": int(candidate_ctx.get("unavailable") or 0) + int(market_ctx.get("unavailable") or 0),
+        "avg_score": float(_clamp(avg_score, -1.0, 1.0)),
+        "headline_count": int(candidate_ctx.get("headline_count") or 0) + int(market_ctx.get("headline_count") or 0),
+        "candidate_signal_total": int(cand_total),
+        "candidate_headline_count": int(candidate_ctx.get("headline_count") or 0),
+        "market_signal_total": int(market_total),
+        "market_headline_count": int(market_ctx.get("headline_count") or 0),
+    }
+
+
 def _theme_strength_map(
     *,
     themes: List[str],
@@ -803,6 +1003,129 @@ def _monitor_policy(
     }
 
 
+def _scanner_source_policy(
+    *,
+    playbook: str,
+    risk_tone: str,
+    trade_aggressiveness: str,
+    market_regime: str,
+    themes: List[str],
+) -> Dict[str, Any]:
+    normalized_playbook = str(playbook or "").strip().lower()
+    normalized_tone = str(risk_tone or "").strip().lower()
+    normalized_aggr = str(trade_aggressiveness or "").strip().lower()
+    normalized_regime = str(market_regime or "").strip().lower()
+    has_themes = bool(list(themes or []))
+
+    policy: Dict[str, Any] = {
+        "preferred_sources": ["top_value", "top_volume", "condition_search"],
+        "include_top_value": True,
+        "include_top_volume": True,
+        "include_change_rate": True,
+        "include_condition_search": True,
+        "include_sector_candidates": has_themes,
+        "include_watchlist": True,
+        "top_candidate_pool": 30,
+        "condition_limit": 200,
+        "source_weights": {
+            "top_value": 2.0,
+            "top_volume": 1.7,
+            "condition_search": 2.3,
+            "sector_theme": 1.6,
+            "operator_watchlist": 0.8,
+            "top_change_rate": 1.3,
+        },
+        "reason": "balanced source mix across liquidity, condition, and momentum sources",
+    }
+
+    if normalized_playbook == "defensive" or normalized_tone == "conservative" or normalized_regime == "risk_off":
+        policy.update(
+            {
+                "preferred_sources": ["top_value", "top_volume", "sector_theme", "operator_watchlist"],
+                "include_change_rate": False,
+                "include_condition_search": False,
+                "include_sector_candidates": has_themes,
+                "include_watchlist": True,
+                "top_candidate_pool": 18,
+                "condition_limit": 0,
+                "source_weights": {
+                    "top_value": 2.2,
+                    "top_volume": 1.9,
+                    "condition_search": 0.0,
+                    "sector_theme": 1.8 if has_themes else 0.0,
+                    "operator_watchlist": 1.1,
+                    "top_change_rate": 0.0,
+                },
+                "reason": "defensive frame prioritizes liquid leaders and suppresses fast-mover sources",
+            }
+        )
+    elif normalized_playbook == "breakout":
+        policy.update(
+            {
+                "preferred_sources": ["top_change_rate", "condition_search", "top_volume", "sector_theme"],
+                "include_change_rate": True,
+                "include_condition_search": True,
+                "include_sector_candidates": has_themes,
+                "include_watchlist": normalized_aggr != "high",
+                "top_candidate_pool": 32,
+                "condition_limit": 240,
+                "source_weights": {
+                    "top_value": 1.4,
+                    "top_volume": 1.9,
+                    "condition_search": 2.4,
+                    "sector_theme": 1.7 if has_themes else 0.0,
+                    "operator_watchlist": 0.5 if normalized_aggr == "high" else 0.8,
+                    "top_change_rate": 2.2,
+                },
+                "reason": "breakout frame prioritizes fast movers, condition hits, and volume expansion",
+            }
+        )
+    elif normalized_playbook == "pullback":
+        policy.update(
+            {
+                "preferred_sources": ["top_value", "condition_search", "sector_theme", "top_volume"],
+                "include_change_rate": False,
+                "include_condition_search": True,
+                "include_sector_candidates": has_themes,
+                "include_watchlist": True,
+                "top_candidate_pool": 24,
+                "condition_limit": 180,
+                "source_weights": {
+                    "top_value": 2.1,
+                    "top_volume": 1.5,
+                    "condition_search": 2.0,
+                    "sector_theme": 1.9 if has_themes else 0.0,
+                    "operator_watchlist": 0.9,
+                    "top_change_rate": 0.0,
+                },
+                "reason": "pullback frame prioritizes liquid leaders with condition confirmation over raw gainers",
+            }
+        )
+    elif normalized_playbook == "reversal":
+        policy.update(
+            {
+                "preferred_sources": ["condition_search", "top_change_rate", "operator_watchlist", "top_volume"],
+                "include_change_rate": True,
+                "include_condition_search": True,
+                "include_sector_candidates": has_themes,
+                "include_watchlist": True,
+                "top_candidate_pool": 22,
+                "condition_limit": 220,
+                "source_weights": {
+                    "top_value": 1.3,
+                    "top_volume": 1.5,
+                    "condition_search": 2.2,
+                    "sector_theme": 1.3 if has_themes else 0.0,
+                    "operator_watchlist": 1.0,
+                    "top_change_rate": 1.9,
+                },
+                "reason": "reversal frame leans on condition hits and sharp movers with watchlist context",
+            }
+        )
+
+    return policy
+
+
 def _report_focus(*, playbook: str, themes: List[str]) -> List[str]:
     if playbook == "defensive":
         return ["theme_accuracy", "exit_quality", "overtrading", "guard_blocks"]
@@ -884,6 +1207,14 @@ def _key_events(
         f"status={str(global_signal.get('status') or '')} "
         f"source={str(global_signal.get('source') or '')}"
     )
+    components = global_signal.get("components") if isinstance(global_signal.get("components"), dict) else {}
+    if components:
+        add(
+            "us_indices "
+            f"sp500={_to_float(components.get('sp500_ret'), 0.0) * 100.0:.2f}% "
+            f"nasdaq={_to_float(components.get('nasdaq_ret'), 0.0) * 100.0:.2f}% "
+            f"dow={_to_float(components.get('dow_ret'), 0.0) * 100.0:.2f}%"
+        )
     add(
         "market_context "
         f"index_trend={_to_float(market_context_inputs.get('index_trend'), 0.0):.3f} "
@@ -1018,6 +1349,21 @@ def _sample_news_for_evidence(
     return out
 
 
+def _merge_news_samples(*samples: Dict[str, Any], limit: int = 12) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        for key, value in sample.items():
+            if len(out) >= limit:
+                return out
+            norm_key = str(key or "").strip()
+            if not norm_key or norm_key in out:
+                continue
+            out[norm_key] = value
+    return out
+
+
 def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     policy = _default_policy(state.get("policy"))
     k = _resolve_top_n_candidates(policy)
@@ -1106,6 +1452,24 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # Keep canonical state-level score and signal shape for downstream nodes.
     state["global_sentiment"] = {"score": float(gs)}
     state["global_sentiment_signal"] = dict(global_signal)
+    market_context_inputs = _extract_market_context_inputs(state)
+    theme_hints = _extract_themes(state, policy)
+    news_query_targets = _build_market_news_query_targets(
+        state=state,
+        policy=policy,
+        global_signal=global_signal,
+        market_context_inputs=market_context_inputs,
+        theme_hints=theme_hints,
+    )
+    news_query_reasoning = _build_market_news_query_reasoning(
+        state=state,
+        policy=policy,
+        global_signal=global_signal,
+        market_context_inputs=market_context_inputs,
+        theme_hints=theme_hints,
+    )
+    state["news_query_targets"] = list(news_query_targets)
+    state["news_query_reasoning"] = news_query_reasoning
 
     # policy adjustment based on global sentiment
     # - risk-off: max_risk decreases, min_confidence increases
@@ -1128,18 +1492,35 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # 3) News analysis (score + data-quality signal)
     news_items_by_symbol = {s: [] for s in symbols}
     news_signal_map: Dict[str, Dict[str, Any]] = {}
+    market_news_items_by_target = {q: [] for q in news_query_targets}
+    market_news_signal_map: Dict[str, Dict[str, Any]] = {}
 
     if bool(policy.get("use_news_analysis", False)) or state.get("mock_news_sentiment") is not None:
         # mock_news_sentiment path is handled inside score_news_sentiment_signal.
         if bool(policy.get("use_news_analysis", False)) or state.get("mock_news_items") is not None:
-            news_items_by_symbol = collect_news_items(symbols, state=state, policy=policy)
+            if symbols:
+                news_items_by_symbol = collect_news_items(symbols, state=state, policy=policy)
+            if news_query_targets:
+                market_news_items_by_target = collect_news_items(news_query_targets, state=state, policy=policy)
         try:
-            news_signal_map = score_news_sentiment_signal(
-                news_items_by_symbol,
-                state=state,
-                policy=policy,
-                symbols=symbols,
-            )
+            if symbols:
+                news_signal_map = score_news_sentiment_signal(
+                    news_items_by_symbol,
+                    state=state,
+                    policy=policy,
+                    symbols=symbols,
+                )
+            else:
+                news_signal_map = {}
+            if news_query_targets:
+                market_news_signal_map = score_news_sentiment_signal(
+                    market_news_items_by_target,
+                    state=state,
+                    policy=policy,
+                    symbols=news_query_targets,
+                )
+            else:
+                market_news_signal_map = {}
         except Exception:
             news_signal_map = {
                 s: make_signal(
@@ -1151,6 +1532,16 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 for s in symbols
             }
+            market_news_signal_map = {
+                q: make_signal(
+                    score=0.0,
+                    status=SIGNAL_STATUS_FALLBACK,
+                    source="strategist_node",
+                    reason="market_news_sentiment_exception",
+                    ts=now,
+                )
+                for q in news_query_targets
+            }
     else:
         news_signal_map = {
             s: make_signal(
@@ -1159,13 +1550,25 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 source="news_policy",
                 reason="news_analysis_disabled",
                 ts=now,
+                )
+                for s in symbols
+        }
+        market_news_signal_map = {
+            q: make_signal(
+                score=0.0,
+                status=SIGNAL_STATUS_FALLBACK,
+                source="news_policy",
+                reason="news_analysis_disabled",
+                ts=now,
             )
-            for s in symbols
+            for q in news_query_targets
         }
 
     news_sent = {s: _signal_score(news_signal_map.get(s)) for s in symbols}
-    news_avg_score = (sum(news_sent.values()) / float(len(news_sent))) if news_sent else 0.0
-    news_ctx = _news_context_summary(news_signal_map, news_items_by_symbol)
+    candidate_news_ctx = _news_context_summary(news_signal_map, news_items_by_symbol)
+    market_news_ctx = _news_context_summary(market_news_signal_map, market_news_items_by_target)
+    news_ctx = _merge_news_contexts(candidate_news_ctx, market_news_ctx)
+    news_avg_score = _to_float(news_ctx.get("avg_score"), 0.0)
 
     state["policy"] = policy
     state["candidates"] = candidates
@@ -1173,6 +1576,12 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["news_items"] = news_items_by_symbol
     state["news_sentiment"] = news_sent
     state["news_sentiment_signal"] = news_signal_map
+    state["candidate_news_items"] = dict(news_items_by_symbol)
+    state["candidate_news_context"] = dict(candidate_news_ctx)
+    state["market_news_items"] = dict(market_news_items_by_target)
+    state["market_news_sentiment"] = {q: _signal_score(market_news_signal_map.get(q)) for q in news_query_targets}
+    state["market_news_sentiment_signal"] = dict(market_news_signal_map)
+    state["market_news_context"] = dict(market_news_ctx)
 
     # 4) Candidate rerank (M18-5): apply weights and negative-news filter, then risk-off count reduction
     w_news = float(policy.get("candidate_news_weight", 0.2))
@@ -1210,7 +1619,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         candidates = candidates[:k]
 
     state["candidates"] = candidates
-    themes = _extract_themes(state, policy)
+    themes = list(theme_hints)
     pre_ai_overrides = _extract_ai_overrides(state, policy)
     themes = _merge_override_text_list(themes, pre_ai_overrides.get("themes"), limit=5)
     candidate_symbols = [str(c.get("symbol") or "") for c in candidates if str(c.get("symbol") or "").strip()]
@@ -1229,7 +1638,6 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["themes"] = themes
     state["candidate_symbols"] = list(candidate_symbols)
 
-    market_context_inputs = _extract_market_context_inputs(state)
     regime_score = _compose_regime_score(
         global_score=gs,
         news_score=news_avg_score,
@@ -1288,12 +1696,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     llm_payload = {
-        "global_sentiment_signal": {
-            "score": _signal_score(global_signal),
-            "status": str(global_signal.get("status") or ""),
-            "source": str(global_signal.get("source") or ""),
-            "reason": str(global_signal.get("reason") or ""),
-        },
+        "global_sentiment_signal": dict(global_signal),
         "news_context": dict(news_ctx),
         "market_context_inputs": dict(market_context_inputs),
         "market_regime_hint": market_regime,
@@ -1302,27 +1705,40 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "playbook_hint": playbook,
         "theme_strength": dict(theme_strength),
         "themes_hint": list(themes),
+        "news_query_targets": list(news_query_targets),
+        "market_news_sample": _sample_news_for_evidence(
+            market_news_items_by_target,
+            max_symbols=6,
+            max_items_per_symbol=2,
+        ),
+        "candidate_news_sample": _sample_news_for_evidence(
+            news_items_by_symbol,
+            max_symbols=6,
+            max_items_per_symbol=2,
+        ),
         "candidate_symbols_hint": list(candidate_symbols)[:10],
         "key_events_hint": list(key_events),
     }
+    candidate_news_sample = _sample_news_for_evidence(news_items_by_symbol)
+    market_news_sample = _sample_news_for_evidence(market_news_items_by_target)
     try:
         record_raw_input(
             run_id=str(state.get("run_id") or "strategist-unknown"),
             agent="strategist",
             stage="theme_selection",
             raw_input={
-                "collected_news": _sample_news_for_evidence(news_items_by_symbol),
-                "global_sentiment_inputs": {
-                    "score": _signal_score(global_signal),
-                    "status": str(global_signal.get("status") or ""),
-                    "source": str(global_signal.get("source") or ""),
-                    "reason": str(global_signal.get("reason") or ""),
-                },
+                "collected_news": _merge_news_samples(market_news_sample, candidate_news_sample),
+                "collected_market_news": market_news_sample,
+                "collected_candidate_news": candidate_news_sample,
+                "news_query_targets": list(news_query_targets),
+                "global_sentiment_inputs": dict(global_signal),
                 "macro_indicators": dict(market_context_inputs),
                 "market_summary": {
                     "market_regime_hint": market_regime,
                     "market_sentiment_hint": market_sentiment,
                     "market_structure_hint": market_structure,
+                    "news_query_targets": list(news_query_targets),
+                    "news_query_reasoning": news_query_reasoning,
                     "candidate_symbols_hint": list(candidate_symbols)[:10],
                 },
                 "llm_payload": dict(llm_payload),
@@ -1383,6 +1799,13 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             trade_aggressiveness=trade_aggressiveness,
             risk_tone=risk_tone,
         )
+    scanner_source_policy = _scanner_source_policy(
+        playbook=playbook,
+        risk_tone=risk_tone,
+        trade_aggressiveness=trade_aggressiveness,
+        market_regime=market_regime,
+        themes=list(themes),
+    )
 
     strategic_answers = _build_strategic_answers(
         market_regime=market_regime,
@@ -1421,6 +1844,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "playbook": playbook,
         "scanner_bias": scanner_bias,
         "scanner_priority": list(scanner_priority),
+        "scanner_source_policy": dict(scanner_source_policy),
         "trade_aggressiveness": trade_aggressiveness,
         "risk_tone": risk_tone,
     }
@@ -1433,6 +1857,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         playbook=playbook,
         scanner_bias=scanner_bias if scanner_bias in ("large_cap", "leader", "momentum", "value") else "leader",
         scanner_priority=list(scanner_priority),
+        scanner_source_policy=dict(scanner_source_policy),
         trade_aggressiveness=trade_aggressiveness,
         risk_tone=risk_tone if risk_tone in ("conservative", "normal", "aggressive") else "normal",
         monitor_guidance=(
@@ -1452,6 +1877,10 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["regime_score"] = float(regime_score)
     strategist_output["sentiment_score"] = float(sentiment_score)
     strategist_output["news_context"] = dict(news_ctx)
+    strategist_output["candidate_news_context"] = dict(candidate_news_ctx)
+    strategist_output["market_news_context"] = dict(market_news_ctx)
+    strategist_output["news_query_targets"] = list(news_query_targets)
+    strategist_output["news_query_reasoning"] = news_query_reasoning
     strategist_output["market_context_inputs"] = dict(market_context_inputs)
     strategist_output["theme_strength"] = dict(theme_strength)
     strategist_output["playbook"] = playbook
@@ -1476,6 +1905,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "playbook": playbook,
             "scanner_bias": scanner_bias,
             "scanner_priority": list(scanner_priority),
+            "scanner_source_policy": dict(scanner_source_policy),
             "trade_aggressiveness": trade_aggressiveness,
             "risk_tone": risk_tone,
             "monitor_guidance": monitor_guidance,
@@ -1483,6 +1913,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "regime_score": float(regime_score),
             "sentiment_score": float(sentiment_score),
             "report_focus": list(report_focus)[:3],
+            "news_query_targets": list(news_query_targets)[:6],
+            "news_query_reasoning": news_query_reasoning,
             "llm_frame_status": str(llm_meta.get("status") or "disabled"),
             "llm_frame_applied": bool(llm_overrides),
             "llm_frame_model": str(llm_meta.get("model") or ""),
@@ -1500,10 +1932,13 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "playbook": playbook,
             "scanner_bias": scanner_bias,
             "scanner_priority": list(scanner_priority)[:5],
+            "scanner_source_policy": dict(scanner_source_policy),
             "trade_aggressiveness": trade_aggressiveness,
             "risk_tone": risk_tone,
             "monitor_guidance": monitor_guidance,
             "report_focus": list(report_focus)[:5],
+            "news_query_targets": list(news_query_targets)[:6],
+            "news_query_reasoning": news_query_reasoning,
             "regime_score": float(regime_score),
             "sentiment_score": float(sentiment_score),
             "key_events": list(key_events)[:3],
@@ -1525,10 +1960,13 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "playbook": playbook,
                 "scanner_bias": scanner_bias,
                 "scanner_priority": list(scanner_priority),
+                "scanner_source_policy": dict(scanner_source_policy),
                 "trade_aggressiveness": trade_aggressiveness,
                 "risk_tone": risk_tone,
                 "monitor_guidance": monitor_guidance,
                 "report_focus": list(report_focus),
+                "news_query_targets": list(news_query_targets),
+                "news_query_reasoning": news_query_reasoning,
                 "candidate_symbols": list(state.get("candidate_symbols") or []),
             },
             decision_link={

@@ -119,8 +119,8 @@ def _extract_title(sample_row: str) -> str:
     return s[:120]
 
 
-def _summarize_collected_news(raw_input: Dict[str, Any], *, max_titles: int = 5) -> Dict[str, Any]:
-    collected = raw_input.get("collected_news") if isinstance(raw_input.get("collected_news"), dict) else {}
+def _summarize_collected_news(raw_input: Dict[str, Any], *, key: str = "collected_news", max_titles: int = 5) -> Dict[str, Any]:
+    collected = raw_input.get(key) if isinstance(raw_input.get(key), dict) else {}
     by_symbol: Dict[str, Dict[str, Any]] = {}
     total_headline_count = 0
     sample_titles: List[str] = []
@@ -228,10 +228,20 @@ def _build_markdown(out: Dict[str, Any]) -> str:
         f"headlines={_safe_int(strategist.get('news_total_headlines'), 0)} "
         f"symbols={_safe_int(strategist.get('news_symbol_count'), 0)}"
     )
+    if strategist.get("news_query_targets"):
+        lines.append(
+            f"- news_query_targets: `{json.dumps(strategist.get('news_query_targets') or [], ensure_ascii=False)}`"
+        )
+    if strategist.get("news_query_reasoning"):
+        lines.append(f"- news_query_reasoning: {strategist.get('news_query_reasoning')}")
     lines.append(
         f"- global_sentiment: score={_safe_float(strategist.get('global_sentiment_score'), 0.0):.4f} "
         f"status={strategist.get('global_sentiment_status')} source={strategist.get('global_sentiment_source')}"
     )
+    if strategist.get("global_index_moves"):
+        lines.append(
+            f"- global_index_moves: `{json.dumps(strategist.get('global_index_moves') or {}, ensure_ascii=False)}`"
+        )
     lines.append(
         f"- llm: provider={strategist.get('llm_provider')} model={strategist.get('llm_model')} "
         f"ok={strategist.get('llm_ok')} latency_ms={strategist.get('llm_latency_ms')}"
@@ -240,6 +250,10 @@ def _build_markdown(out: Dict[str, Any]) -> str:
     lines.append(f"- llm_response_captured: **{bool(strategist.get('llm_response'))}**")
     lines.append(f"- themes: `{json.dumps(strategist.get('themes') or [], ensure_ascii=False)}`")
     lines.append(f"- playbook: **{strategist.get('playbook')}**")
+    if strategist.get("scanner_source_policy"):
+        lines.append(
+            f"- scanner_source_policy: `{json.dumps(strategist.get('scanner_source_policy') or {}, ensure_ascii=False)}`"
+        )
     if strategist.get("news_sample_titles"):
         lines.append(
             f"- news_sample_titles: `{json.dumps(strategist.get('news_sample_titles') or [], ensure_ascii=False)}`"
@@ -252,11 +266,19 @@ def _build_markdown(out: Dict[str, Any]) -> str:
         f"after={_safe_int(scanner.get('candidate_pool_after_filter'), 0)}"
     )
     lines.append(f"- kiwoom_source_mix: `{json.dumps(scanner.get('kiwoom_source_mix') or {}, ensure_ascii=False)}`")
+    if scanner.get("scanner_source_policy"):
+        lines.append(
+            f"- scanner_source_policy: `{json.dumps(scanner.get('scanner_source_policy') or {}, ensure_ascii=False)}`"
+        )
     lines.append(f"- top_stock: **{scanner.get('top_stock')}** top_score={scanner.get('top_score')}")
     lines.append(f"- top_ranked_symbols: `{json.dumps(scanner.get('top_ranked_symbols') or [], ensure_ascii=False)}`")
     lines.append(
         f"- score_breakdown_summary: `{json.dumps(scanner.get('score_breakdown_summary') or {}, ensure_ascii=False)}`"
     )
+    if scanner.get("selected_candidate"):
+        lines.append(
+            f"- selected_candidate: `{json.dumps(scanner.get('selected_candidate') or {}, ensure_ascii=False)}`"
+        )
     lines.append("")
     lines.append("## Monitor")
     lines.append(f"- selected_symbol: **{monitor.get('selected_symbol')}**")
@@ -269,6 +291,16 @@ def _build_markdown(out: Dict[str, Any]) -> str:
         f"min_hold_blocked={monitor.get('min_hold_blocked')} "
         f"sell_cooldown_blocked={monitor.get('sell_cooldown_blocked')}"
     )
+    lines.append(
+        f"- thresholds: `{json.dumps(monitor.get('thresholds') or {}, ensure_ascii=False)}` "
+        f"min_hold={_safe_int(monitor.get('min_hold_sec'), 0)} "
+        f"sell_cooldown={_safe_int(monitor.get('sell_cooldown_sec'), 0)} "
+        f"confirm_ticks={_safe_int(monitor.get('exit_confirm_ticks'), 0)}"
+    )
+    if monitor.get("strategy_frame_adjustments"):
+        lines.append(
+            f"- strategy_frame_adjustments: `{json.dumps(monitor.get('strategy_frame_adjustments') or [], ensure_ascii=False)}`"
+        )
     lines.append("")
     lines.append("## Supervisor")
     lines.append(
@@ -379,15 +411,27 @@ def generate_agent_pipeline_trace_report(
                 strat_parsed = dict(po)
 
     news_summary = _summarize_collected_news(strat_raw, max_titles=max_news_titles)
+    market_news_summary = _summarize_collected_news(strat_raw, key="collected_market_news", max_titles=max_news_titles)
+    candidate_news_summary = _summarize_collected_news(strat_raw, key="collected_candidate_news", max_titles=max_news_titles)
     global_inputs = strat_raw.get("global_sentiment_inputs") if isinstance(strat_raw.get("global_sentiment_inputs"), dict) else {}
+    global_index_moves = global_inputs.get("index_moves") if isinstance(global_inputs.get("index_moves"), dict) else {}
+    global_macro_moves = global_inputs.get("macro_moves") if isinstance(global_inputs.get("macro_moves"), dict) else {}
     llm_payload = strat_raw.get("llm_payload") if isinstance(strat_raw.get("llm_payload"), dict) else {}
     news_context = llm_payload.get("news_context") if isinstance(llm_payload.get("news_context"), dict) else {}
+    news_query_targets = list(strat_raw.get("news_query_targets") or []) if isinstance(strat_raw.get("news_query_targets"), list) else []
+    market_summary = strat_raw.get("market_summary") if isinstance(strat_raw.get("market_summary"), dict) else {}
+    news_query_reasoning = str(strategist_summary_payload.get("news_query_reasoning") or "").strip()
+    if not news_query_reasoning:
+        news_query_reasoning = str(strat_parsed.get("news_query_reasoning") or "").strip()
+    if not news_query_reasoning:
+        news_query_reasoning = str(market_summary.get("news_query_reasoning") or "").strip()
     news_source = "none"
-    if _safe_int(news_summary.get("total_headline_count"), 0) > 0:
+    effective_news_summary = market_news_summary if _safe_int(market_news_summary.get("total_headline_count"), 0) > 0 else news_summary
+    if _safe_int(effective_news_summary.get("total_headline_count"), 0) > 0:
         # best-effort source inference from sample strings
         first = ""
-        if news_summary.get("sample_titles"):
-            first = str((news_summary.get("sample_titles") or [""])[0])
+        if effective_news_summary.get("sample_titles"):
+            first = str((effective_news_summary.get("sample_titles") or [""])[0])
         news_source = "naver_or_yfinance"
         if "Reuters" in first or "Yahoo" in first:
             news_source = "yfinance"
@@ -405,6 +449,19 @@ def generate_agent_pipeline_trace_report(
             scanner_raw = dict(ri)
     scanner_candidates = scanner_raw.get("candidates") if isinstance(scanner_raw.get("candidates"), list) else []
     scanner_source_mix = _summarize_scanner_sources([c for c in scanner_candidates if isinstance(c, dict)])
+    raw_strategist_guidance = scanner_raw.get("strategist_guidance") if isinstance(scanner_raw.get("strategist_guidance"), dict) else {}
+    scanner_source_policy = (
+        scanner_trace.get("scanner_source_policy")
+        if isinstance(scanner_trace.get("scanner_source_policy"), dict)
+        else raw_strategist_guidance.get("scanner_source_policy")
+    )
+    if not isinstance(scanner_source_policy, dict):
+        scanner_source_policy = {}
+    kiwoom_source_mix = (
+        scanner_trace.get("kiwoom_pool_source_mix")
+        if isinstance(scanner_trace.get("kiwoom_pool_source_mix"), dict)
+        else scanner_source_mix
+    )
 
     reporter_rows = [r for r in evidence_rows if str(r.get("agent") or "").lower() == "reporter"]
     reporter_in_run = bool(reporter_rows)
@@ -441,11 +498,19 @@ def generate_agent_pipeline_trace_report(
             "news_symbol_count": _safe_int(news_summary.get("symbol_count"), 0),
             "news_by_symbol": news_summary.get("by_symbol") or {},
             "news_sample_titles": news_summary.get("sample_titles") or [],
+            "news_query_targets": news_query_targets,
+            "news_query_reasoning": news_query_reasoning,
+            "market_news_total_headlines": _safe_int(market_news_summary.get("total_headline_count"), 0),
+            "market_news_query_count": _safe_int(market_news_summary.get("symbol_count"), 0),
+            "market_news_sample_titles": market_news_summary.get("sample_titles") or [],
+            "candidate_news_total_headlines": _safe_int(candidate_news_summary.get("total_headline_count"), 0),
             "news_context": news_context,
             "global_sentiment_score": _safe_float(global_inputs.get("score"), 0.0),
             "global_sentiment_status": str(global_inputs.get("status") or ""),
             "global_sentiment_source": str(global_inputs.get("source") or ""),
             "global_sentiment_reason": str(global_inputs.get("reason") or ""),
+            "global_index_moves": dict(global_index_moves),
+            "global_macro_moves": dict(global_macro_moves),
             "llm_provider": str(strategist_llm_payload.get("provider") or ""),
             "llm_model": str(strategist_llm_payload.get("model") or ""),
             "llm_ok": bool(strategist_llm_payload.get("ok")),
@@ -457,6 +522,7 @@ def generate_agent_pipeline_trace_report(
             "playbook": str(strategist_summary_payload.get("playbook") or ""),
             "scanner_bias": str(strategist_summary_payload.get("scanner_bias") or ""),
             "scanner_priority": list(strategist_summary_payload.get("scanner_priority") or []),
+            "scanner_source_policy": dict(strategist_summary_payload.get("scanner_source_policy") or {}),
             "monitor_guidance": str(strategist_summary_payload.get("monitor_guidance") or ""),
             "risk_tone": str(strategist_summary_payload.get("risk_tone") or ""),
         },
@@ -476,7 +542,9 @@ def generate_agent_pipeline_trace_report(
             "top_score": scanner_summary_payload.get("top_score"),
             "top_ranked_symbols": list(scanner_summary_payload.get("top_ranked_symbols") or []),
             "score_breakdown_summary": dict(scanner_trace.get("score_breakdown_summary") or {}),
-            "kiwoom_source_mix": scanner_source_mix,
+            "selected_candidate": dict(scanner_trace.get("selected_candidate") or {}),
+            "kiwoom_source_mix": dict(kiwoom_source_mix or {}),
+            "scanner_source_policy": dict(scanner_source_policy or {}),
             "candidate_preview": [c for c in scanner_candidates[:10] if isinstance(c, dict)],
         },
         "monitor": {
@@ -484,10 +552,15 @@ def generate_agent_pipeline_trace_report(
             "entry_reason": str(monitor_trace.get("entry_reason") or ""),
             "exit_reason": str(monitor_trace.get("exit_reason") or ""),
             "monitor_reason": str(monitor_trace.get("monitor_reason") or monitor_summary_payload.get("monitor_reason") or ""),
+            "thresholds": dict(monitor_trace.get("thresholds") or {}),
             "position_age_seconds": monitor_trace.get("position_age_seconds"),
+            "min_hold_sec": _safe_int(monitor_trace.get("min_hold_sec"), 0),
+            "sell_cooldown_sec": _safe_int(monitor_trace.get("sell_cooldown_sec"), 0),
+            "exit_confirm_ticks": _safe_int(monitor_trace.get("exit_confirm_ticks"), 0),
             "min_hold_blocked": bool(monitor_trace.get("min_hold_blocked")),
             "sell_cooldown_blocked": bool(monitor_trace.get("sell_cooldown_blocked")),
             "exit_triggered": bool(monitor_summary_payload.get("exit_triggered")),
+            "strategy_frame_adjustments": list(monitor_trace.get("strategy_frame_adjustments") or []),
         },
         "supervisor": {
             "verdict": str(supervisor_trace.get("verdict") or ""),

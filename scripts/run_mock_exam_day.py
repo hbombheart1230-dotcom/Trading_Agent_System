@@ -273,6 +273,24 @@ def _start_live_loop_background(
     return out
 
 
+def _start_background_command(
+    *,
+    step_id: str,
+    command: Sequence[str],
+    env: Dict[str, str],
+    stdout_path: Path,
+    stderr_path: Path,
+) -> Dict[str, Any]:
+    out = _start_live_loop_background(
+        command=command,
+        env=env,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+    )
+    out["step_id"] = str(step_id)
+    return out
+
+
 def _runtime_mode_checks(env_obj: Dict[str, str]) -> Dict[str, Any]:
     runtime_profile = str(env_obj.get("RUNTIME_PROFILE", "")).strip().lower()
     kiwoom_mode = str(env_obj.get("KIWOOM_MODE", "")).strip().lower()
@@ -449,6 +467,43 @@ def _run_session(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
     dt_override = _parse_kst_datetime(str(args.now_kst or "")) if args.now_kst else None
     dt = dt_override or now_kst()
     if not bool(MarketHours().is_open(dt)):
+        if bool(getattr(args, "allow_offhours_simulated_session", False)):
+            cmd = [
+                str(common["python_path"]),
+                "-m",
+                "scripts.run_offhours_validation_loop",
+                "--env-path",
+                str(common["env_path"]),
+                "--event-log-path",
+                str(common["event_log_path"]),
+                "--sleep-sec",
+                str(int(args.sleep_sec)),
+                "--lock-path",
+                str(common["lock_path"]),
+                "--lock-stale-sec",
+                str(int(common["lock_stale_sec"])),
+            ]
+            if common.get("state_path"):
+                cmd += ["--state-path", str(common["state_path"])]
+            probe_symbol = str(getattr(args, "probe_symbol", "") or os.getenv("SYMBOL", "005930")).strip() or "005930"
+            if probe_symbol:
+                cmd += ["--symbol", probe_symbol]
+            proc_env = os.environ.copy()
+            proc_env["ENV_PATH"] = str(common["env_path"])
+            step = _start_background_command(
+                step_id="session.offhours_validation_loop",
+                command=cmd,
+                env=proc_env,
+                stdout_path=Path(common["session_stdout_path"]),
+                stderr_path=Path(common["session_stderr_path"]),
+            )
+            out["steps"].append(step)
+            out["probe_mode"] = "offhours_simulated_session"
+            out["ok"] = bool(step.get("ok"))
+            if not out["ok"]:
+                out["failure_reason"] = str(step.get("error") or "offhours_validation_launch_failed")
+            return out
+
         if not bool(getattr(args, "allow_offhours_session_probe", False)):
             out["failure_reason"] = f"market_closed:{dt.isoformat()}"
             return out
@@ -634,6 +689,7 @@ def _render_report_md(obj: Dict[str, Any]) -> str:
         f"- phase: **{obj.get('phase')}**",
         f"- ok: **{bool(obj.get('ok'))}**",
         f"- event_log_path: `{obj.get('event_log_path')}`",
+        f"- state_path: `{obj.get('state_path')}`",
         f"- report_root: `{obj.get('report_root')}`",
         "",
     ]
@@ -667,6 +723,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--env-path", default=".env")
     p.add_argument("--report-dir", default="reports/mock_exam_day")
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
+    p.add_argument("--state-path", default=os.getenv("STATE_STORE_PATH", ""))
     p.add_argument("--sleep-sec", type=int, default=_to_int(os.getenv("SCAN_INTERVAL_SEC", "60"), 60))
     p.add_argument("--python-path", default=sys.executable)
     p.add_argument("--timeout-sec", type=int, default=1800)
@@ -679,6 +736,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--allow-offhours-session-probe",
         action="store_true",
         help="When market is closed, run one-shot integrated-chain probe instead of failing session phase.",
+    )
+    p.add_argument(
+        "--allow-offhours-simulated-session",
+        action="store_true",
+        help="When market is closed, start continuous off-hours validation loop with local mock fills.",
     )
     p.add_argument("--probe-symbol", default=os.getenv("SYMBOL", "005930"))
     p.add_argument("--probe-price", type=float, default=70000.0)
@@ -701,6 +763,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "env_path": _resolve_path(str(args.env_path), ".env"),
         "report_root": report_root,
         "event_log_path": _resolve_path(str(args.event_log_path), "data/logs/events.jsonl"),
+        "state_path": (
+            _resolve_path(str(args.state_path), "data/state.json")
+            if str(args.state_path or "").strip()
+            else None
+        ),
         "python_path": _resolve_path(str(args.python_path), str(sys.executable)),
         "timeout_sec": int(args.timeout_sec),
         "lock_path": _resolve_path(str(args.lock_path), "data/state/m13_live_loop.lock"),
@@ -728,6 +795,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "started_at": started_at,
         "finished_at": _utc_now_iso(),
         "event_log_path": str(common["event_log_path"]),
+        "state_path": str(common["state_path"]) if common.get("state_path") else "",
         "report_root": str(report_root),
         "phase_result": phase_result,
     }

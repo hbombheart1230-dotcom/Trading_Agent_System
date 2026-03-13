@@ -48,8 +48,14 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                     "playbook": "breakout",
                     "scanner_bias": "leader",
                     "scanner_priority": ["momentum", "volume_surge"],
+                    "scanner_source_policy": {
+                        "preferred_sources": ["top_change_rate", "condition_search", "top_volume"],
+                        "include_change_rate": True,
+                        "include_condition_search": True,
+                    },
                     "monitor_guidance": "hold_through_noise",
                     "risk_tone": "normal",
+                    "news_query_reasoning": "risk-on context added leader/risk-appetite market queries; theme hints expanded queries from semiconductor, AI",
                 },
             },
             {
@@ -73,7 +79,20 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                 "event": "candidate_selection",
                 "payload": {
                     "agent": "scanner",
-                    "payload": {"selected_symbol": "005930", "score_breakdown_summary": {"momentum": 0.24, "trend": 0.20}},
+                    "payload": {
+                        "selected_symbol": "005930",
+                        "scanner_source_policy": {
+                            "preferred_sources": ["top_change_rate", "condition_search", "top_volume"],
+                            "include_change_rate": True,
+                            "include_condition_search": True,
+                        },
+                        "score_breakdown_summary": {"momentum": 0.24, "trend": 0.20},
+                        "selected_candidate": {
+                            "symbol": "005930",
+                            "sources": ["top_value", "top_volume"],
+                            "feature_snapshot": {"quote_trading_value": 1000000.0},
+                        },
+                    },
                 },
             },
             {
@@ -95,6 +114,10 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                         "exit_reason": "",
                         "monitor_reason": "hold",
                         "position_age_seconds": 120,
+                        "thresholds": {"stop_loss_pct": 0.03},
+                        "min_hold_sec": 600,
+                        "sell_cooldown_sec": 300,
+                        "exit_confirm_ticks": 2,
                         "min_hold_blocked": False,
                         "sell_cooldown_blocked": False,
                     },
@@ -148,7 +171,13 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                 "stage": "theme_selection",
                 "raw_input": {
                     "collected_news": {"005930": {"count": 2, "sample": ["NewsItem(title='삼성전자 반등')"]}},
-                    "global_sentiment_inputs": {"score": 0.12, "status": "ok", "source": "yfinance", "reason": "market_ok"},
+                    "global_sentiment_inputs": {
+                        "score": 0.12,
+                        "status": "ok",
+                        "source": "yfinance",
+                        "reason": "market_ok",
+                        "index_moves": {"sp500_pct": 1.2, "nasdaq_pct": 1.8, "dow_pct": 0.7},
+                    },
                     "llm_payload": {"news_context": {"summary": "semiconductor rotation"}},
                 },
                 "llm_prompt": "prompt text",
@@ -214,8 +243,14 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert out["commander"]["mode"] == "integrated_chain"
     assert out["strategist"]["llm_provider"] == "openrouter"
     assert out["strategist"]["global_sentiment_source"] == "yfinance"
+    assert out["strategist"]["global_index_moves"]["nasdaq_pct"] == 1.8
+    assert "theme hints expanded" in out["strategist"]["news_query_reasoning"]
+    assert out["strategist"]["scanner_source_policy"]["preferred_sources"][0] == "top_change_rate"
     assert out["scanner"]["top_stock"] == "005930"
+    assert out["scanner"]["selected_candidate"]["symbol"] == "005930"
+    assert out["scanner"]["scanner_source_policy"]["include_change_rate"] is True
     assert out["monitor"]["selected_symbol"] == "005930"
+    assert out["monitor"]["min_hold_sec"] == 600
     assert out["supervisor"]["verdict"] == "APPROVE"
     assert out["executor"]["execution_attempted"] is True
     assert out["reporter"]["in_run_trace_available"] is True
@@ -230,6 +265,9 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     md_body = md_path.read_text(encoding="utf-8")
     assert "## Commander" in md_body
     assert "## Strategist" in md_body
+    assert "global_index_moves:" in md_body
+    assert "news_query_reasoning:" in md_body
+    assert "scanner_source_policy:" in md_body
     assert "## Scanner" in md_body
     assert "## Monitor" in md_body
     assert "## Supervisor" in md_body

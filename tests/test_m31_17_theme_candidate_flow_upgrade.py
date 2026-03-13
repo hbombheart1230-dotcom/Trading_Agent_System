@@ -47,6 +47,8 @@ def test_m31_17_strategist_outputs_themes_and_candidates_contract(monkeypatch):
     assert strategist_output["monitor_guidance"] in ("hold_through_noise", "defensive_exit", "quick_take_profit")
     assert strategist_output["trade_aggressiveness"] in ("low", "medium", "high")
     assert isinstance(strategist_output["scanner_priority"], list)
+    assert isinstance(strategist_output.get("scanner_source_policy"), dict)
+    assert strategist_output["scanner_source_policy"].get("preferred_sources")
     assert isinstance(strategist_output.get("monitor_policy"), dict)
     assert isinstance(strategist_output["report_focus"], list)
     assert isinstance(strategist_output["strategic_answers"], dict)
@@ -81,6 +83,58 @@ def test_m31_17_scanner_accepts_strategist_output_and_emits_top_stock():
     assert scanner_output.get("strategist_scanner_bias") == "momentum"
     assert scanner_output.get("strategist_trade_aggressiveness") == "high"
     assert scanner_output.get("strategist_risk_tone") == "aggressive"
+
+
+def test_m31_17_scanner_source_policy_changes_kiwoom_source_mix():
+    state = {
+        "strategist_output": {
+            "themes": ["semiconductor"],
+            "playbook": "defensive",
+            "scanner_bias": "leader",
+            "scanner_priority": ["liquidity", "risk_penalty"],
+            "scanner_source_policy": {
+                "include_top_value": True,
+                "include_top_volume": True,
+                "include_change_rate": False,
+                "include_condition_search": False,
+                "include_sector_candidates": False,
+                "include_watchlist": False,
+                "preferred_sources": ["top_value", "top_volume"],
+                "source_weights": {
+                    "top_value": 2.2,
+                    "top_volume": 1.9,
+                    "top_change_rate": 0.0,
+                    "condition_search": 0.0,
+                },
+            },
+            "trade_aggressiveness": "low",
+            "risk_tone": "conservative",
+        },
+        "mock_top_value_symbols": ["AAA"],
+        "mock_top_volume_symbols": ["AAA"],
+        "mock_top_change_symbols": ["BBB"],
+        "mock_condition_symbols": ["CCC"],
+        "mock_scan_results": {
+            "AAA": {"score": 0.60, "risk_score": 0.20, "confidence": 0.80},
+            "BBB": {"score": 0.95, "risk_score": 0.20, "confidence": 0.90},
+            "CCC": {"score": 0.94, "risk_score": 0.20, "confidence": 0.90},
+        },
+    }
+
+    out = scanner_node(state)
+    scanner_output = out.get("scanner_output") or {}
+
+    assert out.get("top_stock") == "AAA"
+    assert scanner_output.get("source_mix") == {
+        "top_value": 1,
+        "top_volume": 1,
+        "top_change_rate": 0,
+        "condition_search": 0,
+        "sector_theme": 0,
+        "operator_watchlist": 0,
+    }
+    assert scanner_output.get("scanner_source_policy", {}).get("include_change_rate") is False
+    assert scanner_output.get("scanner_source_policy", {}).get("include_condition_search") is False
 
 
 def test_m31_17_monitor_sell_cooldown_env_alias_is_supported(monkeypatch):

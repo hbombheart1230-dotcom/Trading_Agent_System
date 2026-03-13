@@ -14,6 +14,7 @@
 - `playbook`
 - `scanner_bias`
 - `scanner_priority[]`
+- `scanner_source_policy`
 - `trade_aggressiveness`
 - `risk_tone`
 - `monitor_guidance`
@@ -30,6 +31,7 @@
   - `playbook`
   - `scanner_bias`
   - `scanner_priority[]`
+  - `scanner_source_policy`
   - `trade_aggressiveness`
   - `risk_tone`
   - `monitor_guidance`
@@ -74,6 +76,8 @@
   - `candidate_pool_size`
   - `ranked_candidates` (Top-N summary rows)
   - `candidate_source`
+  - `source_mix`
+  - `scanner_source_policy`
   - `theme_filter_applied`
   - `strategist_playbook` (additive)
 - Per-candidate score contract:

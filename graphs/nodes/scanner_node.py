@@ -62,6 +62,58 @@ def _make_event_logger(state: Dict[str, Any]) -> Any:
     return EventLogger(log_path=Path(log_path))
 
 
+def _compact_selected_snapshot(selected: Dict[str, Any] | None) -> Dict[str, Any]:
+    if not isinstance(selected, dict):
+        return {}
+    candidate = selected.get("candidate") if isinstance(selected.get("candidate"), dict) else {}
+    features = selected.get("features") if isinstance(selected.get("features"), dict) else {}
+    components = selected.get("components") if isinstance(selected.get("components"), dict) else {}
+    return {
+        "symbol": str(selected.get("symbol") or ""),
+        "why": str(selected.get("why") or ""),
+        "sources": list(candidate.get("sources") or [])[:8],
+        "source_scores": dict(candidate.get("source_scores") or {}),
+        "rank_score": _to_float(candidate.get("rank_score") or 0.0),
+        "universe_score": _to_float(candidate.get("universe_score") or 0.0),
+        "score_total": _to_float(selected.get("score_total") or selected.get("score") or 0.0),
+        "risk_score": _to_float(selected.get("risk_score") or 0.0),
+        "confidence": _to_float(selected.get("confidence") or 0.0),
+        "score_breakdown": dict(selected.get("score_breakdown") or {}),
+        "feature_snapshot": {
+            "quote_trading_value": features.get("quote_trading_value"),
+            "quote_volume": features.get("quote_volume"),
+            "intraday_change_pct": features.get("intraday_change_pct"),
+            "skill_quote_price": features.get("skill_quote_price"),
+            "engine_ma20_gap": features.get("engine_ma20_gap"),
+            "engine_ma60": features.get("engine_ma60"),
+            "engine_ma120": features.get("engine_ma120"),
+            "engine_adx14": features.get("engine_adx14"),
+            "engine_trend_strength": features.get("engine_trend_strength"),
+            "engine_volume_spike20": features.get("engine_volume_spike20"),
+            "engine_volatility20": features.get("engine_volatility20"),
+            "engine_vwap_distance": features.get("engine_vwap_distance"),
+            "engine_sector_relative_strength": features.get("engine_sector_relative_strength"),
+            "engine_cross_section_rank": features.get("engine_cross_section_rank"),
+            "engine_regime": features.get("engine_regime"),
+            "engine_signal_score": features.get("engine_signal_score"),
+        },
+        "component_snapshot": {
+            "news_sentiment": components.get("news_sentiment"),
+            "global_sentiment": components.get("global_sentiment"),
+            "trading_value_component": components.get("trading_value_component"),
+            "momentum_component": components.get("momentum_component"),
+            "trend_component": components.get("trend_component"),
+            "volume_surge_component": components.get("volume_surge_component"),
+            "intraday_strength_component": components.get("intraday_strength_component"),
+            "theme_boost_component": components.get("theme_boost_component"),
+            "sentiment_component": components.get("sentiment_component"),
+            "volatility_penalty_component": components.get("volatility_penalty_component"),
+            "gap_penalty_component": components.get("gap_penalty_component"),
+            "avoid_theme_penalty_component": components.get("avoid_theme_penalty_component"),
+        },
+    }
+
+
 def _log_scanner_summary(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
     try:
         logger = _make_event_logger(state)
@@ -593,6 +645,7 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         "avoid_themes": list(strategist_output.get("avoid_themes") or []),
         "playbook": str(strategist_output.get("playbook") or ""),
         "scanner_priority": list(strategist_output.get("scanner_priority") or []),
+        "scanner_source_policy": dict(strategist_output.get("scanner_source_policy") or {}),
         "scanner_bias": str(raw_bias or "").strip().lower(),
         "trade_aggressiveness": strategist_output.get("trade_aggressiveness"),
         "risk_tone": strategist_output.get("risk_tone"),
@@ -607,6 +660,7 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
             "avoid_themes",
             "playbook",
             "scanner_priority",
+            "scanner_source_policy",
             "scanner_bias",
             "trade_aggressiveness",
             "risk_tone",
@@ -619,6 +673,36 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         return out
 
     return base
+
+
+def _normalize_scanner_source_policy(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in (
+        "include_top_value",
+        "include_top_volume",
+        "include_change_rate",
+        "include_condition_search",
+        "include_sector_candidates",
+        "include_watchlist",
+    ):
+        if value.get(key) is not None:
+            out[key] = bool(value.get(key))
+    for key in ("top_candidate_pool", "condition_limit"):
+        if value.get(key) not in (None, ""):
+            out[key] = max(0, _to_int(value.get(key), 0))
+    if isinstance(value.get("preferred_sources"), list):
+        out["preferred_sources"] = [str(x).strip() for x in list(value.get("preferred_sources") or []) if str(x).strip()]
+    if isinstance(value.get("source_weights"), dict):
+        out["source_weights"] = {
+            str(k).strip(): float(_to_float(v))
+            for k, v in dict(value.get("source_weights") or {}).items()
+            if str(k).strip()
+        }
+    if value.get("reason") not in (None, ""):
+        out["reason"] = str(value.get("reason") or "")
+    return out
 
 
 def _normalize_priority_list(values: Any) -> List[str]:
@@ -843,20 +927,37 @@ def _build_kiwoom_candidates(
     *,
     policy: Dict[str, Any],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    scanner_guidance = _extract_scanner_guidance(state)
+    source_policy = _normalize_scanner_source_policy(scanner_guidance.get("scanner_source_policy"))
     candidate_limit = _resolve_candidate_limit(policy)
     top_pool = _resolve_top_candidate_pool(policy, candidate_limit=candidate_limit)
+    if source_policy.get("top_candidate_pool"):
+        top_pool = max(candidate_limit, int(source_policy.get("top_candidate_pool") or top_pool))
     condition_limit = _resolve_condition_limit(policy, top_pool=top_pool)
+    if source_policy.get("condition_limit") is not None:
+        condition_limit = max(0, int(source_policy.get("condition_limit") or 0))
     include_change_rate = _resolve_include_change_rate(policy)
+    if source_policy.get("include_change_rate") is not None:
+        include_change_rate = bool(source_policy.get("include_change_rate"))
     enable_theme_filter = _resolve_enable_theme_filter(policy)
+    include_top_value = bool(source_policy.get("include_top_value", True))
+    include_top_volume = bool(source_policy.get("include_top_volume", True))
+    include_condition_search = bool(source_policy.get("include_condition_search", True))
+    include_sector_candidates = bool(source_policy.get("include_sector_candidates", True))
+    include_watchlist = bool(source_policy.get("include_watchlist", True))
 
     rows, meta = build_kiwoom_candidate_rows(
         state=state,
         top_pool=top_pool,
         condition_limit=condition_limit,
         include_change_rate=include_change_rate,
+        include_top_value=include_top_value,
+        include_top_volume=include_top_volume,
+        include_condition_search=include_condition_search,
         themes=_extract_themes(state),
-        include_sector_candidates=True,
-        include_watchlist=True,
+        include_sector_candidates=include_sector_candidates,
+        include_watchlist=include_watchlist,
+        source_weights=dict(source_policy.get("source_weights") or {}),
     )
     raw_kiwoom_count = int(len(rows))
     themes = _extract_themes(state)
@@ -920,6 +1021,7 @@ def _build_kiwoom_candidates(
             "condition_limit": int(condition_limit),
             "top_candidate_pool": int(top_pool),
             "enable_theme_filter": bool(enable_theme_filter),
+            "scanner_source_policy": dict(source_policy),
             "raw_kiwoom_count": int(raw_kiwoom_count),
             "backfill_used": bool(backfill_count > 0),
             "backfill_count": int(backfill_count),
@@ -1082,6 +1184,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "playbook": playbook,
                     "scanner_bias": scanner_bias,
                     "scanner_priority": list(scanner_priority),
+                    "scanner_source_policy": dict(scanner_guidance.get("scanner_source_policy") or {}),
                     "trade_aggressiveness": trade_aggressiveness,
                     "risk_tone": risk_tone,
                 },
@@ -1412,6 +1515,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "backfill_skipped_reason": str(pool_meta.get("backfill_skipped_reason") or ""),
         "score_weights": dict(practical_w),
         "source_mix": dict(pool_meta.get("pool_source_mix") or {}),
+        "scanner_source_policy": dict(pool_meta.get("scanner_source_policy") or {}),
         "strategist_scanner_priority": list(scanner_priority),
         "strategist_playbook": playbook or None,
         "strategist_scanner_bias": scanner_bias or None,
@@ -1466,6 +1570,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "top_score": top_score,
             "top_ranked_symbols": [str(x.get("symbol") or "") for x in list(state.get("ranked_candidates") or [])[:5]],
             "strategist_scanner_priority": list(scanner_priority),
+            "strategist_scanner_source_policy": dict(pool_meta.get("scanner_source_policy") or {}),
             "strategist_playbook": playbook or "",
             "strategist_scanner_bias": scanner_bias or "",
             "strategist_avoid_themes": list(pool_meta.get("avoid_themes") or []),
@@ -1492,6 +1597,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         payload={
             "playbook": playbook or "",
             "scanner_priority": list(scanner_priority),
+            "candidate_source": str(pool_meta.get("candidate_source") or ""),
+            "kiwoom_pool_source_mix": dict(pool_meta.get("pool_source_mix") or {}),
+            "scanner_source_policy": dict(pool_meta.get("scanner_source_policy") or {}),
             "candidate_pool_size": int(len(scan_results_sorted)),
             "top_candidates": top_candidates_summary,
             "selected_symbol": state.get("top_stock") or None,
@@ -1500,6 +1608,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 if isinstance(selected, dict)
                 else {}
             ),
+            "selected_candidate": _compact_selected_snapshot(selected if isinstance(selected, dict) else None),
         },
     )
     try:
@@ -1511,11 +1620,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "candidate_pool_size": int(len(scan_results_sorted)),
                 "candidate_source": str(pool_meta.get("candidate_source") or ""),
                 "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
+                "scanner_source_policy": dict(pool_meta.get("scanner_source_policy") or {}),
             },
             parsed_output={
                 "selected_symbol": state.get("top_stock") or None,
                 "top_score": float(_to_float(top_score) if top_score is not None else 0.0),
                 "ranked_candidates": list(state.get("ranked_candidates") or [])[:5],
+                "selected_candidate": _compact_selected_snapshot(selected if isinstance(selected, dict) else None),
             },
             decision_link={
                 "decision_chain": {

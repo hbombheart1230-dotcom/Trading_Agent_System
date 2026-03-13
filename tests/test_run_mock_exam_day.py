@@ -277,3 +277,69 @@ def test_session_offhours_probe_mode_when_enabled(tmp_path: Path, capsys, monkey
     assert out["phase_result"]["probe_mode"] == "offhours_session_probe"
     step = (out["phase_result"]["steps"] or [])[0]
     assert step["step_id"] == "session.offhours_probe"
+
+
+def test_session_offhours_simulated_session_mode_when_enabled(tmp_path: Path, capsys, monkeypatch):
+    env_path = tmp_path / ".env"
+    events = tmp_path / "events.jsonl"
+    state_path = tmp_path / "offhours_state.json"
+    report_dir = tmp_path / "reports"
+    _write_env(
+        env_path,
+        {
+            "RUNTIME_PROFILE": "staging",
+            "KIWOOM_MODE": "mock",
+            "APPROVAL_MODE": "manual",
+            "ALLOW_REAL_EXECUTION": "false",
+        },
+    )
+    events.write_text("", encoding="utf-8")
+
+    def fake_start(*, step_id, command, env, stdout_path, stderr_path):  # type: ignore[no-untyped-def]
+        return {
+            "step_id": step_id,
+            "command": list(command),
+            "mode": "background",
+            "rc": 0,
+            "ok": True,
+            "pid": 56789,
+            "stdout_path": str(stdout_path),
+            "stderr_path": str(stderr_path),
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.02,
+        }
+
+    monkeypatch.setattr(mod, "_start_background_command", fake_start)
+
+    rc = mod.main(
+        [
+            "--phase",
+            "session",
+            "--day",
+            "2026-03-09",
+            "--env-path",
+            str(env_path),
+            "--report-dir",
+            str(report_dir),
+            "--event-log-path",
+            str(events),
+            "--state-path",
+            str(state_path),
+            "--now-kst",
+            "2026-03-08T10:00:00+09:00",
+            "--allow-offhours-simulated-session",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert out["ok"] is True
+    assert out["phase_result"]["probe_mode"] == "offhours_simulated_session"
+    step = (out["phase_result"]["steps"] or [])[0]
+    assert step["step_id"] == "session.offhours_validation_loop"
+    cmd = [str(x) for x in step["command"]]
+    assert "--event-log-path" in cmd
+    assert str(events) in cmd
+    assert "--state-path" in cmd
+    assert str(state_path) in cmd

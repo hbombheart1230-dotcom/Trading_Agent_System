@@ -18,12 +18,14 @@
 ## Runtime Decision Chain (Current)
 
 1. Strategist writes:
+   - `news_query_targets` (market/news search terms derived from global sentiment + macro context before final stock selection)
+   - `global_sentiment_signal.index_moves` (`sp500_pct`, `nasdaq_pct`, `dow_pct`) and `macro_moves` (`dxy_pct`, `tnx_delta`) when available
    - `market_regime`, `market_sentiment`, `key_events`
    - `themes`, `avoid_themes`, `playbook`
-   - `scanner_bias` mode, `scanner_priority`
+   - `scanner_bias` mode, `scanner_priority`, `scanner_source_policy`
    - `trade_aggressiveness`, `risk_tone`
    - `monitor_guidance` mode (+ derived `monitor_policy`), `report_focus`
-   - `regime_score`, `sentiment_score`, `news_context`, `theme_strength` (additive quality fields)
+   - `regime_score`, `sentiment_score`, `news_context`, `candidate_news_context`, `market_news_context`, `theme_strength` (additive quality fields)
    - `candidates` (Top-N, optional hint)
    - canonical `state["strategist_output"]` (contract: `libs/strategies/contracts.py::StrategistOutput`)
    - optional `strategist_llm` result snapshot (`status/model/applied/latency`) + EventLog `stage=strategist_llm`
@@ -40,6 +42,9 @@
      - pre-score pool reduction (halt/abnormal/illiquid filters)
     - optional theme/sector filter with `theme_map` / `sector_map`
     - additive strategist frame bias from `state["strategist_output"]` (`playbook`, `scanner_priority`, aggressiveness/risk tone)
+    - strategist-driven Kiwoom source policy from `state["strategist_output"]["scanner_source_policy"]`
+      - example: `defensive` can disable `top_change_rate` / `condition_search`
+      - example: `breakout` can emphasize `top_change_rate` / `condition_search` / `top_volume`
      - strategist candidate fallback when Kiwoom pool is empty
      - static fallback-only pools can be blocked with `BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY=true`
      - strict mode (`STRICT_KIWOOM_CANDIDATES_ONLY=true`) blocks all strategist fallback on Kiwoom-empty
@@ -136,3 +141,52 @@
   - optional AI fields:
     - `ai_summary`, `ai_findings`, `ai_root_causes`
     - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`
+
+## Off-Hours Validation Loop
+
+- Purpose:
+  - keep validating the integrated chain outside market hours when broker-side mock investor trading cannot run
+  - simulate local fills/state transitions so strategy/scanner/monitor/report quality can still be evaluated
+- Canonical entry points:
+  - direct loop: `scripts/run_offhours_validation_loop.py`
+  - orchestration phase: `scripts/run_mock_exam_day.py --phase session --allow-offhours-simulated-session`
+- Runtime contract:
+  - forces `EXECUTION_MODE=mock`
+  - forces `ALLOW_REAL_EXECUTION=false`
+  - optionally isolates state with `STATE_STORE_PATH` / `--state-path`
+  - uses shared `EVENT_LOG_PATH` / `--event-log-path` for unified observability
+- Pipeline shape:
+  1. load persisted state
+  2. inject local mock portfolio/price readers
+  3. run Strategist -> Scanner -> Monitor -> Supervisor/Executor-compatible decision path
+  4. apply local mock fills into persisted state
+  5. save state for next off-hours cycle
+- What it validates well:
+  - strategist framing quality
+  - scanner candidate/selection behavior
+  - monitor entry/exit logic against persisted positions
+  - decision trace / evidence / operator report generation
+- What it does not validate:
+  - broker-side market-session rules
+  - exchange session behavior
+  - real/mock broker order acceptance during closed market
+
+## Off-Hours Full Trace Bundle
+
+- Purpose:
+  - run one off-hours cycle and emit one complete explainability bundle
+  - useful when operators want a single full data packet instead of a continuous loop
+- Entry point:
+  - `scripts/run_offhours_full_trace_bundle.py`
+- Output intent:
+  - what news/global sentiment was collected
+  - what LLM prompt/response Strategist used
+  - what Kiwoom-source candidate mix Scanner used
+  - what numeric score/feature snapshot selected the Top-1 stock
+  - what Monitor threshold/policy drove entry or exit
+  - what Reporter suggested for next-run learning
+- Default artifact tree:
+  - `reports/offhours_full_trace/offhours_full_trace_<run>.md|json`
+  - `reports/offhours_full_trace/agent_pipeline_trace/*`
+  - `reports/offhours_full_trace/trade_explain/*`
+  - `reports/offhours_full_trace/reporter_analysis/*`

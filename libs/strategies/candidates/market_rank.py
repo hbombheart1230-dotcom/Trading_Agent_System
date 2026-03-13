@@ -100,12 +100,16 @@ class MarketRankCandidateGenerator:
             return _take_unique(_fallback_universe(state, topn), min(topn, 20))
         try:
             # This module exists from M18-1 in this project
-            from libs.read.kiwoom_rank_reader import KiwoomRankReader  # type: ignore
+            from libs.read.kiwoom_rank_reader import KiwoomRankReader, RankMode  # type: ignore
             reader = KiwoomRankReader.from_env()  # type: ignore[attr-defined]
-            mode = str(policy.get("candidate_rank_mode", "value"))
+            mode_raw = str(policy.get("candidate_rank_mode", "value") or "value").strip().lower()
+            try:
+                mode = RankMode(mode_raw)
+            except Exception:
+                mode = RankMode.VALUE
             # reader.get_top_symbols should be implemented in the reader;
             # if not, this will raise and we fallback.
-            live_syms = reader.get_top_symbols(mode=mode, topn=topn)  # type: ignore
+            live_syms = reader.get_top_symbols(mode=mode, topk=topn)  # type: ignore
             if isinstance(live_syms, list) and live_syms:
                 return _take_unique([str(x) for x in live_syms], topn)
         except Exception:

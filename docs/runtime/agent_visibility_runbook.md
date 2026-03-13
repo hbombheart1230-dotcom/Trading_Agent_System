@@ -1,6 +1,6 @@
 # Agent Visibility Runbook (M31+)
 
-- Last updated: 2026-03-06
+- Last updated: 2026-03-12
 - Purpose: make current runtime scope and observability sources explicit for day-to-day operations.
 
 ## 1) Important Distinction: Runtime Path
@@ -84,6 +84,7 @@ python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jso
 python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/reporter_analysis --day 2026-03-10 --json
 python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/reporter_analysis --day 2026-03-10 --ai-review --json
 python -m scripts.run_agent_pipeline_trace_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/agent_pipeline_trace --day 2026-03-10 --json
+python -m scripts.run_offhours_full_trace_bundle --env-path .env --state-path data/state/offhours_full_trace.json --event-log-path data/logs/offhours_full_trace.jsonl --evidence-log-path data/evidence_ledger/offhours_full_trace.jsonl --report-dir reports/offhours_full_trace --json
 
 set EVENT_LOG_PATH=./data/logs/events.jsonl
 set REPORT_DAY=2026-03-06
@@ -137,11 +138,14 @@ python -m scripts.generate_metrics_report
 - Output:
   - `reports/agent_pipeline_trace/agent_pipeline_trace_<run>.md`
   - `reports/agent_pipeline_trace/agent_pipeline_trace_<run>.json`
+  - `reports/offhours_full_trace/offhours_full_trace_<run>.md`
+  - `reports/offhours_full_trace/offhours_full_trace_<run>.json`
 - Purpose:
   - One-screen trace for all 7 roles:
     - Commander / Strategist / Scanner / Monitor / Supervisor / Executor / Reporter
   - Includes:
     - Strategist news/global-sentiment + LLM prompt/response capture status
+    - `news_query_reasoning` explaining why the strategist chose those news query targets
     - Scanner candidate-source mix + top-ranked symbol summary
     - Monitor entry/exit reasons and sell-guard state
     - Supervisor verdict and Executor broker execution result

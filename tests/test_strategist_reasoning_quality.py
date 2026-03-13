@@ -97,3 +97,116 @@ def test_strategist_reasoning_becomes_defensive_on_risk_off_context(monkeypatch)
     assert strategist_output.get("risk_tone") == "conservative"
     avoid_themes = strategist_output.get("avoid_themes") or []
     assert "high_gap_speculative" in avoid_themes
+    scanner_source_policy = strategist_output.get("scanner_source_policy") or {}
+    assert scanner_source_policy.get("include_change_rate") is False
+    assert scanner_source_policy.get("include_condition_search") is False
+    assert scanner_source_policy.get("preferred_sources") == [
+        "top_value",
+        "top_volume",
+        "sector_theme",
+        "operator_watchlist",
+    ]
+
+
+def test_strategist_collects_market_news_queries_without_candidate_symbols(monkeypatch):
+    captured_queries = []
+
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.compute_global_sentiment_signal",
+        lambda **_: {"score": 0.42, "status": "ok", "source": "mock_global", "reason": "", "ts": 1},
+    )
+
+    def _fake_collect(symbols, **_kwargs):
+        captured_queries.append(list(symbols or []))
+        return {
+            str(s): [{"title": f"{s} headline", "source": "naver", "published_at": "2026-03-12T00:00:00Z"}]
+            for s in list(symbols or [])
+        }
+
+    monkeypatch.setattr("graphs.nodes.strategist_node.collect_news_items", _fake_collect)
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.score_news_sentiment_signal",
+        lambda _items, symbols, **_: {
+            str(s): {"score": 0.25, "status": "ok", "source": "mock_news", "reason": "", "ts": 1}
+            for s in list(symbols or [])
+        },
+    )
+
+    state = {
+        "run_id": "srq-market-news",
+        "policy": {
+            "use_global_sentiment": True,
+            "use_news_analysis": True,
+            "use_universe_builder": False,
+        },
+        "market_context": {
+            "index_trend": 0.20,
+            "realized_volatility": 0.018,
+            "market_breadth": 0.35,
+            "macro_risk": 0.25,
+        },
+    }
+
+    out = strategist_node(state)
+    strategist_output = out.get("strategist_output") or {}
+    news_query_targets = out.get("news_query_targets") or []
+
+    assert out.get("candidate_symbols") == []
+    assert isinstance(news_query_targets, list) and len(news_query_targets) > 0
+    assert captured_queries and captured_queries[0] == news_query_targets
+    assert strategist_output.get("news_query_targets") == news_query_targets
+    assert "news_query_reasoning" in strategist_output
+    assert "risk-on context" in str(strategist_output.get("news_query_reasoning") or "")
+    assert int(((strategist_output.get("market_news_context") or {}).get("headline_count")) or 0) > 0
+    assert int(((strategist_output.get("news_context") or {}).get("market_headline_count")) or 0) > 0
+
+
+def test_strategist_news_query_targets_expand_theme_and_macro_context(monkeypatch):
+    captured_queries = []
+
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.compute_global_sentiment_signal",
+        lambda **_: {"score": -0.35, "status": "ok", "source": "mock_global", "reason": "", "ts": 1},
+    )
+
+    def _fake_collect(symbols, **_kwargs):
+        captured_queries.append(list(symbols or []))
+        return {str(s): [] for s in list(symbols or [])}
+
+    monkeypatch.setattr("graphs.nodes.strategist_node.collect_news_items", _fake_collect)
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.score_news_sentiment_signal",
+        lambda _items, symbols, **_: {
+            str(s): {"score": 0.0, "status": "fallback", "source": "mock_news", "reason": "", "ts": 1}
+            for s in list(symbols or [])
+        },
+    )
+
+    state = {
+        "themes": ["semiconductor", "AI"],
+        "macro_events": ["FOMC", "중동 긴장"],
+        "market_context": {
+            "index_trend": -0.15,
+            "realized_volatility": 0.032,
+            "market_breadth": -0.20,
+            "macro_risk": 0.80,
+        },
+        "policy": {
+            "use_global_sentiment": True,
+            "use_news_analysis": True,
+            "use_universe_builder": False,
+        },
+    }
+
+    out = strategist_node(state)
+    targets = out.get("news_query_targets") or []
+
+    assert captured_queries and captured_queries[0] == targets
+    assert "중동" in targets
+    assert "국제유가" in targets
+    assert "반도체" in targets
+    assert "AI" in targets
+    reasoning = str((out.get("strategist_output") or {}).get("news_query_reasoning") or "")
+    assert "risk-off macro context" in reasoning
+    assert "semiconductor" in reasoning
+    assert "AI" in reasoning

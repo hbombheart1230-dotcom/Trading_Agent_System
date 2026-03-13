@@ -106,6 +106,7 @@ class StrategistOutput:
     playbook: StrategistPlaybook = "defensive"
     scanner_bias: StrategistScannerBias = "leader"
     scanner_priority: List[str] = field(default_factory=list)
+    scanner_source_policy: Dict[str, Any] = field(default_factory=dict)
     trade_aggressiveness: StrategistAggressiveness = "medium"
     risk_tone: StrategistRiskTone = "normal"
     monitor_guidance: StrategistMonitorGuidance = "defensive_exit"
@@ -130,6 +131,7 @@ class StrategistOutput:
             "playbook": _norm_enum(self.playbook, ["breakout", "pullback", "reversal", "defensive"], "defensive"),
             "scanner_bias": _norm_enum(self.scanner_bias, ["large_cap", "leader", "momentum", "value"], "leader"),
             "scanner_priority": [str(x) for x in list(self.scanner_priority or [])][:8],
+            "scanner_source_policy": dict(self.scanner_source_policy or {}),
             "trade_aggressiveness": _norm_enum(self.trade_aggressiveness, ["low", "medium", "high"], "medium"),
             "risk_tone": _norm_enum(self.risk_tone, ["conservative", "normal", "aggressive"], "normal"),
             "monitor_guidance": _norm_enum(
@@ -165,6 +167,7 @@ def coerce_strategist_output(raw: Any) -> Dict[str, Any]:
         playbook=raw.get("playbook", "defensive"),  # type: ignore[arg-type]
         scanner_bias=raw.get("scanner_bias", "leader"),  # type: ignore[arg-type]
         scanner_priority=list(raw.get("scanner_priority") or []),
+        scanner_source_policy=dict(raw.get("scanner_source_policy") or {}),
         trade_aggressiveness=raw.get("trade_aggressiveness", "medium"),  # type: ignore[arg-type]
         risk_tone=raw.get("risk_tone", "normal"),  # type: ignore[arg-type]
         monitor_guidance=raw.get("monitor_guidance", "defensive_exit"),  # type: ignore[arg-type]

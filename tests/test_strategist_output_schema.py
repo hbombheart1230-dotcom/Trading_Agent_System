@@ -14,6 +14,11 @@ def test_strategist_output_schema_normalizes_enum_fields() -> None:
         monitor_guidance="HOLD_THROUGH_NOISE",  # type: ignore[arg-type]
         themes=["semiconductor"],
         scanner_priority=["momentum", "trend_strength"],
+        scanner_source_policy={
+            "include_change_rate": True,
+            "include_condition_search": True,
+            "preferred_sources": ["top_change_rate", "condition_search"],
+        },
         report_focus=["theme_accuracy", "overtrading"],
         candidates=["005930", "000660"],
         candidate_count=2,
@@ -26,6 +31,8 @@ def test_strategist_output_schema_normalizes_enum_fields() -> None:
     assert dto["trade_aggressiveness"] == "high"
     assert dto["risk_tone"] == "aggressive"
     assert dto["monitor_guidance"] == "hold_through_noise"
+    assert dto["scanner_source_policy"]["include_change_rate"] is True
+    assert dto["scanner_source_policy"]["preferred_sources"] == ["top_change_rate", "condition_search"]
     assert dto["candidate_count"] == 2
 
 
@@ -60,6 +67,11 @@ def test_coerce_strategist_output_normalizes_required_fields_and_keeps_additive_
         "monitor_guidance": "HOLD_THROUGH_NOISE",
         "themes": ["semiconductor"],
         "scanner_priority": ["momentum"],
+        "scanner_source_policy": {
+            "include_change_rate": False,
+            "include_condition_search": False,
+            "preferred_sources": ["top_value", "top_volume"],
+        },
         "report_focus": ["theme_accuracy"],
         "monitor_policy": {"min_hold_seconds": 600},
         "regime_score": 0.42,
@@ -73,5 +85,7 @@ def test_coerce_strategist_output_normalizes_required_fields_and_keeps_additive_
     assert out["trade_aggressiveness"] == "high"
     assert out["risk_tone"] == "aggressive"
     assert out["monitor_guidance"] == "hold_through_noise"
+    assert out["scanner_source_policy"]["include_change_rate"] is False
+    assert out["scanner_source_policy"]["preferred_sources"] == ["top_value", "top_volume"]
     assert out["monitor_policy"] == {"min_hold_seconds": 600}
     assert out["regime_score"] == 0.42
