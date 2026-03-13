@@ -84,6 +84,26 @@ def test_strategist_condition_search_source_requires_explicit_opt_in(monkeypatch
     assert "condition_search" in list(enabled.get("preferred_sources") or [])
 
 
+def test_scanner_source_policy_becomes_more_defensive_when_fear_index_is_elevated(monkeypatch):
+    from graphs.nodes.strategist_node import _scanner_source_policy
+
+    monkeypatch.delenv("KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH", raising=False)
+    policy = _scanner_source_policy(
+        playbook="breakout",
+        risk_tone="aggressive",
+        trade_aggressiveness="high",
+        market_regime="risk_on",
+        themes=["semiconductor"],
+        fear_index={"level": 28.4, "level_pressure": 0.42},
+    )
+    assert policy["include_change_rate"] is False
+    assert policy["include_condition_search"] is False
+    assert "top_change_rate" not in list(policy.get("preferred_sources") or [])
+    assert list(policy.get("preferred_sources") or [])[:3] == ["top_value", "sector_theme", "top_volume"]
+    assert float(((policy.get("source_weights") or {}).get("top_value")) or 0.0) >= 2.3
+    assert "elevated fear index" in str(policy.get("reason") or "")
+
+
 def test_strategist_reasoning_becomes_defensive_on_risk_off_context(monkeypatch):
     monkeypatch.setenv("TOP_N_CANDIDATES", "3")
     monkeypatch.setattr(

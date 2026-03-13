@@ -1405,6 +1405,7 @@ def _scanner_source_policy(
     trade_aggressiveness: str,
     market_regime: str,
     themes: List[str],
+    fear_index: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     normalized_playbook = str(playbook or "").strip().lower()
     normalized_tone = str(risk_tone or "").strip().lower()
@@ -1412,6 +1413,10 @@ def _scanner_source_policy(
     normalized_regime = str(market_regime or "").strip().lower()
     has_themes = bool(list(themes or []))
     allow_condition_search = _condition_search_source_enabled()
+    normalized_fear = dict(fear_index or {}) if isinstance(fear_index, dict) else {}
+    vix_level = _to_float(normalized_fear.get("level"), 0.0)
+    vix_pressure = _to_float(normalized_fear.get("level_pressure"), 0.0)
+    elevated_fear = vix_level >= 25.0 or vix_pressure >= 0.25
 
     policy: Dict[str, Any] = {
         "preferred_sources": ["top_value", "top_volume", "sector_theme", "operator_watchlist"],
@@ -1541,6 +1546,46 @@ def _scanner_source_policy(
         source_weights["condition_search"] = cond_weight
         policy["source_weights"] = source_weights
         policy["reason"] = str(policy.get("reason") or "") + "; condition search explicitly enabled"
+
+    if elevated_fear:
+        preferred = [str(x).strip() for x in list(policy.get("preferred_sources") or []) if str(x).strip()]
+        preferred = [x for x in preferred if x not in ("top_change_rate", "condition_search")]
+        reordered: List[str] = []
+        for raw in ("top_value", "sector_theme", "top_volume", "operator_watchlist"):
+            if raw == "sector_theme" and not has_themes:
+                continue
+            if raw not in reordered:
+                reordered.append(raw)
+        for raw in preferred:
+            if raw == "sector_theme" and not has_themes:
+                continue
+            if raw not in reordered:
+                reordered.append(raw)
+        source_weights = dict(policy.get("source_weights") or {})
+        source_weights.update(
+            {
+                "top_value": max(_to_float(source_weights.get("top_value"), 0.0), 2.3),
+                "top_volume": max(_to_float(source_weights.get("top_volume"), 0.0), 1.8),
+                "sector_theme": max(_to_float(source_weights.get("sector_theme"), 0.0), 1.9 if has_themes else 0.0),
+                "operator_watchlist": max(_to_float(source_weights.get("operator_watchlist"), 0.0), 1.1),
+                "top_change_rate": 0.0,
+                "condition_search": 0.0,
+            }
+        )
+        policy.update(
+            {
+                "preferred_sources": reordered,
+                "include_change_rate": False,
+                "include_condition_search": False,
+                "top_candidate_pool": min(_to_int(policy.get("top_candidate_pool"), 30), 20),
+                "condition_limit": 0,
+                "source_weights": source_weights,
+                "reason": (
+                    f"{str(policy.get('reason') or '')}; elevated fear index "
+                    f"(vix={vix_level:.2f}, pressure={vix_pressure:.3f}) shifted source policy toward liquid defensive candidates"
+                ).strip("; "),
+            }
+        )
 
     return policy
 
@@ -2275,6 +2320,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         trade_aggressiveness=trade_aggressiveness,
         market_regime=market_regime,
         themes=list(themes),
+        fear_index=global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {},
     )
 
     if isinstance(ai_overrides.get("themes"), list) and list(ai_overrides.get("themes") or []):
