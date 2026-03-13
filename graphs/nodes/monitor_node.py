@@ -43,6 +43,10 @@ def _to_float(v: Any) -> float:
         return 0.0
 
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return float(max(lo, min(hi, x)))
+
+
 def _is_trueish(v: Any) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
@@ -315,6 +319,187 @@ def _harmonize_exit_policy_with_monitor_guards(
         out["time_stop_sec"] = int(min_hold)
         adjustments.append(f"time_stop_sec_raised_to_min_hold:{time_stop}->{min_hold}")
 
+    return {"policy": out, "adjustments": adjustments}
+
+
+def _apply_exit_policy_strategy_frame(
+    *,
+    state: Dict[str, Any],
+    exit_policy_base: Dict[str, Any],
+    selected: Dict[str, Any] | None,
+    position: Dict[str, Any] | None,
+    frame: Dict[str, str],
+) -> Dict[str, Any]:
+    out = dict(exit_policy_base or {})
+    adjustments: list[str] = []
+
+    strategist_output_raw = state.get("strategist_output")
+    strategist_output = (
+        coerce_strategist_output(strategist_output_raw)
+        if isinstance(strategist_output_raw, dict)
+        else {}
+    )
+    strategist_exit_policy = {}
+    if isinstance(strategist_output.get("exit_policy"), dict):
+        strategist_exit_policy.update(dict(strategist_output.get("exit_policy") or {}))
+    if isinstance(state.get("strategist_exit_policy"), dict):
+        strategist_exit_policy.update(dict(state.get("strategist_exit_policy") or {}))
+    if strategist_exit_policy:
+        for key in (
+            "stop_loss_pct",
+            "take_profit_pct",
+            "max_hold_sec",
+            "time_stop_sec",
+            "trailing_stop_pct",
+            "vol_expansion_ratio",
+            "news_shock_threshold",
+            "use_eod_flat",
+            "eod_flat_cutoff_min",
+            "emergency_halt",
+        ):
+            if strategist_exit_policy.get(key) not in (None, ""):
+                out[key] = strategist_exit_policy.get(key)
+        adjustments.append("strategist_exit_policy_override")
+
+    raw_playbook = str(
+        state.get("playbook")
+        or ((strategist_output_raw or {}).get("playbook") if isinstance(strategist_output_raw, dict) else "")
+        or ""
+    ).strip().lower()
+    raw_guidance = str(
+        state.get("monitor_guidance")
+        or ((strategist_output_raw or {}).get("monitor_guidance") if isinstance(strategist_output_raw, dict) else "")
+        or ""
+    ).strip().lower()
+    raw_tone = str(
+        state.get("risk_tone")
+        or ((strategist_output_raw or {}).get("risk_tone") if isinstance(strategist_output_raw, dict) else "")
+        or ""
+    ).strip().lower()
+    raw_aggr = str(
+        state.get("trade_aggressiveness")
+        or ((strategist_output_raw or {}).get("trade_aggressiveness") if isinstance(strategist_output_raw, dict) else "")
+        or ""
+    ).strip().lower()
+
+    playbook = raw_playbook
+    guidance = raw_guidance or str(frame.get("monitor_guidance") or "").strip().lower()
+    tone = raw_tone or str(frame.get("risk_tone") or "").strip().lower()
+    aggr = raw_aggr or str(frame.get("trade_aggressiveness") or "").strip().lower()
+
+    if not strategist_exit_policy and not any((raw_playbook, raw_guidance, raw_tone, raw_aggr)):
+        return {"policy": out, "adjustments": adjustments}
+
+    features = selected.get("features") if isinstance(selected, dict) and isinstance(selected.get("features"), dict) else {}
+    price = _resolve_price(state, str((selected or {}).get("symbol") or ""), selected)
+    if price is None or _to_float(price) <= 0.0:
+        price = _position_mark_price(position)
+    price_num = _to_float(price)
+    atr14 = _to_float((features or {}).get("engine_atr14"))
+    volatility20 = _to_float((features or {}).get("engine_volatility20"))
+    trend_strength = _to_float((features or {}).get("engine_trend_strength"))
+    vwap_distance = _to_float((features or {}).get("engine_vwap_distance"))
+
+    stop_loss_pct = _to_float(out.get("stop_loss_pct"))
+    if stop_loss_pct <= 0.0:
+        stop_loss_pct = 0.03
+    take_profit_pct = _to_float(out.get("take_profit_pct"))
+    if take_profit_pct <= 0.0:
+        take_profit_pct = 0.05
+    trailing_stop_pct = _to_float(out.get("trailing_stop_pct"))
+    vol_expansion_ratio = _to_float(out.get("vol_expansion_ratio"))
+
+    if playbook == "breakout":
+        take_profit_pct *= 1.10
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.90)
+        adjustments.append("playbook:breakout_exit")
+    elif playbook == "pullback":
+        stop_loss_pct *= 1.05
+        take_profit_pct *= 1.08
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.75)
+        adjustments.append("playbook:pullback_exit")
+    elif playbook == "reversal":
+        stop_loss_pct *= 0.92
+        take_profit_pct *= 0.95
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.70)
+        adjustments.append("playbook:reversal_exit")
+    elif playbook == "defensive":
+        stop_loss_pct *= 0.90
+        take_profit_pct *= 0.90
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.65)
+        adjustments.append("playbook:defensive_exit")
+
+    if guidance == "hold_through_noise":
+        stop_loss_pct *= 1.05
+        take_profit_pct *= 1.05
+        adjustments.append("monitor_guidance:hold_through_noise_exit")
+    elif guidance == "quick_take_profit":
+        take_profit_pct *= 0.90
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.80)
+        adjustments.append("monitor_guidance:quick_take_profit_exit")
+    elif guidance == "defensive_exit":
+        stop_loss_pct *= 0.95
+        take_profit_pct *= 0.92
+        adjustments.append("monitor_guidance:defensive_exit_exit")
+
+    if tone == "conservative":
+        stop_loss_pct *= 0.92
+        take_profit_pct *= 0.96
+        adjustments.append("risk_tone:conservative_exit")
+    elif tone == "aggressive":
+        stop_loss_pct *= 1.08
+        take_profit_pct *= 1.05
+        adjustments.append("risk_tone:aggressive_exit")
+
+    if aggr == "low":
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.70)
+        adjustments.append("trade_aggressiveness:low_exit")
+    elif aggr == "high":
+        take_profit_pct *= 1.05
+        adjustments.append("trade_aggressiveness:high_exit")
+
+    if atr14 > 0.0 and price_num > 0.0:
+        atr_ratio = float(atr14 / price_num)
+        atr_mult = 1.2
+        if playbook == "breakout":
+            atr_mult = 1.4
+        elif playbook == "pullback":
+            atr_mult = 1.8
+        elif playbook == "reversal":
+            atr_mult = 1.3
+        atr_stop = _clamp(atr_ratio * atr_mult, 0.005, 0.08)
+        if atr_stop > stop_loss_pct:
+            stop_loss_pct = atr_stop
+            adjustments.append(f"atr_stop_floor:{atr_stop:.4f}")
+
+    if volatility20 > 0.0:
+        vol_stop = _clamp(volatility20 * (1.15 if tone == "aggressive" else 0.95), 0.005, 0.08)
+        if vol_stop > stop_loss_pct:
+            stop_loss_pct = vol_stop
+            adjustments.append(f"volatility_stop_floor:{vol_stop:.4f}")
+        if vol_expansion_ratio <= 0.0:
+            vol_expansion_ratio = 1.8 if playbook in ("defensive", "pullback") else 2.2
+            adjustments.append("vol_expansion_ratio:auto")
+
+    if vwap_distance > 0.02 and guidance == "quick_take_profit":
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.90)
+        adjustments.append("vwap_distance:extended_profit_lock")
+
+    if trend_strength > 0.5 and playbook in ("breakout", "pullback"):
+        take_profit_pct = max(take_profit_pct, stop_loss_pct * 1.6)
+        adjustments.append("trend_strength:extend_take_profit")
+
+    stop_loss_pct = _clamp(stop_loss_pct, 0.003, 0.10)
+    if take_profit_pct <= 0.0:
+        take_profit_pct = max(0.005, stop_loss_pct * 1.05)
+    take_profit_pct = _clamp(take_profit_pct, 0.005, 0.25)
+    trailing_stop_pct = _clamp(max(trailing_stop_pct, stop_loss_pct * 0.50 if trailing_stop_pct > 0.0 else 0.0), 0.0, 0.15)
+    vol_expansion_ratio = _clamp(vol_expansion_ratio, 0.0, 5.0)
+
+    out["stop_loss_pct"] = float(stop_loss_pct)
+    out["take_profit_pct"] = float(take_profit_pct)
+    out["trailing_stop_pct"] = float(trailing_stop_pct)
+    out["vol_expansion_ratio"] = float(vol_expansion_ratio)
     return {"policy": out, "adjustments": adjustments}
 
 
@@ -931,6 +1116,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
         effective_exit_policy_base = dict(exit_policy_harmonized.get("policy") or {})
         exit_policy_guard_adjustments = list(exit_policy_harmonized.get("adjustments") or [])
+        exit_policy_strategy = _apply_exit_policy_strategy_frame(
+            state=state,
+            exit_policy_base=effective_exit_policy_base,
+            selected=selected,
+            position=pos_map.get(selected_symbol, {}),
+            frame=frame_applied,
+        )
+        effective_exit_policy_base = dict(exit_policy_strategy.get("policy") or effective_exit_policy_base)
+        exit_policy_guard_adjustments.extend(list(exit_policy_strategy.get("adjustments") or []))
         symbol = _select_exit_symbol(
             selected_symbol,
             pos_map,
@@ -1083,6 +1277,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "price": price,
             "avg_price": avg_price if avg_price > 0.0 else None,
             "thresholds": decision.get("thresholds") if isinstance(decision.get("thresholds"), dict) else {},
+            "effective_exit_policy": dict(effective_exit_policy_base),
             "hold_sec": hold_sec if hold_sec > 0 else None,
             "trailing_drawdown": decision.get("trailing_drawdown"),
             "volatility_ratio": decision.get("volatility_ratio"),

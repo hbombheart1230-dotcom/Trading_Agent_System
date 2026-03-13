@@ -754,6 +754,13 @@ def _apply_scanner_guidance_weights(
         out["momentum"] = float(out.get("momentum", 0.0) * 1.12)
     if "trend_strength" in priority_set or "trend" in priority_set:
         out["trend"] = float(out.get("trend", 0.0) * 1.10)
+    if "ma_alignment" in priority_set or "moving_average_trend" in priority_set:
+        out["trend"] = float(out.get("trend", 0.0) * 1.08)
+    if "vwap_reclaim" in priority_set or "vwap_distance" in priority_set:
+        out["intraday_strength"] = float(out.get("intraday_strength", 0.0) * 1.08)
+    if "cross_section_rank" in priority_set or "relative_strength" in priority_set:
+        out["trend"] = float(out.get("trend", 0.0) * 1.06)
+        out["theme_boost"] = float(out.get("theme_boost", 0.0) * 1.04)
     if "volume_surge" in priority_set or "volume_confirmation" in priority_set:
         out["volume_surge"] = float(out.get("volume_surge", 0.0) * 1.08)
     if "risk_penalty" in priority_set or "drawdown_control" in priority_set:
@@ -1275,18 +1282,47 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         feature_regime = str(feature_row.get("regime") or "").strip().lower()
         return20 = _to_float(feature_row.get("return20"))
         ma20_gap = _to_float(feature_row.get("ma20_gap"))
+        ma60_gap = _to_float(feature_row.get("ma60_gap"))
+        ma120_gap = _to_float(feature_row.get("ma120_gap"))
         trend_strength = _to_float(feature_row.get("trend_strength"))
+        adx14 = _to_float(feature_row.get("adx14"))
         volume_spike20 = _to_float(feature_row.get("volume_spike20"))
         volatility20 = _to_float(feature_row.get("volatility20"))
+        vwap_distance = _to_float(feature_row.get("vwap_distance"))
+        cross_section_rank = _to_float(feature_row.get("cross_section_rank"))
         gap_pct = abs(_to_float(feature_row.get("gap_pct")))
 
         trading_value_component = _norm01(_to_float(source_scores.get("top_value")), 0.0, 2.0)
         momentum_raw = (0.65 * _signed01(return20, 0.10)) + (0.35 * _signed01(ma20_gap, 0.03))
         momentum_component = max(0.0, momentum_raw)
+        ma_alignment_component = max(
+            0.0,
+            (
+                0.45 * _signed01(ma20_gap, 0.03)
+                + 0.35 * _signed01(ma60_gap, 0.05)
+                + 0.20 * _signed01(ma120_gap, 0.08)
+            ),
+        )
+        adx_component = _norm01(adx14, 15.0, 35.0)
         trend_raw = trend_strength if trend_strength != 0.0 else feature_signal
-        trend_component = max(0.0, _signed01(trend_raw, 1.0))
+        trend_component = max(
+            0.0,
+            (
+                0.45 * max(0.0, _signed01(trend_raw, 1.0))
+                + 0.35 * ma_alignment_component
+                + 0.20 * adx_component
+            ),
+        )
         volume_surge_component = _norm01(volume_spike20, 1.0, 3.0)
-        intraday_strength_component = max(0.0, _signed01(_to_float(metrics.get("change_pct")), 5.0))
+        vwap_alignment_component = max(0.0, _signed01(vwap_distance, 0.02))
+        intraday_strength_component = max(
+            0.0,
+            (
+                0.70 * max(0.0, _signed01(_to_float(metrics.get("change_pct")), 5.0))
+                + 0.30 * vwap_alignment_component
+            ),
+        )
+        cross_section_rank_component = _norm01(cross_section_rank, 0.0, 1.0)
 
         theme_matched_symbols = set(_norm_symbol(x) for x in list(pool_meta.get("theme_matched_symbols") or []))
         avoid_theme_symbols = set(_norm_symbol(x) for x in list(pool_meta.get("avoid_matched_symbols") or []))
@@ -1308,6 +1344,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             + practical_w["sentiment"] * sentiment_component
             + (0.06 * max(0.0, candidate_rank_score))
             + (0.02 * _norm01(candidate_universe_score, 0.0, 10.0))
+            + (0.05 * cross_section_rank_component)
         ) * practical_scale
         risk_penalty_score = (
             practical_w["volatility_penalty"] * volatility_penalty
@@ -1353,10 +1390,14 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "trading_value": float(practical_w["trading_value"] * trading_value_component),
             "momentum": float(practical_w["momentum"] * momentum_component),
             "trend": float(practical_w["trend"] * trend_component),
+            "ma_alignment": float(practical_w["trend"] * 0.35 * ma_alignment_component),
+            "adx_trend": float(practical_w["trend"] * 0.20 * adx_component),
             "volume_surge": float(practical_w["volume_surge"] * volume_surge_component),
             "intraday_strength": float(practical_w["intraday_strength"] * intraday_strength_component),
+            "vwap_alignment": float(practical_w["intraday_strength"] * 0.30 * vwap_alignment_component),
             "theme_boost": float(practical_w["theme_boost"] * theme_boost_component),
             "sentiment": float(practical_w["sentiment"] * sentiment_component),
+            "cross_section_rank": float(0.05 * cross_section_rank_component * practical_scale),
             "avoid_theme_penalty": float(-0.20 * avoid_theme_penalty * practical_scale),
             "risk_penalty": float(-risk_penalty_score),
             "rank_bonus": float(rank_bonus),
@@ -1429,8 +1470,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "trading_value_component": trading_value_component,
                     "momentum_component": momentum_component,
                     "trend_component": trend_component,
+                    "ma_alignment_component": ma_alignment_component,
+                    "adx_component": adx_component,
                     "volume_surge_component": volume_surge_component,
                     "intraday_strength_component": intraday_strength_component,
+                    "vwap_alignment_component": vwap_alignment_component,
+                    "cross_section_rank_component": cross_section_rank_component,
                     "theme_boost_component": theme_boost_component,
                     "sentiment_component": sentiment_component,
                     "volatility_penalty_component": volatility_penalty,

@@ -185,6 +185,7 @@
 - `risk_tone: "conservative" | "normal" | "aggressive"`
 - `monitor_guidance: "hold_through_noise" | "defensive_exit" | "quick_take_profit"`
 - `monitor_policy: object` (deterministic guard tuning derived from guidance)
+- `exit_policy: object` (strategist-derived exit baseline; monitor applies final feature/position-aware adjustments)
 - `regime_score: float` (additive)
 - `sentiment_score: float` (additive)
 - `news_context: object` (additive quality summary)

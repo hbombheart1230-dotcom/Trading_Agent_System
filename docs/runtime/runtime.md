@@ -25,7 +25,7 @@
    - `themes`, `avoid_themes`, `playbook`
    - `scanner_bias` mode, `scanner_priority`, `scanner_source_policy`
    - `trade_aggressiveness`, `risk_tone`
-   - `monitor_guidance` mode (+ derived `monitor_policy`), `report_focus`
+   - `monitor_guidance` mode (+ derived `monitor_policy`), strategist `exit_policy` baseline, `report_focus`
    - `regime_score`, `sentiment_score`, `news_context`, `candidate_news_context`, `market_news_context`, `theme_strength` (additive quality fields)
    - `candidates` (Top-N, optional hint)
    - canonical `state["strategist_output"]` (contract: `libs/strategies/contracts.py::StrategistOutput`)
@@ -67,6 +67,7 @@
    - Explicit emergency exit path:
      - `emergency_halt` / `news_shock` bypass normal confirmation as intentional hard-risk exits.
    - Strategist `monitor_policy` is consumed deterministically from `state["strategist_output"]` when present.
+   - Strategist `exit_policy` is additive: it sets a playbook-aware exit baseline, then Monitor applies final feature/position-aware adjustments.
    - Monitor observability fields include:
      - `position_age_seconds`
      - `exit_signal_detected`

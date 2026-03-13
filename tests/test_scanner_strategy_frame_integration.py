@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from graphs.nodes.scanner_node import _apply_scanner_guidance_weights, _extract_scanner_guidance
+from graphs.nodes.scanner_node import _apply_scanner_guidance_weights, _extract_scanner_guidance, scanner_node
 
 
 def test_scanner_playbook_additively_changes_weights():
@@ -65,3 +65,64 @@ def test_scanner_extract_guidance_reads_strategist_output_contract():
     assert out["scanner_source_policy"]["preferred_sources"] == ["top_change_rate", "condition_search"]
     assert out["trade_aggressiveness"] == "high"
     assert out["risk_tone"] == "aggressive"
+
+
+def test_scanner_uses_chart_features_when_available():
+    state = {
+        "candidates": [
+            {"symbol": "AAA", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
+            {"symbol": "BBB", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
+        ],
+        "mock_scan_results": {
+            "AAA": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
+            "BBB": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
+        },
+        "strategist_output": {
+            "playbook": "breakout",
+            "scanner_bias": "momentum",
+            "scanner_priority": ["momentum", "trend_strength", "ma_alignment", "vwap_reclaim", "cross_section_rank"],
+            "trade_aggressiveness": "high",
+            "risk_tone": "aggressive",
+        },
+        "scanner_features": {
+            "AAA": {
+                "return20": 0.12,
+                "ma20_gap": 0.04,
+                "ma60_gap": 0.06,
+                "ma120_gap": 0.08,
+                "trend_strength": 0.85,
+                "adx14": 31.0,
+                "volume_spike20": 2.4,
+                "vwap_distance": 0.015,
+                "cross_section_rank": 1.0,
+                "volatility20": 0.02,
+            },
+            "BBB": {
+                "return20": -0.02,
+                "ma20_gap": -0.01,
+                "ma60_gap": -0.02,
+                "ma120_gap": -0.03,
+                "trend_strength": -0.20,
+                "adx14": 12.0,
+                "volume_spike20": 1.0,
+                "vwap_distance": -0.010,
+                "cross_section_rank": 0.1,
+                "volatility20": 0.02,
+            },
+        },
+        "policy": {
+            "enable_practical_scoring": True,
+            "weight_news": 0.0,
+            "weight_global": 0.0,
+            "risk_news_penalty": 0.0,
+            "risk_global_penalty": 0.0,
+            "confidence_news_boost": 0.0,
+        },
+    }
+
+    out = scanner_node(state)
+    assert (out.get("selected") or {}).get("symbol") == "AAA"
+    rows = {str(r.get("symbol")): r for r in out.get("scan_results", []) if isinstance(r, dict)}
+    assert float((rows["AAA"].get("score_breakdown") or {}).get("ma_alignment") or 0.0) > 0.0
+    assert float((rows["AAA"].get("score_breakdown") or {}).get("vwap_alignment") or 0.0) > 0.0
+    assert float((rows["AAA"].get("score_breakdown") or {}).get("cross_section_rank") or 0.0) > 0.0

@@ -468,6 +468,40 @@ def test_monitor_uses_strategist_monitor_policy_over_env(monkeypatch):
     assert int(exit_info.get("exit_confirm_ticks") or 0) == 1
 
 
+def test_monitor_applies_strategist_exit_policy_over_env(monkeypatch):
+    monkeypatch.setenv("EXIT_POLICY_STOP_LOSS_PCT", "0.01")
+    monkeypatch.setenv("EXIT_POLICY_TAKE_PROFIT_PCT", "0.01")
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = _base_state()
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "hold_sec": 900}],
+    }
+    state["strategist_output"] = {
+        "playbook": "breakout",
+        "monitor_guidance": "hold_through_noise",
+        "risk_tone": "aggressive",
+        "trade_aggressiveness": "high",
+        "exit_policy": {
+            "stop_loss_pct": 0.025,
+            "take_profit_pct": 0.060,
+            "trailing_stop_pct": 0.020,
+        },
+    }
+
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    effective = exit_info.get("effective_exit_policy") or {}
+    assert float(effective.get("stop_loss_pct") or 0.0) >= 0.025
+    assert float(effective.get("take_profit_pct") or 0.0) >= 0.060
+    assert float(effective.get("trailing_stop_pct") or 0.0) >= 0.020
+    adjustments = exit_info.get("exit_policy_guard_adjustments") or []
+    assert "strategist_exit_policy_override" in adjustments
+
+
 def test_monitor_extract_frame_reads_strategist_output():
     state = {
         "strategist_output": {

@@ -51,7 +51,7 @@
 - Falls back to strategist candidates when Kiwoom candidate pool is empty.
 - Scanner is the final Top-1 selector within strategist framing (not a blind picker).
 - Reduces candidate pool with practical filters (halted/abnormal/illiquid thresholds).
-- Computes practical score factors (trading-value, momentum, trend, volume-surge, intraday strength, penalties).
+- Computes practical score factors (trading-value, momentum, trend, volume-surge, intraday strength, chart-feature factors such as MA alignment/ADX/VWAP/cross-sectional rank, penalties).
 - Returns ranked list and Top-1 selection:
   - `scan_results`
   - `ranked_candidates`
@@ -67,6 +67,7 @@
 - Emits buy/sell/noop intents from policy + position state.
 - Applies sell guards (min hold, sell cooldown, exit confirmation).
 - Consumes strategist `monitor_policy` when present (deterministic guard tuning).
+- Consumes strategist `exit_policy` when present as a playbook-aware exit baseline, then applies final feature/position-aware threshold adjustments.
 - Monitor reads strategist frame from canonical `state["strategist_output"]`.
 - Suppresses duplicate SELL intents with pending-exit lock/cooldown state across polling loops.
 - Keeps emergency exits (`emergency_halt`, `news_shock`) explicit and separate from normal exit confirmation flow.

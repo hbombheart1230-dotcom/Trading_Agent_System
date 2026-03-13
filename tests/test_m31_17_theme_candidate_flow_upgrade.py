@@ -50,6 +50,9 @@ def test_m31_17_strategist_outputs_themes_and_candidates_contract(monkeypatch):
     assert isinstance(strategist_output.get("scanner_source_policy"), dict)
     assert strategist_output["scanner_source_policy"].get("preferred_sources")
     assert isinstance(strategist_output.get("monitor_policy"), dict)
+    assert isinstance(strategist_output.get("exit_policy"), dict)
+    assert float((strategist_output.get("exit_policy") or {}).get("stop_loss_pct") or 0.0) > 0.0
+    assert float((strategist_output.get("exit_policy") or {}).get("take_profit_pct") or 0.0) > 0.0
     assert isinstance(strategist_output["report_focus"], list)
     assert isinstance(strategist_output["strategic_answers"], dict)
     assert strategist_output["runtime_theme_map_keys"] == ["ai", "semiconductor"]

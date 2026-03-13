@@ -1252,6 +1252,101 @@ def _monitor_policy(
     }
 
 
+def _exit_policy(
+    *,
+    playbook: str,
+    monitor_guidance: str,
+    trade_aggressiveness: str,
+    risk_tone: str,
+) -> Dict[str, Any]:
+    stop_loss_pct = _to_float(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "0.03"), 0.03)
+    take_profit_pct = _to_float(os.getenv("EXIT_POLICY_TAKE_PROFIT_PCT", "0.05"), 0.05)
+    trailing_stop_pct = _to_float(os.getenv("EXIT_POLICY_TRAILING_STOP_PCT", "0.0"), 0.0)
+    vol_expansion_ratio = _to_float(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "0.0"), 0.0)
+    news_shock_threshold = _to_float(os.getenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "0.0"), 0.0)
+    adjustments: List[str] = []
+
+    mode = str(playbook or "").strip().lower()
+    guidance = str(monitor_guidance or "").strip().lower()
+    tone = str(risk_tone or "").strip().lower()
+    aggr = str(trade_aggressiveness or "").strip().lower()
+
+    if mode == "breakout":
+        stop_loss_pct *= 0.90
+        take_profit_pct *= 1.40
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.90)
+        vol_expansion_ratio = max(vol_expansion_ratio, 2.20)
+        adjustments.append("playbook:breakout")
+    elif mode == "pullback":
+        stop_loss_pct *= 1.05
+        take_profit_pct *= 1.20
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.75)
+        vol_expansion_ratio = max(vol_expansion_ratio, 2.00)
+        adjustments.append("playbook:pullback")
+    elif mode == "reversal":
+        stop_loss_pct *= 0.85
+        take_profit_pct *= 1.00
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.70)
+        vol_expansion_ratio = max(vol_expansion_ratio, 1.80)
+        adjustments.append("playbook:reversal")
+    else:
+        stop_loss_pct *= 0.80
+        take_profit_pct *= 0.90
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.65)
+        vol_expansion_ratio = max(vol_expansion_ratio, 1.60)
+        adjustments.append("playbook:defensive")
+
+    if guidance == "hold_through_noise":
+        stop_loss_pct *= 1.10
+        take_profit_pct *= 1.10
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.95)
+        adjustments.append("monitor_guidance:hold_through_noise")
+    elif guidance == "quick_take_profit":
+        stop_loss_pct *= 0.95
+        take_profit_pct *= 0.85
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.80)
+        adjustments.append("monitor_guidance:quick_take_profit")
+    elif guidance == "defensive_exit":
+        stop_loss_pct *= 0.92
+        take_profit_pct *= 0.92
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.70)
+        adjustments.append("monitor_guidance:defensive_exit")
+
+    if tone == "conservative":
+        stop_loss_pct *= 0.90
+        take_profit_pct *= 0.95
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 0.75)
+        adjustments.append("risk_tone:conservative")
+    elif tone == "aggressive":
+        stop_loss_pct *= 1.10
+        take_profit_pct *= 1.10
+        trailing_stop_pct = max(trailing_stop_pct, stop_loss_pct * 1.00)
+        adjustments.append("risk_tone:aggressive")
+
+    if aggr == "low":
+        take_profit_pct *= 0.95
+        adjustments.append("trade_aggressiveness:low")
+    elif aggr == "high":
+        take_profit_pct *= 1.08
+        adjustments.append("trade_aggressiveness:high")
+
+    stop_loss_pct = _clamp(stop_loss_pct, 0.003, 0.10)
+    take_profit_pct = _clamp(max(take_profit_pct, stop_loss_pct * 1.05), 0.005, 0.25)
+    trailing_stop_pct = _clamp(max(trailing_stop_pct, stop_loss_pct * 0.50), 0.0, 0.15)
+    vol_expansion_ratio = _clamp(vol_expansion_ratio, 0.0, 5.0)
+    news_shock_threshold = _clamp(news_shock_threshold, 0.0, 1.0)
+
+    return {
+        "stop_loss_pct": float(stop_loss_pct),
+        "take_profit_pct": float(take_profit_pct),
+        "trailing_stop_pct": float(trailing_stop_pct),
+        "vol_expansion_ratio": float(vol_expansion_ratio),
+        "news_shock_threshold": float(news_shock_threshold),
+        "adjustments": list(adjustments),
+        "note": "strategist_exit_policy_baseline",
+    }
+
+
 def _scanner_source_policy(
     *,
     playbook: str,
@@ -1957,6 +2052,12 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         trade_aggressiveness=trade_aggressiveness,
         risk_tone=risk_tone,
     )
+    exit_policy = _exit_policy(
+        playbook=playbook,
+        monitor_guidance=monitor_guidance,
+        trade_aggressiveness=trade_aggressiveness,
+        risk_tone=risk_tone,
+    )
     report_focus = _report_focus(playbook=playbook, themes=themes)
     themes, avoid_themes, scanner_priority, report_focus = _augment_strategy_fields(
         themes=themes,
@@ -2083,6 +2184,16 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             trade_aggressiveness=trade_aggressiveness,
             risk_tone=risk_tone,
         )
+    exit_policy_override = ai_overrides.get("exit_policy")
+    if isinstance(exit_policy_override, dict):
+        exit_policy = {**exit_policy, **dict(exit_policy_override)}
+    else:
+        exit_policy = _exit_policy(
+            playbook=playbook,
+            monitor_guidance=monitor_guidance,
+            trade_aggressiveness=trade_aggressiveness,
+            risk_tone=risk_tone,
+        )
     scanner_source_policy = _scanner_source_policy(
         playbook=playbook,
         risk_tone=risk_tone,
@@ -2137,6 +2248,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["risk_tone"] = risk_tone
     state["monitor_guidance"] = monitor_guidance
     state["monitor_policy"] = dict(monitor_policy)
+    state["strategist_exit_policy"] = dict(exit_policy)
     state["report_focus"] = list(report_focus)
     state["scanner_guidance"] = {
         "themes": list(themes),
@@ -2173,6 +2285,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         source="strategist_node",
     ).to_dict()
     strategist_output["monitor_policy"] = dict(monitor_policy)
+    strategist_output["exit_policy"] = dict(exit_policy)
     strategist_output["market_structure"] = market_structure
     strategist_output["regime_score"] = float(regime_score)
     strategist_output["sentiment_score"] = float(sentiment_score)
