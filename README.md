@@ -288,6 +288,7 @@ Example scanner output:
   - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`
   - `ai_findings_detailed`, `ai_root_causes_detailed`, `ai_improvement_suggestions_detailed`
   - detailed rows carry `evidence_keys` and `evidence_refs` back into deterministic report sections
+  - if the AI model returns empty finding/root-cause/improvement arrays, reporter backfills a minimal evidence-linked set from deterministic diagnostics
 - Does not participate in runtime decision routing
 - AI review remains passive/post-run only and never influences live trading decisions
 

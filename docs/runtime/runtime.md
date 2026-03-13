@@ -177,6 +177,7 @@
     - `ai_findings_detailed`
     - `ai_root_causes_detailed`
     - `ai_improvement_suggestions_detailed`
+  - if AI review returns `status=ok` but empty lists, reporter enriches the output from deterministic evidence so downstream strategy memory stays usable
 
 ## Off-Hours Validation Loop
 

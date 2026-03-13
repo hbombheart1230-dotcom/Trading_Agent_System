@@ -550,3 +550,77 @@ def test_reporter_analysis_ai_review_infers_evidence_links_when_model_omits_them
     assert "scanner_selection_fit" in ((obj.get("ai_findings_detailed") or [])[0].get("evidence_keys") or [])
     root_keys = ((obj.get("ai_root_causes_detailed") or [])[0].get("evidence_keys") or [])
     assert "monitor_exit_quality" in root_keys
+
+
+def test_reporter_analysis_ai_review_fills_empty_lists_from_deterministic_evidence(monkeypatch, tmp_path: Path, capsys) -> None:
+    day = "2026-03-10"
+    events = tmp_path / "events.jsonl"
+    reports_root = tmp_path / "reports"
+    out_dir = reports_root / "reporter_analysis"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r1",
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "scanner",
+                "event": "summary",
+                "payload": {"top_stock": "005930", "top_score": 0.91},
+            },
+            {
+                "run_id": "r2",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "monitor",
+                "event": "summary",
+                "payload": {"monitor_reason": "confirmed_exit_signal", "exit_reason": "stop_loss"},
+            },
+            {
+                "run_id": "r3",
+                "ts": f"{day}T00:00:02+00:00",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": False, "reason": "risk_guard"},
+            },
+        ],
+    )
+
+    def _fake_ai_review(**kwargs):
+        return {
+            "enabled": True,
+            "status": "ok",
+            "model": "fake/reporter-model",
+            "reason": "",
+            "ai_summary": "",
+            "ai_findings": [],
+            "ai_root_causes": [],
+            "ai_improvement_suggestions": [],
+            "ai_run_grade": "C",
+            "ai_agent_evaluations": {},
+            "ai_evidence_links": {"findings": [], "root_causes": [], "improvements": []},
+        }
+
+    monkeypatch.setattr(reporter_analysis_module, "build_ai_reporter_review", _fake_ai_review)
+
+    rc = reporter_analysis_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(out_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--ai-review",
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert (obj.get("ai_review") or {}).get("status") == "ok"
+    assert (obj.get("ai_review") or {}).get("fallback_enriched") is True
+    assert len(obj.get("ai_findings") or []) >= 1
+    assert len(obj.get("ai_root_causes") or []) >= 1
+    assert len(obj.get("ai_improvement_suggestions") or []) >= 1
+    assert len(obj.get("ai_findings_detailed") or []) >= 1
+    assert len(obj.get("ai_root_causes_detailed") or []) >= 1

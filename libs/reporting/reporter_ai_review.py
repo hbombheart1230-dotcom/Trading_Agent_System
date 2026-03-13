@@ -257,7 +257,9 @@ def _build_messages(day: str, compact_input: Dict[str, Any]) -> List[Dict[str, s
     system_prompt = (
         "You are an AI post-run reviewer for a trading agent system. "
         "You must remain passive and never suggest direct live execution actions. "
-        "Given deterministic summaries, return concise JSON only."
+        "Given deterministic summaries, return concise JSON only. "
+        "Prefer 2-3 short findings, 1-3 root causes, and 1-3 concrete improvement suggestions. "
+        "Do not return empty arrays when evidence_catalog_summary contains meaningful evidence."
     )
     json_contract = {
         "ai_summary": "string",
@@ -284,6 +286,8 @@ def _build_messages(day: str, compact_input: Dict[str, Any]) -> List[Dict[str, s
         "monitor exit quality, overtrading risk, supervisor guard appropriateness, anomalies, and next-run improvements.\n"
         "Use only evidence keys already present in evidence_catalog_summary. "
         "ai_evidence_links rows must align by index with ai_findings / ai_root_causes / ai_improvement_suggestions.\n"
+        "If the run has any meaningful deterministic evidence, each of ai_findings / ai_root_causes / "
+        "ai_improvement_suggestions must contain at least one item.\n"
         "Return strict JSON matching this contract keys only:\n"
         f"{json.dumps(json_contract, ensure_ascii=False)}\n\n"
         "Input summary:\n"

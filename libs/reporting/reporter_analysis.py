@@ -980,6 +980,179 @@ def _hydrate_ai_evidence_details(
     return details
 
 
+def _first_nonempty_str(*values: Any) -> str:
+    for value in values:
+        s = str(value or "").strip()
+        if s:
+            return s
+    return ""
+
+
+def _ensure_min_ai_review_payload(
+    *,
+    out: Dict[str, Any],
+    ai_review: Dict[str, Any],
+) -> Dict[str, Any]:
+    findings = list(ai_review.get("ai_findings") or [])
+    root_causes = list(ai_review.get("ai_root_causes") or [])
+    improvements = list(ai_review.get("ai_improvement_suggestions") or [])
+    evidence_links = ai_review.get("ai_evidence_links") if isinstance(ai_review.get("ai_evidence_links"), dict) else {}
+    finding_links = list(evidence_links.get("findings") or [])
+    root_links = list(evidence_links.get("root_causes") or [])
+    improvement_links = list(evidence_links.get("improvements") or [])
+
+    catalog = out.get("ai_evidence_catalog") if isinstance(out.get("ai_evidence_catalog"), dict) else {}
+    strategist_eval = out.get("strategist_evaluation") if isinstance(out.get("strategist_evaluation"), dict) else {}
+    scanner_eval = out.get("scanner_evaluation") if isinstance(out.get("scanner_evaluation"), dict) else {}
+    monitor_eval = out.get("monitor_evaluation") if isinstance(out.get("monitor_evaluation"), dict) else {}
+    supervisor_activity = out.get("supervisor_activity") if isinstance(out.get("supervisor_activity"), dict) else {}
+    overtrading = out.get("overtrading_diagnostics") if isinstance(out.get("overtrading_diagnostics"), dict) else {}
+    improvement_suggestions = out.get("improvement_suggestions") if isinstance(out.get("improvement_suggestions"), list) else []
+
+    fallback_used = False
+
+    def _append_with_link(target: List[str], link_target: List[Dict[str, Any]], text: str, evidence_keys: List[str]) -> None:
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            return
+        if cleaned not in target:
+            target.append(cleaned)
+            link_target.append({"text": cleaned, "evidence_keys": list(evidence_keys or [])[:3]})
+
+    if not findings:
+        fallback_used = True
+        if str(scanner_eval.get("selection_status") or "") == "needs_review":
+            _append_with_link(
+                findings,
+                finding_links,
+                "Scanner selection fit needs review under the observed market context.",
+                ["scanner_selection_fit"],
+            )
+        if str(monitor_eval.get("monitor_status") or "") == "overtrading_risk" or _safe_int(overtrading.get("rapid_buy_sell_cycles"), 0) > 0:
+            _append_with_link(
+                findings,
+                finding_links,
+                "Monitor behavior showed overtrading or rapid exit pressure in this run window.",
+                ["monitor_exit_quality", "overtrading_risk"],
+            )
+        if not findings and _safe_float(supervisor_activity.get("blocked_rate"), 0.0) >= 0.40:
+            _append_with_link(
+                findings,
+                finding_links,
+                "Supervisor blocked a material share of intents, indicating upstream intent quality friction.",
+                ["supervisor_guard_activity"],
+            )
+        if not findings:
+            _append_with_link(
+                findings,
+                finding_links,
+                "Deterministic evidence is available for strategist, scanner, and monitor evaluation and should guide the next run review.",
+                ["decision_trace_quality", "trade_summary"],
+            )
+
+    if not root_causes:
+        fallback_used = True
+        if str(monitor_eval.get("monitor_status") or "") == "overtrading_risk" or _safe_int(overtrading.get("rapid_buy_sell_cycles"), 0) > 0:
+            _append_with_link(
+                root_causes,
+                root_links,
+                "Exit handling and monitor confirmation logic remained the dominant source of instability.",
+                ["monitor_exit_quality", "overtrading_risk"],
+            )
+        if not root_causes and str(scanner_eval.get("selection_status") or "") == "needs_review":
+            _append_with_link(
+                root_causes,
+                root_links,
+                "Scanner candidate ranking relied on weak fit signals relative to the observed market regime.",
+                ["scanner_selection_fit"],
+            )
+        if not root_causes and str(strategist_eval.get("theme_alignment_status") or "") in ("partial", "insufficient_data"):
+            _append_with_link(
+                root_causes,
+                root_links,
+                "Strategist framing only partially aligned with the leaders observed by scanner and execution traces.",
+                ["strategist_theme_alignment"],
+            )
+        if not root_causes:
+            _append_with_link(
+                root_causes,
+                root_links,
+                "No single dominant cause was isolated; scanner fit and monitor exit quality should be reviewed together.",
+                ["scanner_selection_fit", "monitor_exit_quality"],
+            )
+
+    if not improvements:
+        fallback_used = True
+        if improvement_suggestions:
+            top_suggestion = str(improvement_suggestions[0] or "").strip()
+            evidence_keys = _infer_ai_evidence_keys(top_suggestion, catalog)
+            _append_with_link(
+                improvements,
+                improvement_links,
+                top_suggestion,
+                evidence_keys or ["monitor_exit_quality"],
+            )
+        if not improvements and str(monitor_eval.get("monitor_status") or "") == "overtrading_risk":
+            _append_with_link(
+                improvements,
+                improvement_links,
+                "Tighten non-emergency monitor behavior by increasing confirmation strictness or widening patience around noise.",
+                ["monitor_exit_quality", "overtrading_risk"],
+            )
+        if not improvements and str(scanner_eval.get("selection_status") or "") == "needs_review":
+            _append_with_link(
+                improvements,
+                improvement_links,
+                "Refine scanner pool reduction and ranking so candidate fit is less dependent on weak liquidity-only signals.",
+                ["scanner_selection_fit"],
+            )
+        if not improvements:
+            _append_with_link(
+                improvements,
+                improvement_links,
+                "Keep using evidence-linked post-run review and convert the top weakness into an explicit next-run checklist item.",
+                ["decision_trace_quality", "incident_summary"],
+            )
+
+    agent_evaluations = ai_review.get("ai_agent_evaluations") if isinstance(ai_review.get("ai_agent_evaluations"), dict) else {}
+    if fallback_used and not agent_evaluations:
+        agent_evaluations = {
+            "strategist": "needs_improvement" if str(strategist_eval.get("theme_alignment_status") or "") in ("partial", "insufficient_data") else "good",
+            "scanner": "needs_improvement" if str(scanner_eval.get("selection_status") or "") == "needs_review" else "good",
+            "monitor": "needs_improvement" if str(monitor_eval.get("monitor_status") or "") == "overtrading_risk" else "good",
+            "supervisor": "needs_improvement" if _safe_float(supervisor_activity.get("blocked_rate"), 0.0) >= 0.40 else "good",
+            "executor": "good",
+        }
+
+    ai_summary = str(ai_review.get("ai_summary") or "").strip()
+    if fallback_used and not ai_summary:
+        ai_summary = _first_nonempty_str(
+            findings[0] if findings else "",
+            root_causes[0] if root_causes else "",
+            "Deterministic post-run evidence was used to build a minimal AI review summary.",
+        )
+
+    reason = str(ai_review.get("reason") or "").strip()
+    if fallback_used:
+        reason = _first_nonempty_str(reason, "empty_ai_lists_repaired_from_deterministic_evidence")
+
+    return {
+        **dict(ai_review),
+        "reason": reason,
+        "ai_summary": ai_summary,
+        "ai_findings": findings[:12],
+        "ai_root_causes": root_causes[:10],
+        "ai_improvement_suggestions": improvements[:10],
+        "ai_agent_evaluations": dict(agent_evaluations),
+        "ai_evidence_links": {
+            "findings": finding_links[:12],
+            "root_causes": root_links[:10],
+            "improvements": improvement_links[:10],
+        },
+        "fallback_enriched": bool(fallback_used),
+    }
+
+
 def _build_strategy_frame_summary(day_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     theme_counts: Counter[str] = Counter()
     playbook_counts: Counter[str] = Counter()
@@ -1480,6 +1653,8 @@ def _to_markdown(out: Dict[str, Any]) -> str:
         lines.append(f"- ai_review_model: `{ai_review.get('model')}`")
     if ai_review.get("reason"):
         lines.append(f"- ai_review_reason: {ai_review.get('reason')}")
+    if ai_review.get("fallback_enriched") is True:
+        lines.append("- ai_review_fallback_enriched: true")
     lines.append(f"- ai_run_grade: **{out.get('ai_run_grade') or 'N/A'}**")
     if out.get("ai_summary"):
         lines.append(f"- ai_summary: {out.get('ai_summary')}")
@@ -1719,6 +1894,7 @@ def generate_reporter_analysis_report(
             "ai_run_grade": "N/A",
             "ai_agent_evaluations": {},
         }
+    ai_review = _ensure_min_ai_review_payload(out=out, ai_review=dict(ai_review or {}))
     out["ai_review"] = dict(ai_review)
     out["ai_summary"] = str(ai_review.get("ai_summary") or "")
     out["ai_findings"] = list(ai_review.get("ai_findings") or [])
