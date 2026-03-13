@@ -47,7 +47,7 @@ def _mk_req(symbol: str) -> PreparedRequest:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M24 guard precedence check (approval state + duplicate claim + preflight code)")
-    p.add_argument("--intent-log-path", default="data/logs/m24_guard_precedence_intents.jsonl")
+    p.add_argument("--intent-log-path", default="data/logs/milestones/m24/guard_precedence_intents.jsonl")
     p.add_argument("--state-db-path", default="data/state/m24_guard_precedence.db")
     p.add_argument("--json", action="store_true")
     p.add_argument("--no-clear", action="store_true")

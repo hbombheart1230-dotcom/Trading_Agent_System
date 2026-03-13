@@ -17,7 +17,7 @@ from scripts.query_m25_notification_events import main as query_main
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M27-9 portfolio guard notify ops query check.")
-    p.add_argument("--event-log-path", default="data/logs/m27_notify_query_events.jsonl")
+    p.add_argument("--event-log-path", default="data/logs/milestones/m27/notify_query_events.jsonl")
     p.add_argument("--day", default="2026-02-20")
     p.add_argument("--inject-fail", action="store_true")
     p.add_argument("--json", action="store_true")

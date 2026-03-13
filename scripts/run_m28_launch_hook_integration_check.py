@@ -79,7 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", choices=["dev", "staging", "prod"], default="dev")
     p.add_argument("--env-path", default=".env")
     p.add_argument("--state-dir", default="data/state/m28_launch_hook")
-    p.add_argument("--report-dir", default="reports/archive/milestones/m28_launch_hook")
+    p.add_argument("--report-dir", default="reports/milestones/m28_launch_hook")
     p.add_argument("--day", default="2026-02-21")
     p.add_argument("--inject-fail", action="store_true")
     p.add_argument("--no-clear", action="store_true")

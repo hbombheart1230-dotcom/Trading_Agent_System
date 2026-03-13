@@ -89,7 +89,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="M24 closeout check (guard precedence + intent-state ops visibility)."
     )
-    p.add_argument("--intent-log-path", default="data/logs/m24_closeout_intents.jsonl")
+    p.add_argument("--intent-log-path", default="data/logs/milestones/m24/closeout_intents.jsonl")
     p.add_argument("--state-db-path", default="data/state/m24_closeout_state.db")
     p.add_argument("--stuck-executing-sec", type=int, default=300)
     p.add_argument("--inject-stuck-case", action="store_true")

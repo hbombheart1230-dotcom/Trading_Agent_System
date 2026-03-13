@@ -73,7 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Query M25 notification event log summary.")
     p.add_argument(
         "--event-log-path",
-        default=_env_str("M25_NOTIFY_EVENT_LOG_PATH", "data/logs/m25_notify_events.jsonl"),
+        default=_env_str("M25_NOTIFY_EVENT_LOG_PATH", "data/logs/milestones/m25/notify_events.jsonl"),
     )
     p.add_argument("--day", default=None)
     p.add_argument("--provider", default="", help="Filter by provider (webhook/slack_webhook/none).")

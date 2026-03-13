@@ -580,8 +580,8 @@ def generate_operator_daily_summary(
 
     metrics_dir = metrics_report_dir or (Path("reports") / "metrics")
     metrics = _load_or_build_metrics(events_path, metrics_dir, target_day)
-    m30_post_dir = m30_post_golive_dir or (Path("reports") / "m30_post_golive")
-    m30_go_dir = m30_golive_dir or (Path("reports") / "m30_golive")
+    m30_post_dir = m30_post_golive_dir or (Path("reports") / "milestones" / "m30_post_golive")
+    m30_go_dir = m30_golive_dir or (Path("reports") / "milestones" / "m30_golive")
     m31_dir = m31_slo_incident_dir or (Path("reports") / "m31_slo_incident")
     m30_policy = _find_day_artifact(m30_post_dir, "m30_post_golive_policy", target_day)
     m30_signoff = _find_day_artifact(m30_go_dir, "m30_final_golive_signoff", target_day)
@@ -1077,8 +1077,8 @@ def generate_operator_visibility_bundle(
         report_root / "operator_summary",
         day=day,
         metrics_report_dir=report_root / "metrics",
-        m30_post_golive_dir=report_root / "m30_post_golive",
-        m30_golive_dir=report_root / "m30_golive",
+        m30_post_golive_dir=report_root / "milestones" / "m30_post_golive",
+        m30_golive_dir=report_root / "milestones" / "m30_golive",
         m31_slo_incident_dir=report_root / "m31_slo_incident",
     )
     summary_obj = _read_json(summary_js)

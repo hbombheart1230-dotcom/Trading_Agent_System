@@ -12,7 +12,7 @@
 - skill calls + results
 - approvals (audit)
 - errors
-- pytest default log isolation: when `EVENT_LOG_PATH` is unset under pytest, runtime nodes write to `data/logs/pytest_events.jsonl` instead of the operator log
+- pytest default log isolation: when `EVENT_LOG_PATH` is unset under pytest, runtime nodes write to `data/logs/dev/testing/pytest_events.jsonl` instead of the operator log
 
 **Goal:** make every run replayable.
 
@@ -143,6 +143,8 @@
   - `docs/runtime/agent_visibility_runbook.md`
 - Report inventory / cleanup reference:
   - `docs/runtime/report_management.md`
+- Log inventory / cleanup reference:
+  - `docs/runtime/log_management.md`
 - Single-run full-chain trace artifact:
   - generator: `scripts/run_agent_pipeline_trace_report.py`
   - outputs: `reports/dev/analysis/agent_pipeline_trace/agent_pipeline_trace_<run>.md|json`
@@ -202,7 +204,7 @@
   - what Monitor threshold/policy drove entry or exit
   - what Reporter suggested for next-run learning
 - Default artifact tree:
-  - `reports/offhours_full_trace/offhours_full_trace_<run>.md|json`
-  - `reports/offhours_full_trace/agent_pipeline_trace/*`
-  - `reports/offhours_full_trace/trade_explain/*`
-  - `reports/offhours_full_trace/reporter_analysis/*`
+  - `reports/dev/analysis/offhours_full_trace/offhours_full_trace_<run>.md|json`
+  - `reports/dev/analysis/offhours_full_trace/agent_pipeline_trace/*`
+  - `reports/dev/analysis/offhours_full_trace/trade_explain/*`
+  - `reports/dev/analysis/offhours_full_trace/reporter_analysis/*`

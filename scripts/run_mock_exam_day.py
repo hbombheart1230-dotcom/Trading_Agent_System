@@ -327,15 +327,15 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
             py,
             str(ROOT / "scripts" / "run_m30_final_golive_signoff.py"),
             "--event-log-dir",
-            str(ROOT / "data" / "logs" / "m30_golive"),
+            str(ROOT / "data" / "logs" / "milestones" / "m30" / "golive"),
             "--quality-report-dir",
-            str(ROOT / "reports" / "m30_quality_gates"),
+            str(ROOT / "reports" / "milestones" / "m30_quality_gates"),
             "--signoff-report-dir",
-            str(ROOT / "reports" / "m30_signoff"),
+            str(ROOT / "reports" / "milestones" / "m30_signoff"),
             "--policy-report-dir",
-            str(ROOT / "reports" / "m30_post_golive"),
+            str(ROOT / "reports" / "milestones" / "m30_post_golive"),
             "--report-dir",
-            str(ROOT / "reports" / "m30_golive"),
+            str(ROOT / "reports" / "milestones" / "m30_golive"),
             "--day",
             day,
             "--no-clear",
@@ -353,7 +353,7 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
     m30_2_signoff = step1_obj.get("m30_2_signoff") if isinstance(step1_obj.get("m30_2_signoff"), dict) else {}
     m30_2_signoff_json_path = str(m30_2_signoff.get("report_json_path") or "").strip()
     if not m30_2_signoff_json_path:
-        m30_2_signoff_json_path = str(ROOT / "reports" / "m30_signoff" / f"m30_release_signoff_{day}.json")
+        m30_2_signoff_json_path = str(ROOT / "reports" / "milestones" / "m30_signoff" / f"m30_release_signoff_{day}.json")
 
     step2 = _run_subprocess(
         step_id="preopen.m30_post_golive_policy",
@@ -363,13 +363,13 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
             "--signoff-json-path",
             str(m30_2_signoff_json_path),
             "--event-log-dir",
-            str(ROOT / "data" / "logs" / "m30_golive"),
+            str(ROOT / "data" / "logs" / "milestones" / "m30" / "golive"),
             "--quality-report-dir",
-            str(ROOT / "reports" / "m30_quality_gates"),
+            str(ROOT / "reports" / "milestones" / "m30_quality_gates"),
             "--signoff-report-dir",
-            str(ROOT / "reports" / "m30_signoff"),
+            str(ROOT / "reports" / "milestones" / "m30_signoff"),
             "--report-dir",
-            str(ROOT / "reports" / "m30_post_golive"),
+            str(ROOT / "reports" / "milestones" / "m30_post_golive"),
             "--day",
             day,
             "--json",
@@ -581,9 +581,9 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
                 "--event-log-path",
                 event_log_path,
                 "--policy-report-dir",
-                str(ROOT / "reports" / "m30_post_golive"),
+                str(ROOT / "reports" / "milestones" / "m30_post_golive"),
                 "--signoff-report-dir",
-                str(ROOT / "reports" / "m30_golive"),
+                str(ROOT / "reports" / "milestones" / "m30_golive"),
                 "--report-dir",
                 str(report_root / "m31_slo_incident"),
                 "--day",
@@ -620,9 +620,9 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
                 "--metrics-report-dir",
                 str(report_root / "metrics"),
                 "--m30-post-golive-dir",
-                str(ROOT / "reports" / "m30_post_golive"),
+                str(ROOT / "reports" / "milestones" / "m30_post_golive"),
                 "--m30-golive-dir",
-                str(ROOT / "reports" / "m30_golive"),
+                str(ROOT / "reports" / "milestones" / "m30_golive"),
                 "--m31-slo-incident-dir",
                 str(report_root / "m31_slo_incident"),
                 "--report-dir",
@@ -746,8 +746,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout-sec", type=int, default=1800)
     p.add_argument("--lock-path", default="data/state/m13_live_loop.lock")
     p.add_argument("--lock-stale-sec", type=int, default=_to_int(os.getenv("M13_LIVE_LOCK_STALE_SEC", "1800"), 1800))
-    p.add_argument("--session-stdout-path", default="data/logs/mock_exam_day_session_stdout.log")
-    p.add_argument("--session-stderr-path", default="data/logs/mock_exam_day_session_stderr.log")
+    p.add_argument("--session-stdout-path", default="data/logs/dev/session/mock_exam_day_session_stdout.log")
+    p.add_argument("--session-stderr-path", default="data/logs/dev/session/mock_exam_day_session_stderr.log")
     p.add_argument("--now-kst", default=None)
     p.add_argument(
         "--allow-offhours-session-probe",
@@ -789,8 +789,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "timeout_sec": int(args.timeout_sec),
         "lock_path": _resolve_path(str(args.lock_path), "data/state/m13_live_loop.lock"),
         "lock_stale_sec": int(args.lock_stale_sec),
-        "session_stdout_path": _resolve_path(str(args.session_stdout_path), "data/logs/mock_exam_day_session_stdout.log"),
-        "session_stderr_path": _resolve_path(str(args.session_stderr_path), "data/logs/mock_exam_day_session_stderr.log"),
+        "session_stdout_path": _resolve_path(str(args.session_stdout_path), "data/logs/dev/session/mock_exam_day_session_stdout.log"),
+        "session_stderr_path": _resolve_path(str(args.session_stderr_path), "data/logs/dev/session/mock_exam_day_session_stderr.log"),
     }
 
     started_at = _utc_now_iso()

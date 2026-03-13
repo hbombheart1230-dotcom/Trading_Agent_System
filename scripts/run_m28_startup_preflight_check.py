@@ -96,7 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", choices=["dev", "staging", "prod"], default="dev")
     p.add_argument("--env-path", default=".env")
     p.add_argument("--state-path", default="data/state/m28_startup_preflight/runtime_state.json")
-    p.add_argument("--report-dir", default="reports/archive/milestones/m28_startup_preflight")
+    p.add_argument("--report-dir", default="reports/milestones/m28_startup_preflight")
     p.add_argument("--day", default="2026-02-21")
     p.add_argument("--run-id", default="m28-startup-preflight")
     p.add_argument("--inject-fail", action="store_true")

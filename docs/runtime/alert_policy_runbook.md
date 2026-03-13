@@ -23,7 +23,7 @@ ALERT_POLICY_PORTFOLIO_GUARD_STRATEGY_BUDGET_EXCEEDED_MAX=20
 Run against event log for a specific day:
 
 ```powershell
-python scripts/check_alert_policy_v1.py --event-log-path data/logs/events.jsonl --report-dir reports/archive/milestones/m25_alert --day 2026-02-17 --json
+python scripts/check_alert_policy_v1.py --event-log-path data/logs/events.jsonl --report-dir reports/milestones/m25_alert --day 2026-02-17 --json
 ```
 
 Return codes:
@@ -34,32 +34,32 @@ Return codes:
 ## 3. Run M25 Closeout
 
 ```powershell
-python scripts/run_m25_closeout_check.py --event-log-path data/logs/m25_closeout_events.jsonl --report-dir reports/archive/milestones/m25_closeout --day 2026-02-17 --json
+python scripts/run_m25_closeout_check.py --event-log-path data/logs/milestones/m25/closeout_events.jsonl --report-dir reports/milestones/m25_closeout --day 2026-02-17 --json
 ```
 
 Artifacts:
-- `reports/archive/milestones/m25_closeout/metrics_<day>.json`
-- `reports/archive/milestones/m25_closeout/daily_<day>.json`
-- `reports/archive/milestones/m25_closeout/alert_policy_<day>.json`
-- `reports/archive/milestones/m25_closeout/alert_policy_<day>.md`
+- `reports/milestones/m25_closeout/metrics_<day>.json`
+- `reports/milestones/m25_closeout/daily_<day>.json`
+- `reports/milestones/m25_closeout/alert_policy_<day>.json`
+- `reports/milestones/m25_closeout/alert_policy_<day>.md`
 
 ## 4. Run Scheduled Batch Hook
 
 Batch wrapper (single-instance lock + latest status JSON):
 
 ```powershell
-python scripts/run_m25_ops_batch.py --event-log-path data/logs/m25_ops_batch_events.jsonl --report-dir reports/archive/milestones/m25_ops_batch --status-json-path reports/archive/milestones/m25_ops_batch/status_latest.json --json
+python scripts/run_m25_ops_batch.py --event-log-path data/logs/milestones/m25/ops_batch_events.jsonl --report-dir reports/milestones/m25_ops_batch --status-json-path reports/milestones/m25_ops_batch/status_latest.json --json
 ```
 
 Related env defaults:
 
 ```env
-M25_BATCH_EVENT_LOG_PATH=data/logs/m25_ops_batch_events.jsonl
-M25_BATCH_REPORT_DIR=reports/archive/milestones/m25_ops_batch
+M25_BATCH_EVENT_LOG_PATH=data/logs/milestones/m25/ops_batch_events.jsonl
+M25_BATCH_REPORT_DIR=reports/milestones/m25_ops_batch
 M25_BATCH_LOCK_PATH=data/state/m25_ops_batch.lock
 M25_BATCH_LOCK_STALE_SEC=1800
-M25_BATCH_STATUS_JSON_PATH=reports/archive/milestones/m25_ops_batch/status_latest.json
-M25_NOTIFY_EVENT_LOG_PATH=data/logs/m25_notify_events.jsonl
+M25_BATCH_STATUS_JSON_PATH=reports/milestones/m25_ops_batch/status_latest.json
+M25_NOTIFY_EVENT_LOG_PATH=data/logs/milestones/m25/notify_events.jsonl
 ```
 
 Batch return codes:
@@ -111,13 +111,13 @@ python scripts/run_m25_ops_batch.py --notify-provider slack_webhook --notify-web
 ## 5. Query Notification Delivery Summary
 
 ```powershell
-python scripts/query_m25_notification_events.py --event-log-path data/logs/m25_notify_events.jsonl --day 2026-02-17 --json
+python scripts/query_m25_notification_events.py --event-log-path data/logs/milestones/m25/notify_events.jsonl --day 2026-02-17 --json
 ```
 
 Escalation-focused query:
 
 ```powershell
-python scripts/query_m25_notification_events.py --event-log-path data/logs/m25_notify_events.jsonl --day 2026-02-17 --only-escalated --provider slack_webhook --min-portfolio-guard-alert-total 1 --json
+python scripts/query_m25_notification_events.py --event-log-path data/logs/milestones/m25/notify_events.jsonl --day 2026-02-17 --only-escalated --provider slack_webhook --min-portfolio-guard-alert-total 1 --json
 ```
 
 Key output fields:

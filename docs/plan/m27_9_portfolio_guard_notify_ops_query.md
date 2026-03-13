@@ -38,6 +38,6 @@
 ## Operator Usage
 
 ```bash
-python scripts/query_m25_notification_events.py --event-log-path data/logs/m25_notify_events.jsonl --day 2026-02-20 --only-escalated --provider slack_webhook --min-portfolio-guard-alert-total 1 --json
+python scripts/query_m25_notification_events.py --event-log-path data/logs/milestones/m25/notify_events.jsonl --day 2026-02-20 --only-escalated --provider slack_webhook --min-portfolio-guard-alert-total 1 --json
 python scripts/run_m27_portfolio_guard_notify_query_check.py --json
 ```

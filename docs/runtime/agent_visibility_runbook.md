@@ -84,7 +84,7 @@ python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jso
 python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/dev/analysis/reporter_analysis --day 2026-03-10 --json
 python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/dev/analysis/reporter_analysis --day 2026-03-10 --ai-review --json
 python -m scripts.run_agent_pipeline_trace_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/dev/analysis/agent_pipeline_trace --day 2026-03-10 --json
-python -m scripts.run_offhours_full_trace_bundle --env-path .env --state-path data/state/offhours_full_trace.json --event-log-path data/logs/offhours_full_trace.jsonl --evidence-log-path data/evidence_ledger/offhours_full_trace.jsonl --report-dir reports/offhours_full_trace --json
+python -m scripts.run_offhours_full_trace_bundle --env-path .env --state-path data/state/offhours_full_trace.json --event-log-path data/logs/dev/analysis/offhours/offhours_full_trace.jsonl --evidence-log-path data/evidence_ledger/offhours_full_trace.jsonl --report-dir reports/dev/analysis/offhours_full_trace --json
 python -m scripts.run_report_maintenance --report-root reports --event-log-path data/logs/events.jsonl --json
 
 set EVENT_LOG_PATH=./data/logs/events.jsonl
@@ -139,8 +139,8 @@ python -m scripts.generate_metrics_report
 - Output:
   - `reports/dev/analysis/agent_pipeline_trace/agent_pipeline_trace_<run>.md`
   - `reports/dev/analysis/agent_pipeline_trace/agent_pipeline_trace_<run>.json`
-  - `reports/offhours_full_trace/offhours_full_trace_<run>.md`
-  - `reports/offhours_full_trace/offhours_full_trace_<run>.json`
+  - `reports/dev/analysis/offhours_full_trace/offhours_full_trace_<run>.md`
+  - `reports/dev/analysis/offhours_full_trace/offhours_full_trace_<run>.json`
 - Purpose:
   - One-screen trace for all 7 roles:
     - Commander / Strategist / Scanner / Monitor / Supervisor / Executor / Reporter

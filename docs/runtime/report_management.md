@@ -37,7 +37,7 @@ Recommended `reports/dev` layout:
   - archived under `reports/archive/experiments/offhours/`
 - `reports/m22_*`, `reports/m23_*`, `reports/m25_*`, `reports/m28_*`
   - historical milestone validation artifacts
-  - should live under `reports/archive/milestones/`
+  - should live under `reports/milestones/`
 - `reports/daily_test`
   - test-only output
 - root `reports/daily_report_<day>.md|json`

@@ -89,7 +89,7 @@ def _gate_status(components: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M30-1 quality gates bundle (functional/resilience/safety/ops).")
-    p.add_argument("--event-log-dir", default="data/logs/m30_quality_gates")
+    p.add_argument("--event-log-dir", default="data/logs/milestones/m30/quality_gates")
     p.add_argument("--report-dir", default="reports/milestones/m30_quality_gates")
     p.add_argument("--day", default="2026-02-21")
     p.add_argument("--m23-day", default="", help="Optional explicit day for m23 closeout; default uses script latest-day behavior.")

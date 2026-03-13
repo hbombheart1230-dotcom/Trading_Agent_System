@@ -44,7 +44,7 @@ Run:
 
 ```powershell
 python scripts/query_strategist_llm_events.py --limit 20
-python scripts/run_live_session_summary.py --event-log-path data/logs/events_live.jsonl --report-dir reports/dev/live/live_summary --lookback-min 30 --json
+python scripts/run_live_session_summary.py --event-log-path data/logs/dev/live/events_live.jsonl --report-dir reports/dev/live/live_summary --lookback-min 30 --json
 ```
 
 Automated alternative (recommended during session):
@@ -62,7 +62,7 @@ scripts\run_live_session_watch.bat
 Also check:
 
 ```powershell
-Get-Content data/logs/events_live.jsonl -Tail 30
+Get-Content data/logs/dev/live/events_live.jsonl -Tail 30
 ```
 
 ### Record Block (copy per checkpoint)

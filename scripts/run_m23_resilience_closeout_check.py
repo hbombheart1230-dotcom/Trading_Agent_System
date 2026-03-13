@@ -91,7 +91,7 @@ def _query_summary_json(events_path: Path) -> tuple[int, Dict[str, Any]]:
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M23 closeout check (commander resilience + operator resume + incident logs)")
-    p.add_argument("--event-log-path", default="data/logs/m23_closeout_events.jsonl")
+    p.add_argument("--event-log-path", default="data/logs/milestones/m23/closeout_events.jsonl")
     p.add_argument("--json", action="store_true")
     p.add_argument("--no-clear", action="store_true")
     p.add_argument("--skip-error-case", action="store_true")

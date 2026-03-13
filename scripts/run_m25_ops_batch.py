@@ -56,11 +56,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M25 ops batch hook (closeout wrapper + lock + latest status).")
     p.add_argument(
         "--event-log-path",
-        default=_env_str("M25_BATCH_EVENT_LOG_PATH", "data/logs/m25_ops_batch_events.jsonl"),
+        default=_env_str("M25_BATCH_EVENT_LOG_PATH", "data/logs/milestones/m25/ops_batch_events.jsonl"),
     )
     p.add_argument(
         "--report-dir",
-        default=_env_str("M25_BATCH_REPORT_DIR", "reports/archive/milestones/m25_ops_batch"),
+        default=_env_str("M25_BATCH_REPORT_DIR", "reports/milestones/m25_ops_batch"),
     )
     p.add_argument("--day", default=None)
     p.add_argument(
@@ -79,11 +79,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--status-json-path",
-        default=_env_str("M25_BATCH_STATUS_JSON_PATH", "reports/archive/milestones/m25_ops_batch/status_latest.json"),
+        default=_env_str("M25_BATCH_STATUS_JSON_PATH", "reports/milestones/m25_ops_batch/status_latest.json"),
     )
     p.add_argument(
         "--notify-event-log-path",
-        default=_env_str("M25_NOTIFY_EVENT_LOG_PATH", "data/logs/m25_notify_events.jsonl"),
+        default=_env_str("M25_NOTIFY_EVENT_LOG_PATH", "data/logs/milestones/m25/notify_events.jsonl"),
     )
     p.add_argument(
         "--notify-provider",

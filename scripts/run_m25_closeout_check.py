@@ -202,8 +202,8 @@ def _extract_alert_codes(alert_obj: Dict[str, Any]) -> Tuple[List[str], List[str
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M25 closeout check (metrics schema freeze + alert policy + daily report).")
-    p.add_argument("--event-log-path", default="data/logs/m25_closeout_events.jsonl")
-    p.add_argument("--report-dir", default="reports/archive/milestones/m25_closeout")
+    p.add_argument("--event-log-path", default="data/logs/milestones/m25/closeout_events.jsonl")
+    p.add_argument("--report-dir", default="reports/milestones/m25_closeout")
     p.add_argument("--day", default=None)
     p.add_argument("--fail-on", choices=["none", "warning", "critical"], default=_env_fail_on("critical"))
     p.add_argument("--inject-critical-case", action="store_true")

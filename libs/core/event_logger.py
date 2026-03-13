@@ -44,7 +44,7 @@ def resolve_event_log_path(default: str = "./data/logs/events.jsonl") -> Path:
     if raw:
         return Path(raw)
     if os.getenv("PYTEST_CURRENT_TEST"):
-        return Path("./data/logs/pytest_events.jsonl")
+        return Path("./data/logs/dev/testing/pytest_events.jsonl")
     return Path(default)
 
 

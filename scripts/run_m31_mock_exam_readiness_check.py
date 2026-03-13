@@ -99,7 +99,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--day", default="2026-02-21")
     p.add_argument("--env-path", default=".env")
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
-    p.add_argument("--m30-event-log-dir", default="data/logs/m30_golive")
+    p.add_argument("--m30-event-log-dir", default="data/logs/milestones/m30/golive")
     p.add_argument("--m30-quality-report-dir", default="reports/milestones/m30_quality_gates")
     p.add_argument("--m30-signoff-report-dir", default="reports/milestones/m30_signoff")
     p.add_argument("--m30-policy-report-dir", default="reports/milestones/m30_post_golive")

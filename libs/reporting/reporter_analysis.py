@@ -1295,8 +1295,8 @@ def generate_reporter_analysis_report(
         root / "operator_summary",
         day=target_day,
         metrics_report_dir=root / "metrics",
-        m30_post_golive_dir=root / "m30_post_golive",
-        m30_golive_dir=root / "m30_golive",
+        m30_post_golive_dir=root / "milestones" / "m30_post_golive",
+        m30_golive_dir=root / "milestones" / "m30_golive",
         m31_slo_incident_dir=root / "m31_slo_incident",
     )
     ds_md, ds_obj = generate_decision_story_report(

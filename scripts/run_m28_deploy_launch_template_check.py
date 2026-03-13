@@ -85,7 +85,7 @@ def _build_markdown(out: Dict[str, Any]) -> str:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M28-7 deploy-target launch template check.")
     p.add_argument("--output-dir", default="deploy/m28_launch_templates")
-    p.add_argument("--report-dir", default="reports/archive/milestones/m28_launch_templates")
+    p.add_argument("--report-dir", default="reports/milestones/m28_launch_templates")
     p.add_argument("--day", default="2026-02-21")
     p.add_argument("--profile", choices=["dev", "staging", "prod"], default="dev")
     p.add_argument("--env-path", default=".env")

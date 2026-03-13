@@ -159,8 +159,8 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Generate live-session summary over recent event window.")
     p.add_argument(
         "--event-log-path",
-        default=os.getenv("EVENT_LOG_PATH", "data/logs/events_live.jsonl"),
-        help="JSONL event log path (default: EVENT_LOG_PATH or data/logs/events_live.jsonl).",
+        default=os.getenv("EVENT_LOG_PATH", "data/logs/dev/live/events_live.jsonl"),
+        help="JSONL event log path (default: EVENT_LOG_PATH or data/logs/dev/live/events_live.jsonl).",
     )
     p.add_argument("--report-dir", default="reports/dev/live/live_summary")
     p.add_argument("--lookback-min", type=int, default=_safe_int(os.getenv("LIVE_SUMMARY_LOOKBACK_MIN"), 30))
