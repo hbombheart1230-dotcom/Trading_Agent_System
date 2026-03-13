@@ -238,3 +238,66 @@ def test_strategist_news_query_targets_expand_theme_and_macro_context(monkeypatc
     assert "risk-off macro context" in reasoning
     assert "semiconductor" in reasoning
     assert "AI" in reasoning
+
+
+def test_strategist_news_query_targets_become_defensive_when_vix_is_elevated(monkeypatch):
+    captured_queries = []
+
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.compute_global_sentiment_signal",
+        lambda **_: {
+            "score": -0.05,
+            "status": "ok",
+            "source": "mock_global",
+            "reason": "",
+            "ts": 1,
+            "fear_index": {
+                "provider": "mock",
+                "ticker": "^VIX",
+                "level": 28.4,
+                "change_pct": 2.2,
+                "neutral_level": 20.0,
+                "level_pressure": 0.42,
+            },
+        },
+    )
+
+    def _fake_collect(symbols, **_kwargs):
+        captured_queries.append(list(symbols or []))
+        return {str(s): [] for s in list(symbols or [])}
+
+    monkeypatch.setattr("graphs.nodes.strategist_node.collect_news_items", _fake_collect)
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.score_news_sentiment_signal",
+        lambda _items, symbols, **_: {
+            str(s): {"score": 0.0, "status": "fallback", "source": "mock_news", "reason": "", "ts": 1}
+            for s in list(symbols or [])
+        },
+    )
+
+    state = {
+        "themes": ["AI"],
+        "market_context": {
+            "index_trend": -0.02,
+            "realized_volatility": 0.02,
+            "market_breadth": -0.05,
+            "macro_risk": 0.30,
+        },
+        "policy": {
+            "use_global_sentiment": True,
+            "use_news_analysis": True,
+            "use_universe_builder": False,
+        },
+    }
+
+    out = strategist_node(state)
+    targets = out.get("news_query_targets") or []
+    reasoning = str((out.get("strategist_output") or {}).get("news_query_reasoning") or "")
+
+    assert captured_queries and captured_queries[0] == targets
+    assert "국제유가" in targets
+    assert "환율" in targets
+    assert "금" in targets
+    assert "중동" in targets
+    assert "elevated fear index" in reasoning
+    assert "vix=28.40" in reasoning

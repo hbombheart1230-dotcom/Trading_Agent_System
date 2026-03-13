@@ -242,6 +242,10 @@ def _build_markdown(out: Dict[str, Any]) -> str:
         lines.append(
             f"- global_index_moves: `{json.dumps(strategist.get('global_index_moves') or {}, ensure_ascii=False)}`"
         )
+    if strategist.get("fear_index"):
+        lines.append(
+            f"- fear_index: `{json.dumps(strategist.get('fear_index') or {}, ensure_ascii=False)}`"
+        )
     lines.append(
         f"- llm: provider={strategist.get('llm_provider')} model={strategist.get('llm_model')} "
         f"ok={strategist.get('llm_ok')} latency_ms={strategist.get('llm_latency_ms')}"
@@ -426,6 +430,7 @@ def generate_agent_pipeline_trace_report(
     global_inputs = strat_raw.get("global_sentiment_inputs") if isinstance(strat_raw.get("global_sentiment_inputs"), dict) else {}
     global_index_moves = global_inputs.get("index_moves") if isinstance(global_inputs.get("index_moves"), dict) else {}
     global_macro_moves = global_inputs.get("macro_moves") if isinstance(global_inputs.get("macro_moves"), dict) else {}
+    fear_index = global_inputs.get("fear_index") if isinstance(global_inputs.get("fear_index"), dict) else {}
     llm_payload = strat_raw.get("llm_payload") if isinstance(strat_raw.get("llm_payload"), dict) else {}
     news_context = llm_payload.get("news_context") if isinstance(llm_payload.get("news_context"), dict) else {}
     news_query_targets = list(strat_raw.get("news_query_targets") or []) if isinstance(strat_raw.get("news_query_targets"), list) else []
@@ -521,6 +526,7 @@ def generate_agent_pipeline_trace_report(
             "global_sentiment_reason": str(global_inputs.get("reason") or ""),
             "global_index_moves": dict(global_index_moves),
             "global_macro_moves": dict(global_macro_moves),
+            "fear_index": dict(fear_index),
             "llm_provider": str(strategist_llm_payload.get("provider") or ""),
             "llm_model": str(strategist_llm_payload.get("model") or ""),
             "llm_ok": bool(strategist_llm_payload.get("ok")),

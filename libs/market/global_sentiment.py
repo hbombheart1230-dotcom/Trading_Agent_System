@@ -10,6 +10,7 @@ additive index-move evidence so Strategist can reason from:
 - S&P500 daily change
 - Nasdaq daily change
 - Dow daily change
+- VIX level / daily change
 - DXY daily change
 - US 10Y yield delta
 """
@@ -53,6 +54,8 @@ class SentimentInputs:
     sp500_ret: float
     nasdaq_ret: float
     dow_ret: float
+    vix_ret: float
+    vix_level: float
     dxy_ret: float
     tnx_delta: float  # change in 10Y yield (percentage points-ish)
 
@@ -62,16 +65,26 @@ def _compute_raw(
     w_sp: float,
     w_nq: float,
     w_dow: float,
+    w_vix: float,
+    w_vix_level: float,
     w_dxy: float,
     w_tnx: float,
+    vix_neutral_level: float,
 ) -> float:
     # Risk-on: equities up, DXY down, yields down
+    # - VIX up / elevated => risk-off => subtract
     # - DXY up => risk-off => subtract
     # - TNX up => tighter => subtract
+    vix_ret = float(getattr(inputs, "vix_ret", 0.0) or 0.0)
+    vix_level = float(getattr(inputs, "vix_level", 0.0) or 0.0)
+    neutral_vix = max(1.0, float(vix_neutral_level or 20.0))
+    vix_level_pressure = max(0.0, min((vix_level - neutral_vix) / neutral_vix, 2.0))
     return (
         w_sp * inputs.sp500_ret
         + w_nq * inputs.nasdaq_ret
         + w_dow * inputs.dow_ret
+        - w_vix * vix_ret
+        - w_vix_level * vix_level_pressure
         - w_dxy * inputs.dxy_ret
         - w_tnx * inputs.tnx_delta
     )
@@ -101,12 +114,14 @@ def _fetch_inputs(policy: Dict[str, Any]) -> Optional[SentimentInputs]:
     tick_sp = str(policy.get("sentiment_ticker_sp500") or "^GSPC")
     tick_nq = str(policy.get("sentiment_ticker_nasdaq") or "^IXIC")
     tick_dow = str(policy.get("sentiment_ticker_dow") or "^DJI")
+    tick_vix = str(policy.get("sentiment_ticker_vix") or "^VIX")
     tick_dxy = str(policy.get("sentiment_ticker_dxy") or "DX-Y.NYB")
     tick_tnx = str(policy.get("sentiment_ticker_tnx") or "^TNX")
 
     sp = _fetch_last2_closes_yfinance(tick_sp)
     nq = _fetch_last2_closes_yfinance(tick_nq)
     dow = _fetch_last2_closes_yfinance(tick_dow)
+    vix = _fetch_last2_closes_yfinance(tick_vix)
     dxy = _fetch_last2_closes_yfinance(tick_dxy)
     tnx = _fetch_last2_closes_yfinance(tick_tnx)
 
@@ -116,6 +131,8 @@ def _fetch_inputs(policy: Dict[str, Any]) -> Optional[SentimentInputs]:
     sp_ret = (sp[1] / sp[0]) - 1.0 if sp[0] != 0 else 0.0
     nq_ret = (nq[1] / nq[0]) - 1.0 if nq[0] != 0 else 0.0
     dow_ret = (dow[1] / dow[0]) - 1.0 if dow[0] != 0 else 0.0
+    vix_ret = (vix[1] / vix[0]) - 1.0 if vix and vix[0] != 0 else 0.0
+    vix_level = float(vix[1]) if vix else 0.0
     dxy_ret = (dxy[1] / dxy[0]) - 1.0 if dxy[0] != 0 else 0.0
 
     # ^TNX is typically 10Y yield * 10 (e.g., 45 => 4.5%).
@@ -126,6 +143,8 @@ def _fetch_inputs(policy: Dict[str, Any]) -> Optional[SentimentInputs]:
         sp500_ret=sp_ret,
         nasdaq_ret=nq_ret,
         dow_ret=dow_ret,
+        vix_ret=vix_ret,
+        vix_level=vix_level,
         dxy_ret=dxy_ret,
         tnx_delta=tnx_delta,
     )
@@ -136,17 +155,24 @@ def _sentiment_evidence(inputs: Optional[SentimentInputs], weights: Dict[str, fl
         "sp500_ret": float(inputs.sp500_ret) if inputs is not None else 0.0,
         "nasdaq_ret": float(inputs.nasdaq_ret) if inputs is not None else 0.0,
         "dow_ret": float(inputs.dow_ret) if inputs is not None else 0.0,
+        "vix_ret": float(getattr(inputs, "vix_ret", 0.0) or 0.0) if inputs is not None else 0.0,
+        "vix_level": float(getattr(inputs, "vix_level", 0.0) or 0.0) if inputs is not None else 0.0,
         "dxy_ret": float(inputs.dxy_ret) if inputs is not None else 0.0,
         "tnx_delta": float(inputs.tnx_delta) if inputs is not None else 0.0,
     }
     equity_avg = (components["sp500_ret"] + components["nasdaq_ret"] + components["dow_ret"]) / 3.0
+    neutral_vix = max(1.0, float(weights.get("vix_neutral_level", 20.0) or 20.0))
+    vix_level_pressure = max(0.0, min((components["vix_level"] - neutral_vix) / neutral_vix, 2.0))
     return {
         "weights": {
             "sp500": float(weights.get("sp500", 0.0)),
             "nasdaq": float(weights.get("nasdaq", 0.0)),
             "dow": float(weights.get("dow", 0.0)),
+            "vix": float(weights.get("vix", 0.0)),
+            "vix_level": float(weights.get("vix_level", 0.0)),
             "dxy": float(weights.get("dxy", 0.0)),
             "tnx": float(weights.get("tnx", 0.0)),
+            "vix_neutral_level": float(weights.get("vix_neutral_level", 20.0)),
         },
         "components": dict(components),
         "index_moves": {
@@ -155,8 +181,19 @@ def _sentiment_evidence(inputs: Optional[SentimentInputs], weights: Dict[str, fl
             "dow_pct": float(components["dow_ret"] * 100.0),
         },
         "macro_moves": {
+            "vix_pct": float(components["vix_ret"] * 100.0),
+            "vix_level": float(components["vix_level"]),
+            "vix_level_pressure": float(vix_level_pressure),
             "dxy_pct": float(components["dxy_ret"] * 100.0),
             "tnx_delta": float(components["tnx_delta"]),
+        },
+        "fear_index": {
+            "provider": "yfinance",
+            "ticker": "^VIX",
+            "level": float(components["vix_level"]),
+            "change_pct": float(components["vix_ret"] * 100.0),
+            "neutral_level": float(neutral_vix),
+            "level_pressure": float(vix_level_pressure),
         },
         "equity_breadth": {
             "equity_index_average_pct": float(equity_avg * 100.0),
@@ -186,10 +223,10 @@ def compute_global_sentiment(state: Dict[str, Any], policy: Optional[Dict[str, A
     """Compute global sentiment in [-1, 1].
 
     Policy knobs (all optional):
-      - sentiment_weights: dict with keys {sp500, nasdaq, dow, dxy, tnx}
-        defaults: 0.30, 0.35, 0.20, 0.075, 0.075
+      - sentiment_weights: dict with keys {sp500, nasdaq, dow, vix, vix_level, dxy, tnx, vix_neutral_level}
+        defaults: 0.30, 0.35, 0.20, 0.10, 0.08, 0.075, 0.075, 20.0
     - sentiment_norm: dict with key {scale} for tanh scale (default 5.0)
-    - sentiment_ticker_sp500 / nasdaq / dxy / tnx: override tickers
+    - sentiment_ticker_sp500 / nasdaq / dow / vix / dxy / tnx: override tickers
     """
     signal = compute_global_sentiment_signal(state=state, policy=policy)
     status = str(signal.get("status") or "").strip().lower()
@@ -220,7 +257,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
     # 1) explicit mock (tests)
     if state.get("mock_global_sentiment") is not None:
         try:
-            weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "dxy": 0.075, "tnx": 0.075}
+            weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "vix_neutral_level": 20.0}
             return _signal_with_evidence(
                 score=_clamp(float(state["mock_global_sentiment"])),
                 status=SIGNAL_STATUS_OK,
@@ -232,7 +269,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
                 raw_score=float(state["mock_global_sentiment"]),
             )
         except Exception:
-            weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "dxy": 0.075, "tnx": 0.075}
+            weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "vix_neutral_level": 20.0}
             return _signal_with_evidence(
                 score=0.0,
                 status=SIGNAL_STATUS_FALLBACK,
@@ -246,7 +283,7 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
 
     # 2) DRY_RUN => no network
     if _is_dry_run():
-        weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "dxy": 0.075, "tnx": 0.075}
+        weights = {"sp500": 0.30, "nasdaq": 0.35, "dow": 0.20, "vix": 0.10, "vix_level": 0.08, "dxy": 0.075, "tnx": 0.075, "vix_neutral_level": 20.0}
         return _signal_with_evidence(
             score=0.0,
             status=SIGNAL_STATUS_FALLBACK,
@@ -262,9 +299,21 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
     w_sp = float(weights.get("sp500", 0.30))
     w_nq = float(weights.get("nasdaq", 0.35))
     w_dow = float(weights.get("dow", 0.20))
+    w_vix = float(weights.get("vix", 0.10))
+    w_vix_level = float(weights.get("vix_level", 0.08))
     w_dxy = float(weights.get("dxy", 0.075))
     w_tnx = float(weights.get("tnx", 0.075))
-    resolved_weights = {"sp500": w_sp, "nasdaq": w_nq, "dow": w_dow, "dxy": w_dxy, "tnx": w_tnx}
+    vix_neutral_level = float(weights.get("vix_neutral_level", 20.0))
+    resolved_weights = {
+        "sp500": w_sp,
+        "nasdaq": w_nq,
+        "dow": w_dow,
+        "vix": w_vix,
+        "vix_level": w_vix_level,
+        "dxy": w_dxy,
+        "tnx": w_tnx,
+        "vix_neutral_level": vix_neutral_level,
+    }
 
     norm = dict(policy.get("sentiment_norm") or {})
     scale = float(norm.get("scale", 5.0))
@@ -282,7 +331,17 @@ def compute_global_sentiment_signal(state: Dict[str, Any], policy: Optional[Dict
             raw_score=0.0,
         )
 
-    raw = _compute_raw(inputs, w_sp=w_sp, w_nq=w_nq, w_dow=w_dow, w_dxy=w_dxy, w_tnx=w_tnx)
+    raw = _compute_raw(
+        inputs,
+        w_sp=w_sp,
+        w_nq=w_nq,
+        w_dow=w_dow,
+        w_vix=w_vix,
+        w_vix_level=w_vix_level,
+        w_dxy=w_dxy,
+        w_tnx=w_tnx,
+        vix_neutral_level=vix_neutral_level,
+    )
     return _signal_with_evidence(
         score=_tanh_norm(raw, scale=scale),
         status=SIGNAL_STATUS_OK,

@@ -734,7 +734,11 @@ def _build_market_news_query_targets(
     global_score = _signal_score(global_signal)
     macro_risk = _to_float(market_context_inputs.get("macro_risk"), 0.0)
     index_trend = _to_float(market_context_inputs.get("index_trend"), 0.0)
-    if global_score <= -0.20 or macro_risk >= 0.65:
+    fear_index = global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {}
+    vix_level = _to_float(fear_index.get("level"), 0.0)
+    vix_pressure = _to_float(fear_index.get("level_pressure"), 0.0)
+    elevated_fear = vix_level >= 25.0 or vix_pressure >= 0.25
+    if global_score <= -0.20 or macro_risk >= 0.65 or elevated_fear:
         base_queries = ["코스피", "미국 증시", "국제유가", "환율", "중동"]
     elif global_score >= 0.20 and index_trend >= -0.05:
         base_queries = ["코스피", "코스닥", "미국 증시", "위험선호", "주도주"]
@@ -747,7 +751,7 @@ def _build_market_news_query_targets(
         for q in _theme_to_news_queries(raw):
             _append_unique_text(out, seen, q)
 
-    if macro_risk >= 0.65:
+    if macro_risk >= 0.65 or elevated_fear:
         for raw in ("국제유가", "환율", "달러", "중동", "방산", "금"):
             _append_unique_text(out, seen, raw)
     elif global_score <= -0.20:
@@ -789,15 +793,26 @@ def _build_market_news_query_reasoning(
     global_score = _signal_score(global_signal)
     macro_risk = _to_float(market_context_inputs.get("macro_risk"), 0.0)
     index_trend = _to_float(market_context_inputs.get("index_trend"), 0.0)
+    fear_index = global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {}
+    vix_level = _to_float(fear_index.get("level"), 0.0)
+    vix_pressure = _to_float(fear_index.get("level_pressure"), 0.0)
+    elevated_fear = vix_level >= 25.0 or vix_pressure >= 0.25
 
     reasons: List[str] = [
-        f"global_score={global_score:.2f} macro_risk={macro_risk:.2f} index_trend={index_trend:.2f}"
+        (
+            f"global_score={global_score:.2f} macro_risk={macro_risk:.2f} "
+            f"index_trend={index_trend:.2f} vix={vix_level:.2f} vix_pressure={vix_pressure:.3f}"
+        )
     ]
     if explicit_targets:
         reasons.append(f"explicit_targets_first={', '.join(explicit_targets[:4])}")
 
-    if global_score <= -0.20 or macro_risk >= 0.65:
+    if macro_risk >= 0.65:
         reasons.append("risk-off macro context added oil/fx/geopolitics market queries")
+    elif elevated_fear:
+        reasons.append("elevated fear index added defensive macro and hedge queries")
+    elif global_score <= -0.20:
+        reasons.append("risk-off sentiment added oil/fx/geopolitics market queries")
     elif global_score >= 0.20 and index_trend >= -0.05:
         reasons.append("risk-on context added leader/risk-appetite market queries")
     else:
@@ -1618,6 +1633,14 @@ def _key_events(
             f"sp500={_to_float(components.get('sp500_ret'), 0.0) * 100.0:.2f}% "
             f"nasdaq={_to_float(components.get('nasdaq_ret'), 0.0) * 100.0:.2f}% "
             f"dow={_to_float(components.get('dow_ret'), 0.0) * 100.0:.2f}%"
+        )
+    fear_index = global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {}
+    if fear_index:
+        add(
+            "fear_index "
+            f"vix={_to_float(fear_index.get('level'), 0.0):.2f} "
+            f"change={_to_float(fear_index.get('change_pct'), 0.0):.2f}% "
+            f"pressure={_to_float(fear_index.get('level_pressure'), 0.0):.3f}"
         )
     add(
         "market_context "

@@ -20,7 +20,7 @@
 
 1. Strategist writes:
    - `news_query_targets` (market/news search terms derived from global sentiment + macro context before final stock selection)
-   - `global_sentiment_signal.index_moves` (`sp500_pct`, `nasdaq_pct`, `dow_pct`) and `macro_moves` (`dxy_pct`, `tnx_delta`) when available
+   - `global_sentiment_signal.index_moves` (`sp500_pct`, `nasdaq_pct`, `dow_pct`), `macro_moves` (`vix_pct`, `vix_level`, `dxy_pct`, `tnx_delta`), and `fear_index` (`^VIX` level/change/pressure) when available
    - `market_regime`, `market_sentiment`, `key_events`
    - `themes`, `avoid_themes`, `playbook`
    - `scanner_bias` mode, `scanner_priority`, `scanner_source_policy`

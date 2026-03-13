@@ -27,6 +27,8 @@ def test_global_sentiment_signal_exposes_index_move_breakdown(monkeypatch):
         sp500_ret = 0.011
         nasdaq_ret = 0.018
         dow_ret = 0.007
+        vix_ret = 0.12
+        vix_level = 27.5
         dxy_ret = -0.002
         tnx_delta = -0.03
 
@@ -37,6 +39,45 @@ def test_global_sentiment_signal_exposes_index_move_breakdown(monkeypatch):
     assert abs(float((sig.get("components") or {}).get("sp500_ret") or 0.0) - 0.011) < 1e-12
     assert abs(float((sig.get("components") or {}).get("nasdaq_ret") or 0.0) - 0.018) < 1e-12
     assert abs(float((sig.get("components") or {}).get("dow_ret") or 0.0) - 0.007) < 1e-12
+    assert abs(float((sig.get("components") or {}).get("vix_ret") or 0.0) - 0.12) < 1e-12
+    assert abs(float((sig.get("components") or {}).get("vix_level") or 0.0) - 27.5) < 1e-12
     assert abs(float((sig.get("index_moves") or {}).get("sp500_pct") or 0.0) - 1.1) < 1e-9
     assert abs(float((sig.get("index_moves") or {}).get("nasdaq_pct") or 0.0) - 1.8) < 1e-9
     assert abs(float((sig.get("index_moves") or {}).get("dow_pct") or 0.0) - 0.7) < 1e-9
+    assert abs(float((sig.get("macro_moves") or {}).get("vix_pct") or 0.0) - 12.0) < 1e-9
+    assert abs(float((sig.get("macro_moves") or {}).get("vix_level") or 0.0) - 27.5) < 1e-9
+    fear = sig.get("fear_index") or {}
+    assert fear.get("ticker") == "^VIX"
+    assert abs(float(fear.get("level") or 0.0) - 27.5) < 1e-9
+    assert float(fear.get("level_pressure") or 0.0) > 0.0
+
+
+def test_global_sentiment_vix_pressure_makes_signal_more_defensive(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "0")
+
+    class _LowFear:
+        sp500_ret = 0.01
+        nasdaq_ret = 0.01
+        dow_ret = 0.01
+        vix_ret = -0.02
+        vix_level = 15.0
+        dxy_ret = 0.0
+        tnx_delta = 0.0
+
+    class _HighFear:
+        sp500_ret = 0.01
+        nasdaq_ret = 0.01
+        dow_ret = 0.01
+        vix_ret = 0.20
+        vix_level = 32.0
+        dxy_ret = 0.0
+        tnx_delta = 0.0
+
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_inputs", lambda _policy: _LowFear())
+    low_fear = compute_global_sentiment_signal(state={}, policy={})
+    monkeypatch.setattr("libs.market.global_sentiment._fetch_inputs", lambda _policy: _HighFear())
+    high_fear = compute_global_sentiment_signal(state={}, policy={})
+
+    assert high_fear["status"] == "ok"
+    assert low_fear["status"] == "ok"
+    assert float(high_fear.get("score") or 0.0) < float(low_fear.get("score") or 0.0)
