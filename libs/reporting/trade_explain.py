@@ -359,7 +359,6 @@ def _report_inventory(day: str, reports_root: Path) -> List[str]:
         reports_root / "decision_story" / f"decision_story_{day}.md",
         reports_root / "run_cards" / f"run_cards_{day}.md",
         reports_root / "metrics" / f"metrics_{day}.md",
-        reports_root / f"daily_report_{day}.md",
         reports_root / "daily" / f"daily_{day}.md",
         reports_root / "live_watch" / "live_watch_latest.md",
     ]
@@ -592,4 +591,3 @@ def generate_trade_explain_report(
     out["report_md_path"] = str(md_path)
     js_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     return md_path, js_path, out
-

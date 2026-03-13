@@ -162,6 +162,7 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
         "closeout.operator_summary",
         "closeout.decision_story",
         "closeout.run_cards",
+        "closeout.report_inventory",
     ]
 
 

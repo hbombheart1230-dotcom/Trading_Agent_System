@@ -141,6 +141,8 @@
 
 - Runtime/agent visibility reference:
   - `docs/runtime/agent_visibility_runbook.md`
+- Report inventory / cleanup reference:
+  - `docs/runtime/report_management.md`
 - Single-run full-chain trace artifact:
   - generator: `scripts/run_agent_pipeline_trace_report.py`
   - outputs: `reports/agent_pipeline_trace/agent_pipeline_trace_<run>.md|json`

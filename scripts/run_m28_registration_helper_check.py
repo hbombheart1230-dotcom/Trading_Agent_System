@@ -86,7 +86,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M28-8 deployment registration helper check.")
     p.add_argument("--output-dir", default="deploy/m28_registration_helpers")
     p.add_argument("--template-dir", default="deploy/m28_launch_templates")
-    p.add_argument("--report-dir", default="reports/m28_registration_helpers")
+    p.add_argument("--report-dir", default="reports/archive/milestones/m28_registration_helpers")
     p.add_argument("--day", default="2026-02-21")
     p.add_argument("--profile", choices=["dev", "staging", "prod"], default="dev")
     p.add_argument("--service-prefix", default="trading-agent")
@@ -223,3 +223,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

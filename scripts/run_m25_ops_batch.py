@@ -60,7 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--report-dir",
-        default=_env_str("M25_BATCH_REPORT_DIR", "reports/m25_ops_batch"),
+        default=_env_str("M25_BATCH_REPORT_DIR", "reports/archive/milestones/m25_ops_batch"),
     )
     p.add_argument("--day", default=None)
     p.add_argument(
@@ -79,7 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--status-json-path",
-        default=_env_str("M25_BATCH_STATUS_JSON_PATH", "reports/m25_ops_batch/status_latest.json"),
+        default=_env_str("M25_BATCH_STATUS_JSON_PATH", "reports/archive/milestones/m25_ops_batch/status_latest.json"),
     )
     p.add_argument(
         "--notify-event-log-path",
@@ -390,3 +390,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

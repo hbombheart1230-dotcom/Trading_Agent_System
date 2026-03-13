@@ -129,7 +129,7 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     return md_path, js_path
 
 def main() -> None:
-    events_path = Path(os.getenv("EVENT_LOG_PATH", "./data/events.jsonl"))
+    events_path = Path(os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl"))
     out_dir = Path(os.getenv("REPORT_DIR", "./reports")) / "daily"
     day = os.getenv("REPORT_DAY")  # optional YYYY-MM-DD (UTC)
     md, js = generate_daily_report(events_path, out_dir, day=day)

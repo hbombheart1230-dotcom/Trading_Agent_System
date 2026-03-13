@@ -41,7 +41,7 @@ def _batch_result(*, day: str) -> Dict[str, Any]:
                     "portfolio_guard_strategy_budget_exceeded_high",
                 ],
             },
-            "daily_report": {"events": 12, "path_json": "reports/m25_ops_batch/metrics_2026-02-20.json"},
+            "daily_report": {"events": 12, "path_json": "reports/archive/milestones/m25_ops_batch/metrics_2026-02-20.json"},
         },
         "failures": ["alert_policy rc != 0"],
     }
@@ -101,3 +101,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

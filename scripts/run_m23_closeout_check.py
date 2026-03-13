@@ -44,7 +44,7 @@ def _run_resilience_closeout_json(
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M23 final closeout check (resilience runtime + metrics + handover)")
     p.add_argument("--event-log-path", default="data/logs/m23_closeout_events.jsonl")
-    p.add_argument("--report-dir", default="reports/m23_closeout")
+    p.add_argument("--report-dir", default="reports/archive/milestones/m23_closeout")
     p.add_argument("--day", default=None)
     p.add_argument("--json", action="store_true")
     p.add_argument("--no-clear", action="store_true")
@@ -157,3 +157,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

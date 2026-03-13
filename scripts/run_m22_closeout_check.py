@@ -78,7 +78,7 @@ def _run_once(*, run_id: str, fail: bool, logger: EventLogger) -> Dict[str, Any]
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M22 closeout check (hydration + fallback + metrics)")
     p.add_argument("--event-log-path", default="data/logs/m22_closeout_events.jsonl")
-    p.add_argument("--report-dir", default="reports/m22_closeout")
+    p.add_argument("--report-dir", default="reports/archive/milestones/m22_closeout")
     p.add_argument("--day", default=None)
     p.add_argument("--json", action="store_true")
     p.add_argument("--no-clear", action="store_true")
@@ -157,3 +157,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -23,7 +23,7 @@
   - Runs M28-1..M28-8 check scripts in JSON mode.
   - Uses isolated closeout artifacts under:
     - `--work-dir` (default `data/state/m28_closeout`)
-    - `--report-dir` (default `reports/m28_closeout`)
+    - `--report-dir` (default `reports/archive/milestones/m28_closeout`)
   - Creates deterministic dev env file for preflight/wrapper checks.
   - Validates additional evidence:
     - M28-1 `profiles.prod.ok == true`
@@ -58,3 +58,4 @@
 ## Safety Notes
 
 - This milestone is closeout/reporting integration only and does not add direct live-execution authority.
+

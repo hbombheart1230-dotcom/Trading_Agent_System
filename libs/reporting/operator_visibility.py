@@ -288,6 +288,7 @@ def _run_context_default(run_id: str) -> Dict[str, Any]:
         "decision": {},
         "verdict": {},
         "execution": {},
+        "strategy_frame": {},
     }
 
 
@@ -302,6 +303,11 @@ def _is_trade_story(story: Dict[str, Any]) -> bool:
     if guard_status == "intervened":
         return True
     return False
+
+
+def _decision_trace_inner(payload: Dict[str, Any]) -> Dict[str, Any]:
+    inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    return inner if isinstance(inner, dict) else {}
 
 
 def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -372,6 +378,64 @@ def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 ctx["risk_flags"].append(f"global_sentiment_{global_status}")
             ctx["decision"] = dict(payload)
             continue
+
+        if stage == "decision_trace":
+            inner = _decision_trace_inner(payload)
+
+            if event == "strategic_frame":
+                ctx["strategy_frame"] = dict(inner)
+                if not str(ctx.get("key_reason_raw") or "").strip():
+                    key_events = inner.get("key_events") if isinstance(inner.get("key_events"), list) else []
+                    if key_events:
+                        ctx["key_reason_raw"] = str(key_events[0])
+                        ctx["key_reason"] = _humanize_reason(ctx["key_reason_raw"])
+                continue
+
+            if event == "candidate_selection":
+                symbol = str(inner.get("selected_symbol") or "").strip().upper()
+                if symbol:
+                    ctx["symbol"] = symbol
+                selected = inner.get("selected_candidate") if isinstance(inner.get("selected_candidate"), dict) else {}
+                score_summary = inner.get("score_breakdown_summary") if isinstance(inner.get("score_breakdown_summary"), dict) else {}
+                reason_raw = str(
+                    selected.get("why")
+                    or inner.get("candidate_source")
+                    or ctx.get("key_reason_raw")
+                    or ""
+                ).strip()
+                if reason_raw:
+                    ctx["key_reason_raw"] = reason_raw
+                    ctx["key_reason"] = _humanize_reason(reason_raw)
+                if not str(ctx.get("technical_evidence") or "").strip():
+                    technical_bits = {
+                        "playbook": inner.get("playbook"),
+                        "candidate_pool_size": inner.get("candidate_pool_size"),
+                        "score_total": selected.get("score_total") or inner.get("top_score"),
+                        "risk_score": selected.get("risk_score"),
+                    }
+                    if score_summary:
+                        technical_bits["score_breakdown"] = _compact_kv_text(score_summary, topn=5)
+                    ctx["technical_evidence"] = _compact_kv_text(technical_bits, topn=6)
+                continue
+
+            if event == "entry_exit_decision":
+                symbol = str(inner.get("selected_symbol") or "").strip().upper()
+                if symbol:
+                    ctx["symbol"] = symbol
+                exit_reason = str(inner.get("exit_reason") or "").strip()
+                entry_reason = str(inner.get("entry_reason") or "").strip()
+                reason_raw = exit_reason or entry_reason
+                if reason_raw:
+                    ctx["key_reason_raw"] = reason_raw
+                    ctx["key_reason"] = _humanize_reason(reason_raw)
+                thresholds = inner.get("thresholds") if isinstance(inner.get("thresholds"), dict) else {}
+                if thresholds:
+                    ctx["technical_evidence"] = _compact_kv_text(thresholds, topn=6)
+                if bool(inner.get("min_hold_blocked")):
+                    ctx["risk_flags"].append("min_hold_blocked")
+                if bool(inner.get("sell_cooldown_blocked")):
+                    ctx["risk_flags"].append("sell_cooldown_blocked")
+                continue
 
         if stage == "execute_from_packet" and event == "verdict":
             ctx["verdict"] = dict(payload)
@@ -553,6 +617,11 @@ def generate_operator_daily_summary(
             strategy = str(trace.get("strategy") or "").strip()
             if strategy:
                 strategy_counts[strategy] += 1
+        if stage == "decision_trace" and event == "strategic_frame":
+            inner = _decision_trace_inner(payload)
+            strategy = str(inner.get("playbook") or inner.get("market_regime") or "").strip()
+            if strategy:
+                strategy_counts[strategy] += 1
 
         if stage == "execute_from_packet" and event == "verdict":
             if payload.get("allowed") is False:
@@ -712,6 +781,12 @@ def generate_operator_daily_summary(
     blocked_reason_top_human = _render_reason_top(blocked_reason_counts, topn=5)
     noop_reason_top_human = _render_reason_top(noop_reason_counts, topn=5)
     fallback_signal_status_top = _render_reason_top(fallback_signal_status_counts, topn=5)
+
+    if not action_counts:
+        for story in run_stories:
+            action = str(story.get("action") or "").strip().upper()
+            if action:
+                action_counts[action] += 1
 
     summary_lines = [
         (

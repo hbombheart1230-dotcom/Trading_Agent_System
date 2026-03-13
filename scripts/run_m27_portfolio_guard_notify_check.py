@@ -38,7 +38,7 @@ def _batch_result(*, day: str, alert_codes: List[str], failures: Optional[List[s
                 "severity_total": {"warning": len(alert_codes)},
                 "alert_codes": list(alert_codes),
             },
-            "daily_report": {"events": 10, "path_json": "reports/m25_ops_batch/metrics_2026-02-20.json"},
+            "daily_report": {"events": 10, "path_json": "reports/archive/milestones/m25_ops_batch/metrics_2026-02-20.json"},
         },
         "failures": list(failures or ["alert_policy rc != 0"]),
     }
@@ -106,3 +106,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

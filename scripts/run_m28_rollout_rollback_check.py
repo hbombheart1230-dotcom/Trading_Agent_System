@@ -84,7 +84,7 @@ def _build_md(out: Dict[str, Any]) -> str:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M28-3 rollout checklist + rollback procedure check.")
     p.add_argument("--work-dir", default="data/state/m28_rollout_check")
-    p.add_argument("--report-dir", default="reports/m28_rollout")
+    p.add_argument("--report-dir", default="reports/archive/milestones/m28_rollout")
     p.add_argument("--day", default="2026-02-21")
     p.add_argument("--inject-fail", action="store_true")
     p.add_argument("--no-clear", action="store_true")
@@ -233,3 +233,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -674,6 +674,23 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
         )
     )
 
+    steps.append(
+        _run_subprocess(
+            step_id="closeout.report_inventory",
+            command=[
+                py,
+                str(ROOT / "scripts" / "run_report_maintenance.py"),
+                "--report-root",
+                str(report_root),
+                "--event-log-path",
+                event_log_path,
+                "--json",
+            ],
+            cwd=ROOT,
+            timeout_sec=timeout_sec,
+        )
+    )
+
     out["steps"] = steps
     failed = [s for s in steps if not bool(s.get("ok"))]
     out["ok"] = len(failed) == 0

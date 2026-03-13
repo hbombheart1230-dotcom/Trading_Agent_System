@@ -86,8 +86,8 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str) -> Tuple[P
         "events": rows,
     }
 
-    js_path = out_dir / f"daily_report_{day}.json"
-    md_path = out_dir / f"daily_report_{day}.md"
+    js_path = out_dir / f"daily_{day}.json"
+    md_path = out_dir / f"daily_{day}.md"
     js_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     md = [

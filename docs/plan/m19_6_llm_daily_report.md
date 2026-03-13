@@ -11,7 +11,7 @@
 
 ### 출력
 - `state['daily_report']['llm_summary']` 추가
-- 생성된 `daily_report_YYYY-MM-DD.md` 끝에 다음 섹션을 append
+- 생성된 `reports/daily/daily_YYYY-MM-DD.md` 끝에 다음 섹션을 append
   - `## LLM Summary`
 
 ## 네트워크/안전

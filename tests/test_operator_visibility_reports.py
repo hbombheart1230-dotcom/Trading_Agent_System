@@ -305,6 +305,142 @@ def test_run_card_report_trade_only_filters_unknown_utility_runs(tmp_path: Path,
     assert "Status: UNKNOWN" not in md_body
 
 
+def test_decision_story_report_supports_new_decision_trace_events(tmp_path: Path, capsys) -> None:
+    day = "2026-03-13"
+    events = tmp_path / "events.jsonl"
+    out_dir = tmp_path / "decision_story"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "trace-1",
+                "ts": f"{day}T01:00:00+00:00",
+                "stage": "decision_trace",
+                "event": "strategic_frame",
+                "payload": {
+                    "agent": "strategist",
+                    "payload": {"playbook": "pullback", "key_events": ["risk_off_session"]},
+                },
+            },
+            {
+                "run_id": "trace-1",
+                "ts": f"{day}T01:00:01+00:00",
+                "stage": "decision_trace",
+                "event": "candidate_selection",
+                "payload": {
+                    "agent": "scanner",
+                    "payload": {
+                        "selected_symbol": "032820",
+                        "playbook": "pullback",
+                        "candidate_pool_size": 5,
+                        "selected_candidate": {
+                            "symbol": "032820",
+                            "why": "top_value+sector_theme",
+                            "score_total": 1.12,
+                            "risk_score": 0.18,
+                        },
+                    },
+                },
+            },
+            {
+                "run_id": "trace-1",
+                "ts": f"{day}T01:00:02+00:00",
+                "stage": "decision_trace",
+                "event": "entry_exit_decision",
+                "payload": {
+                    "agent": "monitor",
+                    "payload": {
+                        "selected_symbol": "032820",
+                        "entry_reason": "pullback_entry",
+                        "exit_reason": "stop_loss",
+                        "thresholds": {"stop_loss_pct": 0.01, "take_profit_pct": 0.02},
+                    },
+                },
+            },
+            {
+                "run_id": "trace-1",
+                "ts": f"{day}T01:00:03+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"order": {"action": "SELL", "symbol": "032820", "qty": 1}, "payload": {"broker_code": "0"}},
+            },
+        ],
+    )
+
+    rc = decision_story_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(out_dir),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert obj["story_total"] == 1
+    md_body = Path(obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "Run trace-1" in md_body
+    assert "symbol: **032820**" in md_body
+    assert "decision_reason_summary: stop_loss" in md_body
+
+
+def test_operator_daily_summary_supports_new_decision_trace_events(tmp_path: Path, capsys) -> None:
+    day = "2026-03-13"
+    events = tmp_path / "events.jsonl"
+    metrics_dir = tmp_path / "metrics"
+    out_dir = tmp_path / "operator_summary"
+    _write_json(
+        metrics_dir / f"metrics_{day}.json",
+        {
+            "execution": {"intents_created": 2, "intents_blocked": 0},
+            "broker_api": {"api_429_rate": 0.0},
+            "strategist_llm": {"success_rate": 1.0},
+            "commander_resilience": {"total": 0},
+        },
+    )
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "trace-2",
+                "ts": f"{day}T01:00:00+00:00",
+                "stage": "decision_trace",
+                "event": "strategic_frame",
+                "payload": {"agent": "strategist", "payload": {"playbook": "defensive"}},
+            },
+            {
+                "run_id": "trace-2",
+                "ts": f"{day}T01:00:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"order": {"action": "BUY", "symbol": "005930", "qty": 1}, "payload": {"broker_code": "0"}},
+            },
+        ],
+    )
+
+    rc = operator_summary_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--metrics-report-dir",
+            str(metrics_dir),
+            "--report-dir",
+            str(out_dir),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert obj["trading_activity_summary"]["run_total"] == 1
+    assert obj["trading_activity_summary"]["decision_action_counts"]["BUY"] == 1
+    assert obj["trading_activity_summary"]["strategy_counts"]["defensive"] == 1
+
+
 def test_m13_eod_report_auto_attaches_operator_visibility_bundle(tmp_path: Path, monkeypatch) -> None:
     events = tmp_path / "events.jsonl"
     reports = tmp_path / "reports"

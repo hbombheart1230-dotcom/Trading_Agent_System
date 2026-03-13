@@ -65,7 +65,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     profile = str(args.profile or "dev").strip().lower()
     env_path = Path(str(args.env_path).strip())
     state_path = str(args.state_path or "").strip() or f"data/state/m28_launch_wrapper/{role}_runtime_state.json"
-    report_dir = str(args.report_dir or "").strip() or f"reports/m28_launch_wrapper/{role}"
+    report_dir = str(args.report_dir or "").strip() or f"reports/archive/milestones/m28_launch_wrapper/{role}"
     run_id = str(args.run_id or "").strip() or f"m28-launch-{role}"
     command = _normalize_command(args.command or [])
 
@@ -161,3 +161,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
