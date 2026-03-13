@@ -69,6 +69,39 @@
     <h2>Executor</h2>
     <pre class="code">{{ detail.executor.execution | tojson(indent=2) }}</pre>
   </article>
+  <article class="card">
+    <h2>Same-Day Symbol Trade History</h2>
+    <p class="meta-line">day={{ detail.same_day_symbol_trade_history.day or "-" }} symbol={{ detail.same_day_symbol_trade_history.symbol or "-" }} trade_count={{ detail.same_day_symbol_trade_history.trade_count }}</p>
+    {% if detail.same_day_symbol_trade_history.trades %}
+    <div class="timeline">
+      {% for trade in detail.same_day_symbol_trade_history.trades %}
+      <div class="timeline-row">
+        <div class="timeline-meta">{{ trade.ts }} / {{ trade.action }} {{ trade.symbol }} x{{ trade.qty }}</div>
+        <p class="meta-line">status={{ trade.status or "-" }} ord_no={{ trade.ord_no or "-" }} run_id={{ trade.run_id }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p>No same-day trade history found for the selected symbol.</p>
+    {% endif %}
+  </article>
+  <article class="card">
+    <h2>Recent Same-Symbol Run Chain</h2>
+    <p class="meta-line">day={{ detail.same_day_symbol_run_chain.day or "-" }} symbol={{ detail.same_day_symbol_run_chain.symbol or "-" }} run_count={{ detail.same_day_symbol_run_chain.run_count }}</p>
+    {% if detail.same_day_symbol_run_chain.runs %}
+    <div class="timeline">
+      {% for row in detail.same_day_symbol_run_chain.runs %}
+      <div class="timeline-row">
+        <div class="timeline-meta">{{ row.ts }} / {{ row.run_id }} / {{ row.action or "NOOP" }} {{ row.symbol }}</div>
+        <p class="meta-line">playbook={{ row.playbook or "-" }} risk={{ row.risk_tone or "-" }} monitor={{ row.monitor_reason or "-" }} exit={{ row.exit_reason or "-" }}</p>
+        <p class="meta-line">guard={{ row.guard_reason or "-" }} allowed={{ row.allowed }} status={{ row.execution_status or "-" }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p>No recent same-symbol run chain found.</p>
+    {% endif %}
+  </article>
 </section>
 
 <section class="card">
@@ -77,7 +110,7 @@
   <div class="timeline">
     {% for row in detail.event_preview %}
     <div class="timeline-row">
-      <div class="timeline-meta">{{ row.ts }} · {{ row.stage }} · {{ row.event }}</div>
+      <div class="timeline-meta">{{ row.ts }} / {{ row.stage }} / {{ row.event }}</div>
       <pre class="code">{{ row.payload }}</pre>
     </div>
     {% endfor %}

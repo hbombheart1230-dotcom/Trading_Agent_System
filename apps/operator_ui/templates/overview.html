@@ -64,6 +64,22 @@
 
 <section class="grid grid-2">
   <article class="card">
+    <h2>Today Traded Symbols</h2>
+    {% if overview.today_traded_symbols %}
+    <div class="timeline">
+      {% for row in overview.today_traded_symbols %}
+      <div class="timeline-row">
+        <div class="timeline-meta">{{ row.symbol }} / buy={{ row.buy_count }} sell={{ row.sell_count }} net={{ row.net_qty }}</div>
+        <p class="meta-line">latest={{ row.latest_ts }} / {{ row.latest_action or "-" }} / status={{ row.latest_status or "-" }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p>No traded symbols found for the latest day.</p>
+    {% endif %}
+  </article>
+
+  <article class="card">
     <h2>Today Trades</h2>
     {% if overview.today_trades %}
     <div class="timeline">

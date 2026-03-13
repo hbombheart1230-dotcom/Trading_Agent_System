@@ -119,6 +119,8 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path) -> None:
     assert "Reporter summary" in overview.text
     assert "Strategy Memory Timeline" in overview.text
     assert "monitor risk remained elevated" in overview.text
+    assert "Today Traded Symbols" in overview.text
+    assert "buy=1 sell=0 net=1" in overview.text
     assert "Today Trades" in overview.text
     assert "BUY 005930 x0" not in overview.text
     assert "BUY 005930 x1" in overview.text
@@ -138,6 +140,10 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path) -> None:
     assert "strategist prompt" in detail.text
     assert "EXECUTED_OK" in detail.text
     assert "Feature Coverage" in detail.text
+    assert "Same-Day Symbol Trade History" in detail.text
+    assert "trade_count=1" in detail.text
+    assert "Recent Same-Symbol Run Chain" in detail.text
+    assert "run_count=1" in detail.text
 
     health = client.get("/healthz")
     assert health.status_code == 200

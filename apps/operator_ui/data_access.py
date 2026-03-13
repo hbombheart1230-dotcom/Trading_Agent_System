@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+
+
+KST = timezone(timedelta(hours=9), name="KST")
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -44,28 +47,44 @@ def _to_epoch(ts: Any) -> Optional[int]:
         return None
 
 
-def _iso_to_display(ts: Any) -> str:
+def _to_datetime(ts: Any) -> Optional[datetime]:
     if ts is None:
-        return ""
-    if isinstance(ts, str):
-        return ts
-    e = _to_epoch(ts)
-    if e is None:
-        return ""
-    return datetime.fromtimestamp(e, tz=timezone.utc).isoformat()
+        return None
+    if isinstance(ts, datetime):
+        dt = ts
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(KST)
+    if isinstance(ts, (int, float)):
+        try:
+            return datetime.fromtimestamp(int(ts), tz=timezone.utc).astimezone(KST)
+        except Exception:
+            return None
+    raw = str(ts).strip()
+    if not raw:
+        return None
+    s = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(KST)
+    except Exception:
+        return None
+
+
+def _iso_to_display(ts: Any) -> str:
+    dt = _to_datetime(ts)
+    if dt is None:
+        return str(ts or "")
+    return dt.strftime("%Y-%m-%d %H:%M:%S KST")
 
 
 def _event_day(ts: Any) -> str:
-    if ts is None:
+    dt = _to_datetime(ts)
+    if dt is None:
         return ""
-    if isinstance(ts, str):
-        raw = ts.strip()
-        if len(raw) >= 10 and raw[4:5] == "-" and raw[7:8] == "-":
-            return raw[:10]
-    e = _to_epoch(ts)
-    if e is None:
-        return ""
-    return datetime.fromtimestamp(e, tz=timezone.utc).strftime("%Y-%m-%d")
+    return dt.strftime("%Y-%m-%d")
 
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
@@ -203,6 +222,7 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
     strategy_memory_timeline = load_strategy_memory_timeline(config, limit=7)
     latest_day = str(daily.get("day") or operator_summary.get("day") or reporter.get("day") or "")
     today_trades = load_recent_trades_for_day(config, latest_day, limit=8)
+    traded_symbol_summary = summarize_trades_by_symbol(today_trades)
     latest_prompt = load_latest_strategist_prompt_summary(config, latest_day)
 
     return {
@@ -240,6 +260,7 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "path": _latest_matching_path(config.reports_root / "reconciliation", "broker_trade_reconciliation"),
         },
         "today_trades": today_trades,
+        "today_traded_symbols": traded_symbol_summary,
         "latest_strategist_prompt": latest_prompt,
         "strategy_memory_timeline": strategy_memory_timeline,
     }
@@ -272,6 +293,124 @@ def load_recent_trades_for_day(config: OperatorUIConfig, day: str, *, limit: int
         )
     out = sorted(out, key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)
     return out[: max(1, int(limit))]
+
+
+def summarize_trades_by_symbol(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for trade in trades:
+        symbol = str(trade.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        row = grouped.setdefault(
+            symbol,
+            {
+                "symbol": symbol,
+                "buy_count": 0,
+                "sell_count": 0,
+                "net_qty": 0,
+                "latest_action": "",
+                "latest_ts": "",
+                "latest_status": "",
+            },
+        )
+        action = str(trade.get("action") or "").upper()
+        qty = _safe_int(trade.get("qty"), 0)
+        if action == "BUY":
+            row["buy_count"] += 1
+            row["net_qty"] += qty
+        elif action == "SELL":
+            row["sell_count"] += 1
+            row["net_qty"] -= qty
+        if (_to_epoch(trade.get("ts")) or 0) >= (_to_epoch(row.get("latest_ts")) or 0):
+            row["latest_action"] = action
+            row["latest_ts"] = str(trade.get("ts") or "")
+            row["latest_status"] = str(trade.get("status") or "")
+    out = list(grouped.values())
+    out.sort(key=lambda row: (_to_epoch(row.get("latest_ts")) or 0, row.get("symbol") or ""), reverse=True)
+    return out
+
+
+def load_symbol_run_chain(config: OperatorUIConfig, day: str, symbol: str, *, limit: int = 3) -> List[Dict[str, Any]]:
+    if not symbol:
+        return []
+    rows = list(_iter_jsonl(config.event_log_path))
+    route_rows = [
+        row
+        for row in rows
+        if str(row.get("stage") or "") == "commander_router"
+        and str(row.get("event") or "") == "route"
+        and (not day or _event_day(row.get("ts")) == day)
+    ]
+    route_rows = sorted(route_rows, key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        rid = str(row.get("run_id") or "").strip()
+        if not rid:
+            continue
+        grouped.setdefault(rid, []).append(row)
+
+    out: List[Dict[str, Any]] = []
+    for route in route_rows:
+        rid = str(route.get("run_id") or "").strip()
+        run_rows = grouped.get(rid) or []
+        scanner_summary = next(
+            (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "scanner" and str(r.get("event") or "") == "summary" and isinstance(r.get("payload"), dict)),
+            {},
+        )
+        candidate_selection = next(
+            (
+                (r.get("payload") or {}).get("payload")
+                for r in reversed(run_rows)
+                if str(r.get("stage") or "") == "decision_trace"
+                and str(r.get("event") or "") == "candidate_selection"
+                and isinstance(r.get("payload"), dict)
+                and str((r.get("payload") or {}).get("agent") or "") == "scanner"
+            ),
+            {},
+        )
+        execution_payload = next(
+            (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "execution" and isinstance(r.get("payload"), dict)),
+            {},
+        )
+        strategist_summary = next(
+            (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "strategist" and str(r.get("event") or "") == "summary" and isinstance(r.get("payload"), dict)),
+            {},
+        )
+        monitor_summary = next(
+            (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "monitor" and str(r.get("event") or "") == "summary" and isinstance(r.get("payload"), dict)),
+            {},
+        )
+        verdict_payload = next(
+            (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "verdict" and isinstance(r.get("payload"), dict)),
+            {},
+        )
+        run_symbol = str(
+            execution_payload.get("symbol")
+            or scanner_summary.get("top_stock")
+            or candidate_selection.get("selected_symbol")
+            or ""
+        ).strip()
+        if run_symbol != symbol:
+            continue
+        out.append(
+            {
+                "ts": _iso_to_display(route.get("ts")),
+                "run_id": rid,
+                "phase": str((route.get("payload") or {}).get("phase") or ""),
+                "playbook": str(strategist_summary.get("playbook") or ""),
+                "risk_tone": str(strategist_summary.get("risk_tone") or ""),
+                "symbol": run_symbol,
+                "action": str(execution_payload.get("action") or ""),
+                "execution_status": str(execution_payload.get("fill_status_summary") or execution_payload.get("status") or ""),
+                "monitor_reason": str(monitor_summary.get("monitor_reason") or ""),
+                "exit_reason": str(monitor_summary.get("exit_reason") or ""),
+                "guard_reason": str(verdict_payload.get("reason") or ""),
+                "allowed": verdict_payload.get("allowed"),
+            }
+        )
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
 
 
 def load_latest_strategist_prompt_summary(config: OperatorUIConfig, day: str) -> Dict[str, Any]:
@@ -480,7 +619,22 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
 
     strategist_evidence = _latest_evidence(evidence_rows, agent="strategist", stage="theme_selection")
     reporter_evidence = _latest_evidence(evidence_rows, agent="reporter", stage="post_run_analysis")
-    run_day = datetime.fromtimestamp(_to_epoch(all_rows[0].get("ts")) or 0, tz=timezone.utc).strftime("%Y-%m-%d")
+    first_dt = _to_datetime(all_rows[0].get("ts"))
+    run_day = first_dt.strftime("%Y-%m-%d") if first_dt else ""
+    primary_symbol = str(
+        execution_payload.get("symbol")
+        or scanner_summary.get("top_stock")
+        or candidate_selection.get("selected_symbol")
+        or ""
+    ).strip()
+    same_day_symbol_trades = []
+    if primary_symbol:
+        same_day_symbol_trades = [
+            trade
+            for trade in load_recent_trades_for_day(config, run_day, limit=500)
+            if str(trade.get("symbol") or "").strip() == primary_symbol
+        ]
+    same_day_symbol_run_chain = load_symbol_run_chain(config, run_day, primary_symbol, limit=3) if primary_symbol else []
 
     return {
         "found": True,
@@ -519,6 +673,18 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
         },
         "executor": {
             "execution": execution_payload,
+        },
+        "same_day_symbol_trade_history": {
+            "day": run_day,
+            "symbol": primary_symbol,
+            "trade_count": len(same_day_symbol_trades),
+            "trades": same_day_symbol_trades[:20],
+        },
+        "same_day_symbol_run_chain": {
+            "day": run_day,
+            "symbol": primary_symbol,
+            "run_count": len(same_day_symbol_run_chain),
+            "runs": same_day_symbol_run_chain,
         },
         "reporter": _reporter_snippet_for_run(config, str(run_id or ""), run_day),
         "raw_event_count": len(all_rows),
