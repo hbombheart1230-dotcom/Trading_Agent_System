@@ -1025,6 +1025,10 @@ def _monitor_guidance(*, market_regime: str, playbook: str) -> str:
     return "quick_take_profit"
 
 
+def _condition_search_source_enabled() -> bool:
+    return _env_bool("KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH", False)
+
+
 def _monitor_policy(
     *,
     monitor_guidance: str,
@@ -1092,26 +1096,27 @@ def _scanner_source_policy(
     normalized_aggr = str(trade_aggressiveness or "").strip().lower()
     normalized_regime = str(market_regime or "").strip().lower()
     has_themes = bool(list(themes or []))
+    allow_condition_search = _condition_search_source_enabled()
 
     policy: Dict[str, Any] = {
-        "preferred_sources": ["top_value", "top_volume", "condition_search"],
+        "preferred_sources": ["top_value", "top_volume", "sector_theme", "operator_watchlist"],
         "include_top_value": True,
         "include_top_volume": True,
         "include_change_rate": True,
-        "include_condition_search": True,
+        "include_condition_search": False,
         "include_sector_candidates": has_themes,
         "include_watchlist": True,
         "top_candidate_pool": 30,
-        "condition_limit": 200,
+        "condition_limit": 0,
         "source_weights": {
             "top_value": 2.0,
             "top_volume": 1.7,
-            "condition_search": 2.3,
+            "condition_search": 0.0,
             "sector_theme": 1.6,
             "operator_watchlist": 0.8,
             "top_change_rate": 1.3,
         },
-        "reason": "balanced source mix across liquidity, condition, and momentum sources",
+        "reason": "balanced baseline prefers liquidity and theme/watchlist sources; condition search is opt-in only",
     }
 
     if normalized_playbook == "defensive" or normalized_tone == "conservative" or normalized_regime == "risk_off":
@@ -1138,66 +1143,89 @@ def _scanner_source_policy(
     elif normalized_playbook == "breakout":
         policy.update(
             {
-                "preferred_sources": ["top_change_rate", "condition_search", "top_volume", "sector_theme"],
+                "preferred_sources": ["top_change_rate", "top_volume", "sector_theme", "operator_watchlist"],
                 "include_change_rate": True,
-                "include_condition_search": True,
+                "include_condition_search": False,
                 "include_sector_candidates": has_themes,
                 "include_watchlist": normalized_aggr != "high",
                 "top_candidate_pool": 32,
-                "condition_limit": 240,
+                "condition_limit": 0,
                 "source_weights": {
                     "top_value": 1.4,
                     "top_volume": 1.9,
-                    "condition_search": 2.4,
+                    "condition_search": 0.0,
                     "sector_theme": 1.7 if has_themes else 0.0,
                     "operator_watchlist": 0.5 if normalized_aggr == "high" else 0.8,
                     "top_change_rate": 2.2,
                 },
-                "reason": "breakout frame prioritizes fast movers, condition hits, and volume expansion",
+                "reason": "breakout baseline prioritizes fast movers and volume expansion; condition search remains optional",
             }
         )
     elif normalized_playbook == "pullback":
         policy.update(
             {
-                "preferred_sources": ["top_value", "condition_search", "sector_theme", "top_volume"],
+                "preferred_sources": ["top_value", "sector_theme", "top_volume", "operator_watchlist"],
                 "include_change_rate": False,
-                "include_condition_search": True,
+                "include_condition_search": False,
                 "include_sector_candidates": has_themes,
                 "include_watchlist": True,
                 "top_candidate_pool": 24,
-                "condition_limit": 180,
+                "condition_limit": 0,
                 "source_weights": {
                     "top_value": 2.1,
                     "top_volume": 1.5,
-                    "condition_search": 2.0,
+                    "condition_search": 0.0,
                     "sector_theme": 1.9 if has_themes else 0.0,
                     "operator_watchlist": 0.9,
                     "top_change_rate": 0.0,
                 },
-                "reason": "pullback frame prioritizes liquid leaders with condition confirmation over raw gainers",
+                "reason": "pullback baseline prioritizes liquid leaders and theme/watchlist support; condition search remains optional",
             }
         )
     elif normalized_playbook == "reversal":
         policy.update(
             {
-                "preferred_sources": ["condition_search", "top_change_rate", "operator_watchlist", "top_volume"],
+                "preferred_sources": ["top_change_rate", "operator_watchlist", "top_volume", "sector_theme"],
                 "include_change_rate": True,
-                "include_condition_search": True,
+                "include_condition_search": False,
                 "include_sector_candidates": has_themes,
                 "include_watchlist": True,
                 "top_candidate_pool": 22,
-                "condition_limit": 220,
+                "condition_limit": 0,
                 "source_weights": {
                     "top_value": 1.3,
                     "top_volume": 1.5,
-                    "condition_search": 2.2,
+                    "condition_search": 0.0,
                     "sector_theme": 1.3 if has_themes else 0.0,
                     "operator_watchlist": 1.0,
                     "top_change_rate": 1.9,
                 },
-                "reason": "reversal frame leans on condition hits and sharp movers with watchlist context",
+                "reason": "reversal baseline leans on sharp movers and watchlist context; condition search remains optional",
             }
         )
+
+    if allow_condition_search:
+        if normalized_playbook == "breakout":
+            policy["preferred_sources"] = ["top_change_rate", "condition_search", "top_volume", "sector_theme"]
+            policy["condition_limit"] = 240
+            cond_weight = 2.4
+        elif normalized_playbook == "pullback":
+            policy["preferred_sources"] = ["top_value", "condition_search", "sector_theme", "top_volume"]
+            policy["condition_limit"] = 180
+            cond_weight = 2.0
+        elif normalized_playbook == "reversal":
+            policy["preferred_sources"] = ["condition_search", "top_change_rate", "operator_watchlist", "top_volume"]
+            policy["condition_limit"] = 220
+            cond_weight = 2.2
+        else:
+            policy["preferred_sources"] = ["top_value", "top_volume", "condition_search", "sector_theme"]
+            policy["condition_limit"] = 160
+            cond_weight = 2.0
+        policy["include_condition_search"] = True
+        source_weights = dict(policy.get("source_weights") or {})
+        source_weights["condition_search"] = cond_weight
+        policy["source_weights"] = source_weights
+        policy["reason"] = str(policy.get("reason") or "") + "; condition search explicitly enabled"
 
     return policy
 

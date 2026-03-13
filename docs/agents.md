@@ -42,9 +42,11 @@
 - Applies strategist ranking guidance (`scanner_priority`, aggressiveness/risk tone) additively to score weights.
 - Applies strategist `playbook` additively to scoring weights (scanner still performs final quantitative selection).
 - Applies strategist `scanner_source_policy` to the Kiwoom source mix itself.
-  - `defensive` can suppress `top_change_rate` / `condition_search`
-  - `breakout` can emphasize `top_change_rate` / `condition_search` / `top_volume`
-- Scanner diagnostics explicitly expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` when condition-search is unavailable or mock-only.
+  - baseline keeps `condition_search` disabled for mock/operational runs
+  - `defensive` can suppress `top_change_rate`
+  - `breakout` can emphasize `top_change_rate` / `top_volume`
+  - explicit opt-in (`KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH=true`) can re-enable `condition_search`
+- Scanner diagnostics explicitly expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` when condition-search is unavailable, mock-only, or intentionally disabled.
 - Scanner reads strategist frame from canonical `state["strategist_output"]`.
 - Falls back to strategist candidates when Kiwoom candidate pool is empty.
 - Scanner is the final Top-1 selector within strategist framing (not a blind picker).

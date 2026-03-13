@@ -52,8 +52,36 @@ def test_strategist_reasoning_uses_market_news_macro_context(monkeypatch):
     assert isinstance(strategist_output.get("theme_strength"), dict)
     assert float(strategist_output.get("regime_score") or 0.0) > 0.0
     assert float(strategist_output.get("sentiment_score") or 0.0) > 0.0
+    scanner_source_policy = strategist_output.get("scanner_source_policy") or {}
+    assert scanner_source_policy.get("include_condition_search") is False
     assert isinstance(out.get("scanner_guidance"), dict)
     assert str((out.get("scanner_guidance") or {}).get("playbook") or "") in ("breakout", "pullback", "reversal", "defensive")
+
+
+def test_strategist_condition_search_source_requires_explicit_opt_in(monkeypatch):
+    from graphs.nodes.strategist_node import _scanner_source_policy
+
+    monkeypatch.delenv("KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH", raising=False)
+    base = _scanner_source_policy(
+        playbook="breakout",
+        risk_tone="aggressive",
+        trade_aggressiveness="high",
+        market_regime="risk_on",
+        themes=["semiconductor"],
+    )
+    assert base["include_condition_search"] is False
+    assert "condition_search" not in list(base.get("preferred_sources") or [])
+
+    monkeypatch.setenv("KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH", "true")
+    enabled = _scanner_source_policy(
+        playbook="breakout",
+        risk_tone="aggressive",
+        trade_aggressiveness="high",
+        market_regime="risk_on",
+        themes=["semiconductor"],
+    )
+    assert enabled["include_condition_search"] is True
+    assert "condition_search" in list(enabled.get("preferred_sources") or [])
 
 
 def test_strategist_reasoning_becomes_defensive_on_risk_off_context(monkeypatch):

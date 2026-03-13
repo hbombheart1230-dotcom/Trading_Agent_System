@@ -290,7 +290,12 @@ def build_kiwoom_candidate_rows(
     top_volume = get_top_volume_stocks(state, topk=pool_k) if bool(include_top_volume) else []
     top_value = get_top_trading_value_stocks(state, topk=pool_k) if bool(include_top_value) else []
     top_change = get_top_gainers(state, topk=pool_k) if bool(include_change_rate) else []
-    condition_meta: Dict[str, Any] = {"source": "disabled", "status": "disabled", "reason": "condition_search_disabled"}
+    baseline_condition_enabled = _is_trueish(os.getenv("KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH", "false"))
+    condition_meta: Dict[str, Any] = {
+        "source": "disabled",
+        "status": "disabled",
+        "reason": "condition_search_baseline_disabled" if not baseline_condition_enabled else "condition_search_disabled_by_policy",
+    }
     if bool(include_condition_search) and cond_k > 0:
         cond_rows, condition_meta = get_condition_search_results_with_meta(state, limit=cond_k)
     else:

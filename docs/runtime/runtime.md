@@ -45,9 +45,11 @@
     - optional theme/sector filter with `theme_map` / `sector_map`
     - additive strategist frame bias from `state["strategist_output"]` (`playbook`, `scanner_priority`, aggressiveness/risk tone)
     - strategist-driven Kiwoom source policy from `state["strategist_output"]["scanner_source_policy"]`
-      - example: `defensive` can disable `top_change_rate` / `condition_search`
-      - example: `breakout` can emphasize `top_change_rate` / `condition_search` / `top_volume`
-      - scanner diagnostics now expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` so operators can distinguish "zero candidates" from "source not integrated"
+      - default mock/operational baseline keeps `condition_search` disabled
+      - example: `defensive` can disable `top_change_rate`
+      - example: `breakout` can emphasize `top_change_rate` / `top_volume`
+      - explicit opt-in (`KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH=true`) can re-enable `condition_search`
+      - scanner diagnostics now expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` so operators can distinguish "zero candidates" from "source not integrated" or "baseline disabled"
      - strategist candidate fallback when Kiwoom pool is empty
      - static fallback-only pools can be blocked with `BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY=true`
      - strict mode (`STRICT_KIWOOM_CANDIDATES_ONLY=true`) blocks all strategist fallback on Kiwoom-empty

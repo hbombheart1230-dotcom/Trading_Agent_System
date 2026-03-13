@@ -77,7 +77,9 @@ Notes:
 - Pure static fallback pools can be blocked with `BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY=true` (default).
 - All strategist fallback can be disabled with `STRICT_KIWOOM_CANDIDATES_ONLY=true` (strict mode).
 - Fallback candidate symbols can be overridden with `FALLBACK_CANDIDATE_SYMBOLS`.
-- `condition_search` is currently surfaced as a diagnostic source; without Kiwoom websocket condition-search integration its report status will remain `unavailable` instead of silently pretending to contribute candidates.
+- `condition_search` is excluded from the default mock/operational baseline.
+- It remains optional only when `KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH=true`.
+- Without Kiwoom websocket condition-search integration its report status will remain `unavailable` instead of silently pretending to contribute candidates.
 - Candidate reduction knobs:
   - `TOP_CANDIDATE_POOL`
   - `MIN_TRADING_VALUE`
@@ -125,22 +127,22 @@ Example strategist output:
   "scanner_bias": "momentum",
   "scanner_priority": ["momentum", "trend_strength", "volume_surge", "liquidity"],
   "scanner_source_policy": {
-    "preferred_sources": ["top_change_rate", "condition_search", "top_volume", "sector_theme"],
+    "preferred_sources": ["top_change_rate", "top_volume", "sector_theme", "operator_watchlist"],
     "include_top_value": true,
     "include_top_volume": true,
     "include_change_rate": true,
-    "include_condition_search": true,
+    "include_condition_search": false,
     "include_sector_candidates": true,
-    "include_watchlist": false,
+    "include_watchlist": true,
     "top_candidate_pool": 32,
-    "condition_limit": 240,
+    "condition_limit": 0,
     "source_weights": {
       "top_change_rate": 2.2,
-      "condition_search": 2.4,
+      "condition_search": 0.0,
       "top_volume": 1.9,
       "top_value": 1.4
     },
-    "reason": "breakout frame prioritizes fast movers, condition hits, and volume expansion"
+    "reason": "breakout baseline prioritizes fast movers and volume expansion; condition search remains optional"
   },
   "trade_aggressiveness": "high",
   "risk_tone": "aggressive",
@@ -226,9 +228,11 @@ Example scanner output:
   - `playbook`, `scanner_bias`, `scanner_priority`, `risk_tone`, `trade_aggressiveness`
 - Scanner guidance is sourced from canonical `state["strategist_output"]` (with backward-compatible `scanner_guidance` override hook)
 - Strategist can also steer the actual Kiwoom source mix via `scanner_source_policy`
-  - example: `defensive` suppresses `top_change_rate` / `condition_search`
-  - example: `breakout` emphasizes `top_change_rate` / `condition_search` / `top_volume`
-  - reports expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` so operators can see when the source is unavailable
+  - default baseline keeps `condition_search` disabled
+  - example: `defensive` suppresses `top_change_rate`
+  - example: `breakout` emphasizes `top_change_rate` / `top_volume`
+  - explicit opt-in (`KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH=true`) can re-enable `condition_search`
+  - reports expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` so operators can see when the source is unavailable or intentionally disabled
 - Reduces pool with practical guards (halt/abnormal/illiquid thresholds)
 - Computes explainable scoring factors (value, momentum, trend, volume surge, intraday strength, risk penalties)
 - Ranks candidates with score breakdown and selects Top-1
