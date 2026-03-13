@@ -89,6 +89,20 @@ def _resolve_use_exit_policy(state: Dict[str, Any], policy: Dict[str, Any]) -> b
     return _is_trueish(os.getenv("USE_EXIT_POLICY", "false"))
 
 
+def _resolve_post_exit_cooldown_sec(state: Dict[str, Any], policy: Dict[str, Any], monitor_policy: Dict[str, Any]) -> int:
+    raw = state.get("post_exit_cooldown_sec")
+    if raw in (None, "") and isinstance(monitor_policy, dict):
+        raw = monitor_policy.get("post_exit_cooldown_sec")
+    if raw in (None, "") and isinstance(policy, dict):
+        raw = policy.get("post_exit_cooldown_sec")
+    if raw in (None, ""):
+        raw = os.getenv("POST_EXIT_COOLDOWN_SEC", "0")
+    try:
+        return max(0, int(float(raw)))
+    except Exception:
+        return 0
+
+
 def _resolve_block_buy_when_open_position(
     state: Dict[str, Any],
     policy: Dict[str, Any],
@@ -737,7 +751,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     all_pos_map = _position_by_symbol(state)
     open_position_count = sum(1 for row in all_pos_map.values() if max(0, _to_int((row or {}).get("qty"))) > 0)
     block_buy_open_position = _resolve_block_buy_when_open_position(state, policy, monitor_policy)
+    post_exit_cooldown_sec = _resolve_post_exit_cooldown_sec(state, policy, monitor_policy)
     buy_blocked_open_position = False
+    buy_blocked_post_exit_cooldown = False
+    post_exit_cooldown_remaining_sec = 0
     try:
         record_raw_input(
             run_id=run_id,
@@ -822,7 +839,25 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "inputs": {},
             }
 
+        persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+        last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
+        last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
+        now_epoch_for_entry = _resolve_now_epoch(state)
+        if (
+            open_position_count <= 0
+            and post_exit_cooldown_sec > 0
+            and last_trade_side == "SELL"
+            and last_trade_epoch > 0
+        ):
+            elapsed = max(0, int(now_epoch_for_entry - last_trade_epoch))
+            remaining = max(0, int(post_exit_cooldown_sec - elapsed))
+            if remaining > 0:
+                buy_blocked_post_exit_cooldown = True
+                post_exit_cooldown_remaining_sec = remaining
+
         if qty <= 0:
+            intents = []
+        elif buy_blocked_post_exit_cooldown:
             intents = []
         else:
             intent = {
@@ -843,6 +878,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "cash": sizing_info.get("cash"),
                     "inputs": sizing_info.get("inputs"),
                 }
+            if post_exit_cooldown_sec > 0:
+                intent["meta"]["post_exit_cooldown_sec"] = int(post_exit_cooldown_sec)
             intents = [intent]
     if bool(intents) and block_buy_open_position and open_position_count > 0:
         intents = []
@@ -1147,6 +1184,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "open_position_count": int(open_position_count),
         "block_buy_when_open_position": bool(block_buy_open_position),
         "buy_blocked_open_position": bool(buy_blocked_open_position),
+        "post_exit_cooldown_sec": int(post_exit_cooldown_sec),
+        "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
+        "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
     }
     state["monitor_output"] = {
         "selected_symbol": (selected.get("symbol") if isinstance(selected, dict) else None),
@@ -1156,9 +1196,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             str(exit_info.get("reason") or "")
             if bool(exit_info.get("enabled"))
             else (
+                "post_exit_cooldown"
+                if bool(buy_blocked_post_exit_cooldown)
+                else (
                 "buy_blocked_open_position"
                 if bool(buy_blocked_open_position)
                 else "entry_candidate_selected"
+                )
             )
         ),
     }
@@ -1197,6 +1241,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "open_position_count": int(open_position_count),
             "block_buy_when_open_position": bool(block_buy_open_position),
             "buy_blocked_open_position": bool(buy_blocked_open_position),
+            "post_exit_cooldown_sec": int(post_exit_cooldown_sec),
+            "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
+            "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
         },
     )
     append_decision_trace(
@@ -1256,6 +1303,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),
                 "sell_guard_reason": str(exit_info.get("sell_guard_reason") or ""),
                 "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
+                "post_exit_cooldown_sec": int(post_exit_cooldown_sec),
+                "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
+                "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
             },
             decision_link={
                 "decision_chain": {

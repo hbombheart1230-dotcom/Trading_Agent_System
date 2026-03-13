@@ -61,6 +61,7 @@
    - Normal exit stabilization:
      - `MIN_HOLD_SECONDS` blocks premature SELL after entry fill.
      - `SELL_COOLDOWN`/`SELL_COOLDOWN_SEC` suppresses repeated SELL across loops.
+     - `POST_EXIT_COOLDOWN_SEC` suppresses immediate BUY re-entry after a SELL.
      - `MONITOR_EXIT_CONFIRM_TICKS` requires consecutive exit confirmations.
      - `max_hold` / `time_stop` remain normal exits and still respect min-hold/cooldown/confirmation.
    - Explicit emergency exit path:

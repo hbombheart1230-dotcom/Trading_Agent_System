@@ -160,6 +160,26 @@ def test_monitor_allows_buy_when_open_position_guard_disabled(monkeypatch):
     assert (out.get("monitor") or {}).get("buy_blocked_open_position") is False
 
 
+def test_monitor_blocks_reentry_during_post_exit_cooldown(monkeypatch):
+    monkeypatch.setenv("POST_EXIT_COOLDOWN_SEC", "600")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    state = {
+        "tick_ts": 2000,
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "persisted_state": {"last_trade_side": "SELL", "last_trade_epoch": 1500},
+        "policy": {},
+    }
+    out = monitor_node(state)
+    assert out.get("intents") == []
+    mon = out.get("monitor") or {}
+    assert mon.get("buy_blocked_post_exit_cooldown") is True
+    assert mon.get("post_exit_cooldown_remaining_sec") == 100
+    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "post_exit_cooldown"
+
+
 def test_monitor_falls_back_to_held_symbol_for_exit_when_selected_has_no_position(monkeypatch):
     monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
