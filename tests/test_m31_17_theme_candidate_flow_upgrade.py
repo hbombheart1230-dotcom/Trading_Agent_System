@@ -52,6 +52,10 @@ def test_m31_17_strategist_outputs_themes_and_candidates_contract(monkeypatch):
     assert isinstance(strategist_output.get("monitor_policy"), dict)
     assert isinstance(strategist_output["report_focus"], list)
     assert isinstance(strategist_output["strategic_answers"], dict)
+    assert strategist_output["runtime_theme_map_keys"] == ["ai", "semiconductor"]
+    assert strategist_output["runtime_sector_map_keys"] == ["ai", "semiconductor"]
+    assert out.get("theme_map", {}).get("semiconductor") == ["005930", "000660", "042700", "058470"]
+    assert out.get("sector_map", {}).get("ai") == ["005930", "000660", "042700", "058470"]
 
 
 def test_m31_17_scanner_accepts_strategist_output_and_emits_top_stock():
@@ -135,6 +139,36 @@ def test_m31_17_scanner_source_policy_changes_kiwoom_source_mix():
     }
     assert scanner_output.get("scanner_source_policy", {}).get("include_change_rate") is False
     assert scanner_output.get("scanner_source_policy", {}).get("include_condition_search") is False
+
+
+def test_m31_17_runtime_theme_map_enables_sector_theme_candidates():
+    base = strategist_node(
+        {
+            "themes": ["semiconductor"],
+            "candidate_symbols": ["AAA", "BBB", "CCC"],
+            "policy": {
+                "use_global_sentiment": False,
+                "use_news_analysis": False,
+                "use_universe_builder": False,
+            },
+        }
+    )
+    base["mock_scan_results"] = {
+        "AAA": {"score": 0.91, "risk_score": 0.20, "confidence": 0.88},
+        "BBB": {"score": 0.75, "risk_score": 0.21, "confidence": 0.84},
+        "CCC": {"score": 0.72, "risk_score": 0.22, "confidence": 0.80},
+    }
+    base["mock_top_value_symbols"] = []
+    base["mock_top_volume_symbols"] = []
+    base["mock_top_change_symbols"] = []
+    base["mock_condition_symbols"] = []
+
+    out = scanner_node(base)
+    scanner_output = out.get("scanner_output") or {}
+    source_mix = scanner_output.get("source_mix") or {}
+
+    assert int(source_mix.get("sector_theme") or 0) == 3
+    assert out.get("top_stock") == "AAA"
 
 
 def test_m31_17_monitor_sell_cooldown_env_alias_is_supported(monkeypatch):

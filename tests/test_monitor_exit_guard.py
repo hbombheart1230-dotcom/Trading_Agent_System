@@ -270,10 +270,10 @@ def test_monitor_applies_exit_policy_env_overrides(monkeypatch):
     assert str((out.get("monitor_exit") or {}).get("reason") or "") == "max_hold"
 
 
-def test_monitor_hard_exit_bypasses_confirmation_ticks(monkeypatch):
-    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+def test_monitor_max_hold_respects_min_hold_guard(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
-    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "6")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
     monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "60")
 
     state = {
@@ -286,11 +286,44 @@ def test_monitor_hard_exit_bypasses_confirmation_ticks(monkeypatch):
         "policy": {"use_exit_policy": True},
     }
     out = monitor_node(state)
-    intents = out.get("intents") or []
+    assert out.get("intents") == []
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("triggered") is False
+    assert exit_info.get("sell_guard_blocked") is True
+    assert exit_info.get("min_hold_blocked") is True
+    assert "sell_guard_min_hold" in str(exit_info.get("sell_guard_reason") or "")
+    assert exit_info.get("monitor_reason") == "min_hold_active"
+    assert exit_info.get("hard_exit") is False
+
+
+def test_monitor_max_hold_requires_confirmation_ticks(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "2")
+    monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "60")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "AAA"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0, "hold_sec": 120}],
+        },
+        "policy": {"use_exit_policy": True},
+    }
+    out1 = monitor_node(state)
+    assert out1.get("intents") == []
+    exit1 = out1.get("monitor_exit") or {}
+    assert exit1.get("triggered") is False
+    assert "exit_confirmation_pending:1/2" in str(exit1.get("sell_guard_reason") or "")
+    assert exit1.get("hard_exit") is False
+
+    out2 = monitor_node(out1)
+    intents = out2.get("intents") or []
     assert len(intents) == 1
     assert intents[0]["side"] == "SELL"
-    assert str((out.get("monitor_exit") or {}).get("reason") or "") == "max_hold"
-    assert bool((out.get("monitor_exit") or {}).get("hard_exit")) is True
+    assert str((out2.get("monitor_exit") or {}).get("reason") or "") == "max_hold"
+    assert bool((out2.get("monitor_exit") or {}).get("hard_exit")) is False
 
 
 def test_monitor_emergency_exit_bypasses_min_hold_and_confirmation(monkeypatch):

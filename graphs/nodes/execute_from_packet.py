@@ -860,8 +860,9 @@ def execute_from_packet(state: dict) -> dict:
       - state['execution'] (dict)
     """
     EventLogger, new_run_id = _import_event_logger()
-    log_path = os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl")
-    logger = EventLogger(log_path=Path(log_path))
+    from libs.core.event_logger import resolve_event_log_path
+
+    logger = EventLogger(log_path=resolve_event_log_path())
 
     run_id = state.get("run_id") or new_run_id()
     state["run_id"] = run_id

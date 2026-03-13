@@ -767,6 +767,49 @@ def _extract_theme_symbol_index(state: Dict[str, Any], policy: Dict[str, Any]) -
     return out
 
 
+def _merge_theme_symbol_map(
+    existing: Any,
+    *,
+    themes: List[str],
+    candidate_symbols: List[str],
+) -> Dict[str, List[str]]:
+    out: Dict[str, List[str]] = {}
+
+    if isinstance(existing, dict):
+        for key, symbols in existing.items():
+            name = str(key or "").strip().lower()
+            if not name:
+                continue
+            merged: List[str] = []
+            seen: set[str] = set()
+            if isinstance(symbols, list):
+                for sym in symbols:
+                    s = str(sym or "").strip().upper()
+                    if not s or s in seen:
+                        continue
+                    seen.add(s)
+                    merged.append(s)
+            out[name] = merged
+
+    if not candidate_symbols:
+        return out
+
+    for theme in themes:
+        name = str(theme or "").strip().lower()
+        if not name:
+            continue
+        bucket = list(out.get(name) or [])
+        seen = set(bucket)
+        for sym in candidate_symbols:
+            s = str(sym or "").strip().upper()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            bucket.append(s)
+        out[name] = bucket
+    return out
+
+
 def _news_context_summary(
     news_signal_map: Dict[str, Dict[str, Any]],
     news_items_by_symbol: Dict[str, List[Any]],
@@ -1300,10 +1343,9 @@ def _make_event_logger(state: Dict[str, Any]) -> Any:
     injected = state.get("event_logger")
     if injected is not None and hasattr(injected, "log"):
         return injected
-    from libs.core.event_logger import EventLogger
+    from libs.core.event_logger import EventLogger, resolve_event_log_path
 
-    log_path = os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl")
-    return EventLogger(log_path=Path(log_path))
+    return EventLogger(log_path=resolve_event_log_path())
 
 
 def _log_strategist_summary(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
@@ -1637,6 +1679,16 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     state["themes"] = themes
     state["candidate_symbols"] = list(candidate_symbols)
+    state["theme_map"] = _merge_theme_symbol_map(
+        state.get("theme_map"),
+        themes=list(themes),
+        candidate_symbols=list(candidate_symbols),
+    )
+    state["sector_map"] = _merge_theme_symbol_map(
+        state.get("sector_map"),
+        themes=list(themes),
+        candidate_symbols=list(candidate_symbols),
+    )
 
     regime_score = _compose_regime_score(
         global_score=gs,
@@ -1887,6 +1939,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["llm_frame_status"] = str(llm_meta.get("status") or "disabled")
     strategist_output["llm_frame_applied"] = bool(llm_overrides)
     strategist_output["llm_frame_model"] = str(llm_meta.get("model") or "")
+    strategist_output["runtime_theme_map_keys"] = sorted(list((state.get("theme_map") or {}).keys()))
+    strategist_output["runtime_sector_map_keys"] = sorted(list((state.get("sector_map") or {}).keys()))
     state["strategist_output"] = strategist_output
     state["strategist_llm"] = {
         "status": str(llm_meta.get("status") or "disabled"),

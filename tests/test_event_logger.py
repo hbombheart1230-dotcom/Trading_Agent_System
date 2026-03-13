@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from libs.core.event_logger import EventLogger, new_run_id
+from libs.core.event_logger import EventLogger, new_run_id, resolve_event_log_path
 
 
 def test_event_logger_writes_jsonl(tmp_path: Path) -> None:
@@ -58,3 +58,16 @@ def test_event_logger_appends_multiple_lines(tmp_path: Path) -> None:
     second = json.loads(lines[1])
     assert first["ts_kst"] == "2026-02-07T09:00:00+09:00"
     assert second["ts_kst"] == "2026-02-07T09:00:01+09:00"
+
+
+def test_resolve_event_log_path_uses_pytest_default_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("EVENT_LOG_PATH", raising=False)
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_event_logger.py::test_dummy")
+    assert str(resolve_event_log_path()).endswith("data\\logs\\pytest_events.jsonl")
+
+
+def test_resolve_event_log_path_prefers_explicit_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    custom = tmp_path / "custom_events.jsonl"
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests/test_event_logger.py::test_dummy")
+    monkeypatch.setenv("EVENT_LOG_PATH", str(custom))
+    assert resolve_event_log_path() == custom

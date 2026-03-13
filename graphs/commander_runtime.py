@@ -266,9 +266,9 @@ def _make_event_logger(state: Dict[str, Any]) -> Any:
     injected = state.get("event_logger")
     if injected is not None and hasattr(injected, "log"):
         return injected
-    EventLogger, _new_run_id = _import_event_logger()
-    log_path = os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl")
-    return EventLogger(log_path=Path(log_path))
+    from libs.core.event_logger import EventLogger, resolve_event_log_path
+
+    return EventLogger(log_path=resolve_event_log_path())
 
 
 def _log_commander_event(state: Dict[str, Any], event: str, payload: Dict[str, Any]) -> None:

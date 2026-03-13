@@ -33,6 +33,21 @@ def _to_kst_iso(iso_ts: str) -> str:
     return dt.astimezone(kst).replace(microsecond=0).isoformat()
 
 
+def resolve_event_log_path(default: str = "./data/logs/events.jsonl") -> Path:
+    """Resolve the effective event-log path.
+
+    Runtime defaults to the canonical operator log. During pytest, when no
+    explicit EVENT_LOG_PATH is provided, route writes to a separate test log so
+    local test runs do not pollute live operator artifacts.
+    """
+    raw = str(os.getenv("EVENT_LOG_PATH", "") or "").strip()
+    if raw:
+        return Path(raw)
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return Path("./data/logs/pytest_events.jsonl")
+    return Path(default)
+
+
 @dataclass
 class EventLogger:
     """

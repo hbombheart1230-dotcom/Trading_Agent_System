@@ -12,6 +12,7 @@
 - skill calls + results
 - approvals (audit)
 - errors
+- pytest default log isolation: when `EVENT_LOG_PATH` is unset under pytest, runtime nodes write to `data/logs/pytest_events.jsonl` instead of the operator log
 
 **Goal:** make every run replayable.
 
@@ -28,6 +29,7 @@
    - `regime_score`, `sentiment_score`, `news_context`, `candidate_news_context`, `market_news_context`, `theme_strength` (additive quality fields)
    - `candidates` (Top-N, optional hint)
    - canonical `state["strategist_output"]` (contract: `libs/strategies/contracts.py::StrategistOutput`)
+   - additive runtime `theme_map` / `sector_map` seeded from strategist candidate hints so scanner `sector_theme` source can remain non-zero even without a static operator map
    - optional `strategist_llm` result snapshot (`status/model/applied/latency`) + EventLog `stage=strategist_llm`
 2. Scanner uses Kiwoom market data as primary candidate source and writes:
    - `scanner_candidate_pool` (source, counts, theme-filter metadata)
@@ -57,6 +59,7 @@
      - `MIN_HOLD_SECONDS` blocks premature SELL after entry fill.
      - `SELL_COOLDOWN`/`SELL_COOLDOWN_SEC` suppresses repeated SELL across loops.
      - `MONITOR_EXIT_CONFIRM_TICKS` requires consecutive exit confirmations.
+     - `max_hold` / `time_stop` remain normal exits and still respect min-hold/cooldown/confirmation.
    - Explicit emergency exit path:
      - `emergency_halt` / `news_shock` bypass normal confirmation as intentional hard-risk exits.
    - Strategist `monitor_policy` is consumed deterministically from `state["strategist_output"]` when present.

@@ -10,10 +10,9 @@ def _make_event_logger(state: Dict[str, Any]) -> Any:
     injected = state.get("event_logger")
     if injected is not None and hasattr(injected, "log"):
         return injected
-    from libs.core.event_logger import EventLogger
+    from libs.core.event_logger import EventLogger, resolve_event_log_path
 
-    log_path = os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl")
-    return EventLogger(log_path=Path(log_path))
+    return EventLogger(log_path=resolve_event_log_path())
 
 
 def _sanitize(v: Any) -> Any:
@@ -98,4 +97,3 @@ def append_decision_trace(
         except Exception:
             pass
     return state
-
