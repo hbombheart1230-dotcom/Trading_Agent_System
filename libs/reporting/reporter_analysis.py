@@ -14,7 +14,11 @@ from .operator_visibility import (
 from .reporter_ai_review import build_ai_reporter_review
 from .trade_explain import generate_trade_explain_report
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
-from libs.research.strategy_memory_store import resolve_strategy_memory_path, save_strategy_feedback
+from libs.research.strategy_memory_store import (
+    resolve_strategy_memory_daily_dir,
+    resolve_strategy_memory_path,
+    save_strategy_feedback,
+)
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -102,6 +106,31 @@ def _read_json(path: Path) -> Dict[str, Any]:
 def _reason_text(reason: Any) -> str:
     s = str(reason or "").strip()
     return s if s else "unspecified"
+
+
+def _top_chain_run_ids(trace_summary: Dict[str, Any], agent_key: str, *, limit: int = 3) -> List[str]:
+    out: List[str] = []
+    for chain in (trace_summary.get("chains") or []):
+        if not isinstance(chain, dict):
+            continue
+        agent_payload = chain.get(agent_key)
+        if not isinstance(agent_payload, dict) or not agent_payload:
+            continue
+        run_id = str(chain.get("run_id") or "").strip()
+        if run_id and run_id not in out:
+            out.append(run_id)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def _make_evidence_ref(*, path: Any, field: str, run_ids: Optional[List[str]] = None, summary: Any = "") -> Dict[str, Any]:
+    return {
+        "path": str(path or "").strip(),
+        "field": str(field or "").strip(),
+        "run_ids": [str(x or "").strip() for x in list(run_ids or []) if str(x or "").strip()],
+        "summary": str(summary or "").strip(),
+    }
 
 
 def _decision_trace_agent_payload(row: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
@@ -761,6 +790,196 @@ def _build_trade_summary_section(
     }
 
 
+def _build_ai_evidence_catalog(out: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    strategist_eval = out.get("strategist_evaluation") if isinstance(out.get("strategist_evaluation"), dict) else {}
+    scanner_eval = out.get("scanner_evaluation") if isinstance(out.get("scanner_evaluation"), dict) else {}
+    monitor_eval = out.get("monitor_evaluation") if isinstance(out.get("monitor_evaluation"), dict) else {}
+    supervisor_activity = out.get("supervisor_activity") if isinstance(out.get("supervisor_activity"), dict) else {}
+    overtrading = out.get("overtrading_diagnostics") if isinstance(out.get("overtrading_diagnostics"), dict) else {}
+    incidents = out.get("incident_postmortem") if isinstance(out.get("incident_postmortem"), dict) else {}
+    trade_summary = out.get("trade_summary") if isinstance(out.get("trade_summary"), dict) else {}
+    trace_summary = out.get("decision_trace_chain_summary") if isinstance(out.get("decision_trace_chain_summary"), dict) else {}
+    source_reports = out.get("source_reports") if isinstance(out.get("source_reports"), dict) else {}
+    report_json_path = str(out.get("report_json_path") or "").strip()
+
+    return {
+        "strategist_theme_alignment": {
+            "summary": str(strategist_eval.get("assessment") or "Strategist theme alignment assessment"),
+            "evidence_refs": [
+                _make_evidence_ref(
+                    path=report_json_path,
+                    field="strategist_evaluation.theme_alignment_status",
+                    run_ids=_top_chain_run_ids(trace_summary, "strategist"),
+                    summary=str(strategist_eval.get("theme_alignment_status") or ""),
+                ),
+                _make_evidence_ref(
+                    path=source_reports.get("decision_story_md"),
+                    field="decision_story",
+                    run_ids=_top_chain_run_ids(trace_summary, "strategist"),
+                    summary="per-run strategist to scanner narrative",
+                ),
+            ],
+        },
+        "scanner_selection_fit": {
+            "summary": str(scanner_eval.get("assessment") or "Scanner selection fit assessment"),
+            "evidence_refs": [
+                _make_evidence_ref(
+                    path=report_json_path,
+                    field="scanner_evaluation.selected_symbol_top",
+                    run_ids=_top_chain_run_ids(trace_summary, "scanner"),
+                    summary=json.dumps(scanner_eval.get("selected_symbol_top") or {}, ensure_ascii=False),
+                ),
+                _make_evidence_ref(
+                    path=source_reports.get("run_cards_md"),
+                    field="run_cards",
+                    run_ids=_top_chain_run_ids(trace_summary, "scanner"),
+                    summary="top stock and guard status snapshots",
+                ),
+            ],
+        },
+        "monitor_exit_quality": {
+            "summary": str(monitor_eval.get("assessment") or "Monitor exit quality assessment"),
+            "evidence_refs": [
+                _make_evidence_ref(
+                    path=report_json_path,
+                    field="monitor_evaluation.monitor_reason_top",
+                    run_ids=_top_chain_run_ids(trace_summary, "monitor"),
+                    summary=json.dumps(monitor_eval.get("monitor_reason_top") or {}, ensure_ascii=False),
+                ),
+                _make_evidence_ref(
+                    path=source_reports.get("trade_explain_json"),
+                    field="trade_explain.trade_summaries",
+                    run_ids=_top_chain_run_ids(trace_summary, "monitor"),
+                    summary="buy/sell reasons and holding durations",
+                ),
+            ],
+        },
+        "overtrading_risk": {
+            "summary": f"rapid_cycles={_safe_int(overtrading.get('rapid_buy_sell_cycles'), 0)} guard_block_rate={_safe_float(overtrading.get('guard_block_rate'), 0.0):.2%}",
+            "evidence_refs": [
+                _make_evidence_ref(
+                    path=report_json_path,
+                    field="overtrading_diagnostics",
+                    run_ids=_top_chain_run_ids(trace_summary, "monitor"),
+                    summary="rapid buy/sell, noise exits, guard block rate",
+                ),
+            ],
+        },
+        "supervisor_guard_activity": {
+            "summary": str(supervisor_activity.get("assessment") or "Supervisor guard activity assessment"),
+            "evidence_refs": [
+                _make_evidence_ref(
+                    path=report_json_path,
+                    field="supervisor_activity.blocked_reason_top",
+                    run_ids=_top_chain_run_ids(trace_summary, "supervisor"),
+                    summary=json.dumps(supervisor_activity.get("blocked_reason_top") or {}, ensure_ascii=False),
+                ),
+                _make_evidence_ref(
+                    path=source_reports.get("operator_summary_json"),
+                    field="trading_activity_summary",
+                    summary="blocked/approved/executed counts",
+                ),
+            ],
+        },
+        "incident_summary": {
+            "summary": f"incident_total={_safe_int(incidents.get('incident_total'), 0)}",
+            "evidence_refs": [
+                _make_evidence_ref(
+                    path=report_json_path,
+                    field="incident_postmortem.incidents",
+                    summary="unexpected exits, anomalies, guard patterns",
+                ),
+            ],
+        },
+        "trade_summary": {
+            "summary": f"trade_count={_safe_int(trade_summary.get('trade_count'), 0)} symbols={','.join(list(trade_summary.get('symbols_traded') or [])[:4])}",
+            "evidence_refs": [
+                _make_evidence_ref(
+                    path=source_reports.get("trade_explain_json"),
+                    field="trade_explain.trade_summaries",
+                    summary="trade level buy/sell reasons and hold durations",
+                ),
+                _make_evidence_ref(
+                    path=report_json_path,
+                    field="trade_summary",
+                    summary="aggregated traded symbols and hold samples",
+                ),
+            ],
+        },
+        "decision_trace_quality": {
+            "summary": f"complete_chain_total={_safe_int(trace_summary.get('complete_chain_total'), 0)} run_total={_safe_int(trace_summary.get('run_total'), 0)}",
+            "evidence_refs": [
+                _make_evidence_ref(
+                    path=report_json_path,
+                    field="decision_trace_chain_summary",
+                    run_ids=_top_chain_run_ids(trace_summary, "executor"),
+                    summary="cross-agent chain completeness",
+                ),
+            ],
+        },
+    }
+
+
+def _infer_ai_evidence_keys(text: str, catalog: Dict[str, Dict[str, Any]]) -> List[str]:
+    lower = str(text or "").strip().lower()
+    if not lower:
+        return []
+    rules = [
+        ("strategist_theme_alignment", ("strategist", "theme", "playbook", "regime")),
+        ("scanner_selection_fit", ("scanner", "candidate", "selection", "rank", "top stock")),
+        ("monitor_exit_quality", ("monitor", "exit", "hold", "stop", "take profit")),
+        ("overtrading_risk", ("overtrading", "rapid", "noise", "cycle")),
+        ("supervisor_guard_activity", ("supervisor", "guard", "block", "approval")),
+        ("incident_summary", ("incident", "anomal", "error")),
+        ("trade_summary", ("trade", "holding", "pnl")),
+        ("decision_trace_quality", ("trace", "chain", "complete")),
+    ]
+    out: List[str] = []
+    for key, patterns in rules:
+        if key not in catalog:
+            continue
+        if any(pattern in lower for pattern in patterns):
+            out.append(key)
+    return out[:4]
+
+
+def _hydrate_ai_evidence_details(
+    texts: List[Any],
+    link_items: Any,
+    catalog: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    links = link_items if isinstance(link_items, list) else []
+    details: List[Dict[str, Any]] = []
+    for idx, raw_text in enumerate(texts):
+        text = str(raw_text or "").strip()
+        if not text:
+            continue
+        item = links[idx] if idx < len(links) and isinstance(links[idx], dict) else {}
+        evidence_keys: List[str] = []
+        for key in list(item.get("evidence_keys") or []):
+            normalized = str(key or "").strip()
+            if normalized and normalized in catalog and normalized not in evidence_keys:
+                evidence_keys.append(normalized)
+        if not evidence_keys:
+            evidence_keys = _infer_ai_evidence_keys(text, catalog)
+        evidence_refs: List[Dict[str, Any]] = []
+        for key in evidence_keys:
+            entry = catalog.get(key) if isinstance(catalog.get(key), dict) else {}
+            for ref in list(entry.get("evidence_refs") or []):
+                if isinstance(ref, dict):
+                    evidence_refs.append(dict(ref))
+            if len(evidence_refs) >= 8:
+                break
+        details.append(
+            {
+                "text": text,
+                "evidence_keys": evidence_keys,
+                "evidence_refs": evidence_refs[:8],
+            }
+        )
+    return details
+
+
 def _build_strategy_frame_summary(day_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     theme_counts: Counter[str] = Counter()
     playbook_counts: Counter[str] = Counter()
@@ -1270,6 +1489,30 @@ def _to_markdown(out: Dict[str, Any]) -> str:
         f"- ai_improvement_suggestions: `{json.dumps(out.get('ai_improvement_suggestions') or [], ensure_ascii=False)}`"
     )
     lines.append(f"- ai_agent_evaluations: `{json.dumps(out.get('ai_agent_evaluations') or {}, ensure_ascii=False)}`")
+    ai_findings_detailed = out.get("ai_findings_detailed") if isinstance(out.get("ai_findings_detailed"), list) else []
+    ai_root_causes_detailed = out.get("ai_root_causes_detailed") if isinstance(out.get("ai_root_causes_detailed"), list) else []
+    ai_improvement_detailed = out.get("ai_improvement_suggestions_detailed") if isinstance(out.get("ai_improvement_suggestions_detailed"), list) else []
+    if ai_findings_detailed:
+        lines.append("- ai_findings_detailed:")
+        for item in ai_findings_detailed[:6]:
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"  - text: {item.get('text')}")
+            lines.append(f"    evidence_keys: `{json.dumps(item.get('evidence_keys') or [], ensure_ascii=False)}`")
+    if ai_root_causes_detailed:
+        lines.append("- ai_root_causes_detailed:")
+        for item in ai_root_causes_detailed[:6]:
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"  - text: {item.get('text')}")
+            lines.append(f"    evidence_keys: `{json.dumps(item.get('evidence_keys') or [], ensure_ascii=False)}`")
+    if ai_improvement_detailed:
+        lines.append("- ai_improvement_suggestions_detailed:")
+        for item in ai_improvement_detailed[:6]:
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"  - text: {item.get('text')}")
+            lines.append(f"    evidence_keys: `{json.dumps(item.get('evidence_keys') or [], ensure_ascii=False)}`")
     lines.append("")
     lines.append("## Developer Summary")
     lines.append("")
@@ -1452,6 +1695,7 @@ def generate_reporter_analysis_report(
         "report_json_path": str(js_path),
         "report_md_path": str(md_path),
     }
+    out["ai_evidence_catalog"] = _build_ai_evidence_catalog(out)
 
     try:
         ai_review = build_ai_reporter_review(
@@ -1482,10 +1726,34 @@ def generate_reporter_analysis_report(
     out["ai_improvement_suggestions"] = list(ai_review.get("ai_improvement_suggestions") or [])
     out["ai_run_grade"] = str(ai_review.get("ai_run_grade") or "N/A")
     out["ai_agent_evaluations"] = dict(ai_review.get("ai_agent_evaluations") or {})
+    out["ai_evidence_links"] = dict(ai_review.get("ai_evidence_links") or {})
+    out["ai_findings_detailed"] = _hydrate_ai_evidence_details(
+        out["ai_findings"],
+        (out.get("ai_evidence_links") or {}).get("findings"),
+        out["ai_evidence_catalog"],
+    )
+    out["ai_root_causes_detailed"] = _hydrate_ai_evidence_details(
+        out["ai_root_causes"],
+        (out.get("ai_evidence_links") or {}).get("root_causes"),
+        out["ai_evidence_catalog"],
+    )
+    out["ai_improvement_suggestions_detailed"] = _hydrate_ai_evidence_details(
+        out["ai_improvement_suggestions"],
+        (out.get("ai_evidence_links") or {}).get("improvements"),
+        out["ai_evidence_catalog"],
+    )
     try:
         memory_record = save_strategy_feedback(run_id=reporter_run_id, reporter_output=out)
+        memory_meta = (
+            memory_record.get("_strategy_memory_meta")
+            if isinstance(memory_record.get("_strategy_memory_meta"), dict)
+            else {}
+        )
         out["strategy_memory_record"] = {
-            "strategy_memory_path": str(resolve_strategy_memory_path()),
+            "strategy_memory_path": str(memory_meta.get("strategy_memory_path") or resolve_strategy_memory_path()),
+            "strategy_memory_daily_dir": str(resolve_strategy_memory_daily_dir()),
+            "daily_summary_path": str(memory_meta.get("daily_summary_path") or ""),
+            "storage_mode": str(memory_meta.get("storage_mode") or "append_jsonl_with_daily_latest"),
             "run_id": str(memory_record.get("run_id") or reporter_run_id),
             "timestamp": str(memory_record.get("timestamp") or ""),
             "feedback_window_day": target_day,
@@ -1493,6 +1761,9 @@ def generate_reporter_analysis_report(
     except Exception as exc:
         out["strategy_memory_record"] = {
             "strategy_memory_path": str(resolve_strategy_memory_path()),
+            "strategy_memory_daily_dir": str(resolve_strategy_memory_daily_dir()),
+            "daily_summary_path": "",
+            "storage_mode": "append_jsonl_with_daily_latest",
             "run_id": str(reporter_run_id),
             "timestamp": "",
             "error": f"strategy_memory_save_failed:{exc}",

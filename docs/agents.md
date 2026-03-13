@@ -3,12 +3,16 @@
 ## Commander
 - Orchestrates one full run cycle.
 - Routes state between Strategist, Scanner, Monitor, Supervisor, and Executor.
-- Handles retry/pause/cancel transitions and runtime mode selection.
+- Handles retry/pause/cancel transitions, runtime mode selection, and runtime phase selection.
 - Never sends orders directly.
 - Canonical implementation: `graphs/commander_runtime.py`
 - Compatibility layers:
   - `graphs/nodes/commander_node.py` (thin runtime wrapper)
   - `libs/agent/commander.py` (legacy adapter/scaffolding)
+- Runtime phases:
+  - `preopen`: strategist warmup only
+  - `session`: normal trading/runtime path
+  - `closeout`: passive closeout-ready short-circuit; reporting remains script-driven
 
 ## Strategist
 - Consumes market/news/global context.
@@ -24,6 +28,7 @@
 - Emits additive strategist contract fields in canonical `state["strategist_output"]`.
 - Reads recent passive Reporter feedback from `state["recent_strategy_feedback"]`.
   - backed by append-only strategy memory store `data/strategy_memory/feedback.jsonl`
+  - Strategist prefers deduped daily latest summaries under `data/strategy_memory/daily/`
   - advisory only; does not hard-force themes/playbooks or mutate runtime configs
 - Optional LLM strategic-frame pass can override strategist fields additively.
   - bounded by strategist contract normalization + deterministic fallback
@@ -98,6 +103,7 @@
 - AI review is post-run/read-only and never writes execution/runtime control state.
 - Reporter also persists compact feedback snapshots into strategy memory:
   - append-only store: `data/strategy_memory/feedback.jsonl`
+  - daily latest summaries: `data/strategy_memory/daily/YYYY-MM-DD.json`
   - consumed later by Strategist as advisory context only
 - Reporter-ready reason inputs are now emitted via:
   - `state["decision_trace_ledger"]` / `state["reason_ledger"]`
@@ -121,3 +127,7 @@
   - optional AI review fields:
     - `ai_summary`, `ai_findings`, `ai_root_causes`
     - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`
+    - evidence-linked detailed variants:
+      - `ai_findings_detailed`
+      - `ai_root_causes_detailed`
+      - `ai_improvement_suggestions_detailed`

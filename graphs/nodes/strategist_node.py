@@ -298,13 +298,130 @@ def _compact_news_sample_for_llm(sample: Any, *, max_symbols: int = 6, max_title
     return out
 
 
+def _round_optional(value: Any, digits: int = 4) -> Any:
+    try:
+        return round(float(value), int(digits))
+    except Exception:
+        return value
+
+
+def _compact_global_signal_for_llm(signal: Any) -> Dict[str, Any]:
+    src = signal if isinstance(signal, dict) else {}
+    index_moves = src.get("index_moves") if isinstance(src.get("index_moves"), dict) else {}
+    macro_moves = src.get("macro_moves") if isinstance(src.get("macro_moves"), dict) else {}
+    fear_index = src.get("fear_index") if isinstance(src.get("fear_index"), dict) else {}
+    return {
+        "score": _round_optional(src.get("score"), 4),
+        "status": str(src.get("status") or ""),
+        "source": str(src.get("source") or ""),
+        "index_moves": {
+            "sp500_pct": _round_optional(index_moves.get("sp500_pct"), 3),
+            "nasdaq_pct": _round_optional(index_moves.get("nasdaq_pct"), 3),
+            "dow_pct": _round_optional(index_moves.get("dow_pct"), 3),
+        },
+        "macro_moves": {
+            "vix_pct": _round_optional(macro_moves.get("vix_pct"), 3),
+            "vix_level": _round_optional(macro_moves.get("vix_level"), 2),
+            "vix_level_pressure": _round_optional(macro_moves.get("vix_level_pressure"), 3),
+            "dxy_pct": _round_optional(macro_moves.get("dxy_pct"), 3),
+            "tnx_delta": _round_optional(macro_moves.get("tnx_delta"), 4),
+        },
+        "fear_index": {
+            "level": _round_optional(fear_index.get("level"), 2),
+            "change_pct": _round_optional(fear_index.get("change_pct"), 3),
+            "level_pressure": _round_optional(fear_index.get("level_pressure"), 3),
+        },
+    }
+
+
+def _compact_top_metric_map(raw: Any, *, max_items: int = 4) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    rows: List[tuple[str, float]] = []
+    for key, value in raw.items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        try:
+            metric = float(value)
+        except Exception:
+            metric = 0.0
+        rows.append((name, metric))
+    rows.sort(key=lambda item: (-item[1], item[0]))
+    out: Dict[str, Any] = {}
+    for name, metric in rows[: max(0, int(max_items))]:
+        out[name] = _round_optional(metric, 4)
+    return out
+
+
+def _compact_performance_summary_map(raw: Any, *, max_items: int = 3) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    rows: List[tuple[str, float, Dict[str, Any]]] = []
+    for key, value in raw.items():
+        name = str(key or "").strip()
+        item = value if isinstance(value, dict) else {}
+        if not name:
+            continue
+        priority = 0.0
+        if isinstance(item, dict):
+            priority = float(item.get("appearance_count") or item.get("trade_count_total") or 0.0)
+        rows.append((name, priority, item))
+    rows.sort(key=lambda item: (-item[1], item[0]))
+    out: Dict[str, Any] = {}
+    for name, _priority, item in rows[: max(0, int(max_items))]:
+        out[name] = {
+            "appearance_count": int(item.get("appearance_count") or 0),
+            "win_rate": _round_optional(item.get("win_rate"), 4),
+            "avg_return": _round_optional(item.get("avg_return"), 4),
+        }
+    return out
+
+
+def _compact_recent_strategy_feedback_for_llm(feedback: Any) -> Dict[str, Any]:
+    src = feedback if isinstance(feedback, dict) else {}
+    return {
+        "feedback_window_size": int(src.get("feedback_window_size") or 0),
+        "top_recent_strengths": [str(x or "") for x in list(src.get("top_recent_strengths") or [])[:3]],
+        "top_recent_weaknesses": [str(x or "") for x in list(src.get("top_recent_weaknesses") or [])[:4]],
+        "recent_reporter_summary": [str(x or "") for x in list(src.get("recent_reporter_summary") or [])[:2]],
+        "suggested_report_focus": [str(x or "") for x in list(src.get("suggested_report_focus") or [])[:4]],
+        "recent_theme_performance": _compact_performance_summary_map(src.get("recent_theme_performance"), max_items=3),
+        "recent_playbook_performance": _compact_performance_summary_map(src.get("recent_playbook_performance"), max_items=3),
+        "advisory_only": bool(src.get("advisory_only", True)),
+    }
+
+
 def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     compact = dict(payload or {})
-    compact["market_news_sample"] = _compact_news_sample_for_llm(compact.get("market_news_sample"))
-    compact["candidate_news_sample"] = _compact_news_sample_for_llm(compact.get("candidate_news_sample"))
+    compact["global_sentiment_signal"] = _compact_global_signal_for_llm(compact.get("global_sentiment_signal"))
+    news_ctx = compact.get("news_context") if isinstance(compact.get("news_context"), dict) else {}
+    compact["news_context"] = {
+        "signal_total": int(news_ctx.get("signal_total") or 0),
+        "avg_score": _round_optional(news_ctx.get("avg_score"), 4),
+        "headline_count": int(news_ctx.get("headline_count") or 0),
+        "candidate_signal_total": int(news_ctx.get("candidate_signal_total") or 0),
+        "market_signal_total": int(news_ctx.get("market_signal_total") or 0),
+    }
+    market_ctx = compact.get("market_context_inputs") if isinstance(compact.get("market_context_inputs"), dict) else {}
+    compact["market_context_inputs"] = {
+        "index_trend": _round_optional(market_ctx.get("index_trend"), 4),
+        "realized_volatility": _round_optional(market_ctx.get("realized_volatility"), 4),
+        "market_breadth": _round_optional(market_ctx.get("market_breadth"), 4),
+        "macro_risk": _round_optional(market_ctx.get("macro_risk"), 4),
+    }
+    compact["recent_strategy_feedback"] = _compact_recent_strategy_feedback_for_llm(compact.get("recent_strategy_feedback"))
+    compact["macro_stress_overlay_hint"] = {
+        "active": bool(((compact.get("macro_stress_overlay_hint") or {}).get("active"))),
+        "stress_flags": [str(x or "") for x in list(((compact.get("macro_stress_overlay_hint") or {}).get("stress_flags") or [])[:4])],
+        "reason": str(((compact.get("macro_stress_overlay_hint") or {}).get("reason") or "")),
+    }
+    compact["market_news_sample"] = _compact_news_sample_for_llm(compact.get("market_news_sample"), max_symbols=4, max_titles=1, max_title_len=120)
+    compact["candidate_news_sample"] = _compact_news_sample_for_llm(compact.get("candidate_news_sample"), max_symbols=4, max_titles=1, max_title_len=120)
     compact["candidate_symbols_hint"] = list(compact.get("candidate_symbols_hint") or [])[:5]
-    compact["key_events_hint"] = [str(x or "") for x in list(compact.get("key_events_hint") or [])[:5]]
-    compact["themes_hint"] = [str(x or "") for x in list(compact.get("themes_hint") or [])[:5]]
+    compact["key_events_hint"] = [str(x or "") for x in list(compact.get("key_events_hint") or [])[:4]]
+    compact["themes_hint"] = [str(x or "") for x in list(compact.get("themes_hint") or [])[:4]]
+    compact["news_query_targets"] = [str(x or "") for x in list(compact.get("news_query_targets") or [])[:8]]
     return compact
 
 
@@ -379,7 +496,7 @@ def _run_strategist_frame_llm(
     max_tokens_raw = (
         policy.get("strategist_frame_llm_max_tokens")
         if policy.get("strategist_frame_llm_max_tokens") is not None
-        else os.getenv("STRATEGIST_FRAME_LLM_MAX_TOKENS", "900")
+        else os.getenv("STRATEGIST_FRAME_LLM_MAX_TOKENS", os.getenv("AI_STRATEGIST_MAX_TOKENS", "320"))
     )
     try:
         temperature = float(temp_raw)
@@ -388,7 +505,7 @@ def _run_strategist_frame_llm(
     try:
         max_tokens = max(256, int(float(max_tokens_raw)))
     except Exception:
-        max_tokens = 900
+        max_tokens = max(256, int(float(os.getenv("AI_STRATEGIST_MAX_TOKENS", "320"))))
 
     router = LLMRouter.from_env()
     if router.client is None:

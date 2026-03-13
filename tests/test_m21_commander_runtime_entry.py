@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from graphs.commander_runtime import _run_integrated_chain, resolve_runtime_mode, run_commander_runtime
+from graphs.commander_runtime import _run_integrated_chain, resolve_runtime_mode, resolve_runtime_phase, run_commander_runtime
 
 
 def test_m21_runtime_entry_defaults_to_graph_spine():
@@ -30,6 +30,7 @@ def test_m21_runtime_entry_defaults_to_graph_spine():
 
     assert out["path"] == "graph_spine"
     assert out["runtime_plan"]["mode"] == "graph_spine"
+    assert out["runtime_plan"]["phase"] == "session"
     assert out["runtime_plan"]["agents"] == [
         "commander_router",
         "strategist",
@@ -70,6 +71,7 @@ def test_m21_runtime_entry_runs_decision_packet_mode():
     assert out["path"] == "decision_packet"
     assert out["execution"]["allowed"] is True
     assert out["runtime_plan"]["mode"] == "decision_packet"
+    assert out["runtime_plan"]["phase"] == "session"
     assert out["runtime_plan"]["agents"] == [
         "commander_router",
         "strategist",
@@ -129,6 +131,7 @@ def test_m31_runtime_entry_runs_integrated_chain_mode():
 
     assert out["path"] == "integrated_chain"
     assert out["runtime_plan"]["mode"] == "integrated_chain"
+    assert out["runtime_plan"]["phase"] == "session"
     assert out["runtime_plan"]["agents"] == [
         "commander_router",
         "strategist",
@@ -154,6 +157,15 @@ def test_m21_runtime_mode_resolution_precedence(monkeypatch):
     assert resolve_runtime_mode({}) == "decision_packet"
     # invalid values fall back to graph_spine
     assert resolve_runtime_mode({"runtime_mode": "invalid"}) == "graph_spine"
+
+
+def test_m21_runtime_phase_resolution_precedence(monkeypatch):
+    monkeypatch.setenv("COMMANDER_RUNTIME_PHASE", "preopen")
+
+    assert resolve_runtime_phase({"runtime_phase": "closeout"}, phase="session") == "session"
+    assert resolve_runtime_phase({"runtime_phase": "closeout"}) == "closeout"
+    assert resolve_runtime_phase({}) == "preopen"
+    assert resolve_runtime_phase({"runtime_phase": "invalid"}) == "session"
 
 
 def test_m21_runtime_entry_uses_env_mode_when_state_missing(monkeypatch):
@@ -285,6 +297,7 @@ def test_m21_runtime_emits_route_and_end_events():
     router_rows = [r for r in logger.rows if r.get("stage") == "commander_router"]
     assert [r["event"] for r in router_rows] == ["route", "end"]
     assert router_rows[0]["payload"]["mode"] == "graph_spine"
+    assert router_rows[0]["payload"]["phase"] == "session"
     assert router_rows[1]["payload"]["path"] == "graph_spine"
     assert out.get("run_id")
 
@@ -309,6 +322,79 @@ def test_m21_runtime_emits_transition_for_pause_control():
     assert router_rows[2]["payload"]["path"] is None
     assert called["graph"] == 0
     assert out["runtime_status"] == "paused"
+
+
+def test_m21_runtime_preopen_phase_short_circuits_to_preopen_runner():
+    called = {"graph": 0, "integrated": 0, "preopen": 0, "closeout": 0}
+
+    def graph_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["graph"] += 1
+        return state
+
+    def integrated_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["integrated"] += 1
+        return state
+
+    def preopen_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["preopen"] += 1
+        state["path"] = "preopen_strategist"
+        state["runtime_status"] = "preopen_ready"
+        state["strategist_output"] = {"playbook": "defensive"}
+        return state
+
+    def closeout_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["closeout"] += 1
+        return state
+
+    out = run_commander_runtime(
+        {"runtime_mode": "integrated_chain", "runtime_phase": "preopen"},
+        graph_runner=graph_runner,
+        integrated_runner=integrated_runner,
+        preopen_runner=preopen_runner,
+        closeout_runner=closeout_runner,
+    )
+
+    assert out["path"] == "preopen_strategist"
+    assert out["runtime_status"] == "preopen_ready"
+    assert out["runtime_plan"]["phase"] == "preopen"
+    assert out["runtime_plan"]["agents"] == ["commander_router", "strategist"]
+    assert called == {"graph": 0, "integrated": 0, "preopen": 1, "closeout": 0}
+
+
+def test_m21_runtime_closeout_phase_short_circuits_to_closeout_runner():
+    called = {"graph": 0, "decide": 0, "execute": 0, "closeout": 0}
+
+    def graph_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["graph"] += 1
+        return state
+
+    def decide(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["decide"] += 1
+        return state
+
+    def execute(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["execute"] += 1
+        return state
+
+    def closeout_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["closeout"] += 1
+        state["path"] = "closeout_idle"
+        state["runtime_status"] = "closeout_ready"
+        return state
+
+    out = run_commander_runtime(
+        {"runtime_mode": "decision_packet", "runtime_phase": "closeout"},
+        graph_runner=graph_runner,
+        decide=decide,
+        execute=execute,
+        closeout_runner=closeout_runner,
+    )
+
+    assert out["path"] == "closeout_idle"
+    assert out["runtime_status"] == "closeout_ready"
+    assert out["runtime_plan"]["phase"] == "closeout"
+    assert out["runtime_plan"]["agents"] == ["commander_router"]
+    assert called == {"graph": 0, "decide": 0, "execute": 0, "closeout": 1}
 
 
 def test_m31_integrated_chain_hydrates_portfolio_and_updates_execution_state(monkeypatch):

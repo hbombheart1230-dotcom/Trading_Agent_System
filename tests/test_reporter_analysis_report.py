@@ -245,6 +245,8 @@ def test_reporter_analysis_script_builds_structured_sections(tmp_path: Path, cap
     assert "ai_findings" in obj
     assert "ai_root_causes" in obj
     assert "ai_improvement_suggestions" in obj
+    assert "ai_evidence_catalog" in obj
+    assert "ai_findings_detailed" in obj
     assert "ai_run_grade" in obj
     assert "ai_agent_evaluations" in obj
     flow = obj["intent_flow_analysis"]
@@ -342,6 +344,8 @@ def test_reporter_analysis_persists_compact_strategy_memory(monkeypatch, tmp_pat
     assert md_path.exists() is True
     assert js_path.exists() is True
     assert (out.get("strategy_memory_record") or {}).get("strategy_memory_path") == str(memory_path)
+    assert str((out.get("strategy_memory_record") or {}).get("daily_summary_path") or "").endswith("2026-03-10.json")
+    assert (out.get("strategy_memory_record") or {}).get("storage_mode") == "append_jsonl_with_daily_latest"
     rows = load_recent_strategy_feedback(10, path=memory_path)
     assert len(rows) == 1
     assert rows[0]["run_id"] == "reporter-2026-03-10"
@@ -409,6 +413,11 @@ def test_reporter_analysis_ai_review_enabled_integration(monkeypatch, tmp_path: 
             "ai_improvement_suggestions": ["improve_1"],
             "ai_run_grade": "B+",
             "ai_agent_evaluations": {"strategist": "good", "scanner": "good", "monitor": "needs_improvement"},
+            "ai_evidence_links": {
+                "findings": [{"text": "finding_1", "evidence_keys": ["scanner_selection_fit"]}],
+                "root_causes": [{"text": "root_1", "evidence_keys": ["monitor_exit_quality"]}],
+                "improvements": [{"text": "improve_1", "evidence_keys": ["supervisor_guard_activity"]}],
+            },
         }
 
     monkeypatch.setattr(reporter_analysis_module, "build_ai_reporter_review", _fake_ai_review)
@@ -433,6 +442,8 @@ def test_reporter_analysis_ai_review_enabled_integration(monkeypatch, tmp_path: 
     assert obj.get("ai_summary") == "AI review summary"
     assert obj.get("ai_run_grade") == "B+"
     assert (obj.get("ai_agent_evaluations") or {}).get("monitor") == "needs_improvement"
+    assert (obj.get("ai_findings_detailed") or [])[0]["evidence_keys"] == ["scanner_selection_fit"]
+    assert (obj.get("ai_root_causes_detailed") or [])[0]["evidence_keys"] == ["monitor_exit_quality"]
 
 
 def test_reporter_analysis_ai_review_failure_fallback(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -477,3 +488,65 @@ def test_reporter_analysis_ai_review_failure_fallback(monkeypatch, tmp_path: Pat
     assert (obj.get("ai_review") or {}).get("status") == "error"
     assert "trade_summary" in obj
     assert "intent_flow_analysis" in obj
+
+
+def test_reporter_analysis_ai_review_infers_evidence_links_when_model_omits_them(monkeypatch, tmp_path: Path, capsys) -> None:
+    day = "2026-03-10"
+    events = tmp_path / "events.jsonl"
+    reports_root = tmp_path / "reports"
+    out_dir = reports_root / "reporter_analysis"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r1",
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "scanner",
+                "event": "summary",
+                "payload": {"top_stock": "005930", "top_score": 0.91},
+            },
+            {
+                "run_id": "r2",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "monitor",
+                "event": "summary",
+                "payload": {"monitor_reason": "confirmed_exit_signal", "exit_reason": "stop_loss"},
+            },
+        ],
+    )
+
+    def _fake_ai_review(**kwargs):
+        return {
+            "enabled": True,
+            "status": "ok",
+            "model": "fake/reporter-model",
+            "reason": "",
+            "ai_summary": "AI review summary",
+            "ai_findings": ["Scanner selection looked weak under current context"],
+            "ai_root_causes": ["Monitor exits were too defensive"],
+            "ai_improvement_suggestions": ["Reduce overtrading in rapid cycles"],
+            "ai_run_grade": "C",
+            "ai_agent_evaluations": {"scanner": "mixed", "monitor": "needs_improvement"},
+        }
+
+    monkeypatch.setattr(reporter_analysis_module, "build_ai_reporter_review", _fake_ai_review)
+
+    rc = reporter_analysis_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(out_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--ai-review",
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert "scanner_selection_fit" in ((obj.get("ai_findings_detailed") or [])[0].get("evidence_keys") or [])
+    root_keys = ((obj.get("ai_root_causes_detailed") or [])[0].get("evidence_keys") or [])
+    assert "monitor_exit_quality" in root_keys

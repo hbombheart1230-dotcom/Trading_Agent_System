@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from libs.research.strategy_memory_store import (
+    load_recent_daily_strategy_feedback,
     load_recent_strategy_feedback,
     load_strategy_feedback_window,
     save_strategy_feedback,
@@ -70,23 +71,30 @@ def _reporter_output(day: str, theme: str, *, pnl: float) -> dict:
 
 def test_strategy_memory_store_save_load_and_window(tmp_path: Path) -> None:
     memory_path = tmp_path / "strategy_memory" / "feedback.jsonl"
+    daily_dir = tmp_path / "strategy_memory" / "daily"
 
     save_strategy_feedback(
         "reporter-2026-03-10",
         _reporter_output("2026-03-10", "semiconductor", pnl=1.25),
         path=memory_path,
+        daily_dir=daily_dir,
         timestamp="2026-03-10T15:30:00+00:00",
     )
     save_strategy_feedback(
         "reporter-2026-03-11",
         _reporter_output("2026-03-11", "defense", pnl=-0.5),
         path=memory_path,
+        daily_dir=daily_dir,
         timestamp="2026-03-11T15:30:00+00:00",
     )
 
     recent = load_recent_strategy_feedback(1, path=memory_path)
     assert len(recent) == 1
     assert recent[0]["run_id"] == "reporter-2026-03-11"
+
+    daily_recent = load_recent_daily_strategy_feedback(5, daily_dir=daily_dir)
+    assert len(daily_recent) == 2
+    assert daily_recent[-1]["run_id"] == "reporter-2026-03-11"
 
     window = load_strategy_feedback_window(
         "2026-03-10T00:00:00+00:00",
@@ -96,7 +104,38 @@ def test_strategy_memory_store_save_load_and_window(tmp_path: Path) -> None:
     assert len(window) == 1
     assert window[0]["run_id"] == "reporter-2026-03-10"
 
-    summary = summarize_recent_feedback(5, path=memory_path)
+    summary = summarize_recent_feedback(5, path=memory_path, daily_dir=daily_dir)
     assert summary["feedback_window_size"] == 2
     assert "reporter-2026-03-10" in summary["run_ids"]
     assert summary["top_improvement_suggestions"] == ["keep baseline", "keep baseline"]
+    assert summary["storage_mode"] == "daily_latest_preferred"
+
+
+def test_strategy_memory_load_dedupes_same_run_id_and_prefers_latest(tmp_path: Path) -> None:
+    memory_path = tmp_path / "strategy_memory" / "feedback.jsonl"
+    daily_dir = tmp_path / "strategy_memory" / "daily"
+
+    save_strategy_feedback(
+        "reporter-2026-03-12",
+        _reporter_output("2026-03-12", "semiconductor", pnl=1.0),
+        path=memory_path,
+        daily_dir=daily_dir,
+        timestamp="2026-03-12T15:00:00+00:00",
+    )
+    save_strategy_feedback(
+        "reporter-2026-03-12",
+        _reporter_output("2026-03-12", "defense", pnl=2.5),
+        path=memory_path,
+        daily_dir=daily_dir,
+        timestamp="2026-03-12T18:00:00+00:00",
+    )
+
+    rows = load_recent_strategy_feedback(10, path=memory_path, daily_dir=daily_dir)
+    assert len(rows) == 1
+    assert rows[0]["run_id"] == "reporter-2026-03-12"
+    assert rows[0]["strategist_evaluation"]["themes_proposed"] == ["defense"]
+    assert rows[0]["performance_summary"]["estimated_realized_pnl_total"] == 2.5
+
+    daily_rows = load_recent_daily_strategy_feedback(10, daily_dir=daily_dir)
+    assert len(daily_rows) == 1
+    assert daily_rows[0]["strategist_evaluation"]["themes_proposed"] == ["defense"]

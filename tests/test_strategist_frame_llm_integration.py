@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from graphs.nodes.strategist_node import strategist_node
+from graphs.nodes.strategist_node import _build_compact_strategist_llm_payload, strategist_node
 from libs.research.strategy_memory_store import save_strategy_feedback
 
 
@@ -112,6 +112,19 @@ class _FakeRouterNestedJson(_FakeRouterOk):
             '"trade_aggressiveness":"low","risk_tone":"conservative",'
             '"monitor_guidance":"defensive_exit","report_focus":"theme_accuracy|exit_quality"}}'
         )
+
+
+class _FakeRouterCapturePolicy(_FakeRouterOk):
+    last_policy: Dict[str, Any] | None = None
+
+    @staticmethod
+    def from_env() -> "_FakeRouterCapturePolicy":
+        _FakeRouterCapturePolicy.last_policy = None
+        return _FakeRouterCapturePolicy()
+
+    def resolve(self, role: str, *, policy: Dict[str, Any] | None = None) -> _Route:
+        _FakeRouterCapturePolicy.last_policy = dict(policy or {})
+        return _Route(model=str((policy or {}).get("model") or "minimax/minimax-m2.5"))
 
 
 def _base_state(logger: _MemoryLogger) -> Dict[str, Any]:
@@ -372,3 +385,75 @@ def test_strategist_produces_feedback_field_even_when_memory_empty(monkeypatch, 
     strategist_output = out.get("strategist_output") or {}
     assert (strategist_output.get("recent_strategy_feedback") or {}).get("feedback_window_size") == 0
     assert strategist_output.get("playbook") in ("breakout", "pullback", "reversal", "defensive")
+
+
+def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
+    payload = {
+        "global_sentiment_signal": {
+            "score": -0.173829,
+            "status": "ok",
+            "source": "yfinance",
+            "index_moves": {"sp500_pct": -1.5232, "nasdaq_pct": -1.7811, "dow_pct": -1.5511},
+            "macro_moves": {"vix_pct": 3.4455, "vix_level": 26.556, "vix_level_pressure": 0.3277, "dxy_pct": 0.4112, "tnx_delta": 0.00652},
+            "fear_index": {"level": 26.556, "change_pct": 3.4455, "level_pressure": 0.3277},
+        },
+        "news_context": {"signal_total": 13, "avg_score": 0.09234, "headline_count": 65, "candidate_signal_total": 5, "market_signal_total": 8},
+        "market_context_inputs": {"index_trend": 0.0, "realized_volatility": 0.012345, "market_breadth": 0.0, "macro_risk": 0.12555},
+        "recent_strategy_feedback": {
+            "feedback_window_size": 12,
+            "top_recent_strengths": ["a", "b", "c", "d"],
+            "top_recent_weaknesses": ["w1", "w2", "w3", "w4", "w5"],
+            "recent_reporter_summary": ["s1", "s2", "s3"],
+            "suggested_report_focus": ["f1", "f2", "f3", "f4", "f5"],
+            "recent_theme_performance": {"semiconductor": {"appearance_count": 4}, "defense": {"appearance_count": 6}, "ai": {"appearance_count": 2}, "energy": {"appearance_count": 1}},
+            "recent_playbook_performance": {"pullback": {"appearance_count": 9}, "defensive": {"appearance_count": 3}, "breakout": {"appearance_count": 1}, "reversal": {"appearance_count": 2}},
+            "advisory_only": True,
+        },
+        "macro_stress_overlay_hint": {"active": True, "stress_flags": ["elevated_vix", "dollar_strength", "yield_rise", "extra"], "reason": "macro stress"},
+        "market_news_sample": {
+            "코스피": {"count": 5, "sample": [{"title": "a" * 140}, {"title": "b"}]},
+            "미국 증시": {"count": 5, "sample": [{"title": "c"}]},
+            "달러": {"count": 5, "sample": [{"title": "d"}]},
+            "방산": {"count": 5, "sample": [{"title": "e"}]},
+            "금": {"count": 5, "sample": [{"title": "f"}]},
+        },
+        "candidate_news_sample": {
+            "005930": {"count": 5, "sample": [{"title": "g" * 140}, {"title": "h"}]},
+            "000660": {"count": 5, "sample": [{"title": "i"}]},
+            "069500": {"count": 5, "sample": [{"title": "j"}]},
+            "122630": {"count": 5, "sample": [{"title": "k"}]},
+            "032820": {"count": 5, "sample": [{"title": "l"}]},
+        },
+        "candidate_symbols_hint": ["1", "2", "3", "4", "5", "6"],
+        "key_events_hint": ["e1", "e2", "e3", "e4", "e5"],
+        "themes_hint": ["t1", "t2", "t3", "t4", "t5"],
+        "news_query_targets": ["n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8", "n9"],
+    }
+
+    compact = _build_compact_strategist_llm_payload(payload)
+
+    assert compact["global_sentiment_signal"]["score"] == -0.1738
+    assert len(compact["recent_strategy_feedback"]["top_recent_strengths"]) == 3
+    assert len(compact["recent_strategy_feedback"]["top_recent_weaknesses"]) == 4
+    assert len(compact["recent_strategy_feedback"]["suggested_report_focus"]) == 4
+    assert compact["recent_strategy_feedback"]["recent_theme_performance"]["defense"]["appearance_count"] == 6
+    assert len(compact["market_news_sample"]) == 4
+    assert len(compact["candidate_news_sample"]) == 4
+    assert len(compact["candidate_symbols_hint"]) == 5
+    assert len(compact["key_events_hint"]) == 4
+    assert len(compact["themes_hint"]) == 4
+    assert len(compact["news_query_targets"]) == 8
+
+
+def test_strategist_frame_llm_max_tokens_falls_back_to_ai_strategist_setting(monkeypatch):
+    monkeypatch.delenv("STRATEGIST_FRAME_LLM_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("AI_STRATEGIST_MAX_TOKENS", "320")
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterCapturePolicy)
+
+    logger = _MemoryLogger()
+    strategist_node(_base_state(logger))
+
+    assert isinstance(_FakeRouterCapturePolicy.last_policy, dict)
+    assert int(_FakeRouterCapturePolicy.last_policy.get("max_tokens") or 0) == 320

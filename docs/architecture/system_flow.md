@@ -74,6 +74,10 @@
 - Tick pipeline can be selected:
   - `M13_TICK_PIPELINE=legacy_m10` (default compatibility path)
   - `M13_TICK_PIPELINE=integrated_chain` (Strategist -> Scanner -> Monitor chain)
+- Commander runtime phase is explicit:
+  - `preopen`: strategist warmup only
+  - `session`: full trading path
+  - `closeout`: passive closeout-ready state only
 - Guardrails are enforced in execution stage (`execute_from_packet`).
 - Candidate source defaults to Kiwoom:
   - `CANDIDATE_SOURCE=kiwoom` (default)

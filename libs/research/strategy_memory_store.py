@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 DEFAULT_STRATEGY_MEMORY_PATH = Path("data/strategy_memory/feedback.jsonl")
+DEFAULT_STRATEGY_MEMORY_DAILY_DIR = Path("data/strategy_memory/daily")
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -76,6 +77,21 @@ def resolve_strategy_memory_path(path: Optional[Path | str] = None) -> Path:
         resolved = Path(tempfile.gettempdir()) / "trading_agent_system" / "strategy_memory" / f"{test_hash}.jsonl"
     else:
         resolved = DEFAULT_STRATEGY_MEMORY_PATH
+    if not resolved.is_absolute():
+        resolved = Path.cwd() / resolved
+    return resolved
+
+
+def resolve_strategy_memory_daily_dir(path: Optional[Path | str] = None) -> Path:
+    candidate = path or os.getenv("STRATEGY_MEMORY_DAILY_DIR")
+    if candidate:
+        resolved = Path(candidate)
+    elif os.getenv("PYTEST_CURRENT_TEST"):
+        test_name = str(os.getenv("PYTEST_CURRENT_TEST") or "")
+        test_hash = hashlib.sha1(test_name.encode("utf-8")).hexdigest()[:12]
+        resolved = Path(tempfile.gettempdir()) / "trading_agent_system" / "strategy_memory" / "daily" / test_hash
+    else:
+        resolved = DEFAULT_STRATEGY_MEMORY_DAILY_DIR
     if not resolved.is_absolute():
         resolved = Path.cwd() / resolved
     return resolved
@@ -234,11 +250,63 @@ def _build_feedback_record(
     }
 
 
+def _dedupe_feedback_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    latest_by_key: Dict[str, Dict[str, Any]] = {}
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        run_id = str(row.get("run_id") or "").strip()
+        day = str(row.get("day") or "").strip()
+        report_json_path = str(row.get("report_json_path") or "").strip()
+        key = run_id or day or report_json_path or f"row-{idx}"
+        existing = latest_by_key.get(key)
+        if existing is None:
+            latest_by_key[key] = row
+            continue
+        current_epoch = _to_epoch(row.get("timestamp")) or 0
+        existing_epoch = _to_epoch(existing.get("timestamp")) or 0
+        if current_epoch >= existing_epoch:
+            latest_by_key[key] = row
+    return sorted(
+        latest_by_key.values(),
+        key=lambda row: (
+            _to_epoch(row.get("timestamp")) or 0,
+            str(row.get("run_id") or ""),
+            str(row.get("day") or ""),
+        ),
+    )
+
+
+def _write_daily_summary(
+    record: Dict[str, Any],
+    *,
+    daily_dir: Optional[Path | str] = None,
+    source_feedback_path: Optional[Path] = None,
+) -> Path:
+    day = str(record.get("day") or "").strip()
+    target_dir = resolve_strategy_memory_daily_dir(daily_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    if not day:
+        return target_dir / "unknown.json"
+    target = target_dir / f"{day}.json"
+    summary = {
+        "schema_version": "strategy_feedback_daily.v1",
+        "day": day,
+        "updated_at": str(record.get("timestamp") or ""),
+        "source_feedback_path": str(source_feedback_path or resolve_strategy_memory_path()),
+        "latest_run_id": str(record.get("run_id") or ""),
+        "latest_feedback": dict(record),
+    }
+    target.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return target
+
+
 def save_strategy_feedback(
     run_id: str,
     reporter_output: Dict[str, Any],
     *,
     path: Optional[Path | str] = None,
+    daily_dir: Optional[Path | str] = None,
     timestamp: Optional[str] = None,
 ) -> Dict[str, Any]:
     target = resolve_strategy_memory_path(path)
@@ -246,16 +314,58 @@ def save_strategy_feedback(
     record = _build_feedback_record(run_id=run_id, reporter_output=reporter_output, timestamp=timestamp)
     with target.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    daily_summary_path = _write_daily_summary(record, daily_dir=daily_dir, source_feedback_path=target)
+    record["_strategy_memory_meta"] = {
+        "strategy_memory_path": str(target),
+        "daily_summary_path": str(daily_summary_path),
+        "storage_mode": "append_jsonl_with_daily_latest",
+    }
     return record
+
+
+def load_recent_daily_strategy_feedback(
+    n: int,
+    *,
+    daily_dir: Optional[Path | str] = None,
+) -> List[Dict[str, Any]]:
+    target_dir = resolve_strategy_memory_daily_dir(daily_dir)
+    if int(n) <= 0 or not target_dir.exists():
+        return []
+    rows: List[Dict[str, Any]] = []
+    for path in sorted(target_dir.glob("*.json")):
+        try:
+            obj = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        latest = obj.get("latest_feedback") if isinstance(obj.get("latest_feedback"), dict) else {}
+        if latest:
+            rows.append(dict(latest))
+    rows = _dedupe_feedback_rows(rows)
+    if int(n) <= 0:
+        return []
+    return rows[-int(n) :]
 
 
 def load_recent_strategy_feedback(
     n: int,
     *,
     path: Optional[Path | str] = None,
+    daily_dir: Optional[Path | str] = None,
+    prefer_daily: bool = True,
+    dedupe: bool = True,
 ) -> List[Dict[str, Any]]:
+    if int(n) <= 0:
+        return []
+    if prefer_daily:
+        daily_rows = load_recent_daily_strategy_feedback(n, daily_dir=daily_dir)
+        if daily_rows:
+            return daily_rows[-int(n) :]
     target = resolve_strategy_memory_path(path)
     rows = list(_iter_jsonl(target))
+    if dedupe:
+        rows = _dedupe_feedback_rows(rows)
     if int(n) <= 0:
         return []
     return rows[-int(n) :]
@@ -287,8 +397,9 @@ def summarize_recent_feedback(
     n: int,
     *,
     path: Optional[Path | str] = None,
+    daily_dir: Optional[Path | str] = None,
 ) -> Dict[str, Any]:
-    rows = load_recent_strategy_feedback(n, path=path)
+    rows = load_recent_strategy_feedback(n, path=path, daily_dir=daily_dir)
     ai_findings: List[str] = []
     improvements: List[str] = []
     for row in rows:
@@ -300,4 +411,6 @@ def summarize_recent_feedback(
         "top_ai_findings": ai_findings[:5],
         "top_improvement_suggestions": improvements[:5],
         "strategy_memory_path": str(resolve_strategy_memory_path(path)),
+        "strategy_memory_daily_dir": str(resolve_strategy_memory_daily_dir(daily_dir)),
+        "storage_mode": "daily_latest_preferred",
     }

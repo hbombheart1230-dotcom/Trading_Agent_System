@@ -30,6 +30,7 @@
    - `candidates` (Top-N, optional hint)
    - canonical `state["strategist_output"]` (contract: `libs/strategies/contracts.py::StrategistOutput`)
    - advisory `state["recent_strategy_feedback"]` loaded from `data/strategy_memory/feedback.jsonl`
+     - Strategist prefers deduped daily latest snapshots from `data/strategy_memory/daily/` when available
      - compact recent theme/playbook/monitor/scanner findings
      - advisory only; no hard runtime override
    - additive runtime `theme_map` / `sector_map` seeded from strategist candidate hints so scanner `sector_theme` source can remain non-zero even without a static operator map
@@ -118,6 +119,13 @@
 ## Canonical vs Compatibility Modules
 
 - Canonical runtime orchestrator: `graphs/commander_runtime.py`
+- Commander resolves both:
+  - `runtime_mode`: `graph_spine|decision_packet|integrated_chain`
+  - `runtime_phase`: `preopen|session|closeout`
+- Phase behavior:
+  - `preopen`: portfolio/risk hydration + strategist warmup, no scanner/monitor/execution
+  - `session`: normal runtime path
+  - `closeout`: passive commander closeout-ready state only; closeout reporting is handled by orchestration scripts
 - Canonical strategist/scanner/monitor nodes:
   - `graphs/nodes/strategist_node.py`
   - `graphs/nodes/scanner_node.py`
@@ -163,6 +171,12 @@
     - `ai_summary`, `ai_findings`, `ai_root_causes`
     - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`
   - reporter also appends compact feedback records to `data/strategy_memory/feedback.jsonl`
+  - reporter also refreshes `data/strategy_memory/daily/YYYY-MM-DD.json` so repeated closeout runs do not inflate Strategist memory
+  - reporter AI review can now link findings back to deterministic evidence via:
+    - `ai_evidence_catalog`
+    - `ai_findings_detailed`
+    - `ai_root_causes_detailed`
+    - `ai_improvement_suggestions_detailed`
 
 ## Off-Hours Validation Loop
 

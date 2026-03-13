@@ -95,10 +95,33 @@ def _default_result(*, enabled: bool, status: str, reason: str = "", model: str 
         "ai_improvement_suggestions": [],
         "ai_run_grade": "N/A",
         "ai_agent_evaluations": {},
+        "ai_evidence_links": {"findings": [], "root_causes": [], "improvements": []},
     }
 
 
+def _normalize_evidence_link_items(v: Any, *, max_items: int = 10) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not isinstance(v, list):
+        return out
+    for item in v:
+        if isinstance(item, dict):
+            out.append(
+                {
+                    "text": _clip_str(item.get("text"), max_len=260),
+                    "evidence_keys": _list_str(item.get("evidence_keys"), max_items=6, max_len=64),
+                }
+            )
+        elif isinstance(item, str):
+            key = _clip_str(item, max_len=64)
+            if key:
+                out.append({"text": "", "evidence_keys": [key]})
+        if len(out) >= max_items:
+            break
+    return out
+
+
 def _normalize_result(obj: Dict[str, Any], *, enabled: bool, model: str) -> Dict[str, Any]:
+    evidence_links = obj.get("ai_evidence_links") if isinstance(obj.get("ai_evidence_links"), dict) else {}
     return {
         "enabled": bool(enabled),
         "status": "ok",
@@ -110,6 +133,11 @@ def _normalize_result(obj: Dict[str, Any], *, enabled: bool, model: str) -> Dict
         "ai_improvement_suggestions": _list_str(obj.get("ai_improvement_suggestions"), max_items=10, max_len=260),
         "ai_run_grade": _clip_str(obj.get("ai_run_grade") or "N/A", max_len=16),
         "ai_agent_evaluations": _dict_str(obj.get("ai_agent_evaluations"), max_items=10),
+        "ai_evidence_links": {
+            "findings": _normalize_evidence_link_items(evidence_links.get("findings")),
+            "root_causes": _normalize_evidence_link_items(evidence_links.get("root_causes")),
+            "improvements": _normalize_evidence_link_items(evidence_links.get("improvements")),
+        },
     }
 
 
@@ -124,6 +152,7 @@ def _build_compact_input(day: str, out: Dict[str, Any]) -> Dict[str, Any]:
     market_context = out.get("market_context") if isinstance(out.get("market_context"), dict) else {}
     overtrading = out.get("overtrading_diagnostics") if isinstance(out.get("overtrading_diagnostics"), dict) else {}
     trace = out.get("decision_trace_chain_summary") if isinstance(out.get("decision_trace_chain_summary"), dict) else {}
+    evidence_catalog = out.get("ai_evidence_catalog") if isinstance(out.get("ai_evidence_catalog"), dict) else {}
 
     chain_samples: List[Dict[str, Any]] = []
     for chain in (trace.get("chains") or [])[:12]:
@@ -168,6 +197,11 @@ def _build_compact_input(day: str, out: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "day": str(day),
+        "evidence_catalog_summary": {
+            str(key): _clip_str((item or {}).get("summary"), max_len=180)
+            for key, item in list(evidence_catalog.items())[:10]
+            if isinstance(item, dict)
+        },
         "market_context": {
             "global_sentiment_avg": market_context.get("global_sentiment_avg"),
             "symbol_sentiment_avg": market_context.get("symbol_sentiment_avg"),
@@ -238,11 +272,18 @@ def _build_messages(day: str, compact_input: Dict[str, Any]) -> List[Dict[str, s
             "supervisor": "good|mixed|needs_improvement",
             "executor": "good|mixed|needs_improvement",
         },
+        "ai_evidence_links": {
+            "findings": [{"text": "same as ai_findings[i]", "evidence_keys": ["evidence_catalog_key"]}],
+            "root_causes": [{"text": "same as ai_root_causes[i]", "evidence_keys": ["evidence_catalog_key"]}],
+            "improvements": [{"text": "same as ai_improvement_suggestions[i]", "evidence_keys": ["evidence_catalog_key"]}],
+        },
     }
     user_prompt = (
         f"Day: {day}\n"
         "Analyze the run quality and answer these aspects: strategist reasonableness, scanner fit, "
         "monitor exit quality, overtrading risk, supervisor guard appropriateness, anomalies, and next-run improvements.\n"
+        "Use only evidence keys already present in evidence_catalog_summary. "
+        "ai_evidence_links rows must align by index with ai_findings / ai_root_causes / ai_improvement_suggestions.\n"
         "Return strict JSON matching this contract keys only:\n"
         f"{json.dumps(json_contract, ensure_ascii=False)}\n\n"
         "Input summary:\n"

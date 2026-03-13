@@ -33,6 +33,7 @@ from libs.runtime.resilience_state import ensure_runtime_resilience_state
 
 
 RuntimeMode = Literal["graph_spine", "decision_packet", "integrated_chain"]
+RuntimePhase = Literal["preopen", "session", "closeout"]
 
 
 def _is_trueish(v: Any) -> bool:
@@ -53,6 +54,15 @@ def _normalize_transition(value: Any) -> str:
     if v in ("retry", "pause", "cancel", "resume"):
         return v
     return ""
+
+
+def _normalize_phase(value: Any) -> RuntimePhase:
+    v = str(value or "").strip().lower()
+    if v == "preopen":
+        return "preopen"
+    if v == "closeout":
+        return "closeout"
+    return "session"
 
 
 def _coerce_int(value: Any, default: int = 0) -> int:
@@ -228,7 +238,11 @@ def _apply_runtime_transition(state: Dict[str, Any]) -> Tuple[bool, Dict[str, An
     return True, state
 
 
-def _runtime_agent_chain(mode: RuntimeMode) -> Tuple[str, ...]:
+def _runtime_agent_chain(mode: RuntimeMode, phase: RuntimePhase) -> Tuple[str, ...]:
+    if phase == "preopen":
+        return ("commander_router", "strategist")
+    if phase == "closeout":
+        return ("commander_router",)
     if mode == "decision_packet":
         return ("commander_router", "strategist", "supervisor", "executor", "reporter")
     if mode == "integrated_chain":
@@ -236,10 +250,11 @@ def _runtime_agent_chain(mode: RuntimeMode) -> Tuple[str, ...]:
     return ("commander_router", "strategist", "scanner", "monitor", "supervisor", "executor", "reporter")
 
 
-def _annotate_runtime_plan(state: Dict[str, Any], selected: RuntimeMode) -> Dict[str, Any]:
+def _annotate_runtime_plan(state: Dict[str, Any], selected: RuntimeMode, phase: RuntimePhase) -> Dict[str, Any]:
     state["runtime_plan"] = {
         "mode": selected,
-        "agents": list(_runtime_agent_chain(selected)),
+        "phase": phase,
+        "agents": list(_runtime_agent_chain(selected, phase)),
     }
     return state
 
@@ -369,6 +384,29 @@ def _run_integrated_chain(
     return state
 
 
+def _run_preopen_phase(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Warm strategist context before session without entering selection/execution paths."""
+    from graphs.nodes.build_portfolio_snapshot import build_portfolio_snapshot
+    from graphs.nodes.build_risk_context import build_risk_context
+    from graphs.nodes.strategist_node import strategist_node
+
+    state = build_portfolio_snapshot(state)
+    snaps = state.get("snapshots") if isinstance(state.get("snapshots"), dict) else {}
+    state["snapshots"] = {**dict(snaps or {}), "portfolio": state.get("portfolio_snapshot")}
+    state = build_risk_context(state)
+    state = strategist_node(state)
+    state["path"] = "preopen_strategist"
+    state["runtime_status"] = str(state.get("runtime_status") or "preopen_ready")
+    return state
+
+
+def _run_closeout_phase(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep commander passive during closeout; reporting remains script-driven."""
+    state["path"] = "closeout_idle"
+    state["runtime_status"] = str(state.get("runtime_status") or "closeout_ready")
+    return state
+
+
 def resolve_runtime_mode(state: Dict[str, Any], *, mode: Optional[RuntimeMode] = None) -> RuntimeMode:
     """Resolve runtime mode with explicit precedence.
 
@@ -403,12 +441,24 @@ def resolve_runtime_mode(state: Dict[str, Any], *, mode: Optional[RuntimeMode] =
     return selected
 
 
+def resolve_runtime_phase(state: Dict[str, Any], *, phase: Optional[RuntimePhase] = None) -> RuntimePhase:
+    """Resolve runtime phase with explicit precedence."""
+    if phase is not None:
+        return _normalize_phase(phase)
+    if "runtime_phase" in state:
+        return _normalize_phase(state.get("runtime_phase"))
+    return _normalize_phase(os.getenv("COMMANDER_RUNTIME_PHASE", "session"))
+
+
 def run_commander_runtime(
     state: Dict[str, Any],
     *,
     mode: Optional[RuntimeMode] = None,
+    phase: Optional[RuntimePhase] = None,
     graph_runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     integrated_runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    preopen_runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    closeout_runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     decide: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
     execute: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
@@ -418,11 +468,17 @@ def run_commander_runtime(
     """
     state = ensure_runtime_resilience_state(state)
     selected = resolve_runtime_mode(state, mode=mode)
-    state = _annotate_runtime_plan(state, selected)
+    selected_phase = resolve_runtime_phase(state, phase=phase)
+    state["runtime_phase"] = selected_phase
+    state = _annotate_runtime_plan(state, selected, selected_phase)
     _log_commander_event(
         state,
         "route",
-        {"mode": selected, "agents": list(state.get("runtime_plan", {}).get("agents", []))},
+        {
+            "mode": selected,
+            "phase": selected_phase,
+            "agents": list(state.get("runtime_plan", {}).get("agents", [])),
+        },
     )
 
     should_run, state = _apply_runtime_transition(state)
@@ -474,8 +530,40 @@ def run_commander_runtime(
     decide = decide or decide_trade
     execute = execute or execute_from_packet
     integrated_runner = integrated_runner or (lambda s: _run_integrated_chain(s, execute_fn=execute))
+    preopen_runner = preopen_runner or _run_preopen_phase
+    closeout_runner = closeout_runner or _run_closeout_phase
 
     try:
+        if selected_phase == "preopen":
+            state = preopen_runner(state)
+            _log_commander_event(
+                state,
+                "end",
+                {
+                    "mode": selected,
+                    "phase": selected_phase,
+                    "status": state.get("runtime_status", "preopen_ready"),
+                    "path": state.get("path", "preopen_strategist"),
+                    **_portfolio_guard_event_summary(state),
+                },
+            )
+            return state
+
+        if selected_phase == "closeout":
+            state = closeout_runner(state)
+            _log_commander_event(
+                state,
+                "end",
+                {
+                    "mode": selected,
+                    "phase": selected_phase,
+                    "status": state.get("runtime_status", "closeout_ready"),
+                    "path": state.get("path", "closeout_idle"),
+                    **_portfolio_guard_event_summary(state),
+                },
+            )
+            return state
+
         if selected == "decision_packet":
             state = decide(state)
             state = execute(state)
@@ -484,6 +572,7 @@ def run_commander_runtime(
                 "end",
                 {
                     "mode": selected,
+                    "phase": selected_phase,
                     "status": state.get("runtime_status", "ok"),
                     "path": "decision_packet",
                     **_portfolio_guard_event_summary(state),
@@ -498,6 +587,7 @@ def run_commander_runtime(
                 "end",
                 {
                     "mode": selected,
+                    "phase": selected_phase,
                     "status": state.get("runtime_status", "ok"),
                     "path": "integrated_chain",
                     **_portfolio_guard_event_summary(state),
@@ -511,6 +601,7 @@ def run_commander_runtime(
             "end",
             {
                 "mode": selected,
+                "phase": selected_phase,
                 "status": state.get("runtime_status", "ok"),
                 "path": "graph_spine",
                 **_portfolio_guard_event_summary(state),
@@ -523,6 +614,12 @@ def run_commander_runtime(
         _log_commander_event(
             state,
             "error",
-            {"mode": selected, "error_type": type(e).__name__, "error": str(e), **incident_payload},
+            {
+                "mode": selected,
+                "phase": selected_phase,
+                "error_type": type(e).__name__,
+                "error": str(e),
+                **incident_payload,
+            },
         )
         raise

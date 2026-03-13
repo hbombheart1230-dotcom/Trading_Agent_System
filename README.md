@@ -96,6 +96,10 @@ Notes:
   - `graphs/commander_runtime.py`
   - `graphs/nodes/commander_node.py` is a thin wrapper around canonical runtime
   - `libs/agent/commander.py` is legacy compatibility scaffolding
+  - runtime phase is explicit: `preopen`, `session`, `closeout`
+  - `preopen` warms strategist context only
+  - `session` runs the active trading path
+  - `closeout` stays passive inside commander and defers reporting to closeout scripts
 - Strategist (canonical):
   - `graphs/nodes/strategist_node.py`
   - `libs/agent/strategist.py` is a thin compatibility adapter for legacy `Plan` contract
@@ -222,6 +226,7 @@ Example scanner output:
 - Canonical strategist contract is defined at `libs/strategies/contracts.py::StrategistOutput`
 - Strategist also reads passive advisory memory from recent Reporter runs via `state["recent_strategy_feedback"]`
   - append-only store: `data/strategy_memory/feedback.jsonl`
+  - deduped daily latest summaries: `data/strategy_memory/daily/YYYY-MM-DD.json`
   - advisory only; no automatic live parameter mutation
 
 ## Scanner (스캐너)
@@ -281,6 +286,8 @@ Example scanner output:
 - Optional AI review output fields:
   - `ai_summary`, `ai_findings`, `ai_root_causes`
   - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`
+  - `ai_findings_detailed`, `ai_root_causes_detailed`, `ai_improvement_suggestions_detailed`
+  - detailed rows carry `evidence_keys` and `evidence_refs` back into deterministic report sections
 - Does not participate in runtime decision routing
 - AI review remains passive/post-run only and never influences live trading decisions
 

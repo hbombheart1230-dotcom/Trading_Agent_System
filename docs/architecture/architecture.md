@@ -14,6 +14,7 @@
 - **Commander/orchestration**: `graphs/commander_runtime.py`
   - wrapper: `graphs/nodes/commander_node.py`
   - legacy adapter: `libs/agent/commander.py`
+  - phase-aware runtime: `preopen`, `session`, `closeout`
 - **Strategist**: `graphs/nodes/strategist_node.py`
   - compatibility adapter: `libs/agent/strategist.py`
 - **Scanner**: `graphs/nodes/scanner_node.py`

@@ -76,4 +76,5 @@ def test_m23_6_runtime_once_cli_accepts_resume_control(capsys):
     assert rc == 0
     assert obj["runtime_transition"] == "resume"
     assert obj["runtime_status"] == "resuming"
+    assert obj["runtime_phase"] == "session"
     assert obj["path"] == "graph_spine"

@@ -186,6 +186,10 @@
     - `ai_improvement_suggestions[]`
     - `ai_run_grade`
     - `ai_agent_evaluations`
+    - `ai_evidence_links`
+      - `findings[]` (`text`, `evidence_keys[]`)
+      - `root_causes[]` (`text`, `evidence_keys[]`)
+      - `improvements[]` (`text`, `evidence_keys[]`)
   - top-level convenience aliases:
     - `ai_summary`
     - `ai_findings[]`
@@ -193,6 +197,13 @@
     - `ai_improvement_suggestions[]`
     - `ai_run_grade`
     - `ai_agent_evaluations`
+    - `ai_evidence_catalog`
+    - `ai_findings_detailed[]`
+      - `text`
+      - `evidence_keys[]`
+      - `evidence_refs[]`
+    - `ai_root_causes_detailed[]`
+    - `ai_improvement_suggestions_detailed[]`
   - `strategy_memory_record`
     - `strategy_memory_path`
     - `run_id`
@@ -200,6 +211,7 @@
 
 ## StrategyFeedbackRecord (`strategy_feedback.v1`)
 - File: `data/strategy_memory/feedback.jsonl` (`STRATEGY_MEMORY_PATH` override)
+- Daily latest summaries: `data/strategy_memory/daily/YYYY-MM-DD.json` (`STRATEGY_MEMORY_DAILY_DIR` override)
 - Compact append-only strategy memory built from Reporter outputs
 - Keys:
   - `run_id`

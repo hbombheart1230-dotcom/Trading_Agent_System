@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from graphs.commander_runtime import run_commander_runtime, RuntimeMode
+from graphs.commander_runtime import run_commander_runtime, RuntimeMode, RuntimePhase
 
 
 def _stub_graph_runner(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -44,6 +44,7 @@ def _stub_integrated_runner(state: Dict[str, Any]) -> Dict[str, Any]:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run canonical commander runtime once.")
     p.add_argument("--mode", choices=["graph_spine", "decision_packet", "integrated_chain"], default=None)
+    p.add_argument("--phase", choices=["preopen", "session", "closeout"], default=None)
     p.add_argument("--runtime-control", choices=["retry", "pause", "cancel", "resume"], default=None)
     p.add_argument("--run-id", default="m21-runtime-once")
     p.add_argument("--live", action="store_true", help="Use real node path instead of offline smoke stubs.")
@@ -59,6 +60,7 @@ def _to_summary(out: Dict[str, Any], *, live: bool) -> Dict[str, Any]:
         "runtime_status": out.get("runtime_status", "running"),
         "runtime_transition": out.get("runtime_transition"),
         "runtime_mode": runtime_plan.get("mode"),
+        "runtime_phase": runtime_plan.get("phase"),
         "runtime_agents": runtime_plan.get("agents", []),
         "path": out.get("path"),
         "decision": out.get("decision"),
@@ -74,13 +76,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         state["runtime_control"] = args.runtime_control
 
     typed_mode = cast(Optional[RuntimeMode], args.mode)
+    typed_phase = cast(Optional[RuntimePhase], args.phase)
 
     if args.live:
-        out = run_commander_runtime(state, mode=typed_mode)
+        out = run_commander_runtime(state, mode=typed_mode, phase=typed_phase)
     else:
         out = run_commander_runtime(
             state,
             mode=typed_mode,
+            phase=typed_phase,
             graph_runner=_stub_graph_runner,
             integrated_runner=_stub_integrated_runner,
             decide=_stub_decide,
