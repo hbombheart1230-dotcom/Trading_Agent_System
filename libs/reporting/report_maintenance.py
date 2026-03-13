@@ -80,7 +80,7 @@ def _detect_archive_candidates(report_root: Path) -> List[ArchiveCandidate]:
     out: List[ArchiveCandidate] = []
     for path in _iter_top_level(report_root):
         name = path.name
-        if name in ("archive", "_catalog"):
+        if name in ("archive", "_catalog", "dev", "milestones"):
             continue
         if path.is_dir() and name.startswith(_OFFHOURS_PREFIX):
             out.append(
@@ -221,27 +221,14 @@ def build_report_inventory(report_root: Path, *, event_log_path: Optional[Path] 
     canonical_dirs = [
         name
         for name in (
-            "agent_pipeline_trace",
             "daily",
-            "decision_story",
-            "live_summary",
-            "live_watch",
-            "m30_golive",
-            "m30_post_golive",
-            "m30_quality_gates",
-            "m30_signoff",
-            "m31_mock_exam",
-            "m31_mock_exam_readiness",
-            "m31_slo_incident",
-            "m31_weekly_health",
             "metrics",
-            "mock_exam_day",
             "operator_summary",
-            "orchestration",
-            "reconciliation",
-            "reporter_analysis",
+            "decision_story",
             "run_cards",
-            "trade_explain",
+            "reconciliation",
+            "dev",
+            "milestones",
         )
         if (report_root / name).exists()
     ]
@@ -351,7 +338,7 @@ def apply_archive_candidates(report_root: Path, candidates: List[ArchiveCandidat
 
 
 def write_report_inventory(report_root: Path, inventory: Dict[str, Any]) -> Tuple[Path, Path]:
-    catalog_dir = Path(report_root) / "_catalog"
+    catalog_dir = Path(report_root) / "dev" / "catalog"
     catalog_dir.mkdir(parents=True, exist_ok=True)
     day = _utc_today()
     js_path = catalog_dir / f"report_inventory_{day}.json"

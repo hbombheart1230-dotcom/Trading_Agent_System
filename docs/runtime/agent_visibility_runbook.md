@@ -80,10 +80,10 @@ Optional:
 ```bash
 python -m scripts.query_strategist_llm_events --path data/logs/events.jsonl --limit 20
 python -m scripts.query_trade_reason_chain --path data/logs/events.jsonl --only-broker-success --limit 20
-python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jsonl --report-dir reports/trade_explain --day 2026-03-10 --json
-python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/reporter_analysis --day 2026-03-10 --json
-python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/reporter_analysis --day 2026-03-10 --ai-review --json
-python -m scripts.run_agent_pipeline_trace_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/agent_pipeline_trace --day 2026-03-10 --json
+python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jsonl --report-dir reports/dev/analysis/trade_explain --day 2026-03-10 --json
+python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/dev/analysis/reporter_analysis --day 2026-03-10 --json
+python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/dev/analysis/reporter_analysis --day 2026-03-10 --ai-review --json
+python -m scripts.run_agent_pipeline_trace_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/dev/analysis/agent_pipeline_trace --day 2026-03-10 --json
 python -m scripts.run_offhours_full_trace_bundle --env-path .env --state-path data/state/offhours_full_trace.json --event-log-path data/logs/offhours_full_trace.jsonl --evidence-log-path data/evidence_ledger/offhours_full_trace.jsonl --report-dir reports/offhours_full_trace --json
 python -m scripts.run_report_maintenance --report-root reports --event-log-path data/logs/events.jsonl --json
 
@@ -99,8 +99,8 @@ python -m scripts.generate_metrics_report
 ## 6) Trade Explain Report
 
 - Output:
-  - `reports/trade_explain/trade_explain_<day>.md`
-  - `reports/trade_explain/trade_explain_<day>.json`
+  - `reports/dev/analysis/trade_explain/trade_explain_<day>.md`
+  - `reports/dev/analysis/trade_explain/trade_explain_<day>.json`
 - Purpose:
   - Show BUY/SELL execution timeline with reason chain.
   - Build FIFO sell-pair analysis (hold duration + estimated realized PnL).
@@ -111,8 +111,8 @@ python -m scripts.generate_metrics_report
 ## 7) Reporter Analysis Report
 
 - Output:
-  - `reports/reporter_analysis/reporter_analysis_<day>.md`
-  - `reports/reporter_analysis/reporter_analysis_<day>.json`
+  - `reports/dev/analysis/reporter_analysis/reporter_analysis_<day>.md`
+  - `reports/dev/analysis/reporter_analysis/reporter_analysis_<day>.json`
 - Purpose:
   - Integrate trade/intent/operator reports into one passive post-run analysis bundle.
   - Provide overtrading diagnostics and incident/post-mortem summaries.
@@ -137,8 +137,8 @@ python -m scripts.generate_metrics_report
 ## 8) Single-Run Agent Pipeline Trace
 
 - Output:
-  - `reports/agent_pipeline_trace/agent_pipeline_trace_<run>.md`
-  - `reports/agent_pipeline_trace/agent_pipeline_trace_<run>.json`
+  - `reports/dev/analysis/agent_pipeline_trace/agent_pipeline_trace_<run>.md`
+  - `reports/dev/analysis/agent_pipeline_trace/agent_pipeline_trace_<run>.json`
   - `reports/offhours_full_trace/offhours_full_trace_<run>.md`
   - `reports/offhours_full_trace/offhours_full_trace_<run>.json`
 - Purpose:

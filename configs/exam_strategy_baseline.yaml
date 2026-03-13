@@ -99,4 +99,4 @@ reproducibility:
     - reports/operator_summary/operator_summary_<day>.md
     - reports/decision_story/decision_story_<day>.md
     - reports/run_cards/run_cards_<day>.md
-    - reports/m31_mock_exam/m31_mock_exam_<day>.json
+    - reports/milestones/m31_mock_exam/m31_mock_exam_<day>.json

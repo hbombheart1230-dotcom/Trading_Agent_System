@@ -328,8 +328,8 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         default=os.getenv("EVENT_LOG_PATH", "data/logs/events.jsonl"),
         help="Event log path used by runtime loop.",
     )
-    p.add_argument("--summary-report-dir", default="reports/live_summary")
-    p.add_argument("--watch-report-dir", default="reports/live_watch")
+    p.add_argument("--summary-report-dir", default="reports/dev/live/live_summary")
+    p.add_argument("--watch-report-dir", default="reports/dev/live/live_watch")
     p.add_argument("--lock-path", default=os.getenv("M13_LIVE_LOCK_PATH", "data/state/m13_live_loop.lock"))
     p.add_argument("--lookback-min", type=int, default=_to_int(os.getenv("LIVE_SUMMARY_LOOKBACK_MIN"), 30))
     p.add_argument("--sleep-sec", type=int, default=_to_int(os.getenv("LIVE_WATCH_SLEEP_SEC"), 300))

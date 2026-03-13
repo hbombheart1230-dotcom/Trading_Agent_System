@@ -738,7 +738,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--phase", choices=[PHASE_PREOPEN, PHASE_SESSION, PHASE_CLOSEOUT], required=True)
     p.add_argument("--day", default=None)
     p.add_argument("--env-path", default=".env")
-    p.add_argument("--report-dir", default="reports/mock_exam_day")
+    p.add_argument("--report-dir", default="reports/dev/exam/mock_exam_day")
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
     p.add_argument("--state-path", default=os.getenv("STATE_STORE_PATH", ""))
     p.add_argument("--sleep-sec", type=int, default=_to_int(os.getenv("SCAN_INTERVAL_SEC", "60"), 60))
@@ -770,7 +770,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
     day = str(args.day).strip() if args.day else now_kst().strftime("%Y-%m-%d")
-    report_root = _resolve_path(str(args.report_dir), "reports/mock_exam_day")
+    report_root = _resolve_path(str(args.report_dir), "reports/dev/exam/mock_exam_day")
     report_root.mkdir(parents=True, exist_ok=True)
     orchestration_dir = report_root / "orchestration"
     orchestration_dir.mkdir(parents=True, exist_ok=True)

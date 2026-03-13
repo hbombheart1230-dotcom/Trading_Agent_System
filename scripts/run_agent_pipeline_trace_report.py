@@ -19,7 +19,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
     p.add_argument("--evidence-log-path", default="data/evidence_ledger/events.jsonl")
-    p.add_argument("--report-dir", default="reports/agent_pipeline_trace")
+    p.add_argument("--report-dir", default="reports/dev/analysis/agent_pipeline_trace")
     p.add_argument("--reports-root", default="reports")
     p.add_argument("--run-id", default=None, help="If omitted, latest run for --day is selected.")
     p.add_argument("--day", default=None, help="UTC day (YYYY-MM-DD). Optional run picker filter.")

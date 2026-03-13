@@ -200,7 +200,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M31-2 mock investor exam protocol gate check.")
     p.add_argument("--env-path", default=".env")
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
-    p.add_argument("--report-dir", default="reports/m31_mock_exam")
+    p.add_argument("--report-dir", default="reports/milestones/m31_mock_exam")
     p.add_argument("--day", default="2026-02-21")
     p.add_argument(
         "--allow-offhours",

@@ -156,9 +156,9 @@ def _build_markdown(out: Dict[str, Any]) -> str:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="M31-1 daily SLO baseline + incident ownership check.")
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
-    p.add_argument("--policy-report-dir", default="reports/m30_post_golive")
-    p.add_argument("--signoff-report-dir", default="reports/m30_golive")
-    p.add_argument("--report-dir", default="reports/m31_slo_incident")
+    p.add_argument("--policy-report-dir", default="reports/milestones/m30_post_golive")
+    p.add_argument("--signoff-report-dir", default="reports/milestones/m30_golive")
+    p.add_argument("--report-dir", default="reports/milestones/m31_slo_incident")
     p.add_argument("--day", default="2026-02-21")
     p.add_argument("--min-availability-rate", type=float, default=0.99)
     p.add_argument("--max-error-rate", type=float, default=0.20)

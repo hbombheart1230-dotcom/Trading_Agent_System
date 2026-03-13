@@ -38,9 +38,9 @@
 ```bash
 python scripts/run_m31_weekly_health_summary.py \
   --event-log-path data/logs/events.jsonl \
-  --policy-report-dir reports/m30_post_golive \
-  --signoff-report-dir reports/m30_golive \
-  --report-dir reports/m31_weekly_health \
+  --policy-report-dir reports/milestones/m30_post_golive \
+  --signoff-report-dir reports/milestones/m30_golive \
+  --report-dir reports/milestones/m31_weekly_health \
   --week-end 2026-02-21 \
   --days 7 \
   --json

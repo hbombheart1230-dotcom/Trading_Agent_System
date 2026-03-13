@@ -349,7 +349,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Generate daily ops diagnostic report (broker failures / NOOP reasons / LLM latency)."
     )
     p.add_argument("--event-log-path", default=os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl"))
-    p.add_argument("--report-dir", default="./reports/ops_diagnostic")
+    p.add_argument("--report-dir", default="./reports/dev/analysis/ops_diagnostic")
     p.add_argument("--day", default="", help="UTC day in YYYY-MM-DD. Default: latest day in log.")
     p.add_argument("--json", action="store_true", help="Print summary JSON to stdout.")
     args = p.parse_args(argv)

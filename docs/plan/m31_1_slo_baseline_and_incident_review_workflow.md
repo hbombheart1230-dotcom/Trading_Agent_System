@@ -119,15 +119,15 @@ python scripts/generate_metrics_report.py
 - script: `scripts/run_m31_slo_incident_review_check.py`
 - role: consumes M30 artifacts + event log and emits a daily M31-1 stabilization check artifact.
 - output:
-  - `reports/m31_slo_incident/m31_slo_incident_<day>.json`
-  - `reports/m31_slo_incident/m31_slo_incident_<day>.md`
+  - `reports/milestones/m31_slo_incident/m31_slo_incident_<day>.json`
+  - `reports/milestones/m31_slo_incident/m31_slo_incident_<day>.md`
 
 ```bash
 python scripts/run_m31_slo_incident_review_check.py \
   --event-log-path data/logs/events.jsonl \
-  --policy-report-dir reports/m30_post_golive \
-  --signoff-report-dir reports/m30_golive \
-  --report-dir reports/m31_slo_incident \
+  --policy-report-dir reports/milestones/m30_post_golive \
+  --signoff-report-dir reports/milestones/m30_golive \
+  --report-dir reports/milestones/m31_slo_incident \
   --day 2026-02-21 \
   --json
 ```

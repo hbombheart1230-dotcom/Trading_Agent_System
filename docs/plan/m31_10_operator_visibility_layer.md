@@ -9,9 +9,9 @@
 - Input:
   - `data/logs/events.jsonl`
   - `reports/metrics/metrics_<day>.json` (auto-generated if missing)
-  - `reports/m30_post_golive/m30_post_golive_policy_<day>.json`
-  - `reports/m30_golive/m30_final_golive_signoff_<day>.json`
-  - `reports/m31_slo_incident/m31_slo_incident_<day>.json`
+  - `reports/milestones/m30_post_golive/m30_post_golive_policy_<day>.json`
+  - `reports/milestones/m30_golive/m30_final_golive_signoff_<day>.json`
+  - `reports/milestones/m31_slo_incident/m31_slo_incident_<day>.json`
 - Output:
   - `reports/operator_summary/operator_summary_<day>.md`
   - `reports/operator_summary/operator_summary_<day>.json`

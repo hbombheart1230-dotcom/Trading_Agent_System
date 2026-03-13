@@ -43,7 +43,7 @@ class Reporter:
         self,
         *,
         event_log_path: str | Path = "data/logs/events.jsonl",
-        report_dir: str | Path = "reports/reporter_analysis",
+        report_dir: str | Path = "reports/dev/analysis/reporter_analysis",
         day: Optional[str] = None,
         intents_path: str | Path = "data/logs/intents.jsonl",
         reports_root: str | Path = "reports",

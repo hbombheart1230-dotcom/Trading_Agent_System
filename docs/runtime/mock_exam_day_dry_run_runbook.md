@@ -9,14 +9,14 @@
 Sample day: `2026-03-08`
 
 - preopen:
-  - `reports/mock_exam_day/orchestration/mock_exam_day_2026-03-08_preopen.json`
-  - `reports/mock_exam_day/orchestration/mock_exam_day_2026-03-08_preopen.md`
+  - `reports/dev/exam/mock_exam_day/orchestration/mock_exam_day_2026-03-08_preopen.json`
+  - `reports/dev/exam/mock_exam_day/orchestration/mock_exam_day_2026-03-08_preopen.md`
 - session:
-  - `reports/mock_exam_day/orchestration/mock_exam_day_2026-03-08_session.json`
-  - `reports/mock_exam_day/orchestration/mock_exam_day_2026-03-08_session.md`
+  - `reports/dev/exam/mock_exam_day/orchestration/mock_exam_day_2026-03-08_session.json`
+  - `reports/dev/exam/mock_exam_day/orchestration/mock_exam_day_2026-03-08_session.md`
 - closeout:
-  - `reports/mock_exam_day/orchestration/mock_exam_day_2026-03-08_closeout.json`
-  - `reports/mock_exam_day/orchestration/mock_exam_day_2026-03-08_closeout.md`
+  - `reports/dev/exam/mock_exam_day/orchestration/mock_exam_day_2026-03-08_closeout.json`
+  - `reports/dev/exam/mock_exam_day/orchestration/mock_exam_day_2026-03-08_closeout.md`
 
 Observed sample outcome:
 
@@ -70,7 +70,7 @@ C:\Trading_Agent_System\venv\Scripts\python.exe -m scripts.run_mock_exam_day `
   --phase preopen `
   --day 2026-03-09 `
   --env-path .env `
-  --report-dir reports/mock_exam_day `
+  --report-dir reports/dev/exam/mock_exam_day `
   --event-log-path data/logs/events.jsonl `
   --json
 ```
@@ -90,7 +90,7 @@ C:\Trading_Agent_System\venv\Scripts\python.exe -m scripts.run_mock_exam_day `
   --phase session `
   --day 2026-03-09 `
   --env-path .env `
-  --report-dir reports/mock_exam_day `
+  --report-dir reports/dev/exam/mock_exam_day `
   --event-log-path data/logs/events.jsonl `
   --sleep-sec 60 `
   --json
@@ -113,7 +113,7 @@ C:\Trading_Agent_System\venv\Scripts\python.exe -m scripts.run_mock_exam_day `
   --phase session `
   --day 2026-03-09 `
   --env-path .env `
-  --report-dir reports/mock_exam_day `
+  --report-dir reports/dev/exam/mock_exam_day `
   --event-log-path data/logs/events.jsonl `
   --allow-offhours-session-probe `
   --probe-symbol 005930 `
@@ -141,7 +141,7 @@ C:\Trading_Agent_System\venv\Scripts\python.exe -m scripts.run_mock_exam_day `
   --phase session `
   --day 2026-03-09 `
   --env-path .env `
-  --report-dir reports/mock_exam_day `
+  --report-dir reports/dev/exam/mock_exam_day `
   --event-log-path data/logs/events.jsonl `
   --state-path data/state/offhours_validation.json `
   --sleep-sec 60 `
@@ -177,7 +177,7 @@ C:\Trading_Agent_System\venv\Scripts\python.exe -m scripts.run_mock_exam_day `
   --phase closeout `
   --day 2026-03-09 `
   --env-path .env `
-  --report-dir reports/mock_exam_day `
+  --report-dir reports/dev/exam/mock_exam_day `
   --event-log-path data/logs/events.jsonl `
   --json
 ```

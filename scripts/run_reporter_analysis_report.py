@@ -17,7 +17,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Generate enhanced Reporter analysis report from event logs.")
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
     p.add_argument("--intents-path", default="data/logs/intents.jsonl")
-    p.add_argument("--report-dir", default="reports/reporter_analysis")
+    p.add_argument("--report-dir", default="reports/dev/analysis/reporter_analysis")
     p.add_argument("--reports-root", default="reports")
     p.add_argument("--day", default=None, help="UTC day (YYYY-MM-DD). If omitted, latest day in event log is used.")
     p.add_argument("--rapid-cycle-threshold-sec", type=int, default=120)

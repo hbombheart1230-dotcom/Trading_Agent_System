@@ -1,4 +1,4 @@
-﻿# M31 Operational Readiness Audit (2026-03-08)
+# M31 Operational Readiness Audit (2026-03-08)
 
 - Scope: operational validation only (no feature additions).
 - Basis: repository code + generated artifacts (`reports/*`) + env/runtime policy snapshot.
@@ -14,9 +14,9 @@ What changed:
 2. readiness gate re-run passed with all required checks
 
 Evidence:
-- pre-fix: `reports/m31_mock_exam_readiness/m31_mock_exam_readiness_2026-03-07.json`
-- post-fix: `reports/m31_mock_exam_readiness/m31_mock_exam_readiness_2026-03-08.json`
-- post-fix gate detail: `reports/m31_mock_exam/m31_mock_exam_2026-03-08.json`
+- pre-fix: `reports/milestones/m31_mock_exam_readiness/m31_mock_exam_readiness_2026-03-07.json`
+- post-fix: `reports/milestones/m31_mock_exam_readiness/m31_mock_exam_readiness_2026-03-08.json`
+- post-fix gate detail: `reports/milestones/m31_mock_exam/m31_mock_exam_2026-03-08.json`
 
 ---
 

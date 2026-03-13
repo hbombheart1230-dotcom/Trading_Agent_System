@@ -145,7 +145,7 @@
   - `docs/runtime/report_management.md`
 - Single-run full-chain trace artifact:
   - generator: `scripts/run_agent_pipeline_trace_report.py`
-  - outputs: `reports/agent_pipeline_trace/agent_pipeline_trace_<run>.md|json`
+  - outputs: `reports/dev/analysis/agent_pipeline_trace/agent_pipeline_trace_<run>.md|json`
 - Reporter passive analysis artifacts (`scripts/run_reporter_analysis_report.py`):
   - deterministic baseline remains canonical
   - optional AI review layer can be enabled without changing runtime decisions

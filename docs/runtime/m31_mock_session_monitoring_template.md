@@ -44,7 +44,7 @@ Run:
 
 ```powershell
 python scripts/query_strategist_llm_events.py --limit 20
-python scripts/run_live_session_summary.py --event-log-path data/logs/events_live.jsonl --report-dir reports/live_summary --lookback-min 30 --json
+python scripts/run_live_session_summary.py --event-log-path data/logs/events_live.jsonl --report-dir reports/dev/live/live_summary --lookback-min 30 --json
 ```
 
 Automated alternative (recommended during session):
@@ -56,8 +56,8 @@ scripts\run_live_session_watch.bat
 
 - `--once`: single health check (quick spot check)
 - no flag: continuous 5-minute watch loop (`sleep-sec=300`) with artifacts:
-  - `reports/live_watch/live_watch_YYYY-MM-DD.jsonl`
-  - `reports/live_watch/live_watch_latest.md`
+  - `reports/dev/live/live_watch/live_watch_YYYY-MM-DD.jsonl`
+  - `reports/dev/live/live_watch/live_watch_latest.md`
 
 Also check:
 

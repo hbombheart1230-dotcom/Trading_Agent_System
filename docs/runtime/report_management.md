@@ -7,15 +7,28 @@
 - `reports/operator_summary`
 - `reports/decision_story`
 - `reports/run_cards`
-- `reports/trade_explain`
-- `reports/reporter_analysis`
-- `reports/agent_pipeline_trace`
 - `reports/reconciliation`
-- `reports/mock_exam_day`
-- `reports/m30_*`
-- `reports/m31_*`
+- `reports/dev`
+- `reports/milestones`
 
-These are the directories operators should check first.
+Operators should check the first six directories for day-to-day operations.
+`reports/dev` is for diagnostics, replay, and deep analysis outputs.
+`reports/milestones` is for M30/M31 evidence bundles.
+
+Recommended `reports/dev` layout:
+
+- `reports/dev/analysis`
+  - `agent_pipeline_trace`
+  - `trade_explain`
+  - `reporter_analysis`
+  - `ops_diagnostic`
+- `reports/dev/live`
+  - `live_summary`
+  - `live_watch`
+- `reports/dev/exam`
+  - `mock_exam_day`
+- `reports/dev/catalog`
+  - report inventory snapshots
 
 ## Non-Canonical / Archive Candidates
 
@@ -67,7 +80,7 @@ python -m scripts.run_report_maintenance --report-root reports --event-log-path 
 
 ## Inventory Artifacts
 
-- `reports/_catalog/report_inventory_latest.md`
-- `reports/_catalog/report_inventory_latest.json`
+- `reports/dev/catalog/report_inventory_latest.md`
+- `reports/dev/catalog/report_inventory_latest.json`
 
 Closeout orchestration now generates the inventory automatically as a non-destructive step.

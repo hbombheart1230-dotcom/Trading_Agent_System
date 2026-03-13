@@ -18,7 +18,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Generate trade explain report (buy/sell pair, hold-time, PnL estimate, reason chain)."
     )
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
-    p.add_argument("--report-dir", default="reports/trade_explain")
+    p.add_argument("--report-dir", default="reports/dev/analysis/trade_explain")
     p.add_argument("--day", default=None, help="UTC day (YYYY-MM-DD). If omitted, latest day in event log is used.")
     p.add_argument("--max-executions", type=int, default=120)
     p.add_argument("--max-sell-pairs", type=int, default=120)

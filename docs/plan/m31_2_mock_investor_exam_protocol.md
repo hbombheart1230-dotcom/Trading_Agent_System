@@ -79,8 +79,8 @@ powershell -ExecutionPolicy Bypass -File deploy/m31_registration_helpers/windows
 - script: `scripts/run_m31_mock_investor_exam_check.py`
 - role: validates fixed runtime-mode policy, guardrail configuration, market-hours contract, and tick behavior for M31-B exam operations.
 - output:
-  - `reports/m31_mock_exam/m31_mock_exam_<day>.json`
-  - `reports/m31_mock_exam/m31_mock_exam_<day>.md`
+  - `reports/milestones/m31_mock_exam/m31_mock_exam_<day>.json`
+  - `reports/milestones/m31_mock_exam/m31_mock_exam_<day>.md`
 
 - script: `scripts/run_m31_agent_chain_probe.py`
 - role: visualizes end-to-end agent chain (`strategist -> scanner -> monitor -> decision -> execute`) with one JSON artifact-like output for operator understanding.
@@ -99,7 +99,7 @@ powershell -ExecutionPolicy Bypass -File deploy/m31_registration_helpers/windows
 python scripts/run_m31_mock_investor_exam_check.py \
   --env-path .env \
   --event-log-path data/logs/events.jsonl \
-  --report-dir reports/m31_mock_exam \
+  --report-dir reports/milestones/m31_mock_exam \
   --day 2026-02-21 \
   --json
 
