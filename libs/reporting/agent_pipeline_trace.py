@@ -314,6 +314,10 @@ def _build_markdown(out: Dict[str, Any]) -> str:
         f"ok={executor.get('execution_ok')} broker_code={executor.get('broker_code')}"
     )
     lines.append(
+        f"- execution_mode={executor.get('execution_mode')} kiwoom_mode={executor.get('kiwoom_mode')} "
+        f"broker_env={executor.get('broker_env')} effective_mode={executor.get('effective_mode')}"
+    )
+    lines.append(
         f"- api_id={executor.get('order_api_id')} url={executor.get('order_url')} "
         f"action={executor.get('order_action')} symbol={executor.get('order_symbol')} qty={executor.get('order_qty')}"
     )
@@ -590,6 +594,10 @@ def generate_agent_pipeline_trace_report(
             "order_qty": execution_order.get("qty"),
             "order_url": str(execution_meta.get("url") or ""),
             "mode": str(execution_inner.get("mode") or ""),
+            "execution_mode": str(execution_inner.get("execution_mode") or ""),
+            "kiwoom_mode": str(execution_inner.get("kiwoom_mode") or ""),
+            "broker_env": str(execution_inner.get("broker_env") or ""),
+            "effective_mode": str(execution_inner.get("effective_mode") or ""),
         },
         "reporter": {
             "in_run_trace_available": reporter_in_run,

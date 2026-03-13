@@ -148,7 +148,14 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                 "payload": {
                     "ok": True,
                     "order": {"order_api_id": "TTTC0802U", "action": "BUY", "symbol": "005930", "qty": 1},
-                    "payload": {"mode": "mock", "meta": {"url": "https://mock-api.example/orders"}},
+                    "payload": {
+                        "mode": "real",
+                        "execution_mode": "real",
+                        "kiwoom_mode": "mock",
+                        "broker_env": "mock",
+                        "effective_mode": "mock_broker_http",
+                        "meta": {"url": "https://mock-api.example/orders"},
+                    },
                 },
             },
             {
@@ -253,6 +260,10 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert out["monitor"]["min_hold_sec"] == 600
     assert out["supervisor"]["verdict"] == "APPROVE"
     assert out["executor"]["execution_attempted"] is True
+    assert out["executor"]["execution_mode"] == "real"
+    assert out["executor"]["kiwoom_mode"] == "mock"
+    assert out["executor"]["broker_env"] == "mock"
+    assert out["executor"]["effective_mode"] == "mock_broker_http"
     assert out["reporter"]["in_run_trace_available"] is True
     assert out["reporter"]["reporter_analysis_day_file_found"] is True
     assert out["reporter"]["reporter_analysis_found"] is True
@@ -272,6 +283,7 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert "## Monitor" in md_body
     assert "## Supervisor" in md_body
     assert "## Executor" in md_body
+    assert "effective_mode=mock_broker_http" in md_body
     assert "## Reporter" in md_body
 
 

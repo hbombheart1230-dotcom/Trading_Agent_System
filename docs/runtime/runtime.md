@@ -68,6 +68,12 @@
      - `sell_cooldown_blocked`
      - `monitor_reason`
 4. Supervisor/Executor remain the only approval/execution path.
+   - Execution observability now separates:
+     - `mode`: executor selection (`mock|real`, kept for compatibility)
+     - `execution_mode`: resolved `EXECUTION_MODE`
+     - `kiwoom_mode`: broker environment selection (`mock|real`)
+     - `broker_env`: effective broker target environment
+     - `effective_mode`: operator-friendly interpretation such as `mock_executor`, `mock_broker_http`, `real_broker_http`
 
 ## Minimal Decision Trace / Reason Ledger (Additive)
 

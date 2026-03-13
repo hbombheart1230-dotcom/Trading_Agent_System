@@ -92,6 +92,24 @@ def _is_kiwoom_mock_broker_http_mode() -> bool:
     return _is_kiwoom_mock_mode() and _resolve_execution_mode() == "real"
 
 
+def _execution_mode_details() -> Dict[str, str]:
+    execution_mode = _resolve_execution_mode()
+    kiwoom_mode = "mock" if _is_kiwoom_mock_mode() else "real"
+    broker_env = "mock" if kiwoom_mode == "mock" else "real"
+    if execution_mode == "mock":
+        effective_mode = "mock_executor"
+    elif kiwoom_mode == "mock":
+        effective_mode = "mock_broker_http"
+    else:
+        effective_mode = "real_broker_http"
+    return {
+        "execution_mode": str(execution_mode),
+        "kiwoom_mode": str(kiwoom_mode),
+        "broker_env": str(broker_env),
+        "effective_mode": str(effective_mode),
+    }
+
+
 def _is_trueish(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -682,6 +700,7 @@ def _normalize_execution(
 ) -> Dict[str, Any]:
     """Normalize to dict shape used by tests and reports."""
     exec_mode = _resolve_execution_mode()
+    exec_meta = _execution_mode_details()
     resolved_reason = str(reason or "")
     if not resolved_reason and allow_result is not None:
         resolved_reason = str(getattr(allow_result, "reason", "") or "")
@@ -742,6 +761,9 @@ def _normalize_execution(
             if hasattr(execution_result, "meta") and getattr(execution_result, "meta") is not None:
                 payload["meta"] = getattr(execution_result, "meta")
         payload.setdefault("mode", exec_mode)
+
+    for key, value in exec_meta.items():
+        payload.setdefault(key, value)
 
     ok = bool(allowed)
     ok_source = "allowed_gate"

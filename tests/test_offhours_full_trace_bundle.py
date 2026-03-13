@@ -58,7 +58,17 @@ def test_offhours_full_trace_bundle_builds_single_run_bundle(tmp_path: Path, cap
                 "exit_confirm_ticks": 2,
             },
             "supervisor": {"verdict": "approve"},
-            "executor": {"order_action": "BUY", "order_symbol": "005930", "order_qty": 1, "mode": "mock", "execution_ok": True},
+            "executor": {
+                "order_action": "BUY",
+                "order_symbol": "005930",
+                "order_qty": 1,
+                "mode": "real",
+                "execution_mode": "real",
+                "kiwoom_mode": "mock",
+                "broker_env": "mock",
+                "effective_mode": "mock_broker_http",
+                "execution_ok": True,
+            },
             "reporter": {"reporter_analysis_found": True, "reporter_analysis_day_file_found": True},
         }
         md_path.write_text("trace", encoding="utf-8")
@@ -120,3 +130,4 @@ def test_offhours_full_trace_bundle_builds_single_run_bundle(tmp_path: Path, cap
     assert Path(out["report_md_path"]).exists()
     assert "global_index_moves:" in Path(out["report_md_path"]).read_text(encoding="utf-8")
     assert "news_query_reasoning:" in Path(out["report_md_path"]).read_text(encoding="utf-8")
+    assert "effective_mode=mock_broker_http" in Path(out["report_md_path"]).read_text(encoding="utf-8")

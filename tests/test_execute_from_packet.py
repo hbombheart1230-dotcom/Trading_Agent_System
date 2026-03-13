@@ -32,6 +32,10 @@ def test_execute_from_packet_mock(tmp_path, monkeypatch):
     out = execute_from_packet(state)
     assert out["execution"]["allowed"] is True
     assert out["execution"]["payload"]["mode"] == "mock"
+    assert out["execution"]["payload"]["execution_mode"] == "mock"
+    assert out["execution"]["payload"]["kiwoom_mode"] == "mock"
+    assert out["execution"]["payload"]["broker_env"] == "mock"
+    assert out["execution"]["payload"]["effective_mode"] == "mock_executor"
 
 
 def test_execute_from_packet_uses_real_mode_when_execution_mode_unset(tmp_path, monkeypatch):
@@ -466,6 +470,11 @@ def test_execute_from_packet_forces_market_order_in_mock_broker_http_mode(tmp_pa
     out = execute_from_packet(state)
     assert out["execution"]["allowed"] is True
     assert out["execution"]["ok"] is True
+    assert out["execution"]["payload"]["mode"] == "real"
+    assert out["execution"]["payload"]["execution_mode"] == "real"
+    assert out["execution"]["payload"]["kiwoom_mode"] == "mock"
+    assert out["execution"]["payload"]["broker_env"] == "mock"
+    assert out["execution"]["payload"]["effective_mode"] == "mock_broker_http"
     assert str(captured["body"]["trde_tp"]) == "3"
     assert str(captured["body"].get("ord_uv") or "") == ""
 

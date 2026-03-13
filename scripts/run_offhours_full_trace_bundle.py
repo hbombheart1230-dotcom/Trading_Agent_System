@@ -39,6 +39,13 @@ def _normalize_symbol(raw: Any) -> str:
     return str(raw or "").strip().upper()
 
 
+def _print_json_safe(obj: Dict[str, Any]) -> None:
+    try:
+        print(json.dumps(obj, ensure_ascii=False))
+    except UnicodeEncodeError:
+        print(json.dumps(obj, ensure_ascii=True))
+
+
 def _build_initial_state(symbol: str) -> Dict[str, Any]:
     state: Dict[str, Any] = {
         "offhours_validation": True,
@@ -114,6 +121,10 @@ def _render_markdown(out: Dict[str, Any]) -> str:
     lines.append(
         f"- action={executor.get('order_action')} symbol={executor.get('order_symbol')} "
         f"qty={executor.get('order_qty')} mode={executor.get('mode')} ok={executor.get('execution_ok')}"
+    )
+    lines.append(
+        f"- execution_mode={executor.get('execution_mode')} kiwoom_mode={executor.get('kiwoom_mode')} "
+        f"broker_env={executor.get('broker_env')} effective_mode={executor.get('effective_mode')}"
     )
     lines.append("")
     lines.append("## Reporter")
@@ -243,7 +254,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     md_path.write_text(_render_markdown(out), encoding="utf-8")
 
     if bool(args.json):
-        print(json.dumps(out, ensure_ascii=False))
+        _print_json_safe(out)
     else:
         print(
             f"run_id={run_id} decision={out.get('decision')} "
