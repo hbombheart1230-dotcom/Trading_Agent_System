@@ -89,3 +89,42 @@ def test_coerce_strategist_output_normalizes_required_fields_and_keeps_additive_
     assert out["scanner_source_policy"]["preferred_sources"] == ["top_value", "top_volume"]
     assert out["monitor_policy"] == {"min_hold_seconds": 600}
     assert out["regime_score"] == 0.42
+
+
+def test_coerce_strategist_output_preserves_string_list_fields_as_items() -> None:
+    raw = {
+        "themes": "semiconductor, AI",
+        "avoid_themes": "high_gap_speculative",
+        "scanner_priority": '["trading_value", "trend_strength"]',
+        "report_focus": "theme_accuracy|exit_quality",
+        "candidates": "005930,000660",
+        "candidate_hints": "005930",
+    }
+
+    out = coerce_strategist_output(raw)
+
+    assert out["themes"] == ["semiconductor", "AI"]
+    assert out["avoid_themes"] == ["high_gap_speculative"]
+    assert out["scanner_priority"] == ["trading_value", "trend_strength"]
+    assert out["report_focus"] == ["theme_accuracy", "exit_quality"]
+    assert out["candidates"] == ["005930", "000660"]
+    assert out["candidate_hints"] == ["005930"]
+    assert out["candidate_count"] == 2
+
+
+def test_coerce_strategist_output_unwraps_nested_output_contract() -> None:
+    raw = {
+        "output": {
+            "market_regime": "risk_on",
+            "themes": ["semiconductor"],
+            "avoid_themes": "high_gap_speculative",
+        },
+        "trace_id": "abc",
+    }
+
+    out = coerce_strategist_output(raw)
+
+    assert out["market_regime"] == "risk_on"
+    assert out["themes"] == ["semiconductor"]
+    assert out["avoid_themes"] == ["high_gap_speculative"]
+    assert out["trace_id"] == "abc"

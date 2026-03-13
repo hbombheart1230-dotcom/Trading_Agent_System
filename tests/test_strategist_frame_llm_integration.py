@@ -56,6 +56,23 @@ class _FakeRouterBadJson(_FakeRouterOk):
         return "not-json-response"
 
 
+class _FakeRouterNestedJson(_FakeRouterOk):
+    @staticmethod
+    def from_env() -> "_FakeRouterNestedJson":
+        return _FakeRouterNestedJson()
+
+    def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+        return (
+            '{"output":{"market_regime":"risk_off","market_sentiment":"bearish",'
+            '"themes":"defensive_large_cap, semiconductors_hbm",'
+            '"avoid_themes":"high_gap_speculative",'
+            '"playbook":"pullback","scanner_bias":"leader",'
+            '"scanner_priority":"trading_value, trend_strength",'
+            '"trade_aggressiveness":"low","risk_tone":"conservative",'
+            '"monitor_guidance":"defensive_exit","report_focus":"theme_accuracy|exit_quality"}}'
+        )
+
+
 def _base_state(logger: _MemoryLogger) -> Dict[str, Any]:
     return {
         "run_id": "strategist-llm-test",
@@ -113,3 +130,25 @@ def test_strategist_frame_llm_parse_error_falls_back_to_deterministic(monkeypatc
     strategist_llm = out.get("strategist_llm") or {}
     assert strategist_llm.get("status") == "parse_error"
     assert strategist_llm.get("applied") is False
+
+
+def test_strategist_frame_llm_nested_output_and_string_lists_are_normalized(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterNestedJson)
+
+    logger = _MemoryLogger()
+    out = strategist_node(_base_state(logger))
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("market_regime") == "risk_off"
+    assert strategist_output.get("themes") == ["defensive_large_cap", "semiconductors_hbm"]
+    avoid_themes = strategist_output.get("avoid_themes") or []
+    assert "high_gap_speculative" in avoid_themes
+    scanner_priority = strategist_output.get("scanner_priority") or []
+    assert "trading_value" in scanner_priority
+    assert "trend_strength" in scanner_priority
+    report_focus = strategist_output.get("report_focus") or []
+    assert "theme_accuracy" in report_focus
+    assert "exit_quality" in report_focus
+    assert strategist_output.get("llm_frame_applied") is True

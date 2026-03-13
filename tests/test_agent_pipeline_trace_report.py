@@ -67,6 +67,9 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                     "candidate_source": "kiwoom_market_data",
                     "candidate_pool_before_filter": 10,
                     "candidate_pool_after_filter": 6,
+                    "condition_search_status": "unavailable",
+                    "condition_search_source": "unavailable",
+                    "condition_search_reason": "kiwoom_condition_websocket_not_integrated",
                     "top_stock": "005930",
                     "top_score": 0.87,
                     "top_ranked_symbols": ["005930", "000660"],
@@ -256,6 +259,7 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert out["scanner"]["top_stock"] == "005930"
     assert out["scanner"]["selected_candidate"]["symbol"] == "005930"
     assert out["scanner"]["scanner_source_policy"]["include_change_rate"] is True
+    assert out["scanner"]["condition_search_status"] == "unavailable"
     assert out["monitor"]["selected_symbol"] == "005930"
     assert out["monitor"]["min_hold_sec"] == 600
     assert out["supervisor"]["verdict"] == "APPROVE"
@@ -280,6 +284,7 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert "news_query_reasoning:" in md_body
     assert "scanner_source_policy:" in md_body
     assert "## Scanner" in md_body
+    assert "condition_search: status=unavailable" in md_body
     assert "## Monitor" in md_body
     assert "## Supervisor" in md_body
     assert "## Executor" in md_body

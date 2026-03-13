@@ -77,6 +77,7 @@ Notes:
 - Pure static fallback pools can be blocked with `BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY=true` (default).
 - All strategist fallback can be disabled with `STRICT_KIWOOM_CANDIDATES_ONLY=true` (strict mode).
 - Fallback candidate symbols can be overridden with `FALLBACK_CANDIDATE_SYMBOLS`.
+- `condition_search` is currently surfaced as a diagnostic source; without Kiwoom websocket condition-search integration its report status will remain `unavailable` instead of silently pretending to contribute candidates.
 - Candidate reduction knobs:
   - `TOP_CANDIDATE_POOL`
   - `MIN_TRADING_VALUE`
@@ -227,6 +228,7 @@ Example scanner output:
 - Strategist can also steer the actual Kiwoom source mix via `scanner_source_policy`
   - example: `defensive` suppresses `top_change_rate` / `condition_search`
   - example: `breakout` emphasizes `top_change_rate` / `condition_search` / `top_volume`
+  - reports expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` so operators can see when the source is unavailable
 - Reduces pool with practical guards (halt/abnormal/illiquid thresholds)
 - Computes explainable scoring factors (value, momentum, trend, volume surge, intraday strength, risk penalties)
 - Ranks candidates with score breakdown and selects Top-1

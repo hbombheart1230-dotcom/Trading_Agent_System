@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal
 
@@ -148,6 +150,84 @@ class StrategistOutput:
         }
 
 
+def _coerce_text_list(raw: Any) -> List[str]:
+    out: List[str] = []
+    seen = set()
+
+    def add_one(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        key = text.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(text)
+
+    def visit(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, (list, tuple, set)):
+            for row in value:
+                visit(row)
+            return
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return
+            try:
+                decoded = json.loads(s)
+            except Exception:
+                decoded = None
+            if decoded is not None and decoded is not value:
+                if isinstance(decoded, (list, tuple, set, str)):
+                    visit(decoded)
+                    return
+            if any(sep in s for sep in ("\n", ",", ";", "|")):
+                for part in re.split(r"[\n,;|]+", s):
+                    add_one(part)
+                return
+            add_one(s)
+            return
+        add_one(value)
+
+    visit(raw)
+    return out
+
+
+def _coerce_nested_output(raw: Dict[str, Any]) -> Dict[str, Any]:
+    contract_keys = {
+        "market_regime",
+        "market_sentiment",
+        "key_events",
+        "themes",
+        "avoid_themes",
+        "playbook",
+        "scanner_bias",
+        "scanner_priority",
+        "scanner_source_policy",
+        "trade_aggressiveness",
+        "risk_tone",
+        "monitor_guidance",
+        "report_focus",
+        "candidates",
+        "candidate_count",
+        "candidate_hints",
+        "strategic_answers",
+    }
+    if any(k in raw for k in contract_keys):
+        return dict(raw)
+
+    for key in ("strategist_output", "output", "result", "data"):
+        nested = raw.get(key)
+        if isinstance(nested, dict) and any(k in nested for k in contract_keys):
+            merged = dict(raw)
+            merged.pop(key, None)
+            merged.update(nested)
+            return merged
+    return dict(raw)
+
+
 def coerce_strategist_output(raw: Any) -> Dict[str, Any]:
     """Normalize strategist output into canonical StrategistOutput contract shape.
 
@@ -157,24 +237,25 @@ def coerce_strategist_output(raw: Any) -> Dict[str, Any]:
     """
     if not isinstance(raw, dict):
         return StrategistOutput().to_dict()
+    raw = _coerce_nested_output(raw)
 
     dto = StrategistOutput(
         market_regime=raw.get("market_regime", "neutral"),  # type: ignore[arg-type]
         market_sentiment=raw.get("market_sentiment", "neutral"),  # type: ignore[arg-type]
-        key_events=list(raw.get("key_events") or []),
-        themes=list(raw.get("themes") or []),
-        avoid_themes=list(raw.get("avoid_themes") or []),
+        key_events=_coerce_text_list(raw.get("key_events")),
+        themes=_coerce_text_list(raw.get("themes")),
+        avoid_themes=_coerce_text_list(raw.get("avoid_themes")),
         playbook=raw.get("playbook", "defensive"),  # type: ignore[arg-type]
         scanner_bias=raw.get("scanner_bias", "leader"),  # type: ignore[arg-type]
-        scanner_priority=list(raw.get("scanner_priority") or []),
+        scanner_priority=_coerce_text_list(raw.get("scanner_priority")),
         scanner_source_policy=dict(raw.get("scanner_source_policy") or {}),
         trade_aggressiveness=raw.get("trade_aggressiveness", "medium"),  # type: ignore[arg-type]
         risk_tone=raw.get("risk_tone", "normal"),  # type: ignore[arg-type]
         monitor_guidance=raw.get("monitor_guidance", "defensive_exit"),  # type: ignore[arg-type]
-        report_focus=list(raw.get("report_focus") or []),
-        candidates=list(raw.get("candidates") or []),
-        candidate_count=int(raw.get("candidate_count") or 0),
-        candidate_hints=list(raw.get("candidate_hints") or []),
+        report_focus=_coerce_text_list(raw.get("report_focus")),
+        candidates=_coerce_text_list(raw.get("candidates")),
+        candidate_count=int(raw.get("candidate_count") or len(_coerce_text_list(raw.get("candidates"))) or 0),
+        candidate_hints=_coerce_text_list(raw.get("candidate_hints")),
         strategic_answers=dict(raw.get("strategic_answers") or {}),
         source=str(raw.get("source") or "strategist_node"),
     ).to_dict()

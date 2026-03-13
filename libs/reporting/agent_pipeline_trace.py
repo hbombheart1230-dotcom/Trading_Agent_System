@@ -266,6 +266,12 @@ def _build_markdown(out: Dict[str, Any]) -> str:
         f"after={_safe_int(scanner.get('candidate_pool_after_filter'), 0)}"
     )
     lines.append(f"- kiwoom_source_mix: `{json.dumps(scanner.get('kiwoom_source_mix') or {}, ensure_ascii=False)}`")
+    if scanner.get("condition_search_status") or scanner.get("condition_search_reason"):
+        lines.append(
+            f"- condition_search: status={scanner.get('condition_search_status')} "
+            f"source={scanner.get('condition_search_source')} "
+            f"reason={scanner.get('condition_search_reason')}"
+        )
     if scanner.get("scanner_source_policy"):
         lines.append(
             f"- scanner_source_policy: `{json.dumps(scanner.get('scanner_source_policy') or {}, ensure_ascii=False)}`"
@@ -548,6 +554,21 @@ def generate_agent_pipeline_trace_report(
             "score_breakdown_summary": dict(scanner_trace.get("score_breakdown_summary") or {}),
             "selected_candidate": dict(scanner_trace.get("selected_candidate") or {}),
             "kiwoom_source_mix": dict(kiwoom_source_mix or {}),
+            "condition_search_status": str(
+                scanner_summary_payload.get("condition_search_status")
+                or scanner_trace.get("condition_search_status")
+                or ""
+            ),
+            "condition_search_source": str(
+                scanner_summary_payload.get("condition_search_source")
+                or scanner_trace.get("condition_search_source")
+                or ""
+            ),
+            "condition_search_reason": str(
+                scanner_summary_payload.get("condition_search_reason")
+                or scanner_trace.get("condition_search_reason")
+                or ""
+            ),
             "scanner_source_policy": dict(scanner_source_policy or {}),
             "candidate_preview": [c for c in scanner_candidates[:10] if isinstance(c, dict)],
         },

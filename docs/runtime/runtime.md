@@ -47,6 +47,7 @@
     - strategist-driven Kiwoom source policy from `state["strategist_output"]["scanner_source_policy"]`
       - example: `defensive` can disable `top_change_rate` / `condition_search`
       - example: `breakout` can emphasize `top_change_rate` / `condition_search` / `top_volume`
+      - scanner diagnostics now expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` so operators can distinguish "zero candidates" from "source not integrated"
      - strategist candidate fallback when Kiwoom pool is empty
      - static fallback-only pools can be blocked with `BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY=true`
      - strict mode (`STRICT_KIWOOM_CANDIDATES_ONLY=true`) blocks all strategist fallback on Kiwoom-empty

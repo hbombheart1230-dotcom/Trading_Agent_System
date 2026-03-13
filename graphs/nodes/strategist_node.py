@@ -94,10 +94,42 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     s = _strip_fenced_block(text)
     if not s:
         return {}
+    contract_keys = {
+        "market_regime",
+        "market_sentiment",
+        "key_events",
+        "themes",
+        "avoid_themes",
+        "playbook",
+        "scanner_bias",
+        "scanner_priority",
+        "trade_aggressiveness",
+        "risk_tone",
+        "monitor_guidance",
+        "report_focus",
+        "scanner_source_policy",
+    }
+
+    def unwrap(obj: Any) -> Dict[str, Any]:
+        if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+            obj = obj[0]
+        if not isinstance(obj, dict):
+            return {}
+        if any(k in obj for k in contract_keys):
+            return obj
+        for key in ("strategist_output", "output", "result", "data"):
+            nested = obj.get(key)
+            if isinstance(nested, dict) and any(k in nested for k in contract_keys):
+                merged = dict(obj)
+                merged.pop(key, None)
+                merged.update(nested)
+                return merged
+        return obj
     try:
         obj = json.loads(s)
-        if isinstance(obj, dict):
-            return obj
+        unwrapped = unwrap(obj)
+        if unwrapped:
+            return unwrapped
     except Exception:
         pass
     dec = json.JSONDecoder()
@@ -106,8 +138,9 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
             continue
         try:
             obj, _end = dec.raw_decode(s[i:])
-            if isinstance(obj, dict):
-                return obj
+            unwrapped = unwrap(obj)
+            if unwrapped:
+                return unwrapped
         except Exception:
             continue
     return {}

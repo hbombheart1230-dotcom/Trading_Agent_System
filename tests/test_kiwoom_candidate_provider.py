@@ -3,6 +3,7 @@ from __future__ import annotations
 from graphs.nodes.scanner_node import scanner_node
 from libs.strategies.candidates.kiwoom_candidate_provider import (
     build_kiwoom_candidate_rows,
+    get_condition_search_results_with_meta,
     get_top_volume_stocks,
 )
 from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
@@ -72,6 +73,33 @@ def test_build_kiwoom_candidate_rows_respects_source_flags_and_weights():
     assert rows[0]["symbol"] == "AAA"
     assert "top_change_rate" not in rows[0]["sources"]
     assert "condition_search" not in rows[0]["sources"]
+
+
+def test_condition_search_reports_unavailable_status_when_live_not_integrated(monkeypatch):
+    monkeypatch.delenv("MOCK_CONDITION_SYMBOLS", raising=False)
+    monkeypatch.delenv("KIWOOM_CONDITION_LIVE_FETCH", raising=False)
+
+    rows, meta = get_condition_search_results_with_meta({}, limit=10)
+
+    assert rows == []
+    assert meta["status"] == "unavailable"
+    assert meta["reason"] == "kiwoom_condition_live_fetch_disabled"
+
+
+def test_build_kiwoom_candidate_rows_exposes_condition_search_diagnostics(monkeypatch):
+    monkeypatch.delenv("MOCK_CONDITION_SYMBOLS", raising=False)
+    monkeypatch.setenv("KIWOOM_CONDITION_LIVE_FETCH", "true")
+
+    rows, meta = build_kiwoom_candidate_rows(
+        state={"mock_top_value_symbols": ["AAA"]},
+        top_pool=5,
+        condition_limit=10,
+        include_condition_search=True,
+    )
+
+    assert rows[0]["symbol"] == "AAA"
+    assert meta["condition_search_status"] == "unavailable"
+    assert meta["condition_search_reason"] == "kiwoom_condition_websocket_not_integrated"
 
 
 def test_scanner_node_uses_kiwoom_candidates_and_theme_filter():

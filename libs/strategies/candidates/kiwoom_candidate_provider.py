@@ -170,6 +170,22 @@ def get_condition_search_results(state: Dict[str, Any], limit: int = 200) -> Lis
     return _unique_symbols(rows)[: max(1, int(limit))]
 
 
+def get_condition_search_results_with_meta(state: Dict[str, Any], limit: int = 200) -> Tuple[List[str], Dict[str, Any]]:
+    injected = _unique_symbols(state.get("mock_condition_symbols"))
+    if injected:
+        return injected[: max(1, int(limit))], {
+            "source": "state_mock",
+            "status": "ok",
+            "reason": "state.mock_condition_symbols",
+        }
+    reader = KiwoomConditionReader()
+    try:
+        rows, meta = reader.get_symbols_with_meta(state=state, limit=max(1, int(limit)))
+    except Exception as e:
+        rows, meta = [], {"source": "error", "status": "unavailable", "reason": f"{type(e).__name__}:{e}"}
+    return _unique_symbols(rows)[: max(1, int(limit))], dict(meta or {})
+
+
 def get_top_trading_value_stocks(state: Dict[str, Any], topk: int = 30) -> List[str]:
     """Practical alias: trading value ranking source."""
     return get_top_value_stocks(state, topk=topk)
@@ -274,7 +290,11 @@ def build_kiwoom_candidate_rows(
     top_volume = get_top_volume_stocks(state, topk=pool_k) if bool(include_top_volume) else []
     top_value = get_top_trading_value_stocks(state, topk=pool_k) if bool(include_top_value) else []
     top_change = get_top_gainers(state, topk=pool_k) if bool(include_change_rate) else []
-    cond_rows = get_condition_candidates(state, limit=cond_k) if bool(include_condition_search) and cond_k > 0 else []
+    condition_meta: Dict[str, Any] = {"source": "disabled", "status": "disabled", "reason": "condition_search_disabled"}
+    if bool(include_condition_search) and cond_k > 0:
+        cond_rows, condition_meta = get_condition_search_results_with_meta(state, limit=cond_k)
+    else:
+        cond_rows = []
     sector_rows = (
         get_sector_candidates(state, themes=themes, limit=pool_k)
         if bool(include_sector_candidates)
@@ -355,5 +375,8 @@ def build_kiwoom_candidate_rows(
             "operator_watchlist": float(source_weight_map.get("operator_watchlist", 0.8)),
             "top_change_rate": float(source_weight_map.get("top_change_rate", 1.3)),
         },
+        "condition_search_status": str(condition_meta.get("status") or ""),
+        "condition_search_source": str(condition_meta.get("source") or ""),
+        "condition_search_reason": str(condition_meta.get("reason") or ""),
     }
     return normalized, meta

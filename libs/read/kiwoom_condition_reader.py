@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -52,20 +52,63 @@ class KiwoomConditionReader:
     def __init__(self) -> None:
         pass
 
+    def get_symbols_with_meta(
+        self,
+        state: Dict[str, Any],
+        query: Optional[ConditionQuery] = None,
+        limit: int = 200,
+    ) -> Tuple[List[str], Dict[str, Any]]:
+        symbols = _parse_symbols(state.get("mock_condition_symbols"))
+        if symbols:
+            return symbols[:limit], {
+                "source": "state_mock",
+                "status": "ok",
+                "reason": "state.mock_condition_symbols",
+                "query": {
+                    "condition_id": query.condition_id if isinstance(query, ConditionQuery) else None,
+                    "condition_name": query.condition_name if isinstance(query, ConditionQuery) else None,
+                },
+            }
+
+        env_symbols = os.getenv("MOCK_CONDITION_SYMBOLS", "")
+        symbols = _parse_symbols(env_symbols)
+        if symbols:
+            return symbols[:limit], {
+                "source": "env_mock",
+                "status": "ok",
+                "reason": "env.MOCK_CONDITION_SYMBOLS",
+                "query": {
+                    "condition_id": query.condition_id if isinstance(query, ConditionQuery) else None,
+                    "condition_name": query.condition_name if isinstance(query, ConditionQuery) else None,
+                },
+            }
+
+        enabled = str(os.getenv("KIWOOM_CONDITION_LIVE_FETCH", "") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        )
+        return [], {
+            "source": "unavailable",
+            "status": "unavailable",
+            "reason": (
+                "kiwoom_condition_websocket_not_integrated"
+                if enabled
+                else "kiwoom_condition_live_fetch_disabled"
+            ),
+            "query": {
+                "condition_id": query.condition_id if isinstance(query, ConditionQuery) else None,
+                "condition_name": query.condition_name if isinstance(query, ConditionQuery) else None,
+            },
+        }
+
     def get_symbols(
         self,
         state: Dict[str, Any],
         query: Optional[ConditionQuery] = None,
         limit: int = 200,
     ) -> List[str]:
-        symbols = _parse_symbols(state.get("mock_condition_symbols"))
-        if symbols:
-            return symbols[:limit]
-
-        env_symbols = os.getenv("MOCK_CONDITION_SYMBOLS", "")
-        symbols = _parse_symbols(env_symbols)
-        if symbols:
-            return symbols[:limit]
-
-        # No real API integration yet.
-        return []
+        symbols, _meta = self.get_symbols_with_meta(state=state, query=query, limit=limit)
+        return symbols
