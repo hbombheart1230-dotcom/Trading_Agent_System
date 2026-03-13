@@ -8,6 +8,7 @@ __pycache__/
 # Runtime/generated artifacts
 data/logs/
 data/evidence_ledger/
+data/strategy_memory/
 data/state/
 data/state.json
 data/token_cache.json
