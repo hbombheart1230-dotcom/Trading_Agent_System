@@ -146,6 +146,15 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     return {}
 
 
+def _classify_llm_parse_failure(raw: Any) -> str:
+    s = _strip_fenced_block(str(raw or "")).strip()
+    if not s:
+        return "strategist_llm_response_empty"
+    if s.startswith("{") or s.startswith("[") or "market_regime" in s or "themes" in s:
+        return "strategist_llm_response_truncated_json"
+    return "strategist_llm_response_not_json"
+
+
 def _resolve_strategist_frame_llm_enabled(policy: Dict[str, Any]) -> bool:
     if policy.get("strategist_frame_use_llm") is not None:
         return _is_trueish(policy.get("strategist_frame_use_llm"))
@@ -330,6 +339,7 @@ def _run_strategist_frame_llm(
 
     obj = _extract_json_object(raw)
     if not isinstance(obj, dict) or not obj:
+        reason = _classify_llm_parse_failure(raw)
         try:
             record_llm_response(
                 run_id=run_id,
@@ -337,14 +347,14 @@ def _run_strategist_frame_llm(
                 stage="theme_selection",
                 llm_response=str(raw or ""),
                 parsed_output={},
-                decision_link={"status": "parse_error"},
+                decision_link={"status": "parse_error", "reason": reason},
             )
         except Exception:
             pass
         return {}, {
             "enabled": True,
             "status": "parse_error",
-            "reason": "strategist_llm_response_not_json",
+            "reason": reason,
             "latency_ms": latency_ms,
             "model": route.model,
             "raw_preview": str(raw or "")[:220],
@@ -2008,6 +2018,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "model": str(llm_meta.get("model") or ""),
         "applied": bool(llm_overrides),
         "latency_ms": int(llm_meta.get("latency_ms") or 0),
+        "reason": str(llm_meta.get("reason") or ""),
         "error": str(llm_meta.get("reason") or ""),
     }
     _log_strategist_summary(

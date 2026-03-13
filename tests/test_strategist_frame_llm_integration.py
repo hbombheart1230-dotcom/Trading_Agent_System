@@ -56,6 +56,24 @@ class _FakeRouterBadJson(_FakeRouterOk):
         return "not-json-response"
 
 
+class _FakeRouterEmpty(_FakeRouterOk):
+    @staticmethod
+    def from_env() -> "_FakeRouterEmpty":
+        return _FakeRouterEmpty()
+
+    def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+        return ""
+
+
+class _FakeRouterTruncatedJson(_FakeRouterOk):
+    @staticmethod
+    def from_env() -> "_FakeRouterTruncatedJson":
+        return _FakeRouterTruncatedJson()
+
+    def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+        return '{"market_regime":"risk_off","themes":["defensive"],"playbook":"defensive"'
+
+
 class _FakeRouterNestedJson(_FakeRouterOk):
     @staticmethod
     def from_env() -> "_FakeRouterNestedJson":
@@ -130,6 +148,41 @@ def test_strategist_frame_llm_parse_error_falls_back_to_deterministic(monkeypatc
     strategist_llm = out.get("strategist_llm") or {}
     assert strategist_llm.get("status") == "parse_error"
     assert strategist_llm.get("applied") is False
+    assert strategist_llm.get("reason") == "strategist_llm_response_not_json"
+
+
+def test_strategist_frame_llm_empty_response_is_classified(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterEmpty)
+
+    logger = _MemoryLogger()
+    out = strategist_node(_base_state(logger))
+
+    strategist_output = out.get("strategist_output") or {}
+    assert bool(strategist_output.get("llm_frame_applied")) is False
+    assert str(strategist_output.get("llm_frame_status") or "") == "parse_error"
+
+    strategist_llm = out.get("strategist_llm") or {}
+    assert strategist_llm.get("status") == "parse_error"
+    assert strategist_llm.get("reason") == "strategist_llm_response_empty"
+
+
+def test_strategist_frame_llm_truncated_json_is_classified(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterTruncatedJson)
+
+    logger = _MemoryLogger()
+    out = strategist_node(_base_state(logger))
+
+    strategist_output = out.get("strategist_output") or {}
+    assert bool(strategist_output.get("llm_frame_applied")) is False
+    assert str(strategist_output.get("llm_frame_status") or "") == "parse_error"
+
+    strategist_llm = out.get("strategist_llm") or {}
+    assert strategist_llm.get("status") == "parse_error"
+    assert strategist_llm.get("reason") == "strategist_llm_response_truncated_json"
 
 
 def test_strategist_frame_llm_nested_output_and_string_lists_are_normalized(monkeypatch):

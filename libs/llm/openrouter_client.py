@@ -91,15 +91,86 @@ class OpenRouterClient:
         choices = resp.get("choices") or []
         if not choices:
             return ""
-        msg = (choices[0] or {}).get("message") or {}
+        first = choices[0] or {}
+        if isinstance(first.get("text"), str) and str(first.get("text") or "").strip():
+            return str(first.get("text") or "")
+
+        msg = first.get("message") or {}
+        if not isinstance(msg, dict):
+            return ""
+
+        parsed = msg.get("parsed")
+        if isinstance(parsed, dict) and parsed:
+            try:
+                return json.dumps(parsed, ensure_ascii=False)
+            except Exception:
+                return str(parsed)
+
         content = msg.get("content")
-        if isinstance(content, str):
+        if isinstance(content, str) and content.strip():
             return content
+        if isinstance(content, dict):
+            for key in ("json", "parsed", "input_json"):
+                nested = content.get(key)
+                if isinstance(nested, dict) and nested:
+                    try:
+                        return json.dumps(nested, ensure_ascii=False)
+                    except Exception:
+                        return str(nested)
         # Some providers may return content as list of parts
         if isinstance(content, list):
             parts = []
             for p in content:
+                if isinstance(p, str):
+                    parts.append(p)
+                    continue
+                if not isinstance(p, dict):
+                    continue
                 if isinstance(p, dict) and isinstance(p.get("text"), str):
                     parts.append(p["text"])
+                    continue
+                for key in ("json", "parsed", "input_json"):
+                    nested = p.get(key)
+                    if isinstance(nested, dict) and nested:
+                        try:
+                            return json.dumps(nested, ensure_ascii=False)
+                        except Exception:
+                            return str(nested)
             return "".join(parts)
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function")
+                if not isinstance(fn, dict):
+                    continue
+                args = fn.get("arguments")
+                if isinstance(args, str) and args.strip():
+                    return args
+                if isinstance(args, dict) and args:
+                    try:
+                        return json.dumps(args, ensure_ascii=False)
+                    except Exception:
+                        return str(args)
+        reasoning = msg.get("reasoning")
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning
+        output_text = resp.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text
+        output = resp.get("output")
+        if isinstance(output, list):
+            parts = []
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                content_parts = item.get("content")
+                if not isinstance(content_parts, list):
+                    continue
+                for part in content_parts:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        parts.append(part.get("text") or "")
+            if parts:
+                return "".join(parts)
         return ""
