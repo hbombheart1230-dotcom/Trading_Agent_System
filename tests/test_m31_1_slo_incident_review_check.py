@@ -130,6 +130,59 @@ def test_m31_1_slo_incident_review_check_fails_with_injected_case(tmp_path: Path
     assert any("inject_fail" in x for x in (obj["failures"] or []))
 
 
+def test_m31_1_slo_incident_review_check_falls_back_to_latest_prior_artifacts(tmp_path: Path, capsys):
+    day = "2026-02-22"
+    fallback_day = "2026-02-21"
+    events = tmp_path / "events.jsonl"
+    policy_dir = tmp_path / "policy"
+    signoff_dir = tmp_path / "signoff"
+    report_dir = tmp_path / "reports"
+
+    _write_jsonl(
+        events,
+        [
+            {"run_id": "r1", "ts": "2026-02-22T01:00:00+00:00", "stage": "execute_from_packet", "event": "start"},
+            {"run_id": "r1", "ts": "2026-02-22T01:00:02+00:00", "stage": "execute_from_packet", "event": "end"},
+        ],
+    )
+    _write_json(
+        policy_dir / f"m30_post_golive_policy_{fallback_day}.json",
+        {"escalation_level": "normal", "policy": {"manual_approval_only": False, "oncall_escalation": "none"}},
+    )
+    _write_json(
+        signoff_dir / f"m30_final_golive_signoff_{fallback_day}.json",
+        {"approved": True, "go_live_decision": "approve_go_live"},
+    )
+
+    rc = m31_1_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--policy-report-dir",
+            str(policy_dir),
+            "--signoff-report-dir",
+            str(signoff_dir),
+            "--report-dir",
+            str(report_dir),
+            "--day",
+            day,
+            "--min-availability-rate",
+            "0.5",
+            "--max-error-rate",
+            "0.5",
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert obj["ok"] is True
+    assert obj["policy"]["fallback_used"] is True
+    assert obj["signoff"]["fallback_used"] is True
+    assert obj["policy"]["path"].endswith(f"m30_post_golive_policy_{fallback_day}.json")
+    assert obj["signoff"]["path"].endswith(f"m30_final_golive_signoff_{fallback_day}.json")
+
+
 def test_m31_1_script_file_entrypoint_resolves_repo_imports(tmp_path: Path):
     day = "2026-02-21"
     root = Path(__file__).resolve().parents[1]

@@ -70,6 +70,36 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
+def _resolve_day_artifact(report_dir: Path, prefix: str, day: str) -> tuple[Path, Dict[str, Any], bool]:
+    direct = report_dir / f"{prefix}_{day}.json"
+    direct_obj = _read_json(direct)
+    if direct_obj:
+        return direct, direct_obj, False
+
+    target_day = str(day or "").strip()
+    best_day = ""
+    best_path = direct
+    best_obj: Dict[str, Any] = {}
+    pattern = f"{prefix}_*.json"
+    for path in sorted(report_dir.glob(pattern)):
+        stem = path.stem
+        if not stem.startswith(f"{prefix}_"):
+            continue
+        candidate_day = stem[len(prefix) + 1 :].strip()
+        if not candidate_day:
+            continue
+        if target_day and candidate_day > target_day:
+            continue
+        obj = _read_json(path)
+        if not obj:
+            continue
+        if not best_day or candidate_day > best_day:
+            best_day = candidate_day
+            best_path = path
+            best_obj = obj
+    return best_path, best_obj, bool(best_obj)
+
+
 def _item(
     *,
     item_id: str,
@@ -221,10 +251,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     availability_rate = float(success_run_total) / float(run_total) if run_total > 0 else 0.0
     error_rate = float(error_total) / float(event_total) if event_total > 0 else 0.0
 
-    policy_path = policy_report_dir / f"m30_post_golive_policy_{day}.json"
-    signoff_path = signoff_report_dir / f"m30_final_golive_signoff_{day}.json"
-    policy_obj = _read_json(policy_path)
-    signoff_obj = _read_json(signoff_path)
+    policy_path, policy_obj, policy_fallback_used = _resolve_day_artifact(
+        policy_report_dir,
+        "m30_post_golive_policy",
+        day,
+    )
+    signoff_path, signoff_obj, signoff_fallback_used = _resolve_day_artifact(
+        signoff_report_dir,
+        "m30_final_golive_signoff",
+        day,
+    )
 
     escalation_level = str(policy_obj.get("escalation_level") or "").strip().lower()
     policy = policy_obj.get("policy") if isinstance(policy_obj.get("policy"), dict) else {}
@@ -239,13 +275,19 @@ def main(argv: Optional[List[str]] = None) -> int:
             item_id="policy_artifact_presence",
             title="M30 post-go-live policy artifact exists",
             passed=bool(policy_obj),
-            evidence=f"path={policy_path}, exists={bool(policy_obj)}",
+            evidence=(
+                f"path={policy_path}, exists={bool(policy_obj)}, "
+                f"fallback_used={policy_fallback_used}"
+            ),
         ),
         _item(
             item_id="signoff_artifact_presence",
             title="M30 final signoff artifact exists",
             passed=bool(signoff_obj),
-            evidence=f"path={signoff_path}, exists={bool(signoff_obj)}",
+            evidence=(
+                f"path={signoff_path}, exists={bool(signoff_obj)}, "
+                f"fallback_used={signoff_fallback_used}"
+            ),
         ),
         _item(
             item_id="slo_probe_measurable",
@@ -322,6 +364,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "policy": {
             "path": str(policy_path),
             "exists": bool(policy_obj),
+            "fallback_used": bool(policy_fallback_used),
             "escalation_level": escalation_level,
             "severity": severity,
             "ownership": expected_ownership,
@@ -331,6 +374,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "signoff": {
             "path": str(signoff_path),
             "exists": bool(signoff_obj),
+            "fallback_used": bool(signoff_fallback_used),
             "approved": bool(signoff_obj.get("approved")),
             "go_live_decision": str(signoff_obj.get("go_live_decision") or ""),
         },
