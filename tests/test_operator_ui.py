@@ -121,6 +121,8 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path) -> None:
     assert "monitor risk remained elevated" in overview.text
     assert "Today Traded Symbols" in overview.text
     assert "buy=1 sell=0 net=1" in overview.text
+    assert "Overtrading Warning" in overview.text
+    assert "level=normal total_executions=1" in overview.text
     assert "Today Trades" in overview.text
     assert "BUY 005930 x0" not in overview.text
     assert "BUY 005930 x1" in overview.text

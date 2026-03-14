@@ -4,6 +4,8 @@ __pycache__/
 .env
 *.db
 .pytest_cache/
+.pytest-tmp/
+.pytest-work/
 
 # Runtime/generated artifacts
 data/logs/

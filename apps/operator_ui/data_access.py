@@ -221,8 +221,10 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
     recon_summary = reconciliation.get("summary") if isinstance(reconciliation.get("summary"), dict) else {}
     strategy_memory_timeline = load_strategy_memory_timeline(config, limit=7)
     latest_day = str(daily.get("day") or operator_summary.get("day") or reporter.get("day") or "")
-    today_trades = load_recent_trades_for_day(config, latest_day, limit=8)
-    traded_symbol_summary = summarize_trades_by_symbol(today_trades)
+    all_today_trades = load_recent_trades_for_day(config, latest_day, limit=200)
+    today_trades = all_today_trades[:8]
+    traded_symbol_summary = summarize_trades_by_symbol(all_today_trades)
+    overtrading_warning = build_overtrading_warning(all_today_trades, traded_symbol_summary, reporter)
     latest_prompt = load_latest_strategist_prompt_summary(config, latest_day)
 
     return {
@@ -261,6 +263,7 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
         },
         "today_trades": today_trades,
         "today_traded_symbols": traded_symbol_summary,
+        "overtrading_warning": overtrading_warning,
         "latest_strategist_prompt": latest_prompt,
         "strategy_memory_timeline": strategy_memory_timeline,
     }
@@ -328,6 +331,53 @@ def summarize_trades_by_symbol(trades: List[Dict[str, Any]]) -> List[Dict[str, A
     out = list(grouped.values())
     out.sort(key=lambda row: (_to_epoch(row.get("latest_ts")) or 0, row.get("symbol") or ""), reverse=True)
     return out
+
+
+def build_overtrading_warning(
+    trades: List[Dict[str, Any]],
+    traded_symbols: List[Dict[str, Any]],
+    reporter_report: Dict[str, Any],
+) -> Dict[str, Any]:
+    total_executions = len(trades)
+    round_trip_symbols = [
+        {
+            "symbol": row.get("symbol"),
+            "buy_count": _safe_int(row.get("buy_count"), 0),
+            "sell_count": _safe_int(row.get("sell_count"), 0),
+            "round_trips": min(_safe_int(row.get("buy_count"), 0), _safe_int(row.get("sell_count"), 0)),
+        }
+        for row in traded_symbols
+        if _safe_int(row.get("buy_count"), 0) > 0 and _safe_int(row.get("sell_count"), 0) > 0
+    ]
+    round_trip_symbols.sort(key=lambda row: (row.get("round_trips") or 0, row.get("symbol") or ""), reverse=True)
+    ai_findings = list(reporter_report.get("ai_findings") or [])[:4] if isinstance(reporter_report, dict) else []
+    reasons: List[str] = []
+    level = "normal"
+    if total_executions >= 10:
+        level = "high"
+        reasons.append(f"execution count elevated ({total_executions})")
+    elif total_executions >= 5:
+        level = "elevated"
+        reasons.append(f"execution count moderately elevated ({total_executions})")
+    if round_trip_symbols:
+        if level == "normal":
+            level = "elevated"
+        top = round_trip_symbols[0]
+        reasons.append(
+            f"same-symbol round trips detected on {top.get('symbol')} ({top.get('round_trips')} cycles)"
+        )
+    if any("overtrading" in str(item).lower() for item in ai_findings):
+        if level == "normal":
+            level = "elevated"
+        reasons.append("reporter flagged overtrading risk")
+    if not reasons:
+        reasons.append("no immediate overtrading signal in latest execution window")
+    return {
+        "level": level,
+        "total_executions": total_executions,
+        "round_trip_symbols": round_trip_symbols[:5],
+        "reasons": reasons[:4],
+    }
 
 
 def load_symbol_run_chain(config: OperatorUIConfig, day: str, symbol: str, *, limit: int = 3) -> List[Dict[str, Any]]:

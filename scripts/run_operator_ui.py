@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
 import uvicorn
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -19,16 +24,19 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    from apps.operator_ui.main import create_app
+
     args = _parse_args(argv)
     env_path = Path(str(args.env_path).strip())
     if env_path.exists():
         load_dotenv(env_path, override=False)
+    app_target = "apps.operator_ui.main:create_app" if bool(args.reload) else create_app()
     uvicorn.run(
-        "apps.operator_ui.main:app",
+        app_target,
         host=str(args.host),
         port=int(args.port),
         reload=bool(args.reload),
-        factory=False,
+        factory=bool(args.reload),
     )
     return 0
 

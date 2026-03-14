@@ -80,6 +80,19 @@
   </article>
 
   <article class="card">
+    <h2>Overtrading Warning</h2>
+    <p class="meta-line">level={{ overview.overtrading_warning.level }} total_executions={{ overview.overtrading_warning.total_executions }}</p>
+    <ul class="summary-list">
+      {% for reason in overview.overtrading_warning.reasons %}
+      <li>{{ reason }}</li>
+      {% endfor %}
+    </ul>
+    {% if overview.overtrading_warning.round_trip_symbols %}
+    <pre class="code">{{ overview.overtrading_warning.round_trip_symbols | tojson(indent=2) }}</pre>
+    {% endif %}
+  </article>
+
+  <article class="card">
     <h2>Today Trades</h2>
     {% if overview.today_trades %}
     <div class="timeline">
