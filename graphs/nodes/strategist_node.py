@@ -1011,6 +1011,8 @@ def _build_market_news_query_targets(
     global_score = _signal_score(global_signal)
     macro_risk = _to_float(market_context_inputs.get("macro_risk"), 0.0)
     index_trend = _to_float(market_context_inputs.get("index_trend"), 0.0)
+    realized_volatility = _to_float(market_context_inputs.get("realized_volatility"), 0.0)
+    market_breadth = _to_float(market_context_inputs.get("market_breadth"), 0.0)
     fear_index = global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {}
     vix_level = _to_float(fear_index.get("level"), 0.0)
     vix_pressure = _to_float(fear_index.get("level_pressure"), 0.0)
@@ -1025,8 +1027,17 @@ def _build_market_news_query_targets(
         _append_unique_text(out, seen, raw)
 
     for raw in list(theme_hints or [])[:5]:
-        for q in _theme_to_news_queries(raw):
+        for q in _theme_to_news_queries(raw)[:2]:
             _append_unique_text(out, seen, q)
+
+    if realized_volatility >= 0.03:
+        _append_unique_text(out, seen, "변동성 확대")
+    if market_breadth <= 0.40:
+        for raw in ("하락 종목 수", "약세 업종"):
+            _append_unique_text(out, seen, raw)
+    elif market_breadth >= 0.60:
+        for raw in ("상승 종목 수", "주도 섹터"):
+            _append_unique_text(out, seen, raw)
 
     if macro_risk >= 0.65 or elevated_fear:
         for raw in ("국제유가", "환율", "달러", "중동", "방산", "금"):
@@ -1050,6 +1061,7 @@ def _build_market_news_query_targets(
     return out[:limit]
 
 
+
 def _build_market_news_query_reasoning(
     *,
     state: Dict[str, Any],
@@ -1070,6 +1082,8 @@ def _build_market_news_query_reasoning(
     global_score = _signal_score(global_signal)
     macro_risk = _to_float(market_context_inputs.get("macro_risk"), 0.0)
     index_trend = _to_float(market_context_inputs.get("index_trend"), 0.0)
+    realized_volatility = _to_float(market_context_inputs.get("realized_volatility"), 0.0)
+    market_breadth = _to_float(market_context_inputs.get("market_breadth"), 0.0)
     fear_index = global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {}
     vix_level = _to_float(fear_index.get("level"), 0.0)
     vix_pressure = _to_float(fear_index.get("level_pressure"), 0.0)
@@ -1099,6 +1113,13 @@ def _build_market_news_query_reasoning(
     if normalized_themes:
         reasons.append(f"theme hints expanded queries from {', '.join(normalized_themes[:3])}")
 
+    if realized_volatility >= 0.03:
+        reasons.append("intraday volatility added 변동성 확대 query")
+    if market_breadth <= 0.40:
+        reasons.append("weak breadth added 하락 종목 수/약세 업종 queries")
+    elif market_breadth >= 0.60:
+        reasons.append("strong breadth added 상승 종목 수/주도 섹터 queries")
+
     for key in ("macro_events", "global_events", "major_events"):
         values = state.get(key)
         if isinstance(values, list):
@@ -1108,6 +1129,7 @@ def _build_market_news_query_reasoning(
                 break
 
     return "; ".join(reasons)
+
 
 
 def _default_policy(user_policy: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -1576,15 +1598,26 @@ def _apply_macro_stress_to_monitor_frame(
     adjusted_focus = list(report_focus or [])
     adjustments: List[str] = []
 
-    if next_guidance != "defensive_exit":
-        next_guidance = "defensive_exit"
-        adjustments.append("macro_stress:monitor_guidance=defensive_exit")
-    if next_tone != "conservative":
-        next_tone = "conservative"
-        adjustments.append("macro_stress:risk_tone=conservative")
-
     stress_count = int(overlay.get("stress_count") or 0)
-    target_aggr = "low" if stress_count >= 3 else "medium"
+    intensity = "high" if stress_count >= 3 else "moderate"
+    overlay["intensity"] = intensity
+
+    if intensity == "high":
+        if next_guidance != "defensive_exit":
+            next_guidance = "defensive_exit"
+            adjustments.append("macro_stress:monitor_guidance=defensive_exit")
+        if next_tone != "conservative":
+            next_tone = "conservative"
+            adjustments.append("macro_stress:risk_tone=conservative")
+    else:
+        if next_guidance == "quick_take_profit":
+            next_guidance = "hold_through_noise"
+            adjustments.append("macro_stress:monitor_guidance=hold_through_noise")
+        if next_tone == "aggressive":
+            next_tone = "normal"
+            adjustments.append("macro_stress:risk_tone=normal")
+
+    target_aggr = "low" if intensity == "high" else "medium"
     if next_aggr != target_aggr:
         next_aggr = target_aggr
         adjustments.append(f"macro_stress:trade_aggressiveness={target_aggr}")
@@ -1593,9 +1626,9 @@ def _apply_macro_stress_to_monitor_frame(
     take_profit_pct = _to_float(adjusted_exit_policy.get("take_profit_pct"), 0.0)
     trailing_stop_pct = _to_float(adjusted_exit_policy.get("trailing_stop_pct"), 0.0)
     if stop_loss_pct > 0.0:
-        adjusted_exit_policy["stop_loss_pct"] = stop_loss_pct * 0.90
+        adjusted_exit_policy["stop_loss_pct"] = stop_loss_pct * (0.90 if intensity == "high" else 0.95)
     if take_profit_pct > 0.0:
-        adjusted_exit_policy["take_profit_pct"] = take_profit_pct * 0.88
+        adjusted_exit_policy["take_profit_pct"] = take_profit_pct * (0.88 if intensity == "high" else 0.94)
     if trailing_stop_pct > 0.0:
         adjusted_exit_policy["trailing_stop_pct"] = max(trailing_stop_pct, _to_float(adjusted_exit_policy.get("stop_loss_pct"), 0.0) * 0.75)
     adjustments.append("macro_stress:tightened_exit_policy")
@@ -2813,6 +2846,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["llm_frame_applied"] = bool(llm_overrides)
     strategist_output["llm_frame_model"] = str(llm_meta.get("model") or "")
     strategist_output["llm_frame_recovery_method"] = str(llm_meta.get("recovery_method") or "")
+    strategist_output["llm_frame_low_confidence"] = bool(llm_meta.get("repair_used"))
     strategist_output["runtime_theme_map_keys"] = sorted(list((state.get("theme_map") or {}).keys()))
     strategist_output["runtime_sector_map_keys"] = sorted(list((state.get("sector_map") or {}).keys()))
     state["strategist_output"] = strategist_output
@@ -2823,6 +2857,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "latency_ms": int(llm_meta.get("latency_ms") or 0),
         "attempts": int(llm_meta.get("attempts") or 1),
         "repair_used": bool(llm_meta.get("repair_used")),
+        "low_confidence": bool(llm_meta.get("repair_used")),
         "reason": str(llm_meta.get("reason") or ""),
         "error": str(llm_meta.get("reason") or ""),
         "recovery_method": str(llm_meta.get("recovery_method") or ""),
@@ -2855,6 +2890,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "llm_frame_applied": bool(llm_overrides),
             "llm_frame_model": str(llm_meta.get("model") or ""),
             "llm_frame_recovery_method": str(llm_meta.get("recovery_method") or ""),
+            "llm_frame_low_confidence": bool(llm_meta.get("repair_used")),
         },
     )
     append_decision_trace(
@@ -2887,6 +2923,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "llm_frame_status": str(llm_meta.get("status") or "disabled"),
             "llm_frame_applied": bool(llm_overrides),
             "llm_frame_model": str(llm_meta.get("model") or ""),
+            "llm_frame_low_confidence": bool(llm_meta.get("repair_used")),
         },
     )
     try:

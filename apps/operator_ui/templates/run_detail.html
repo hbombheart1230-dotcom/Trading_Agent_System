@@ -20,12 +20,38 @@
 
 <section class="grid grid-2">
   <article class="card">
-    <h2>Commander</h2>
-    <pre class="code">{{ detail.commander | tojson(indent=2) }}</pre>
+    <h2>운영자 브리프</h2>
+    <p class="meta-line">status={{ detail.operator_brief.status }} model={{ detail.operator_brief.model or "-" }}</p>
+    <h3>{{ detail.operator_brief.headline }}</h3>
+    <ul class="summary-list">
+      <li><strong>지휘자</strong>: {{ detail.operator_brief.commander_summary }}</li>
+      <li><strong>전략가</strong>: {{ detail.operator_brief.strategist_summary }}</li>
+      <li><strong>스캐너</strong>: {{ detail.operator_brief.scanner_summary }}</li>
+      <li><strong>모니터</strong>: {{ detail.operator_brief.monitor_summary }}</li>
+      <li><strong>감독관</strong>: {{ detail.operator_brief.supervisor_summary }}</li>
+      <li><strong>수행자</strong>: {{ detail.operator_brief.executor_summary }}</li>
+      <li><strong>리포터</strong>: {{ detail.operator_brief.reporter_summary }}</li>
+    </ul>
+    <h3>운영 포인트</h3>
+    <ul class="summary-list">
+      {% for line in detail.operator_brief.operator_takeaways %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
   </article>
   <article class="card">
     <h2>Reporter</h2>
-    <pre class="code">{{ detail.reporter | tojson(indent=2) }}</pre>
+    <p class="meta-line">found={{ detail.reporter.found }} grade={{ detail.reporter.ai_run_grade or "-" }}</p>
+    <p>{{ detail.reporter.ai_summary or "해당 run과 연결된 reporter 요약이 없어서 운영자 브리프로 대체 표시 중입니다." }}</p>
+    {% if detail.reporter.chain %}
+    <h3>Reporter Chain</h3>
+    <pre class="code">{{ detail.reporter.chain | tojson(indent=2) }}</pre>
+    {% endif %}
+    <p class="path">{{ detail.reporter.report_path or "-" }}</p>
+  </article>
+  <article class="card">
+    <h2>Commander</h2>
+    <pre class="code">{{ detail.commander | tojson(indent=2) }}</pre>
   </article>
   <article class="card">
     <h2>Strategist</h2>

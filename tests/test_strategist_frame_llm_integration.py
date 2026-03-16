@@ -281,11 +281,13 @@ def test_strategist_frame_llm_repair_retry_can_recover(monkeypatch):
     assert strategist_output.get("playbook") == "breakout"
     assert strategist_output.get("llm_frame_applied") is True
     assert strategist_output.get("llm_frame_status") == "ok"
+    assert strategist_output.get("llm_frame_low_confidence") is True
 
     strategist_llm = out.get("strategist_llm") or {}
     assert strategist_llm.get("status") == "ok"
     assert strategist_llm.get("attempts") == 2
     assert strategist_llm.get("repair_used") is True
+    assert strategist_llm.get("low_confidence") is True
 
 
 def test_strategist_frame_llm_nested_output_and_string_lists_are_normalized(monkeypatch):
@@ -308,6 +310,7 @@ def test_strategist_frame_llm_nested_output_and_string_lists_are_normalized(monk
     assert "theme_accuracy" in report_focus
     assert "exit_quality" in report_focus
     assert strategist_output.get("llm_frame_applied") is True
+    assert strategist_output.get("llm_frame_low_confidence") is False
 
 
 def test_strategist_frame_llm_prose_contract_is_salvaged(monkeypatch):

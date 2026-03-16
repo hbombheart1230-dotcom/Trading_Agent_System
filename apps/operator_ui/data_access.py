@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+import re
+
+from libs.llm.llm_router import LLMRouter
 
 
 KST = timezone(timedelta(hours=9), name="KST")
@@ -124,6 +127,14 @@ def _latest_matching(path: Path, prefix: str) -> Dict[str, Any]:
     return _read_json(files[-1])
 
 
+def _read_day_or_latest(path: Path, prefix: str, day: str) -> Dict[str, Any]:
+    if path.exists() and day:
+        exact = path / f"{prefix}_{day}.json"
+        if exact.exists():
+            return _read_json(exact)
+    return _latest_matching(path, prefix)
+
+
 def _latest_matching_path(path: Path, prefix: str) -> str:
     if not path.exists():
         return ""
@@ -131,6 +142,27 @@ def _latest_matching_path(path: Path, prefix: str) -> str:
     if not files:
         return ""
     return str(files[-1])
+
+
+def _day_or_latest_path(path: Path, prefix: str, day: str) -> str:
+    if path.exists() and day:
+        exact = path / f"{prefix}_{day}.json"
+        if exact.exists():
+            return str(exact)
+    return _latest_matching_path(path, prefix)
+
+
+def _latest_event_day(event_log_path: Path) -> str:
+    latest_day = ""
+    latest_epoch = -1
+    for row in _iter_jsonl(event_log_path):
+        ts = row.get("ts_kst") or row.get("ts")
+        epoch = _to_epoch(ts)
+        if epoch is None or epoch < latest_epoch:
+            continue
+        latest_epoch = epoch
+        latest_day = _event_day(ts)
+    return latest_day
 
 
 def _feature_coverage(feature_snapshot: Dict[str, Any]) -> Dict[str, Any]:
@@ -209,6 +241,118 @@ def _truncate_json(v: Any, max_len: int = 800) -> str:
     return s[: max_len - 3] + "..."
 
 
+def _extract_json_object(text: Any) -> Dict[str, Any]:
+    raw = str(text or "").strip()
+    if not raw:
+        return {}
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        pass
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(raw):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(raw[idx:])
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            continue
+    return {}
+
+
+def _salvage_operator_brief_fields(text: Any) -> Dict[str, Any]:
+    raw = str(text or "")
+    if not raw.strip():
+        return {}
+    fields = [
+        "headline",
+        "commander_summary",
+        "strategist_summary",
+        "scanner_summary",
+        "monitor_summary",
+        "supervisor_summary",
+        "executor_summary",
+        "reporter_summary",
+    ]
+    out: Dict[str, Any] = {}
+    for key in fields:
+        pattern = rf'"{key}"\s*:\s*"((?:[^"\\]|\\.)*)"'
+        match = re.search(pattern, raw, flags=re.DOTALL)
+        if not match:
+            continue
+        try:
+            out[key] = json.loads('"' + match.group(1) + '"')
+        except Exception:
+            out[key] = match.group(1).replace('\\"', '"')
+    takeaways_match = re.search(r'"operator_takeaways"\s*:\s*\[(.*)', raw, flags=re.DOTALL)
+    if takeaways_match:
+        items = re.findall(r'"((?:[^"\\]|\\.)*)"', takeaways_match.group(1), flags=re.DOTALL)
+        cleaned: List[str] = []
+        for item in items[:5]:
+            try:
+                cleaned.append(json.loads('"' + item + '"'))
+            except Exception:
+                cleaned.append(item.replace('\\"', '"'))
+        if cleaned:
+            out["operator_takeaways"] = cleaned
+    return out
+
+
+def _is_free_model(model: str) -> bool:
+    raw = str(model or "").strip().lower()
+    return ":free" in raw or raw.endswith("/free")
+
+
+def _parse_operator_brief_lines(text: Any) -> Dict[str, Any]:
+    raw = str(text or "").strip()
+    if not raw:
+        return {}
+    keys = [
+        "headline",
+        "commander_summary",
+        "strategist_summary",
+        "scanner_summary",
+        "monitor_summary",
+        "supervisor_summary",
+        "executor_summary",
+        "reporter_summary",
+        "operator_takeaways",
+    ]
+    out: Dict[str, Any] = {}
+    for key in keys:
+        pattern = rf"{key}\s*:\s*(.+)"
+        matches = re.findall(pattern, raw, flags=re.IGNORECASE)
+        if not matches:
+            continue
+        if key == "operator_takeaways":
+            for candidate in reversed(matches):
+                items = [item.strip(" -*") for item in str(candidate).split("|") if item.strip(" -*")]
+                if not items:
+                    continue
+                if all(item.lower().startswith("item") for item in items):
+                    continue
+                out[key] = items[:5]
+                break
+            continue
+        for candidate in reversed(matches):
+            cleaned = str(candidate).strip().strip('"')
+            if not cleaned:
+                continue
+            if cleaned in {"...", "…"}:
+                continue
+            out[key] = cleaned
+            break
+    return out
+
+
 @dataclass(frozen=True)
 class OperatorUIConfig:
     repo_root: Path
@@ -230,10 +374,11 @@ class OperatorUIConfig:
 
 
 def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
-    daily = _latest_matching(config.reports_root / "daily", "daily")
-    operator_summary = _latest_matching(config.reports_root / "operator_summary", "operator_summary")
-    reporter = _latest_matching(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis")
-    reconciliation = _latest_matching(config.reports_root / "reconciliation", "broker_trade_reconciliation")
+    latest_day = _latest_event_day(config.event_log_path)
+    daily = _read_day_or_latest(config.reports_root / "daily", "daily", latest_day)
+    operator_summary = _read_day_or_latest(config.reports_root / "operator_summary", "operator_summary", latest_day)
+    reporter = _read_day_or_latest(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis", latest_day)
+    reconciliation = _read_day_or_latest(config.reports_root / "reconciliation", "broker_trade_reconciliation", latest_day)
 
     executive = operator_summary.get("executive_summary") if isinstance(operator_summary.get("executive_summary"), dict) else {}
     health = operator_summary.get("system_health_status") if isinstance(operator_summary.get("system_health_status"), dict) else {}
@@ -242,7 +387,7 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
     trade_summary = reporter.get("trade_summary") if isinstance(reporter.get("trade_summary"), dict) else {}
     recon_summary = reconciliation.get("summary") if isinstance(reconciliation.get("summary"), dict) else {}
     strategy_memory_timeline = load_strategy_memory_timeline(config, limit=7)
-    latest_day = str(daily.get("day") or operator_summary.get("day") or reporter.get("day") or "")
+    latest_day = str(latest_day or daily.get("day") or operator_summary.get("day") or reporter.get("day") or "")
     all_today_trades = load_recent_trades_for_day(config, latest_day, limit=200)
     today_trades = all_today_trades[:8]
     traded_symbol_summary = summarize_trades_by_symbol(all_today_trades)
@@ -256,7 +401,7 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "decision_actions": dict(daily.get("decision_actions") or {}),
             "approvals": _safe_int(daily.get("approvals"), 0),
             "blocks": _safe_int(daily.get("blocks"), 0),
-            "path": _latest_matching_path(config.reports_root / "daily", "daily"),
+            "path": _day_or_latest_path(config.reports_root / "daily", "daily", latest_day),
         },
         "operator_summary": {
             "system_status": str(executive.get("system_status") or "UNKNOWN"),
@@ -266,7 +411,7 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "run_total": _safe_int(trading.get("run_total"), 0),
             "executions_total": _safe_int(trading.get("executions_total"), 0),
             "blocked_total": _safe_int(trading.get("blocked_total"), 0),
-            "path": _latest_matching_path(config.reports_root / "operator_summary", "operator_summary"),
+            "path": _day_or_latest_path(config.reports_root / "operator_summary", "operator_summary", latest_day),
         },
         "reporter": {
             "trade_count": _safe_int(trade_summary.get("trade_count"), 0),
@@ -274,14 +419,14 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "ai_status": str(ai_review.get("status") or "disabled"),
             "ai_run_grade": str(reporter.get("ai_run_grade") or "N/A"),
             "ai_summary": str(reporter.get("ai_summary") or ""),
-            "path": _latest_matching_path(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis"),
+            "path": _day_or_latest_path(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis", latest_day),
         },
         "reconciliation": {
             "local_total": _safe_int(recon_summary.get("local_total"), 0),
             "broker_total": _safe_int(recon_summary.get("broker_total"), 0),
             "matched_by_ord_no": _safe_int(recon_summary.get("matched_by_ord_no"), 0),
             "broker_window_limited": bool(recon_summary.get("broker_window_limited")),
-            "path": _latest_matching_path(config.reports_root / "reconciliation", "broker_trade_reconciliation"),
+            "path": _day_or_latest_path(config.reports_root / "reconciliation", "broker_trade_reconciliation", latest_day),
         },
         "today_trades": today_trades,
         "today_traded_symbols": traded_symbol_summary,
@@ -615,6 +760,9 @@ def _reporter_snippet_for_run(config: OperatorUIConfig, run_id: str, run_day: st
     path = config.reports_root / "dev" / "analysis" / "reporter_analysis" / f"reporter_analysis_{run_day}.json"
     report = _read_json(path)
     if not report:
+        report = _latest_matching(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis")
+        path = Path(_latest_matching_path(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis"))
+    if not report:
         return {}
     chains = ((report.get("decision_trace_chain_summary") or {}).get("chains") or []) if isinstance(report.get("decision_trace_chain_summary"), dict) else []
     chain = next((c for c in chains if isinstance(c, dict) and str(c.get("run_id") or "").strip() == run_id), {})
@@ -631,6 +779,365 @@ def _reporter_snippet_for_run(config: OperatorUIConfig, run_id: str, run_day: st
         "ai_summary": str(report.get("ai_summary") or ""),
         "ai_run_grade": str(report.get("ai_run_grade") or ""),
         "chain": chain,
+    }
+
+
+def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
+    strategist = detail.get("strategist") if isinstance(detail.get("strategist"), dict) else {}
+    strategist_summary = strategist.get("summary") if isinstance(strategist.get("summary"), dict) else {}
+    strategist_evidence = strategist.get("evidence") if isinstance(strategist.get("evidence"), dict) else {}
+    raw_input = strategist_evidence.get("raw_input") if isinstance(strategist_evidence.get("raw_input"), dict) else {}
+    global_inputs = raw_input.get("global_sentiment_inputs") if isinstance(raw_input.get("global_sentiment_inputs"), dict) else {}
+    fear_index = global_inputs.get("fear_index") if isinstance(global_inputs.get("fear_index"), dict) else {}
+    scanner = detail.get("scanner") if isinstance(detail.get("scanner"), dict) else {}
+    scanner_summary = scanner.get("summary") if isinstance(scanner.get("summary"), dict) else {}
+    scanner_trace = scanner.get("decision_trace") if isinstance(scanner.get("decision_trace"), dict) else {}
+    selected = scanner_trace.get("selected_candidate") if isinstance(scanner_trace.get("selected_candidate"), dict) else {}
+    monitor = detail.get("monitor") if isinstance(detail.get("monitor"), dict) else {}
+    monitor_summary = monitor.get("summary") if isinstance(monitor.get("summary"), dict) else {}
+    monitor_trace = monitor.get("decision_trace") if isinstance(monitor.get("decision_trace"), dict) else {}
+    supervisor = ((detail.get("supervisor") or {}).get("verdict") or {}) if isinstance(detail.get("supervisor"), dict) else {}
+    executor = ((detail.get("executor") or {}).get("execution") or {}) if isinstance(detail.get("executor"), dict) else {}
+    reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
+
+    global_bits: List[str] = []
+    if global_inputs.get("score") is not None:
+        global_bits.append(f"??? ?? ??={_safe_float(global_inputs.get('score'), 0.0):.2f}")
+    if fear_index.get("level") is not None:
+        global_bits.append(f"VIX={_safe_float(fear_index.get('level'), 0.0):.2f}")
+    if global_inputs.get("macro_moves") and isinstance(global_inputs.get("macro_moves"), dict):
+        macro_moves = global_inputs.get("macro_moves") or {}
+        if macro_moves.get("dxy_pct") is not None:
+            global_bits.append(f"????={_safe_float(macro_moves.get('dxy_pct'), 0.0):.2f}")
+
+    feature_coverage = scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else {}
+    quote_metrics = scanner.get("quote_metrics") if isinstance(scanner.get("quote_metrics"), dict) else {}
+    headline = f"{detail.get('run_id') or ''} ?? ??"
+    return {
+        "status": "fallback",
+        "model": "",
+        "headline": headline,
+        "commander_summary": f"???? {((detail.get('commander') or {}).get('phase') or '-')} phase?? {((detail.get('commander') or {}).get('path') or '-')} ??? ??????.",
+        "strategist_summary": (
+            f"???? {', '.join(global_bits) or '?? ??'}? ?? ?? {', '.join(list(strategist_summary.get('news_query_targets') or [])[:6]) or '-'}? ???? "
+            f"?? {', '.join(list(strategist_summary.get('themes') or [])[:4]) or '-'}, ???? {strategist_summary.get('playbook') or '-'}? ??????."
+        ),
+        "scanner_summary": (
+            f"???? Kiwoom ?? {int(scanner_summary.get('candidate_pool_after_filter') or 0)}? ? "
+            f"{scanner_summary.get('top_stock') or selected.get('symbol') or '-'}? 1??? ??? "
+            f"??? {selected.get('why') or '-'}???."
+        ),
+        "monitor_summary": (
+            f"???? {monitor_summary.get('monitor_reason') or monitor_trace.get('monitor_reason') or '-'}? ?? "
+            f"exit={monitor_summary.get('exit_reason') or monitor_trace.get('exit_reason') or '-'}? ??????."
+        ),
+        "supervisor_summary": (
+            f"???? allowed={supervisor.get('allowed')} / reason={supervisor.get('reason') or '-'}? ??????."
+        ),
+        "executor_summary": (
+            f"???? {executor.get('action') or 'NOOP'} {executor.get('symbol') or ''} "
+            f"status={executor.get('fill_status_summary') or executor.get('status') or '-'}? ??????."
+        ),
+        "reporter_summary": (
+            f"???? grade={reporter.get('ai_run_grade') or '-'} / "
+            f"summary={reporter.get('ai_summary') or '?? run ?? ?? ??'}"
+        ),
+        "operator_takeaways": [
+            f"??/?? ??: {', '.join(global_bits) or '?? ?? ?? ??'}",
+            f"??/feature coverage: {feature_coverage.get('quality') or '-'} ({feature_coverage.get('present') or 0}/{feature_coverage.get('total') or 0})",
+            f"??? quote: ?? {quote_metrics.get('skill_quote_price') or '-'} ??? {quote_metrics.get('quote_volume') or '-'} ???? {quote_metrics.get('quote_trading_value') or '-'}",
+        ],
+    }
+
+
+def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
+    strategist = detail.get("strategist") if isinstance(detail.get("strategist"), dict) else {}
+    scanner = detail.get("scanner") if isinstance(detail.get("scanner"), dict) else {}
+    monitor = detail.get("monitor") if isinstance(detail.get("monitor"), dict) else {}
+    commander = detail.get("commander") if isinstance(detail.get("commander"), dict) else {}
+    reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
+    strategist_summary = strategist.get("summary") if isinstance(strategist.get("summary"), dict) else {}
+    strategist_evidence = strategist.get("evidence") if isinstance(strategist.get("evidence"), dict) else {}
+    raw_input = strategist_evidence.get("raw_input") if isinstance(strategist_evidence.get("raw_input"), dict) else {}
+    scanner_trace = scanner.get("decision_trace") if isinstance(scanner.get("decision_trace"), dict) else {}
+    selected = scanner_trace.get("selected_candidate") if isinstance(scanner_trace.get("selected_candidate"), dict) else {}
+    score_breakdown = selected.get("score_breakdown") if isinstance(selected.get("score_breakdown"), dict) else {}
+    component_snapshot = selected.get("component_snapshot") if isinstance(selected.get("component_snapshot"), dict) else {}
+    feature_snapshot = selected.get("feature_snapshot") if isinstance(selected.get("feature_snapshot"), dict) else {}
+    monitor_summary = monitor.get("summary") if isinstance(monitor.get("summary"), dict) else {}
+    monitor_trace = monitor.get("decision_trace") if isinstance(monitor.get("decision_trace"), dict) else {}
+    return {
+        "run_id": detail.get("run_id"),
+        "commander": {
+            "mode": commander.get("mode"),
+            "phase": commander.get("phase"),
+            "path": commander.get("path"),
+            "status": commander.get("status"),
+        },
+        "strategist": {
+            "market_regime": strategist_summary.get("market_regime"),
+            "market_sentiment": strategist_summary.get("market_sentiment"),
+            "themes": list(strategist_summary.get("themes") or [])[:5],
+            "playbook": strategist_summary.get("playbook"),
+            "scanner_bias": strategist_summary.get("scanner_bias"),
+            "risk_tone": strategist_summary.get("risk_tone"),
+            "monitor_guidance": strategist_summary.get("monitor_guidance"),
+            "news_query_targets": list(strategist_summary.get("news_query_targets") or [])[:8],
+            "news_query_reasoning": strategist_summary.get("news_query_reasoning"),
+            "global_sentiment_inputs": raw_input.get("global_sentiment_inputs") if isinstance(raw_input.get("global_sentiment_inputs"), dict) else {},
+            "market_news_titles": [str((x or {}).get("title") or "") for x in list(raw_input.get("collected_market_news") or [])[:4] if isinstance(x, dict)],
+            "candidate_news_titles": [str((x or {}).get("title") or "") for x in list(raw_input.get("collected_candidate_news") or [])[:4] if isinstance(x, dict)],
+            "llm_status": strategist_summary.get("llm_frame_status"),
+            "llm_low_confidence": strategist_summary.get("llm_frame_low_confidence"),
+        },
+        "scanner": {
+            "candidate_source": scanner.get("summary", {}).get("candidate_source") if isinstance(scanner.get("summary"), dict) else "",
+            "candidate_pool_before_filter": (scanner.get("summary") or {}).get("candidate_pool_before_filter") if isinstance(scanner.get("summary"), dict) else None,
+            "candidate_pool_after_filter": (scanner.get("summary") or {}).get("candidate_pool_after_filter") if isinstance(scanner.get("summary"), dict) else None,
+            "top_ranked_symbols": list((scanner.get("summary") or {}).get("top_ranked_symbols") or [])[:5] if isinstance(scanner.get("summary"), dict) else [],
+            "source_mix": scanner_trace.get("kiwoom_pool_source_mix") if isinstance(scanner_trace.get("kiwoom_pool_source_mix"), dict) else {},
+            "selected_symbol": scanner_trace.get("selected_symbol") or selected.get("symbol"),
+            "selected_reason": selected.get("why"),
+            "source_scores": selected.get("source_scores") if isinstance(selected.get("source_scores"), dict) else {},
+            "score_total": selected.get("score_total"),
+            "confidence": selected.get("confidence"),
+            "feature_coverage": scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else {},
+            "quote_metrics": scanner.get("quote_metrics") if isinstance(scanner.get("quote_metrics"), dict) else {},
+            "score_breakdown": score_breakdown,
+            "component_snapshot": component_snapshot,
+            "feature_snapshot": feature_snapshot,
+        },
+        "monitor": {
+            "monitor_reason": monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason"),
+            "exit_reason": monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason"),
+            "position_age_seconds": monitor_summary.get("position_age_seconds"),
+            "thresholds": monitor_trace.get("thresholds") if isinstance(monitor_trace.get("thresholds"), dict) else {},
+            "strategy_frame_adjustments": list(monitor_trace.get("strategy_frame_adjustments") or [])[:6],
+            "exit_policy_guard_adjustments": list(monitor_trace.get("exit_policy_guard_adjustments") or [])[:6],
+        },
+        "supervisor": ((detail.get("supervisor") or {}).get("verdict") or {}) if isinstance(detail.get("supervisor"), dict) else {},
+        "executor": ((detail.get("executor") or {}).get("execution") or {}) if isinstance(detail.get("executor"), dict) else {},
+        "reporter": {
+            "ai_summary": reporter.get("ai_summary"),
+            "ai_run_grade": reporter.get("ai_run_grade"),
+            "found": reporter.get("found"),
+        },
+    }
+
+
+def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[str, str]]:
+    contract = {
+        "headline": "string",
+        "commander_summary": "string",
+        "strategist_summary": "string",
+        "scanner_summary": "string",
+        "monitor_summary": "string",
+        "supervisor_summary": "string",
+        "executor_summary": "string",
+        "reporter_summary": "string",
+        "operator_takeaways": ["string"],
+    }
+    system_prompt = (
+        "당신은 트레이딩 운영 콘솔 요약기다. "
+        "각 에이전트가 무엇을 했는지 운영자가 바로 이해할 수 있게 짧고 정확한 한국어로 정리한다. "
+        "반드시 JSON만 반환하고, 입력에 없는 내용은 추측하지 마라."
+    )
+    user_prompt = (
+        "아래 입력을 바탕으로 지휘자, 전략가, 스캐너, 모니터, 감독관, 수행자, 리포터가 무엇을 했는지 "
+        "운영자가 한눈에 이해할 수 있게 한국어로 요약하라.\n"
+        "반드시 다음을 포함하라:\n"
+        "- 전략가가 어떤 뉴스/글로벌 감성/VIX/거시 입력을 읽었는지\n"
+        "- 그래서 어떤 테마/플레이북/리스크 톤을 만들었는지\n"
+        "- 스캐너가 Kiwoom에서 무엇을 가져왔고 어떤 후보 중 어떤 종목이 1등이 됐는지\n"
+        "- 차트/feature/실시간 quote 중 무엇을 점수에 썼는지\n"
+        "- 모니터가 무엇을 보고 매수/매도/차단을 판단했는지\n"
+        "- 감독관과 수행자의 최종 결과\n"
+        "- 리포터가 남긴 사후 평가가 있으면 한 줄로 정리할 것\n"
+        "각 항목은 한 문장만 쓰고, 120자 안쪽으로 매우 짧게 유지하라.\n"
+        "operator_takeaways는 최대 3개까지만 작성하라.\n"
+        f"계약: {json.dumps(contract, ensure_ascii=False)}\n"
+        f"입력: {json.dumps(compact_input, ensure_ascii=False)}"
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def _build_operator_brief_repair_messages(raw_text: str) -> List[Dict[str, str]]:
+    contract = {
+        "headline": "string",
+        "commander_summary": "string",
+        "strategist_summary": "string",
+        "scanner_summary": "string",
+        "monitor_summary": "string",
+        "supervisor_summary": "string",
+        "executor_summary": "string",
+        "reporter_summary": "string",
+        "operator_takeaways": ["string"],
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                "당신은 운영자용 JSON 정리기다. "
+                "주어진 초안을 계약에 맞는 JSON으로만 다시 써라. "
+                "설명, 서문, 코드블록 없이 JSON 객체만 반환하라."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"계약: {json.dumps(contract, ensure_ascii=False)}\n"
+                f"초안: {raw_text}"
+            ),
+        },
+    ]
+
+
+def _build_operator_brief_line_messages(compact_input: Dict[str, Any]) -> List[Dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "당신은 트레이딩 운영 브리프 생성기다. "
+                "아래 키 이름을 그대로 써서 각 줄에 key: value 형식으로만 답하라. "
+                "불필요한 설명을 붙이지 말고 최대한 짧게 작성하라."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "다음 형식으로만 답하라:\n"
+                "headline: ...\n"
+                "commander_summary: ...\n"
+                "strategist_summary: ...\n"
+                "scanner_summary: ...\n"
+                "monitor_summary: ...\n"
+                "supervisor_summary: ...\n"
+                "executor_summary: ...\n"
+                "reporter_summary: ...\n"
+                "operator_takeaways: item1 | item2 | item3\n"
+                f"입력: {json.dumps(compact_input, ensure_ascii=False)}"
+            ),
+        },
+    ]
+
+
+def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
+    fallback = _fallback_operator_brief(detail)
+    router = LLMRouter.from_env()
+    if router.client is None:
+        return fallback
+    model = str(os.getenv("OPERATOR_UI_RUN_BRIEF_MODEL", "") or os.getenv("OPENROUTER_DEFAULT_MODEL", "") or "").strip()
+    compact_input = _build_operator_brief_input(detail)
+    messages = _build_operator_brief_messages(compact_input)
+    try:
+        raw = router.chat(
+            "reporter",
+            messages,
+            policy={
+                "model": model,
+                "temperature": float(os.getenv("OPERATOR_UI_RUN_BRIEF_TEMPERATURE", "0.1")),
+                "max_tokens": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_MAX_TOKENS", "700"))),
+                "response_format": {"type": "json_object"},
+            },
+        )
+    except Exception as exc:
+        fallback["model"] = model
+        fallback["reason"] = f"llm_error:{exc}"
+        return fallback
+    parsed = _extract_json_object(raw)
+    if not parsed:
+        try:
+            repair_raw = router.chat(
+                "reporter",
+                _build_operator_brief_repair_messages(raw),
+                policy={
+                    "model": model,
+                    "temperature": 0.0,
+                    "max_tokens": 600,
+                    "response_format": {"type": "json_object"},
+                },
+            )
+        except Exception:
+            repair_raw = ""
+        repaired = _extract_json_object(repair_raw)
+        if repaired:
+            return {
+                "status": "repaired",
+                "model": model,
+                "headline": str(repaired.get("headline") or fallback.get("headline") or ""),
+                "commander_summary": str(repaired.get("commander_summary") or fallback.get("commander_summary") or ""),
+                "strategist_summary": str(repaired.get("strategist_summary") or fallback.get("strategist_summary") or ""),
+                "scanner_summary": str(repaired.get("scanner_summary") or fallback.get("scanner_summary") or ""),
+                "monitor_summary": str(repaired.get("monitor_summary") or fallback.get("monitor_summary") or ""),
+                "supervisor_summary": str(repaired.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
+                "executor_summary": str(repaired.get("executor_summary") or fallback.get("executor_summary") or ""),
+                "reporter_summary": str(repaired.get("reporter_summary") or fallback.get("reporter_summary") or ""),
+                "operator_takeaways": [str(x or "") for x in list(repaired.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
+                "reason": "llm_repair_pass",
+            }
+        if _is_free_model(model):
+            try:
+                line_raw = router.chat(
+                    "reporter",
+                    _build_operator_brief_line_messages(compact_input),
+                    policy={
+                        "model": model,
+                        "temperature": 0.0,
+                        "max_tokens": 500,
+                    },
+                )
+            except Exception:
+                line_raw = ""
+            line_parsed = _parse_operator_brief_lines(line_raw)
+            if line_parsed:
+                return {
+                    "status": "line_repaired",
+                    "model": model,
+                    "headline": str(line_parsed.get("headline") or fallback.get("headline") or ""),
+                    "commander_summary": str(line_parsed.get("commander_summary") or fallback.get("commander_summary") or ""),
+                    "strategist_summary": str(line_parsed.get("strategist_summary") or fallback.get("strategist_summary") or ""),
+                    "scanner_summary": str(line_parsed.get("scanner_summary") or fallback.get("scanner_summary") or ""),
+                    "monitor_summary": str(line_parsed.get("monitor_summary") or fallback.get("monitor_summary") or ""),
+                    "supervisor_summary": str(line_parsed.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
+                    "executor_summary": str(line_parsed.get("executor_summary") or fallback.get("executor_summary") or ""),
+                    "reporter_summary": str(line_parsed.get("reporter_summary") or fallback.get("reporter_summary") or ""),
+                    "operator_takeaways": [str(x or "") for x in list(line_parsed.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
+                    "reason": "llm_line_repair_pass",
+                }
+        salvaged = _salvage_operator_brief_fields(raw)
+        if salvaged:
+            return {
+                "status": "salvaged",
+                "model": model,
+                "headline": str(salvaged.get("headline") or fallback.get("headline") or ""),
+                "commander_summary": str(salvaged.get("commander_summary") or fallback.get("commander_summary") or ""),
+                "strategist_summary": str(salvaged.get("strategist_summary") or fallback.get("strategist_summary") or ""),
+                "scanner_summary": str(salvaged.get("scanner_summary") or fallback.get("scanner_summary") or ""),
+                "monitor_summary": str(salvaged.get("monitor_summary") or fallback.get("monitor_summary") or ""),
+                "supervisor_summary": str(salvaged.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
+                "executor_summary": str(salvaged.get("executor_summary") or fallback.get("executor_summary") or ""),
+                "reporter_summary": str(salvaged.get("reporter_summary") or fallback.get("reporter_summary") or ""),
+                "operator_takeaways": [str(x or "") for x in list(salvaged.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
+                "reason": "llm_partial_salvage",
+            }
+        fallback["model"] = model
+        fallback["reason"] = "llm_parse_error"
+        return fallback
+    return {
+        "status": "ok",
+        "model": model,
+        "headline": str(parsed.get("headline") or fallback.get("headline") or ""),
+        "commander_summary": str(parsed.get("commander_summary") or fallback.get("commander_summary") or ""),
+        "strategist_summary": str(parsed.get("strategist_summary") or fallback.get("strategist_summary") or ""),
+        "scanner_summary": str(parsed.get("scanner_summary") or fallback.get("scanner_summary") or ""),
+        "monitor_summary": str(parsed.get("monitor_summary") or fallback.get("monitor_summary") or ""),
+        "supervisor_summary": str(parsed.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
+        "executor_summary": str(parsed.get("executor_summary") or fallback.get("executor_summary") or ""),
+        "reporter_summary": str(parsed.get("reporter_summary") or fallback.get("reporter_summary") or ""),
+        "operator_takeaways": [str(x or "") for x in list(parsed.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
     }
 
 
@@ -709,7 +1216,7 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
         ]
     same_day_symbol_run_chain = load_symbol_run_chain(config, run_day, primary_symbol, limit=3) if primary_symbol else []
 
-    return {
+    detail = {
         "found": True,
         "run_id": str(run_id or ""),
         "started_at": _iso_to_display(route_row.get("ts")),
@@ -773,6 +1280,8 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             for row in all_rows[:120]
         ],
     }
+    detail["operator_brief"] = _load_operator_brief(detail)
+    return detail
 
 
 def load_strategy_memory_timeline(config: OperatorUIConfig, *, limit: int = 7) -> List[Dict[str, Any]]:

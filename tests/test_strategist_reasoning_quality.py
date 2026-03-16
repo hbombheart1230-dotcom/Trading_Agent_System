@@ -221,11 +221,80 @@ def test_strategist_macro_stress_overlay_makes_monitor_frame_more_defensive(monk
     assert strategist_output.get("risk_tone") == "conservative"
     assert strategist_output.get("trade_aggressiveness") == "low"
     assert overlay.get("active") is True
+    assert overlay.get("intensity") == "high"
     assert "elevated_vix" in list(overlay.get("stress_flags") or [])
     assert "dollar_strength" in list(overlay.get("stress_flags") or [])
     assert "yield_rise" in list(overlay.get("stress_flags") or [])
     assert "macro_stress:tightened_exit_policy" in list(overlay.get("adjustments") or [])
     assert "macro_stress" in list(strategist_output.get("report_focus") or [])
+
+
+def test_strategist_macro_stress_overlay_moderates_but_does_not_hard_override(monkeypatch):
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.compute_global_sentiment_signal",
+        lambda **_: {
+            "score": 0.55,
+            "status": "ok",
+            "source": "mock_global",
+            "reason": "",
+            "ts": 1,
+            "macro_moves": {
+                "vix_pct": 1.2,
+                "vix_level": 27.0,
+                "vix_level_pressure": 0.35,
+                "dxy_pct": 0.35,
+                "tnx_delta": 0.002,
+            },
+            "fear_index": {
+                "provider": "mock",
+                "ticker": "^VIX",
+                "level": 27.0,
+                "change_pct": 1.2,
+                "neutral_level": 20.0,
+                "level_pressure": 0.35,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.collect_news_items",
+        lambda symbols, **_: {str(s): [] for s in list(symbols or [])},
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.score_news_sentiment_signal",
+        lambda _items, symbols, **_: {
+            str(s): {"score": 0.2, "status": "ok", "source": "mock_news", "reason": "", "ts": 1}
+            for s in list(symbols or [])
+        },
+    )
+
+    state = {
+        "themes": ["semiconductor"],
+        "candidate_symbols": ["005930", "000660"],
+        "market_context": {
+            "index_trend": 0.45,
+            "realized_volatility": 0.018,
+            "market_breadth": 0.55,
+            "macro_risk": 0.10,
+        },
+        "policy": {
+            "use_global_sentiment": True,
+            "use_news_analysis": True,
+            "use_universe_builder": False,
+        },
+    }
+
+    out = strategist_node(state)
+    strategist_output = out.get("strategist_output") or {}
+    overlay = strategist_output.get("macro_stress_overlay") or {}
+
+    assert strategist_output.get("market_regime") == "risk_on"
+    assert strategist_output.get("playbook") == "breakout"
+    assert strategist_output.get("monitor_guidance") == "hold_through_noise"
+    assert strategist_output.get("risk_tone") == "normal"
+    assert strategist_output.get("trade_aggressiveness") == "medium"
+    assert overlay.get("active") is True
+    assert overlay.get("intensity") == "moderate"
+    assert "macro_stress:risk_tone=normal" in list(overlay.get("adjustments") or [])
 
 
 def test_strategist_collects_market_news_queries_without_candidate_symbols(monkeypatch):
@@ -277,6 +346,8 @@ def test_strategist_collects_market_news_queries_without_candidate_symbols(monke
     assert strategist_output.get("news_query_targets") == news_query_targets
     assert "news_query_reasoning" in strategist_output
     assert "risk-on context" in str(strategist_output.get("news_query_reasoning") or "")
+    assert "\ud558\ub77d \uc885\ubaa9 \uc218" in news_query_targets
+    assert "\uc57d\uc138 \uc5c5\uc885" in news_query_targets
     assert int(((strategist_output.get("market_news_context") or {}).get("headline_count")) or 0) > 0
     assert int(((strategist_output.get("news_context") or {}).get("market_headline_count")) or 0) > 0
 
@@ -322,12 +393,14 @@ def test_strategist_news_query_targets_expand_theme_and_macro_context(monkeypatc
     targets = out.get("news_query_targets") or []
 
     assert captured_queries and captured_queries[0] == targets
-    assert "중동" in targets
-    assert "국제유가" in targets
-    assert "반도체" in targets
+    assert "\uc911\ub3d9" in targets
+    assert "\uad6d\uc81c\uc720\uac00" in targets
+    assert "\ubc18\ub3c4\uccb4" in targets
     assert "AI" in targets
+    assert "\ubcc0\ub3d9\uc131 \ud655\ub300" in targets
     reasoning = str((out.get("strategist_output") or {}).get("news_query_reasoning") or "")
     assert "risk-off macro context" in reasoning
+    assert "intraday volatility added \ubcc0\ub3d9\uc131 \ud655\ub300 query" in reasoning
     assert "semiconductor" in reasoning
     assert "AI" in reasoning
 
@@ -387,9 +460,9 @@ def test_strategist_news_query_targets_become_defensive_when_vix_is_elevated(mon
     reasoning = str((out.get("strategist_output") or {}).get("news_query_reasoning") or "")
 
     assert captured_queries and captured_queries[0] == targets
-    assert "국제유가" in targets
-    assert "환율" in targets
-    assert "금" in targets
-    assert "중동" in targets
+    assert "\uad6d\uc81c\uc720\uac00" in targets
+    assert "\ud658\uc728" in targets
+    assert "\ub2ec\ub7ec" in targets
+    assert "\uc911\ub3d9" in targets
     assert "elevated fear index" in reasoning
     assert "vix=28.40" in reasoning
