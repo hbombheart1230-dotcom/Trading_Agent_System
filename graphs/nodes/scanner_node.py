@@ -23,6 +23,7 @@ from libs.runtime.decision_trace import append_decision_trace
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 from libs.strategies.candidates.fallback_pool import is_static_fallback_pool
 from libs.runtime.feature_engine import build_feature_map
+from libs.runtime.scanner_feature_hydration import hydrate_scanner_feature_map
 from libs.strategies.contracts import coerce_strategist_output
 
 
@@ -1155,13 +1156,20 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         trade_aggressiveness=trade_aggressiveness,
         risk_tone=risk_tone,
     )
+    skill_quotes, quote_meta = _extract_skill_quotes(state)
+    skill_order_counts, skill_order_rows, order_meta = _extract_account_open_order_counts(state)
+    feature_map, feature_source, feature_errors = hydrate_scanner_feature_map(
+        state=state,
+        candidates=list(candidates),
+        skill_quotes=skill_quotes,
+        policy=policy,
+    )
+    if not feature_map:
+        feature_map, feature_source, feature_errors = _extract_feature_engine_map(state)
     gs = _get_global_sentiment_score(state)
     gs_signal = _get_global_sentiment_signal(state)
     news_by_sym = _get_news_sentiment_map(state)
     news_signal_by_sym = _get_news_sentiment_signal_map(state)
-    skill_quotes, quote_meta = _extract_skill_quotes(state)
-    skill_order_counts, skill_order_rows, order_meta = _extract_account_open_order_counts(state)
-    feature_map, feature_source, feature_errors = _extract_feature_engine_map(state)
     try:
         raw_candidates = []
         for item in list(candidates)[:50]:

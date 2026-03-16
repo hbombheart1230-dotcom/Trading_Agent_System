@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from graphs.nodes.scanner_node import _apply_scanner_guidance_weights, _extract_scanner_guidance, scanner_node
 
 
@@ -126,3 +128,67 @@ def test_scanner_uses_chart_features_when_available():
     assert float((rows["AAA"].get("score_breakdown") or {}).get("ma_alignment") or 0.0) > 0.0
     assert float((rows["AAA"].get("score_breakdown") or {}).get("vwap_alignment") or 0.0) > 0.0
     assert float((rows["AAA"].get("score_breakdown") or {}).get("cross_section_rank") or 0.0) > 0.0
+
+
+def _seed_rows(*, start_price: float, drift: float, rows: int = 80) -> list[dict]:
+    base_ts = datetime(2026, 3, 16, tzinfo=timezone.utc)
+    out = []
+    price = float(start_price)
+    for idx in range(rows):
+        ts = int((base_ts + timedelta(days=idx)).timestamp())
+        open_p = price
+        close = max(1.0, price * (1.0 + drift))
+        high = max(open_p, close) * 1.01
+        low = min(open_p, close) * 0.99
+        out.append(
+            {
+                "ts": ts,
+                "open": round(open_p, 4),
+                "high": round(high, 4),
+                "low": round(low, 4),
+                "close": round(close, 4),
+                "volume": float(1000 + (idx * 5)),
+            }
+        )
+        price = close
+    return out
+
+
+def test_scanner_hydrates_candidate_features_from_seed_rows_when_feature_map_missing():
+    state = {
+        "candidates": [
+            {"symbol": "AAA", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
+            {"symbol": "BBB", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
+        ],
+        "mock_scan_results": {
+            "AAA": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
+            "BBB": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
+        },
+        "strategist_output": {
+            "playbook": "breakout",
+            "scanner_bias": "momentum",
+            "scanner_priority": ["momentum", "trend_strength", "ma_alignment", "vwap_distance", "cross_section_rank"],
+            "trade_aggressiveness": "high",
+            "risk_tone": "aggressive",
+        },
+        "scanner_feature_seed_rows": {
+            "AAA": _seed_rows(start_price=100.0, drift=0.01),
+            "BBB": _seed_rows(start_price=100.0, drift=-0.005),
+        },
+        "policy": {
+            "enable_practical_scoring": True,
+            "weight_news": 0.0,
+            "weight_global": 0.0,
+            "risk_news_penalty": 0.0,
+            "risk_global_penalty": 0.0,
+            "confidence_news_boost": 0.0,
+            "scanner_feature_seed_with_yf": False,
+        },
+    }
+
+    out = scanner_node(state)
+    assert (out.get("selected") or {}).get("symbol") == "AAA"
+    assert ((out.get("selected") or {}).get("features") or {}).get("engine_ma20_gap") is not None
+    assert ((out.get("selected") or {}).get("features") or {}).get("engine_adx14") is not None
+    assert ((out.get("selected") or {}).get("features") or {}).get("engine_cross_section_rank") is not None
+    assert str((out.get("scanner_feature") or {}).get("source") or "").startswith("scanner_candidate_hydration")
