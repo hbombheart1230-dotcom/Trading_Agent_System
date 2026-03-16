@@ -178,6 +178,12 @@
 - Executed-run bundle artifact for session/closeout:
   - generator: `scripts/run_live_execution_bundle_report.py`
   - outputs: `reports/dev/analysis/live_execution_bundles/live_execution_bundle_<run>.md|json`
+  - canonical per-trade story path: `reports/trades/YYYY/MM/<story_id>/`
+  - canonical story files:
+    - `aggregated_execution_bundle.json`
+    - `trade_story_input.json`
+    - `trade_report.json`
+    - `trade_report.md`
   - closeout can auto-generate these bundles for BUY/SELL runs detected in the selected day
 - Read-only operator web UI:
   - launcher:

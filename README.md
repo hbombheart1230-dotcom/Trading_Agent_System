@@ -418,6 +418,12 @@ Operator-facing report scripts:
 - `python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/dev/analysis/reporter_analysis --day <YYYY-MM-DD>`
 - `python -m scripts.run_agent_pipeline_trace_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/dev/analysis/agent_pipeline_trace --run-id <RUN_ID>`
 - `python -m scripts.run_live_execution_bundle_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/dev/analysis/live_execution_bundles --day <YYYY-MM-DD>`
+  - canonical per-trade outputs are also written under `reports/trades/YYYY/MM/<story_id>/`
+  - each story directory contains:
+    - `aggregated_execution_bundle.json`
+    - `trade_story_input.json`
+    - `trade_report.json`
+    - `trade_report.md`
 - Reporter AI review optional flags:
   - `--ai-review` (enable passive AI review stage)
   - `--no-ai-review` (force deterministic-only mode)

@@ -721,6 +721,8 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
             command=[
                 py,
                 str(ROOT / "scripts" / "run_live_execution_bundle_report.py"),
+                "--env-path",
+                str(common["env_path"]),
                 "--event-log-path",
                 event_log_path,
                 "--evidence-log-path",

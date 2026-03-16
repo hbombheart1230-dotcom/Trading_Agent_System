@@ -11,10 +11,33 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.core.settings import load_env_file
 from libs.core.symbols import normalize_symbol
 from libs.reporting.agent_pipeline_trace import generate_agent_pipeline_trace_report
 from libs.reporting.reporter_analysis import generate_reporter_analysis_report
 from libs.reporting.trade_explain import generate_trade_explain_report
+from libs.reporting.trade_report_ai import build_ai_trade_report, render_trade_report_markdown
+from libs.reporting.trade_story_pipeline import (
+    build_execution_outcome_human,
+    build_filters_human,
+    build_guard_reason_human,
+    build_market_context_human,
+    build_monitor_reason_human,
+    build_operator_conclusion_human,
+    build_reporter_status_human,
+    build_scanner_reason_human,
+    build_story_contract,
+    build_story_id,
+    build_timeline,
+    build_trade_story_input,
+    classify_story_type as _classify_story_type,
+    collect_story_warnings,
+    execution_mode_label,
+    render_bundle_markdown,
+    render_summary_markdown,
+    safe_int,
+    utc_now_iso,
+)
 
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
@@ -35,6 +58,16 @@ def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
     return out
 
 
+def _read_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
 def _to_epoch(ts: Any) -> Optional[int]:
     if ts is None:
         return None
@@ -47,9 +80,9 @@ def _to_epoch(ts: Any) -> Optional[int]:
         return int(float(raw))
     except Exception:
         pass
-    s = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    stamped = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
     try:
-        dt = datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(stamped)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return int(dt.timestamp())
@@ -64,17 +97,6 @@ def _utc_day(ts: Any) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _safe_int(v: Any, default: int = 0) -> int:
-    try:
-        return int(float(v))
-    except Exception:
-        return int(default)
-
-
 def _normalize_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         return {"action": "", "symbol": "", "qty": 0, "status": "", "ord_no": ""}
@@ -87,7 +109,7 @@ def _normalize_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             payload.get("symbol") or order.get("symbol") or order.get("stk_cd") or "",
             allow_test_symbols=True,
         ),
-        "qty": _safe_int(payload.get("qty"), _safe_int(order.get("qty"), _safe_int(order.get("ord_qty"), 0))),
+        "qty": safe_int(payload.get("qty"), safe_int(order.get("qty"), safe_int(order.get("ord_qty"), 0))),
         "status": str(
             payload.get("fill_status_summary")
             or payload.get("status")
@@ -103,9 +125,7 @@ def _latest_execution_day(event_log_path: Path) -> str:
     best_day = ""
     best_epoch = -1
     for row in _iter_jsonl(event_log_path):
-        if str(row.get("stage") or "") != "execute_from_packet":
-            continue
-        if str(row.get("event") or "") != "execution":
+        if str(row.get("stage") or "") != "execute_from_packet" or str(row.get("event") or "") != "execution":
             continue
         execution = _normalize_execution_payload(row.get("payload") if isinstance(row.get("payload"), dict) else {})
         if str(execution.get("action") or "").upper() not in {"BUY", "SELL"}:
@@ -125,9 +145,7 @@ def _resolve_execution_runs(event_log_path: Path, day: str) -> List[Dict[str, An
     out: List[Dict[str, Any]] = []
     rows = sorted(_iter_jsonl(event_log_path), key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)
     for row in rows:
-        if str(row.get("stage") or "") != "execute_from_packet":
-            continue
-        if str(row.get("event") or "") != "execution":
+        if str(row.get("stage") or "") != "execute_from_packet" or str(row.get("event") or "") != "execution":
             continue
         if day and _utc_day(row.get("ts")) != day:
             continue
@@ -135,9 +153,7 @@ def _resolve_execution_runs(event_log_path: Path, day: str) -> List[Dict[str, An
         if not run_id or run_id in seen:
             continue
         execution = _normalize_execution_payload(row.get("payload") if isinstance(row.get("payload"), dict) else {})
-        if str(execution.get("action") or "").upper() not in {"BUY", "SELL"}:
-            continue
-        if not str(execution.get("symbol") or "").strip():
+        if str(execution.get("action") or "").upper() not in {"BUY", "SELL"} or not str(execution.get("symbol") or "").strip():
             continue
         seen.add(run_id)
         out.append(
@@ -146,7 +162,7 @@ def _resolve_execution_runs(event_log_path: Path, day: str) -> List[Dict[str, An
                 "ts": str(row.get("ts") or ""),
                 "action": str(execution.get("action") or "").upper(),
                 "symbol": str(execution.get("symbol") or ""),
-                "qty": _safe_int(execution.get("qty"), 0),
+                "qty": safe_int(execution.get("qty"), 0),
                 "status": str(execution.get("status") or ""),
                 "ord_no": str(execution.get("ord_no") or ""),
             }
@@ -163,11 +179,7 @@ def _load_or_generate_trade_explain(event_log_path: Path, analysis_root: Path, d
     report_dir = analysis_root / "trade_explain"
     md_path, js_path = _resolve_existing_day_artifact(report_dir, "trade_explain", day)
     if js_path.exists() and md_path.exists():
-        try:
-            obj = json.loads(js_path.read_text(encoding="utf-8"))
-        except Exception:
-            obj = {}
-        return md_path, js_path, obj if isinstance(obj, dict) else {}
+        return md_path, js_path, _read_json(js_path)
     return generate_trade_explain_report(event_log_path, report_dir, day=day)
 
 
@@ -181,11 +193,7 @@ def _load_or_generate_reporter_analysis(
     report_dir = analysis_root / "reporter_analysis"
     md_path, js_path = _resolve_existing_day_artifact(report_dir, "reporter_analysis", day)
     if js_path.exists() and md_path.exists():
-        try:
-            obj = json.loads(js_path.read_text(encoding="utf-8"))
-        except Exception:
-            obj = {}
-        return md_path, js_path, obj if isinstance(obj, dict) else {}
+        return md_path, js_path, _read_json(js_path)
     return generate_reporter_analysis_report(
         event_log_path,
         report_dir,
@@ -195,99 +203,9 @@ def _load_or_generate_reporter_analysis(
     )
 
 
-def _read_json(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        obj = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return obj if isinstance(obj, dict) else {}
-
-
-def _render_bundle_markdown(out: Dict[str, Any]) -> str:
-    strategist = out.get("strategist") if isinstance(out.get("strategist"), dict) else {}
-    scanner = out.get("scanner") if isinstance(out.get("scanner"), dict) else {}
-    monitor = out.get("monitor") if isinstance(out.get("monitor"), dict) else {}
-    reporter = out.get("reporter") if isinstance(out.get("reporter"), dict) else {}
-    execution = out.get("execution") if isinstance(out.get("execution"), dict) else {}
-    artifacts = out.get("artifacts") if isinstance(out.get("artifacts"), dict) else {}
-
-    lines: List[str] = []
-    lines.append(f"# Live Execution Bundle ({out.get('run_id')})")
-    lines.append("")
-    lines.append(f"- day: **{out.get('day')}**")
-    lines.append(
-        f"- execution: **{execution.get('action')} {execution.get('symbol')} x{execution.get('qty')}** "
-        f"status=`{execution.get('status') or '-'}` ord_no=`{execution.get('ord_no') or '-'}`"
-    )
-    lines.append(f"- execution_ts: `{execution.get('ts') or ''}`")
-    lines.append("")
-    lines.append("## Strategist")
-    lines.append(
-        f"- playbook: **{strategist.get('playbook')}** themes=`{json.dumps(strategist.get('themes') or [], ensure_ascii=False)}`"
-    )
-    lines.append(
-        f"- market context: sentiment={strategist.get('global_sentiment_score')} "
-        f"vix=`{json.dumps(strategist.get('fear_index') or {}, ensure_ascii=False)}`"
-    )
-    if strategist.get("news_query_reasoning"):
-        lines.append(f"- news_query_reasoning: {strategist.get('news_query_reasoning')}")
-    lines.append("")
-    lines.append("## Scanner")
-    lines.append(
-        f"- top_stock: **{scanner.get('top_stock')}** top_score={scanner.get('top_score')} "
-        f"pool_after={scanner.get('candidate_pool_after_filter')}"
-    )
-    lines.append(f"- selected_candidate: `{json.dumps(scanner.get('selected_candidate') or {}, ensure_ascii=False)}`")
-    lines.append("")
-    lines.append("## Monitor")
-    lines.append(
-        f"- selected_symbol={monitor.get('selected_symbol')} entry_reason={monitor.get('entry_reason')} "
-        f"exit_reason={monitor.get('exit_reason')} monitor_reason={monitor.get('monitor_reason')}"
-    )
-    lines.append(f"- thresholds: `{json.dumps(monitor.get('thresholds') or {}, ensure_ascii=False)}`")
-    lines.append("")
-    lines.append("## Reporter")
-    lines.append(
-        f"- reporter_analysis_found={reporter.get('reporter_analysis_found')} "
-        f"day_file_found={reporter.get('reporter_analysis_day_file_found')}"
-    )
-    lines.append(f"- reporter_analysis_path: `{reporter.get('reporter_analysis_path') or ''}`")
-    lines.append("")
-    lines.append("## Artifacts")
-    for key, value in artifacts.items():
-        lines.append(f"- {key}: `{value}`")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def _render_summary_markdown(out: Dict[str, Any]) -> str:
-    bundles = out.get("bundles") if isinstance(out.get("bundles"), list) else []
-    lines: List[str] = []
-    lines.append(f"# Live Execution Bundles ({out.get('day')})")
-    lines.append("")
-    lines.append(f"- bundle_count: **{out.get('bundle_count')}**")
-    lines.append(f"- event_log_path: `{out.get('event_log_path')}`")
-    lines.append(f"- evidence_log_path: `{out.get('evidence_log_path')}`")
-    lines.append("")
-    if not bundles:
-        lines.append("No executed BUY/SELL runs were found for the selected day.")
-        lines.append("")
-        return "\n".join(lines)
-    lines.append("## Bundles")
-    lines.append("")
-    for row in bundles:
-        lines.append(
-            f"- `{row.get('run_id')}` {row.get('action')} {row.get('symbol')} x{row.get('qty')} "
-            f"status=`{row.get('status')}` json=`{row.get('report_json_path')}`"
-        )
-    lines.append("")
-    return "\n".join(lines)
-
-
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Generate run-level live execution bundles for executed BUY/SELL runs.")
+    p = argparse.ArgumentParser(description="Generate run-level aggregated execution bundles and per-trade reports.")
+    p.add_argument("--env-path", default=".env")
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
     p.add_argument("--evidence-log-path", default="data/evidence_ledger/events.jsonl")
     p.add_argument("--report-dir", default="reports/dev/analysis/live_execution_bundles")
@@ -295,12 +213,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--intents-path", default="data/logs/intents.jsonl")
     p.add_argument("--day", default=None)
     p.add_argument("--max-runs", type=int, default=50)
+    ai = p.add_mutually_exclusive_group()
+    ai.add_argument("--trade-report-ai", dest="trade_report_ai", action="store_true")
+    ai.add_argument("--no-trade-report-ai", dest="trade_report_ai", action="store_false")
+    p.set_defaults(trade_report_ai=None)
+    p.add_argument("--trade-report-ai-model", default=None)
+    p.add_argument("--trade-report-ai-temperature", type=float, default=None)
+    p.add_argument("--trade-report-ai-max-tokens", type=int, default=None)
     p.add_argument("--json", action="store_true")
     return p
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
+    load_env_file(str(args.env_path).strip() or ".env")
     event_log_path = Path(str(args.event_log_path).strip())
     evidence_log_path = Path(str(args.evidence_log_path).strip())
     report_dir = Path(str(args.report_dir).strip())
@@ -308,12 +234,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     intents_path = Path(str(args.intents_path).strip()) if str(args.intents_path or "").strip() else None
     day = str(args.day).strip() if args.day else _latest_execution_day(event_log_path)
     analysis_root = report_dir.parent
-
     report_dir.mkdir(parents=True, exist_ok=True)
 
     if not day:
         out = {
-            "schema_version": "live_execution_bundles.v1",
+            "schema_version": "live_execution_bundles.v2",
             "ok": False,
             "error": "no_execution_day_detected",
             "event_log_path": str(event_log_path),
@@ -321,25 +246,19 @@ def main(argv: Optional[List[str]] = None) -> int:
             "bundle_count": 0,
             "bundles": [],
         }
-        if bool(args.json):
-            print(json.dumps(out, ensure_ascii=False))
-        else:
-            print("ok=false error=no_execution_day_detected")
+        print(json.dumps(out, ensure_ascii=False) if bool(args.json) else "ok=false error=no_execution_day_detected")
         return 3
 
     execution_runs = _resolve_execution_runs(event_log_path, day)[: max(1, int(args.max_runs))]
-    trade_md, trade_js, _trade_out = _load_or_generate_trade_explain(event_log_path, analysis_root, day)
-    reporter_md, reporter_js, _reporter_out = _load_or_generate_reporter_analysis(
-        event_log_path,
-        analysis_root,
-        reports_root,
-        intents_path,
-        day,
-    )
+    trade_md, trade_js, trade_obj = _load_or_generate_trade_explain(event_log_path, analysis_root, day)
+    reporter_md, reporter_js, reporter_obj = _load_or_generate_reporter_analysis(event_log_path, analysis_root, reports_root, intents_path, day)
     operator_summary_json = reports_root / "operator_summary" / f"operator_summary_{day}.json"
     operator_summary_md = reports_root / "operator_summary" / f"operator_summary_{day}.md"
+    canonical_trades_root = reports_root / "trades"
+    year_part, month_part = (day.split("-") + ["01", "01"])[:2]
 
     bundles: List[Dict[str, Any]] = []
+    story_type_counts: Dict[str, int] = {}
     for execution in execution_runs:
         run_id = str(execution.get("run_id") or "").strip()
         trace_md, trace_js, trace_out = generate_agent_pipeline_trace_report(
@@ -351,11 +270,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             reports_root=analysis_root,
         )
         bundle_out: Dict[str, Any] = {
-            "schema_version": "live_execution_bundle.v1",
-            "ts": _utc_now_iso(),
+            "schema_version": "live_execution_bundle.v2",
+            "artifact_type": "aggregated_execution_bundle",
+            "ts": utc_now_iso(),
             "day": day,
             "run_id": run_id,
             "execution": dict(execution),
+            "commander": dict(trace_out.get("commander") or {}),
             "strategist": dict(trace_out.get("strategist") or {}),
             "scanner": dict(trace_out.get("scanner") or {}),
             "monitor": dict(trace_out.get("monitor") or {}),
@@ -363,7 +284,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "executor": dict(trace_out.get("executor") or {}),
             "reporter": {
                 **dict(trace_out.get("reporter") or {}),
-                "reporter_analysis_summary": str((_read_json(reporter_js).get("ai_summary") or "")),
+                "reporter_analysis_summary": str(reporter_obj.get("ai_summary") or ""),
+                "reporter_analysis_grade": str(reporter_obj.get("ai_run_grade") or "N/A"),
             },
             "artifacts": {
                 "agent_pipeline_trace_json": str(trace_js),
@@ -375,34 +297,136 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "operator_summary_json": str(operator_summary_json) if operator_summary_json.exists() else "",
                 "operator_summary_md": str(operator_summary_md) if operator_summary_md.exists() else "",
             },
+            "trade_explain_summary": {
+                "executions_total": safe_int((trade_obj.get("execution_summary") or {}).get("executions_total"), 0)
+                if isinstance(trade_obj.get("execution_summary"), dict)
+                else 0
+            },
         }
-        safe_run = "".join(ch for ch in run_id if ch.isalnum() or ch in ("_", "-"))[:40] or "run"
-        bundle_json = report_dir / f"live_execution_bundle_{safe_run}.json"
-        bundle_md = report_dir / f"live_execution_bundle_{safe_run}.md"
+
+        story_contract = build_story_contract(bundle_out)
+        market_context_human = build_market_context_human(bundle_out["strategist"])
+        scanner_reason_human = build_scanner_reason_human(bundle_out["scanner"], bundle_out["strategist"])
+        filters_human = build_filters_human(bundle_out["scanner"], bundle_out["strategist"], bundle_out["supervisor"])
+        monitor_reason_human = build_monitor_reason_human(bundle_out["monitor"], bundle_out["execution"])
+        guard_reason_human = build_guard_reason_human(bundle_out["supervisor"])
+        execution_outcome_human = build_execution_outcome_human(
+            bundle_out["execution"],
+            bundle_out["executor"],
+            story_type=str(story_contract.get("story_type") or ""),
+            mode_label=execution_mode_label(bundle_out["executor"]),
+        )
+        reporter_status_human = build_reporter_status_human(bundle_out["reporter"], reporter_obj)
+        operator_conclusion_human = build_operator_conclusion_human(
+            execution=bundle_out["execution"],
+            scanner_reason_human=scanner_reason_human,
+            filters_human=filters_human,
+            monitor_reason_human=monitor_reason_human,
+            execution_outcome_human=execution_outcome_human,
+            reporter_status_human=reporter_status_human,
+        )
+        timeline = build_timeline(
+            commander=bundle_out["commander"],
+            market_context_human=market_context_human,
+            scanner_reason_human=scanner_reason_human,
+            monitor_reason_human=monitor_reason_human,
+            guard_reason_human=guard_reason_human,
+            execution_outcome_human=execution_outcome_human,
+            reporter_status_human=reporter_status_human,
+            execution=bundle_out["execution"],
+        )
+        warnings = collect_story_warnings(
+            story_contract=story_contract,
+            market_context_human=market_context_human,
+            filters_human=filters_human,
+            reporter_status_human=reporter_status_human,
+            execution_outcome_human=execution_outcome_human,
+        )
+        story_contract["warnings"] = warnings
+
+        story_id = build_story_id(day, bundle_out["execution"])
+        canonical_dir = canonical_trades_root / year_part / month_part / story_id
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        bundle_out.update(
+            {
+                "story_id": story_id,
+                "story_contract": story_contract,
+                "market_context_human": market_context_human,
+                "scanner_reason_human": scanner_reason_human,
+                "filters_human": filters_human,
+                "monitor_reason_human": monitor_reason_human,
+                "guard_reason_human": guard_reason_human,
+                "execution_outcome_human": execution_outcome_human,
+                "reporter_status_human": reporter_status_human,
+                "operator_conclusion_human": operator_conclusion_human,
+                "timeline": timeline,
+                "warnings": warnings,
+            }
+        )
+
+        trade_story_input = build_trade_story_input(bundle_out)
+        trade_report = build_ai_trade_report(
+            trade_story_input,
+            enabled=args.trade_report_ai,
+            model=str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else None,
+            temperature=args.trade_report_ai_temperature,
+            max_tokens=args.trade_report_ai_max_tokens,
+        )
+
+        aggregated_bundle_path = canonical_dir / "aggregated_execution_bundle.json"
+        story_input_path = canonical_dir / "trade_story_input.json"
+        trade_report_json_path = canonical_dir / "trade_report.json"
+        trade_report_md_path = canonical_dir / "trade_report.md"
+        aggregated_bundle_path.write_text(json.dumps(bundle_out, ensure_ascii=False, indent=2), encoding="utf-8")
+        story_input_path.write_text(json.dumps(trade_story_input, ensure_ascii=False, indent=2), encoding="utf-8")
+        trade_report_json_path.write_text(json.dumps(trade_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        trade_report_md_path.write_text(render_trade_report_markdown(trade_report), encoding="utf-8")
+
+        bundle_out["artifacts"].update(
+            {
+                "aggregated_execution_bundle_json": str(aggregated_bundle_path),
+                "trade_story_input_json": str(story_input_path),
+                "trade_report_json": str(trade_report_json_path),
+                "trade_report_md": str(trade_report_md_path),
+            }
+        )
+        bundle_json = report_dir / f"live_execution_bundle_{run_id}.json"
+        bundle_md = report_dir / f"live_execution_bundle_{run_id}.md"
         bundle_out["report_json_path"] = str(bundle_json)
         bundle_out["report_md_path"] = str(bundle_md)
         bundle_json.write_text(json.dumps(bundle_out, ensure_ascii=False, indent=2), encoding="utf-8")
-        bundle_md.write_text(_render_bundle_markdown(bundle_out), encoding="utf-8")
+        bundle_md.write_text(render_bundle_markdown(bundle_out), encoding="utf-8")
+
+        story_type = str(story_contract.get("story_type") or "unknown")
+        story_type_counts[story_type] = int(story_type_counts.get(story_type, 0) + 1)
         bundles.append(
             {
                 "run_id": run_id,
+                "story_id": story_id,
+                "story_type": story_type,
                 "action": execution.get("action"),
                 "symbol": execution.get("symbol"),
                 "qty": execution.get("qty"),
                 "status": execution.get("status"),
                 "report_json_path": str(bundle_json),
                 "report_md_path": str(bundle_md),
+                "trade_story_input_path": str(story_input_path),
+                "trade_report_json_path": str(trade_report_json_path),
+                "trade_report_md_path": str(trade_report_md_path),
+                "trade_report_summary": str((trade_report.get("executive_summary") or {}).get("summary") or ""),
             }
         )
 
     summary_out: Dict[str, Any] = {
-        "schema_version": "live_execution_bundles.v1",
+        "schema_version": "live_execution_bundles.v2",
         "ok": True,
-        "ts": _utc_now_iso(),
+        "ts": utc_now_iso(),
         "day": day,
         "event_log_path": str(event_log_path),
         "evidence_log_path": str(evidence_log_path),
         "bundle_count": len(bundles),
+        "story_type_counts": story_type_counts,
+        "canonical_trades_root": str(canonical_trades_root),
         "bundles": bundles,
         "day_artifacts": {
             "trade_explain_json": str(trade_js),
@@ -418,15 +442,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     summary_out["report_json_path"] = str(summary_json)
     summary_out["report_md_path"] = str(summary_md)
     summary_json.write_text(json.dumps(summary_out, ensure_ascii=False, indent=2), encoding="utf-8")
-    summary_md.write_text(_render_summary_markdown(summary_out), encoding="utf-8")
+    summary_md.write_text(render_summary_markdown(summary_out), encoding="utf-8")
 
     if bool(args.json):
         print(json.dumps(summary_out, ensure_ascii=False))
     else:
-        print(
-            f"day={day} bundle_count={len(bundles)} "
-            f"report_json={summary_json} report_md={summary_md}"
-        )
+        print(f"day={day} bundle_count={len(bundles)} report_json={summary_json} report_md={summary_md}")
     return 0
 
 
