@@ -105,6 +105,37 @@ def _fake_reporter(event_log_path, report_dir, *, day=None, intents_path=None, r
     return md_path, js_path, out
 
 
+def _fake_ai_trade_report_ok(story_input: dict, **kwargs):  # type: ignore[no-untyped-def]
+    symbol = str(story_input.get("symbol") or "000000")
+    action = str(story_input.get("action") or "HOLD")
+    return {
+        "schema_version": "trade_report.v2",
+        "trade_id": str(story_input.get("trade_id") or story_input.get("story_id") or ""),
+        "story_id": str(story_input.get("story_id") or ""),
+        "run_id": str(story_input.get("run_id") or ""),
+        "symbol": symbol,
+        "action": action,
+        "status": str(story_input.get("status") or "closed"),
+        "story_type": str(story_input.get("story_type") or "simulation"),
+        "execution_mode_label": str(story_input.get("execution_mode_label") or "simulation"),
+        "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free", "reason": ""},
+        "executive_summary": {"headline": f"{action} {symbol}", "summary": "AI report generated.", "action": action, "symbol": symbol, "confidence": "high"},
+        "market_context_at_entry": {"summary": "Sentiment context captured.", "bullets": ["sentiment: neutral"]},
+        "why_this_symbol_was_chosen": {"summary": "Top rank selected.", "bullets": ["rank #1"]},
+        "entry_decision": {"summary": "Entry rationale captured.", "bullets": []},
+        "holding_monitoring_story": {"summary": "Holding path captured.", "bullets": []},
+        "exit_decision": {"summary": "Exit rationale captured.", "bullets": []},
+        "execution_quality": {"summary": "Execution quality captured.", "bullets": []},
+        "scanner_filters": {"summary": "Filters captured.", "bullets": []},
+        "guard_approval_result": {"summary": "Guard approval captured.", "bullets": []},
+        "reporter_evaluation": {"summary": "Reporter linkage captured.", "status": "linked", "grade": "A", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "No major issues.", "bullets": []},
+        "full_timeline": [{"event": "entry", "ts": "2026-03-16T00:00:00+00:00", "description": "entry"}],
+        "timeline": [{"event": "entry", "ts": "2026-03-16T00:00:00+00:00", "description": "entry"}],
+        "final_operator_conclusion": {"summary": "Hold and monitor.", "current_action": "HOLD", "watch_next": ["volatility"], "thesis_invalidation": ["stop breach"]},
+    }
+
+
 def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exit(tmp_path: Path, capsys, monkeypatch) -> None:
     day = "2026-03-16"
     event_log = tmp_path / "events.jsonl"
@@ -126,6 +157,7 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
     monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
     monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
 
     rc = mod.main(
         [
@@ -149,6 +181,7 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert out["run_bundle_count"] == 2
     lifecycle_row = out["bundles"][0]
     assert lifecycle_row["status"] == "closed"
+    assert lifecycle_row["report_status"] == "available"
     assert lifecycle_row["entry_run_id"] == "run-1"
     assert lifecycle_row["exit_run_id"] == "run-2"
     assert "run-3" in lifecycle_row["hold_run_ids"]
@@ -193,6 +226,7 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert story_input["entry_summary"]["reason_human"]
 
     trade_report = json.loads((canonical_dir / "trade_report.json").read_text(encoding="utf-8"))
+    assert (trade_report.get("ai_report_diagnostics") or {}).get("report_status") == "available"
     assert trade_report["status"] == "closed"
     assert trade_report["market_context_at_entry"]["summary"]
     assert trade_report["why_this_symbol_was_chosen"]["summary"]
@@ -300,10 +334,65 @@ def test_live_execution_bundle_report_keeps_open_lifecycle_without_exit(tmp_path
     assert out["trade_lifecycle_count"] == 1
     lifecycle = out["bundles"][0]
     assert lifecycle["status"] == "open"
+    assert lifecycle["report_status"] == "pending"
+    assert lifecycle["report_reason_code"] == "awaiting_exit_for_full_report"
     story_id = lifecycle["story_id"]
-    trade_report = json.loads((reports_root / "trades" / "2026" / "03" / story_id / "trade_report.json").read_text(encoding="utf-8"))
-    assert trade_report["status"] == "open"
-    assert "open" in trade_report["exit_decision"]["summary"].lower() or "still open" in trade_report["exit_decision"]["summary"].lower()
+    trade_dir = reports_root / "trades" / "2026" / "03" / story_id
+    assert (trade_dir / "trade_story_input.json").exists()
+    assert not (trade_dir / "trade_report.json").exists()
+    bundle = json.loads((trade_dir / "aggregated_execution_bundle.json").read_text(encoding="utf-8"))
+    diagnostics = bundle.get("ai_report_diagnostics") or {}
+    assert diagnostics.get("report_status") == "pending"
+    assert diagnostics.get("report_reason_code") == "awaiting_exit_for_full_report"
+
+
+def test_live_execution_bundle_report_marks_skipped_when_report_not_requested(tmp_path: Path, capsys, monkeypatch) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:10:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}}},
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--no-trade-report-ai",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    lifecycle = out["bundles"][0]
+    assert lifecycle["report_status"] == "skipped"
+    assert lifecycle["report_reason_code"] == "report_not_requested"
+    trade_dir = reports_root / "trades" / "2026" / "03" / lifecycle["story_id"]
+    assert not (trade_dir / "trade_report.json").exists()
+    bundle = json.loads((trade_dir / "aggregated_execution_bundle.json").read_text(encoding="utf-8"))
+    diagnostics = bundle.get("ai_report_diagnostics") or {}
+    assert diagnostics.get("report_status") == "skipped"
+    assert diagnostics.get("report_reason_code") == "report_not_requested"
 
 
 def test_story_type_classification_is_deterministic() -> None:

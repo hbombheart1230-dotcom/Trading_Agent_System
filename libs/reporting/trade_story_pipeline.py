@@ -689,6 +689,7 @@ def build_trade_story_input(
             "timeline": [dict(x) for x in list(lifecycle.get("timeline") or bundle_out.get("timeline") or []) if isinstance(x, dict)][:40],
             "warnings": [str(x or "") for x in list(bundle_out.get("warnings") or lifecycle.get("warnings") or []) if str(x or "").strip()][:20],
             "improvement_points": [str(x or "") for x in list(reporter.get("improvement_points") or []) if str(x or "").strip()][:12],
+            "ai_report_diagnostics": dict(bundle_out.get("ai_report_diagnostics") or {}),
         }
 
     return {
@@ -711,6 +712,7 @@ def build_trade_story_input(
         "operator_conclusion_human": dict(bundle_out.get("operator_conclusion_human") or {}),
         "timeline": list(bundle_out.get("timeline") or []),
         "warnings": list(bundle_out.get("warnings") or []),
+        "ai_report_diagnostics": dict(bundle_out.get("ai_report_diagnostics") or {}),
     }
 
 

@@ -55,23 +55,21 @@
         </td>
         <td>{{ row.execution_mode_label or "-" }}</td>
         <td>
-          {% if row.report_available %}
           <div class="chip-list">
-            <span class="chip chip--soft">AI report available</span>
+            <span class="{{ row.report_status_badge_class or 'status-badge' }}">{{ row.report_status_label or "AI Report" }}</span>
             {% if row.lifecycle_status %}
             <span class="chip">Lifecycle {{ row.lifecycle_status | upper }}</span>
             {% endif %}
-            {% if row.report_link %}
+            {% if row.report_available and row.report_link %}
             <a class="link-action" href="{{ row.report_link }}">Open report</a>
             {% endif %}
           </div>
           {% if row.trade_id %}
           <p class="subtle-meta">Trade ID: {{ row.trade_id }}</p>
           {% endif %}
-          <p class="subtle-meta clamp-2">{{ row.report_summary }}</p>
-          {% else %}
-          <span class="chip">No report</span>
-          <p class="subtle-meta">No linked trade report for this run.</p>
+          <p class="subtle-meta clamp-2">{{ row.report_reason_human or row.report_summary }}</p>
+          {% if row.report_next_expected_step %}
+          <p class="subtle-meta clamp-2">Next: {{ row.report_next_expected_step }}</p>
           {% endif %}
         </td>
         <td>

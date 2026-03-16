@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,131 @@ from libs.reporting.trade_story_pipeline import (
     safe_int,
     utc_now_iso,
 )
+
+
+def _env_bool(name: str, default: bool = True) -> bool:
+    raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _normalize_model_name(model: Any) -> str:
+    raw = str(model or "").strip()
+    lowered = raw.lower()
+    if lowered == "free":
+        return "openrouter/free"
+    if lowered == "auto":
+        return "openrouter/auto"
+    return raw
+
+
+def _sanitize_error_message(value: Any, *, max_len: int = 260) -> str:
+    text = str(value or "").strip().replace("\n", " ").replace("\r", " ")
+    if len(text) <= max_len:
+        return text
+    return text[: max(0, max_len - 3)] + "..."
+
+
+def _report_reason_human(code: str) -> str:
+    mapping = {
+        "no_executed_lifecycle": "No executed trade lifecycle was created for this run.",
+        "decision_only_run": "This run was decision-only, so a full AI trade report was not generated.",
+        "hold_only_run": "This run only updated hold/monitor state, so a full AI trade report was not generated.",
+        "execution_failed": "Execution did not complete successfully, so a full AI trade report was skipped.",
+        "missing_story_input": "Trade story input was not created, so report generation could not continue.",
+        "llm_generation_failed": "Trade story input existed, but AI report generation failed.",
+        "artifact_write_failed": "AI report generation ran, but writing report artifacts failed.",
+        "missing_report_linkage": "A linked AI trade report could not be found for this run.",
+        "report_not_requested": "AI trade report generation was not requested for this run.",
+        "still_open_lifecycle": "This trade lifecycle is still open, so the full AI report is pending.",
+        "awaiting_exit_for_full_report": "This trade is still open. The full AI report is generated after exit/closure.",
+    }
+    return mapping.get(str(code or "").strip().lower(), "AI report diagnostics are not fully classified.")
+
+
+def _report_next_step(code: str) -> str:
+    mapping = {
+        "no_executed_lifecycle": "Continue with Operator Brief. Generate full AI report only for executed lifecycles.",
+        "decision_only_run": "Continue with Operator Brief. Generate full AI report after executed lifecycle events.",
+        "hold_only_run": "Continue monitoring. Generate full AI report after entry/exit execution is formed.",
+        "execution_failed": "Review execution failure details and rerun report generation after stabilization.",
+        "missing_story_input": "Fix trade story input generation first, then retry.",
+        "llm_generation_failed": "Check OpenRouter/model connectivity and retry report generation.",
+        "artifact_write_failed": "Check filesystem write path and permissions, then retry.",
+        "missing_report_linkage": "Regenerate lifecycle/report linkage for this run and retry.",
+        "report_not_requested": "Enable AI report generation policy and rerun.",
+        "still_open_lifecycle": "Generate the full AI report after lifecycle exit/closure.",
+        "awaiting_exit_for_full_report": "Generate the final AI report after exit/closure.",
+    }
+    return mapping.get(str(code or "").strip().lower(), "Review diagnostics and continue with Operator Brief.")
+
+
+def _base_diagnostics(model_hint: str) -> Dict[str, Any]:
+    return {
+        "report_status": "pending",
+        "report_reason_code": "",
+        "report_reason_human": "",
+        "generation_attempted": False,
+        "generation_ts": "",
+        "story_input_available": False,
+        "report_output_available": False,
+        "report_artifact_available": False,
+        "llm_provider": "OpenRouter",
+        "llm_model_used": _normalize_model_name(model_hint) or "openrouter/free",
+        "expected_generation_mode": "per-trade free model report",
+        "last_error_message": "",
+        "next_expected_step": "",
+    }
+
+
+def _seed_diagnostics_for_policy(
+    *,
+    lifecycle_status: str,
+    story_type: str,
+    report_requested: bool,
+    story_input_available: bool,
+    model_hint: str,
+) -> Tuple[Dict[str, Any], bool]:
+    diagnostics = _base_diagnostics(model_hint)
+    diagnostics["story_input_available"] = bool(story_input_available)
+    status = str(lifecycle_status or "").strip().lower()
+    story = str(story_type or "").strip().lower()
+
+    if not story_input_available:
+        diagnostics["report_status"] = "failed"
+        diagnostics["report_reason_code"] = "missing_story_input"
+        diagnostics["report_reason_human"] = _report_reason_human("missing_story_input")
+        diagnostics["next_expected_step"] = _report_next_step("missing_story_input")
+        return diagnostics, False
+
+    if not report_requested:
+        diagnostics["report_status"] = "skipped"
+        diagnostics["report_reason_code"] = "report_not_requested"
+        diagnostics["report_reason_human"] = _report_reason_human("report_not_requested")
+        diagnostics["next_expected_step"] = _report_next_step("report_not_requested")
+        return diagnostics, False
+
+    if story == "decision_only":
+        diagnostics["report_status"] = "skipped"
+        diagnostics["report_reason_code"] = "decision_only_run"
+        diagnostics["report_reason_human"] = _report_reason_human("decision_only_run")
+        diagnostics["next_expected_step"] = _report_next_step("decision_only_run")
+        return diagnostics, False
+
+    if story == "failed_execution":
+        diagnostics["report_status"] = "skipped"
+        diagnostics["report_reason_code"] = "execution_failed"
+        diagnostics["report_reason_human"] = _report_reason_human("execution_failed")
+        diagnostics["next_expected_step"] = _report_next_step("execution_failed")
+        return diagnostics, False
+
+    if status == "open":
+        diagnostics["report_status"] = "pending"
+        diagnostics["report_reason_code"] = "awaiting_exit_for_full_report"
+        diagnostics["report_reason_human"] = _report_reason_human("awaiting_exit_for_full_report")
+        diagnostics["next_expected_step"] = _report_next_step("awaiting_exit_for_full_report")
+        return diagnostics, False
+
+    return diagnostics, True
 
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
@@ -665,6 +791,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     day = str(args.day).strip() if args.day else _latest_execution_day(event_log_path)
     analysis_root = report_dir.parent
     report_dir.mkdir(parents=True, exist_ok=True)
+    report_requested = bool(args.trade_report_ai) if args.trade_report_ai is not None else _env_bool("TRADE_REPORT_AI_ENABLED", True)
+    configured_report_model = _normalize_model_name(
+        str(args.trade_report_ai_model).strip()
+        if args.trade_report_ai_model
+        else os.getenv("TRADE_REPORT_AI_MODEL", "")
+        or os.getenv("OPENROUTER_MODEL_TRADE_REPORT", "")
+        or os.getenv("OPENROUTER_DEFAULT_MODEL", "")
+        or "openrouter/free"
+    )
 
     if not day:
         out = {
@@ -821,6 +956,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "trade_report_md_path": "",
                 "trade_lifecycle_json_path": "",
                 "trade_report_summary": "",
+                "report_status": "failed",
+                "report_reason_code": "missing_report_linkage",
+                "report_reason_human": _report_reason_human("missing_report_linkage"),
+                "report_next_expected_step": _report_next_step("missing_report_linkage"),
+                "report_generation_model": configured_report_model,
+                "report_generation_attempted": False,
             }
         )
 
@@ -941,27 +1082,94 @@ def main(argv: Optional[List[str]] = None) -> int:
         trade_report_md_path = canonical_dir / "trade_report.md"
 
         trade_story_input = build_trade_story_input(lifecycle_bundle, trade_lifecycle=lifecycle)
-        trade_report = build_ai_trade_report(
-            trade_story_input,
-            enabled=args.trade_report_ai,
-            model=str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else None,
-            temperature=args.trade_report_ai_temperature,
-            max_tokens=args.trade_report_ai_max_tokens,
+        diagnostics, should_attempt_generation = _seed_diagnostics_for_policy(
+            lifecycle_status=status,
+            story_type=story_type,
+            report_requested=report_requested,
+            story_input_available=bool(trade_story_input),
+            model_hint=configured_report_model,
         )
+
+        trade_report: Dict[str, Any] = {}
+        if should_attempt_generation:
+            diagnostics["generation_attempted"] = True
+            diagnostics["generation_ts"] = utc_now_iso()
+            trade_report = build_ai_trade_report(
+                trade_story_input,
+                enabled=True,
+                model=str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else configured_report_model,
+                temperature=args.trade_report_ai_temperature,
+                max_tokens=args.trade_report_ai_max_tokens,
+            )
+            generation = trade_report.get("generation") if isinstance(trade_report.get("generation"), dict) else {}
+            generation_status = str(generation.get("status") or "").strip().lower()
+            generation_mode = str(generation.get("mode") or "").strip().lower()
+            diagnostics["llm_model_used"] = _normalize_model_name(generation.get("model") or configured_report_model) or "openrouter/free"
+            if generation_status == "ok" and generation_mode == "ai":
+                diagnostics["report_status"] = "available"
+                diagnostics["report_reason_code"] = ""
+                diagnostics["report_reason_human"] = "AI trade report was generated successfully."
+                diagnostics["next_expected_step"] = "Open the full report for detailed lifecycle analysis."
+            else:
+                diagnostics["report_status"] = "failed"
+                diagnostics["report_reason_code"] = "llm_generation_failed"
+                diagnostics["report_reason_human"] = _report_reason_human("llm_generation_failed")
+                diagnostics["next_expected_step"] = _report_next_step("llm_generation_failed")
+                diagnostics["last_error_message"] = _sanitize_error_message(generation.get("reason"))
+
+        diagnostics["report_output_available"] = False
+        diagnostics["report_artifact_available"] = False
+
+        lifecycle["ai_report_diagnostics"] = dict(diagnostics)
+        lifecycle_bundle["ai_report_diagnostics"] = dict(diagnostics)
+        trade_story_input["ai_report_diagnostics"] = dict(diagnostics)
+        if trade_report:
+            trade_report["ai_report_diagnostics"] = dict(diagnostics)
+
+        trade_report_json_written = ""
+        trade_report_md_written = ""
+        if should_attempt_generation and trade_report:
+            try:
+                trade_report_json_path.write_text(json.dumps(trade_report, ensure_ascii=False, indent=2), encoding="utf-8")
+                trade_report_md_path.write_text(render_trade_report_markdown(trade_report), encoding="utf-8")
+                trade_report_json_written = str(trade_report_json_path)
+                trade_report_md_written = str(trade_report_md_path)
+                diagnostics["report_output_available"] = bool(diagnostics.get("report_status") == "available")
+                diagnostics["report_artifact_available"] = bool(diagnostics.get("report_status") == "available")
+            except Exception as exc:
+                diagnostics["report_status"] = "failed"
+                diagnostics["report_reason_code"] = "artifact_write_failed"
+                diagnostics["report_reason_human"] = _report_reason_human("artifact_write_failed")
+                diagnostics["next_expected_step"] = _report_next_step("artifact_write_failed")
+                diagnostics["last_error_message"] = _sanitize_error_message(exc)
+                diagnostics["report_output_available"] = False
+                diagnostics["report_artifact_available"] = False
+        else:
+            if trade_report_json_path.exists():
+                trade_report_json_path.unlink()
+            if trade_report_md_path.exists():
+                trade_report_md_path.unlink()
+
+        lifecycle["ai_report_diagnostics"] = dict(diagnostics)
+        lifecycle_bundle["ai_report_diagnostics"] = dict(diagnostics)
+        trade_story_input["ai_report_diagnostics"] = dict(diagnostics)
+        if trade_report:
+            trade_report["ai_report_diagnostics"] = dict(diagnostics)
+            if trade_report_json_written:
+                trade_report_json_path.write_text(json.dumps(trade_report, ensure_ascii=False, indent=2), encoding="utf-8")
+                trade_report_md_path.write_text(render_trade_report_markdown(trade_report), encoding="utf-8")
 
         trade_lifecycle_path.write_text(json.dumps(lifecycle, ensure_ascii=False, indent=2), encoding="utf-8")
         aggregated_bundle_path.write_text(json.dumps(lifecycle_bundle, ensure_ascii=False, indent=2), encoding="utf-8")
         story_input_path.write_text(json.dumps(trade_story_input, ensure_ascii=False, indent=2), encoding="utf-8")
-        trade_report_json_path.write_text(json.dumps(trade_report, ensure_ascii=False, indent=2), encoding="utf-8")
-        trade_report_md_path.write_text(render_trade_report_markdown(trade_report), encoding="utf-8")
 
         lifecycle_bundle["artifacts"].update(
             {
                 "trade_lifecycle_json": str(trade_lifecycle_path),
                 "aggregated_execution_bundle_json": str(aggregated_bundle_path),
                 "trade_story_input_json": str(story_input_path),
-                "trade_report_json": str(trade_report_json_path),
-                "trade_report_md": str(trade_report_md_path),
+                "trade_report_json": trade_report_json_written,
+                "trade_report_md": trade_report_md_written,
             }
         )
 
@@ -982,9 +1190,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "report_json_path": str(aggregated_bundle_path),
                 "trade_lifecycle_json_path": str(trade_lifecycle_path),
                 "trade_story_input_path": str(story_input_path),
-                "trade_report_json_path": str(trade_report_json_path),
-                "trade_report_md_path": str(trade_report_md_path),
+                "trade_report_json_path": trade_report_json_written,
+                "trade_report_md_path": trade_report_md_written,
                 "trade_report_summary": str((trade_report.get("executive_summary") or {}).get("summary") or ""),
+                "report_status": str(diagnostics.get("report_status") or ""),
+                "report_reason_code": str(diagnostics.get("report_reason_code") or ""),
+                "report_reason_human": str(diagnostics.get("report_reason_human") or ""),
+                "report_next_expected_step": str(diagnostics.get("next_expected_step") or ""),
+                "report_generation_model": str(diagnostics.get("llm_model_used") or ""),
+                "report_generation_attempted": bool(diagnostics.get("generation_attempted")),
             }
         )
 
@@ -995,20 +1209,27 @@ def main(argv: Optional[List[str]] = None) -> int:
                 row["story_id"] = trade_id
                 row["trade_lifecycle_json_path"] = str(trade_lifecycle_path)
                 row["trade_story_input_path"] = str(story_input_path)
-                row["trade_report_json_path"] = str(trade_report_json_path)
-                row["trade_report_md_path"] = str(trade_report_md_path)
+                row["trade_report_json_path"] = trade_report_json_written
+                row["trade_report_md_path"] = trade_report_md_written
                 row["trade_report_summary"] = str((trade_report.get("executive_summary") or {}).get("summary") or "")
+                row["report_status"] = str(diagnostics.get("report_status") or "")
+                row["report_reason_code"] = str(diagnostics.get("report_reason_code") or "")
+                row["report_reason_human"] = str(diagnostics.get("report_reason_human") or "")
+                row["report_next_expected_step"] = str(diagnostics.get("next_expected_step") or "")
+                row["report_generation_model"] = str(diagnostics.get("llm_model_used") or "")
+                row["report_generation_attempted"] = bool(diagnostics.get("generation_attempted"))
             bundle = run_bundles_by_run.get(rid)
             if isinstance(bundle, dict):
                 bundle["trade_id"] = trade_id
                 bundle["story_id"] = trade_id
+                bundle["ai_report_diagnostics"] = dict(diagnostics)
                 bundle.setdefault("artifacts", {})
                 bundle["artifacts"].update(
                     {
                         "trade_lifecycle_json": str(trade_lifecycle_path),
                         "trade_story_input_json": str(story_input_path),
-                        "trade_report_json": str(trade_report_json_path),
-                        "trade_report_md": str(trade_report_md_path),
+                        "trade_report_json": trade_report_json_written,
+                        "trade_report_md": trade_report_md_written,
                     }
                 )
                 report_json_path = Path(str(bundle.get("report_json_path") or ""))
@@ -1017,6 +1238,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 report_md_path = Path(str(bundle.get("report_md_path") or ""))
                 if report_md_path.exists():
                     report_md_path.write_text(render_bundle_markdown(bundle), encoding="utf-8")
+
+    report_status_counts: Dict[str, int] = {}
+    for row in lifecycle_rows:
+        key = str(row.get("report_status") or "").strip().lower() or "unknown"
+        report_status_counts[key] = int(report_status_counts.get(key, 0) + 1)
 
     summary_out: Dict[str, Any] = {
         "schema_version": "live_execution_bundles.v3",
@@ -1029,6 +1255,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "trade_lifecycle_count": len(lifecycle_rows),
         "run_bundle_count": len(run_bundle_rows),
         "story_type_counts": lifecycle_story_type_counts,
+        "report_status_counts": report_status_counts,
         "run_story_type_counts": run_story_type_counts,
         "canonical_trades_root": str(canonical_trades_root),
         "bundles": lifecycle_rows,
@@ -1052,7 +1279,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if bool(args.json):
         print(json.dumps(summary_out, ensure_ascii=False))
     else:
-        print(f"day={day} bundle_count={len(bundles)} report_json={summary_json} report_md={summary_md}")
+        print(f"day={day} bundle_count={len(lifecycle_rows)} report_json={summary_json} report_md={summary_md}")
     return 0
 
 

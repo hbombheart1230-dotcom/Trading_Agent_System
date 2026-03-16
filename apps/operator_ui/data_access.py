@@ -459,6 +459,164 @@ def _story_type_badge_class(story_type: Any) -> str:
     return "status-badge"
 
 
+def _normalize_report_status(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"available", "skipped", "pending", "failed"}:
+        return raw
+    return ""
+
+
+def _report_status_label(status: Any) -> str:
+    raw = _normalize_report_status(status)
+    if raw == "available":
+        return "AI Report Available"
+    if raw == "pending":
+        return "AI Report Pending"
+    if raw == "failed":
+        return "AI Report Failed"
+    if raw == "skipped":
+        return "AI Report Skipped"
+    return "AI Report"
+
+
+def _report_status_badge_class(status: Any) -> str:
+    raw = _normalize_report_status(status)
+    if raw == "available":
+        return "status-badge status-badge--ok"
+    if raw in {"pending", "skipped"}:
+        return "status-badge status-badge--warn"
+    if raw == "failed":
+        return "status-badge status-badge--critical"
+    return "status-badge"
+
+
+def _report_reason_human(code: Any) -> str:
+    raw = str(code or "").strip().lower()
+    mapping = {
+        "no_executed_lifecycle": "No executed trade lifecycle was created for this run.",
+        "decision_only_run": "This run was decision-only, so a full AI trade report was not generated.",
+        "hold_only_run": "This run only updated hold/monitor state, so a full AI trade report was not generated.",
+        "execution_failed": "Execution did not complete successfully, so a full AI trade report was skipped.",
+        "missing_story_input": "Trade story input was not created, so report generation could not continue.",
+        "llm_generation_failed": "Trade story input existed, but AI report generation failed.",
+        "artifact_write_failed": "AI report generation ran, but writing report artifacts failed.",
+        "missing_report_linkage": "A linked AI trade report could not be found for this run.",
+        "report_not_requested": "AI trade report generation was not requested for this run.",
+        "still_open_lifecycle": "This trade lifecycle is still open, so the full AI report is pending.",
+        "awaiting_exit_for_full_report": "This trade is still open. The full AI report is generated after exit/closure.",
+    }
+    return mapping.get(raw, "AI trade report status is not fully classified yet.")
+
+
+def _report_next_step(code: Any) -> str:
+    raw = str(code or "").strip().lower()
+    mapping = {
+        "no_executed_lifecycle": "Keep using the Operator Brief. A full report is generated only for executed trade lifecycles.",
+        "decision_only_run": "Continue with the Operator Brief. Generate AI reports only after executed lifecycle events.",
+        "hold_only_run": "Continue monitoring. Generate the full AI report after an executed entry/exit lifecycle is formed.",
+        "execution_failed": "Review execution failure details and rerun after execution stabilizes.",
+        "missing_story_input": "Inspect story input generation first, then retry report generation.",
+        "llm_generation_failed": "Check OpenRouter/model connectivity and retry report generation.",
+        "artifact_write_failed": "Check filesystem write path and permissions, then retry.",
+        "missing_report_linkage": "Regenerate lifecycle/report linkage for this run and retry.",
+        "report_not_requested": "Enable AI trade report generation policy, then rerun.",
+        "still_open_lifecycle": "Generate the full AI report after lifecycle exit/closure.",
+        "awaiting_exit_for_full_report": "Generate the final AI report after exit/closure.",
+    }
+    return mapping.get(raw, "Review diagnostics and proceed with the Operator Brief in the meantime.")
+
+
+def _normalize_ai_report_diagnostics(
+    raw: Any,
+    *,
+    report_exists: bool,
+    lifecycle_status: Any,
+    story_type: Any,
+    model_hint: Any = "",
+    generation: Any = None,
+) -> Dict[str, Any]:
+    diag = raw if isinstance(raw, dict) else {}
+    generation_obj = generation if isinstance(generation, dict) else {}
+    lifecycle = str(lifecycle_status or "").strip().lower()
+    story = str(story_type or "").strip().lower()
+
+    status = _normalize_report_status(diag.get("report_status"))
+    reason_code = str(diag.get("report_reason_code") or "").strip().lower()
+
+    if not status:
+        if report_exists:
+            status = "available"
+            reason_code = reason_code or ""
+        elif lifecycle == "open":
+            status = "pending"
+            reason_code = reason_code or "awaiting_exit_for_full_report"
+        elif story == "decision_only":
+            status = "skipped"
+            reason_code = reason_code or "decision_only_run"
+        elif story == "failed_execution":
+            status = "skipped"
+            reason_code = reason_code or "execution_failed"
+        else:
+            status = "failed"
+            reason_code = reason_code or "missing_report_linkage"
+
+    if status == "available" and not report_exists:
+        status = "failed"
+        reason_code = "missing_report_linkage"
+
+    reason_human = _trim_text(diag.get("report_reason_human"), max_len=320)
+    if not reason_human:
+        reason_human = _report_reason_human(reason_code)
+
+    next_step = _trim_text(diag.get("next_expected_step"), max_len=320)
+    if not next_step:
+        next_step = _report_next_step(reason_code)
+
+    model_used = (
+        _trim_text(diag.get("llm_model_used"), max_len=120)
+        or _trim_text(diag.get("llm_model"), max_len=120)
+        or _trim_text(generation_obj.get("model"), max_len=120)
+        or _trim_text(model_hint, max_len=120)
+        or "not_captured"
+    )
+    provider = _trim_text(diag.get("llm_provider"), max_len=64) or "OpenRouter"
+
+    generation_attempted = bool(diag.get("generation_attempted"))
+    if not generation_attempted and str(generation_obj.get("status") or "").strip():
+        generation_attempted = True
+    generation_ts = _trim_text(diag.get("generation_ts"), max_len=64)
+    last_error_message = _trim_text(diag.get("last_error_message"), max_len=260)
+    if not last_error_message and status == "failed":
+        last_error_message = _trim_text(generation_obj.get("reason"), max_len=260)
+
+    story_input_available = bool(diag.get("story_input_available")) if "story_input_available" in diag else True
+    report_output_available = (
+        bool(diag.get("report_output_available"))
+        if "report_output_available" in diag
+        else bool(diag.get("report_artifact_available"))
+        if "report_artifact_available" in diag
+        else report_exists
+    )
+
+    return {
+        "report_status": status,
+        "report_status_label": _report_status_label(status),
+        "report_status_badge_class": _report_status_badge_class(status),
+        "report_reason_code": reason_code,
+        "report_reason_human": reason_human,
+        "generation_attempted": generation_attempted,
+        "generation_ts": generation_ts,
+        "story_input_available": story_input_available,
+        "report_output_available": report_output_available,
+        "report_artifact_available": report_output_available,
+        "llm_provider": provider,
+        "llm_model_used": model_used,
+        "expected_generation_mode": _trim_text(diag.get("expected_generation_mode"), max_len=120) or "per-trade free model report",
+        "next_expected_step": next_step,
+        "last_error_message": last_error_message,
+    }
+
+
 def _short_run_id(run_id: Any) -> str:
     text = str(run_id or "").strip()
     if len(text) <= 12:
@@ -520,6 +678,7 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
         executive = report.get("executive_summary") if isinstance(report.get("executive_summary"), dict) else {}
         reporter_eval = report.get("reporter_evaluation") if isinstance(report.get("reporter_evaluation"), dict) else {}
         final_conclusion = report.get("final_operator_conclusion") if isinstance(report.get("final_operator_conclusion"), dict) else {}
+        generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
         lifecycle_summary_obj = lifecycle.get("summary") if isinstance(lifecycle.get("summary"), dict) else {}
         lifecycle_status = str(lifecycle.get("status") or bundle.get("trade_lifecycle_status") or report.get("status") or "").strip().lower()
         lifecycle_summary = (
@@ -550,7 +709,25 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
             allow_test_symbols=True,
         )
         action = str(execution.get("action") or report.get("action") or "").upper()
-        report_available = bool(report_json_path.exists() or report_md_path.exists())
+        report_exists = bool(report_json_path.exists() or report_md_path.exists())
+        raw_diagnostics = (
+            report.get("ai_report_diagnostics")
+            if isinstance(report.get("ai_report_diagnostics"), dict)
+            else bundle.get("ai_report_diagnostics")
+            if isinstance(bundle.get("ai_report_diagnostics"), dict)
+            else lifecycle.get("ai_report_diagnostics")
+            if isinstance(lifecycle.get("ai_report_diagnostics"), dict)
+            else {}
+        )
+        diagnostics = _normalize_ai_report_diagnostics(
+            raw_diagnostics,
+            report_exists=report_exists,
+            lifecycle_status=lifecycle_status,
+            story_type=story_type,
+            model_hint=generation.get("model"),
+            generation=generation,
+        )
+        report_available = bool(diagnostics.get("report_status") == "available" and report_exists)
         record = {
             "trade_id": trade_id,
             "story_id": story_id,
@@ -567,10 +744,20 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
             "lifecycle_summary": lifecycle_summary or "Lifecycle summary is not available yet.",
             "execution_mode_label": execution_mode_label or "not captured",
             "report_available": report_available,
-            "report_status_label": "AI report available" if report_available else "No report",
+            "report_status": str(diagnostics.get("report_status") or ""),
+            "report_status_label": str(diagnostics.get("report_status_label") or _report_status_label("")),
+            "report_status_badge_class": str(diagnostics.get("report_status_badge_class") or "status-badge"),
+            "report_reason_code": str(diagnostics.get("report_reason_code") or ""),
+            "report_reason_human": str(diagnostics.get("report_reason_human") or ""),
+            "report_next_expected_step": str(diagnostics.get("next_expected_step") or ""),
+            "report_generation_attempted": bool(diagnostics.get("generation_attempted")),
+            "report_generation_ts": str(diagnostics.get("generation_ts") or ""),
+            "report_generation_model": str(diagnostics.get("llm_model_used") or ""),
+            "report_generation_provider": str(diagnostics.get("llm_provider") or "OpenRouter"),
+            "ai_report_diagnostics": diagnostics,
             "report_summary": report_summary or "Per-trade report summary was not generated yet.",
             "reporter_status_human": reporter_summary,
-            "report_link": f"/reports/trade/{trade_id}" if report_available and trade_id else "",
+            "report_link": f"/reports/trade/{trade_id}" if report_available and trade_id and report_exists else "",
             "trade_report_json_path": str(report_json_path) if report_json_path.exists() else "",
             "trade_report_md_path": str(report_md_path) if report_md_path.exists() else "",
             "trade_story_input_path": str(story_input_path) if story_input_path.exists() else "",
@@ -1034,6 +1221,54 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[
         feature_coverage = _feature_coverage(feature_snapshot)
         macro_stress_overlay = strategic_frame.get("macro_stress_overlay") if isinstance(strategic_frame.get("macro_stress_overlay"), dict) else {}
         report_meta = reports_by_run.get(rid) if isinstance(reports_by_run.get(rid), dict) else {}
+        if report_meta:
+            report_diag = (
+                report_meta.get("ai_report_diagnostics")
+                if isinstance(report_meta.get("ai_report_diagnostics"), dict)
+                else {}
+            )
+        else:
+            execution_action = str(execution.get("action") or "").upper()
+            monitor_reason_text = str(monitor_summary.get("monitor_reason") or "").strip().lower()
+            if execution_action in {"BUY", "SELL"}:
+                report_diag = _normalize_ai_report_diagnostics(
+                    {
+                        "report_status": "failed",
+                        "report_reason_code": "missing_report_linkage",
+                        "report_reason_human": _report_reason_human("missing_report_linkage"),
+                        "next_expected_step": _report_next_step("missing_report_linkage"),
+                        "generation_attempted": False,
+                        "story_input_available": False,
+                        "report_output_available": False,
+                    },
+                    report_exists=False,
+                    lifecycle_status="",
+                    story_type="",
+                )
+            elif "hold" in monitor_reason_text:
+                report_diag = _normalize_ai_report_diagnostics(
+                    {
+                        "report_status": "skipped",
+                        "report_reason_code": "hold_only_run",
+                        "report_reason_human": _report_reason_human("hold_only_run"),
+                        "next_expected_step": _report_next_step("hold_only_run"),
+                    },
+                    report_exists=False,
+                    lifecycle_status="",
+                    story_type="decision_only",
+                )
+            else:
+                report_diag = _normalize_ai_report_diagnostics(
+                    {
+                        "report_status": "skipped",
+                        "report_reason_code": "decision_only_run",
+                        "report_reason_human": _report_reason_human("decision_only_run"),
+                        "next_expected_step": _report_next_step("decision_only_run"),
+                    },
+                    report_exists=False,
+                    lifecycle_status="",
+                    story_type="decision_only",
+                )
         out.append(
             {
                 "run_id": rid,
@@ -1057,7 +1292,12 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[
                 "feature_coverage_quality": str(feature_coverage.get("quality") or "missing"),
                 "feature_coverage_ratio": _safe_float(feature_coverage.get("coverage_ratio"), 0.0),
                 "report_available": bool(report_meta.get("report_available")),
-                "report_status_label": str(report_meta.get("report_status_label") or "No report"),
+                "report_status": str(report_meta.get("report_status") or report_diag.get("report_status") or "skipped"),
+                "report_status_label": str(report_meta.get("report_status_label") or report_diag.get("report_status_label") or _report_status_label("skipped")),
+                "report_status_badge_class": str(report_meta.get("report_status_badge_class") or report_diag.get("report_status_badge_class") or _report_status_badge_class("skipped")),
+                "report_reason_human": str(report_meta.get("report_reason_human") or report_diag.get("report_reason_human") or ""),
+                "report_next_expected_step": str(report_meta.get("report_next_expected_step") or report_diag.get("next_expected_step") or ""),
+                "report_generation_model": str(report_meta.get("report_generation_model") or report_diag.get("llm_model_used") or ""),
                 "trade_id": str(report_meta.get("trade_id") or ""),
                 "story_id": str(report_meta.get("story_id") or ""),
                 "story_type": str(report_meta.get("story_type") or ""),
@@ -1210,6 +1450,21 @@ def load_trade_report_detail(config: OperatorUIConfig, story_id: str) -> Dict[st
         if isinstance(row, dict)
     ][:24]
     generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
+    report_exists = bool(report_path.exists() or Path(str(meta.get("trade_report_md_path") or "")).exists())
+    diagnostics = _normalize_ai_report_diagnostics(
+        report.get("ai_report_diagnostics")
+        if isinstance(report.get("ai_report_diagnostics"), dict)
+        else bundle.get("ai_report_diagnostics")
+        if isinstance(bundle.get("ai_report_diagnostics"), dict)
+        else lifecycle.get("ai_report_diagnostics")
+        if isinstance(lifecycle.get("ai_report_diagnostics"), dict)
+        else {},
+        report_exists=report_exists,
+        lifecycle_status=meta.get("lifecycle_status") or lifecycle.get("status"),
+        story_type=meta.get("story_type") or report.get("story_type"),
+        model_hint=generation.get("model"),
+        generation=generation,
+    )
     action = _trim_text(report.get("action"), max_len=32) or _trim_text(meta.get("action"), max_len=32) or "WAIT"
     symbol = normalize_symbol(
         report.get("symbol") or meta.get("symbol") or "",
@@ -1232,9 +1487,10 @@ def load_trade_report_detail(config: OperatorUIConfig, story_id: str) -> Dict[st
         "story_type_label": str(meta.get("story_type_label") or _story_type_label(report.get("story_type"))),
         "story_type_badge_class": str(meta.get("story_type_badge_class") or _story_type_badge_class(report.get("story_type"))),
         "execution_mode_label": str(meta.get("execution_mode_label") or report.get("execution_mode_label") or "not captured"),
-        "report_available": bool(meta.get("report_available")),
+        "report_available": bool(diagnostics.get("report_status") == "available" and report_exists),
         "report_summary": str(meta.get("report_summary") or executive.get("summary") or ""),
         "reporter_status_human": str(meta.get("reporter_status_human") or reporter_eval.get("summary") or ""),
+        "ai_report_diagnostics": diagnostics,
         "executive_summary": executive,
         "market_context": market_context,
         "why_this_symbol": why_symbol,
@@ -1747,6 +2003,31 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     ]
 
     report_available = bool(trade_report.get("report_available"))
+    report_diag = (
+        trade_report.get("ai_report_diagnostics")
+        if isinstance(trade_report.get("ai_report_diagnostics"), dict)
+        else {}
+    )
+    report_status = str(
+        report_diag.get("report_status")
+        or trade_report.get("report_status")
+        or ("available" if report_available else "skipped")
+    ).strip().lower()
+    report_reason = str(
+        report_diag.get("report_reason_human")
+        or trade_report.get("report_reason_human")
+        or _report_reason_human(trade_report.get("report_reason_code"))
+    ).strip()
+    report_next_step = str(
+        report_diag.get("next_expected_step")
+        or trade_report.get("report_next_expected_step")
+        or _report_next_step(trade_report.get("report_reason_code"))
+    ).strip()
+    report_model = str(
+        report_diag.get("llm_model_used")
+        or trade_report.get("report_generation_model")
+        or "-"
+    ).strip()
     report_trade_id = str(trade_report.get("trade_id") or "")
     report_lifecycle_status = str(trade_report.get("lifecycle_status") or "")
     report_lifecycle_summary = str(trade_report.get("lifecycle_summary") or "")
@@ -1754,7 +2035,6 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     report_mode = str(trade_report.get("execution_mode_label") or "-")
     report_summary = str(trade_report.get("report_summary") or "")
     report_link = str(trade_report.get("report_link") or "")
-    report_status_text = "AI report available" if report_available else "No linked trade report for this run"
 
     macro_summary: List[str] = []
     if macro_moves.get("dxy_pct") is not None:
@@ -1838,7 +2118,13 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
             "key_finding": key_finding,
         },
         "ai_trade_report": {
-            "availability": report_status_text,
+            "status": report_status,
+            "status_label": _report_status_label(report_status),
+            "status_badge_class": _report_status_badge_class(report_status),
+            "reason": report_reason or "AI report diagnostics were not captured.",
+            "next_step": report_next_step or "Continue with Operator Brief while report diagnostics are resolved.",
+            "model": report_model or "-",
+            "available": report_available,
             "trade_id": report_trade_id,
             "lifecycle_status": report_lifecycle_status or "-",
             "lifecycle_summary": report_lifecycle_summary or "-",
@@ -2386,6 +2672,19 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
     same_day_symbol_run_chain = load_symbol_run_chain(config, run_day, primary_symbol, limit=3) if primary_symbol else []
     trade_report_meta = _trade_report_meta_for_run(config, str(run_id or ""))
     if trade_report_meta:
+        ai_diag = (
+            trade_report_meta.get("ai_report_diagnostics")
+            if isinstance(trade_report_meta.get("ai_report_diagnostics"), dict)
+            else {}
+        )
+        if not ai_diag:
+            ai_diag = _normalize_ai_report_diagnostics(
+                {},
+                report_exists=bool(trade_report_meta.get("trade_report_json_path") or trade_report_meta.get("trade_report_md_path")),
+                lifecycle_status=trade_report_meta.get("lifecycle_status"),
+                story_type=trade_report_meta.get("story_type"),
+                model_hint=trade_report_meta.get("report_generation_model"),
+            )
         trade_report_card = {
             "report_available": bool(trade_report_meta.get("report_available")),
             "trade_id": str(trade_report_meta.get("trade_id") or ""),
@@ -2396,14 +2695,49 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "lifecycle_status": str(trade_report_meta.get("lifecycle_status") or ""),
             "lifecycle_summary": str(trade_report_meta.get("lifecycle_summary") or ""),
             "execution_mode_label": str(trade_report_meta.get("execution_mode_label") or "-"),
+            "report_status": str(trade_report_meta.get("report_status") or ai_diag.get("report_status") or "skipped"),
+            "report_status_label": str(trade_report_meta.get("report_status_label") or ai_diag.get("report_status_label") or _report_status_label("skipped")),
+            "report_status_badge_class": str(trade_report_meta.get("report_status_badge_class") or ai_diag.get("report_status_badge_class") or _report_status_badge_class("skipped")),
+            "report_reason_code": str(trade_report_meta.get("report_reason_code") or ai_diag.get("report_reason_code") or ""),
+            "report_reason_human": str(trade_report_meta.get("report_reason_human") or ai_diag.get("report_reason_human") or ""),
+            "report_next_expected_step": str(trade_report_meta.get("report_next_expected_step") or ai_diag.get("next_expected_step") or ""),
+            "report_generation_model": str(trade_report_meta.get("report_generation_model") or ai_diag.get("llm_model_used") or ""),
+            "report_generation_provider": str(trade_report_meta.get("report_generation_provider") or ai_diag.get("llm_provider") or "OpenRouter"),
             "report_summary": str(trade_report_meta.get("report_summary") or ""),
             "reporter_status_human": str(trade_report_meta.get("reporter_status_human") or ""),
             "report_link": str(trade_report_meta.get("report_link") or ""),
             "symbol": str(trade_report_meta.get("symbol") or primary_symbol or ""),
             "action": str(trade_report_meta.get("action") or normalized_execution.get("action") or ""),
-            "missing_reason": "",
+            "missing_reason": str(trade_report_meta.get("report_reason_human") or ai_diag.get("report_reason_human") or ""),
+            "ai_report_diagnostics": ai_diag,
         }
     else:
+        execution_action = str(normalized_execution.get("action") or "").upper()
+        monitor_reason_text = str(monitor_summary.get("monitor_reason") or entry_exit_decision.get("monitor_reason") or "").strip().lower()
+        if execution_action in {"BUY", "SELL"}:
+            reason_code = "missing_report_linkage"
+            status = "failed"
+        elif "hold" in monitor_reason_text:
+            reason_code = "hold_only_run"
+            status = "skipped"
+        else:
+            reason_code = "decision_only_run"
+            status = "skipped"
+        ai_diag = _normalize_ai_report_diagnostics(
+            {
+                "report_status": status,
+                "report_reason_code": reason_code,
+                "report_reason_human": _report_reason_human(reason_code),
+                "next_expected_step": _report_next_step(reason_code),
+                "generation_attempted": False,
+                "story_input_available": False,
+                "report_output_available": False,
+            },
+            report_exists=False,
+            lifecycle_status="",
+            story_type="decision_only" if status == "skipped" else "",
+            model_hint="",
+        )
         trade_report_card = {
             "report_available": False,
             "trade_id": "",
@@ -2414,12 +2748,21 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "lifecycle_status": "",
             "lifecycle_summary": "",
             "execution_mode_label": "-",
+            "report_status": str(ai_diag.get("report_status") or "skipped"),
+            "report_status_label": str(ai_diag.get("report_status_label") or _report_status_label("skipped")),
+            "report_status_badge_class": str(ai_diag.get("report_status_badge_class") or _report_status_badge_class("skipped")),
+            "report_reason_code": str(ai_diag.get("report_reason_code") or ""),
+            "report_reason_human": str(ai_diag.get("report_reason_human") or ""),
+            "report_next_expected_step": str(ai_diag.get("next_expected_step") or ""),
+            "report_generation_model": str(ai_diag.get("llm_model_used") or ""),
+            "report_generation_provider": str(ai_diag.get("llm_provider") or "OpenRouter"),
             "report_summary": "",
             "reporter_status_human": "",
             "report_link": "",
             "symbol": primary_symbol or str(normalized_execution.get("symbol") or scanner_summary.get("top_stock") or ""),
             "action": str(normalized_execution.get("action") or ""),
-            "missing_reason": "No per-trade AI report is available for this run because no executed trade lifecycle was created.",
+            "missing_reason": str(ai_diag.get("report_reason_human") or "No linked trade report for this run."),
+            "ai_report_diagnostics": ai_diag,
         }
 
     detail = {

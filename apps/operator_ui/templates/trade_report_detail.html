@@ -18,18 +18,25 @@
   </div>
 </section>
 
+{% set diag = report.ai_report_diagnostics or {} %}
 <section class="grid grid-2">
   <article class="card card--attention">
     <h2>Executive Summary</h2>
     <div class="chip-list">
+      <span class="{{ diag.report_status_badge_class or 'status-badge' }}">{{ diag.report_status_label or "AI Report" }}</span>
       <span class="{{ report.story_type_badge_class or 'status-badge' }}">{{ report.story_type_label or "-" }}</span>
       <span class="chip">{{ report.execution_mode_label or "-" }}</span>
       {% if report.status %}
       <span class="chip">Lifecycle {{ report.status | upper }}</span>
       {% endif %}
-      <span class="chip chip--soft">AI report available</span>
+      {% if report.report_available %}
+      <span class="chip chip--soft">Openable full report</span>
+      {% endif %}
     </div>
-    <p class="operator-sentence">{{ (report.executive_summary or {}).get("summary") or "-" }}</p>
+    <p class="operator-sentence">{{ diag.report_reason_human or (report.executive_summary or {}).get("summary") or "-" }}</p>
+    {% if diag.next_expected_step %}
+    <p class="subtle-meta">{{ diag.next_expected_step }}</p>
+    {% endif %}
     <ul class="summary-list summary-list--tight">
       <li>Action: {{ report.action or "-" }}</li>
       <li>Symbol: {{ report.symbol or "-" }}</li>
@@ -44,11 +51,13 @@
   <article class="card card--muted">
     <h2>Report Generation</h2>
     <ul class="summary-list summary-list--tight">
-      <li>Status: {{ (report.generation or {}).get("status") or "-" }}</li>
-      <li>Mode: {{ (report.generation or {}).get("mode") or "-" }}</li>
-      <li>Model: {{ (report.generation or {}).get("model") or "-" }}</li>
-      {% if (report.generation or {}).get("reason") %}
-      <li>Reason: {{ (report.generation or {}).get("reason") }}</li>
+      <li>Status: {{ (diag.report_status_label or "-") }}</li>
+      <li>Reason: {{ (diag.report_reason_human or "-") }}</li>
+      <li>Next step: {{ (diag.next_expected_step or "-") }}</li>
+      <li>Attempted: {{ (diag.generation_attempted if diag.generation_attempted is not none else "-") }}</li>
+      <li>Provider / model: {{ (diag.llm_provider or "OpenRouter") }} / {{ (diag.llm_model_used or "-") }}</li>
+      {% if diag.last_error_message %}
+      <li>Last error: {{ diag.last_error_message }}</li>
       {% endif %}
     </ul>
   </article>

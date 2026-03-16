@@ -409,7 +409,7 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert runs.status_code == 200
     assert "run-1" in runs.text
     assert "005930" in runs.text
-    assert "AI report available" in runs.text
+    assert "AI Report Available" in runs.text
     assert "Simulation trade report" in runs.text
     assert "Open report" in runs.text
     assert "Lifecycle CLOSED" in runs.text
@@ -421,18 +421,14 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "운영자 브리프" in detail.text
     assert "stepfun/step-3.5-flash:free" in detail.text
     assert "전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다." in detail.text
-    assert "A. Executive Decision" in detail.text
-    assert "B. Why This Symbol Was Chosen" in detail.text
+    assert "What Happened" in detail.text
+    assert "Why" in detail.text
     assert "Universe scanned: 5" in detail.text
     assert "Selected rank: #1" in detail.text
-    assert "C. Market / News / Global Sentiment Context" in detail.text
+    assert "Market regime:" in detail.text
     assert "Global sentiment: -0.20" in detail.text
-    assert "VIX: 24.50" in detail.text
-    assert "E. Filters and Gates" in detail.text
-    assert "F. Scanner Ranking Explanation" in detail.text
-    assert "I. Reporter Evaluation" in detail.text
-    assert "Reporter status: linked" in detail.text
-    assert "J. Operator Conclusion" in detail.text
+    assert "AI Report Status" in detail.text
+    assert "AI Report Available" in detail.text
     assert "grade=A-" in detail.text
     assert "strategist prompt" in detail.text
     assert "EXECUTED_OK" in detail.text
@@ -444,11 +440,10 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "trade_count=1" in detail.text
     assert "Recent Same-Symbol Run Chain" in detail.text
     assert "run_count=1" in detail.text
-    assert "AI Trade Report" in detail.text
+    assert "AI Report" in detail.text
     assert "Open full report" in detail.text
-    assert "AI Report Linkage" in detail.text
     assert "Trade ID:" in detail.text
-    assert "Lifecycle status:" in detail.text
+    assert "Lifecycle:" in detail.text
 
     health = client.get("/healthz")
     assert health.status_code == 200
@@ -510,7 +505,7 @@ def test_operator_ui_run_detail_explains_missing_reporter_linkage(tmp_path: Path
 
     detail = client.get("/runs/run-1")
     assert detail.status_code == 200
-    assert "Reporter status: pending" in detail.text
+    assert "status=pending" in detail.text
     assert "same-day reporter analysis file is not generated yet" in detail.text
     assert "found=False" not in detail.text
 
@@ -538,6 +533,7 @@ def test_operator_ui_trade_report_detail_page(tmp_path: Path, monkeypatch) -> No
     assert "Final Operator Conclusion" in page.text
     assert "Simulation trade report" in page.text
     assert "Lifecycle CLOSED" in page.text
+    assert "AI Report Available" in page.text
 
 
 def test_operator_ui_run_detail_explains_missing_trade_report(tmp_path: Path, monkeypatch) -> None:
@@ -556,8 +552,78 @@ def test_operator_ui_run_detail_explains_missing_trade_report(tmp_path: Path, mo
 
     runs = client.get("/runs")
     assert runs.status_code == 200
-    assert "No report" in runs.text
+    assert "AI Report Failed" in runs.text
 
     detail = client.get("/runs/run-1")
     assert detail.status_code == 200
-    assert "No per-trade AI report is available for this run because no executed trade lifecycle was created." in detail.text
+    assert "AI Report Failed" in detail.text
+    assert "A linked AI trade report could not be found for this run." in detail.text
+
+
+def test_operator_ui_shows_pending_ai_report_status_for_open_lifecycle(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
+    cfg = _make_config(tmp_path)
+    trade_root = cfg.reports_root / "trades" / "2026" / "03" / "20260316_005930_buy_run-1"
+    bundle_path = trade_root / "aggregated_execution_bundle.json"
+    lifecycle_path = trade_root / "trade_lifecycle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    lifecycle = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+    diagnostics = {
+        "report_status": "pending",
+        "report_reason_code": "awaiting_exit_for_full_report",
+        "report_reason_human": "This trade is still open. The full AI report is generated after exit/closure.",
+        "next_expected_step": "Generate the final AI report after exit/closure.",
+        "generation_attempted": False,
+        "story_input_available": True,
+        "report_output_available": False,
+        "llm_provider": "OpenRouter",
+        "llm_model_used": "openrouter/free",
+        "expected_generation_mode": "per-trade free model report",
+    }
+    bundle["trade_lifecycle_status"] = "open"
+    bundle["ai_report_diagnostics"] = diagnostics
+    lifecycle["status"] = "open"
+    lifecycle["ai_report_diagnostics"] = diagnostics
+    bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+    lifecycle_path.write_text(json.dumps(lifecycle, ensure_ascii=False, indent=2), encoding="utf-8")
+    report_json = trade_root / "trade_report.json"
+    report_md = trade_root / "trade_report.md"
+    if report_json.exists():
+        report_json.unlink()
+    if report_md.exists():
+        report_md.unlink()
+
+    app = create_app(cfg)
+    client = TestClient(app)
+    runs = client.get("/runs")
+    assert runs.status_code == 200
+    assert "AI Report Pending" in runs.text
+
+    detail = client.get("/runs/run-1")
+    assert detail.status_code == 200
+    assert "AI Report Pending" in detail.text
+    assert "full AI report is generated after exit/closure" in detail.text
+
+
+def test_operator_ui_shows_skipped_status_for_hold_only_run(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
+    cfg = _make_config(tmp_path)
+    with cfg.event_log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"run_id": "run-hold", "ts": "2026-03-16T00:30:00+00:00", "stage": "commander_router", "event": "route", "payload": {"mode": "integrated_chain", "phase": "session", "agents": ["strategist", "scanner", "monitor"]}}, ensure_ascii=False) + "\n")
+        f.write(json.dumps({"run_id": "run-hold", "ts": "2026-03-16T00:30:01+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "hold_position", "exit_reason": "hold"}}, ensure_ascii=False) + "\n")
+        f.write(json.dumps({"run_id": "run-hold", "ts": "2026-03-16T00:30:02+00:00", "stage": "commander_router", "event": "end", "payload": {"status": "ok", "path": "integrated_chain"}}, ensure_ascii=False) + "\n")
+
+    app = create_app(cfg)
+    client = TestClient(app)
+    runs = client.get("/runs")
+    assert runs.status_code == 200
+    assert "run-hold" in runs.text
+    assert "AI Report Skipped" in runs.text
+
+    detail = client.get("/runs/run-hold")
+    assert detail.status_code == 200
+    assert "운영자 브리프" in detail.text
+    assert "AI Report Skipped" in detail.text
+    assert "only updated hold/monitor state" in detail.text
