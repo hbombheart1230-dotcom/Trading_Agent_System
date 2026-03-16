@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="overview">
-  {% set system_status_raw = (overview.operator_summary.system_status or "UNKNOWN") | upper %}
-  {% if system_status_raw in ["GREEN", "OK", "LIVE", "HEALTHY"] %}
+  {% set system_status_value = (overview.operator_summary.system_status or "UNKNOWN") | upper %}
+  {% if system_status_value in ["GREEN", "OK", "LIVE", "HEALTHY"] %}
     {% set status_label = "OK" %}
     {% set status_tone = "ok" %}
-  {% elif system_status_raw in ["YELLOW", "WARN", "WARNING", "AMBER", "UNKNOWN"] %}
+  {% elif system_status_value in ["YELLOW", "WARN", "WARNING", "AMBER", "UNKNOWN"] %}
     {% set status_label = "WARNING" %}
     {% set status_tone = "warn" %}
   {% else %}
@@ -59,7 +59,15 @@
     <article class="card card--hero card--status-{{ status_tone }}">
       <h2>System Status</h2>
       <div class="status-badge status-badge--{{ status_tone }}">{{ status_label }}</div>
-      <p class="operator-sentence">{{ exec_total }} executions today, {{ blocked_total }} blocked, system {{ "stable" if status_tone == "ok" else "requires attention" }}.</p>
+      <p class="operator-sentence">
+        {{ exec_total }} executions today.
+        {% if blocked_total > 0 %}
+          {{ blocked_total }} blocked.
+        {% else %}
+          No blocks.
+        {% endif %}
+        System {{ "stable" if status_tone == "ok" else "requires attention" }}.
+      </p>
       {% if overview.operator_summary.summary_lines %}
       <ul class="summary-list summary-list--tight">
         {% for line in overview.operator_summary.summary_lines[:3] %}
@@ -192,9 +200,9 @@
     <article class="card">
       <h2>Daily Totals</h2>
       <div class="stats">
-        <div><span>events</span><strong>{{ overview.daily.events }}</strong></div>
-        <div><span>approvals</span><strong>{{ overview.daily.approvals }}</strong></div>
-        <div><span>blocks</span><strong>{{ overview.daily.blocks }}</strong></div>
+        <div><span>Events</span><strong>{{ overview.daily.events }}</strong></div>
+        <div><span>Approvals</span><strong>{{ overview.daily.approvals }}</strong></div>
+        <div><span>Blocks</span><strong>{{ overview.daily.blocks }}</strong></div>
       </div>
       <div class="chip-list">
         {% if overview.daily.decision_actions %}
@@ -238,7 +246,7 @@
             <span class="metric-pill metric-pill--sell">SELL {{ row.sell_count }}</span>
             <span class="metric-pill {% if row.net_qty >= 0 %}metric-pill--net-pos{% else %}metric-pill--net-neg{% endif %}">NET {{ row.net_qty }}</span>
           </div>
-          <div class="subtle-meta">latest {{ row.latest_action or "-" }} / {{ row.latest_status or "-" }}</div>
+          <div class="subtle-meta">Latest action: {{ row.latest_action or "-" }} / {{ row.latest_status or "-" }}</div>
         </div>
         {% endfor %}
       </div>
