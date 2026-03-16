@@ -12,6 +12,7 @@
      - `themes`, `avoid_themes`, `playbook`
      - `scanner_bias` mode + `scanner_priority`, `scanner_source_policy`, `trade_aggressiveness`, `risk_tone`
      - `monitor_guidance` mode (+ derived `monitor_policy`), `report_focus`
+     - `macro_stress_overlay` (soft macro-risk influence from VIX/DXY/TNX)
      - optional `candidates` hint
      - additive context quality fields (`regime_score`, `sentiment_score`, `news_context`, `theme_strength`)
      - canonical runtime key: `state["strategist_output"]` (DTO: `libs/strategies/contracts.py::StrategistOutput`)
@@ -20,12 +21,22 @@
    - retrieves candidate universe from Kiwoom market data
    - source mix: condition search, top volume, top value, optional top change-rate, sector/theme map, watchlist
    - strategist can change the source mix itself through `scanner_source_policy`
+   - hydrates candidate chart/feature packs before final ranking
+     - prefers prebuilt `feature_engine.by_symbol`
+     - otherwise hydrates candidate-level features inside scanner path
    - reduces pool before scoring (halt/abnormal/illiquid thresholds)
    - applies strategist theme/sector filter (`theme_map` / `sector_map`)
    - applies strategist scanner-priority guidance additively to ranking weights
    - applies strategist `playbook` additively to ranking weights
    - strategist guidance source: `state["strategist_output"]` (with backward-compatible override hooks)
    - computes explainable score breakdown + features/risk
+   - carries quote/feature observability such as:
+     - `feature_source`
+     - `feature_symbol_count`
+     - `skill_quote_price`
+     - `quote_volume`
+     - `quote_trading_value`
+     - `intraday_change_pct`
    - outputs `selected` and `top_stock` (final symbol selector in current run)
 3. Monitor
    - entry/exit monitoring for selected stock only
@@ -95,6 +106,10 @@
   - `MIN_HOLD_SECONDS`
   - `SELL_COOLDOWN` or `SELL_COOLDOWN_SEC`
   - `MONITOR_EXIT_CONFIRM_TICKS`
+- Read-only operator UI now sits on top of runtime artifacts:
+  - overview is same-day aware and can fall back to live event-log summaries
+  - `/runs` surfaces macro stress and feature coverage
+  - `/runs/{run_id}` surfaces operator brief, feature coverage, quote metrics, same-day symbol history, and recent same-symbol run chain
 
 ## Implementation Reference
 

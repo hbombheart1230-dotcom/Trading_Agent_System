@@ -24,6 +24,7 @@
    - `market_regime`, `market_sentiment`, `key_events`
    - `themes`, `avoid_themes`, `playbook`
    - `scanner_bias` mode, `scanner_priority`, `scanner_source_policy`
+   - `macro_stress_overlay` (soft macro-risk influence summary from VIX/DXY/TNX context)
    - `trade_aggressiveness`, `risk_tone`
    - `monitor_guidance` mode (+ derived `monitor_policy`), strategist `exit_policy` baseline, `report_focus`
    - `regime_score`, `sentiment_score`, `news_context`, `candidate_news_context`, `market_news_context`, `theme_strength` (additive quality fields)
@@ -35,6 +36,10 @@
      - advisory only; no hard runtime override
    - additive runtime `theme_map` / `sector_map` seeded from strategist candidate hints so scanner `sector_theme` source can remain non-zero even without a static operator map
    - optional `strategist_llm` result snapshot (`status/model/applied/latency`) + EventLog `stage=strategist_llm`
+   - additive strategist LLM confidence fields:
+     - `llm_frame_low_confidence`
+     - `strategist_llm.low_confidence`
+     - `strategist_llm.repair_used`
 2. Scanner uses Kiwoom market data as primary candidate source and writes:
    - `scanner_candidate_pool` (source, counts, theme-filter metadata)
    - `scan_results`
@@ -46,14 +51,24 @@
      - top volume/value/change-rate + condition search
      - sector/theme map + operator watchlist sources
      - pre-score pool reduction (halt/abnormal/illiquid filters)
-    - optional theme/sector filter with `theme_map` / `sector_map`
+     - optional theme/sector filter with `theme_map` / `sector_map`
     - additive strategist frame bias from `state["strategist_output"]` (`playbook`, `scanner_priority`, aggressiveness/risk tone)
     - strategist-driven Kiwoom source policy from `state["strategist_output"]["scanner_source_policy"]`
       - default mock/operational baseline keeps `condition_search` disabled
       - example: `defensive` can disable `top_change_rate`
       - example: `breakout` can emphasize `top_change_rate` / `top_volume`
       - explicit opt-in (`KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH=true`) can re-enable `condition_search`
-      - scanner diagnostics now expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` so operators can distinguish "zero candidates" from "source not integrated" or "baseline disabled"
+     - scanner diagnostics now expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` so operators can distinguish "zero candidates" from "source not integrated" or "baseline disabled"
+     - integrated-chain scanner now hydrates candidate features before ranking:
+       - prefers `state["feature_engine"]["by_symbol"]` when present
+       - otherwise builds additive candidate feature packs through scanner-side hydration
+     - scanner observability now includes candidate feature hydration / quote metrics such as:
+       - `feature_source`
+       - `feature_symbol_count`
+       - `skill_quote_price`
+       - `quote_volume`
+       - `quote_trading_value`
+       - `intraday_change_pct`
      - strategist candidate fallback when Kiwoom pool is empty
      - static fallback-only pools can be blocked with `BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY=true`
      - strict mode (`STRICT_KIWOOM_CANDIDATES_ONLY=true`) blocks all strategist fallback on Kiwoom-empty
@@ -147,6 +162,7 @@
 - Symbol requirement:
   - `legacy_m10` requires `symbol`
   - `integrated_chain` can run without a preselected symbol
+  - `integrated_chain` now hydrates scanner candidate features/quote metrics before final ranking, so chart/feature scoring is active during normal session runs
 
 ## Operational Visibility
 
@@ -160,13 +176,34 @@
   - generator: `scripts/run_agent_pipeline_trace_report.py`
   - outputs: `reports/dev/analysis/agent_pipeline_trace/agent_pipeline_trace_<run>.md|json`
 - Read-only operator web UI:
-  - launcher: `scripts/run_operator_ui.py`
+  - launcher:
+    - `scripts/run_operator_ui.py`
+    - PowerShell helpers: `scripts/start_operator_ui.ps1`, `scripts/stop_operator_ui.ps1`
   - default URL: `http://127.0.0.1:8010`
   - pages:
-    - `/` latest daily/operator/reporter/reconciliation overview
+    - `/` latest same-day overview
+      - `Today Trades`
+      - `Today Traded Symbols`
+      - `Overtrading Warning`
+      - `Latest Strategist Prompt`
+      - `Strategy Memory Timeline`
     - `/runs` recent commander-routed cycles
+      - includes `macro stress` and `feature coverage`
     - `/runs/{run_id}` single-run commander -> strategist -> scanner -> monitor -> supervisor -> executor trace
+      - includes operator-facing Korean brief
+      - includes `Feature Coverage`, `Quote Metrics`
+      - includes same-day symbol trade history and recent same-symbol run chain
     - `/healthz` machine-readable health endpoint
+  - overview/report behavior:
+    - overview uses exact same-day report files when they exist
+    - it does not silently fall back to stale prior-day reporter/operator reports
+    - if same-day reports are not generated yet, overview falls back to live event-log summaries
+    - run detail explicitly surfaces `same_day_report_missing` instead of showing stale analysis
+  - OpenRouter role routing:
+    - `AI_STRATEGIST_MODEL=openrouter/auto` lets Strategist use OpenRouter auto-routing across the full model pool
+    - `OPENROUTER_MODEL_REPORTER_FINAL=openrouter/auto` and `OPENROUTER_MODEL_DAILY_REPORT=openrouter/auto` let end-of-day reporter summaries use the full routed pool
+    - `OPENROUTER_MODEL_OPERATOR_UI=openrouter/free` and `OPENROUTER_MODEL_REPORTER_INTRADAY=openrouter/free` keep frequent intraday/operator briefs on the free-model pool
+    - `OPENROUTER_DEFAULT_MODEL=openrouter/free` remains the generic low-cost fallback for simple LLM requests
 - Reporter passive analysis artifacts (`scripts/run_reporter_analysis_report.py`):
   - deterministic baseline remains canonical
   - optional AI review layer can be enabled without changing runtime decisions

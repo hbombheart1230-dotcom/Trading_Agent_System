@@ -33,6 +33,12 @@
 - Optional LLM strategic-frame pass can override strategist fields additively.
   - bounded by strategist contract normalization + deterministic fallback
   - observability via EventLog `stage=strategist_llm`, `event=result`
+- Applies additive macro stress interpretation from VIX / DXY / TNX context.
+  - moderate macro stress softens aggression/monitor posture
+  - high macro stress can still force clearly defensive guidance
+- Emits low-confidence flags when the LLM response required repair/salvage:
+  - `llm_frame_low_confidence`
+  - `strategist_llm.low_confidence`
 - Canonical DTO contract: `libs/strategies/contracts.py::StrategistOutput`.
 - Strengthened context inputs include:
   - global sentiment signal health
@@ -55,6 +61,14 @@
   - `breakout` can emphasize `top_change_rate` / `top_volume`
   - explicit opt-in (`KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH=true`) can re-enable `condition_search`
 - Scanner diagnostics explicitly expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` when condition-search is unavailable, mock-only, or intentionally disabled.
+- In integrated chain, Scanner now hydrates candidate-level chart/feature inputs before ranking.
+  - prefers `state["feature_engine"]["by_symbol"]`
+  - falls back to scanner-side candidate hydration when needed
+- Scanner observability now exposes practical feature/quote readiness:
+  - `feature_source`
+  - `feature_symbol_count`
+  - feature coverage / feature snapshot
+  - `skill_quote_price`, `quote_volume`, `quote_trading_value`, `intraday_change_pct`
 - Scanner reads strategist frame from canonical `state["strategist_output"]`.
 - Falls back to strategist candidates when Kiwoom candidate pool is empty.
 - Scanner is the final Top-1 selector within strategist framing (not a blind picker).
@@ -113,6 +127,10 @@
   - per-entry keys: `raw_input`, `llm_prompt`, `llm_response`, `parsed_output`, `decision_link`
   - passive only (no runtime control impact)
 - Runtime report generators: `libs/reporting/*`, `scripts/run_*report*.py`
+- Operator UI consumes Reporter outputs in a same-day-safe way:
+  - same-day reporter artifacts are preferred
+  - stale previous-day reporter artifacts are not silently reused for today's run detail
+  - if same-day reporter output is missing, the UI surfaces that state explicitly and falls back to deterministic/live summaries
 - Single-run full-chain trace report:
   - `scripts/run_agent_pipeline_trace_report.py` -> `agent_pipeline_trace.v1`
   - summarizes Commander/Strategist/Scanner/Monitor/Supervisor/Executor/Reporter in one artifact

@@ -186,6 +186,11 @@
 - `monitor_guidance: "hold_through_noise" | "defensive_exit" | "quick_take_profit"`
 - `monitor_policy: object` (deterministic guard tuning derived from guidance)
 - `exit_policy: object` (strategist-derived exit baseline; monitor applies final feature/position-aware adjustments)
+- `macro_stress_overlay: object`
+  - `active: bool`
+  - `severity: "low" | "moderate" | "high"`
+  - `flags: list[str]`
+  - `reason: str`
 - `recent_strategy_feedback: object` (compact Reporter memory summary; advisory only)
 - `regime_score: float` (additive)
 - `sentiment_score: float` (additive)
@@ -198,6 +203,7 @@
 - `candidate_hints: list[str]`
 - `strategic_answers: object`
 - `source: str`
+- `llm_frame_low_confidence: bool` (additive; true when LLM output required repair/salvage)
 
 ### RecentStrategyFeedback
 - `feedback_window_size: int`
@@ -223,6 +229,13 @@
 - `ranked_candidates: list[object]` (Top-N summary)
 - `strategist_playbook: str | null` (additive)
 - `scanner_source_policy: object` (applied strategist source policy snapshot)
+- `feature_source: str | null`
+- `feature_symbol_count: int`
+- `selected_feature_snapshot: object | null`
+- `skill_quote_price: float | null`
+- `quote_volume: float | null`
+- `quote_trading_value: float | null`
+- `intraday_change_pct: float | null`
 
 ### RankedCandidate (scanner)
 - `symbol: str`
@@ -275,6 +288,11 @@
   - `ai_agent_evaluations: object`
 - additive persistence metadata
   - `strategy_memory_record: object`
+    - `strategy_memory_path`
+    - `strategy_memory_daily_dir`
+    - `daily_summary_path`
+    - `storage_mode`
+  - `ai_review.fallback_enriched: bool`
 
 ### AgentPipelineTrace (single-run visibility)
 - `schema_version: "agent_pipeline_trace.v1"`

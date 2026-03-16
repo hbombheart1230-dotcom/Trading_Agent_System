@@ -19,6 +19,7 @@
 - `risk_tone`
 - `monitor_guidance`
 - `monitor_policy` (derived deterministic guard knobs)
+- `macro_stress_overlay` (additive macro-risk summary / influence)
 - `recent_strategy_feedback` (compact Reporter-memory advisory summary)
 - `report_focus[]`
 - `candidates[]` (Top-N, optional hint/fallback path)
@@ -39,6 +40,11 @@
   - `monitor_policy`
   - `recent_strategy_feedback`
   - `report_focus[]`
+  - `macro_stress_overlay`
+    - `active`
+    - `severity`
+    - `flags[]`
+    - `reason`
   - `regime_score` (additive)
   - `sentiment_score` (additive)
   - `news_context` (additive)
@@ -50,6 +56,7 @@
   - `strategic_answers`
   - `llm_frame_status` (`disabled|dry_run|unavailable|ok|parse_error|error`, additive)
   - `llm_frame_applied` (bool, additive)
+  - `llm_frame_low_confidence` (bool, additive)
   - `llm_frame_model` (additive)
   - `source`
   - `recent_strategy_feedback`
@@ -69,6 +76,10 @@
   - `model`
   - `applied`
   - `latency_ms`
+  - `low_confidence`
+  - `repair_used`
+  - `attempts`
+  - `reason`
   - `error`
 - `scenarios[]` (optional)
 - `feature_requests[]` (optional)
@@ -94,6 +105,13 @@
   - `scanner_source_policy`
   - `theme_filter_applied`
   - `strategist_playbook` (additive)
+  - `feature_source`
+  - `feature_symbol_count`
+  - `selected_feature_snapshot`
+  - `skill_quote_price`
+  - `quote_volume`
+  - `quote_trading_value`
+  - `intraday_change_pct`
 - Per-candidate score contract:
   - `score_total`
   - `score_breakdown`
@@ -206,8 +224,13 @@
     - `ai_improvement_suggestions_detailed[]`
   - `strategy_memory_record`
     - `strategy_memory_path`
+    - `strategy_memory_daily_dir`
+    - `daily_summary_path`
+    - `storage_mode`
     - `run_id`
     - `timestamp`
+  - `ai_review.fallback_enriched`
+    - `true` when deterministic evidence backfills otherwise-empty AI findings/root causes/improvements
 
 ## StrategyFeedbackRecord (`strategy_feedback.v1`)
 - File: `data/strategy_memory/feedback.jsonl` (`STRATEGY_MEMORY_PATH` override)

@@ -1,17 +1,21 @@
 # Agent Visibility Runbook (M31+)
 
-- Last updated: 2026-03-12
+- Last updated: 2026-03-16
 - Purpose: make current runtime scope and observability sources explicit for day-to-day operations.
 
 ## 1) Important Distinction: Runtime Path
 
 1. `scripts/run_m13_live_loop.py` (current live/mock session path)
-- Uses `graphs/pipelines/m13_live_loop.py` -> `m13_tick` -> `m10_live_pipeline`.
-- Focuses on decision/execution loop.
-- In practice, event stages are mostly:
-  - `strategist_llm`
-  - `decision`
-  - `execute_from_packet`
+- Supports:
+  - `legacy_m10`
+  - `integrated_chain`
+- Current operating baseline should be treated as `integrated_chain` unless explicitly overridden.
+- `integrated_chain` emits the full chain:
+  - `commander_router -> strategist -> scanner -> monitor -> decision -> supervisor -> executor -> reporter`
+- Scanner-side feature hydration is now part of the integrated chain, so session visibility should include:
+  - feature coverage
+  - hydrated quote metrics
+  - candidate source mix
 
 2. `integrated_chain` probe/runtime
 - Validates full chain presence:
@@ -21,21 +25,25 @@
 python -m scripts.run_m31_agent_chain_probe --json
 ```
 
-## 2) 7-Agent Status Snapshot (2026-03-06)
+## 2) Current Visibility Snapshot (2026-03-16)
 
 1. Full chain wiring exists: `PASS`
 - Evidence: `scripts/run_m31_agent_chain_probe.py` returns `ok=true` with full chain list.
 
-2. Session event observability in `run_m13_live_loop`: `PARTIAL`
-- `data/logs/events.jsonl` day stats (2026-03-06):
-  - `execute_from_packet=786`
-  - `decision=313`
-  - `strategist_llm=277`
-- Commander/scanner/monitor/supervisor/reporter are not continuously emitted in this path by default.
+2. Session event observability in `integrated_chain`: `GOOD`
+- Operators should expect continuous visibility for:
+  - `commander_router`
+  - `strategist`
+  - `scanner`
+  - `monitor`
+  - `decision`
+  - `supervisor`
+  - `executor`
+- Reporter remains primarily post-run / reporting-layer output, but same-day operator UI summaries are available during session.
 
 ## 3) Is `events.jsonl` Alone Enough?
 
-No. Use a minimum 4-source bundle:
+No. Use a core observability bundle:
 
 1. `data/logs/events.jsonl`
 - decision trace, LLM result, execution verdict/execution, errors.
@@ -53,6 +61,13 @@ Optional:
 
 5. Broker-side evidence
 - mock/real broker order ids, account app, or external broker logs.
+
+6. `data/strategy_memory/daily/*.json`
+- deduped latest Reporter memory snapshots consumed by Strategist.
+
+7. Operator UI
+- `http://127.0.0.1:8010/`
+- use for same-day overview, recent runs, feature coverage, quote metrics, and operator briefs.
 
 ## 4) What to Check After Market Close
 
@@ -75,7 +90,26 @@ Optional:
 5. End-of-day account state
 - `open_positions`, `mock_realized_pnl`, `last_execution_reason`.
 
-## 5) Daily Operator Commands (Reference)
+## 5) What to Check During Session
+
+1. `/runs`
+- confirm recent cycles keep arriving
+- check `macro stress`
+- check `feature coverage`
+
+2. `/runs/{run_id}`
+- confirm operator brief is populated
+- confirm scanner `Feature Coverage` and `Quote Metrics`
+- confirm same-day symbol history / recent same-symbol run chain
+
+3. Overview
+- `Today Trades`
+- `Today Traded Symbols`
+- `Overtrading Warning`
+- `Latest Strategist Prompt`
+- `Strategy Memory Timeline`
+
+## 6) Daily Operator Commands (Reference)
 
 ```bash
 python -m scripts.query_strategist_llm_events --path data/logs/events.jsonl --limit 20
@@ -86,6 +120,8 @@ python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events
 python -m scripts.run_agent_pipeline_trace_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/dev/analysis/agent_pipeline_trace --day 2026-03-10 --json
 python -m scripts.run_offhours_full_trace_bundle --env-path .env --state-path data/state/offhours_full_trace.json --event-log-path data/logs/dev/analysis/offhours/offhours_full_trace.jsonl --evidence-log-path data/evidence_ledger/offhours_full_trace.jsonl --report-dir reports/dev/analysis/offhours_full_trace --json
 python -m scripts.run_report_maintenance --report-root reports --event-log-path data/logs/events.jsonl --json
+powershell -ExecutionPolicy Bypass -File scripts/start_operator_ui.ps1
+powershell -ExecutionPolicy Bypass -File scripts/stop_operator_ui.ps1
 
 set EVENT_LOG_PATH=./data/logs/events.jsonl
 set REPORT_DAY=2026-03-06
@@ -96,7 +132,7 @@ set METRICS_DAY=2026-03-06
 python -m scripts.generate_metrics_report
 ```
 
-## 6) Trade Explain Report
+## 7) Trade Explain Report
 
 - Output:
   - `reports/dev/analysis/trade_explain/trade_explain_<day>.md`
@@ -108,7 +144,7 @@ python -m scripts.generate_metrics_report
 - Known data gap:
   - Raw news headline text and scanner `score_breakdown` depend on current event payload policy and may be missing.
 
-## 7) Reporter Analysis Report
+## 8) Reporter Analysis Report
 
 - Output:
   - `reports/dev/analysis/reporter_analysis/reporter_analysis_<day>.md`
@@ -134,7 +170,7 @@ python -m scripts.generate_metrics_report
     - `ai_summary`, `ai_findings`, `ai_root_causes`
     - `ai_improvement_suggestions`, `ai_run_grade`, `ai_agent_evaluations`
 
-## 8) Single-Run Agent Pipeline Trace
+## 9) Single-Run Agent Pipeline Trace
 
 - Output:
   - `reports/dev/analysis/agent_pipeline_trace/agent_pipeline_trace_<run>.md`
@@ -148,6 +184,7 @@ python -m scripts.generate_metrics_report
     - Strategist news/global-sentiment + LLM prompt/response capture status
     - `news_query_reasoning` explaining why the strategist chose those news query targets
     - Scanner candidate-source mix + top-ranked symbol summary
+    - scanner feature hydration / quote metrics when available
     - Monitor entry/exit reasons and sell-guard state
     - Supervisor verdict and Executor broker execution result
   - Sources:

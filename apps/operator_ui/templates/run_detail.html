@@ -1,3 +1,4 @@
+
 {% extends "base.html" %}
 {% block content %}
 <section class="hero">
@@ -42,7 +43,13 @@
   <article class="card">
     <h2>Reporter</h2>
     <p class="meta-line">found={{ detail.reporter.found }} grade={{ detail.reporter.ai_run_grade or "-" }}</p>
-    <p>{{ detail.reporter.ai_summary or "해당 run과 연결된 reporter 요약이 없어서 운영자 브리프로 대체 표시 중입니다." }}</p>
+    <p>
+      {% if detail.reporter.found %}
+      {{ detail.reporter.ai_summary or "같은 날짜 reporter 요약이 비어 있습니다." }}
+      {% else %}
+      {{ detail.reporter.reason or "same_day_report_missing" }}: 같은 날짜 reporter 분석과 아직 연결되지 않았습니다.
+      {% endif %}
+    </p>
     {% if detail.reporter.chain %}
     <h3>Reporter Chain</h3>
     <pre class="code">{{ detail.reporter.chain | tojson(indent=2) }}</pre>
@@ -115,38 +122,30 @@
       {% endfor %}
     </div>
     {% else %}
-    <p>No same-day trade history found for the selected symbol.</p>
+    <p>No same-day trades found for this symbol.</p>
     {% endif %}
   </article>
   <article class="card">
     <h2>Recent Same-Symbol Run Chain</h2>
-    <p class="meta-line">day={{ detail.same_day_symbol_run_chain.day or "-" }} symbol={{ detail.same_day_symbol_run_chain.symbol or "-" }} run_count={{ detail.same_day_symbol_run_chain.run_count }}</p>
+    <p class="meta-line">symbol={{ detail.same_day_symbol_run_chain.symbol or "-" }} run_count={{ detail.same_day_symbol_run_chain.run_count }}</p>
     {% if detail.same_day_symbol_run_chain.runs %}
     <div class="timeline">
-      {% for row in detail.same_day_symbol_run_chain.runs %}
+      {% for run in detail.same_day_symbol_run_chain.runs %}
       <div class="timeline-row">
-        <div class="timeline-meta">{{ row.ts }} / {{ row.run_id }} / {{ row.action or "NOOP" }} {{ row.symbol }}</div>
-        <p class="meta-line">playbook={{ row.playbook or "-" }} risk={{ row.risk_tone or "-" }} monitor={{ row.monitor_reason or "-" }} exit={{ row.exit_reason or "-" }}</p>
-        <p class="meta-line">guard={{ row.guard_reason or "-" }} allowed={{ row.allowed }} status={{ row.execution_status or "-" }}</p>
+        <div class="timeline-meta">{{ run.ts }} / {{ run.run_id }}</div>
+        <p class="meta-line">action={{ run.action or "-" }} symbol={{ run.symbol or "-" }} playbook={{ run.playbook or "-" }} risk={{ run.risk_tone or "-" }}</p>
+        <p class="meta-line">monitor={{ run.monitor_reason or "-" }} exit={{ run.exit_reason or "-" }} guard={{ run.guard_reason or "-" }}</p>
+        <p class="meta-line">allowed={{ run.allowed }} execution_status={{ run.execution_status or "-" }}</p>
       </div>
       {% endfor %}
     </div>
     {% else %}
-    <p>No recent same-symbol run chain found.</p>
+    <p>No recent same-symbol run chain available.</p>
     {% endif %}
   </article>
-</section>
-
-<section class="card">
-  <h2>Raw Event Preview</h2>
-  <p class="meta-line">raw_event_count={{ detail.raw_event_count }} stage_counts={{ detail.stage_counts | tojson }}</p>
-  <div class="timeline">
-    {% for row in detail.event_preview %}
-    <div class="timeline-row">
-      <div class="timeline-meta">{{ row.ts }} / {{ row.stage }} / {{ row.event }}</div>
-      <pre class="code">{{ row.payload }}</pre>
-    </div>
-    {% endfor %}
-  </div>
+  <article class="card">
+    <h2>Raw Event Preview</h2>
+    <pre class="code tall">{{ detail.event_preview | tojson(indent=2) }}</pre>
+  </article>
 </section>
 {% endblock %}

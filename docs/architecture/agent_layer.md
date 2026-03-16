@@ -31,6 +31,7 @@ This document defines agent responsibilities and handoff boundaries.
   - `risk_tone` (`conservative|normal|aggressive`)
   - `monitor_guidance` (`hold_through_noise|defensive_exit|quick_take_profit`)
   - `monitor_policy` (derived deterministic guard parameters)
+  - `macro_stress_overlay`
   - `report_focus`
   - `recent_strategy_feedback` (compact Reporter-memory advisory summary)
   - `candidates` (Top-N, optional hint/fallback)
@@ -42,6 +43,9 @@ This document defines agent responsibilities and handoff boundaries.
   - market context inputs (`index_trend`, `realized_volatility`, `market_breadth`, `macro_risk`)
   - optional `kiwoom_market_summary` / `macro_context`
   - theme strength map
+- Macro stress from VIX / DXY / TNX is additive:
+  - moderate stress softens aggression
+  - high stress can still enforce a defensive frame
 
 ### Scanner
 - Builds candidate universe from Kiwoom market data in integrated chain path.
@@ -58,6 +62,16 @@ This document defines agent responsibilities and handoff boundaries.
 - Applies strategist theme/sector filtering when `theme_map` / `sector_map` is available.
 - Applies strategist ranking guidance (`scanner_priority`, aggressiveness/risk tone) additively.
 - Applies strategist `playbook` additively to score weighting.
+- Hydrates candidate chart/feature packs before final ranking.
+  - prefers `feature_engine.by_symbol`
+  - falls back to scanner-side candidate hydration when needed
+- Emits feature/quote observability for operators:
+  - `feature_source`
+  - `feature_symbol_count`
+  - `skill_quote_price`
+  - `quote_volume`
+  - `quote_trading_value`
+  - `intraday_change_pct`
 - Scanner consumes strategist frame from `state["strategist_output"]` and remains final Top-1 selector.
 - Falls back to strategist candidate hints when Kiwoom pool is empty.
 - Produces:
@@ -103,6 +117,7 @@ This document defines agent responsibilities and handoff boundaries.
   - optional AI review stage for post-run interpretation
 - AI review is read-only/post-run and does not write to live runtime control state.
 - Reporter can persist compact strategy-memory records for future Strategist advisory context.
+- Reporter outputs now also support evidence-linked AI review details and deterministic backfill when AI review returns empty findings.
 - `reporter_analysis.v1` adds:
   - `decision_trace_chain_summary` (run_id chain completeness across strategist/scanner/monitor/supervisor/executor)
   - `operator_facing_summary` (health + immediate actions)

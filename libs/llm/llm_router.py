@@ -23,6 +23,62 @@ def _env_model_key(role: str) -> str:
     return f"OPENROUTER_MODEL_{role.upper()}"
 
 
+def _role_env_model_keys(role: str) -> List[str]:
+    normalized = str(role or "").strip().lower()
+    keys: List[str] = [_env_model_key(normalized)]
+    if normalized == "reporter_final":
+        keys.extend(
+            [
+                "OPENROUTER_MODEL_REPORTER_FINAL",
+                "OPENROUTER_MODEL_DAILY_REPORT",
+                "OPENROUTER_MODEL_REPORTER",
+            ]
+        )
+    elif normalized == "daily_report":
+        keys.extend(
+            [
+                "OPENROUTER_MODEL_DAILY_REPORT",
+                "OPENROUTER_MODEL_REPORTER_FINAL",
+                "OPENROUTER_MODEL_REPORTER",
+            ]
+        )
+    elif normalized == "operator_ui":
+        keys.extend(
+            [
+                "OPENROUTER_MODEL_OPERATOR_UI",
+                "OPENROUTER_MODEL_REPORTER_INTRADAY",
+                "OPENROUTER_MODEL_REPORTER",
+            ]
+        )
+    elif normalized == "reporter_intraday":
+        keys.extend(
+            [
+                "OPENROUTER_MODEL_REPORTER_INTRADAY",
+                "OPENROUTER_MODEL_OPERATOR_UI",
+                "OPENROUTER_MODEL_REPORTER",
+            ]
+        )
+    # preserve order but dedupe
+    seen = set()
+    out: List[str] = []
+    for key in keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _normalize_model_name(model: str) -> str:
+    raw = str(model or "").strip()
+    lowered = raw.lower()
+    if lowered == "auto":
+        return "openrouter/auto"
+    if lowered == "free":
+        return "openrouter/free"
+    return raw
+
+
 @dataclass
 class LLMRoute:
     role: str
@@ -42,11 +98,15 @@ class LLMRouter:
     def resolve(self, role: str, *, policy: Optional[Dict[str, Any]] = None) -> LLMRoute:
         policy = policy or {}
         # policy overrides env
-        model = (policy.get("openrouter_model") or policy.get("model") or "").strip()
+        model = _normalize_model_name(str(policy.get("openrouter_model") or policy.get("model") or "").strip())
         if not model:
-            model = (os.getenv(_env_model_key(role), "") or "").strip()
+            for key in _role_env_model_keys(role):
+                candidate = _normalize_model_name(os.getenv(key, "") or "")
+                if candidate:
+                    model = candidate
+                    break
         if not model:
-            model = (os.getenv("OPENROUTER_DEFAULT_MODEL", "") or "").strip()
+            model = _normalize_model_name(os.getenv("OPENROUTER_DEFAULT_MODEL", "") or "")
         if not model:
             # conservative default (user can override)
             model = "openai/gpt-4o-mini"
@@ -70,5 +130,7 @@ class LLMRouter:
             for k in ("top_p", "presence_penalty", "frequency_penalty", "seed", "response_format"):
                 if k in policy:
                     payload[k] = policy[k]
+            if "timeout_sec" in policy:
+                payload["__timeout_sec"] = policy["timeout_sec"]
         resp = self.client.chat_completions(payload)
         return self.client.extract_text(resp)

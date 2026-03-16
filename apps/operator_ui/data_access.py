@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import re
 
 from libs.llm.llm_router import LLMRouter
+from libs.core.symbols import normalize_symbol
 
 
 KST = timezone(timedelta(hours=9), name="KST")
@@ -241,6 +242,29 @@ def _truncate_json(v: Any, max_len: int = 800) -> str:
     return s[: max_len - 3] + "..."
 
 
+def _clean_brief_text(v: Any) -> str:
+    s = str(v or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"^\s*From\s+[A-Za-z0-9_]+\s*-\s*", "", s)
+    s = re.sub(r"^\s*[A-Za-z0-9_]+_hint\s*-\s*", "", s)
+    s = re.sub(r"\s+", " ", s).strip(" -")
+    return s
+
+
+def _clean_brief_list(v: Any, *, limit: int) -> List[str]:
+    if not isinstance(v, list):
+        return []
+    out: List[str] = []
+    for item in v:
+        cleaned = _clean_brief_text(item)
+        if cleaned:
+            out.append(cleaned)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _extract_json_object(text: Any) -> Dict[str, Any]:
     raw = str(text or "").strip()
     if not raw:
@@ -311,6 +335,16 @@ def _is_free_model(model: str) -> bool:
     return ":free" in raw or raw.endswith("/free")
 
 
+def _normalize_role_model_name(model: str) -> str:
+    raw = str(model or "").strip()
+    lowered = raw.lower()
+    if lowered == "auto":
+        return "openrouter/auto"
+    if lowered == "free":
+        return "openrouter/free"
+    return raw
+
+
 def _parse_operator_brief_lines(text: Any) -> Dict[str, Any]:
     raw = str(text or "").strip()
     if not raw:
@@ -346,11 +380,39 @@ def _parse_operator_brief_lines(text: Any) -> Dict[str, Any]:
             cleaned = str(candidate).strip().strip('"')
             if not cleaned:
                 continue
-            if cleaned in {"...", "…"}:
+            if cleaned in {"...", "?"}:
                 continue
             out[key] = cleaned
             break
     return out
+
+
+def _read_exact_day(path: Path, prefix: str, day: str) -> Dict[str, Any]:
+    if not path.exists() or not day:
+        return {}
+    exact = path / f"{prefix}_{day}.json"
+    return _read_json(exact)
+
+
+def _normalize_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {
+            "action": "",
+            "symbol": "",
+            "qty": 0,
+            "status": "",
+            "ord_no": "",
+        }
+    order = payload.get("order") if isinstance(payload.get("order"), dict) else {}
+    broker = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    response_payload = broker.get("response_payload") if isinstance(broker.get("response_payload"), dict) else {}
+    return {
+        "action": str(payload.get("action") or order.get("action") or "").upper(),
+        "symbol": str(payload.get("symbol") or order.get("symbol") or order.get("stk_cd") or "").strip(),
+        "qty": _safe_int(payload.get("qty"), _safe_int(order.get("qty"), _safe_int(order.get("ord_qty"), 0))),
+        "status": str(payload.get("fill_status_summary") or payload.get("status") or broker.get("broker_message") or response_payload.get("return_msg") or ""),
+        "ord_no": str(payload.get("ord_no") or broker.get("order_id") or response_payload.get("ord_no") or ""),
+    }
 
 
 @dataclass(frozen=True)
@@ -360,6 +422,7 @@ class OperatorUIConfig:
     event_log_path: Path
     evidence_log_path: Path
     strategy_memory_path: Path
+    operator_ui_cache_path: Path
 
     @staticmethod
     def from_env(repo_root: Optional[Path] = None) -> "OperatorUIConfig":
@@ -370,29 +433,86 @@ class OperatorUIConfig:
             event_log_path=Path(os.getenv("OPERATOR_UI_EVENT_LOG_PATH", str(root / "data" / "logs" / "events.jsonl"))),
             evidence_log_path=Path(os.getenv("OPERATOR_UI_EVIDENCE_LOG_PATH", str(root / "data" / "evidence_ledger" / "events.jsonl"))),
             strategy_memory_path=Path(os.getenv("OPERATOR_UI_STRATEGY_MEMORY_PATH", str(root / "data" / "strategy_memory" / "daily"))),
+            operator_ui_cache_path=Path(os.getenv("OPERATOR_UI_CACHE_PATH", str(root / "data" / "operator_ui" / "brief_cache"))),
         )
 
 
 def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
     latest_day = _latest_event_day(config.event_log_path)
-    daily = _read_day_or_latest(config.reports_root / "daily", "daily", latest_day)
-    operator_summary = _read_day_or_latest(config.reports_root / "operator_summary", "operator_summary", latest_day)
-    reporter = _read_day_or_latest(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis", latest_day)
-    reconciliation = _read_day_or_latest(config.reports_root / "reconciliation", "broker_trade_reconciliation", latest_day)
+    daily = _read_exact_day(config.reports_root / "daily", "daily", latest_day)
+    operator_summary = _read_exact_day(config.reports_root / "operator_summary", "operator_summary", latest_day)
+    reporter = _read_exact_day(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis", latest_day)
+    reconciliation = _read_exact_day(config.reports_root / "reconciliation", "broker_trade_reconciliation", latest_day)
 
     executive = operator_summary.get("executive_summary") if isinstance(operator_summary.get("executive_summary"), dict) else {}
     health = operator_summary.get("system_health_status") if isinstance(operator_summary.get("system_health_status"), dict) else {}
     trading = operator_summary.get("trading_activity_summary") if isinstance(operator_summary.get("trading_activity_summary"), dict) else {}
-    ai_review = reporter.get("ai_review") if isinstance(reporter.get("ai_review"), dict) else {}
-    trade_summary = reporter.get("trade_summary") if isinstance(reporter.get("trade_summary"), dict) else {}
     recon_summary = reconciliation.get("summary") if isinstance(reconciliation.get("summary"), dict) else {}
     strategy_memory_timeline = load_strategy_memory_timeline(config, limit=7)
-    latest_day = str(latest_day or daily.get("day") or operator_summary.get("day") or reporter.get("day") or "")
+    latest_day = str(latest_day or "")
     all_today_trades = load_recent_trades_for_day(config, latest_day, limit=200)
     today_trades = all_today_trades[:8]
     traded_symbol_summary = summarize_trades_by_symbol(all_today_trades)
     overtrading_warning = build_overtrading_warning(all_today_trades, traded_symbol_summary, reporter)
     latest_prompt = load_latest_strategist_prompt_summary(config, latest_day)
+    today_rows = list(_iter_jsonl(config.event_log_path))
+    today_rows = [row for row in today_rows if not latest_day or _event_day(row.get("ts_kst") or row.get("ts")) == latest_day]
+    live_route_rows = [
+        row
+        for row in today_rows
+        if str(row.get("stage") or "") == "commander_router"
+        and str(row.get("event") or "") == "route"
+    ]
+    live_verdict_rows = [
+        row
+        for row in today_rows
+        if str(row.get("stage") or "") == "execute_from_packet"
+        and str(row.get("event") or "") == "verdict"
+        and isinstance(row.get("payload"), dict)
+    ]
+    live_blocked_total = sum(1 for row in live_verdict_rows if not bool((row.get("payload") or {}).get("allowed")))
+    live_run_total = len(live_route_rows)
+    live_execution_total = len(all_today_trades)
+
+    if not operator_summary and latest_day:
+        operator_summary_live_lines: List[str] = []
+        if live_run_total:
+            operator_summary_live_lines.append(f"live event log fallback active for {latest_day}")
+        if live_execution_total:
+            operator_summary_live_lines.append(f"today executions observed in log: {live_execution_total}")
+        if live_blocked_total:
+            operator_summary_live_lines.append(f"today blocked verdicts observed in log: {live_blocked_total}")
+        live_status = "LIVE" if (live_run_total or live_execution_total or live_blocked_total) else "UNKNOWN"
+        executive = {
+            "system_status": live_status,
+            "summary_lines": operator_summary_live_lines[:4],
+        }
+        health = {
+            "system_health_level": live_status,
+            "recommended_action": (
+                [f"review same-day overtrading warning: {overtrading_warning.get('level')}"]
+                if str(overtrading_warning.get("level") or "normal") in {"elevated", "high"}
+                else ["generate operator summary after closeout to replace live fallback"]
+            )[:4],
+        }
+        trading = {
+            "run_total": live_run_total,
+            "executions_total": live_execution_total,
+            "blocked_total": live_blocked_total,
+        }
+
+    if not reporter and latest_day:
+        reporter = {
+            "ai_review": {"status": "not_generated_yet"},
+            "ai_run_grade": "-",
+            "ai_summary": "Same-day reporter analysis has not been generated yet.",
+            "trade_summary": {
+                "trade_count": live_execution_total,
+                "symbols_traded": [str(row.get("symbol") or "") for row in traded_symbol_summary[:8]],
+            },
+        }
+    ai_review = reporter.get("ai_review") if isinstance(reporter.get("ai_review"), dict) else {}
+    trade_summary = reporter.get("trade_summary") if isinstance(reporter.get("trade_summary"), dict) else {}
 
     return {
         "latest_day": latest_day,
@@ -401,7 +521,7 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "decision_actions": dict(daily.get("decision_actions") or {}),
             "approvals": _safe_int(daily.get("approvals"), 0),
             "blocks": _safe_int(daily.get("blocks"), 0),
-            "path": _day_or_latest_path(config.reports_root / "daily", "daily", latest_day),
+            "path": str(config.reports_root / "daily" / f"daily_{latest_day}.json") if latest_day else "",
         },
         "operator_summary": {
             "system_status": str(executive.get("system_status") or "UNKNOWN"),
@@ -411,7 +531,7 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "run_total": _safe_int(trading.get("run_total"), 0),
             "executions_total": _safe_int(trading.get("executions_total"), 0),
             "blocked_total": _safe_int(trading.get("blocked_total"), 0),
-            "path": _day_or_latest_path(config.reports_root / "operator_summary", "operator_summary", latest_day),
+            "path": str(config.reports_root / "operator_summary" / f"operator_summary_{latest_day}.json") if latest_day else "",
         },
         "reporter": {
             "trade_count": _safe_int(trade_summary.get("trade_count"), 0),
@@ -419,14 +539,14 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "ai_status": str(ai_review.get("status") or "disabled"),
             "ai_run_grade": str(reporter.get("ai_run_grade") or "N/A"),
             "ai_summary": str(reporter.get("ai_summary") or ""),
-            "path": _day_or_latest_path(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis", latest_day),
+            "path": str(config.reports_root / "dev" / "analysis" / "reporter_analysis" / f"reporter_analysis_{latest_day}.json") if latest_day else "",
         },
         "reconciliation": {
             "local_total": _safe_int(recon_summary.get("local_total"), 0),
             "broker_total": _safe_int(recon_summary.get("broker_total"), 0),
             "matched_by_ord_no": _safe_int(recon_summary.get("matched_by_ord_no"), 0),
             "broker_window_limited": bool(recon_summary.get("broker_window_limited")),
-            "path": _day_or_latest_path(config.reports_root / "reconciliation", "broker_trade_reconciliation", latest_day),
+            "path": str(config.reports_root / "reconciliation" / f"broker_trade_reconciliation_{latest_day}.json") if latest_day else "",
         },
         "today_trades": today_trades,
         "today_traded_symbols": traded_symbol_summary,
@@ -444,21 +564,24 @@ def load_recent_trades_for_day(config: OperatorUIConfig, day: str, *, limit: int
             continue
         if str(row.get("event") or "") != "execution":
             continue
-        if day and _event_day(row.get("ts")) != day:
+        if day and _event_day(row.get("ts_kst") or row.get("ts")) != day:
             continue
-        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-        action = str(payload.get("action") or "").upper()
+        execution = _normalize_execution_payload(row.get("payload") if isinstance(row.get("payload"), dict) else {})
+        action = str(execution.get("action") or "").upper()
+        symbol = normalize_symbol(execution.get("symbol"), allow_test_symbols=True)
         if action not in {"BUY", "SELL"}:
+            continue
+        if not symbol:
             continue
         out.append(
             {
-                "ts": _iso_to_display(row.get("ts")),
+                "ts": _iso_to_display(row.get("ts_kst") or row.get("ts")),
                 "run_id": str(row.get("run_id") or ""),
                 "action": action,
-                "symbol": str(payload.get("symbol") or ""),
-                "qty": _safe_int(payload.get("qty"), _safe_int(payload.get("requested_qty"), 0)),
-                "status": str(payload.get("fill_status_summary") or payload.get("status") or ""),
-                "ord_no": str(payload.get("ord_no") or ""),
+                "symbol": symbol,
+                "qty": _safe_int(execution.get("qty"), 0),
+                "status": str(execution.get("status") or ""),
+                "ord_no": str(execution.get("ord_no") or ""),
             }
         )
     out = sorted(out, key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)
@@ -468,7 +591,7 @@ def load_recent_trades_for_day(config: OperatorUIConfig, day: str, *, limit: int
 def summarize_trades_by_symbol(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     grouped: Dict[str, Dict[str, Any]] = {}
     for trade in trades:
-        symbol = str(trade.get("symbol") or "").strip()
+        symbol = normalize_symbol(trade.get("symbol"), allow_test_symbols=True)
         if not symbol:
             continue
         row = grouped.setdefault(
@@ -589,6 +712,8 @@ def load_symbol_run_chain(config: OperatorUIConfig, day: str, symbol: str, *, li
             (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "execution" and isinstance(r.get("payload"), dict)),
             {},
         )
+        execution = _normalize_execution_payload(execution_payload if isinstance(execution_payload, dict) else {})
+        execution = _normalize_execution_payload(execution_payload if isinstance(execution_payload, dict) else {})
         strategist_summary = next(
             (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "strategist" and str(r.get("event") or "") == "summary" and isinstance(r.get("payload"), dict)),
             {},
@@ -601,11 +726,12 @@ def load_symbol_run_chain(config: OperatorUIConfig, day: str, symbol: str, *, li
             (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "verdict" and isinstance(r.get("payload"), dict)),
             {},
         )
-        run_symbol = str(
-            execution_payload.get("symbol")
+        run_symbol = normalize_symbol(
+            execution.get("symbol")
             or scanner_summary.get("top_stock")
             or candidate_selection.get("selected_symbol")
-            or ""
+            or "",
+            allow_test_symbols=True,
         ).strip()
         if run_symbol != symbol:
             continue
@@ -617,8 +743,8 @@ def load_symbol_run_chain(config: OperatorUIConfig, day: str, symbol: str, *, li
                 "playbook": str(strategist_summary.get("playbook") or ""),
                 "risk_tone": str(strategist_summary.get("risk_tone") or ""),
                 "symbol": run_symbol,
-                "action": str(execution_payload.get("action") or ""),
-                "execution_status": str(execution_payload.get("fill_status_summary") or execution_payload.get("status") or ""),
+                "action": str(execution.get("action") or ""),
+                "execution_status": str(execution.get("status") or ""),
                 "monitor_reason": str(monitor_summary.get("monitor_reason") or ""),
                 "exit_reason": str(monitor_summary.get("exit_reason") or ""),
                 "guard_reason": str(verdict_payload.get("reason") or ""),
@@ -716,6 +842,7 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[
             (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "execution" and isinstance(r.get("payload"), dict)),
             {},
         )
+        execution = _normalize_execution_payload(execution_payload if isinstance(execution_payload, dict) else {})
         selected_candidate = candidate_selection.get("selected_candidate") if isinstance(candidate_selection.get("selected_candidate"), dict) else {}
         feature_snapshot = selected_candidate.get("feature_snapshot") if isinstance(selected_candidate.get("feature_snapshot"), dict) else {}
         feature_coverage = _feature_coverage(feature_snapshot)
@@ -734,9 +861,9 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[
                 "exit_reason": str(monitor_summary.get("exit_reason") or ""),
                 "supervisor_allowed": verdict_payload.get("allowed"),
                 "guard_reason": str(verdict_payload.get("reason") or ""),
-                "execution_status": str(execution_payload.get("fill_status_summary") or execution_payload.get("status") or ""),
-                "execution_action": str(execution_payload.get("action") or ""),
-                "symbol": str(execution_payload.get("symbol") or scanner_summary.get("top_stock") or ""),
+                "execution_status": str(execution.get("status") or ""),
+                "execution_action": str(execution.get("action") or ""),
+                "symbol": normalize_symbol(execution.get("symbol") or scanner_summary.get("top_stock") or "", allow_test_symbols=True),
                 "macro_stress_active": bool(macro_stress_overlay.get("active")),
                 "macro_stress_flags": list(macro_stress_overlay.get("stress_flags") or [])[:3],
                 "feature_coverage_quality": str(feature_coverage.get("quality") or "missing"),
@@ -760,18 +887,22 @@ def _reporter_snippet_for_run(config: OperatorUIConfig, run_id: str, run_day: st
     path = config.reports_root / "dev" / "analysis" / "reporter_analysis" / f"reporter_analysis_{run_day}.json"
     report = _read_json(path)
     if not report:
-        report = _latest_matching(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis")
-        path = Path(_latest_matching_path(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis"))
-    if not report:
-        return {}
+        return {
+            "report_path": str(path),
+            "found": False,
+            "ai_summary": "",
+            "ai_run_grade": "",
+            "reason": "same_day_report_missing",
+        }
     chains = ((report.get("decision_trace_chain_summary") or {}).get("chains") or []) if isinstance(report.get("decision_trace_chain_summary"), dict) else []
     chain = next((c for c in chains if isinstance(c, dict) and str(c.get("run_id") or "").strip() == run_id), {})
     if not chain:
         return {
             "report_path": str(path),
             "found": False,
-            "ai_summary": str(report.get("ai_summary") or ""),
+            "ai_summary": "",
             "ai_run_grade": str(report.get("ai_run_grade") or ""),
+            "reason": "run_not_linked_in_same_day_report",
         }
     return {
         "report_path": str(path),
@@ -780,6 +911,9 @@ def _reporter_snippet_for_run(config: OperatorUIConfig, run_id: str, run_day: st
         "ai_run_grade": str(report.get("ai_run_grade") or ""),
         "chain": chain,
     }
+
+
+
 
 
 def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
@@ -792,60 +926,64 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     scanner = detail.get("scanner") if isinstance(detail.get("scanner"), dict) else {}
     scanner_summary = scanner.get("summary") if isinstance(scanner.get("summary"), dict) else {}
     scanner_trace = scanner.get("decision_trace") if isinstance(scanner.get("decision_trace"), dict) else {}
-    selected = scanner_trace.get("selected_candidate") if isinstance(scanner_trace.get("selected_candidate"), dict) else {}
+    selected = (scanner_trace.get("selected_candidate") or {}) if isinstance(scanner_trace.get("selected_candidate"), dict) else {}
     monitor = detail.get("monitor") if isinstance(detail.get("monitor"), dict) else {}
     monitor_summary = monitor.get("summary") if isinstance(monitor.get("summary"), dict) else {}
     monitor_trace = monitor.get("decision_trace") if isinstance(monitor.get("decision_trace"), dict) else {}
-    supervisor = ((detail.get("supervisor") or {}).get("verdict") or {}) if isinstance(detail.get("supervisor"), dict) else {}
-    executor = ((detail.get("executor") or {}).get("execution") or {}) if isinstance(detail.get("executor"), dict) else {}
+    supervisor = (detail.get("supervisor") or {}).get("verdict") if isinstance(detail.get("supervisor"), dict) else {}
+    executor = (detail.get("executor") or {}).get("execution") if isinstance(detail.get("executor"), dict) else {}
     reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
 
     global_bits: List[str] = []
     if global_inputs.get("score") is not None:
-        global_bits.append(f"??? ?? ??={_safe_float(global_inputs.get('score'), 0.0):.2f}")
+        global_bits.append(f"\uae00\ub85c\ubc8c \uac10\uc131 \uc810\uc218={_safe_float(global_inputs.get('score'), 0.0):.2f}")
     if fear_index.get("level") is not None:
         global_bits.append(f"VIX={_safe_float(fear_index.get('level'), 0.0):.2f}")
-    if global_inputs.get("macro_moves") and isinstance(global_inputs.get("macro_moves"), dict):
-        macro_moves = global_inputs.get("macro_moves") or {}
-        if macro_moves.get("dxy_pct") is not None:
-            global_bits.append(f"????={_safe_float(macro_moves.get('dxy_pct'), 0.0):.2f}")
+    macro_moves = global_inputs.get("macro_moves") if isinstance(global_inputs.get("macro_moves"), dict) else {}
+    if macro_moves.get("dxy_pct") is not None:
+        global_bits.append(f"\ub2ec\ub7ec\uc9c0\uc218={_safe_float(macro_moves.get('dxy_pct'), 0.0):.2f}")
 
     feature_coverage = scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else {}
     quote_metrics = scanner.get("quote_metrics") if isinstance(scanner.get("quote_metrics"), dict) else {}
-    headline = f"{detail.get('run_id') or ''} ?? ??"
+
     return {
         "status": "fallback",
         "model": "",
-        "headline": headline,
-        "commander_summary": f"???? {((detail.get('commander') or {}).get('phase') or '-')} phase?? {((detail.get('commander') or {}).get('path') or '-')} ??? ??????.",
+        "headline": f"{detail.get('run_id') or '-'} \uc6b4\uc601 \uc694\uc57d",
+        "commander_summary": (
+            f"\uc9c0\ud718\uc790\ub294 {((detail.get('commander') or {}).get('phase') or '-')} phase\uc5d0\uc11c "
+            f"{((detail.get('commander') or {}).get('path') or '-')} \uacbd\ub85c\ub97c \uc2e4\ud589\ud588\uc2b5\ub2c8\ub2e4."
+        ),
         "strategist_summary": (
-            f"???? {', '.join(global_bits) or '?? ??'}? ?? ?? {', '.join(list(strategist_summary.get('news_query_targets') or [])[:6]) or '-'}? ???? "
-            f"?? {', '.join(list(strategist_summary.get('themes') or [])[:4]) or '-'}, ???? {strategist_summary.get('playbook') or '-'}? ??????."
+            f"\uc804\ub7b5\uac00\ub294 {', '.join(global_bits) or '\uc2dc\uc7a5 \uc785\ub825'}\uc744 \ucc38\uace0\ud558\uace0, \ub274\uc2a4 \uc9c8\uc758 "
+            f"{', '.join(_clean_brief_list(strategist_summary.get('news_query_targets'), limit=6)) or '-'}\ub85c \ubd84\uc704\uae30\ub97c \ud655\uc778\ud55c \ub4a4 "
+            f"\ud14c\ub9c8 {', '.join(_clean_brief_list(strategist_summary.get('themes'), limit=4)) or '-'}, "
+            f"\ud50c\ub808\uc774\ubd81 {strategist_summary.get('playbook') or '-'}\ub85c \uc815\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
         ),
         "scanner_summary": (
-            f"???? Kiwoom ?? {int(scanner_summary.get('candidate_pool_after_filter') or 0)}? ? "
-            f"{scanner_summary.get('top_stock') or selected.get('symbol') or '-'}? 1??? ??? "
-            f"??? {selected.get('why') or '-'}???."
+            f"\uc2a4\uce90\ub108\ub294 Kiwoom \ud6c4\ubcf4 {int(scanner_summary.get('candidate_pool_after_filter') or 0)}\uac1c \uc911 "
+            f"{_clean_brief_text(scanner_summary.get('top_stock') or selected.get('symbol') or '-')}\ub97c 1\ub4f1\uc73c\ub85c \uace8\ub790\uace0 \uc774\uc720\ub294 "
+            f"{selected.get('why') or '-'}\uc785\ub2c8\ub2e4."
         ),
         "monitor_summary": (
-            f"???? {monitor_summary.get('monitor_reason') or monitor_trace.get('monitor_reason') or '-'}? ?? "
-            f"exit={monitor_summary.get('exit_reason') or monitor_trace.get('exit_reason') or '-'}? ??????."
+            f"\ubaa8\ub2c8\ud130\ub294 {monitor_summary.get('monitor_reason') or monitor_trace.get('monitor_reason') or '-'} \uc0c1\ud0dc\ub97c \ubcf4\uace0, "
+            f"exit={monitor_summary.get('exit_reason') or monitor_trace.get('exit_reason') or '-'}\ub85c \ud310\ub2e8\ud588\uc2b5\ub2c8\ub2e4."
         ),
         "supervisor_summary": (
-            f"???? allowed={supervisor.get('allowed')} / reason={supervisor.get('reason') or '-'}? ??????."
+            f"\uac10\ub3c5\uad00\uc740 allowed={supervisor.get('allowed')} / reason={supervisor.get('reason') or '-'}\ub85c \uacb0\ub860\ub0c8\uc2b5\ub2c8\ub2e4."
         ),
         "executor_summary": (
-            f"???? {executor.get('action') or 'NOOP'} {executor.get('symbol') or ''} "
-            f"status={executor.get('fill_status_summary') or executor.get('status') or '-'}? ??????."
+            f"\uc218\ud589\uc790\ub294 {executor.get('action') or 'NOOP'} {executor.get('symbol') or ''} "
+            f"status={executor.get('fill_status_summary') or executor.get('status') or '-'}\ub85c \ub9c8\ubb34\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
         ),
         "reporter_summary": (
-            f"???? grade={reporter.get('ai_run_grade') or '-'} / "
-            f"summary={reporter.get('ai_summary') or '?? run ?? ?? ??'}"
+            f"\ub9ac\ud3ec\ud130\ub294 grade={reporter.get('ai_run_grade') or '-'} / "
+            f"summary={reporter.get('ai_summary') or '\uac19\uc740 \ub0a0\uc9dc reporter \uc694\uc57d\uc774 \uc544\uc9c1 \uc5c6\uc2b5\ub2c8\ub2e4.'}"
         ),
         "operator_takeaways": [
-            f"??/?? ??: {', '.join(global_bits) or '?? ?? ?? ??'}",
-            f"??/feature coverage: {feature_coverage.get('quality') or '-'} ({feature_coverage.get('present') or 0}/{feature_coverage.get('total') or 0})",
-            f"??? quote: ?? {quote_metrics.get('skill_quote_price') or '-'} ??? {quote_metrics.get('quote_volume') or '-'} ???? {quote_metrics.get('quote_trading_value') or '-'}",
+            f"\ub274\uc2a4/\uac70\uc2dc \uc785\ub825: {', '.join(global_bits) or '\uc2dc\uc7a5 \uc785\ub825 \uc5c6\uc74c'}",
+            f"\ucc28\ud2b8/feature coverage: {feature_coverage.get('quality') or '-'} ({feature_coverage.get('present') or 0}/{feature_coverage.get('total') or 0})",
+            f"\uc2e4\uc2dc\uac04 quote: \uac00\uaca9 {quote_metrics.get('skill_quote_price') or '-'} \uac70\ub798\ub7c9 {quote_metrics.get('quote_volume') or '-'} \uac70\ub798\ub300\uae08 {quote_metrics.get('quote_trading_value') or '-'}",
         ],
     }
 
@@ -938,25 +1076,24 @@ def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[s
         "operator_takeaways": ["string"],
     }
     system_prompt = (
-        "당신은 트레이딩 운영 콘솔 요약기다. "
-        "각 에이전트가 무엇을 했는지 운영자가 바로 이해할 수 있게 짧고 정확한 한국어로 정리한다. "
-        "반드시 JSON만 반환하고, 입력에 없는 내용은 추측하지 마라."
+        "\ub2f9\uc2e0\uc740 \ud2b8\ub808\uc774\ub529 \uc6b4\uc601 \ud654\uba74\uc6a9 \ud55c\uae00 \ube0c\ub9ac\ud504 \uc791\uc131\uae30\uc785\ub2c8\ub2e4. "
+        "\uc6b4\uc601\uc790\uac00 \ud55c \ubc88\uc5d0 \uc774\ud574\ud560 \uc218 \uc788\ub3c4\ub85d \uc9e7\uace0 \uc815\ud655\ud558\uac8c \uc815\ub9ac\ud558\uc138\uc694. "
+        "\ubc18\ub4dc\uc2dc JSON\ub9cc \ucd9c\ub825\ud558\uace0 \uc124\uba85\ubb38\uc774\ub098 \uc8fc\uc11d\uc740 \uc4f0\uc9c0 \ub9c8\uc138\uc694."
     )
     user_prompt = (
-        "아래 입력을 바탕으로 지휘자, 전략가, 스캐너, 모니터, 감독관, 수행자, 리포터가 무엇을 했는지 "
-        "운영자가 한눈에 이해할 수 있게 한국어로 요약하라.\n"
-        "반드시 다음을 포함하라:\n"
-        "- 전략가가 어떤 뉴스/글로벌 감성/VIX/거시 입력을 읽었는지\n"
-        "- 그래서 어떤 테마/플레이북/리스크 톤을 만들었는지\n"
-        "- 스캐너가 Kiwoom에서 무엇을 가져왔고 어떤 후보 중 어떤 종목이 1등이 됐는지\n"
-        "- 차트/feature/실시간 quote 중 무엇을 점수에 썼는지\n"
-        "- 모니터가 무엇을 보고 매수/매도/차단을 판단했는지\n"
-        "- 감독관과 수행자의 최종 결과\n"
-        "- 리포터가 남긴 사후 평가가 있으면 한 줄로 정리할 것\n"
-        "각 항목은 한 문장만 쓰고, 120자 안쪽으로 매우 짧게 유지하라.\n"
-        "operator_takeaways는 최대 3개까지만 작성하라.\n"
-        f"계약: {json.dumps(contract, ensure_ascii=False)}\n"
-        f"입력: {json.dumps(compact_input, ensure_ascii=False)}"
+        "\uc544\ub798 \uc2e4\ud589 \uae30\ub85d\uc744 \ubc14\ud0d5\uc73c\ub85c \uc9c0\ud718\uc790, \uc804\ub7b5\uac00, \uc2a4\uce90\ub108, \ubaa8\ub2c8\ud130, \uac10\ub3c5\uad00, \uc218\ud589\uc790, \ub9ac\ud3ec\ud130\uac00 \uac01\uac01 \ubb34\uc5c7\uc744 \ud588\ub294\uc9c0 "
+        "\uc6b4\uc601\uc790\uc5d0\uac8c \ubc14\ub85c \uc77d\ud788\ub294 \ud55c\uad6d\uc5b4\ub85c \uc694\uc57d\ud558\uc138\uc694.\n"
+        "\ube0c\ub9ac\ud504\uc5d0\ub294 \ub2e4\uc74c\uc774 \ud3ec\ud568\ub3fc\uc57c \ud569\ub2c8\ub2e4.\n"
+        "- \uc804\ub7b5\uac00\uac00 \uc5b4\ub5a4 \ub274\uc2a4/\uae00\ub85c\ubc8c \uac10\uc131/VIX/\uac70\uc2dc \uc785\ub825\uc744 \ubd24\ub294\uc9c0\n"
+        "- \uc2a4\uce90\ub108\uac00 Kiwoom \ud6c4\ubcf4 \uc911 \uc5b4\ub5a4 \uc885\ubaa9\uc744 \uc65c 1\ub4f1\uc73c\ub85c \uace8\ub790\ub294\uc9c0\n"
+        "- \ucc28\ud2b8/feature/\uc2e4\uc2dc\uac04 quote\uac00 \uc5bc\ub9c8\ub098 \ucc44\uc6cc\uc84c\ub294\uc9c0\n"
+        "- \ubaa8\ub2c8\ud130\uac00 \uc65c hold/buy/sell/block \ud588\ub294\uc9c0\n"
+        "- \uac10\ub3c5\uad00\uacfc \uc218\ud589\uc790\uc758 \ucd5c\uc885 \uacb0\ub860\n"
+        "- \ub9ac\ud3ec\ud130\uc758 \uc0ac\ud6c4 \ud3c9\uac00\n"
+        "\uac01 \ud56d\ubaa9\uc740 \uc9e7\uace0 \uba85\ud655\ud558\uac8c \uc4f0\uace0, \uc804\uccb4\ub294 120\uc790 \ub0b4\uc678 \ubb38\uc7a5 \uc704\uc8fc\ub85c \uc815\ub9ac\ud558\uc138\uc694.\n"
+        "operator_takeaways\ub294 3\uac1c \uc774\ud558\ub85c \uc791\uc131\ud558\uc138\uc694.\n"
+        f"\uacc4\uc57d: {json.dumps(contract, ensure_ascii=False)}\n"
+        f"\uc785\ub825: {json.dumps(compact_input, ensure_ascii=False)}"
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -980,16 +1117,16 @@ def _build_operator_brief_repair_messages(raw_text: str) -> List[Dict[str, str]]
         {
             "role": "system",
             "content": (
-                "당신은 운영자용 JSON 정리기다. "
-                "주어진 초안을 계약에 맞는 JSON으로만 다시 써라. "
-                "설명, 서문, 코드블록 없이 JSON 객체만 반환하라."
+                "\ub2f9\uc2e0\uc740 \ube0c\ub9ac\ud504 \ubcf5\uad6c\uae30\uc785\ub2c8\ub2e4. "
+                "\uc785\ub825 \ud14d\uc2a4\ud2b8\ub97c \uacc4\uc57d\uc5d0 \ub9de\ub294 JSON \ud558\ub098\ub85c\ub9cc \uc815\ub9ac\ud558\uc138\uc694. "
+                "\uc124\uba85\uc774\ub098 \uc8fc\uc11d \uc5c6\uc774 JSON \uac1d\uccb4\ub9cc \ucd9c\ub825\ud558\uc138\uc694."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"계약: {json.dumps(contract, ensure_ascii=False)}\n"
-                f"초안: {raw_text}"
+                f"\uacc4\uc57d: {json.dumps(contract, ensure_ascii=False)}\n"
+                f"\uc785\ub825: {raw_text}"
             ),
         },
     ]
@@ -1000,15 +1137,15 @@ def _build_operator_brief_line_messages(compact_input: Dict[str, Any]) -> List[D
         {
             "role": "system",
             "content": (
-                "당신은 트레이딩 운영 브리프 생성기다. "
-                "아래 키 이름을 그대로 써서 각 줄에 key: value 형식으로만 답하라. "
-                "불필요한 설명을 붙이지 말고 최대한 짧게 작성하라."
+                "\ub2f9\uc2e0\uc740 \ube0c\ub9ac\ud504 \ubcf5\uad6c\uae30\uc785\ub2c8\ub2e4. "
+                "JSON\uc774 \uc5b4\ub824\uc6b0\uba74 \uc544\ub798 key:value \ud615\uc2dd\uc73c\ub85c\ub9cc \ub2f5\ud558\uc138\uc694. "
+                "\ubd88\ud544\uc694\ud55c \uc11c\ub860 \uc5c6\uc774 \ud544\uc694\ud55c \uc904\ub9cc \ucd9c\ub825\ud558\uc138\uc694."
             ),
         },
         {
             "role": "user",
             "content": (
-                "다음 형식으로만 답하라:\n"
+                "\ub2e4\uc74c \ud615\uc2dd\uc73c\ub85c\ub9cc \ub2f5\ud558\uc138\uc694:\n"
                 "headline: ...\n"
                 "commander_summary: ...\n"
                 "strategist_summary: ...\n"
@@ -1018,7 +1155,7 @@ def _build_operator_brief_line_messages(compact_input: Dict[str, Any]) -> List[D
                 "executor_summary: ...\n"
                 "reporter_summary: ...\n"
                 "operator_takeaways: item1 | item2 | item3\n"
-                f"입력: {json.dumps(compact_input, ensure_ascii=False)}"
+                f"\uc785\ub825: {json.dumps(compact_input, ensure_ascii=False)}"
             ),
         },
     ]
@@ -1029,18 +1166,33 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     router = LLMRouter.from_env()
     if router.client is None:
         return fallback
-    model = str(os.getenv("OPERATOR_UI_RUN_BRIEF_MODEL", "") or os.getenv("OPENROUTER_DEFAULT_MODEL", "") or "").strip()
+    explicit_model = str(
+        os.getenv("OPERATOR_UI_RUN_BRIEF_MODEL", "")
+        or os.getenv("OPENROUTER_MODEL_OPERATOR_UI", "")
+        or os.getenv("OPENROUTER_MODEL_REPORTER_INTRADAY", "")
+        or ""
+    ).strip()
+    if hasattr(router, "resolve"):
+        route = router.resolve("operator_ui", policy={"model": explicit_model} if explicit_model else None)
+        model = str(getattr(route, "model", "") or explicit_model or "").strip()
+    else:
+        model = _normalize_role_model_name(
+            explicit_model
+            or os.getenv("OPENROUTER_DEFAULT_MODEL", "")
+            or ""
+        )
     compact_input = _build_operator_brief_input(detail)
     messages = _build_operator_brief_messages(compact_input)
     try:
         raw = router.chat(
-            "reporter",
+            "operator_ui",
             messages,
             policy={
-                "model": model,
                 "temperature": float(os.getenv("OPERATOR_UI_RUN_BRIEF_TEMPERATURE", "0.1")),
                 "max_tokens": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_MAX_TOKENS", "700"))),
+                "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
                 "response_format": {"type": "json_object"},
+                **({"model": model} if model else {}),
             },
         )
     except Exception as exc:
@@ -1049,15 +1201,21 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         return fallback
     parsed = _extract_json_object(raw)
     if not parsed:
+        if _is_free_model(model) and not str(raw or "").strip():
+            fallback["status"] = "fallback"
+            fallback["model"] = model
+            fallback["reason"] = "free_model_empty_response"
+            return fallback
         try:
             repair_raw = router.chat(
-                "reporter",
+                "operator_ui",
                 _build_operator_brief_repair_messages(raw),
                 policy={
-                    "model": model,
                     "temperature": 0.0,
                     "max_tokens": 600,
+                    "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
                     "response_format": {"type": "json_object"},
+                    **({"model": model} if model else {}),
                 },
             )
         except Exception:
@@ -1079,14 +1237,31 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 "reason": "llm_repair_pass",
             }
         if _is_free_model(model):
+            salvaged = _salvage_operator_brief_fields(raw)
+            if salvaged:
+                return {
+                    "status": "salvaged",
+                    "model": model,
+                    "headline": str(salvaged.get("headline") or fallback.get("headline") or ""),
+                    "commander_summary": str(salvaged.get("commander_summary") or fallback.get("commander_summary") or ""),
+                    "strategist_summary": str(salvaged.get("strategist_summary") or fallback.get("strategist_summary") or ""),
+                    "scanner_summary": str(salvaged.get("scanner_summary") or fallback.get("scanner_summary") or ""),
+                    "monitor_summary": str(salvaged.get("monitor_summary") or fallback.get("monitor_summary") or ""),
+                    "supervisor_summary": str(salvaged.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
+                    "executor_summary": str(salvaged.get("executor_summary") or fallback.get("executor_summary") or ""),
+                    "reporter_summary": str(salvaged.get("reporter_summary") or fallback.get("reporter_summary") or ""),
+                    "operator_takeaways": [str(x or "") for x in list(salvaged.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
+                    "reason": "free_model_salvage_pass",
+                }
             try:
                 line_raw = router.chat(
-                    "reporter",
+                    "operator_ui",
                     _build_operator_brief_line_messages(compact_input),
                     policy={
-                        "model": model,
                         "temperature": 0.0,
                         "max_tokens": 500,
+                        "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
+                        **({"model": model} if model else {}),
                     },
                 )
             except Exception:
@@ -1141,6 +1316,39 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
+    if not run_id:
+        return {}
+    path = config.operator_ui_cache_path / f"{run_id}.json"
+    cached = _read_json(path)
+    if not isinstance(cached, dict):
+        return {}
+    if int(cached.get("version") or 0) < 2:
+        return {}
+    return cached
+
+
+def _save_cached_operator_brief(config: OperatorUIConfig, run_id: str, brief: Dict[str, Any]) -> None:
+    if not run_id or not isinstance(brief, dict):
+        return
+    path = config.operator_ui_cache_path / f"{run_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(brief)
+    payload["version"] = 2
+    payload["cached_at"] = datetime.now(tz=KST).isoformat()
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_operator_brief_with_cache(config: OperatorUIConfig, detail: Dict[str, Any]) -> Dict[str, Any]:
+    run_id = str(detail.get("run_id") or "").strip()
+    cached = _load_cached_operator_brief(config, run_id)
+    if cached:
+        return cached
+    brief = _load_operator_brief(detail)
+    _save_cached_operator_brief(config, run_id, brief)
+    return brief
+
+
 def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
     all_rows = [row for row in _iter_jsonl(config.event_log_path) if str(row.get("run_id") or "").strip() == str(run_id or "").strip()]
     all_rows = sorted(all_rows, key=lambda row: _to_epoch(row.get("ts")) or 0)
@@ -1158,6 +1366,7 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
     monitor_summary = next((r.get("payload") for r in reversed(all_rows) if str(r.get("stage") or "") == "monitor" and str(r.get("event") or "") == "summary" and isinstance(r.get("payload"), dict)), {})
     verdict_payload = next((r.get("payload") for r in reversed(all_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "verdict" and isinstance(r.get("payload"), dict)), {})
     execution_payload = next((r.get("payload") for r in reversed(all_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "execution" and isinstance(r.get("payload"), dict)), {})
+    normalized_execution = _normalize_execution_payload(execution_payload if isinstance(execution_payload, dict) else {})
 
     strategic_frame = next(
         (
@@ -1201,11 +1410,12 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
     reporter_evidence = _latest_evidence(evidence_rows, agent="reporter", stage="post_run_analysis")
     first_dt = _to_datetime(all_rows[0].get("ts"))
     run_day = first_dt.strftime("%Y-%m-%d") if first_dt else ""
-    primary_symbol = str(
-        execution_payload.get("symbol")
+    primary_symbol = normalize_symbol(
+        normalized_execution.get("symbol")
         or scanner_summary.get("top_stock")
         or candidate_selection.get("selected_symbol")
-        or ""
+        or "",
+        allow_test_symbols=True,
     ).strip()
     same_day_symbol_trades = []
     if primary_symbol:
@@ -1280,7 +1490,7 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             for row in all_rows[:120]
         ],
     }
-    detail["operator_brief"] = _load_operator_brief(detail)
+    detail["operator_brief"] = _load_operator_brief_with_cache(config, detail)
     return detail
 
 
@@ -1319,12 +1529,24 @@ def _count_stages(rows: List[Dict[str, Any]]) -> Dict[str, int]:
 
 
 def load_health(config: OperatorUIConfig) -> Dict[str, Any]:
-    overview = load_overview(config)
+    latest_day = _latest_event_day(config.event_log_path)
+    operator_summary = _read_exact_day(config.reports_root / "operator_summary", "operator_summary", latest_day)
+    reporter = _read_exact_day(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis", latest_day)
+    if operator_summary:
+        executive = operator_summary.get("executive_summary") if isinstance(operator_summary.get("executive_summary"), dict) else {}
+        system_status = str(executive.get("system_status") or "UNKNOWN")
+    else:
+        system_status = "LIVE" if latest_day else "UNKNOWN"
+    if reporter:
+        ai_review = reporter.get("ai_review") if isinstance(reporter.get("ai_review"), dict) else {}
+        ai_review_status = str(ai_review.get("status") or "disabled")
+    else:
+        ai_review_status = "not_generated_yet" if latest_day else "disabled"
     return {
         "status": "ok",
-        "latest_day": overview.get("latest_day"),
-        "system_status": ((overview.get("operator_summary") or {}).get("system_status") or "UNKNOWN"),
-        "ai_review_status": ((overview.get("reporter") or {}).get("ai_status") or "disabled"),
+        "latest_day": latest_day,
+        "system_status": system_status,
+        "ai_review_status": ai_review_status,
         "event_log_path": str(config.event_log_path),
         "reports_root": str(config.reports_root),
     }

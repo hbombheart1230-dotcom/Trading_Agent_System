@@ -320,7 +320,12 @@ def build_ai_reporter_review(
     if router.client is None:
         return _default_result(enabled=True, status="unavailable", reason="LLM client unavailable")
 
-    env_model = str(os.getenv("REPORTER_AI_REVIEW_MODEL", "")).strip()
+    env_model = str(
+        os.getenv("REPORTER_AI_REVIEW_MODEL", "")
+        or os.getenv("OPENROUTER_MODEL_REPORTER_FINAL", "")
+        or os.getenv("OPENROUTER_MODEL_DAILY_REPORT", "")
+        or ""
+    ).strip()
     env_temp_raw = str(os.getenv("REPORTER_AI_REVIEW_TEMPERATURE", "")).strip()
     env_max_tokens_raw = str(os.getenv("REPORTER_AI_REVIEW_MAX_TOKENS", "")).strip()
     resolved_model = str(model or env_model or "").strip()
@@ -346,7 +351,7 @@ def build_ai_reporter_review(
     }
     if resolved_model:
         policy["model"] = resolved_model
-    route = router.resolve("reporter", policy=policy)
+    route = router.resolve("reporter_final", policy=policy)
 
     compact_input = _build_compact_input(day, reporter_output)
     messages = _build_messages(day, compact_input)
@@ -372,7 +377,7 @@ def build_ai_reporter_review(
     except Exception:
         pass
     try:
-        raw = router.chat("reporter", messages, policy=policy)
+        raw = router.chat("reporter_final", messages, policy=policy)
     except Exception as e:
         try:
             record_llm_response(

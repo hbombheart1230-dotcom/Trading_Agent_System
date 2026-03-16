@@ -18,6 +18,8 @@ def test_report_inventory_detects_offhours_and_legacy_daily(tmp_path: Path) -> N
     (reports / "daily" / "daily_2026-03-13.json").write_text("{}", encoding="utf-8")
     (reports / "daily_report_2026-03-13.md").write_text("legacy", encoding="utf-8")
     (reports / "daily_report_2026-03-13.json").write_text("{}", encoding="utf-8")
+    (reports / "daily_2026-03-13.md").write_text("legacy canonical-name-in-root", encoding="utf-8")
+    (reports / "daily_2026-03-13.json").write_text("{}", encoding="utf-8")
 
     inv = build_report_inventory(reports, event_log_path=tmp_path / "missing_events.jsonl")
     candidates = inv.get("archive_candidates") or []
@@ -25,6 +27,8 @@ def test_report_inventory_detects_offhours_and_legacy_daily(tmp_path: Path) -> N
     assert "offhours_full_trace_demo" in rel_paths
     assert "daily_report_2026-03-13.md" in rel_paths
     assert "daily_report_2026-03-13.json" in rel_paths
+    assert "daily_2026-03-13.md" in rel_paths
+    assert "daily_2026-03-13.json" in rel_paths
 
 
 def test_report_inventory_warns_when_operator_summary_uses_missing_event_path(tmp_path: Path) -> None:

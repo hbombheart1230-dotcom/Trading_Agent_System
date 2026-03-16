@@ -60,6 +60,8 @@ This is kept only for compatibility with older code paths.
         }
         if "response_format" in (policy or {}):
             payload["response_format"] = policy.get("response_format")
+        if "timeout_sec" in (policy or {}):
+            payload["__timeout_sec"] = policy.get("timeout_sec")
         if extra:
             payload.update(extra)
         return self.client.chat_completions(payload)

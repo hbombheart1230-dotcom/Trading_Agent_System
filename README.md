@@ -1,4 +1,4 @@
-# Trading Agent System
+﻿# Trading Agent System
 
 ## Enterprise Architecture Overview (M20)
 
@@ -23,21 +23,14 @@ Core philosophy:
 
 # 2. System at a Glance (7-Agent Model)
 
-    Commander (지휘관)
-        ↓
-    Strategist (전략가)
-        ↓
-    Scanner (스캐너)
-        ↓
-    Monitor (모니터)
-        ↓
-    Supervisor (감독관)
-        ↓
-    Executor (수행자)
-        ↓
-    Broker (Mock/Real)
-        ↓
-    Reporter (리포터)
+    Commander
+        -> Strategist
+        -> Scanner
+        -> Monitor
+        -> Supervisor
+        -> Executor
+        -> Broker (Mock/Real)
+        -> Reporter
 
 Key separation:
 - Decision Layer (Commander, Strategist, Scanner, Monitor)
@@ -56,6 +49,8 @@ The decision chain now uses Kiwoom market data as the primary candidate source:
    global sentiment/macro context and collects market-level news before Scanner selects stocks.
    Strategist also emits `scanner_source_policy` so Scanner can change which Kiwoom sources are
    actually enabled or suppressed for that run.
+   Strategist also emits `macro_stress_overlay` from VIX / DXY / TNX context so downstream
+   Scanner and Monitor can reason explicitly about macro stress.
 3. Scanner builds candidate pool from Kiwoom sources:
    - condition search
    - top volume ranking
@@ -63,7 +58,8 @@ The decision chain now uses Kiwoom market data as the primary candidate source:
    - top change-rate ranking (optional)
    - sector/theme mapped symbols
    - operator watchlist shortlist (optional)
-4. Scanner applies theme/sector filtering (`theme_map`/`sector_map`) and ranks candidates
+4. Scanner hydrates candidate chart/feature packs and quote metrics, then applies theme/sector
+   filtering (`theme_map`/`sector_map`) and ranks candidates
 5. Scanner returns Top-1 (`top_stock`)
 6. Monitor handles entry/exit intent generation only
 7. Supervisor/Executor keep approval + guard + execution separation
@@ -106,6 +102,7 @@ Notes:
 - Scanner (canonical):
   - `graphs/nodes/scanner_node.py` (Kiwoom-first candidate retrieval/ranking, strategist-guided)
   - `graphs/nodes/scan_candidates.py` remains compatibility stage wiring
+  - integrated chain scanner now hydrates candidate features / quote metrics before final ranking
 - Monitor (canonical):
   - `graphs/nodes/monitor_node.py` (entry/exit intent logic only)
   - `libs/agent/monitor.py` is legacy placeholder interface
@@ -189,7 +186,7 @@ Example scanner output:
 
 # 3. Agent Responsibilities
 
-## Commander (지휘관)
+## Commander
 - Orchestrates full run cycle
 - Decides which agent to call next
 - Routes outputs between agents
@@ -197,13 +194,14 @@ Example scanner output:
 - Never selects stocks directly
 - Never executes trades
 
-## Strategist (전략가)
+## Strategist
 - AI-centered strategic framing (no order execution)
 - Produces a structured run-cycle brief:
   - market regime/sentiment and key events
   - leading themes and avoid-themes
   - playbook, aggressiveness, and risk tone
   - scanner ranking priorities, monitor guidance, reporter focus
+  - additive `macro_stress_overlay`
 - Strengthened context inputs (additive):
   - global sentiment signal (status/source aware)
   - global sentiment preserves `S&P500 / Nasdaq / Dow` daily change rates plus DXY / US10Y move details
@@ -219,6 +217,10 @@ Example scanner output:
   - LLM returns frame overrides (`themes`, `playbook`, `scanner_priority`, `monitor_guidance`, etc.)
   - deterministic strategist logic remains baseline fallback on error/parse-fail
   - observability: EventLog `stage=strategist_llm`, `event=result`
+  - additive confidence flags expose repaired / salvaged responses:
+    - `llm_frame_low_confidence`
+    - `strategist_llm.low_confidence`
+    - `strategist_llm.repair_used`
 - Market-first news flow:
   - Strategist can collect market/topic news even when `candidate_symbols` is empty
   - derived search targets are stored as `news_query_targets`
@@ -229,7 +231,7 @@ Example scanner output:
   - deduped daily latest summaries: `data/strategy_memory/daily/YYYY-MM-DD.json`
   - advisory only; no automatic live parameter mutation
 
-## Scanner (스캐너)
+## Scanner
 - Builds candidate universe from Kiwoom market data
 - Applies strategist theme/sector filters when mapping exists
 - Applies strategist frame additively to ranking:
@@ -243,9 +245,19 @@ Example scanner output:
   - reports expose `condition_search_status`, `condition_search_source`, and `condition_search_reason` so operators can see when the source is unavailable or intentionally disabled
 - Reduces pool with practical guards (halt/abnormal/illiquid thresholds)
 - Computes explainable scoring factors (value, momentum, trend, volume surge, intraday strength, risk penalties)
+- Hydrates candidate-level chart/feature inputs before ranking
+  - prefers `feature_engine.by_symbol`
+  - falls back to scanner-side candidate hydration
+- Emits quote/feature observability for operators:
+  - `feature_source`
+  - `feature_symbol_count`
+  - `skill_quote_price`
+  - `quote_volume`
+  - `quote_trading_value`
+  - `intraday_change_pct`
 - Ranks candidates with score breakdown and selects Top-1
 
-## Monitor (모니터)
+## Monitor
 - Watches selected primary symbol / active position state
 - Emits ActionProposal / OrderIntent only
 - Consumes strategist guidance deterministically:
@@ -258,19 +270,19 @@ Example scanner output:
 - Emergency exits (`emergency_halt`, `news_shock`) are handled as explicit separate path
 - Never selects stocks and never places orders
 
-## Supervisor (감독관)
+## Supervisor
 - Owns risk limits and policy
 - Validates OrderIntent
 - Approves / rejects / modifies
 - Can pause/stop system
 
-## Executor (수행자)
+## Executor
 - Executes approved intents only
 - Applies guard precedence
 - Ensures idempotency
 - Routes to Broker API
 
-## Reporter (리포터)
+## Reporter
 - Reads EventLog
 - Produces script-driven daily / trade / operator reports from artifacts
 - Summarizes LLM quality and execution metrics
@@ -311,7 +323,7 @@ Guard priority always overrides approval.
 
 # 5. Intent Lifecycle
 
-    created → pending_approval → approved → executing → executed/failed → settled
+    created -> pending_approval -> approved -> executing -> executed/failed -> settled
 
 Idempotency enforced via intent_id.
 
@@ -328,6 +340,10 @@ Current State:
 - Error-type classification
 - LLM telemetry logging (`stage=strategist_llm`)
 - Operator smoke and query scripts for LLM telemetry
+- Role-separated OpenRouter routing:
+  - Strategist / final daily summaries: `openrouter/auto`
+  - operator UI / intraday lightweight summaries: `openrouter/free`
+  - generic fallback remains low-cost
 
 Implemented Milestones:
 - M20-1: strategist smoke + safe fallback
@@ -337,6 +353,17 @@ Implemented Milestones:
 - M20-5: daily metrics aggregation for strategist LLM reliability
 - M20-6: prompt/schema version telemetry and distribution metrics
 - M20-7: token usage + estimated cost telemetry in events/ops/metrics
+
+Recommended env shape:
+
+```env
+OPENROUTER_DEFAULT_MODEL=openrouter/free
+OPENROUTER_MODEL_OPERATOR_UI=openrouter/free
+OPENROUTER_MODEL_REPORTER_INTRADAY=openrouter/free
+OPENROUTER_MODEL_REPORTER_FINAL=openrouter/auto
+OPENROUTER_MODEL_DAILY_REPORT=openrouter/auto
+AI_STRATEGIST_MODEL=openrouter/auto
+```
 
 Next Steps:
 - Circuit breaker + safe fallback mode
@@ -396,11 +423,23 @@ Operator-facing report scripts:
   - `--ai-review-model <model>` (override reporter model route)
 - Operator UI:
   - `python -m scripts.run_operator_ui --env-path .env --host 127.0.0.1 --port 8010`
+  - `powershell -ExecutionPolicy Bypass -File scripts/start_operator_ui.ps1`
+  - `powershell -ExecutionPolicy Bypass -File scripts/stop_operator_ui.ps1`
   - pages:
-    - `/` overview
-    - `/runs` recent run table
-    - `/runs/{run_id}` single run trace
+    - `/` same-day overview
+      - `Today Trades`
+      - `Today Traded Symbols`
+      - `Overtrading Warning`
+      - `Latest Strategist Prompt`
+      - `Strategy Memory Timeline`
+    - `/runs` recent run table (`macro stress`, `feature coverage`)
+    - `/runs/{run_id}` single run trace with operator brief, feature coverage, quote metrics,
+      same-day symbol trade history, and recent same-symbol run chain
     - `/healthz` machine-readable health summary
+  - same-day behavior:
+    - exact same-day report files are preferred
+    - if same-day reports are not generated yet, UI falls back to live event-log summaries
+    - run detail surfaces `same_day_report_missing` instead of silently using stale prior-day reporter analysis
 
 Off-hours validation mode (continuous non-broker evaluation):
 - Goal: keep validating Strategist -> Scanner -> Monitor -> Supervisor/Executor flow after market close without sending broker-side mock/live orders.

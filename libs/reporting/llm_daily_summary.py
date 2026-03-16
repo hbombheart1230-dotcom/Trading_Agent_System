@@ -70,7 +70,15 @@ def summarize_daily_report(*, state: Dict[str, Any], policy: Dict[str, Any]) -> 
 
     messages = _build_messages(state, policy)
     llm_policy = dict(policy.get("llm") or {})
+    env_model = str(
+        os.getenv("DAILY_REPORT_LLM_MODEL", "")
+        or os.getenv("OPENROUTER_MODEL_DAILY_REPORT", "")
+        or os.getenv("OPENROUTER_MODEL_REPORTER_FINAL", "")
+        or ""
+    ).strip()
     # allow role specific overrides (optional)
     llm_policy.setdefault("max_tokens", 256)
     llm_policy.setdefault("temperature", 0.2)
-    return router.chat("reporter", messages, policy=llm_policy).strip()
+    if env_model and not str(llm_policy.get("model") or "").strip():
+        llm_policy["model"] = env_model
+    return router.chat("daily_report", messages, policy=llm_policy).strip()

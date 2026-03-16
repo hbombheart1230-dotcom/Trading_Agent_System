@@ -385,6 +385,16 @@ def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _normalize_router_model_name(model: Any) -> str:
+    raw = str(model or "").strip()
+    lowered = raw.lower()
+    if lowered == "auto":
+        return "openrouter/auto"
+    if lowered == "free":
+        return "openrouter/free"
+    return raw
+
+
 def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, str]]:
     system = (
         "You are the Strategist agent for an automated trading system. "
@@ -630,13 +640,14 @@ def _run_strategist_frame_llm(
     if _env_bool("DRY_RUN", False):
         return {}, {"enabled": True, "status": "dry_run", "reason": "dry_run"}
 
-    model = str(
+    model = _normalize_router_model_name(
         policy.get("strategist_frame_llm_model")
         or os.getenv("STRATEGIST_FRAME_LLM_MODEL", "")
         or os.getenv("AI_STRATEGIST_MODEL", "")
+        or os.getenv("OPENROUTER_MODEL_STRATEGIST", "")
         or os.getenv("OPENROUTER_DEFAULT_MODEL", "")
         or ""
-    ).strip()
+    )
     temp_raw = (
         policy.get("strategist_frame_llm_temperature")
         if policy.get("strategist_frame_llm_temperature") is not None

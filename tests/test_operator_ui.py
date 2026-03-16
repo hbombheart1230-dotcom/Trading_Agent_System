@@ -101,16 +101,30 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
     events = tmp_path / "data" / "logs" / "events.jsonl"
     evidence = tmp_path / "data" / "evidence_ledger" / "events.jsonl"
     memory = tmp_path / "data" / "strategy_memory" / "daily"
+    cache = tmp_path / "data" / "operator_ui" / "brief_cache"
 
     _write_json(
         reports / "daily" / "daily_2026-03-13.json",
         {"day": "2026-03-13", "events": 10, "decision_actions": {"BUY": 1, "SELL": 1}, "approvals": 2, "blocks": 1},
     )
     _write_json(
+        reports / "daily" / "daily_2026-03-16.json",
+        {"day": "2026-03-16", "events": 11, "decision_actions": {"BUY": 1}, "approvals": 1, "blocks": 0},
+    )
+    _write_json(
         reports / "operator_summary" / "operator_summary_2026-03-13.json",
         {
             "day": "2026-03-13",
             "executive_summary": {"system_status": "GREEN", "summary_lines": ["runs ok"]},
+            "system_health_status": {"system_health_level": "GREEN", "recommended_action": ["continue"]},
+            "trading_activity_summary": {"run_total": 1, "executions_total": 1, "blocked_total": 0},
+        },
+    )
+    _write_json(
+        reports / "operator_summary" / "operator_summary_2026-03-16.json",
+        {
+            "day": "2026-03-16",
+            "executive_summary": {"system_status": "GREEN", "summary_lines": ["today runs ok"]},
             "system_health_status": {"system_health_level": "GREEN", "recommended_action": ["continue"]},
             "trading_activity_summary": {"run_total": 1, "executions_total": 1, "blocked_total": 0},
         },
@@ -127,7 +141,22 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
         },
     )
     _write_json(
+        reports / "dev" / "analysis" / "reporter_analysis" / "reporter_analysis_2026-03-16.json",
+        {
+            "day": "2026-03-16",
+            "ai_review": {"status": "ok"},
+            "ai_run_grade": "A-",
+            "ai_summary": "Today reporter summary",
+            "trade_summary": {"trade_count": 1, "symbols_traded": ["005930"]},
+            "decision_trace_chain_summary": {"chains": [{"run_id": "run-1", "scanner": {"selected_symbol": "005930"}}]},
+        },
+    )
+    _write_json(
         reports / "reconciliation" / "broker_trade_reconciliation_2026-03-13.json",
+        {"summary": {"local_total": 1, "broker_total": 1, "matched_by_ord_no": 1, "broker_window_limited": False}},
+    )
+    _write_json(
+        reports / "reconciliation" / "broker_trade_reconciliation_2026-03-16.json",
         {"summary": {"local_total": 1, "broker_total": 1, "matched_by_ord_no": 1, "broker_window_limited": False}},
     )
     _write_json(
@@ -156,7 +185,7 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
             {"run_id": "run-1", "ts": "2026-03-16T00:00:06+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "no_position", "exit_reason": "no_position"}},
             {"run_id": "run-1", "ts": "2026-03-16T00:00:07+00:00", "stage": "decision_trace", "event": "entry_exit_decision", "payload": {"agent": "monitor", "payload": {"entry_reason": "no_position"}}},
             {"run_id": "run-1", "ts": "2026-03-16T00:00:08+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": True, "reason": "Allowed"}},
-            {"run_id": "run-1", "ts": "2026-03-16T00:00:09+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"action": "BUY", "symbol": "005930", "qty": 1, "fill_status_summary": "EXECUTED_OK"}},
+            {"run_id": "run-1", "ts": "2026-03-16T00:00:09+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": True, "order": {"action": "BUY", "symbol": "005930", "qty": 1, "ord_qty": "1"}, "payload": {"order_id": "A0001", "broker_message": "EXECUTED_OK", "response_payload": {"ord_no": "A0001", "return_msg": "EXECUTED_OK"}}}},
             {"run_id": "run-1", "ts": "2026-03-16T00:00:10+00:00", "stage": "commander_router", "event": "end", "payload": {"status": "ok", "path": "integrated_chain"}},
         ],
     )
@@ -190,6 +219,7 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
         event_log_path=events,
         evidence_log_path=evidence,
         strategy_memory_path=memory,
+        operator_ui_cache_path=cache,
     )
 
 
@@ -203,7 +233,7 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert overview.status_code == 200
     assert "Operator Console" in overview.text
     assert "2026-03-16" in overview.text
-    assert "Reporter summary" in overview.text
+    assert "Today reporter summary" in overview.text
     assert "Strategy Memory Timeline" in overview.text
     assert "monitor risk remained elevated" in overview.text
     assert "Today Traded Symbols" in overview.text
@@ -228,7 +258,7 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "운영자 브리프" in detail.text
     assert "stepfun/step-3.5-flash:free" in detail.text
     assert "전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다." in detail.text
-    assert "grade=B" in detail.text
+    assert "grade=A-" in detail.text
     assert "strategist prompt" in detail.text
     assert "EXECUTED_OK" in detail.text
     assert "Feature Coverage" in detail.text
@@ -270,3 +300,22 @@ def test_operator_ui_run_detail_uses_line_repair_for_free_model(tmp_path: Path, 
     assert detail.status_code == 200
     assert "status=line_repaired" in detail.text
     assert "line repair 동작" in detail.text
+
+
+def test_operator_ui_overview_does_not_fallback_to_stale_reporter_for_latest_day(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
+    cfg = _make_config(tmp_path)
+    (cfg.reports_root / "dev" / "analysis" / "reporter_analysis" / "reporter_analysis_2026-03-16.json").unlink()
+    (cfg.reports_root / "operator_summary" / "operator_summary_2026-03-16.json").unlink()
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    overview = client.get("/")
+    assert overview.status_code == 200
+    assert "2026-03-16" in overview.text
+    assert "Today reporter summary" not in overview.text
+    assert "Reporter summary" not in overview.text
+    assert "Same-day reporter analysis has not been generated yet." in overview.text
+    assert "LIVE" in overview.text
+    assert "live event log fallback active for 2026-03-16" in overview.text

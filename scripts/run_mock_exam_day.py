@@ -568,6 +568,7 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
     py = str(common["python_path"])
     day = str(common["day"])
     event_log_path = str(common["event_log_path"])
+    intents_path = str(Path(common["event_log_path"]).with_name("intents.jsonl"))
     report_root = Path(common["report_root"])
     timeout_sec = int(common["timeout_sec"])
     steps: List[Dict[str, Any]] = []
@@ -674,6 +675,45 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
         )
     )
 
+    daily_env = os.environ.copy()
+    daily_env["EVENT_LOG_PATH"] = event_log_path
+    daily_env["REPORT_DIR"] = str(report_root)
+    daily_env["REPORT_DAY"] = day
+    steps.append(
+        _run_subprocess(
+            step_id="closeout.daily",
+            command=[py, str(ROOT / "scripts" / "generate_daily_report.py")],
+            cwd=ROOT,
+            env=daily_env,
+            timeout_sec=timeout_sec,
+        )
+    )
+
+    steps.append(
+        _run_subprocess(
+            step_id="closeout.reporter_analysis",
+            command=[
+                py,
+                str(ROOT / "scripts" / "run_reporter_analysis_report.py"),
+                "--env-path",
+                str(common["env_path"]),
+                "--event-log-path",
+                event_log_path,
+                "--intents-path",
+                intents_path,
+                "--reports-root",
+                str(report_root),
+                "--report-dir",
+                str(report_root / "dev" / "analysis" / "reporter_analysis"),
+                "--day",
+                day,
+                "--json",
+            ],
+            cwd=ROOT,
+            timeout_sec=timeout_sec,
+        )
+    )
+
     steps.append(
         _run_subprocess(
             step_id="closeout.report_inventory",
@@ -684,6 +724,8 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
                 str(report_root),
                 "--event-log-path",
                 event_log_path,
+                "--apply",
+                "--include-legacy-root-daily",
                 "--json",
             ],
             cwd=ROOT,

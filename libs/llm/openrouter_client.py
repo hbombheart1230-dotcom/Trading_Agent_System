@@ -58,6 +58,7 @@ class OpenRouterClient:
         return OpenRouterClient(cfg)
 
     def chat_completions(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        req_timeout = int(payload.pop("__timeout_sec", self.cfg.timeout_sec) or self.cfg.timeout_sec)
         url = self.cfg.base_url.rstrip("/") + "/chat/completions"
         headers = {
             "Authorization": f"Bearer {self.cfg.api_key}",
@@ -72,7 +73,7 @@ class OpenRouterClient:
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url=url, data=data, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=self.cfg.timeout_sec) as resp:
+            with urllib.request.urlopen(req, timeout=req_timeout) as resp:
                 raw = resp.read().decode("utf-8")
                 return json.loads(raw)
         except urllib.error.HTTPError as e:

@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 _OFFHOURS_PREFIX = "offhours_"
-_ROOT_DAILY_RE = re.compile(r"^daily_report_(\d{4}-\d{2}-\d{2})\.(md|json)$")
+_ROOT_DAILY_RE = re.compile(r"^(?:daily_report_|daily_)(\d{4}-\d{2}-\d{2})\.(md|json)$")
 _LEGACY_MILESTONE_DIRS = {
     "m22_closeout",
     "m23_closeout",

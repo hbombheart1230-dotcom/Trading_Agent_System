@@ -41,11 +41,33 @@ $args = @(
 )
 
 $proc = Start-Process -FilePath $python -ArgumentList $args -WorkingDirectory $root -PassThru
-Start-Sleep -Seconds 3
 
 $url = "http://$ListenHost`:$Port/"
 $healthUrl = "http://$ListenHost`:$Port/healthz"
-$health = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 5
+$health = $null
+$deadline = (Get-Date).AddSeconds(20)
+do {
+    Start-Sleep -Milliseconds 750
+    try {
+        $health = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 3
+    } catch {
+        $health = $null
+    }
+} while (-not $health -and (Get-Date) -lt $deadline)
+
+if (-not $health) {
+    $stillRunning = Get-Process -Id $proc.Id -ErrorAction SilentlyContinue
+    if ($stillRunning) {
+        Write-Output ("PID=" + $proc.Id)
+        Write-Output ("URL=" + $url)
+        Write-Output ("HEALTH=pending")
+        if ($OpenBrowser) {
+            Start-Process $url | Out-Null
+        }
+        return
+    }
+    throw "operator UI health check timed out: $healthUrl"
+}
 
 Write-Output ("PID=" + $proc.Id)
 Write-Output ("URL=" + $url)
