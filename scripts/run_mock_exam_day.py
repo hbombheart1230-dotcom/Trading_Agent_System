@@ -568,6 +568,7 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
     py = str(common["python_path"])
     day = str(common["day"])
     event_log_path = str(common["event_log_path"])
+    evidence_log_path = str(common["evidence_log_path"])
     intents_path = str(Path(common["event_log_path"]).with_name("intents.jsonl"))
     report_root = Path(common["report_root"])
     timeout_sec = int(common["timeout_sec"])
@@ -716,6 +717,31 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
 
     steps.append(
         _run_subprocess(
+            step_id="closeout.live_execution_bundles",
+            command=[
+                py,
+                str(ROOT / "scripts" / "run_live_execution_bundle_report.py"),
+                "--event-log-path",
+                event_log_path,
+                "--evidence-log-path",
+                evidence_log_path,
+                "--reports-root",
+                str(report_root),
+                "--report-dir",
+                str(report_root / "dev" / "analysis" / "live_execution_bundles"),
+                "--intents-path",
+                intents_path,
+                "--day",
+                day,
+                "--json",
+            ],
+            cwd=ROOT,
+            timeout_sec=timeout_sec,
+        )
+    )
+
+    steps.append(
+        _run_subprocess(
             step_id="closeout.report_inventory",
             command=[
                 py,
@@ -782,6 +808,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--env-path", default=".env")
     p.add_argument("--report-dir", default="reports/dev/exam/mock_exam_day")
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
+    p.add_argument("--evidence-log-path", default="data/evidence_ledger/events.jsonl")
     p.add_argument("--state-path", default=os.getenv("STATE_STORE_PATH", ""))
     p.add_argument("--sleep-sec", type=int, default=_to_int(os.getenv("SCAN_INTERVAL_SEC", "60"), 60))
     p.add_argument("--python-path", default=sys.executable)
@@ -822,6 +849,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "env_path": _resolve_path(str(args.env_path), ".env"),
         "report_root": report_root,
         "event_log_path": _resolve_path(str(args.event_log_path), "data/logs/events.jsonl"),
+        "evidence_log_path": _resolve_path(str(args.evidence_log_path), "data/evidence_ledger/events.jsonl"),
         "state_path": (
             _resolve_path(str(args.state_path), "data/state.json")
             if str(args.state_path or "").strip()

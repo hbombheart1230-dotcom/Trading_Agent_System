@@ -164,6 +164,7 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
         "closeout.run_cards",
         "closeout.daily",
         "closeout.reporter_analysis",
+        "closeout.live_execution_bundles",
         "closeout.report_inventory",
     ]
 

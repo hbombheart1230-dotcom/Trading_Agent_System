@@ -175,6 +175,10 @@
 - Single-run full-chain trace artifact:
   - generator: `scripts/run_agent_pipeline_trace_report.py`
   - outputs: `reports/dev/analysis/agent_pipeline_trace/agent_pipeline_trace_<run>.md|json`
+- Executed-run bundle artifact for session/closeout:
+  - generator: `scripts/run_live_execution_bundle_report.py`
+  - outputs: `reports/dev/analysis/live_execution_bundles/live_execution_bundle_<run>.md|json`
+  - closeout can auto-generate these bundles for BUY/SELL runs detected in the selected day
 - Read-only operator web UI:
   - launcher:
     - `scripts/run_operator_ui.py`
