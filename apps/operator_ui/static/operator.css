@@ -370,6 +370,10 @@ td a {
   border-top: 1px solid var(--line);
 }
 
+.brief-card .brief-hero-chips {
+  margin-top: 10px;
+}
+
 .brief-card .brief-section h3 {
   margin-top: 0;
 }

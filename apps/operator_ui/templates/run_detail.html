@@ -54,11 +54,27 @@
   {% set sec = brief.sections or {} %}
   <article class="card brief-card">
     <h2>운영자 브리프</h2>
-    <p class="meta-line">status={{ brief.status }} model={{ brief.model or "-" }}</p>
+    <p class="meta-line">brief={{ brief.status }} model={{ brief.model or "-" }}</p>
     <h3>{{ brief.headline }}</h3>
+    <div class="chip-list brief-hero-chips">
+      <span class="status-badge status-badge--ok">{{ (sec.executive_decision or {}).get("final_action") or "-" }} {{ (sec.executive_decision or {}).get("symbol") or "-" }}</span>
+      {% if (sec.ai_trade_report or {}).get("story_type") %}
+      <span class="chip">{{ (sec.ai_trade_report or {}).get("story_type") }}</span>
+      {% endif %}
+      {% if (sec.ai_trade_report or {}).get("lifecycle_status") %}
+      <span class="chip">Lifecycle {{ (sec.ai_trade_report or {}).get("lifecycle_status") | upper }}</span>
+      {% endif %}
+      {% if (sec.ai_trade_report or {}).get("execution_mode_label") %}
+      <span class="chip">{{ (sec.ai_trade_report or {}).get("execution_mode_label") }}</span>
+      {% endif %}
+    </div>
+    <p class="operator-sentence">{{ (sec.executive_decision or {}).get("reason") or "-" }}</p>
+    {% if (sec.ai_trade_report or {}).get("summary") or (sec.ai_trade_report or {}).get("lifecycle_summary") %}
+    <p class="subtle-meta">{{ (sec.ai_trade_report or {}).get("summary") or (sec.ai_trade_report or {}).get("lifecycle_summary") }}</p>
+    {% endif %}
 
     <div class="brief-section">
-      <h3>What Happened</h3>
+      <h3>현재 판단</h3>
       <ul class="summary-list summary-list--tight">
         <li><strong>{{ (sec.executive_decision or {}).get("final_action") or "-" }} {{ (sec.executive_decision or {}).get("symbol") or "-" }}</strong></li>
         <li>Reason: {{ (sec.executive_decision or {}).get("reason") or "-" }}</li>
@@ -69,7 +85,7 @@
     </div>
 
     <div class="brief-section">
-      <h3>Why</h3>
+      <h3>판단 근거</h3>
       <ul class="summary-list summary-list--tight">
         <li>Market regime: {{ (sec.market_context or {}).get("market_regime") or "-" }}</li>
         <li>Global sentiment: {{ (sec.market_context or {}).get("global_sentiment") or "-" }}</li>
@@ -83,7 +99,7 @@
     </div>
 
     <div class="brief-section">
-      <h3>What Now</h3>
+      <h3>다음 체크</h3>
       <ul class="summary-list summary-list--tight">
         {% for line in (sec.operator_conclusion or {}).get("watch_next") or [] %}
         <li>Watch next: {{ line }}</li>
@@ -95,7 +111,7 @@
     </div>
 
     <div class="brief-section">
-      <h3>AI Report</h3>
+      <h3>AI 리포트</h3>
       <div class="chip-list">
         <span class="{{ (sec.ai_trade_report or {}).get('status_badge_class') or trade_report.report_status_badge_class or 'status-badge' }}">
           {{ (sec.ai_trade_report or {}).get("status_label") or trade_report.report_status_label or "-" }}
@@ -119,7 +135,7 @@
     </div>
 
     <details class="details-block">
-      <summary>Agent snapshots</summary>
+      <summary>에이전트 한줄 요약</summary>
       <ul class="summary-list summary-list--tight">
         <li><strong>Commander</strong>: {{ brief.commander_summary }}</li>
         <li><strong>Strategist</strong>: {{ brief.strategist_summary }}</li>

@@ -421,8 +421,8 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "운영자 브리프" in detail.text
     assert "stepfun/step-3.5-flash:free" in detail.text
     assert "전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다." in detail.text
-    assert "What Happened" in detail.text
-    assert "Why" in detail.text
+    assert "현재 판단" in detail.text
+    assert "판단 근거" in detail.text
     assert "Universe scanned: 5" in detail.text
     assert "Selected rank: #1" in detail.text
     assert "Market regime:" in detail.text
@@ -440,7 +440,8 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "trade_count=1" in detail.text
     assert "Recent Same-Symbol Run Chain" in detail.text
     assert "run_count=1" in detail.text
-    assert "AI Report" in detail.text
+    assert "AI 리포트" in detail.text
+    assert "Scanner rank #1 with robust chart coverage and approved execution." in detail.text
     assert "Open full report" in detail.text
     assert "Trade ID:" in detail.text
     assert "Lifecycle:" in detail.text
@@ -461,7 +462,7 @@ def test_operator_ui_run_detail_repairs_non_json_llm_output(tmp_path: Path, monk
 
     detail = client.get("/runs/run-1")
     assert detail.status_code == 200
-    assert "status=repaired" in detail.text
+    assert "brief=repaired" in detail.text
     assert "repair 경로가 동작했습니다." in detail.text
 
 
@@ -473,8 +474,79 @@ def test_operator_ui_run_detail_uses_line_repair_for_free_model(tmp_path: Path, 
 
     detail = client.get("/runs/run-1")
     assert detail.status_code == 200
-    assert "status=line_repaired" in detail.text
+    assert "brief=line_repaired" in detail.text
     assert "line repair 동작" in detail.text
+
+
+def test_operator_brief_input_prefers_canonical_trade_artifacts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    detail = data_access.load_run_detail(cfg, "run-1")
+    detail["strategist"] = {"summary": {}, "evidence": {}, "llm": {}, "decision_trace": {}}
+    detail["scanner"] = {"summary": {}, "decision_trace": {}, "feature_coverage": {}, "quote_metrics": {}}
+    detail["monitor"] = {"summary": {}, "decision_trace": {}}
+    detail["supervisor"] = {"verdict": {}}
+    detail["executor"] = {"execution": {}}
+    detail["reporter"] = {}
+
+    compact = data_access._build_operator_brief_input(detail)
+
+    canonical = compact["canonical_trade"]
+    assert canonical["available"] is True
+    assert canonical["trade_id"] == "20260316_005930_buy_run-1"
+    assert canonical["market_context_summary"] == "Market regime was neutral with elevated volatility and defensive posture."
+    assert canonical["selection_summary"] == "Selected as top ranked symbol due to value/volume blend."
+    assert canonical["monitor_summary"] == "Monitor allowed BUY because no position was open."
+    assert canonical["reporter_summary"] == "Reporter linked and graded the run A-."
+    assert compact["scanner"]["selected_reason"] == "Selected as top ranked symbol due to value/volume blend."
+    assert compact["monitor"]["monitor_reason"] == "Monitor allowed BUY because no position was open."
+    assert compact["reporter"]["ai_summary"] == "Reporter linked and graded the run A-."
+
+
+def test_fallback_operator_brief_uses_canonical_trade_artifacts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    detail = data_access.load_run_detail(cfg, "run-1")
+    detail["strategist"] = {"summary": {}, "evidence": {}, "llm": {}, "decision_trace": {}}
+    detail["scanner"] = {"summary": {}, "decision_trace": {}, "feature_coverage": {}, "quote_metrics": {}}
+    detail["monitor"] = {"summary": {}, "decision_trace": {}}
+    detail["supervisor"] = {"verdict": {}}
+    detail["executor"] = {"execution": {}}
+    detail["reporter"] = {}
+
+    brief = data_access._fallback_operator_brief(detail)
+
+    assert brief["headline"] == "BUY 005930"
+    assert "elevated volatility and defensive posture" in brief["strategist_summary"]
+    assert "value/volume blend" in brief["scanner_summary"]
+    assert "simulation mode" in brief["executor_summary"]
+    assert "A-" in brief["reporter_summary"]
+
+
+def test_operator_brief_sections_prefer_canonical_trade_artifacts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    detail = data_access.load_run_detail(cfg, "run-1")
+    detail["strategist"] = {"summary": {}, "evidence": {}, "llm": {}, "decision_trace": {}}
+    detail["scanner"] = {"summary": {}, "decision_trace": {}, "feature_coverage": {}, "quote_metrics": {}}
+    detail["monitor"] = {"summary": {}, "decision_trace": {}}
+    detail["supervisor"] = {"verdict": {}}
+    detail["executor"] = {"execution": {}}
+    detail["reporter"] = {}
+
+    sections = data_access._build_operator_brief_sections(detail)
+
+    assert sections["executive_decision"]["reason"] == "Scanner rank #1 with robust chart coverage and approved execution."
+    assert sections["market_context"]["market_regime"] == "neutral"
+    assert sections["market_context"]["global_sentiment"] == "-0.20"
+    assert sections["market_context"]["vix"] == "24.50"
+    assert sections["why_symbol_chosen"]["selected_rank"] == 1
+    assert sections["why_symbol_chosen"]["universe_size"] == 5
+    assert "Selected as top ranked symbol due to value/volume blend." in sections["why_symbol_chosen"]["selection_reasons"]
+    assert sections["filters_and_gates"][0]["status"] == "PASS"
+    assert sections["position_monitor_reasoning"]["hold_reasons"][0] == "Posture: BUY"
+    assert sections["reporter_evaluation"]["run_grade"] == "A-"
+    assert sections["reporter_evaluation"]["key_finding"] == "Reporter linked and graded the run A-."
 
 
 def test_operator_ui_overview_does_not_fallback_to_stale_reporter_for_latest_day(tmp_path: Path, monkeypatch) -> None:

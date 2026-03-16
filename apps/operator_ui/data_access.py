@@ -1662,6 +1662,212 @@ def _build_top_candidates(scanner_summary: Dict[str, Any], scanner_trace: Dict[s
     return out[:5]
 
 
+def _trade_report_artifact_payload(trade_report: Dict[str, Any], key: str) -> Dict[str, Any]:
+    payload = trade_report.get(key) if isinstance(trade_report, dict) else {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _trade_report_section_payload(*sections: Any) -> Dict[str, Any]:
+    for section in sections:
+        if isinstance(section, dict) and section:
+            return section
+    return {}
+
+
+def _trade_report_section_summary(section: Dict[str, Any], fallback: str = "") -> str:
+    if not isinstance(section, dict):
+        return str(fallback or "")
+    return str(section.get("summary") or fallback or "")
+
+
+def _trade_report_section_bullets(section: Dict[str, Any], *, limit: int = 6) -> List[str]:
+    if not isinstance(section, dict):
+        return []
+    return [str(x or "") for x in list(section.get("bullets") or [])[:limit] if str(x or "").strip()]
+
+
+def _extract_labeled_bullet(bullets: List[str], labels: List[str]) -> str:
+    normalized_labels = [str(label or "").strip().lower() for label in labels if str(label or "").strip()]
+    for bullet in bullets:
+        text = str(bullet or "").strip()
+        lower = text.lower()
+        for label in normalized_labels:
+            prefix = f"{label}:"
+            if lower.startswith(prefix):
+                return text.split(":", 1)[1].strip()
+    return ""
+
+
+def _extract_labeled_int(bullets: List[str], labels: List[str]) -> Optional[int]:
+    value = _extract_labeled_bullet(bullets, labels)
+    if not value:
+        return None
+    match = re.search(r"-?\d+", value)
+    if not match:
+        return None
+    return _safe_int(match.group(0), 0)
+
+
+def _parse_canonical_filter_bullets(bullets: List[str]) -> List[Dict[str, str]]:
+    rows: List[Dict[str, str]] = []
+    for bullet in bullets:
+        text = str(bullet or "").strip()
+        if not text or ":" not in text:
+            continue
+        name_raw, rest = text.split(":", 1)
+        name = name_raw.strip().title()
+        status = "INFO"
+        note = rest.strip()
+        match = re.match(r"\s*(PASS|FAIL|PARTIAL|SKIPPED|NOT_AVAILABLE)\s*[-:]?\s*(.*)$", note, flags=re.IGNORECASE)
+        if match:
+            status = match.group(1).upper()
+            note = match.group(2).strip() or note.strip()
+        rows.append({"name": name, "status": status, "note": note})
+    return rows
+
+
+def _prefer_runtime_reporter_state(reporter: Dict[str, Any]) -> bool:
+    if not isinstance(reporter, dict):
+        return False
+    return bool(reporter.get("reason") or reporter.get("ai_summary") or reporter.get("found"))
+
+
+def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str, Any]:
+    story_input = _trade_report_artifact_payload(trade_report, "story_input_data")
+    lifecycle = _trade_report_artifact_payload(trade_report, "lifecycle_data")
+    report = _trade_report_artifact_payload(trade_report, "report_data")
+    if not (story_input or lifecycle or report):
+        return {
+            "available": False,
+            "trade_id": str(trade_report.get("trade_id") or ""),
+            "story_type": str(trade_report.get("story_type_label") or trade_report.get("story_type") or ""),
+            "execution_mode_label": str(trade_report.get("execution_mode_label") or ""),
+            "lifecycle_status": str(trade_report.get("lifecycle_status") or ""),
+            "lifecycle_summary": str(trade_report.get("lifecycle_summary") or ""),
+            "report_summary": str(trade_report.get("report_summary") or ""),
+            "reporter_summary": str(trade_report.get("reporter_status_human") or ""),
+        }
+
+    market_context = _trade_report_section_payload(
+        story_input.get("market_context_human"),
+        report.get("market_context_at_entry"),
+        report.get("market_context"),
+    )
+    selection = _trade_report_section_payload(
+        story_input.get("scanner_reason_human"),
+        report.get("why_this_symbol_was_chosen"),
+        report.get("why_this_symbol"),
+    )
+    filters = _trade_report_section_payload(
+        story_input.get("filters_human"),
+        report.get("scanner_filters"),
+        report.get("scanner_logic_and_filters"),
+    )
+    monitor = _trade_report_section_payload(
+        story_input.get("monitor_reason_human"),
+        report.get("holding_monitoring_story"),
+        report.get("monitor_trigger_reasoning"),
+    )
+    guard = _trade_report_section_payload(
+        story_input.get("guard_reason_human"),
+        report.get("guard_approval_result"),
+    )
+    execution = _trade_report_section_payload(
+        story_input.get("execution_outcome_human"),
+        report.get("execution_quality"),
+        report.get("execution_result"),
+    )
+    reporter_eval = _trade_report_section_payload(
+        story_input.get("reporter_status_human"),
+        report.get("reporter_evaluation"),
+        lifecycle.get("reporter"),
+    )
+    conclusion = _trade_report_section_payload(
+        story_input.get("operator_conclusion_human"),
+        report.get("final_operator_conclusion"),
+        lifecycle.get("summary"),
+    )
+    executive = _trade_report_section_payload(report.get("executive_summary"))
+    lifecycle_summary = lifecycle.get("summary") if isinstance(lifecycle.get("summary"), dict) else {}
+    entry_summary = story_input.get("entry_summary") if isinstance(story_input.get("entry_summary"), dict) else {}
+    exit_summary = story_input.get("exit_summary") if isinstance(story_input.get("exit_summary"), dict) else {}
+
+    market_bullets = _trade_report_section_bullets(market_context)
+    selection_bullets = _trade_report_section_bullets(selection)
+    filter_bullets = _trade_report_section_bullets(filters, limit=8)
+    monitor_bullets = _trade_report_section_bullets(monitor)
+    execution_bullets = _trade_report_section_bullets(execution)
+    market_regime = str(market_context.get("regime") or _extract_labeled_bullet(market_bullets, ["market regime", "regime"]) or "")
+    market_sentiment = str(
+        market_context.get("market_sentiment")
+        or _extract_labeled_bullet(market_bullets, ["market sentiment"])
+        or ""
+    )
+    global_sentiment = str(
+        market_context.get("global_sentiment_score")
+        or _extract_labeled_bullet(market_bullets, ["global sentiment score", "global sentiment"])
+        or ""
+    )
+    vix_level = str(
+        market_context.get("vix_level")
+        or _extract_labeled_bullet(market_bullets, ["vix / fear index level", "vix"])
+        or ""
+    )
+    universe_size = _extract_labeled_int(selection_bullets, ["universe scanned"])
+    selected_rank = _extract_labeled_int(selection_bullets, ["selected rank"])
+    canonical_filter_rows = _parse_canonical_filter_bullets(filter_bullets)
+
+    return {
+        "available": True,
+        "trade_id": str(trade_report.get("trade_id") or story_input.get("trade_id") or lifecycle.get("trade_id") or ""),
+        "story_type": str(trade_report.get("story_type_label") or trade_report.get("story_type") or story_input.get("story_type") or ""),
+        "execution_mode_label": str(trade_report.get("execution_mode_label") or story_input.get("execution_mode_label") or lifecycle.get("execution_mode_label") or ""),
+        "lifecycle_status": str(trade_report.get("lifecycle_status") or lifecycle.get("status") or ""),
+        "lifecycle_summary": str(
+            trade_report.get("lifecycle_summary")
+            or lifecycle_summary.get("lifecycle_summary_human")
+            or conclusion.get("summary")
+            or ""
+        ),
+        "headline": str(executive.get("headline") or ""),
+        "current_action": str(
+            conclusion.get("current_action")
+            or report.get("action")
+            or story_input.get("action")
+            or trade_report.get("action")
+            or ""
+        ),
+        "symbol": str(report.get("symbol") or story_input.get("symbol") or trade_report.get("symbol") or ""),
+        "market_regime": market_regime,
+        "market_sentiment": market_sentiment,
+        "global_sentiment": global_sentiment,
+        "vix": vix_level,
+        "playbook": str(market_context.get("playbook") or ""),
+        "themes": [str(x or "") for x in list(market_context.get("themes") or [])[:6] if str(x or "").strip()],
+        "market_context_summary": _trade_report_section_summary(market_context),
+        "market_context_bullets": market_bullets,
+        "selection_summary": _trade_report_section_summary(selection),
+        "selection_bullets": selection_bullets,
+        "universe_size": universe_size,
+        "selected_rank": selected_rank,
+        "filters_summary": _trade_report_section_summary(filters),
+        "filter_bullets": filter_bullets,
+        "filter_rows": canonical_filter_rows,
+        "monitor_summary": _trade_report_section_summary(monitor),
+        "monitor_bullets": monitor_bullets,
+        "guard_summary": _trade_report_section_summary(guard),
+        "execution_summary": _trade_report_section_summary(execution),
+        "execution_bullets": execution_bullets,
+        "report_summary": str(trade_report.get("report_summary") or executive.get("summary") or ""),
+        "reporter_status": str(reporter_eval.get("status") or lifecycle.get("reporter", {}).get("status_human") or ""),
+        "reporter_grade": str(reporter_eval.get("grade") or lifecycle.get("reporter", {}).get("grade") or ""),
+        "reporter_summary": _trade_report_section_summary(reporter_eval, str(trade_report.get("reporter_status_human") or "")),
+        "entry_reason": str(entry_summary.get("reason_human") or lifecycle_summary.get("entry_reason_human") or ""),
+        "exit_reason": str(exit_summary.get("reason_human") or lifecycle_summary.get("exit_reason_human") or ""),
+        "timeline": [dict(x) for x in list(story_input.get("timeline") or lifecycle.get("timeline") or report.get("timeline") or []) if isinstance(x, dict)][:10],
+    }
+
+
 def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     strategist = detail.get("strategist") if isinstance(detail.get("strategist"), dict) else {}
     scanner = detail.get("scanner") if isinstance(detail.get("scanner"), dict) else {}
@@ -1670,6 +1876,7 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     executor = detail.get("executor") if isinstance(detail.get("executor"), dict) else {}
     reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    canonical_trade = _build_canonical_trade_brief_input(trade_report)
 
     strategist_summary = strategist.get("summary") if isinstance(strategist.get("summary"), dict) else {}
     strategist_trace = strategist.get("decision_trace") if isinstance(strategist.get("decision_trace"), dict) else {}
@@ -1693,7 +1900,8 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     execution = _normalize_execution_payload(executor.get("execution") if isinstance(executor.get("execution"), dict) else {})
 
     selected_symbol = normalize_symbol(
-        execution.get("symbol")
+        canonical_trade.get("symbol")
+        or execution.get("symbol")
         or scanner_trace.get("selected_symbol")
         or scanner_summary.get("top_stock")
         or selected_candidate.get("symbol")
@@ -1701,16 +1909,22 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         allow_test_symbols=True,
     ).strip()
     top_candidates = _build_top_candidates(scanner_summary, scanner_trace, selected_symbol)
-    selected_rank = next((int(row.get("rank") or 0) for row in top_candidates if str(row.get("symbol") or "") == selected_symbol), 0)
+    selected_rank = _safe_int(
+        canonical_trade.get("selected_rank"),
+        next((int(row.get("rank") or 0) for row in top_candidates if str(row.get("symbol") or "") == selected_symbol), 0),
+    )
     universe_size = _safe_int(
-        scanner_summary.get("candidate_pool_after_filter"),
-        _safe_int(scanner_trace.get("candidate_pool_size"), len(top_candidates)),
+        canonical_trade.get("universe_size"),
+        _safe_int(scanner_summary.get("candidate_pool_after_filter"), _safe_int(scanner_trace.get("candidate_pool_size"), len(top_candidates))),
     )
 
     execution_action = str(execution.get("action") or "").upper()
-    monitor_reason = str(monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason") or "").strip()
-    exit_reason = str(monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason") or "").strip()
-    if execution_action in {"BUY", "SELL"}:
+    canonical_action = str(canonical_trade.get("current_action") or "").upper()
+    monitor_reason = str(canonical_trade.get("monitor_summary") or monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason") or "").strip()
+    exit_reason = str(canonical_trade.get("exit_reason") or monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason") or "").strip()
+    if canonical_action in {"BUY", "SELL", "HOLD", "WAIT"}:
+        final_action = canonical_action
+    elif execution_action in {"BUY", "SELL"}:
         final_action = execution_action
     elif not selected_symbol:
         final_action = "WAIT"
@@ -1730,8 +1944,13 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
 
     selection_reasons: List[str] = []
     selected_why = _clean_brief_text(selected_candidate.get("why") or scanner_trace.get("selected_reason") or "")
-    if selected_why:
+    if canonical_trade.get("selection_summary"):
+        selection_reasons.append(str(canonical_trade.get("selection_summary")))
+    if selected_why and selected_why not in selection_reasons:
         selection_reasons.append(selected_why)
+    for bullet in list(canonical_trade.get("selection_bullets") or [])[:4]:
+        if bullet not in selection_reasons:
+            selection_reasons.append(bullet)
     if feature_coverage.get("total"):
         selection_reasons.append(
             f"chart feature coverage {feature_coverage.get('present')}/{feature_coverage.get('total')} ({feature_coverage.get('quality') or '-'})"
@@ -1755,20 +1974,22 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     global_inputs = strategist_raw_input.get("global_sentiment_inputs") if isinstance(strategist_raw_input.get("global_sentiment_inputs"), dict) else {}
     fear_index = global_inputs.get("fear_index") if isinstance(global_inputs.get("fear_index"), dict) else {}
     macro_moves = global_inputs.get("macro_moves") if isinstance(global_inputs.get("macro_moves"), dict) else {}
-    global_score = global_inputs.get("score")
-    vix_level = fear_index.get("level")
+    global_score = canonical_trade.get("global_sentiment") or global_inputs.get("score")
+    vix_level = canonical_trade.get("vix") or fear_index.get("level")
     market_news_titles = [str((x or {}).get("title") or "") for x in list(strategist_raw_input.get("collected_market_news") or []) if isinstance(x, dict)]
     news_targets = list(strategist_summary.get("news_query_targets") or strategist_raw_input.get("news_query_targets") or [])
     macro_stress_overlay = strategist_trace.get("macro_stress_overlay") if isinstance(strategist_trace.get("macro_stress_overlay"), dict) else {}
     defensive_mode = bool(macro_stress_overlay.get("active")) or str(strategist_summary.get("playbook") or "").lower() == "defensive" or (_safe_float(vix_level, 0.0) >= 25.0 if vix_level is not None else False)
-    if market_news_titles:
+    if canonical_trade.get("market_context_summary"):
+        news_summary = str(canonical_trade.get("market_context_summary"))
+    elif market_news_titles:
         news_summary = "; ".join([title for title in market_news_titles[:2] if title]) or "market news sampled"
     elif news_targets:
         news_summary = "no strong market-moving headline was retained in this run"
     else:
         news_summary = "no meaningful news input was captured"
 
-    detected_themes = _clean_brief_list(strategist_summary.get("themes"), limit=6)
+    detected_themes = _clean_brief_list(canonical_trade.get("themes") or strategist_summary.get("themes"), limit=6)
     theme_match = _clean_brief_text(
         selected_candidate.get("theme_match")
         or selected_candidate.get("sector_theme")
@@ -1937,7 +2158,10 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
             "risk gate failure or abnormal volatility expansion",
         ]
 
-    reporter_found = bool(reporter.get("found"))
+    prefer_runtime_reporter = _prefer_runtime_reporter_state(reporter)
+    reporter_found = bool(reporter.get("found")) if prefer_runtime_reporter else (
+        bool(reporter.get("found")) or str(canonical_trade.get("reporter_status") or "").strip().lower() == "linked"
+    )
     reporter_reason_key = str(reporter.get("reason") or "").strip()
     if reporter_found:
         reporter_status = "linked"
@@ -1952,8 +2176,8 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         reporter_status = "missing"
         reporter_reason = "reporter linkage is unavailable for this run"
 
-    run_grade = str(reporter.get("ai_run_grade") or "").strip()
-    ai_summary = str(reporter.get("ai_summary") or "").strip()
+    run_grade = str((reporter.get("ai_run_grade") if prefer_runtime_reporter else "") or canonical_trade.get("reporter_grade") or reporter.get("ai_run_grade") or "").strip()
+    ai_summary = str((reporter.get("ai_summary") if prefer_runtime_reporter else "") or canonical_trade.get("reporter_summary") or reporter.get("ai_summary") or "").strip()
     strategy_alignment = "strategy frame and scanner trace were captured"
     execution_quality = "execution log present" if execution_action in {"BUY", "SELL"} else "no executed order in this run"
     monitor_consistency = f"monitor={monitor_reason or '-'} / exit={exit_reason or '-'}"
@@ -1964,7 +2188,9 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         trade_quality = "post-trade quality grade is pending"
         key_finding = ai_summary or reporter_reason
 
-    if final_action == "BUY":
+    if canonical_trade.get("report_summary"):
+        decision_reason = str(canonical_trade.get("report_summary"))
+    elif final_action == "BUY":
         decision_reason = (
             f"scanner rank #{selected_rank or 1} out of {max(universe_size, 1)} with strong selection factors, "
             f"chart coverage {feature_coverage.get('present')}/{feature_coverage.get('total')}, and approved execution."
@@ -2041,6 +2267,28 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         macro_summary.append(f"DXY change {_format_percent(macro_moves.get('dxy_pct'), 2)}")
     if macro_moves.get("tnx_delta") is not None:
         macro_summary.append(f"US10Y delta {_format_float(macro_moves.get('tnx_delta'), 3)}")
+    for bullet in list(canonical_trade.get("market_context_bullets") or [])[:4]:
+        if bullet not in macro_summary:
+            macro_summary.append(bullet)
+
+    filter_rows = list(canonical_trade.get("filter_rows") or [])
+    if filter_rows:
+        filters_and_gates = filter_rows[:8]
+    else:
+        filters_and_gates = [
+            {"name": "Liquidity filter", "status": liquidity_status, "note": liquidity_note},
+            {"name": "Turnover filter", "status": turnover_status, "note": turnover_note},
+            {"name": "Sector strength filter", "status": sector_status, "note": sector_note},
+            {"name": "Chart completeness filter", "status": chart_status, "note": chart_note},
+            {"name": "Sentiment gate", "status": sentiment_gate_status, "note": sentiment_gate_note},
+            {"name": "Risk gate", "status": risk_status, "note": risk_note},
+            {"name": "Price anomaly filter", "status": anomaly_status, "note": anomaly_note},
+            {"name": "Spread/slippage filter", "status": spread_status, "note": spread_note},
+        ]
+
+    hold_reason_rows = list(canonical_trade.get("monitor_bullets") or [])
+    if hold_reason_rows:
+        hold_reasons = hold_reason_rows[:4]
 
     return {
         "executive_decision": {
@@ -2060,7 +2308,7 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
             "top_candidates": top_candidates[:3],
         },
         "market_context": {
-            "market_regime": str(strategist_summary.get("market_regime") or strategist_trace.get("market_regime") or "-"),
+            "market_regime": str(canonical_trade.get("market_regime") or strategist_summary.get("market_regime") or strategist_trace.get("market_regime") or "-"),
             "global_sentiment": _format_float(global_score, 2) if global_score is not None else "-",
             "vix": _format_float(vix_level, 2) if vix_level is not None else "-",
             "macro_summary": macro_summary,
@@ -2074,16 +2322,7 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
             "priority_alignment": priority_alignment,
             "theme_priority_bucket": theme_priority,
         },
-        "filters_and_gates": [
-            {"name": "Liquidity filter", "status": liquidity_status, "note": liquidity_note},
-            {"name": "Turnover filter", "status": turnover_status, "note": turnover_note},
-            {"name": "Sector strength filter", "status": sector_status, "note": sector_note},
-            {"name": "Chart completeness filter", "status": chart_status, "note": chart_note},
-            {"name": "Sentiment gate", "status": sentiment_gate_status, "note": sentiment_gate_note},
-            {"name": "Risk gate", "status": risk_status, "note": risk_note},
-            {"name": "Price anomaly filter", "status": anomaly_status, "note": anomaly_note},
-            {"name": "Spread/slippage filter", "status": spread_status, "note": spread_note},
-        ],
+        "filters_and_gates": filters_and_gates,
         "scanner_ranking_explanation": {
             "ranking_basis": ranking_basis,
             "component_scores": component_scores,
@@ -2151,6 +2390,8 @@ def _attach_operator_brief_sections(brief: Dict[str, Any], detail: Dict[str, Any
 
 
 def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    canonical_trade = _build_canonical_trade_brief_input(trade_report)
     strategist = detail.get("strategist") if isinstance(detail.get("strategist"), dict) else {}
     strategist_summary = strategist.get("summary") if isinstance(strategist.get("summary"), dict) else {}
     strategist_evidence = strategist.get("evidence") if isinstance(strategist.get("evidence"), dict) else {}
@@ -2167,6 +2408,7 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     supervisor = (detail.get("supervisor") or {}).get("verdict") if isinstance(detail.get("supervisor"), dict) else {}
     executor = (detail.get("executor") or {}).get("execution") if isinstance(detail.get("executor"), dict) else {}
     reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
+    prefer_runtime_reporter = _prefer_runtime_reporter_state(reporter)
 
     global_bits: List[str] = []
     if global_inputs.get("score") is not None:
@@ -2179,45 +2421,73 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
 
     feature_coverage = scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else {}
     quote_metrics = scanner.get("quote_metrics") if isinstance(scanner.get("quote_metrics"), dict) else {}
+    canonical_market_summary = str(canonical_trade.get("market_context_summary") or "").strip()
+    canonical_selection_summary = str(canonical_trade.get("selection_summary") or "").strip()
+    canonical_monitor_summary = str(canonical_trade.get("monitor_summary") or "").strip()
+    canonical_guard_summary = str(canonical_trade.get("guard_summary") or "").strip()
+    canonical_execution_summary = str(canonical_trade.get("execution_summary") or "").strip()
+    canonical_reporter_summary = str(canonical_trade.get("reporter_summary") or "").strip()
+    canonical_lifecycle_summary = str(canonical_trade.get("lifecycle_summary") or "").strip()
+    canonical_report_summary = str(canonical_trade.get("report_summary") or "").strip()
+    headline = (
+        str(canonical_trade.get("headline") or "").strip()
+        or f"{detail.get('run_id') or '-'} 운영 요약"
+    )
 
     return {
         "status": "fallback",
         "model": "",
-        "headline": f"{detail.get('run_id') or '-'} \uc6b4\uc601 \uc694\uc57d",
+        "headline": headline,
         "commander_summary": (
             f"\uc9c0\ud718\uc790\ub294 {((detail.get('commander') or {}).get('phase') or '-')} phase\uc5d0\uc11c "
             f"{((detail.get('commander') or {}).get('path') or '-')} \uacbd\ub85c\ub97c \uc2e4\ud589\ud588\uc2b5\ub2c8\ub2e4."
         ),
         "strategist_summary": (
-            f"\uc804\ub7b5\uac00\ub294 {', '.join(global_bits) or '\uc2dc\uc7a5 \uc785\ub825'}\uc744 \ucc38\uace0\ud558\uace0, \ub274\uc2a4 \uc9c8\uc758 "
-            f"{', '.join(_clean_brief_list(strategist_summary.get('news_query_targets'), limit=6)) or '-'}\ub85c \ubd84\uc704\uae30\ub97c \ud655\uc778\ud55c \ub4a4 "
-            f"\ud14c\ub9c8 {', '.join(_clean_brief_list(strategist_summary.get('themes'), limit=4)) or '-'}, "
-            f"\ud50c\ub808\uc774\ubd81 {strategist_summary.get('playbook') or '-'}\ub85c \uc815\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
+            canonical_market_summary
+            or (
+                f"\uc804\ub7b5\uac00\ub294 {', '.join(global_bits) or '\uc2dc\uc7a5 \uc785\ub825'}\uc744 \ucc38\uace0\ud558\uace0, \ub274\uc2a4 \uc9c8\uc758 "
+                f"{', '.join(_clean_brief_list(strategist_summary.get('news_query_targets'), limit=6)) or '-'}\ub85c \ubd84\uc704\uae30\ub97c \ud655\uc778\ud55c \ub4a4 "
+                f"\ud14c\ub9c8 {', '.join(_clean_brief_list(strategist_summary.get('themes'), limit=4)) or '-'}, "
+                f"\ud50c\ub808\uc774\ubd81 {strategist_summary.get('playbook') or '-'}\ub85c \uc815\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
+            )
         ),
         "scanner_summary": (
-            f"\uc2a4\uce90\ub108\ub294 Kiwoom \ud6c4\ubcf4 {int(scanner_summary.get('candidate_pool_after_filter') or 0)}\uac1c \uc911 "
-            f"{_clean_brief_text(scanner_summary.get('top_stock') or selected.get('symbol') or '-')}\ub97c 1\ub4f1\uc73c\ub85c \uace8\ub790\uace0 \uc774\uc720\ub294 "
-            f"{selected.get('why') or '-'}\uc785\ub2c8\ub2e4."
+            canonical_selection_summary
+            or (
+                f"\uc2a4\uce90\ub108\ub294 Kiwoom \ud6c4\ubcf4 {int(scanner_summary.get('candidate_pool_after_filter') or 0)}\uac1c \uc911 "
+                f"{_clean_brief_text(scanner_summary.get('top_stock') or selected.get('symbol') or '-')}\ub97c 1\ub4f1\uc73c\ub85c \uace8\ub790\uace0 \uc774\uc720\ub294 "
+                f"{selected.get('why') or '-'}\uc785\ub2c8\ub2e4."
+            )
         ),
         "monitor_summary": (
-            f"\ubaa8\ub2c8\ud130\ub294 {monitor_summary.get('monitor_reason') or monitor_trace.get('monitor_reason') or '-'} \uc0c1\ud0dc\ub97c \ubcf4\uace0, "
-            f"exit={monitor_summary.get('exit_reason') or monitor_trace.get('exit_reason') or '-'}\ub85c \ud310\ub2e8\ud588\uc2b5\ub2c8\ub2e4."
+            canonical_monitor_summary
+            or (
+                f"\ubaa8\ub2c8\ud130\ub294 {monitor_summary.get('monitor_reason') or monitor_trace.get('monitor_reason') or '-'} \uc0c1\ud0dc\ub97c \ubcf4\uace0, "
+                f"exit={monitor_summary.get('exit_reason') or monitor_trace.get('exit_reason') or '-'}\ub85c \ud310\ub2e8\ud588\uc2b5\ub2c8\ub2e4."
+            )
         ),
         "supervisor_summary": (
-            f"\uac10\ub3c5\uad00\uc740 allowed={supervisor.get('allowed')} / reason={supervisor.get('reason') or '-'}\ub85c \uacb0\ub860\ub0c8\uc2b5\ub2c8\ub2e4."
+            canonical_guard_summary
+            or f"\uac10\ub3c5\uad00\uc740 allowed={supervisor.get('allowed')} / reason={supervisor.get('reason') or '-'}\ub85c \uacb0\ub860\ub0c8\uc2b5\ub2c8\ub2e4."
         ),
         "executor_summary": (
-            f"\uc218\ud589\uc790\ub294 {executor.get('action') or 'NOOP'} {executor.get('symbol') or ''} "
-            f"status={executor.get('fill_status_summary') or executor.get('status') or '-'}\ub85c \ub9c8\ubb34\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
+            canonical_execution_summary
+            or (
+                f"\uc218\ud589\uc790\ub294 {executor.get('action') or 'NOOP'} {executor.get('symbol') or ''} "
+                f"status={executor.get('fill_status_summary') or executor.get('status') or '-'}\ub85c \ub9c8\ubb34\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
+            )
         ),
         "reporter_summary": (
-            f"\ub9ac\ud3ec\ud130\ub294 grade={reporter.get('ai_run_grade') or '-'} / "
-            f"summary={reporter.get('ai_summary') or '\uac19\uc740 \ub0a0\uc9dc reporter \uc694\uc57d\uc774 \uc544\uc9c1 \uc5c6\uc2b5\ub2c8\ub2e4.'}"
+            ("" if prefer_runtime_reporter else canonical_reporter_summary)
+            or (
+                f"\ub9ac\ud3ec\ud130\ub294 grade={reporter.get('ai_run_grade') or '-'} / "
+                f"summary={reporter.get('ai_summary') or '\uac19\uc740 \ub0a0\uc9dc reporter \uc694\uc57d\uc774 \uc544\uc9c1 \uc5c6\uc2b5\ub2c8\ub2e4.'}"
+            )
         ),
         "operator_takeaways": [
-            f"\ub274\uc2a4/\uac70\uc2dc \uc785\ub825: {', '.join(global_bits) or '\uc2dc\uc7a5 \uc785\ub825 \uc5c6\uc74c'}",
-            f"\ucc28\ud2b8/feature coverage: {feature_coverage.get('quality') or '-'} ({feature_coverage.get('present') or 0}/{feature_coverage.get('total') or 0})",
-            f"\uc2e4\uc2dc\uac04 quote: \uac00\uaca9 {quote_metrics.get('skill_quote_price') or '-'} \uac70\ub798\ub7c9 {quote_metrics.get('quote_volume') or '-'} \uac70\ub798\ub300\uae08 {quote_metrics.get('quote_trading_value') or '-'}",
+            canonical_market_summary or f"\ub274\uc2a4/\uac70\uc2dc \uc785\ub825: {', '.join(global_bits) or '\uc2dc\uc7a5 \uc785\ub825 \uc5c6\uc74c'}",
+            str(canonical_trade.get("filters_summary") or "") or f"\ucc28\ud2b8/feature coverage: {feature_coverage.get('quality') or '-'} ({feature_coverage.get('present') or 0}/{feature_coverage.get('total') or 0})",
+            canonical_lifecycle_summary or canonical_report_summary or f"\uc2e4\uc2dc\uac04 quote: \uac00\uaca9 {quote_metrics.get('skill_quote_price') or '-'} \uac70\ub798\ub7c9 {quote_metrics.get('quote_volume') or '-'} \uac70\ub798\ub300\uae08 {quote_metrics.get('quote_trading_value') or '-'}",
         ],
     }
 
@@ -2229,6 +2499,8 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
     commander = detail.get("commander") if isinstance(detail.get("commander"), dict) else {}
     reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    canonical_trade = _build_canonical_trade_brief_input(trade_report)
+    prefer_runtime_reporter = _prefer_runtime_reporter_state(reporter)
     strategist_summary = strategist.get("summary") if isinstance(strategist.get("summary"), dict) else {}
     strategist_evidence = strategist.get("evidence") if isinstance(strategist.get("evidence"), dict) else {}
     raw_input = strategist_evidence.get("raw_input") if isinstance(strategist_evidence.get("raw_input"), dict) else {}
@@ -2248,10 +2520,10 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "status": commander.get("status"),
         },
         "strategist": {
-            "market_regime": strategist_summary.get("market_regime"),
-            "market_sentiment": strategist_summary.get("market_sentiment"),
-            "themes": list(strategist_summary.get("themes") or [])[:5],
-            "playbook": strategist_summary.get("playbook"),
+            "market_regime": canonical_trade.get("market_regime") or strategist_summary.get("market_regime"),
+            "market_sentiment": canonical_trade.get("market_sentiment") or strategist_summary.get("market_sentiment"),
+            "themes": list(canonical_trade.get("themes") or strategist_summary.get("themes") or [])[:5],
+            "playbook": canonical_trade.get("playbook") or strategist_summary.get("playbook"),
             "scanner_bias": strategist_summary.get("scanner_bias"),
             "risk_tone": strategist_summary.get("risk_tone"),
             "monitor_guidance": strategist_summary.get("monitor_guidance"),
@@ -2262,6 +2534,8 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "candidate_news_titles": [str((x or {}).get("title") or "") for x in list(raw_input.get("collected_candidate_news") or [])[:4] if isinstance(x, dict)],
             "llm_status": strategist_summary.get("llm_frame_status"),
             "llm_low_confidence": strategist_summary.get("llm_frame_low_confidence"),
+            "canonical_summary": canonical_trade.get("market_context_summary"),
+            "canonical_bullets": list(canonical_trade.get("market_context_bullets") or [])[:6],
         },
         "scanner": {
             "candidate_source": scanner.get("summary", {}).get("candidate_source") if isinstance(scanner.get("summary"), dict) else "",
@@ -2270,7 +2544,7 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "top_ranked_symbols": list((scanner.get("summary") or {}).get("top_ranked_symbols") or [])[:5] if isinstance(scanner.get("summary"), dict) else [],
             "source_mix": scanner_trace.get("kiwoom_pool_source_mix") if isinstance(scanner_trace.get("kiwoom_pool_source_mix"), dict) else {},
             "selected_symbol": scanner_trace.get("selected_symbol") or selected.get("symbol"),
-            "selected_reason": selected.get("why"),
+            "selected_reason": canonical_trade.get("selection_summary") or selected.get("why"),
             "source_scores": selected.get("source_scores") if isinstance(selected.get("source_scores"), dict) else {},
             "score_total": selected.get("score_total"),
             "confidence": selected.get("confidence"),
@@ -2279,21 +2553,34 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "score_breakdown": score_breakdown,
             "component_snapshot": component_snapshot,
             "feature_snapshot": feature_snapshot,
+            "canonical_bullets": list(canonical_trade.get("selection_bullets") or [])[:6],
+            "canonical_filters_summary": canonical_trade.get("filters_summary"),
+            "canonical_filter_bullets": list(canonical_trade.get("filter_bullets") or [])[:8],
         },
         "monitor": {
-            "monitor_reason": monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason"),
-            "exit_reason": monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason"),
+            "monitor_reason": canonical_trade.get("monitor_summary") or monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason"),
+            "exit_reason": canonical_trade.get("exit_reason") or monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason"),
             "position_age_seconds": monitor_summary.get("position_age_seconds"),
             "thresholds": monitor_trace.get("thresholds") if isinstance(monitor_trace.get("thresholds"), dict) else {},
             "strategy_frame_adjustments": list(monitor_trace.get("strategy_frame_adjustments") or [])[:6],
             "exit_policy_guard_adjustments": list(monitor_trace.get("exit_policy_guard_adjustments") or [])[:6],
+            "canonical_bullets": list(canonical_trade.get("monitor_bullets") or [])[:6],
         },
-        "supervisor": ((detail.get("supervisor") or {}).get("verdict") or {}) if isinstance(detail.get("supervisor"), dict) else {},
-        "executor": ((detail.get("executor") or {}).get("execution") or {}) if isinstance(detail.get("executor"), dict) else {},
+        "supervisor": {
+            **((((detail.get("supervisor") or {}).get("verdict") or {}) if isinstance(detail.get("supervisor"), dict) else {})),
+            "canonical_summary": canonical_trade.get("guard_summary"),
+        },
+        "executor": {
+            **((((detail.get("executor") or {}).get("execution") or {}) if isinstance(detail.get("executor"), dict) else {})),
+            "canonical_summary": canonical_trade.get("execution_summary"),
+            "canonical_bullets": list(canonical_trade.get("execution_bullets") or [])[:6],
+        },
         "reporter": {
-            "ai_summary": reporter.get("ai_summary"),
-            "ai_run_grade": reporter.get("ai_run_grade"),
+            "ai_summary": reporter.get("ai_summary") if prefer_runtime_reporter else (canonical_trade.get("reporter_summary") or reporter.get("ai_summary")),
+            "ai_run_grade": reporter.get("ai_run_grade") if prefer_runtime_reporter else (canonical_trade.get("reporter_grade") or reporter.get("ai_run_grade")),
             "found": reporter.get("found"),
+            "status": canonical_trade.get("reporter_status"),
+            "reason": reporter.get("reason"),
         },
         "trade_report": {
             "report_available": trade_report.get("report_available"),
@@ -2305,6 +2592,7 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "summary": trade_report.get("report_summary"),
             "reporter_status_human": trade_report.get("reporter_status_human"),
         },
+        "canonical_trade": canonical_trade,
     }
 
 
@@ -2329,6 +2617,7 @@ def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[s
         "\uc544\ub798 \uc2e4\ud589 \uae30\ub85d\uc744 \ubc14\ud0d5\uc73c\ub85c \uc9c0\ud718\uc790, \uc804\ub7b5\uac00, \uc2a4\uce90\ub108, \ubaa8\ub2c8\ud130, \uac10\ub3c5\uad00, \uc218\ud589\uc790, \ub9ac\ud3ec\ud130\uac00 \uac01\uac01 \ubb34\uc5c7\uc744 \ud588\ub294\uc9c0 "
         "\uc6b4\uc601\uc790\uc5d0\uac8c \ubc14\ub85c \uc77d\ud788\ub294 \ud55c\uad6d\uc5b4\ub85c \uc694\uc57d\ud558\uc138\uc694.\n"
         "\ube0c\ub9ac\ud504\uc5d0\ub294 \ub2e4\uc74c\uc774 \ud3ec\ud568\ub3fc\uc57c \ud569\ub2c8\ub2e4.\n"
+        "- canonical_trade.available=true \uba74 reports/trades \uc0b0\ucd9c\ubb3c(trade_story_input, trade_lifecycle, trade_report)\uc744 1\ucc28 source of truth\ub85c \uc0ac\uc6a9\ud558\uace0 run-level \ub85c\uadf8\ub294 \ube48\uce78 \ubcf4\uc644\uc5d0\ub9cc \uc0ac\uc6a9\n"
         "- \uc804\ub7b5\uac00\uac00 \uc5b4\ub5a4 \ub274\uc2a4/\uae00\ub85c\ubc8c \uac10\uc131/VIX/\uac70\uc2dc \uc785\ub825\uc744 \ubd24\ub294\uc9c0\n"
         "- \uc2a4\uce90\ub108\uac00 Kiwoom \ud6c4\ubcf4 \uc911 \uc5b4\ub5a4 \uc885\ubaa9\uc744 \uc65c 1\ub4f1\uc73c\ub85c \uace8\ub790\ub294\uc9c0\n"
         "- \ucc28\ud2b8/feature/\uc2e4\uc2dc\uac04 quote\uac00 \uc5bc\ub9c8\ub098 \ucc44\uc6cc\uc84c\ub294\uc9c0\n"
@@ -2568,7 +2857,7 @@ def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[s
     cached = _read_json(path)
     if not isinstance(cached, dict):
         return {}
-    if int(cached.get("version") or 0) < 3:
+    if int(cached.get("version") or 0) < 4:
         return {}
     return cached
 
@@ -2579,7 +2868,7 @@ def _save_cached_operator_brief(config: OperatorUIConfig, run_id: str, brief: Di
     path = config.operator_ui_cache_path / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(brief)
-    payload["version"] = 3
+    payload["version"] = 4
     payload["cached_at"] = datetime.now(tz=KST).isoformat()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -2672,6 +2961,12 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
     same_day_symbol_run_chain = load_symbol_run_chain(config, run_day, primary_symbol, limit=3) if primary_symbol else []
     trade_report_meta = _trade_report_meta_for_run(config, str(run_id or ""))
     if trade_report_meta:
+        story_input_path = Path(str(trade_report_meta.get("trade_story_input_path") or ""))
+        lifecycle_path = Path(str(trade_report_meta.get("trade_lifecycle_json_path") or ""))
+        report_json_path = Path(str(trade_report_meta.get("trade_report_json_path") or ""))
+        story_input_data = _read_json(story_input_path) if story_input_path.exists() else {}
+        lifecycle_data = _read_json(lifecycle_path) if lifecycle_path.exists() else {}
+        report_data = _read_json(report_json_path) if report_json_path.exists() else {}
         ai_diag = (
             trade_report_meta.get("ai_report_diagnostics")
             if isinstance(trade_report_meta.get("ai_report_diagnostics"), dict)
@@ -2710,6 +3005,9 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "action": str(trade_report_meta.get("action") or normalized_execution.get("action") or ""),
             "missing_reason": str(trade_report_meta.get("report_reason_human") or ai_diag.get("report_reason_human") or ""),
             "ai_report_diagnostics": ai_diag,
+            "story_input_data": story_input_data if isinstance(story_input_data, dict) else {},
+            "lifecycle_data": lifecycle_data if isinstance(lifecycle_data, dict) else {},
+            "report_data": report_data if isinstance(report_data, dict) else {},
         }
     else:
         execution_action = str(normalized_execution.get("action") or "").upper()
@@ -2763,6 +3061,9 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "action": str(normalized_execution.get("action") or ""),
             "missing_reason": str(ai_diag.get("report_reason_human") or "No linked trade report for this run."),
             "ai_report_diagnostics": ai_diag,
+            "story_input_data": {},
+            "lifecycle_data": {},
+            "report_data": {},
         }
 
     detail = {
