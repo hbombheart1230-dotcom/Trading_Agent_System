@@ -220,9 +220,13 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
         {
             "schema_version": "live_execution_bundle.v2",
             "run_id": "run-1",
+            "trade_id": story_id,
             "story_id": story_id,
             "ts": "2026-03-16T00:00:10+00:00",
             "execution": {"run_id": "run-1", "action": "BUY", "symbol": "005930", "qty": 1, "status": "EXECUTED_OK", "ord_no": "A0001"},
+            "linked_run_ids": ["run-1"],
+            "trade_lifecycle_status": "closed",
+            "trade_lifecycle_summary": "Trade lifecycle was closed with approved simulation execution.",
             "story_contract": {
                 "story_available": True,
                 "story_type": "simulation",
@@ -258,6 +262,30 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
         },
     )
     _write_json(
+        trade_root / "trade_lifecycle.json",
+        {
+            "trade_id": story_id,
+            "symbol": "005930",
+            "status": "closed",
+            "execution_mode_label": "simulation (mock broker)",
+            "story_type": "simulation",
+            "entry": {"run_id": "run-1", "ts": "2026-03-16T00:00:00+00:00", "action": "BUY", "qty": 1, "reason_human": "scanner rank #1"},
+            "holding": {"run_ids": [], "holding_events": [], "posture_history": [], "monitor_updates": [], "noteworthy_changes": []},
+            "exit": {"run_id": "run-1", "ts": "2026-03-16T00:00:10+00:00", "action": "SELL", "qty": 1, "reason_human": "simulated closeout"},
+            "summary": {
+                "holding_duration": "10m",
+                "entry_reason_human": "scanner rank #1",
+                "exit_reason_human": "simulated closeout",
+                "lifecycle_summary_human": "Trade lifecycle was closed with approved simulation execution.",
+                "operator_conclusion_human": "Trade completed in simulation mode.",
+            },
+            "reporter": {"status_human": "linked", "summary": "linked", "grade": "A-", "improvement_points": []},
+            "timeline": [{"event": "entry", "ts": "2026-03-16T00:00:00+00:00", "description": "entry"}],
+            "run_ids_all": ["run-1"],
+            "warnings": [],
+        },
+    )
+    _write_json(
         trade_root / "trade_story_input.json",
         {
             "schema_version": "trade_story_input.v1",
@@ -273,10 +301,12 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
         trade_root / "trade_report.json",
         {
             "schema_version": "trade_report.v1",
+            "trade_id": story_id,
             "story_id": story_id,
             "run_id": "run-1",
             "symbol": "005930",
             "action": "BUY",
+            "status": "closed",
             "story_type": "simulation",
             "execution_mode_label": "simulation (mock broker)",
             "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free", "reason": ""},
@@ -382,6 +412,7 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "AI report available" in runs.text
     assert "Simulation trade report" in runs.text
     assert "Open report" in runs.text
+    assert "Lifecycle CLOSED" in runs.text
     assert "active elevated_vix" in runs.text
     assert "strong (100%)" in runs.text
 
@@ -416,6 +447,8 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "AI Trade Report" in detail.text
     assert "Open full report" in detail.text
     assert "AI Report Linkage" in detail.text
+    assert "Trade ID:" in detail.text
+    assert "Lifecycle status:" in detail.text
 
     health = client.get("/healthz")
     assert health.status_code == 200
@@ -495,13 +528,16 @@ def test_operator_ui_trade_report_detail_page(tmp_path: Path, monkeypatch) -> No
     assert "Market Context" in page.text
     assert "Why This Symbol" in page.text
     assert "Scanner Logic and Filters" in page.text
-    assert "Monitor / Trigger Reasoning" in page.text
+    assert "Holding / Monitoring Story" in page.text
+    assert "Entry Decision" in page.text
+    assert "Exit Decision" in page.text
     assert "Guard / Approval Result" in page.text
-    assert "Execution Result" in page.text
+    assert "Execution Quality" in page.text
     assert "Reporter Evaluation" in page.text
     assert "Errors / Weaknesses / Improvement Points" in page.text
     assert "Final Operator Conclusion" in page.text
     assert "Simulation trade report" in page.text
+    assert "Lifecycle CLOSED" in page.text
 
 
 def test_operator_ui_run_detail_explains_missing_trade_report(tmp_path: Path, monkeypatch) -> None:

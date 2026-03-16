@@ -27,10 +27,17 @@
     <span class="chip chip--soft">AI report available</span>
     <span class="{{ trade_report.story_type_badge_class or 'status-badge' }}">{{ trade_report.story_type_label or "-" }}</span>
     <span class="chip">{{ trade_report.execution_mode_label or "-" }}</span>
+    {% if trade_report.lifecycle_status %}
+    <span class="chip">Lifecycle {{ trade_report.lifecycle_status | upper }}</span>
+    {% endif %}
   </div>
   <p class="operator-sentence clamp-3">{{ trade_report.report_summary or "A linked per-trade report exists for this run." }}</p>
   <ul class="summary-list summary-list--tight">
+    <li>Trade ID: {{ trade_report.trade_id or "-" }}</li>
     <li>Action / symbol: <strong>{{ trade_report.action or "-" }} {{ trade_report.symbol or "-" }}</strong></li>
+    {% if trade_report.lifecycle_summary %}
+    <li>Lifecycle: {{ trade_report.lifecycle_summary }}</li>
+    {% endif %}
     <li>Reporter linkage: {{ trade_report.reporter_status_human or "-" }}</li>
   </ul>
   {% if trade_report.report_link %}
@@ -221,8 +228,11 @@
       <h3>AI Report Linkage</h3>
       <ul class="summary-list summary-list--tight">
         <li>Availability: {{ (sec.ai_trade_report or {}).get("availability") or "-" }}</li>
+        <li>Trade ID: {{ (sec.ai_trade_report or {}).get("trade_id") or "-" }}</li>
+        <li>Lifecycle status: {{ (sec.ai_trade_report or {}).get("lifecycle_status") or "-" }}</li>
         <li>Story type: {{ (sec.ai_trade_report or {}).get("story_type") or "-" }}</li>
         <li>Execution label: {{ (sec.ai_trade_report or {}).get("execution_mode_label") or "-" }}</li>
+        <li>Lifecycle summary: {{ (sec.ai_trade_report or {}).get("lifecycle_summary") or "-" }}</li>
         <li>Summary: {{ (sec.ai_trade_report or {}).get("summary") or "-" }}</li>
       </ul>
       {% if (sec.ai_trade_report or {}).get("link") %}

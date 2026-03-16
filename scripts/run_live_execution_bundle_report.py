@@ -171,6 +171,436 @@ def _resolve_execution_runs(event_log_path: Path, day: str) -> List[Dict[str, An
     return out
 
 
+def _build_run_snapshots(event_log_path: Path, day: str) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in _iter_jsonl(event_log_path):
+        if day and _utc_day(row.get("ts")) != day:
+            continue
+        run_id = str(row.get("run_id") or "").strip()
+        if not run_id:
+            continue
+        grouped.setdefault(run_id, []).append(row)
+
+    out: List[Dict[str, Any]] = []
+    for run_id, rows in grouped.items():
+        rows = sorted(rows, key=lambda row: _to_epoch(row.get("ts")) or 0)
+        route_row = next(
+            (
+                row
+                for row in rows
+                if str(row.get("stage") or "") == "commander_router"
+                and str(row.get("event") or "") == "route"
+            ),
+            {},
+        )
+        scanner_summary = next(
+            (
+                row.get("payload")
+                for row in reversed(rows)
+                if str(row.get("stage") or "") == "scanner"
+                and str(row.get("event") or "") == "summary"
+                and isinstance(row.get("payload"), dict)
+            ),
+            {},
+        )
+        monitor_summary = next(
+            (
+                row.get("payload")
+                for row in reversed(rows)
+                if str(row.get("stage") or "") == "monitor"
+                and str(row.get("event") or "") == "summary"
+                and isinstance(row.get("payload"), dict)
+            ),
+            {},
+        )
+        verdict_payload = next(
+            (
+                row.get("payload")
+                for row in reversed(rows)
+                if str(row.get("stage") or "") == "execute_from_packet"
+                and str(row.get("event") or "") == "verdict"
+                and isinstance(row.get("payload"), dict)
+            ),
+            {},
+        )
+        execution_row = next(
+            (
+                row
+                for row in reversed(rows)
+                if str(row.get("stage") or "") == "execute_from_packet"
+                and str(row.get("event") or "") == "execution"
+                and isinstance(row.get("payload"), dict)
+            ),
+            {},
+        )
+        execution = _normalize_execution_payload(execution_row.get("payload") if isinstance(execution_row.get("payload"), dict) else {})
+        candidate_selection = next(
+            (
+                (row.get("payload") or {}).get("payload")
+                for row in reversed(rows)
+                if str(row.get("stage") or "") == "decision_trace"
+                and str(row.get("event") or "") == "candidate_selection"
+                and isinstance(row.get("payload"), dict)
+                and str((row.get("payload") or {}).get("agent") or "") == "scanner"
+            ),
+            {},
+        )
+        selected_symbol = (
+            (candidate_selection.get("selected_candidate") or {}).get("symbol")
+            if isinstance(candidate_selection.get("selected_candidate"), dict)
+            else candidate_selection.get("selected_symbol")
+        )
+        symbol = normalize_symbol(
+            execution.get("symbol")
+            or selected_symbol
+            or scanner_summary.get("top_stock")
+            or monitor_summary.get("symbol")
+            or "",
+            allow_test_symbols=True,
+        )
+        execution_action = str(execution.get("action") or "").upper()
+        monitor_reason = str(monitor_summary.get("monitor_reason") or "").strip()
+        exit_reason = str(monitor_summary.get("exit_reason") or "").strip()
+        if execution_action in {"BUY", "SELL"}:
+            posture = execution_action
+        elif "hold" in monitor_reason.lower() or "hold" in exit_reason.lower():
+            posture = "HOLD"
+        elif "exit" in exit_reason.lower():
+            posture = "EXIT_SIGNAL"
+        else:
+            posture = "WAIT"
+        ts_start = str(route_row.get("ts") or rows[0].get("ts") or "")
+        ts_end = str(rows[-1].get("ts") or ts_start)
+        out.append(
+            {
+                "run_id": run_id,
+                "ts_start": ts_start,
+                "ts_end": ts_end,
+                "ts_epoch": _to_epoch(ts_start) or 0,
+                "symbol": symbol,
+                "execution_action": execution_action,
+                "posture": posture,
+                "execution": execution,
+                "monitor_reason": monitor_reason,
+                "exit_reason": exit_reason,
+                "phase": str((route_row.get("payload") or {}).get("phase") or ""),
+                "mode": str((route_row.get("payload") or {}).get("mode") or ""),
+                "verdict_allowed": bool(verdict_payload.get("allowed")),
+                "verdict_reason": str(verdict_payload.get("reason") or ""),
+            }
+        )
+    out.sort(key=lambda row: int(row.get("ts_epoch") or 0))
+    return out
+
+
+def _format_duration_human(seconds: int) -> str:
+    if seconds <= 0:
+        return "0m"
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds / 60.0:.1f}m"
+    return f"{seconds / 3600.0:.1f}h"
+
+
+def _build_trade_id(day: str, symbol: str, seq: int) -> str:
+    compact_day = str(day or "").replace("-", "")
+    clean_symbol = normalize_symbol(symbol or "", allow_test_symbols=True) or "UNKNOWN"
+    return f"TRD_{compact_day}_{clean_symbol}_{int(seq):02d}"
+
+
+def _build_lifecycle_from_seed(
+    *,
+    trade_id: str,
+    symbol: str,
+    day: str,
+    execution_mode_label_text: str,
+    story_type: str,
+) -> Dict[str, Any]:
+    return {
+        "trade_id": trade_id,
+        "symbol": symbol,
+        "day": day,
+        "status": "open",
+        "execution_mode_label": execution_mode_label_text,
+        "story_type": story_type,
+        "entry": {},
+        "holding": {
+            "run_ids": [],
+            "holding_events": [],
+            "posture_history": [],
+            "monitor_updates": [],
+            "noteworthy_changes": [],
+        },
+        "exit": {},
+        "run_ids_all": [],
+        "summary": {},
+        "reporter": {},
+        "timeline": [],
+        "warnings": [],
+    }
+
+
+def _build_trade_lifecycles(
+    *,
+    day: str,
+    run_snapshots: List[Dict[str, Any]],
+    run_bundles: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    symbol_seq: Dict[str, int] = {}
+    active_by_symbol: Dict[str, Dict[str, Any]] = {}
+    out: List[Dict[str, Any]] = []
+
+    def _next_trade_id(symbol: str) -> str:
+        key = normalize_symbol(symbol, allow_test_symbols=True) or "UNKNOWN"
+        symbol_seq[key] = int(symbol_seq.get(key, 0) + 1)
+        return _build_trade_id(day, key, symbol_seq[key])
+
+    def _bundle_story_type(bundle: Dict[str, Any]) -> str:
+        story_contract = bundle.get("story_contract") if isinstance(bundle.get("story_contract"), dict) else {}
+        return str(story_contract.get("story_type") or "").strip().lower()
+
+    def _bundle_mode_label(bundle: Dict[str, Any]) -> str:
+        story_contract = bundle.get("story_contract") if isinstance(bundle.get("story_contract"), dict) else {}
+        return str(story_contract.get("execution_mode_label") or "").strip()
+
+    def _entry_context(snapshot: Dict[str, Any], bundle: Dict[str, Any]) -> Dict[str, Any]:
+        execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
+        return {
+            "run_id": str(snapshot.get("run_id") or ""),
+            "ts": str(snapshot.get("ts_start") or ""),
+            "action": str(execution.get("action") or "BUY"),
+            "price": execution.get("price"),
+            "qty": safe_int(execution.get("qty"), 0),
+            "reason_human": str(
+                (bundle.get("scanner_reason_human") or {}).get("summary")
+                or (bundle.get("monitor_reason_human") or {}).get("summary")
+                or snapshot.get("monitor_reason")
+                or "Entry reasoning was not captured."
+            ),
+            "strategist_context": {
+                "playbook": str((bundle.get("strategist") or {}).get("playbook") or ""),
+                "themes": list((bundle.get("strategist") or {}).get("themes") or [])[:6],
+                "market_context_summary": str((bundle.get("market_context_human") or {}).get("summary") or ""),
+            },
+            "scanner_context": dict(bundle.get("scanner_reason_human") or {}),
+            "monitor_context": dict(bundle.get("monitor_reason_human") or {}),
+            "guard_context": dict(bundle.get("guard_reason_human") or {}),
+            "execution_context": dict(bundle.get("execution_outcome_human") or {}),
+        }
+
+    def _exit_context(snapshot: Dict[str, Any], bundle: Dict[str, Any]) -> Dict[str, Any]:
+        execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
+        return {
+            "run_id": str(snapshot.get("run_id") or ""),
+            "ts": str(snapshot.get("ts_start") or ""),
+            "action": str(execution.get("action") or "SELL"),
+            "price": execution.get("price"),
+            "qty": safe_int(execution.get("qty"), 0),
+            "reason_human": str(
+                (bundle.get("monitor_reason_human") or {}).get("summary")
+                or (bundle.get("execution_outcome_human") or {}).get("summary")
+                or snapshot.get("exit_reason")
+                or snapshot.get("monitor_reason")
+                or "Exit reasoning was not captured."
+            ),
+            "monitor_context": dict(bundle.get("monitor_reason_human") or {}),
+            "guard_context": dict(bundle.get("guard_reason_human") or {}),
+            "execution_context": dict(bundle.get("execution_outcome_human") or {}),
+        }
+
+    for snapshot in sorted(run_snapshots, key=lambda row: int(row.get("ts_epoch") or 0)):
+        run_id = str(snapshot.get("run_id") or "").strip()
+        symbol = normalize_symbol(snapshot.get("symbol") or "", allow_test_symbols=True)
+        if not run_id or not symbol:
+            continue
+        bundle = run_bundles.get(run_id) if isinstance(run_bundles.get(run_id), dict) else {}
+        action = str(snapshot.get("execution_action") or "").upper()
+        if action == "BUY":
+            if symbol in active_by_symbol and isinstance(active_by_symbol.get(symbol), dict):
+                prev = active_by_symbol[symbol]
+                if str(prev.get("status") or "") == "open":
+                    prev["status"] = "partial"
+                    prev.setdefault("warnings", []).append(
+                        "A new BUY was detected while a previous lifecycle for the same symbol was still open."
+                    )
+                    prev.setdefault("timeline", []).append(
+                        {
+                            "event": "entry_overlap",
+                            "ts": str(snapshot.get("ts_start") or ""),
+                            "description": f"New BUY run {run_id} overlapped existing open lifecycle.",
+                        }
+                    )
+            trade_id = _next_trade_id(symbol)
+            story_type = _bundle_story_type(bundle) or "decision_only"
+            mode_label = _bundle_mode_label(bundle) or "decision only"
+            lifecycle = _build_lifecycle_from_seed(
+                trade_id=trade_id,
+                symbol=symbol,
+                day=day,
+                execution_mode_label_text=mode_label,
+                story_type=story_type,
+            )
+            lifecycle["entry"] = _entry_context(snapshot, bundle)
+            lifecycle["run_ids_all"] = [run_id]
+            lifecycle["timeline"].append(
+                {
+                    "event": "entry",
+                    "ts": str(snapshot.get("ts_start") or ""),
+                    "description": f"Entry BUY was executed by run {run_id}.",
+                }
+            )
+            active_by_symbol[symbol] = lifecycle
+            out.append(lifecycle)
+            continue
+
+        if action == "SELL":
+            lifecycle = active_by_symbol.get(symbol)
+            if not lifecycle:
+                trade_id = _next_trade_id(symbol)
+                story_type = _bundle_story_type(bundle) or "decision_only"
+                mode_label = _bundle_mode_label(bundle) or "decision only"
+                lifecycle = _build_lifecycle_from_seed(
+                    trade_id=trade_id,
+                    symbol=symbol,
+                    day=day,
+                    execution_mode_label_text=mode_label,
+                    story_type=story_type,
+                )
+                lifecycle["status"] = "partial"
+                out.append(lifecycle)
+            lifecycle["exit"] = _exit_context(snapshot, bundle)
+            lifecycle.setdefault("run_ids_all", [])
+            if run_id not in lifecycle["run_ids_all"]:
+                lifecycle["run_ids_all"].append(run_id)
+            lifecycle["timeline"].append(
+                {
+                    "event": "exit",
+                    "ts": str(snapshot.get("ts_start") or ""),
+                    "description": f"Exit SELL was executed by run {run_id}.",
+                }
+            )
+            if lifecycle.get("entry"):
+                lifecycle["status"] = "closed"
+            else:
+                lifecycle["status"] = "partial"
+            active_by_symbol.pop(symbol, None)
+            continue
+
+        lifecycle = active_by_symbol.get(symbol)
+        if not lifecycle:
+            continue
+        lifecycle.setdefault("run_ids_all", [])
+        if run_id not in lifecycle["run_ids_all"]:
+            lifecycle["run_ids_all"].append(run_id)
+        monitor_reason = str(snapshot.get("monitor_reason") or "")
+        exit_reason = str(snapshot.get("exit_reason") or "")
+        holding_event = {
+            "run_id": run_id,
+            "ts": str(snapshot.get("ts_start") or ""),
+            "posture": str(snapshot.get("posture") or "HOLD"),
+            "monitor_reason": monitor_reason,
+            "exit_reason": exit_reason,
+            "summary": f"Monitor posture={snapshot.get('posture') or 'HOLD'} reason={monitor_reason or '-'} exit={exit_reason or '-'}",
+        }
+        holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+        holding.setdefault("run_ids", [])
+        holding.setdefault("holding_events", [])
+        holding.setdefault("posture_history", [])
+        holding.setdefault("monitor_updates", [])
+        if run_id not in holding["run_ids"]:
+            holding["run_ids"].append(run_id)
+        holding["holding_events"].append(holding_event)
+        holding["posture_history"].append({"ts": str(snapshot.get("ts_start") or ""), "posture": str(snapshot.get("posture") or "HOLD")})
+        holding["monitor_updates"].append(monitor_reason or exit_reason or "monitor update captured")
+        lifecycle["holding"] = holding
+        lifecycle["timeline"].append(
+            {
+                "event": "holding",
+                "ts": str(snapshot.get("ts_start") or ""),
+                "description": holding_event["summary"],
+            }
+        )
+
+    for lifecycle in out:
+        entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+        exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+        holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+        entry_ts = _to_epoch(entry.get("ts"))
+        end_ts = _to_epoch(exit_ctx.get("ts"))
+        if end_ts is None:
+            latest_hold_ts = max((_to_epoch((row or {}).get("ts")) or 0 for row in list(holding.get("holding_events") or [])), default=0)
+            end_ts = latest_hold_ts or entry_ts or 0
+        duration_sec = int(max(0, (end_ts or 0) - (entry_ts or end_ts or 0)))
+        holding_duration = _format_duration_human(duration_sec)
+        entry_reason_human = str(entry.get("reason_human") or "Entry reason was not captured.")
+        if lifecycle.get("status") == "open":
+            exit_reason_human = "Position is still open; monitor is watching for exit triggers."
+        elif lifecycle.get("status") == "partial" and not exit_ctx:
+            exit_reason_human = "Lifecycle is partial because exit evidence is missing."
+        else:
+            exit_reason_human = str(exit_ctx.get("reason_human") or "Exit reason was not captured.")
+        lifecycle_summary = (
+            f"Trade {lifecycle.get('trade_id')} for {lifecycle.get('symbol')} is {lifecycle.get('status')}. "
+            f"Holding duration is {holding_duration}. "
+            f"Entry: {entry_reason_human} "
+            f"Exit: {exit_reason_human}"
+        )
+        operator_conclusion_human = (
+            f"Current lifecycle status is {lifecycle.get('status')}. "
+            f"{'Position remains open and requires monitoring.' if lifecycle.get('status') == 'open' else 'Entry and exit are connected in one lifecycle story.'}"
+        )
+
+        reporter_summary = ""
+        reporter_grade = "N/A"
+        reporter_status = "missing"
+        improvement_points: List[str] = []
+        entry_run_id = str(entry.get("run_id") or "")
+        exit_run_id = str(exit_ctx.get("run_id") or "")
+        entry_bundle = run_bundles.get(entry_run_id) if isinstance(run_bundles.get(entry_run_id), dict) else {}
+        exit_bundle = run_bundles.get(exit_run_id) if isinstance(run_bundles.get(exit_run_id), dict) else {}
+        reporter_human = (
+            entry_bundle.get("reporter_status_human")
+            if isinstance(entry_bundle.get("reporter_status_human"), dict)
+            else exit_bundle.get("reporter_status_human")
+            if isinstance(exit_bundle.get("reporter_status_human"), dict)
+            else {}
+        )
+        if isinstance(reporter_human, dict):
+            reporter_summary = str(reporter_human.get("summary") or "")
+            reporter_grade = str(reporter_human.get("grade") or "N/A")
+            reporter_status = str(reporter_human.get("status") or "missing")
+        if reporter_status != "linked":
+            improvement_points.append("Link same-day reporter analysis to this lifecycle for a complete quality review.")
+        if lifecycle.get("status") == "open":
+            improvement_points.append("Capture additional monitor runs so hold behavior quality can be evaluated.")
+        if not holding.get("run_ids"):
+            improvement_points.append("Holding-phase evidence is thin; preserve more monitor context between entry and exit.")
+
+        lifecycle["summary"] = {
+            "holding_duration": holding_duration,
+            "entry_reason_human": entry_reason_human,
+            "exit_reason_human": exit_reason_human,
+            "lifecycle_summary_human": lifecycle_summary,
+            "operator_conclusion_human": operator_conclusion_human,
+        }
+        lifecycle["reporter"] = {
+            "status_human": reporter_status,
+            "summary": reporter_summary or "Reporter linkage is pending or missing for this lifecycle.",
+            "grade": reporter_grade,
+            "improvement_points": improvement_points[:6],
+        }
+        if str(lifecycle.get("story_type") or "") == "failed_execution":
+            lifecycle["status"] = "failed"
+        lifecycle.setdefault("warnings", [])
+        if lifecycle.get("status") == "partial":
+            lifecycle["warnings"].append("Lifecycle is partial because entry or exit evidence is incomplete.")
+        if lifecycle.get("status") == "open":
+            lifecycle["warnings"].append("Lifecycle is open; no closing SELL execution has been recorded yet.")
+
+    return out
+
+
 def _resolve_existing_day_artifact(report_dir: Path, prefix: str, day: str) -> Tuple[Path, Path]:
     return report_dir / f"{prefix}_{day}.md", report_dir / f"{prefix}_{day}.json"
 
@@ -257,8 +687,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     canonical_trades_root = reports_root / "trades"
     year_part, month_part = (day.split("-") + ["01", "01"])[:2]
 
-    bundles: List[Dict[str, Any]] = []
-    story_type_counts: Dict[str, int] = {}
+    run_bundles_by_run: Dict[str, Dict[str, Any]] = {}
+    run_bundle_rows: List[Dict[str, Any]] = []
+    run_story_type_counts: Dict[str, int] = {}
     for execution in execution_runs:
         run_id = str(execution.get("run_id") or "").strip()
         trace_md, trace_js, trace_out = generate_agent_pipeline_trace_report(
@@ -345,10 +776,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         story_contract["warnings"] = warnings
 
         story_id = build_story_id(day, bundle_out["execution"])
-        canonical_dir = canonical_trades_root / year_part / month_part / story_id
-        canonical_dir.mkdir(parents=True, exist_ok=True)
         bundle_out.update(
             {
+                "trade_id": "",
                 "story_id": story_id,
                 "story_contract": story_contract,
                 "market_context_human": market_context_human,
@@ -364,44 +794,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             }
         )
 
-        trade_story_input = build_trade_story_input(bundle_out)
-        trade_report = build_ai_trade_report(
-            trade_story_input,
-            enabled=args.trade_report_ai,
-            model=str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else None,
-            temperature=args.trade_report_ai_temperature,
-            max_tokens=args.trade_report_ai_max_tokens,
-        )
-
-        aggregated_bundle_path = canonical_dir / "aggregated_execution_bundle.json"
-        story_input_path = canonical_dir / "trade_story_input.json"
-        trade_report_json_path = canonical_dir / "trade_report.json"
-        trade_report_md_path = canonical_dir / "trade_report.md"
-        aggregated_bundle_path.write_text(json.dumps(bundle_out, ensure_ascii=False, indent=2), encoding="utf-8")
-        story_input_path.write_text(json.dumps(trade_story_input, ensure_ascii=False, indent=2), encoding="utf-8")
-        trade_report_json_path.write_text(json.dumps(trade_report, ensure_ascii=False, indent=2), encoding="utf-8")
-        trade_report_md_path.write_text(render_trade_report_markdown(trade_report), encoding="utf-8")
-
-        bundle_out["artifacts"].update(
-            {
-                "aggregated_execution_bundle_json": str(aggregated_bundle_path),
-                "trade_story_input_json": str(story_input_path),
-                "trade_report_json": str(trade_report_json_path),
-                "trade_report_md": str(trade_report_md_path),
-            }
-        )
         bundle_json = report_dir / f"live_execution_bundle_{run_id}.json"
         bundle_md = report_dir / f"live_execution_bundle_{run_id}.md"
         bundle_out["report_json_path"] = str(bundle_json)
         bundle_out["report_md_path"] = str(bundle_md)
         bundle_json.write_text(json.dumps(bundle_out, ensure_ascii=False, indent=2), encoding="utf-8")
         bundle_md.write_text(render_bundle_markdown(bundle_out), encoding="utf-8")
+        run_bundles_by_run[run_id] = bundle_out
 
         story_type = str(story_contract.get("story_type") or "unknown")
-        story_type_counts[story_type] = int(story_type_counts.get(story_type, 0) + 1)
-        bundles.append(
+        run_story_type_counts[story_type] = int(run_story_type_counts.get(story_type, 0) + 1)
+        run_bundle_rows.append(
             {
                 "run_id": run_id,
+                "trade_id": "",
                 "story_id": story_id,
                 "story_type": story_type,
                 "action": execution.get("action"),
@@ -410,6 +816,171 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "status": execution.get("status"),
                 "report_json_path": str(bundle_json),
                 "report_md_path": str(bundle_md),
+                "trade_story_input_path": "",
+                "trade_report_json_path": "",
+                "trade_report_md_path": "",
+                "trade_lifecycle_json_path": "",
+                "trade_report_summary": "",
+            }
+        )
+
+    run_snapshots = _build_run_snapshots(event_log_path, day)
+    trade_lifecycles = _build_trade_lifecycles(
+        day=day,
+        run_snapshots=run_snapshots,
+        run_bundles=run_bundles_by_run,
+    )
+    lifecycle_rows: List[Dict[str, Any]] = []
+    lifecycle_story_type_counts: Dict[str, int] = {}
+    run_bundle_lookup = {str(row.get("run_id") or ""): row for row in run_bundle_rows}
+
+    for lifecycle in trade_lifecycles:
+        trade_id = str(lifecycle.get("trade_id") or "").strip()
+        if not trade_id:
+            continue
+        symbol = normalize_symbol(lifecycle.get("symbol") or "", allow_test_symbols=True)
+        status = str(lifecycle.get("status") or "open").strip().lower()
+        story_type = str(lifecycle.get("story_type") or "decision_only").strip().lower()
+        execution_mode_label_text = str(lifecycle.get("execution_mode_label") or "decision only").strip()
+
+        entry_ctx = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+        exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+        entry_run_id = str(entry_ctx.get("run_id") or "")
+        exit_run_id = str(exit_ctx.get("run_id") or "")
+        linked_run_ids = [str(x or "").strip() for x in list(lifecycle.get("run_ids_all") or []) if str(x or "").strip()]
+        holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+        hold_run_ids = [str(x or "").strip() for x in list(holding.get("run_ids") or []) if str(x or "").strip()]
+
+        anchor_run_id = entry_run_id or exit_run_id or (linked_run_ids[0] if linked_run_ids else "")
+        anchor_bundle = run_bundles_by_run.get(anchor_run_id) if isinstance(run_bundles_by_run.get(anchor_run_id), dict) else {}
+        anchor_execution = anchor_bundle.get("execution") if isinstance(anchor_bundle.get("execution"), dict) else {}
+        if not anchor_execution:
+            anchor_execution = {
+                "run_id": anchor_run_id,
+                "action": str(entry_ctx.get("action") or exit_ctx.get("action") or ("BUY" if status == "open" else "WAIT")),
+                "symbol": symbol,
+                "qty": safe_int(entry_ctx.get("qty"), safe_int(exit_ctx.get("qty"), 0)),
+                "status": str((exit_ctx.get("execution_context") or {}).get("outcome") or ""),
+                "ord_no": "",
+                "ts": str(entry_ctx.get("ts") or exit_ctx.get("ts") or ""),
+            }
+
+        summary_obj = lifecycle.get("summary") if isinstance(lifecycle.get("summary"), dict) else {}
+        reporter_obj = lifecycle.get("reporter") if isinstance(lifecycle.get("reporter"), dict) else {}
+        story_contract = {
+            "story_available": True,
+            "story_type": story_type,
+            "execution_mode_label": execution_mode_label_text,
+            "story_anchor": f"{anchor_execution.get('action') or 'WAIT'} {symbol or '-'} x{safe_int(anchor_execution.get('qty'), 0)} | trade {trade_id}",
+            "warnings": list(lifecycle.get("warnings") or []),
+        }
+        lifecycle_bundle: Dict[str, Any] = {
+            "schema_version": "live_execution_bundle.v3",
+            "artifact_type": "aggregated_execution_bundle",
+            "ts": utc_now_iso(),
+            "day": day,
+            "run_id": anchor_run_id,
+            "trade_id": trade_id,
+            "story_id": trade_id,
+            "linked_run_ids": linked_run_ids,
+            "trade_lifecycle_status": status,
+            "trade_lifecycle_summary": str(summary_obj.get("lifecycle_summary_human") or ""),
+            "story_contract": story_contract,
+            "execution": dict(anchor_execution),
+            "commander": dict(anchor_bundle.get("commander") or {}),
+            "strategist": dict(anchor_bundle.get("strategist") or {}),
+            "scanner": dict(anchor_bundle.get("scanner") or {}),
+            "monitor": dict(anchor_bundle.get("monitor") or {}),
+            "supervisor": dict(anchor_bundle.get("supervisor") or {}),
+            "executor": dict(anchor_bundle.get("executor") or {}),
+            "reporter": dict(anchor_bundle.get("reporter") or {}),
+            "market_context_human": dict(anchor_bundle.get("market_context_human") or entry_ctx.get("strategist_context") or {}),
+            "scanner_reason_human": dict(anchor_bundle.get("scanner_reason_human") or entry_ctx.get("scanner_context") or {}),
+            "filters_human": dict(anchor_bundle.get("filters_human") or {}),
+            "monitor_reason_human": dict(anchor_bundle.get("monitor_reason_human") or exit_ctx.get("monitor_context") or {}),
+            "guard_reason_human": dict(anchor_bundle.get("guard_reason_human") or exit_ctx.get("guard_context") or {}),
+            "execution_outcome_human": dict(anchor_bundle.get("execution_outcome_human") or exit_ctx.get("execution_context") or {}),
+            "reporter_status_human": {
+                "status": str(reporter_obj.get("status_human") or "missing"),
+                "summary": str(reporter_obj.get("summary") or ""),
+                "grade": str(reporter_obj.get("grade") or "N/A"),
+                "bullets": [str(x or "") for x in list(reporter_obj.get("improvement_points") or [])[:6]],
+            },
+            "operator_conclusion_human": {
+                "current_action": str(anchor_execution.get("action") or ("HOLD" if status == "open" else "WAIT")),
+                "summary": str(summary_obj.get("operator_conclusion_human") or ""),
+                "watch_next": [f"Lifecycle status: {status}", "Monitor trigger changes", "Macro/news shifts"],
+                "thesis_invalidation": ["stop-loss breach", "monitor and scanner divergence", "negative macro regime shift"],
+            },
+            "timeline": list(lifecycle.get("timeline") or []),
+            "warnings": list(story_contract.get("warnings") or []),
+            "trade_lifecycle": lifecycle,
+            "artifacts": {
+                "agent_pipeline_trace_json": str(anchor_bundle.get("artifacts", {}).get("agent_pipeline_trace_json") or ""),
+                "agent_pipeline_trace_md": str(anchor_bundle.get("artifacts", {}).get("agent_pipeline_trace_md") or ""),
+                "trade_explain_json": str(trade_js),
+                "trade_explain_md": str(trade_md),
+                "reporter_analysis_json": str(reporter_js),
+                "reporter_analysis_md": str(reporter_md),
+                "operator_summary_json": str(operator_summary_json) if operator_summary_json.exists() else "",
+                "operator_summary_md": str(operator_summary_md) if operator_summary_md.exists() else "",
+            },
+            "trade_explain_summary": {
+                "executions_total": safe_int((trade_obj.get("execution_summary") or {}).get("executions_total"), 0)
+                if isinstance(trade_obj.get("execution_summary"), dict)
+                else 0
+            },
+        }
+
+        canonical_dir = canonical_trades_root / year_part / month_part / trade_id
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        trade_lifecycle_path = canonical_dir / "trade_lifecycle.json"
+        aggregated_bundle_path = canonical_dir / "aggregated_execution_bundle.json"
+        story_input_path = canonical_dir / "trade_story_input.json"
+        trade_report_json_path = canonical_dir / "trade_report.json"
+        trade_report_md_path = canonical_dir / "trade_report.md"
+
+        trade_story_input = build_trade_story_input(lifecycle_bundle, trade_lifecycle=lifecycle)
+        trade_report = build_ai_trade_report(
+            trade_story_input,
+            enabled=args.trade_report_ai,
+            model=str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else None,
+            temperature=args.trade_report_ai_temperature,
+            max_tokens=args.trade_report_ai_max_tokens,
+        )
+
+        trade_lifecycle_path.write_text(json.dumps(lifecycle, ensure_ascii=False, indent=2), encoding="utf-8")
+        aggregated_bundle_path.write_text(json.dumps(lifecycle_bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+        story_input_path.write_text(json.dumps(trade_story_input, ensure_ascii=False, indent=2), encoding="utf-8")
+        trade_report_json_path.write_text(json.dumps(trade_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        trade_report_md_path.write_text(render_trade_report_markdown(trade_report), encoding="utf-8")
+
+        lifecycle_bundle["artifacts"].update(
+            {
+                "trade_lifecycle_json": str(trade_lifecycle_path),
+                "aggregated_execution_bundle_json": str(aggregated_bundle_path),
+                "trade_story_input_json": str(story_input_path),
+                "trade_report_json": str(trade_report_json_path),
+                "trade_report_md": str(trade_report_md_path),
+            }
+        )
+
+        lifecycle_story_type_counts[story_type] = int(lifecycle_story_type_counts.get(story_type, 0) + 1)
+        lifecycle_rows.append(
+            {
+                "trade_id": trade_id,
+                "story_id": trade_id,
+                "status": status,
+                "story_type": story_type,
+                "execution_mode_label": execution_mode_label_text,
+                "symbol": symbol,
+                "entry_run_id": entry_run_id,
+                "hold_run_ids": hold_run_ids,
+                "exit_run_id": exit_run_id,
+                "linked_run_ids": linked_run_ids,
+                "lifecycle_summary": str(summary_obj.get("lifecycle_summary_human") or ""),
+                "report_json_path": str(aggregated_bundle_path),
+                "trade_lifecycle_json_path": str(trade_lifecycle_path),
                 "trade_story_input_path": str(story_input_path),
                 "trade_report_json_path": str(trade_report_json_path),
                 "trade_report_md_path": str(trade_report_md_path),
@@ -417,17 +988,51 @@ def main(argv: Optional[List[str]] = None) -> int:
             }
         )
 
+        for rid in linked_run_ids:
+            row = run_bundle_lookup.get(rid)
+            if isinstance(row, dict):
+                row["trade_id"] = trade_id
+                row["story_id"] = trade_id
+                row["trade_lifecycle_json_path"] = str(trade_lifecycle_path)
+                row["trade_story_input_path"] = str(story_input_path)
+                row["trade_report_json_path"] = str(trade_report_json_path)
+                row["trade_report_md_path"] = str(trade_report_md_path)
+                row["trade_report_summary"] = str((trade_report.get("executive_summary") or {}).get("summary") or "")
+            bundle = run_bundles_by_run.get(rid)
+            if isinstance(bundle, dict):
+                bundle["trade_id"] = trade_id
+                bundle["story_id"] = trade_id
+                bundle.setdefault("artifacts", {})
+                bundle["artifacts"].update(
+                    {
+                        "trade_lifecycle_json": str(trade_lifecycle_path),
+                        "trade_story_input_json": str(story_input_path),
+                        "trade_report_json": str(trade_report_json_path),
+                        "trade_report_md": str(trade_report_md_path),
+                    }
+                )
+                report_json_path = Path(str(bundle.get("report_json_path") or ""))
+                if report_json_path.exists():
+                    report_json_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+                report_md_path = Path(str(bundle.get("report_md_path") or ""))
+                if report_md_path.exists():
+                    report_md_path.write_text(render_bundle_markdown(bundle), encoding="utf-8")
+
     summary_out: Dict[str, Any] = {
-        "schema_version": "live_execution_bundles.v2",
+        "schema_version": "live_execution_bundles.v3",
         "ok": True,
         "ts": utc_now_iso(),
         "day": day,
         "event_log_path": str(event_log_path),
         "evidence_log_path": str(evidence_log_path),
-        "bundle_count": len(bundles),
-        "story_type_counts": story_type_counts,
+        "bundle_count": len(lifecycle_rows),
+        "trade_lifecycle_count": len(lifecycle_rows),
+        "run_bundle_count": len(run_bundle_rows),
+        "story_type_counts": lifecycle_story_type_counts,
+        "run_story_type_counts": run_story_type_counts,
         "canonical_trades_root": str(canonical_trades_root),
-        "bundles": bundles,
+        "bundles": lifecycle_rows,
+        "run_bundles": run_bundle_rows,
         "day_artifacts": {
             "trade_explain_json": str(trade_js),
             "trade_explain_md": str(trade_md),

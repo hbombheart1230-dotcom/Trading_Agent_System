@@ -558,14 +558,147 @@ def collect_story_warnings(
     return deduped[:10]
 
 
-def build_trade_story_input(bundle_out: Dict[str, Any]) -> Dict[str, Any]:
+def build_trade_story_input(
+    bundle_out: Dict[str, Any],
+    *,
+    trade_lifecycle: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     story_contract = bundle_out.get("story_contract") if isinstance(bundle_out.get("story_contract"), dict) else {}
+    lifecycle = (
+        trade_lifecycle
+        if isinstance(trade_lifecycle, dict)
+        else bundle_out.get("trade_lifecycle")
+        if isinstance(bundle_out.get("trade_lifecycle"), dict)
+        else {}
+    )
+    if lifecycle:
+        entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+        holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+        exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+        summary = lifecycle.get("summary") if isinstance(lifecycle.get("summary"), dict) else {}
+        reporter = lifecycle.get("reporter") if isinstance(lifecycle.get("reporter"), dict) else {}
+        symbol = str(lifecycle.get("symbol") or (bundle_out.get("execution") or {}).get("symbol") or "")
+        status = str(lifecycle.get("status") or "open")
+        entry_action = str(entry.get("action") or (bundle_out.get("execution") or {}).get("action") or "BUY")
+        exit_action = str(exit_ctx.get("action") or "")
+        lifecycle_action = exit_action or entry_action or "WAIT"
+        market_context_human = dict(bundle_out.get("market_context_human") or {})
+        scanner_reason_human = dict(bundle_out.get("scanner_reason_human") or {})
+        filters_human = dict(bundle_out.get("filters_human") or {})
+        monitor_reason_human = dict(bundle_out.get("monitor_reason_human") or {})
+        guard_reason_human = dict(bundle_out.get("guard_reason_human") or {})
+        execution_outcome_human = dict(bundle_out.get("execution_outcome_human") or {})
+        reporter_status_human = dict(bundle_out.get("reporter_status_human") or {})
+        operator_conclusion_human = dict(bundle_out.get("operator_conclusion_human") or {})
+        if not market_context_human:
+            market_context_human = {
+                "summary": str((entry.get("strategist_context") or {}).get("market_context_summary") or "Market context was not captured."),
+                "bullets": [
+                    f"Playbook: {str((entry.get('strategist_context') or {}).get('playbook') or 'not_captured')}",
+                    "Lifecycle-level entry context was used.",
+                ],
+            }
+        if not scanner_reason_human:
+            scanner_reason_human = {
+                "summary": str(entry.get("reason_human") or "Scanner selection rationale was not captured."),
+                "bullets": [str(entry.get("reason_human") or "no scanner rationale captured")],
+            }
+        if not monitor_reason_human:
+            monitor_reason_human = {
+                "summary": (
+                    f"Holding updates captured from {len(list(holding.get('run_ids') or []))} monitor runs."
+                    if list(holding.get("run_ids") or [])
+                    else "Holding monitor updates were not captured."
+                ),
+                "bullets": [str(x or "") for x in list(holding.get("monitor_updates") or [])[:8]],
+            }
+        if not execution_outcome_human:
+            execution_outcome_human = {
+                "summary": str(summary.get("lifecycle_summary_human") or "Execution outcome summary was not captured."),
+                "bullets": [
+                    f"Lifecycle status: {status}",
+                    f"Entry action: {entry_action or 'not_captured'}",
+                    f"Exit action: {exit_action or 'not_captured'}",
+                ],
+            }
+        if not reporter_status_human:
+            reporter_status_human = {
+                "status": str(reporter.get("status_human") or "missing"),
+                "summary": str(reporter.get("summary") or "Reporter linkage was not captured."),
+                "grade": str(reporter.get("grade") or "N/A"),
+                "bullets": [str(x or "") for x in list(reporter.get("improvement_points") or [])[:6]],
+            }
+        if not operator_conclusion_human:
+            operator_conclusion_human = {
+                "summary": str(summary.get("operator_conclusion_human") or "Lifecycle conclusion was not captured."),
+                "current_action": "HOLD" if status == "open" else lifecycle_action,
+                "watch_next": [f"Lifecycle status is {status}", "Monitor posture changes", "Macro/news regime changes"],
+                "thesis_invalidation": ["stop-loss breach", "monitor/scanner divergence", "negative macro shift"],
+            }
+        return {
+            "schema_version": "trade_story_input.v2",
+            "trade_id": str(lifecycle.get("trade_id") or bundle_out.get("trade_id") or bundle_out.get("story_id") or ""),
+            "story_id": str(lifecycle.get("trade_id") or bundle_out.get("trade_id") or bundle_out.get("story_id") or ""),
+            "run_id": str(bundle_out.get("run_id") or entry.get("run_id") or ""),
+            "symbol": symbol,
+            "action": lifecycle_action,
+            "status": status,
+            "story_type": str(story_contract.get("story_type") or lifecycle.get("story_type") or ""),
+            "execution_mode_label": str(story_contract.get("execution_mode_label") or lifecycle.get("execution_mode_label") or ""),
+            "entry_summary": {
+                "run_id": str(entry.get("run_id") or ""),
+                "ts": str(entry.get("ts") or ""),
+                "action": entry_action,
+                "reason_human": str(entry.get("reason_human") or ""),
+                "strategist_context": dict(entry.get("strategist_context") or {}),
+                "scanner_context": dict(entry.get("scanner_context") or {}),
+                "monitor_context": dict(entry.get("monitor_context") or {}),
+                "guard_context": dict(entry.get("guard_context") or {}),
+                "execution_context": dict(entry.get("execution_context") or {}),
+            },
+            "holding_summary": {
+                "run_ids": [str(x or "") for x in list(holding.get("run_ids") or []) if str(x or "").strip()],
+                "holding_events": [dict(x) for x in list(holding.get("holding_events") or []) if isinstance(x, dict)][:20],
+                "posture_history": [dict(x) for x in list(holding.get("posture_history") or []) if isinstance(x, dict)][:20],
+                "monitor_updates": [str(x or "") for x in list(holding.get("monitor_updates") or []) if str(x or "").strip()][:20],
+            },
+            "exit_summary": {
+                "run_id": str(exit_ctx.get("run_id") or ""),
+                "ts": str(exit_ctx.get("ts") or ""),
+                "action": exit_action,
+                "reason_human": str(exit_ctx.get("reason_human") or ""),
+                "monitor_context": dict(exit_ctx.get("monitor_context") or {}),
+                "guard_context": dict(exit_ctx.get("guard_context") or {}),
+                "execution_context": dict(exit_ctx.get("execution_context") or {}),
+            },
+            "lifecycle_summary": {
+                "holding_duration": str(summary.get("holding_duration") or ""),
+                "entry_reason_human": str(summary.get("entry_reason_human") or ""),
+                "exit_reason_human": str(summary.get("exit_reason_human") or ""),
+                "lifecycle_summary_human": str(summary.get("lifecycle_summary_human") or ""),
+                "operator_conclusion_human": str(summary.get("operator_conclusion_human") or ""),
+            },
+            "market_context_human": market_context_human,
+            "scanner_reason_human": scanner_reason_human,
+            "filters_human": filters_human,
+            "monitor_reason_human": monitor_reason_human,
+            "guard_reason_human": guard_reason_human,
+            "execution_outcome_human": execution_outcome_human,
+            "reporter_status_human": reporter_status_human,
+            "operator_conclusion_human": operator_conclusion_human,
+            "timeline": [dict(x) for x in list(lifecycle.get("timeline") or bundle_out.get("timeline") or []) if isinstance(x, dict)][:40],
+            "warnings": [str(x or "") for x in list(bundle_out.get("warnings") or lifecycle.get("warnings") or []) if str(x or "").strip()][:20],
+            "improvement_points": [str(x or "") for x in list(reporter.get("improvement_points") or []) if str(x or "").strip()][:12],
+        }
+
     return {
         "schema_version": "trade_story_input.v1",
+        "trade_id": str(bundle_out.get("trade_id") or bundle_out.get("story_id") or ""),
         "story_id": str(bundle_out.get("story_id") or ""),
         "run_id": str(bundle_out.get("run_id") or ""),
         "symbol": str((bundle_out.get("execution") or {}).get("symbol") or ""),
         "action": str((bundle_out.get("execution") or {}).get("action") or ""),
+        "status": str(bundle_out.get("trade_lifecycle_status") or "closed"),
         "story_type": str(story_contract.get("story_type") or ""),
         "execution_mode_label": str(story_contract.get("execution_mode_label") or ""),
         "market_context_human": dict(bundle_out.get("market_context_human") or {}),

@@ -4,12 +4,12 @@
   <div>
     <div class="eyebrow">Per-trade report</div>
     <h1>{{ report.action or "-" }} {{ report.symbol or "-" }}</h1>
-    <p class="lede">{{ report.report_summary or (report.executive_summary or {}).get("summary") or "Per-trade report detail" }}</p>
+    <p class="lede">{{ report.lifecycle_summary or report.report_summary or (report.executive_summary or {}).get("summary") or "Per-trade report detail" }}</p>
   </div>
   <div class="hero-meta">
     <div class="metric">
-      <span class="metric-label">Story</span>
-      <span class="metric-value">{{ report.story_id or "-" }}</span>
+      <span class="metric-label">Trade</span>
+      <span class="metric-value">{{ report.trade_id or report.story_id or "-" }}</span>
     </div>
     <div class="metric">
       <span class="metric-label">Run</span>
@@ -24,6 +24,9 @@
     <div class="chip-list">
       <span class="{{ report.story_type_badge_class or 'status-badge' }}">{{ report.story_type_label or "-" }}</span>
       <span class="chip">{{ report.execution_mode_label or "-" }}</span>
+      {% if report.status %}
+      <span class="chip">Lifecycle {{ report.status | upper }}</span>
+      {% endif %}
       <span class="chip chip--soft">AI report available</span>
     </div>
     <p class="operator-sentence">{{ (report.executive_summary or {}).get("summary") or "-" }}</p>
@@ -53,7 +56,7 @@
 
 <section class="grid grid-2">
   <article class="card">
-    <h2>Market Context</h2>
+    <h2>Market Context at Entry</h2>
     <p>{{ (report.market_context or {}).get("summary") or "-" }}</p>
     <ul class="summary-list summary-list--tight">
       {% for line in (report.market_context or {}).get("bullets") or [] %}
@@ -63,10 +66,40 @@
   </article>
 
   <article class="card">
-    <h2>Why This Symbol</h2>
+    <h2>Why This Symbol Was Chosen</h2>
     <p>{{ (report.why_this_symbol or {}).get("summary") or "-" }}</p>
     <ul class="summary-list summary-list--tight">
       {% for line in (report.why_this_symbol or {}).get("bullets") or [] %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Entry Decision</h2>
+    <p>{{ (report.entry_decision or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      {% for line in (report.entry_decision or {}).get("bullets") or [] %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Holding / Monitoring Story</h2>
+    <p>{{ (report.holding_monitoring_story or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      {% for line in (report.holding_monitoring_story or {}).get("bullets") or [] %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Exit Decision</h2>
+    <p>{{ (report.exit_decision or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      {% for line in (report.exit_decision or {}).get("bullets") or [] %}
       <li>{{ line }}</li>
       {% endfor %}
     </ul>
@@ -83,16 +116,6 @@
   </article>
 
   <article class="card">
-    <h2>Monitor / Trigger Reasoning</h2>
-    <p>{{ (report.monitor_trigger_reasoning or {}).get("summary") or "-" }}</p>
-    <ul class="summary-list summary-list--tight">
-      {% for line in (report.monitor_trigger_reasoning or {}).get("bullets") or [] %}
-      <li>{{ line }}</li>
-      {% endfor %}
-    </ul>
-  </article>
-
-  <article class="card">
     <h2>Guard / Approval Result</h2>
     <p>{{ (report.guard_approval_result or {}).get("summary") or "-" }}</p>
     <ul class="summary-list summary-list--tight">
@@ -103,7 +126,7 @@
   </article>
 
   <article class="card">
-    <h2>Execution Result</h2>
+    <h2>Execution Quality</h2>
     <p>{{ (report.execution_result or {}).get("summary") or "-" }}</p>
     <ul class="summary-list summary-list--tight">
       {% for line in (report.execution_result or {}).get("bullets") or [] %}
@@ -137,13 +160,13 @@
 
 <section class="grid grid-2">
   <article class="card">
-    <h2>Timeline</h2>
+    <h2>Full Timeline</h2>
     {% if report.timeline %}
     <div class="timeline timeline--compact">
       {% for row in report.timeline %}
       <div class="timeline-row">
-        <div class="timeline-meta">{{ row.ts or "-" }} / {{ row.step or row.label or "step" }}</div>
-        <p>{{ row.summary or row.detail or "-" }}</p>
+        <div class="timeline-meta">{{ row.ts or "-" }} / {{ row.event or row.step or row.label or "step" }}</div>
+        <p>{{ row.description or row.summary or row.detail or "-" }}</p>
       </div>
       {% endfor %}
     </div>
