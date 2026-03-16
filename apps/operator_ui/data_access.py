@@ -913,6 +913,566 @@ def _reporter_snippet_for_run(config: OperatorUIConfig, run_id: str, run_day: st
     }
 
 
+_FEATURE_NAME_MAP: Dict[str, str] = {
+    "engine_ma20_gap": "MA20 gap support",
+    "engine_ma60": "MA60 trend anchor",
+    "engine_ma120": "MA120 long trend",
+    "engine_adx14": "ADX trend strength",
+    "engine_trend_strength": "trend strength score",
+    "engine_volume_spike20": "volume expansion",
+    "engine_volatility20": "volatility profile",
+    "engine_vwap_distance": "VWAP distance",
+    "engine_sector_relative_strength": "sector relative strength",
+    "engine_cross_section_rank": "cross-sectional rank",
+    "engine_regime": "regime detection",
+    "engine_signal_score": "composite signal score",
+}
+
+
+def _format_float(v: Any, digits: int = 2) -> str:
+    if v is None or v == "":
+        return "-"
+    try:
+        return f"{float(v):.{digits}f}"
+    except Exception:
+        return str(v)
+
+
+def _format_percent(v: Any, digits: int = 1) -> str:
+    if v is None or v == "":
+        return "-"
+    try:
+        num = float(v)
+    except Exception:
+        return str(v)
+    if abs(num) <= 1.0:
+        num *= 100.0
+    return f"{num:.{digits}f}%"
+
+
+def _format_duration(seconds: Any) -> str:
+    total = _safe_int(seconds, -1)
+    if total < 0:
+        return "-"
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total / 60.0:.1f}m"
+    return f"{total / 3600.0:.1f}h"
+
+
+def _friendly_feature_name(key: str) -> str:
+    k = str(key or "").strip()
+    if not k:
+        return "-"
+    if k in _FEATURE_NAME_MAP:
+        return _FEATURE_NAME_MAP[k]
+    return k.replace("engine_", "").replace("_", " ")
+
+
+def _build_top_candidates(scanner_summary: Dict[str, Any], scanner_trace: Dict[str, Any], selected_symbol: str) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    raw_ranked = scanner_summary.get("top_ranked_symbols") if isinstance(scanner_summary, dict) else []
+    if isinstance(raw_ranked, list):
+        for idx, item in enumerate(raw_ranked[:5], start=1):
+            if isinstance(item, dict):
+                symbol = normalize_symbol(
+                    item.get("symbol")
+                    or item.get("code")
+                    or item.get("ticker")
+                    or item.get("stock")
+                    or "",
+                    allow_test_symbols=True,
+                )
+                reason = str(item.get("reason") or item.get("why") or "").strip()
+                score = item.get("score_total") if item.get("score_total") is not None else item.get("score")
+            else:
+                symbol = normalize_symbol(item, allow_test_symbols=True)
+                reason = ""
+                score = None
+            if not symbol:
+                continue
+            out.append(
+                {
+                    "rank": idx,
+                    "symbol": symbol,
+                    "reason": reason,
+                    "score": score,
+                }
+            )
+    ranked_candidates = scanner_trace.get("ranked_candidates") if isinstance(scanner_trace, dict) else []
+    if isinstance(ranked_candidates, list):
+        seen = {str(row.get("symbol") or "") for row in out}
+        for item in ranked_candidates[:5]:
+            if not isinstance(item, dict):
+                continue
+            symbol = normalize_symbol(
+                item.get("symbol")
+                or item.get("code")
+                or item.get("ticker")
+                or "",
+                allow_test_symbols=True,
+            )
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            out.append(
+                {
+                    "rank": len(out) + 1,
+                    "symbol": symbol,
+                    "reason": str(item.get("reason") or item.get("why") or "").strip(),
+                    "score": item.get("score_total") if item.get("score_total") is not None else item.get("score"),
+                }
+            )
+    if selected_symbol and not any(str(row.get("symbol") or "") == selected_symbol for row in out):
+        out.insert(
+            0,
+            {
+                "rank": 1,
+                "symbol": selected_symbol,
+                "reason": "",
+                "score": None,
+            },
+        )
+    for idx, row in enumerate(out, start=1):
+        row["rank"] = idx
+    return out[:5]
+
+
+def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
+    strategist = detail.get("strategist") if isinstance(detail.get("strategist"), dict) else {}
+    scanner = detail.get("scanner") if isinstance(detail.get("scanner"), dict) else {}
+    monitor = detail.get("monitor") if isinstance(detail.get("monitor"), dict) else {}
+    supervisor = detail.get("supervisor") if isinstance(detail.get("supervisor"), dict) else {}
+    executor = detail.get("executor") if isinstance(detail.get("executor"), dict) else {}
+    reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
+
+    strategist_summary = strategist.get("summary") if isinstance(strategist.get("summary"), dict) else {}
+    strategist_trace = strategist.get("decision_trace") if isinstance(strategist.get("decision_trace"), dict) else {}
+    strategist_evidence = strategist.get("evidence") if isinstance(strategist.get("evidence"), dict) else {}
+    strategist_raw_input = strategist_evidence.get("raw_input") if isinstance(strategist_evidence.get("raw_input"), dict) else {}
+
+    scanner_summary = scanner.get("summary") if isinstance(scanner.get("summary"), dict) else {}
+    scanner_trace = scanner.get("decision_trace") if isinstance(scanner.get("decision_trace"), dict) else {}
+    selected_candidate = scanner_trace.get("selected_candidate") if isinstance(scanner_trace.get("selected_candidate"), dict) else {}
+    feature_snapshot = selected_candidate.get("feature_snapshot") if isinstance(selected_candidate.get("feature_snapshot"), dict) else {}
+    score_breakdown = selected_candidate.get("score_breakdown") if isinstance(selected_candidate.get("score_breakdown"), dict) else {}
+    source_scores = selected_candidate.get("source_scores") if isinstance(selected_candidate.get("source_scores"), dict) else {}
+    feature_coverage = scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else _feature_coverage(feature_snapshot)
+    quote_metrics = scanner.get("quote_metrics") if isinstance(scanner.get("quote_metrics"), dict) else _quote_metrics_snapshot(feature_snapshot)
+
+    monitor_summary = monitor.get("summary") if isinstance(monitor.get("summary"), dict) else {}
+    monitor_trace = monitor.get("decision_trace") if isinstance(monitor.get("decision_trace"), dict) else {}
+    thresholds = monitor_trace.get("thresholds") if isinstance(monitor_trace.get("thresholds"), dict) else {}
+
+    verdict = supervisor.get("verdict") if isinstance(supervisor.get("verdict"), dict) else {}
+    execution = _normalize_execution_payload(executor.get("execution") if isinstance(executor.get("execution"), dict) else {})
+
+    selected_symbol = normalize_symbol(
+        execution.get("symbol")
+        or scanner_trace.get("selected_symbol")
+        or scanner_summary.get("top_stock")
+        or selected_candidate.get("symbol")
+        or "",
+        allow_test_symbols=True,
+    ).strip()
+    top_candidates = _build_top_candidates(scanner_summary, scanner_trace, selected_symbol)
+    selected_rank = next((int(row.get("rank") or 0) for row in top_candidates if str(row.get("symbol") or "") == selected_symbol), 0)
+    universe_size = _safe_int(
+        scanner_summary.get("candidate_pool_after_filter"),
+        _safe_int(scanner_trace.get("candidate_pool_size"), len(top_candidates)),
+    )
+
+    execution_action = str(execution.get("action") or "").upper()
+    monitor_reason = str(monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason") or "").strip()
+    exit_reason = str(monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason") or "").strip()
+    if execution_action in {"BUY", "SELL"}:
+        final_action = execution_action
+    elif not selected_symbol:
+        final_action = "WAIT"
+    elif "hold" in exit_reason.lower() or "hold" in monitor_reason.lower():
+        final_action = "HOLD"
+    elif monitor_reason.lower() == "no_position":
+        final_action = "WAIT"
+    else:
+        final_action = "HOLD"
+
+    confidence_raw = (
+        selected_candidate.get("confidence")
+        if selected_candidate.get("confidence") is not None
+        else selected_candidate.get("score_total")
+    )
+    confidence = _format_float(confidence_raw, 2) if confidence_raw is not None else ""
+
+    selection_reasons: List[str] = []
+    selected_why = _clean_brief_text(selected_candidate.get("why") or scanner_trace.get("selected_reason") or "")
+    if selected_why:
+        selection_reasons.append(selected_why)
+    if feature_coverage.get("total"):
+        selection_reasons.append(
+            f"chart feature coverage {feature_coverage.get('present')}/{feature_coverage.get('total')} ({feature_coverage.get('quality') or '-'})"
+        )
+    if quote_metrics.get("quote_trading_value") is not None:
+        selection_reasons.append("acceptable turnover and tradability")
+    if strategist_summary.get("playbook"):
+        selection_reasons.append(f"aligned with playbook {strategist_summary.get('playbook')}")
+
+    comparison_reasons: List[str] = []
+    if len(top_candidates) >= 2:
+        for row in top_candidates[1:3]:
+            reason = _clean_brief_text(row.get("reason"))
+            if reason:
+                comparison_reasons.append(f"{row.get('symbol')} was weaker: {reason}")
+        if not comparison_reasons:
+            comparison_reasons.append("other candidates had lower composite rank or weaker feature coverage")
+    else:
+        comparison_reasons.append("only one ranked candidate was persisted for this run")
+
+    global_inputs = strategist_raw_input.get("global_sentiment_inputs") if isinstance(strategist_raw_input.get("global_sentiment_inputs"), dict) else {}
+    fear_index = global_inputs.get("fear_index") if isinstance(global_inputs.get("fear_index"), dict) else {}
+    macro_moves = global_inputs.get("macro_moves") if isinstance(global_inputs.get("macro_moves"), dict) else {}
+    global_score = global_inputs.get("score")
+    vix_level = fear_index.get("level")
+    market_news_titles = [str((x or {}).get("title") or "") for x in list(strategist_raw_input.get("collected_market_news") or []) if isinstance(x, dict)]
+    news_targets = list(strategist_summary.get("news_query_targets") or strategist_raw_input.get("news_query_targets") or [])
+    macro_stress_overlay = strategist_trace.get("macro_stress_overlay") if isinstance(strategist_trace.get("macro_stress_overlay"), dict) else {}
+    defensive_mode = bool(macro_stress_overlay.get("active")) or str(strategist_summary.get("playbook") or "").lower() == "defensive" or (_safe_float(vix_level, 0.0) >= 25.0 if vix_level is not None else False)
+    if market_news_titles:
+        news_summary = "; ".join([title for title in market_news_titles[:2] if title]) or "market news sampled"
+    elif news_targets:
+        news_summary = "no strong market-moving headline was retained in this run"
+    else:
+        news_summary = "no meaningful news input was captured"
+
+    detected_themes = _clean_brief_list(strategist_summary.get("themes"), limit=6)
+    theme_match = _clean_brief_text(
+        selected_candidate.get("theme_match")
+        or selected_candidate.get("sector_theme")
+        or selected_candidate.get("theme")
+        or ""
+    )
+    if not theme_match and selected_why and detected_themes:
+        lowered = selected_why.lower()
+        for theme in detected_themes:
+            if str(theme).lower() in lowered:
+                theme_match = theme
+                break
+    if detected_themes and theme_match:
+        priority_alignment = "yes"
+        theme_priority = "high-priority theme"
+    elif detected_themes and selected_symbol:
+        priority_alignment = "partial"
+        theme_priority = "fallback theme match"
+    elif detected_themes:
+        priority_alignment = "unknown"
+        theme_priority = "theme detected but symbol linkage unavailable"
+    else:
+        priority_alignment = "no"
+        theme_priority = "no explicit theme detected"
+
+    sector_strength = feature_snapshot.get("engine_sector_relative_strength")
+    sentiment_gate_status = "SKIPPED"
+    sentiment_gate_note = "sentiment input not available"
+    if global_score is not None:
+        sentiment_gate_status = "PASS" if _safe_float(global_score, 0.0) >= -0.35 else "FAIL"
+        sentiment_gate_note = f"global sentiment {_format_float(global_score, 2)}"
+
+    liquidity_status = "SKIPPED"
+    liquidity_note = "quote volume not available"
+    if quote_metrics.get("quote_volume") is not None:
+        liquidity_status = "PASS" if _safe_float(quote_metrics.get("quote_volume"), 0.0) > 0 else "FAIL"
+        liquidity_note = f"quote volume {quote_metrics.get('quote_volume')}"
+
+    turnover_status = "SKIPPED"
+    turnover_note = "turnover metric not available"
+    if quote_metrics.get("quote_trading_value") is not None:
+        turnover_status = "PASS" if _safe_float(quote_metrics.get("quote_trading_value"), 0.0) > 0 else "FAIL"
+        turnover_note = f"trading value {quote_metrics.get('quote_trading_value')}"
+
+    sector_status = "SKIPPED"
+    sector_note = "sector relative strength not available"
+    if sector_strength is not None:
+        sector_status = "PASS" if _safe_float(sector_strength, 0.0) >= 0 else "FAIL"
+        sector_note = f"sector relative strength {_format_float(sector_strength, 2)}"
+
+    coverage_ratio = _safe_float(feature_coverage.get("coverage_ratio"), 0.0)
+    if _safe_int(feature_coverage.get("total"), 0) <= 0:
+        chart_status = "SKIPPED"
+        chart_note = "feature snapshot not available"
+    elif coverage_ratio >= 0.75:
+        chart_status = "PASS"
+        chart_note = f"{feature_coverage.get('present')}/{feature_coverage.get('total')} filled"
+    elif coverage_ratio >= 0.5:
+        chart_status = "PARTIAL"
+        chart_note = f"{feature_coverage.get('present')}/{feature_coverage.get('total')} filled"
+    else:
+        chart_status = "FAIL"
+        chart_note = f"{feature_coverage.get('present')}/{feature_coverage.get('total')} filled"
+
+    risk_status = "PASS" if bool(verdict.get("allowed")) else "FAIL"
+    risk_note = str(verdict.get("reason") or ("order allowed" if risk_status == "PASS" else "order blocked"))
+
+    change_pct = quote_metrics.get("intraday_change_pct")
+    anomaly_status = "SKIPPED"
+    anomaly_note = "intraday change metric not available"
+    if change_pct is not None:
+        anomaly_status = "PASS" if abs(_safe_float(change_pct, 0.0)) <= 12.0 else "FAIL"
+        anomaly_note = f"intraday change {_format_percent(change_pct, 2)}"
+
+    spread_bps = selected_candidate.get("spread_bps")
+    spread_status = "SKIPPED"
+    spread_note = "spread/slippage metric not available in this run"
+    if spread_bps is not None:
+        spread_status = "PASS" if _safe_float(spread_bps, 9999.0) <= 50.0 else "FAIL"
+        spread_note = f"spread {spread_bps} bps"
+
+    ranking_basis: List[str] = []
+    for key in list(score_breakdown.keys())[:6]:
+        ranking_basis.append(_friendly_feature_name(key))
+    if not ranking_basis:
+        for key in list(source_scores.keys())[:6]:
+            ranking_basis.append(str(key).replace("_", " "))
+    if not ranking_basis:
+        ranking_basis = ["trading value", "volume", "sector strength", "chart feature coverage"]
+
+    component_scores: List[str] = []
+    for key, value in list(score_breakdown.items())[:6]:
+        component_scores.append(f"{_friendly_feature_name(str(key))}: {_format_float(value, 3)}")
+    if not component_scores:
+        for key, value in list(source_scores.items())[:6]:
+            component_scores.append(f"{str(key).replace('_', ' ')}: {_format_float(value, 3)}")
+
+    positive_factors: List[str] = []
+    if selected_why:
+        positive_factors.append(selected_why)
+    if _safe_float(quote_metrics.get("quote_trading_value"), 0.0) > 0:
+        positive_factors.append("strong tradable turnover")
+    if chart_status == "PASS":
+        positive_factors.append("robust chart feature coverage")
+    if sector_status == "PASS":
+        positive_factors.append("sector alignment is acceptable")
+    if not positive_factors:
+        positive_factors.append("selected symbol retained highest available composite rank")
+
+    weak_factors: List[str] = []
+    missing_keys = list(feature_coverage.get("missing_keys") or [])
+    if missing_keys:
+        weak_factors.append(
+            "missing features: " + ", ".join(_friendly_feature_name(k) for k in missing_keys[:2])
+        )
+    volatility20 = feature_snapshot.get("engine_volatility20")
+    if volatility20 is not None and _safe_float(volatility20, 0.0) >= 0.3:
+        weak_factors.append("elevated short-term volatility remains")
+    if sentiment_gate_status == "FAIL":
+        weak_factors.append("negative global sentiment requires tighter monitoring")
+    if not weak_factors:
+        weak_factors.append("no major weakness persisted in this run snapshot")
+
+    present_feature_names = [_friendly_feature_name(k) for k in list(feature_coverage.get("present_keys") or [])[:6]]
+    missing_feature_names = [_friendly_feature_name(k) for k in missing_keys[:4]]
+    if chart_status == "PASS":
+        chart_interpretation = "feature coverage is robust enough for scanner ranking confidence"
+    elif chart_status == "PARTIAL":
+        chart_interpretation = "feature coverage is usable but needs caution on weaker technical inputs"
+    else:
+        chart_interpretation = "feature coverage is insufficient; treat selection confidence conservatively"
+
+    stop_loss = thresholds.get("stop_loss_pct")
+    take_profit = thresholds.get("take_profit_pct")
+    if stop_loss is None:
+        stop_loss = thresholds.get("stop_loss")
+    if take_profit is None:
+        take_profit = thresholds.get("take_profit")
+    stop_loss_text = _format_percent(stop_loss, 2) if stop_loss is not None else "-"
+    take_profit_text = _format_percent(take_profit, 2) if take_profit is not None else "-"
+    holding_time = _format_duration(monitor_summary.get("position_age_seconds") or monitor_trace.get("position_age_seconds"))
+
+    hold_reasons: List[str] = []
+    if final_action == "HOLD":
+        hold_reasons.append("no explicit exit trigger was hit yet")
+        hold_reasons.append(f"monitor reason: {monitor_reason or '-'} / exit reason: {exit_reason or '-'}")
+    elif final_action == "WAIT":
+        hold_reasons.append("entry is waiting because no active position or execution signal is confirmed")
+        hold_reasons.append(f"monitor reason: {monitor_reason or '-'}")
+    elif final_action == "BUY":
+        hold_reasons.append("scanner selection passed gating and execution was approved")
+    elif final_action == "SELL":
+        hold_reasons.append("monitor/supervisor flow reached sell execution condition")
+    if chart_status in {"PASS", "PARTIAL"}:
+        hold_reasons.append(f"chart coverage state: {feature_coverage.get('quality') or '-'}")
+
+    exit_triggers = [
+        "stop-loss breach",
+        "take-profit hit",
+        "monitor quality deterioration",
+    ]
+    if stop_loss_text != "-" or take_profit_text != "-":
+        exit_triggers = [
+            f"stop-loss trigger ({stop_loss_text})" if stop_loss_text != "-" else "stop-loss trigger",
+            f"take-profit trigger ({take_profit_text})" if take_profit_text != "-" else "take-profit trigger",
+            "risk gate failure or abnormal volatility expansion",
+        ]
+
+    reporter_found = bool(reporter.get("found"))
+    reporter_reason_key = str(reporter.get("reason") or "").strip()
+    if reporter_found:
+        reporter_status = "linked"
+        reporter_reason = "same-day reporter analysis is linked to this run"
+    elif reporter_reason_key == "same_day_report_missing":
+        reporter_status = "pending"
+        reporter_reason = "same-day reporter analysis file is not generated yet"
+    elif reporter_reason_key == "run_not_linked_in_same_day_report":
+        reporter_status = "pending"
+        reporter_reason = "same-day reporter analysis exists, but this run_id is not linked yet"
+    else:
+        reporter_status = "missing"
+        reporter_reason = "reporter linkage is unavailable for this run"
+
+    run_grade = str(reporter.get("ai_run_grade") or "").strip()
+    ai_summary = str(reporter.get("ai_summary") or "").strip()
+    strategy_alignment = "strategy frame and scanner trace were captured"
+    execution_quality = "execution log present" if execution_action in {"BUY", "SELL"} else "no executed order in this run"
+    monitor_consistency = f"monitor={monitor_reason or '-'} / exit={exit_reason or '-'}"
+    if reporter_found:
+        trade_quality = f"grade {run_grade}" if run_grade else "grade not provided"
+        key_finding = ai_summary or "reporter summary exists but key finding text is empty"
+    else:
+        trade_quality = "post-trade quality grade is pending"
+        key_finding = ai_summary or reporter_reason
+
+    if final_action == "BUY":
+        decision_reason = (
+            f"scanner rank #{selected_rank or 1} out of {max(universe_size, 1)} with strong selection factors, "
+            f"chart coverage {feature_coverage.get('present')}/{feature_coverage.get('total')}, and approved execution."
+        )
+    elif final_action == "SELL":
+        decision_reason = (
+            f"monitor/supervisor flow triggered SELL for {selected_symbol or '-'} "
+            f"after exit condition review ({exit_reason or monitor_reason or 'triggered'})."
+        )
+    elif final_action == "HOLD":
+        decision_reason = (
+            f"scanner rank #{selected_rank or 1} candidate is retained with chart coverage "
+            f"{feature_coverage.get('present')}/{feature_coverage.get('total')}, and no active exit trigger yet."
+        )
+    else:
+        decision_reason = (
+            f"no executable BUY/SELL action yet; waiting for entry confirmation while monitoring {selected_symbol or 'candidate'}."
+        )
+
+    watch_next: List[str] = []
+    if take_profit_text != "-":
+        watch_next.append(f"take-profit proximity ({take_profit_text})")
+    if stop_loss_text != "-":
+        watch_next.append(f"stop-loss proximity ({stop_loss_text})")
+    if vix_level is not None:
+        watch_next.append(f"volatility trend (VIX {_format_float(vix_level, 2)})")
+    if detected_themes:
+        watch_next.append(f"theme strength drift ({', '.join(detected_themes[:2])})")
+    if not watch_next:
+        watch_next = ["entry/exit trigger activation", "volatility expansion", "sector weakness"]
+
+    thesis_invalidation = [
+        "stop-loss breach or abnormal drawdown",
+        "scanner and monitor signal divergence",
+        "negative macro/news regime shift",
+    ]
+
+    macro_summary: List[str] = []
+    if macro_moves.get("dxy_pct") is not None:
+        macro_summary.append(f"DXY change {_format_percent(macro_moves.get('dxy_pct'), 2)}")
+    if macro_moves.get("tnx_delta") is not None:
+        macro_summary.append(f"US10Y delta {_format_float(macro_moves.get('tnx_delta'), 3)}")
+
+    return {
+        "executive_decision": {
+            "final_action": final_action,
+            "symbol": selected_symbol or "-",
+            "reason": decision_reason,
+            "confidence": confidence,
+            "selected_rank": selected_rank or None,
+            "universe_size": universe_size or None,
+        },
+        "why_symbol_chosen": {
+            "selected": bool(selected_symbol),
+            "universe_size": universe_size or None,
+            "selected_rank": selected_rank or None,
+            "selection_reasons": selection_reasons or ["selection rationale was not explicitly persisted"],
+            "comparison_reasons": comparison_reasons,
+            "top_candidates": top_candidates[:3],
+        },
+        "market_context": {
+            "market_regime": str(strategist_summary.get("market_regime") or strategist_trace.get("market_regime") or "-"),
+            "global_sentiment": _format_float(global_score, 2) if global_score is not None else "-",
+            "vix": _format_float(vix_level, 2) if vix_level is not None else "-",
+            "macro_summary": macro_summary,
+            "news_summary": news_summary,
+            "news_targets": _clean_brief_list(news_targets, limit=6),
+            "defensive_mode": "enabled" if defensive_mode else "disabled",
+        },
+        "theme_detection": {
+            "detected_themes": detected_themes,
+            "symbol_theme_match": theme_match or "not explicitly tagged",
+            "priority_alignment": priority_alignment,
+            "theme_priority_bucket": theme_priority,
+        },
+        "filters_and_gates": [
+            {"name": "Liquidity filter", "status": liquidity_status, "note": liquidity_note},
+            {"name": "Turnover filter", "status": turnover_status, "note": turnover_note},
+            {"name": "Sector strength filter", "status": sector_status, "note": sector_note},
+            {"name": "Chart completeness filter", "status": chart_status, "note": chart_note},
+            {"name": "Sentiment gate", "status": sentiment_gate_status, "note": sentiment_gate_note},
+            {"name": "Risk gate", "status": risk_status, "note": risk_note},
+            {"name": "Price anomaly filter", "status": anomaly_status, "note": anomaly_note},
+            {"name": "Spread/slippage filter", "status": spread_status, "note": spread_note},
+        ],
+        "scanner_ranking_explanation": {
+            "ranking_basis": ranking_basis,
+            "component_scores": component_scores,
+            "tie_break_rule": str(scanner_trace.get("tie_break_rule") or "higher composite score, then stronger feature coverage"),
+            "positive_factors": positive_factors[:5],
+            "weak_factors": weak_factors[:4],
+        },
+        "chart_feature_coverage": {
+            "present": _safe_int(feature_coverage.get("present"), 0),
+            "total": _safe_int(feature_coverage.get("total"), 0),
+            "quality": str(feature_coverage.get("quality") or "missing"),
+            "confirmed_features": present_feature_names,
+            "missing_features": missing_feature_names,
+            "interpretation": chart_interpretation,
+        },
+        "position_monitor_reasoning": {
+            "posture": final_action,
+            "holding_time": holding_time,
+            "stop_loss": stop_loss_text,
+            "take_profit": take_profit_text,
+            "hold_reasons": hold_reasons[:4],
+            "exit_triggers": exit_triggers[:3],
+        },
+        "reporter_evaluation": {
+            "status": reporter_status,
+            "reason": reporter_reason,
+            "strategy_alignment": strategy_alignment,
+            "execution_quality": execution_quality,
+            "monitor_consistency": monitor_consistency,
+            "run_grade": run_grade or "-",
+            "trade_quality": trade_quality,
+            "key_finding": key_finding,
+        },
+        "operator_conclusion": {
+            "current_action": final_action,
+            "watch_next": watch_next[:4],
+            "thesis_invalidation": thesis_invalidation,
+        },
+    }
+
+
+def _attach_operator_brief_sections(brief: Dict[str, Any], detail: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(brief or {})
+    out["sections"] = _build_operator_brief_sections(detail)
+    return out
+
+
 
 
 
@@ -1323,7 +1883,7 @@ def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[s
     cached = _read_json(path)
     if not isinstance(cached, dict):
         return {}
-    if int(cached.get("version") or 0) < 2:
+    if int(cached.get("version") or 0) < 3:
         return {}
     return cached
 
@@ -1334,7 +1894,7 @@ def _save_cached_operator_brief(config: OperatorUIConfig, run_id: str, brief: Di
     path = config.operator_ui_cache_path / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(brief)
-    payload["version"] = 2
+    payload["version"] = 3
     payload["cached_at"] = datetime.now(tz=KST).isoformat()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1343,8 +1903,8 @@ def _load_operator_brief_with_cache(config: OperatorUIConfig, detail: Dict[str, 
     run_id = str(detail.get("run_id") or "").strip()
     cached = _load_cached_operator_brief(config, run_id)
     if cached:
-        return cached
-    brief = _load_operator_brief(detail)
+        return _attach_operator_brief_sections(cached, detail)
+    brief = _attach_operator_brief_sections(_load_operator_brief(detail), detail)
     _save_cached_operator_brief(config, run_id, brief)
     return brief
 

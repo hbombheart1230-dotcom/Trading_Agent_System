@@ -348,6 +348,16 @@ td a {
   margin-bottom: 4px;
 }
 
+.brief-card .brief-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.brief-card .brief-section h3 {
+  margin-top: 0;
+}
+
 .subtle-meta {
   margin: 8px 0 0;
   color: var(--muted);

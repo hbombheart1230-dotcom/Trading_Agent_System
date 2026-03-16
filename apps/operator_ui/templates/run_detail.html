@@ -20,41 +20,248 @@
 </section>
 
 <section class="grid grid-2">
-  <article class="card">
+  {% set brief = detail.operator_brief or {} %}
+  {% set sec = brief.sections or {} %}
+  <article class="card brief-card">
     <h2>운영자 브리프</h2>
-    <p class="meta-line">status={{ detail.operator_brief.status }} model={{ detail.operator_brief.model or "-" }}</p>
-    <h3>{{ detail.operator_brief.headline }}</h3>
-    <ul class="summary-list">
-      <li><strong>지휘자</strong>: {{ detail.operator_brief.commander_summary }}</li>
-      <li><strong>전략가</strong>: {{ detail.operator_brief.strategist_summary }}</li>
-      <li><strong>스캐너</strong>: {{ detail.operator_brief.scanner_summary }}</li>
-      <li><strong>모니터</strong>: {{ detail.operator_brief.monitor_summary }}</li>
-      <li><strong>감독관</strong>: {{ detail.operator_brief.supervisor_summary }}</li>
-      <li><strong>수행자</strong>: {{ detail.operator_brief.executor_summary }}</li>
-      <li><strong>리포터</strong>: {{ detail.operator_brief.reporter_summary }}</li>
-    </ul>
-    <h3>운영 포인트</h3>
-    <ul class="summary-list">
-      {% for line in detail.operator_brief.operator_takeaways %}
-      <li>{{ line }}</li>
-      {% endfor %}
-    </ul>
+    <p class="meta-line">status={{ brief.status }} model={{ brief.model or "-" }}</p>
+    <h3>{{ brief.headline }}</h3>
+
+    <div class="brief-section">
+      <h3>A. Executive Decision</h3>
+      <ul class="summary-list summary-list--tight">
+        <li><strong>{{ (sec.executive_decision or {}).get("final_action") or "-" }} {{ (sec.executive_decision or {}).get("symbol") or "-" }}</strong></li>
+        <li>Reason: {{ (sec.executive_decision or {}).get("reason") or "-" }}</li>
+        {% if (sec.executive_decision or {}).get("confidence") %}
+        <li>Confidence: {{ (sec.executive_decision or {}).get("confidence") }}</li>
+        {% endif %}
+      </ul>
+    </div>
+
+    <div class="brief-section">
+      <h3>B. Why This Symbol Was Chosen</h3>
+      <ul class="summary-list summary-list--tight">
+        <li>Universe scanned: {{ (sec.why_symbol_chosen or {}).get("universe_size") or "-" }}</li>
+        <li>Selected rank: {% if (sec.why_symbol_chosen or {}).get("selected_rank") %}#{{ (sec.why_symbol_chosen or {}).get("selected_rank") }}{% else %}-{% endif %}</li>
+        {% for line in (sec.why_symbol_chosen or {}).get("selection_reasons") or [] %}
+        <li>Selected because: {{ line }}</li>
+        {% endfor %}
+        {% for line in (sec.why_symbol_chosen or {}).get("comparison_reasons") or [] %}
+        <li>Why not others: {{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% if (sec.why_symbol_chosen or {}).get("top_candidates") %}
+      <p class="meta-line">Top candidates</p>
+      <ul class="summary-list summary-list--tight">
+        {% for row in (sec.why_symbol_chosen or {}).get("top_candidates") %}
+        <li>#{{ row.rank }} {{ row.symbol }}{% if row.reason %} - {{ row.reason }}{% endif %}{% if row.score is not none %} (score {{ row.score }}){% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+
+    <div class="brief-section">
+      <h3>C. Market / News / Global Sentiment Context</h3>
+      <ul class="summary-list summary-list--tight">
+        <li>Market regime: {{ (sec.market_context or {}).get("market_regime") or "-" }}</li>
+        <li>Global sentiment: {{ (sec.market_context or {}).get("global_sentiment") or "-" }}</li>
+        <li>VIX: {{ (sec.market_context or {}).get("vix") or "-" }}</li>
+        <li>Defensive mode: {{ (sec.market_context or {}).get("defensive_mode") or "-" }}</li>
+        <li>News input: {{ (sec.market_context or {}).get("news_summary") or "-" }}</li>
+      </ul>
+      {% if (sec.market_context or {}).get("news_targets") %}
+      <p class="meta-line">News targets: {{ ((sec.market_context or {}).get("news_targets") or []) | join(", ") }}</p>
+      {% endif %}
+      {% if (sec.market_context or {}).get("macro_summary") %}
+      <ul class="summary-list summary-list--tight">
+        {% for line in (sec.market_context or {}).get("macro_summary") %}
+        {% if line %}<li>{{ line }}</li>{% endif %}
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+
+    <div class="brief-section">
+      <h3>D. Theme Detection</h3>
+      <ul class="summary-list summary-list--tight">
+        <li>Detected themes: {{ ((sec.theme_detection or {}).get("detected_themes") or []) | join(", ") or "-" }}</li>
+        <li>Selected symbol theme match: {{ (sec.theme_detection or {}).get("symbol_theme_match") or "-" }}</li>
+        <li>Priority theme alignment: {{ (sec.theme_detection or {}).get("priority_alignment") or "-" }} ({{ (sec.theme_detection or {}).get("theme_priority_bucket") or "-" }})</li>
+      </ul>
+    </div>
+
+    <div class="brief-section">
+      <h3>E. Filters and Gates</h3>
+      <ul class="summary-list summary-list--tight">
+        {% for gate in (sec.filters_and_gates or []) %}
+        <li>{{ gate.name }}: <strong>{{ gate.status }}</strong>{% if gate.note %} - {{ gate.note }}{% endif %}</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div class="brief-section">
+      <h3>F. Scanner Ranking Explanation</h3>
+      <ul class="summary-list summary-list--tight">
+        <li>Ranking basis: {{ ((sec.scanner_ranking_explanation or {}).get("ranking_basis") or []) | join(", ") or "-" }}</li>
+        <li>Tie-break rule: {{ (sec.scanner_ranking_explanation or {}).get("tie_break_rule") or "-" }}</li>
+      </ul>
+      {% if (sec.scanner_ranking_explanation or {}).get("component_scores") %}
+      <p class="meta-line">Component scores</p>
+      <ul class="summary-list summary-list--tight">
+        {% for line in (sec.scanner_ranking_explanation or {}).get("component_scores") %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if (sec.scanner_ranking_explanation or {}).get("positive_factors") %}
+      <p class="meta-line">Positive factors</p>
+      <ul class="summary-list summary-list--tight">
+        {% for line in (sec.scanner_ranking_explanation or {}).get("positive_factors") %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if (sec.scanner_ranking_explanation or {}).get("weak_factors") %}
+      <p class="meta-line">Weaknesses</p>
+      <ul class="summary-list summary-list--tight">
+        {% for line in (sec.scanner_ranking_explanation or {}).get("weak_factors") %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+
+    <div class="brief-section">
+      <h3>G. Chart / Technical Feature Coverage</h3>
+      <ul class="summary-list summary-list--tight">
+        <li>Feature coverage: {{ (sec.chart_feature_coverage or {}).get("present") or 0 }}/{{ (sec.chart_feature_coverage or {}).get("total") or 0 }} ({{ (sec.chart_feature_coverage or {}).get("quality") or "-" }})</li>
+        <li>Interpretation: {{ (sec.chart_feature_coverage or {}).get("interpretation") or "-" }}</li>
+      </ul>
+      {% if (sec.chart_feature_coverage or {}).get("confirmed_features") %}
+      <p class="meta-line">Confirmed</p>
+      <ul class="summary-list summary-list--tight">
+        {% for line in (sec.chart_feature_coverage or {}).get("confirmed_features") %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if (sec.chart_feature_coverage or {}).get("missing_features") %}
+      <p class="meta-line">Missing / weak</p>
+      <ul class="summary-list summary-list--tight">
+        {% for line in (sec.chart_feature_coverage or {}).get("missing_features") %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+
+    <div class="brief-section">
+      <h3>H. Position / Monitor Reasoning</h3>
+      <ul class="summary-list summary-list--tight">
+        <li>Current posture: {{ (sec.position_monitor_reasoning or {}).get("posture") or "-" }}</li>
+        <li>Holding time: {{ (sec.position_monitor_reasoning or {}).get("holding_time") or "-" }}</li>
+        <li>Stop loss: {{ (sec.position_monitor_reasoning or {}).get("stop_loss") or "-" }}</li>
+        <li>Take-profit: {{ (sec.position_monitor_reasoning or {}).get("take_profit") or "-" }}</li>
+      </ul>
+      {% if (sec.position_monitor_reasoning or {}).get("hold_reasons") %}
+      <p class="meta-line">Reason for current posture</p>
+      <ul class="summary-list summary-list--tight">
+        {% for line in (sec.position_monitor_reasoning or {}).get("hold_reasons") %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if (sec.position_monitor_reasoning or {}).get("exit_triggers") %}
+      <p class="meta-line">Exit triggers</p>
+      <ul class="summary-list summary-list--tight">
+        {% for line in (sec.position_monitor_reasoning or {}).get("exit_triggers") %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+
+    <div class="brief-section">
+      <h3>I. Reporter Evaluation</h3>
+      <ul class="summary-list summary-list--tight">
+        <li>Reporter status: {{ (sec.reporter_evaluation or {}).get("status") or "-" }}</li>
+        <li>Reason: {{ (sec.reporter_evaluation or {}).get("reason") or "-" }}</li>
+        <li>Strategy alignment: {{ (sec.reporter_evaluation or {}).get("strategy_alignment") or "-" }}</li>
+        <li>Execution quality: {{ (sec.reporter_evaluation or {}).get("execution_quality") or "-" }}</li>
+        <li>Monitor consistency: {{ (sec.reporter_evaluation or {}).get("monitor_consistency") or "-" }}</li>
+        <li>Run grade: {{ (sec.reporter_evaluation or {}).get("run_grade") or "-" }}</li>
+        <li>Trade quality: {{ (sec.reporter_evaluation or {}).get("trade_quality") or "-" }}</li>
+        <li>Key finding: {{ (sec.reporter_evaluation or {}).get("key_finding") or "-" }}</li>
+      </ul>
+    </div>
+
+    <div class="brief-section">
+      <h3>J. Operator Conclusion</h3>
+      <ul class="summary-list summary-list--tight">
+        <li>Current action: {{ (sec.operator_conclusion or {}).get("current_action") or "-" }}</li>
+      </ul>
+      {% if (sec.operator_conclusion or {}).get("watch_next") %}
+      <p class="meta-line">Watch next</p>
+      <ul class="summary-list summary-list--tight">
+        {% for line in (sec.operator_conclusion or {}).get("watch_next") %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      {% if (sec.operator_conclusion or {}).get("thesis_invalidation") %}
+      <p class="meta-line">Thesis invalidation</p>
+      <ul class="summary-list summary-list--tight">
+        {% for line in (sec.operator_conclusion or {}).get("thesis_invalidation") %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+
+    <details class="details-block">
+      <summary>Agent snapshots</summary>
+      <ul class="summary-list summary-list--tight">
+        <li><strong>지휘자</strong>: {{ brief.commander_summary }}</li>
+        <li><strong>전략가</strong>: {{ brief.strategist_summary }}</li>
+        <li><strong>스캐너</strong>: {{ brief.scanner_summary }}</li>
+        <li><strong>모니터</strong>: {{ brief.monitor_summary }}</li>
+        <li><strong>감독관</strong>: {{ brief.supervisor_summary }}</li>
+        <li><strong>수행자</strong>: {{ brief.executor_summary }}</li>
+        <li><strong>리포터</strong>: {{ brief.reporter_summary }}</li>
+      </ul>
+      {% if brief.operator_takeaways %}
+      <p class="meta-line">Operator takeaways</p>
+      <ul class="summary-list summary-list--tight">
+        {% for line in brief.operator_takeaways %}
+        <li>{{ line }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </details>
   </article>
   <article class="card">
     <h2>Reporter</h2>
-    <p class="meta-line">found={{ detail.reporter.found }} grade={{ detail.reporter.ai_run_grade or "-" }}</p>
+    <p class="meta-line">status={{ (sec.reporter_evaluation or {}).get("status") or "-" }} grade={{ detail.reporter.ai_run_grade or "-" }}</p>
     <p>
-      {% if detail.reporter.found %}
-      {{ detail.reporter.ai_summary or "같은 날짜 reporter 요약이 비어 있습니다." }}
-      {% else %}
-      {{ detail.reporter.reason or "same_day_report_missing" }}: 같은 날짜 reporter 분석과 아직 연결되지 않았습니다.
-      {% endif %}
+      {{ (sec.reporter_evaluation or {}).get("reason") or "same-day reporter linkage status is unavailable." }}
     </p>
+    <ul class="summary-list summary-list--tight">
+      <li>Strategy alignment: {{ (sec.reporter_evaluation or {}).get("strategy_alignment") or "-" }}</li>
+      <li>Execution quality: {{ (sec.reporter_evaluation or {}).get("execution_quality") or "-" }}</li>
+      <li>Monitor consistency: {{ (sec.reporter_evaluation or {}).get("monitor_consistency") or "-" }}</li>
+      <li>Trade quality: {{ (sec.reporter_evaluation or {}).get("trade_quality") or "-" }}</li>
+    </ul>
+    <p>{{ detail.reporter.ai_summary or (sec.reporter_evaluation or {}).get("key_finding") or "No reporter summary text available yet." }}</p>
     {% if detail.reporter.chain %}
-    <h3>Reporter Chain</h3>
-    <pre class="code">{{ detail.reporter.chain | tojson(indent=2) }}</pre>
+    <details class="details-block">
+      <summary>Reporter Chain</summary>
+      <pre class="code">{{ detail.reporter.chain | tojson(indent=2) }}</pre>
+    </details>
     {% endif %}
-    <p class="path">{{ detail.reporter.report_path or "-" }}</p>
+    <details class="details-block">
+      <summary>Reporter Source</summary>
+      <p class="path">{{ detail.reporter.report_path or "-" }}</p>
+    </details>
   </article>
   <article class="card">
     <h2>Commander</h2>

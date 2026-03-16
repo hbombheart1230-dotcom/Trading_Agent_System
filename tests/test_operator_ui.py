@@ -265,6 +265,18 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "운영자 브리프" in detail.text
     assert "stepfun/step-3.5-flash:free" in detail.text
     assert "전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다." in detail.text
+    assert "A. Executive Decision" in detail.text
+    assert "B. Why This Symbol Was Chosen" in detail.text
+    assert "Universe scanned: 5" in detail.text
+    assert "Selected rank: #1" in detail.text
+    assert "C. Market / News / Global Sentiment Context" in detail.text
+    assert "Global sentiment: -0.20" in detail.text
+    assert "VIX: 24.50" in detail.text
+    assert "E. Filters and Gates" in detail.text
+    assert "F. Scanner Ranking Explanation" in detail.text
+    assert "I. Reporter Evaluation" in detail.text
+    assert "Reporter status: linked" in detail.text
+    assert "J. Operator Conclusion" in detail.text
     assert "grade=A-" in detail.text
     assert "strategist prompt" in detail.text
     assert "EXECUTED_OK" in detail.text
@@ -325,3 +337,18 @@ def test_operator_ui_overview_does_not_fallback_to_stale_reporter_for_latest_day
     assert "Reporter summary" not in overview.text
     assert "Same-day reporter analysis has not been generated yet." in overview.text
     assert "live event log fallback active for 2026-03-16" in overview.text
+
+
+def test_operator_ui_run_detail_explains_missing_reporter_linkage(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
+    cfg = _make_config(tmp_path)
+    (cfg.reports_root / "dev" / "analysis" / "reporter_analysis" / "reporter_analysis_2026-03-16.json").unlink()
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    detail = client.get("/runs/run-1")
+    assert detail.status_code == 200
+    assert "Reporter status: pending" in detail.text
+    assert "same-day reporter analysis file is not generated yet" in detail.text
+    assert "found=False" not in detail.text
