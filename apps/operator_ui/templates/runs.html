@@ -2,9 +2,9 @@
 {% block content %}
 <section class="hero">
   <div>
-    <div class="eyebrow">Execution trace index</div>
+    <div class="eyebrow">Operations run index</div>
     <h1>Recent Runs</h1>
-    <p class="lede">Latest commander-routed cycles with strategist, scanner, monitor, supervisor, and executor summaries.</p>
+    <p class="lede">Latest cycles with strategy, scan, monitor, guard, execution, and AI report linkage.</p>
   </div>
   <div class="hero-meta">
     <div class="metric">
@@ -23,6 +23,9 @@
         <th>phase</th>
         <th>playbook</th>
         <th>top stock</th>
+        <th>story type</th>
+        <th>execution label</th>
+        <th>AI report</th>
         <th>macro stress</th>
         <th>feature coverage</th>
         <th>monitor</th>
@@ -34,10 +37,37 @@
       {% for row in runs %}
       <tr>
         <td>{{ row.ts }}</td>
-        <td><a href="/runs/{{ row.run_id }}">{{ row.run_id }}</a></td>
+        <td>
+          <a href="/runs/{{ row.run_id }}">{{ row.run_id_short or row.run_id }}</a>
+          {% if row.run_id_short and row.run_id_short != row.run_id %}
+          <div class="meta-line">full: {{ row.run_id }}</div>
+          {% endif %}
+        </td>
         <td>{{ row.phase or row.mode }}</td>
         <td>{{ row.strategist_playbook or "-" }}</td>
         <td>{{ row.scanner_top_stock or "-" }}</td>
+        <td>
+          {% if row.story_type_label and row.story_type_label != "No linked report" %}
+          <span class="{{ row.story_type_badge_class or 'status-badge' }}">{{ row.story_type_label }}</span>
+          {% else %}
+          <span class="chip">No linked report</span>
+          {% endif %}
+        </td>
+        <td>{{ row.execution_mode_label or "-" }}</td>
+        <td>
+          {% if row.report_available %}
+          <div class="chip-list">
+            <span class="chip chip--soft">AI report available</span>
+            {% if row.report_link %}
+            <a class="link-action" href="{{ row.report_link }}">Open report</a>
+            {% endif %}
+          </div>
+          <p class="subtle-meta clamp-2">{{ row.report_summary }}</p>
+          {% else %}
+          <span class="chip">No report</span>
+          <p class="subtle-meta">No linked trade report for this run.</p>
+          {% endif %}
+        </td>
         <td>
           {% if row.macro_stress_active %}
           active {{ row.macro_stress_flags | join(", ") }}

@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">Per-trade report</div>
+    <h1>{{ report.action or "-" }} {{ report.symbol or "-" }}</h1>
+    <p class="lede">{{ report.report_summary or (report.executive_summary or {}).get("summary") or "Per-trade report detail" }}</p>
+  </div>
+  <div class="hero-meta">
+    <div class="metric">
+      <span class="metric-label">Story</span>
+      <span class="metric-value">{{ report.story_id or "-" }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Run</span>
+      <span class="metric-value">{{ report.run_id or "-" }}</span>
+    </div>
+  </div>
+</section>
+
+<section class="grid grid-2">
+  <article class="card card--attention">
+    <h2>Executive Summary</h2>
+    <div class="chip-list">
+      <span class="{{ report.story_type_badge_class or 'status-badge' }}">{{ report.story_type_label or "-" }}</span>
+      <span class="chip">{{ report.execution_mode_label or "-" }}</span>
+      <span class="chip chip--soft">AI report available</span>
+    </div>
+    <p class="operator-sentence">{{ (report.executive_summary or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      <li>Action: {{ report.action or "-" }}</li>
+      <li>Symbol: {{ report.symbol or "-" }}</li>
+      <li>Reporter status: {{ (report.reporter_evaluation or {}).get("status") or "-" }}</li>
+      <li>Reporter grade: {{ (report.reporter_evaluation or {}).get("grade") or "-" }}</li>
+    </ul>
+    {% if report.run_link %}
+    <p><a class="link-action" href="{{ report.run_link }}">Open linked run detail</a></p>
+    {% endif %}
+  </article>
+
+  <article class="card card--muted">
+    <h2>Report Generation</h2>
+    <ul class="summary-list summary-list--tight">
+      <li>Status: {{ (report.generation or {}).get("status") or "-" }}</li>
+      <li>Mode: {{ (report.generation or {}).get("mode") or "-" }}</li>
+      <li>Model: {{ (report.generation or {}).get("model") or "-" }}</li>
+      {% if (report.generation or {}).get("reason") %}
+      <li>Reason: {{ (report.generation or {}).get("reason") }}</li>
+      {% endif %}
+    </ul>
+  </article>
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <h2>Market Context</h2>
+    <p>{{ (report.market_context or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      {% for line in (report.market_context or {}).get("bullets") or [] %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Why This Symbol</h2>
+    <p>{{ (report.why_this_symbol or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      {% for line in (report.why_this_symbol or {}).get("bullets") or [] %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Scanner Logic and Filters</h2>
+    <p>{{ (report.scanner_logic_and_filters or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      {% for line in (report.scanner_logic_and_filters or {}).get("bullets") or [] %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Monitor / Trigger Reasoning</h2>
+    <p>{{ (report.monitor_trigger_reasoning or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      {% for line in (report.monitor_trigger_reasoning or {}).get("bullets") or [] %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Guard / Approval Result</h2>
+    <p>{{ (report.guard_approval_result or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      {% for line in (report.guard_approval_result or {}).get("bullets") or [] %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Execution Result</h2>
+    <p>{{ (report.execution_result or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      {% for line in (report.execution_result or {}).get("bullets") or [] %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Reporter Evaluation</h2>
+    <p>{{ (report.reporter_evaluation or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      <li>Status: {{ (report.reporter_evaluation or {}).get("status") or "-" }}</li>
+      <li>Grade: {{ (report.reporter_evaluation or {}).get("grade") or "-" }}</li>
+      {% for line in (report.reporter_evaluation or {}).get("bullets") or [] %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Errors / Weaknesses / Improvement Points</h2>
+    <p>{{ (report.errors_weaknesses_improvement_points or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      {% for line in (report.errors_weaknesses_improvement_points or {}).get("bullets") or [] %}
+      <li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+</section>
+
+<section class="grid grid-2">
+  <article class="card">
+    <h2>Timeline</h2>
+    {% if report.timeline %}
+    <div class="timeline timeline--compact">
+      {% for row in report.timeline %}
+      <div class="timeline-row">
+        <div class="timeline-meta">{{ row.ts or "-" }} / {{ row.step or row.label or "step" }}</div>
+        <p>{{ row.summary or row.detail or "-" }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p>No timeline entries were captured.</p>
+    {% endif %}
+  </article>
+
+  <article class="card">
+    <h2>Final Operator Conclusion</h2>
+    <p>{{ (report.final_operator_conclusion or {}).get("summary") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      <li>Current action: {{ (report.final_operator_conclusion or {}).get("current_action") or "-" }}</li>
+      {% for line in (report.final_operator_conclusion or {}).get("watch_next") or [] %}
+      <li>Watch next: {{ line }}</li>
+      {% endfor %}
+      {% for line in (report.final_operator_conclusion or {}).get("thesis_invalidation") or [] %}
+      <li>Thesis invalidation: {{ line }}</li>
+      {% endfor %}
+    </ul>
+  </article>
+</section>
+
+<section class="card card--muted">
+  <details class="details-block">
+    <summary>Raw report JSON (evidence)</summary>
+    <pre class="code tall">{{ report.raw_report | tojson(indent=2) }}</pre>
+  </details>
+</section>
+{% endblock %}

@@ -213,6 +213,128 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
             }
         ],
     )
+    story_id = "20260316_005930_buy_run-1"
+    trade_root = reports / "trades" / "2026" / "03" / story_id
+    _write_json(
+        trade_root / "aggregated_execution_bundle.json",
+        {
+            "schema_version": "live_execution_bundle.v2",
+            "run_id": "run-1",
+            "story_id": story_id,
+            "ts": "2026-03-16T00:00:10+00:00",
+            "execution": {"run_id": "run-1", "action": "BUY", "symbol": "005930", "qty": 1, "status": "EXECUTED_OK", "ord_no": "A0001"},
+            "story_contract": {
+                "story_available": True,
+                "story_type": "simulation",
+                "execution_mode_label": "simulation (mock broker)",
+                "story_anchor": "BUY 005930 x1 | run run-1",
+                "warnings": [],
+            },
+            "reporter_status_human": {
+                "status": "linked",
+                "grade": "A-",
+                "summary": "A same-day reporter analysis was linked to this run.",
+            },
+            "operator_conclusion_human": {
+                "summary": "Current action is BUY with approved simulation execution.",
+                "current_action": "BUY",
+                "watch_next": ["Watch volatility expansion"],
+                "thesis_invalidation": ["Negative macro shift"],
+            },
+            "market_context_human": {
+                "summary": "Market regime was neutral with defensive playbook.",
+            },
+            "scanner_reason_human": {
+                "summary": "Scanner selected 005930 as rank #1 out of 5 candidates.",
+            },
+            "filters_human": {"summary": "Scanner and guard checks passed 6 of 8 visible gates."},
+            "monitor_reason_human": {"summary": "BUY was triggered because no_position entry condition passed."},
+            "guard_reason_human": {"summary": "Supervisor approved the order."},
+            "execution_outcome_human": {"summary": "BUY order was recorded in simulation mode."},
+            "timeline": [
+                {"step": "strategist_frame", "summary": "Defensive frame with elevated VIX input."},
+                {"step": "scanner_ranking", "summary": "005930 ranked #1."},
+            ],
+        },
+    )
+    _write_json(
+        trade_root / "trade_story_input.json",
+        {
+            "schema_version": "trade_story_input.v1",
+            "story_id": story_id,
+            "run_id": "run-1",
+            "symbol": "005930",
+            "action": "BUY",
+            "story_type": "simulation",
+            "execution_mode_label": "simulation (mock broker)",
+        },
+    )
+    _write_json(
+        trade_root / "trade_report.json",
+        {
+            "schema_version": "trade_report.v1",
+            "story_id": story_id,
+            "run_id": "run-1",
+            "symbol": "005930",
+            "action": "BUY",
+            "story_type": "simulation",
+            "execution_mode_label": "simulation (mock broker)",
+            "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free", "reason": ""},
+            "executive_summary": {
+                "headline": "BUY 005930",
+                "action": "BUY",
+                "symbol": "005930",
+                "confidence": "medium",
+                "summary": "Scanner rank #1 with robust chart coverage and approved execution.",
+            },
+            "market_context": {
+                "summary": "Market regime was neutral with elevated volatility and defensive posture.",
+                "bullets": ["Regime: neutral", "Global sentiment: -0.20", "VIX: 24.50"],
+            },
+            "why_this_symbol": {
+                "summary": "Selected as top ranked symbol due to value/volume blend.",
+                "bullets": ["Universe scanned: 5", "Selected rank: #1", "Runner-up symbols had weaker coverage"],
+            },
+            "scanner_logic_and_filters": {
+                "summary": "Primary filters passed and chart completeness remained strong.",
+                "bullets": ["liquidity filter: PASS", "turnover filter: PASS", "chart completeness filter: PASS (12/12)"],
+            },
+            "monitor_trigger_reasoning": {
+                "summary": "Monitor allowed BUY because no position was open.",
+                "bullets": ["Posture: BUY", "Trigger: no_position", "Exit trigger: no"],
+            },
+            "guard_approval_result": {
+                "summary": "Supervisor approved execution in manual mode.",
+                "bullets": ["Supervisor allow: yes", "Guard reason: Allowed"],
+            },
+            "execution_result": {
+                "summary": "BUY order was recorded successfully in simulation mode.",
+                "bullets": ["Outcome: recorded", "Quantity: 1", "Order status: EXECUTED_OK"],
+            },
+            "reporter_evaluation": {
+                "summary": "Reporter linked and graded the run A-.",
+                "status": "linked",
+                "grade": "A-",
+                "bullets": ["Strategy alignment: normal", "Execution quality: good"],
+            },
+            "errors_weaknesses_improvement_points": {
+                "summary": "No critical issues, but continue monitoring volatility.",
+                "bullets": ["Elevated macro volatility remains"],
+            },
+            "timeline": [
+                {"step": "strategist_frame", "summary": "Defensive frame with global sentiment input."},
+                {"step": "scanner_ranking", "summary": "005930 ranked #1 out of 5."},
+                {"step": "monitor_signal", "summary": "Entry condition passed for no_position."},
+            ],
+            "final_operator_conclusion": {
+                "summary": "Maintain position monitoring under defensive volatility assumptions.",
+                "current_action": "BUY",
+                "watch_next": ["Volatility expansion", "Theme drift"],
+                "thesis_invalidation": ["Macro regime breakdown"],
+            },
+        },
+    )
+    (trade_root / "trade_report.md").write_text("# Trade report\n", encoding="utf-8")
     return OperatorUIConfig(
         repo_root=tmp_path,
         reports_root=reports,
@@ -257,6 +379,9 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert runs.status_code == 200
     assert "run-1" in runs.text
     assert "005930" in runs.text
+    assert "AI report available" in runs.text
+    assert "Simulation trade report" in runs.text
+    assert "Open report" in runs.text
     assert "active elevated_vix" in runs.text
     assert "strong (100%)" in runs.text
 
@@ -288,6 +413,9 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "trade_count=1" in detail.text
     assert "Recent Same-Symbol Run Chain" in detail.text
     assert "run_count=1" in detail.text
+    assert "AI Trade Report" in detail.text
+    assert "Open full report" in detail.text
+    assert "AI Report Linkage" in detail.text
 
     health = client.get("/healthz")
     assert health.status_code == 200
@@ -352,3 +480,48 @@ def test_operator_ui_run_detail_explains_missing_reporter_linkage(tmp_path: Path
     assert "Reporter status: pending" in detail.text
     assert "same-day reporter analysis file is not generated yet" in detail.text
     assert "found=False" not in detail.text
+
+
+def test_operator_ui_trade_report_detail_page(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
+    app = create_app(_make_config(tmp_path))
+    client = TestClient(app)
+
+    page = client.get("/reports/trade/20260316_005930_buy_run-1")
+    assert page.status_code == 200
+    assert "Per-trade report" in page.text
+    assert "Executive Summary" in page.text
+    assert "Market Context" in page.text
+    assert "Why This Symbol" in page.text
+    assert "Scanner Logic and Filters" in page.text
+    assert "Monitor / Trigger Reasoning" in page.text
+    assert "Guard / Approval Result" in page.text
+    assert "Execution Result" in page.text
+    assert "Reporter Evaluation" in page.text
+    assert "Errors / Weaknesses / Improvement Points" in page.text
+    assert "Final Operator Conclusion" in page.text
+    assert "Simulation trade report" in page.text
+
+
+def test_operator_ui_run_detail_explains_missing_trade_report(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
+    cfg = _make_config(tmp_path)
+    trade_root = cfg.reports_root / "trades"
+    if trade_root.exists():
+        for path in sorted(trade_root.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                path.rmdir()
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    runs = client.get("/runs")
+    assert runs.status_code == 200
+    assert "No report" in runs.text
+
+    detail = client.get("/runs/run-1")
+    assert detail.status_code == 200
+    assert "No per-trade AI report is available for this run because no executed trade lifecycle was created." in detail.text

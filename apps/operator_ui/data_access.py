@@ -415,6 +415,150 @@ def _normalize_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _trim_text(value: Any, *, max_len: int = 220) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max(0, max_len - 3)] + "..."
+
+
+def _clean_str_list(values: Any, *, limit: int = 8, max_len: int = 220) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    out: List[str] = []
+    for row in values:
+        text = _trim_text(row, max_len=max_len)
+        if text:
+            out.append(text)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def _story_type_label(story_type: Any) -> str:
+    raw = str(story_type or "").strip().lower()
+    mapping = {
+        "live_trade": "Live trade report",
+        "simulation": "Simulation trade report",
+        "failed_execution": "Failed execution report",
+        "decision_only": "Decision-only summary",
+    }
+    return mapping.get(raw, "Unknown report type")
+
+
+def _story_type_badge_class(story_type: Any) -> str:
+    raw = str(story_type or "").strip().lower()
+    if raw == "live_trade":
+        return "status-badge status-badge--ok"
+    if raw == "failed_execution":
+        return "status-badge status-badge--critical"
+    if raw == "simulation":
+        return "status-badge status-badge--warn"
+    if raw == "decision_only":
+        return "status-badge status-badge--warn"
+    return "status-badge"
+
+
+def _short_run_id(run_id: Any) -> str:
+    text = str(run_id or "").strip()
+    if len(text) <= 12:
+        return text
+    return text[:8] + "..."
+
+
+def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
+    root = config.reports_root / "trades"
+    if not root.exists():
+        return {"by_run_id": {}, "by_story_id": {}}
+
+    by_run_id: Dict[str, Dict[str, Any]] = {}
+    by_story_id: Dict[str, Dict[str, Any]] = {}
+    for bundle_path in sorted(root.glob("*/*/*/aggregated_execution_bundle.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        bundle = _read_json(bundle_path)
+        if not bundle:
+            continue
+
+        story_id = str(bundle.get("story_id") or bundle_path.parent.name).strip()
+        run_id = str(bundle.get("run_id") or "").strip()
+        execution = bundle.get("execution") if isinstance(bundle.get("execution"), dict) else {}
+        story_contract = bundle.get("story_contract") if isinstance(bundle.get("story_contract"), dict) else {}
+        reporter_status_human = bundle.get("reporter_status_human") if isinstance(bundle.get("reporter_status_human"), dict) else {}
+        operator_conclusion_human = bundle.get("operator_conclusion_human") if isinstance(bundle.get("operator_conclusion_human"), dict) else {}
+        execution_outcome_human = bundle.get("execution_outcome_human") if isinstance(bundle.get("execution_outcome_human"), dict) else {}
+
+        report_json_path = bundle_path.parent / "trade_report.json"
+        report_md_path = bundle_path.parent / "trade_report.md"
+        story_input_path = bundle_path.parent / "trade_story_input.json"
+        report = _read_json(report_json_path)
+        executive = report.get("executive_summary") if isinstance(report.get("executive_summary"), dict) else {}
+        reporter_eval = report.get("reporter_evaluation") if isinstance(report.get("reporter_evaluation"), dict) else {}
+        final_conclusion = report.get("final_operator_conclusion") if isinstance(report.get("final_operator_conclusion"), dict) else {}
+
+        story_type = str(story_contract.get("story_type") or report.get("story_type") or "").strip().lower()
+        execution_mode_label = str(story_contract.get("execution_mode_label") or report.get("execution_mode_label") or "").strip()
+        report_summary = (
+            _trim_text(executive.get("summary"), max_len=260)
+            or _trim_text(final_conclusion.get("summary"), max_len=260)
+            or _trim_text(operator_conclusion_human.get("summary"), max_len=260)
+            or _trim_text(execution_outcome_human.get("summary"), max_len=260)
+        )
+        reporter_summary = (
+            _trim_text(reporter_eval.get("summary"), max_len=220)
+            or _trim_text(reporter_status_human.get("summary"), max_len=220)
+            or "Reporter linkage summary is not available yet."
+        )
+
+        ts_epoch = _to_epoch(bundle.get("ts"))
+        if ts_epoch is None:
+            ts_epoch = int(bundle_path.stat().st_mtime)
+        symbol = normalize_symbol(
+            execution.get("symbol") or report.get("symbol") or "",
+            allow_test_symbols=True,
+        )
+        action = str(execution.get("action") or report.get("action") or "").upper()
+        report_available = bool(report_json_path.exists() or report_md_path.exists())
+        record = {
+            "story_id": story_id,
+            "run_id": run_id,
+            "run_id_short": _short_run_id(run_id),
+            "symbol": symbol,
+            "action": action,
+            "story_type": story_type,
+            "story_type_label": _story_type_label(story_type),
+            "story_type_badge_class": _story_type_badge_class(story_type),
+            "execution_mode_label": execution_mode_label or "not captured",
+            "report_available": report_available,
+            "report_status_label": "AI report available" if report_available else "No report",
+            "report_summary": report_summary or "Per-trade report summary was not generated yet.",
+            "reporter_status_human": reporter_summary,
+            "report_link": f"/reports/trade/{story_id}" if report_available and story_id else "",
+            "trade_report_json_path": str(report_json_path) if report_json_path.exists() else "",
+            "trade_report_md_path": str(report_md_path) if report_md_path.exists() else "",
+            "trade_story_input_path": str(story_input_path) if story_input_path.exists() else "",
+            "aggregated_bundle_path": str(bundle_path),
+            "ts_epoch": ts_epoch,
+        }
+
+        if story_id:
+            by_story_id[story_id] = record
+        if run_id:
+            current = by_run_id.get(run_id)
+            if (not current) or int(record.get("ts_epoch") or 0) >= int(current.get("ts_epoch") or 0):
+                by_run_id[run_id] = record
+
+    return {"by_run_id": by_run_id, "by_story_id": by_story_id}
+
+
+def _trade_report_meta_for_run(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
+    index = _trade_report_index(config)
+    return dict((index.get("by_run_id") or {}).get(str(run_id or "").strip()) or {})
+
+
+def _trade_report_meta_for_story(config: OperatorUIConfig, story_id: str) -> Dict[str, Any]:
+    index = _trade_report_index(config)
+    return dict((index.get("by_story_id") or {}).get(str(story_id or "").strip()) or {})
+
+
 @dataclass(frozen=True)
 class OperatorUIConfig:
     repo_root: Path
@@ -791,6 +935,8 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[
     route_rows = sorted(route_rows, key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)[: max(1, int(limit))]
     target_run_ids = {str(row.get("run_id") or "").strip() for row in route_rows if str(row.get("run_id") or "").strip()}
     grouped: Dict[str, List[Dict[str, Any]]] = {rid: [] for rid in target_run_ids}
+    report_index = _trade_report_index(config)
+    reports_by_run = report_index.get("by_run_id") or {}
     for row in rows:
         rid = str(row.get("run_id") or "").strip()
         if rid in grouped:
@@ -847,9 +993,11 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[
         feature_snapshot = selected_candidate.get("feature_snapshot") if isinstance(selected_candidate.get("feature_snapshot"), dict) else {}
         feature_coverage = _feature_coverage(feature_snapshot)
         macro_stress_overlay = strategic_frame.get("macro_stress_overlay") if isinstance(strategic_frame.get("macro_stress_overlay"), dict) else {}
+        report_meta = reports_by_run.get(rid) if isinstance(reports_by_run.get(rid), dict) else {}
         out.append(
             {
                 "run_id": rid,
+                "run_id_short": _short_run_id(rid),
                 "ts": _iso_to_display(route.get("ts")),
                 "mode": str((route.get("payload") or {}).get("mode") or ""),
                 "phase": str((route.get("payload") or {}).get("phase") or ""),
@@ -868,6 +1016,16 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[
                 "macro_stress_flags": list(macro_stress_overlay.get("stress_flags") or [])[:3],
                 "feature_coverage_quality": str(feature_coverage.get("quality") or "missing"),
                 "feature_coverage_ratio": _safe_float(feature_coverage.get("coverage_ratio"), 0.0),
+                "report_available": bool(report_meta.get("report_available")),
+                "report_status_label": str(report_meta.get("report_status_label") or "No report"),
+                "story_id": str(report_meta.get("story_id") or ""),
+                "story_type": str(report_meta.get("story_type") or ""),
+                "story_type_label": str(report_meta.get("story_type_label") or "No linked report"),
+                "story_type_badge_class": str(report_meta.get("story_type_badge_class") or "status-badge"),
+                "execution_mode_label": str(report_meta.get("execution_mode_label") or "-"),
+                "report_summary": str(report_meta.get("report_summary") or "No linked trade report for this run."),
+                "reporter_status_human": str(report_meta.get("reporter_status_human") or ""),
+                "report_link": str(report_meta.get("report_link") or ""),
             }
         )
     return out
@@ -910,6 +1068,114 @@ def _reporter_snippet_for_run(config: OperatorUIConfig, run_id: str, run_day: st
         "ai_summary": str(report.get("ai_summary") or ""),
         "ai_run_grade": str(report.get("ai_run_grade") or ""),
         "chain": chain,
+    }
+
+
+def _report_section(report: Dict[str, Any], key: str, fallback_summary: str = "") -> Dict[str, Any]:
+    section = report.get(key) if isinstance(report.get(key), dict) else {}
+    return {
+        "summary": _trim_text(section.get("summary"), max_len=1000) or _trim_text(fallback_summary, max_len=1000),
+        "bullets": _clean_str_list(section.get("bullets"), limit=12, max_len=280),
+        "status": _trim_text(section.get("status"), max_len=64),
+        "grade": _trim_text(section.get("grade"), max_len=32),
+    }
+
+
+def load_trade_report_detail(config: OperatorUIConfig, story_id: str) -> Dict[str, Any]:
+    meta = _trade_report_meta_for_story(config, story_id)
+    if not meta:
+        return {"found": False, "story_id": str(story_id or "")}
+
+    report_path = Path(str(meta.get("trade_report_json_path") or ""))
+    bundle_path = Path(str(meta.get("aggregated_bundle_path") or ""))
+    report = _read_json(report_path) if report_path.exists() else {}
+    bundle = _read_json(bundle_path) if bundle_path.exists() else {}
+    market_context_human = bundle.get("market_context_human") if isinstance(bundle.get("market_context_human"), dict) else {}
+    scanner_reason_human = bundle.get("scanner_reason_human") if isinstance(bundle.get("scanner_reason_human"), dict) else {}
+    filters_human = bundle.get("filters_human") if isinstance(bundle.get("filters_human"), dict) else {}
+    monitor_reason_human = bundle.get("monitor_reason_human") if isinstance(bundle.get("monitor_reason_human"), dict) else {}
+    guard_reason_human = bundle.get("guard_reason_human") if isinstance(bundle.get("guard_reason_human"), dict) else {}
+    execution_outcome_human = bundle.get("execution_outcome_human") if isinstance(bundle.get("execution_outcome_human"), dict) else {}
+    reporter_status_human = bundle.get("reporter_status_human") if isinstance(bundle.get("reporter_status_human"), dict) else {}
+    operator_conclusion_human = bundle.get("operator_conclusion_human") if isinstance(bundle.get("operator_conclusion_human"), dict) else {}
+
+    executive = _report_section(report, "executive_summary", operator_conclusion_human.get("summary") or execution_outcome_human.get("summary") or "")
+    market_context = _report_section(report, "market_context", market_context_human.get("summary") or "")
+    why_symbol = _report_section(report, "why_this_symbol", scanner_reason_human.get("summary") or "")
+    scanner_filters = _report_section(report, "scanner_logic_and_filters", filters_human.get("summary") or "")
+    monitor_reason = _report_section(report, "monitor_trigger_reasoning", monitor_reason_human.get("summary") or "")
+    guard_result = _report_section(report, "guard_approval_result", guard_reason_human.get("summary") or "")
+    execution_result = _report_section(report, "execution_result", execution_outcome_human.get("summary") or "")
+    reporter_eval = _report_section(report, "reporter_evaluation", reporter_status_human.get("summary") or "")
+    weak_points = _report_section(
+        report,
+        "errors_weaknesses_improvement_points",
+        "No explicit weaknesses were captured beyond standard warnings.",
+    )
+    final_conclusion = report.get("final_operator_conclusion") if isinstance(report.get("final_operator_conclusion"), dict) else {}
+    timeline = [
+        row
+        for row in list(report.get("timeline") or bundle.get("timeline") or [])
+        if isinstance(row, dict)
+    ][:12]
+    generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
+    action = _trim_text(report.get("action"), max_len=32) or _trim_text(meta.get("action"), max_len=32) or "WAIT"
+    symbol = normalize_symbol(
+        report.get("symbol") or meta.get("symbol") or "",
+        allow_test_symbols=True,
+    )
+    reporter_status = _trim_text(reporter_eval.get("status"), max_len=48) or _trim_text(reporter_status_human.get("status"), max_len=48) or "-"
+    reporter_grade = _trim_text(reporter_eval.get("grade"), max_len=24) or _trim_text(reporter_status_human.get("grade"), max_len=24) or "-"
+
+    return {
+        "found": True,
+        "story_id": str(meta.get("story_id") or story_id),
+        "run_id": str(meta.get("run_id") or ""),
+        "run_link": f"/runs/{meta.get('run_id')}" if str(meta.get("run_id") or "").strip() else "",
+        "symbol": symbol,
+        "action": action,
+        "story_type": str(meta.get("story_type") or report.get("story_type") or ""),
+        "story_type_label": str(meta.get("story_type_label") or _story_type_label(report.get("story_type"))),
+        "story_type_badge_class": str(meta.get("story_type_badge_class") or _story_type_badge_class(report.get("story_type"))),
+        "execution_mode_label": str(meta.get("execution_mode_label") or report.get("execution_mode_label") or "not captured"),
+        "report_available": bool(meta.get("report_available")),
+        "report_summary": str(meta.get("report_summary") or executive.get("summary") or ""),
+        "reporter_status_human": str(meta.get("reporter_status_human") or reporter_eval.get("summary") or ""),
+        "executive_summary": executive,
+        "market_context": market_context,
+        "why_this_symbol": why_symbol,
+        "scanner_logic_and_filters": scanner_filters,
+        "monitor_trigger_reasoning": monitor_reason,
+        "guard_approval_result": guard_result,
+        "execution_result": execution_result,
+        "reporter_evaluation": {
+            **reporter_eval,
+            "status": reporter_status,
+            "grade": reporter_grade,
+        },
+        "errors_weaknesses_improvement_points": weak_points,
+        "timeline": timeline,
+        "final_operator_conclusion": {
+            "summary": _trim_text(final_conclusion.get("summary"), max_len=1000) or _trim_text(operator_conclusion_human.get("summary"), max_len=1000),
+            "current_action": _trim_text(final_conclusion.get("current_action"), max_len=32) or _trim_text(action, max_len=32),
+            "watch_next": _clean_str_list(final_conclusion.get("watch_next"), limit=8, max_len=220)
+            or _clean_str_list(operator_conclusion_human.get("watch_next"), limit=8, max_len=220),
+            "thesis_invalidation": _clean_str_list(final_conclusion.get("thesis_invalidation"), limit=8, max_len=220)
+            or _clean_str_list(operator_conclusion_human.get("thesis_invalidation"), limit=8, max_len=220),
+        },
+        "generation": {
+            "status": _trim_text(generation.get("status"), max_len=48) or "not_captured",
+            "mode": _trim_text(generation.get("mode"), max_len=48) or "not_captured",
+            "model": _trim_text(generation.get("model"), max_len=120) or "not_captured",
+            "reason": _trim_text(generation.get("reason"), max_len=320),
+        },
+        "paths": {
+            "trade_report_json": str(meta.get("trade_report_json_path") or ""),
+            "trade_report_md": str(meta.get("trade_report_md_path") or ""),
+            "trade_story_input": str(meta.get("trade_story_input_path") or ""),
+            "aggregated_execution_bundle": str(meta.get("aggregated_bundle_path") or ""),
+        },
+        "raw_report": report if isinstance(report, dict) else {},
     }
 
 
@@ -1046,6 +1312,7 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     supervisor = detail.get("supervisor") if isinstance(detail.get("supervisor"), dict) else {}
     executor = detail.get("executor") if isinstance(detail.get("executor"), dict) else {}
     reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
 
     strategist_summary = strategist.get("summary") if isinstance(strategist.get("summary"), dict) else {}
     strategist_trace = strategist.get("decision_trace") if isinstance(strategist.get("decision_trace"), dict) else {}
@@ -1378,6 +1645,13 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         "negative macro/news regime shift",
     ]
 
+    report_available = bool(trade_report.get("report_available"))
+    report_story_type = str(trade_report.get("story_type_label") or trade_report.get("story_type") or "No linked report")
+    report_mode = str(trade_report.get("execution_mode_label") or "-")
+    report_summary = str(trade_report.get("report_summary") or "")
+    report_link = str(trade_report.get("report_link") or "")
+    report_status_text = "AI report available" if report_available else "No linked trade report for this run"
+
     macro_summary: List[str] = []
     if macro_moves.get("dxy_pct") is not None:
         macro_summary.append(f"DXY change {_format_percent(macro_moves.get('dxy_pct'), 2)}")
@@ -1458,6 +1732,13 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
             "run_grade": run_grade or "-",
             "trade_quality": trade_quality,
             "key_finding": key_finding,
+        },
+        "ai_trade_report": {
+            "availability": report_status_text,
+            "story_type": report_story_type,
+            "execution_mode_label": report_mode,
+            "summary": report_summary or "No per-trade AI report is linked to this run yet.",
+            "link": report_link,
         },
         "operator_conclusion": {
             "current_action": final_action,
@@ -1554,6 +1835,7 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
     monitor = detail.get("monitor") if isinstance(detail.get("monitor"), dict) else {}
     commander = detail.get("commander") if isinstance(detail.get("commander"), dict) else {}
     reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
     strategist_summary = strategist.get("summary") if isinstance(strategist.get("summary"), dict) else {}
     strategist_evidence = strategist.get("evidence") if isinstance(strategist.get("evidence"), dict) else {}
     raw_input = strategist_evidence.get("raw_input") if isinstance(strategist_evidence.get("raw_input"), dict) else {}
@@ -1619,6 +1901,13 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "ai_summary": reporter.get("ai_summary"),
             "ai_run_grade": reporter.get("ai_run_grade"),
             "found": reporter.get("found"),
+        },
+        "trade_report": {
+            "report_available": trade_report.get("report_available"),
+            "story_type": trade_report.get("story_type_label") or trade_report.get("story_type"),
+            "execution_mode_label": trade_report.get("execution_mode_label"),
+            "summary": trade_report.get("report_summary"),
+            "reporter_status_human": trade_report.get("reporter_status_human"),
         },
     }
 
@@ -1985,6 +2274,37 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             if str(trade.get("symbol") or "").strip() == primary_symbol
         ]
     same_day_symbol_run_chain = load_symbol_run_chain(config, run_day, primary_symbol, limit=3) if primary_symbol else []
+    trade_report_meta = _trade_report_meta_for_run(config, str(run_id or ""))
+    if trade_report_meta:
+        trade_report_card = {
+            "report_available": bool(trade_report_meta.get("report_available")),
+            "story_id": str(trade_report_meta.get("story_id") or ""),
+            "story_type": str(trade_report_meta.get("story_type") or ""),
+            "story_type_label": str(trade_report_meta.get("story_type_label") or ""),
+            "story_type_badge_class": str(trade_report_meta.get("story_type_badge_class") or "status-badge"),
+            "execution_mode_label": str(trade_report_meta.get("execution_mode_label") or "-"),
+            "report_summary": str(trade_report_meta.get("report_summary") or ""),
+            "reporter_status_human": str(trade_report_meta.get("reporter_status_human") or ""),
+            "report_link": str(trade_report_meta.get("report_link") or ""),
+            "symbol": str(trade_report_meta.get("symbol") or primary_symbol or ""),
+            "action": str(trade_report_meta.get("action") or normalized_execution.get("action") or ""),
+            "missing_reason": "",
+        }
+    else:
+        trade_report_card = {
+            "report_available": False,
+            "story_id": "",
+            "story_type": "",
+            "story_type_label": "No linked trade report",
+            "story_type_badge_class": "status-badge",
+            "execution_mode_label": "-",
+            "report_summary": "",
+            "reporter_status_human": "",
+            "report_link": "",
+            "symbol": primary_symbol or str(normalized_execution.get("symbol") or scanner_summary.get("top_stock") or ""),
+            "action": str(normalized_execution.get("action") or ""),
+            "missing_reason": "No per-trade AI report is available for this run because no executed trade lifecycle was created.",
+        }
 
     detail = {
         "found": True,
@@ -2037,6 +2357,7 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "run_count": len(same_day_symbol_run_chain),
             "runs": same_day_symbol_run_chain,
         },
+        "trade_report": trade_report_card,
         "reporter": _reporter_snippet_for_run(config, str(run_id or ""), run_day),
         "raw_event_count": len(all_rows),
         "stage_counts": _count_stages(all_rows),

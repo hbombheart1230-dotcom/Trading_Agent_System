@@ -249,6 +249,22 @@ td a {
   font-weight: 700;
 }
 
+.link-action {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 700;
+  border: 1px solid rgba(15, 109, 104, 0.28);
+  border-radius: 999px;
+  padding: 6px 10px;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(15, 109, 104, 0.08);
+}
+
+.link-action:hover {
+  background: rgba(15, 109, 104, 0.15);
+}
+
 .timeline {
   display: grid;
   gap: 12px;
@@ -596,6 +612,10 @@ td a {
   cursor: pointer;
   color: var(--muted);
   font-size: 12px;
+}
+
+.report-summary-card {
+  margin-bottom: 16px;
 }
 
 .details-text {

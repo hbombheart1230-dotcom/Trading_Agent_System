@@ -8,7 +8,14 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .data_access import OperatorUIConfig, load_health, load_overview, load_recent_runs, load_run_detail
+from .data_access import (
+    OperatorUIConfig,
+    load_health,
+    load_overview,
+    load_recent_runs,
+    load_run_detail,
+    load_trade_report_detail,
+)
 
 
 def create_app(config: Optional[OperatorUIConfig] = None) -> FastAPI:
@@ -63,6 +70,21 @@ def create_app(config: Optional[OperatorUIConfig] = None) -> FastAPI:
                 "page_title": f"Run {run_id}",
                 "section": "runs",
                 "detail": detail,
+            },
+        )
+
+    @app.get("/reports/trade/{story_id}", response_class=HTMLResponse)
+    def trade_report_detail(request: Request, story_id: str) -> HTMLResponse:
+        report = load_trade_report_detail(cfg, story_id)
+        if not report.get("found"):
+            raise HTTPException(status_code=404, detail=f"trade report not found: {story_id}")
+        return templates.TemplateResponse(
+            name="trade_report_detail.html",
+            request=request,
+            context={
+                "page_title": f"Trade Report {story_id}",
+                "section": "runs",
+                "report": report,
             },
         )
 

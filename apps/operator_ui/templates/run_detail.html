@@ -19,6 +19,28 @@
   </div>
 </section>
 
+{% set trade_report = detail.trade_report or {} %}
+<section class="card card--attention report-summary-card">
+  <h2>AI Trade Report</h2>
+  {% if trade_report.report_available %}
+  <div class="chip-list">
+    <span class="chip chip--soft">AI report available</span>
+    <span class="{{ trade_report.story_type_badge_class or 'status-badge' }}">{{ trade_report.story_type_label or "-" }}</span>
+    <span class="chip">{{ trade_report.execution_mode_label or "-" }}</span>
+  </div>
+  <p class="operator-sentence clamp-3">{{ trade_report.report_summary or "A linked per-trade report exists for this run." }}</p>
+  <ul class="summary-list summary-list--tight">
+    <li>Action / symbol: <strong>{{ trade_report.action or "-" }} {{ trade_report.symbol or "-" }}</strong></li>
+    <li>Reporter linkage: {{ trade_report.reporter_status_human or "-" }}</li>
+  </ul>
+  {% if trade_report.report_link %}
+  <p><a class="link-action" href="{{ trade_report.report_link }}">Open full report</a></p>
+  {% endif %}
+  {% else %}
+  <p class="operator-sentence">{{ trade_report.missing_reason or "No per-trade AI report is available for this run because no executed trade lifecycle was created." }}</p>
+  {% endif %}
+</section>
+
 <section class="grid grid-2">
   {% set brief = detail.operator_brief or {} %}
   {% set sec = brief.sections or {} %}
@@ -196,6 +218,19 @@
     </div>
 
     <div class="brief-section">
+      <h3>AI Report Linkage</h3>
+      <ul class="summary-list summary-list--tight">
+        <li>Availability: {{ (sec.ai_trade_report or {}).get("availability") or "-" }}</li>
+        <li>Story type: {{ (sec.ai_trade_report or {}).get("story_type") or "-" }}</li>
+        <li>Execution label: {{ (sec.ai_trade_report or {}).get("execution_mode_label") or "-" }}</li>
+        <li>Summary: {{ (sec.ai_trade_report or {}).get("summary") or "-" }}</li>
+      </ul>
+      {% if (sec.ai_trade_report or {}).get("link") %}
+      <p><a class="link-action" href="{{ (sec.ai_trade_report or {}).get("link") }}">Open full AI report</a></p>
+      {% endif %}
+    </div>
+
+    <div class="brief-section">
       <h3>J. Operator Conclusion</h3>
       <ul class="summary-list summary-list--tight">
         <li>Current action: {{ (sec.operator_conclusion or {}).get("current_action") or "-" }}</li>
@@ -221,13 +256,13 @@
     <details class="details-block">
       <summary>Agent snapshots</summary>
       <ul class="summary-list summary-list--tight">
-        <li><strong>지휘자</strong>: {{ brief.commander_summary }}</li>
-        <li><strong>전략가</strong>: {{ brief.strategist_summary }}</li>
-        <li><strong>스캐너</strong>: {{ brief.scanner_summary }}</li>
-        <li><strong>모니터</strong>: {{ brief.monitor_summary }}</li>
-        <li><strong>감독관</strong>: {{ brief.supervisor_summary }}</li>
-        <li><strong>수행자</strong>: {{ brief.executor_summary }}</li>
-        <li><strong>리포터</strong>: {{ brief.reporter_summary }}</li>
+        <li><strong>Commander</strong>: {{ brief.commander_summary }}</li>
+        <li><strong>Strategist</strong>: {{ brief.strategist_summary }}</li>
+        <li><strong>Scanner</strong>: {{ brief.scanner_summary }}</li>
+        <li><strong>Monitor</strong>: {{ brief.monitor_summary }}</li>
+        <li><strong>Supervisor</strong>: {{ brief.supervisor_summary }}</li>
+        <li><strong>Executor</strong>: {{ brief.executor_summary }}</li>
+        <li><strong>Reporter</strong>: {{ brief.reporter_summary }}</li>
       </ul>
       {% if brief.operator_takeaways %}
       <p class="meta-line">Operator takeaways</p>
@@ -356,3 +391,4 @@
   </article>
 </section>
 {% endblock %}
+
