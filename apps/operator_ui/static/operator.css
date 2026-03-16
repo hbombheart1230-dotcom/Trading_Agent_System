@@ -265,6 +265,15 @@ td a {
   gap: 18px;
 }
 
+.section-label {
+  margin: 4px 2px -6px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
 .hero--overview {
   margin-bottom: 0;
 }
@@ -361,6 +370,14 @@ td a {
 
 .section-attention .card {
   box-shadow: 0 18px 40px rgba(27, 35, 49, 0.1);
+}
+
+.section-activity .card {
+  box-shadow: 0 14px 34px rgba(27, 35, 49, 0.09);
+}
+
+.section-interpretation .card {
+  box-shadow: 0 12px 30px rgba(27, 35, 49, 0.08);
 }
 
 .section-deep .card {

@@ -241,11 +241,14 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "SELL 0" in overview.text
     assert "NET 1" in overview.text
     assert "Overtrading Warning" in overview.text
-    assert "level=normal / total_executions=1" in overview.text
+    assert "Trading pace is normal today." in overview.text
+    assert "Executions today: 1" in overview.text
     assert "Today Trades" in overview.text
     assert "BUY" in overview.text
     assert "005930" in overview.text
     assert "x1" in overview.text
+    assert "Daily Totals" in overview.text
+    assert "Broker Reconciliation" in overview.text
     assert "Strategist Summary" in overview.text
     assert "strategist prompt" in overview.text
     assert "defensive" in overview.text

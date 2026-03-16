@@ -37,6 +37,9 @@
   {% endif %}
   {% set over_level = (overview.overtrading_warning.level or "normal") | lower %}
   {% set over_is_alert = over_level in ["elevated", "high", "warning", "critical"] %}
+  {% set round_trip_symbols = overview.overtrading_warning.round_trip_symbols or [] %}
+  {% set over_round_trip_count = round_trip_symbols | length %}
+  {% set over_exec_total = overview.overtrading_warning.total_executions or exec_total %}
 
   <section class="hero hero--overview">
     <div>
@@ -75,7 +78,7 @@
     <article class="card card--hero">
       <h2>Blocked</h2>
       <p class="kpi-value">{{ blocked_total }}</p>
-      <p class="subtle-meta">Daily block count from summary + live fallback</p>
+      <p class="subtle-meta">Blocks recorded today</p>
     </article>
 
     <article class="card card--hero card--status-{{ recon_tone }}">
@@ -85,6 +88,7 @@
     </article>
   </section>
 
+  <p class="section-label">Immediate Attention</p>
   <section class="grid grid-2 section-attention">
     <article class="card card--attention">
       <h2>Recommended Action</h2>
@@ -151,13 +155,18 @@
         {% if over_is_alert %}ATTENTION{% else %}NORMAL{% endif %}
       </div>
       <p class="operator-sentence">
-        {% if over_is_alert %}
-          Overtrading signal detected. Review trade pacing and monitor exit behavior.
+        {% if over_level in ["high", "critical"] %}
+          Elevated trading frequency detected.
+        {% elif over_level in ["elevated", "warning"] %}
+          Trading frequency is above the normal range.
         {% else %}
-          No immediate overtrading signal in the latest execution window.
+          Trading pace is normal today.
         {% endif %}
       </p>
-      <p class="subtle-meta">level={{ overview.overtrading_warning.level }} / total_executions={{ overview.overtrading_warning.total_executions }}</p>
+      <p class="subtle-meta">Executions today: {{ over_exec_total }}</p>
+      {% if over_round_trip_count > 0 %}
+      <p class="subtle-meta">Possible round-trip concentration in {{ over_round_trip_count }} symbols.</p>
+      {% endif %}
       {% if overview.overtrading_warning.reasons %}
       <ul class="summary-list summary-list--tight">
         {% for reason in overview.overtrading_warning.reasons[:3] %}
@@ -165,11 +174,11 @@
         {% endfor %}
       </ul>
       {% endif %}
-      {% if overview.overtrading_warning.round_trip_symbols %}
+      {% if round_trip_symbols %}
       <details class="details-block">
         <summary>Round-trip symbols</summary>
         <div class="chip-list">
-          {% for row in overview.overtrading_warning.round_trip_symbols[:5] %}
+          {% for row in round_trip_symbols[:5] %}
           <span class="chip">{{ row.symbol }} x{{ row.round_trips }}</span>
           {% endfor %}
         </div>
@@ -178,7 +187,42 @@
     </article>
   </section>
 
-  <section class="grid grid-2">
+  <p class="section-label">Today's Activity</p>
+  <section class="grid grid-2 section-activity">
+    <article class="card">
+      <h2>Daily Totals</h2>
+      <div class="stats">
+        <div><span>events</span><strong>{{ overview.daily.events }}</strong></div>
+        <div><span>approvals</span><strong>{{ overview.daily.approvals }}</strong></div>
+        <div><span>blocks</span><strong>{{ overview.daily.blocks }}</strong></div>
+      </div>
+      <div class="chip-list">
+        {% if overview.daily.decision_actions %}
+          {% for action, count in overview.daily.decision_actions.items() %}
+          <span class="metric-pill">{{ action }} {{ count }}</span>
+          {% endfor %}
+        {% else %}
+          <span class="subtle-meta">No decision actions for this day.</span>
+        {% endif %}
+      </div>
+    </article>
+
+    <article class="card card--muted card--status-{{ recon_tone }}">
+      <h2>Broker Reconciliation</h2>
+      <div class="status-badge status-badge--{{ recon_tone }}">{{ recon_status }}</div>
+      <div class="recon-grid">
+        <div><span>Matched</span><strong>{{ recon_matched }} / {{ recon_base }}</strong></div>
+        <div><span>Local</span><strong>{{ recon_local }}</strong></div>
+        <div><span>Broker</span><strong>{{ recon_broker }}</strong></div>
+      </div>
+      <p class="subtle-meta">{{ recon_sentence }}</p>
+      {% if overview.reconciliation.broker_window_limited %}
+      <p class="subtle-meta">Broker query window may omit older orders.</p>
+      {% endif %}
+    </article>
+  </section>
+
+  <section class="grid grid-2 section-activity">
     <article class="card">
       <h2>Today Traded Symbols</h2>
       {% if overview.today_traded_symbols %}
@@ -232,7 +276,8 @@
     </article>
   </section>
 
-  <section class="grid grid-2">
+  <p class="section-label">Reason And Interpretation</p>
+  <section class="grid grid-2 section-interpretation">
     <article class="card">
       <h2>Reporter Review</h2>
       <div class="kv-grid">
@@ -255,36 +300,34 @@
     <article class="card">
       <h2>Strategist Summary</h2>
       {% if overview.latest_strategist_prompt %}
+      {% set regime = overview.latest_strategist_prompt.market_regime or "unknown regime" %}
+      {% set playbook = overview.latest_strategist_prompt.playbook or "default playbook" %}
+      {% set themes = overview.latest_strategist_prompt.themes or [] %}
       <div class="kv-grid">
-        <div class="kv-row"><span>Regime</span><strong>{{ overview.latest_strategist_prompt.market_regime or "-" }}</strong></div>
-        <div class="kv-row"><span>Playbook</span><strong>{{ overview.latest_strategist_prompt.playbook or "-" }}</strong></div>
+        <div class="kv-row"><span>Regime</span><strong>{{ regime }}</strong></div>
+        <div class="kv-row"><span>Playbook</span><strong>{{ playbook }}</strong></div>
       </div>
-      {% if overview.latest_strategist_prompt.themes %}
+      {% if themes %}
       <div class="chip-list">
-        {% for theme in overview.latest_strategist_prompt.themes[:4] %}
+        {% for theme in themes[:4] %}
         <span class="chip">{{ theme }}</span>
         {% endfor %}
       </div>
       {% endif %}
-      {% if overview.latest_strategist_prompt.news_query_targets %}
-      <p class="subtle-meta">Signals considered</p>
-      <div class="chip-list">
-        {% for target in overview.latest_strategist_prompt.news_query_targets[:6] %}
-        <span class="chip chip--soft">{{ target }}</span>
-        {% endfor %}
-      </div>
-      {% endif %}
-      <p class="clamp-3">{{ overview.latest_strategist_prompt.prompt_excerpt or "No strategist summary text." }}</p>
-      <details class="details-block">
-        <summary>Latest strategist prompt excerpt</summary>
-        <p class="details-text">{{ overview.latest_strategist_prompt.prompt_excerpt or "-" }}</p>
-      </details>
+      <p class="operator-sentence">
+        {% if themes %}
+          Current posture is {{ regime }} with the {{ playbook }} playbook, focused on {{ themes[:2] | join(", ") }}.
+        {% else %}
+          Current posture is {{ regime }} with the {{ playbook }} playbook.
+        {% endif %}
+      </p>
       {% else %}
       <p class="subtle-meta">No strategist prompt evidence found for the latest day.</p>
       {% endif %}
     </article>
   </section>
 
+  <p class="section-label">Deep Evidence</p>
   <section class="grid grid-2 section-deep">
     <article class="card card--muted">
       <h2>Strategy Memory Timeline</h2>
@@ -293,7 +336,7 @@
         {% for row in overview.strategy_memory_timeline[:3] %}
         <div class="timeline-row">
           <div class="timeline-meta">{{ row.day }} / {{ row.updated_at }}</div>
-          <p class="meta-line">trades={{ row.trade_count }} / alignment={{ row.theme_alignment_status or "-" }} / monitor={{ row.monitor_status or "-" }}</p>
+          <p class="meta-line">Trades {{ row.trade_count }} | Theme alignment {{ row.theme_alignment_status or "-" }} | Monitor {{ row.monitor_status or "-" }}</p>
           <p class="clamp-2">{{ (row.ai_findings[0] if row.ai_findings else "No finding summary.") }}</p>
         </div>
         {% endfor %}
@@ -305,7 +348,7 @@
           {% for row in overview.strategy_memory_timeline[3:] %}
           <div class="timeline-row">
             <div class="timeline-meta">{{ row.day }} / {{ row.updated_at }}</div>
-            <p class="meta-line">trades={{ row.trade_count }} / alignment={{ row.theme_alignment_status or "-" }} / monitor={{ row.monitor_status or "-" }}</p>
+            <p class="meta-line">Trades {{ row.trade_count }} | Theme alignment {{ row.theme_alignment_status or "-" }} | Monitor {{ row.monitor_status or "-" }}</p>
           </div>
           {% endfor %}
         </div>
@@ -317,36 +360,24 @@
     </article>
 
     <article class="card card--muted">
-      <h2>Daily Totals</h2>
-      <div class="stats">
-        <div><span>events</span><strong>{{ overview.daily.events }}</strong></div>
-        <div><span>approvals</span><strong>{{ overview.daily.approvals }}</strong></div>
-        <div><span>blocks</span><strong>{{ overview.daily.blocks }}</strong></div>
-      </div>
+      <h2>Latest Strategist Prompt Details</h2>
+      {% if overview.latest_strategist_prompt %}
+      {% if overview.latest_strategist_prompt.news_query_targets %}
+      <p class="subtle-meta">Signals reviewed</p>
       <div class="chip-list">
-        {% if overview.daily.decision_actions %}
-          {% for action, count in overview.daily.decision_actions.items() %}
-          <span class="metric-pill">{{ action }} {{ count }}</span>
-          {% endfor %}
-        {% else %}
-          <span class="subtle-meta">No decision actions for this day.</span>
-        {% endif %}
+        {% for target in overview.latest_strategist_prompt.news_query_targets[:6] %}
+        <span class="chip chip--soft">{{ target }}</span>
+        {% endfor %}
       </div>
+      {% endif %}
+      <details class="details-block">
+        <summary>Prompt excerpt</summary>
+        <p class="details-text">{{ overview.latest_strategist_prompt.prompt_excerpt or "-" }}</p>
+      </details>
+      {% else %}
+      <p class="subtle-meta">No strategist prompt details available.</p>
+      {% endif %}
     </article>
-  </section>
-
-  <section class="card card--status-{{ recon_tone }}">
-    <h2>Broker Reconciliation</h2>
-    <div class="status-badge status-badge--{{ recon_tone }}">{{ recon_status }}</div>
-    <div class="recon-grid">
-      <div><span>Matched</span><strong>{{ recon_matched }} / {{ recon_base }}</strong></div>
-      <div><span>Local</span><strong>{{ recon_local }}</strong></div>
-      <div><span>Broker</span><strong>{{ recon_broker }}</strong></div>
-    </div>
-    <p class="subtle-meta">{{ recon_sentence }}</p>
-    {% if overview.reconciliation.broker_window_limited %}
-    <p class="subtle-meta">Broker query window is limited; some orders may be omitted.</p>
-    {% endif %}
   </section>
 </div>
 {% endblock %}
