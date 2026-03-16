@@ -13,6 +13,7 @@ from .operator_visibility import (
 )
 from .reporter_ai_review import build_ai_reporter_review
 from .trade_explain import generate_trade_explain_report
+from libs.core.symbols import normalize_symbol
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 from libs.research.strategy_memory_store import (
     resolve_strategy_memory_daily_dir,
@@ -33,6 +34,10 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return float(v)
     except Exception:
         return float(default)
+
+
+def _normalize_live_symbol(value: Any) -> str:
+    return normalize_symbol(value, allow_test_symbols=False)
 
 
 def _to_epoch(ts: Any) -> Optional[int]:
@@ -180,7 +185,7 @@ def _build_trade_decision_summaries(trade_explain_obj: Dict[str, Any]) -> Dict[s
         exit_trigger = _reason_text(pair.get("monitor_exit_reason") or pair.get("monitor_reason") or sell_reason)
         summaries.append(
             {
-                "symbol": str(pair.get("symbol") or ""),
+                "symbol": _normalize_live_symbol(pair.get("symbol")),
                 "buy_run_id": buy_run_id,
                 "sell_run_id": str(pair.get("sell_run_id") or ""),
                 "buy_reason": _reason_text(
@@ -578,7 +583,7 @@ def _build_decision_chains(day_rows: List[Dict[str, Any]], *, limit: int = 200) 
             packet = payload.get("decision_packet") if isinstance(payload.get("decision_packet"), dict) else {}
             intent = packet.get("intent") if isinstance(packet.get("intent"), dict) else {}
             action = str(intent.get("action") or "").strip().upper()
-            symbol = str(intent.get("symbol") or "").strip().upper()
+            symbol = _normalize_live_symbol(intent.get("symbol"))
             reason = _reason_text(intent.get("reason") or intent.get("rationale"))
             if action:
                 chain["action"] = action
@@ -603,7 +608,7 @@ def _build_decision_chains(day_rows: List[Dict[str, Any]], *, limit: int = 200) 
         elif stage == "execute_from_packet" and event == "execution":
             ex_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
             order = payload.get("order") if isinstance(payload.get("order"), dict) else {}
-            symbol = str(order.get("symbol") or "").strip().upper()
+            symbol = _normalize_live_symbol(order.get("symbol"))
             action = str(order.get("action") or "").strip().upper()
             if symbol:
                 chain["symbol"] = symbol
@@ -630,11 +635,15 @@ def _build_decision_chains(day_rows: List[Dict[str, Any]], *, limit: int = 200) 
             elif agent == "scanner":
                 chain["scanner_selection"] = {
                     "candidate_pool_size": _safe_int(ap.get("candidate_pool_size"), 0),
-                    "selected_symbol": str(ap.get("selected_symbol") or ""),
-                    "top_candidates": list(ap.get("top_candidates") or [])[:3],
+                    "selected_symbol": _normalize_live_symbol(ap.get("selected_symbol")),
+                    "top_candidates": [
+                        sym
+                        for sym in (_normalize_live_symbol(x) for x in list(ap.get("top_candidates") or [])[:3])
+                        if sym
+                    ],
                 }
                 if not chain.get("symbol"):
-                    sel = str(ap.get("selected_symbol") or "").strip().upper()
+                    sel = _normalize_live_symbol(ap.get("selected_symbol"))
                     if sel:
                         chain["symbol"] = sel
             elif agent == "monitor":
@@ -714,8 +723,12 @@ def _build_decision_trace_chain_summary(day_rows: List[Dict[str, Any]], *, limit
         elif agent == "scanner":
             chain["scanner"] = {
                 "candidate_pool_size": _safe_int(ap.get("candidate_pool_size"), 0),
-                "selected_symbol": str(ap.get("selected_symbol") or ""),
-                "top_candidates": list(ap.get("top_candidates") or [])[:3],
+                "selected_symbol": _normalize_live_symbol(ap.get("selected_symbol")),
+                "top_candidates": [
+                    sym
+                    for sym in (_normalize_live_symbol(x) for x in list(ap.get("top_candidates") or [])[:3])
+                    if sym
+                ],
                 "score_breakdown_summary": dict(ap.get("score_breakdown_summary") or {}),
             }
         elif agent == "monitor":
@@ -769,14 +782,23 @@ def _build_trade_summary_section(
     decision_chains: Dict[str, Any],
 ) -> Dict[str, Any]:
     trade_rows = trade_decision.get("trade_summaries") if isinstance(trade_decision.get("trade_summaries"), list) else []
-    symbols = sorted({str(r.get("symbol") or "").strip().upper() for r in trade_rows if isinstance(r, dict) and str(r.get("symbol") or "").strip()})
+    symbols = sorted(
+        {
+            sym
+            for sym in (_normalize_live_symbol((r or {}).get("symbol")) for r in trade_rows if isinstance(r, dict))
+            if sym
+        }
+    )
     hold_rows: List[Dict[str, Any]] = []
     for row in trade_rows:
         if not isinstance(row, dict):
             continue
+        symbol = _normalize_live_symbol(row.get("symbol"))
+        if not symbol:
+            continue
         hold_rows.append(
             {
-                "symbol": str(row.get("symbol") or "").strip().upper(),
+                "symbol": symbol,
                 "holding_duration_sec": _safe_int(row.get("holding_duration_sec"), 0),
                 "buy_reason": _reason_text(row.get("buy_reason")),
                 "sell_reason": _reason_text(row.get("sell_reason")),
@@ -1226,7 +1248,7 @@ def _build_strategist_evaluation(day_rows: List[Dict[str, Any]]) -> Dict[str, An
             scanner_summary_total += 1
             if bool(payload.get("theme_filter_applied")):
                 theme_filter_applied_total += 1
-            top = str(payload.get("top_stock") or "").strip().upper()
+            top = _normalize_live_symbol(payload.get("top_stock"))
             if top:
                 leader_symbol_counts[top] += 1
 
@@ -1270,7 +1292,7 @@ def _build_scanner_evaluation(day_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         source = str(payload.get("candidate_source") or "").strip().lower()
         if source:
             source_counts[source] += 1
-        top = str(payload.get("top_stock") or "").strip().upper()
+        top = _normalize_live_symbol(payload.get("top_stock"))
         if top:
             top_stock_counts[top] += 1
         else:

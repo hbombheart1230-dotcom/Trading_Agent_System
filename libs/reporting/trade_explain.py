@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from libs.core.symbols import normalize_symbol
+
 
 def _safe_int(v: Any, default: int = 0) -> int:
     try:
@@ -19,6 +21,10 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return float(v)
     except Exception:
         return float(default)
+
+
+def _normalize_live_symbol(value: Any) -> str:
+    return normalize_symbol(value, allow_test_symbols=False)
 
 
 def _to_epoch(ts: Any) -> Optional[int]:
@@ -133,7 +139,7 @@ def _extract_decision_context(payload: Dict[str, Any]) -> Dict[str, Any]:
         "decision_rationale": decision_rationale,
         "decision_reason": decision_reason,
         "intent_action": str(intent.get("action") or "").strip().upper(),
-        "intent_symbol": str(intent.get("symbol") or "").strip().upper(),
+        "intent_symbol": _normalize_live_symbol(intent.get("symbol")),
         "intent_qty": _safe_int(intent.get("qty"), 0),
         "technical": technical if isinstance(technical, dict) else {},
         "news": news if isinstance(news, dict) else {},
@@ -202,7 +208,7 @@ def _build_execution_rows(rows: List[Dict[str, Any]], by_run: Dict[str, Dict[str
         action = str(order.get("action") or "").strip().upper()
         if action not in ("BUY", "SELL"):
             continue
-        symbol = str(order.get("symbol") or order.get("stk_cd") or "").strip().upper()
+        symbol = _normalize_live_symbol(order.get("symbol") or order.get("stk_cd"))
         qty = _safe_int(order.get("qty"), 0)
         if not symbol or qty <= 0:
             continue
@@ -236,9 +242,13 @@ def _build_execution_rows(rows: List[Dict[str, Any]], by_run: Dict[str, Dict[str
                 "decision_rationale": str(decision.get("decision_rationale") or ""),
                 "decision_reason": str(decision.get("decision_reason") or ""),
                 "scanner_source": str(scanner.get("candidate_source") or ""),
-                "scanner_top_stock": str(scanner.get("top_stock") or ""),
+                "scanner_top_stock": _normalize_live_symbol(scanner.get("top_stock")),
                 "scanner_top_score": scanner.get("top_score"),
-                "scanner_top_ranked_symbols": list(scanner.get("top_ranked_symbols") or []),
+                "scanner_top_ranked_symbols": [
+                    sym
+                    for sym in (_normalize_live_symbol(x) for x in list(scanner.get("top_ranked_symbols") or []))
+                    if sym
+                ],
                 "monitor_exit_reason": str(monitor.get("exit_reason") or ""),
                 "monitor_reason": str(monitor.get("monitor_reason") or ""),
                 "guard_allowed": verdict.get("allowed"),

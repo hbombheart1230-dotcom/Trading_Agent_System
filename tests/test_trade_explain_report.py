@@ -186,3 +186,45 @@ def test_trade_explain_report_uses_latest_day_when_day_not_given(tmp_path: Path,
     assert int(obj["execution_summary"]["executions_total"]) == 1
     assert "000660:BUY" in (obj["execution_summary"]["symbol_side_counts"] or {})
 
+
+def test_trade_explain_report_filters_malformed_live_like_symbols(tmp_path: Path, capsys) -> None:
+    day = "2026-03-16"
+    events = tmp_path / "events.jsonl"
+    out_dir = tmp_path / "trade_explain"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "bad1",
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"order": {"action": "BUY", "symbol": "A0082N0", "qty": 1, "price": 100}},
+            },
+            {
+                "run_id": "good1",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"order": {"action": "BUY", "symbol": "005930", "qty": 1, "price": 200}},
+            },
+        ],
+    )
+
+    rc = trade_explain_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(out_dir),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert int(obj["execution_summary"]["executions_total"]) == 1
+    assert "005930:BUY" in (obj["execution_summary"]["symbol_side_counts"] or {})
+    assert "A0082N0:BUY" not in (obj["execution_summary"]["symbol_side_counts"] or {})
