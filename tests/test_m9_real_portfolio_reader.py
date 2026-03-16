@@ -83,3 +83,25 @@ def test_kiwoom_portfolio_reader_extracts_kt00018_shape():
     assert snap.positions[0].qty == 3
     assert snap.positions[0].avg_price == 312000.0
     assert snap.positions[0].unrealized_pnl == -2400.0
+
+
+def test_kiwoom_portfolio_reader_drops_invalid_live_like_symbols():
+    class StubAccountInvalidSymbol:
+        def get_account_balance(self, *, dry_run: bool = False):  # type: ignore
+            class R:
+                status_code = 200
+                ok = True
+                payload = {
+                    "cash": "1000000",
+                    "positions": [
+                        {"stk_cd": "A0082N0", "rmnd_qty": "1", "buy_uv": "63200", "evltv_prft": "0"},
+                        {"stk_cd": "A005930", "rmnd_qty": "2", "buy_uv": "70000", "evltv_prft": "0"},
+                    ],
+                }
+                raw_text = ""
+            return R()
+
+    r = KiwoomPortfolioReader(account=StubAccountInvalidSymbol())  # type: ignore
+    snap = r.get_portfolio_snapshot()
+    assert snap.cash == 1000000.0
+    assert [row.symbol for row in snap.positions] == ["005930"]

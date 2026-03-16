@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 
+from libs.core.symbols import normalize_symbol
 from libs.read.portfolio_reader import PortfolioReader
 from libs.read.portfolio_reader import MockPortfolioReader
 from libs.read.kiwoom_portfolio_reader import KiwoomPortfolioReader
@@ -28,7 +29,7 @@ def _normalize_positions(raw: object) -> list[dict]:
     for row in raw:
         if not isinstance(row, dict):
             continue
-        symbol = str(row.get("symbol") or "").strip()
+        symbol = normalize_symbol(row.get("symbol") or row.get("stk_cd") or row.get("pdno") or row.get("code"))
         qty = _safe_int(row.get("qty"), 0)
         if not symbol or qty <= 0:
             continue
@@ -94,6 +95,14 @@ def build_portfolio_snapshot(state: dict) -> dict:
     if mock_mode:
         persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
         persisted_positions = _normalize_positions((persisted or {}).get("mock_positions"))
+        if isinstance(persisted, dict):
+            persisted["mock_positions"] = list(persisted_positions)
+            persisted["open_positions"] = len(persisted_positions)
+            normalized_last_trade_symbol = normalize_symbol((persisted or {}).get("last_trade_symbol"))
+            if normalized_last_trade_symbol:
+                persisted["last_trade_symbol"] = normalized_last_trade_symbol
+            else:
+                persisted.pop("last_trade_symbol", None)
         persisted_cash = _safe_float((persisted or {}).get("mock_cash"), 0.0)
         persisted_realized = _safe_float((persisted or {}).get("mock_realized_pnl"), 0.0)
         snapshot_positions = _normalize_positions(snapshot.get("positions"))

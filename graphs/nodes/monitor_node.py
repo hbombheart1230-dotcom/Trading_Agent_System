@@ -18,6 +18,7 @@ from graphs.nodes.skill_contracts import (
     extract_market_quotes,
     extract_order_status,
 )
+from libs.core.symbols import normalize_symbol
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.exit_policy import evaluate_exit_policy
@@ -514,7 +515,7 @@ def _resolve_now_epoch(state: Dict[str, Any]) -> int:
 
 
 def _norm_symbol(v: Any) -> str:
-    return str(v or "").strip().upper()
+    return normalize_symbol(v)
 
 
 def _clear_symbol_confirm_keys(confirm_map: Dict[str, Any], symbol: str) -> None:
@@ -644,10 +645,12 @@ def _position_by_symbol(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         for row in snapshot.get("positions") or []:
             if not isinstance(row, dict):
                 continue
-            sym = _norm_symbol(row.get("symbol") or row.get("stk_cd") or row.get("code"))
+            sym = _norm_symbol(row.get("symbol") or row.get("stk_cd") or row.get("pdno") or row.get("code"))
             if not sym:
                 continue
-            out[sym] = dict(row)
+            normalized_row = dict(row)
+            normalized_row["symbol"] = sym
+            out[sym] = normalized_row
         return out
 
     snaps = state.get("snapshots")
@@ -657,10 +660,12 @@ def _position_by_symbol(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             for row in port.get("positions") or []:
                 if not isinstance(row, dict):
                     continue
-                sym = _norm_symbol(row.get("symbol") or row.get("stk_cd") or row.get("code"))
+                sym = _norm_symbol(row.get("symbol") or row.get("stk_cd") or row.get("pdno") or row.get("code"))
                 if not sym:
                     continue
-                out[sym] = dict(row)
+                normalized_row = dict(row)
+                normalized_row["symbol"] = sym
+                out[sym] = normalized_row
     return out
 
 
@@ -990,7 +995,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "inputs": {},
     }
     if isinstance(selected, dict) and selected.get("symbol"):
-        symbol = str(selected.get("symbol"))
+        symbol = _norm_symbol(selected.get("symbol"))
         qty = 1
         use_position_sizing = _is_trueish(state.get("use_position_sizing")) or _is_trueish(policy.get("use_position_sizing"))
         if use_position_sizing:
@@ -1040,7 +1045,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 buy_blocked_post_exit_cooldown = True
                 post_exit_cooldown_remaining_sec = remaining
 
-        if qty <= 0:
+        if not symbol:
+            intents = []
+        elif qty <= 0:
             intents = []
         elif buy_blocked_post_exit_cooldown:
             intents = []

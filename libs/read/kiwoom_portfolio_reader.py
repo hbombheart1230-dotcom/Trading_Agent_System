@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from libs.core.symbols import normalize_symbol
 from libs.core.settings import Settings
 from libs.core.http_client import HttpClient
 from libs.kiwoom.kiwoom_token_client import KiwoomTokenClient
@@ -58,10 +59,7 @@ def _extract_cash(payload: Dict[str, Any]) -> float:
 
 
 def _normalize_symbol(symbol: Any) -> str:
-    raw = str(symbol or "").strip().upper()
-    if len(raw) == 7 and raw[0].isalpha() and raw[1:].isdigit():
-        return raw[1:]
-    return raw
+    return normalize_symbol(symbol, allow_test_symbols=False)
 
 
 def _extract_positions(payload: Dict[str, Any]) -> List[PositionSnapshot]:

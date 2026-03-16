@@ -268,6 +268,33 @@ def test_monitor_selects_held_symbol_with_triggered_exit_among_multiple_position
     assert bool(exit_info.get("exit_symbol_fallback")) is True
 
 
+def test_monitor_ignores_invalid_live_like_positions(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "true")
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "005930"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "A0082N0", "qty": 1, "avg_price": 63200.0, "hold_sec": 900}],
+        },
+        "policy": {"use_exit_policy": True},
+    }
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
+    assert intents[0]["symbol"] == "005930"
+    mon = out.get("monitor") or {}
+    assert mon.get("open_position_count") == 0
+    exit_info = out.get("monitor_exit") or {}
+    assert bool(exit_info.get("exit_symbol_fallback")) is False
+    assert int(exit_info.get("qty") or 0) == 0
+
+
 def test_monitor_applies_exit_policy_env_overrides(monkeypatch):
     monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
