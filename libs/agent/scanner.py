@@ -4,6 +4,7 @@ import os
 from typing import Any, Dict, List
 
 from libs.agent.strategist import Plan
+from libs.core.symbols import normalize_symbol
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 
 
@@ -15,7 +16,7 @@ def _to_int(v: Any, default: int) -> int:
 
 
 def _norm_symbol(v: Any) -> str:
-    return str(v or "").strip().upper()
+    return normalize_symbol(v)
 
 
 def _extract_theme_map(context: Dict[str, Any]) -> Dict[str, set[str]]:

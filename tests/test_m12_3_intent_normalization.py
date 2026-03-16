@@ -18,3 +18,9 @@ def test_market_allows_missing_price():
     raw = {"action": "BUY", "symbol": "005930", "qty": 1, "order_type": "market"}
     out, _ = normalize_intent(raw, default_symbol=None, default_price=None)
     assert out["action"] in ("BUY", "NOOP")
+
+
+def test_invalid_live_like_symbol_becomes_noop():
+    raw = {"action": "BUY", "symbol": "0082N0", "qty": 1, "order_type": "market"}
+    out, _ = normalize_intent(raw, default_symbol=None, default_price=None)
+    assert out["action"] == "NOOP"

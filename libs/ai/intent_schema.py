@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
+from libs.core.symbols import normalize_symbol
+
 ALLOWED_ACTIONS = {"BUY", "SELL", "NOOP"}
 
 def _to_int(x: Any, default: int = 0) -> int:
@@ -45,7 +47,7 @@ def normalize_intent(intent: Dict[str, Any], *, default_symbol: Optional[str] = 
     action = normalize_action(intent)
 
     symbol = intent.get("symbol") or intent.get("code") or default_symbol
-    symbol = str(symbol) if symbol is not None else None
+    symbol = normalize_symbol(symbol) or None
 
     qty = intent.get("qty") or intent.get("quantity") or 0
     qty_i = max(_to_int(qty, 0), 0)

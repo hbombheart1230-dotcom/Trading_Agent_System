@@ -6,12 +6,10 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
+from libs.core.symbols import normalize_symbol
 
 def _norm_symbol(v: Any) -> str:
-    s = str(v or "").strip()
-    if s.startswith("A") and len(s) > 1 and s[1:].isdigit():
-        return s[1:]
-    return s
+    return normalize_symbol(v)
 
 
 def _is_trueish(v: Any) -> bool:

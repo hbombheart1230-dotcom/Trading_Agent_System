@@ -7,12 +7,6 @@ def test_execute_from_packet_mock(tmp_path, monkeypatch):
     # ensure mock executor
     monkeypatch.setenv("EXECUTION_MODE", "mock")
 
-    pkt = TradeDecisionPacket(
-        intent=TradeIntent(intent="buy", order_api_id="ORDER_SUBMIT"),
-        risk=RiskContext(open_positions=0),
-        exec_context=ExecutionContext(values={}),
-    )
-
     # minimal catalog
     cat = tmp_path / "api_catalog.jsonl"
     cat.write_text(
@@ -23,9 +17,9 @@ def test_execute_from_packet_mock(tmp_path, monkeypatch):
     state = {
         "catalog_path": str(cat),
         "decision_packet": {
-            "intent": pkt.intent.to_dict(),
-            "risk": pkt.risk.to_dict(),
-            "exec_context": pkt.exec_context.to_dict(),
+            "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "order_api_id": "ORDER_SUBMIT", "order_type": "market"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
         },
     }
 
@@ -119,6 +113,30 @@ def test_execute_from_packet_blocks_symbol_not_allowlisted(tmp_path, monkeypatch
     assert out["execution"]["allowed"] is False
     assert out["execution"]["reason"] == "symbol_not_allowlisted"
     assert int(out["execution"]["symbol_guard"]["allowlist_size"]) == 1
+
+
+def test_execute_from_packet_blocks_invalid_symbol_format(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "0082N0", "qty": 1, "price": 70000, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "invalid_symbol_format"
+    assert out["execution"]["symbol_format_guard"]["raw_symbol"] == "0082N0"
 
 
 def test_execute_from_packet_blocks_qty_limit_with_max_qty_alias(tmp_path, monkeypatch):

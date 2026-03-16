@@ -2,15 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
+from libs.core.symbols import normalize_symbol
+
 
 CONTRACT_VERSION = "m22.skill.v1"
 
 
 def norm_symbol(v: Any) -> str:
-    s = str(v or "").strip()
-    if s.startswith("A") and len(s) > 1 and s[1:].isdigit():
-        return s[1:]
-    return s
+    return normalize_symbol(v)
 
 
 def _get_skill_root(state: Dict[str, Any]) -> Dict[str, Any]:

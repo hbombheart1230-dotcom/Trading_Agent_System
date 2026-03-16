@@ -9,6 +9,7 @@ Role boundary:
 """
 
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -51,6 +52,144 @@ def _to_int(v: Any, default: int) -> int:
         return int(float(v))
     except Exception:
         return int(default)
+
+
+def _resolve_scanner_repeat_guard_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
+    raw_policy = policy.get("scanner_repeat_guard") if isinstance(policy.get("scanner_repeat_guard"), dict) else {}
+    lookback_sec = _to_int(
+        raw_policy.get("lookback_sec", os.getenv("SCANNER_REPEAT_LOOKBACK_SEC", "1800")),
+        1800,
+    )
+    per_hit_penalty = _to_float(
+        raw_policy.get("per_hit_penalty", os.getenv("SCANNER_REPEAT_SYMBOL_PENALTY", "0.06"))
+    )
+    recent_trade_penalty = _to_float(
+        raw_policy.get("recent_trade_penalty", os.getenv("SCANNER_RECENT_TRADE_SYMBOL_PENALTY", "0.10"))
+    )
+    trade_lookback_sec = _to_int(
+        raw_policy.get("trade_lookback_sec", os.getenv("SCANNER_RECENT_TRADE_LOOKBACK_SEC", "5400")),
+        5400,
+    )
+    max_penalty = _to_float(
+        raw_policy.get("max_penalty", os.getenv("SCANNER_REPEAT_SYMBOL_MAX_PENALTY", "0.40"))
+    )
+    streak_threshold = _to_int(
+        raw_policy.get("streak_threshold", os.getenv("SCANNER_REPEAT_STREAK_THRESHOLD", "3")),
+        3,
+    )
+    streak_penalty = _to_float(
+        raw_policy.get("streak_penalty", os.getenv("SCANNER_REPEAT_STREAK_PENALTY", "0.12"))
+    )
+    history_limit = _to_int(
+        raw_policy.get("history_limit", os.getenv("SCANNER_REPEAT_HISTORY_LIMIT", "40")),
+        40,
+    )
+    return {
+        "lookback_sec": max(0, int(lookback_sec)),
+        "per_hit_penalty": max(0.0, float(per_hit_penalty)),
+        "recent_trade_penalty": max(0.0, float(recent_trade_penalty)),
+        "trade_lookback_sec": max(0, int(trade_lookback_sec)),
+        "max_penalty": max(0.0, float(max_penalty)),
+        "streak_threshold": max(2, int(streak_threshold)),
+        "streak_penalty": max(0.0, float(streak_penalty)),
+        "history_limit": max(5, int(history_limit)),
+    }
+
+
+def _scanner_recent_selection_history(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    rows = persisted.get("recent_scanner_selected")
+    if not isinstance(rows, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sym = _norm_symbol(row.get("symbol"))
+        epoch = _to_int(row.get("epoch"), 0)
+        if sym and epoch > 0:
+            out.append({"symbol": sym, "epoch": epoch})
+    return out
+
+
+def _resolve_now_epoch(state: Dict[str, Any]) -> int:
+    for key in ("now_epoch", "ts_epoch", "epoch"):
+        value = _to_int(state.get(key), 0)
+        if value > 0:
+            return value
+    return int(time.time())
+
+
+def _repeat_symbol_penalty(
+    state: Dict[str, Any],
+    *,
+    symbol: str,
+    policy: Dict[str, Any],
+) -> Dict[str, Any]:
+    cfg = _resolve_scanner_repeat_guard_policy(policy)
+    now_epoch = _resolve_now_epoch(state)
+    history = _scanner_recent_selection_history(state)
+    sel = _norm_symbol(symbol)
+    repeat_count = 0
+    streak_count = 0
+    if cfg["lookback_sec"] > 0 and sel:
+        cutoff = max(0, now_epoch - cfg["lookback_sec"])
+        for row in history:
+            if row.get("symbol") == sel and _to_int(row.get("epoch"), 0) >= cutoff:
+                repeat_count += 1
+        for row in reversed(history):
+            if _to_int(row.get("epoch"), 0) < cutoff:
+                break
+            if row.get("symbol") != sel:
+                break
+            streak_count += 1
+
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    last_trade_symbol = _norm_symbol(persisted.get("last_trade_symbol"))
+    last_trade_epoch = _to_int(persisted.get("last_trade_epoch"), 0)
+    recent_trade_same_symbol = False
+    if (
+        sel
+        and last_trade_symbol == sel
+        and last_trade_epoch > 0
+        and cfg["trade_lookback_sec"] > 0
+        and (now_epoch - last_trade_epoch) <= cfg["trade_lookback_sec"]
+    ):
+        recent_trade_same_symbol = True
+
+    streak_extra = cfg["streak_penalty"] if streak_count >= cfg["streak_threshold"] else 0.0
+    penalty = min(
+        cfg["max_penalty"],
+        (repeat_count * cfg["per_hit_penalty"])
+        + streak_extra
+        + (cfg["recent_trade_penalty"] if recent_trade_same_symbol else 0.0),
+    )
+    return {
+        "penalty": float(max(0.0, penalty)),
+        "repeat_count": int(repeat_count),
+        "streak_count": int(streak_count),
+        "recent_trade_same_symbol": bool(recent_trade_same_symbol),
+        "now_epoch": int(now_epoch),
+        "history_count": int(len(history)),
+        "config": cfg,
+    }
+
+
+def _remember_selected_symbol(state: Dict[str, Any], selected_symbol: str, *, now_epoch: int, policy: Dict[str, Any]) -> None:
+    symbol = _norm_symbol(selected_symbol)
+    if not symbol:
+        return
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    state["persisted_state"] = persisted
+    cfg = _resolve_scanner_repeat_guard_policy(policy)
+    history = _scanner_recent_selection_history(state)
+    history.append({"symbol": symbol, "epoch": int(now_epoch)})
+    if cfg["lookback_sec"] > 0:
+        cutoff = max(0, int(now_epoch) - int(cfg["lookback_sec"]) * 2)
+        history = [row for row in history if _to_int(row.get("epoch"), 0) >= cutoff]
+    if len(history) > cfg["history_limit"]:
+        history = history[-cfg["history_limit"] :]
+    persisted["recent_scanner_selected"] = history
 
 
 def _make_event_logger(state: Dict[str, Any]) -> Any:
@@ -139,6 +278,75 @@ def _extract_account_open_order_counts(state: Dict[str, Any]) -> Tuple[Dict[str,
             continue
         out[symbol] = int(out.get(symbol, 0)) + 1
     return out, len(rows), meta
+
+
+def _is_live_equity_symbol(symbol: str) -> bool:
+    sym = _norm_symbol(symbol)
+    return bool(sym) and sym.isdigit() and len(sym) == 6
+
+
+def _should_auto_hydrate_scanner_skills(state: Dict[str, Any], candidates: List[Any]) -> bool:
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    explicit = policy.get("enable_scanner_skill_hydration")
+    if explicit is not None:
+        enabled = _is_trueish(explicit)
+    else:
+        env_value = os.getenv("SCANNER_AUTO_SKILL_HYDRATION", "")
+        if env_value:
+            enabled = _is_trueish(env_value)
+        else:
+            enabled = not bool(os.getenv("PYTEST_CURRENT_TEST"))
+    if not enabled:
+        return False
+
+    if state.get("skill_runner") is not None or callable(state.get("skill_runner_factory")):
+        return True
+    if _is_trueish(state.get("auto_skill_runner")) or _is_trueish(os.getenv("M22_AUTO_SKILL_RUNNER", "")):
+        return True
+
+    candidate_symbols: List[str] = []
+    for item in candidates:
+        if isinstance(item, dict):
+            sym = _norm_symbol(item.get("symbol"))
+        else:
+            sym = _norm_symbol(item)
+        if sym:
+            candidate_symbols.append(sym)
+    return any(_is_live_equity_symbol(sym) for sym in candidate_symbols)
+
+
+def _maybe_hydrate_scanner_skill_results(state: Dict[str, Any], candidates: List[Any]) -> Dict[str, Any]:
+    existing_quotes, _quote_meta = _extract_skill_quotes(state)
+    existing_order_counts, existing_order_rows, _order_meta = _extract_account_open_order_counts(state)
+    if existing_quotes or existing_order_counts or existing_order_rows > 0:
+        return state
+    if not _should_auto_hydrate_scanner_skills(state, candidates):
+        return state
+
+    try:
+        from graphs.nodes.hydrate_skill_results_node import hydrate_skill_results_node
+    except Exception:
+        return state
+
+    injected_auto = False
+    previous_auto = state.get("auto_skill_runner")
+    if (
+        state.get("skill_runner") is None
+        and not callable(state.get("skill_runner_factory"))
+        and not _is_trueish(state.get("auto_skill_runner"))
+    ):
+        state["auto_skill_runner"] = True
+        injected_auto = True
+    try:
+        return hydrate_skill_results_node(state)
+    except Exception:
+        return state
+    finally:
+        if injected_auto:
+            if previous_auto is None:
+                state.pop("auto_skill_runner", None)
+            else:
+                state["auto_skill_runner"] = previous_auto
 
 
 def _get_global_sentiment_score(state: Dict[str, Any]) -> float:
@@ -819,6 +1027,16 @@ def _candidate_quote_metrics(
     )
     change_pct = _to_float(quote.get("change_pct") or quote.get("chg_rate") or quote.get("changeRate"))
 
+    raw_quote = quote.get("raw") if isinstance(quote.get("raw"), dict) else {}
+    raw_rows = raw_quote.get("cntr_infr") if isinstance(raw_quote.get("cntr_infr"), list) else []
+    raw_row = raw_rows[0] if raw_rows and isinstance(raw_rows[0], dict) else {}
+    if volume <= 0.0:
+        volume = _to_float(raw_row.get("acc_trde_qty"))
+    if trading_value <= 0.0:
+        trading_value = _to_float(raw_row.get("acc_trde_prica"))
+    if change_pct == 0.0:
+        change_pct = _to_float(raw_row.get("pre_rt"))
+
     halted = False
     if quote.get("halted") is not None:
         halted = bool(quote.get("halted"))
@@ -1156,6 +1374,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         trade_aggressiveness=trade_aggressiveness,
         risk_tone=risk_tone,
     )
+    state = _maybe_hydrate_scanner_skill_results(state, list(candidates))
     skill_quotes, quote_meta = _extract_skill_quotes(state)
     skill_order_counts, skill_order_rows, order_meta = _extract_account_open_order_counts(state)
     feature_map, feature_source, feature_errors = hydrate_scanner_feature_map(
@@ -1342,6 +1561,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         open_order_penalty = _norm01(float(order_penalty), 0.0, 3.0)
         avoid_theme_penalty = 1.0 if (symbol in avoid_theme_symbols and len(avoid_theme_symbols) > 0) else 0.0
 
+        repeat_penalty_meta = _repeat_symbol_penalty(state, symbol=symbol, policy=policy)
+        repeat_symbol_penalty = _to_float(repeat_penalty_meta.get("penalty"))
+
         positive_score = (
             practical_w["trading_value"] * trading_value_component
             + practical_w["momentum"] * momentum_component
@@ -1369,7 +1591,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             - (0.03 * open_order_penalty)
         )
         rank_bonus = 0.01 * max(0.0, candidate_rank_score)
-        score_total = base_score + positive_score + legacy_adjust - risk_penalty_score + rank_bonus
+        score_total = base_score + positive_score + legacy_adjust - risk_penalty_score + rank_bonus - repeat_symbol_penalty
 
         neg_news = max(-news_s, 0.0)
         neg_global = max(-gs, 0.0)
@@ -1393,6 +1615,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             0.0,
             1.0,
         )
+        if repeat_symbol_penalty > 0.0:
+            adj_conf = _clamp(adj_conf - (0.40 * repeat_symbol_penalty), 0.0, 1.0)
+            adj_risk = _clamp(adj_risk + (0.25 * repeat_symbol_penalty), 0.0, 1.0)
 
         score_breakdown = {
             "trading_value": float(practical_w["trading_value"] * trading_value_component),
@@ -1407,6 +1632,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "sentiment": float(practical_w["sentiment"] * sentiment_component),
             "cross_section_rank": float(0.05 * cross_section_rank_component * practical_scale),
             "avoid_theme_penalty": float(-0.20 * avoid_theme_penalty * practical_scale),
+            "repeat_symbol_penalty": float(-repeat_symbol_penalty),
             "risk_penalty": float(-risk_penalty_score),
             "rank_bonus": float(rank_bonus),
         }
@@ -1490,6 +1716,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "gap_penalty_component": gap_penalty,
                     "open_order_penalty_component": open_order_penalty,
                     "avoid_theme_penalty_component": avoid_theme_penalty,
+                    "repeat_symbol_penalty_component": repeat_symbol_penalty,
+                    "recent_selection_repeat_count": int(repeat_penalty_meta.get("repeat_count") or 0),
+                    "recent_selection_streak_count": int(repeat_penalty_meta.get("streak_count") or 0),
+                    "recent_trade_same_symbol": bool(repeat_penalty_meta.get("recent_trade_same_symbol")),
                     "news_sentiment_status": str(news_sig.get("status") or "fallback"),
                     "news_sentiment_source": str(news_sig.get("source") or ""),
                     "news_sentiment_reason": str(news_sig.get("reason") or ""),
@@ -1513,6 +1743,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     selected = scan_results_sorted[0] if scan_results_sorted else None
+    now_epoch = _resolve_now_epoch(state)
+    if isinstance(selected, dict):
+        _remember_selected_symbol(state, str(selected.get("symbol") or ""), now_epoch=now_epoch, policy=policy)
     state["scan_results"] = scan_results_sorted
     state["ranked_candidates"] = [
         {
@@ -1577,6 +1810,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_avoid_themes": list(pool_meta.get("avoid_themes") or []),
         "strategist_trade_aggressiveness": trade_aggressiveness or None,
         "strategist_risk_tone": risk_tone or None,
+        "repeat_guard": _resolve_scanner_repeat_guard_policy(policy),
+        "recent_scanner_selected_count": int(len(_scanner_recent_selection_history(state))),
     }
 
     # Provide a normalized risk snapshot for Decision Node.
@@ -1634,6 +1869,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "strategist_avoid_themes": list(pool_meta.get("avoid_themes") or []),
             "strategist_trade_aggressiveness": trade_aggressiveness or "",
             "strategist_risk_tone": risk_tone or "",
+            "recent_scanner_selected_count": int(len(_scanner_recent_selection_history(state))),
         },
     )
 
@@ -1662,6 +1898,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "condition_search_reason": str(pool_meta.get("condition_search_reason") or ""),
             "scanner_source_policy": dict(pool_meta.get("scanner_source_policy") or {}),
             "candidate_pool_size": int(len(scan_results_sorted)),
+            "recent_scanner_selected_count": int(len(_scanner_recent_selection_history(state))),
             "top_candidates": top_candidates_summary,
             "selected_symbol": state.get("top_stock") or None,
             "score_breakdown_summary": (

@@ -114,6 +114,28 @@ class _FakeRouterNestedJson(_FakeRouterOk):
         )
 
 
+class _FakeRouterProseContract(_FakeRouterOk):
+    @staticmethod
+    def from_env() -> "_FakeRouterProseContract":
+        return _FakeRouterProseContract()
+
+    def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+        return (
+            "Let me analyze the input and produce the strategist frame.\n\n"
+            "1. **market_regime**: the safest fit is \"risk_off\"\n"
+            "2. **market_sentiment**: use \"bearish\"\n"
+            "3. **themes**: [\"defensive_assets\", \"broad_market_leaders\"]\n"
+            "4. **avoid_themes**: [\"high_beta\", \"small_cap_speculative\"]\n"
+            "5. **playbook**: \"defensive\"\n"
+            "6. **scanner_bias**: \"large_cap\"\n"
+            "7. **scanner_priority**: [\"trading_value\", \"leader_quality\", \"trend_strength\"]\n"
+            "8. **trade_aggressiveness**: \"low\"\n"
+            "9. **risk_tone**: \"conservative\"\n"
+            "10. **monitor_guidance**: \"defensive_exit\"\n"
+            "11. **report_focus**: [\"theme_accuracy\", \"exit_quality\"]\n"
+        )
+
+
 class _FakeRouterCapturePolicy(_FakeRouterOk):
     last_policy: Dict[str, Any] | None = None
 
@@ -125,6 +147,22 @@ class _FakeRouterCapturePolicy(_FakeRouterOk):
     def resolve(self, role: str, *, policy: Dict[str, Any] | None = None) -> _Route:
         _FakeRouterCapturePolicy.last_policy = dict(policy or {})
         return _Route(model=str((policy or {}).get("model") or "minimax/minimax-m2.5"))
+
+
+class _FakeRouterHintOnlyProse(_FakeRouterOk):
+    @staticmethod
+    def from_env() -> "_FakeRouterHintOnlyProse":
+        return _FakeRouterHintOnlyProse()
+
+    def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+        return (
+            "The market context suggests caution.\n"
+            "market_regime_hint: \"neutral\"\n"
+            "market_sentiment_hint: \"neutral\"\n"
+            "playbook_hint: \"pullback\"\n"
+            "themes_hint: [\"broad_market_leaders\"]\n"
+            "key_events_hint: [\"global_sentiment score=-0.170\"]\n"
+        )
 
 
 def _base_state(logger: _MemoryLogger) -> Dict[str, Any]:
@@ -270,6 +308,48 @@ def test_strategist_frame_llm_nested_output_and_string_lists_are_normalized(monk
     assert "theme_accuracy" in report_focus
     assert "exit_quality" in report_focus
     assert strategist_output.get("llm_frame_applied") is True
+
+
+def test_strategist_frame_llm_prose_contract_is_salvaged(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterProseContract)
+
+    logger = _MemoryLogger()
+    out = strategist_node(_base_state(logger))
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("market_regime") == "risk_off"
+    assert strategist_output.get("market_sentiment") == "bearish"
+    assert strategist_output.get("playbook") == "defensive"
+    assert strategist_output.get("scanner_bias") == "large_cap"
+    assert strategist_output.get("monitor_guidance") == "defensive_exit"
+    assert strategist_output.get("themes") == ["defensive_assets", "broad_market_leaders"]
+    assert strategist_output.get("llm_frame_applied") is True
+    assert strategist_output.get("llm_frame_status") == "ok"
+    assert strategist_output.get("llm_frame_recovery_method") == "prose_contract"
+
+    strategist_llm = out.get("strategist_llm") or {}
+    assert strategist_llm.get("status") == "ok"
+    assert strategist_llm.get("recovery_method") == "prose_contract"
+
+
+def test_strategist_frame_llm_hint_only_prose_is_salvaged(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterHintOnlyProse)
+
+    logger = _MemoryLogger()
+    out = strategist_node(_base_state(logger))
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("market_regime") == "neutral"
+    assert strategist_output.get("market_sentiment") == "neutral"
+    assert strategist_output.get("playbook") == "pullback"
+    assert strategist_output.get("themes") == ["broad_market_leaders"]
+    assert strategist_output.get("llm_frame_applied") is True
+    assert strategist_output.get("llm_frame_status") == "ok"
+    assert strategist_output.get("llm_frame_recovery_method") == "prose_contract"
 
 
 def test_strategist_reads_recent_strategy_feedback_when_available(monkeypatch, tmp_path):

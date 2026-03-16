@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Tuple
 
+from libs.core.symbols import is_valid_symbol, normalize_symbol
 from libs.runtime.decision_trace import append_decision_trace
 
 
@@ -136,7 +137,7 @@ def _parse_symbol_allowlist(raw: Optional[str]) -> set[str]:
     v = raw.strip()
     if not v:
         return set()
-    return {x.strip() for x in v.split(",") if x.strip()}
+    return {normalize_symbol(x) for x in v.split(",") if normalize_symbol(x)}
 
 
 def _resolve_limit_env_value(primary: str, alias: str) -> Tuple[int, str]:
@@ -172,6 +173,24 @@ def _evaluate_symbol_allowlist_guard(order: Dict[str, Any]) -> Tuple[bool, str, 
         return True, "", details
     details["allowlist"] = sorted(allow)
     return False, "symbol_not_allowlisted", details
+
+
+def _evaluate_symbol_format_guard(order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    if action not in ("BUY", "SELL"):
+        return True, "", {"guard_applied": False, "action": action}
+
+    raw_symbol = order.get("symbol_raw") or order.get("symbol") or order.get("stk_cd")
+    symbol = normalize_symbol(raw_symbol)
+    details: Dict[str, Any] = {
+        "guard_applied": True,
+        "action": action,
+        "raw_symbol": str(raw_symbol or "").strip(),
+        "symbol": symbol,
+    }
+    if not is_valid_symbol(raw_symbol):
+        return False, "invalid_symbol_format", details
+    return True, "", details
 
 
 def _evaluate_order_limit_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
@@ -213,9 +232,7 @@ def _evaluate_order_limit_guard(state: Dict[str, Any], order: Dict[str, Any]) ->
 
 def _extract_order_symbol(order: Dict[str, Any]) -> str:
     sym = order.get("symbol") or order.get("stk_cd")
-    if sym is None:
-        return ""
-    return str(sym).strip()
+    return normalize_symbol(sym)
 
 
 def _extract_open_symbols_from_state(state: Dict[str, Any]) -> set[str]:
@@ -228,7 +245,7 @@ def _extract_open_symbols_from_state(state: Dict[str, Any]) -> set[str]:
             for row in rows:
                 if not isinstance(row, dict):
                     continue
-                sym = str(row.get("symbol") or "").strip()
+                sym = normalize_symbol(row.get("symbol"))
                 qty = _coerce_int(row.get("qty"), 0)
                 if sym and qty > 0:
                     symbols.add(sym)
@@ -240,7 +257,7 @@ def _extract_open_symbols_from_state(state: Dict[str, Any]) -> set[str]:
             for row in rows:
                 if not isinstance(row, dict):
                     continue
-                sym = str(row.get("symbol") or "").strip()
+                sym = normalize_symbol(row.get("symbol"))
                 qty = _coerce_int(row.get("qty"), 0)
                 if sym and qty > 0:
                     symbols.add(sym)
@@ -460,7 +477,8 @@ def _build_order_from_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
 
     qty = intent.get("qty") or intent.get("quantity")
     price = intent.get("price")
-    symbol = intent.get("symbol")
+    raw_symbol = intent.get("symbol") or intent.get("code") or intent.get("stk_cd")
+    symbol = normalize_symbol(raw_symbol)
 
     qty_int = None
     if qty is not None:
@@ -480,6 +498,7 @@ def _build_order_from_intent(intent: Dict[str, Any]) -> Dict[str, Any]:
         "api_id": api_id,
         "action": action,
         "symbol": symbol,
+        "symbol_raw": raw_symbol,
         "qty": qty_int if qty_int is not None else qty,
         "price": price_int if price_int is not None else price,
         "order_type": order_type,
@@ -914,6 +933,26 @@ def execute_from_packet(state: dict) -> dict:
                 stage="execute_from_packet",
                 event="verdict",
                 payload={"allowed": False, "reason": "noop_intent_skipped"},
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        symbol_format_allowed, symbol_format_reason, symbol_format_details = _evaluate_symbol_format_guard(order)
+        if not symbol_format_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=symbol_format_reason,
+            )
+            state["execution"]["symbol_format_guard"] = symbol_format_details
+            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="symbol_format_guard_block",
+                payload={"allowed": False, "reason": symbol_format_reason, **symbol_format_details},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state

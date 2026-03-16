@@ -68,6 +68,7 @@ def test_update_state_mock_buy_updates_mock_positions(monkeypatch):
     assert ps["mock_realized_pnl"] == 0.0
     assert ps["last_trade_side"] == "BUY"
     assert ps["last_trade_epoch"] == 1234
+    assert ps["last_trade_symbol"] == "005930"
 
 
 def test_update_state_mock_sell_closes_position(monkeypatch):
@@ -94,6 +95,7 @@ def test_update_state_mock_sell_closes_position(monkeypatch):
     assert ps["mock_realized_pnl"] == 400.0
     assert ps["last_trade_side"] == "SELL"
     assert ps["last_trade_epoch"] == 1234
+    assert ps["last_trade_symbol"] == "005930"
 
 
 def test_update_state_real_mode_still_updates_mock_ledger_when_kiwoom_mode_mock(monkeypatch):
@@ -158,3 +160,23 @@ def test_update_state_reconciles_stale_mock_position_on_sell_reject_code20(monke
     assert ps.get("mock_positions") == []
     assert ps.get("open_positions") == 0
     assert ps.get("mock_position_desync_reconciled") is True
+
+
+def test_update_state_sanitizes_invalid_mock_positions_and_last_trade_symbol(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {
+            "mock_positions": [
+                {"symbol": "0082N0", "qty": 1, "avg_price": 0.0, "unrealized_pnl": 0.0},
+                {"symbol": "005930", "qty": 2, "avg_price": 70000.0, "unrealized_pnl": 0.0},
+            ],
+            "last_trade_symbol": "A0082N0",
+        },
+        "execution": {"ok": False, "blocked": True, "reason": "noop"},
+    }
+
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert [row["symbol"] for row in ps["mock_positions"]] == ["005930"]
+    assert ps["open_positions"] == 1
+    assert ps.get("last_trade_symbol") in ("", None)

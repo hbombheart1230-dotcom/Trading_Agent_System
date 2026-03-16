@@ -1,5 +1,7 @@
 from typing import Any, Dict, List, Mapping, Sequence
 from collections import defaultdict
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 from libs.news.models import NewsItem
 from libs.news.providers.registry import get_provider
@@ -14,6 +16,7 @@ from libs.data_quality.signal_contract import (
 
 import os
 import time
+import math
 
 
 def _is_trueish(v: Any) -> bool:
@@ -293,6 +296,91 @@ def _normalize_items_for_scoring(
     return norm, all_symbols
 
 
+def _normalize_headline_key(text: Any) -> str:
+    raw = _as_str(text).strip().lower()
+    if not raw:
+        return ""
+    compact = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in raw)
+    return " ".join(compact.split())
+
+
+def _parse_news_timestamp(value: Any) -> int | None:
+    text = _as_str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        pass
+    try:
+        dt = parsedate_to_datetime(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
+
+def _resolve_news_decay_policy(policy: Dict[str, Any]) -> Dict[str, float]:
+    half_life_sec = float(policy.get("news_sentiment_freshness_half_life_sec") or os.getenv("NEWS_SENTIMENT_FRESHNESS_HALF_LIFE_SEC", "3600"))
+    min_freshness_weight = float(policy.get("news_sentiment_min_freshness_weight") or os.getenv("NEWS_SENTIMENT_MIN_FRESHNESS_WEIGHT", "0.35"))
+    min_duplicate_weight = float(policy.get("news_sentiment_min_duplicate_weight") or os.getenv("NEWS_SENTIMENT_MIN_DUPLICATE_WEIGHT", "0.40"))
+    return {
+        "half_life_sec": max(300.0, half_life_sec),
+        "min_freshness_weight": max(0.10, min(1.0, min_freshness_weight)),
+        "min_duplicate_weight": max(0.10, min(1.0, min_duplicate_weight)),
+    }
+
+
+def _news_symbol_decay_meta(rows: List[NewsItem], *, now_epoch: int, policy: Dict[str, Any]) -> Dict[str, Any]:
+    cfg = _resolve_news_decay_policy(policy)
+    if not rows:
+        return {
+            "headline_count": 0,
+            "distinct_headline_count": 0,
+            "freshness_weight": 1.0,
+            "duplicate_weight": 1.0,
+        }
+
+    headline_keys = [_normalize_headline_key(getattr(row, "title", "")) for row in rows]
+    headline_keys = [k for k in headline_keys if k]
+    distinct_count = len(set(headline_keys)) if headline_keys else 0
+    duplicate_weight = 1.0
+    if headline_keys:
+        duplicate_weight = max(
+            cfg["min_duplicate_weight"],
+            float(distinct_count) / float(max(1, len(headline_keys))),
+        )
+
+    freshness_weights: List[float] = []
+    for row in rows:
+        ts = _parse_news_timestamp(getattr(row, "published_at", ""))
+        if ts is None:
+            freshness_weights.append(1.0)
+            continue
+        age_sec = max(0, int(now_epoch - ts))
+        weight = math.pow(0.5, float(age_sec) / float(cfg["half_life_sec"]))
+        freshness_weights.append(weight)
+    freshness_weight = 1.0
+    if freshness_weights:
+        freshness_weight = max(
+            cfg["min_freshness_weight"],
+            sum(freshness_weights) / float(len(freshness_weights)),
+        )
+
+    return {
+        "headline_count": int(len(rows)),
+        "distinct_headline_count": int(distinct_count or len(rows)),
+        "freshness_weight": float(freshness_weight),
+        "duplicate_weight": float(duplicate_weight),
+    }
+
+
 def score_news_sentiment(
     items_by_symbol=None,
     *,
@@ -405,13 +493,29 @@ def score_news_sentiment_signal(
             )
             continue
         try:
-            out[s] = make_signal(
-                score=float(raw_map.get(s)),
+            raw_score = float(raw_map.get(s))
+            decay_meta = _news_symbol_decay_meta(norm.get(s, []), now_epoch=now, policy=policy)
+            adjusted_score = raw_score * float(decay_meta.get("freshness_weight") or 1.0) * float(decay_meta.get("duplicate_weight") or 1.0)
+            signal = make_signal(
+                score=adjusted_score,
                 status=SIGNAL_STATUS_OK,
                 source=f"scorer:{scorer_name}",
                 reason="",
                 ts=now,
             )
+            signal["raw_score"] = normalize_signal_score(raw_score, default=0.0)
+            signal["freshness_weight"] = float(decay_meta.get("freshness_weight") or 1.0)
+            signal["duplicate_weight"] = float(decay_meta.get("duplicate_weight") or 1.0)
+            signal["headline_count"] = int(decay_meta.get("headline_count") or 0)
+            signal["distinct_headline_count"] = int(decay_meta.get("distinct_headline_count") or 0)
+            if signal["freshness_weight"] < 0.999 or signal["duplicate_weight"] < 0.999:
+                reasons = []
+                if signal["freshness_weight"] < 0.999:
+                    reasons.append("freshness_decay")
+                if signal["duplicate_weight"] < 0.999:
+                    reasons.append("duplicate_headline_decay")
+                signal["reason"] = ",".join(reasons)
+            out[s] = signal
         except Exception:
             out[s] = make_signal(
                 score=0.0,

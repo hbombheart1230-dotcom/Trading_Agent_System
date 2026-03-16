@@ -4,6 +4,8 @@ import os
 import re
 import time
 
+from libs.core.symbols import normalize_symbol
+
 
 def _as_int(value, default: int = 0) -> int:  # type: ignore[no-untyped-def]
     try:
@@ -26,7 +28,7 @@ def _normalize_mock_positions(raw):  # type: ignore[no-untyped-def]
     for row in raw:
         if not isinstance(row, dict):
             continue
-        symbol = str(row.get("symbol") or "").strip()
+        symbol = normalize_symbol(row.get("symbol"))
         qty = _as_int(row.get("qty"), 0)
         if not symbol or qty <= 0:
             continue
@@ -63,7 +65,7 @@ def _ensure_mock_cash(ps: dict) -> float:
 def _apply_mock_fill(ps: dict, ex: dict) -> None:
     order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
     action = str(order.get("action") or "").strip().upper()
-    symbol = str(order.get("symbol") or "").strip()
+    symbol = normalize_symbol(order.get("symbol"))
     qty = _as_int(order.get("qty"), 0)
     price = _as_float(order.get("price"), 0.0)
     if action not in ("BUY", "SELL") or not symbol or qty <= 0:
@@ -146,7 +148,7 @@ def _reconcile_mock_sell_reject_no_position(ps: dict, ex: dict) -> bool:
         return False
 
     order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
-    symbol = str(order.get("symbol") or "").strip()
+    symbol = normalize_symbol(order.get("symbol"))
     if not symbol:
         return False
     req_qty = max(0, _as_int(order.get("qty"), 0))
@@ -228,6 +230,13 @@ def update_state_after_execution(state: dict) -> dict:
     """
     ps = state.get("persisted_state") or {}
     ex = state.get("execution") or {}
+    ps["mock_positions"] = _normalize_mock_positions(ps.get("mock_positions"))
+    ps["open_positions"] = len(ps["mock_positions"])
+    last_trade_symbol = normalize_symbol(ps.get("last_trade_symbol"))
+    if last_trade_symbol:
+        ps["last_trade_symbol"] = last_trade_symbol
+    else:
+        ps.pop("last_trade_symbol", None)
 
     # Backward/forward compatible success shape with broker-level override:
     # - execution["ok"] when present
@@ -263,6 +272,10 @@ def update_state_after_execution(state: dict) -> dict:
         if side:
             ps["last_trade_side"] = side
             ps["last_trade_epoch"] = now_epoch
+            order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
+            trade_symbol = normalize_symbol(order.get("symbol") or order.get("stk_cd"))
+            if trade_symbol:
+                ps["last_trade_symbol"] = trade_symbol
 
     # Keep local mock ledger in sync when execution is explicitly mock, or when
     # runtime uses real executor against Kiwoom mock host (KIWOOM_MODE=mock).

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Set, Tuple
 
+from libs.core.symbols import normalize_symbol
 from libs.read.kiwoom_condition_reader import KiwoomConditionReader
 
 
@@ -25,7 +26,7 @@ def _to_float(v: Any, default: float = 0.0) -> float:
 
 
 def _norm_symbol(v: Any) -> str:
-    return str(v or "").strip().upper()
+    return normalize_symbol(v)
 
 
 def _unique_symbols(items: Any) -> List[str]:

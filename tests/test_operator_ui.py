@@ -63,7 +63,7 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
             {"run_id": "run-1", "ts": "2026-03-13T00:00:02+00:00", "stage": "strategist", "event": "summary", "payload": {"playbook": "defensive", "risk_tone": "conservative"}},
             {"run_id": "run-1", "ts": "2026-03-13T00:00:03+00:00", "stage": "decision_trace", "event": "strategic_frame", "payload": {"agent": "strategist", "payload": {"themes": ["quality"], "playbook": "defensive", "macro_stress_overlay": {"active": True, "stress_flags": ["elevated_vix"]}}}},
             {"run_id": "run-1", "ts": "2026-03-13T00:00:04+00:00", "stage": "scanner", "event": "summary", "payload": {"top_stock": "005930", "top_score": 0.91}},
-            {"run_id": "run-1", "ts": "2026-03-13T00:00:05+00:00", "stage": "decision_trace", "event": "candidate_selection", "payload": {"agent": "scanner", "payload": {"selected_symbol": "005930", "candidate_pool_size": 5, "selected_candidate": {"feature_snapshot": {"engine_ma20_gap": 0.1, "engine_ma60": 1.0, "engine_ma120": 1.0, "engine_adx14": 20.0, "engine_trend_strength": 0.7, "engine_volume_spike20": 1.4, "engine_volatility20": 0.2, "engine_vwap_distance": 0.01, "engine_sector_relative_strength": 0.3, "engine_cross_section_rank": 0.8, "engine_regime": "trend", "engine_signal_score": 0.9}}}}},
+            {"run_id": "run-1", "ts": "2026-03-13T00:00:05+00:00", "stage": "decision_trace", "event": "candidate_selection", "payload": {"agent": "scanner", "payload": {"selected_symbol": "005930", "candidate_pool_size": 5, "selected_candidate": {"feature_snapshot": {"skill_quote_price": 70500, "quote_volume": 1234567, "quote_trading_value": 89012345678, "intraday_change_pct": 2.15, "engine_ma20_gap": 0.1, "engine_ma60": 1.0, "engine_ma120": 1.0, "engine_adx14": 20.0, "engine_trend_strength": 0.7, "engine_volume_spike20": 1.4, "engine_volatility20": 0.2, "engine_vwap_distance": 0.01, "engine_sector_relative_strength": 0.3, "engine_cross_section_rank": 0.8, "engine_regime": "trend", "engine_signal_score": 0.9}}}}},
             {"run_id": "run-1", "ts": "2026-03-13T00:00:06+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "no_position", "exit_reason": "no_position"}},
             {"run_id": "run-1", "ts": "2026-03-13T00:00:07+00:00", "stage": "decision_trace", "event": "entry_exit_decision", "payload": {"agent": "monitor", "payload": {"entry_reason": "no_position"}}},
             {"run_id": "run-1", "ts": "2026-03-13T00:00:08+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": True, "reason": "Allowed"}},
@@ -142,6 +142,9 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path) -> None:
     assert "strategist prompt" in detail.text
     assert "EXECUTED_OK" in detail.text
     assert "Feature Coverage" in detail.text
+    assert "Quote Metrics" in detail.text
+    assert "price=70500" in detail.text
+    assert "2.15" in detail.text
     assert "Same-Day Symbol Trade History" in detail.text
     assert "trade_count=1" in detail.text
     assert "Recent Same-Symbol Run Chain" in detail.text

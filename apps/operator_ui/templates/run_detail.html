@@ -54,6 +54,13 @@
       ratio={{ "%.0f"|format(detail.scanner.feature_coverage.coverage_ratio * 100) }}%
     </p>
     <pre class="code">{{ detail.scanner.feature_coverage | tojson(indent=2) }}</pre>
+    <h3>Quote Metrics</h3>
+    <p class="meta-line">
+      present={{ detail.scanner.quote_metrics.present }}
+      price={{ detail.scanner.quote_metrics.skill_quote_price or "-" }}
+      change_pct={{ detail.scanner.quote_metrics.intraday_change_pct or "-" }}
+    </p>
+    <pre class="code">{{ detail.scanner.quote_metrics | tojson(indent=2) }}</pre>
   </article>
   <article class="card">
     <h2>Monitor</h2>

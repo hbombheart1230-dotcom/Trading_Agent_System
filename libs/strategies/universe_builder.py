@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Set
 
+from libs.core.symbols import normalize_symbol
 from libs.read.kiwoom_condition_reader import KiwoomConditionReader
 from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
 from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
@@ -20,7 +21,7 @@ def _to_int(v: Any, default: int) -> int:
 
 
 def _norm_symbol(v: Any) -> str:
-    return str(v or "").strip().upper()
+    return normalize_symbol(v)
 
 
 def _unique_symbols(items: Any) -> List[str]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from libs.core.symbols import normalize_symbol
 from .dto import QuoteDTO, OrderPlaceDTO, OrderStatusDTO, AccountOrdersDTO, RawDTO
 
 
@@ -22,12 +23,8 @@ def _to_int(v: Any) -> Optional[int]:
 
 
 def _norm_symbol(code: Optional[str]) -> Optional[str]:
-    if not code:
-        return code
-    code = str(code)
-    if code.startswith("A") and len(code) > 1:
-        return code[1:]
-    return code
+    normalized = normalize_symbol(code)
+    return normalized or None
 
 
 def extract_quote(symbol: str, payload: Dict[str, Any]) -> QuoteDTO:

@@ -177,6 +177,28 @@ def _feature_coverage(feature_snapshot: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _quote_metrics_snapshot(feature_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(feature_snapshot, dict) or not feature_snapshot:
+        return {
+            "present": False,
+            "skill_quote_price": None,
+            "quote_volume": None,
+            "quote_trading_value": None,
+            "intraday_change_pct": None,
+        }
+    price = feature_snapshot.get("skill_quote_price")
+    volume = feature_snapshot.get("quote_volume")
+    trading_value = feature_snapshot.get("quote_trading_value")
+    change_pct = feature_snapshot.get("intraday_change_pct")
+    return {
+        "present": any(v is not None and v != 0 for v in (price, volume, trading_value, change_pct)),
+        "skill_quote_price": price,
+        "quote_volume": volume,
+        "quote_trading_value": trading_value,
+        "intraday_change_pct": change_pct,
+    }
+
+
 def _truncate_json(v: Any, max_len: int = 800) -> str:
     try:
         s = json.dumps(v, ensure_ascii=False, indent=2)
@@ -666,6 +688,7 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
     selected_candidate = candidate_selection.get("selected_candidate") if isinstance(candidate_selection.get("selected_candidate"), dict) else {}
     feature_snapshot = selected_candidate.get("feature_snapshot") if isinstance(selected_candidate.get("feature_snapshot"), dict) else {}
     feature_coverage = _feature_coverage(feature_snapshot)
+    quote_metrics = _quote_metrics_snapshot(feature_snapshot)
 
     strategist_evidence = _latest_evidence(evidence_rows, agent="strategist", stage="theme_selection")
     reporter_evidence = _latest_evidence(evidence_rows, agent="reporter", stage="post_run_analysis")
@@ -713,6 +736,7 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "summary": scanner_summary,
             "decision_trace": candidate_selection if isinstance(candidate_selection, dict) else {},
             "feature_coverage": feature_coverage,
+            "quote_metrics": quote_metrics,
         },
         "monitor": {
             "summary": monitor_summary,

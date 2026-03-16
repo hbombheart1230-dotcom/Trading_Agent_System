@@ -5,11 +5,12 @@ import os
 import time
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
+from libs.core.symbols import is_live_equity_symbol, normalize_symbol
 from libs.runtime.feature_engine import build_feature_map
 
 
 def _norm_symbol(value: Any) -> str:
-    return str(value or "").strip().upper()
+    return normalize_symbol(value)
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -109,7 +110,7 @@ def _append_live_price(rows: List[Dict[str, Any]], *, price: float, now_epoch: i
 
 
 def _resolve_yf_ticker(symbol: str) -> str:
-    if symbol.isdigit() and len(symbol) == 6:
+    if is_live_equity_symbol(symbol):
         return f"{symbol}.KS"
     return symbol
 

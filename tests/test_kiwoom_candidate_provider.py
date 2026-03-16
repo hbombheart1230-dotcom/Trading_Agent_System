@@ -75,6 +75,30 @@ def test_build_kiwoom_candidate_rows_respects_source_flags_and_weights():
     assert "condition_search" not in rows[0]["sources"]
 
 
+def test_build_kiwoom_candidate_rows_filters_malformed_live_like_symbols():
+    state = {
+        "mock_top_value_symbols": ["005930", "0082N0", "AAA"],
+        "mock_top_volume_symbols": ["000660", "A0082N0", "005930"],
+        "mock_condition_symbols": ["0082N0", "000660"],
+    }
+
+    rows, meta = build_kiwoom_candidate_rows(
+        state=state,
+        top_pool=10,
+        condition_limit=10,
+        include_condition_search=True,
+    )
+
+    symbols = [str(row.get("symbol") or "") for row in rows]
+    assert "005930" in symbols
+    assert "000660" in symbols
+    assert "AAA" in symbols
+    assert "0082N0" not in symbols
+    assert "A0082N0" not in symbols
+    assert meta["top_value_count"] == 2
+    assert meta["top_volume_count"] == 2
+
+
 def test_condition_search_reports_unavailable_status_when_live_not_integrated(monkeypatch):
     monkeypatch.delenv("MOCK_CONDITION_SYMBOLS", raising=False)
     monkeypatch.delenv("KIWOOM_CONDITION_LIVE_FETCH", raising=False)

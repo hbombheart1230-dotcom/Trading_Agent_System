@@ -10,6 +10,8 @@ Role boundary:
 
 import os
 import json
+import ast
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -126,6 +128,146 @@ def _strip_fenced_block(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _parse_text_list_fragment(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        return [str(x or "").strip() for x in list(raw or []) if str(x or "").strip()]
+    s = str(raw or "").strip()
+    if not s:
+        return []
+    decoded = None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            decoded = parser(s)
+            break
+        except Exception:
+            decoded = None
+    if isinstance(decoded, (list, tuple, set)):
+        return [str(x or "").strip() for x in list(decoded or []) if str(x or "").strip()]
+    if any(sep in s for sep in ("\n", ",", ";", "|")):
+        return [str(x or "").strip() for x in re.split(r"[\n,;|]+", s) if str(x or "").strip()]
+    return [s]
+
+
+def _extract_contract_from_prose(text: str) -> Dict[str, Any]:
+    s = _strip_fenced_block(text)
+    if not s:
+        return {}
+
+    out: Dict[str, Any] = {}
+    lines = [str(row or "").strip() for row in s.splitlines() if str(row or "").strip()]
+    if not lines:
+        return {}
+
+    enum_specs: Dict[str, List[str]] = {
+        "market_regime": ["risk_on", "neutral", "risk_off"],
+        "market_sentiment": ["bullish", "neutral", "bearish"],
+        "playbook": ["breakout", "pullback", "reversal", "defensive"],
+        "scanner_bias": ["large_cap", "leader", "momentum", "value"],
+        "trade_aggressiveness": ["low", "medium", "high"],
+        "risk_tone": ["conservative", "normal", "aggressive"],
+        "monitor_guidance": ["hold_through_noise", "defensive_exit", "quick_take_profit"],
+    }
+    list_keys = ("key_events", "themes", "avoid_themes", "scanner_priority", "report_focus")
+    alias_map = {
+        "market_regime_hint": "market_regime",
+        "market_sentiment_hint": "market_sentiment",
+        "playbook_hint": "playbook",
+        "themes_hint": "themes",
+        "key_events_hint": "key_events",
+    }
+
+    def normalized_line(raw_line: str) -> str:
+        line = str(raw_line or "").strip()
+        line = re.sub(r"^\d+\.\s*", "", line)
+        line = re.sub(r"^[-*]\s*", "", line)
+        line = line.replace("**", "")
+        return line.strip()
+
+    for raw_line in lines:
+        line = normalized_line(raw_line)
+        if not line or ":" not in line:
+            continue
+        for raw_key in list(enum_specs.keys()) + list(list_keys) + list(alias_map.keys()):
+            match = re.search(rf"\b{re.escape(raw_key)}\b\s*:\s*(.+)$", line, flags=re.IGNORECASE)
+            if not match:
+                continue
+            key = alias_map.get(raw_key, raw_key)
+            value = str(match.group(1) or "").strip()
+            if key in enum_specs:
+                matches = re.findall(r"(risk_on|risk_off|neutral|bullish|bearish|breakout|pullback|reversal|defensive|large_cap|leader|momentum|value|low|medium|high|conservative|normal|aggressive|hold_through_noise|defensive_exit|quick_take_profit)", value, flags=re.IGNORECASE)
+                if matches:
+                    allowed = {item.lower() for item in enum_specs[key]}
+                    for candidate in reversed(matches):
+                        normalized = str(candidate or "").strip().lower()
+                        if normalized in allowed:
+                            out[key] = normalized
+                            break
+            else:
+                bracket_match = re.search(r"(\[[^\]]*\])", value)
+                parsed = _parse_text_list_fragment(bracket_match.group(1) if bracket_match else value)
+                if (not parsed) or (parsed and len(parsed) == 1 and parsed[0] == value):
+                    quoted = [str(x or "").strip() for x in re.findall(r'"([^"\n]{1,120})"', value) if str(x or "").strip()]
+                    if quoted:
+                        parsed = quoted
+                if key == "scanner_priority" and parsed:
+                    allowed_priority = {"trading_value", "trend_strength", "volume_surge", "leader_quality", "pullback_quality", "relative_strength", "risk_penalty", "low_volatility", "drawdown_control", "momentum"}
+                    parsed = [x for x in parsed if str(x or "").strip().lower() in allowed_priority]
+                if parsed:
+                    out[key] = parsed
+            break
+
+    # Fall back to broader regex if line-oriented parsing missed obvious fields.
+    for key, allowed in enum_specs.items():
+        if key in out:
+            continue
+        raw_keys = [key] + [alias for alias, target in alias_map.items() if target == key]
+        match = None
+        for raw_key in raw_keys:
+            pattern = rf"{re.escape(raw_key)}\s*:\s*([^\n]+)"
+            match = re.search(pattern, s, flags=re.IGNORECASE)
+            if match:
+                break
+        if not match:
+            continue
+        tail = str(match.group(1) or "")
+        candidates = re.findall(
+            r"(risk_on|risk_off|neutral|bullish|bearish|breakout|pullback|reversal|defensive|large_cap|leader|momentum|value|low|medium|high|conservative|normal|aggressive|hold_through_noise|defensive_exit|quick_take_profit)",
+            tail,
+            flags=re.IGNORECASE,
+        )
+        allowed_set = {item.lower() for item in allowed}
+        for candidate in reversed(candidates):
+            normalized = str(candidate or "").strip().lower()
+            if normalized in allowed_set:
+                out[key] = normalized
+                break
+
+    for key in list_keys:
+        if key in out:
+            continue
+        raw_keys = [key] + [alias for alias, target in alias_map.items() if target == key]
+        match = None
+        for raw_key in raw_keys:
+            match = re.search(rf"{re.escape(raw_key)}\s*:\s*(\[[^\]]*\])", s, flags=re.IGNORECASE | re.DOTALL)
+            if match:
+                break
+        if not match:
+            continue
+        parsed = _parse_text_list_fragment(match.group(1))
+        if parsed:
+            out[key] = parsed
+
+    has_contract_signal = bool(
+        out.get("market_regime")
+        or out.get("playbook")
+        or out.get("themes")
+        or out.get("monitor_guidance")
+    )
+    return out if has_contract_signal else {}
+
+
 def _extract_json_object(text: str) -> Dict[str, Any]:
     s = _strip_fenced_block(text)
     if not s:
@@ -179,6 +321,9 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
                 return unwrapped
         except Exception:
             continue
+    prose_contract = _extract_contract_from_prose(s)
+    if prose_contract:
+        return prose_contract
     return {}
 
 
@@ -245,7 +390,9 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         "You are the Strategist agent for an automated trading system. "
         "You must output a strategic frame only. "
         "Do not select final stock and do not produce order instructions. "
-        "Return strict JSON only."
+        "Return exactly one minified JSON object only. "
+        "Do not add analysis, markdown, bullet points, or any text before or after the JSON. "
+        "The first character must be { and the last character must be }."
     )
     contract = {
         "market_regime": "risk_on|neutral|risk_off",
@@ -263,7 +410,8 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
     }
     user = (
         "Use the provided market context, news/global sentiment, and candidate hints. "
-        "Produce a realistic strategic frame for scanner/monitor guidance.\n"
+        "Produce a realistic strategic frame for scanner/monitor guidance. "
+        "Reply with JSON only. No prose.\n"
         "JSON contract:\n"
         f"{json.dumps(contract, ensure_ascii=False)}\n\n"
         "Input:\n"
@@ -429,8 +577,9 @@ def _build_strategist_llm_repair_messages(payload: Dict[str, Any], raw_response:
     compact_payload = _build_compact_strategist_llm_payload(payload)
     system = (
         "You repair strategist outputs for an automated trading system. "
-        "Return strict JSON only, matching the required contract exactly. "
-        "Do not add commentary, markdown, or explanations."
+        "Return exactly one minified JSON object only, matching the required contract exactly. "
+        "Do not add commentary, markdown, analysis, or explanations. "
+        "If the previous draft contained prose, ignore it and generate a fresh JSON object."
     )
     contract = {
         "market_regime": "risk_on|neutral|risk_off",
@@ -453,8 +602,8 @@ def _build_strategist_llm_repair_messages(payload: Dict[str, Any], raw_response:
         f"{json.dumps(contract, ensure_ascii=False)}\n\n"
         "Compact input:\n"
         f"{json.dumps(compact_payload, ensure_ascii=False)}\n\n"
-        "Draft response to repair:\n"
-        f"{raw}"
+        f"Previous attempt failure reason: {_classify_llm_parse_failure(raw)}\n"
+        "Return only the repaired JSON object."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -692,6 +841,10 @@ def _run_strategist_frame_llm(
             "repair_used": bool(repair_used),
         }
 
+    recovery_method = ""
+    if not str(raw or "").strip().startswith("{"):
+        recovery_method = "prose_contract"
+
     try:
         record_llm_response(
             run_id=run_id,
@@ -699,7 +852,13 @@ def _run_strategist_frame_llm(
             stage="theme_selection",
             llm_response=str(raw or ""),
             parsed_output=dict(overrides),
-            decision_link={"status": "ok", "model": str(route.model or ""), "latency_ms": int(latency_ms), "attempts": int(attempts)},
+            decision_link={
+                "status": "ok",
+                "model": str(route.model or ""),
+                "latency_ms": int(latency_ms),
+                "attempts": int(attempts),
+                "recovery_method": recovery_method,
+            },
         )
     except Exception:
         pass
@@ -711,6 +870,7 @@ def _run_strategist_frame_llm(
         "model": route.model,
         "attempts": int(attempts),
         "repair_used": bool(repair_used),
+        "recovery_method": recovery_method,
     }
 
 
@@ -2488,6 +2648,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             llm_payload_log["error"] = str(llm_meta.get("reason"))
         if llm_meta.get("error_type"):
             llm_payload_log["error_type"] = str(llm_meta.get("error_type"))
+        if llm_meta.get("recovery_method"):
+            llm_payload_log["recovery_method"] = str(llm_meta.get("recovery_method"))
         _log_strategist_llm_result(state, llm_payload_log)
 
     # Optional AI overrides are additive and bounded to keep deterministic fallback.
@@ -2650,6 +2812,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["llm_frame_status"] = str(llm_meta.get("status") or "disabled")
     strategist_output["llm_frame_applied"] = bool(llm_overrides)
     strategist_output["llm_frame_model"] = str(llm_meta.get("model") or "")
+    strategist_output["llm_frame_recovery_method"] = str(llm_meta.get("recovery_method") or "")
     strategist_output["runtime_theme_map_keys"] = sorted(list((state.get("theme_map") or {}).keys()))
     strategist_output["runtime_sector_map_keys"] = sorted(list((state.get("sector_map") or {}).keys()))
     state["strategist_output"] = strategist_output
@@ -2662,6 +2825,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "repair_used": bool(llm_meta.get("repair_used")),
         "reason": str(llm_meta.get("reason") or ""),
         "error": str(llm_meta.get("reason") or ""),
+        "recovery_method": str(llm_meta.get("recovery_method") or ""),
     }
     _log_strategist_summary(
         state,
@@ -2690,6 +2854,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "llm_frame_status": str(llm_meta.get("status") or "disabled"),
             "llm_frame_applied": bool(llm_overrides),
             "llm_frame_model": str(llm_meta.get("model") or ""),
+            "llm_frame_recovery_method": str(llm_meta.get("recovery_method") or ""),
         },
     )
     append_decision_trace(
