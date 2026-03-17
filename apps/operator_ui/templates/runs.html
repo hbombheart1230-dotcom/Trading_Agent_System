@@ -26,6 +26,7 @@
         <th>story type</th>
         <th>execution label</th>
         <th>AI report</th>
+        <th>portfolio sync</th>
         <th>macro stress</th>
         <th>feature coverage</th>
         <th>monitor</th>
@@ -70,6 +71,14 @@
           <p class="subtle-meta clamp-2">{{ row.report_reason_human or row.report_summary }}</p>
           {% if row.report_next_expected_step %}
           <p class="subtle-meta clamp-2">Next: {{ row.report_next_expected_step }}</p>
+          {% endif %}
+        </td>
+        <td>
+          <div class="chip-list">
+            <span class="{{ row.portfolio_sync_badge_class or 'status-badge' }}">{{ row.portfolio_sync_label or "Sync status unavailable" }}</span>
+          </div>
+          {% if row.portfolio_sync_sentence %}
+          <p class="subtle-meta clamp-2">{{ row.portfolio_sync_sentence }}</p>
           {% endif %}
         </td>
         <td>

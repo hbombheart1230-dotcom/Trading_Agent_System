@@ -44,6 +44,32 @@ def _normalize_positions(raw: object) -> list[dict]:
     return out
 
 
+def _positions_signature(rows: list[dict]) -> list[tuple[str, int, float]]:
+    sig: list[tuple[str, int, float]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sig.append(
+            (
+                normalize_symbol(row.get("symbol")),
+                _safe_int(row.get("qty"), 0),
+                round(_safe_float(row.get("avg_price"), 0.0), 4),
+            )
+        )
+    sig.sort()
+    return sig
+
+
+def _reader_positions_authoritative(*, mock_mode: bool, execution_mode: str, reader_ok: bool) -> bool:
+    if not bool(reader_ok):
+        return False
+    if not mock_mode:
+        return True
+    # When runtime uses the real executor against Kiwoom mock host, account reader
+    # is the best source of truth for manual sells / external mock-account changes.
+    return str(execution_mode or "").strip().lower() == "real"
+
+
 def _resolve_execution_mode() -> str:
     mode = str(os.getenv("EXECUTION_MODE", "") or "").strip().lower()
     if mode in ("mock", "real"):
@@ -106,19 +132,55 @@ def build_portfolio_snapshot(state: dict) -> dict:
         persisted_cash = _safe_float((persisted or {}).get("mock_cash"), 0.0)
         persisted_realized = _safe_float((persisted or {}).get("mock_realized_pnl"), 0.0)
         snapshot_positions = _normalize_positions(snapshot.get("positions"))
+        positions_mismatch = _positions_signature(snapshot_positions) != _positions_signature(persisted_positions)
+        reader_authoritative = _reader_positions_authoritative(
+            mock_mode=mock_mode,
+            execution_mode=execution_mode,
+            reader_ok=bool(health.get("reader_ok")),
+        )
+        health["reader_positions_authoritative"] = bool(reader_authoritative)
+        health["reader_positions_count"] = len(snapshot_positions)
+        health["persisted_positions_count"] = len(persisted_positions)
+        health["positions_mismatch_detected"] = bool(positions_mismatch)
+        health["reconciliation_applied"] = False
+        health["reconciliation_status"] = "aligned"
 
-        # In mock mode, prefer live reader positions when available.
-        # Fall back to persisted mock ledger only when reader positions are unavailable.
-        if snapshot_positions:
+        # In mock mode with real executor -> Kiwoom mock host, reader positions are
+        # authoritative even when empty. This keeps local state aligned when an
+        # operator manually exits or when local mock ledger drifts.
+        if reader_authoritative:
+            snapshot["positions"] = snapshot_positions
+            health["positions_source"] = (
+                "reader_positions_authoritative"
+                if snapshot_positions
+                else "reader_positions_authoritative_empty"
+            )
+            if positions_mismatch:
+                if isinstance(persisted, dict):
+                    persisted["mock_positions"] = list(snapshot_positions)
+                    persisted["open_positions"] = len(snapshot_positions)
+                    persisted["mock_position_desync_reconciled"] = True
+                    persisted["portfolio_reconcile_reason"] = "reader_positions_authoritative"
+                health["reconciliation_applied"] = True
+                health["reconciliation_status"] = "reconciled_to_reader"
+            else:
+                health["reconciliation_status"] = "reader_aligned"
+        # In pure local mock execution, fall back to persisted mock ledger when
+        # reader does not return positions.
+        elif snapshot_positions:
             snapshot["positions"] = snapshot_positions
             health["positions_source"] = "reader_positions"
         elif persisted_positions:
             snapshot["positions"] = persisted_positions
             health["positions_source"] = "persisted_mock_positions"
+            health["reconciliation_status"] = "persisted_fallback"
         else:
             snapshot["positions"] = []
             health["positions_source"] = "reader_positions_empty"
-        if persisted_cash > 0.0:
+            health["reconciliation_status"] = "empty"
+        if reader_authoritative:
+            health["cash_source"] = "reader_cash_authoritative"
+        elif persisted_cash > 0.0:
             snapshot["cash"] = float(persisted_cash)
             health["cash_source"] = "persisted_mock_cash"
         else:

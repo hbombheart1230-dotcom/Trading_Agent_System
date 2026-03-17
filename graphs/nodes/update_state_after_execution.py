@@ -62,12 +62,66 @@ def _ensure_mock_cash(ps: dict) -> float:
     return float(base)
 
 
-def _apply_mock_fill(ps: dict, ex: dict) -> None:
+def _resolve_mock_fill_price(state: dict, ex: dict, symbol: str) -> float:
+    order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
+    payload = ex.get("payload") if isinstance(ex.get("payload"), dict) else {}
+
+    candidates = [
+        order.get("price"),
+        order.get("avg_fill_price"),
+        order.get("fill_price"),
+        payload.get("avg_fill_price"),
+        payload.get("fill_price"),
+        payload.get("executed_price"),
+        payload.get("price"),
+    ]
+
+    selected = state.get("selected") if isinstance(state.get("selected"), dict) else {}
+    if normalize_symbol(selected.get("symbol")) == symbol:
+        features = selected.get("features") if isinstance(selected.get("features"), dict) else {}
+        candidates.extend(
+            [
+                selected.get("price"),
+                features.get("skill_quote_price"),
+                features.get("current_price"),
+                features.get("last_price"),
+            ]
+        )
+
+    market = state.get("market_snapshot") if isinstance(state.get("market_snapshot"), dict) else {}
+    if normalize_symbol(market.get("symbol")) in ("", symbol):
+        candidates.extend(
+            [
+                market.get("price"),
+                market.get("cur_price"),
+                market.get("last_price"),
+                market.get("current_price"),
+            ]
+        )
+
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    candidates.extend(
+        [
+            persisted.get("last_market_price"),
+            persisted.get("last_price"),
+        ]
+    )
+
+    for value in candidates:
+        px = _as_float(value, 0.0)
+        if px > 0.0:
+            return float(px)
+    return 0.0
+
+
+def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
     order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
     action = str(order.get("action") or "").strip().upper()
     symbol = normalize_symbol(order.get("symbol"))
     qty = _as_int(order.get("qty"), 0)
     price = _as_float(order.get("price"), 0.0)
+    if price <= 0.0 and isinstance(state, dict):
+        price = _resolve_mock_fill_price(state, ex, symbol)
     if action not in ("BUY", "SELL") or not symbol or qty <= 0:
         return
 
@@ -280,7 +334,7 @@ def update_state_after_execution(state: dict) -> dict:
     # Keep local mock ledger in sync when execution is explicitly mock, or when
     # runtime uses real executor against Kiwoom mock host (KIWOOM_MODE=mock).
     if ok and (mode == "mock" or _is_kiwoom_mock_mode()):
-        _apply_mock_fill(ps, ex)
+        _apply_mock_fill(ps, ex, state)
     elif not ok and _is_kiwoom_mock_mode():
         _reconcile_mock_sell_reject_no_position(ps, ex)
 

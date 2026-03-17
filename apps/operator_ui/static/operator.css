@@ -622,6 +622,14 @@ td a {
   margin-bottom: 16px;
 }
 
+.portfolio-sync-card {
+  margin-bottom: 16px;
+}
+
+.portfolio-sync-card .summary-list {
+  margin-top: 12px;
+}
+
 .details-text {
   margin-top: 8px;
   color: var(--muted);

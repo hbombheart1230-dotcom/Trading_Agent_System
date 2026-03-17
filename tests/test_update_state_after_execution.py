@@ -71,6 +71,25 @@ def test_update_state_mock_buy_updates_mock_positions(monkeypatch):
     assert ps["last_trade_symbol"] == "005930"
 
 
+def test_update_state_mock_buy_uses_selected_quote_when_order_price_missing(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "selected": {"symbol": "005930", "features": {"skill_quote_price": 70100}},
+        "persisted_state": {"last_order_epoch": 10, "mock_positions": []},
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "mock"},
+            "reason": "Allowed",
+            "order": {"action": "BUY", "symbol": "005930", "qty": 1, "price": None},
+        },
+    }
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert ps["open_positions"] == 1
+    assert ps["mock_positions"][0]["avg_price"] == 70100.0
+    assert ps["mock_cash"] == 1929900.0
+
+
 def test_update_state_mock_sell_closes_position(monkeypatch):
     monkeypatch.setattr(time, "time", lambda: 1234.0)
     state = {
@@ -96,6 +115,31 @@ def test_update_state_mock_sell_closes_position(monkeypatch):
     assert ps["last_trade_side"] == "SELL"
     assert ps["last_trade_epoch"] == 1234
     assert ps["last_trade_symbol"] == "005930"
+
+
+def test_update_state_mock_sell_uses_market_snapshot_when_order_price_missing(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "market_snapshot": {"symbol": "005930", "price": 70200.0},
+        "persisted_state": {
+            "last_order_epoch": 10,
+            "mock_positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "unrealized_pnl": 0.0}],
+            "mock_cash": 1860000.0,
+            "mock_realized_pnl": 0.0,
+        },
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "mock"},
+            "reason": "Allowed",
+            "order": {"action": "SELL", "symbol": "005930", "qty": 2, "price": None},
+        },
+    }
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert ps["open_positions"] == 0
+    assert ps["mock_positions"] == []
+    assert ps["mock_cash"] == 2000400.0
+    assert ps["mock_realized_pnl"] == 400.0
 
 
 def test_update_state_real_mode_still_updates_mock_ledger_when_kiwoom_mode_mock(monkeypatch):

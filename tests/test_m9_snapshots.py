@@ -100,6 +100,7 @@ def test_build_portfolio_snapshot_falls_back_when_mock_reader_returns_zero_cash(
 
 def test_build_portfolio_snapshot_uses_persisted_mock_positions_when_reader_empty(monkeypatch):
     monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
     state = {
         "portfolio_reader": MockPortfolioReader(cash=2000000, positions=[]),
         "persisted_state": {
@@ -114,6 +115,39 @@ def test_build_portfolio_snapshot_uses_persisted_mock_positions_when_reader_empt
     assert ps["positions"][0]["symbol"] == "005930"
     assert ps["positions"][0]["qty"] == 3
     assert ps["open_positions"] == 1
+
+
+def test_build_portfolio_snapshot_uses_reader_positions_as_authoritative_in_mock_real_mode(monkeypatch):
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    state = {
+        "portfolio_reader": MockPortfolioReader(cash=1500000, positions=[]),
+        "persisted_state": {
+            "mock_positions": [
+                {"symbol": "005930", "qty": 3, "avg_price": 70000.0, "unrealized_pnl": 0.0},
+            ],
+            "mock_cash": 1234567.0,
+        },
+    }
+
+    out = build_portfolio_snapshot(state)
+    ps = out["portfolio_snapshot"]
+    health = ps.get("_health", {})
+    persisted = out["persisted_state"]
+
+    assert ps["positions"] == []
+    assert ps["open_positions"] == 0
+    assert ps["cash"] == 1500000
+    assert health.get("reader_positions_authoritative") is True
+    assert health.get("positions_source") == "reader_positions_authoritative_empty"
+    assert health.get("positions_mismatch_detected") is True
+    assert health.get("reconciliation_applied") is True
+    assert health.get("reconciliation_status") == "reconciled_to_reader"
+    assert health.get("cash_source") == "reader_cash_authoritative"
+    assert persisted.get("mock_positions") == []
+    assert persisted.get("open_positions") == 0
+    assert persisted.get("mock_position_desync_reconciled") is True
+    assert persisted.get("portfolio_reconcile_reason") == "reader_positions_authoritative"
 
 
 def test_build_portfolio_snapshot_drops_invalid_persisted_mock_symbols(monkeypatch):

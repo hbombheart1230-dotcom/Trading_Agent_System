@@ -184,8 +184,8 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
             {"run_id": "run-1", "ts": "2026-03-16T00:00:05+00:00", "stage": "decision_trace", "event": "candidate_selection", "payload": {"agent": "scanner", "payload": {"selected_symbol": "005930", "candidate_pool_size": 5, "kiwoom_pool_source_mix": {"top_value": 5, "top_volume": 5}, "selected_candidate": {"symbol": "005930", "why": "top_value+trend", "feature_snapshot": {"skill_quote_price": 70500, "quote_volume": 1234567, "quote_trading_value": 89012345678, "intraday_change_pct": 2.15, "engine_ma20_gap": 0.1, "engine_ma60": 1.0, "engine_ma120": 1.0, "engine_adx14": 20.0, "engine_trend_strength": 0.7, "engine_volume_spike20": 1.4, "engine_volatility20": 0.2, "engine_vwap_distance": 0.01, "engine_sector_relative_strength": 0.3, "engine_cross_section_rank": 0.8, "engine_regime": "trend", "engine_signal_score": 0.9}}}}},
             {"run_id": "run-1", "ts": "2026-03-16T00:00:06+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "no_position", "exit_reason": "no_position"}},
             {"run_id": "run-1", "ts": "2026-03-16T00:00:07+00:00", "stage": "decision_trace", "event": "entry_exit_decision", "payload": {"agent": "monitor", "payload": {"entry_reason": "no_position"}}},
-            {"run_id": "run-1", "ts": "2026-03-16T00:00:08+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": True, "reason": "Allowed"}},
-            {"run_id": "run-1", "ts": "2026-03-16T00:00:09+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": True, "order": {"action": "BUY", "symbol": "005930", "qty": 1, "ord_qty": "1"}, "payload": {"order_id": "A0001", "broker_message": "EXECUTED_OK", "response_payload": {"ord_no": "A0001", "return_msg": "EXECUTED_OK"}}}},
+            {"run_id": "run-1", "ts": "2026-03-16T00:00:08+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": True, "reason": "Allowed", "portfolio_guard": {"reader_ok": True, "positions_source": "reader_positions_authoritative_empty", "reconciliation_status": "reader_aligned", "reader_positions_authoritative": True, "positions_mismatch_detected": False, "reconciliation_applied": False, "reader_positions_count": 0, "persisted_positions_count": 0}}},
+            {"run_id": "run-1", "ts": "2026-03-16T00:00:09+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": True, "order": {"action": "BUY", "symbol": "005930", "qty": 1, "ord_qty": "1"}, "portfolio_guard": {"reader_ok": True, "positions_source": "reader_positions_authoritative_empty", "reconciliation_status": "reader_aligned", "reader_positions_authoritative": True, "positions_mismatch_detected": False, "reconciliation_applied": False, "reader_positions_count": 0, "persisted_positions_count": 0}, "payload": {"order_id": "A0001", "broker_message": "EXECUTED_OK", "response_payload": {"ord_no": "A0001", "return_msg": "EXECUTED_OK"}}}},
             {"run_id": "run-1", "ts": "2026-03-16T00:00:10+00:00", "stage": "commander_router", "event": "end", "payload": {"status": "ok", "path": "integrated_chain"}},
         ],
     )
@@ -395,6 +395,8 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "Overtrading Warning" in overview.text
     assert "Trading pace is normal today." in overview.text
     assert "Executions today: 1" in overview.text
+    assert "Portfolio Sync" in overview.text
+    assert "Portfolio Sync OK" in overview.text
     assert "Today Trades" in overview.text
     assert "BUY" in overview.text
     assert "005930" in overview.text
@@ -413,6 +415,7 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "Simulation trade report" in runs.text
     assert "Open report" in runs.text
     assert "Lifecycle CLOSED" in runs.text
+    assert "Portfolio Sync OK" in runs.text
     assert "active elevated_vix" in runs.text
     assert "strong (100%)" in runs.text
 
@@ -428,6 +431,9 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "Market regime:" in detail.text
     assert "Global sentiment: -0.20" in detail.text
     assert "AI Report Status" in detail.text
+    assert "계좌 동기화" in detail.text
+    assert "Portfolio Sync OK" in detail.text
+    assert "계좌 보유 종목과 로컬 상태가 일치했습니다." in detail.text
     assert "AI Report Available" in detail.text
     assert "grade=A-" in detail.text
     assert "strategist prompt" in detail.text
@@ -699,3 +705,28 @@ def test_operator_ui_shows_skipped_status_for_hold_only_run(tmp_path: Path, monk
     assert "운영자 브리프" in detail.text
     assert "AI Report Skipped" in detail.text
     assert "only updated hold/monitor state" in detail.text
+
+
+def test_operator_ui_run_detail_shows_portfolio_sync_mismatch_warning(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
+    cfg = _make_config(tmp_path)
+    with cfg.event_log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"run_id": "run-sync-block", "ts": "2026-03-16T01:00:00+00:00", "stage": "commander_router", "event": "route", "payload": {"mode": "integrated_chain", "phase": "session", "agents": ["strategist", "scanner", "monitor"]}}, ensure_ascii=False) + "\n")
+        f.write(json.dumps({"run_id": "run-sync-block", "ts": "2026-03-16T01:00:01+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "no_position", "exit_reason": "no_position"}}, ensure_ascii=False) + "\n")
+        f.write(json.dumps({"run_id": "run-sync-block", "ts": "2026-03-16T01:00:02+00:00", "stage": "execute_from_packet", "event": "portfolio_guard_block", "payload": {"allowed": False, "reason": "portfolio_snapshot_positions_mismatch_unresolved", "reader_ok": True, "positions_source": "reader_positions", "reconciliation_status": "persisted_fallback", "reader_positions_authoritative": False, "positions_mismatch_detected": True, "reconciliation_applied": False, "reader_positions_count": 0, "persisted_positions_count": 1}}, ensure_ascii=False) + "\n")
+        f.write(json.dumps({"run_id": "run-sync-block", "ts": "2026-03-16T01:00:03+00:00", "stage": "commander_router", "event": "end", "payload": {"status": "ok", "path": "integrated_chain"}}, ensure_ascii=False) + "\n")
+
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    runs = client.get("/runs")
+    assert runs.status_code == 200
+    assert "run-sync-block" in runs.text
+    assert "Portfolio Mismatch" in runs.text
+
+    detail = client.get("/runs/run-sync-block")
+    assert detail.status_code == 200
+    assert "계좌 동기화" in detail.text
+    assert "Portfolio Mismatch" in detail.text
+    assert "신규 BUY는 차단됩니다." in detail.text

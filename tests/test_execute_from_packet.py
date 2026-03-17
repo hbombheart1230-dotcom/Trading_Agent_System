@@ -560,3 +560,75 @@ def test_execute_from_packet_blocks_buy_when_portfolio_snapshot_reader_failed(tm
     assert out["execution"]["reason"] == "portfolio_snapshot_reader_error"
     assert out["execution"]["portfolio_guard"]["reader_ok"] is False
     assert called["execute"] == 0
+
+
+def test_execute_from_packet_blocks_buy_when_portfolio_snapshot_mismatch_unresolved(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("PORTFOLIO_SNAPSHOT_HEALTH_GUARD_ENABLED", "true")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class AllowSupervisor:
+        def allow(self, intent, context):  # type: ignore[no-untyped-def]
+            class R:
+                allow = True
+                reason = "allowed"
+
+            return R()
+
+    called = {"execute": 0}
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            called["execute"] += 1
+
+            class Result:
+                response = ApiResponse.from_http(200, '{"return_code":0,"return_msg":"ok"}')
+                meta = {"executor": "real"}
+
+            return Result()
+
+    state = {
+        "catalog_path": str(cat),
+        "supervisor": AllowSupervisor(),
+        "executor": CaptureExecutor(),
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [],
+            "_health": {
+                "reader_ok": True,
+                "source": "reader",
+                "positions_source": "persisted_mock_positions",
+                "reconciliation_status": "persisted_fallback",
+                "reader_positions_authoritative": False,
+                "positions_mismatch_detected": True,
+                "reconciliation_applied": False,
+                "reader_positions_count": 0,
+                "persisted_positions_count": 1,
+            },
+        },
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "portfolio_snapshot_positions_mismatch_unresolved"
+    assert out["execution"]["portfolio_guard"]["positions_mismatch_detected"] is True
+    assert out["execution"]["portfolio_guard"]["reconciliation_applied"] is False
+    assert called["execute"] == 0

@@ -20,6 +20,7 @@
 
 {% set trade_report = detail.trade_report or {} %}
 {% set trade_diag = trade_report.ai_report_diagnostics or {} %}
+{% set portfolio_sync = detail.portfolio_sync or {} %}
 <section class="card card--attention report-summary-card">
   <h2>AI Report Status</h2>
   <div class="chip-list">
@@ -46,6 +47,32 @@
   <p><a class="link-action" href="{{ trade_report.report_link }}">Open full report</a></p>
   {% else %}
   <p class="subtle-meta">Operator Brief remains available even when full AI report generation is pending, skipped, or failed.</p>
+  {% endif %}
+</section>
+
+<section class="card card--attention portfolio-sync-card {% if portfolio_sync.status == 'aligned' or portfolio_sync.status == 'reconciled' %}card--status-ok{% elif portfolio_sync.status == 'unavailable' %}{% else %}card--status-critical{% endif %}">
+  <h2>계좌 동기화</h2>
+  <div class="chip-list">
+    <span class="{{ portfolio_sync.badge_class or 'status-badge' }}">{{ portfolio_sync.status_label or "Sync status unavailable" }}</span>
+    {% if portfolio_sync.positions_source_label %}
+    <span class="chip">{{ portfolio_sync.positions_source_label }}</span>
+    {% endif %}
+    {% if portfolio_sync.reader_positions_authoritative %}
+    <span class="chip">Reader authoritative</span>
+    {% endif %}
+  </div>
+  <p class="operator-sentence">{{ portfolio_sync.sentence or "이 run에는 계좌 동기화 상태가 기록되지 않았습니다." }}</p>
+  {% if portfolio_sync.note %}
+  <p class="subtle-meta">{{ portfolio_sync.note }}</p>
+  {% endif %}
+  <ul class="summary-list summary-list--tight">
+    <li>Reader: <strong>{% if portfolio_sync.reader_ok is sameas true %}ok{% elif portfolio_sync.reader_ok is sameas false %}error{% else %}-{% endif %}</strong></li>
+    <li>Positions source: {{ portfolio_sync.positions_source_label or "-" }}</li>
+    <li>Reconciliation: {{ portfolio_sync.reconciliation_label or "-" }}</li>
+    <li>Counts: reader {{ portfolio_sync.reader_positions_count or 0 }} / local {{ portfolio_sync.persisted_positions_count or 0 }}</li>
+  </ul>
+  {% if portfolio_sync.reader_error %}
+  <p class="subtle-meta">Reader error: {{ portfolio_sync.reader_error }}</p>
   {% endif %}
 </section>
 

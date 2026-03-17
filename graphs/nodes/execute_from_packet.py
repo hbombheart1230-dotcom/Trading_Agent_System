@@ -367,6 +367,8 @@ def _evaluate_portfolio_snapshot_guard(state: Dict[str, Any], order: Dict[str, A
         return True, "", {"enabled": True, "health_present": False, "guard_applied": True}
 
     reader_ok = _is_trueish(health.get("reader_ok"))
+    positions_mismatch_detected = _is_trueish(health.get("positions_mismatch_detected"))
+    reconciliation_applied = _is_trueish(health.get("reconciliation_applied"))
     details: Dict[str, Any] = {
         "enabled": True,
         "health_present": True,
@@ -374,8 +376,18 @@ def _evaluate_portfolio_snapshot_guard(state: Dict[str, Any], order: Dict[str, A
         "source": str(health.get("source") or ""),
         "reader_error": str(health.get("reader_error") or ""),
         "guard_applied": True,
+        "positions_source": str(health.get("positions_source") or ""),
+        "cash_source": str(health.get("cash_source") or ""),
+        "reader_positions_authoritative": _is_trueish(health.get("reader_positions_authoritative")),
+        "positions_mismatch_detected": bool(positions_mismatch_detected),
+        "reconciliation_applied": bool(reconciliation_applied),
+        "reconciliation_status": str(health.get("reconciliation_status") or ""),
+        "reader_positions_count": _coerce_int(health.get("reader_positions_count"), 0),
+        "persisted_positions_count": _coerce_int(health.get("persisted_positions_count"), 0),
     }
     if reader_ok:
+        if positions_mismatch_detected and not reconciliation_applied:
+            return False, "portfolio_snapshot_positions_mismatch_unresolved", details
         return True, "", details
     return False, "portfolio_snapshot_reader_error", details
 
@@ -893,6 +905,7 @@ def execute_from_packet(state: dict) -> dict:
 
     order: Dict[str, Any] = {}
     allow_result: Any = None
+    portfolio_details: Dict[str, Any] = {}
     try:
         packet: Dict[str, Any] = state["decision_packet"]
 
@@ -1012,7 +1025,7 @@ def execute_from_packet(state: dict) -> dict:
                 run_id=run_id,
                 stage="execute_from_packet",
                 event="portfolio_guard_block",
-                payload={"allowed": False, "reason": portfolio_reason, **portfolio_details},
+                payload={"allowed": False, "reason": portfolio_reason, "portfolio_guard": portfolio_details, **portfolio_details},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -1025,12 +1038,13 @@ def execute_from_packet(state: dict) -> dict:
                 order=order,
                 reason="duplicate_buy_position_exists",
             )
+            state["execution"]["portfolio_guard"] = portfolio_details
             _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
                 event="verdict",
-                payload={"allowed": False, "reason": "duplicate_buy_position_exists"},
+                payload={"allowed": False, "reason": "duplicate_buy_position_exists", "portfolio_guard": portfolio_details},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -1045,12 +1059,13 @@ def execute_from_packet(state: dict) -> dict:
                 reason=cash_reason,
             )
             state["execution"]["cash_guard"] = cash_details
+            state["execution"]["portfolio_guard"] = portfolio_details
             _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
                 event="verdict",
-                payload={"allowed": False, "reason": cash_reason, **cash_details},
+                payload={"allowed": False, "reason": cash_reason, "portfolio_guard": portfolio_details, **cash_details},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -1069,12 +1084,13 @@ def execute_from_packet(state: dict) -> dict:
                 reason=degrade_reason,
             )
             state["execution"]["degrade_policy"] = degrade_details
+            state["execution"]["portfolio_guard"] = portfolio_details
             _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
                 event="degrade_policy_block",
-                payload={"reason": degrade_reason, **degrade_details},
+                payload={"reason": degrade_reason, "portfolio_guard": portfolio_details, **degrade_details},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -1095,6 +1111,7 @@ def execute_from_packet(state: dict) -> dict:
                 order=order,
                 reason=getattr(allow_result, "reason", "blocked"),
             )
+            state["execution"]["portfolio_guard"] = portfolio_details
             _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=allow_result)
             logger.log(run_id=run_id, stage="execute_from_packet", event="verdict", payload=state["execution"])
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
@@ -1110,9 +1127,15 @@ def execute_from_packet(state: dict) -> dict:
             allow_result=allow_result,
             order=order,
         )
+        state["execution"]["portfolio_guard"] = portfolio_details
 
         _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=allow_result)
-        logger.log(run_id=run_id, stage="execute_from_packet", event="verdict", payload={"allowed": True})
+        logger.log(
+            run_id=run_id,
+            stage="execute_from_packet",
+            event="verdict",
+            payload={"allowed": True, "portfolio_guard": portfolio_details},
+        )
         logger.log(run_id=run_id, stage="execute_from_packet", event="execution", payload=state["execution"])
         logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
         return state

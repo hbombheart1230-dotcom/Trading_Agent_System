@@ -526,6 +526,177 @@ def _report_next_step(code: Any) -> str:
     return mapping.get(raw, "Review diagnostics and proceed with the Operator Brief in the meantime.")
 
 
+def _portfolio_sync_badge_class(status: Any) -> str:
+    raw = str(status or "").strip().lower()
+    if raw in {"aligned", "reconciled"}:
+        return "status-badge status-badge--ok"
+    if raw == "unavailable":
+        return "status-badge"
+    return "status-badge status-badge--critical"
+
+
+def _portfolio_sync_label(status: Any) -> str:
+    raw = str(status or "").strip().lower()
+    mapping = {
+        "aligned": "Portfolio Sync OK",
+        "reconciled": "Portfolio Reconciled",
+        "mismatch": "Portfolio Mismatch",
+        "reader_error": "Portfolio Reader Error",
+        "unavailable": "Sync status unavailable",
+    }
+    return mapping.get(raw, "Portfolio Sync")
+
+
+def _portfolio_sync_sentence(status: Any) -> str:
+    raw = str(status or "").strip().lower()
+    mapping = {
+        "aligned": "계좌 보유 종목과 로컬 상태가 일치했습니다.",
+        "reconciled": "계좌 보유 종목을 기준으로 로컬 상태를 자동 정합화했습니다.",
+        "mismatch": "계좌 보유 종목과 로컬 상태 불일치가 남아 있습니다. 신규 BUY는 차단됩니다.",
+        "reader_error": "계좌 조회에 실패했습니다. 신규 BUY는 차단됩니다.",
+        "unavailable": "이 run에는 계좌 동기화 상태가 기록되지 않았습니다.",
+    }
+    return mapping.get(raw, "계좌 동기화 상태를 확인하세요.")
+
+
+def _portfolio_positions_source_label(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    mapping = {
+        "reader_positions_authoritative": "Reader positions",
+        "reader_positions_authoritative_empty": "Reader says no positions",
+        "reader_positions": "Reader positions",
+        "persisted_mock_positions": "Local fallback positions",
+        "reader_positions_empty": "No positions",
+    }
+    return mapping.get(raw, raw.replace("_", " ") if raw else "")
+
+
+def _portfolio_reconciliation_label(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    mapping = {
+        "aligned": "Already aligned",
+        "reader_aligned": "Already aligned",
+        "reconciled_to_reader": "Reconciled to account reader",
+        "persisted_fallback": "Using local fallback",
+        "empty": "No active positions",
+    }
+    return mapping.get(raw, raw.replace("_", " ") if raw else "")
+
+
+def _build_portfolio_sync_card(raw: Any) -> Dict[str, Any]:
+    guard = raw if isinstance(raw, dict) else {}
+    if not guard:
+        status = "unavailable"
+        return {
+            "available": False,
+            "status": status,
+            "status_label": _portfolio_sync_label(status),
+            "badge_class": _portfolio_sync_badge_class(status),
+            "sentence": _portfolio_sync_sentence(status),
+            "note": "",
+            "positions_source": "",
+            "positions_source_label": "",
+            "reconciliation_status": "",
+            "reconciliation_label": "",
+            "reader_ok": None,
+            "reader_error": "",
+            "reader_positions_authoritative": False,
+            "positions_mismatch_detected": False,
+            "reconciliation_applied": False,
+            "reader_positions_count": 0,
+            "persisted_positions_count": 0,
+        }
+
+    reader_ok = bool(guard.get("reader_ok"))
+    mismatch = bool(guard.get("positions_mismatch_detected"))
+    reconciled = bool(guard.get("reconciliation_applied"))
+    if not reader_ok:
+        status = "reader_error"
+    elif mismatch and reconciled:
+        status = "reconciled"
+    elif mismatch:
+        status = "mismatch"
+    else:
+        status = "aligned"
+
+    positions_source = str(guard.get("positions_source") or "")
+    reconciliation_status = str(guard.get("reconciliation_status") or "")
+    counts_note = (
+        f"Reader { _safe_int(guard.get('reader_positions_count'), 0) } / local { _safe_int(guard.get('persisted_positions_count'), 0) }"
+    )
+    note_bits = [bit for bit in [
+        _portfolio_positions_source_label(positions_source),
+        _portfolio_reconciliation_label(reconciliation_status),
+        counts_note,
+    ] if bit]
+
+    return {
+        "available": True,
+        "status": status,
+        "status_label": _portfolio_sync_label(status),
+        "badge_class": _portfolio_sync_badge_class(status),
+        "sentence": _portfolio_sync_sentence(status),
+        "note": " | ".join(note_bits),
+        "positions_source": positions_source,
+        "positions_source_label": _portfolio_positions_source_label(positions_source),
+        "reconciliation_status": reconciliation_status,
+        "reconciliation_label": _portfolio_reconciliation_label(reconciliation_status),
+        "reader_ok": reader_ok,
+        "reader_error": str(guard.get("reader_error") or ""),
+        "reader_positions_authoritative": bool(guard.get("reader_positions_authoritative")),
+        "positions_mismatch_detected": mismatch,
+        "reconciliation_applied": reconciled,
+        "reader_positions_count": _safe_int(guard.get("reader_positions_count"), 0),
+        "persisted_positions_count": _safe_int(guard.get("persisted_positions_count"), 0),
+    }
+
+
+def _extract_portfolio_guard_payload_from_run_rows(run_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(run_rows, list) or not run_rows:
+        return {}
+    execution_payload = next(
+        (
+            r.get("payload")
+            for r in reversed(run_rows)
+            if str(r.get("stage") or "") == "execute_from_packet"
+            and str(r.get("event") or "") == "execution"
+            and isinstance(r.get("payload"), dict)
+        ),
+        {},
+    )
+    if isinstance(execution_payload, dict) and isinstance(execution_payload.get("portfolio_guard"), dict):
+        return dict(execution_payload.get("portfolio_guard") or {})
+
+    verdict_payload = next(
+        (
+            r.get("payload")
+            for r in reversed(run_rows)
+            if str(r.get("stage") or "") == "execute_from_packet"
+            and str(r.get("event") or "") == "verdict"
+            and isinstance(r.get("payload"), dict)
+        ),
+        {},
+    )
+    if isinstance(verdict_payload, dict) and isinstance(verdict_payload.get("portfolio_guard"), dict):
+        return dict(verdict_payload.get("portfolio_guard") or {})
+
+    portfolio_guard_block_payload = next(
+        (
+            r.get("payload")
+            for r in reversed(run_rows)
+            if str(r.get("stage") or "") == "execute_from_packet"
+            and str(r.get("event") or "") == "portfolio_guard_block"
+            and isinstance(r.get("payload"), dict)
+        ),
+        {},
+    )
+    if isinstance(portfolio_guard_block_payload, dict):
+        if isinstance(portfolio_guard_block_payload.get("portfolio_guard"), dict):
+            return dict(portfolio_guard_block_payload.get("portfolio_guard") or {})
+        return dict(portfolio_guard_block_payload)
+    return {}
+
+
 def _normalize_ai_report_diagnostics(
     raw: Any,
     *,
@@ -884,6 +1055,12 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
         }
     ai_review = reporter.get("ai_review") if isinstance(reporter.get("ai_review"), dict) else {}
     trade_summary = reporter.get("trade_summary") if isinstance(reporter.get("trade_summary"), dict) else {}
+    recent_runs = load_recent_runs(config, limit=1)
+    latest_run_sync = (
+        dict((recent_runs[0] or {}).get("portfolio_sync") or {})
+        if recent_runs and isinstance(recent_runs[0], dict)
+        else _build_portfolio_sync_card({})
+    )
 
     return {
         "latest_day": latest_day,
@@ -924,6 +1101,7 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
         "overtrading_warning": overtrading_warning,
         "latest_strategist_prompt": latest_prompt,
         "strategy_memory_timeline": strategy_memory_timeline,
+        "portfolio_sync": latest_run_sync,
     }
 
 
@@ -1216,6 +1394,7 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[
             {},
         )
         execution = _normalize_execution_payload(execution_payload if isinstance(execution_payload, dict) else {})
+        portfolio_sync = _build_portfolio_sync_card(_extract_portfolio_guard_payload_from_run_rows(run_rows))
         selected_candidate = candidate_selection.get("selected_candidate") if isinstance(candidate_selection.get("selected_candidate"), dict) else {}
         feature_snapshot = selected_candidate.get("feature_snapshot") if isinstance(selected_candidate.get("feature_snapshot"), dict) else {}
         feature_coverage = _feature_coverage(feature_snapshot)
@@ -1309,6 +1488,11 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[
                 "report_summary": str(report_meta.get("report_summary") or "No linked trade report for this run."),
                 "reporter_status_human": str(report_meta.get("reporter_status_human") or ""),
                 "report_link": str(report_meta.get("report_link") or ""),
+                "portfolio_sync": portfolio_sync,
+                "portfolio_sync_status": str(portfolio_sync.get("status") or "unavailable"),
+                "portfolio_sync_label": str(portfolio_sync.get("status_label") or "Sync status unavailable"),
+                "portfolio_sync_badge_class": str(portfolio_sync.get("badge_class") or "status-badge"),
+                "portfolio_sync_sentence": str(portfolio_sync.get("sentence") or ""),
             }
         )
     return out
@@ -2901,6 +3085,7 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
     verdict_payload = next((r.get("payload") for r in reversed(all_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "verdict" and isinstance(r.get("payload"), dict)), {})
     execution_payload = next((r.get("payload") for r in reversed(all_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "execution" and isinstance(r.get("payload"), dict)), {})
     normalized_execution = _normalize_execution_payload(execution_payload if isinstance(execution_payload, dict) else {})
+    portfolio_sync = _build_portfolio_sync_card(_extract_portfolio_guard_payload_from_run_rows(all_rows))
 
     strategic_frame = next(
         (
@@ -3105,6 +3290,7 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
         "executor": {
             "execution": execution_payload,
         },
+        "portfolio_sync": portfolio_sync,
         "same_day_symbol_trade_history": {
             "day": run_day,
             "symbol": primary_symbol,

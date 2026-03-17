@@ -1,0 +1,185 @@
+{
+  "last_order_epoch": 1773632511,
+  "open_positions": 1,
+  "daily_pnl_ratio": 0.0,
+  "mock_cash": 3598600.0,
+  "mock_positions": [
+    {
+      "symbol": "032820",
+      "qty": 1,
+      "avg_price": 24800.0,
+      "unrealized_pnl": 0.0
+    }
+  ],
+  "mock_realized_pnl": 14400.0,
+  "last_trade_side": "BUY",
+  "last_trade_epoch": 1773632511,
+  "last_execution_ok": false,
+  "last_execution_reason": "noop_intent_skipped",
+  "last_market_price": 24800.0,
+  "mock_position_desync_reconciled": true,
+  "recent_scanner_selected": [
+    {
+      "symbol": "032820",
+      "epoch": 1773707810
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773707899
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773707979
+    },
+    {
+      "symbol": "008350",
+      "epoch": 1773708060
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773708140
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773708226
+    },
+    {
+      "symbol": "008350",
+      "epoch": 1773708314
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773708395
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773708481
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773708561
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773708644
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773708727
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773708807
+    },
+    {
+      "symbol": "008350",
+      "epoch": 1773708888
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773708967
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773709047
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773709133
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773709218
+    },
+    {
+      "symbol": "178320",
+      "epoch": 1773709297
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773709380
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773709464
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773709551
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773709637
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773709719
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773709803
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773709882
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773709975
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773710055
+    },
+    {
+      "symbol": "008350",
+      "epoch": 1773710137
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773710223
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773710317
+    },
+    {
+      "symbol": "032820",
+      "epoch": 1773710403
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1773710455
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1773710625
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1773710889
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1773710970
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1773711050
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1773711130
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1773711210
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1773711295
+    }
+  ],
+  "last_trade_symbol": "032820",
+  "mock_position_repair_note": "2026-03-17: repaired 032820 avg_price from open lifecycle entry skill_quote_price=24800.0"
+}
