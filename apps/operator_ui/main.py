@@ -46,15 +46,20 @@ def create_app(config: Optional[OperatorUIConfig] = None) -> FastAPI:
         )
 
     @app.get("/runs", response_class=HTMLResponse)
-    def runs(request: Request, limit: int = Query(default=50, ge=1, le=200)) -> HTMLResponse:
+    def runs(
+        request: Request,
+        limit: int = Query(default=50, ge=1, le=200),
+        mismatch_only: bool = Query(default=False),
+    ) -> HTMLResponse:
         return templates.TemplateResponse(
             name="runs.html",
             request=request,
             context={
                 "page_title": "Recent Runs",
                 "section": "runs",
-                "runs": load_recent_runs(cfg, limit=limit),
+                "runs": load_recent_runs(cfg, limit=limit, mismatch_only=mismatch_only),
                 "limit": int(limit),
+                "mismatch_only": bool(mismatch_only),
             },
         )
 

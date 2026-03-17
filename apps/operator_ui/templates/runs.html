@@ -14,6 +14,11 @@
   </div>
 </section>
 
+<section class="run-filters">
+  <a href="/runs?limit={{ limit }}" class="link-action {% if not mismatch_only %}link-action--active{% endif %}">All runs</a>
+  <a href="/runs?limit={{ limit }}&mismatch_only=true" class="link-action {% if mismatch_only %}link-action--active{% endif %}">Mismatch only</a>
+</section>
+
 <section class="card table-card">
   <table>
     <thead>

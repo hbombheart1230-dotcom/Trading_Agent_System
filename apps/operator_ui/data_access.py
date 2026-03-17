@@ -1055,12 +1055,22 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
         }
     ai_review = reporter.get("ai_review") if isinstance(reporter.get("ai_review"), dict) else {}
     trade_summary = reporter.get("trade_summary") if isinstance(reporter.get("trade_summary"), dict) else {}
-    recent_runs = load_recent_runs(config, limit=1)
+    recent_runs = load_recent_runs(config, limit=200)
     latest_run_sync = (
         dict((recent_runs[0] or {}).get("portfolio_sync") or {})
         if recent_runs and isinstance(recent_runs[0], dict)
         else _build_portfolio_sync_card({})
     )
+    sync_runs_today = [
+        row for row in recent_runs
+        if latest_day and str(row.get("ts") or "").startswith(latest_day)
+    ]
+    sync_summary = {
+        "today_total": len(sync_runs_today),
+        "aligned_total": sum(1 for row in sync_runs_today if str((row.get("portfolio_sync") or {}).get("status") or "") == "aligned"),
+        "reconciled_total": sum(1 for row in sync_runs_today if str((row.get("portfolio_sync") or {}).get("status") or "") == "reconciled"),
+        "alert_total": sum(1 for row in sync_runs_today if str((row.get("portfolio_sync") or {}).get("status") or "") in {"mismatch", "reader_error"}),
+    }
 
     return {
         "latest_day": latest_day,
@@ -1102,6 +1112,7 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
         "latest_strategist_prompt": latest_prompt,
         "strategy_memory_timeline": strategy_memory_timeline,
         "portfolio_sync": latest_run_sync,
+        "portfolio_sync_summary": sync_summary,
     }
 
 
@@ -1334,7 +1345,7 @@ def load_latest_strategist_prompt_summary(config: OperatorUIConfig, day: str) ->
     }
 
 
-def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[str, Any]]:
+def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50, mismatch_only: bool = False) -> List[Dict[str, Any]]:
     rows = list(_iter_jsonl(config.event_log_path))
     route_rows = [row for row in rows if str(row.get("stage") or "") == "commander_router" and str(row.get("event") or "") == "route"]
     route_rows = sorted(route_rows, key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)[: max(1, int(limit))]
@@ -1448,8 +1459,7 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[
                     lifecycle_status="",
                     story_type="decision_only",
                 )
-        out.append(
-            {
+        row = {
                 "run_id": rid,
                 "run_id_short": _short_run_id(rid),
                 "ts": _iso_to_display(route.get("ts")),
@@ -1494,7 +1504,9 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50) -> List[Dict[
                 "portfolio_sync_badge_class": str(portfolio_sync.get("badge_class") or "status-badge"),
                 "portfolio_sync_sentence": str(portfolio_sync.get("sentence") or ""),
             }
-        )
+        if mismatch_only and row["portfolio_sync_status"] not in {"mismatch", "reader_error"}:
+            continue
+        out.append(row)
     return out
 
 

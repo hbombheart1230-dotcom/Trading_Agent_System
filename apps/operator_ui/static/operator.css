@@ -303,7 +303,7 @@ td a {
 
 .kpi-strip {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 16px;
 }
 
@@ -620,6 +620,17 @@ td a {
 
 .report-summary-card {
   margin-bottom: 16px;
+}
+
+.run-filters {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 16px;
+}
+
+.link-action--active {
+  background: rgba(15, 109, 104, 0.18);
+  border-color: rgba(15, 109, 104, 0.42);
 }
 
 .portfolio-sync-card {

@@ -311,6 +311,99 @@ def _portfolio_guard_event_summary(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _portfolio_preflight_event_summary(state: Dict[str, Any]) -> Dict[str, Any]:
+    pf = state.get("portfolio_preflight")
+    if not isinstance(pf, dict):
+        return {}
+    return {
+        "portfolio_preflight": {
+            "applied": bool(pf.get("applied")),
+            "blocked": bool(pf.get("blocked")),
+            "reason": str(pf.get("reason") or ""),
+            "phase": str(pf.get("phase") or ""),
+        }
+    }
+
+
+def _extract_portfolio_snapshot_health(state: Dict[str, Any]) -> Dict[str, Any]:
+    health = state.get("portfolio_snapshot_health")
+    if isinstance(health, dict):
+        return dict(health)
+    snap = state.get("portfolio_snapshot")
+    if isinstance(snap, dict) and isinstance(snap.get("_health"), dict):
+        return dict(snap.get("_health") or {})
+    return {}
+
+
+def _portfolio_preflight_block_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+    health = _extract_portfolio_snapshot_health(state)
+    if not health:
+        return {}
+
+    reader_ok = bool(health.get("reader_ok"))
+    mismatch = bool(health.get("positions_mismatch_detected"))
+    reconciled = bool(health.get("reconciliation_applied"))
+
+    reason = ""
+    reason_human = ""
+    if not reader_ok:
+        reason = "portfolio_snapshot_reader_error"
+        reason_human = "계좌 조회가 실패해서 전략 판단 전에 실행을 중단했습니다."
+    elif mismatch and not reconciled:
+        reason = "portfolio_snapshot_positions_mismatch_unresolved"
+        reason_human = "계좌 보유 종목과 로컬 상태 불일치가 남아 있어서 전략 판단 전에 실행을 중단했습니다."
+    if not reason:
+        return {}
+
+    return {
+        "blocked": True,
+        "reason": reason,
+        "reason_human": reason_human,
+        "reader_ok": reader_ok,
+        "positions_source": str(health.get("positions_source") or ""),
+        "reconciliation_status": str(health.get("reconciliation_status") or ""),
+        "reader_positions_authoritative": bool(health.get("reader_positions_authoritative")),
+        "positions_mismatch_detected": mismatch,
+        "reconciliation_applied": reconciled,
+        "reader_positions_count": _coerce_int(health.get("reader_positions_count"), 0),
+        "persisted_positions_count": _coerce_int(health.get("persisted_positions_count"), 0),
+    }
+
+
+def _apply_portfolio_preflight_guard(state: Dict[str, Any], *, phase: RuntimePhase) -> Tuple[bool, Dict[str, Any]]:
+    payload = _portfolio_preflight_block_payload(state)
+    if not payload:
+        state["portfolio_preflight"] = {
+            "applied": True,
+            "blocked": False,
+            "phase": phase,
+        }
+        return True, state
+
+    state["portfolio_preflight"] = {
+        "applied": True,
+        "blocked": True,
+        "phase": phase,
+        **payload,
+    }
+    state["runtime_status"] = "preflight_blocked"
+    state["path"] = "portfolio_preflight_guard"
+    state["decision"] = "reject"
+    state["intents"] = []
+    state["selected"] = None
+    state["execution"] = {
+        "allowed": False,
+        "ok": False,
+        "reason": payload.get("reason"),
+        "order": {"action": "NOOP"},
+        "payload": {
+            "mode": "preflight_guard",
+            "reason_human": payload.get("reason_human"),
+        },
+    }
+    return False, state
+
+
 def _intent_from_monitor_state(state: Dict[str, Any]) -> Dict[str, Any]:
     intents = state.get("intents")
     if not isinstance(intents, list) or not intents:
@@ -366,6 +459,9 @@ def _run_integrated_chain(
     state = build_portfolio_snapshot(state)
     snaps = state.get("snapshots") if isinstance(state.get("snapshots"), dict) else {}
     state["snapshots"] = {**dict(snaps or {}), "portfolio": state.get("portfolio_snapshot")}
+    should_continue, state = _apply_portfolio_preflight_guard(state, phase="session")
+    if not should_continue:
+        return state
     state = build_risk_context(state)
 
     state = strategist_node(state)
@@ -393,6 +489,9 @@ def _run_preopen_phase(state: Dict[str, Any]) -> Dict[str, Any]:
     state = build_portfolio_snapshot(state)
     snaps = state.get("snapshots") if isinstance(state.get("snapshots"), dict) else {}
     state["snapshots"] = {**dict(snaps or {}), "portfolio": state.get("portfolio_snapshot")}
+    should_continue, state = _apply_portfolio_preflight_guard(state, phase="preopen")
+    if not should_continue:
+        return state
     state = build_risk_context(state)
     state = strategist_node(state)
     state["path"] = "preopen_strategist"
@@ -545,6 +644,7 @@ def run_commander_runtime(
                     "status": state.get("runtime_status", "preopen_ready"),
                     "path": state.get("path", "preopen_strategist"),
                     **_portfolio_guard_event_summary(state),
+                    **_portfolio_preflight_event_summary(state),
                 },
             )
             return state
@@ -560,6 +660,7 @@ def run_commander_runtime(
                     "status": state.get("runtime_status", "closeout_ready"),
                     "path": state.get("path", "closeout_idle"),
                     **_portfolio_guard_event_summary(state),
+                    **_portfolio_preflight_event_summary(state),
                 },
             )
             return state
@@ -576,6 +677,7 @@ def run_commander_runtime(
                     "status": state.get("runtime_status", "ok"),
                     "path": "decision_packet",
                     **_portfolio_guard_event_summary(state),
+                    **_portfolio_preflight_event_summary(state),
                 },
             )
             return state
@@ -589,8 +691,9 @@ def run_commander_runtime(
                     "mode": selected,
                     "phase": selected_phase,
                     "status": state.get("runtime_status", "ok"),
-                    "path": "integrated_chain",
+                    "path": state.get("path", "integrated_chain"),
                     **_portfolio_guard_event_summary(state),
+                    **_portfolio_preflight_event_summary(state),
                 },
             )
             return state
@@ -605,6 +708,7 @@ def run_commander_runtime(
                 "status": state.get("runtime_status", "ok"),
                 "path": "graph_spine",
                 **_portfolio_guard_event_summary(state),
+                **_portfolio_preflight_event_summary(state),
             },
         )
         return state

@@ -18,6 +18,7 @@
   {% set recon_broker = overview.reconciliation.broker_total or 0 %}
   {% set recon_matched = overview.reconciliation.matched_by_ord_no or 0 %}
   {% set portfolio_sync = overview.portfolio_sync or {} %}
+  {% set portfolio_sync_summary = overview.portfolio_sync_summary or {} %}
   {% set recon_base = [recon_local, recon_broker] | max %}
   {% if recon_base == 0 %}
     {% set recon_status = "OK" %}
@@ -94,6 +95,16 @@
       <h2>Reconciliation</h2>
       <div class="status-badge status-badge--{{ recon_tone }}">{{ recon_status }}</div>
       <p class="subtle-meta">{{ recon_sentence }}</p>
+    </article>
+
+    <article class="card card--hero {% if (portfolio_sync_summary.alert_total or 0) > 0 %}card--status-critical{% else %}card--status-ok{% endif %}">
+      <h2>Portfolio Sync</h2>
+      <div class="{{ portfolio_sync.badge_class or 'status-badge' }}">{{ portfolio_sync.status_label or "Sync status unavailable" }}</div>
+      <p class="subtle-meta">
+        Today: {{ portfolio_sync_summary.aligned_total or 0 }} aligned,
+        {{ portfolio_sync_summary.reconciled_total or 0 }} reconciled,
+        {{ portfolio_sync_summary.alert_total or 0 }} alerts
+      </p>
     </article>
   </section>
 

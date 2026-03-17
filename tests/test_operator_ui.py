@@ -397,6 +397,9 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "Executions today: 1" in overview.text
     assert "Portfolio Sync" in overview.text
     assert "Portfolio Sync OK" in overview.text
+    assert "1 aligned" in overview.text
+    assert "0 reconciled" in overview.text
+    assert "0 alerts" in overview.text
     assert "Today Trades" in overview.text
     assert "BUY" in overview.text
     assert "005930" in overview.text
@@ -416,6 +419,7 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "Open report" in runs.text
     assert "Lifecycle CLOSED" in runs.text
     assert "Portfolio Sync OK" in runs.text
+    assert "Mismatch only" in runs.text
     assert "active elevated_vix" in runs.text
     assert "strong (100%)" in runs.text
 
@@ -724,6 +728,11 @@ def test_operator_ui_run_detail_shows_portfolio_sync_mismatch_warning(tmp_path: 
     assert runs.status_code == 200
     assert "run-sync-block" in runs.text
     assert "Portfolio Mismatch" in runs.text
+
+    mismatch_runs = client.get("/runs?mismatch_only=true")
+    assert mismatch_runs.status_code == 200
+    assert "run-sync-block" in mismatch_runs.text
+    assert "run-1" not in mismatch_runs.text
 
     detail = client.get("/runs/run-sync-block")
     assert detail.status_code == 200

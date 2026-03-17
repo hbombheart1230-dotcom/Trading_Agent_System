@@ -471,3 +471,90 @@ def test_m31_integrated_chain_hydrates_portfolio_and_updates_execution_state(mon
         "execute",
         "update_state_after_execution",
     ]
+
+
+def test_m31_integrated_chain_preflight_blocks_before_strategist_when_reader_error(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 0.0,
+            "positions": [],
+            "_health": {
+                "reader_ok": False,
+                "reader_error": "account_api_500",
+            },
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        return state
+
+    def fake_execute(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("execute")
+        return state
+
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+
+    out = _run_integrated_chain({}, execute_fn=fake_execute)
+
+    assert out["path"] == "portfolio_preflight_guard"
+    assert out["runtime_status"] == "preflight_blocked"
+    assert out["portfolio_preflight"]["blocked"] is True
+    assert out["portfolio_preflight"]["reason"] == "portfolio_snapshot_reader_error"
+    assert out["execution"]["allowed"] is False
+    assert calls == ["build_portfolio_snapshot"]
+
+
+def test_m21_runtime_preopen_phase_preflight_blocks_before_strategist(monkeypatch):
+    calls: list[str] = []
+    logger = _FakeEventLogger()
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000000.0,
+            "positions": [],
+            "_health": {
+                "reader_ok": True,
+                "positions_mismatch_detected": True,
+                "reconciliation_applied": False,
+                "positions_source": "persisted_mock_positions",
+                "reconciliation_status": "persisted_fallback",
+            },
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        return state
+
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+
+    out = run_commander_runtime(
+        {"runtime_mode": "integrated_chain", "runtime_phase": "preopen", "event_logger": logger},
+    )
+
+    assert out["path"] == "portfolio_preflight_guard"
+    assert out["runtime_status"] == "preflight_blocked"
+    assert out["portfolio_preflight"]["reason"] == "portfolio_snapshot_positions_mismatch_unresolved"
+    assert calls == ["build_portfolio_snapshot"]
+
+    end_rows = [r for r in logger.rows if r.get("stage") == "commander_router" and r.get("event") == "end"]
+    assert len(end_rows) == 1
+    assert end_rows[0]["payload"]["path"] == "portfolio_preflight_guard"
+    assert end_rows[0]["payload"]["portfolio_preflight"]["blocked"] is True
