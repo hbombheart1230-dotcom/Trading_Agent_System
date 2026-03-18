@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from libs.runtime.market_hours import KST
 from libs.runtime.market_hours import MarketHours
 from libs.runtime.market_hours import now_kst
+from libs.storage.state_store import StateStore
 
 
 PHASE_PREOPEN = "preopen"
@@ -403,6 +404,86 @@ def _stop_live_loop_processes(common: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _resolve_state_store_path(common: Dict[str, Any]) -> Path:
+    explicit = common.get("state_path")
+    if explicit:
+        return Path(explicit)
+    env_obj = _read_env_file(Path(common["env_path"]))
+    raw = str(env_obj.get("STATE_STORE_PATH", "")).strip()
+    return _resolve_path(raw, "data/state.json")
+
+
+def _closeout_backup_liquidation(common: Dict[str, Any]) -> Dict[str, Any]:
+    t0 = time.time()
+    state_path = _resolve_state_store_path(common)
+    env_obj = _read_env_file(Path(common["env_path"]))
+    kiwoom_mode = str(env_obj.get("KIWOOM_MODE", "")).strip().lower()
+    out: Dict[str, Any] = {
+        "step_id": "closeout.backup_liquidation",
+        "mode": "noop",
+        "ok": True,
+        "rc": 0,
+        "state_path": str(state_path),
+        "positions_before": 0,
+        "positions_after": 0,
+        "qty_total_before": 0,
+        "symbols_before": [],
+        "symbols_after": [],
+        "error": "",
+        "duration_sec": 0.0,
+    }
+    try:
+        store = StateStore(str(state_path))
+        state = store.load()
+        raw_positions = state.get("mock_positions")
+        positions: List[Dict[str, Any]] = []
+        for row in raw_positions if isinstance(raw_positions, list) else []:
+            if not isinstance(row, dict):
+                continue
+            qty = _to_int(row.get("qty"), 0)
+            symbol = str(row.get("symbol") or "").strip()
+            if qty <= 0 or not symbol:
+                continue
+            positions.append({"symbol": symbol, "qty": qty})
+        out["positions_before"] = len(positions)
+        out["qty_total_before"] = sum(int(row.get("qty") or 0) for row in positions)
+        out["symbols_before"] = [str(row.get("symbol") or "") for row in positions]
+        if not positions:
+            out["mode"] = "noop_already_flat"
+            out["duration_sec"] = round(max(0.0, float(time.time() - t0)), 3)
+            return out
+        if kiwoom_mode != "mock":
+            out["mode"] = "non_mock_requires_manual_flatten"
+            out["ok"] = False
+            out["rc"] = 2
+            out["error"] = "backup_liquidation_non_mock_not_supported"
+            out["duration_sec"] = round(max(0.0, float(time.time() - t0)), 3)
+            return out
+
+        state["mock_positions"] = []
+        state["open_positions"] = 0
+        state.pop("position_peak_price", None)
+        state.pop("position_strategy_context", None)
+        state["closeout_backup_liquidation"] = {
+            "applied": True,
+            "applied_at": _utc_now_iso(),
+            "mode": "mock_backup_flatten",
+            "symbols": list(out["symbols_before"]),
+            "qty_total": int(out["qty_total_before"]),
+            "reason": "closeout_forced_flatten_backup",
+        }
+        store.save(state)
+        out["mode"] = "mock_backup_flatten"
+        out["positions_after"] = 0
+        out["symbols_after"] = []
+    except Exception as ex:
+        out["ok"] = False
+        out["rc"] = 1
+        out["error"] = f"{type(ex).__name__}: {ex}"
+    out["duration_sec"] = round(max(0.0, float(time.time() - t0)), 3)
+    return out
+
+
 def _runtime_mode_checks(env_obj: Dict[str, str]) -> Dict[str, Any]:
     runtime_profile = str(env_obj.get("RUNTIME_PROFILE", "")).strip().lower()
     kiwoom_mode = str(env_obj.get("KIWOOM_MODE", "")).strip().lower()
@@ -703,6 +784,8 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
         out["steps"] = steps
         out["failure_reason"] = "stop_session_loop_failed"
         return out
+
+    steps.append(_closeout_backup_liquidation(common))
 
     steps.append(
         _run_subprocess(

@@ -65,6 +65,18 @@ def decision_node(state: Dict[str, Any]) -> Dict[str, Any]:
     has_any_intent = isinstance(intents, list) and len(intents) > 0
     has_selected = bool(state.get("selected"))
 
+    if has_any_intent:
+        first_intent = intents[0] if isinstance(intents[0], dict) else {}
+        raw_side = str(first_intent.get("side") or first_intent.get("action") or "").strip().upper()
+        if raw_side in ("SELL", "CLOSE", "EXIT"):
+            state["decision"] = "approve"
+            state["decision_reason"] = "exit_within_policy"
+            state["risk"] = {
+                "risk_score": float(first_intent.get("risk_score") or 0.0),
+                "confidence": float(first_intent.get("confidence") or 1.0),
+            }
+            return state
+
     if not has_selected and not has_any_intent:
         state["decision"] = "noop"
         state["decision_reason"] = "no_candidate"

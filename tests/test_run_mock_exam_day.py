@@ -109,6 +109,7 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
     env_path = tmp_path / ".env"
     events = tmp_path / "events.jsonl"
     report_dir = tmp_path / "reports"
+    state_path = tmp_path / "state.json"
     _write_env(
         env_path,
         {
@@ -163,6 +164,8 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
             str(env_path),
             "--report-dir",
             str(report_dir),
+            "--state-path",
+            str(state_path),
             "--event-log-path",
             str(events),
             "--json",
@@ -173,6 +176,8 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
     assert out["ok"] is True
     steps = out["phase_result"]["steps"]
     assert steps[0]["step_id"] == "closeout.stop_session_loop"
+    assert steps[1]["step_id"] == "closeout.backup_liquidation"
+    assert steps[1]["mode"] == "noop_already_flat"
     assert calls == [
         "closeout.m31_slo_incident",
         "closeout.metrics",
@@ -184,6 +189,184 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
         "closeout.live_execution_bundles",
         "closeout.report_inventory",
     ]
+
+
+def test_closeout_backup_liquidation_flattens_mock_positions(tmp_path: Path, capsys, monkeypatch):
+    env_path = tmp_path / ".env"
+    events = tmp_path / "events.jsonl"
+    report_dir = tmp_path / "reports"
+    state_path = tmp_path / "state.json"
+    _write_env(
+        env_path,
+        {
+            "RUNTIME_PROFILE": "staging",
+            "KIWOOM_MODE": "mock",
+            "APPROVAL_MODE": "manual",
+            "ALLOW_REAL_EXECUTION": "false",
+        },
+    )
+    events.write_text("", encoding="utf-8")
+    state_path.write_text(
+        json.dumps(
+            {
+                "open_positions": 1,
+                "mock_positions": [{"symbol": "000660", "qty": 2, "avg_price": 1005000.0}],
+                "position_peak_price": {"000660": 1011000.0},
+                "position_strategy_context": {"000660": {"playbook": "defensive"}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        mod,
+        "_stop_live_loop_processes",
+        lambda common: {
+            "step_id": "closeout.stop_session_loop",
+            "mode": "process_cleanup",
+            "rc": 0,
+            "ok": True,
+            "stopped_pids": [],
+            "stopped_total": 0,
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.001,
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run_subprocess",
+        lambda **kwargs: {
+            "step_id": str(kwargs["step_id"]),
+            "command": list(kwargs["command"]),
+            "cwd": str(kwargs["cwd"]),
+            "rc": 0,
+            "ok": True,
+            "stdout_tail": "{}",
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.001,
+        },
+    )
+
+    rc = mod.main(
+        [
+            "--phase",
+            "closeout",
+            "--day",
+            "2026-03-09",
+            "--env-path",
+            str(env_path),
+            "--report-dir",
+            str(report_dir),
+            "--state-path",
+            str(state_path),
+            "--event-log-path",
+            str(events),
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert out["ok"] is True
+    backup_step = out["phase_result"]["steps"][1]
+    assert backup_step["step_id"] == "closeout.backup_liquidation"
+    assert backup_step["mode"] == "mock_backup_flatten"
+    assert backup_step["positions_before"] == 1
+    assert backup_step["qty_total_before"] == 2
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["open_positions"] == 0
+    assert saved["mock_positions"] == []
+    assert "position_peak_price" not in saved
+    assert "position_strategy_context" not in saved
+    assert saved["closeout_backup_liquidation"]["applied"] is True
+
+
+def test_closeout_backup_liquidation_reports_non_mock_positions(tmp_path: Path, capsys, monkeypatch):
+    env_path = tmp_path / ".env"
+    events = tmp_path / "events.jsonl"
+    report_dir = tmp_path / "reports"
+    state_path = tmp_path / "state.json"
+    _write_env(
+        env_path,
+        {
+            "RUNTIME_PROFILE": "staging",
+            "KIWOOM_MODE": "real",
+            "APPROVAL_MODE": "manual",
+            "ALLOW_REAL_EXECUTION": "false",
+        },
+    )
+    events.write_text("", encoding="utf-8")
+    state_path.write_text(
+        json.dumps(
+            {
+                "open_positions": 1,
+                "mock_positions": [{"symbol": "005930", "qty": 1, "avg_price": 70000.0}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        mod,
+        "_stop_live_loop_processes",
+        lambda common: {
+            "step_id": "closeout.stop_session_loop",
+            "mode": "process_cleanup",
+            "rc": 0,
+            "ok": True,
+            "stopped_pids": [],
+            "stopped_total": 0,
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.001,
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run_subprocess",
+        lambda **kwargs: {
+            "step_id": str(kwargs["step_id"]),
+            "command": list(kwargs["command"]),
+            "cwd": str(kwargs["cwd"]),
+            "rc": 0,
+            "ok": True,
+            "stdout_tail": "{}",
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.001,
+        },
+    )
+
+    rc = mod.main(
+        [
+            "--phase",
+            "closeout",
+            "--day",
+            "2026-03-09",
+            "--env-path",
+            str(env_path),
+            "--report-dir",
+            str(report_dir),
+            "--state-path",
+            str(state_path),
+            "--event-log-path",
+            str(events),
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 3
+    assert out["ok"] is False
+    backup_step = out["phase_result"]["steps"][1]
+    assert backup_step["step_id"] == "closeout.backup_liquidation"
+    assert backup_step["mode"] == "non_mock_requires_manual_flatten"
+    assert backup_step["ok"] is False
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["open_positions"] == 1
+    assert len(saved["mock_positions"]) == 1
 
 
 def test_session_success_starts_background_loop(tmp_path: Path, capsys, monkeypatch):
