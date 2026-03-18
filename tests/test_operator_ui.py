@@ -104,6 +104,18 @@ class _AlwaysEmptyRouter:
         return ""
 
 
+class _TimeoutThenEmptyRouter:
+    def __init__(self) -> None:
+        self.client = object()
+        self.calls = 0
+
+    def chat(self, role: str, messages: list[dict], *, policy: dict | None = None) -> str:
+        self.calls += 1
+        if self.calls == 1:
+            raise TimeoutError("operator brief timed out")
+        return ""
+
+
 def _make_config(tmp_path: Path) -> OperatorUIConfig:
     reports = tmp_path / "reports"
     events = tmp_path / "data" / "logs" / "events.jsonl"
@@ -601,7 +613,7 @@ def test_operator_ui_run_detail_repairs_non_json_llm_output(tmp_path: Path, monk
 
     detail = client.get("/runs/run-1")
     assert detail.status_code == 200
-    assert "brief=ok" in detail.text
+    assert "brief=repaired" in detail.text
     assert "repair 경로가 동작했습니다." in detail.text
 
 
@@ -613,7 +625,7 @@ def test_operator_ui_run_detail_uses_line_repair_for_free_model(tmp_path: Path, 
 
     detail = client.get("/runs/run-1")
     assert detail.status_code == 200
-    assert "brief=ok" in detail.text
+    assert "brief=salvaged" in detail.text
     assert "line repair 동작" in detail.text
 
 
@@ -809,7 +821,7 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert saved["run_id"] == "run-1"
     assert saved["trade_id"] == "20260316_005930_buy_run-1"
     assert saved["report_status"] == "available"
-    assert saved["version"] == 9
+    assert saved["version"] == 10
     assert saved["monitor_snapshot"]["price_source"] == "-"
     assert str(saved["monitor_snapshot"]["effective_stop_reason"] or "") in {"", "-", "Hard stop"}
     md_text = brief_md.read_text(encoding="utf-8")
@@ -848,11 +860,33 @@ def test_operator_brief_writes_failure_artifact_after_retries(tmp_path: Path, mo
     brief_llm = brief_json.parent / "brief_llm_response.json"
     artifact = json.loads(brief_llm.read_text(encoding="utf-8"))
 
-    assert brief["status"] == "empty_response"
-    assert artifact["status"] == "empty_response"
+    assert brief["status"] == "fallback"
+    assert brief["failure"]["status"] == "empty_response"
+    assert artifact["status"] == "fallback"
     assert artifact["retry_count"] >= 1
     assert artifact["raw_response_text"] == ""
+    assert artifact["parse_mode"] == "none"
+    assert artifact["required_keys_missing"] == data_access.OPERATOR_BRIEF_REQUIRED_KEYS
+    assert artifact["used_fallback_sections"] == data_access.OPERATOR_BRIEF_REQUIRED_KEYS
     assert brief["headline"].startswith("AI Brief Failed")
+
+
+def test_operator_brief_timeout_retry_preserves_attempt_history(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _TimeoutThenEmptyRouter()))
+    monkeypatch.setenv("OPERATOR_UI_RUN_BRIEF_RETRY_MAX", "1")
+    cfg = _make_config(tmp_path)
+
+    detail = data_access.load_run_detail(cfg, "run-1")
+    brief = detail["operator_brief"]
+    brief_json = Path(str(detail["trade_report"].get("operator_brief_json_path") or ""))
+    artifact = json.loads((brief_json.parent / "brief_llm_response.json").read_text(encoding="utf-8"))
+
+    assert brief["status"] == "fallback"
+    assert brief["failure"]["status"] in {"timeout", "empty_response"}
+    assert artifact["retry_count"] >= 1
+    assert [row["step"] for row in artifact["attempts"][:2]] == ["primary", "retry_1"]
+    assert artifact["attempts"][0]["status"] == "timeout"
+    assert artifact["parse_mode"] == "none"
 
 
 def test_operator_ui_reads_new_trade_artifact_layout(tmp_path: Path, monkeypatch) -> None:
@@ -1104,3 +1138,86 @@ def test_operator_ui_run_detail_shows_portfolio_sync_mismatch_warning(tmp_path: 
     assert "계좌 동기화" in detail.text
     assert "Portfolio Mismatch" in detail.text
     assert "신규 BUY는 차단됩니다." in detail.text
+
+
+def test_load_run_detail_prefers_canonical_run_artifacts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    canonical_dir = cfg.reports_root / "canonical" / "2026-03-16" / "run-1"
+    canonical_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        canonical_dir / "commander.json",
+        {
+            "agent": "commander",
+            "run_id": "run-1",
+            "mode": "integrated_chain",
+            "phase": "session",
+            "path": "integrated_chain_monitor_only",
+            "status": "ok",
+        },
+    )
+    _write_json(
+        canonical_dir / "strategist.json",
+        {
+            "agent": "strategist",
+            "run_id": "run-1",
+            "playbook": "canonical_defensive",
+            "themes": ["chips"],
+            "market_regime": "canonical_neutral",
+            "market_sentiment": "canonical_mixed",
+            "llm_metadata_summary": {"status": "ok", "model": "openrouter/free"},
+        },
+    )
+    _write_json(
+        canonical_dir / "scanner.json",
+        {
+            "agent": "scanner",
+            "run_id": "run-1",
+            "top_stock": "000660",
+            "selected_symbol": "000660",
+            "candidate_pool_after_filter": 7,
+            "selected_candidate": {"symbol": "000660", "why": "canonical rank #1"},
+        },
+    )
+    _write_json(
+        canonical_dir / "monitor.json",
+        {
+            "agent": "monitor",
+            "run_id": "run-1",
+            "monitor_reason": "canonical_hold",
+            "exit_reason": "canonical_hold",
+            "selected_symbol": "000660",
+        },
+    )
+    _write_json(
+        canonical_dir / "supervisor.json",
+        {
+            "agent": "supervisor",
+            "run_id": "run-1",
+            "supervisor_allow": True,
+            "supervisor_reason": "canonical_allowed",
+        },
+    )
+    _write_json(
+        canonical_dir / "executor.json",
+        {
+            "agent": "executor",
+            "run_id": "run-1",
+            "action": "BUY",
+            "symbol": "000660",
+            "qty": 1,
+            "status": "CANONICAL_EXECUTED",
+        },
+    )
+
+    detail = data_access.load_run_detail(cfg, "run-1")
+    assert detail["strategist"]["provenance"] == "canonical"
+    assert detail["scanner"]["provenance"] == "canonical"
+    assert detail["monitor"]["provenance"] == "canonical"
+    assert detail["strategist"]["summary"]["playbook"] == "canonical_defensive"
+    assert detail["scanner"]["summary"]["top_stock"] == "000660"
+    assert detail["monitor"]["summary"]["monitor_reason"] == "canonical_hold"
+    compact = data_access._build_operator_brief_input(detail)
+    assert compact["strategist"]["playbook"] == "canonical_defensive"
+    assert compact["scanner"]["selected_symbol"] == "000660"
+    assert compact["monitor"]["monitor_reason"] == "canonical_hold"

@@ -5,6 +5,7 @@
 - Routes state between Strategist, Scanner, Monitor, Supervisor, and Executor.
 - Handles retry/pause/cancel transitions, runtime mode selection, and runtime phase selection.
 - Never sends orders directly.
+- Writes a canonical per-run artifact at source under `reports/canonical/<day>/<run_id>/commander.json`.
 - Canonical implementation: `graphs/commander_runtime.py`
 - Compatibility layers:
   - `graphs/nodes/commander_node.py` (thin runtime wrapper)
@@ -39,6 +40,9 @@
 - Optional LLM strategic-frame pass can override strategist fields additively.
   - bounded by strategist contract normalization + deterministic fallback
   - observability via EventLog `stage=strategist_llm`, `event=result`
+- Writes a canonical per-run source artifact under `reports/canonical/<day>/<run_id>/strategist.json`.
+  - this artifact is the primary source of strategist rationale for reporting/UI
+  - event logs remain supporting evidence
 - Applies additive macro stress interpretation from VIX / DXY / TNX context.
   - moderate macro stress softens aggression/monitor posture
   - high macro stress can still force clearly defensive guidance
@@ -88,6 +92,8 @@
   - `selected`
   - `top_stock`
   - `scanner_output`
+- Writes a canonical per-run source artifact under `reports/canonical/<day>/<run_id>/scanner.json`.
+  - reporting/UI should read this before reconstructing scanner meaning from logs
 - Canonical implementation: `graphs/nodes/scanner_node.py`
 - Compatibility stage helper: `graphs/nodes/scan_candidates.py`
 
@@ -115,6 +121,8 @@
 - Suppresses duplicate SELL intents with pending-exit lock/cooldown state across polling loops.
 - Keeps emergency exits (`emergency_halt`, `news_shock`) explicit and separate from normal exit confirmation flow.
 - Never executes orders.
+- Writes a canonical per-run source artifact under `reports/canonical/<day>/<run_id>/monitor.json`.
+  - this is the primary source for thresholds, active exit axis, guards, and hold/sell reasoning
 - Canonical implementation: `graphs/nodes/monitor_node.py`
 - Compatibility interface: `libs/agent/monitor.py` (legacy placeholder)
 
@@ -124,6 +132,7 @@
 - Guard precedence always overrides approval.
 - Must consume strategist-owned `strategy_policy` as read-only context.
   - recommended scope: hard risk rails and position-sizing rails only
+- Writes a canonical per-run source artifact under `reports/canonical/<day>/<run_id>/supervisor.json`.
 
 ## Decision Policy
 - `strategy_policy.decision_policy` should be the preferred owner for deterministic decision toggles.
@@ -150,11 +159,16 @@
 - Consumes `strategy_policy` only as execution context metadata.
   - should persist compact `strategy_policy_summary` into execution/verdict traces
   - must not mutate strategy math or silently rewrite strategist thresholds
+- Writes a canonical per-run source artifact under `reports/canonical/<day>/<run_id>/executor.json`.
 
 ## Reporter
 - Builds operator-facing summaries from event logs and reports.
 - Works as a post-run/report script layer (not a runtime control node).
 - Does not change runtime decisions.
+- Must prefer canonical run artifacts first:
+  1. `reports/canonical/<day>/<run_id>/*.json`
+  2. direct run artifacts / trade artifacts
+  3. event logs as fallback evidence only
 - Two-layer passive analysis:
   - deterministic structured analysis (baseline)
   - optional AI review layer on top of deterministic outputs

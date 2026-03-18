@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, Literal, Optional, Tuple
 from graphs.trading_graph import run_trading_graph
 from graphs.nodes.decide_trade import decide_trade
 from graphs.nodes.execute_from_packet import execute_from_packet
+from libs.runtime.canonical_artifacts import write_commander_artifact
 from libs.runtime.resilience_state import ensure_runtime_resilience_state
 
 
@@ -879,6 +880,18 @@ def run_commander_runtime(
     Mode selection uses `resolve_runtime_mode(...)`.
     """
     state = ensure_runtime_resilience_state(state)
+    def _persist_commander(mode_value: str, phase_value: str, *, status_value: str, path_value: str, reason: str = "") -> None:
+        try:
+            write_commander_artifact(
+                state,
+                mode=str(mode_value or ""),
+                phase=str(phase_value or ""),
+                path=str(path_value or ""),
+                status=str(status_value or "ok"),
+                reason=str(reason or ""),
+            )
+        except Exception:
+            pass
     selected = resolve_runtime_mode(state, mode=mode)
     selected_phase = resolve_runtime_phase(state, phase=phase)
     state["runtime_phase"] = selected_phase
@@ -910,6 +923,7 @@ def run_commander_runtime(
             "end",
             {"mode": selected, "status": state.get("runtime_status", "stopped"), "path": None},
         )
+        _persist_commander(selected, selected_phase, status_value=str(state.get("runtime_status", "stopped") or "stopped"), path_value="")
         return state
 
     state, intervention_payload = _apply_operator_resume_intervention(state)
@@ -960,6 +974,7 @@ def run_commander_runtime(
                     **_portfolio_preflight_event_summary(state),
                 },
             )
+            _persist_commander(selected, selected_phase, status_value=str(state.get("runtime_status", "preopen_ready") or "preopen_ready"), path_value=str(state.get("path", "preopen_strategist") or "preopen_strategist"))
             return state
 
         if selected_phase == "closeout":
@@ -976,6 +991,7 @@ def run_commander_runtime(
                     **_portfolio_preflight_event_summary(state),
                 },
             )
+            _persist_commander(selected, selected_phase, status_value=str(state.get("runtime_status", "closeout_ready") or "closeout_ready"), path_value=str(state.get("path", "closeout_idle") or "closeout_idle"))
             return state
 
         if selected == "decision_packet":
@@ -993,6 +1009,7 @@ def run_commander_runtime(
                     **_portfolio_preflight_event_summary(state),
                 },
             )
+            _persist_commander(selected, selected_phase, status_value=str(state.get("runtime_status", "ok") or "ok"), path_value="decision_packet")
             return state
 
         if selected == "integrated_chain":
@@ -1009,6 +1026,7 @@ def run_commander_runtime(
                     **_portfolio_preflight_event_summary(state),
                 },
             )
+            _persist_commander(selected, selected_phase, status_value=str(state.get("runtime_status", "ok") or "ok"), path_value=str(state.get("path", "integrated_chain") or "integrated_chain"))
             return state
 
         if _graph_spine_portfolio_preflight_enabled(state, phase=selected_phase):
@@ -1027,6 +1045,7 @@ def run_commander_runtime(
                 **_portfolio_preflight_event_summary(state),
             },
         )
+        _persist_commander(selected, selected_phase, status_value=str(state.get("runtime_status", "ok") or "ok"), path_value=str(state.get("path", "graph_spine") or "graph_spine"))
         return state
     except Exception as e:
         incident_payload = _register_commander_incident(state, error_type=type(e).__name__)
@@ -1042,4 +1061,5 @@ def run_commander_runtime(
                 **incident_payload,
             },
         )
+        _persist_commander(selected, selected_phase, status_value="error", path_value=str(state.get("path") or ""), reason=str(e))
         raise

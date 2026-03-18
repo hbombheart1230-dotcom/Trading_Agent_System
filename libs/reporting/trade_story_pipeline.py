@@ -780,6 +780,12 @@ def build_trade_story_input(
             "strategist_evidence": dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
             "scanner_evidence": dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
             "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
+            "canonical_agent_artifacts": dict(bundle_out.get("canonical_agent_artifacts") or {}),
+            "evidence_provenance": dict(bundle_out.get("evidence_provenance") or {}),
+            "evidence_source": "canonical" if any(
+                str(source or "").strip().lower() == "canonical"
+                for source in dict(bundle_out.get("evidence_provenance") or {}).values()
+            ) else "direct_artifact",
             "ai_report_diagnostics": dict(bundle_out.get("ai_report_diagnostics") or {}),
         }
 
@@ -807,6 +813,12 @@ def build_trade_story_input(
         "strategist_evidence": dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
         "scanner_evidence": dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
         "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
+        "canonical_agent_artifacts": dict(bundle_out.get("canonical_agent_artifacts") or {}),
+        "evidence_provenance": dict(bundle_out.get("evidence_provenance") or {}),
+        "evidence_source": "canonical" if any(
+            str(source or "").strip().lower() == "canonical"
+            for source in dict(bundle_out.get("evidence_provenance") or {}).values()
+        ) else "direct_artifact",
         "ai_report_diagnostics": dict(bundle_out.get("ai_report_diagnostics") or {}),
     }
 

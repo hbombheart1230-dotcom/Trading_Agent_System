@@ -1,5 +1,20 @@
 # Agent I/O Contracts
 
+## Canonical Run Artifacts
+- Source-of-decision artifacts are written once at node execution time under:
+  - `reports/canonical/<YYYY-MM-DD>/<run_id>/commander.json`
+  - `reports/canonical/<YYYY-MM-DD>/<run_id>/strategist.json`
+  - `reports/canonical/<YYYY-MM-DD>/<run_id>/scanner.json`
+  - `reports/canonical/<YYYY-MM-DD>/<run_id>/monitor.json`
+  - `reports/canonical/<YYYY-MM-DD>/<run_id>/supervisor.json`
+  - `reports/canonical/<YYYY-MM-DD>/<run_id>/executor.json`
+- These are the primary truth for downstream reporting and operator UI.
+- Event logs remain supporting evidence and fallback material, not the preferred source when canonical artifacts exist.
+- Downstream precedence:
+  1. canonical run artifact
+  2. direct run/trade artifact
+  3. event log / inferred fallback
+
 ## RunConfig (Supervisor output)
 - `goal`, `scan_interval_sec`, `monitor_interval_sec`, `report_interval_sec`
 - `risk.daily_loss_limit`, `risk.per_trade_limit`, `risk.max_positions`, `risk.cooldown`

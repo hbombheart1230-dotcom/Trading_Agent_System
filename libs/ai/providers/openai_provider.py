@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
+from libs.llm.json_response import extract_json_object_loose, strip_fenced_code_block
 from libs.llm.model_names import normalize_openrouter_model_name
 
 DEFAULT_PROMPT_VERSION = "m20-6"
@@ -35,46 +36,12 @@ def _looks_like_chat_completions_endpoint(url: str) -> bool:
 
 
 def _strip_fenced_block(text: str) -> str:
-    s = str(text or "").strip()
-    if not s.startswith("```"):
-        return s
-
-    lines = s.splitlines()
-    if not lines:
-        return s
-
-    # drop first fence line (` ``` ` or ` ```json `), and optional trailing fence
-    lines = lines[1:]
-    if lines and lines[-1].strip().startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
+    return strip_fenced_code_block(text)
 
 
 def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
-    s = _strip_fenced_block(text)
-    if not s:
-        return None
-
-    # 1) direct JSON
-    try:
-        obj = json.loads(s)
-        if isinstance(obj, dict):
-            return obj
-    except Exception:
-        pass
-
-    # 2) best-effort: find first decodable JSON object in free text
-    dec = json.JSONDecoder()
-    for i, ch in enumerate(s):
-        if ch != "{":
-            continue
-        try:
-            obj, _end = dec.raw_decode(s[i:])
-            if isinstance(obj, dict):
-                return obj
-        except Exception:
-            continue
-    return None
+    obj = extract_json_object_loose(text)
+    return obj if obj else None
 
 
 def _extract_chat_content(resp: Dict[str, Any]) -> str:

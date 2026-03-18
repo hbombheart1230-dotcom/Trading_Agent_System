@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
+from libs.llm.json_response import extract_json_object_loose, strip_fenced_code_block
 from libs.research.evidence_ledger import record_llm_prompt, record_llm_response, record_raw_input
 
 
@@ -15,39 +16,12 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _strip_fenced_block(text: str) -> str:
-    s = str(text or "").strip()
-    if not s.startswith("```"):
-        return s
-    lines = s.splitlines()
-    if not lines:
-        return s
-    lines = lines[1:]
-    if lines and lines[-1].strip().startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
+    return strip_fenced_code_block(text)
 
 
 def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
-    s = _strip_fenced_block(text)
-    if not s:
-        return None
-    try:
-        obj = json.loads(s)
-        if isinstance(obj, dict):
-            return obj
-    except Exception:
-        pass
-    dec = json.JSONDecoder()
-    for i, ch in enumerate(s):
-        if ch != "{":
-            continue
-        try:
-            obj, _end = dec.raw_decode(s[i:])
-            if isinstance(obj, dict):
-                return obj
-        except Exception:
-            continue
-    return None
+    obj = extract_json_object_loose(text)
+    return obj if obj else None
 
 
 def _clip_str(v: Any, *, max_len: int = 400) -> str:

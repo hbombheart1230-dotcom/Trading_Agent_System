@@ -29,6 +29,7 @@ from libs.research.evidence_ledger import (
 )
 from libs.research.strategy_feedback_builder import build_recent_strategy_feedback
 from libs.runtime.decision_trace import append_decision_trace
+from libs.runtime.canonical_artifacts import write_strategist_artifact
 from libs.runtime.regime import classify_regime_v2
 from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
 from libs.strategies.contracts import StrategistOutput, coerce_strategist_output
@@ -3437,6 +3438,10 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 }
             },
         )
+    except Exception:
+        pass
+    try:
+        write_strategist_artifact(state)
     except Exception:
         pass
     return state

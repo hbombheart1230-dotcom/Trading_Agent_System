@@ -20,6 +20,7 @@ from graphs.nodes.skill_contracts import (
     norm_symbol,
 )
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
+from libs.runtime.canonical_artifacts import write_scanner_artifact
 from libs.runtime.decision_trace import append_decision_trace
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 from libs.strategies.candidates.fallback_pool import is_static_fallback_pool
@@ -2150,6 +2151,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 }
             },
         )
+    except Exception:
+        pass
+    try:
+        write_scanner_artifact(state)
     except Exception:
         pass
 

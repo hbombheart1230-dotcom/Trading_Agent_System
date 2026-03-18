@@ -9,7 +9,10 @@ from typing import Any, Dict, Iterable, List, Optional
 import re
 import time
 
+from apps.operator_ui.data_access_reports import load_trade_report_payloads
+from apps.operator_ui.data_access_runs import load_run_canonical_sources, prefer_canonical_agent_payload
 from libs.llm.llm_router import LLMRouter
+from libs.llm.json_response import parse_llm_json_response, required_key_metadata
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.core.symbols import normalize_symbol
 from libs.reporting.llm_artifacts import (
@@ -274,30 +277,9 @@ def _clean_brief_list(v: Any, *, limit: int) -> List[str]:
 
 
 def _extract_json_object(text: Any) -> Dict[str, Any]:
-    raw = str(text or "").strip()
-    if not raw:
-        return {}
-    if raw.startswith("```"):
-        lines = raw.splitlines()
-        lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        raw = "\n".join(lines).strip()
-    try:
-        obj = json.loads(raw)
-        return obj if isinstance(obj, dict) else {}
-    except Exception:
-        pass
-    decoder = json.JSONDecoder()
-    for idx, ch in enumerate(raw):
-        if ch != "{":
-            continue
-        try:
-            obj, _ = decoder.raw_decode(raw[idx:])
-            return obj if isinstance(obj, dict) else {}
-        except Exception:
-            continue
-    return {}
+    parsed = parse_llm_json_response(text)
+    obj = parsed.get("full_object") if isinstance(parsed.get("full_object"), dict) else parsed.get("partial_object")
+    return dict(obj) if isinstance(obj, dict) else {}
 
 
 def _salvage_operator_brief_fields(text: Any) -> Dict[str, Any]:
@@ -1841,6 +1823,50 @@ def load_recent_runs(
     return out
 
 
+OPERATOR_BRIEF_REQUIRED_KEYS = [
+    "headline",
+    "commander_summary",
+    "strategist_summary",
+    "scanner_summary",
+    "monitor_summary",
+    "supervisor_summary",
+    "executor_summary",
+    "reporter_summary",
+    "operator_takeaways",
+]
+
+
+def _operator_brief_parse_meta(raw: Any, parsed: Dict[str, Any] | None) -> Dict[str, Any]:
+    result = parse_llm_json_response(raw)
+    candidate = parsed if isinstance(parsed, dict) else {}
+    key_meta = required_key_metadata(candidate, OPERATOR_BRIEF_REQUIRED_KEYS)
+    parse_mode = "none"
+    if bool(result.get("is_full")):
+        parse_mode = "full"
+    elif bool(result.get("is_partial")):
+        parse_mode = "partial"
+    return {
+        "parse_mode": parse_mode,
+        **key_meta,
+        "trailing_text": str(result.get("trailing_text") or ""),
+        "raw_nonempty": bool(result.get("raw_nonempty")),
+        "parse_error": str(result.get("error") or ""),
+    }
+
+
+def _operator_brief_is_complete(parsed: Dict[str, Any]) -> bool:
+    meta = required_key_metadata(parsed, OPERATOR_BRIEF_REQUIRED_KEYS)
+    return not bool(meta.get("required_keys_missing"))
+
+
+def _is_retryable_brief_failure(status: str, reason: str = "") -> bool:
+    status_text = str(status or "").strip().lower()
+    reason_text = str(reason or "").strip().lower()
+    if status_text in {"timeout", "network_error", "empty_response"}:
+        return True
+    return "429" in reason_text or "rate" in reason_text
+
+
 def _latest_evidence(rows: List[Dict[str, Any]], *, agent: str, stage: str) -> Dict[str, Any]:
     for row in reversed(rows):
         if str(row.get("agent") or "").strip() != agent:
@@ -2582,6 +2608,9 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
     universe_size = _extract_labeled_int(selection_bullets, ["universe scanned"])
     selected_rank = _extract_labeled_int(selection_bullets, ["selected rank"])
     canonical_filter_rows = _parse_canonical_filter_bullets(filter_bullets)
+    strategist_evidence = story_input.get("strategist_evidence") if isinstance(story_input.get("strategist_evidence"), dict) else {}
+    scanner_evidence = story_input.get("scanner_evidence") if isinstance(story_input.get("scanner_evidence"), dict) else {}
+    monitor_timeline = story_input.get("monitor_timeline") if isinstance(story_input.get("monitor_timeline"), dict) else {}
 
     return {
         "available": True,
@@ -2633,6 +2662,27 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
         "entry_reason": str(entry_summary.get("reason_human") or lifecycle_summary.get("entry_reason_human") or ""),
         "exit_reason": str(exit_summary.get("reason_human") or lifecycle_summary.get("exit_reason_human") or ""),
         "timeline": [dict(x) for x in list(story_input.get("timeline") or lifecycle.get("timeline") or report.get("timeline") or []) if isinstance(x, dict)][:10],
+        "evidence": {
+            "strategist": {
+                "market_context_snapshots": len(list(strategist_evidence.get("market_context_snapshots") or [])),
+                "global_sentiment_breakdowns": len(list(strategist_evidence.get("global_sentiment_breakdowns") or [])),
+                "news_evidence_ranked": len(list(strategist_evidence.get("news_evidence_ranked") or [])),
+                "decision_frames": len(list(strategist_evidence.get("decision_frames") or [])),
+                "llm_response_saved": len(list(strategist_evidence.get("llm_response_saved") or [])),
+            },
+            "scanner": {
+                "candidate_pool_snapshots": len(list(scanner_evidence.get("candidate_pool_snapshots") or [])),
+                "candidate_ranking_tables": len(list(scanner_evidence.get("candidate_ranking_tables") or [])),
+                "candidate_selection_reasons": len(list(scanner_evidence.get("candidate_selection_reasons") or [])),
+                "selection_outputs": len(list(scanner_evidence.get("selection_outputs") or [])),
+            },
+            "monitor": {
+                "threshold_snapshots": len(list(monitor_timeline.get("threshold_snapshots") or [])),
+                "state_transitions": len(list(monitor_timeline.get("state_transitions") or [])),
+                "exit_decision_details": len(list(monitor_timeline.get("exit_decision_details") or [])),
+                "cycle_summaries": len(list(monitor_timeline.get("cycle_summaries") or [])),
+            },
+        },
     }
 
 
@@ -3335,7 +3385,14 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _failure_operator_brief(detail: Dict[str, Any], *, status: str, model: str, reason: str) -> Dict[str, Any]:
+def _failure_operator_brief(
+    detail: Dict[str, Any],
+    *,
+    status: str,
+    model: str,
+    reason: str,
+    failure_status: str = "",
+) -> Dict[str, Any]:
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
     symbol = normalize_symbol(
         trade_report.get("symbol")
@@ -3345,7 +3402,7 @@ def _failure_operator_brief(detail: Dict[str, Any], *, status: str, model: str, 
     )
     action = str(trade_report.get("action") or "").strip().upper() or "WAIT"
     return {
-        "status": str(status or "error"),
+        "status": str(status or "fallback"),
         "model": str(model or ""),
         "headline": " ".join(part for part in ["AI Brief Failed", action, symbol] if str(part or "").strip()),
         "commander_summary": "",
@@ -3358,7 +3415,7 @@ def _failure_operator_brief(detail: Dict[str, Any], *, status: str, model: str, 
         "operator_takeaways": [],
         "reason": str(reason or "brief_generation_failed"),
         "failure": {
-            "status": str(status or "error"),
+            "status": str(failure_status or status or "error"),
             "reason": str(reason or "brief_generation_failed"),
         },
     }
@@ -3391,10 +3448,10 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "status": commander.get("status"),
         },
         "strategist": {
-            "market_regime": canonical_trade.get("market_regime") or strategist_summary.get("market_regime"),
-            "market_sentiment": canonical_trade.get("market_sentiment") or strategist_summary.get("market_sentiment"),
-            "themes": list(canonical_trade.get("themes") or strategist_summary.get("themes") or [])[:5],
-            "playbook": canonical_trade.get("playbook") or strategist_summary.get("playbook"),
+            "market_regime": strategist_summary.get("market_regime") or canonical_trade.get("market_regime"),
+            "market_sentiment": strategist_summary.get("market_sentiment") or canonical_trade.get("market_sentiment"),
+            "themes": list(strategist_summary.get("themes") or canonical_trade.get("themes") or [])[:5],
+            "playbook": strategist_summary.get("playbook") or canonical_trade.get("playbook"),
             "scanner_bias": strategist_summary.get("scanner_bias"),
             "risk_tone": strategist_summary.get("risk_tone"),
             "monitor_guidance": strategist_summary.get("monitor_guidance"),
@@ -3415,7 +3472,7 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "top_ranked_symbols": list((scanner.get("summary") or {}).get("top_ranked_symbols") or [])[:5] if isinstance(scanner.get("summary"), dict) else [],
             "source_mix": scanner_trace.get("kiwoom_pool_source_mix") if isinstance(scanner_trace.get("kiwoom_pool_source_mix"), dict) else {},
             "selected_symbol": scanner_trace.get("selected_symbol") or selected.get("symbol"),
-            "selected_reason": canonical_trade.get("selection_summary") or selected.get("why"),
+            "selected_reason": selected.get("why") or canonical_trade.get("selection_summary"),
             "source_scores": selected.get("source_scores") if isinstance(selected.get("source_scores"), dict) else {},
             "score_total": selected.get("score_total"),
             "confidence": selected.get("confidence"),
@@ -3429,8 +3486,8 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "canonical_filter_bullets": list(canonical_trade.get("filter_bullets") or [])[:8],
         },
         "monitor": {
-            "monitor_reason": canonical_trade.get("monitor_summary") or monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason"),
-            "exit_reason": canonical_trade.get("exit_reason") or monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason"),
+            "monitor_reason": monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason") or canonical_trade.get("monitor_summary"),
+            "exit_reason": monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason") or canonical_trade.get("exit_reason"),
             "position_age_seconds": monitor_summary.get("position_age_seconds"),
             "thresholds": monitor_trace.get("thresholds") if isinstance(monitor_trace.get("thresholds"), dict) else {},
             "strategy_frame_adjustments": list(monitor_trace.get("strategy_frame_adjustments") or [])[:6],
@@ -3619,13 +3676,33 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
             parsed_output=parsed_output,
             model_info={"provider": "OpenRouter", "model": str(out.get("model") or "")},
             latency_ms=latency_ms,
-            meta={"reason": str(out.get("reason") or "")},
+            meta={
+                "reason": str(out.get("reason") or ""),
+                "parse_mode": str(out.get("parse_mode") or ""),
+                "required_keys_expected": list(out.get("required_keys_expected") or []),
+                "required_keys_present": list(out.get("required_keys_present") or []),
+                "required_keys_missing": list(out.get("required_keys_missing") or []),
+                "completeness_score": float(out.get("completeness_score") or 0.0),
+                "used_fallback_sections": list(out.get("used_fallback_sections") or []),
+                "finish_reason": str(out.get("finish_reason") or ""),
+                "error": str((out.get("failure") or {}).get("reason") or out.get("reason") or ""),
+            },
         )
         return out
 
     router = LLMRouter.from_env()
     if router.client is None:
-        return finalize(_failure_operator_brief(detail, status="error", model="", reason="llm_client_unavailable"))
+        return finalize(
+            {
+                **_failure_operator_brief(detail, status="fallback", model="", reason="llm_client_unavailable", failure_status="error"),
+                "parse_mode": "none",
+                "required_keys_expected": list(OPERATOR_BRIEF_REQUIRED_KEYS),
+                "required_keys_present": [],
+                "required_keys_missing": list(OPERATOR_BRIEF_REQUIRED_KEYS),
+                "completeness_score": 0.0,
+                "used_fallback_sections": list(OPERATOR_BRIEF_REQUIRED_KEYS),
+            }
+        )
     explicit_model = str(
         os.getenv("OPERATOR_UI_RUN_BRIEF_MODEL", "")
         or os.getenv("OPENROUTER_MODEL_OPERATOR_UI", "")
@@ -3644,190 +3721,290 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     compact_input = _build_operator_brief_input(detail)
     _save_operator_brief_input_artifact(detail, compact_input)
     messages = _build_operator_brief_messages(compact_input)
+    timeout_sec = int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "8")))
+    retry_max = max(0, int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_RETRY_MAX", "1"))))
     primary_policy = {
         "temperature": float(os.getenv("OPERATOR_UI_RUN_BRIEF_TEMPERATURE", "0.1")),
         "max_tokens": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_MAX_TOKENS", "700"))),
-        "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
+        "timeout_sec": timeout_sec,
         "response_format": {"type": "json_object"},
         **({"model": model} if model else {}),
     }
-    primary_t0 = time.perf_counter()
-    try:
-        raw = router.chat("operator_ui", messages, policy=primary_policy)
-    except Exception as exc:
-        status = classify_llm_exception(exc)
-        reason = f"{type(exc).__name__}:{exc}"
-        attempts.append(
-            make_attempt(
-                step="primary",
-                messages=messages,
-                raw_response_text=f"ERROR:{reason}",
-                parsed_output={},
-                model=model,
-                latency_ms=int((time.perf_counter() - primary_t0) * 1000),
-                status=status,
-                meta={"role": "brief", "error": reason},
-            )
-        )
-        return finalize(_failure_operator_brief(detail, status=status, model=model, reason=reason))
-    primary_latency_ms = int((time.perf_counter() - primary_t0) * 1000)
-    parsed = _extract_json_object(raw)
-    if not parsed:
-        primary_status = "empty_response" if not str(raw or "").strip() else "parse_error"
-        attempts.append(
-            make_attempt(
-                step="primary",
-                messages=messages,
-                raw_response_text=raw,
-                parsed_output={},
-                model=model,
-                latency_ms=primary_latency_ms,
-                status=primary_status,
-                meta={"role": "brief", "error": primary_status},
-            )
-        )
-        repair_messages = _build_operator_brief_repair_messages(raw)
-        repair_policy = {
-            "temperature": 0.0,
-            "max_tokens": 600,
-            "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
-            "response_format": {"type": "json_object"},
-            **({"model": model} if model else {}),
-        }
-        repair_t0 = time.perf_counter()
+    primary_status = "error"
+    primary_reason = ""
+    primary_raw = ""
+    primary_partial: Dict[str, Any] = {}
+    primary_parse_meta: Dict[str, Any] = {
+        "parse_mode": "none",
+        "required_keys_expected": list(OPERATOR_BRIEF_REQUIRED_KEYS),
+        "required_keys_present": [],
+        "required_keys_missing": list(OPERATOR_BRIEF_REQUIRED_KEYS),
+        "completeness_score": 0.0,
+    }
+    for attempt_index in range(retry_max + 1):
+        step = "primary" if attempt_index == 0 else f"retry_{attempt_index}"
+        primary_t0 = time.perf_counter()
         try:
-            repair_raw = router.chat(
-                "operator_ui",
-                repair_messages,
-                policy=repair_policy,
-            )
-        except Exception:
-            repair_raw = ""
-        repair_latency_ms = int((time.perf_counter() - repair_t0) * 1000)
-        repaired = _extract_json_object(repair_raw)
-        if repaired:
+            raw = router.chat("operator_ui", messages, policy=primary_policy)
+        except Exception as exc:
+            status = classify_llm_exception(exc)
+            reason = f"{type(exc).__name__}:{exc}"
+            primary_status = status
+            primary_reason = reason
             attempts.append(
                 make_attempt(
-                    step="repair",
-                    messages=repair_messages,
-                    raw_response_text=repair_raw,
-                    parsed_output=repaired,
+                    step=step,
+                    messages=messages,
+                    raw_response_text=f"ERROR:{reason}",
+                    parsed_output={},
                     model=model,
-                    latency_ms=repair_latency_ms,
+                    latency_ms=int((time.perf_counter() - primary_t0) * 1000),
+                    status=status,
+                    meta={
+                        "role": "brief",
+                        "error": reason,
+                        "parse_mode": "none",
+                        "required_keys_expected": list(OPERATOR_BRIEF_REQUIRED_KEYS),
+                        "required_keys_present": [],
+                        "required_keys_missing": list(OPERATOR_BRIEF_REQUIRED_KEYS),
+                        "completeness_score": 0.0,
+                    },
+                )
+            )
+            if attempt_index < retry_max and _is_retryable_brief_failure(status, reason):
+                continue
+            break
+        primary_latency_ms = int((time.perf_counter() - primary_t0) * 1000)
+        primary_raw = raw
+        parsed_result = parse_llm_json_response(raw)
+        parsed_candidate = (
+            parsed_result.get("full_object")
+            if isinstance(parsed_result.get("full_object"), dict)
+            else parsed_result.get("partial_object")
+        )
+        parsed_candidate = dict(parsed_candidate) if isinstance(parsed_candidate, dict) else {}
+        parse_meta = _operator_brief_parse_meta(raw, parsed_candidate)
+        primary_parse_meta = dict(parse_meta)
+        if bool(parsed_result.get("is_full")) and _operator_brief_is_complete(parsed_candidate):
+            attempts.append(
+                make_attempt(
+                    step=step,
+                    messages=messages,
+                    raw_response_text=raw,
+                    parsed_output=parsed_candidate,
+                    model=model,
+                    latency_ms=primary_latency_ms,
                     status="ok",
-                    meta={"role": "brief"},
+                    meta={"role": "brief", **parse_meta},
                 )
             )
             return finalize({
                 "status": "ok",
                 "model": model,
-                "headline": str(repaired.get("headline") or fallback.get("headline") or ""),
-                "commander_summary": str(repaired.get("commander_summary") or fallback.get("commander_summary") or ""),
-                "strategist_summary": str(repaired.get("strategist_summary") or fallback.get("strategist_summary") or ""),
-                "scanner_summary": str(repaired.get("scanner_summary") or fallback.get("scanner_summary") or ""),
-                "monitor_summary": str(repaired.get("monitor_summary") or fallback.get("monitor_summary") or ""),
-                "supervisor_summary": str(repaired.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
-                "executor_summary": str(repaired.get("executor_summary") or fallback.get("executor_summary") or ""),
-                "reporter_summary": str(repaired.get("reporter_summary") or fallback.get("reporter_summary") or ""),
-                "operator_takeaways": [str(x or "") for x in list(repaired.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
-                "reason": "llm_repair_pass",
+                "headline": str(parsed_candidate.get("headline") or fallback.get("headline") or ""),
+                "commander_summary": str(parsed_candidate.get("commander_summary") or fallback.get("commander_summary") or ""),
+                "strategist_summary": str(parsed_candidate.get("strategist_summary") or fallback.get("strategist_summary") or ""),
+                "scanner_summary": str(parsed_candidate.get("scanner_summary") or fallback.get("scanner_summary") or ""),
+                "monitor_summary": str(parsed_candidate.get("monitor_summary") or fallback.get("monitor_summary") or ""),
+                "supervisor_summary": str(parsed_candidate.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
+                "executor_summary": str(parsed_candidate.get("executor_summary") or fallback.get("executor_summary") or ""),
+                "reporter_summary": str(parsed_candidate.get("reporter_summary") or fallback.get("reporter_summary") or ""),
+                "operator_takeaways": [str(x or "") for x in list(parsed_candidate.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
+                **parse_meta,
+                "used_fallback_sections": [],
             })
+        primary_partial = dict(parsed_candidate) if parsed_candidate else {}
+        if not bool(parsed_result.get("raw_nonempty")):
+            primary_status = "empty_response"
+            primary_reason = "empty_response"
+        elif parsed_candidate:
+            primary_status = "partial"
+            primary_reason = "brief_json_incomplete_or_partial"
+        else:
+            primary_status = "parse_error"
+            primary_reason = "parse_error"
+        attempts.append(
+            make_attempt(
+                step=step,
+                messages=messages,
+                raw_response_text=raw,
+                parsed_output=parsed_candidate,
+                model=model,
+                latency_ms=primary_latency_ms,
+                status=primary_status,
+                meta={"role": "brief", "error": primary_reason, **parse_meta},
+            )
+        )
+        if attempt_index < retry_max and _is_retryable_brief_failure(primary_status, primary_reason):
+            continue
+        break
+
+    repair_messages = _build_operator_brief_repair_messages(primary_raw)
+    repair_policy = {
+        "temperature": 0.0,
+        "max_tokens": 600,
+        "timeout_sec": timeout_sec,
+        "response_format": {"type": "json_object"},
+        **({"model": model} if model else {}),
+    }
+    repair_t0 = time.perf_counter()
+    try:
+        repair_raw = router.chat(
+            "operator_ui",
+            repair_messages,
+            policy=repair_policy,
+        )
+    except Exception as exc:
+        repair_raw = ""
+        repair_error = f"{type(exc).__name__}:{exc}"
+    else:
+        repair_error = ""
+    repair_latency_ms = int((time.perf_counter() - repair_t0) * 1000)
+    repair_result = parse_llm_json_response(repair_raw)
+    repaired = repair_result.get("full_object") if isinstance(repair_result.get("full_object"), dict) else repair_result.get("partial_object")
+    repaired = dict(repaired) if isinstance(repaired, dict) else {}
+    repair_meta = _operator_brief_parse_meta(repair_raw, repaired)
+    if bool(repair_result.get("is_full")) and _operator_brief_is_complete(repaired):
         attempts.append(
             make_attempt(
                 step="repair",
                 messages=repair_messages,
                 raw_response_text=repair_raw,
-                parsed_output={},
+                parsed_output=repaired,
                 model=model,
                 latency_ms=repair_latency_ms,
-                status="empty_response" if not str(repair_raw or "").strip() else "parse_error",
-                meta={"role": "brief", "error": "repair_empty_response" if not str(repair_raw or "").strip() else "repair_parse_error"},
+                status="repaired",
+                meta={"role": "brief", **repair_meta},
             )
         )
-        if _is_free_model(model):
-            line_messages = _build_operator_brief_line_messages(compact_input)
-            line_policy = {
-                "temperature": 0.0,
-                "max_tokens": 500,
-                "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
-                **({"model": model} if model else {}),
-            }
-            line_t0 = time.perf_counter()
-            try:
-                line_raw = router.chat(
-                    "operator_ui",
-                    line_messages,
-                    policy=line_policy,
-                )
-            except Exception:
-                line_raw = ""
-            line_latency_ms = int((time.perf_counter() - line_t0) * 1000)
-            line_parsed = _parse_operator_brief_lines(line_raw)
-            if line_parsed:
-                attempts.append(
-                    make_attempt(
-                        step="line_repair",
-                        messages=line_messages,
-                        raw_response_text=line_raw,
-                        parsed_output=line_parsed,
-                        model=model,
-                        latency_ms=line_latency_ms,
-                        status="ok",
-                        meta={"role": "brief"},
-                    )
-                )
-                return finalize({
-                    "status": "ok",
-                    "model": model,
-                    "headline": str(line_parsed.get("headline") or fallback.get("headline") or ""),
-                    "commander_summary": str(line_parsed.get("commander_summary") or fallback.get("commander_summary") or ""),
-                    "strategist_summary": str(line_parsed.get("strategist_summary") or fallback.get("strategist_summary") or ""),
-                    "scanner_summary": str(line_parsed.get("scanner_summary") or fallback.get("scanner_summary") or ""),
-                    "monitor_summary": str(line_parsed.get("monitor_summary") or fallback.get("monitor_summary") or ""),
-                    "supervisor_summary": str(line_parsed.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
-                    "executor_summary": str(line_parsed.get("executor_summary") or fallback.get("executor_summary") or ""),
-                    "reporter_summary": str(line_parsed.get("reporter_summary") or fallback.get("reporter_summary") or ""),
-                    "operator_takeaways": [str(x or "") for x in list(line_parsed.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
-                    "reason": "llm_line_repair_pass",
-                })
+        return finalize({
+            "status": "repaired",
+            "model": model,
+            "headline": str(repaired.get("headline") or fallback.get("headline") or ""),
+            "commander_summary": str(repaired.get("commander_summary") or fallback.get("commander_summary") or ""),
+            "strategist_summary": str(repaired.get("strategist_summary") or fallback.get("strategist_summary") or ""),
+            "scanner_summary": str(repaired.get("scanner_summary") or fallback.get("scanner_summary") or ""),
+            "monitor_summary": str(repaired.get("monitor_summary") or fallback.get("monitor_summary") or ""),
+            "supervisor_summary": str(repaired.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
+            "executor_summary": str(repaired.get("executor_summary") or fallback.get("executor_summary") or ""),
+            "reporter_summary": str(repaired.get("reporter_summary") or fallback.get("reporter_summary") or ""),
+            "operator_takeaways": [str(x or "") for x in list(repaired.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
+            "reason": "llm_repair_pass",
+            **repair_meta,
+            "used_fallback_sections": [],
+        })
+    attempts.append(
+        make_attempt(
+            step="repair",
+            messages=repair_messages,
+            raw_response_text=repair_raw,
+            parsed_output=repaired,
+            model=model,
+            latency_ms=repair_latency_ms,
+            status="empty_response" if not str(repair_raw or "").strip() else ("partial" if repaired else "parse_error"),
+            meta={
+                "role": "brief",
+                "error": repair_error or ("repair_empty_response" if not str(repair_raw or "").strip() else "repair_parse_error"),
+                **repair_meta,
+            },
+        )
+    )
+    if _is_free_model(model):
+        line_messages = _build_operator_brief_line_messages(compact_input)
+        line_policy = {
+            "temperature": 0.0,
+            "max_tokens": 500,
+            "timeout_sec": timeout_sec,
+            **({"model": model} if model else {}),
+        }
+        line_t0 = time.perf_counter()
+        try:
+            line_raw = router.chat(
+                "operator_ui",
+                line_messages,
+                policy=line_policy,
+            )
+        except Exception as exc:
+            line_raw = ""
+            line_error = f"{type(exc).__name__}:{exc}"
+        else:
+            line_error = ""
+        line_latency_ms = int((time.perf_counter() - line_t0) * 1000)
+        line_parsed = _parse_operator_brief_lines(line_raw)
+        line_meta = required_key_metadata(line_parsed, OPERATOR_BRIEF_REQUIRED_KEYS)
+        if line_parsed and not line_meta.get("required_keys_missing"):
             attempts.append(
                 make_attempt(
                     step="line_repair",
                     messages=line_messages,
                     raw_response_text=line_raw,
-                    parsed_output={},
+                    parsed_output=line_parsed,
                     model=model,
                     latency_ms=line_latency_ms,
-                    status="empty_response" if not str(line_raw or "").strip() else "parse_error",
-                    meta={"role": "brief", "error": "line_repair_empty_response" if not str(line_raw or "").strip() else "line_repair_parse_error"},
+                    status="salvaged",
+                    meta={
+                        "role": "brief",
+                        "parse_mode": "none",
+                        **line_meta,
+                        "used_fallback_sections": [],
+                    },
                 )
             )
-        return finalize(_failure_operator_brief(detail, status=primary_status, model=model, reason=primary_status))
-    attempts.append(
-        make_attempt(
-            step="primary",
-            messages=messages,
-            raw_response_text=raw,
-            parsed_output=parsed,
-            model=model,
-            latency_ms=primary_latency_ms,
-            status="ok",
-            meta={"role": "brief"},
+            return finalize({
+                "status": "salvaged",
+                "model": model,
+                "headline": str(line_parsed.get("headline") or fallback.get("headline") or ""),
+                "commander_summary": str(line_parsed.get("commander_summary") or fallback.get("commander_summary") or ""),
+                "strategist_summary": str(line_parsed.get("strategist_summary") or fallback.get("strategist_summary") or ""),
+                "scanner_summary": str(line_parsed.get("scanner_summary") or fallback.get("scanner_summary") or ""),
+                "monitor_summary": str(line_parsed.get("monitor_summary") or fallback.get("monitor_summary") or ""),
+                "supervisor_summary": str(line_parsed.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
+                "executor_summary": str(line_parsed.get("executor_summary") or fallback.get("executor_summary") or ""),
+                "reporter_summary": str(line_parsed.get("reporter_summary") or fallback.get("reporter_summary") or ""),
+                "operator_takeaways": [str(x or "") for x in list(line_parsed.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
+                "reason": "llm_line_repair_pass",
+                "parse_mode": "none",
+                **line_meta,
+                "used_fallback_sections": [],
+            })
+        attempts.append(
+            make_attempt(
+                step="line_repair",
+                messages=line_messages,
+                raw_response_text=line_raw,
+                parsed_output=line_parsed,
+                model=model,
+                latency_ms=line_latency_ms,
+                status="empty_response" if not str(line_raw or "").strip() else ("partial" if line_parsed else "parse_error"),
+                meta={
+                    "role": "brief",
+                    "error": line_error or ("line_repair_empty_response" if not str(line_raw or "").strip() else "line_repair_parse_error"),
+                    "parse_mode": "none",
+                    **line_meta,
+                },
+            )
         )
+
+    fallback_brief = _failure_operator_brief(
+        detail,
+        status="fallback",
+        model=model,
+        reason=primary_reason or "brief_generation_failed",
+        failure_status=primary_status,
     )
-    return finalize({
-        "status": "ok",
-        "model": model,
-        "headline": str(parsed.get("headline") or fallback.get("headline") or ""),
-        "commander_summary": str(parsed.get("commander_summary") or fallback.get("commander_summary") or ""),
-        "strategist_summary": str(parsed.get("strategist_summary") or fallback.get("strategist_summary") or ""),
-        "scanner_summary": str(parsed.get("scanner_summary") or fallback.get("scanner_summary") or ""),
-        "monitor_summary": str(parsed.get("monitor_summary") or fallback.get("monitor_summary") or ""),
-        "supervisor_summary": str(parsed.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
-        "executor_summary": str(parsed.get("executor_summary") or fallback.get("executor_summary") or ""),
-        "reporter_summary": str(parsed.get("reporter_summary") or fallback.get("reporter_summary") or ""),
-        "operator_takeaways": [str(x or "") for x in list(parsed.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
-    })
+    fallback_brief.update(
+        {
+            "parse_mode": str(primary_parse_meta.get("parse_mode") or "none"),
+            "required_keys_expected": list(primary_parse_meta.get("required_keys_expected") or OPERATOR_BRIEF_REQUIRED_KEYS),
+            "required_keys_present": list(primary_parse_meta.get("required_keys_present") or []),
+            "required_keys_missing": list(primary_parse_meta.get("required_keys_missing") or OPERATOR_BRIEF_REQUIRED_KEYS),
+            "completeness_score": float(primary_parse_meta.get("completeness_score") or 0.0),
+            "used_fallback_sections": list(OPERATOR_BRIEF_REQUIRED_KEYS),
+        }
+    )
+    if primary_partial:
+        fallback_brief["failure"]["partial_fields_recovered"] = sorted(primary_partial.keys())
+    return finalize(fallback_brief)
 
 
 def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
@@ -3837,7 +4014,7 @@ def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[s
     cached = _read_json(path)
     if not isinstance(cached, dict):
         return {}
-    if int(cached.get("version") or 0) < 10:
+    if int(cached.get("version") or 0) < 11:
         return {}
     return cached
 
@@ -3848,7 +4025,7 @@ def _save_cached_operator_brief(config: OperatorUIConfig, run_id: str, brief: Di
     path = config.operator_ui_cache_path / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(brief)
-    payload["version"] = 10
+    payload["version"] = 11
     payload["cached_at"] = datetime.now(tz=KST).isoformat()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -3911,7 +4088,7 @@ def _save_operator_brief_input_artifact(detail: Dict[str, Any], compact_input: D
 
 
 def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
-    if str(brief.get("status") or "").strip().lower() not in {"", "ok"}:
+    if str(brief.get("status") or "").strip().lower() not in {"", "ok", "partial", "salvaged", "repaired"}:
         failure = brief.get("failure") if isinstance(brief.get("failure"), dict) else {}
         lines = [
             "# Operator Brief",
@@ -4052,7 +4229,7 @@ def _load_saved_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     payload = _read_json(json_path)
     if not isinstance(payload, dict):
         return {}
-    if int(payload.get("version") or 0) < 9:
+    if int(payload.get("version") or 0) < 10:
         return {}
     if not _saved_operator_brief_matches_detail(payload, detail):
         return {}
@@ -4094,7 +4271,7 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         "hold_reasons": [str(x or "") for x in list(monitor_section.get("hold_reasons") or []) if str(x or "").strip()][:6],
         "exit_triggers": [str(x or "") for x in list(monitor_section.get("exit_triggers") or []) if str(x or "").strip()][:6],
     }
-    payload["version"] = 9
+    payload["version"] = 10
     payload["saved_at"] = datetime.now(tz=KST).isoformat()
     payload["run_id"] = str(detail.get("run_id") or "")
     payload["trade_id"] = str(trade_report.get("trade_id") or "")
@@ -4170,7 +4347,6 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
     monitor_summary = next((r.get("payload") for r in reversed(all_rows) if str(r.get("stage") or "") == "monitor" and str(r.get("event") or "") == "summary" and isinstance(r.get("payload"), dict)), {})
     verdict_payload = next((r.get("payload") for r in reversed(all_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "verdict" and isinstance(r.get("payload"), dict)), {})
     execution_payload = next((r.get("payload") for r in reversed(all_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "execution" and isinstance(r.get("payload"), dict)), {})
-    normalized_execution = _normalize_execution_payload(execution_payload if isinstance(execution_payload, dict) else {})
     portfolio_sync = _build_portfolio_sync_card(_extract_portfolio_guard_payload_from_run_rows(all_rows))
 
     strategic_frame = next(
@@ -4215,6 +4391,87 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
     reporter_evidence = _latest_evidence(evidence_rows, agent="reporter", stage="post_run_analysis")
     first_dt = _to_datetime(all_rows[0].get("ts"))
     run_day = first_dt.strftime("%Y-%m-%d") if first_dt else ""
+    canonical_sources = load_run_canonical_sources(config.reports_root, str(run_id or ""), run_day)
+    commander_summary, commander_provenance = prefer_canonical_agent_payload(
+        canonical_sources,
+        "commander",
+        {
+            "mode": str((route_row.get("payload") or {}).get("mode") or ""),
+            "phase": str((route_row.get("payload") or {}).get("phase") or ""),
+            "status": str((end_row.get("payload") or {}).get("status") or ""),
+            "path": str((end_row.get("payload") or {}).get("path") or ""),
+        },
+        fallback_source="event_log",
+    )
+    strategist_summary, strategist_provenance = prefer_canonical_agent_payload(
+        canonical_sources,
+        "strategist",
+        strategist_summary if isinstance(strategist_summary, dict) else {},
+        fallback_source="event_log",
+    )
+    scanner_summary, scanner_provenance = prefer_canonical_agent_payload(
+        canonical_sources,
+        "scanner",
+        scanner_summary if isinstance(scanner_summary, dict) else {},
+        fallback_source="event_log",
+    )
+    monitor_summary, monitor_provenance = prefer_canonical_agent_payload(
+        canonical_sources,
+        "monitor",
+        monitor_summary if isinstance(monitor_summary, dict) else {},
+        fallback_source="event_log",
+    )
+    verdict_payload, supervisor_provenance = prefer_canonical_agent_payload(
+        canonical_sources,
+        "supervisor",
+        verdict_payload if isinstance(verdict_payload, dict) else {},
+        fallback_source="event_log",
+    )
+    execution_payload, executor_provenance = prefer_canonical_agent_payload(
+        canonical_sources,
+        "executor",
+        execution_payload if isinstance(execution_payload, dict) else {},
+        fallback_source="event_log",
+    )
+    normalized_execution = _normalize_execution_payload(execution_payload if isinstance(execution_payload, dict) else {})
+    if not strategist_llm and isinstance(strategist_summary.get("llm_metadata_summary"), dict):
+        strategist_llm = dict(strategist_summary.get("llm_metadata_summary") or {})
+    if not isinstance(strategic_frame, dict) or not strategic_frame:
+        strategic_frame = dict(strategist_summary or {})
+    if (not isinstance(candidate_selection, dict) or not candidate_selection) and isinstance(scanner_summary.get("selected_candidate"), dict):
+        candidate_selection = {
+            "selected_symbol": scanner_summary.get("selected_symbol") or scanner_summary.get("top_stock"),
+            "candidate_pool_size": scanner_summary.get("candidate_pool_after_filter") or scanner_summary.get("universe_size"),
+            "selected_candidate": dict(scanner_summary.get("selected_candidate") or {}),
+        }
+    elif scanner_provenance == "canonical":
+        candidate_selection = dict(candidate_selection or {})
+        selected_candidate = (
+            candidate_selection.get("selected_candidate")
+            if isinstance(candidate_selection.get("selected_candidate"), dict)
+            else {}
+        )
+        merged_selected_candidate = dict(selected_candidate or {})
+        merged_selected_candidate.update(
+            dict(scanner_summary.get("selected_candidate") or {})
+            if isinstance(scanner_summary.get("selected_candidate"), dict)
+            else {}
+        )
+        candidate_selection["selected_symbol"] = (
+            scanner_summary.get("selected_symbol")
+            or scanner_summary.get("top_stock")
+            or candidate_selection.get("selected_symbol")
+        )
+        candidate_selection["candidate_pool_size"] = (
+            scanner_summary.get("candidate_pool_after_filter")
+            or scanner_summary.get("universe_size")
+            or candidate_selection.get("candidate_pool_size")
+        )
+        candidate_selection["selected_candidate"] = merged_selected_candidate
+    if not isinstance(entry_exit_decision, dict) or not entry_exit_decision:
+        entry_exit_decision = dict(monitor_summary or {})
+    elif monitor_provenance == "canonical":
+        entry_exit_decision = {**dict(entry_exit_decision or {}), **dict(monitor_summary or {})}
     primary_symbol = normalize_symbol(
         normalized_execution.get("symbol")
         or scanner_summary.get("top_stock")
@@ -4232,12 +4489,10 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
     same_day_symbol_run_chain = load_symbol_run_chain(config, run_day, primary_symbol, limit=3) if primary_symbol else []
     trade_report_meta = _trade_report_meta_for_run(config, str(run_id or ""))
     if trade_report_meta:
-        story_input_path = Path(str(trade_report_meta.get("trade_story_input_path") or ""))
-        lifecycle_path = Path(str(trade_report_meta.get("trade_lifecycle_json_path") or ""))
-        report_json_path = Path(str(trade_report_meta.get("trade_report_json_path") or ""))
-        story_input_data = _read_json(story_input_path) if story_input_path.exists() else {}
-        lifecycle_data = _read_json(lifecycle_path) if lifecycle_path.exists() else {}
-        report_data = _read_json(report_json_path) if report_json_path.exists() else {}
+        report_payloads = load_trade_report_payloads(trade_report_meta, read_json=_read_json)
+        story_input_data = dict(report_payloads.get("story_input_data") or {})
+        lifecycle_data = dict(report_payloads.get("lifecycle_data") or {})
+        report_data = dict(report_payloads.get("report_data") or {})
         ai_diag = (
             trade_report_meta.get("ai_report_diagnostics")
             if isinstance(trade_report_meta.get("ai_report_diagnostics"), dict)
@@ -4375,16 +4630,20 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
         "started_at": _iso_to_display(route_row.get("ts")),
         "completed_at": _iso_to_display(end_row.get("ts")),
         "commander": {
-            "mode": str((route_row.get("payload") or {}).get("mode") or ""),
-            "phase": str((route_row.get("payload") or {}).get("phase") or ""),
-            "agents": list((route_row.get("payload") or {}).get("agents") or []),
-            "status": str((end_row.get("payload") or {}).get("status") or ""),
-            "path": str((end_row.get("payload") or {}).get("path") or ""),
+            "mode": str(commander_summary.get("mode") or commander_summary.get("command") or (route_row.get("payload") or {}).get("mode") or ""),
+            "phase": str(commander_summary.get("phase") or ((commander_summary.get("blocked_allowed_details") or {}) if isinstance(commander_summary.get("blocked_allowed_details"), dict) else {}).get("phase") or (route_row.get("payload") or {}).get("phase") or ""),
+            "agents": list(commander_summary.get("invoked_agents") or (route_row.get("payload") or {}).get("agents") or []),
+            "status": str(commander_summary.get("status") or (end_row.get("payload") or {}).get("status") or ""),
+            "path": str(commander_summary.get("path") or commander_summary.get("decision") or (end_row.get("payload") or {}).get("path") or ""),
+            "reason": str(commander_summary.get("reason") or ""),
+            "provenance": commander_provenance,
+            "artifact": commander_summary if isinstance(commander_summary, dict) else {},
         },
         "strategist": {
             "summary": strategist_summary,
             "llm": strategist_llm,
             "decision_trace": strategic_frame if isinstance(strategic_frame, dict) else {},
+            "provenance": strategist_provenance,
             "evidence": {
                 "raw_input": strategist_evidence.get("raw_input") if isinstance(strategist_evidence.get("raw_input"), dict) else {},
                 "llm_prompt": str(strategist_evidence.get("llm_prompt") or ""),
@@ -4397,16 +4656,20 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "decision_trace": candidate_selection if isinstance(candidate_selection, dict) else {},
             "feature_coverage": feature_coverage,
             "quote_metrics": quote_metrics,
+            "provenance": scanner_provenance,
         },
         "monitor": {
             "summary": monitor_summary,
             "decision_trace": entry_exit_decision if isinstance(entry_exit_decision, dict) else {},
+            "provenance": monitor_provenance,
         },
         "supervisor": {
             "verdict": verdict_payload,
+            "provenance": supervisor_provenance,
         },
         "executor": {
             "execution": execution_payload,
+            "provenance": executor_provenance,
         },
         "portfolio_sync": portfolio_sync,
         "same_day_symbol_trade_history": {
@@ -4423,6 +4686,16 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
         },
         "trade_report": trade_report_card,
         "reporter": _reporter_snippet_for_run(config, str(run_id or ""), run_day),
+        "canonical_sources": canonical_sources,
+        "artifact_provenance": {
+            "commander": commander_provenance,
+            "strategist": strategist_provenance,
+            "scanner": scanner_provenance,
+            "monitor": monitor_provenance,
+            "supervisor": supervisor_provenance,
+            "executor": executor_provenance,
+            "reporter": "direct_artifact",
+        },
         "raw_event_count": len(all_rows),
         "stage_counts": _count_stages(all_rows),
         "event_preview": [

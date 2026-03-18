@@ -1048,3 +1048,53 @@ def test_live_execution_bundle_report_succeeds_with_zero_executions_for_explicit
     assert rc == 0
     assert out["ok"] is True
     assert out["bundle_count"] == 0
+
+
+def test_build_run_snapshots_prefers_canonical_agent_artifacts(tmp_path: Path) -> None:
+    day = "2026-03-18"
+    event_log = tmp_path / "events.jsonl"
+    reports_root = tmp_path / "reports"
+    canonical_dir = reports_root / "canonical" / day / "run-1"
+    canonical_dir.mkdir(parents=True, exist_ok=True)
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:00+00:00", "stage": "commander_router", "event": "route", "payload": {"mode": "integrated_chain", "phase": "session"}},
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "scanner", "event": "summary", "payload": {"top_stock": "BBB"}},
+            {"run_id": "run-1", "ts": f"{day}T00:00:02+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "event_log_hold", "exit_reason": "event_log_hold"}},
+            {"run_id": "run-1", "ts": f"{day}T00:00:03+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": False, "reason": "event_log_block"}},
+            {"run_id": "run-1", "ts": f"{day}T00:00:04+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"action": "BUY", "symbol": "BBB", "qty": 1, "status": "EVENT_ONLY"}},
+        ],
+    )
+    (canonical_dir / "commander.json").write_text(
+        json.dumps({"agent": "commander", "run_id": "run-1", "mode": "integrated_chain", "phase": "session", "path": "integrated_chain", "status": "ok"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (canonical_dir / "scanner.json").write_text(
+        json.dumps({"agent": "scanner", "run_id": "run-1", "selected_symbol": "AAA", "top_stock": "AAA"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (canonical_dir / "monitor.json").write_text(
+        json.dumps({"agent": "monitor", "run_id": "run-1", "monitor_reason": "canonical_hold", "exit_reason": "canonical_hold", "selected_symbol": "AAA"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (canonical_dir / "supervisor.json").write_text(
+        json.dumps({"agent": "supervisor", "run_id": "run-1", "supervisor_allow": True, "supervisor_reason": "canonical_allow"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    (canonical_dir / "executor.json").write_text(
+        json.dumps({"agent": "executor", "run_id": "run-1", "action": "BUY", "symbol": "AAA", "qty": 1, "status": "FILLED"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    rows = mod._build_run_snapshots(event_log, day, reports_root=reports_root)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["symbol"] == "AAA"
+    assert row["monitor_reason"] == "canonical_hold"
+    assert row["verdict_allowed"] is True
+    assert row["verdict_reason"] == "canonical_allow"
+    assert row["execution"]["symbol"] == "AAA"
+    assert row["evidence_provenance"]["scanner"] == "canonical"
+    assert row["evidence_provenance"]["monitor"] == "canonical"

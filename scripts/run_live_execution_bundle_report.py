@@ -48,6 +48,7 @@ from libs.reporting.trade_story_pipeline import (
     safe_int,
     utc_now_iso,
 )
+from libs.runtime.canonical_artifacts import load_run_canonical_artifacts
 
 
 def _env_bool(name: str, default: bool = True) -> bool:
@@ -635,7 +636,44 @@ def _resolve_execution_runs(event_log_path: Path, day: str) -> List[Dict[str, An
     return out
 
 
-def _build_run_snapshots(event_log_path: Path, day: str) -> List[Dict[str, Any]]:
+def _has_meaningful_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    for value in payload.values():
+        if isinstance(value, dict) and _has_meaningful_payload(value):
+            return True
+        if isinstance(value, list) and any(item not in ({}, [], None, "") for item in value):
+            return True
+        if value not in ({}, [], None, ""):
+            return True
+    return False
+
+
+def _prefer_canonical_payload(
+    canonical_sources: Dict[str, Any],
+    agent: str,
+    fallback: Dict[str, Any],
+    *,
+    fallback_source: str,
+) -> Tuple[Dict[str, Any], str, str]:
+    canonical_payload = (
+        (canonical_sources.get("artifacts") or {}).get(agent)
+        if isinstance(canonical_sources.get("artifacts"), dict)
+        else {}
+    )
+    canonical_path = (
+        str(((canonical_sources.get("paths") or {}).get(agent) or "")).strip()
+        if isinstance(canonical_sources.get("paths"), dict)
+        else ""
+    )
+    merged = dict(fallback or {})
+    if _has_meaningful_payload(canonical_payload):
+        merged.update(dict(canonical_payload or {}))
+        return merged, "canonical", canonical_path
+    return dict(fallback or {}), str(fallback_source or "fallback"), canonical_path
+
+
+def _build_run_snapshots(event_log_path: Path, day: str, *, reports_root: Path) -> List[Dict[str, Any]]:
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for row in _iter_jsonl(event_log_path):
         if day and _utc_day(row.get("ts")) != day:
@@ -648,6 +686,11 @@ def _build_run_snapshots(event_log_path: Path, day: str) -> List[Dict[str, Any]]
     out: List[Dict[str, Any]] = []
     for run_id, rows in grouped.items():
         rows = sorted(rows, key=lambda row: _to_epoch(row.get("ts")) or 0)
+        canonical_sources = load_run_canonical_artifacts(
+            reports_root=reports_root,
+            run_id=run_id,
+            day_hint=day,
+        )
         route_row = next(
             (
                 row
@@ -688,6 +731,35 @@ def _build_run_snapshots(event_log_path: Path, day: str) -> List[Dict[str, Any]]
             ),
             {},
         )
+        commander_summary, commander_source, _commander_path = _prefer_canonical_payload(
+            canonical_sources,
+            "commander",
+            {
+                "mode": str((route_row.get("payload") or {}).get("mode") or ""),
+                "phase": str((route_row.get("payload") or {}).get("phase") or ""),
+                "status": str(((rows[-1].get("payload") or {}) if isinstance(rows[-1].get("payload"), dict) else {}).get("status") or ""),
+                "path": str(((rows[-1].get("payload") or {}) if isinstance(rows[-1].get("payload"), dict) else {}).get("path") or ""),
+            },
+            fallback_source="event_log",
+        )
+        scanner_summary, scanner_source, _scanner_path = _prefer_canonical_payload(
+            canonical_sources,
+            "scanner",
+            scanner_summary if isinstance(scanner_summary, dict) else {},
+            fallback_source="direct_artifact",
+        )
+        monitor_summary, monitor_source, _monitor_path = _prefer_canonical_payload(
+            canonical_sources,
+            "monitor",
+            monitor_summary if isinstance(monitor_summary, dict) else {},
+            fallback_source="direct_artifact",
+        )
+        supervisor_summary, supervisor_source, _supervisor_path = _prefer_canonical_payload(
+            canonical_sources,
+            "supervisor",
+            verdict_payload if isinstance(verdict_payload, dict) else {},
+            fallback_source="event_log",
+        )
         execution_row = next(
             (
                 row
@@ -698,7 +770,25 @@ def _build_run_snapshots(event_log_path: Path, day: str) -> List[Dict[str, Any]]
             ),
             {},
         )
-        execution = _normalize_execution_payload(execution_row.get("payload") if isinstance(execution_row.get("payload"), dict) else {})
+        executor_payload, executor_source, _executor_path = _prefer_canonical_payload(
+            canonical_sources,
+            "executor",
+            _normalize_execution_payload(execution_row.get("payload") if isinstance(execution_row.get("payload"), dict) else {}),
+            fallback_source="event_log",
+        )
+        execution = _normalize_execution_payload(executor_payload if isinstance(executor_payload, dict) else {})
+        if isinstance(supervisor_summary, dict) and "supervisor_allow" in supervisor_summary:
+            supervisor_summary = {
+                **dict(supervisor_summary),
+                "allowed": bool(supervisor_summary.get("supervisor_allow")),
+                "reason": str(supervisor_summary.get("supervisor_reason") or supervisor_summary.get("guard_reason") or supervisor_summary.get("reason") or ""),
+            }
+        elif isinstance(supervisor_summary, dict) and "allowed" not in supervisor_summary:
+            supervisor_summary = {
+                **dict(supervisor_summary),
+                "allowed": bool(supervisor_summary.get("supervisor_allow")),
+                "reason": str(supervisor_summary.get("supervisor_reason") or supervisor_summary.get("guard_reason") or ""),
+            }
         candidate_selection = next(
             (
                 (row.get("payload") or {}).get("payload")
@@ -718,6 +808,7 @@ def _build_run_snapshots(event_log_path: Path, day: str) -> List[Dict[str, Any]]
         symbol = normalize_symbol(
             execution.get("symbol")
             or selected_symbol
+            or scanner_summary.get("selected_symbol")
             or monitor_trace.get("selected_symbol")
             or monitor_summary.get("selected_symbol")
             or scanner_summary.get("top_stock")
@@ -759,10 +850,19 @@ def _build_run_snapshots(event_log_path: Path, day: str) -> List[Dict[str, Any]]
                 "exit_reason": exit_reason,
                 "monitor": merged_monitor,
                 "monitor_trace": dict(monitor_trace or {}),
-                "phase": str((route_row.get("payload") or {}).get("phase") or ""),
-                "mode": str((route_row.get("payload") or {}).get("mode") or ""),
-                "verdict_allowed": bool(verdict_payload.get("allowed")),
-                "verdict_reason": str(verdict_payload.get("reason") or ""),
+                "phase": str(commander_summary.get("phase") or (route_row.get("payload") or {}).get("phase") or ""),
+                "mode": str(commander_summary.get("mode") or (route_row.get("payload") or {}).get("mode") or ""),
+                "verdict_allowed": bool(supervisor_summary.get("allowed")),
+                "verdict_reason": str(supervisor_summary.get("reason") or ""),
+                "canonical_agent_artifacts": dict((canonical_sources.get("artifacts") or {})) if isinstance(canonical_sources.get("artifacts"), dict) else {},
+                "canonical_agent_artifact_paths": dict((canonical_sources.get("paths") or {})) if isinstance(canonical_sources.get("paths"), dict) else {},
+                "evidence_provenance": {
+                    "commander": commander_source,
+                    "scanner": scanner_source,
+                    "monitor": monitor_source,
+                    "supervisor": supervisor_source,
+                    "executor": executor_source,
+                },
             }
         )
     out.sort(key=lambda row: int(row.get("ts_epoch") or 0))
@@ -1189,19 +1289,61 @@ def main(argv: Optional[List[str]] = None) -> int:
             day=day,
             reports_root=analysis_root,
         )
+        canonical_sources = load_run_canonical_artifacts(
+            reports_root=reports_root,
+            run_id=run_id,
+            day_hint=day,
+        )
+        commander_payload, commander_source, commander_path = _prefer_canonical_payload(
+            canonical_sources,
+            "commander",
+            dict(trace_out.get("commander") or {}),
+            fallback_source="direct_artifact",
+        )
+        strategist_payload, strategist_source, strategist_path = _prefer_canonical_payload(
+            canonical_sources,
+            "strategist",
+            dict(trace_out.get("strategist") or {}),
+            fallback_source="direct_artifact",
+        )
+        scanner_payload, scanner_source, scanner_path = _prefer_canonical_payload(
+            canonical_sources,
+            "scanner",
+            dict(trace_out.get("scanner") or {}),
+            fallback_source="direct_artifact",
+        )
+        monitor_payload, monitor_source, monitor_path = _prefer_canonical_payload(
+            canonical_sources,
+            "monitor",
+            dict(trace_out.get("monitor") or {}),
+            fallback_source="direct_artifact",
+        )
+        supervisor_payload, supervisor_source, supervisor_path = _prefer_canonical_payload(
+            canonical_sources,
+            "supervisor",
+            dict(trace_out.get("supervisor") or {}),
+            fallback_source="direct_artifact",
+        )
+        executor_payload, executor_source, executor_path = _prefer_canonical_payload(
+            canonical_sources,
+            "executor",
+            dict(trace_out.get("executor") or {}),
+            fallback_source="direct_artifact",
+        )
+        merged_execution = _normalize_execution_payload({**dict(execution or {}), **dict(executor_payload or {})})
         bundle_out: Dict[str, Any] = {
             "schema_version": "live_execution_bundle.v2",
             "artifact_type": "aggregated_execution_bundle",
             "ts": utc_now_iso(),
             "day": day,
             "run_id": run_id,
-            "execution": dict(execution),
-            "commander": dict(trace_out.get("commander") or {}),
-            "strategist": dict(trace_out.get("strategist") or {}),
-            "scanner": dict(trace_out.get("scanner") or {}),
-            "monitor": dict(trace_out.get("monitor") or {}),
-            "supervisor": dict(trace_out.get("supervisor") or {}),
-            "executor": dict(trace_out.get("executor") or {}),
+            "execution": merged_execution,
+            "commander": commander_payload,
+            "strategist": strategist_payload,
+            "scanner": scanner_payload,
+            "monitor": monitor_payload,
+            "supervisor": supervisor_payload,
+            "executor": executor_payload,
             "reporter": {
                 **dict(trace_out.get("reporter") or {}),
                 "reporter_analysis_summary": str(reporter_obj.get("ai_summary") or ""),
@@ -1216,6 +1358,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "reporter_analysis_md": str(reporter_md),
                 "operator_summary_json": str(operator_summary_json) if operator_summary_json.exists() else "",
                 "operator_summary_md": str(operator_summary_md) if operator_summary_md.exists() else "",
+                "canonical_commander_json": commander_path,
+                "canonical_strategist_json": strategist_path,
+                "canonical_scanner_json": scanner_path,
+                "canonical_monitor_json": monitor_path,
+                "canonical_supervisor_json": supervisor_path,
+                "canonical_executor_json": executor_path,
+            },
+            "canonical_agent_artifacts": dict((canonical_sources.get("artifacts") or {})) if isinstance(canonical_sources.get("artifacts"), dict) else {},
+            "evidence_provenance": {
+                "commander": commander_source,
+                "strategist": strategist_source,
+                "scanner": scanner_source,
+                "monitor": monitor_source,
+                "supervisor": supervisor_source,
+                "executor": executor_source,
+                "reporter": "direct_artifact",
             },
             "trade_explain_summary": {
                 "executions_total": safe_int((trade_obj.get("execution_summary") or {}).get("executions_total"), 0)
@@ -1319,7 +1477,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             }
         )
 
-    run_snapshots = _build_run_snapshots(event_log_path, day)
+    run_snapshots = _build_run_snapshots(event_log_path, day, reports_root=reports_root)
     trade_lifecycles = _build_trade_lifecycles(
         day=day,
         run_snapshots=run_snapshots,
@@ -1428,6 +1586,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "supervisor": dict(anchor_bundle.get("supervisor") or {}),
             "executor": dict(anchor_bundle.get("executor") or {}),
             "reporter": dict(anchor_bundle.get("reporter") or {}),
+            "canonical_agent_artifacts": dict(anchor_bundle.get("canonical_agent_artifacts") or {}),
+            "evidence_provenance": dict(anchor_bundle.get("evidence_provenance") or {}),
             "market_context_human": dict(anchor_bundle.get("market_context_human") or entry_ctx.get("strategist_context") or {}),
             "scanner_reason_human": dict(anchor_bundle.get("scanner_reason_human") or entry_ctx.get("scanner_context") or {}),
             "filters_human": dict(anchor_bundle.get("filters_human") or {}),

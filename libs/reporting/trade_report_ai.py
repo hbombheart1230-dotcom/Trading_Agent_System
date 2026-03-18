@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from libs.llm.json_response import parse_llm_json_response, required_key_metadata
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.reporting.llm_artifacts import build_llm_response_artifact, classify_llm_exception, make_attempt
@@ -52,40 +53,20 @@ def _fmt_price(value: Any) -> str:
     return f"{number:.2f}"
 
 
-def _strip_fenced_block(text: str) -> str:
-    raw = str(text or "").strip()
-    if not raw.startswith("```"):
-        return raw
-    lines = raw.splitlines()
-    if not lines:
-        return raw
-    lines = lines[1:]
-    if lines and lines[-1].strip().startswith("```"):
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
-
-
-def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
-    raw = _strip_fenced_block(text)
-    if not raw:
-        return None
-    try:
-        obj = json.loads(raw)
-        if isinstance(obj, dict):
-            return obj
-    except Exception:
-        pass
-    decoder = json.JSONDecoder()
-    for idx, char in enumerate(raw):
-        if char != "{":
-            continue
-        try:
-            obj, _ = decoder.raw_decode(raw[idx:])
-        except Exception:
-            continue
-        if isinstance(obj, dict):
-            return obj
-    return None
+AI_TRADE_REPORT_REQUIRED_KEYS = [
+    "executive_summary",
+    "market_context_at_entry",
+    "why_this_symbol_was_chosen",
+    "entry_decision",
+    "holding_monitoring_story",
+    "exit_decision",
+    "execution_quality",
+    "scanner_filters",
+    "guard_approval_result",
+    "reporter_evaluation",
+    "errors_weaknesses_improvement_points",
+    "final_operator_conclusion",
+]
 
 
 def _env_bool(name: str, default: bool = True) -> bool:
@@ -203,6 +184,112 @@ def _merge_section_with_fallback(ai_section: Any, fallback_section: Dict[str, An
         if not str(merged.get(key) or "").strip() and str(fallback.get(key) or "").strip():
             merged[key] = fallback.get(key)
     return merged
+
+
+def _trade_report_parse_meta(raw: Any, parsed: Dict[str, Any] | None) -> Dict[str, Any]:
+    result = parse_llm_json_response(raw)
+    candidate = parsed if isinstance(parsed, dict) else {}
+    key_meta = required_key_metadata(candidate, AI_TRADE_REPORT_REQUIRED_KEYS)
+    parse_mode = "none"
+    if bool(result.get("is_full")):
+        parse_mode = "full"
+    elif bool(result.get("is_partial")):
+        parse_mode = "partial"
+    return {
+        "parse_mode": parse_mode,
+        **key_meta,
+        "trailing_text": str(result.get("trailing_text") or ""),
+        "raw_nonempty": bool(result.get("raw_nonempty")),
+        "parse_error": str(result.get("error") or ""),
+    }
+
+
+def _merge_trade_report_candidate(
+    story_input: Dict[str, Any],
+    candidate: Dict[str, Any],
+    *,
+    status: str,
+    mode: str,
+    model: str,
+    reason: str,
+) -> Dict[str, Any]:
+    out = _fallback_report(
+        story_input,
+        status=status,
+        mode=mode,
+        model=model,
+        reason=reason,
+    )
+    out["generation"] = {
+        "status": status,
+        "mode": mode,
+        "model": _clip(model, max_len=120),
+        "reason": _clip(reason, max_len=320),
+    }
+    used_fallback_sections: List[str] = []
+
+    def _merge_into(section_key: str, source_value: Any, fallback_key: str | None = None) -> None:
+        normalized = _normalize_section(
+            source_value,
+            default_summary=(out.get(section_key) or {}).get("summary") or "",
+        )
+        merged = _merge_section_with_fallback(normalized, out.get(section_key) if isinstance(out.get(section_key), dict) else {})
+        if not (isinstance(source_value, dict) and source_value):
+            used_fallback_sections.append(section_key)
+        out[section_key] = merged
+        if fallback_key:
+            out[fallback_key] = dict(merged)
+
+    _merge_into("executive_summary", candidate.get("executive_summary"))
+    _merge_into("market_context_at_entry", candidate.get("market_context_at_entry") or candidate.get("market_context"), "market_context")
+    _merge_into("why_this_symbol_was_chosen", candidate.get("why_this_symbol_was_chosen") or candidate.get("why_this_symbol"), "why_this_symbol")
+    _merge_into("entry_decision", candidate.get("entry_decision"))
+    _merge_into("holding_monitoring_story", candidate.get("holding_monitoring_story") or candidate.get("monitor_trigger_reasoning"), "monitor_trigger_reasoning")
+    _merge_into("exit_decision", candidate.get("exit_decision"))
+    _merge_into("execution_quality", candidate.get("execution_quality") or candidate.get("execution_result"), "execution_result")
+    _merge_into("scanner_filters", candidate.get("scanner_filters") or candidate.get("scanner_logic_and_filters"), "scanner_logic_and_filters")
+    _merge_into("guard_approval_result", candidate.get("guard_approval_result"))
+    out["reporter_evaluation"] = _merge_section_with_fallback(
+        _normalize_section(candidate.get("reporter_evaluation"), default_summary=out["reporter_evaluation"]["summary"]),
+        out["reporter_evaluation"],
+    )
+    if not isinstance(candidate.get("reporter_evaluation"), dict):
+        used_fallback_sections.append("reporter_evaluation")
+    out["errors_weaknesses_improvement_points"] = _merge_section_with_fallback(
+        _normalize_section(
+            candidate.get("errors_weaknesses_improvement_points"),
+            default_summary=out["errors_weaknesses_improvement_points"]["summary"],
+        ),
+        out["errors_weaknesses_improvement_points"],
+    )
+    if not isinstance(candidate.get("errors_weaknesses_improvement_points"), dict):
+        used_fallback_sections.append("errors_weaknesses_improvement_points")
+
+    final_conclusion = candidate.get("final_operator_conclusion") if isinstance(candidate.get("final_operator_conclusion"), dict) else {}
+    out["final_operator_conclusion"] = {
+        "summary": _prefer_fallback_text(final_conclusion.get("summary"), out["final_operator_conclusion"]["summary"]),
+        "current_action": _clip(final_conclusion.get("current_action"), max_len=24) or out["final_operator_conclusion"]["current_action"],
+        "watch_next": _listify(final_conclusion.get("watch_next"), max_items=6, max_len=200) or out["final_operator_conclusion"]["watch_next"],
+        "thesis_invalidation": _listify(final_conclusion.get("thesis_invalidation"), max_items=6, max_len=200)
+        or out["final_operator_conclusion"]["thesis_invalidation"],
+    }
+    if not final_conclusion:
+        used_fallback_sections.append("final_operator_conclusion")
+
+    timeline_rows: List[Dict[str, Any]] = []
+    parsed_timeline = candidate.get("full_timeline")
+    if isinstance(parsed_timeline, list):
+        timeline_rows = [row for row in parsed_timeline if isinstance(row, dict)][:24]
+    if not timeline_rows:
+        timeline_rows = [row for row in list(candidate.get("timeline") or []) if isinstance(row, dict)][:24]
+    if timeline_rows:
+        out["full_timeline"] = timeline_rows
+        out["timeline"] = timeline_rows
+    else:
+        used_fallback_sections.append("timeline")
+
+    out["used_fallback_sections"] = sorted(set(used_fallback_sections))
+    return _normalize_trade_report_output(story_input, out)
 
 
 def _fallback_report(
@@ -665,6 +752,14 @@ def build_ai_trade_report(
     run_id = str(story_input.get("run_id") or "")
     day = str(story_input.get("day") or "")
     retry_max = max(0, int(float(str(os.getenv("TRADE_REPORT_AI_RETRY_MAX", "2")).strip() or "2")))
+    empty_required_meta = {
+        "parse_mode": "none",
+        "required_keys_expected": list(AI_TRADE_REPORT_REQUIRED_KEYS),
+        "required_keys_present": [],
+        "required_keys_missing": list(AI_TRADE_REPORT_REQUIRED_KEYS),
+        "completeness_score": 0.0,
+        "used_fallback_sections": [],
+    }
     if not is_enabled:
         report = _failure_report(
             story_input,
@@ -683,7 +778,7 @@ def build_ai_trade_report(
             attempts=[],
             parsed_output={},
             model_info={"provider": "OpenRouter", "model": chosen_model or "openrouter/free"},
-            meta={"reason": "TRADE_REPORT_AI_ENABLED is false"},
+            meta={"reason": "TRADE_REPORT_AI_ENABLED is false", **empty_required_meta},
         )
         return report
 
@@ -706,7 +801,7 @@ def build_ai_trade_report(
             attempts=[],
             parsed_output={},
             model_info={"provider": "OpenRouter", "model": chosen_model or "openrouter/free"},
-            meta={"reason": "OPENROUTER_API_KEY is not configured", "error": "llm_client_unavailable"},
+            meta={"reason": "OPENROUTER_API_KEY is not configured", "error": "llm_client_unavailable", **empty_required_meta},
         )
         return report
 
@@ -737,6 +832,8 @@ def build_ai_trade_report(
     final_error = ""
     final_latency_ms = 0
     parsed: Optional[Dict[str, Any]] = None
+    best_partial: Dict[str, Any] = {}
+    best_partial_meta: Dict[str, Any] = {}
     raw = ""
     current_messages = list(messages)
     current_policy = {
@@ -769,8 +866,11 @@ def build_ai_trade_report(
             )
         else:
             final_latency_ms = int((time.perf_counter() - t0) * 1000)
-            parsed = _extract_json_object(raw)
-            if not str(raw or "").strip():
+            parse_result = parse_llm_json_response(raw)
+            candidate = parse_result.get("full_object") if isinstance(parse_result.get("full_object"), dict) else parse_result.get("partial_object")
+            candidate = dict(candidate) if isinstance(candidate, dict) else {}
+            parse_meta = _trade_report_parse_meta(raw, candidate)
+            if not bool(parse_result.get("raw_nonempty")):
                 final_status = "empty_response"
                 final_reason = "trade_report_ai returned an empty response"
                 attempts.append(
@@ -782,10 +882,49 @@ def build_ai_trade_report(
                         model=chosen_model or resolved_model,
                         latency_ms=final_latency_ms,
                         status=final_status,
-                        meta={"role": "ai_trade_report", "error": final_reason},
+                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta},
                     )
                 )
-            elif not parsed:
+            elif bool(parse_result.get("is_full")) and not parse_meta.get("required_keys_missing"):
+                parsed = candidate
+                final_status = "repaired" if step.startswith("repair") else "ok"
+                attempts.append(
+                    make_attempt(
+                        step=step,
+                        messages=current_messages,
+                        raw_response_text=raw,
+                        parsed_output=parsed,
+                        model=chosen_model or resolved_model,
+                        latency_ms=final_latency_ms,
+                        status=final_status,
+                        meta={"role": "ai_trade_report", **parse_meta},
+                    )
+                )
+                break
+            elif candidate:
+                best_partial = dict(candidate)
+                best_partial_meta = dict(parse_meta)
+                final_status = "partial"
+                missing = list(parse_meta.get("required_keys_missing") or [])
+                if bool(parse_result.get("is_partial")):
+                    final_reason = "trade_report_ai returned truncated or partial JSON"
+                elif missing:
+                    final_reason = f"trade_report_ai response is missing required keys: {', '.join(missing)}"
+                else:
+                    final_reason = "trade_report_ai response was incomplete"
+                attempts.append(
+                    make_attempt(
+                        step=step,
+                        messages=current_messages,
+                        raw_response_text=raw,
+                        parsed_output=candidate,
+                        model=chosen_model or resolved_model,
+                        latency_ms=final_latency_ms,
+                        status=final_status,
+                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta},
+                    )
+                )
+            else:
                 final_status = "parse_error"
                 final_reason = "trade_report_ai returned non-JSON response"
                 attempts.append(
@@ -797,32 +936,48 @@ def build_ai_trade_report(
                         model=chosen_model or resolved_model,
                         latency_ms=final_latency_ms,
                         status=final_status,
-                        meta={"role": "ai_trade_report", "error": final_reason},
+                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta},
                     )
                 )
-            else:
-                final_status = "ok"
-                attempts.append(
-                    make_attempt(
-                        step=step,
-                        messages=current_messages,
-                        raw_response_text=raw,
-                        parsed_output=parsed,
-                        model=chosen_model or resolved_model,
-                        latency_ms=final_latency_ms,
-                        status="ok",
-                        meta={"role": "ai_trade_report"},
-                    )
-                )
-                break
         if attempt_index < retry_max:
-            if final_status == "parse_error":
+            if final_status in {"parse_error", "partial"}:
                 current_messages = _build_repair_messages(story_input, raw)
             current_policy = {
                 **current_policy,
                 "temperature": 0.0,
                 "max_tokens": min(max(800, token_budget), 1800),
             }
+
+    if not parsed and best_partial:
+        final_status = "salvaged"
+        final_reason = final_reason or "trade_report_ai returned incomplete JSON; deterministic sections were salvaged from the partial response"
+        out = _merge_trade_report_candidate(
+            story_input,
+            best_partial,
+            status=final_status,
+            mode="ai",
+            model=chosen_model or resolved_model,
+            reason=final_reason,
+        )
+        out["llm_response_artifact"] = build_llm_response_artifact(
+            component="ai_trade_report",
+            run_id=run_id,
+            trade_id=trade_id,
+            story_id=trade_id,
+            day=day,
+            status=final_status,
+            attempts=attempts,
+            parsed_output=best_partial,
+            model_info={"provider": "OpenRouter", "model": chosen_model or resolved_model},
+            latency_ms=sum(int(row.get("latency_ms") or 0) for row in attempts),
+            meta={
+                "reason": final_reason,
+                "error": final_error,
+                **best_partial_meta,
+                "used_fallback_sections": list(out.get("used_fallback_sections") or []),
+            },
+        )
+        return out
 
     if not parsed:
         report = _failure_report(
@@ -844,139 +999,43 @@ def build_ai_trade_report(
             parsed_output={},
             model_info={"provider": "OpenRouter", "model": chosen_model or resolved_model},
             latency_ms=sum(int(row.get("latency_ms") or 0) for row in attempts),
-            meta={"reason": final_reason, "error": final_error},
+            meta={"reason": final_reason, "error": final_error, **empty_required_meta},
         )
         return report
 
-    out = _fallback_report(
+    parse_meta = _trade_report_parse_meta(raw, parsed)
+    out = _merge_trade_report_candidate(
         story_input,
-        status="ok",
+        parsed,
+        status=final_status,
         mode="ai",
         model=chosen_model or resolved_model,
-        reason="",
+        reason=final_reason,
     )
-    out["generation"] = {
-        "status": "ok",
-        "mode": "ai",
-        "model": _clip(chosen_model or resolved_model, max_len=120),
-        "reason": "",
-    }
-    out["executive_summary"] = _merge_section_with_fallback(
-        _normalize_section(parsed.get("executive_summary"), default_summary=out["executive_summary"]["summary"]),
-        out["executive_summary"],
-    )
-    out["market_context_at_entry"] = _merge_section_with_fallback(
-        _normalize_section(
-            parsed.get("market_context_at_entry") or parsed.get("market_context"),
-            default_summary=(out.get("market_context_at_entry") or {}).get("summary") or (out.get("market_context") or {}).get("summary") or "",
-        ),
-        out["market_context_at_entry"],
-    )
-    out["why_this_symbol_was_chosen"] = _merge_section_with_fallback(
-        _normalize_section(
-            parsed.get("why_this_symbol_was_chosen") or parsed.get("why_this_symbol"),
-            default_summary=(out.get("why_this_symbol_was_chosen") or {}).get("summary") or (out.get("why_this_symbol") or {}).get("summary") or "",
-        ),
-        out["why_this_symbol_was_chosen"],
-    )
-    out["entry_decision"] = _merge_section_with_fallback(
-        _normalize_section(
-            parsed.get("entry_decision"),
-            default_summary=(out.get("entry_decision") or {}).get("summary") or "",
-        ),
-        out["entry_decision"],
-    )
-    out["holding_monitoring_story"] = _merge_section_with_fallback(
-        _normalize_section(
-            parsed.get("holding_monitoring_story") or parsed.get("monitor_trigger_reasoning"),
-            default_summary=(out.get("holding_monitoring_story") or {}).get("summary") or (out.get("monitor_trigger_reasoning") or {}).get("summary") or "",
-        ),
-        out["holding_monitoring_story"],
-    )
-    out["exit_decision"] = _merge_section_with_fallback(
-        _normalize_section(
-            parsed.get("exit_decision"),
-            default_summary=(out.get("exit_decision") or {}).get("summary") or "",
-        ),
-        out["exit_decision"],
-    )
-    out["execution_quality"] = _merge_section_with_fallback(
-        _normalize_section(
-            parsed.get("execution_quality") or parsed.get("execution_result"),
-            default_summary=(out.get("execution_quality") or {}).get("summary") or (out.get("execution_result") or {}).get("summary") or "",
-        ),
-        out["execution_quality"],
-    )
-    out["scanner_filters"] = _merge_section_with_fallback(
-        _normalize_section(
-            parsed.get("scanner_filters") or parsed.get("scanner_logic_and_filters"),
-            default_summary=(out.get("scanner_filters") or {}).get("summary") or (out.get("scanner_logic_and_filters") or {}).get("summary") or "",
-        ),
-        out["scanner_filters"],
-    )
-    out["guard_approval_result"] = _merge_section_with_fallback(
-        _normalize_section(
-            parsed.get("guard_approval_result"),
-            default_summary=out["guard_approval_result"]["summary"],
-        ),
-        out["guard_approval_result"],
-    )
-    out["reporter_evaluation"] = _merge_section_with_fallback(
-        _normalize_section(
-            parsed.get("reporter_evaluation"),
-            default_summary=out["reporter_evaluation"]["summary"],
-        ),
-        out["reporter_evaluation"],
-    )
-    out["errors_weaknesses_improvement_points"] = _merge_section_with_fallback(
-        _normalize_section(
-            parsed.get("errors_weaknesses_improvement_points"),
-            default_summary=out["errors_weaknesses_improvement_points"]["summary"],
-        ),
-        out["errors_weaknesses_improvement_points"],
-    )
-    final_conclusion = parsed.get("final_operator_conclusion") if isinstance(parsed.get("final_operator_conclusion"), dict) else {}
-    out["final_operator_conclusion"] = {
-        "summary": _prefer_fallback_text(final_conclusion.get("summary"), out["final_operator_conclusion"]["summary"]),
-        "current_action": _clip(final_conclusion.get("current_action"), max_len=24) or out["final_operator_conclusion"]["current_action"],
-        "watch_next": _listify(final_conclusion.get("watch_next"), max_items=6, max_len=200) or out["final_operator_conclusion"]["watch_next"],
-        "thesis_invalidation": _listify(final_conclusion.get("thesis_invalidation"), max_items=6, max_len=200)
-        or out["final_operator_conclusion"]["thesis_invalidation"],
-    }
-    timeline_rows: List[Dict[str, Any]] = []
-    parsed_timeline = parsed.get("full_timeline")
-    if isinstance(parsed_timeline, list):
-        timeline_rows = [row for row in parsed_timeline if isinstance(row, dict)][:24]
-    if not timeline_rows:
-        timeline_rows = [row for row in list(parsed.get("timeline") or []) if isinstance(row, dict)][:24]
-    if timeline_rows:
-        out["full_timeline"] = timeline_rows
-        out["timeline"] = timeline_rows
-
-    # Backward-compatible aliases for existing UI renderers.
-    out["market_context"] = dict(out.get("market_context_at_entry") or {})
-    out["why_this_symbol"] = dict(out.get("why_this_symbol_was_chosen") or {})
-    out["scanner_logic_and_filters"] = dict(out.get("scanner_filters") or {})
-    out["monitor_trigger_reasoning"] = dict(out.get("holding_monitoring_story") or {})
-    out["execution_result"] = dict(out.get("execution_quality") or {})
     out["llm_response_artifact"] = build_llm_response_artifact(
         component="ai_trade_report",
         run_id=run_id,
         trade_id=trade_id,
         story_id=trade_id,
         day=day,
-        status="ok",
+        status=final_status,
         attempts=attempts,
         parsed_output=parsed,
         model_info={"provider": "OpenRouter", "model": chosen_model or resolved_model},
         latency_ms=sum(int(row.get("latency_ms") or 0) for row in attempts),
+        meta={
+            **parse_meta,
+            "reason": final_reason,
+            "used_fallback_sections": list(out.get("used_fallback_sections") or []),
+        },
     )
-    return _normalize_trade_report_output(story_input, out)
+    return out
 
 
 def render_trade_report_markdown(report: Dict[str, Any]) -> str:
     generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
-    if str(generation.get("status") or "").strip().lower() not in {"", "ok"}:
+    generation_status = str(generation.get("status") or "").strip().lower()
+    if generation_status not in {"", "ok", "repaired", "partial", "salvaged"}:
         failure = report.get("failure") if isinstance(report.get("failure"), dict) else {}
         lines = [
             f"# AI Trade Report ({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})",
@@ -1055,6 +1114,16 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         f"model=`{generation.get('model') or '-'}`"
     )
     lines.append("")
+    if generation_status in {"repaired", "partial", "salvaged"}:
+        lines.append("## Generation Note")
+        lines.append("")
+        lines.append(
+            f"- status: `{generation_status}`"
+        )
+        lines.append(
+            f"- reason: {generation.get('reason') or 'The report was reconstructed from a repaired or partial LLM response.'}"
+        )
+        lines.append("")
     if monitor_snapshot:
         lines.append("## Monitor Snapshot")
         lines.append("")

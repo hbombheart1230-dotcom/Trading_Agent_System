@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional, Tuple
 
 from libs.core.symbols import is_valid_symbol, normalize_symbol
+from libs.runtime.canonical_artifacts import write_executor_artifact, write_supervisor_artifact
 from libs.runtime.decision_trace import append_decision_trace
 
 
@@ -990,6 +991,24 @@ def execute_from_packet(state: dict) -> dict:
     allow_result: Any = None
     portfolio_details: Dict[str, Any] = {}
     strategy_policy_summary: Dict[str, Any] = {}
+    def _persist_execution_artifacts(*, supervisor_allowed: bool, supervisor_reason: str, supervisor_details: Dict[str, Any] | None = None) -> None:
+        try:
+            write_supervisor_artifact(
+                state,
+                order=order,
+                allowed=bool(supervisor_allowed),
+                reason=str(supervisor_reason or ""),
+                details=dict(supervisor_details or {}),
+                strategy_policy_summary=dict(strategy_policy_summary or {}),
+            )
+        except Exception:
+            pass
+        try:
+            execution_payload = state.get("execution") if isinstance(state.get("execution"), dict) else {}
+            if execution_payload:
+                write_executor_artifact(state, execution=execution_payload, order=order)
+        except Exception:
+            pass
     try:
         packet: Dict[str, Any] = state["decision_packet"]
 
@@ -1044,6 +1063,7 @@ def execute_from_packet(state: dict) -> dict:
                 event="verdict",
                 payload={"allowed": False, "reason": "noop_intent_skipped", "strategy_policy_summary": strategy_policy_summary},
             )
+            _persist_execution_artifacts(supervisor_allowed=False, supervisor_reason="noop_intent_skipped")
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
 
@@ -1066,6 +1086,11 @@ def execute_from_packet(state: dict) -> dict:
                 stage="execute_from_packet",
                 event="symbol_format_guard_block",
                 payload={"allowed": False, "reason": symbol_format_reason, **symbol_format_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=symbol_format_reason,
+                supervisor_details=symbol_format_details,
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -1090,6 +1115,11 @@ def execute_from_packet(state: dict) -> dict:
                 event="symbol_guard_block",
                 payload={"allowed": False, "reason": symbol_reason, **symbol_details},
             )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=symbol_reason,
+                supervisor_details=symbol_details,
+            )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
 
@@ -1112,6 +1142,11 @@ def execute_from_packet(state: dict) -> dict:
                 stage="execute_from_packet",
                 event="order_limit_guard_block",
                 payload={"allowed": False, "reason": limits_reason, **limits_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=limits_reason,
+                supervisor_details=limits_details,
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -1136,6 +1171,11 @@ def execute_from_packet(state: dict) -> dict:
                 event="portfolio_guard_block",
                 payload={"allowed": False, "reason": portfolio_reason, "portfolio_guard": portfolio_details, **portfolio_details},
             )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=portfolio_reason,
+                supervisor_details=portfolio_details,
+            )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
 
@@ -1157,6 +1197,11 @@ def execute_from_packet(state: dict) -> dict:
                 stage="execute_from_packet",
                 event="verdict",
                 payload={"allowed": False, "reason": "duplicate_buy_position_exists", "portfolio_guard": portfolio_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason="duplicate_buy_position_exists",
+                supervisor_details=portfolio_details,
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -1181,6 +1226,11 @@ def execute_from_packet(state: dict) -> dict:
                 stage="execute_from_packet",
                 event="verdict",
                 payload={"allowed": False, "reason": cash_reason, "portfolio_guard": portfolio_details, **cash_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=cash_reason,
+                supervisor_details={**dict(portfolio_details or {}), **dict(cash_details or {})},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -1209,6 +1259,11 @@ def execute_from_packet(state: dict) -> dict:
                 stage="execute_from_packet",
                 event="degrade_policy_block",
                 payload={"reason": degrade_reason, "portfolio_guard": portfolio_details, **degrade_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=degrade_reason,
+                supervisor_details={**dict(portfolio_details or {}), **dict(degrade_details or {})},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -1242,6 +1297,11 @@ def execute_from_packet(state: dict) -> dict:
                 strategy_policy_summary=strategy_policy_summary,
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="verdict", payload=state["execution"])
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=getattr(allow_result, "reason", "blocked"),
+                supervisor_details=allow_details if isinstance(allow_details, dict) else {},
+            )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
 
@@ -1275,6 +1335,11 @@ def execute_from_packet(state: dict) -> dict:
             payload={"allowed": True, "portfolio_guard": portfolio_details, "strategy_policy_summary": strategy_policy_summary},
         )
         logger.log(run_id=run_id, stage="execute_from_packet", event="execution", payload=state["execution"])
+        _persist_execution_artifacts(
+            supervisor_allowed=True,
+            supervisor_reason=str(getattr(allow_result, "reason", "") or "allowed"),
+            supervisor_details=allow_details if isinstance(allow_details, dict) else {},
+        )
         logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
         return state
 
@@ -1288,6 +1353,11 @@ def execute_from_packet(state: dict) -> dict:
             execution=state["execution"],
             allow_result=allow_result,
             strategy_policy_summary=strategy_policy_summary,
+        )
+        _persist_execution_artifacts(
+            supervisor_allowed=False,
+            supervisor_reason=str(e),
+            supervisor_details={},
         )
         logger.log(run_id=run_id, stage="execute_from_packet", event="error", payload={"error": str(e)})
         raise

@@ -64,9 +64,9 @@ def split_prompt_text(prompt_text: Any) -> Tuple[str, str]:
 
 def normalize_llm_status(value: Any, *, default: str = "fallback") -> str:
     raw = str(value or "").strip().lower()
-    if raw in {"ok", "error", "fallback", "salvaged", "parse_error", "timeout", "network_error", "empty_response"}:
+    if raw in {"ok", "partial", "salvaged", "repaired", "fallback", "error", "parse_error", "timeout", "network_error", "empty_response"}:
         return raw
-    if raw in {"repaired", "line_repaired"}:
+    if raw == "line_repaired":
         return "salvaged"
     if raw in {"disabled", "unavailable", "dry_run"}:
         return "fallback"
@@ -159,6 +159,50 @@ def build_llm_response_artifact(
         out["meta"] = dict(meta)
         if not out["error"] and meta.get("error") is not None:
             out["error"] = str(meta.get("error") or "")
+    metadata_sources = []
+    if isinstance(meta, dict):
+        metadata_sources.append(meta)
+    if isinstance(final_attempt, dict):
+        metadata_sources.append(final_attempt)
+    for source in metadata_sources:
+        for key in (
+            "parse_mode",
+            "required_keys_expected",
+            "required_keys_present",
+            "required_keys_missing",
+            "completeness_score",
+            "used_fallback_sections",
+            "finish_reason",
+        ):
+            if key in out and out.get(key) not in (None, "", [], {}):
+                continue
+            value = source.get(key) if isinstance(source, dict) else None
+            if value in (None, ""):
+                continue
+            if key == "completeness_score":
+                try:
+                    out[key] = float(value)
+                except Exception:
+                    continue
+            elif key in {"required_keys_expected", "required_keys_present", "required_keys_missing", "used_fallback_sections"}:
+                if isinstance(value, list):
+                    out[key] = list(value)
+            else:
+                out[key] = value
+    if "parse_mode" not in out:
+        out["parse_mode"] = "none"
+    if "required_keys_expected" not in out:
+        out["required_keys_expected"] = []
+    if "required_keys_present" not in out:
+        out["required_keys_present"] = []
+    if "required_keys_missing" not in out:
+        out["required_keys_missing"] = []
+    if "completeness_score" not in out:
+        out["completeness_score"] = 0.0
+    if "used_fallback_sections" not in out:
+        out["used_fallback_sections"] = []
+    if "finish_reason" not in out:
+        out["finish_reason"] = ""
     return out
 
 
