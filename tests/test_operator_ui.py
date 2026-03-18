@@ -412,6 +412,47 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "strategist prompt" in overview.text
     assert "defensive" in overview.text
 
+
+def test_operator_ui_overview_prefers_live_intraday_counts_over_stale_reports(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
+    cfg = _make_config(tmp_path)
+
+    events_path = cfg.event_log_path
+    rows = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows.extend(
+        [
+            {"run_id": "run-2", "ts": "2026-03-16T00:10:00+00:00", "stage": "commander_router", "event": "route", "payload": {"mode": "integrated_chain", "phase": "session", "agents": ["monitor", "executor"]}},
+            {"run_id": "run-2", "ts": "2026-03-16T00:10:01+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "peak_drawdown", "exit_reason": "peak_drawdown", "selected_symbol": "005930"}},
+            {"run_id": "run-2", "ts": "2026-03-16T00:10:02+00:00", "stage": "decision_trace", "event": "entry_exit_decision", "payload": {"agent": "monitor", "payload": {"selected_symbol": "005930", "entry_reason": "peak_drawdown", "exit_reason": "peak_drawdown", "thresholds": {"effective_stop_loss_pct": 0.01, "effective_stop_reason": "hard_stop"}}}},
+            {"run_id": "run-2", "ts": "2026-03-16T00:10:03+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": True, "reason": "Allowed"}},
+            {"run_id": "run-2", "ts": "2026-03-16T00:10:04+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": True, "order": {"action": "SELL", "symbol": "005930", "qty": 1, "ord_qty": "1"}, "payload": {"order_id": "A0002", "broker_message": "EXECUTED_OK", "response_payload": {"ord_no": "A0002", "return_msg": "EXECUTED_OK"}}}},
+            {"run_id": "run-2", "ts": "2026-03-16T00:10:05+00:00", "stage": "commander_router", "event": "end", "payload": {"status": "ok", "path": "integrated_chain_monitor_only"}},
+            {"run_id": "run-3", "ts": "2026-03-16T00:11:00+00:00", "stage": "commander_router", "event": "route", "payload": {"mode": "integrated_chain", "phase": "session", "agents": ["monitor", "executor"]}},
+            {"run_id": "run-3", "ts": "2026-03-16T00:11:01+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "no_position", "exit_reason": "no_position", "selected_symbol": "000660"}},
+            {"run_id": "run-3", "ts": "2026-03-16T00:11:02+00:00", "stage": "decision_trace", "event": "entry_exit_decision", "payload": {"agent": "monitor", "payload": {"selected_symbol": "000660", "entry_reason": "no_position", "exit_reason": "no_position", "thresholds": {}}}},
+            {"run_id": "run-3", "ts": "2026-03-16T00:11:03+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": True, "reason": "Allowed"}},
+            {"run_id": "run-3", "ts": "2026-03-16T00:11:04+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": True, "order": {"action": "BUY", "symbol": "000660", "qty": 1, "ord_qty": "1"}, "payload": {"order_id": "A0003", "broker_message": "EXECUTED_OK", "response_payload": {"ord_no": "A0003", "return_msg": "EXECUTED_OK"}}}},
+            {"run_id": "run-3", "ts": "2026-03-16T00:11:05+00:00", "stage": "commander_router", "event": "end", "payload": {"status": "ok", "path": "integrated_chain_monitor_only"}},
+        ]
+    )
+    _write_jsonl(events_path, rows)
+
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    overview = client.get("/")
+    assert overview.status_code == 200
+    assert "3 executions today." in overview.text
+    assert "Approved today: 3" in overview.text
+    assert "BUY 2" in overview.text
+    assert "SELL 1" in overview.text
+    assert "Intraday reconciliation has not been generated yet." in overview.text
+    assert "Portfolio Sync OK" in overview.text
+    assert "Sync status unavailable" not in overview.text
+    assert "snapshot" in overview.text
+    assert "000660" in overview.text
+
     runs = client.get("/runs")
     assert runs.status_code == 200
     assert "run-1" in runs.text
@@ -452,9 +493,9 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "price=70500" in detail.text
     assert "2.15" in detail.text
     assert "Same-Day Symbol Trade History" in detail.text
-    assert "trade_count=1" in detail.text
+    assert "trade_count=2" in detail.text
     assert "Recent Same-Symbol Run Chain" in detail.text
-    assert "run_count=1" in detail.text
+    assert "run_count=2" in detail.text
     assert "AI 리포트" in detail.text
     assert "Scanner rank #1 with robust chart coverage and approved execution." in detail.text
     assert "Open full report" in detail.text
@@ -468,6 +509,45 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert obj["status"] == "ok"
     assert obj["system_status"] == "GREEN"
     assert obj["latest_day"] == "2026-03-16"
+
+
+def test_operator_ui_runs_support_trade_and_monitoring_filters(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
+    cfg = _make_config(tmp_path)
+    events_path = cfg.event_log_path
+    rows = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows.extend(
+        [
+            {"run_id": "run-monitor", "ts": "2026-03-16T00:12:00+00:00", "stage": "commander_router", "event": "route", "payload": {"mode": "integrated_chain", "phase": "session", "agents": ["monitor", "executor"]}},
+            {"run_id": "run-monitor", "ts": "2026-03-16T00:12:01+00:00", "stage": "commander_router", "event": "fast_path", "payload": {"path": "integrated_chain_monitor_only", "enabled": True, "open_position_count": 1}},
+            {"run_id": "run-monitor", "ts": "2026-03-16T00:12:02+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "hold", "exit_reason": "hold", "selected_symbol": "005930"}},
+            {"run_id": "run-monitor", "ts": "2026-03-16T00:12:03+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": False, "reason": "noop_intent_skipped"}},
+            {"run_id": "run-monitor", "ts": "2026-03-16T00:12:04+00:00", "stage": "commander_router", "event": "end", "payload": {"status": "ok", "path": "integrated_chain_monitor_only"}},
+        ]
+    )
+    _write_jsonl(events_path, rows)
+
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    all_runs = client.get("/runs")
+    assert all_runs.status_code == 200
+    assert "Trades" in all_runs.text
+    assert "Monitoring" in all_runs.text
+
+    trades = client.get("/runs?activity_view=trades")
+    assert trades.status_code == 200
+    assert "run-1" in trades.text
+    assert "run-monitor" not in trades.text
+    assert "Trade" in trades.text
+
+    monitoring = client.get("/runs?activity_view=monitoring")
+    assert monitoring.status_code == 200
+    assert "run-monitor" in monitoring.text
+    assert "run-1" not in monitoring.text
+    assert "Monitoring" in monitoring.text
+    assert "integrated_chain_monitor_only" in monitoring.text
 
 
 def test_operator_ui_run_detail_repairs_non_json_llm_output(tmp_path: Path, monkeypatch) -> None:
@@ -686,6 +766,7 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert saved["run_id"] == "run-1"
     assert saved["trade_id"] == "20260316_005930_buy_run-1"
     assert saved["report_status"] == "available"
+    assert saved["version"] == 7
     assert saved["monitor_snapshot"]["price_source"] == "-"
     assert str(saved["monitor_snapshot"]["effective_stop_reason"] or "") in {"", "-", "Hard stop"}
     md_text = brief_md.read_text(encoding="utf-8")

@@ -15,7 +15,9 @@
 </section>
 
 <section class="run-filters">
-  <a href="/runs?limit={{ limit }}" class="link-action {% if not mismatch_only %}link-action--active{% endif %}">All runs</a>
+  <a href="/runs?limit={{ limit }}&activity_view=all" class="link-action {% if activity_view == 'all' and not mismatch_only %}link-action--active{% endif %}">All runs</a>
+  <a href="/runs?limit={{ limit }}&activity_view=trades" class="link-action {% if activity_view == 'trades' and not mismatch_only %}link-action--active{% endif %}">Trades</a>
+  <a href="/runs?limit={{ limit }}&activity_view=monitoring" class="link-action {% if activity_view == 'monitoring' and not mismatch_only %}link-action--active{% endif %}">Monitoring</a>
   <a href="/runs?limit={{ limit }}&mismatch_only=true" class="link-action {% if mismatch_only %}link-action--active{% endif %}">Mismatch only</a>
 </section>
 
@@ -29,6 +31,7 @@
         <th>playbook</th>
         <th>top stock</th>
         <th>story type</th>
+        <th>activity</th>
         <th>execution label</th>
         <th>AI report</th>
         <th>portfolio sync</th>
@@ -57,6 +60,12 @@
           <span class="{{ row.story_type_badge_class or 'status-badge' }}">{{ row.story_type_label }}</span>
           {% else %}
           <span class="chip">No linked report</span>
+          {% endif %}
+        </td>
+        <td>
+          <span class="{{ row.activity_badge_class or 'chip' }}">{{ row.activity_label or "-" }}</span>
+          {% if row.runtime_path %}
+          <p class="subtle-meta">{{ row.runtime_path }}</p>
           {% endif %}
         </td>
         <td>{{ row.execution_mode_label or "-" }}</td>

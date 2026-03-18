@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -109,6 +110,96 @@ def _normalize_section(section: Any, *, default_summary: str = "", bullet_key: s
         if value:
             out[key] = value
     return out
+
+
+def _actual_lifecycle_action(story_input: Dict[str, Any]) -> str:
+    status_text = str(story_input.get("status") or "").strip().lower()
+    exit_summary = story_input.get("exit_summary") if isinstance(story_input.get("exit_summary"), dict) else {}
+    entry_summary = story_input.get("entry_summary") if isinstance(story_input.get("entry_summary"), dict) else {}
+    operator_conclusion = story_input.get("operator_conclusion_human") if isinstance(story_input.get("operator_conclusion_human"), dict) else {}
+
+    exit_action = _clip(exit_summary.get("action"), max_len=24).upper()
+    entry_action = _clip(entry_summary.get("action"), max_len=24).upper()
+    requested_action = _clip(story_input.get("action"), max_len=24).upper()
+    conclusion_action = _clip(operator_conclusion.get("current_action"), max_len=24).upper()
+
+    if exit_action in {"BUY", "SELL"}:
+        return exit_action
+    if status_text == "open":
+        if conclusion_action in {"HOLD", "WAIT", "BUY"}:
+            return conclusion_action
+        return "HOLD"
+    if requested_action in {"BUY", "SELL"}:
+        return requested_action
+    if conclusion_action in {"BUY", "SELL", "HOLD", "WAIT"}:
+        return conclusion_action
+    if entry_action in {"BUY", "SELL"}:
+        return entry_action
+    return "WAIT"
+
+
+def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(report or {})
+    action = _actual_lifecycle_action(story_input)
+    symbol = _clip(story_input.get("symbol"), max_len=32) or _clip(out.get("symbol"), max_len=32) or "unknown"
+    status_text = _clip(story_input.get("status"), max_len=32) or _clip(out.get("status"), max_len=32) or "closed"
+    story_type = _clip(story_input.get("story_type"), max_len=40) or _clip(out.get("story_type"), max_len=40)
+    execution_mode = _clip(story_input.get("execution_mode_label"), max_len=80) or _clip(out.get("execution_mode_label"), max_len=80)
+
+    out["symbol"] = symbol
+    out["action"] = action
+    out["status"] = status_text
+    if story_type:
+        out["story_type"] = story_type
+    if execution_mode:
+        out["execution_mode_label"] = execution_mode
+
+    executive = out.get("executive_summary") if isinstance(out.get("executive_summary"), dict) else {}
+    executive_summary = dict(executive)
+    executive_summary["action"] = action
+    executive_summary["symbol"] = symbol
+    if not str(executive_summary.get("headline") or "").strip():
+        executive_summary["headline"] = f"{action} {symbol}"
+    out["executive_summary"] = executive_summary
+
+    final_conclusion = out.get("final_operator_conclusion") if isinstance(out.get("final_operator_conclusion"), dict) else {}
+    normalized_conclusion = dict(final_conclusion)
+    normalized_conclusion["current_action"] = "HOLD" if status_text.lower() == "open" and action == "BUY" else action
+    out["final_operator_conclusion"] = normalized_conclusion
+    return out
+
+
+def _contains_hangul(value: Any) -> bool:
+    return bool(re.search(r"[가-힣]", str(value or "")))
+
+
+def _prefer_fallback_text(ai_text: Any, fallback_text: Any) -> str:
+    ai_clean = _clip(ai_text, max_len=2000)
+    fallback_clean = _clip(fallback_text, max_len=2000)
+    if not ai_clean:
+        return fallback_clean
+    if fallback_clean and not _contains_hangul(ai_clean) and _contains_hangul(fallback_clean):
+        return fallback_clean
+    return ai_clean
+
+
+def _merge_section_with_fallback(ai_section: Any, fallback_section: Dict[str, Any]) -> Dict[str, Any]:
+    section = ai_section if isinstance(ai_section, dict) else {}
+    fallback = fallback_section if isinstance(fallback_section, dict) else {}
+    merged = dict(section)
+    merged["summary"] = _prefer_fallback_text(section.get("summary"), fallback.get("summary"))
+    ai_bullets = _listify(section.get("bullets"), max_items=12, max_len=260)
+    fallback_bullets = _listify(fallback.get("bullets"), max_items=12, max_len=260)
+    if not ai_bullets:
+        merged["bullets"] = fallback_bullets
+    elif fallback_bullets and not any(_contains_hangul(item) for item in ai_bullets) and any(_contains_hangul(item) for item in fallback_bullets):
+        merged["bullets"] = fallback_bullets
+    else:
+        merged["bullets"] = ai_bullets
+    for key in ("headline", "action", "confidence", "status", "grade", "current_action", "symbol"):
+        if not str(merged.get(key) or "").strip() and str(fallback.get(key) or "").strip():
+            merged[key] = fallback.get(key)
+    return merged
 
 
 def _fallback_report(
@@ -329,16 +420,24 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
         {
             "role": "system",
             "content": (
-                "You are writing a per-trade operator memo for a trading system. "
-                "Use only the provided facts. Do not invent numbers or events. "
-                "Return strict JSON only."
+                "당신은 트레이딩 시스템의 거래별 운영 리포트를 작성하는 한국어 분석기입니다. "
+                "입력으로 제공된 사실만 사용하고 숫자나 사건을 지어내지 마세요. "
+                "모든 출력은 한국어 JSON 객체 하나만 반환하세요."
             ),
         },
         {
             "role": "user",
             "content": (
-                "Turn this trade story input into an operator-friendly report.\n"
-                "Return JSON with these keys:\n"
+                "아래 trade story input을 운영자가 한눈에 이해할 수 있는 한국어 AI 거래 리포트로 정리하세요.\n"
+                "파이프라인 순서를 반드시 유지하세요: 전략가 -> 스캐너 -> 모니터 -> 감독관 -> 수행자 -> 리포터.\n"
+                "다음 원칙을 지키세요.\n"
+                "- 글로벌 감성 점수, VIX, 수집한 뉴스 수와 질의 대상 수를 가능한 한 숫자로 적기\n"
+                "- 스캐너는 후보 수, 1등 종목, runner-up, Kiwoom 소스(top_value/top_volume/sector_theme 등), 점수/feature coverage를 구체적으로 적기\n"
+                "- 모니터는 전달받은 감시 기준(stop, effective stop, take profit, watch axis, 가격 source)을 구체적으로 적기\n"
+                "- 감독관과 수행자는 승인/체결 결과를 분리해서 적기\n"
+                "- 리포터 linkage가 없으면 원인을 한국어로 설명하기\n"
+                "- 영어 문장 대신 한국어 문장으로 쓰되, 종목코드와 key 이름은 필요한 경우 유지 가능\n"
+                "아래 JSON 스키마로만 반환하세요:\n"
                 "{"
                 "\"executive_summary\": {\"headline\": str, \"action\": str, \"symbol\": str, \"confidence\": str, \"summary\": str}, "
                 "\"market_context_at_entry\": {\"summary\": str, \"bullets\": [str]}, "
@@ -354,7 +453,8 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
                 "\"full_timeline\": [{\"event\": str, \"ts\": str, \"description\": str}], "
                 "\"final_operator_conclusion\": {\"summary\": str, \"current_action\": str, \"watch_next\": [str], \"thesis_invalidation\": [str]}"
                 "}\n"
-                "Keep wording concise, explicit, and operator-facing.\n"
+                "각 section의 bullets는 3~6개 정도로 충분히 자세하게 작성하세요.\n"
+                "summary는 운영자가 바로 의사결정할 수 있도록 명확하게 쓰세요.\n"
                 f"Input:\n{json.dumps(compact_input, ensure_ascii=False)}"
             ),
         },
@@ -448,50 +548,83 @@ def build_ai_trade_report(
         "model": _clip(chosen_model or str(router.resolve("trade_report").model), max_len=120),
         "reason": "",
     }
-    out["executive_summary"] = _normalize_section(parsed.get("executive_summary"), default_summary=out["executive_summary"]["summary"])
-    out["market_context_at_entry"] = _normalize_section(
-        parsed.get("market_context_at_entry") or parsed.get("market_context"),
-        default_summary=(out.get("market_context_at_entry") or {}).get("summary") or (out.get("market_context") or {}).get("summary") or "",
+    out["executive_summary"] = _merge_section_with_fallback(
+        _normalize_section(parsed.get("executive_summary"), default_summary=out["executive_summary"]["summary"]),
+        out["executive_summary"],
     )
-    out["why_this_symbol_was_chosen"] = _normalize_section(
-        parsed.get("why_this_symbol_was_chosen") or parsed.get("why_this_symbol"),
-        default_summary=(out.get("why_this_symbol_was_chosen") or {}).get("summary") or (out.get("why_this_symbol") or {}).get("summary") or "",
+    out["market_context_at_entry"] = _merge_section_with_fallback(
+        _normalize_section(
+            parsed.get("market_context_at_entry") or parsed.get("market_context"),
+            default_summary=(out.get("market_context_at_entry") or {}).get("summary") or (out.get("market_context") or {}).get("summary") or "",
+        ),
+        out["market_context_at_entry"],
     )
-    out["entry_decision"] = _normalize_section(
-        parsed.get("entry_decision"),
-        default_summary=(out.get("entry_decision") or {}).get("summary") or "",
+    out["why_this_symbol_was_chosen"] = _merge_section_with_fallback(
+        _normalize_section(
+            parsed.get("why_this_symbol_was_chosen") or parsed.get("why_this_symbol"),
+            default_summary=(out.get("why_this_symbol_was_chosen") or {}).get("summary") or (out.get("why_this_symbol") or {}).get("summary") or "",
+        ),
+        out["why_this_symbol_was_chosen"],
     )
-    out["holding_monitoring_story"] = _normalize_section(
-        parsed.get("holding_monitoring_story") or parsed.get("monitor_trigger_reasoning"),
-        default_summary=(out.get("holding_monitoring_story") or {}).get("summary") or (out.get("monitor_trigger_reasoning") or {}).get("summary") or "",
+    out["entry_decision"] = _merge_section_with_fallback(
+        _normalize_section(
+            parsed.get("entry_decision"),
+            default_summary=(out.get("entry_decision") or {}).get("summary") or "",
+        ),
+        out["entry_decision"],
     )
-    out["exit_decision"] = _normalize_section(
-        parsed.get("exit_decision"),
-        default_summary=(out.get("exit_decision") or {}).get("summary") or "",
+    out["holding_monitoring_story"] = _merge_section_with_fallback(
+        _normalize_section(
+            parsed.get("holding_monitoring_story") or parsed.get("monitor_trigger_reasoning"),
+            default_summary=(out.get("holding_monitoring_story") or {}).get("summary") or (out.get("monitor_trigger_reasoning") or {}).get("summary") or "",
+        ),
+        out["holding_monitoring_story"],
     )
-    out["execution_quality"] = _normalize_section(
-        parsed.get("execution_quality") or parsed.get("execution_result"),
-        default_summary=(out.get("execution_quality") or {}).get("summary") or (out.get("execution_result") or {}).get("summary") or "",
+    out["exit_decision"] = _merge_section_with_fallback(
+        _normalize_section(
+            parsed.get("exit_decision"),
+            default_summary=(out.get("exit_decision") or {}).get("summary") or "",
+        ),
+        out["exit_decision"],
     )
-    out["scanner_filters"] = _normalize_section(
-        parsed.get("scanner_filters") or parsed.get("scanner_logic_and_filters"),
-        default_summary=(out.get("scanner_filters") or {}).get("summary") or (out.get("scanner_logic_and_filters") or {}).get("summary") or "",
+    out["execution_quality"] = _merge_section_with_fallback(
+        _normalize_section(
+            parsed.get("execution_quality") or parsed.get("execution_result"),
+            default_summary=(out.get("execution_quality") or {}).get("summary") or (out.get("execution_result") or {}).get("summary") or "",
+        ),
+        out["execution_quality"],
     )
-    out["guard_approval_result"] = _normalize_section(
-        parsed.get("guard_approval_result"),
-        default_summary=out["guard_approval_result"]["summary"],
+    out["scanner_filters"] = _merge_section_with_fallback(
+        _normalize_section(
+            parsed.get("scanner_filters") or parsed.get("scanner_logic_and_filters"),
+            default_summary=(out.get("scanner_filters") or {}).get("summary") or (out.get("scanner_logic_and_filters") or {}).get("summary") or "",
+        ),
+        out["scanner_filters"],
     )
-    out["reporter_evaluation"] = _normalize_section(
-        parsed.get("reporter_evaluation"),
-        default_summary=out["reporter_evaluation"]["summary"],
+    out["guard_approval_result"] = _merge_section_with_fallback(
+        _normalize_section(
+            parsed.get("guard_approval_result"),
+            default_summary=out["guard_approval_result"]["summary"],
+        ),
+        out["guard_approval_result"],
     )
-    out["errors_weaknesses_improvement_points"] = _normalize_section(
-        parsed.get("errors_weaknesses_improvement_points"),
-        default_summary=out["errors_weaknesses_improvement_points"]["summary"],
+    out["reporter_evaluation"] = _merge_section_with_fallback(
+        _normalize_section(
+            parsed.get("reporter_evaluation"),
+            default_summary=out["reporter_evaluation"]["summary"],
+        ),
+        out["reporter_evaluation"],
+    )
+    out["errors_weaknesses_improvement_points"] = _merge_section_with_fallback(
+        _normalize_section(
+            parsed.get("errors_weaknesses_improvement_points"),
+            default_summary=out["errors_weaknesses_improvement_points"]["summary"],
+        ),
+        out["errors_weaknesses_improvement_points"],
     )
     final_conclusion = parsed.get("final_operator_conclusion") if isinstance(parsed.get("final_operator_conclusion"), dict) else {}
     out["final_operator_conclusion"] = {
-        "summary": _clip(final_conclusion.get("summary"), max_len=600) or out["final_operator_conclusion"]["summary"],
+        "summary": _prefer_fallback_text(final_conclusion.get("summary"), out["final_operator_conclusion"]["summary"]),
         "current_action": _clip(final_conclusion.get("current_action"), max_len=24) or out["final_operator_conclusion"]["current_action"],
         "watch_next": _listify(final_conclusion.get("watch_next"), max_items=6, max_len=200) or out["final_operator_conclusion"]["watch_next"],
         "thesis_invalidation": _listify(final_conclusion.get("thesis_invalidation"), max_items=6, max_len=200)
@@ -513,7 +646,7 @@ def build_ai_trade_report(
     out["scanner_logic_and_filters"] = dict(out.get("scanner_filters") or {})
     out["monitor_trigger_reasoning"] = dict(out.get("holding_monitoring_story") or {})
     out["execution_result"] = dict(out.get("execution_quality") or {})
-    return out
+    return _normalize_trade_report_output(story_input, out)
 
 
 def render_trade_report_markdown(report: Dict[str, Any]) -> str:

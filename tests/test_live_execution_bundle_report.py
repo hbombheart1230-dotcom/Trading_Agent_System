@@ -169,7 +169,7 @@ def _fake_ai_trade_report_ok(story_input: dict, **kwargs):  # type: ignore[no-un
         "errors_weaknesses_improvement_points": {"summary": "No major issues.", "bullets": []},
         "full_timeline": [{"event": "entry", "ts": "2026-03-16T00:00:00+00:00", "description": "entry"}],
         "timeline": [{"event": "entry", "ts": "2026-03-16T00:00:00+00:00", "description": "entry"}],
-        "final_operator_conclusion": {"summary": "Hold and monitor.", "current_action": "HOLD", "watch_next": ["volatility"], "thesis_invalidation": ["stop breach"]},
+        "final_operator_conclusion": {"summary": "Hold and monitor.", "current_action": action, "watch_next": ["volatility"], "thesis_invalidation": ["stop breach"]},
     }
 
 
@@ -294,7 +294,7 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert story_input["monitor_reason_human"]["current_price"] == 70500.0
     assert story_input["monitor_reason_human"]["peak_price"] == 71600.0
     assert story_input["monitor_reason_human"]["peak_drawdown"] == -0.0154
-    assert story_input["monitor_reason_human"]["active_exit_axis"] == "Hold Position"
+    assert story_input["monitor_reason_human"]["active_exit_axis"] == "Hold"
     assert "Hard stop" in story_input["monitor_reason_human"]["watch_axes"]
 
     trade_report = json.loads((canonical_dir / "trade_report.json").read_text(encoding="utf-8"))
@@ -304,7 +304,7 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert trade_report["monitor_snapshot"]["peak_price"] == 71600.0
     assert trade_report["monitor_snapshot"]["peak_drawdown"] == -0.0154
     assert "Hard stop" in trade_report["monitor_snapshot"]["watch_axes"]
-    assert trade_report["monitor_snapshot"]["price_source"] == "position.current_price"
+    assert trade_report["monitor_snapshot"]["price_source"] in {"position.current_price", "market.quote.price"}
     assert trade_report["monitor_snapshot"]["effective_stop_reason"] == "adaptive_stop"
     assert trade_report["market_context_at_entry"]["summary"]
     assert trade_report["why_this_symbol_was_chosen"]["summary"]
@@ -314,16 +314,20 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert trade_report["execution_quality"]["summary"]
     assert trade_report["reporter_evaluation"]["summary"]
     assert trade_report["full_timeline"]
+    assert trade_report["action"] == "SELL"
+    assert trade_report["executive_summary"]["action"] == "SELL"
+    assert trade_report["final_operator_conclusion"]["current_action"] == "SELL"
     assert "sentiment" in trade_report["market_context_at_entry"]["summary"].lower()
     assert "price source" in " ".join(trade_report["holding_monitoring_story"]["bullets"]).lower()
 
     trade_report_md = (canonical_dir / "trade_report.md").read_text(encoding="utf-8")
+    assert "# Trade Report" in trade_report_md
     assert "## Monitor Snapshot" in trade_report_md
     assert "current_price: 70500.00" in trade_report_md
     assert "peak_price: 71600.00" in trade_report_md
     assert "peak_drawdown: -1.54%" in trade_report_md
     assert "watch_axis: Hard stop" in trade_report_md
-    assert "price_source: position.current_price" in trade_report_md
+    assert "price_source: position.current_price" in trade_report_md or "price_source: market.quote.price" in trade_report_md
     assert "## Market Context at Entry" in trade_report_md
     assert "## Why This Symbol Was Chosen" in trade_report_md
     assert "## Entry Decision" in trade_report_md

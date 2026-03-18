@@ -651,6 +651,31 @@ def _build_portfolio_sync_card(raw: Any) -> Dict[str, Any]:
     }
 
 
+def _run_activity_meta(runtime_path: Any, execution: Dict[str, Any], guard_reason: Any, monitor_reason: Any) -> Dict[str, str]:
+    path = str(runtime_path or "").strip().lower()
+    action = str((execution or {}).get("action") or "").strip().upper()
+    status = str((execution or {}).get("status") or "").strip()
+    guard = str(guard_reason or "").strip().lower()
+    monitor = str(monitor_reason or "").strip().lower()
+    if action in {"BUY", "SELL"} and status:
+        return {
+            "activity_kind": "trade",
+            "activity_label": "Trade",
+            "activity_badge_class": "status-badge status-badge--ok",
+        }
+    if path == "integrated_chain_monitor_only" and (guard == "noop_intent_skipped" or "hold" in monitor):
+        return {
+            "activity_kind": "monitoring",
+            "activity_label": "Monitoring",
+            "activity_badge_class": "status-badge",
+        }
+    return {
+        "activity_kind": "analysis",
+        "activity_label": "Analysis",
+        "activity_badge_class": "chip",
+    }
+
+
 def _extract_portfolio_guard_payload_from_run_rows(run_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(run_rows, list) or not run_rows:
         return {}
@@ -900,7 +925,7 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
             model_hint=generation.get("model"),
             generation=generation,
         )
-        report_available = bool(diagnostics.get("report_status") == "available" and report_exists)
+        report_available = bool(report_exists)
         record = {
             "trade_id": trade_id,
             "story_id": story_id,
@@ -930,7 +955,7 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
             "ai_report_diagnostics": diagnostics,
             "report_summary": report_summary or "Per-trade report summary was not generated yet.",
             "reporter_status_human": reporter_summary,
-            "report_link": f"/reports/trade/{trade_id}" if report_available and trade_id and report_exists else "",
+            "report_link": f"/reports/trade/{trade_id}" if trade_id and report_exists else "",
             "operator_brief_available": bool(trade_id),
             "operator_brief_link": f"/reports/trade/{trade_id}/brief" if trade_id else "",
             "trade_report_json_path": str(report_json_path) if report_json_path.exists() else "",
@@ -996,6 +1021,8 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
     health = operator_summary.get("system_health_status") if isinstance(operator_summary.get("system_health_status"), dict) else {}
     trading = operator_summary.get("trading_activity_summary") if isinstance(operator_summary.get("trading_activity_summary"), dict) else {}
     recon_summary = reconciliation.get("summary") if isinstance(reconciliation.get("summary"), dict) else {}
+    ai_review = reporter.get("ai_review") if isinstance(reporter.get("ai_review"), dict) else {}
+    trade_summary = reporter.get("trade_summary") if isinstance(reporter.get("trade_summary"), dict) else {}
     strategy_memory_timeline = load_strategy_memory_timeline(config, limit=7)
     latest_day = str(latest_day or "")
     all_today_trades = load_recent_trades_for_day(config, latest_day, limit=200)
@@ -1018,9 +1045,112 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
         and str(row.get("event") or "") == "verdict"
         and isinstance(row.get("payload"), dict)
     ]
-    live_blocked_total = sum(1 for row in live_verdict_rows if not bool((row.get("payload") or {}).get("allowed")))
+    live_allowed_total = 0
+    live_blocked_total = 0
+    live_noop_total = 0
+    live_block_reason_top: Dict[str, int] = {}
+    for row in live_verdict_rows:
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        allowed = payload.get("allowed")
+        reason = str(payload.get("reason") or "").strip()
+        if allowed is True:
+            live_allowed_total += 1
+            continue
+        if reason == "noop_intent_skipped":
+            live_noop_total += 1
+            continue
+        if allowed is False:
+            live_blocked_total += 1
+            if reason:
+                live_block_reason_top[reason] = _safe_int(live_block_reason_top.get(reason), 0) + 1
     live_run_total = len(live_route_rows)
     live_execution_total = len(all_today_trades)
+    live_action_counts: Dict[str, int] = {}
+    for row in all_today_trades:
+        action = str(row.get("action") or "").upper().strip()
+        if not action:
+            continue
+        live_action_counts[action] = _safe_int(live_action_counts.get(action), 0) + 1
+    live_events_total = live_run_total
+    live_symbols_traded = [str(row.get("symbol") or "") for row in traded_symbol_summary[:8] if str(row.get("symbol") or "").strip()]
+
+    reported_run_total = _safe_int(trading.get("run_total"), 0)
+    reported_exec_total = _safe_int(trading.get("executions_total"), 0)
+    reported_blocked_total = _safe_int(trading.get("blocked_total"), 0)
+    reported_daily_events = _safe_int(daily.get("events"), 0)
+    reported_daily_approvals = _safe_int(daily.get("approvals"), 0)
+    reported_daily_blocks = _safe_int(daily.get("blocks"), 0)
+    reported_reporter_trade_count = _safe_int(trade_summary.get("trade_count"), 0)
+    reported_reporter_symbols = [str(v or "") for v in list(trade_summary.get("symbols_traded") or []) if str(v or "").strip()]
+    live_snapshot_mismatch = any(
+        [
+            live_run_total > reported_run_total,
+            live_execution_total > reported_exec_total,
+            live_allowed_total > reported_daily_approvals,
+            live_blocked_total != reported_blocked_total and live_execution_total > 0,
+            live_events_total > reported_daily_events,
+            live_execution_total > reported_reporter_trade_count,
+            live_symbols_traded != reported_reporter_symbols[: len(live_symbols_traded)],
+        ]
+    )
+
+    if latest_day and live_snapshot_mismatch:
+        top_block_reason = ""
+        if live_block_reason_top:
+            top_block_reason = sorted(live_block_reason_top.items(), key=lambda item: (-_safe_int(item[1]), str(item[0])))[0][0]
+        executive = {
+            "system_status": str(executive.get("system_status") or health.get("system_health_level") or "LIVE"),
+            "summary_lines": [
+                f"[LIVE] runs={live_run_total}, executions={live_execution_total} (approved={live_allowed_total}, blocked={live_blocked_total}, noop={live_noop_total}).",
+                f"Top guard block: {top_block_reason or 'none'}",
+            ] + list(executive.get("summary_lines") or []),
+        }
+        trading = {
+            **trading,
+            "run_total": live_run_total,
+            "executions_total": live_execution_total,
+            "blocked_total": live_blocked_total,
+        }
+        daily = {
+            **daily,
+            "events": live_events_total,
+            "decision_actions": live_action_counts,
+            "approvals": live_allowed_total,
+            "blocks": live_blocked_total,
+        }
+        if reporter:
+            reporter = {
+                **reporter,
+                "trade_summary": {
+                    **trade_summary,
+                    "trade_count": live_execution_total,
+                    "symbols_traded": live_symbols_traded,
+                },
+            }
+            ai_review = reporter.get("ai_review") if isinstance(reporter.get("ai_review"), dict) else {}
+            trade_summary = reporter.get("trade_summary") if isinstance(reporter.get("trade_summary"), dict) else {}
+            if ai_review:
+                reporter["ai_review"] = {
+                    **ai_review,
+                    "status": "snapshot" if str(ai_review.get("status") or "").strip().lower() == "ok" else ai_review.get("status"),
+                }
+
+    reported_recon_local = _safe_int(recon_summary.get("local_total"), 0)
+    reported_recon_broker = _safe_int(recon_summary.get("broker_total"), 0)
+    reported_recon_matched = _safe_int(recon_summary.get("matched_by_ord_no"), 0)
+    recon_stale_vs_live = live_execution_total > max(reported_recon_local, reported_recon_broker, reported_recon_matched)
+    if latest_day and live_execution_total > 0 and (not reconciliation or recon_stale_vs_live):
+        reconciliation = {
+            "summary": {
+                "local_total": live_execution_total,
+                "broker_total": reported_recon_broker,
+                "matched_by_ord_no": reported_recon_matched,
+                "broker_window_limited": bool(recon_summary.get("broker_window_limited")),
+                "pending": True,
+                "sentence": "Intraday reconciliation has not been generated yet. Local executions are ahead of broker matching.",
+            }
+        }
+        recon_summary = reconciliation.get("summary") if isinstance(reconciliation.get("summary"), dict) else {}
 
     if not operator_summary and latest_day:
         operator_summary_live_lines: List[str] = []
@@ -1062,10 +1192,18 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
     ai_review = reporter.get("ai_review") if isinstance(reporter.get("ai_review"), dict) else {}
     trade_summary = reporter.get("trade_summary") if isinstance(reporter.get("trade_summary"), dict) else {}
     recent_runs = load_recent_runs(config, limit=200)
-    latest_run_sync = (
-        dict((recent_runs[0] or {}).get("portfolio_sync") or {})
-        if recent_runs and isinstance(recent_runs[0], dict)
-        else _build_portfolio_sync_card({})
+    latest_run_sync = next(
+        (
+            dict((row or {}).get("portfolio_sync") or {})
+            for row in recent_runs
+            if isinstance(row, dict)
+            and str(((row.get("portfolio_sync") or {}).get("status") or "")).strip().lower() not in {"", "unavailable"}
+        ),
+        (
+            dict((recent_runs[0] or {}).get("portfolio_sync") or {})
+            if recent_runs and isinstance(recent_runs[0], dict)
+            else _build_portfolio_sync_card({})
+        ),
     )
     sync_runs_today = [
         row for row in recent_runs
@@ -1110,6 +1248,8 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "broker_total": _safe_int(recon_summary.get("broker_total"), 0),
             "matched_by_ord_no": _safe_int(recon_summary.get("matched_by_ord_no"), 0),
             "broker_window_limited": bool(recon_summary.get("broker_window_limited")),
+            "pending": bool(recon_summary.get("pending")),
+            "sentence": str(recon_summary.get("sentence") or ""),
             "path": str(config.reports_root / "reconciliation" / f"broker_trade_reconciliation_{latest_day}.json") if latest_day else "",
         },
         "today_trades": today_trades,
@@ -1391,7 +1531,13 @@ def load_latest_strategist_prompt_summary(config: OperatorUIConfig, day: str) ->
     }
 
 
-def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50, mismatch_only: bool = False) -> List[Dict[str, Any]]:
+def load_recent_runs(
+    config: OperatorUIConfig,
+    *,
+    limit: int = 50,
+    mismatch_only: bool = False,
+    activity_view: str = "all",
+) -> List[Dict[str, Any]]:
     rows = list(_iter_jsonl(config.event_log_path))
     route_rows = [row for row in rows if str(row.get("stage") or "") == "commander_router" and str(row.get("event") or "") == "route"]
     route_rows = sorted(route_rows, key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)[: max(1, int(limit))]
@@ -1457,6 +1603,14 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50, mismatch_only
             (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "verdict" and isinstance(r.get("payload"), dict)),
             {},
         )
+        fast_path_payload = next(
+            (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "commander_router" and str(r.get("event") or "") == "fast_path" and isinstance(r.get("payload"), dict)),
+            {},
+        )
+        runtime_end_payload = next(
+            (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "commander_router" and str(r.get("event") or "") == "end" and isinstance(r.get("payload"), dict)),
+            {},
+        )
         execution_payload = next(
             (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "execution" and isinstance(r.get("payload"), dict)),
             {},
@@ -1471,6 +1625,7 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50, mismatch_only
         feature_snapshot = selected_candidate.get("feature_snapshot") if isinstance(selected_candidate.get("feature_snapshot"), dict) else {}
         feature_coverage = _feature_coverage(feature_snapshot)
         macro_stress_overlay = strategic_frame.get("macro_stress_overlay") if isinstance(strategic_frame.get("macro_stress_overlay"), dict) else {}
+        runtime_path = str(runtime_end_payload.get("path") or fast_path_payload.get("path") or "")
         report_meta = reports_by_run.get(rid) if isinstance(reports_by_run.get(rid), dict) else {}
         if report_meta:
             report_diag = (
@@ -1526,6 +1681,7 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50, mismatch_only
                 "ts": _iso_to_display(route.get("ts")),
                 "mode": str((route.get("payload") or {}).get("mode") or ""),
                 "phase": str((route.get("payload") or {}).get("phase") or ""),
+                "runtime_path": runtime_path,
                 "strategist_playbook": str(strategist_summary.get("playbook") or ""),
                 "strategist_risk_tone": str(strategist_summary.get("risk_tone") or ""),
                 "scanner_top_stock": str(scanner_summary.get("top_stock") or ""),
@@ -1571,7 +1727,19 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50, mismatch_only
                 "portfolio_sync_badge_class": str(portfolio_sync.get("badge_class") or "status-badge"),
                 "portfolio_sync_sentence": str(portfolio_sync.get("sentence") or ""),
             }
+        row.update(
+            _run_activity_meta(
+                runtime_path,
+                execution,
+                verdict_payload.get("reason") if isinstance(verdict_payload, dict) else "",
+                monitor_summary.get("monitor_reason") if isinstance(monitor_summary, dict) else "",
+            )
+        )
         if mismatch_only and row["portfolio_sync_status"] not in {"mismatch", "reader_error"}:
+            continue
+        if activity_view == "trades" and row.get("activity_kind") != "trade":
+            continue
+        if activity_view == "monitoring" and row.get("activity_kind") != "monitoring":
             continue
         out.append(row)
     return out
@@ -2424,10 +2592,15 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     execution_action = str(execution.get("action") or "").upper()
+    report_lifecycle_status = str(trade_report.get("lifecycle_status") or canonical_trade.get("lifecycle_status") or "").strip().lower()
     canonical_action = str(canonical_trade.get("current_action") or "").upper()
     monitor_reason = str(canonical_trade.get("monitor_summary") or live_monitor_reason or "").strip()
     exit_reason = str(canonical_trade.get("exit_reason") or live_exit_reason or "").strip()
-    if canonical_action in {"BUY", "SELL", "HOLD", "WAIT"}:
+    if execution_action == "SELL":
+        final_action = "SELL"
+    elif execution_action == "BUY" and report_lifecycle_status != "closed":
+        final_action = "BUY"
+    elif canonical_action in {"BUY", "SELL", "HOLD", "WAIT"}:
         final_action = canonical_action
     elif execution_action in {"BUY", "SELL"}:
         final_action = execution_action
@@ -2732,7 +2905,9 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         trade_quality = "post-trade quality grade is pending"
         key_finding = ai_summary or reporter_reason
 
-    if canonical_trade.get("report_summary"):
+    canonical_report_summary = str(canonical_trade.get("report_summary") or "")
+    generic_lifecycle_summary = canonical_report_summary.lower().startswith("current lifecycle status is")
+    if canonical_report_summary and not (final_action == "SELL" and generic_lifecycle_summary):
         decision_reason = str(canonical_trade.get("report_summary"))
     elif final_action == "BUY":
         decision_reason = (
@@ -2972,12 +3147,12 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
 
     global_bits: List[str] = []
     if global_inputs.get("score") is not None:
-        global_bits.append(f"\uae00\ub85c\ubc8c \uac10\uc131 \uc810\uc218={_safe_float(global_inputs.get('score'), 0.0):.2f}")
+        global_bits.append(f"global sentiment score={_safe_float(global_inputs.get('score'), 0.0):.2f}")
     if fear_index.get("level") is not None:
         global_bits.append(f"VIX={_safe_float(fear_index.get('level'), 0.0):.2f}")
     macro_moves = global_inputs.get("macro_moves") if isinstance(global_inputs.get("macro_moves"), dict) else {}
     if macro_moves.get("dxy_pct") is not None:
-        global_bits.append(f"\ub2ec\ub7ec\uc9c0\uc218={_safe_float(macro_moves.get('dxy_pct'), 0.0):.2f}")
+        global_bits.append(f"dollar index={_safe_float(macro_moves.get('dxy_pct'), 0.0):.2f}")
 
     feature_coverage = scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else {}
     quote_metrics = scanner.get("quote_metrics") if isinstance(scanner.get("quote_metrics"), dict) else {}
@@ -2994,11 +3169,11 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         canonical_trade.get("symbol") or trade_report.get("symbol") or selected.get("symbol") or scanner_summary.get("top_stock") or "",
         allow_test_symbols=True,
     )
-    headline_fallback = " ".join(part for part in [headline_action, headline_symbol, "운영 요약"] if str(part or "").strip())
+    headline_fallback = " ".join(part for part in [headline_action, headline_symbol, "Operator Summary"] if str(part or "").strip())
     headline = (
         str(canonical_trade.get("headline") or "").strip()
         or headline_fallback
-        or f"{detail.get('run_id') or '-'} 운영 요약"
+        or f"{detail.get('run_id') or '-'} Operator Summary"
     )
 
     return {
@@ -3006,58 +3181,56 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         "model": "",
         "headline": headline,
         "commander_summary": (
-            f"\uc9c0\ud718\uc790\ub294 {((detail.get('commander') or {}).get('phase') or '-')} phase\uc5d0\uc11c "
-            f"{((detail.get('commander') or {}).get('path') or '-')} \uacbd\ub85c\ub97c \uc2e4\ud589\ud588\uc2b5\ub2c8\ub2e4."
+            f"Commander ran the {((detail.get('commander') or {}).get('phase') or '-')} phase "
+            f"through the {((detail.get('commander') or {}).get('path') or '-')} path."
         ),
         "strategist_summary": (
             canonical_market_summary
             or (
-                f"\uc804\ub7b5\uac00\ub294 {', '.join(global_bits) or '\uc2dc\uc7a5 \uc785\ub825'}\uc744 \ucc38\uace0\ud558\uace0, \ub274\uc2a4 \uc9c8\uc758 "
-                f"{', '.join(_clean_brief_list(strategist_summary.get('news_query_targets'), limit=6)) or '-'}\ub85c \ubd84\uc704\uae30\ub97c \ud655\uc778\ud55c \ub4a4 "
-                f"\ud14c\ub9c8 {', '.join(_clean_brief_list(strategist_summary.get('themes'), limit=4)) or '-'}, "
-                f"\ud50c\ub808\uc774\ubd81 {strategist_summary.get('playbook') or '-'}\ub85c \uc815\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
+                f"Strategist reviewed {', '.join(global_bits) or 'market inputs'}, checked news query targets "
+                f"{', '.join(_clean_brief_list(strategist_summary.get('news_query_targets'), limit=6)) or '-'}, and summarized the market into "
+                f"themes {', '.join(_clean_brief_list(strategist_summary.get('themes'), limit=4)) or '-'} with playbook {strategist_summary.get('playbook') or '-'}."
             )
         ),
         "scanner_summary": (
             canonical_selection_summary
             or (
-                f"\uc2a4\uce90\ub108\ub294 Kiwoom \ud6c4\ubcf4 {int(scanner_summary.get('candidate_pool_after_filter') or 0)}\uac1c \uc911 "
-                f"{_clean_brief_text(scanner_summary.get('top_stock') or selected.get('symbol') or '-')}\ub97c 1\ub4f1\uc73c\ub85c \uace8\ub790\uace0 \uc774\uc720\ub294 "
-                f"{selected.get('why') or '-'}\uc785\ub2c8\ub2e4."
+                f"Scanner reviewed {int(scanner_summary.get('candidate_pool_after_filter') or 0)} Kiwoom candidates, ranked "
+                f"{_clean_brief_text(scanner_summary.get('top_stock') or selected.get('symbol') or '-')} first, and recorded the reason as "
+                f"{selected.get('why') or '-'}."
             )
         ),
         "monitor_summary": (
             canonical_monitor_summary
             or (
-                f"\ubaa8\ub2c8\ud130\ub294 {monitor_summary.get('monitor_reason') or monitor_trace.get('monitor_reason') or '-'} \uc0c1\ud0dc\ub97c \ubcf4\uace0, "
-                f"exit={monitor_summary.get('exit_reason') or monitor_trace.get('exit_reason') or '-'}\ub85c \ud310\ub2e8\ud588\uc2b5\ub2c8\ub2e4."
+                f"Monitor evaluated {monitor_summary.get('monitor_reason') or monitor_trace.get('monitor_reason') or '-'} "
+                f"with exit={monitor_summary.get('exit_reason') or monitor_trace.get('exit_reason') or '-'}."
             )
         ),
         "supervisor_summary": (
             canonical_guard_summary
-            or f"\uac10\ub3c5\uad00\uc740 allowed={supervisor.get('allowed')} / reason={supervisor.get('reason') or '-'}\ub85c \uacb0\ub860\ub0c8\uc2b5\ub2c8\ub2e4."
+            or f"Supervisor concluded allowed={supervisor.get('allowed')} / reason={supervisor.get('reason') or '-'}."
         ),
         "executor_summary": (
             canonical_execution_summary
             or (
-                f"\uc218\ud589\uc790\ub294 {executor.get('action') or 'NOOP'} {executor.get('symbol') or ''} "
-                f"status={executor.get('fill_status_summary') or executor.get('status') or '-'}\ub85c \ub9c8\ubb34\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
+                f"Executor finished with {executor.get('action') or 'NOOP'} {executor.get('symbol') or ''} "
+                f"status={executor.get('fill_status_summary') or executor.get('status') or '-'}."
             )
         ),
         "reporter_summary": (
             ("" if prefer_runtime_reporter else canonical_reporter_summary)
             or (
-                f"\ub9ac\ud3ec\ud130\ub294 grade={reporter.get('ai_run_grade') or '-'} / "
-                f"summary={reporter.get('ai_summary') or '\uac19\uc740 \ub0a0\uc9dc reporter \uc694\uc57d\uc774 \uc544\uc9c1 \uc5c6\uc2b5\ub2c8\ub2e4.'}"
+                f"Reporter recorded grade={reporter.get('ai_run_grade') or '-'} / "
+                f"summary={reporter.get('ai_summary') or 'No same-day reporter summary is available yet.'}"
             )
         ),
         "operator_takeaways": [
-            canonical_market_summary or f"\ub274\uc2a4/\uac70\uc2dc \uc785\ub825: {', '.join(global_bits) or '\uc2dc\uc7a5 \uc785\ub825 \uc5c6\uc74c'}",
-            str(canonical_trade.get("filters_summary") or "") or f"\ucc28\ud2b8/feature coverage: {feature_coverage.get('quality') or '-'} ({feature_coverage.get('present') or 0}/{feature_coverage.get('total') or 0})",
-            canonical_lifecycle_summary or canonical_report_summary or f"\uc2e4\uc2dc\uac04 quote: \uac00\uaca9 {quote_metrics.get('skill_quote_price') or '-'} \uac70\ub798\ub7c9 {quote_metrics.get('quote_volume') or '-'} \uac70\ub798\ub300\uae08 {quote_metrics.get('quote_trading_value') or '-'}",
+            canonical_market_summary or f"News / macro inputs: {', '.join(global_bits) or 'no market inputs captured'}",
+            str(canonical_trade.get("filters_summary") or "") or f"Chart / feature coverage: {feature_coverage.get('quality') or '-'} ({feature_coverage.get('present') or 0}/{feature_coverage.get('total') or 0})",
+            canonical_lifecycle_summary or canonical_report_summary or f"Live quote: price {quote_metrics.get('skill_quote_price') or '-'} volume {quote_metrics.get('quote_volume') or '-'} trading_value {quote_metrics.get('quote_trading_value') or '-'}",
         ],
     }
-
 
 def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
     strategist = detail.get("strategist") if isinstance(detail.get("strategist"), dict) else {}
@@ -3177,25 +3350,26 @@ def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[s
         "operator_takeaways": ["string"],
     }
     system_prompt = (
-        "\ub2f9\uc2e0\uc740 \ud2b8\ub808\uc774\ub529 \uc6b4\uc601 \ud654\uba74\uc6a9 \ud55c\uae00 \ube0c\ub9ac\ud504 \uc791\uc131\uae30\uc785\ub2c8\ub2e4. "
-        "\uc6b4\uc601\uc790\uac00 \ud55c \ubc88\uc5d0 \uc774\ud574\ud560 \uc218 \uc788\ub3c4\ub85d \uc9e7\uace0 \uc815\ud655\ud558\uac8c \uc815\ub9ac\ud558\uc138\uc694. "
-        "\ubc18\ub4dc\uc2dc JSON\ub9cc \ucd9c\ub825\ud558\uace0 \uc124\uba85\ubb38\uc774\ub098 \uc8fc\uc11d\uc740 \uc4f0\uc9c0 \ub9c8\uc138\uc694."
+        "당신은 트레이딩 운영 화면용 한글 브리프 작성기입니다. "
+        "운영자가 한 번에 이해할 수 있도록 파이프라인 순서대로 정확하고 충분히 구체적으로 정리하세요. "
+        "반드시 JSON만 출력하고 설명문이나 주석은 쓰지 마세요."
     )
     user_prompt = (
-        "\uc544\ub798 \uc2e4\ud589 \uae30\ub85d\uc744 \ubc14\ud0d5\uc73c\ub85c \uc9c0\ud718\uc790, \uc804\ub7b5\uac00, \uc2a4\uce90\ub108, \ubaa8\ub2c8\ud130, \uac10\ub3c5\uad00, \uc218\ud589\uc790, \ub9ac\ud3ec\ud130\uac00 \uac01\uac01 \ubb34\uc5c7\uc744 \ud588\ub294\uc9c0 "
-        "\uc6b4\uc601\uc790\uc5d0\uac8c \ubc14\ub85c \uc77d\ud788\ub294 \ud55c\uad6d\uc5b4\ub85c \uc694\uc57d\ud558\uc138\uc694.\n"
-        "\ube0c\ub9ac\ud504\uc5d0\ub294 \ub2e4\uc74c\uc774 \ud3ec\ud568\ub3fc\uc57c \ud569\ub2c8\ub2e4.\n"
-        "- canonical_trade.available=true \uba74 reports/trades \uc0b0\ucd9c\ubb3c(trade_story_input, trade_lifecycle, trade_report)\uc744 1\ucc28 source of truth\ub85c \uc0ac\uc6a9\ud558\uace0 run-level \ub85c\uadf8\ub294 \ube48\uce78 \ubcf4\uc644\uc5d0\ub9cc \uc0ac\uc6a9\n"
-        "- \uc804\ub7b5\uac00\uac00 \uc5b4\ub5a4 \ub274\uc2a4/\uae00\ub85c\ubc8c \uac10\uc131/VIX/\uac70\uc2dc \uc785\ub825\uc744 \ubd24\ub294\uc9c0\n"
-        "- \uc2a4\uce90\ub108\uac00 Kiwoom \ud6c4\ubcf4 \uc911 \uc5b4\ub5a4 \uc885\ubaa9\uc744 \uc65c 1\ub4f1\uc73c\ub85c \uace8\ub790\ub294\uc9c0\n"
-        "- \ucc28\ud2b8/feature/\uc2e4\uc2dc\uac04 quote\uac00 \uc5bc\ub9c8\ub098 \ucc44\uc6cc\uc84c\ub294\uc9c0\n"
-        "- \ubaa8\ub2c8\ud130\uac00 \uc65c hold/buy/sell/block \ud588\ub294\uc9c0\n"
-        "- \uac10\ub3c5\uad00\uacfc \uc218\ud589\uc790\uc758 \ucd5c\uc885 \uacb0\ub860\n"
-        "- \ub9ac\ud3ec\ud130\uc758 \uc0ac\ud6c4 \ud3c9\uac00\n"
-        "\uac01 \ud56d\ubaa9\uc740 \uc9e7\uace0 \uba85\ud655\ud558\uac8c \uc4f0\uace0, \uc804\uccb4\ub294 120\uc790 \ub0b4\uc678 \ubb38\uc7a5 \uc704\uc8fc\ub85c \uc815\ub9ac\ud558\uc138\uc694.\n"
-        "operator_takeaways\ub294 3\uac1c \uc774\ud558\ub85c \uc791\uc131\ud558\uc138\uc694.\n"
-        f"\uacc4\uc57d: {json.dumps(contract, ensure_ascii=False)}\n"
-        f"\uc785\ub825: {json.dumps(compact_input, ensure_ascii=False)}"
+        "아래 실행 기록을 바탕으로 지휘자, 전략가, 스캐너, 모니터, 감독관, 수행자, 리포터가 각각 무엇을 했는지 "
+        "운영자에게 바로 읽히는 한국어로 요약하세요.\n"
+        "브리프에는 다음이 포함돼야 합니다.\n"
+        "- canonical_trade.available=true 면 reports/trades 산출물(trade_story_input, trade_lifecycle, trade_report)을 1차 source of truth로 사용하고 run-level 로그는 빈칸 보완에만 사용\n"
+        "- 전략가가 어떤 뉴스/글로벌 감성/VIX/거시 입력을 봤는지\n"
+        "- 스캐너가 Kiwoom 후보 몇 개를 봤고 어떤 소스(top_value/top_volume/sector_theme 등)와 수치 계산으로 왜 1등을 골랐는지\n"
+        "- 차트/feature/실시간 quote가 얼마나 채워졌는지와 주요 점수/coverage가 무엇인지\n"
+        "- 모니터가 어떤 stop/effective stop/take profit/watch axis/current price를 받아 왜 hold/buy/sell/block 했는지\n"
+        "- 감독관이 무엇을 승인 또는 차단했고 수행자가 실제로 무엇을 주문/체결했는지\n"
+        "- 리포터의 사후 평가\n"
+        "각 항목은 1~3문장으로 쓰되 숫자와 근거를 포함하세요.\n"
+        "영어 문장보다 한국어 문장을 우선하고, 종목코드/지표명만 필요한 경우 유지하세요.\n"
+        "operator_takeaways는 5개 이하로 작성하세요.\n"
+        f"계약: {json.dumps(contract, ensure_ascii=False)}\n"
+        f"입력: {json.dumps(compact_input, ensure_ascii=False)}"
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -3445,7 +3619,7 @@ def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[s
     cached = _read_json(path)
     if not isinstance(cached, dict):
         return {}
-    if int(cached.get("version") or 0) < 5:
+    if int(cached.get("version") or 0) < 8:
         return {}
     return cached
 
@@ -3456,7 +3630,7 @@ def _save_cached_operator_brief(config: OperatorUIConfig, run_id: str, brief: Di
     path = config.operator_ui_cache_path / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(brief)
-    payload["version"] = 5
+    payload["version"] = 8
     payload["cached_at"] = datetime.now(tz=KST).isoformat()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -3605,7 +3779,7 @@ def _load_saved_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     payload = _read_json(json_path)
     if not isinstance(payload, dict):
         return {}
-    if int(payload.get("version") or 0) < 4:
+    if int(payload.get("version") or 0) < 7:
         return {}
     if not _saved_operator_brief_matches_detail(payload, detail):
         return {}
@@ -3647,7 +3821,7 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         "hold_reasons": [str(x or "") for x in list(monitor_section.get("hold_reasons") or []) if str(x or "").strip()][:6],
         "exit_triggers": [str(x or "") for x in list(monitor_section.get("exit_triggers") or []) if str(x or "").strip()][:6],
     }
-    payload["version"] = 4
+    payload["version"] = 7
     payload["saved_at"] = datetime.now(tz=KST).isoformat()
     payload["run_id"] = str(detail.get("run_id") or "")
     payload["trade_id"] = str(trade_report.get("trade_id") or "")

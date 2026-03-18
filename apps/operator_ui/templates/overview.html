@@ -12,15 +12,20 @@
     {% set status_label = "CRITICAL" %}
     {% set status_tone = "critical" %}
   {% endif %}
-  {% set exec_total = overview.operator_summary.executions_total or (overview.today_trades | length) %}
+  {% set exec_total = [overview.operator_summary.executions_total or 0, (overview.today_trades | length)] | max %}
   {% set blocked_total = overview.operator_summary.blocked_total or overview.daily.blocks %}
   {% set recon_local = overview.reconciliation.local_total or 0 %}
   {% set recon_broker = overview.reconciliation.broker_total or 0 %}
   {% set recon_matched = overview.reconciliation.matched_by_ord_no or 0 %}
+  {% set recon_pending = overview.reconciliation.pending %}
   {% set portfolio_sync = overview.portfolio_sync or {} %}
   {% set portfolio_sync_summary = overview.portfolio_sync_summary or {} %}
   {% set recon_base = [recon_local, recon_broker] | max %}
-  {% if recon_base == 0 %}
+  {% if recon_pending %}
+    {% set recon_status = "PENDING" %}
+    {% set recon_tone = "warn" %}
+    {% set recon_sentence = overview.reconciliation.sentence or "Intraday reconciliation is still pending." %}
+  {% elif recon_base == 0 %}
     {% set recon_status = "OK" %}
     {% set recon_tone = "ok" %}
     {% set recon_sentence = "No executions to reconcile for the latest day." %}

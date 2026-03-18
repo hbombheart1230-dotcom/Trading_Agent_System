@@ -1158,6 +1158,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         entry_ctx = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
         exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+        exit_action = str(exit_ctx.get("action") or "").strip().upper()
         entry_run_id = str(entry_ctx.get("run_id") or "")
         exit_run_id = str(exit_ctx.get("run_id") or "")
         linked_run_ids = [str(x or "").strip() for x in list(lifecycle.get("run_ids_all") or []) if str(x or "").strip()]
@@ -1190,7 +1191,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             if isinstance(latest_holding_event, dict) and isinstance(latest_holding_event.get("monitor_context"), dict)
             else {}
         )
-        if latest_holding_monitor_context:
+        exit_monitor_context = dict(exit_ctx.get("monitor_context") or {}) if isinstance(exit_ctx.get("monitor_context"), dict) else {}
+        exit_guard_context = dict(exit_ctx.get("guard_context") or {}) if isinstance(exit_ctx.get("guard_context"), dict) else {}
+        exit_execution_context = dict(exit_ctx.get("execution_context") or {}) if isinstance(exit_ctx.get("execution_context"), dict) else {}
+        merged_exit_monitor_context = dict(latest_holding_monitor_context)
+        if exit_monitor_context:
+            merged_exit_monitor_context.update(exit_monitor_context)
+        if status == "closed" and merged_exit_monitor_context:
+            lifecycle_monitor_reason_human = build_monitor_reason_human(
+                merged_exit_monitor_context,
+                {"action": exit_action or "SELL"},
+            )
+        elif latest_holding_monitor_context:
             lifecycle_monitor_reason_human = build_monitor_reason_human(
                 latest_holding_monitor_context,
                 {"action": "HOLD"},
@@ -1238,8 +1250,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "scanner_reason_human": dict(anchor_bundle.get("scanner_reason_human") or entry_ctx.get("scanner_context") or {}),
             "filters_human": dict(anchor_bundle.get("filters_human") or {}),
             "monitor_reason_human": lifecycle_monitor_reason_human,
-            "guard_reason_human": dict(anchor_bundle.get("guard_reason_human") or exit_ctx.get("guard_context") or {}),
-            "execution_outcome_human": dict(anchor_bundle.get("execution_outcome_human") or exit_ctx.get("execution_context") or {}),
+            "guard_reason_human": dict(exit_guard_context or anchor_bundle.get("guard_reason_human") or {}),
+            "execution_outcome_human": dict(exit_execution_context or anchor_bundle.get("execution_outcome_human") or {}),
             "reporter_status_human": {
                 "status": str(reporter_obj.get("status_human") or "missing"),
                 "summary": str(reporter_obj.get("summary") or ""),
@@ -1247,7 +1259,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "bullets": [str(x or "") for x in list(reporter_obj.get("improvement_points") or [])[:6]],
             },
             "operator_conclusion_human": {
-                "current_action": str(anchor_execution.get("action") or ("HOLD" if status == "open" else "WAIT")),
+                "current_action": str(exit_action or ("HOLD" if status == "open" else anchor_execution.get("action") or "WAIT")),
                 "summary": str(summary_obj.get("operator_conclusion_human") or ""),
                 "watch_next": [f"Lifecycle status: {status}", "Monitor trigger changes", "Macro/news shifts"],
                 "thesis_invalidation": ["stop-loss breach", "monitor and scanner divergence", "negative macro regime shift"],

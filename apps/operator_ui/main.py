@@ -51,16 +51,21 @@ def create_app(config: Optional[OperatorUIConfig] = None) -> FastAPI:
         request: Request,
         limit: int = Query(default=50, ge=1, le=200),
         mismatch_only: bool = Query(default=False),
+        activity_view: str = Query(default="all"),
     ) -> HTMLResponse:
+        activity_view_normalized = str(activity_view or "all").strip().lower()
+        if activity_view_normalized not in {"all", "trades", "monitoring"}:
+            activity_view_normalized = "all"
         return templates.TemplateResponse(
             name="runs.html",
             request=request,
             context={
                 "page_title": "Recent Runs",
                 "section": "runs",
-                "runs": load_recent_runs(cfg, limit=limit, mismatch_only=mismatch_only),
+                "runs": load_recent_runs(cfg, limit=limit, mismatch_only=mismatch_only, activity_view=activity_view_normalized),
                 "limit": int(limit),
                 "mismatch_only": bool(mismatch_only),
+                "activity_view": activity_view_normalized,
             },
         )
 
