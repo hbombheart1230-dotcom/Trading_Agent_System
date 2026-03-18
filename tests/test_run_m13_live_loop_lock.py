@@ -73,3 +73,15 @@ def test_m13_initial_state_propagates_use_exit_policy_from_env(monkeypatch):
     monkeypatch.setenv("USE_EXIT_POLICY", "true")
     st = live._build_initial_state("005930", tick_pipeline="integrated_chain")
     assert st["use_exit_policy"] is True
+
+
+def test_m13_resolve_env_path_prefers_cli_value(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ENV_PATH", str(tmp_path / "ignored.env"))
+    env_path = live._resolve_env_path(["--env-path", str(tmp_path / "custom.env")])
+    assert env_path == (tmp_path / "custom.env")
+
+
+def test_m13_resolve_env_path_uses_env_path_variable(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ENV_PATH", str(tmp_path / "from_env.env"))
+    env_path = live._resolve_env_path([])
+    assert env_path == (tmp_path / "from_env.env")

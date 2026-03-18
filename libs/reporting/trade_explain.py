@@ -251,6 +251,9 @@ def _build_execution_rows(rows: List[Dict[str, Any]], by_run: Dict[str, Dict[str
                 ],
                 "monitor_exit_reason": str(monitor.get("exit_reason") or ""),
                 "monitor_reason": str(monitor.get("monitor_reason") or ""),
+                "monitor_price_source": str(monitor.get("price_source") or ""),
+                "monitor_price_source_policy": str(monitor.get("price_source_policy") or ""),
+                "monitor_feature_source": str(monitor.get("feature_source") or ""),
                 "guard_allowed": verdict.get("allowed"),
                 "guard_reason": str(verdict.get("reason") or ""),
                 "llm_provider": str(strategist_llm.get("provider") or ""),
@@ -344,6 +347,9 @@ def _build_sell_pairs_fifo(executions: List[Dict[str, Any]]) -> List[Dict[str, A
                 "strategy": str(row.get("strategy") or ""),
                 "monitor_exit_reason": str(row.get("monitor_exit_reason") or ""),
                 "monitor_reason": str(row.get("monitor_reason") or ""),
+                "monitor_price_source": str(row.get("monitor_price_source") or ""),
+                "monitor_price_source_policy": str(row.get("monitor_price_source_policy") or ""),
+                "monitor_feature_source": str(row.get("monitor_feature_source") or ""),
                 "scanner_source": str(row.get("scanner_source") or ""),
                 "scanner_top_stock": str(row.get("scanner_top_stock") or ""),
                 "scanner_top_score": row.get("scanner_top_score"),
@@ -468,8 +474,13 @@ def _to_markdown(
                 f"- technical_context: signal_score={pair.get('signal_score')}, rsi14={pair.get('rsi14')}, ma20_gap={pair.get('ma20_gap')}, volatility20={pair.get('volatility20')}, composite={pair.get('composite_score')}"
             )
             lines.append(
-                f"- monitor_context: exit_reason={pair.get('monitor_exit_reason') or '-'}, monitor_reason={pair.get('monitor_reason') or '-'}"
+                f"- monitor_context: exit_reason={pair.get('monitor_exit_reason') or '-'}, "
+                f"monitor_reason={pair.get('monitor_reason') or '-'}, "
+                f"price_source={pair.get('monitor_price_source') or '-'}, "
+                f"feature_source={pair.get('monitor_feature_source') or '-'}"
             )
+            if pair.get("monitor_price_source_policy"):
+                lines.append(f"- monitor_price_policy: {pair.get('monitor_price_source_policy')}")
             lines.append(f"- matched_buy_runs: `{pair.get('matched_buy_run_ids') or []}`")
             lines.append("")
     lines.append("## Data Gaps")

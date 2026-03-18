@@ -139,3 +139,53 @@ def test_decide_trade_auto_strategy_selects_mean_reversion_in_range():
     assert out["decision_trace"]["strategy"] == "MeanReversionV1"
     assert out["decision_trace"]["strategy_v1_name"] == "mean_reversion_v1"
     assert out["decision_packet"]["intent"]["action"] in ("BUY", "NOOP")
+
+
+def test_decide_trade_strategy_policy_decision_name_selects_news_strategy():
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 5_000_000, "open_positions": 0},
+        "policy": {
+            "use_strategy_v1": False,
+            "use_exit_policy": False,
+        },
+        "strategist_output": {
+            "strategy_policy": {
+                "decision_policy": {
+                    "use_strategy_v1_engine": True,
+                    "strategy_v1_name": "news_momentum_v1",
+                }
+            }
+        },
+        "feature_engine": {
+            "by_symbol": {
+                "005930": {
+                    "rsi14": 56.0,
+                    "ma20_gap": 0.02,
+                    "volatility20": 0.05,
+                    "regime": "trend",
+                    "signal_score": 0.32,
+                }
+            }
+        },
+        "news_sentiment_signal": {
+            "005930": {
+                "score": 0.72,
+                "status": "ok",
+                "source": "test",
+                "reason": "fixture",
+                "ts": 1772812800,
+            }
+        },
+        "global_sentiment_signal": {
+            "score": 0.20,
+            "status": "ok",
+            "source": "test",
+            "reason": "fixture",
+            "ts": 1772812800,
+        },
+    }
+    out = decide_trade(state)
+    assert out["decision_trace"]["strategy"] == "NewsMomentumV1"
+    assert out["decision_trace"]["strategy_v1_name"] == "news_momentum_v1"

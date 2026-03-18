@@ -41,6 +41,7 @@ def evaluate_exit_policy(
         "reason": "",
         "pnl_ratio": None,
         "thresholds": {
+            "hard_stop_pct": _clamp_non_negative(_to_float(p.get("hard_stop_pct"), 0.0)),
             "stop_loss_pct": _clamp_non_negative(_to_float(p.get("stop_loss_pct"), 0.03)),
             "take_profit_pct": _clamp_non_negative(_to_float(p.get("take_profit_pct"), 0.05)),
             "max_hold_sec": max(0, int(_to_float(p.get("max_hold_sec"), 0))),
@@ -56,6 +57,10 @@ def evaluate_exit_policy(
             "trailing_stop_pct": _clamp_non_negative(_to_float(p.get("trailing_stop_pct"), 0.0)),
             "vol_expansion_ratio": _clamp_non_negative(_to_float(p.get("vol_expansion_ratio"), 0.0)),
             "news_shock_threshold": _clamp_non_negative(_to_float(p.get("news_shock_threshold"), 0.0)),
+            "peak_drawdown_exit_pct": _clamp_non_negative(_to_float(p.get("peak_drawdown_exit_pct"), 0.0)),
+            "vwap_breakdown_pct": _clamp_non_negative(_to_float(p.get("vwap_breakdown_pct"), 0.0)),
+            "intraday_low_break_pct": _clamp_non_negative(_to_float(p.get("intraday_low_break_pct"), 0.0)),
+            "trend_strength_floor": _to_float(p.get("trend_strength_floor"), 0.0),
             "eod_flat_cutoff_min": max(0, int(_to_float(p.get("eod_flat_cutoff_min"), 10))),
         },
     }
@@ -126,11 +131,33 @@ def evaluate_exit_policy(
     out["pnl_ratio"] = pnl_ratio
 
     sl = float(out["thresholds"]["stop_loss_pct"])
+    hard_sl = float(out["thresholds"]["hard_stop_pct"])
     tp = float(out["thresholds"]["take_profit_pct"])
 
-    if sl > 0.0 and pnl_ratio <= -sl:
+    effective_stop_candidates = [
+        (reason, threshold)
+        for reason, threshold in (
+            ("hard_stop", hard_sl),
+            ("stop_loss", sl),
+        )
+        if threshold > 0.0
+    ]
+    effective_stop_reason = ""
+    effective_stop_pct = 0.0
+    if effective_stop_candidates:
+        effective_stop_reason, effective_stop_pct = min(
+            effective_stop_candidates,
+            key=lambda row: float(row[1]),
+        )
+        out["thresholds"]["effective_stop_loss_pct"] = float(effective_stop_pct)
+        out["thresholds"]["effective_stop_reason"] = str(effective_stop_reason)
+    else:
+        out["thresholds"]["effective_stop_loss_pct"] = 0.0
+        out["thresholds"]["effective_stop_reason"] = ""
+
+    if effective_stop_pct > 0.0 and pnl_ratio <= -effective_stop_pct:
         out["triggered"] = True
-        out["reason"] = "stop_loss"
+        out["reason"] = str(effective_stop_reason or "stop_loss")
         return out
 
     if tp > 0.0 and pnl_ratio >= tp:
@@ -138,12 +165,51 @@ def evaluate_exit_policy(
         out["reason"] = "take_profit"
         return out
 
+    peak_price = _to_float(p.get("peak_price"), 0.0)
+    if peak_price <= 0.0:
+        peak_price = max(apx, px)
+    if peak_price > 0.0:
+        peak_drawdown = float((px / peak_price) - 1.0)
+        out["peak_drawdown"] = peak_drawdown
+        peak_drawdown_th = float(out["thresholds"]["peak_drawdown_exit_pct"])
+        if peak_drawdown_th > 0.0 and peak_price > apx and peak_drawdown <= -peak_drawdown_th:
+            out["triggered"] = True
+            out["reason"] = "peak_drawdown"
+            return out
+
+    vwap_breakdown_th = float(out["thresholds"]["vwap_breakdown_pct"])
+    if vwap_breakdown_th > 0.0:
+        vwap_distance = _to_float(p.get("vwap_distance"), 0.0)
+        out["vwap_distance"] = float(vwap_distance)
+        require_profit = _to_bool(p.get("vwap_break_requires_profit"), True)
+        if vwap_distance <= -vwap_breakdown_th and (not require_profit or peak_price > apx or pnl_ratio > 0.0):
+            out["triggered"] = True
+            out["reason"] = "vwap_breakdown"
+            return out
+
+    intraday_low_break_pct = float(out["thresholds"]["intraday_low_break_pct"])
+    if intraday_low_break_pct > 0.0:
+        prior_bar_low = _to_float(p.get("prior_bar_low"), 0.0)
+        out["prior_bar_low"] = float(prior_bar_low)
+        if prior_bar_low > 0.0 and px <= float(prior_bar_low * (1.0 - intraday_low_break_pct)):
+            out["triggered"] = True
+            out["reason"] = "intraday_low_break"
+            return out
+
+    trend_strength_floor = float(out["thresholds"]["trend_strength_floor"])
+    if trend_strength_floor != 0.0:
+        trend_strength = _to_float(p.get("trend_strength"), 0.0)
+        out["trend_strength"] = float(trend_strength)
+        vwap_distance = _to_float(p.get("vwap_distance"), out.get("vwap_distance") or 0.0)
+        out["vwap_distance"] = float(vwap_distance)
+        if trend_strength <= trend_strength_floor and vwap_distance < 0.0:
+            out["triggered"] = True
+            out["reason"] = "trend_breakdown"
+            return out
+
     # Trailing stop (optional).
     trail = float(out["thresholds"]["trailing_stop_pct"])
     if trail > 0.0:
-        peak_price = _to_float(p.get("peak_price"), 0.0)
-        if peak_price <= 0.0:
-            peak_price = max(apx, px)
         if peak_price > 0.0:
             drawdown = float((px / peak_price) - 1.0)
             out["trailing_drawdown"] = drawdown

@@ -113,3 +113,103 @@ def test_exit_policy_news_shock_triggers():
     )
     assert out["triggered"] is True
     assert out["reason"] == "news_shock"
+
+
+def test_exit_policy_hard_stop_overrides_wider_soft_stop():
+    out = evaluate_exit_policy(
+        price=98.8,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "hard_stop_pct": 0.01,
+            "stop_loss_pct": 0.08,
+            "take_profit_pct": 0.05,
+        },
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "hard_stop"
+    assert float((out.get("thresholds") or {}).get("effective_stop_loss_pct") or 0.0) == 0.01
+    assert str((out.get("thresholds") or {}).get("effective_stop_reason") or "") == "hard_stop"
+
+
+def test_exit_policy_prefers_tighter_soft_stop_when_hard_stop_is_looser():
+    out = evaluate_exit_policy(
+        price=96.5,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "hard_stop_pct": 0.05,
+            "stop_loss_pct": 0.03,
+            "take_profit_pct": 0.05,
+        },
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "stop_loss"
+    assert float((out.get("thresholds") or {}).get("effective_stop_loss_pct") or 0.0) == 0.03
+    assert str((out.get("thresholds") or {}).get("effective_stop_reason") or "") == "stop_loss"
+
+
+def test_exit_policy_peak_drawdown_triggers():
+    out = evaluate_exit_policy(
+        price=104.0,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "peak_price": 110.0,
+            "peak_drawdown_exit_pct": 0.05,
+            "take_profit_pct": 0.0,
+        },
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "peak_drawdown"
+    assert float(out.get("peak_drawdown") or 0.0) <= -0.05
+
+
+def test_exit_policy_vwap_breakdown_triggers_with_profit_protection():
+    out = evaluate_exit_policy(
+        price=101.0,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "peak_price": 102.0,
+            "vwap_distance": -0.01,
+            "vwap_breakdown_pct": 0.005,
+            "take_profit_pct": 0.0,
+        },
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "vwap_breakdown"
+    assert float(out.get("vwap_distance") or 0.0) == -0.01
+
+
+def test_exit_policy_intraday_low_break_triggers():
+    out = evaluate_exit_policy(
+        price=98.8,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "prior_bar_low": 99.0,
+            "intraday_low_break_pct": 0.001,
+            "take_profit_pct": 0.0,
+        },
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "intraday_low_break"
+    assert float(out.get("prior_bar_low") or 0.0) == 99.0
+
+
+def test_exit_policy_trend_breakdown_triggers():
+    out = evaluate_exit_policy(
+        price=100.5,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "trend_strength": -0.25,
+            "trend_strength_floor": -0.10,
+            "vwap_distance": -0.01,
+            "take_profit_pct": 0.0,
+        },
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "trend_breakdown"
+    assert float(out.get("trend_strength") or 0.0) == -0.25

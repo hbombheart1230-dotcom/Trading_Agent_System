@@ -404,6 +404,32 @@ def _apply_portfolio_preflight_guard(state: Dict[str, Any], *, phase: RuntimePha
     return False, state
 
 
+def _graph_spine_portfolio_preflight_enabled(state: Dict[str, Any], *, phase: RuntimePhase) -> bool:
+    if phase != "session":
+        return False
+    if _is_trueish(state.get("disable_graph_spine_portfolio_preflight")):
+        return False
+    if _is_trueish(state.get("enable_graph_spine_portfolio_preflight")):
+        return True
+    return _is_trueish(os.getenv("COMMANDER_GRAPH_SPINE_PORTFOLIO_PREFLIGHT_ENABLED", ""))
+
+
+def _run_graph_spine_with_preflight(
+    state: Dict[str, Any],
+    *,
+    graph_runner: Callable[[Dict[str, Any]], Dict[str, Any]],
+) -> Dict[str, Any]:
+    from graphs.nodes.build_portfolio_snapshot import build_portfolio_snapshot
+
+    state = build_portfolio_snapshot(state)
+    snaps = state.get("snapshots") if isinstance(state.get("snapshots"), dict) else {}
+    state["snapshots"] = {**dict(snaps or {}), "portfolio": state.get("portfolio_snapshot")}
+    should_continue, state = _apply_portfolio_preflight_guard(state, phase="session")
+    if not should_continue:
+        return state
+    return graph_runner(state)
+
+
 def _intent_from_monitor_state(state: Dict[str, Any]) -> Dict[str, Any]:
     intents = state.get("intents")
     if not isinstance(intents, list) or not intents:
@@ -441,6 +467,211 @@ def _build_packet_from_state(state: Dict[str, Any], *, intent: Dict[str, Any]) -
     }
 
 
+def _persist_strategist_output_cache(state: Dict[str, Any]) -> Dict[str, Any]:
+    strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    if not strategist_output:
+        return state
+    persisted_state = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    persisted_state["strategist_output_cache"] = {
+        "output": dict(strategist_output),
+        "generated_epoch": int(_runtime_now_epoch(state)),
+        "source": "strategist_node",
+    }
+    state["persisted_state"] = persisted_state
+    return state
+
+
+def _hydrate_strategist_output_cache(state: Dict[str, Any]) -> Dict[str, Any]:
+    if isinstance(state.get("strategist_output"), dict) and state.get("strategist_output"):
+        return state
+    persisted_state = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    raw_cached = persisted_state.get("strategist_output_cache") if isinstance(persisted_state.get("strategist_output_cache"), dict) else {}
+    cached = raw_cached.get("output") if isinstance(raw_cached.get("output"), dict) else raw_cached
+    if isinstance(cached, dict) and cached:
+        state["strategist_output"] = dict(cached)
+        if isinstance(raw_cached, dict) and raw_cached:
+            state["strategist_output_cache_meta"] = dict(raw_cached)
+        return state
+
+    held_symbols = _portfolio_open_position_symbols(state)
+    position_context = (
+        persisted_state.get("position_strategy_context")
+        if isinstance(persisted_state.get("position_strategy_context"), dict)
+        else {}
+    )
+    for symbol in held_symbols:
+        row = position_context.get(symbol) if isinstance(position_context.get(symbol), dict) else {}
+        output = row.get("output") if isinstance(row.get("output"), dict) else {}
+        if output:
+            state["strategist_output"] = dict(output)
+            state["strategist_output_cache_meta"] = {
+                "output": dict(output),
+                "generated_epoch": _coerce_int(row.get("generated_epoch"), 0),
+                "source": str(row.get("source") or "position_strategy_context"),
+                "symbol": symbol,
+            }
+    return state
+
+
+def _portfolio_open_position_count(state: Dict[str, Any]) -> int:
+    snapshot = state.get("portfolio_snapshot") if isinstance(state.get("portfolio_snapshot"), dict) else {}
+    positions = snapshot.get("positions")
+    if isinstance(positions, dict):
+        rows = list(positions.values())
+    elif isinstance(positions, list):
+        rows = positions
+    else:
+        rows = []
+    count = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if _coerce_int(row.get("qty"), 0) > 0:
+            count += 1
+    return int(count)
+
+
+def _portfolio_open_position_symbols(state: Dict[str, Any]) -> list[str]:
+    snapshot = state.get("portfolio_snapshot") if isinstance(state.get("portfolio_snapshot"), dict) else {}
+    positions = snapshot.get("positions")
+    if isinstance(positions, dict):
+        rows = list(positions.values())
+    elif isinstance(positions, list):
+        rows = positions
+    else:
+        rows = []
+    seen: set[str] = set()
+    symbols: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if _coerce_int(row.get("qty"), 0) <= 0:
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    return symbols
+
+
+def _hydrate_monitor_symbol_features(state: Dict[str, Any]) -> Dict[str, Any]:
+    held_symbols = _portfolio_open_position_symbols(state)
+    if not held_symbols:
+        state["monitor_feature_hydration"] = {
+            "applied": False,
+            "symbol_count": 0,
+            "source": "none",
+            "errors": [],
+        }
+        return state
+
+    from graphs.nodes.skill_contracts import extract_market_quotes
+    from libs.runtime.scanner_feature_hydration import hydrate_scanner_feature_map
+
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    skill_quotes, _quote_meta = extract_market_quotes(state)
+    feature_map, feature_source, feature_errors = hydrate_scanner_feature_map(
+        state=state,
+        candidates=[{"symbol": symbol} for symbol in held_symbols],
+        skill_quotes=skill_quotes,
+        policy=policy,
+        refresh_existing=True,
+    )
+    state["monitor_feature_hydration"] = {
+        "applied": True,
+        "symbol_count": int(len(held_symbols)),
+        "source": str(feature_source or "none"),
+        "feature_symbol_count": int(len(feature_map)),
+        "errors": list(feature_errors),
+        "symbols": list(held_symbols),
+    }
+    return state
+
+
+def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    enabled = _is_trueish(
+        state.get("enable_monitor_only_fast_path")
+        if state.get("enable_monitor_only_fast_path") is not None
+        else os.getenv("COMMANDER_MONITOR_ONLY_WHEN_HOLDING_ENABLED", "true")
+    )
+    open_position_count = _portfolio_open_position_count(state)
+    block_buy_when_open_position = _is_trueish(
+        state.get("monitor_block_buy_when_open_position")
+        if state.get("monitor_block_buy_when_open_position") is not None
+        else os.getenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    )
+    payload = {
+        "enabled": bool(enabled),
+        "open_position_count": int(open_position_count),
+        "block_buy_when_open_position": bool(block_buy_when_open_position),
+        "reason": "",
+    }
+    if not enabled:
+        payload["reason"] = "disabled"
+        return False, payload
+    if open_position_count <= 0:
+        payload["reason"] = "no_open_position"
+        return False, payload
+    if not block_buy_when_open_position:
+        payload["reason"] = "buy_not_blocked_when_open_position"
+        return False, payload
+    payload["reason"] = "holding_position_monitor_only"
+    return True, payload
+
+
+def _strategist_cache_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+    persisted_state = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    raw_cached = persisted_state.get("strategist_output_cache") if isinstance(persisted_state.get("strategist_output_cache"), dict) else {}
+    if isinstance(raw_cached.get("output"), dict):
+        return dict(raw_cached)
+    if raw_cached:
+        return {"output": dict(raw_cached), "generated_epoch": 0, "source": "legacy_cache"}
+    return {}
+
+
+def _should_use_cached_strategist_when_flat(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    enabled = _is_trueish(
+        state.get("enable_cached_strategist_when_flat")
+        if state.get("enable_cached_strategist_when_flat") is not None
+        else os.getenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
+    )
+    open_position_count = _portfolio_open_position_count(state)
+    cache_payload = _strategist_cache_payload(state)
+    output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
+    now_epoch = _runtime_now_epoch(state)
+    generated_epoch = max(0, _coerce_int(cache_payload.get("generated_epoch"), 0))
+    reuse_sec = max(0, _coerce_int(os.getenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "180"), 180))
+    age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
+    payload = {
+        "enabled": bool(enabled),
+        "open_position_count": int(open_position_count),
+        "reuse_sec": int(reuse_sec),
+        "cache_age_sec": int(age_sec) if age_sec < 10**9 else None,
+        "reason": "",
+    }
+    if not enabled:
+        payload["reason"] = "disabled"
+        return False, payload
+    if open_position_count > 0:
+        payload["reason"] = "open_positions_present"
+        return False, payload
+    if _is_trueish(state.get("force_refresh_strategist")):
+        payload["reason"] = "force_refresh_requested"
+        return False, payload
+    if not output:
+        payload["reason"] = "no_cached_strategist_output"
+        return False, payload
+    if generated_epoch <= 0:
+        payload["reason"] = "cache_timestamp_missing"
+        return False, payload
+    if age_sec > reuse_sec:
+        payload["reason"] = "cache_stale"
+        return False, payload
+    payload["reason"] = "flat_position_cached_strategist"
+    return True, payload
+
+
 def _run_integrated_chain(
     state: Dict[str, Any],
     *,
@@ -454,6 +685,7 @@ def _run_integrated_chain(
     from graphs.nodes.monitor_node import monitor_node
     from graphs.nodes.decision_node import decision_node
     from graphs.nodes.update_state_after_execution import update_state_after_execution
+    from libs.reporting.intraday_trade_reports import generate_intraday_trade_artifacts
 
     # Keep integrated chain position/risk context aligned with live state.
     state = build_portfolio_snapshot(state)
@@ -464,8 +696,50 @@ def _run_integrated_chain(
         return state
     state = build_risk_context(state)
 
-    state = strategist_node(state)
+    use_monitor_only, fast_path_payload = _should_use_monitor_only_fast_path(state)
+    if use_monitor_only:
+        state = _hydrate_strategist_output_cache(state)
+        held_symbols = _portfolio_open_position_symbols(state)
+        if held_symbols:
+            state["selected"] = {
+                "symbol": held_symbols[0],
+                "_monitor_synthetic_selected": True,
+            }
+        else:
+            state.pop("selected", None)
+        state.pop("scanner_output", None)
+        state["runtime_fast_path"] = dict(fast_path_payload)
+        _log_commander_event(state, "fast_path", {"path": "integrated_chain_monitor_only", **fast_path_payload})
+        state = _hydrate_monitor_symbol_features(state)
+        state = monitor_node(state)
+        state = decision_node(state)
+        decision = str(state.get("decision") or "").strip().lower()
+        if decision == "approve":
+            intent = _intent_from_monitor_state(state)
+            state["decision_packet"] = _build_packet_from_state(state, intent=intent)
+            state = execute_fn(state)
+            state = update_state_after_execution(state)
+            try:
+                state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
+            except Exception as exc:
+                state["intraday_trade_report"] = {
+                    "ok": False,
+                    "status": "failed",
+                    "reason": f"intraday_trade_artifact_exception:{type(exc).__name__}",
+                }
+        state["path"] = "integrated_chain_monitor_only"
+        return state
+
+    reused_strategist_cache, cache_payload = _should_use_cached_strategist_when_flat(state)
+    if reused_strategist_cache:
+        state = _hydrate_strategist_output_cache(state)
+        state["runtime_fast_path"] = dict(cache_payload)
+        _log_commander_event(state, "fast_path", {"path": "integrated_chain_cached_frame", **cache_payload})
+    else:
+        state = strategist_node(state)
+        state = _persist_strategist_output_cache(state)
     state = scanner_node(state)
+    state = _hydrate_monitor_symbol_features(state)
     state = monitor_node(state)
     state = decision_node(state)
 
@@ -475,8 +749,16 @@ def _run_integrated_chain(
         state["decision_packet"] = _build_packet_from_state(state, intent=intent)
         state = execute_fn(state)
         state = update_state_after_execution(state)
+        try:
+            state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
+        except Exception as exc:
+            state["intraday_trade_report"] = {
+                "ok": False,
+                "status": "failed",
+                "reason": f"intraday_trade_artifact_exception:{type(exc).__name__}",
+            }
 
-    state["path"] = "integrated_chain"
+    state["path"] = "integrated_chain_cached_frame" if reused_strategist_cache else "integrated_chain"
     return state
 
 
@@ -494,6 +776,7 @@ def _run_preopen_phase(state: Dict[str, Any]) -> Dict[str, Any]:
         return state
     state = build_risk_context(state)
     state = strategist_node(state)
+    state = _persist_strategist_output_cache(state)
     state["path"] = "preopen_strategist"
     state["runtime_status"] = str(state.get("runtime_status") or "preopen_ready")
     return state
@@ -698,7 +981,10 @@ def run_commander_runtime(
             )
             return state
 
-        state = graph_runner(state)
+        if _graph_spine_portfolio_preflight_enabled(state, phase=selected_phase):
+            state = _run_graph_spine_with_preflight(state, graph_runner=graph_runner)
+        else:
+            state = graph_runner(state)
         _log_commander_event(
             state,
             "end",
@@ -706,7 +992,7 @@ def run_commander_runtime(
                 "mode": selected,
                 "phase": selected_phase,
                 "status": state.get("runtime_status", "ok"),
-                "path": "graph_spine",
+                "path": state.get("path", "graph_spine"),
                 **_portfolio_guard_event_summary(state),
                 **_portfolio_preflight_event_summary(state),
             },

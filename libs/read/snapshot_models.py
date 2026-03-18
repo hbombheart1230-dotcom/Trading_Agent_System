@@ -10,6 +10,7 @@ class PositionSnapshot:
     qty: int
     avg_price: float
     unrealized_pnl: float = 0.0
+    current_price: float | None = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

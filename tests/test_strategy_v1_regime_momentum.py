@@ -102,3 +102,57 @@ def test_decide_trade_uses_strategy_v1_when_enabled(monkeypatch):
     assert "invalidation" in out["decision_packet"]
     assert "sizing_inputs" in out["decision_packet"]
     assert out["decision_packet"]["why"]["regime"] == "trend"
+
+
+def test_decide_trade_strategy_policy_entry_thresholds_override_env(monkeypatch):
+    monkeypatch.setenv("USE_STRATEGY_V1", "true")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("STRATEGY_V1_BUY_COMPOSITE_THRESHOLD", "0.90")
+    monkeypatch.setenv("STRATEGY_V1_MIN_SIGNAL_FOR_ENTRY", "0.90")
+    monkeypatch.setenv("STRATEGY_V1_MIN_NEWS_FOR_ENTRY", "0.90")
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 5_000_000, "open_positions": 0},
+        "strategist_output": {
+            "strategy_policy": {
+                "decision_policy": {
+                    "use_strategy_v1_engine": True,
+                    "strategy_v1_name": "regime_momentum_v1",
+                },
+                "entry_policy": {
+                    "buy_composite_threshold": 0.20,
+                    "min_signal_for_entry": 0.15,
+                    "min_news_for_entry": 0.00,
+                    "max_volatility_for_entry": 0.12,
+                    "position_sizing": {
+                        "max_position_qty": 2,
+                        "min_position_qty": 1,
+                        "lot_size": 1,
+                    },
+                },
+            }
+        },
+        "feature_engine": {
+            "by_symbol": {
+                "005930": {
+                    "rsi14": 58.0,
+                    "ma20_gap": 0.02,
+                    "atr14": 550.0,
+                    "volume_spike20": 1.2,
+                    "volatility20": 0.03,
+                    "regime": "trend",
+                    "signal_score": 0.7,
+                }
+            }
+        },
+        "news_sentiment": {"005930": 0.30},
+        "global_sentiment": {"score": 0.10},
+    }
+    out = decide_trade(state)
+    assert out["decision_trace"]["strategy"] == "RegimeMomentumV1"
+    assert out["decision_packet"]["intent"]["action"] == "BUY"
+    evidence = out["decision_trace"]["strategy_v1_decision"]["evidence"]["policy"]
+    assert float(evidence["buy_composite_threshold"]) == 0.20
+    assert float(evidence["min_signal_for_entry"]) == 0.15

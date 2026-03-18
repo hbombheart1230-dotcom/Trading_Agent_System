@@ -184,6 +184,14 @@
 - `trade_aggressiveness: "low" | "medium" | "high"`
 - `risk_tone: "conservative" | "normal" | "aggressive"`
 - `monitor_guidance: "hold_through_noise" | "defensive_exit" | "quick_take_profit"`
+- `strategy_policy: object`
+  - `schema_version: "strategy_policy.v1"`
+  - `market_policy: object`
+  - `scanner_policy: object`
+  - `entry_policy: object`
+  - `monitor_policy: object`
+  - `decision_policy: object`
+  - `operator_explain: object`
 - `monitor_policy: object` (deterministic guard tuning derived from guidance)
 - `exit_policy: object` (strategist-derived exit baseline; monitor applies final feature/position-aware adjustments)
 - `macro_stress_overlay: object`
@@ -204,6 +212,35 @@
 - `strategic_answers: object`
 - `source: str`
 - `llm_frame_low_confidence: bool` (additive; true when LLM output required repair/salvage)
+
+### StrategyPolicy
+- canonical additive strategist-owned numeric policy bundle
+- intended ownership:
+  - Strategist generates
+  - Scanner consumes `scanner_policy`
+  - Monitor consumes `monitor_policy`
+  - decide/strategy-v1 consumes `entry_policy` and `decision_policy`
+  - Commander must not mutate policy math; Commander only routes / gates execution
+- `market_policy: object`
+  - market/news/global-sentiment/VIX interpretation snapshot
+- `scanner_policy: object`
+  - `candidate_sources`
+  - `priority_tilts`
+  - `score_weights`
+  - `filters`
+  - `ranking_rules`
+- `entry_policy: object`
+  - deterministic entry thresholds and sizing bounds
+- `monitor_policy: object`
+  - `position_guards`
+  - `adaptive_exit`
+    - may include `peak_drawdown_exit_pct`
+    - may include `vwap_breakdown_pct`
+    - may include `intraday_low_break_pct`
+    - may include `trend_strength_floor`
+  - `hard_risk_rails`
+- `decision_policy: object`
+  - deterministic decision-engine toggles such as `use_strategy_v1_engine`
 
 ### RecentStrategyFeedback
 - `feedback_window_size: int`

@@ -18,6 +18,7 @@
 - `trade_aggressiveness`
 - `risk_tone`
 - `monitor_guidance`
+- `strategy_policy`
 - `monitor_policy` (derived deterministic guard knobs)
 - `macro_stress_overlay` (additive macro-risk summary / influence)
 - `recent_strategy_feedback` (compact Reporter-memory advisory summary)
@@ -37,6 +38,12 @@
   - `trade_aggressiveness`
   - `risk_tone`
   - `monitor_guidance`
+  - `strategy_policy`
+    - `market_policy`
+    - `scanner_policy`
+    - `entry_policy`
+    - `monitor_policy`
+    - `decision_policy`
   - `monitor_policy`
   - `recent_strategy_feedback`
   - `report_focus[]`
@@ -71,6 +78,13 @@
     - `top_recent_weaknesses[]`
     - `suggested_report_focus[]`
     - advisory only
+- `strategy_policy`
+  - preferred additive numeric contract for deterministic downstream execution
+  - Strategist owns generation
+  - Scanner consumes `scanner_policy`
+  - Monitor consumes `monitor_policy`
+  - decide/strategy-v1 consumes `entry_policy` and `decision_policy`
+  - Commander must not mutate numeric strategy math
 - `strategist_llm` (additive runtime snapshot)
   - `status`
   - `model`
@@ -126,11 +140,30 @@
 - `monitor_reason` (e.g. `confirmed_exit_signal`, `emergency_exit_signal`)
 - `exit_confirm_count` (normal exit confirmation progress)
 - `risk_check_inputs` (entry/stop/expected_loss/position_size_after)
+- additive packet/runtime aliases may also include:
+  - `strategy_policy`
+  - `strategy_policy_summary`
+  - intended use: Supervisor/Executor observability + sizing/hard-rail enforcement only
 
 ## Monitor Exit Observability (`monitor_exit`)
 - `triggered`
 - `reason`
 - `position_age_seconds`
+- `price_source`
+- `price_source_policy`
+- `feature_source`
+- `thresholds.hard_stop_pct`
+- `thresholds.stop_loss_pct`
+- `thresholds.effective_stop_loss_pct`
+- `thresholds.effective_stop_reason`
+- `thresholds.peak_drawdown_exit_pct`
+- `thresholds.vwap_breakdown_pct`
+- `thresholds.intraday_low_break_pct`
+- `thresholds.trend_strength_floor`
+- `peak_drawdown`
+- `vwap_distance`
+- `prior_bar_low`
+- `trend_strength`
 - `exit_signal_detected`
 - `exit_confirm_ticks`
 - `exit_confirm_count`
@@ -140,12 +173,38 @@
 - `sell_cooldown_blocked`
 - `monitor_reason`
 - `emergency_exit`
+- recommended held-position price precedence:
+  - `market.quote`
+  - `position.current_price` / other direct portfolio price fields
+  - same-symbol `selected.price` / `selected.features.skill_quote_price`
+  - same-symbol `market_snapshot.price`
+  - derived `avg_price + unrealized_pnl/qty`
 
 ## SupervisorDecision
 - `intent_id`
 - `approve | reject | modify`
 - `why`
 - `modifications` (optional)
+- additive policy-aware fields:
+  - `strategy_policy_summary`
+  - `supervisor_details`
+
+## Strategy Policy Decision Contract (`strategy_policy.decision_policy`)
+- `use_strategy_v1_engine`
+- `strategy_v1_name`
+- `allow_score_override`
+- `score_override_scope`
+- `buy_threshold`
+- `sell_threshold`
+- `high_vol_abs_threshold`
+- `news_buy_threshold`
+- `news_sell_threshold`
+- preferred precedence: strategist-owned policy first, environment fallback second
+- recommended default: `score_override_scope=llm_only`
+  - expected usage:
+    - read-only policy context
+    - sizing / hard-rail guard explanation
+    - not a second strategy engine
 
 ## Minimal Decision Trace / Reason Ledger (additive)
 - Runtime keys:

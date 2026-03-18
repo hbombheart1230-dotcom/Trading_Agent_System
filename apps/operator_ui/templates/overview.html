@@ -294,12 +294,20 @@
           <span class="trade-symbol">{{ trade.symbol }}</span>
           <span class="trade-qty">x{{ trade.qty }}</span>
           <span class="trade-status">{{ trade.status or "-" }}</span>
+          <span class="subtle-meta">axis {{ trade.active_exit_axis or "-" }}</span>
+          <span class="subtle-meta">stop {{ trade.effective_stop or "-" }}</span>
+          {% if trade.peak_drawdown and trade.peak_drawdown != "-" %}
+          <span class="subtle-meta">dd {{ trade.peak_drawdown }}</span>
+          {% endif %}
           {% if trade.ord_no or trade.run_id %}
           <details class="details-inline">
             <summary>detail</summary>
             <div class="subtle-meta">
               {% if trade.ord_no %}<div>ord_no: {{ trade.ord_no }}</div>{% endif %}
               {% if trade.run_id %}<div>run_id: {{ trade.run_id }}</div>{% endif %}
+              <div>active exit axis: {{ trade.active_exit_axis or "-" }}</div>
+              <div>effective stop: {{ trade.effective_stop or "-" }}</div>
+              {% if trade.peak_drawdown and trade.peak_drawdown != "-" %}<div>peak drawdown: {{ trade.peak_drawdown }}</div>{% endif %}
             </div>
           </details>
           {% endif %}

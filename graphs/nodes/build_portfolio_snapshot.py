@@ -41,6 +41,14 @@ def _normalize_positions(raw: object) -> list[dict]:
                 "unrealized_pnl": _safe_float(row.get("unrealized_pnl"), 0.0),
             }
         )
+        current_price = _safe_float(
+            row.get("current_price")
+            if row.get("current_price") not in (None, "")
+            else row.get("cur_price"),
+            0.0,
+        )
+        if current_price > 0.0:
+            out[-1]["current_price"] = float(current_price)
     return out
 
 
@@ -58,6 +66,36 @@ def _positions_signature(rows: list[dict]) -> list[tuple[str, int, float]]:
         )
     sig.sort()
     return sig
+
+
+def _merge_position_current_prices(base_rows: list[dict], source_rows: list[dict]) -> list[dict]:
+    if not isinstance(base_rows, list):
+        return []
+    current_price_by_symbol: dict[str, float] = {}
+    for row in source_rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = normalize_symbol(row.get("symbol"))
+        if not symbol:
+            continue
+        current_price = _safe_float(
+            row.get("current_price") if row.get("current_price") not in (None, "") else row.get("cur_price"),
+            0.0,
+        )
+        if current_price > 0.0:
+            current_price_by_symbol[symbol] = float(current_price)
+
+    merged: list[dict] = []
+    for raw_row in base_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        row = dict(raw_row)
+        symbol = normalize_symbol(row.get("symbol"))
+        current_price = current_price_by_symbol.get(symbol, 0.0)
+        if current_price > 0.0:
+            row["current_price"] = float(current_price)
+        merged.append(row)
+    return merged
 
 
 def _reader_positions_authoritative(*, mock_mode: bool, execution_mode: str, reader_ok: bool) -> bool:
@@ -165,11 +203,17 @@ def build_portfolio_snapshot(state: dict) -> dict:
                 health["reconciliation_status"] = "reconciled_to_reader"
             else:
                 health["reconciliation_status"] = "reader_aligned"
+            if isinstance(persisted, dict):
+                persisted["mock_positions"] = list(snapshot_positions)
+                persisted["open_positions"] = len(snapshot_positions)
         # In pure local mock execution, fall back to persisted mock ledger when
         # reader does not return positions.
         elif snapshot_positions:
             snapshot["positions"] = snapshot_positions
             health["positions_source"] = "reader_positions"
+            if isinstance(persisted, dict) and persisted_positions:
+                persisted["mock_positions"] = _merge_position_current_prices(persisted_positions, snapshot_positions)
+                persisted["open_positions"] = len(_normalize_positions(persisted.get("mock_positions")))
         elif persisted_positions:
             snapshot["positions"] = persisted_positions
             health["positions_source"] = "persisted_mock_positions"

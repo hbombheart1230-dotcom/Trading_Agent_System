@@ -23,6 +23,12 @@
   - `scanner_bias` (`large_cap|leader|momentum|value`), `scanner_priority`, `scanner_source_policy`
   - `trade_aggressiveness`, `risk_tone`
   - `monitor_guidance` (`hold_through_noise|defensive_exit|quick_take_profit`), `report_focus`
+- Also emits canonical `strategy_policy` for deterministic downstream execution:
+  - `market_policy` for theme/news/global-sentiment/VIX interpretation
+  - `scanner_policy` for candidate-source/score-weight/filter control
+  - `entry_policy` for deterministic entry thresholds/sizing bounds
+  - `monitor_policy` for deterministic exit guards and adaptive exit baseline
+  - `decision_policy` for strategy-v1 / score-override gating
 - May provide candidate hints (Top-N) as an additive signal.
 - Strategist defines HOW to fight; final stock selection remains Scanner responsibility.
 - Emits additive strategist contract fields in canonical `state["strategist_output"]`.
@@ -70,6 +76,8 @@
   - feature coverage / feature snapshot
   - `skill_quote_price`, `quote_volume`, `quote_trading_value`, `intraday_change_pct`
 - Scanner reads strategist frame from canonical `state["strategist_output"]`.
+- Scanner should treat strategist `strategy_policy.scanner_policy` as the preferred numeric contract.
+- Legacy strategist fields such as `scanner_priority` / `scanner_source_policy` remain compatibility aliases.
 - Falls back to strategist candidates when Kiwoom candidate pool is empty.
 - Scanner is the final Top-1 selector within strategist framing (not a blind picker).
 - Reduces candidate pool with practical filters (halted/abnormal/illiquid thresholds).
@@ -90,7 +98,20 @@
 - Applies sell guards (min hold, sell cooldown, exit confirmation).
 - Consumes strategist `monitor_policy` when present (deterministic guard tuning).
 - Consumes strategist `exit_policy` when present as a playbook-aware exit baseline, then applies final feature/position-aware threshold adjustments.
+- Preferred contract is strategist `strategy_policy.monitor_policy`.
+  - `position_guards` for min-hold / cooldown / confirm ticks
+  - `adaptive_exit` for stop / take-profit / trailing / volatility gates
+  - may also include `peak_drawdown_exit_pct` and `vwap_breakdown_pct` for profit-protection exits
+  - may also include `intraday_low_break_pct` and `trend_strength_floor` for minute-structure exits
+  - `hard_risk_rails` for hard-stop / cap semantics that must remain operator-visible
+  - `hard_stop_pct` should act as an independent absolute loss rail, not just a descriptive alias
+  - adaptive `stop_loss_pct` may widen for structure/volatility, but the effective stop used by exit evaluation must still report which rail actually owns the stop
 - Monitor reads strategist frame from canonical `state["strategist_output"]`.
+- For held-symbol exit review, Monitor should prefer position-symbol-specific inputs over stale scanner snapshots.
+  - preferred order: held-symbol quote/market snapshot -> held-symbol feature row -> position mark fallback
+  - may hydrate held-symbol features from `feature_engine.by_symbol` or `ohlcv_by_symbol`
+  - should expose `price_source`, `feature_source`, and effective stop ownership in exit observability
+  - should persist position peak tracking (`persisted_state.position_peak_price`) so peak-drawdown exits remain coherent across polling loops
 - Suppresses duplicate SELL intents with pending-exit lock/cooldown state across polling loops.
 - Keeps emergency exits (`emergency_halt`, `news_shock`) explicit and separate from normal exit confirmation flow.
 - Never executes orders.
@@ -101,11 +122,34 @@
 - Owns approval and risk policy checks.
 - Can approve/reject/modify intents.
 - Guard precedence always overrides approval.
+- Must consume strategist-owned `strategy_policy` as read-only context.
+  - recommended scope: hard risk rails and position-sizing rails only
+
+## Decision Policy
+- `strategy_policy.decision_policy` should be the preferred owner for deterministic decision toggles.
+- Current preferred fields:
+  - `use_strategy_v1_engine`
+  - `strategy_v1_name`
+  - `allow_score_override`
+  - `score_override_scope`
+  - `buy_threshold`
+  - `sell_threshold`
+  - `high_vol_abs_threshold`
+  - `news_buy_threshold`
+  - `news_sell_threshold`
+- recommended default: `score_override_scope=llm_only`
+- intent: score-override remains a salvage path for LLM NOOPs, not a competing override on deterministic strategy-v1 decisions
+- Environment variables may remain as fallback defaults, but operator-visible behavior should prefer strategist-owned policy when present.
+  - must not recompute playbook/theme/news interpretation
+  - should explain blocks in operator-facing terms using policy-aware guard details
 
 ## Executor
 - Executes approved intents only.
 - Applies execution guards (optional `SYMBOL_ALLOWLIST`, max qty/notional, mode checks).
 - Keeps mock/real separation.
+- Consumes `strategy_policy` only as execution context metadata.
+  - should persist compact `strategy_policy_summary` into execution/verdict traces
+  - must not mutate strategy math or silently rewrite strategist thresholds
 
 ## Reporter
 - Builds operator-facing summaries from event logs and reports.

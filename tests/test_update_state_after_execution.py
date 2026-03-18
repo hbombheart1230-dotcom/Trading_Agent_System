@@ -49,6 +49,7 @@ def test_update_state_handles_allowed_schema_mock_without_order_sent(monkeypatch
 def test_update_state_mock_buy_updates_mock_positions(monkeypatch):
     monkeypatch.setattr(time, "time", lambda: 1234.0)
     state = {
+        "strategist_output": {"playbook": "defensive", "monitor_guidance": "defensive_exit"},
         "persisted_state": {"last_order_epoch": 10, "mock_positions": []},
         "execution": {
             "allowed": True,
@@ -66,6 +67,8 @@ def test_update_state_mock_buy_updates_mock_positions(monkeypatch):
     assert ps["mock_positions"][0]["avg_price"] == 70000.0
     assert ps["mock_cash"] == 1860000.0
     assert ps["mock_realized_pnl"] == 0.0
+    assert ps["position_peak_price"] == {"005930": 70000.0}
+    assert ((ps.get("position_strategy_context") or {}).get("005930") or {}).get("output", {}).get("playbook") == "defensive"
     assert ps["last_trade_side"] == "BUY"
     assert ps["last_trade_epoch"] == 1234
     assert ps["last_trade_symbol"] == "005930"
@@ -96,6 +99,10 @@ def test_update_state_mock_sell_closes_position(monkeypatch):
         "persisted_state": {
             "last_order_epoch": 10,
             "mock_positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "unrealized_pnl": 0.0}],
+            "position_peak_price": {"005930": 71200.0},
+            "position_strategy_context": {
+                "005930": {"output": {"playbook": "defensive"}, "generated_epoch": 1200, "source": "buy_execution"}
+            },
             "mock_cash": 1860000.0,
             "mock_realized_pnl": 0.0,
         },
@@ -110,6 +117,8 @@ def test_update_state_mock_sell_closes_position(monkeypatch):
     ps = out["persisted_state"]
     assert ps["open_positions"] == 0
     assert ps["mock_positions"] == []
+    assert ps.get("position_peak_price") in ({}, None)
+    assert ps.get("position_strategy_context") in ({}, None)
     assert ps["mock_cash"] == 2000400.0
     assert ps["mock_realized_pnl"] == 400.0
     assert ps["last_trade_side"] == "SELL"
@@ -124,6 +133,7 @@ def test_update_state_mock_sell_uses_market_snapshot_when_order_price_missing(mo
         "persisted_state": {
             "last_order_epoch": 10,
             "mock_positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "unrealized_pnl": 0.0}],
+            "position_peak_price": {"005930": 70800.0},
             "mock_cash": 1860000.0,
             "mock_realized_pnl": 0.0,
         },
@@ -138,6 +148,7 @@ def test_update_state_mock_sell_uses_market_snapshot_when_order_price_missing(mo
     ps = out["persisted_state"]
     assert ps["open_positions"] == 0
     assert ps["mock_positions"] == []
+    assert ps.get("position_peak_price") in ({}, None)
     assert ps["mock_cash"] == 2000400.0
     assert ps["mock_realized_pnl"] == 400.0
 
@@ -189,6 +200,7 @@ def test_update_state_reconciles_stale_mock_position_on_sell_reject_code20(monke
         "persisted_state": {
             "last_order_epoch": 10,
             "mock_positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "unrealized_pnl": 0.0}],
+            "position_peak_price": {"005930": 71100.0},
             "mock_cash": 2000000.0,
         },
         "execution": {
@@ -203,7 +215,85 @@ def test_update_state_reconciles_stale_mock_position_on_sell_reject_code20(monke
     assert ps["last_execution_ok"] is False
     assert ps.get("mock_positions") == []
     assert ps.get("open_positions") == 0
+    assert ps.get("position_peak_price") in ({}, None)
     assert ps.get("mock_position_desync_reconciled") is True
+
+
+def test_update_state_mock_partial_sell_preserves_existing_position_peak(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {
+            "last_order_epoch": 10,
+            "mock_positions": [{"symbol": "005930", "qty": 3, "avg_price": 70000.0, "unrealized_pnl": 0.0}],
+            "position_peak_price": {"005930": 71500.0},
+            "mock_cash": 1790000.0,
+            "mock_realized_pnl": 0.0,
+        },
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "mock"},
+            "reason": "Allowed",
+            "order": {"action": "SELL", "symbol": "005930", "qty": 1, "price": 70500},
+        },
+    }
+
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert ps["open_positions"] == 1
+    assert ps["mock_positions"][0]["qty"] == 2
+    assert ps["position_peak_price"] == {"005930": 71500.0}
+
+
+def test_update_state_mock_buy_stores_position_strategy_context(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "strategist_output": {"playbook": "defensive", "monitor_guidance": "defensive_exit"},
+        "persisted_state": {"last_order_epoch": 10, "mock_positions": []},
+        "execution": {
+            "allowed": True,
+            "payload": {"mode": "mock"},
+            "reason": "Allowed",
+            "order": {"action": "BUY", "symbol": "005930", "qty": 1, "price": 70000},
+        },
+    }
+
+    out = update_state_after_execution(state)
+    context = ((out["persisted_state"].get("position_strategy_context") or {}).get("005930") or {})
+    assert context.get("source") == "buy_execution"
+    assert (context.get("output") or {}).get("playbook") == "defensive"
+
+
+def test_update_state_sanitizes_stale_position_strategy_context(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {
+            "mock_positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "unrealized_pnl": 0.0}],
+            "position_strategy_context": {
+                "005930": {"output": {"playbook": "defensive"}, "generated_epoch": 1000, "source": "buy_execution"},
+                "000660": {"output": {"playbook": "breakout"}, "generated_epoch": 1000, "source": "buy_execution"},
+            },
+        },
+        "execution": {"ok": False, "blocked": True, "reason": "noop"},
+    }
+
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert set((ps.get("position_strategy_context") or {}).keys()) == {"005930"}
+
+
+def test_update_state_sanitizes_stale_position_peak_price(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "persisted_state": {
+            "mock_positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "unrealized_pnl": 0.0}],
+            "position_peak_price": {"005930": 71000.0, "000660": 130000.0, "A0082N0": 1000.0},
+        },
+        "execution": {"ok": False, "blocked": True, "reason": "noop"},
+    }
+
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert ps["position_peak_price"] == {"005930": 71000.0}
 
 
 def test_update_state_sanitizes_invalid_mock_positions_and_last_trade_symbol(monkeypatch):

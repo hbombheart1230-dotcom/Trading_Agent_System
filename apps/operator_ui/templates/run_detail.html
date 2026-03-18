@@ -44,7 +44,12 @@
     {% endif %}
   </ul>
   {% if trade_report.report_available and trade_report.report_link %}
-  <p><a class="link-action" href="{{ trade_report.report_link }}">Open full report</a></p>
+  <p class="chip-list">
+    <a class="link-action" href="{{ trade_report.report_link }}">Open full report</a>
+    {% if trade_report.operator_brief_available and trade_report.operator_brief_link %}
+    <a class="link-action" href="{{ trade_report.operator_brief_link }}">Open saved brief</a>
+    {% endif %}
+  </p>
   {% else %}
   <p class="subtle-meta">Operator Brief remains available even when full AI report generation is pending, skipped, or failed.</p>
   {% endif %}
@@ -122,7 +127,19 @@
         <li>Selection note: {{ ((sec.why_symbol_chosen or {}).get("selection_reasons") or ["-"])[0] }}</li>
         <li>Monitor posture: {{ (sec.position_monitor_reasoning or {}).get("posture") or "-" }}</li>
         <li>Monitor note: {{ ((sec.position_monitor_reasoning or {}).get("hold_reasons") or ["-"])[0] }}</li>
+        <li>Active exit axis: {{ (sec.position_monitor_reasoning or {}).get("active_exit_axis") or "-" }}</li>
+        <li>Current / avg / peak: {{ (sec.position_monitor_reasoning or {}).get("current_price") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("average_price") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("peak_price") or "-" }}</li>
+        <li>Current / peak drawdown: {{ (sec.position_monitor_reasoning or {}).get("current_drawdown") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("peak_drawdown") or "-" }}</li>
+        <li>Effective stop / take profit: {{ (sec.position_monitor_reasoning or {}).get("effective_stop") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("take_profit") or "-" }}</li>
+        <li>VWAP distance: {{ (sec.position_monitor_reasoning or {}).get("vwap_distance") or "-" }}</li>
       </ul>
+      {% if (sec.position_monitor_reasoning or {}).get("watch_axes") %}
+      <p class="chip-list">
+        {% for axis in (sec.position_monitor_reasoning or {}).get("watch_axes") or [] %}
+        <span class="chip">{{ axis }}</span>
+        {% endfor %}
+      </p>
+      {% endif %}
     </div>
 
     <div class="brief-section">
@@ -157,7 +174,14 @@
         <li>Model: {{ (sec.ai_trade_report or {}).get("model") or trade_report.report_generation_model or "-" }}</li>
       </ul>
       {% if (sec.ai_trade_report or {}).get("link") %}
-      <p><a class="link-action" href="{{ (sec.ai_trade_report or {}).get('link') }}">Open full AI report</a></p>
+      <p class="chip-list">
+        <a class="link-action" href="{{ (sec.ai_trade_report or {}).get('link') }}">Open full AI report</a>
+        {% if trade_report.operator_brief_available and trade_report.operator_brief_link %}
+        <a class="link-action" href="{{ trade_report.operator_brief_link }}">Open saved brief</a>
+        {% endif %}
+      </p>
+      {% elif trade_report.operator_brief_available and trade_report.operator_brief_link %}
+      <p><a class="link-action" href="{{ trade_report.operator_brief_link }}">Open saved brief</a></p>
       {% endif %}
     </div>
 

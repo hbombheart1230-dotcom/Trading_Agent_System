@@ -95,7 +95,34 @@ def _extract_positions(payload: Dict[str, Any]) -> List[PositionSnapshot]:
         upnl = _num(_first_present(it, ["unrealized_pnl", "evlu_pfls_amt", "pnl", "prft"]) or 0)
         if upnl == 0.0:
             upnl = _num(_first_present(it, ["evltv_prft"]) or 0)
-        pos.append(PositionSnapshot(symbol=symbol, qty=qty, avg_price=avg_price, unrealized_pnl=upnl))
+        current_price = _num(
+            _first_present(
+                it,
+                [
+                    "current_price",
+                    "cur_price",
+                    "cur_prc",
+                    "stck_prpr",
+                    "prpr",
+                    "now_pric",
+                    "last_price",
+                    "price",
+                    "cur",
+                ],
+            )
+            or 0
+        )
+        if current_price <= 0.0 and qty > 0 and avg_price > 0.0 and upnl != 0.0:
+            current_price = avg_price + (upnl / float(qty))
+        pos.append(
+            PositionSnapshot(
+                symbol=symbol,
+                qty=qty,
+                avg_price=avg_price,
+                unrealized_pnl=upnl,
+                current_price=(current_price if current_price > 0.0 else None),
+            )
+        )
     return pos
 
 

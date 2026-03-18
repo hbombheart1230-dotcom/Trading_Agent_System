@@ -36,6 +36,19 @@ def format_pct(value: Any) -> str:
     return f"{safe_float(value, 0.0):.2f}"
 
 
+def format_ratio_pct(value: Any) -> str:
+    if value in (None, ""):
+        return "not_captured"
+    return f"{safe_float(value, 0.0) * 100.0:.2f}"
+
+
+def format_exit_label(value: Any) -> str:
+    text = str(value or "").strip().replace("_", " ")
+    if not text:
+        return "not_captured"
+    return " ".join(part.capitalize() for part in text.split())
+
+
 def slug(value: Any, *, max_len: int = 80) -> str:
     text = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(value or "").strip()).strip("_")
     if not text:
@@ -343,7 +356,44 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
     exit_reason = str(monitor.get("exit_reason") or "").strip()
     monitor_reason = str(monitor.get("monitor_reason") or "").strip()
     thresholds = monitor.get("thresholds") if isinstance(monitor.get("thresholds"), dict) else {}
+    price_source = str(monitor.get("price_source") or "").strip()
+    price_source_policy = str(monitor.get("price_source_policy") or "").strip()
+    feature_source = str(monitor.get("feature_source") or "").strip()
+    current_price = monitor.get("current_price")
+    if current_price in (None, ""):
+        current_price = monitor.get("price")
+    average_price = monitor.get("average_price")
+    if average_price in (None, ""):
+        average_price = monitor.get("avg_price")
+    peak_price = monitor.get("peak_price")
+    peak_drawdown = monitor.get("peak_drawdown")
+    current_drawdown = monitor.get("current_drawdown")
+    vwap_distance = monitor.get("vwap_distance")
+    if current_drawdown in (None, "") and current_price not in (None, "") and peak_price not in (None, ""):
+        current_drawdown = (safe_float(current_price, 0.0) / max(safe_float(peak_price, 1.0), 1e-9)) - 1.0
+    if current_drawdown in (None, "") and peak_drawdown not in (None, ""):
+        current_drawdown = peak_drawdown
+
+    watch_axes: List[str] = []
+    if thresholds.get("hard_stop_pct") not in (None, "") or thresholds.get("stop_loss_pct") not in (None, ""):
+        watch_axes.append("Hard stop")
+    if thresholds.get("take_profit_pct") not in (None, ""):
+        watch_axes.append("Take profit")
+    if thresholds.get("trailing_stop_pct") not in (None, ""):
+        watch_axes.append("Trailing stop")
+    if thresholds.get("peak_drawdown_exit_pct") not in (None, ""):
+        watch_axes.append("Peak drawdown")
+    if thresholds.get("vwap_breakdown_pct") not in (None, ""):
+        watch_axes.append("VWAP breakdown")
+    if thresholds.get("intraday_low_break_pct") not in (None, ""):
+        watch_axes.append("Intraday low break")
+    if thresholds.get("trend_strength_floor") not in (None, ""):
+        watch_axes.append("Trend breakdown")
+    if thresholds.get("vol_expansion_ratio") not in (None, ""):
+        watch_axes.append("Volatility expansion")
+
     trigger_type = exit_reason if action == "SELL" else entry_reason or monitor_reason
+    active_exit_axis = format_exit_label(trigger_type)
     if action == "BUY":
         summary = f"BUY was triggered because {entry_reason or monitor_reason or 'the entry condition passed'}."
     elif action == "SELL":
@@ -355,17 +405,54 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         f"Trigger type: {trigger_type or 'not_captured'}",
         f"Monitor reason: {monitor_reason or 'not_captured'}",
         f"Position age: {safe_int(monitor.get('position_age_seconds'), 0)} seconds",
-        f"Stop loss: {format_pct(thresholds.get('stop_loss_pct'))}%",
-        f"Take profit: {format_pct(thresholds.get('take_profit_pct'))}%",
+        f"Stop loss: {format_ratio_pct(thresholds.get('stop_loss_pct'))}%",
+        f"Effective stop: {format_ratio_pct(thresholds.get('effective_stop_loss_pct'))}%",
+        f"Effective stop reason: {str(thresholds.get('effective_stop_reason') or 'not_captured')}",
+        f"Take profit: {format_ratio_pct(thresholds.get('take_profit_pct'))}%",
         f"Min hold blocked: {'yes' if monitor.get('min_hold_blocked') else 'no'}",
         f"Sell cooldown blocked: {'yes' if monitor.get('sell_cooldown_blocked') else 'no'}",
         f"Exit triggered: {'yes' if monitor.get('exit_triggered') else 'no'}",
     ]
+    if current_price not in (None, ""):
+        bullets.append(f"Current price: {safe_float(current_price, 0.0):.2f}")
+    if average_price not in (None, ""):
+        bullets.append(f"Average price: {safe_float(average_price, 0.0):.2f}")
+    if peak_price not in (None, ""):
+        bullets.append(f"Peak price: {safe_float(peak_price, 0.0):.2f}")
+    if current_drawdown not in (None, ""):
+        bullets.append(f"Current drawdown: {format_ratio_pct(current_drawdown)}%")
+    if peak_drawdown not in (None, ""):
+        bullets.append(f"Peak drawdown: {format_ratio_pct(peak_drawdown)}%")
+    if vwap_distance not in (None, ""):
+        bullets.append(f"VWAP distance: {format_ratio_pct(vwap_distance)}%")
+    if price_source:
+        bullets.append(f"Price source: {price_source}")
+    if feature_source:
+        bullets.append(f"Feature source: {feature_source}")
+    if price_source_policy:
+        bullets.append(f"Price source policy: {price_source_policy}")
     return {
         "posture": action or "WAIT",
         "trigger_type": trigger_type,
         "summary": summary,
         "bullets": bullets,
+        "position_age_seconds": safe_int(monitor.get("position_age_seconds"), 0),
+        "stop_loss_pct": thresholds.get("stop_loss_pct"),
+        "effective_stop_loss_pct": thresholds.get("effective_stop_loss_pct"),
+        "effective_stop_reason": str(thresholds.get("effective_stop_reason") or "").strip(),
+        "take_profit_pct": thresholds.get("take_profit_pct"),
+        "exit_triggered": bool(monitor.get("exit_triggered")),
+        "current_price": current_price,
+        "average_price": average_price,
+        "peak_price": peak_price,
+        "current_drawdown": current_drawdown,
+        "peak_drawdown": peak_drawdown,
+        "vwap_distance": vwap_distance,
+        "active_exit_axis": active_exit_axis,
+        "watch_axes": watch_axes[:8],
+        "price_source": price_source,
+        "feature_source": feature_source,
+        "price_source_policy": price_source_policy,
     }
 
 

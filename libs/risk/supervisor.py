@@ -31,6 +31,29 @@ class Supervisor:
     def __init__(self, settings: Optional[Settings] = None):
         self.s = settings or Settings.from_env()
 
+    @staticmethod
+    def _policy_position_sizing(context: Dict[str, Any]) -> Dict[str, Any]:
+        policy = context.get("strategy_policy")
+        if not isinstance(policy, dict):
+            return {}
+        entry_policy = policy.get("entry_policy")
+        if not isinstance(entry_policy, dict):
+            return {}
+        sizing = entry_policy.get("position_sizing")
+        if not isinstance(sizing, dict):
+            return {}
+        return dict(sizing)
+
+    @staticmethod
+    def _entry_order_qty(context: Dict[str, Any]) -> int:
+        order = context.get("order")
+        if not isinstance(order, dict):
+            return 0
+        try:
+            return int(float(order.get("qty") or 0))
+        except Exception:
+            return 0
+
     def allow(self, intent: str, context: Dict[str, Any]) -> AllowResult:
         intent = (intent or "").lower().strip()
         now = int(context.get("now_epoch") or time.time())
@@ -75,6 +98,48 @@ class Supervisor:
                 reason="Order cooldown active",
                 details={"cooldown_sec": cooldown, "elapsed_sec": now - last_order},
             )
+
+        # --- Strategy policy sizing rails ---
+        if is_entry_intent:
+            sizing = self._policy_position_sizing(context)
+            qty = self._entry_order_qty(context)
+            if sizing:
+                max_qty = int(sizing.get("max_position_qty") or 0)
+                min_qty = int(sizing.get("min_position_qty") or 0)
+                lot_size = int(sizing.get("lot_size") or 0)
+
+                if max_qty > 0 and qty > max_qty:
+                    return AllowResult(
+                        allow=False,
+                        reason="Strategy policy max position qty exceeded",
+                        details={
+                            "order_qty": qty,
+                            "max_position_qty": max_qty,
+                            "policy_guard": "max_position_qty",
+                        },
+                    )
+
+                if min_qty > 0 and qty > 0 and qty < min_qty:
+                    return AllowResult(
+                        allow=False,
+                        reason="Strategy policy minimum position qty not met",
+                        details={
+                            "order_qty": qty,
+                            "min_position_qty": min_qty,
+                            "policy_guard": "min_position_qty",
+                        },
+                    )
+
+                if lot_size > 1 and qty > 0 and (qty % lot_size) != 0:
+                    return AllowResult(
+                        allow=False,
+                        reason="Strategy policy lot size violated",
+                        details={
+                            "order_qty": qty,
+                            "lot_size": lot_size,
+                            "policy_guard": "lot_size",
+                        },
+                    )
 
         return AllowResult(allow=True, reason="Allowed", details={"intent": intent})
 

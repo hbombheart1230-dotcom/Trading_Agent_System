@@ -157,11 +157,12 @@ def _seed_diagnostics_for_policy(
         return diagnostics, False
 
     if status == "open":
-        diagnostics["report_status"] = "pending"
-        diagnostics["report_reason_code"] = "awaiting_exit_for_full_report"
-        diagnostics["report_reason_human"] = _report_reason_human("awaiting_exit_for_full_report")
-        diagnostics["next_expected_step"] = _report_next_step("awaiting_exit_for_full_report")
-        return diagnostics, False
+        if not _env_bool("TRADE_REPORT_AI_GENERATE_ON_OPEN", True):
+            diagnostics["report_status"] = "pending"
+            diagnostics["report_reason_code"] = "awaiting_exit_for_full_report"
+            diagnostics["report_reason_human"] = _report_reason_human("awaiting_exit_for_full_report")
+            diagnostics["next_expected_step"] = _report_next_step("awaiting_exit_for_full_report")
+            return diagnostics, False
 
     return diagnostics, True
 
@@ -192,6 +193,145 @@ def _read_json(path: Path) -> Dict[str, Any]:
     except Exception:
         return {}
     return obj if isinstance(obj, dict) else {}
+
+
+def _safe_float(value: Any, default: Optional[float] = 0.0) -> Optional[float]:
+    if value in (None, ""):
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _runtime_position_for_symbol(state_obj: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    normalized = normalize_symbol(symbol or "", allow_test_symbols=True)
+    if not normalized or not isinstance(state_obj, dict):
+        return {}
+
+    portfolio_snapshot = state_obj.get("portfolio_snapshot") if isinstance(state_obj.get("portfolio_snapshot"), dict) else {}
+    sources = [
+        ("portfolio_snapshot.positions", portfolio_snapshot.get("positions")),
+        ("mock_positions", state_obj.get("mock_positions")),
+    ]
+    for source_name, rows in sources:
+        if not isinstance(rows, list):
+            continue
+        for raw_row in rows:
+            if not isinstance(raw_row, dict):
+                continue
+            row_symbol = normalize_symbol(raw_row.get("symbol") or raw_row.get("code") or "", allow_test_symbols=True)
+            if row_symbol != normalized:
+                continue
+            row = dict(raw_row)
+            row["_source"] = source_name
+            return row
+    return {}
+
+
+def _derive_runtime_position_price(position: Dict[str, Any]) -> Tuple[Optional[float], str]:
+    if not isinstance(position, dict):
+        return None, ""
+    direct_fields = (
+        ("current_price", "runtime_state.position.current_price"),
+        ("price", "runtime_state.position.price"),
+        ("mark_price", "runtime_state.position.mark_price"),
+        ("last_price", "runtime_state.position.last_price"),
+    )
+    for key, source in direct_fields:
+        price = _safe_float(position.get(key), None)
+        if price and price > 0:
+            return price, source
+
+    avg_price = _safe_float(position.get("avg_price"), None)
+    qty = safe_int(position.get("qty"), 0)
+    unrealized = _safe_float(position.get("unrealized_pnl"), None)
+    if avg_price and avg_price > 0 and qty > 0 and unrealized is not None:
+        derived = avg_price + (unrealized / float(qty))
+        if derived > 0:
+            return derived, "runtime_state.position.avg_plus_unrealized"
+    return None, ""
+
+
+def _append_unique_bullet(bullets: List[str], text: str) -> None:
+    raw = str(text or "").strip()
+    if not raw:
+        return
+    lowered = raw.lower()
+    if any(str(existing or "").strip().lower() == lowered for existing in bullets):
+        return
+    bullets.append(raw)
+
+
+def _backfill_open_lifecycle_monitor_reason(
+    monitor_reason_human: Dict[str, Any],
+    *,
+    lifecycle_status: str,
+    symbol: str,
+    state_obj: Dict[str, Any],
+) -> Dict[str, Any]:
+    out = dict(monitor_reason_human or {})
+    if str(lifecycle_status or "").strip().lower() != "open":
+        return out
+    normalized_symbol = normalize_symbol(symbol or "", allow_test_symbols=True)
+    if not normalized_symbol or not isinstance(state_obj, dict) or not state_obj:
+        return out
+
+    position = _runtime_position_for_symbol(state_obj, normalized_symbol)
+    peak_map = state_obj.get("position_peak_price") if isinstance(state_obj.get("position_peak_price"), dict) else {}
+    bullets = [str(x or "").strip() for x in list(out.get("bullets") or []) if str(x or "").strip()]
+
+    avg_price = out.get("average_price")
+    if avg_price in (None, ""):
+        avg_price = _safe_float(position.get("avg_price"), None)
+        if avg_price not in (None, ""):
+            out["average_price"] = avg_price
+            _append_unique_bullet(bullets, f"Average price: {float(avg_price):.2f}")
+
+    current_price = out.get("current_price")
+    derived_price_source = ""
+    current_price_backfilled = False
+    if current_price in (None, ""):
+        current_price, derived_price_source = _derive_runtime_position_price(position)
+        if current_price not in (None, ""):
+            out["current_price"] = current_price
+            current_price_backfilled = True
+            _append_unique_bullet(bullets, f"Current price: {float(current_price):.2f}")
+
+    peak_price = out.get("peak_price")
+    if peak_price in (None, ""):
+        peak_price = _safe_float(peak_map.get(normalized_symbol), None)
+        if peak_price in (None, ""):
+            peak_price = _safe_float(position.get("peak_price"), None)
+        if peak_price in (None, "") and avg_price not in (None, "") and current_price not in (None, ""):
+            peak_price = max(float(avg_price), float(current_price))
+        if peak_price not in (None, ""):
+            out["peak_price"] = peak_price
+            _append_unique_bullet(bullets, f"Peak price: {float(peak_price):.2f}")
+
+    current_drawdown = out.get("current_drawdown")
+    if current_drawdown in (None, "") and current_price not in (None, "") and avg_price not in (None, "") and float(avg_price) > 0:
+        current_drawdown = (float(current_price) / float(avg_price)) - 1.0
+        out["current_drawdown"] = current_drawdown
+        _append_unique_bullet(bullets, f"Current drawdown: {current_drawdown * 100.0:.2f}%")
+
+    peak_drawdown = out.get("peak_drawdown")
+    if peak_drawdown in (None, "") and current_price not in (None, "") and peak_price not in (None, "") and float(peak_price) > 0:
+        peak_drawdown = (float(current_price) / float(peak_price)) - 1.0
+        out["peak_drawdown"] = peak_drawdown
+        _append_unique_bullet(bullets, f"Peak drawdown: {peak_drawdown * 100.0:.2f}%")
+
+    if derived_price_source and current_price_backfilled:
+        out["price_source"] = derived_price_source
+        _append_unique_bullet(bullets, f"Price source: {derived_price_source}")
+    if derived_price_source and current_price_backfilled:
+        policy = "runtime_state.position.current_price > runtime_state.position.avg_plus_unrealized > existing_monitor_fields"
+        out["price_source_policy"] = policy
+        _append_unique_bullet(bullets, f"Price source policy: {policy}")
+
+    if bullets:
+        out["bullets"] = bullets
+    return out
 
 
 def _to_epoch(ts: Any) -> Optional[int]:
@@ -266,6 +406,23 @@ def _latest_execution_day(event_log_path: Path) -> str:
     return best_day
 
 
+def _latest_decision_trace_payload(rows: List[Dict[str, Any]], *, event: str, agent: str) -> Dict[str, Any]:
+    agent_name = str(agent or "").strip().lower()
+    event_name = str(event or "").strip()
+    for row in reversed(rows):
+        if str(row.get("stage") or "").strip() != "decision_trace":
+            continue
+        if str(row.get("event") or "").strip() != event_name:
+            continue
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        row_agent = str(payload.get("agent") or "").strip().lower()
+        if row_agent != agent_name:
+            continue
+        agent_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+        return dict(agent_payload or {})
+    return {}
+
+
 def _resolve_execution_runs(event_log_path: Path, day: str) -> List[Dict[str, Any]]:
     seen: set[str] = set()
     out: List[Dict[str, Any]] = []
@@ -329,6 +486,7 @@ def _build_run_snapshots(event_log_path: Path, day: str) -> List[Dict[str, Any]]
             ),
             {},
         )
+        monitor_trace = _latest_decision_trace_payload(rows, event="entry_exit_decision", agent="monitor")
         monitor_summary = next(
             (
                 row.get("payload")
@@ -379,6 +537,8 @@ def _build_run_snapshots(event_log_path: Path, day: str) -> List[Dict[str, Any]]
         symbol = normalize_symbol(
             execution.get("symbol")
             or selected_symbol
+            or monitor_trace.get("selected_symbol")
+            or monitor_summary.get("selected_symbol")
             or scanner_summary.get("top_stock")
             or monitor_summary.get("symbol")
             or "",
@@ -387,6 +547,13 @@ def _build_run_snapshots(event_log_path: Path, day: str) -> List[Dict[str, Any]]
         execution_action = str(execution.get("action") or "").upper()
         monitor_reason = str(monitor_summary.get("monitor_reason") or "").strip()
         exit_reason = str(monitor_summary.get("exit_reason") or "").strip()
+        merged_monitor = dict(monitor_summary or {})
+        if monitor_trace:
+            merged_monitor.update(dict(monitor_trace or {}))
+        if not monitor_reason:
+            monitor_reason = str(merged_monitor.get("monitor_reason") or "").strip()
+        if not exit_reason:
+            exit_reason = str(merged_monitor.get("exit_reason") or "").strip()
         if execution_action in {"BUY", "SELL"}:
             posture = execution_action
         elif "hold" in monitor_reason.lower() or "hold" in exit_reason.lower():
@@ -409,6 +576,8 @@ def _build_run_snapshots(event_log_path: Path, day: str) -> List[Dict[str, Any]]
                 "execution": execution,
                 "monitor_reason": monitor_reason,
                 "exit_reason": exit_reason,
+                "monitor": merged_monitor,
+                "monitor_trace": dict(monitor_trace or {}),
                 "phase": str((route_row.get("payload") or {}).get("phase") or ""),
                 "mode": str((route_row.get("payload") or {}).get("mode") or ""),
                 "verdict_allowed": bool(verdict_payload.get("allowed")),
@@ -627,6 +796,7 @@ def _build_trade_lifecycles(
             "posture": str(snapshot.get("posture") or "HOLD"),
             "monitor_reason": monitor_reason,
             "exit_reason": exit_reason,
+            "monitor_context": dict(snapshot.get("monitor") or {}),
             "summary": f"Monitor posture={snapshot.get('posture') or 'HOLD'} reason={monitor_reason or '-'} exit={exit_reason or '-'}",
         }
         holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
@@ -791,6 +961,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     day = str(args.day).strip() if args.day else _latest_execution_day(event_log_path)
     analysis_root = report_dir.parent
     report_dir.mkdir(parents=True, exist_ok=True)
+    state_store_path = Path(str(os.getenv("STATE_STORE_PATH", "data/state.json")).strip() or "data/state.json")
+    runtime_state = _read_json(state_store_path)
     report_requested = bool(args.trade_report_ai) if args.trade_report_ai is not None else _env_bool("TRADE_REPORT_AI_ENABLED", True)
     configured_report_model = _normalize_model_name(
         str(args.trade_report_ai_model).strip()
@@ -1008,6 +1180,33 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         summary_obj = lifecycle.get("summary") if isinstance(lifecycle.get("summary"), dict) else {}
         reporter_obj = lifecycle.get("reporter") if isinstance(lifecycle.get("reporter"), dict) else {}
+        latest_holding_event = (
+            list(holding.get("holding_events") or [])[-1]
+            if isinstance(holding.get("holding_events"), list) and list(holding.get("holding_events") or [])
+            else {}
+        )
+        latest_holding_monitor_context = (
+            dict(latest_holding_event.get("monitor_context") or {})
+            if isinstance(latest_holding_event, dict) and isinstance(latest_holding_event.get("monitor_context"), dict)
+            else {}
+        )
+        if latest_holding_monitor_context:
+            lifecycle_monitor_reason_human = build_monitor_reason_human(
+                latest_holding_monitor_context,
+                {"action": "HOLD"},
+            )
+        else:
+            lifecycle_monitor_reason_human = dict(
+                anchor_bundle.get("monitor_reason_human")
+                or exit_ctx.get("monitor_context")
+                or {}
+            )
+        lifecycle_monitor_reason_human = _backfill_open_lifecycle_monitor_reason(
+            lifecycle_monitor_reason_human,
+            lifecycle_status=status,
+            symbol=symbol,
+            state_obj=runtime_state,
+        )
         story_contract = {
             "story_available": True,
             "story_type": story_type,
@@ -1038,7 +1237,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "market_context_human": dict(anchor_bundle.get("market_context_human") or entry_ctx.get("strategist_context") or {}),
             "scanner_reason_human": dict(anchor_bundle.get("scanner_reason_human") or entry_ctx.get("scanner_context") or {}),
             "filters_human": dict(anchor_bundle.get("filters_human") or {}),
-            "monitor_reason_human": dict(anchor_bundle.get("monitor_reason_human") or exit_ctx.get("monitor_context") or {}),
+            "monitor_reason_human": lifecycle_monitor_reason_human,
             "guard_reason_human": dict(anchor_bundle.get("guard_reason_human") or exit_ctx.get("guard_context") or {}),
             "execution_outcome_human": dict(anchor_bundle.get("execution_outcome_human") or exit_ctx.get("execution_context") or {}),
             "reporter_status_human": {

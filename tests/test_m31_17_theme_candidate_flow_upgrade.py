@@ -165,6 +165,44 @@ def test_m31_17_runtime_theme_map_enables_sector_theme_candidates():
     base["mock_top_volume_symbols"] = []
     base["mock_top_change_symbols"] = []
     base["mock_condition_symbols"] = []
+    base["scanner_features"] = {
+        "AAA": {
+            "return20": 0.12,
+            "ma20_gap": 0.04,
+            "ma60_gap": 0.05,
+            "ma120_gap": 0.06,
+            "trend_strength": 0.80,
+            "adx14": 28.0,
+            "volume_spike20": 2.0,
+            "vwap_distance": 0.010,
+            "cross_section_rank": 1.0,
+            "volatility20": 0.02,
+        },
+        "BBB": {
+            "return20": 0.02,
+            "ma20_gap": 0.01,
+            "ma60_gap": 0.01,
+            "ma120_gap": 0.00,
+            "trend_strength": 0.20,
+            "adx14": 14.0,
+            "volume_spike20": 1.0,
+            "vwap_distance": 0.000,
+            "cross_section_rank": 0.3,
+            "volatility20": 0.03,
+        },
+        "CCC": {
+            "return20": -0.01,
+            "ma20_gap": -0.01,
+            "ma60_gap": -0.01,
+            "ma120_gap": -0.02,
+            "trend_strength": -0.10,
+            "adx14": 12.0,
+            "volume_spike20": 1.0,
+            "vwap_distance": -0.005,
+            "cross_section_rank": 0.1,
+            "volatility20": 0.03,
+        },
+    }
 
     out = scanner_node(base)
     scanner_output = out.get("scanner_output") or {}
@@ -222,6 +260,44 @@ def test_m31_17_llm_override_themes_enable_sector_theme_candidates(monkeypatch):
     base["mock_top_volume_symbols"] = []
     base["mock_top_change_symbols"] = []
     base["mock_condition_symbols"] = []
+    base["scanner_features"] = {
+        "AAA": {
+            "return20": 0.12,
+            "ma20_gap": 0.04,
+            "ma60_gap": 0.05,
+            "ma120_gap": 0.06,
+            "trend_strength": 0.80,
+            "adx14": 28.0,
+            "volume_spike20": 2.0,
+            "vwap_distance": 0.010,
+            "cross_section_rank": 1.0,
+            "volatility20": 0.02,
+        },
+        "BBB": {
+            "return20": 0.02,
+            "ma20_gap": 0.01,
+            "ma60_gap": 0.01,
+            "ma120_gap": 0.00,
+            "trend_strength": 0.20,
+            "adx14": 14.0,
+            "volume_spike20": 1.0,
+            "vwap_distance": 0.000,
+            "cross_section_rank": 0.3,
+            "volatility20": 0.03,
+        },
+        "CCC": {
+            "return20": -0.01,
+            "ma20_gap": -0.01,
+            "ma60_gap": -0.01,
+            "ma120_gap": -0.02,
+            "trend_strength": -0.10,
+            "adx14": 12.0,
+            "volume_spike20": 1.0,
+            "vwap_distance": -0.005,
+            "cross_section_rank": 0.1,
+            "volatility20": 0.03,
+        },
+    }
 
     out = scanner_node(base)
     scanner_output = out.get("scanner_output") or {}

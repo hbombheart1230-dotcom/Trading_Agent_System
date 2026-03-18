@@ -22,6 +22,7 @@ from libs.core.symbols import normalize_symbol
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.exit_policy import evaluate_exit_policy
+from libs.runtime.feature_engine import build_feature_row
 from libs.runtime.position_sizing import evaluate_position_size
 from libs.strategies.contracts import coerce_strategist_output
 
@@ -128,12 +129,17 @@ def _resolve_exit_policy_config(policy: Dict[str, Any]) -> Dict[str, Any]:
 
     # Backward-compatible flat policy aliases.
     alias_map = {
+        "hard_stop_pct": "hard_stop_pct",
         "stop_loss_pct": "stop_loss_pct",
         "take_profit_pct": "take_profit_pct",
         "max_hold_sec": "max_hold_sec",
         "trailing_stop_pct": "trailing_stop_pct",
         "vol_expansion_ratio": "vol_expansion_ratio",
         "news_shock_threshold": "news_shock_threshold",
+        "peak_drawdown_exit_pct": "peak_drawdown_exit_pct",
+        "vwap_breakdown_pct": "vwap_breakdown_pct",
+        "intraday_low_break_pct": "intraday_low_break_pct",
+        "trend_strength_floor": "trend_strength_floor",
         "use_eod_flat": "use_eod_flat",
         "eod_flat_cutoff_min": "eod_flat_cutoff_min",
         "emergency_halt": "emergency_halt",
@@ -148,6 +154,10 @@ def _resolve_exit_policy_config(policy: Dict[str, Any]) -> Dict[str, Any]:
     trail_raw = str(os.getenv("EXIT_POLICY_TRAILING_STOP_PCT", "") or "").strip()
     vol_exp_raw = str(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "") or "").strip()
     news_shock_raw = str(os.getenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "") or "").strip()
+    peak_drawdown_raw = str(os.getenv("EXIT_POLICY_PEAK_DRAWDOWN_EXIT_PCT", "") or "").strip()
+    vwap_breakdown_raw = str(os.getenv("EXIT_POLICY_VWAP_BREAKDOWN_PCT", "") or "").strip()
+    intraday_low_break_raw = str(os.getenv("EXIT_POLICY_INTRADAY_LOW_BREAK_PCT", "") or "").strip()
+    trend_strength_floor_raw = str(os.getenv("EXIT_POLICY_TREND_STRENGTH_FLOOR", "") or "").strip()
     eod_flat_raw = str(os.getenv("EXIT_POLICY_USE_EOD_FLAT", "") or "").strip()
     eod_cutoff_raw = str(os.getenv("EXIT_POLICY_EOD_FLAT_CUTOFF_MIN", "") or "").strip()
     emergency_raw = str(os.getenv("EXIT_POLICY_EMERGENCY_HALT", "") or "").strip()
@@ -180,6 +190,20 @@ def _resolve_exit_policy_config(policy: Dict[str, Any]) -> Dict[str, Any]:
         base = _to_float(out.get("news_shock_threshold"))
         x = _to_float(news_shock_raw)
         out["news_shock_threshold"] = float(x if x > 0.0 else base)
+    if peak_drawdown_raw:
+        base = _to_float(out.get("peak_drawdown_exit_pct"))
+        x = _to_float(peak_drawdown_raw)
+        out["peak_drawdown_exit_pct"] = float(x if x > 0.0 else base)
+    if vwap_breakdown_raw:
+        base = _to_float(out.get("vwap_breakdown_pct"))
+        x = _to_float(vwap_breakdown_raw)
+        out["vwap_breakdown_pct"] = float(x if x > 0.0 else base)
+    if intraday_low_break_raw:
+        base = _to_float(out.get("intraday_low_break_pct"))
+        x = _to_float(intraday_low_break_raw)
+        out["intraday_low_break_pct"] = float(x if x > 0.0 else base)
+    if trend_strength_floor_raw:
+        out["trend_strength_floor"] = _to_float(trend_strength_floor_raw, _to_float(out.get("trend_strength_floor")))
     if eod_flat_raw:
         out["use_eod_flat"] = _is_trueish(eod_flat_raw)
     if eod_cutoff_raw:
@@ -200,24 +224,38 @@ def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, str]:
         if isinstance(strategist_output_raw, dict)
         else {}
     )
+    strategy_policy = (
+        dict(strategist_output.get("strategy_policy") or {})
+        if isinstance(strategist_output.get("strategy_policy"), dict)
+        else {}
+    )
+    market_policy = (
+        dict(strategy_policy.get("market_policy") or {})
+        if isinstance(strategy_policy.get("market_policy"), dict)
+        else {}
+    )
     return {
         "playbook": str(
             state.get("playbook")
+            or market_policy.get("playbook")
             or strategist_output.get("playbook")
             or ""
         ).strip().lower(),
         "monitor_guidance": str(
             state.get("monitor_guidance")
+            or market_policy.get("monitor_guidance")
             or strategist_output.get("monitor_guidance")
             or ""
         ).strip().lower(),
         "risk_tone": str(
             state.get("risk_tone")
+            or market_policy.get("risk_tone")
             or strategist_output.get("risk_tone")
             or ""
         ).strip().lower(),
         "trade_aggressiveness": str(
             state.get("trade_aggressiveness")
+            or market_policy.get("trade_aggressiveness")
             or strategist_output.get("trade_aggressiveness")
             or ""
         ).strip().lower(),
@@ -340,13 +378,28 @@ def _apply_exit_policy_strategy_frame(
         if isinstance(strategist_output_raw, dict)
         else {}
     )
+    strategy_policy = (
+        dict(strategist_output.get("strategy_policy") or {})
+        if isinstance(strategist_output.get("strategy_policy"), dict)
+        else {}
+    )
+    strategy_monitor_policy = (
+        dict(strategy_policy.get("monitor_policy") or {})
+        if isinstance(strategy_policy.get("monitor_policy"), dict)
+        else {}
+    )
     strategist_exit_policy = {}
+    if isinstance(strategy_monitor_policy.get("adaptive_exit"), dict):
+        strategist_exit_policy.update(dict(strategy_monitor_policy.get("adaptive_exit") or {}))
+    elif isinstance(strategy_monitor_policy.get("exit_policy"), dict):
+        strategist_exit_policy.update(dict(strategy_monitor_policy.get("exit_policy") or {}))
     if isinstance(strategist_output.get("exit_policy"), dict):
         strategist_exit_policy.update(dict(strategist_output.get("exit_policy") or {}))
     if isinstance(state.get("strategist_exit_policy"), dict):
         strategist_exit_policy.update(dict(state.get("strategist_exit_policy") or {}))
     if strategist_exit_policy:
         for key in (
+            "hard_stop_pct",
             "stop_loss_pct",
             "take_profit_pct",
             "max_hold_sec",
@@ -354,6 +407,10 @@ def _apply_exit_policy_strategy_frame(
             "trailing_stop_pct",
             "vol_expansion_ratio",
             "news_shock_threshold",
+            "peak_drawdown_exit_pct",
+            "vwap_breakdown_pct",
+            "intraday_low_break_pct",
+            "trend_strength_floor",
             "use_eod_flat",
             "eod_flat_cutoff_min",
             "emergency_halt",
@@ -392,7 +449,12 @@ def _apply_exit_policy_strategy_frame(
         return {"policy": out, "adjustments": adjustments}
 
     features = selected.get("features") if isinstance(selected, dict) and isinstance(selected.get("features"), dict) else {}
-    price = _resolve_price(state, str((selected or {}).get("symbol") or ""), selected)
+    price = _resolve_price(
+        state,
+        str((selected or {}).get("symbol") or ""),
+        selected,
+        position=position if isinstance(position, dict) else None,
+    )
     if price is None or _to_float(price) <= 0.0:
         price = _position_mark_price(position)
     price_num = _to_float(price)
@@ -400,10 +462,18 @@ def _apply_exit_policy_strategy_frame(
     volatility20 = _to_float((features or {}).get("engine_volatility20"))
     trend_strength = _to_float((features or {}).get("engine_trend_strength"))
     vwap_distance = _to_float((features or {}).get("engine_vwap_distance"))
+    hard_risk_rails = (
+        dict(strategy_monitor_policy.get("hard_risk_rails") or {})
+        if isinstance(strategy_monitor_policy.get("hard_risk_rails"), dict)
+        else {}
+    )
 
     stop_loss_pct = _to_float(out.get("stop_loss_pct"))
     if stop_loss_pct <= 0.0:
         stop_loss_pct = 0.03
+    hard_stop_pct = _to_float(out.get("hard_stop_pct"))
+    if hard_stop_pct <= 0.0:
+        hard_stop_pct = _to_float(hard_risk_rails.get("hard_stop_pct"))
     take_profit_pct = _to_float(out.get("take_profit_pct"))
     if take_profit_pct <= 0.0:
         take_profit_pct = 0.05
@@ -491,12 +561,21 @@ def _apply_exit_policy_strategy_frame(
         adjustments.append("trend_strength:extend_take_profit")
 
     stop_loss_pct = _clamp(stop_loss_pct, 0.003, 0.10)
+    if hard_stop_pct > 0.0:
+        hard_stop_pct = _clamp(hard_stop_pct, 0.003, 0.10)
     if take_profit_pct <= 0.0:
         take_profit_pct = max(0.005, stop_loss_pct * 1.05)
     take_profit_pct = _clamp(take_profit_pct, 0.005, 0.25)
     trailing_stop_pct = _clamp(max(trailing_stop_pct, stop_loss_pct * 0.50 if trailing_stop_pct > 0.0 else 0.0), 0.0, 0.15)
     vol_expansion_ratio = _clamp(vol_expansion_ratio, 0.0, 5.0)
+    max_stop_pct_cap = _to_float(hard_risk_rails.get("max_stop_pct_cap"))
+    if max_stop_pct_cap > 0.0 and stop_loss_pct > max_stop_pct_cap:
+        stop_loss_pct = max_stop_pct_cap
+        adjustments.append(f"strategy_policy:max_stop_pct_cap:{max_stop_pct_cap:.4f}")
+    if hard_stop_pct > 0.0:
+        adjustments.append(f"strategy_policy:hard_stop_pct:{hard_stop_pct:.4f}")
 
+    out["hard_stop_pct"] = float(hard_stop_pct)
     out["stop_loss_pct"] = float(stop_loss_pct)
     out["take_profit_pct"] = float(take_profit_pct)
     out["trailing_stop_pct"] = float(trailing_stop_pct)
@@ -536,7 +615,12 @@ def _is_hard_exit_reason(reason: str) -> bool:
         "emergency_halt",
         "news_shock",
         "eod_flat",
+        "hard_stop",
         "stop_loss",
+        "intraday_low_break",
+        "trend_breakdown",
+        "peak_drawdown",
+        "vwap_breakdown",
         "volatility_expansion",
         "trailing_stop",
     )
@@ -602,7 +686,19 @@ def _build_sizing_risk_context(state: Dict[str, Any], selected: Dict[str, Any], 
     rc = dict(state.get("risk_context") or {}) if isinstance(state.get("risk_context"), dict) else {}
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
     strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    strategy_policy = (
+        dict(strategist_output.get("strategy_policy") or {})
+        if isinstance(strategist_output.get("strategy_policy"), dict)
+        else {}
+    )
+    strategy_monitor_policy = (
+        dict(strategy_policy.get("monitor_policy") or {})
+        if isinstance(strategy_policy.get("monitor_policy"), dict)
+        else {}
+    )
     monitor_policy = state.get("monitor_policy") if isinstance(state.get("monitor_policy"), dict) else {}
+    if isinstance(strategy_monitor_policy.get("position_guards"), dict):
+        monitor_policy = {**dict(strategy_monitor_policy.get("position_guards") or {}), **monitor_policy}
     if isinstance(strategist_output.get("monitor_policy"), dict):
         monitor_policy = {**dict(strategist_output.get("monitor_policy") or {}), **monitor_policy}
     features = selected.get("features") if isinstance(selected.get("features"), dict) else {}
@@ -612,7 +708,11 @@ def _build_sizing_risk_context(state: Dict[str, Any], selected: Dict[str, Any], 
     if vol_pct <= 0.0 and vol20 > 0.0:
         vol_pct = min(max(vol20 / 0.05, 0.0), 1.0)
 
-    price = _resolve_price(state, symbol, selected) or 0.0
+    price = _resolve_price(
+        state,
+        symbol,
+        selected,
+    ) or 0.0
     exposure = _portfolio_exposure(state, price_fallback=float(price))
     corr_bucket = str(policy.get("correlation_bucket") or "medium").strip().lower()
     daily_pnl_ratio = _to_float(rc.get("daily_pnl_ratio"))
@@ -679,14 +779,35 @@ def _preview_exit_decision_for_symbol(
 ) -> Dict[str, Any]:
     qty = max(0, _to_int(position.get("qty")))
     avg_price = _to_float(position.get("avg_price"))
-    selected_for_exit = selected if isinstance(selected, dict) else {"symbol": symbol}
-    price = _resolve_price(state, symbol, selected_for_exit)
+    selected_for_exit = _monitor_selected_snapshot_for_symbol(
+        state,
+        symbol,
+        selected if isinstance(selected, dict) else None,
+        position=position,
+    )
+    price, price_source = _resolve_price_with_source(
+        state,
+        symbol,
+        selected_for_exit,
+        position=position,
+    )
     if price is None or _to_float(price) <= 0.0:
-        pos_mark = _position_mark_price(position)
+        pos_mark, pos_mark_source = _position_mark_price_with_source(position)
         if pos_mark is not None and pos_mark > 0.0:
             price = float(pos_mark)
+            price_source = str(pos_mark_source or "position_mark")
+    if _to_float(price) > 0.0 and avg_price > 0.0:
+        peak_price = _update_position_peak_price(
+            state,
+            symbol,
+            avg_price=avg_price,
+            observed_price=_to_float(price),
+        )
+    else:
+        peak_price = 0.0
 
     features = selected_for_exit.get("features") if isinstance(selected_for_exit.get("features"), dict) else {}
+    feature_source = str(selected_for_exit.get("_monitor_feature_source") or "none")
     hold_sec = _to_int(position.get("hold_sec"))
     if hold_sec <= 0:
         hold_sec = _to_int(state.get("position_hold_sec"))
@@ -703,8 +824,22 @@ def _preview_exit_decision_for_symbol(
         exit_policy_map.setdefault("peak_price", position.get("peak_price"))
     elif position.get("high_water_mark") is not None:
         exit_policy_map.setdefault("peak_price", position.get("high_water_mark"))
+    elif peak_price > 0.0:
+        exit_policy_map.setdefault("peak_price", peak_price)
+    else:
+        persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+        peak_map = persisted.get("position_peak_price") if isinstance(persisted.get("position_peak_price"), dict) else {}
+        if peak_map.get(symbol) is not None:
+            exit_policy_map.setdefault("peak_price", peak_map.get(symbol))
     if features.get("engine_volatility20") is not None:
         exit_policy_map.setdefault("current_volatility", features.get("engine_volatility20"))
+    if features.get("engine_vwap_distance") is not None:
+        exit_policy_map.setdefault("vwap_distance", features.get("engine_vwap_distance"))
+    if features.get("engine_trend_strength") is not None:
+        exit_policy_map.setdefault("trend_strength", features.get("engine_trend_strength"))
+    prior_bar_low = _to_float(selected_for_exit.get("_monitor_prior_bar_low"))
+    if prior_bar_low > 0.0:
+        exit_policy_map.setdefault("prior_bar_low", prior_bar_low)
     if state.get("policy") and isinstance(state.get("policy"), dict):
         policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
         if policy.get("exit_policy_baseline_volatility") is not None:
@@ -722,12 +857,65 @@ def _preview_exit_decision_for_symbol(
         hold_sec=hold_sec if hold_sec > 0 else None,
         policy=exit_policy_map,
     )
+    resolved_peak_price = _to_float(exit_policy_map.get("peak_price"))
+    if resolved_peak_price <= 0.0:
+        resolved_peak_price = float(peak_price)
     decision["_qty"] = int(qty)
     decision["_price"] = float(price) if price is not None and _to_float(price) > 0.0 else None
     decision["_avg_price"] = float(avg_price) if avg_price > 0.0 else None
+    decision["_peak_price"] = float(resolved_peak_price) if resolved_peak_price > 0.0 else None
     decision["_hold_sec"] = int(hold_sec) if hold_sec > 0 else None
     decision["_pnl_ratio"] = _to_float(decision.get("pnl_ratio"))
+    decision["_price_source"] = str(price_source or "unavailable")
+    decision["_feature_source"] = str(feature_source or "none")
     return decision
+
+
+def _update_position_peak_price(
+    state: Dict[str, Any],
+    symbol: str,
+    *,
+    avg_price: float,
+    observed_price: float,
+) -> float:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    peak_map = persisted.get("position_peak_price") if isinstance(persisted.get("position_peak_price"), dict) else {}
+    sym = _norm_symbol(symbol)
+    cur_peak = _to_float(peak_map.get(sym))
+    next_peak = max(cur_peak, _to_float(avg_price), _to_float(observed_price))
+    if sym and next_peak > 0.0:
+        peak_map[sym] = float(next_peak)
+        persisted["position_peak_price"] = peak_map
+        state["persisted_state"] = persisted
+    return float(next_peak)
+
+
+def _ensure_position_peak_price_map(
+    state: Dict[str, Any],
+    pos_map: Dict[str, Dict[str, Any]],
+) -> Dict[str, float]:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    raw_peak_map = persisted.get("position_peak_price") if isinstance(persisted.get("position_peak_price"), dict) else {}
+    next_peak_map: Dict[str, float] = {}
+    for sym, row in pos_map.items():
+        if max(0, _to_int((row or {}).get("qty"))) <= 0:
+            continue
+        key = _norm_symbol(sym)
+        if not key:
+            continue
+        peak = _to_float(raw_peak_map.get(key))
+        avg_price = _to_float((row or {}).get("avg_price"))
+        position_peak = _to_float((row or {}).get("peak_price"))
+        high_water_mark = _to_float((row or {}).get("high_water_mark"))
+        next_peak = max(peak, avg_price, position_peak, high_water_mark)
+        if next_peak > 0.0:
+            next_peak_map[key] = float(next_peak)
+    if next_peak_map:
+        persisted["position_peak_price"] = next_peak_map
+    else:
+        persisted.pop("position_peak_price", None)
+    state["persisted_state"] = persisted
+    return next_peak_map
 
 
 def _exit_reason_priority(reason: str) -> int:
@@ -738,7 +926,12 @@ def _exit_reason_priority(reason: str) -> int:
         "eod_flat": 90,
         "time_stop": 80,
         "max_hold": 75,
+        "hard_stop": 72,
         "stop_loss": 70,
+        "intraday_low_break": 69,
+        "trend_breakdown": 68,
+        "peak_drawdown": 67,
+        "vwap_breakdown": 66,
         "volatility_expansion": 65,
         "trailing_stop": 60,
         "take_profit": 50,
@@ -810,33 +1003,27 @@ def _select_exit_symbol(
     return sel
 
 
-def _resolve_price(state: Dict[str, Any], symbol: str, selected: Dict[str, Any] | None) -> float | None:
+def _resolve_price(
+    state: Dict[str, Any],
+    symbol: str,
+    selected: Dict[str, Any] | None,
+    *,
+    position: Dict[str, Any] | None = None,
+) -> float | None:
+    price, _source = _resolve_price_with_source(state, symbol, selected, position=position)
+    return price
+
+
+def _resolve_price_with_source(
+    state: Dict[str, Any],
+    symbol: str,
+    selected: Dict[str, Any] | None,
+    *,
+    position: Dict[str, Any] | None = None,
+) -> tuple[float | None, str]:
     sym = _norm_symbol(symbol)
     if not sym:
-        return None
-
-    if isinstance(selected, dict):
-        direct = selected.get("price")
-        if direct is not None:
-            p = _to_float(direct)
-            if p > 0.0:
-                return p
-        features = selected.get("features")
-        if isinstance(features, dict):
-            x = features.get("skill_quote_price")
-            if x is not None:
-                p = _to_float(x)
-                if p > 0.0:
-                    return p
-
-    mkt = state.get("market_snapshot")
-    if isinstance(mkt, dict):
-        ms = _norm_symbol(mkt.get("symbol"))
-        px = mkt.get("price")
-        if ms == sym and px is not None:
-            p = _to_float(px)
-            if p > 0.0:
-                return p
+        return None, "no_symbol"
 
     quotes, _meta = extract_market_quotes(state)
     q = quotes.get(sym)
@@ -845,25 +1032,205 @@ def _resolve_price(state: Dict[str, Any], symbol: str, selected: Dict[str, Any] 
             if q.get(k) is not None:
                 p = _to_float(q.get(k))
                 if p > 0.0:
-                    return p
+                    return p, f"market.quote.{k}"
+
+    if isinstance(position, dict):
+        pos_live_price, pos_live_source = _position_live_price_with_source(position)
+        if pos_live_price is not None and pos_live_price > 0.0:
+            return pos_live_price, pos_live_source
+
+    selected_symbol = _norm_symbol((selected or {}).get("symbol")) if isinstance(selected, dict) else ""
+    selected_matches = bool(selected_symbol and selected_symbol == sym)
+    if isinstance(selected, dict) and selected_matches:
+        direct = selected.get("price")
+        if direct is not None:
+            p = _to_float(direct)
+            if p > 0.0:
+                source_hint = str(selected.get("_monitor_price_source") or "").strip()
+                return p, (source_hint or "selected.price")
+        features = selected.get("features")
+        if isinstance(features, dict):
+            x = features.get("skill_quote_price")
+            if x is not None:
+                p = _to_float(x)
+                if p > 0.0:
+                    source_hint = str(selected.get("_monitor_price_source") or "").strip()
+                    return p, (source_hint or "selected.features.skill_quote_price")
+
+    mkt = state.get("market_snapshot")
+    if isinstance(mkt, dict):
+        ms = _norm_symbol(mkt.get("symbol"))
+        px = mkt.get("price")
+        if ms == sym and px is not None:
+            p = _to_float(px)
+            if p > 0.0:
+                return p, "market_snapshot"
+    return None, "unavailable"
+
+
+def _feature_alias_map(feature_row: Dict[str, Any], *, quote: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    row = dict(feature_row or {})
+    q = dict(quote or {})
+    out = {
+        "engine_rsi14": row.get("engine_rsi14", row.get("rsi14")),
+        "engine_ma20_gap": row.get("engine_ma20_gap", row.get("ma20_gap")),
+        "engine_ma60": row.get("engine_ma60", row.get("ma60")),
+        "engine_ma120": row.get("engine_ma120", row.get("ma120")),
+        "engine_adx14": row.get("engine_adx14", row.get("adx14")),
+        "engine_trend_strength": row.get("engine_trend_strength", row.get("trend_strength")),
+        "engine_atr14": row.get("engine_atr14", row.get("atr14")),
+        "engine_volume_spike20": row.get("engine_volume_spike20", row.get("volume_spike20")),
+        "engine_volatility20": row.get("engine_volatility20", row.get("volatility20")),
+        "engine_realized_volatility": row.get("engine_realized_volatility", row.get("realized_volatility")),
+        "engine_vwap_distance": row.get("engine_vwap_distance", row.get("vwap_distance")),
+        "engine_rolling_drawdown20": row.get("engine_rolling_drawdown20", row.get("rolling_drawdown20")),
+        "engine_cross_section_rank": row.get("engine_cross_section_rank", row.get("cross_section_rank")),
+        "engine_regime": row.get("engine_regime", row.get("regime")),
+        "engine_signal_score": row.get("engine_signal_score", row.get("signal_score")),
+    }
+    if q:
+        quote_price = q.get("price")
+        if quote_price is None:
+            quote_price = q.get("cur")
+        out["skill_quote_price"] = quote_price
+        out["intraday_change_pct"] = q.get("change_pct")
+        out["quote_volume"] = q.get("volume")
+        out["quote_trading_value"] = q.get("value")
+    return out
+
+
+def _feature_context_from_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    market_ctx = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    out: Dict[str, Any] = {}
+    if market_ctx.get("global_sentiment") is not None:
+        out["global_sentiment"] = market_ctx.get("global_sentiment")
+    if market_ctx.get("market_breadth") is not None:
+        out["market_breadth"] = market_ctx.get("market_breadth")
+    if market_ctx.get("index_trend") is not None:
+        out["index_trend"] = market_ctx.get("index_trend")
+    if market_ctx.get("realized_volatility") is not None:
+        out["realized_volatility"] = market_ctx.get("realized_volatility")
+    if not out:
+        gs = state.get("global_sentiment")
+        if isinstance(gs, dict) and gs.get("score") is not None:
+            out["global_sentiment"] = gs.get("score")
+    return out
+
+
+def _feature_row_for_symbol(state: Dict[str, Any], symbol: str) -> tuple[Dict[str, Any], str]:
+    sym = _norm_symbol(symbol)
+    if not sym:
+        return {}, "none"
+
+    feature_engine = state.get("feature_engine") if isinstance(state.get("feature_engine"), dict) else {}
+    by_symbol = feature_engine.get("by_symbol") if isinstance(feature_engine.get("by_symbol"), dict) else {}
+    direct = by_symbol.get(sym)
+    if isinstance(direct, dict) and direct:
+        return dict(direct), "feature_engine.by_symbol"
+
+    ohlcv_by_symbol = state.get("ohlcv_by_symbol") if isinstance(state.get("ohlcv_by_symbol"), dict) else {}
+    rows = ohlcv_by_symbol.get(sym)
+    if isinstance(rows, list) and rows:
+        try:
+            return build_feature_row(rows, **_feature_context_from_state(state)), "ohlcv_by_symbol"
+        except Exception:
+            return {}, "ohlcv_build_failed"
+
+    return {}, "none"
+
+
+def _prior_bar_low_for_symbol(state: Dict[str, Any], symbol: str) -> float | None:
+    sym = _norm_symbol(symbol)
+    if not sym:
+        return None
+    ohlcv_by_symbol = state.get("ohlcv_by_symbol") if isinstance(state.get("ohlcv_by_symbol"), dict) else {}
+    rows = ohlcv_by_symbol.get(sym)
+    if not isinstance(rows, list) or len(rows) < 2:
+        return None
+    prior = rows[-2] if isinstance(rows[-2], dict) else {}
+    low = _to_float(prior.get("low"))
+    if low > 0.0:
+        return float(low)
     return None
 
 
+def _monitor_selected_snapshot_for_symbol(
+    state: Dict[str, Any],
+    symbol: str,
+    selected: Dict[str, Any] | None,
+    *,
+    position: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    sym = _norm_symbol(symbol)
+    selected_symbol = _norm_symbol((selected or {}).get("symbol")) if isinstance(selected, dict) else ""
+    selected_matches = bool(selected_symbol and selected_symbol == sym)
+    base = dict(selected or {}) if selected_matches else {}
+    base["symbol"] = sym
+
+    quotes, _meta = extract_market_quotes(state)
+    quote = quotes.get(sym) if isinstance(quotes.get(sym), dict) else {}
+
+    price, price_source = _resolve_price_with_source(state, sym, selected, position=position)
+    if price is not None and _to_float(price) > 0.0:
+        base["price"] = float(price)
+
+    features = base.get("features") if isinstance(base.get("features"), dict) else {}
+    feature_source = "selected.features" if features else "none"
+    if not features:
+        feature_row, feature_source = _feature_row_for_symbol(state, sym)
+        if feature_row:
+            features = _feature_alias_map(feature_row, quote=quote)
+    elif quote:
+        enriched = dict(features)
+        quote_alias = _feature_alias_map({}, quote=quote)
+        for key, value in quote_alias.items():
+            if value in (None, ""):
+                continue
+            if key in {"skill_quote_price", "intraday_change_pct", "quote_volume", "quote_trading_value"}:
+                enriched[key] = value
+            elif enriched.get(key) in (None, ""):
+                enriched[key] = value
+        features = enriched
+
+    if features:
+        base["features"] = dict(features)
+    base["_monitor_price_source"] = str(price_source)
+    base["_monitor_feature_source"] = str(feature_source)
+    prior_bar_low = _prior_bar_low_for_symbol(state, sym)
+    if prior_bar_low is not None and prior_bar_low > 0.0:
+        base["_monitor_prior_bar_low"] = float(prior_bar_low)
+    return base
+
+
 def _position_mark_price(position: Dict[str, Any] | None) -> float | None:
+    price, _source = _position_mark_price_with_source(position)
+    return price
+
+
+def _position_live_price_with_source(position: Dict[str, Any] | None) -> tuple[float | None, str]:
     if not isinstance(position, dict):
-        return None
+        return None, "no_position"
     for key in ("price", "cur_price", "last_price", "current_price"):
         p = _to_float(position.get(key))
         if p > 0.0:
-            return p
+            return p, f"position.{key}"
+    return None, "position_live_price_unavailable"
+
+
+def _position_mark_price_with_source(position: Dict[str, Any] | None) -> tuple[float | None, str]:
+    direct_price, direct_source = _position_live_price_with_source(position)
+    if direct_price is not None and direct_price > 0.0:
+        return direct_price, direct_source
+    if not isinstance(position, dict):
+        return None, "no_position"
     qty = max(0, _to_int(position.get("qty")))
     avg_price = _to_float(position.get("avg_price"))
     unrealized = _to_float(position.get("unrealized_pnl"))
     if qty > 0 and avg_price > 0.0:
         mark = avg_price + (unrealized / float(qty))
         if mark > 0.0:
-            return mark
-    return None
+            return mark, "position.avg_plus_unrealized"
+    return None, "position_mark_unavailable"
 
 
 def _derive_order_lifecycle(order_status: Dict[str, Any] | None) -> Dict[str, Any] | None:
@@ -927,18 +1294,33 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     run_id = str(state.get("run_id") or "").strip() or "monitor-unknown"
     selected = state.get("selected")
     plan = state.get("plan") or {}
+    if isinstance(selected, dict) and selected.get("symbol"):
+        selected = _monitor_selected_snapshot_for_symbol(state, str(selected.get("symbol") or ""), selected)
 
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
     strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    strategy_policy = (
+        dict(strategist_output.get("strategy_policy") or {})
+        if isinstance(strategist_output.get("strategy_policy"), dict)
+        else {}
+    )
+    strategy_monitor_policy = (
+        dict(strategy_policy.get("monitor_policy") or {})
+        if isinstance(strategy_policy.get("monitor_policy"), dict)
+        else {}
+    )
     monitor_policy: Dict[str, Any] = {}
     if isinstance(policy.get("monitor_policy"), dict):
         monitor_policy.update(dict(policy.get("monitor_policy") or {}))
+    if isinstance(strategy_monitor_policy.get("position_guards"), dict):
+        monitor_policy.update(dict(strategy_monitor_policy.get("position_guards") or {}))
     if isinstance(strategist_output.get("monitor_policy"), dict):
         monitor_policy.update(dict(strategist_output.get("monitor_policy") or {}))
     if isinstance(state.get("monitor_policy"), dict):
         monitor_policy.update(dict(state.get("monitor_policy") or {}))
 
     all_pos_map = _position_by_symbol(state)
+    _ensure_position_peak_price_map(state, all_pos_map)
     open_position_count = sum(1 for row in all_pos_map.values() if max(0, _to_int((row or {}).get("qty"))) > 0)
     block_buy_open_position = _resolve_block_buy_when_open_position(state, policy, monitor_policy)
     post_exit_cooldown_sec = _resolve_post_exit_cooldown_sec(state, policy, monitor_policy)
@@ -962,6 +1344,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "score": selected.get("score"),
                         "risk_score": selected.get("risk_score"),
                         "confidence": selected.get("confidence"),
+                        "price_source": str(selected.get("_monitor_price_source") or ""),
+                        "feature_source": str(selected.get("_monitor_feature_source") or ""),
                     }
                     if isinstance(selected, dict)
                     else {}
@@ -1283,11 +1667,17 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "pnl_ratio": decision.get("pnl_ratio"),
             "price": price,
             "avg_price": avg_price if avg_price > 0.0 else None,
+            "peak_price": decision.get("_peak_price"),
             "thresholds": decision.get("thresholds") if isinstance(decision.get("thresholds"), dict) else {},
             "effective_exit_policy": dict(effective_exit_policy_base),
             "hold_sec": hold_sec if hold_sec > 0 else None,
             "trailing_drawdown": decision.get("trailing_drawdown"),
+            "peak_drawdown": decision.get("peak_drawdown"),
+            "vwap_distance": decision.get("vwap_distance"),
             "volatility_ratio": decision.get("volatility_ratio"),
+            "price_source": str(decision.get("_price_source") or ""),
+            "price_source_policy": "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized",
+            "feature_source": str(decision.get("_feature_source") or ""),
             "minutes_to_close": decision.get("minutes_to_close"),
             "min_hold_sec": int(min_hold_sec),
             "sell_cooldown_sec": int(sell_cooldown_sec),
@@ -1423,6 +1813,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "exit_reason": str(exit_info.get("reason") or ""),
             "monitor_reason": str(exit_info.get("monitor_reason") or ""),
             "position_age_seconds": exit_info.get("position_age_seconds"),
+            "peak_drawdown": exit_info.get("peak_drawdown"),
+            "peak_price": exit_info.get("peak_price"),
+            "vwap_distance": exit_info.get("vwap_distance"),
+            "price_source": str(exit_info.get("price_source") or ""),
+            "feature_source": str(exit_info.get("feature_source") or ""),
             "min_hold_sec": int(exit_info.get("min_hold_sec") or 0),
             "sell_cooldown_sec": int(exit_info.get("sell_cooldown_sec") or 0),
             "exit_confirm_ticks": int(exit_info.get("exit_confirm_ticks") or 0),
@@ -1458,6 +1853,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "exit_reason": str(exit_info.get("reason") or ""),
             "thresholds": dict(exit_info.get("thresholds") or {}),
             "position_age_seconds": exit_info.get("position_age_seconds"),
+            "peak_drawdown": exit_info.get("peak_drawdown"),
+            "peak_price": exit_info.get("peak_price"),
+            "vwap_distance": exit_info.get("vwap_distance"),
+            "price_source": str(exit_info.get("price_source") or ""),
+            "price_source_policy": str(exit_info.get("price_source_policy") or ""),
+            "feature_source": str(exit_info.get("feature_source") or ""),
             "min_hold_sec": int(exit_info.get("min_hold_sec") or 0),
             "sell_cooldown_sec": int(exit_info.get("sell_cooldown_sec") or 0),
             "exit_confirm_ticks": int(exit_info.get("exit_confirm_ticks") or 0),
@@ -1500,6 +1901,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "exit_reason": str(exit_info.get("reason") or ""),
                 "monitor_reason": str(exit_info.get("monitor_reason") or ""),
                 "position_age_seconds": exit_info.get("position_age_seconds"),
+                "peak_drawdown": exit_info.get("peak_drawdown"),
+                "peak_price": exit_info.get("peak_price"),
+                "vwap_distance": exit_info.get("vwap_distance"),
+                "price_source": str(exit_info.get("price_source") or ""),
+                "feature_source": str(exit_info.get("feature_source") or ""),
                 "exit_signal_detected": bool(exit_info.get("exit_signal_detected")),
                 "min_hold_blocked": bool(exit_info.get("min_hold_blocked")),
                 "sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),

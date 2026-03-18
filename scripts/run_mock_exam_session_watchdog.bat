@@ -3,6 +3,7 @@ setlocal
 
 set "ROOT=%~dp0.."
 set "SESSION_BAT=%ROOT%\scripts\run_mock_exam_session.bat"
+set "LOCK_PATH=%ROOT%\data\state\m13_live_loop.lock"
 
 if not exist "%SESSION_BAT%" (
   echo missing_file %SESSION_BAT%
@@ -10,7 +11,7 @@ if not exist "%SESSION_BAT%" (
 )
 
 set "HAS_LOOP=0"
-for /f %%i in ('powershell -NoProfile -Command "$p = Get-CimInstance Win32_Process ^| Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*scripts.run_m13_live_loop*' }; if ($p) { '1' } else { '0' }"') do set "HAS_LOOP=%%i"
+for /f %%i in ('powershell -NoProfile -Command "$root = [System.IO.Path]::GetFullPath('%ROOT%'); $lock = [System.IO.Path]::GetFullPath('%LOCK_PATH%'); $p = Get-CimInstance Win32_Process ^| Where-Object { $cmd = [string]$_.CommandLine; $_.Name -eq 'python.exe' -and ((($cmd -like '*scripts/run_m13_live_loop.py*') -or ($cmd -like '*-m scripts.run_m13_live_loop*')) -and (($cmd -like ('*' + $lock + '*')) -or ($cmd -like ('*' + $root + '*')))) }; if ($p) { '1' } else { '0' }"') do set "HAS_LOOP=%%i"
 
 if "%HAS_LOOP%"=="1" (
   echo ok session_loop_alive
@@ -20,4 +21,3 @@ if "%HAS_LOOP%"=="1" (
 echo watchdog_restart session_loop_missing
 call "%SESSION_BAT%" %*
 exit /b %ERRORLEVEL%
-

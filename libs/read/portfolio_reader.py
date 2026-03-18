@@ -26,6 +26,7 @@ class MockPortfolioReader:
                     qty=int(p.get("qty", 0)),
                     avg_price=float(p.get("avg_price", 0.0)),
                     unrealized_pnl=float(p.get("unrealized_pnl", 0.0)),
+                    current_price=(float(p.get("current_price")) if p.get("current_price") not in (None, "") else None),
                 )
             )
         return PortfolioSnapshot(cash=self.cash, positions=pos)

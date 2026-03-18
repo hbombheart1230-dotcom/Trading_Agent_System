@@ -1728,6 +1728,10 @@ def _exit_policy(
     trailing_stop_pct = _to_float(os.getenv("EXIT_POLICY_TRAILING_STOP_PCT", "0.0"), 0.0)
     vol_expansion_ratio = _to_float(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "0.0"), 0.0)
     news_shock_threshold = _to_float(os.getenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "0.0"), 0.0)
+    peak_drawdown_exit_pct = _to_float(os.getenv("EXIT_POLICY_PEAK_DRAWDOWN_EXIT_PCT", "0.0"), 0.0)
+    vwap_breakdown_pct = _to_float(os.getenv("EXIT_POLICY_VWAP_BREAKDOWN_PCT", "0.0"), 0.0)
+    intraday_low_break_pct = _to_float(os.getenv("EXIT_POLICY_INTRADAY_LOW_BREAK_PCT", "0.0"), 0.0)
+    trend_strength_floor = _to_float(os.getenv("EXIT_POLICY_TREND_STRENGTH_FLOOR", "0.0"), 0.0)
     adjustments: List[str] = []
 
     mode = str(playbook or "").strip().lower()
@@ -1797,8 +1801,52 @@ def _exit_policy(
     stop_loss_pct = _clamp(stop_loss_pct, 0.003, 0.10)
     take_profit_pct = _clamp(max(take_profit_pct, stop_loss_pct * 1.05), 0.005, 0.25)
     trailing_stop_pct = _clamp(max(trailing_stop_pct, stop_loss_pct * 0.50), 0.0, 0.15)
+    if peak_drawdown_exit_pct <= 0.0:
+        if guidance == "quick_take_profit":
+            peak_drawdown_exit_pct = stop_loss_pct * 0.45
+        elif guidance == "hold_through_noise":
+            peak_drawdown_exit_pct = stop_loss_pct * 0.80
+        elif mode == "defensive":
+            peak_drawdown_exit_pct = stop_loss_pct * 0.50
+        elif mode == "breakout":
+            peak_drawdown_exit_pct = stop_loss_pct * 0.75
+        else:
+            peak_drawdown_exit_pct = stop_loss_pct * 0.60
+        adjustments.append("peak_drawdown_exit_pct:auto")
+    if vwap_breakdown_pct <= 0.0:
+        if guidance == "quick_take_profit":
+            vwap_breakdown_pct = 0.004
+        elif mode == "breakout":
+            vwap_breakdown_pct = 0.010
+        elif mode == "defensive":
+            vwap_breakdown_pct = 0.005
+        else:
+            vwap_breakdown_pct = 0.007
+        adjustments.append("vwap_breakdown_pct:auto")
+    if intraday_low_break_pct <= 0.0:
+        if guidance == "quick_take_profit":
+            intraday_low_break_pct = 0.0015
+        elif mode == "breakout":
+            intraday_low_break_pct = 0.0030
+        elif mode == "defensive":
+            intraday_low_break_pct = 0.0020
+        else:
+            intraday_low_break_pct = 0.0025
+        adjustments.append("intraday_low_break_pct:auto")
+    if trend_strength_floor == 0.0:
+        if mode == "breakout":
+            trend_strength_floor = -0.05
+        elif mode == "defensive":
+            trend_strength_floor = -0.15
+        else:
+            trend_strength_floor = -0.10
+        adjustments.append("trend_strength_floor:auto")
     vol_expansion_ratio = _clamp(vol_expansion_ratio, 0.0, 5.0)
     news_shock_threshold = _clamp(news_shock_threshold, 0.0, 1.0)
+    peak_drawdown_exit_pct = _clamp(peak_drawdown_exit_pct, 0.0, 0.15)
+    vwap_breakdown_pct = _clamp(vwap_breakdown_pct, 0.0, 0.05)
+    intraday_low_break_pct = _clamp(intraday_low_break_pct, 0.0, 0.03)
+    trend_strength_floor = _clamp(trend_strength_floor, -1.0, 1.0)
 
     return {
         "stop_loss_pct": float(stop_loss_pct),
@@ -1806,6 +1854,10 @@ def _exit_policy(
         "trailing_stop_pct": float(trailing_stop_pct),
         "vol_expansion_ratio": float(vol_expansion_ratio),
         "news_shock_threshold": float(news_shock_threshold),
+        "peak_drawdown_exit_pct": float(peak_drawdown_exit_pct),
+        "vwap_breakdown_pct": float(vwap_breakdown_pct),
+        "intraday_low_break_pct": float(intraday_low_break_pct),
+        "trend_strength_floor": float(trend_strength_floor),
         "adjustments": list(adjustments),
         "note": "strategist_exit_policy_baseline",
     }
@@ -2001,6 +2053,148 @@ def _scanner_source_policy(
         )
 
     return policy
+
+
+def _strategy_policy_score_weights() -> Dict[str, float]:
+    return {
+        "trading_value": _to_float(os.getenv("SCORE_WEIGHTS_TRADING_VALUE", "0.20"), 0.20),
+        "momentum": _to_float(os.getenv("SCORE_WEIGHTS_MOMENTUM", "0.22"), 0.22),
+        "trend": _to_float(os.getenv("SCORE_WEIGHTS_TREND", "0.20"), 0.20),
+        "volume_surge": _to_float(os.getenv("SCORE_WEIGHTS_VOLUME_SURGE", "0.14"), 0.14),
+        "intraday_strength": _to_float(os.getenv("SCORE_WEIGHTS_INTRADAY_STRENGTH", "0.12"), 0.12),
+        "theme_boost": _to_float(os.getenv("SCORE_WEIGHTS_THEME_BOOST", "0.06"), 0.06),
+        "sentiment": _to_float(os.getenv("SCORE_WEIGHTS_SENTIMENT", "0.06"), 0.06),
+        "volatility_penalty": _to_float(os.getenv("SCORE_WEIGHTS_VOLATILITY_PENALTY", "0.10"), 0.10),
+        "gap_penalty": _to_float(os.getenv("SCORE_WEIGHTS_GAP_PENALTY", "0.07"), 0.07),
+        "open_order_penalty": _to_float(os.getenv("SCORE_WEIGHTS_OPEN_ORDER_PENALTY", "0.04"), 0.04),
+    }
+
+
+def _strategy_policy_entry_policy() -> Dict[str, Any]:
+    return {
+        "buy_score_threshold": _to_float(os.getenv("STRATEGY_V1_BUY_COMPOSITE_THRESHOLD", "0.20"), 0.20),
+        "sell_score_threshold": _to_float(os.getenv("STRATEGY_V1_SELL_COMPOSITE_THRESHOLD", "-0.12"), -0.12),
+        "min_signal_for_entry": _to_float(os.getenv("STRATEGY_V1_MIN_SIGNAL_FOR_ENTRY", "0.15"), 0.15),
+        "min_news_for_entry": _to_float(os.getenv("STRATEGY_V1_MIN_NEWS_FOR_ENTRY", "0.00"), 0.00),
+        "max_volatility_for_entry": _to_float(os.getenv("STRATEGY_V1_MAX_VOLATILITY_FOR_ENTRY", "0.12"), 0.12),
+        "invalidation_signal_floor": _to_float(os.getenv("STRATEGY_V1_INVALIDATION_SIGNAL_FLOOR", "-0.08"), -0.08),
+        "base_risk_per_trade_ratio": _to_float(os.getenv("STRATEGY_V1_BASE_RISK_PER_TRADE_RATIO", "0.01"), 0.01),
+        "base_position_notional_ratio": _to_float(
+            os.getenv("STRATEGY_V1_BASE_POSITION_NOTIONAL_RATIO", "0.10"),
+            0.10,
+        ),
+        "min_confidence_for_entry": _to_float(os.getenv("STRATEGY_V1_MIN_CONFIDENCE_FOR_ENTRY", "0.35"), 0.35),
+        "max_position_qty": max(1, _to_int(os.getenv("STRATEGY_V1_MAX_POSITION_QTY", "10"), 10)),
+        "min_position_qty": max(1, _to_int(os.getenv("STRATEGY_V1_MIN_POSITION_QTY", "1"), 1)),
+        "lot_size": max(1, _to_int(os.getenv("STRATEGY_V1_LOT_SIZE", "1"), 1)),
+    }
+
+
+def _build_strategy_policy(
+    *,
+    market_regime: str,
+    market_sentiment: str,
+    playbook: str,
+    trade_aggressiveness: str,
+    risk_tone: str,
+    monitor_guidance: str,
+    global_signal: Dict[str, Any],
+    market_context_inputs: Dict[str, float],
+    themes: List[str],
+    avoid_themes: List[str],
+    theme_strength: Dict[str, Any],
+    scanner_priority: List[str],
+    scanner_source_policy: Dict[str, Any],
+    monitor_policy: Dict[str, Any],
+    exit_policy: Dict[str, Any],
+    macro_stress_overlay: Dict[str, Any],
+    news_ctx: Dict[str, Any],
+) -> Dict[str, Any]:
+    fear_index = dict(global_signal.get("fear_index") or {}) if isinstance(global_signal.get("fear_index"), dict) else {}
+    market_news_count = _to_int(news_ctx.get("headline_count"), 0)
+    candidate_news_count = _to_int(news_ctx.get("candidate_signal_total"), 0)
+    entry_policy = _strategy_policy_entry_policy()
+    return {
+        "schema_version": "strategy_policy.v1",
+        "market_policy": {
+            "market_regime": str(market_regime or "neutral"),
+            "market_sentiment": str(market_sentiment or "neutral"),
+            "playbook": str(playbook or "defensive"),
+            "trade_aggressiveness": str(trade_aggressiveness or "medium"),
+            "risk_tone": str(risk_tone or "normal"),
+            "monitor_guidance": str(monitor_guidance or "defensive_exit"),
+            "defensive_mode": bool(macro_stress_overlay.get("active")),
+            "global_sentiment_score": _to_float(global_signal.get("score"), 0.0),
+            "fear_index": {
+                "vix_level": _to_float(fear_index.get("level"), 0.0),
+                "vix_pressure": _to_float(fear_index.get("level_pressure"), 0.0),
+                "elevated": bool(
+                    _to_float(fear_index.get("level"), 0.0) >= 25.0
+                    or _to_float(fear_index.get("level_pressure"), 0.0) >= 0.25
+                ),
+            },
+            "macro_stress_score": _to_float(market_context_inputs.get("macro_risk"), 0.0),
+            "macro_stress_flags": [str(x) for x in list(macro_stress_overlay.get("flags") or [])],
+            "market_context_inputs": dict(market_context_inputs or {}),
+            "theme_policy": {
+                "preferred_themes": [str(x) for x in list(themes or [])],
+                "avoid_themes": [str(x) for x in list(avoid_themes or [])],
+                "theme_strength": dict(theme_strength or {}),
+            },
+            "news_policy": {
+                "market_news_count": int(market_news_count),
+                "candidate_news_count": int(candidate_news_count),
+                "average_news_score": _to_float(news_ctx.get("avg_score"), 0.0),
+            },
+        },
+        "scanner_policy": {
+            "candidate_sources": dict(scanner_source_policy or {}),
+            "priority_tilts": [str(x) for x in list(scanner_priority or [])],
+            "score_weights": _strategy_policy_score_weights(),
+            "filters": {
+                "max_volatility_for_entry": _to_float(entry_policy.get("max_volatility_for_entry"), 0.12),
+                "min_feature_coverage": 0,
+                "min_confidence_for_entry": _to_float(entry_policy.get("min_confidence_for_entry"), 0.35),
+            },
+            "ranking_rules": {
+                "allow_repeat_symbol": True,
+                "repeat_symbol_penalty": _to_float(os.getenv("SCANNER_REPEAT_SYMBOL_PENALTY", "0.0"), 0.0),
+            },
+        },
+        "entry_policy": dict(entry_policy),
+        "monitor_policy": {
+            "position_guards": dict(monitor_policy or {}),
+            "adaptive_exit": dict(exit_policy or {}),
+            "hard_risk_rails": {
+                "hard_stop_pct": _to_float(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "0.03"), 0.03),
+                "max_stop_pct_cap": _to_float(os.getenv("STRATEGY_POLICY_MAX_STOP_PCT_CAP", "0.10"), 0.10),
+                "use_eod_flat": _is_trueish(os.getenv("EXIT_POLICY_USE_EOD_FLAT", "false")),
+            },
+        },
+        "decision_policy": {
+            "use_strategy_v1_engine": _is_trueish(os.getenv("USE_STRATEGY_V1", "false")),
+            "allow_score_override": _is_trueish(os.getenv("AI_STRATEGIST_SCORE_OVERRIDE", "false")),
+            "score_override_scope": str(
+                os.getenv("AI_STRATEGIST_SCORE_OVERRIDE_SCOPE", "llm_only") or "llm_only"
+            ).strip().lower(),
+            "strategy_v1_name": str(os.getenv("STRATEGY_V1_NAME", "regime_momentum_v1") or "regime_momentum_v1"),
+            "buy_threshold": _to_float(os.getenv("AI_STRATEGIST_BUY_THRESHOLD", "0.10"), 0.10),
+            "sell_threshold": _to_float(os.getenv("AI_STRATEGIST_SELL_THRESHOLD", "-0.10"), -0.10),
+            "high_vol_abs_threshold": _to_float(os.getenv("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", "0.12"), 0.12),
+            "news_buy_threshold": _to_float(os.getenv("AI_STRATEGIST_NEWS_BUY_THRESHOLD", "0.15"), 0.15),
+            "news_sell_threshold": _to_float(os.getenv("AI_STRATEGIST_NEWS_SELL_THRESHOLD", "-0.15"), -0.15),
+        },
+        "operator_explain": {
+            "why_this_playbook": (
+                f"playbook={str(playbook or 'defensive')} regime={str(market_regime or 'neutral')} "
+                f"sentiment={str(market_sentiment or 'neutral')}"
+            ),
+            "why_this_risk_tone": (
+                f"risk_tone={str(risk_tone or 'normal')} guidance={str(monitor_guidance or 'defensive_exit')}"
+            ),
+            "what_changes_next": str(macro_stress_overlay.get("reason") or ""),
+        },
+    }
 
 
 def _report_focus(*, playbook: str, themes: List[str]) -> List[str]:
@@ -2784,6 +2978,25 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         report_focus=report_focus,
         recent_strategy_feedback=recent_strategy_feedback,
     )
+    strategy_policy = _build_strategy_policy(
+        market_regime=market_regime,
+        market_sentiment=market_sentiment,
+        playbook=playbook,
+        trade_aggressiveness=trade_aggressiveness,
+        risk_tone=risk_tone,
+        monitor_guidance=monitor_guidance,
+        global_signal=global_signal,
+        market_context_inputs=market_context_inputs,
+        themes=list(themes),
+        avoid_themes=list(avoid_themes),
+        theme_strength=dict(theme_strength),
+        scanner_priority=list(scanner_priority),
+        scanner_source_policy=dict(scanner_source_policy),
+        monitor_policy=dict(monitor_policy),
+        exit_policy=dict(exit_policy),
+        macro_stress_overlay=dict(macro_stress_overlay),
+        news_ctx=dict(news_ctx),
+    )
 
     state["market_regime"] = market_regime
     state["market_sentiment"] = market_sentiment
@@ -2802,6 +3015,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["macro_stress_overlay"] = dict(macro_stress_overlay)
     state["monitor_policy"] = dict(monitor_policy)
     state["strategist_exit_policy"] = dict(exit_policy)
+    state["strategy_policy"] = dict(strategy_policy)
     state["report_focus"] = list(report_focus)
     state["scanner_guidance"] = {
         "themes": list(themes),
@@ -2830,6 +3044,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             if monitor_guidance in ("hold_through_noise", "defensive_exit", "quick_take_profit")
             else "defensive_exit"
         ),
+        strategy_policy=dict(strategy_policy),
         report_focus=list(report_focus),
         recent_strategy_feedback=dict(recent_strategy_feedback),
         candidates=list(state["candidate_symbols"]),

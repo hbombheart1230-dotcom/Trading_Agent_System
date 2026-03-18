@@ -632,3 +632,110 @@ def test_execute_from_packet_blocks_buy_when_portfolio_snapshot_mismatch_unresol
     assert out["execution"]["portfolio_guard"]["positions_mismatch_detected"] is True
     assert out["execution"]["portfolio_guard"]["reconciliation_applied"] is False
     assert called["execute"] == 0
+
+
+def test_execute_from_packet_uses_strategy_policy_sizing_rail_in_supervisor(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_MODE", "real")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [],
+            "_health": {
+                "reader_ok": True,
+                "source": "reader",
+                "positions_source": "reader_positions_authoritative_empty",
+                "reconciliation_status": "reader_aligned",
+                "reader_positions_authoritative": True,
+                "positions_mismatch_detected": False,
+                "reconciliation_applied": False,
+                "reader_positions_count": 0,
+                "persisted_positions_count": 0,
+            },
+        },
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 2,
+                "price": 70000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+            "strategy_policy": {
+                "schema_version": "strategy_policy.v1",
+                "market_policy": {
+                    "playbook": "defensive",
+                    "risk_tone": "conservative",
+                    "trade_aggressiveness": "low",
+                    "defensive_mode": True,
+                },
+                "entry_policy": {
+                    "position_sizing": {
+                        "max_position_qty": 1,
+                        "min_position_qty": 1,
+                        "lot_size": 1,
+                    }
+                },
+                "monitor_policy": {
+                    "hard_risk_rails": {
+                        "hard_stop_pct": 0.01,
+                        "max_stop_pct_cap": 0.03,
+                    }
+                },
+                "decision_policy": {
+                    "use_strategy_v1_engine": True,
+                    "allow_score_override": False,
+                },
+            },
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "Strategy policy max position qty exceeded"
+    assert out["execution"]["strategy_policy_summary"]["playbook"] == "defensive"
+    assert out["execution"]["supervisor_guard"]["policy_guard"] == "max_position_qty"
+
+
+def test_execute_from_packet_traces_strategy_policy_summary(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "run_id": "trace-policy-r1",
+        "catalog_path": str(cat),
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+            "strategy_policy_summary": {
+                "schema_version": "strategy_policy.v1",
+                "playbook": "pullback",
+                "risk_tone": "conservative",
+                "max_position_qty": 3,
+            },
+        },
+    }
+
+    out = execute_from_packet(state)
+    ledger = out.get("decision_trace_ledger") or {}
+    latest = ledger.get("latest_by_agent") or {}
+    assert out["execution"]["strategy_policy_summary"]["playbook"] == "pullback"
+    assert latest["supervisor"]["strategy_policy_summary"]["playbook"] == "pullback"
+    assert latest["executor"]["strategy_policy_summary"]["playbook"] == "pullback"

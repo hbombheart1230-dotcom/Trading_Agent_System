@@ -29,6 +29,26 @@ def test_build_portfolio_snapshot_with_mock_portfolio():
     assert ps["open_positions"] == 1
 
 
+def test_build_portfolio_snapshot_preserves_position_current_price():
+    state = {
+        "portfolio_reader": MockPortfolioReader(
+            cash=10000000,
+            positions=[
+                {
+                    "symbol": "005930",
+                    "qty": 10,
+                    "avg_price": 70000,
+                    "unrealized_pnl": 12000,
+                    "current_price": 71200,
+                }
+            ],
+        )
+    }
+    out = build_portfolio_snapshot(state)
+    ps = out["portfolio_snapshot"]
+    assert ps["positions"][0]["current_price"] == 71200.0
+
+
 def test_build_market_snapshot_falls_back_when_mock_reader_returns_non_positive(monkeypatch):
     class ZeroPriceReader:
         def get_market_snapshot(self, symbol):  # type: ignore[no-untyped-def]
@@ -148,6 +168,68 @@ def test_build_portfolio_snapshot_uses_reader_positions_as_authoritative_in_mock
     assert persisted.get("open_positions") == 0
     assert persisted.get("mock_position_desync_reconciled") is True
     assert persisted.get("portfolio_reconcile_reason") == "reader_positions_authoritative"
+
+
+def test_build_portfolio_snapshot_syncs_reader_current_price_into_persisted_positions_in_mock_real_mode(monkeypatch):
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    state = {
+        "portfolio_reader": MockPortfolioReader(
+            cash=1500000,
+            positions=[
+                {
+                    "symbol": "005930",
+                    "qty": 3,
+                    "avg_price": 70000.0,
+                    "unrealized_pnl": 3600.0,
+                    "current_price": 71200.0,
+                }
+            ],
+        ),
+        "persisted_state": {
+            "mock_positions": [
+                {"symbol": "005930", "qty": 3, "avg_price": 70000.0, "unrealized_pnl": 0.0},
+            ],
+            "mock_cash": 1234567.0,
+        },
+    }
+
+    out = build_portfolio_snapshot(state)
+    persisted = out["persisted_state"]
+
+    assert persisted["mock_positions"][0]["symbol"] == "005930"
+    assert persisted["mock_positions"][0]["current_price"] == 71200.0
+
+
+def test_build_portfolio_snapshot_merges_reader_current_price_into_persisted_positions_in_pure_mock_mode(monkeypatch):
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+    state = {
+        "portfolio_reader": MockPortfolioReader(
+            cash=2000000,
+            positions=[
+                {
+                    "symbol": "005930",
+                    "qty": 3,
+                    "avg_price": 70000.0,
+                    "unrealized_pnl": 3600.0,
+                    "current_price": 71200.0,
+                }
+            ],
+        ),
+        "persisted_state": {
+            "mock_positions": [
+                {"symbol": "005930", "qty": 3, "avg_price": 70000.0, "unrealized_pnl": 0.0},
+            ],
+        },
+    }
+
+    out = build_portfolio_snapshot(state)
+    ps = out["portfolio_snapshot"]
+    persisted = out["persisted_state"]
+
+    assert ps["positions"][0]["current_price"] == 71200.0
+    assert persisted["mock_positions"][0]["current_price"] == 71200.0
 
 
 def test_build_portfolio_snapshot_drops_invalid_persisted_mock_symbols(monkeypatch):

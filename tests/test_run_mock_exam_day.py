@@ -136,6 +136,21 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
             "duration_sec": 0.001,
         }
 
+    monkeypatch.setattr(
+        mod,
+        "_stop_live_loop_processes",
+        lambda common: {
+            "step_id": "closeout.stop_session_loop",
+            "mode": "process_cleanup",
+            "rc": 0,
+            "ok": True,
+            "stopped_pids": [],
+            "stopped_total": 0,
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.001,
+        },
+    )
     monkeypatch.setattr(mod, "_run_subprocess", fake_run_subprocess)
 
     rc = mod.main(
@@ -156,6 +171,8 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
     out = json.loads(capsys.readouterr().out.strip())
     assert rc == 0
     assert out["ok"] is True
+    steps = out["phase_result"]["steps"]
+    assert steps[0]["step_id"] == "closeout.stop_session_loop"
     assert calls == [
         "closeout.m31_slo_incident",
         "closeout.metrics",
@@ -200,6 +217,7 @@ def test_session_success_starts_background_loop(tmp_path: Path, capsys, monkeypa
         }
 
     monkeypatch.setattr(mod, "_start_live_loop_background", fake_start)
+    monkeypatch.setattr(mod, "_existing_live_loop_step", lambda common: {})
 
     rc = mod.main(
         [
@@ -223,6 +241,71 @@ def test_session_success_starts_background_loop(tmp_path: Path, capsys, monkeypa
     assert out["ok"] is True
     step = (out["phase_result"]["steps"] or [])[0]
     assert int(step["pid"]) == 12345
+    cmd = [str(x) for x in step["command"]]
+    assert "--env-path" in cmd
+    assert str(env_path) in cmd
+    assert "--tick-pipeline" in cmd
+    assert "integrated_chain" in cmd
+
+
+def test_session_reuses_existing_live_loop_when_present(tmp_path: Path, capsys, monkeypatch):
+    env_path = tmp_path / ".env"
+    events = tmp_path / "events.jsonl"
+    report_dir = tmp_path / "reports"
+    _write_env(
+        env_path,
+        {
+            "RUNTIME_PROFILE": "staging",
+            "KIWOOM_MODE": "mock",
+            "APPROVAL_MODE": "manual",
+            "ALLOW_REAL_EXECUTION": "false",
+        },
+    )
+    events.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        mod,
+        "_existing_live_loop_step",
+        lambda common: {
+            "step_id": "session.live_loop_existing",
+            "mode": "existing",
+            "rc": 0,
+            "ok": True,
+            "pid": 45678,
+            "command_line": "python -m scripts.run_m13_live_loop --tick-pipeline integrated_chain",
+            "duration_sec": 0.0,
+        },
+    )
+
+    def fail_start(**kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("background start should not run when existing loop is alive")
+
+    monkeypatch.setattr(mod, "_start_live_loop_background", fail_start)
+
+    rc = mod.main(
+        [
+            "--phase",
+            "session",
+            "--day",
+            "2026-03-10",
+            "--env-path",
+            str(env_path),
+            "--report-dir",
+            str(report_dir),
+            "--event-log-path",
+            str(events),
+            "--now-kst",
+            "2026-03-10T10:00:00+09:00",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert out["ok"] is True
+    assert out["phase_result"]["reuse_existing"] is True
+    step = (out["phase_result"]["steps"] or [])[0]
+    assert step["step_id"] == "session.live_loop_existing"
+    assert int(step["pid"]) == 45678
 
 
 def test_session_offhours_probe_mode_when_enabled(tmp_path: Path, capsys, monkeypatch):

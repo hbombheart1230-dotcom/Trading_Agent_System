@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">Operator brief</div>
+    <h1>{{ brief.executive_action or "-" }} {{ brief.executive_symbol or "-" }}</h1>
+    <p class="lede">{{ brief.headline or brief.trade_summary or "Saved operator brief" }}</p>
+  </div>
+  <div class="hero-meta">
+    <div class="metric">
+      <span class="metric-label">Trade</span>
+      <span class="metric-value">{{ brief.trade_id or brief.story_id or "-" }}</span>
+    </div>
+    <div class="metric">
+      <span class="metric-label">Run</span>
+      <span class="metric-value">{{ brief.run_id or "-" }}</span>
+    </div>
+  </div>
+</section>
+
+{% set sec = brief.sections or {} %}
+<section class="grid grid-2">
+  <article class="card card--attention">
+    <h2>Brief Summary</h2>
+    <div class="chip-list">
+      <span class="status-badge status-badge--ok">{{ brief.executive_action or "-" }} {{ brief.executive_symbol or "-" }}</span>
+      {% if brief.story_type_label %}
+      <span class="{{ brief.story_type_badge_class or 'status-badge' }}">{{ brief.story_type_label }}</span>
+      {% endif %}
+      {% if brief.execution_mode_label %}
+      <span class="chip">{{ brief.execution_mode_label }}</span>
+      {% endif %}
+      {% if brief.lifecycle_status %}
+      <span class="chip">Lifecycle {{ brief.lifecycle_status | upper }}</span>
+      {% endif %}
+      <span class="{{ brief.ai_trade_status_badge_class or 'status-badge' }}">{{ brief.ai_trade_status_label or "-" }}</span>
+    </div>
+    <p class="operator-sentence">{{ (sec.executive_decision or {}).get("reason") or "-" }}</p>
+    <ul class="summary-list summary-list--tight">
+      <li>Status: {{ brief.status or "-" }}</li>
+      <li>Model: {{ brief.model or "-" }}</li>
+      <li>Saved at: {{ brief.saved_at or "-" }}</li>
+      {% if brief.trade_summary %}
+      <li>Trade summary: {{ brief.trade_summary }}</li>
+      {% endif %}
+    </ul>
+    <p class="chip-list">
+      {% if brief.run_link %}
+      <a class="link-action" href="{{ brief.run_link }}">Open run detail</a>
+      {% endif %}
+      {% if brief.report_link %}
+      <a class="link-action" href="{{ brief.report_link }}">Open full AI report</a>
+      {% endif %}
+    </p>
+  </article>
+
+  <article class="card">
+    <h2>Market and Selection</h2>
+    <ul class="summary-list summary-list--tight">
+      <li>Market regime: {{ (sec.market_context or {}).get("market_regime") or "-" }}</li>
+      <li>Global sentiment: {{ (sec.market_context or {}).get("global_sentiment") or "-" }}</li>
+      <li>News summary: {{ (sec.market_context or {}).get("news_summary") or "-" }}</li>
+      <li>Universe scanned: {{ (sec.why_symbol_chosen or {}).get("universe_size") or "-" }}</li>
+      <li>Selected rank: {% if (sec.why_symbol_chosen or {}).get("selected_rank") %}#{{ (sec.why_symbol_chosen or {}).get("selected_rank") }}{% else %}-{% endif %}</li>
+      <li>Selection note: {{ ((sec.why_symbol_chosen or {}).get("selection_reasons") or ["-"])[0] }}</li>
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Monitor and Guard</h2>
+    <ul class="summary-list summary-list--tight">
+      <li>Posture: {{ (sec.position_monitor_reasoning or {}).get("posture") or "-" }}</li>
+      <li>Monitor note: {{ ((sec.position_monitor_reasoning or {}).get("hold_reasons") or ["-"])[0] }}</li>
+      <li>Active exit axis: {{ (sec.position_monitor_reasoning or {}).get("active_exit_axis") or "-" }}</li>
+      <li>Current / avg / peak: {{ (sec.position_monitor_reasoning or {}).get("current_price") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("average_price") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("peak_price") or "-" }}</li>
+      <li>Current / peak drawdown: {{ (sec.position_monitor_reasoning or {}).get("current_drawdown") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("peak_drawdown") or "-" }}</li>
+      <li>Effective stop / take profit: {{ (sec.position_monitor_reasoning or {}).get("effective_stop") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("take_profit") or "-" }}</li>
+      <li>VWAP distance: {{ (sec.position_monitor_reasoning or {}).get("vwap_distance") or "-" }}</li>
+      <li>Guard reason: {{ (sec.guard_approval or {}).get("reason") or "-" }}</li>
+      <li>Execution summary: {{ (sec.execution_result or {}).get("summary") or "-" }}</li>
+    </ul>
+    {% if (sec.position_monitor_reasoning or {}).get("watch_axes") %}
+    <p class="chip-list">
+      {% for axis in (sec.position_monitor_reasoning or {}).get("watch_axes") or [] %}
+      <span class="chip">{{ axis }}</span>
+      {% endfor %}
+    </p>
+    {% endif %}
+  </article>
+
+  <article class="card">
+    <h2>Next Watch</h2>
+    <ul class="summary-list summary-list--tight">
+      {% for line in brief.watch_next or [] %}
+      <li>Watch next: {{ line }}</li>
+      {% endfor %}
+      {% for line in brief.thesis_invalidation or [] %}
+      <li>Invalidation: {{ line }}</li>
+      {% endfor %}
+      {% if not (brief.watch_next or brief.thesis_invalidation) %}
+      <li>No additional watch items were saved.</li>
+      {% endif %}
+    </ul>
+  </article>
+</section>
+
+<section class="card">
+  <h2>Agent Summaries</h2>
+  <ul class="summary-list summary-list--tight">
+    <li><strong>Commander</strong>: {{ brief.raw_brief.commander_summary or "-" }}</li>
+    <li><strong>Strategist</strong>: {{ brief.raw_brief.strategist_summary or "-" }}</li>
+    <li><strong>Scanner</strong>: {{ brief.raw_brief.scanner_summary or "-" }}</li>
+    <li><strong>Monitor</strong>: {{ brief.raw_brief.monitor_summary or "-" }}</li>
+    <li><strong>Supervisor</strong>: {{ brief.raw_brief.supervisor_summary or "-" }}</li>
+    <li><strong>Executor</strong>: {{ brief.raw_brief.executor_summary or "-" }}</li>
+    <li><strong>Reporter</strong>: {{ brief.raw_brief.reporter_summary or "-" }}</li>
+  </ul>
+  {% if brief.operator_takeaways %}
+  <h3>Operator Takeaways</h3>
+  <ul class="summary-list summary-list--tight">
+    {% for line in brief.operator_takeaways %}
+    <li>{{ line }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section class="card card--muted">
+  <details class="details-block">
+    <summary>Saved brief JSON (evidence)</summary>
+    <pre class="code tall">{{ brief.raw_brief | tojson(indent=2) }}</pre>
+  </details>
+</section>
+{% endblock %}

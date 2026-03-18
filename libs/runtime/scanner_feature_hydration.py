@@ -184,6 +184,7 @@ def hydrate_scanner_feature_map(
     candidates: List[Any],
     skill_quotes: Dict[str, Dict[str, Any]],
     policy: Dict[str, Any],
+    refresh_existing: bool = False,
 ) -> Tuple[Dict[str, Dict[str, Any]], str, List[str]]:
     feature_errors: List[str] = []
     candidate_symbols = []
@@ -198,7 +199,7 @@ def hydrate_scanner_feature_map(
         return {}, "none", feature_errors
 
     direct = state.get("scanner_features")
-    if isinstance(direct, dict):
+    if isinstance(direct, dict) and not refresh_existing:
         out = {}
         for symbol in candidate_symbols:
             value = direct.get(symbol)
@@ -217,7 +218,7 @@ def hydrate_scanner_feature_map(
             out_existing[symbol] = dict(value)
         else:
             missing_symbols.append(symbol)
-    if not missing_symbols and out_existing:
+    if not missing_symbols and out_existing and not refresh_existing:
         return out_existing, "state.feature_engine.by_symbol", feature_errors
 
     ohlcv_root = state.get("ohlcv_by_symbol") if isinstance(state.get("ohlcv_by_symbol"), dict) else {}

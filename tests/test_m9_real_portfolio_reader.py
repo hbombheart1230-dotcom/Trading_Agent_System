@@ -105,3 +105,29 @@ def test_kiwoom_portfolio_reader_drops_invalid_live_like_symbols():
     snap = r.get_portfolio_snapshot()
     assert snap.cash == 1000000.0
     assert [row.symbol for row in snap.positions] == ["005930"]
+
+
+def test_kiwoom_portfolio_reader_extracts_current_price_when_available():
+    class StubAccountCurrentPrice:
+        def get_account_balance(self, *, dry_run: bool = False):  # type: ignore
+            class R:
+                status_code = 200
+                ok = True
+                payload = {
+                    "cash": "10000000",
+                    "positions": [
+                        {
+                            "symbol": "005930",
+                            "qty": "10",
+                            "avg_price": "70000",
+                            "unrealized_pnl": "+12000",
+                            "prpr": "71200",
+                        },
+                    ],
+                }
+                raw_text = ""
+            return R()
+
+    r = KiwoomPortfolioReader(account=StubAccountCurrentPrice())  # type: ignore
+    snap = r.get_portfolio_snapshot()
+    assert snap.positions[0].current_price == 71200.0

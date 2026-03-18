@@ -69,6 +69,9 @@
             {% if row.report_available and row.report_link %}
             <a class="link-action" href="{{ row.report_link }}">Open report</a>
             {% endif %}
+            {% if row.operator_brief_available and row.operator_brief_link %}
+            <a class="link-action" href="{{ row.operator_brief_link }}">Open brief</a>
+            {% endif %}
           </div>
           {% if row.trade_id %}
           <p class="subtle-meta">Trade ID: {{ row.trade_id }}</p>
@@ -94,7 +97,14 @@
           {% endif %}
         </td>
         <td>{{ row.feature_coverage_quality }} ({{ "%.0f"|format(row.feature_coverage_ratio * 100) }}%)</td>
-        <td>{{ row.monitor_reason or row.exit_reason or "-" }}</td>
+        <td>
+          <div>{{ row.monitor_reason or row.exit_reason or "-" }}</div>
+          <div class="subtle-meta">axis: {{ row.active_exit_axis or "-" }}</div>
+          <div class="subtle-meta">stop: {{ row.effective_stop or "-" }}</div>
+          {% if row.peak_drawdown and row.peak_drawdown != "-" %}
+          <div class="subtle-meta">drawdown: {{ row.peak_drawdown }}</div>
+          {% endif %}
+        </td>
         <td>{{ row.guard_reason or "-" }}</td>
         <td>{{ row.execution_action or "-" }} {{ row.execution_status or "" }}</td>
       </tr>

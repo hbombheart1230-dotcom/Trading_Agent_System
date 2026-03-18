@@ -291,6 +291,118 @@ def _start_background_command(
     return out
 
 
+def _query_live_loop_processes(root: Path, lock_path: Path) -> List[Dict[str, Any]]:
+    root_text = str(root.resolve())
+    lock_text = str(lock_path.resolve())
+    command = (
+        f"$root = {json.dumps(root_text)}; "
+        f"$lock = {json.dumps(lock_text)}; "
+        "$rows = Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+        "Where-Object { "
+        "$cmd = [string]$_.CommandLine; "
+        "((($cmd -like '*scripts/run_m13_live_loop.py*') -or ($cmd -like '*-m scripts.run_m13_live_loop*')) "
+        "-and (($cmd -like ('*' + $lock + '*')) -or ($cmd -like ('*' + $root + '*')))) "
+        "} | Select-Object ProcessId,CommandLine; "
+        "if ($rows) { $rows | ConvertTo-Json -Compress }"
+    )
+    try:
+        cp = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return []
+    if int(cp.returncode) != 0:
+        return []
+    raw = str(cp.stdout or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    out: List[Dict[str, Any]] = []
+    for row in parsed if isinstance(parsed, list) else []:
+        if not isinstance(row, dict):
+            continue
+        out.append(
+            {
+                "pid": _to_int(row.get("ProcessId"), 0),
+                "command_line": str(row.get("CommandLine") or ""),
+            }
+        )
+    return [row for row in out if int(row.get("pid") or 0) > 0]
+
+
+def _existing_live_loop_step(common: Dict[str, Any]) -> Dict[str, Any]:
+    rows = _query_live_loop_processes(Path(common["root"]), Path(common["lock_path"]))
+    if not rows:
+        return {}
+    first = rows[0]
+    return {
+        "step_id": "session.live_loop_existing",
+        "mode": "existing",
+        "rc": 0,
+        "ok": True,
+        "pid": int(first.get("pid") or 0),
+        "command_line": str(first.get("command_line") or ""),
+        "duration_sec": 0.0,
+    }
+
+
+def _stop_live_loop_processes(common: Dict[str, Any]) -> Dict[str, Any]:
+    t0 = time.time()
+    rows = _query_live_loop_processes(Path(common["root"]), Path(common["lock_path"]))
+    out: Dict[str, Any] = {
+        "step_id": "closeout.stop_session_loop",
+        "mode": "process_cleanup",
+        "ok": True,
+        "rc": 0,
+        "stopped_pids": [],
+        "stderr_tail": "",
+        "error": "",
+        "duration_sec": 0.0,
+    }
+    stderr_chunks: List[str] = []
+    for row in rows:
+        pid = int(row.get("pid") or 0)
+        if pid <= 0:
+            continue
+        try:
+            cp = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                cwd=str(common["root"]),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if int(cp.returncode) == 0:
+                out["stopped_pids"].append(pid)
+            else:
+                out["ok"] = False
+                out["rc"] = int(cp.returncode)
+                stderr_chunks.append(_tail((cp.stdout or "") + "\n" + (cp.stderr or "")))
+        except Exception as ex:
+            out["ok"] = False
+            out["rc"] = 1
+            stderr_chunks.append(f"{type(ex).__name__}: {ex}")
+    try:
+        Path(common["lock_path"]).unlink(missing_ok=True)
+    except Exception:
+        pass
+    out["stopped_total"] = len(out["stopped_pids"])
+    out["stderr_tail"] = "\n".join(chunk for chunk in stderr_chunks if chunk).strip()
+    if not out["ok"] and not out["error"]:
+        out["error"] = "session_loop_stop_failed"
+    out["duration_sec"] = round(max(0.0, float(time.time() - t0)), 3)
+    return out
+
+
 def _runtime_mode_checks(env_obj: Dict[str, str]) -> Dict[str, Any]:
     runtime_profile = str(env_obj.get("RUNTIME_PROFILE", "")).strip().lower()
     kiwoom_mode = str(env_obj.get("KIWOOM_MODE", "")).strip().lower()
@@ -536,10 +648,21 @@ def _run_session(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
             out["failure_reason"] = "offhours_probe_failed"
         return out
 
+    existing_step = _existing_live_loop_step(common)
+    if existing_step:
+        out["steps"].append(existing_step)
+        out["ok"] = True
+        out["reuse_existing"] = True
+        return out
+
     cmd = [
         str(common["python_path"]),
         "-m",
         "scripts.run_m13_live_loop",
+        "--env-path",
+        str(common["env_path"]),
+        "--tick-pipeline",
+        "integrated_chain",
         "--sleep-sec",
         str(int(args.sleep_sec)),
         "--lock-path",
@@ -573,6 +696,13 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
     report_root = Path(common["report_root"])
     timeout_sec = int(common["timeout_sec"])
     steps: List[Dict[str, Any]] = []
+
+    stop_step = _stop_live_loop_processes(common)
+    steps.append(stop_step)
+    if not bool(stop_step.get("ok")):
+        out["steps"] = steps
+        out["failure_reason"] = "stop_session_loop_failed"
+        return out
 
     steps.append(
         _run_subprocess(
@@ -847,6 +977,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     orchestration_dir.mkdir(parents=True, exist_ok=True)
 
     common: Dict[str, Any] = {
+        "root": ROOT,
         "day": day,
         "env_path": _resolve_path(str(args.env_path), ".env"),
         "report_root": report_root,

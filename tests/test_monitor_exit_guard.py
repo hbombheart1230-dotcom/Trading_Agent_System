@@ -238,6 +238,291 @@ def test_monitor_uses_position_mark_price_when_quote_unavailable(monkeypatch):
     assert intents[0]["symbol"] == "AAA"
     assert str((out.get("monitor_exit") or {}).get("reason") or "") == "stop_loss"
     assert (out.get("monitor_exit") or {}).get("exit_symbol_fallback") is True
+    assert (out.get("monitor_exit") or {}).get("price_source") == "position.avg_plus_unrealized"
+
+
+def test_monitor_prefers_position_current_price_over_derived_mark(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [
+                {
+                    "symbol": "AAA",
+                    "qty": 3,
+                    "avg_price": 100.0,
+                    "current_price": 96.0,
+                    "unrealized_pnl": -15.0,
+                    "hold_sec": 900,
+                }
+            ],
+        },
+        "market_snapshot": {"symbol": "BBB", "price": 120.0},
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.03},
+    }
+    out = monitor_node(state)
+
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("price_source") == "position.current_price"
+    assert float(exit_info.get("price") or 0.0) == 96.0
+    assert "position.current_price" in str(exit_info.get("price_source_policy") or "")
+
+
+def test_monitor_prefers_position_current_price_over_selected_same_symbol_price(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "AAA",
+            "price": 101.0,
+            "features": {"skill_quote_price": 101.0},
+        },
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [
+                {
+                    "symbol": "AAA",
+                    "qty": 3,
+                    "avg_price": 100.0,
+                    "current_price": 96.0,
+                    "unrealized_pnl": -15.0,
+                    "hold_sec": 900,
+                }
+            ],
+        },
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.03},
+    }
+
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("price_source") == "position.current_price"
+    assert float(exit_info.get("price") or 0.0) == 96.0
+
+
+def test_monitor_prefers_position_current_price_over_market_snapshot_when_quote_missing(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [
+                {
+                    "symbol": "AAA",
+                    "qty": 3,
+                    "avg_price": 100.0,
+                    "current_price": 96.0,
+                    "unrealized_pnl": -15.0,
+                    "hold_sec": 900,
+                }
+            ],
+        },
+        "market_snapshot": {"symbol": "AAA", "price": 95.0},
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.03},
+    }
+
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("price_source") == "position.current_price"
+    assert float(exit_info.get("price") or 0.0) == 96.0
+
+
+def test_monitor_uses_feature_engine_snapshot_for_held_symbol_fallback(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 3, "avg_price": 100.0, "hold_sec": 900}],
+        },
+        "market_snapshot": {"symbol": "AAA", "price": 95.0},
+        "feature_engine": {
+            "by_symbol": {
+                "AAA": {
+                    "atr14": 2.5,
+                    "volatility20": 0.03,
+                    "vwap_distance": -0.01,
+                    "signal_score": -0.4,
+                    "regime": "trend",
+                }
+            }
+        },
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.03},
+    }
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("triggered") is True
+    assert exit_info.get("symbol") == "AAA"
+    assert exit_info.get("feature_source") == "feature_engine.by_symbol"
+    assert exit_info.get("price_source") == "market_snapshot"
+
+
+def test_monitor_uses_ohlcv_derived_features_for_held_symbol_fallback(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    candles = []
+    px = 100.0
+    for _ in range(40):
+        candles.append(
+            {
+                "open": px,
+                "high": px + 1.0,
+                "low": px - 1.0,
+                "close": px,
+                "volume": 100000,
+            }
+        )
+        px += 0.2
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 3, "avg_price": 100.0, "hold_sec": 900}],
+        },
+        "skill_results": {
+            "market.quote": {
+                "data": {
+                    "AAA": {
+                        "symbol": "AAA",
+                        "price": 95.0,
+                        "change_pct": -5.0,
+                        "volume": 123456,
+                        "value": 123456789.0,
+                    }
+                }
+            }
+        },
+        "ohlcv_by_symbol": {"AAA": candles},
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.03},
+    }
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("triggered") is True
+    assert exit_info.get("symbol") == "AAA"
+    assert exit_info.get("feature_source") == "ohlcv_by_symbol"
+    assert exit_info.get("price_source") == "market.quote.price"
+
+
+def test_monitor_does_not_use_other_symbol_selected_price_for_held_position(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 120.0,
+            "features": {"skill_quote_price": 120.0, "engine_vwap_distance": 0.02},
+        },
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 3, "avg_price": 100.0, "hold_sec": 900}],
+        },
+        "skill_results": {
+            "market.quote": {
+                "data": {
+                    "AAA": {
+                        "symbol": "AAA",
+                        "price": 95.0,
+                        "change_pct": -5.0,
+                        "volume": 123456,
+                        "value": 123456789.0,
+                    }
+                }
+            }
+        },
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.03},
+    }
+
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("symbol") == "AAA"
+    assert exit_info.get("price_source") == "market.quote.price"
+    assert float(exit_info.get("price") or 0.0) == 95.0
+
+
+def test_monitor_prefers_quote_price_over_stale_selected_feature_quote(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "AAA",
+            "price": 101.0,
+            "features": {
+                "skill_quote_price": 101.0,
+                "engine_vwap_distance": 0.02,
+            },
+        },
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 3, "avg_price": 100.0, "hold_sec": 900}],
+        },
+        "skill_results": {
+            "market.quote": {
+                "data": {
+                    "AAA": {
+                        "symbol": "AAA",
+                        "price": 95.0,
+                        "change_pct": -5.0,
+                        "volume": 123456,
+                        "value": 123456789.0,
+                    }
+                }
+            }
+        },
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.03},
+    }
+
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("price_source") == "market.quote.price"
+    assert float(exit_info.get("price") or 0.0) == 95.0
+
+
+def test_monitor_backfills_peak_price_from_open_position_when_missing(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "AAA"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "AAA", "qty": 3, "avg_price": 100.0, "hold_sec": 900}],
+        },
+        "persisted_state": {},
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.20, "take_profit_pct": 0.20},
+    }
+
+    out = monitor_node(state)
+    peak_map = ((out.get("persisted_state") or {}).get("position_peak_price") or {})
+    assert float(peak_map.get("AAA") or 0.0) == 100.0
+    exit_info = out.get("monitor_exit") or {}
+    assert float(exit_info.get("peak_price") or 0.0) == 100.0
 
 
 def test_monitor_selects_held_symbol_with_triggered_exit_among_multiple_positions(monkeypatch):
@@ -527,6 +812,239 @@ def test_monitor_applies_strategist_exit_policy_over_env(monkeypatch):
     assert float(effective.get("trailing_stop_pct") or 0.0) >= 0.020
     adjustments = exit_info.get("exit_policy_guard_adjustments") or []
     assert "strategist_exit_policy_override" in adjustments
+
+
+def test_monitor_uses_strategy_policy_monitor_contract(monkeypatch):
+    monkeypatch.setenv("EXIT_POLICY_STOP_LOSS_PCT", "0.01")
+    monkeypatch.setenv("EXIT_POLICY_TAKE_PROFIT_PCT", "0.01")
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "1200")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "600")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "3")
+
+    state = _base_state()
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "hold_sec": 200}],
+    }
+    state["selected"]["price"] = 68000.0
+    state["strategist_output"] = {
+        "strategy_policy": {
+            "market_policy": {
+                "playbook": "breakout",
+                "monitor_guidance": "quick_take_profit",
+                "risk_tone": "aggressive",
+                "trade_aggressiveness": "high",
+            },
+            "monitor_policy": {
+                "position_guards": {
+                    "min_hold_seconds": 0,
+                    "sell_cooldown_seconds": 30,
+                    "exit_confirm_ticks": 1,
+                },
+                "adaptive_exit": {
+                    "stop_loss_pct": 0.025,
+                    "take_profit_pct": 0.060,
+                    "trailing_stop_pct": 0.020,
+                },
+                "hard_risk_rails": {
+                    "hard_stop_pct": 0.01,
+                    "max_stop_pct_cap": 0.03,
+                },
+            },
+        }
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    exit_info = out.get("monitor_exit") or {}
+    effective = exit_info.get("effective_exit_policy") or {}
+    thresholds = exit_info.get("thresholds") or {}
+    assert float(effective.get("stop_loss_pct") or 0.0) >= 0.02
+    assert float(effective.get("stop_loss_pct") or 0.0) <= 0.03
+    assert float(effective.get("hard_stop_pct") or 0.0) == 0.01
+    assert int(exit_info.get("exit_confirm_ticks") or 0) == 1
+    assert str(exit_info.get("monitor_guidance") or "") == "quick_take_profit"
+    assert float(thresholds.get("effective_stop_loss_pct") or 0.0) == 0.01
+    assert str(thresholds.get("effective_stop_reason") or "") == "hard_stop"
+    adjustments = exit_info.get("exit_policy_guard_adjustments") or []
+    assert "strategist_exit_policy_override" in adjustments
+
+
+def test_monitor_hard_stop_triggers_before_wider_adaptive_stop(monkeypatch):
+    monkeypatch.setenv("EXIT_POLICY_STOP_LOSS_PCT", "0.08")
+    monkeypatch.setenv("EXIT_POLICY_TAKE_PROFIT_PCT", "0.02")
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = _base_state()
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0, "hold_sec": 900}],
+    }
+    state["selected"]["price"] = 69160.0
+    state["strategist_output"] = {
+        "strategy_policy": {
+            "market_policy": {
+                "playbook": "pullback",
+                "monitor_guidance": "hold_through_noise",
+                "risk_tone": "normal",
+                "trade_aggressiveness": "medium",
+            },
+            "monitor_policy": {
+                "adaptive_exit": {
+                    "stop_loss_pct": 0.08,
+                    "take_profit_pct": 0.03,
+                    "trailing_stop_pct": 0.02,
+                },
+                "hard_risk_rails": {
+                    "hard_stop_pct": 0.01,
+                    "max_stop_pct_cap": 0.08,
+                },
+            },
+        }
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    assert str(intents[0]["meta"].get("exit_reason") or "") == "hard_stop"
+    exit_info = out.get("monitor_exit") or {}
+    effective = exit_info.get("effective_exit_policy") or {}
+    thresholds = exit_info.get("thresholds") or {}
+    assert str(exit_info.get("reason") or "") == "hard_stop"
+    assert float(effective.get("stop_loss_pct") or 0.0) >= 0.08
+    assert float(effective.get("hard_stop_pct") or 0.0) == 0.01
+    assert float(thresholds.get("effective_stop_loss_pct") or 0.0) == 0.01
+
+
+def test_monitor_peak_drawdown_exit_uses_persisted_peak(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = _base_state()
+    state["selected"]["price"] = 104.0
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 900}],
+    }
+    state["persisted_state"] = {
+        "position_peak_price": {"005930": 110.0},
+    }
+    state["policy"] = {
+        "use_exit_policy": True,
+        "peak_drawdown_exit_pct": 0.05,
+        "take_profit_pct": 0.0,
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    exit_info = out.get("monitor_exit") or {}
+    assert str(exit_info.get("reason") or "") == "peak_drawdown"
+    assert float(exit_info.get("peak_drawdown") or 0.0) <= -0.05
+
+
+def test_monitor_vwap_breakdown_exit_uses_feature_signal(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = _base_state()
+    state["selected"] = {
+        "symbol": "005930",
+        "price": 101.0,
+        "features": {"engine_vwap_distance": -0.01},
+    }
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 900}],
+    }
+    state["persisted_state"] = {
+        "position_peak_price": {"005930": 102.0},
+    }
+    state["policy"] = {
+        "use_exit_policy": True,
+        "vwap_breakdown_pct": 0.005,
+        "take_profit_pct": 0.0,
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    exit_info = out.get("monitor_exit") or {}
+    assert str(exit_info.get("reason") or "") == "vwap_breakdown"
+    assert float(exit_info.get("vwap_distance") or 0.0) == -0.01
+
+
+def test_monitor_intraday_low_break_exit_uses_ohlcv_structure(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    candles = [
+        {"open": 100.0, "high": 100.5, "low": 99.8, "close": 100.2, "volume": 100000},
+        {"open": 100.2, "high": 100.4, "low": 99.5, "close": 99.7, "volume": 120000},
+        {"open": 99.7, "high": 99.9, "low": 98.7, "close": 98.8, "volume": 130000},
+    ]
+    state = _base_state()
+    state["selected"] = {"symbol": "005930", "price": 98.8}
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 900}],
+    }
+    state["ohlcv_by_symbol"] = {"005930": candles}
+    state["policy"] = {
+        "use_exit_policy": True,
+        "intraday_low_break_pct": 0.001,
+        "take_profit_pct": 0.0,
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    exit_info = out.get("monitor_exit") or {}
+    assert str(exit_info.get("reason") or "") == "intraday_low_break"
+
+
+def test_monitor_trend_breakdown_exit_uses_feature_signal(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = _base_state()
+    state["selected"] = {
+        "symbol": "005930",
+        "price": 100.5,
+        "features": {
+            "engine_trend_strength": -0.25,
+            "engine_vwap_distance": -0.01,
+        },
+    }
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 900}],
+    }
+    state["policy"] = {
+        "use_exit_policy": True,
+        "trend_strength_floor": -0.10,
+        "take_profit_pct": 0.0,
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    exit_info = out.get("monitor_exit") or {}
+    assert str(exit_info.get("reason") or "") == "trend_breakdown"
+    assert float(exit_info.get("vwap_distance") or 0.0) == -0.01
 
 
 def test_monitor_extract_frame_reads_strategist_output():

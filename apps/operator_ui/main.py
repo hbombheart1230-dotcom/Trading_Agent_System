@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 from .data_access import (
     OperatorUIConfig,
     load_health,
+    load_operator_brief_detail,
     load_overview,
     load_recent_runs,
     load_run_detail,
@@ -90,6 +91,21 @@ def create_app(config: Optional[OperatorUIConfig] = None) -> FastAPI:
                 "page_title": f"Trade Report {story_id}",
                 "section": "runs",
                 "report": report,
+            },
+        )
+
+    @app.get("/reports/trade/{story_id}/brief", response_class=HTMLResponse)
+    def operator_brief_detail(request: Request, story_id: str) -> HTMLResponse:
+        brief = load_operator_brief_detail(cfg, story_id)
+        if not brief.get("found"):
+            raise HTTPException(status_code=404, detail=f"operator brief not found: {story_id}")
+        return templates.TemplateResponse(
+            name="operator_brief_detail.html",
+            request=request,
+            context={
+                "page_title": f"Operator Brief {story_id}",
+                "section": "runs",
+                "brief": brief,
             },
         )
 

@@ -30,6 +30,29 @@ def _first_universe_symbol() -> str:
     return ""
 
 
+def _resolve_env_path(argv: Optional[list[str]]) -> Path:
+    args = list(argv or [])
+    raw = ""
+    for idx, token in enumerate(args):
+        cur = str(token or "").strip()
+        if not cur:
+            continue
+        if cur.startswith("--env-path="):
+            raw = cur.split("=", 1)[1].strip()
+            break
+        if cur == "--env-path" and idx + 1 < len(args):
+            raw = str(args[idx + 1] or "").strip()
+            break
+    if not raw:
+        raw = str(os.getenv("ENV_PATH", "") or "").strip()
+    if not raw:
+        raw = str(ROOT / ".env")
+    path = Path(raw)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
+
+
 def _normalize_tick_pipeline(v: Any) -> str:
     raw = str(v or "").strip().lower()
     if raw in ("integrated_chain", "integrated", "chain"):
@@ -158,8 +181,10 @@ def _resolve_path_from_root(raw: str, default_rel: str) -> Path:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    load_env_file(str(ROOT / ".env"))
+    env_path = _resolve_env_path(argv)
+    load_env_file(str(env_path))
     p = ArgumentParser(description="Run M13 live loop (mock-safe).")
+    p.add_argument("--env-path", default=str(env_path), help="Env file path loaded before parsing defaults.")
     p.add_argument(
         "--symbol",
         default=os.getenv("SYMBOL", "").strip() or _first_universe_symbol(),

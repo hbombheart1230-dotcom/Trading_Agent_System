@@ -32,6 +32,22 @@ def _listify(values: Any, *, max_items: int = 6, max_len: int = 240) -> List[str
     return out
 
 
+def _fmt_pct(value: Any) -> str:
+    try:
+        number = float(value)
+    except Exception:
+        return "-"
+    return f"{number * 100.0:.2f}%"
+
+
+def _fmt_price(value: Any) -> str:
+    try:
+        number = float(value)
+    except Exception:
+        return "-"
+    return f"{number:.2f}"
+
+
 def _strip_fenced_block(text: str) -> str:
     raw = str(text or "").strip()
     if not raw.startswith("```"):
@@ -113,6 +129,27 @@ def _fallback_report(
     operator_conclusion = (
         story_input.get("operator_conclusion_human") if isinstance(story_input.get("operator_conclusion_human"), dict) else {}
     )
+    monitor_snapshot = {
+        "posture": _clip(monitor_reason.get("posture"), max_len=40) or action or "WAIT",
+        "trigger_type": _clip(monitor_reason.get("trigger_type"), max_len=80) or "not_captured",
+        "position_age_seconds": int(monitor_reason.get("position_age_seconds") or 0),
+        "stop_loss_pct": monitor_reason.get("stop_loss_pct"),
+        "effective_stop_loss_pct": monitor_reason.get("effective_stop_loss_pct"),
+        "effective_stop_reason": _clip(monitor_reason.get("effective_stop_reason"), max_len=80) or "not_captured",
+        "take_profit_pct": monitor_reason.get("take_profit_pct"),
+        "exit_triggered": bool(monitor_reason.get("exit_triggered")),
+        "current_price": monitor_reason.get("current_price"),
+        "average_price": monitor_reason.get("average_price"),
+        "peak_price": monitor_reason.get("peak_price"),
+        "current_drawdown": monitor_reason.get("current_drawdown"),
+        "peak_drawdown": monitor_reason.get("peak_drawdown"),
+        "vwap_distance": monitor_reason.get("vwap_distance"),
+        "active_exit_axis": _clip(monitor_reason.get("active_exit_axis"), max_len=80),
+        "watch_axes": _listify(monitor_reason.get("watch_axes"), max_items=8, max_len=120),
+        "price_source": _clip(monitor_reason.get("price_source"), max_len=120) or "not_captured",
+        "feature_source": _clip(monitor_reason.get("feature_source"), max_len=120) or "not_captured",
+        "price_source_policy": _clip(monitor_reason.get("price_source_policy"), max_len=260) or "",
+    }
     entry_summary = story_input.get("entry_summary") if isinstance(story_input.get("entry_summary"), dict) else {}
     holding_summary = story_input.get("holding_summary") if isinstance(story_input.get("holding_summary"), dict) else {}
     exit_summary = story_input.get("exit_summary") if isinstance(story_input.get("exit_summary"), dict) else {}
@@ -227,6 +264,7 @@ def _fallback_report(
         "holding_monitoring_story": holding_story,
         "exit_decision": exit_decision,
         "execution_quality": execution_quality,
+        "monitor_snapshot": monitor_snapshot,
         "scanner_filters": {
             "summary": _clip(filters_human.get("summary"), max_len=600),
             "bullets": _listify(filters_human.get("bullets"), max_items=12, max_len=260),
@@ -525,6 +563,7 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         else {}
     )
     final_conclusion = report.get("final_operator_conclusion") if isinstance(report.get("final_operator_conclusion"), dict) else {}
+    monitor_snapshot = report.get("monitor_snapshot") if isinstance(report.get("monitor_snapshot"), dict) else {}
 
     lines: List[str] = []
     lines.append(f"# Trade Report ({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})")
@@ -539,6 +578,36 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         f"model=`{generation.get('model') or '-'}`"
     )
     lines.append("")
+    if monitor_snapshot:
+        lines.append("## Monitor Snapshot")
+        lines.append("")
+        lines.append(f"- posture: **{monitor_snapshot.get('posture') or '-'}**")
+        lines.append(f"- trigger_type: **{monitor_snapshot.get('trigger_type') or '-'}**")
+        lines.append(f"- effective_stop: **{_fmt_pct(monitor_snapshot.get('effective_stop_loss_pct'))}**")
+        lines.append(f"- effective_stop_reason: {monitor_snapshot.get('effective_stop_reason') or '-'}")
+        lines.append(f"- take_profit: {_fmt_pct(monitor_snapshot.get('take_profit_pct'))}")
+        if monitor_snapshot.get("current_price") not in (None, ""):
+            lines.append(f"- current_price: {_fmt_price(monitor_snapshot.get('current_price'))}")
+        if monitor_snapshot.get("average_price") not in (None, ""):
+            lines.append(f"- average_price: {_fmt_price(monitor_snapshot.get('average_price'))}")
+        if monitor_snapshot.get("peak_price") not in (None, ""):
+            lines.append(f"- peak_price: {_fmt_price(monitor_snapshot.get('peak_price'))}")
+        if monitor_snapshot.get("current_drawdown") not in (None, ""):
+            lines.append(f"- current_drawdown: {_fmt_pct(monitor_snapshot.get('current_drawdown'))}")
+        if monitor_snapshot.get("peak_drawdown") not in (None, ""):
+            lines.append(f"- peak_drawdown: {_fmt_pct(monitor_snapshot.get('peak_drawdown'))}")
+        if monitor_snapshot.get("vwap_distance") not in (None, ""):
+            lines.append(f"- vwap_distance: {_fmt_pct(monitor_snapshot.get('vwap_distance'))}")
+        if str(monitor_snapshot.get("active_exit_axis") or "").strip():
+            lines.append(f"- active_exit_axis: {monitor_snapshot.get('active_exit_axis')}")
+        for axis in list(monitor_snapshot.get("watch_axes") or [])[:6]:
+            lines.append(f"- watch_axis: {axis}")
+        lines.append(f"- price_source: {monitor_snapshot.get('price_source') or '-'}")
+        lines.append(f"- feature_source: {monitor_snapshot.get('feature_source') or '-'}")
+        if str(monitor_snapshot.get('price_source_policy') or '').strip():
+            lines.append(f"- price_source_policy: {monitor_snapshot.get('price_source_policy')}")
+        lines.append(f"- exit_triggered: {'yes' if monitor_snapshot.get('exit_triggered') else 'no'}")
+        lines.append("")
 
     def _section(title: str, section: Dict[str, Any], *, bullet_key: str = "bullets") -> None:
         lines.append(f"## {title}")

@@ -462,6 +462,116 @@ def test_m20_2_decide_trade_score_override_converts_noop_to_buy(monkeypatch):
     assert out["decision_trace"]["score_override_applied"] is True
 
 
+def test_m20_2_decide_trade_score_override_prefers_strategy_policy_thresholds(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
+    monkeypatch.setenv("AI_STRATEGIST_SCORE_OVERRIDE", "false")
+    monkeypatch.setenv("AI_STRATEGIST_BUY_THRESHOLD", "0.30")
+    monkeypatch.setenv("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", "0.30")
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {"intent": {"action": "NOOP", "reason": "model_no_signal"}, "rationale": "hold"}
+
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+        "feature_engine": {
+            "by_symbol": {
+                "005930": {
+                    "rsi14": 55.0,
+                    "ma20_gap": 0.015,
+                    "atr14": 650.0,
+                    "volume_spike20": 1.3,
+                    "volatility20": 0.05,
+                    "regime": "high_volatility",
+                    "signal_score": 0.2,
+                }
+            }
+        },
+        "news_sentiment": {"005930": 0.0},
+        "global_sentiment": {"score": 0.0},
+        "strategist_output": {
+            "strategy_policy": {
+                "decision_policy": {
+                    "use_strategy_v1_engine": False,
+                    "allow_score_override": True,
+                    "buy_threshold": 0.05,
+                    "high_vol_abs_threshold": 0.06,
+                }
+            }
+        },
+    }
+    out = decide_trade(state)
+
+    assert out["decision_packet"]["intent"]["action"] == "BUY"
+    assert out["decision_trace"]["score_override_applied"] is True
+    why = out["decision_packet"]["why"]
+    assert float((why.get("policy") or {}).get("buy_threshold") or 0.0) == 0.05
+
+
+def test_m20_2_decide_trade_score_override_does_not_override_strategy_v1_noop(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_SCORE_OVERRIDE", "true")
+    monkeypatch.setenv("AI_STRATEGIST_BUY_THRESHOLD", "0.05")
+    monkeypatch.setenv("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", "0.06")
+
+    from libs.strategies.contracts import StrategyDecision
+    import libs.strategies.v1.registry as registry
+
+    class FakeV1:
+        def decide(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return StrategyDecision(
+                action="NOOP",
+                symbol="005930",
+                rationale="v1-noop",
+            )
+
+    monkeypatch.setattr(registry, "resolve_strategy_v1_name", lambda policy, llm_context: "fake_v1")
+    monkeypatch.setattr(registry, "build_strategy_v1", lambda name, policy: (FakeV1(), "fake_v1"))
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+        "feature_engine": {
+            "by_symbol": {
+                "005930": {
+                    "rsi14": 55.0,
+                    "ma20_gap": 0.015,
+                    "atr14": 650.0,
+                    "volume_spike20": 1.3,
+                    "volatility20": 0.05,
+                    "regime": "high_volatility",
+                    "signal_score": 0.2,
+                }
+            }
+        },
+        "news_sentiment": {"005930": 0.0},
+        "global_sentiment": {"score": 0.0},
+        "strategist_output": {
+            "strategy_policy": {
+                "decision_policy": {
+                    "use_strategy_v1_engine": True,
+                    "allow_score_override": True,
+                    "score_override_scope": "llm_only",
+                    "buy_threshold": 0.05,
+                    "high_vol_abs_threshold": 0.06,
+                    "strategy_v1_name": "fake_v1",
+                }
+            }
+        },
+    }
+
+    out = decide_trade(state)
+
+    assert out["decision_packet"]["intent"]["action"] == "NOOP"
+    assert out["decision_trace"]["score_override_applied"] is False
+    assert out["decision_trace"]["decision_source"] == "strategy_v1"
+
+
 def test_m20_2_decide_trade_eod_force_liquidation_emits_sell(monkeypatch):
     monkeypatch.setenv("USE_EOD_FORCE_LIQUIDATION", "true")
     monkeypatch.setenv("EOD_FORCE_LIQUIDATION_START_HHMM", "1520")

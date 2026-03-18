@@ -108,6 +108,36 @@ def test_scanner_extract_guidance_reads_strategist_output_contract():
     assert out["risk_tone"] == "aggressive"
 
 
+def test_scanner_extract_guidance_prefers_strategy_policy_when_present():
+    state = {
+        "strategist_output": {
+            "themes": ["semiconductor"],
+            "avoid_themes": ["high_gap_speculative"],
+            "playbook": "defensive",
+            "scanner_priority": ["trading_value"],
+            "scanner_source_policy": {"include_change_rate": True},
+            "trade_aggressiveness": "low",
+            "risk_tone": "conservative",
+            "strategy_policy": {
+                "scanner_policy": {
+                    "candidate_sources": {
+                        "include_change_rate": False,
+                        "preferred_sources": ["top_value", "top_volume"],
+                    },
+                    "priority_tilts": ["trend_strength", "volume_surge"],
+                    "score_weights": {"momentum": 0.05, "trend": 0.30},
+                }
+            },
+        }
+    }
+
+    out = _extract_scanner_guidance(state)
+    assert out["scanner_priority"] == ["trend_strength", "volume_surge"]
+    assert out["scanner_source_policy"]["include_change_rate"] is False
+    assert out["scanner_source_policy"]["preferred_sources"] == ["top_value", "top_volume"]
+    assert float((out.get("score_weights") or {}).get("trend") or 0.0) == 0.30
+
+
 def test_scanner_uses_chart_features_when_available():
     state = {
         "candidates": [

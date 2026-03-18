@@ -56,3 +56,49 @@ def test_allow_ok(monkeypatch):
     sup = Supervisor(s)
     res = sup.allow("buy", {"daily_pnl_ratio": -0.001, "open_positions": 0, "per_trade_risk_ratio": 0.001})
     assert res.allow is True
+
+
+def test_strategy_policy_max_position_qty_blocks_entry(monkeypatch):
+    s = make_settings(monkeypatch)
+    sup = Supervisor(s)
+    res = sup.allow(
+        "buy",
+        {
+            "order": {"action": "BUY", "symbol": "005930", "qty": 3},
+            "strategy_policy": {
+                "entry_policy": {
+                    "position_sizing": {
+                        "max_position_qty": 2,
+                        "min_position_qty": 1,
+                        "lot_size": 1,
+                    }
+                }
+            },
+        },
+    )
+    assert res.allow is False
+    assert "max position qty" in res.reason.lower()
+    assert int(res.details["max_position_qty"]) == 2
+
+
+def test_strategy_policy_lot_size_blocks_entry(monkeypatch):
+    s = make_settings(monkeypatch)
+    sup = Supervisor(s)
+    res = sup.allow(
+        "buy",
+        {
+            "order": {"action": "BUY", "symbol": "005930", "qty": 3},
+            "strategy_policy": {
+                "entry_policy": {
+                    "position_sizing": {
+                        "max_position_qty": 10,
+                        "min_position_qty": 1,
+                        "lot_size": 2,
+                    }
+                }
+            },
+        },
+    )
+    assert res.allow is False
+    assert "lot size" in res.reason.lower()
+    assert int(res.details["lot_size"]) == 2

@@ -631,6 +631,77 @@ def _supervisor_allow(supervisor: Any, order: Dict[str, Any], risk: Dict[str, An
             return supervisor.allow(action, ctx)
 
 
+def _extract_strategy_policy(packet: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+    raw = packet.get("strategy_policy")
+    if isinstance(raw, dict) and raw:
+        return dict(raw)
+    strategist_output = state.get("strategist_output")
+    if isinstance(strategist_output, dict):
+        raw = strategist_output.get("strategy_policy")
+        if isinstance(raw, dict) and raw:
+            return dict(raw)
+    raw = state.get("strategy_policy")
+    if isinstance(raw, dict) and raw:
+        return dict(raw)
+    return {}
+
+
+def _summarize_strategy_policy(strategy_policy: Dict[str, Any], packet: Dict[str, Any]) -> Dict[str, Any]:
+    packet_summary = packet.get("strategy_policy_summary")
+    if isinstance(packet_summary, dict) and packet_summary:
+        return dict(packet_summary)
+    if not isinstance(strategy_policy, dict) or not strategy_policy:
+        return {}
+
+    market_policy = strategy_policy.get("market_policy") if isinstance(strategy_policy.get("market_policy"), dict) else {}
+    entry_policy = strategy_policy.get("entry_policy") if isinstance(strategy_policy.get("entry_policy"), dict) else {}
+    position_sizing = entry_policy.get("position_sizing") if isinstance(entry_policy.get("position_sizing"), dict) else {}
+    monitor_policy = strategy_policy.get("monitor_policy") if isinstance(strategy_policy.get("monitor_policy"), dict) else {}
+    hard_risk_rails = monitor_policy.get("hard_risk_rails") if isinstance(monitor_policy.get("hard_risk_rails"), dict) else {}
+    decision_policy = strategy_policy.get("decision_policy") if isinstance(strategy_policy.get("decision_policy"), dict) else {}
+    return {
+        "schema_version": str(strategy_policy.get("schema_version") or "strategy_policy.v1"),
+        "playbook": str(market_policy.get("playbook") or ""),
+        "risk_tone": str(market_policy.get("risk_tone") or ""),
+        "trade_aggressiveness": str(market_policy.get("trade_aggressiveness") or ""),
+        "defensive_mode": bool(market_policy.get("defensive_mode", False)),
+        "max_position_qty": _coerce_int(position_sizing.get("max_position_qty"), 0),
+        "min_position_qty": _coerce_int(position_sizing.get("min_position_qty"), 0),
+        "lot_size": _coerce_int(position_sizing.get("lot_size"), 0),
+        "hard_stop_pct": _coerce_float(hard_risk_rails.get("hard_stop_pct"), 0.0),
+        "max_stop_pct_cap": _coerce_float(hard_risk_rails.get("max_stop_pct_cap"), 0.0),
+        "use_strategy_v1_engine": _is_trueish(decision_policy.get("use_strategy_v1_engine")),
+        "allow_score_override": _is_trueish(decision_policy.get("allow_score_override")),
+    }
+
+
+def _augment_supervisor_risk_context(
+    *,
+    state: Dict[str, Any],
+    packet: Dict[str, Any],
+    order: Dict[str, Any],
+    risk: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    strategy_policy = _extract_strategy_policy(packet, state)
+    strategy_policy_summary = _summarize_strategy_policy(strategy_policy, packet)
+    enriched = dict(risk or {})
+    enriched["order"] = dict(order or {})
+    if strategy_policy:
+        enriched["strategy_policy"] = dict(strategy_policy)
+    if strategy_policy_summary:
+        enriched["strategy_policy_summary"] = dict(strategy_policy_summary)
+
+    qty = _coerce_int(order.get("qty"), 0)
+    price = _resolve_order_price_for_notional(state, order)
+    if qty > 0:
+        enriched["order_qty"] = int(qty)
+    if price > 0:
+        enriched["order_price"] = float(price)
+    if qty > 0 and price > 0:
+        enriched["order_notional"] = float(qty) * float(price)
+    return enriched, strategy_policy_summary
+
+
 def _prepare_request(order: Dict[str, Any], catalog: Any) -> Any:
     """Build a PreparedRequest-like object for executors.
 
@@ -728,6 +799,7 @@ def _normalize_execution(
     allow_result: Any,
     order: Dict[str, Any],
     reason: str = "",
+    strategy_policy_summary: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Normalize to dict shape used by tests and reports."""
     exec_mode = _resolve_execution_mode()
@@ -814,6 +886,9 @@ def _normalize_execution(
         "order": order,
         "payload": payload,
     }
+    if isinstance(strategy_policy_summary, dict) and strategy_policy_summary:
+        verdict["strategy_policy_summary"] = dict(strategy_policy_summary)
+        payload.setdefault("strategy_policy_summary", dict(strategy_policy_summary))
     return verdict
 
 
@@ -823,6 +898,7 @@ def _append_execution_trace_entries(
     order: Dict[str, Any],
     execution: Dict[str, Any],
     allow_result: Any = None,
+    strategy_policy_summary: Optional[Dict[str, Any]] = None,
 ) -> None:
     action = str(order.get("action") or "").strip().upper()
     reason = str(execution.get("reason") or "")
@@ -832,9 +908,13 @@ def _append_execution_trace_entries(
 
     supervisor_allow: Optional[bool] = None
     supervisor_reason = ""
+    supervisor_details: Dict[str, Any] = {}
     if allow_result is not None:
         supervisor_allow = bool(getattr(allow_result, "allowed", getattr(allow_result, "allow", False)))
         supervisor_reason = str(getattr(allow_result, "reason", "") or "")
+        raw_details = getattr(allow_result, "details", {})
+        if isinstance(raw_details, dict):
+            supervisor_details = dict(raw_details)
 
     append_decision_trace(
         state,
@@ -845,8 +925,10 @@ def _append_execution_trace_entries(
             "guard_reason": reason or supervisor_reason,
             "supervisor_allow": supervisor_allow,
             "supervisor_reason": supervisor_reason,
+            "supervisor_details": supervisor_details,
             "action": action,
             "symbol": str(order.get("symbol") or ""),
+            "strategy_policy_summary": dict(strategy_policy_summary or {}),
         },
     )
 
@@ -873,6 +955,7 @@ def _append_execution_trace_entries(
                 "order_id": str(payload.get("order_id") or ""),
             },
             "fill_status_summary": fill_status,
+            "strategy_policy_summary": dict(strategy_policy_summary or {}),
         },
     )
 
@@ -906,6 +989,7 @@ def execute_from_packet(state: dict) -> dict:
     order: Dict[str, Any] = {}
     allow_result: Any = None
     portfolio_details: Dict[str, Any] = {}
+    strategy_policy_summary: Dict[str, Any] = {}
     try:
         packet: Dict[str, Any] = state["decision_packet"]
 
@@ -930,6 +1014,12 @@ def execute_from_packet(state: dict) -> dict:
         else:
             order = _build_order_from_intent(intent)
         order = _apply_mock_broker_order_safety(order)
+        risk_for_supervisor, strategy_policy_summary = _augment_supervisor_risk_context(
+            state=state,
+            packet=packet,
+            order=order,
+            risk=risk,
+        )
 
         action = str(order.get("action") or "").strip().upper()
         if action == "NOOP":
@@ -939,13 +1029,20 @@ def execute_from_packet(state: dict) -> dict:
                 allow_result=None,
                 order=order,
                 reason="noop_intent_skipped",
+                strategy_policy_summary=strategy_policy_summary,
             )
-            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
+            _append_execution_trace_entries(
+                state,
+                order=order,
+                execution=state["execution"],
+                allow_result=None,
+                strategy_policy_summary=strategy_policy_summary,
+            )
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
                 event="verdict",
-                payload={"allowed": False, "reason": "noop_intent_skipped"},
+                payload={"allowed": False, "reason": "noop_intent_skipped", "strategy_policy_summary": strategy_policy_summary},
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -958,9 +1055,12 @@ def execute_from_packet(state: dict) -> dict:
                 allow_result=None,
                 order=order,
                 reason=symbol_format_reason,
+                strategy_policy_summary=strategy_policy_summary,
             )
             state["execution"]["symbol_format_guard"] = symbol_format_details
-            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -978,9 +1078,12 @@ def execute_from_packet(state: dict) -> dict:
                 allow_result=None,
                 order=order,
                 reason=symbol_reason,
+                strategy_policy_summary=strategy_policy_summary,
             )
             state["execution"]["symbol_guard"] = symbol_details
-            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -998,9 +1101,12 @@ def execute_from_packet(state: dict) -> dict:
                 allow_result=None,
                 order=order,
                 reason=limits_reason,
+                strategy_policy_summary=strategy_policy_summary,
             )
             state["execution"]["order_limit_guard"] = limits_details
-            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -1018,9 +1124,12 @@ def execute_from_packet(state: dict) -> dict:
                 allow_result=None,
                 order=order,
                 reason=portfolio_reason,
+                strategy_policy_summary=strategy_policy_summary,
             )
             state["execution"]["portfolio_guard"] = portfolio_details
-            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -1037,9 +1146,12 @@ def execute_from_packet(state: dict) -> dict:
                 allow_result=None,
                 order=order,
                 reason="duplicate_buy_position_exists",
+                strategy_policy_summary=strategy_policy_summary,
             )
             state["execution"]["portfolio_guard"] = portfolio_details
-            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -1057,10 +1169,13 @@ def execute_from_packet(state: dict) -> dict:
                 allow_result=None,
                 order=order,
                 reason=cash_reason,
+                strategy_policy_summary=strategy_policy_summary,
             )
             state["execution"]["cash_guard"] = cash_details
             state["execution"]["portfolio_guard"] = portfolio_details
-            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -1082,10 +1197,13 @@ def execute_from_packet(state: dict) -> dict:
                 allow_result=None,
                 order=order,
                 reason=degrade_reason,
+                strategy_policy_summary=strategy_policy_summary,
             )
             state["execution"]["degrade_policy"] = degrade_details
             state["execution"]["portfolio_guard"] = portfolio_details
-            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=None)
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
             logger.log(
                 run_id=run_id,
                 stage="execute_from_packet",
@@ -1096,7 +1214,7 @@ def execute_from_packet(state: dict) -> dict:
             return state
 
         # Supervisor verdict
-        allow_result = _supervisor_allow(supervisor, order, risk)
+        allow_result = _supervisor_allow(supervisor, order, risk_for_supervisor)
         allowed = bool(getattr(allow_result, "allowed", getattr(allow_result, "allow", False)))
         # Mock mode bypasses supervisor gating for offline-safe test flows.
         # Real mode must honor supervisor verdict.
@@ -1110,9 +1228,19 @@ def execute_from_packet(state: dict) -> dict:
                 allow_result=allow_result,
                 order=order,
                 reason=getattr(allow_result, "reason", "blocked"),
+                strategy_policy_summary=strategy_policy_summary,
             )
             state["execution"]["portfolio_guard"] = portfolio_details
-            _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=allow_result)
+            allow_details = getattr(allow_result, "details", {})
+            if isinstance(allow_details, dict) and allow_details:
+                state["execution"]["supervisor_guard"] = dict(allow_details)
+            _append_execution_trace_entries(
+                state,
+                order=order,
+                execution=state["execution"],
+                allow_result=allow_result,
+                strategy_policy_summary=strategy_policy_summary,
+            )
             logger.log(run_id=run_id, stage="execute_from_packet", event="verdict", payload=state["execution"])
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
@@ -1126,15 +1254,25 @@ def execute_from_packet(state: dict) -> dict:
             execution_result=execution_result,
             allow_result=allow_result,
             order=order,
+            strategy_policy_summary=strategy_policy_summary,
         )
         state["execution"]["portfolio_guard"] = portfolio_details
+        allow_details = getattr(allow_result, "details", {})
+        if isinstance(allow_details, dict) and allow_details:
+            state["execution"]["supervisor_guard"] = dict(allow_details)
 
-        _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=allow_result)
+        _append_execution_trace_entries(
+            state,
+            order=order,
+            execution=state["execution"],
+            allow_result=allow_result,
+            strategy_policy_summary=strategy_policy_summary,
+        )
         logger.log(
             run_id=run_id,
             stage="execute_from_packet",
             event="verdict",
-            payload={"allowed": True, "portfolio_guard": portfolio_details},
+            payload={"allowed": True, "portfolio_guard": portfolio_details, "strategy_policy_summary": strategy_policy_summary},
         )
         logger.log(run_id=run_id, stage="execute_from_packet", event="execution", payload=state["execution"])
         logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
@@ -1142,6 +1280,14 @@ def execute_from_packet(state: dict) -> dict:
 
     except Exception as e:
         state["execution"] = {"allowed": False, "reason": str(e)}
-        _append_execution_trace_entries(state, order=order, execution=state["execution"], allow_result=allow_result)
+        if strategy_policy_summary:
+            state["execution"]["strategy_policy_summary"] = dict(strategy_policy_summary)
+        _append_execution_trace_entries(
+            state,
+            order=order,
+            execution=state["execution"],
+            allow_result=allow_result,
+            strategy_policy_summary=strategy_policy_summary,
+        )
         logger.log(run_id=run_id, stage="execute_from_packet", event="error", payload={"error": str(e)})
         raise

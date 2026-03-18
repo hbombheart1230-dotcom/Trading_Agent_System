@@ -63,9 +63,23 @@ def _fake_trace(event_log_path, evidence_log_path, report_dir, *, run_id=None, d
             "entry_reason": "no_position",
             "exit_reason": "stop_loss" if rid == "run-2" else "no_position",
             "monitor_reason": "confirmed_exit_signal" if rid == "run-2" else "entry_ready",
-            "thresholds": {"stop_loss_pct": 0.08, "take_profit_pct": 0.02},
+            "thresholds": {
+                "stop_loss_pct": 0.08,
+                "effective_stop_loss_pct": 0.03,
+                "effective_stop_reason": "adaptive_stop",
+                "take_profit_pct": 0.02,
+            },
             "position_age_seconds": 120,
             "exit_triggered": rid == "run-2",
+            "price": 70500.0,
+            "avg_price": 70000.0,
+            "peak_price": 71600.0,
+            "peak_drawdown": -0.0154,
+            "current_drawdown": -0.0154,
+            "vwap_distance": -0.006,
+            "price_source": "market.quote.price",
+            "price_source_policy": "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized",
+            "feature_source": "selected.features",
         },
         "supervisor": {"verdict": "approve", "supervisor_allow": True, "supervisor_reason": "risk checks passed"},
         "executor": {"execution_ok": True, "execution_attempted": True, "broker_env": "mock", "effective_mode": "mock_broker_http"},
@@ -108,6 +122,7 @@ def _fake_reporter(event_log_path, report_dir, *, day=None, intents_path=None, r
 def _fake_ai_trade_report_ok(story_input: dict, **kwargs):  # type: ignore[no-untyped-def]
     symbol = str(story_input.get("symbol") or "000000")
     action = str(story_input.get("action") or "HOLD")
+    monitor_reason = story_input.get("monitor_reason_human") if isinstance(story_input.get("monitor_reason_human"), dict) else {}
     return {
         "schema_version": "trade_report.v2",
         "trade_id": str(story_input.get("trade_id") or story_input.get("story_id") or ""),
@@ -123,7 +138,29 @@ def _fake_ai_trade_report_ok(story_input: dict, **kwargs):  # type: ignore[no-un
         "market_context_at_entry": {"summary": "Sentiment context captured.", "bullets": ["sentiment: neutral"]},
         "why_this_symbol_was_chosen": {"summary": "Top rank selected.", "bullets": ["rank #1"]},
         "entry_decision": {"summary": "Entry rationale captured.", "bullets": []},
-        "holding_monitoring_story": {"summary": "Holding path captured.", "bullets": []},
+        "holding_monitoring_story": {
+            "summary": "Holding path captured.",
+            "bullets": list((monitor_reason.get("bullets") or [])),
+        },
+        "monitor_snapshot": {
+            "posture": str(monitor_reason.get("posture") or action),
+            "trigger_type": str(monitor_reason.get("trigger_type") or ""),
+            "current_price": monitor_reason.get("current_price"),
+            "average_price": monitor_reason.get("average_price"),
+            "peak_price": monitor_reason.get("peak_price"),
+            "current_drawdown": monitor_reason.get("current_drawdown"),
+            "peak_drawdown": monitor_reason.get("peak_drawdown"),
+            "vwap_distance": monitor_reason.get("vwap_distance"),
+            "active_exit_axis": str(monitor_reason.get("active_exit_axis") or ""),
+            "watch_axes": list(monitor_reason.get("watch_axes") or []),
+            "price_source": str(monitor_reason.get("price_source") or ""),
+            "price_source_policy": str(monitor_reason.get("price_source_policy") or ""),
+            "feature_source": str(monitor_reason.get("feature_source") or ""),
+            "effective_stop_loss_pct": monitor_reason.get("effective_stop_loss_pct"),
+            "effective_stop_reason": str(monitor_reason.get("effective_stop_reason") or ""),
+            "take_profit_pct": monitor_reason.get("take_profit_pct"),
+            "exit_triggered": bool(monitor_reason.get("exit_triggered")),
+        },
         "exit_decision": {"summary": "Exit rationale captured.", "bullets": []},
         "execution_quality": {"summary": "Execution quality captured.", "bullets": []},
         "scanner_filters": {"summary": "Filters captured.", "bullets": []},
@@ -149,6 +186,34 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
             {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
             {"run_id": "run-3", "ts": f"{day}T00:05:00+00:00", "stage": "scanner", "event": "summary", "payload": {"top_stock": "000660"}},
             {"run_id": "run-3", "ts": f"{day}T00:05:01+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "hold_position", "exit_reason": "hold"}},
+            {
+                "run_id": "run-3",
+                "ts": f"{day}T00:05:02+00:00",
+                "stage": "decision_trace",
+                "event": "entry_exit_decision",
+                "payload": {
+                    "agent": "monitor",
+                    "payload": {
+                        "monitor_reason": "hold_position",
+                        "exit_reason": "hold",
+                        "price_source": "position.current_price",
+                        "price_source_policy": "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized",
+                        "feature_source": "selected.features",
+                        "price": 70500.0,
+                        "avg_price": 70000.0,
+                        "peak_price": 71600.0,
+                        "peak_drawdown": -0.0154,
+                        "current_drawdown": -0.0154,
+                        "vwap_distance": -0.006,
+                        "thresholds": {
+                            "stop_loss_pct": 0.08,
+                            "effective_stop_loss_pct": 0.03,
+                            "effective_stop_reason": "adaptive_stop",
+                            "take_profit_pct": 0.02,
+                        },
+                    },
+                },
+            },
             {"run_id": "run-2", "ts": f"{day}T00:10:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}}},
         ],
     )
@@ -224,10 +289,23 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert story_input["story_type"] == "simulation"
     assert "run-3" in story_input["holding_summary"]["run_ids"]
     assert story_input["entry_summary"]["reason_human"]
+    assert "price source" in " ".join(story_input["monitor_reason_human"]["bullets"]).lower()
+    assert "position.current_price" in " ".join(story_input["monitor_reason_human"]["bullets"]).lower()
+    assert story_input["monitor_reason_human"]["current_price"] == 70500.0
+    assert story_input["monitor_reason_human"]["peak_price"] == 71600.0
+    assert story_input["monitor_reason_human"]["peak_drawdown"] == -0.0154
+    assert story_input["monitor_reason_human"]["active_exit_axis"] == "Hold Position"
+    assert "Hard stop" in story_input["monitor_reason_human"]["watch_axes"]
 
     trade_report = json.loads((canonical_dir / "trade_report.json").read_text(encoding="utf-8"))
     assert (trade_report.get("ai_report_diagnostics") or {}).get("report_status") == "available"
     assert trade_report["status"] == "closed"
+    assert trade_report["monitor_snapshot"]["current_price"] == 70500.0
+    assert trade_report["monitor_snapshot"]["peak_price"] == 71600.0
+    assert trade_report["monitor_snapshot"]["peak_drawdown"] == -0.0154
+    assert "Hard stop" in trade_report["monitor_snapshot"]["watch_axes"]
+    assert trade_report["monitor_snapshot"]["price_source"] == "position.current_price"
+    assert trade_report["monitor_snapshot"]["effective_stop_reason"] == "adaptive_stop"
     assert trade_report["market_context_at_entry"]["summary"]
     assert trade_report["why_this_symbol_was_chosen"]["summary"]
     assert trade_report["entry_decision"]["summary"]
@@ -237,8 +315,15 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert trade_report["reporter_evaluation"]["summary"]
     assert trade_report["full_timeline"]
     assert "sentiment" in trade_report["market_context_at_entry"]["summary"].lower()
+    assert "price source" in " ".join(trade_report["holding_monitoring_story"]["bullets"]).lower()
 
     trade_report_md = (canonical_dir / "trade_report.md").read_text(encoding="utf-8")
+    assert "## Monitor Snapshot" in trade_report_md
+    assert "current_price: 70500.00" in trade_report_md
+    assert "peak_price: 71600.00" in trade_report_md
+    assert "peak_drawdown: -1.54%" in trade_report_md
+    assert "watch_axis: Hard stop" in trade_report_md
+    assert "price_source: position.current_price" in trade_report_md
     assert "## Market Context at Entry" in trade_report_md
     assert "## Why This Symbol Was Chosen" in trade_report_md
     assert "## Entry Decision" in trade_report_md
@@ -293,6 +378,68 @@ def test_live_execution_bundle_report_explains_missing_reporter_linkage(tmp_path
     assert "not linked" in reporter_eval["summary"].lower() or "pending" in reporter_eval["summary"].lower()
 
 
+def test_live_execution_bundle_report_links_hold_run_from_monitor_trace_symbol(tmp_path: Path, capsys, monkeypatch) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-3", "ts": f"{day}T00:05:01+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "hold_position", "exit_reason": "hold"}},
+            {
+                "run_id": "run-3",
+                "ts": f"{day}T00:05:02+00:00",
+                "stage": "decision_trace",
+                "event": "entry_exit_decision",
+                "payload": {
+                    "agent": "monitor",
+                    "payload": {
+                        "selected_symbol": "000660",
+                        "monitor_reason": "hold_position",
+                        "exit_reason": "hold",
+                        "price_source": "position.current_price",
+                    },
+                },
+            },
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--no-trade-report-ai",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    lifecycle = out["bundles"][0]
+    assert lifecycle["status"] == "open"
+    assert "run-3" in lifecycle["hold_run_ids"]
+    trade_dir = reports_root / "trades" / "2026" / "03" / lifecycle["story_id"]
+    story_input = json.loads((trade_dir / "trade_story_input.json").read_text(encoding="utf-8"))
+    assert "run-3" in story_input["holding_summary"]["run_ids"]
+    assert "price source" in " ".join(story_input["monitor_reason_human"]["bullets"]).lower()
+
+
 def test_live_execution_bundle_report_keeps_open_lifecycle_without_exit(tmp_path: Path, capsys, monkeypatch) -> None:
     day = "2026-03-16"
     event_log = tmp_path / "events.jsonl"
@@ -313,6 +460,7 @@ def test_live_execution_bundle_report_keeps_open_lifecycle_without_exit(tmp_path
     monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
     monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
     monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
 
     rc = mod.main(
         [
@@ -334,16 +482,154 @@ def test_live_execution_bundle_report_keeps_open_lifecycle_without_exit(tmp_path
     assert out["trade_lifecycle_count"] == 1
     lifecycle = out["bundles"][0]
     assert lifecycle["status"] == "open"
-    assert lifecycle["report_status"] == "pending"
-    assert lifecycle["report_reason_code"] == "awaiting_exit_for_full_report"
+    assert lifecycle["report_status"] == "available"
+    assert lifecycle["report_reason_code"] == ""
     story_id = lifecycle["story_id"]
     trade_dir = reports_root / "trades" / "2026" / "03" / story_id
     assert (trade_dir / "trade_story_input.json").exists()
-    assert not (trade_dir / "trade_report.json").exists()
+    assert (trade_dir / "trade_report.json").exists()
     bundle = json.loads((trade_dir / "aggregated_execution_bundle.json").read_text(encoding="utf-8"))
     diagnostics = bundle.get("ai_report_diagnostics") or {}
-    assert diagnostics.get("report_status") == "pending"
-    assert diagnostics.get("report_reason_code") == "awaiting_exit_for_full_report"
+    assert diagnostics.get("report_status") == "available"
+    assert diagnostics.get("report_reason_code") == ""
+
+
+def test_live_execution_bundle_report_backfills_open_monitor_snapshot_from_runtime_state(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+    state_path = tmp_path / "state.json"
+
+    def _fake_sparse_trace(event_log_path, evidence_log_path, report_dir, *, run_id=None, day=None, reports_root=None, max_news_titles=5):  # type: ignore[no-untyped-def]
+        report_dir.mkdir(parents=True, exist_ok=True)
+        rid = str(run_id or "run")
+        js_path = report_dir / f"agent_pipeline_trace_{rid}.json"
+        md_path = report_dir / f"agent_pipeline_trace_{rid}.md"
+        out = {
+            "run_id": rid,
+            "day": day,
+            "commander": {"route_ts": f"{day}T00:00:00+00:00"},
+            "strategist": {
+                "playbook": "defensive",
+                "themes": ["semiconductor"],
+                "global_sentiment_score": -0.08,
+                "fear_index": {"level": 24.8},
+                "llm_parsed_output": {"market_regime": "neutral", "market_sentiment": "neutral"},
+            },
+            "scanner": {
+                "top_stock": "000660",
+                "candidate_pool_after_filter": 4,
+                "selected_candidate": {"symbol": "000660", "why": "top_value+sector_theme"},
+            },
+            "monitor": {
+                "selected_symbol": "000660",
+                "entry_reason": "no_position",
+                "exit_reason": "hold",
+                "monitor_reason": "hold_position",
+                "thresholds": {
+                    "stop_loss_pct": 0.08,
+                    "effective_stop_loss_pct": 0.03,
+                    "effective_stop_reason": "adaptive_stop",
+                    "take_profit_pct": 0.02,
+                },
+                "position_age_seconds": 180,
+                "exit_triggered": False,
+            },
+            "supervisor": {"verdict": "approve", "supervisor_allow": True, "supervisor_reason": "risk checks passed"},
+            "executor": {"execution_ok": True, "execution_attempted": True, "broker_env": "mock", "effective_mode": "mock_broker_http"},
+            "reporter": {"reporter_analysis_day_file_found": False, "reporter_analysis_found": False, "reporter_analysis_path": ""},
+        }
+        js_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        md_path.write_text(f"# trace {rid}\n", encoding="utf-8")
+        return md_path, js_path, out
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:05:01+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "hold_position", "exit_reason": "hold"}},
+            {"run_id": "run-2", "ts": f"{day}T00:05:02+00:00", "stage": "decision_trace", "event": "entry_exit_decision", "payload": {"agent": "monitor", "payload": {"selected_symbol": "000660", "monitor_reason": "hold_position", "exit_reason": "hold"}}},
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+    state_path.write_text(
+        json.dumps(
+            {
+                "portfolio_snapshot": {
+                    "positions": [
+                        {
+                            "symbol": "000660",
+                            "qty": 1,
+                            "avg_price": 70000.0,
+                            "current_price": 70500.0,
+                            "unrealized_pnl": 500.0,
+                        }
+                    ]
+                },
+                "mock_positions": [
+                    {
+                        "symbol": "000660",
+                        "qty": 1,
+                        "avg_price": 70000.0,
+                        "unrealized_pnl": 500.0,
+                    }
+                ],
+                "position_peak_price": {"000660": 72000.0},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("STATE_STORE_PATH", str(state_path))
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_sparse_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    lifecycle = out["bundles"][0]
+    assert lifecycle["status"] == "open"
+    trade_dir = reports_root / "trades" / "2026" / "03" / lifecycle["story_id"]
+    story_input = json.loads((trade_dir / "trade_story_input.json").read_text(encoding="utf-8"))
+    trade_report = json.loads((trade_dir / "trade_report.json").read_text(encoding="utf-8"))
+
+    monitor_reason = story_input["monitor_reason_human"]
+    assert monitor_reason["current_price"] == 70500.0
+    assert monitor_reason["average_price"] == 70000.0
+    assert monitor_reason["peak_price"] == 72000.0
+    assert round(float(monitor_reason["current_drawdown"]), 6) == round((70500.0 / 70000.0) - 1.0, 6)
+    assert round(float(monitor_reason["peak_drawdown"]), 6) == round((70500.0 / 72000.0) - 1.0, 6)
+    assert monitor_reason["price_source"] == "runtime_state.position.current_price"
+    assert "runtime_state.position.current_price" in " ".join(monitor_reason["bullets"])
+
+    monitor_snapshot = trade_report["monitor_snapshot"]
+    assert monitor_snapshot["current_price"] == 70500.0
+    assert monitor_snapshot["average_price"] == 70000.0
+    assert monitor_snapshot["peak_price"] == 72000.0
+    assert round(float(monitor_snapshot["peak_drawdown"]), 6) == round((70500.0 / 72000.0) - 1.0, 6)
+    assert monitor_snapshot["price_source"] == "runtime_state.position.current_price"
 
 
 def test_live_execution_bundle_report_marks_skipped_when_report_not_requested(tmp_path: Path, capsys, monkeypatch) -> None:

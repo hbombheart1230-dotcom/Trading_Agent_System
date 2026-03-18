@@ -845,6 +845,8 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
         report_json_path = bundle_path.parent / "trade_report.json"
         report_md_path = bundle_path.parent / "trade_report.md"
         story_input_path = bundle_path.parent / "trade_story_input.json"
+        operator_brief_json_path = bundle_path.parent / "operator_brief.json"
+        operator_brief_md_path = bundle_path.parent / "operator_brief.md"
         report = _read_json(report_json_path)
         executive = report.get("executive_summary") if isinstance(report.get("executive_summary"), dict) else {}
         reporter_eval = report.get("reporter_evaluation") if isinstance(report.get("reporter_evaluation"), dict) else {}
@@ -929,10 +931,14 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
             "report_summary": report_summary or "Per-trade report summary was not generated yet.",
             "reporter_status_human": reporter_summary,
             "report_link": f"/reports/trade/{trade_id}" if report_available and trade_id and report_exists else "",
+            "operator_brief_available": bool(trade_id),
+            "operator_brief_link": f"/reports/trade/{trade_id}/brief" if trade_id else "",
             "trade_report_json_path": str(report_json_path) if report_json_path.exists() else "",
             "trade_report_md_path": str(report_md_path) if report_md_path.exists() else "",
             "trade_story_input_path": str(story_input_path) if story_input_path.exists() else "",
             "trade_lifecycle_json_path": str(lifecycle_path) if lifecycle_path.exists() else "",
+            "operator_brief_json_path": str(operator_brief_json_path) if operator_brief_json_path.exists() else "",
+            "operator_brief_md_path": str(operator_brief_md_path) if operator_brief_md_path.exists() else "",
             "aggregated_bundle_path": str(bundle_path),
             "ts_epoch": ts_epoch,
         }
@@ -1118,6 +1124,11 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
 
 def load_recent_trades_for_day(config: OperatorUIConfig, day: str, *, limit: int = 8) -> List[Dict[str, Any]]:
     rows = list(_iter_jsonl(config.event_log_path))
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        rid = str(row.get("run_id") or "").strip()
+        if rid:
+            grouped.setdefault(rid, []).append(row)
     out: List[Dict[str, Any]] = []
     for row in rows:
         if str(row.get("stage") or "") != "execute_from_packet":
@@ -1133,15 +1144,39 @@ def load_recent_trades_for_day(config: OperatorUIConfig, day: str, *, limit: int
             continue
         if not symbol:
             continue
+        run_id = str(row.get("run_id") or "").strip()
+        run_rows = grouped.get(run_id) or []
+        monitor_summary = next(
+            (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "monitor" and str(r.get("event") or "") == "summary" and isinstance(r.get("payload"), dict)),
+            {},
+        )
+        monitor_trace = next(
+            (
+                (r.get("payload") or {}).get("payload")
+                for r in reversed(run_rows)
+                if str(r.get("stage") or "") == "decision_trace"
+                and str(r.get("event") or "") == "entry_exit_decision"
+                and isinstance(r.get("payload"), dict)
+                and str((r.get("payload") or {}).get("agent") or "") == "monitor"
+            ),
+            {},
+        )
+        monitor_row = _monitor_row_summary(
+            monitor_summary if isinstance(monitor_summary, dict) else {},
+            monitor_trace if isinstance(monitor_trace, dict) else {},
+        )
         out.append(
             {
                 "ts": _iso_to_display(row.get("ts_kst") or row.get("ts")),
-                "run_id": str(row.get("run_id") or ""),
+                "run_id": run_id,
                 "action": action,
                 "symbol": symbol,
                 "qty": _safe_int(execution.get("qty"), 0),
                 "status": str(execution.get("status") or ""),
                 "ord_no": str(execution.get("ord_no") or ""),
+                "active_exit_axis": str(monitor_row.get("active_exit_axis") or "-"),
+                "effective_stop": str(monitor_row.get("effective_stop") or "-"),
+                "peak_drawdown": str(monitor_row.get("peak_drawdown") or "-"),
             }
         )
     out = sorted(out, key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)
@@ -1282,6 +1317,17 @@ def load_symbol_run_chain(config: OperatorUIConfig, day: str, symbol: str, *, li
             (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "monitor" and str(r.get("event") or "") == "summary" and isinstance(r.get("payload"), dict)),
             {},
         )
+        monitor_trace = next(
+            (
+                (r.get("payload") or {}).get("payload")
+                for r in reversed(run_rows)
+                if str(r.get("stage") or "") == "decision_trace"
+                and str(r.get("event") or "") == "entry_exit_decision"
+                and isinstance(r.get("payload"), dict)
+                and str((r.get("payload") or {}).get("agent") or "") == "monitor"
+            ),
+            {},
+        )
         verdict_payload = next(
             (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "execute_from_packet" and str(r.get("event") or "") == "verdict" and isinstance(r.get("payload"), dict)),
             {},
@@ -1374,6 +1420,17 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50, mismatch_only
             (r.get("payload") for r in reversed(run_rows) if str(r.get("stage") or "") == "monitor" and str(r.get("event") or "") == "summary" and isinstance(r.get("payload"), dict)),
             {},
         )
+        monitor_trace = next(
+            (
+                (r.get("payload") or {}).get("payload")
+                for r in reversed(run_rows)
+                if str(r.get("stage") or "") == "decision_trace"
+                and str(r.get("event") or "") == "entry_exit_decision"
+                and isinstance(r.get("payload"), dict)
+                and str((r.get("payload") or {}).get("agent") or "") == "monitor"
+            ),
+            {},
+        )
         strategic_frame = next(
             (
                 (r.get("payload") or {}).get("payload")
@@ -1406,6 +1463,10 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50, mismatch_only
         )
         execution = _normalize_execution_payload(execution_payload if isinstance(execution_payload, dict) else {})
         portfolio_sync = _build_portfolio_sync_card(_extract_portfolio_guard_payload_from_run_rows(run_rows))
+        monitor_row = _monitor_row_summary(
+            monitor_summary if isinstance(monitor_summary, dict) else {},
+            monitor_trace if isinstance(monitor_trace, dict) else {},
+        )
         selected_candidate = candidate_selection.get("selected_candidate") if isinstance(candidate_selection.get("selected_candidate"), dict) else {}
         feature_snapshot = selected_candidate.get("feature_snapshot") if isinstance(selected_candidate.get("feature_snapshot"), dict) else {}
         feature_coverage = _feature_coverage(feature_snapshot)
@@ -1471,6 +1532,10 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50, mismatch_only
                 "scanner_top_score": _safe_float(scanner_summary.get("top_score"), 0.0),
                 "monitor_reason": str(monitor_summary.get("monitor_reason") or ""),
                 "exit_reason": str(monitor_summary.get("exit_reason") or ""),
+                "active_exit_axis": str(monitor_row.get("active_exit_axis") or "-"),
+                "effective_stop": str(monitor_row.get("effective_stop") or "-"),
+                "peak_drawdown": str(monitor_row.get("peak_drawdown") or "-"),
+                "watch_axes": list(monitor_row.get("watch_axes") or []),
                 "supervisor_allowed": verdict_payload.get("allowed"),
                 "guard_reason": str(verdict_payload.get("reason") or ""),
                 "execution_status": str(execution.get("status") or ""),
@@ -1498,6 +1563,8 @@ def load_recent_runs(config: OperatorUIConfig, *, limit: int = 50, mismatch_only
                 "report_summary": str(report_meta.get("report_summary") or "No linked trade report for this run."),
                 "reporter_status_human": str(report_meta.get("reporter_status_human") or ""),
                 "report_link": str(report_meta.get("report_link") or ""),
+                "operator_brief_available": bool(report_meta.get("operator_brief_available")),
+                "operator_brief_link": str(report_meta.get("operator_brief_link") or ""),
                 "portfolio_sync": portfolio_sync,
                 "portfolio_sync_status": str(portfolio_sync.get("status") or "unavailable"),
                 "portfolio_sync_label": str(portfolio_sync.get("status_label") or "Sync status unavailable"),
@@ -1732,6 +1799,71 @@ def load_trade_report_detail(config: OperatorUIConfig, story_id: str) -> Dict[st
     }
 
 
+def load_operator_brief_detail(config: OperatorUIConfig, story_id: str) -> Dict[str, Any]:
+    meta = _trade_report_meta_for_story(config, story_id)
+    if not meta:
+        return {"found": False, "story_id": str(story_id or "")}
+
+    run_id = str(meta.get("run_id") or "").strip()
+    json_path = Path(str(meta.get("operator_brief_json_path") or ""))
+    md_path = Path(str(meta.get("operator_brief_md_path") or ""))
+    brief = _read_json(json_path) if json_path.exists() else {}
+
+    if not isinstance(brief, dict) or not brief:
+        if run_id:
+            detail = load_run_detail(config, run_id)
+            if not detail.get("found"):
+                return {"found": False, "story_id": str(story_id or ""), "trade_id": str(meta.get("trade_id") or "")}
+            trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+            brief = detail.get("operator_brief") if isinstance(detail.get("operator_brief"), dict) else {}
+            json_path = Path(str(trade_report.get("operator_brief_json_path") or ""))
+            md_path = Path(str(trade_report.get("operator_brief_md_path") or ""))
+
+    if not isinstance(brief, dict) or not brief:
+        return {
+            "found": False,
+            "story_id": str(meta.get("story_id") or story_id),
+            "trade_id": str(meta.get("trade_id") or ""),
+            "reason": "operator_brief_not_available",
+        }
+
+    sections = brief.get("sections") if isinstance(brief.get("sections"), dict) else {}
+    executive = sections.get("executive_decision") if isinstance(sections.get("executive_decision"), dict) else {}
+    ai_trade = sections.get("ai_trade_report") if isinstance(sections.get("ai_trade_report"), dict) else {}
+    conclusion = sections.get("operator_conclusion") if isinstance(sections.get("operator_conclusion"), dict) else {}
+
+    return {
+        "found": True,
+        "trade_id": str(meta.get("trade_id") or meta.get("story_id") or story_id),
+        "story_id": str(meta.get("story_id") or story_id),
+        "run_id": run_id,
+        "run_link": f"/runs/{run_id}" if run_id else "",
+        "report_link": str(meta.get("report_link") or ""),
+        "headline": str(brief.get("headline") or ""),
+        "status": str(brief.get("status") or ""),
+        "model": str(brief.get("model") or ""),
+        "saved_at": str(brief.get("saved_at") or ""),
+        "trade_summary": str(meta.get("report_summary") or ""),
+        "lifecycle_status": str(meta.get("lifecycle_status") or ""),
+        "story_type_label": str(meta.get("story_type_label") or ""),
+        "story_type_badge_class": str(meta.get("story_type_badge_class") or "status-badge"),
+        "execution_mode_label": str(meta.get("execution_mode_label") or "-"),
+        "operator_takeaways": _clean_str_list(brief.get("operator_takeaways"), limit=8, max_len=220),
+        "sections": sections,
+        "executive_action": str(executive.get("final_action") or executive.get("action") or meta.get("action") or "-"),
+        "executive_symbol": normalize_symbol(executive.get("symbol") or meta.get("symbol") or "", allow_test_symbols=True),
+        "ai_trade_status_label": str(ai_trade.get("status_label") or meta.get("report_status_label") or "-"),
+        "ai_trade_status_badge_class": str(ai_trade.get("status_badge_class") or meta.get("report_status_badge_class") or "status-badge"),
+        "watch_next": _clean_str_list(conclusion.get("watch_next"), limit=8, max_len=220),
+        "thesis_invalidation": _clean_str_list(conclusion.get("thesis_invalidation"), limit=8, max_len=220),
+        "paths": {
+            "operator_brief_json": str(json_path) if json_path.exists() else "",
+            "operator_brief_md": str(md_path) if md_path.exists() else "",
+        },
+        "raw_brief": brief,
+    }
+
+
 _FEATURE_NAME_MAP: Dict[str, str] = {
     "engine_ma20_gap": "MA20 gap support",
     "engine_ma60": "MA60 trend anchor",
@@ -1787,6 +1919,75 @@ def _friendly_feature_name(key: str) -> str:
     if k in _FEATURE_NAME_MAP:
         return _FEATURE_NAME_MAP[k]
     return k.replace("engine_", "").replace("_", " ")
+
+
+def _friendly_exit_reason(reason: Any) -> str:
+    raw = str(reason or "").strip().lower()
+    normalized = raw.replace(" ", "_")
+    mapping = {
+        "hard_stop": "Hard stop",
+        "stop_loss": "Adaptive stop",
+        "take_profit": "Take profit",
+        "trailing_stop": "Trailing stop",
+        "peak_drawdown": "Peak drawdown",
+        "vwap_breakdown": "VWAP breakdown",
+        "intraday_low_break": "Intraday low break",
+        "trend_breakdown": "Trend breakdown",
+        "volatility_expansion": "Volatility expansion",
+        "news_shock": "News shock",
+        "hold": "No trigger yet",
+        "no_position": "No position",
+        "price_unavailable": "Price unavailable",
+    }
+    return mapping.get(normalized, str(reason or "-").replace("_", " ") if str(reason or "").strip() else "-")
+
+
+def _monitor_watch_axes(thresholds: Dict[str, Any]) -> List[str]:
+    if not isinstance(thresholds, dict):
+        return []
+    out: List[str] = []
+    if _safe_float(thresholds.get("hard_stop_pct"), 0.0) > 0.0:
+        out.append("Hard stop")
+    if _safe_float(thresholds.get("effective_stop_loss_pct"), 0.0) > 0.0:
+        reason = _friendly_exit_reason(thresholds.get("effective_stop_reason") or "stop_loss")
+        out.append(reason)
+    if _safe_float(thresholds.get("take_profit_pct"), 0.0) > 0.0:
+        out.append("Take profit")
+    if _safe_float(thresholds.get("peak_drawdown_exit_pct"), 0.0) > 0.0:
+        out.append("Peak drawdown")
+    if _safe_float(thresholds.get("vwap_breakdown_pct"), 0.0) > 0.0:
+        out.append("VWAP breakdown")
+    if _safe_float(thresholds.get("intraday_low_break_pct"), 0.0) > 0.0:
+        out.append("Intraday low break")
+    if _safe_float(thresholds.get("trend_strength_floor"), 0.0) > 0.0:
+        out.append("Trend breakdown")
+    if _safe_float(thresholds.get("trailing_stop_pct"), 0.0) > 0.0:
+        out.append("Trailing stop")
+    if _safe_float(thresholds.get("vol_expansion_ratio"), 0.0) > 0.0:
+        out.append("Volatility expansion")
+    seen: List[str] = []
+    for item in out:
+        if item not in seen:
+            seen.append(item)
+    return seen[:6]
+
+
+def _monitor_row_summary(monitor_summary: Dict[str, Any], monitor_trace: Dict[str, Any]) -> Dict[str, Any]:
+    summary = monitor_summary if isinstance(monitor_summary, dict) else {}
+    trace = monitor_trace if isinstance(monitor_trace, dict) else {}
+    thresholds = trace.get("thresholds") if isinstance(trace.get("thresholds"), dict) else {}
+    live_monitor_reason = str(summary.get("monitor_reason") or trace.get("monitor_reason") or "").strip()
+    live_exit_reason = str(summary.get("exit_reason") or trace.get("exit_reason") or "").strip()
+    effective_stop_loss = thresholds.get("effective_stop_loss_pct")
+    peak_drawdown_raw = trace.get("peak_drawdown")
+    if peak_drawdown_raw in (None, ""):
+        peak_drawdown_raw = summary.get("peak_drawdown")
+    return {
+        "active_exit_axis": _friendly_exit_reason(live_exit_reason or str(thresholds.get("effective_stop_reason") or "").strip() or live_monitor_reason or "hold"),
+        "effective_stop": _format_percent(effective_stop_loss, 2) if effective_stop_loss not in (None, "") else "-",
+        "peak_drawdown": _format_percent(peak_drawdown_raw, 2) if peak_drawdown_raw not in (None, "") else "-",
+        "watch_axes": _monitor_watch_axes(thresholds),
+    }
 
 
 def _build_top_candidates(scanner_summary: Dict[str, Any], scanner_trace: Dict[str, Any], selected_symbol: str) -> List[Dict[str, Any]]:
@@ -1928,6 +2129,102 @@ def _prefer_runtime_reporter_state(reporter: Dict[str, Any]) -> bool:
     return bool(reporter.get("reason") or reporter.get("ai_summary") or reporter.get("found"))
 
 
+def _normalize_canonical_monitor_snapshot(snapshot: Dict[str, Any], story_monitor: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    if not isinstance(story_monitor, dict):
+        story_monitor = {}
+
+    posture = str(snapshot.get("posture") or story_monitor.get("posture") or "").strip()
+    trigger_type = str(snapshot.get("trigger_type") or story_monitor.get("trigger_type") or "").strip()
+    raw_effective_reason = str(
+        snapshot.get("effective_stop_reason")
+        or story_monitor.get("effective_stop_reason")
+        or trigger_type
+        or ""
+    ).strip()
+    effective_reason = _friendly_exit_reason(raw_effective_reason) if raw_effective_reason else ""
+
+    stop_loss_pct = snapshot.get("stop_loss_pct")
+    if stop_loss_pct in (None, ""):
+        stop_loss_pct = story_monitor.get("stop_loss_pct")
+    effective_stop_loss_pct = snapshot.get("effective_stop_loss_pct")
+    if effective_stop_loss_pct in (None, ""):
+        effective_stop_loss_pct = story_monitor.get("effective_stop_loss_pct")
+    take_profit_pct = snapshot.get("take_profit_pct")
+    if take_profit_pct in (None, ""):
+        take_profit_pct = story_monitor.get("take_profit_pct")
+
+    position_age_seconds = snapshot.get("position_age_seconds")
+    if position_age_seconds in (None, ""):
+        position_age_seconds = story_monitor.get("position_age_seconds")
+
+    active_exit_axis = str(snapshot.get("active_exit_axis") or "").strip()
+    if not active_exit_axis:
+        if trigger_type:
+            active_exit_axis = _friendly_exit_reason(trigger_type)
+        elif raw_effective_reason:
+            active_exit_axis = _friendly_exit_reason(raw_effective_reason)
+        elif posture.upper() == "HOLD":
+            active_exit_axis = "No trigger yet"
+    else:
+        active_exit_axis = _friendly_exit_reason(active_exit_axis)
+
+    def _fmt_optional_price(value: Any) -> str:
+        if value in (None, ""):
+            return ""
+        return _format_float(value, 2)
+
+    def _fmt_optional_pct(value: Any) -> str:
+        if value in (None, ""):
+            return ""
+        return _format_percent(value, 2)
+
+    watch_axes = [str(x or "") for x in list(snapshot.get("watch_axes") or []) if str(x or "").strip()]
+    hold_reasons = [str(x or "") for x in list(snapshot.get("hold_reasons") or []) if str(x or "").strip()]
+    exit_triggers = [str(x or "") for x in list(snapshot.get("exit_triggers") or []) if str(x or "").strip()]
+    if not hold_reasons:
+        hold_reasons = [str(x or "") for x in list(story_monitor.get("bullets") or []) if str(x or "").strip()][:4]
+
+    return {
+        "posture": posture,
+        "holding_time": (
+            _format_duration(position_age_seconds)
+            if position_age_seconds not in (None, "")
+            else str(snapshot.get("holding_time") or "").strip()
+        ),
+        "stop_loss": (
+            _format_percent(stop_loss_pct, 2)
+            if stop_loss_pct not in (None, "")
+            else str(snapshot.get("stop_loss") or "").strip()
+        ),
+        "effective_stop": (
+            _format_percent(effective_stop_loss_pct, 2)
+            if effective_stop_loss_pct not in (None, "")
+            else str(snapshot.get("effective_stop") or "").strip()
+        ),
+        "effective_stop_reason": effective_reason,
+        "take_profit": (
+            _format_percent(take_profit_pct, 2)
+            if take_profit_pct not in (None, "")
+            else str(snapshot.get("take_profit") or "").strip()
+        ),
+        "current_price": _fmt_optional_price(snapshot.get("current_price")),
+        "average_price": _fmt_optional_price(snapshot.get("average_price")),
+        "peak_price": _fmt_optional_price(snapshot.get("peak_price")),
+        "current_drawdown": _fmt_optional_pct(snapshot.get("current_drawdown")),
+        "peak_drawdown": _fmt_optional_pct(snapshot.get("peak_drawdown")),
+        "vwap_distance": _fmt_optional_pct(snapshot.get("vwap_distance")),
+        "price_source": str(snapshot.get("price_source") or story_monitor.get("price_source") or "").strip(),
+        "feature_source": str(snapshot.get("feature_source") or story_monitor.get("feature_source") or "").strip(),
+        "price_source_policy": str(snapshot.get("price_source_policy") or story_monitor.get("price_source_policy") or "").strip(),
+        "active_exit_axis": active_exit_axis,
+        "watch_axes": watch_axes,
+        "hold_reasons": hold_reasons[:6],
+        "exit_triggers": exit_triggers[:6],
+    }
+
+
 def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str, Any]:
     story_input = _trade_report_artifact_payload(trade_report, "story_input_data")
     lifecycle = _trade_report_artifact_payload(trade_report, "lifecycle_data")
@@ -1987,6 +2284,9 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
     lifecycle_summary = lifecycle.get("summary") if isinstance(lifecycle.get("summary"), dict) else {}
     entry_summary = story_input.get("entry_summary") if isinstance(story_input.get("entry_summary"), dict) else {}
     exit_summary = story_input.get("exit_summary") if isinstance(story_input.get("exit_summary"), dict) else {}
+    story_monitor = story_input.get("monitor_reason_human") if isinstance(story_input.get("monitor_reason_human"), dict) else {}
+    report_monitor_snapshot = report.get("monitor_snapshot") if isinstance(report.get("monitor_snapshot"), dict) else {}
+    monitor_snapshot = _normalize_canonical_monitor_snapshot(report_monitor_snapshot, story_monitor)
 
     market_bullets = _trade_report_section_bullets(market_context)
     selection_bullets = _trade_report_section_bullets(selection)
@@ -2028,6 +2328,7 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
         "headline": str(executive.get("headline") or ""),
         "current_action": str(
             conclusion.get("current_action")
+            or monitor_snapshot.get("posture")
             or report.get("action")
             or story_input.get("action")
             or trade_report.get("action")
@@ -2051,6 +2352,7 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
         "filter_rows": canonical_filter_rows,
         "monitor_summary": _trade_report_section_summary(monitor),
         "monitor_bullets": monitor_bullets,
+        "monitor_snapshot": monitor_snapshot if isinstance(monitor_snapshot, dict) else {},
         "guard_summary": _trade_report_section_summary(guard),
         "execution_summary": _trade_report_section_summary(execution),
         "execution_bullets": execution_bullets,
@@ -2073,6 +2375,11 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
     canonical_trade = _build_canonical_trade_brief_input(trade_report)
+    canonical_monitor_snapshot = (
+        canonical_trade.get("monitor_snapshot")
+        if isinstance(canonical_trade.get("monitor_snapshot"), dict)
+        else {}
+    )
 
     strategist_summary = strategist.get("summary") if isinstance(strategist.get("summary"), dict) else {}
     strategist_trace = strategist.get("decision_trace") if isinstance(strategist.get("decision_trace"), dict) else {}
@@ -2091,6 +2398,8 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     monitor_summary = monitor.get("summary") if isinstance(monitor.get("summary"), dict) else {}
     monitor_trace = monitor.get("decision_trace") if isinstance(monitor.get("decision_trace"), dict) else {}
     thresholds = monitor_trace.get("thresholds") if isinstance(monitor_trace.get("thresholds"), dict) else {}
+    live_monitor_reason = str(monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason") or "").strip()
+    live_exit_reason = str(monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason") or "").strip()
 
     verdict = supervisor.get("verdict") if isinstance(supervisor.get("verdict"), dict) else {}
     execution = _normalize_execution_payload(executor.get("execution") if isinstance(executor.get("execution"), dict) else {})
@@ -2116,8 +2425,8 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
 
     execution_action = str(execution.get("action") or "").upper()
     canonical_action = str(canonical_trade.get("current_action") or "").upper()
-    monitor_reason = str(canonical_trade.get("monitor_summary") or monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason") or "").strip()
-    exit_reason = str(canonical_trade.get("exit_reason") or monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason") or "").strip()
+    monitor_reason = str(canonical_trade.get("monitor_summary") or live_monitor_reason or "").strip()
+    exit_reason = str(canonical_trade.get("exit_reason") or live_exit_reason or "").strip()
     if canonical_action in {"BUY", "SELL", "HOLD", "WAIT"}:
         final_action = canonical_action
     elif execution_action in {"BUY", "SELL"}:
@@ -2320,13 +2629,52 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
 
     stop_loss = thresholds.get("stop_loss_pct")
     take_profit = thresholds.get("take_profit_pct")
+    effective_stop_loss = thresholds.get("effective_stop_loss_pct")
+    effective_stop_reason = str(thresholds.get("effective_stop_reason") or "").strip()
     if stop_loss is None:
         stop_loss = thresholds.get("stop_loss")
     if take_profit is None:
         take_profit = thresholds.get("take_profit")
     stop_loss_text = _format_percent(stop_loss, 2) if stop_loss is not None else "-"
     take_profit_text = _format_percent(take_profit, 2) if take_profit is not None else "-"
+    effective_stop_text = _format_percent(effective_stop_loss, 2) if effective_stop_loss not in (None, "") else stop_loss_text
+    current_price = monitor_trace.get("price")
+    avg_price_monitor = monitor_trace.get("avg_price")
+    peak_price = monitor_trace.get("peak_price") or monitor_summary.get("peak_price")
+    peak_drawdown_raw = monitor_trace.get("peak_drawdown")
+    if peak_drawdown_raw in (None, ""):
+        peak_drawdown_raw = monitor_summary.get("peak_drawdown")
+    vwap_distance_raw = monitor_trace.get("vwap_distance")
+    if vwap_distance_raw in (None, ""):
+        vwap_distance_raw = monitor_summary.get("vwap_distance")
+    current_drawdown_raw = None
+    if _safe_float(current_price, 0.0) > 0.0 and _safe_float(peak_price, 0.0) > 0.0:
+        current_drawdown_raw = (_safe_float(current_price, 0.0) / _safe_float(peak_price, 1.0)) - 1.0
+    elif peak_drawdown_raw not in (None, ""):
+        current_drawdown_raw = peak_drawdown_raw
+    watch_axes = _monitor_watch_axes(thresholds)
+    active_exit_axis = _friendly_exit_reason(live_exit_reason or effective_stop_reason or live_monitor_reason or exit_reason or monitor_reason or "hold")
     holding_time = _format_duration(monitor_summary.get("position_age_seconds") or monitor_trace.get("position_age_seconds"))
+
+    canonical_holding_time = str(canonical_monitor_snapshot.get("holding_time") or "").strip()
+    canonical_posture = str(canonical_monitor_snapshot.get("posture") or "").strip()
+    canonical_current_price = str(canonical_monitor_snapshot.get("current_price") or "").strip()
+    canonical_average_price = str(canonical_monitor_snapshot.get("average_price") or "").strip()
+    canonical_peak_price = str(canonical_monitor_snapshot.get("peak_price") or "").strip()
+    canonical_current_drawdown = str(canonical_monitor_snapshot.get("current_drawdown") or "").strip()
+    canonical_peak_drawdown = str(canonical_monitor_snapshot.get("peak_drawdown") or "").strip()
+    canonical_vwap_distance = str(canonical_monitor_snapshot.get("vwap_distance") or "").strip()
+    canonical_stop_loss = str(canonical_monitor_snapshot.get("stop_loss") or "").strip()
+    canonical_effective_stop = str(canonical_monitor_snapshot.get("effective_stop") or "").strip()
+    canonical_effective_stop_reason = str(canonical_monitor_snapshot.get("effective_stop_reason") or "").strip()
+    canonical_take_profit = str(canonical_monitor_snapshot.get("take_profit") or "").strip()
+    canonical_price_source = str(canonical_monitor_snapshot.get("price_source") or "").strip()
+    canonical_feature_source = str(canonical_monitor_snapshot.get("feature_source") or "").strip()
+    canonical_price_source_policy = str(canonical_monitor_snapshot.get("price_source_policy") or "").strip()
+    canonical_active_exit_axis = str(canonical_monitor_snapshot.get("active_exit_axis") or "").strip()
+    canonical_watch_axes = [str(x or "") for x in list(canonical_monitor_snapshot.get("watch_axes") or []) if str(x or "").strip()]
+    canonical_hold_reasons = [str(x or "") for x in list(canonical_monitor_snapshot.get("hold_reasons") or []) if str(x or "").strip()]
+    canonical_exit_triggers = [str(x or "") for x in list(canonical_monitor_snapshot.get("exit_triggers") or []) if str(x or "").strip()]
 
     hold_reasons: List[str] = []
     if final_action == "HOLD":
@@ -2535,12 +2883,28 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
             "interpretation": chart_interpretation,
         },
         "position_monitor_reasoning": {
-            "posture": final_action,
-            "holding_time": holding_time,
-            "stop_loss": stop_loss_text,
-            "take_profit": take_profit_text,
-            "hold_reasons": hold_reasons[:4],
-            "exit_triggers": exit_triggers[:3],
+            "posture": canonical_posture or final_action,
+            "holding_time": canonical_holding_time or holding_time,
+            "stop_loss": canonical_stop_loss or stop_loss_text,
+            "effective_stop": canonical_effective_stop or effective_stop_text,
+            "effective_stop_reason": (
+                canonical_effective_stop_reason
+                or (_friendly_exit_reason(effective_stop_reason or "stop_loss") if effective_stop_text != "-" else "-")
+            ),
+            "take_profit": canonical_take_profit or take_profit_text,
+            "current_price": canonical_current_price or (_format_float(current_price, 2) if current_price not in (None, "") else "-"),
+            "average_price": canonical_average_price or (_format_float(avg_price_monitor, 2) if avg_price_monitor not in (None, "") else "-"),
+            "peak_price": canonical_peak_price or (_format_float(peak_price, 2) if peak_price not in (None, "") else "-"),
+            "current_drawdown": canonical_current_drawdown or (_format_percent(current_drawdown_raw, 2) if current_drawdown_raw not in (None, "") else "-"),
+            "peak_drawdown": canonical_peak_drawdown or (_format_percent(peak_drawdown_raw, 2) if peak_drawdown_raw not in (None, "") else "-"),
+            "vwap_distance": canonical_vwap_distance or (_format_percent(vwap_distance_raw, 2) if vwap_distance_raw not in (None, "") else "-"),
+            "price_source": canonical_price_source or str(monitor_trace.get("price_source") or monitor_summary.get("price_source") or "-"),
+            "feature_source": canonical_feature_source or str(monitor_trace.get("feature_source") or monitor_summary.get("feature_source") or "-"),
+            "price_source_policy": canonical_price_source_policy or str(monitor_trace.get("price_source_policy") or monitor_summary.get("price_source_policy") or ""),
+            "active_exit_axis": (_friendly_exit_reason(canonical_active_exit_axis) if canonical_active_exit_axis else "") or active_exit_axis,
+            "watch_axes": canonical_watch_axes or watch_axes,
+            "hold_reasons": canonical_hold_reasons or hold_reasons[:4],
+            "exit_triggers": canonical_exit_triggers or exit_triggers[:3],
         },
         "reporter_evaluation": {
             "status": reporter_status,
@@ -2625,8 +2989,15 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     canonical_reporter_summary = str(canonical_trade.get("reporter_summary") or "").strip()
     canonical_lifecycle_summary = str(canonical_trade.get("lifecycle_summary") or "").strip()
     canonical_report_summary = str(canonical_trade.get("report_summary") or "").strip()
+    headline_action = str(canonical_trade.get("action") or trade_report.get("action") or "").strip().upper()
+    headline_symbol = normalize_symbol(
+        canonical_trade.get("symbol") or trade_report.get("symbol") or selected.get("symbol") or scanner_summary.get("top_stock") or "",
+        allow_test_symbols=True,
+    )
+    headline_fallback = " ".join(part for part in [headline_action, headline_symbol, "운영 요약"] if str(part or "").strip())
     headline = (
         str(canonical_trade.get("headline") or "").strip()
+        or headline_fallback
         or f"{detail.get('run_id') or '-'} 운영 요약"
     )
 
@@ -2761,6 +3132,7 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "strategy_frame_adjustments": list(monitor_trace.get("strategy_frame_adjustments") or [])[:6],
             "exit_policy_guard_adjustments": list(monitor_trace.get("exit_policy_guard_adjustments") or [])[:6],
             "canonical_bullets": list(canonical_trade.get("monitor_bullets") or [])[:6],
+            "canonical_snapshot": dict(canonical_trade.get("monitor_snapshot") or {}),
         },
         "supervisor": {
             **((((detail.get("supervisor") or {}).get("verdict") or {}) if isinstance(detail.get("supervisor"), dict) else {})),
@@ -2893,6 +3265,26 @@ def _build_operator_brief_line_messages(compact_input: Dict[str, Any]) -> List[D
 
 def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     fallback = _fallback_operator_brief(detail)
+
+    def finalize(result: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(result)
+        headline = str(out.get("headline") or "").strip()
+        fallback_headline = str(fallback.get("headline") or "").strip()
+        expected_date = ""
+        headline_date = ""
+        started_at = str(detail.get("started_at") or "").strip()
+        started_match = re.search(r"\d{4}-\d{2}-\d{2}", started_at)
+        headline_match = re.search(r"\d{4}-\d{2}-\d{2}", headline)
+        if started_match:
+            expected_date = started_match.group(0)
+        if headline_match:
+            headline_date = headline_match.group(0)
+        if not headline:
+            out["headline"] = fallback_headline
+        elif expected_date and headline_date and headline_date != expected_date:
+            out["headline"] = fallback_headline
+        return out
+
     router = LLMRouter.from_env()
     if router.client is None:
         return fallback
@@ -2928,14 +3320,14 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:
         fallback["model"] = model
         fallback["reason"] = f"llm_error:{exc}"
-        return fallback
+        return finalize(fallback)
     parsed = _extract_json_object(raw)
     if not parsed:
         if _is_free_model(model) and not str(raw or "").strip():
             fallback["status"] = "fallback"
             fallback["model"] = model
             fallback["reason"] = "free_model_empty_response"
-            return fallback
+            return finalize(fallback)
         try:
             repair_raw = router.chat(
                 "operator_ui",
@@ -2952,7 +3344,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
             repair_raw = ""
         repaired = _extract_json_object(repair_raw)
         if repaired:
-            return {
+            return finalize({
                 "status": "repaired",
                 "model": model,
                 "headline": str(repaired.get("headline") or fallback.get("headline") or ""),
@@ -2965,11 +3357,11 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 "reporter_summary": str(repaired.get("reporter_summary") or fallback.get("reporter_summary") or ""),
                 "operator_takeaways": [str(x or "") for x in list(repaired.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
                 "reason": "llm_repair_pass",
-            }
+            })
         if _is_free_model(model):
             salvaged = _salvage_operator_brief_fields(raw)
             if salvaged:
-                return {
+                return finalize({
                     "status": "salvaged",
                     "model": model,
                     "headline": str(salvaged.get("headline") or fallback.get("headline") or ""),
@@ -2982,7 +3374,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                     "reporter_summary": str(salvaged.get("reporter_summary") or fallback.get("reporter_summary") or ""),
                     "operator_takeaways": [str(x or "") for x in list(salvaged.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
                     "reason": "free_model_salvage_pass",
-                }
+                })
             try:
                 line_raw = router.chat(
                     "operator_ui",
@@ -2998,7 +3390,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 line_raw = ""
             line_parsed = _parse_operator_brief_lines(line_raw)
             if line_parsed:
-                return {
+                return finalize({
                     "status": "line_repaired",
                     "model": model,
                     "headline": str(line_parsed.get("headline") or fallback.get("headline") or ""),
@@ -3011,10 +3403,10 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                     "reporter_summary": str(line_parsed.get("reporter_summary") or fallback.get("reporter_summary") or ""),
                     "operator_takeaways": [str(x or "") for x in list(line_parsed.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
                     "reason": "llm_line_repair_pass",
-                }
+                })
         salvaged = _salvage_operator_brief_fields(raw)
         if salvaged:
-            return {
+            return finalize({
                 "status": "salvaged",
                 "model": model,
                 "headline": str(salvaged.get("headline") or fallback.get("headline") or ""),
@@ -3027,11 +3419,11 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 "reporter_summary": str(salvaged.get("reporter_summary") or fallback.get("reporter_summary") or ""),
                 "operator_takeaways": [str(x or "") for x in list(salvaged.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
                 "reason": "llm_partial_salvage",
-            }
+            })
         fallback["model"] = model
         fallback["reason"] = "llm_parse_error"
-        return fallback
-    return {
+        return finalize(fallback)
+    return finalize({
         "status": "ok",
         "model": model,
         "headline": str(parsed.get("headline") or fallback.get("headline") or ""),
@@ -3043,7 +3435,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         "executor_summary": str(parsed.get("executor_summary") or fallback.get("executor_summary") or ""),
         "reporter_summary": str(parsed.get("reporter_summary") or fallback.get("reporter_summary") or ""),
         "operator_takeaways": [str(x or "") for x in list(parsed.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
-    }
+    })
 
 
 def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
@@ -3053,7 +3445,7 @@ def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[s
     cached = _read_json(path)
     if not isinstance(cached, dict):
         return {}
-    if int(cached.get("version") or 0) < 4:
+    if int(cached.get("version") or 0) < 5:
         return {}
     return cached
 
@@ -3064,18 +3456,222 @@ def _save_cached_operator_brief(config: OperatorUIConfig, run_id: str, brief: Di
     path = config.operator_ui_cache_path / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(brief)
-    payload["version"] = 4
+    payload["version"] = 5
     payload["cached_at"] = datetime.now(tz=KST).isoformat()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _operator_brief_artifact_paths(detail: Dict[str, Any]) -> tuple[Path | None, Path | None]:
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    candidate_paths = [
+        str(trade_report.get("trade_report_json_path") or ""),
+        str(trade_report.get("trade_story_input_path") or ""),
+        str(trade_report.get("trade_lifecycle_json_path") or ""),
+        str(trade_report.get("aggregated_bundle_path") or ""),
+    ]
+    for raw in candidate_paths:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        path = Path(text)
+        parent = path.parent if path.suffix else path
+        return parent / "operator_brief.json", parent / "operator_brief.md"
+    return None, None
+
+
+def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
+    sections = brief.get("sections") if isinstance(brief.get("sections"), dict) else {}
+    ai_trade = sections.get("ai_trade_report") if isinstance(sections.get("ai_trade_report"), dict) else {}
+    executive = sections.get("executive_decision") if isinstance(sections.get("executive_decision"), dict) else {}
+    market = sections.get("market_context") if isinstance(sections.get("market_context"), dict) else {}
+    selection = sections.get("why_symbol_chosen") if isinstance(sections.get("why_symbol_chosen"), dict) else {}
+    monitor = sections.get("position_monitor_reasoning") if isinstance(sections.get("position_monitor_reasoning"), dict) else {}
+    reporter = sections.get("reporter_evaluation") if isinstance(sections.get("reporter_evaluation"), dict) else {}
+    takeaways = [str(x or "") for x in list(brief.get("operator_takeaways") or []) if str(x or "").strip()]
+
+    lines = [
+        "# Operator Brief",
+        "",
+        f"- headline: **{str(brief.get('headline') or '-')}**",
+        f"- status: `{str(brief.get('status') or '-')}`",
+        f"- model: `{str(brief.get('model') or '-')}`",
+        "",
+        "## Executive Decision",
+        "",
+        f"- action: **{str(executive.get('action') or '-')} {str(executive.get('symbol') or '-')}**",
+        f"- reason: {str(executive.get('reason') or brief.get('scanner_summary') or '-')}",
+        "",
+        "## Market Context",
+        "",
+        f"- regime: {str(market.get('market_regime') or '-')}",
+        f"- global_sentiment: {str(market.get('global_sentiment') or '-')}",
+        f"- vix: {str(market.get('vix') or '-')}",
+        "",
+        "## Selection",
+        "",
+        f"- universe_scanned: {str(selection.get('universe_size') or '-')}",
+        f"- selected_rank: {str(selection.get('selected_rank') or '-')}",
+    ]
+
+    selection_reasons = selection.get("selection_reasons") if isinstance(selection.get("selection_reasons"), list) else []
+    for reason in selection_reasons[:4]:
+        lines.append(f"- why: {str(reason)}")
+
+    lines.extend(
+        [
+            "",
+            "## Monitor",
+            "",
+            f"- posture: {str(monitor.get('posture') or '-')}",
+            f"- active_exit_axis: {str(monitor.get('active_exit_axis') or '-')}",
+            f"- price(avg/current/peak): {str(monitor.get('average_price') or '-')} / {str(monitor.get('current_price') or '-')} / {str(monitor.get('peak_price') or '-')}",
+            f"- drawdown(current/peak): {str(monitor.get('current_drawdown') or '-')} / {str(monitor.get('peak_drawdown') or '-')}",
+            f"- effective_stop: {str(monitor.get('effective_stop') or '-')} ({str(monitor.get('effective_stop_reason') or '-')})",
+            f"- vwap_distance: {str(monitor.get('vwap_distance') or '-')}",
+            f"- price_source: {str(monitor.get('price_source') or '-')}",
+            f"- feature_source: {str(monitor.get('feature_source') or '-')}",
+        ]
+    )
+    if str(monitor.get("price_source_policy") or "").strip():
+        lines.append(f"- price_source_policy: {str(monitor.get('price_source_policy') or '-')}")
+    for axis in list(monitor.get("watch_axes") or [])[:4]:
+        lines.append(f"- watch_axis: {str(axis)}")
+    for reason in list(monitor.get("hold_reasons") or [])[:4]:
+        lines.append(f"- monitor_reason: {str(reason)}")
+
+    lines.extend(
+        [
+            "",
+            "## AI Report",
+            "",
+            f"- status: {str(ai_trade.get('status_label') or '-')}",
+            f"- reason: {str(ai_trade.get('reason') or '-')}",
+            f"- next_step: {str(ai_trade.get('next_step') or '-')}",
+        ]
+    )
+    if str(ai_trade.get("link") or "").strip():
+        lines.append(f"- report_link: `{str(ai_trade.get('link') or '')}`")
+
+    lines.extend(
+        [
+            "",
+            "## Reporter",
+            "",
+            f"- run_grade: {str(reporter.get('run_grade') or '-')}",
+            f"- key_finding: {str(reporter.get('key_finding') or '-')}",
+            "",
+            "## Agent Summaries",
+            "",
+            f"- commander: {str(brief.get('commander_summary') or '-')}",
+            f"- strategist: {str(brief.get('strategist_summary') or '-')}",
+            f"- scanner: {str(brief.get('scanner_summary') or '-')}",
+            f"- monitor: {str(brief.get('monitor_summary') or '-')}",
+            f"- supervisor: {str(brief.get('supervisor_summary') or '-')}",
+            f"- executor: {str(brief.get('executor_summary') or '-')}",
+            f"- reporter: {str(brief.get('reporter_summary') or '-')}",
+            "",
+            "## Takeaways",
+            "",
+        ]
+    )
+    if takeaways:
+        for item in takeaways[:5]:
+            lines.append(f"- {item}")
+    else:
+        lines.append("- none")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _saved_operator_brief_matches_detail(saved: Dict[str, Any], detail: Dict[str, Any]) -> bool:
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    if str(saved.get("run_id") or "").strip() != str(detail.get("run_id") or "").strip():
+        return False
+    if str(saved.get("trade_id") or "").strip() != str(trade_report.get("trade_id") or "").strip():
+        return False
+    if str(saved.get("story_id") or "").strip() != str(trade_report.get("story_id") or "").strip():
+        return False
+    if str(saved.get("lifecycle_status") or "").strip() != str(trade_report.get("lifecycle_status") or "").strip():
+        return False
+    if str(saved.get("report_status") or "").strip() != str(trade_report.get("report_status") or "").strip():
+        return False
+    return True
+
+
+def _load_saved_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
+    json_path, _ = _operator_brief_artifact_paths(detail)
+    if json_path is None or not json_path.exists():
+        return {}
+    payload = _read_json(json_path)
+    if not isinstance(payload, dict):
+        return {}
+    if int(payload.get("version") or 0) < 4:
+        return {}
+    if not _saved_operator_brief_matches_detail(payload, detail):
+        return {}
+    return payload
+
+
+def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any]) -> None:
+    if not isinstance(brief, dict) or not brief:
+        return
+    json_path, md_path = _operator_brief_artifact_paths(detail)
+    if json_path is None or md_path is None:
+        return
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    payload = dict(brief)
+    sections = payload.get("sections") if isinstance(payload.get("sections"), dict) else {}
+    monitor_section = (
+        sections.get("position_monitor_reasoning")
+        if isinstance(sections.get("position_monitor_reasoning"), dict)
+        else {}
+    )
+    payload["monitor_snapshot"] = {
+        "posture": str(monitor_section.get("posture") or ""),
+        "holding_time": str(monitor_section.get("holding_time") or ""),
+        "stop_loss": str(monitor_section.get("stop_loss") or ""),
+        "effective_stop": str(monitor_section.get("effective_stop") or ""),
+        "effective_stop_reason": str(monitor_section.get("effective_stop_reason") or ""),
+        "take_profit": str(monitor_section.get("take_profit") or ""),
+        "current_price": str(monitor_section.get("current_price") or ""),
+        "average_price": str(monitor_section.get("average_price") or ""),
+        "peak_price": str(monitor_section.get("peak_price") or ""),
+        "current_drawdown": str(monitor_section.get("current_drawdown") or ""),
+        "peak_drawdown": str(monitor_section.get("peak_drawdown") or ""),
+        "vwap_distance": str(monitor_section.get("vwap_distance") or ""),
+        "price_source": str(monitor_section.get("price_source") or ""),
+        "feature_source": str(monitor_section.get("feature_source") or ""),
+        "price_source_policy": str(monitor_section.get("price_source_policy") or ""),
+        "active_exit_axis": str(monitor_section.get("active_exit_axis") or ""),
+        "watch_axes": [str(x or "") for x in list(monitor_section.get("watch_axes") or []) if str(x or "").strip()][:6],
+        "hold_reasons": [str(x or "") for x in list(monitor_section.get("hold_reasons") or []) if str(x or "").strip()][:6],
+        "exit_triggers": [str(x or "") for x in list(monitor_section.get("exit_triggers") or []) if str(x or "").strip()][:6],
+    }
+    payload["version"] = 4
+    payload["saved_at"] = datetime.now(tz=KST).isoformat()
+    payload["run_id"] = str(detail.get("run_id") or "")
+    payload["trade_id"] = str(trade_report.get("trade_id") or "")
+    payload["story_id"] = str(trade_report.get("story_id") or "")
+    payload["lifecycle_status"] = str(trade_report.get("lifecycle_status") or "")
+    payload["report_status"] = str(trade_report.get("report_status") or "")
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    md_path.write_text(_render_operator_brief_markdown(payload), encoding="utf-8")
+
+
 def _load_operator_brief_with_cache(config: OperatorUIConfig, detail: Dict[str, Any]) -> Dict[str, Any]:
     run_id = str(detail.get("run_id") or "").strip()
+    saved = _load_saved_operator_brief(detail)
+    if saved:
+        _save_cached_operator_brief(config, run_id, saved)
+        return _attach_operator_brief_sections(saved, detail)
     cached = _load_cached_operator_brief(config, run_id)
     if cached:
+        _save_operator_brief_artifact(detail, _attach_operator_brief_sections(cached, detail))
         return _attach_operator_brief_sections(cached, detail)
     brief = _attach_operator_brief_sections(_load_operator_brief(detail), detail)
     _save_cached_operator_brief(config, run_id, brief)
+    _save_operator_brief_artifact(detail, brief)
     return brief
 
 
@@ -3198,6 +3794,15 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "report_summary": str(trade_report_meta.get("report_summary") or ""),
             "reporter_status_human": str(trade_report_meta.get("reporter_status_human") or ""),
             "report_link": str(trade_report_meta.get("report_link") or ""),
+            "operator_brief_available": bool(trade_report_meta.get("operator_brief_available")),
+            "operator_brief_link": str(trade_report_meta.get("operator_brief_link") or ""),
+            "operator_brief_json_path": str(trade_report_meta.get("operator_brief_json_path") or ""),
+            "operator_brief_md_path": str(trade_report_meta.get("operator_brief_md_path") or ""),
+            "trade_report_json_path": str(trade_report_meta.get("trade_report_json_path") or ""),
+            "trade_report_md_path": str(trade_report_meta.get("trade_report_md_path") or ""),
+            "trade_story_input_path": str(trade_report_meta.get("trade_story_input_path") or ""),
+            "trade_lifecycle_json_path": str(trade_report_meta.get("trade_lifecycle_json_path") or ""),
+            "aggregated_bundle_path": str(trade_report_meta.get("aggregated_bundle_path") or ""),
             "symbol": str(trade_report_meta.get("symbol") or primary_symbol or ""),
             "action": str(trade_report_meta.get("action") or normalized_execution.get("action") or ""),
             "missing_reason": str(trade_report_meta.get("report_reason_human") or ai_diag.get("report_reason_human") or ""),
@@ -3254,6 +3859,15 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "report_summary": "",
             "reporter_status_human": "",
             "report_link": "",
+            "operator_brief_available": False,
+            "operator_brief_link": "",
+            "operator_brief_json_path": "",
+            "operator_brief_md_path": "",
+            "trade_report_json_path": "",
+            "trade_report_md_path": "",
+            "trade_story_input_path": "",
+            "trade_lifecycle_json_path": "",
+            "aggregated_bundle_path": "",
             "symbol": primary_symbol or str(normalized_execution.get("symbol") or scanner_summary.get("top_stock") or ""),
             "action": str(normalized_execution.get("action") or ""),
             "missing_reason": str(ai_diag.get("report_reason_human") or "No linked trade report for this run."),
@@ -3330,6 +3944,15 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
         ],
     }
     detail["operator_brief"] = _load_operator_brief_with_cache(config, detail)
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    if trade_report:
+        brief_json_path, brief_md_path = _operator_brief_artifact_paths(detail)
+        trade_report["operator_brief_json_path"] = (
+            str(brief_json_path) if brief_json_path is not None and brief_json_path.exists() else ""
+        )
+        trade_report["operator_brief_md_path"] = (
+            str(brief_md_path) if brief_md_path is not None and brief_md_path.exists() else ""
+        )
     return detail
 
 

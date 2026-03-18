@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from graphs.commander_runtime import _run_integrated_chain, resolve_runtime_mode, resolve_runtime_phase, run_commander_runtime
+from graphs.commander_runtime import _run_preopen_phase
 
 
 def test_m21_runtime_entry_defaults_to_graph_spine():
@@ -558,3 +559,532 @@ def test_m21_runtime_preopen_phase_preflight_blocks_before_strategist(monkeypatc
     assert len(end_rows) == 1
     assert end_rows[0]["payload"]["path"] == "portfolio_preflight_guard"
     assert end_rows[0]["payload"]["portfolio_preflight"]["blocked"] is True
+
+
+def test_m21_preopen_phase_persists_strategist_output_cache(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        state["now_epoch"] = 1000
+        state["strategist_output"] = {"playbook": "defensive", "monitor_guidance": "defensive_exit"}
+        return state
+
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+
+    out = _run_preopen_phase({"persisted_state": {}})
+
+    cache = (out.get("persisted_state") or {}).get("strategist_output_cache") or {}
+    assert out["path"] == "preopen_strategist"
+    assert (cache.get("output") or {}).get("playbook") == "defensive"
+    assert cache.get("generated_epoch") == 1000
+    assert cache.get("source") == "strategist_node"
+    assert calls == ["build_portfolio_snapshot", "build_risk_context", "strategist"]
+
+
+def test_m31_graph_spine_preflight_blocks_before_graph_runner_when_enabled(monkeypatch):
+    calls: list[str] = []
+    logger = _FakeEventLogger()
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 0.0,
+            "positions": [],
+            "_health": {
+                "reader_ok": False,
+                "reader_error": "account_api_500",
+            },
+        }
+        return state
+
+    def graph_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("graph_runner")
+        state["path"] = "graph_spine"
+        return state
+
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+
+    out = run_commander_runtime(
+        {
+            "enable_graph_spine_portfolio_preflight": True,
+            "event_logger": logger,
+        },
+        mode="graph_spine",
+        graph_runner=graph_runner,
+    )
+
+    assert out["path"] == "portfolio_preflight_guard"
+    assert out["runtime_status"] == "preflight_blocked"
+    assert out["portfolio_preflight"]["reason"] == "portfolio_snapshot_reader_error"
+    assert calls == ["build_portfolio_snapshot"]
+
+    end_rows = [r for r in logger.rows if r.get("stage") == "commander_router" and r.get("event") == "end"]
+    assert len(end_rows) == 1
+    assert end_rows[0]["payload"]["path"] == "portfolio_preflight_guard"
+    assert end_rows[0]["payload"]["portfolio_preflight"]["blocked"] is True
+
+
+def test_m31_integrated_chain_triggers_intraday_trade_artifacts_after_success(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["portfolio_snapshot"] = {"cash": 1000.0, "positions": [], "_health": {"reader_ok": True}}
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["selected"] = {"symbol": "005930"}
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["intents"] = [{"side": "BUY", "symbol": "005930", "qty": 1, "price": 70000}]
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["decision"] = "approve"
+        return state
+
+    def fake_execute(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["execution"] = {
+            "ok": True,
+            "allowed": True,
+            "order": {"action": "BUY", "symbol": "005930", "qty": 1},
+            "payload": {"mode": "real"},
+        }
+        return state
+
+    def fake_update_state_after_execution(state: Dict[str, Any]) -> Dict[str, Any]:
+        return state
+
+    def fake_generate_intraday_trade_artifacts(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append(str((state.get("execution") or {}).get("order", {}).get("symbol") or ""))
+        return {"ok": True, "status": "generated", "trade_id": "TRD_1"}
+
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+    monkeypatch.setattr("graphs.nodes.update_state_after_execution.update_state_after_execution", fake_update_state_after_execution)
+    monkeypatch.setattr("libs.reporting.intraday_trade_reports.generate_intraday_trade_artifacts", fake_generate_intraday_trade_artifacts)
+
+    out = _run_integrated_chain({}, execute_fn=fake_execute)
+
+    assert calls == ["005930"]
+    assert out["intraday_trade_report"]["trade_id"] == "TRD_1"
+
+
+def test_m31_integrated_chain_uses_monitor_only_fast_path_when_holding(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [{"symbol": "322000", "qty": 1, "avg_price": 100.0}],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        state["decision"] = "hold"
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    def fake_execute(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("execute")
+        return state
+
+    monkeypatch.setenv("COMMANDER_MONITOR_ONLY_WHEN_HOLDING_ENABLED", "true")
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "true")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain({}, execute_fn=fake_execute)
+
+    assert out["path"] == "integrated_chain_monitor_only"
+    assert out["runtime_fast_path"]["reason"] == "holding_position_monitor_only"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_monitor_only_hydrates_held_symbols_before_monitor(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [{"symbol": "322000", "qty": 1, "avg_price": 100.0}],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_hydrate_monitor_symbol_features(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("hydrate_monitor_symbol_features")
+        state["monitor_feature_hydration"] = {
+            "applied": True,
+            "symbol_count": 1,
+            "symbols": ["322000"],
+        }
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        assert (state.get("selected") or {}).get("symbol") == "322000"
+        assert bool((state.get("selected") or {}).get("_monitor_synthetic_selected")) is True
+        assert (state.get("monitor_feature_hydration") or {}).get("symbols") == ["322000"]
+        state["intents"] = []
+        state["decision"] = "hold"
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_MONITOR_ONLY_WHEN_HOLDING_ENABLED", "true")
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "true")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.commander_runtime._hydrate_monitor_symbol_features", fake_hydrate_monitor_symbol_features)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain({}, execute_fn=lambda state: state)
+
+    assert out["path"] == "integrated_chain_monitor_only"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "hydrate_monitor_symbol_features",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_monitor_only_uses_position_strategy_context_when_cache_missing(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [{"symbol": "322000", "qty": 1, "avg_price": 100.0}],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_hydrate_monitor_symbol_features(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("hydrate_monitor_symbol_features")
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        strategist_output = state.get("strategist_output") or {}
+        assert strategist_output.get("playbook") == "defensive"
+        assert strategist_output.get("monitor_guidance") == "defensive_exit"
+        meta = state.get("strategist_output_cache_meta") or {}
+        assert meta.get("source") == "buy_execution"
+        assert meta.get("symbol") == "322000"
+        state["intents"] = []
+        state["decision"] = "hold"
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_MONITOR_ONLY_WHEN_HOLDING_ENABLED", "true")
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "true")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.commander_runtime._hydrate_monitor_symbol_features", fake_hydrate_monitor_symbol_features)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "persisted_state": {
+                "position_strategy_context": {
+                    "322000": {
+                        "output": {"playbook": "defensive", "monitor_guidance": "defensive_exit"},
+                        "generated_epoch": 950,
+                        "source": "buy_execution",
+                    }
+                }
+            }
+        },
+        execute_fn=lambda state: state,
+    )
+
+    assert out["path"] == "integrated_chain_monitor_only"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "hydrate_monitor_symbol_features",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_reuses_cached_strategist_when_flat(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        assert (state.get("strategist_output") or {}).get("playbook") == "defensive"
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "180")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "now_epoch": 1000,
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {"playbook": "defensive", "monitor_guidance": "defensive_exit"},
+                    "generated_epoch": 950,
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    assert out["path"] == "integrated_chain_cached_frame"
+    assert out["runtime_fast_path"]["reason"] == "flat_position_cached_strategist"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "scanner",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_hydrates_held_symbols_before_monitor_after_scanner(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [{"symbol": "322000", "qty": 1, "avg_price": 100.0}],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        state["strategist_output"] = {"playbook": "defensive"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        state["selected"] = {"symbol": "005930"}
+        return state
+
+    def fake_hydrate_monitor_symbol_features(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("hydrate_monitor_symbol_features")
+        state["monitor_feature_hydration"] = {
+            "applied": True,
+            "symbol_count": 1,
+            "symbols": ["322000"],
+        }
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        assert (state.get("monitor_feature_hydration") or {}).get("symbols") == ["322000"]
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_MONITOR_ONLY_WHEN_HOLDING_ENABLED", "false")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.commander_runtime._hydrate_monitor_symbol_features", fake_hydrate_monitor_symbol_features)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain({}, execute_fn=lambda state: state)
+
+    assert out["path"] == "integrated_chain"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "strategist",
+        "scanner",
+        "hydrate_monitor_symbol_features",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_runs_strategist_when_flat_cache_is_stale(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        state["strategist_output"] = {"playbook": "defensive"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "60")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "now_epoch": 1000,
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {"playbook": "defensive", "monitor_guidance": "defensive_exit"},
+                    "generated_epoch": 800,
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    assert out["path"] == "integrated_chain"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "strategist",
+        "scanner",
+        "monitor",
+        "decision",
+    ]

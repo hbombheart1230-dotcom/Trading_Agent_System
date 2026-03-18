@@ -845,6 +845,16 @@ def _resolve_scanner_score_weights(policy: Dict[str, Any]) -> Dict[str, float]:
 def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output_raw = state.get("strategist_output")
     strategist_output = coerce_strategist_output(strategist_output_raw) if isinstance(strategist_output_raw, dict) else {}
+    strategy_policy = (
+        dict(strategist_output.get("strategy_policy") or {})
+        if isinstance(strategist_output.get("strategy_policy"), dict)
+        else {}
+    )
+    scanner_policy = (
+        dict(strategy_policy.get("scanner_policy") or {})
+        if isinstance(strategy_policy.get("scanner_policy"), dict)
+        else {}
+    )
     raw_bias = strategist_output.get("scanner_bias")
     if isinstance(raw_bias, dict):
         raw_bias = str(raw_bias.get("style") or "")
@@ -852,11 +862,19 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         "themes": list(strategist_output.get("themes") or []),
         "avoid_themes": list(strategist_output.get("avoid_themes") or []),
         "playbook": str(strategist_output.get("playbook") or ""),
-        "scanner_priority": list(strategist_output.get("scanner_priority") or []),
-        "scanner_source_policy": dict(strategist_output.get("scanner_source_policy") or {}),
+        "scanner_priority": list(scanner_policy.get("priority_tilts") or strategist_output.get("scanner_priority") or []),
+        "scanner_source_policy": dict(
+            scanner_policy.get("candidate_sources")
+            if isinstance(scanner_policy.get("candidate_sources"), dict)
+            else strategist_output.get("scanner_source_policy")
+            or {}
+        ),
         "scanner_bias": str(raw_bias or "").strip().lower(),
         "trade_aggressiveness": strategist_output.get("trade_aggressiveness"),
         "risk_tone": strategist_output.get("risk_tone"),
+        "score_weights": dict(scanner_policy.get("score_weights") or {}),
+        "filters": dict(scanner_policy.get("filters") or {}),
+        "ranking_rules": dict(scanner_policy.get("ranking_rules") or {}),
     }
 
     # Backward-compatible override hook; canonical source remains strategist_output.
@@ -872,6 +890,9 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_bias",
             "trade_aggressiveness",
             "risk_tone",
+            "score_weights",
+            "filters",
+            "ranking_rules",
         ):
             if guidance.get(key) not in (None, ""):
                 out[key] = guidance.get(key)
@@ -1366,6 +1387,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     scanner_priority = _normalize_priority_list(scanner_guidance.get("scanner_priority"))
     trade_aggressiveness = str(scanner_guidance.get("trade_aggressiveness") or "").strip().lower()
     risk_tone = str(scanner_guidance.get("risk_tone") or "").strip().lower()
+    if isinstance(scanner_guidance.get("score_weights"), dict):
+        for key, value in dict(scanner_guidance.get("score_weights") or {}).items():
+            if key in practical_w and value not in (None, ""):
+                practical_w[key] = _to_float(value)
     practical_w = _apply_scanner_guidance_weights(
         practical_w,
         playbook=playbook,

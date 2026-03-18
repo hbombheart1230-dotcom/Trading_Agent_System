@@ -16,6 +16,20 @@ StrategistRiskTone = Literal["conservative", "normal", "aggressive"]
 StrategistMonitorGuidance = Literal["hold_through_noise", "defensive_exit", "quick_take_profit"]
 
 
+def _coerce_strategy_policy(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raw = {}
+    out = dict(raw)
+    out["schema_version"] = str(raw.get("schema_version") or "strategy_policy.v1")
+    out["market_policy"] = dict(raw.get("market_policy") or {})
+    out["scanner_policy"] = dict(raw.get("scanner_policy") or {})
+    out["entry_policy"] = dict(raw.get("entry_policy") or {})
+    out["monitor_policy"] = dict(raw.get("monitor_policy") or {})
+    out["decision_policy"] = dict(raw.get("decision_policy") or {})
+    out["operator_explain"] = dict(raw.get("operator_explain") or {})
+    return out
+
+
 @dataclass(frozen=True)
 class StrategyEvidence:
     regime: str = "unknown"
@@ -112,6 +126,7 @@ class StrategistOutput:
     trade_aggressiveness: StrategistAggressiveness = "medium"
     risk_tone: StrategistRiskTone = "normal"
     monitor_guidance: StrategistMonitorGuidance = "defensive_exit"
+    strategy_policy: Dict[str, Any] = field(default_factory=dict)
     report_focus: List[str] = field(default_factory=list)
     recent_strategy_feedback: Dict[str, Any] = field(default_factory=dict)
     candidates: List[str] = field(default_factory=list)
@@ -142,6 +157,7 @@ class StrategistOutput:
                 ["hold_through_noise", "defensive_exit", "quick_take_profit"],
                 "defensive_exit",
             ),
+            "strategy_policy": _coerce_strategy_policy(self.strategy_policy),
             "report_focus": [str(x) for x in list(self.report_focus or [])][:8],
             "recent_strategy_feedback": dict(self.recent_strategy_feedback or {}),
             "candidates": [str(x) for x in list(self.candidates or [])][:32],
@@ -211,6 +227,7 @@ def _coerce_nested_output(raw: Dict[str, Any]) -> Dict[str, Any]:
         "trade_aggressiveness",
         "risk_tone",
         "monitor_guidance",
+        "strategy_policy",
         "report_focus",
         "recent_strategy_feedback",
         "candidates",
@@ -255,6 +272,7 @@ def coerce_strategist_output(raw: Any) -> Dict[str, Any]:
         trade_aggressiveness=raw.get("trade_aggressiveness", "medium"),  # type: ignore[arg-type]
         risk_tone=raw.get("risk_tone", "normal"),  # type: ignore[arg-type]
         monitor_guidance=raw.get("monitor_guidance", "defensive_exit"),  # type: ignore[arg-type]
+        strategy_policy=_coerce_strategy_policy(raw.get("strategy_policy")),
         report_focus=_coerce_text_list(raw.get("report_focus")),
         recent_strategy_feedback=(
             dict(raw.get("recent_strategy_feedback") or {})

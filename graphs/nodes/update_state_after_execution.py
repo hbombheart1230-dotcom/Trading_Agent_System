@@ -40,6 +40,55 @@ def _normalize_mock_positions(raw):  # type: ignore[no-untyped-def]
                 "unrealized_pnl": _as_float(row.get("unrealized_pnl"), 0.0),
             }
         )
+        current_price = _as_float(
+            row.get("current_price") if row.get("current_price") not in (None, "") else row.get("cur_price"),
+            0.0,
+        )
+        if current_price > 0.0:
+            out[-1]["current_price"] = float(current_price)
+    return out
+
+
+def _normalize_position_peak_price(raw, open_symbols=None):  # type: ignore[no-untyped-def]
+    out = {}
+    allowed = None
+    if isinstance(open_symbols, (list, set, tuple)):
+        allowed = {normalize_symbol(sym) for sym in open_symbols if normalize_symbol(sym)}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        symbol = normalize_symbol(key)
+        if not symbol:
+            continue
+        if allowed is not None and symbol not in allowed:
+            continue
+        peak = _as_float(value, 0.0)
+        if peak > 0.0:
+            out[symbol] = float(peak)
+    return out
+
+
+def _normalize_position_strategy_context(raw, open_symbols=None):  # type: ignore[no-untyped-def]
+    out = {}
+    allowed = None
+    if isinstance(open_symbols, (list, set, tuple)):
+        allowed = {normalize_symbol(sym) for sym in open_symbols if normalize_symbol(sym)}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        symbol = normalize_symbol(key)
+        if not symbol:
+            continue
+        if allowed is not None and symbol not in allowed:
+            continue
+        if not isinstance(value, dict):
+            continue
+        output = value.get("output") if isinstance(value.get("output"), dict) else {}
+        if not output:
+            continue
+        row = dict(value)
+        row["output"] = dict(output)
+        out[symbol] = row
     return out
 
 
@@ -127,6 +176,8 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
 
     pos = _normalize_mock_positions(ps.get("mock_positions"))
     by_symbol = {str(r.get("symbol")): dict(r) for r in pos if isinstance(r, dict)}
+    peak_map = _normalize_position_peak_price(ps.get("position_peak_price"), by_symbol.keys())
+    strategy_context_map = _normalize_position_strategy_context(ps.get("position_strategy_context"), by_symbol.keys())
     cur = dict(by_symbol.get(symbol) or {"symbol": symbol, "qty": 0, "avg_price": 0.0, "unrealized_pnl": 0.0})
     cash = _ensure_mock_cash(ps)
     realized_total = _as_float(ps.get("mock_realized_pnl"), 0.0)
@@ -146,6 +197,16 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
         cur["qty"] = new_qty
         cur["avg_price"] = float(weighted_avg)
         by_symbol[symbol] = cur
+        next_peak = max(_as_float(peak_map.get(symbol), 0.0), float(weighted_avg), float(price))
+        if next_peak > 0.0:
+            peak_map[symbol] = float(next_peak)
+        strategy_snapshot = _extract_strategist_output_snapshot(state)
+        if strategy_snapshot:
+            strategy_context_map[symbol] = {
+                "output": dict(strategy_snapshot),
+                "generated_epoch": _as_int(time.time(), 0),
+                "source": "buy_execution",
+            }
     else:
         prev_qty = _as_int(cur.get("qty"), 0)
         if prev_qty <= 0:
@@ -160,6 +221,8 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
         new_qty = max(0, prev_qty - fill_qty)
         if new_qty <= 0:
             by_symbol.pop(symbol, None)
+            peak_map.pop(symbol, None)
+            strategy_context_map.pop(symbol, None)
         else:
             cur["qty"] = new_qty
             by_symbol[symbol] = cur
@@ -169,6 +232,19 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
     ps["open_positions"] = len(final_positions)
     ps["mock_cash"] = float(cash)
     ps["mock_realized_pnl"] = float(realized_total)
+    final_peak_map = _normalize_position_peak_price(peak_map, [row.get("symbol") for row in final_positions])
+    if final_peak_map:
+        ps["position_peak_price"] = final_peak_map
+    else:
+        ps.pop("position_peak_price", None)
+    final_strategy_context_map = _normalize_position_strategy_context(
+        strategy_context_map,
+        [row.get("symbol") for row in final_positions],
+    )
+    if final_strategy_context_map:
+        ps["position_strategy_context"] = final_strategy_context_map
+    else:
+        ps.pop("position_strategy_context", None)
 
 
 def _extract_trade_side(ex: dict) -> str:
@@ -209,6 +285,8 @@ def _reconcile_mock_sell_reject_no_position(ps: dict, ex: dict) -> bool:
 
     pos = _normalize_mock_positions(ps.get("mock_positions"))
     by_symbol = {str(r.get("symbol")): dict(r) for r in pos if isinstance(r, dict)}
+    peak_map = _normalize_position_peak_price(ps.get("position_peak_price"), by_symbol.keys())
+    strategy_context_map = _normalize_position_strategy_context(ps.get("position_strategy_context"), by_symbol.keys())
     cur = dict(by_symbol.get(symbol) or {})
     cur_qty = max(0, _as_int(cur.get("qty"), 0))
     if cur_qty <= 0:
@@ -216,6 +294,8 @@ def _reconcile_mock_sell_reject_no_position(ps: dict, ex: dict) -> bool:
 
     if req_qty <= 0 or req_qty >= cur_qty:
         by_symbol.pop(symbol, None)
+        peak_map.pop(symbol, None)
+        strategy_context_map.pop(symbol, None)
     else:
         cur["qty"] = int(cur_qty - req_qty)
         by_symbol[symbol] = cur
@@ -223,8 +303,33 @@ def _reconcile_mock_sell_reject_no_position(ps: dict, ex: dict) -> bool:
     final_positions = [v for v in by_symbol.values() if _as_int(v.get("qty"), 0) > 0]
     ps["mock_positions"] = final_positions
     ps["open_positions"] = len(final_positions)
+    final_peak_map = _normalize_position_peak_price(peak_map, [row.get("symbol") for row in final_positions])
+    if final_peak_map:
+        ps["position_peak_price"] = final_peak_map
+    else:
+        ps.pop("position_peak_price", None)
+    final_strategy_context_map = _normalize_position_strategy_context(
+        strategy_context_map,
+        [row.get("symbol") for row in final_positions],
+    )
+    if final_strategy_context_map:
+        ps["position_strategy_context"] = final_strategy_context_map
+    else:
+        ps.pop("position_strategy_context", None)
     ps["mock_position_desync_reconciled"] = True
     return True
+
+
+def _extract_strategist_output_snapshot(state: dict | None) -> dict:
+    if not isinstance(state, dict):
+        return {}
+    strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    if strategist_output:
+        return dict(strategist_output)
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    cached = persisted.get("strategist_output_cache") if isinstance(persisted.get("strategist_output_cache"), dict) else {}
+    output = cached.get("output") if isinstance(cached.get("output"), dict) else {}
+    return dict(output) if output else {}
 
 
 def _broker_code_success(value) -> bool | None:  # type: ignore[no-untyped-def]
@@ -286,6 +391,18 @@ def update_state_after_execution(state: dict) -> dict:
     ex = state.get("execution") or {}
     ps["mock_positions"] = _normalize_mock_positions(ps.get("mock_positions"))
     ps["open_positions"] = len(ps["mock_positions"])
+    ps["position_peak_price"] = _normalize_position_peak_price(
+        ps.get("position_peak_price"),
+        [row.get("symbol") for row in ps.get("mock_positions") or []],
+    )
+    if not ps["position_peak_price"]:
+        ps.pop("position_peak_price", None)
+    ps["position_strategy_context"] = _normalize_position_strategy_context(
+        ps.get("position_strategy_context"),
+        [row.get("symbol") for row in ps.get("mock_positions") or []],
+    )
+    if not ps["position_strategy_context"]:
+        ps.pop("position_strategy_context", None)
     last_trade_symbol = normalize_symbol(ps.get("last_trade_symbol"))
     if last_trade_symbol:
         ps["last_trade_symbol"] = last_trade_symbol

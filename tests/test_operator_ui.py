@@ -404,6 +404,8 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "BUY" in overview.text
     assert "005930" in overview.text
     assert "x1" in overview.text
+    assert "axis No position" in overview.text
+    assert "stop -" in overview.text
     assert "Daily Totals" in overview.text
     assert "Broker Reconciliation" in overview.text
     assert "Strategist Summary" in overview.text
@@ -417,8 +419,11 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "AI Report Available" in runs.text
     assert "Simulation trade report" in runs.text
     assert "Open report" in runs.text
+    assert "Open brief" in runs.text
     assert "Lifecycle CLOSED" in runs.text
     assert "Portfolio Sync OK" in runs.text
+    assert "axis: No position" in runs.text
+    assert "stop: -" in runs.text
     assert "Mismatch only" in runs.text
     assert "active elevated_vix" in runs.text
     assert "strong (100%)" in runs.text
@@ -453,6 +458,7 @@ def test_operator_ui_overview_and_run_pages(tmp_path: Path, monkeypatch) -> None
     assert "AI 리포트" in detail.text
     assert "Scanner rank #1 with robust chart coverage and approved execution." in detail.text
     assert "Open full report" in detail.text
+    assert "Open saved brief" in detail.text
     assert "Trade ID:" in detail.text
     assert "Lifecycle:" in detail.text
 
@@ -559,6 +565,152 @@ def test_operator_brief_sections_prefer_canonical_trade_artifacts(tmp_path: Path
     assert sections["reporter_evaluation"]["key_finding"] == "Reporter linked and graded the run A-."
 
 
+def test_operator_brief_sections_surface_monitor_exit_metrics(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    detail = data_access.load_run_detail(cfg, "run-1")
+    detail["monitor"] = {
+        "summary": {
+            "monitor_reason": "hold",
+            "exit_reason": "hold",
+            "peak_price": 71500.0,
+            "peak_drawdown": -0.01399,
+            "vwap_distance": -0.004,
+            "position_age_seconds": 1800,
+        },
+        "decision_trace": {
+            "monitor_reason": "hold",
+            "exit_reason": "hold",
+            "price": 70500.0,
+            "avg_price": 70000.0,
+            "peak_price": 71500.0,
+            "peak_drawdown": -0.01399,
+            "vwap_distance": -0.004,
+            "position_age_seconds": 1800,
+            "thresholds": {
+                "hard_stop_pct": 0.01,
+                "effective_stop_loss_pct": 0.01,
+                "effective_stop_reason": "hard_stop",
+                "take_profit_pct": 0.015,
+                "peak_drawdown_exit_pct": 0.012,
+                "vwap_breakdown_pct": 0.008,
+                "intraday_low_break_pct": 0.004,
+                "trend_strength_floor": 0.2,
+            },
+        },
+    }
+    detail["trade_report"]["report_data"]["monitor_snapshot"] = {
+        "holding_time": "2.5h",
+        "effective_stop": "0.80%",
+        "effective_stop_reason": "Peak drawdown",
+        "take_profit": "1.20%",
+        "current_price": "70300.00",
+        "average_price": "70050.00",
+        "peak_price": "71600.00",
+        "current_drawdown": "-1.82%",
+        "peak_drawdown": "-1.82%",
+        "vwap_distance": "-0.60%",
+        "price_source": "position.current_price",
+        "feature_source": "selected.features",
+        "price_source_policy": "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized",
+        "active_exit_axis": "Peak drawdown",
+        "watch_axes": ["Peak drawdown", "VWAP breakdown"],
+        "hold_reasons": ["latest hold snapshot reused"],
+        "exit_triggers": ["stop-loss trigger (1.00%)"],
+    }
+
+    sections = data_access._build_operator_brief_sections(detail)
+    monitor_sec = sections["position_monitor_reasoning"]
+
+    assert monitor_sec["current_price"] == "70300.00"
+    assert monitor_sec["average_price"] == "70050.00"
+    assert monitor_sec["peak_price"] == "71600.00"
+    assert monitor_sec["current_drawdown"] == "-1.82%"
+    assert monitor_sec["peak_drawdown"] == "-1.82%"
+    assert monitor_sec["effective_stop"] == "0.80%"
+    assert monitor_sec["effective_stop_reason"] == "Peak drawdown"
+    assert monitor_sec["vwap_distance"] == "-0.60%"
+    assert monitor_sec["price_source"] == "position.current_price"
+    assert monitor_sec["feature_source"] == "selected.features"
+    assert monitor_sec["price_source_policy"] == "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized"
+    assert monitor_sec["active_exit_axis"] == "Peak drawdown"
+    assert "Peak drawdown" in monitor_sec["watch_axes"]
+    assert "VWAP breakdown" in monitor_sec["watch_axes"]
+
+
+def test_operator_brief_sections_normalize_raw_trade_report_monitor_snapshot(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    detail = data_access.load_run_detail(cfg, "run-1")
+    detail["trade_report"]["report_data"]["monitor_snapshot"] = {
+        "posture": "HOLD",
+        "trigger_type": "hard_stop",
+        "position_age_seconds": 0,
+        "stop_loss_pct": 0.08,
+        "effective_stop_loss_pct": 0.01,
+        "effective_stop_reason": "hard_stop",
+        "take_profit_pct": 0.0094,
+        "exit_triggered": True,
+        "price_source": "position.current_price",
+        "feature_source": "selected.features",
+        "price_source_policy": "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized",
+    }
+
+    sections = data_access._build_operator_brief_sections(detail)
+    monitor_sec = sections["position_monitor_reasoning"]
+
+    assert monitor_sec["posture"] == "HOLD"
+    assert monitor_sec["holding_time"] == "0s"
+    assert monitor_sec["stop_loss"] == "8.00%"
+    assert monitor_sec["effective_stop"] == "1.00%"
+    assert monitor_sec["effective_stop_reason"] == "Hard stop"
+    assert monitor_sec["take_profit"] == "0.94%"
+    assert monitor_sec["price_source"] == "position.current_price"
+    assert monitor_sec["feature_source"] == "selected.features"
+    assert monitor_sec["price_source_policy"] == "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized"
+    assert monitor_sec["active_exit_axis"] == "Hard stop"
+
+
+def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+
+    detail = data_access.load_run_detail(cfg, "run-1")
+    trade_report = detail["trade_report"]
+    brief_json = Path(str(trade_report.get("operator_brief_json_path") or ""))
+    brief_md = Path(str(trade_report.get("operator_brief_md_path") or ""))
+
+    assert brief_json.exists() is True
+    assert brief_md.exists() is True
+    saved = json.loads(brief_json.read_text(encoding="utf-8"))
+    assert saved["run_id"] == "run-1"
+    assert saved["trade_id"] == "20260316_005930_buy_run-1"
+    assert saved["report_status"] == "available"
+    assert saved["monitor_snapshot"]["price_source"] == "-"
+    assert str(saved["monitor_snapshot"]["effective_stop_reason"] or "") in {"", "-", "Hard stop"}
+    md_text = brief_md.read_text(encoding="utf-8")
+    assert "# Operator Brief" in md_text
+    assert "price_source:" in md_text
+    assert "feature_source:" in md_text
+
+
+def test_operator_brief_saved_artifact_is_reused(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    first = data_access.load_run_detail(cfg, "run-1")
+    brief_json = Path(str(first["trade_report"].get("operator_brief_json_path") or ""))
+    payload = json.loads(brief_json.read_text(encoding="utf-8"))
+    payload["headline"] = "saved artifact headline"
+    brief_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    cache_path = cfg.operator_ui_cache_path / "run-1.json"
+    if cache_path.exists():
+        cache_path.unlink()
+
+    second = data_access.load_run_detail(cfg, "run-1")
+
+    assert second["operator_brief"]["headline"] == "saved artifact headline"
+
+
 def test_operator_ui_overview_does_not_fallback_to_stale_reporter_for_latest_day(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
     monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
@@ -616,6 +768,23 @@ def test_operator_ui_trade_report_detail_page(tmp_path: Path, monkeypatch) -> No
     assert "Simulation trade report" in page.text
     assert "Lifecycle CLOSED" in page.text
     assert "AI Report Available" in page.text
+
+
+def test_operator_ui_operator_brief_detail_page(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
+    app = create_app(_make_config(tmp_path))
+    client = TestClient(app)
+
+    page = client.get("/reports/trade/20260316_005930_buy_run-1/brief")
+    assert page.status_code == 200
+    assert "Operator brief" in page.text
+    assert "Brief Summary" in page.text
+    assert "Market and Selection" in page.text
+    assert "Monitor and Guard" in page.text
+    assert "Open run detail" in page.text
+    assert "Open full AI report" in page.text
+    assert "Saved brief JSON" in page.text
 
 
 def test_operator_ui_run_detail_explains_missing_trade_report(tmp_path: Path, monkeypatch) -> None:
