@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 
 from libs.core.settings import load_env_file
 from libs.core.symbols import normalize_symbol
+from libs.llm.model_names import normalize_openrouter_model_name
 from libs.reporting.agent_pipeline_trace import generate_agent_pipeline_trace_report
 from libs.reporting.reporter_analysis import generate_reporter_analysis_report
 from libs.reporting.llm_artifacts import (
@@ -55,13 +56,7 @@ def _env_bool(name: str, default: bool = True) -> bool:
 
 
 def _normalize_model_name(model: Any) -> str:
-    raw = str(model or "").strip()
-    lowered = raw.lower()
-    if lowered == "free":
-        return "openrouter/free"
-    if lowered == "auto":
-        return "openrouter/auto"
-    return raw
+    return normalize_openrouter_model_name(model)
 
 
 def _sanitize_error_message(value: Any, *, max_len: int = 260) -> str:

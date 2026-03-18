@@ -96,3 +96,10 @@ def test_m20_3_text_router_normalizes_policy_auto_alias():
     router = LLMRouter(client=None)  # type: ignore[arg-type]
     assert router.resolve("strategist", policy={"model": "auto"}).model == "openrouter/auto"
     assert router.resolve("operator_ui", policy={"model": "free"}).model == "openrouter/free"
+
+
+def test_m20_3_text_router_preserves_direct_provider_model_name():
+    from libs.llm.llm_router import LLMRouter
+
+    router = LLMRouter(client=None)  # type: ignore[arg-type]
+    assert router.resolve("strategist", policy={"model": "minimax/minimax-m2.5"}).model == "minimax/minimax-m2.5"

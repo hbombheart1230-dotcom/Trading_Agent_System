@@ -4,6 +4,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.research.evidence_ledger import record_llm_prompt, record_llm_response, record_raw_input
 
@@ -328,7 +329,7 @@ def build_ai_reporter_review(
     ).strip()
     env_temp_raw = str(os.getenv("REPORTER_AI_REVIEW_TEMPERATURE", "")).strip()
     env_max_tokens_raw = str(os.getenv("REPORTER_AI_REVIEW_MAX_TOKENS", "")).strip()
-    resolved_model = str(model or env_model or "").strip()
+    resolved_model = normalize_openrouter_model_name(model or env_model or "")
     if temperature is not None:
         resolved_temp = float(temperature)
     elif env_temp_raw:

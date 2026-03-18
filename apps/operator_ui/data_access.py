@@ -10,9 +10,11 @@ import re
 import time
 
 from libs.llm.llm_router import LLMRouter
+from libs.llm.model_names import normalize_openrouter_model_name
 from libs.core.symbols import normalize_symbol
 from libs.reporting.llm_artifacts import (
     build_llm_response_artifact,
+    classify_llm_exception,
     make_attempt,
     trade_artifact_paths,
 )
@@ -342,13 +344,7 @@ def _is_free_model(model: str) -> bool:
 
 
 def _normalize_role_model_name(model: str) -> str:
-    raw = str(model or "").strip()
-    lowered = raw.lower()
-    if lowered == "auto":
-        return "openrouter/auto"
-    if lowered == "free":
-        return "openrouter/free"
-    return raw
+    return normalize_openrouter_model_name(model)
 
 
 def _parse_operator_brief_lines(text: Any) -> Dict[str, Any]:
@@ -3338,6 +3334,35 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         ],
     }
 
+
+def _failure_operator_brief(detail: Dict[str, Any], *, status: str, model: str, reason: str) -> Dict[str, Any]:
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    symbol = normalize_symbol(
+        trade_report.get("symbol")
+        or (((detail.get("scanner") or {}).get("summary") or {}).get("top_stock") if isinstance(detail.get("scanner"), dict) else "")
+        or "",
+        allow_test_symbols=True,
+    )
+    action = str(trade_report.get("action") or "").strip().upper() or "WAIT"
+    return {
+        "status": str(status or "error"),
+        "model": str(model or ""),
+        "headline": " ".join(part for part in ["AI Brief Failed", action, symbol] if str(part or "").strip()),
+        "commander_summary": "",
+        "strategist_summary": "",
+        "scanner_summary": "",
+        "monitor_summary": "",
+        "supervisor_summary": "",
+        "executor_summary": "",
+        "reporter_summary": "",
+        "operator_takeaways": [],
+        "reason": str(reason or "brief_generation_failed"),
+        "failure": {
+            "status": str(status or "error"),
+            "reason": str(reason or "brief_generation_failed"),
+        },
+    }
+
 def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
     strategist = detail.get("strategist") if isinstance(detail.get("strategist"), dict) else {}
     scanner = detail.get("scanner") if isinstance(detail.get("scanner"), dict) else {}
@@ -3600,9 +3625,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
 
     router = LLMRouter.from_env()
     if router.client is None:
-        fallback["status"] = "fallback"
-        fallback["reason"] = "llm_client_unavailable"
-        return finalize(fallback)
+        return finalize(_failure_operator_brief(detail, status="error", model="", reason="llm_client_unavailable"))
     explicit_model = str(
         os.getenv("OPERATOR_UI_RUN_BRIEF_MODEL", "")
         or os.getenv("OPENROUTER_MODEL_OPERATOR_UI", "")
@@ -3631,40 +3654,25 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     try:
         raw = router.chat("operator_ui", messages, policy=primary_policy)
     except Exception as exc:
+        status = classify_llm_exception(exc)
+        reason = f"{type(exc).__name__}:{exc}"
         attempts.append(
             make_attempt(
                 step="primary",
                 messages=messages,
-                raw_response_text=f"ERROR:{type(exc).__name__}:{exc}",
+                raw_response_text=f"ERROR:{reason}",
                 parsed_output={},
                 model=model,
                 latency_ms=int((time.perf_counter() - primary_t0) * 1000),
-                status="error",
+                status=status,
+                meta={"role": "brief", "error": reason},
             )
         )
-        fallback["status"] = "error"
-        fallback["model"] = model
-        fallback["reason"] = f"llm_error:{exc}"
-        return finalize(fallback)
+        return finalize(_failure_operator_brief(detail, status=status, model=model, reason=reason))
     primary_latency_ms = int((time.perf_counter() - primary_t0) * 1000)
     parsed = _extract_json_object(raw)
     if not parsed:
-        if _is_free_model(model) and not str(raw or "").strip():
-            fallback["status"] = "fallback"
-            fallback["model"] = model
-            fallback["reason"] = "free_model_empty_response"
-            attempts.append(
-                make_attempt(
-                    step="primary",
-                    messages=messages,
-                    raw_response_text=raw,
-                    parsed_output={},
-                    model=model,
-                    latency_ms=primary_latency_ms,
-                    status="fallback",
-                )
-            )
-            return finalize(fallback)
+        primary_status = "empty_response" if not str(raw or "").strip() else "parse_error"
         attempts.append(
             make_attempt(
                 step="primary",
@@ -3673,7 +3681,8 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 parsed_output={},
                 model=model,
                 latency_ms=primary_latency_ms,
-                status="salvaged",
+                status=primary_status,
+                meta={"role": "brief", "error": primary_status},
             )
         )
         repair_messages = _build_operator_brief_repair_messages(raw)
@@ -3704,11 +3713,12 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                     parsed_output=repaired,
                     model=model,
                     latency_ms=repair_latency_ms,
-                    status="salvaged",
+                    status="ok",
+                    meta={"role": "brief"},
                 )
             )
             return finalize({
-                "status": "repaired",
+                "status": "ok",
                 "model": model,
                 "headline": str(repaired.get("headline") or fallback.get("headline") or ""),
                 "commander_summary": str(repaired.get("commander_summary") or fallback.get("commander_summary") or ""),
@@ -3721,35 +3731,19 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 "operator_takeaways": [str(x or "") for x in list(repaired.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
                 "reason": "llm_repair_pass",
             })
-        if repair_raw:
-            attempts.append(
-                make_attempt(
-                    step="repair",
-                    messages=repair_messages,
-                    raw_response_text=repair_raw,
-                    parsed_output={},
-                    model=model,
-                    latency_ms=repair_latency_ms,
-                    status="salvaged",
-                )
+        attempts.append(
+            make_attempt(
+                step="repair",
+                messages=repair_messages,
+                raw_response_text=repair_raw,
+                parsed_output={},
+                model=model,
+                latency_ms=repair_latency_ms,
+                status="empty_response" if not str(repair_raw or "").strip() else "parse_error",
+                meta={"role": "brief", "error": "repair_empty_response" if not str(repair_raw or "").strip() else "repair_parse_error"},
             )
+        )
         if _is_free_model(model):
-            salvaged = _salvage_operator_brief_fields(raw)
-            if salvaged:
-                return finalize({
-                    "status": "salvaged",
-                    "model": model,
-                    "headline": str(salvaged.get("headline") or fallback.get("headline") or ""),
-                    "commander_summary": str(salvaged.get("commander_summary") or fallback.get("commander_summary") or ""),
-                    "strategist_summary": str(salvaged.get("strategist_summary") or fallback.get("strategist_summary") or ""),
-                    "scanner_summary": str(salvaged.get("scanner_summary") or fallback.get("scanner_summary") or ""),
-                    "monitor_summary": str(salvaged.get("monitor_summary") or fallback.get("monitor_summary") or ""),
-                    "supervisor_summary": str(salvaged.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
-                    "executor_summary": str(salvaged.get("executor_summary") or fallback.get("executor_summary") or ""),
-                    "reporter_summary": str(salvaged.get("reporter_summary") or fallback.get("reporter_summary") or ""),
-                    "operator_takeaways": [str(x or "") for x in list(salvaged.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
-                    "reason": "free_model_salvage_pass",
-                })
             line_messages = _build_operator_brief_line_messages(compact_input)
             line_policy = {
                 "temperature": 0.0,
@@ -3777,11 +3771,12 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                         parsed_output=line_parsed,
                         model=model,
                         latency_ms=line_latency_ms,
-                        status="salvaged",
+                        status="ok",
+                        meta={"role": "brief"},
                     )
                 )
                 return finalize({
-                    "status": "line_repaired",
+                    "status": "ok",
                     "model": model,
                     "headline": str(line_parsed.get("headline") or fallback.get("headline") or ""),
                     "commander_summary": str(line_parsed.get("commander_summary") or fallback.get("commander_summary") or ""),
@@ -3794,38 +3789,19 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                     "operator_takeaways": [str(x or "") for x in list(line_parsed.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
                     "reason": "llm_line_repair_pass",
                 })
-            if line_raw:
-                attempts.append(
-                    make_attempt(
-                        step="line_repair",
-                        messages=line_messages,
-                        raw_response_text=line_raw,
-                        parsed_output={},
-                        model=model,
-                        latency_ms=line_latency_ms,
-                        status="salvaged",
-                    )
+            attempts.append(
+                make_attempt(
+                    step="line_repair",
+                    messages=line_messages,
+                    raw_response_text=line_raw,
+                    parsed_output={},
+                    model=model,
+                    latency_ms=line_latency_ms,
+                    status="empty_response" if not str(line_raw or "").strip() else "parse_error",
+                    meta={"role": "brief", "error": "line_repair_empty_response" if not str(line_raw or "").strip() else "line_repair_parse_error"},
                 )
-        salvaged = _salvage_operator_brief_fields(raw)
-        if salvaged:
-            return finalize({
-                "status": "salvaged",
-                "model": model,
-                "headline": str(salvaged.get("headline") or fallback.get("headline") or ""),
-                "commander_summary": str(salvaged.get("commander_summary") or fallback.get("commander_summary") or ""),
-                "strategist_summary": str(salvaged.get("strategist_summary") or fallback.get("strategist_summary") or ""),
-                "scanner_summary": str(salvaged.get("scanner_summary") or fallback.get("scanner_summary") or ""),
-                "monitor_summary": str(salvaged.get("monitor_summary") or fallback.get("monitor_summary") or ""),
-                "supervisor_summary": str(salvaged.get("supervisor_summary") or fallback.get("supervisor_summary") or ""),
-                "executor_summary": str(salvaged.get("executor_summary") or fallback.get("executor_summary") or ""),
-                "reporter_summary": str(salvaged.get("reporter_summary") or fallback.get("reporter_summary") or ""),
-                "operator_takeaways": [str(x or "") for x in list(salvaged.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
-                "reason": "llm_partial_salvage",
-            })
-        fallback["status"] = "fallback"
-        fallback["model"] = model
-        fallback["reason"] = "llm_parse_error"
-        return finalize(fallback)
+            )
+        return finalize(_failure_operator_brief(detail, status=primary_status, model=model, reason=primary_status))
     attempts.append(
         make_attempt(
             step="primary",
@@ -3835,6 +3811,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
             model=model,
             latency_ms=primary_latency_ms,
             status="ok",
+            meta={"role": "brief"},
         )
     )
     return finalize({
@@ -3859,7 +3836,7 @@ def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[s
     cached = _read_json(path)
     if not isinstance(cached, dict):
         return {}
-    if int(cached.get("version") or 0) < 9:
+    if int(cached.get("version") or 0) < 10:
         return {}
     return cached
 
@@ -3870,7 +3847,7 @@ def _save_cached_operator_brief(config: OperatorUIConfig, run_id: str, brief: Di
     path = config.operator_ui_cache_path / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(brief)
-    payload["version"] = 9
+    payload["version"] = 10
     payload["cached_at"] = datetime.now(tz=KST).isoformat()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -3909,6 +3886,22 @@ def _operator_brief_artifact_paths(detail: Dict[str, Any]) -> tuple[Path | None,
 
 
 def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
+    if str(brief.get("status") or "").strip().lower() not in {"", "ok"}:
+        failure = brief.get("failure") if isinstance(brief.get("failure"), dict) else {}
+        lines = [
+            "# Operator Brief",
+            "",
+            f"- headline: **{str(brief.get('headline') or '-')}**",
+            f"- status: `{str(brief.get('status') or '-')}`",
+            f"- model: `{str(brief.get('model') or '-')}`",
+            "",
+            "## Failure",
+            "",
+            f"- reason: {str(failure.get('reason') or brief.get('reason') or '-')}",
+            "",
+        ]
+        return "\n".join(lines)
+
     sections = brief.get("sections") if isinstance(brief.get("sections"), dict) else {}
     ai_trade = sections.get("ai_trade_report") if isinstance(sections.get("ai_trade_report"), dict) else {}
     executive = sections.get("executive_decision") if isinstance(sections.get("executive_decision"), dict) else {}
@@ -4034,7 +4027,7 @@ def _load_saved_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     payload = _read_json(json_path)
     if not isinstance(payload, dict):
         return {}
-    if int(payload.get("version") or 0) < 8:
+    if int(payload.get("version") or 0) < 9:
         return {}
     if not _saved_operator_brief_matches_detail(payload, detail):
         return {}
@@ -4076,7 +4069,7 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         "hold_reasons": [str(x or "") for x in list(monitor_section.get("hold_reasons") or []) if str(x or "").strip()][:6],
         "exit_triggers": [str(x or "") for x in list(monitor_section.get("exit_triggers") or []) if str(x or "").strip()][:6],
     }
-    payload["version"] = 8
+    payload["version"] = 9
     payload["saved_at"] = datetime.now(tz=KST).isoformat()
     payload["run_id"] = str(detail.get("run_id") or "")
     payload["trade_id"] = str(trade_report.get("trade_id") or "")

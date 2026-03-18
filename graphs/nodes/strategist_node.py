@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from libs.data_quality.signal_contract import SIGNAL_STATUS_FALLBACK, make_signal
+from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.market.global_sentiment import compute_global_sentiment_signal
 from libs.news.news_pipeline import collect_news_items, score_news_sentiment_signal
@@ -358,6 +359,16 @@ def _resolve_strategist_frame_llm_enabled(policy: Dict[str, Any]) -> bool:
     return has_key
 
 
+def _resolve_strategist_frame_llm_strict_enabled(policy: Dict[str, Any]) -> bool:
+    raw = policy.get("strategist_frame_llm_strict")
+    if raw is not None:
+        return _is_trueish(raw)
+    env_raw = str(os.getenv("STRATEGIST_FRAME_LLM_STRICT", "true") or "").strip()
+    if env_raw:
+        return _is_trueish(env_raw)
+    return True
+
+
 def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
@@ -383,16 +394,6 @@ def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(raw.get("monitor_policy"), dict):
         out["monitor_policy"] = dict(raw.get("monitor_policy") or {})
     return out
-
-
-def _normalize_router_model_name(model: Any) -> str:
-    raw = str(model or "").strip()
-    lowered = raw.lower()
-    if lowered == "auto":
-        return "openrouter/auto"
-    if lowered == "free":
-        return "openrouter/free"
-    return raw
 
 
 def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -640,7 +641,7 @@ def _run_strategist_frame_llm(
     if _env_bool("DRY_RUN", False):
         return {}, {"enabled": True, "status": "dry_run", "reason": "dry_run"}
 
-    model = _normalize_router_model_name(
+    model = normalize_openrouter_model_name(
         policy.get("strategist_frame_llm_model")
         or os.getenv("STRATEGIST_FRAME_LLM_MODEL", "")
         or os.getenv("AI_STRATEGIST_MODEL", "")
@@ -2862,8 +2863,18 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     llm_overrides, llm_meta = _run_strategist_frame_llm(state=state, policy=policy, payload=llm_payload)
     manual_overrides = _extract_ai_overrides(state, policy)
     ai_overrides = {**dict(llm_overrides or {}), **dict(manual_overrides or {})}
+    llm_required = _resolve_strategist_frame_llm_enabled(policy)
+    llm_strict = _resolve_strategist_frame_llm_strict_enabled(policy)
+    strategist_llm_blocked = bool(llm_required and llm_strict and str(llm_meta.get("status") or "") != "ok")
+    strategist_llm_block_reason = ""
+    if strategist_llm_blocked:
+        strategist_llm_block_reason = (
+            "strategist_llm_required"
+            if str(llm_meta.get("status") or "") in {"disabled", "dry_run", "unavailable"}
+            else "strategist_llm_failed"
+        )
 
-    if _resolve_strategist_frame_llm_enabled(policy):
+    if llm_required:
         llm_payload_log: Dict[str, Any] = {
             "provider": "openrouter",
             "model": str(llm_meta.get("model") or ""),
@@ -2888,6 +2899,9 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             llm_payload_log["error_type"] = str(llm_meta.get("error_type"))
         if llm_meta.get("recovery_method"):
             llm_payload_log["recovery_method"] = str(llm_meta.get("recovery_method"))
+        if strategist_llm_blocked:
+            llm_payload_log["blocked"] = True
+            llm_payload_log["blocked_reason"] = strategist_llm_block_reason
         _log_strategist_llm_result(state, llm_payload_log)
 
     # Optional AI overrides are additive and bounded to keep deterministic fallback.
@@ -3073,9 +3087,15 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["llm_frame_model"] = str(llm_meta.get("model") or "")
     strategist_output["llm_frame_recovery_method"] = str(llm_meta.get("recovery_method") or "")
     strategist_output["llm_frame_low_confidence"] = bool(llm_meta.get("repair_used"))
+    strategist_output["llm_frame_required"] = bool(llm_required)
+    strategist_output["llm_frame_strict"] = bool(llm_strict)
+    strategist_output["llm_frame_blocked"] = bool(strategist_llm_blocked)
+    strategist_output["llm_frame_blocked_reason"] = str(strategist_llm_block_reason or "")
     strategist_output["runtime_theme_map_keys"] = sorted(list((state.get("theme_map") or {}).keys()))
     strategist_output["runtime_sector_map_keys"] = sorted(list((state.get("sector_map") or {}).keys()))
     state["strategist_output"] = strategist_output
+    state["strategist_blocked"] = bool(strategist_llm_blocked)
+    state["strategist_blocked_reason"] = str(strategist_llm_block_reason or "")
     state["strategist_llm"] = {
         "status": str(llm_meta.get("status") or "disabled"),
         "model": str(llm_meta.get("model") or ""),
@@ -3087,6 +3107,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "reason": str(llm_meta.get("reason") or ""),
         "error": str(llm_meta.get("reason") or ""),
         "recovery_method": str(llm_meta.get("recovery_method") or ""),
+        "blocked": bool(strategist_llm_blocked),
+        "blocked_reason": str(strategist_llm_block_reason or ""),
     }
     _log_strategist_summary(
         state,
@@ -3117,6 +3139,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "llm_frame_model": str(llm_meta.get("model") or ""),
             "llm_frame_recovery_method": str(llm_meta.get("recovery_method") or ""),
             "llm_frame_low_confidence": bool(llm_meta.get("repair_used")),
+            "llm_frame_blocked": bool(strategist_llm_blocked),
+            "llm_frame_blocked_reason": str(strategist_llm_block_reason or ""),
         },
     )
     append_decision_trace(

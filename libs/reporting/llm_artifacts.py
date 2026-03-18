@@ -64,13 +64,22 @@ def split_prompt_text(prompt_text: Any) -> Tuple[str, str]:
 
 def normalize_llm_status(value: Any, *, default: str = "fallback") -> str:
     raw = str(value or "").strip().lower()
-    if raw in {"ok", "error", "fallback", "salvaged"}:
+    if raw in {"ok", "error", "fallback", "salvaged", "parse_error", "timeout", "network_error", "empty_response"}:
         return raw
-    if raw in {"repaired", "line_repaired", "parse_error"}:
+    if raw in {"repaired", "line_repaired"}:
         return "salvaged"
     if raw in {"disabled", "unavailable", "dry_run"}:
         return "fallback"
     return default
+
+
+def classify_llm_exception(exc: Exception) -> str:
+    text = str(exc or "").strip().lower()
+    if isinstance(exc, TimeoutError) or "timeout" in text or "timed out" in text:
+        return "timeout"
+    if any(marker in text for marker in ("connection", "network", "dns", "ssl", "reset by peer", "temporarily unavailable")):
+        return "network_error"
+    return "error"
 
 
 def make_attempt(
@@ -88,6 +97,7 @@ def make_attempt(
     system_prompt, user_prompt = split_prompt_messages(messages)
     payload = {
         "step": str(step or "").strip() or "primary",
+        "role": str(meta.get("role") if isinstance(meta, dict) and meta.get("role") is not None else "").strip() if isinstance(meta, dict) else "",
         "system_prompt": system_prompt,
         "user_prompt": user_prompt,
         "raw_response_text": str(raw_response_text or ""),
@@ -124,6 +134,7 @@ def build_llm_response_artifact(
     out = {
         "schema_version": "llm_response_artifact.v1",
         "component": str(component or "").strip(),
+        "role": str(component or "").strip(),
         "run_id": str(run_id or ""),
         "trade_id": str(trade_id or ""),
         "story_id": str(story_id or trade_id or ""),
@@ -133,10 +144,21 @@ def build_llm_response_artifact(
         "latency_ms": int(float(latency_ms or 0)),
         "parsed_output": parsed_output if isinstance(parsed_output, (dict, list)) else {},
         "model_info": dict(model_info or {}),
+        "model": str((model_info or {}).get("model") or ""),
         "attempts": [dict(row) for row in list(attempts or []) if isinstance(row, dict)],
     }
+    final_attempt = out["attempts"][-1] if out["attempts"] else {}
+    out["system_prompt"] = str(final_attempt.get("system_prompt") or "")
+    out["user_prompt"] = str(final_attempt.get("user_prompt") or "")
+    out["raw_response_text"] = str(final_attempt.get("raw_response_text") or "")
+    if not out["parsed_output"] and isinstance(final_attempt.get("parsed_output"), (dict, list)):
+        out["parsed_output"] = final_attempt.get("parsed_output")
+    out["error"] = str(final_attempt.get("error") or "")
+    out["retry_count"] = max(0, len(out["attempts"]) - 1)
     if isinstance(meta, dict):
         out["meta"] = dict(meta)
+        if not out["error"] and meta.get("error") is not None:
+            out["error"] = str(meta.get("error") or "")
     return out
 
 

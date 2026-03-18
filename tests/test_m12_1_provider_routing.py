@@ -10,6 +10,7 @@ def _disable_strategy_v1(monkeypatch):
 
 def test_provider_openai_fallback_when_missing_endpoint(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
+    monkeypatch.setenv("AI_STRATEGIST_STRICT", "true")
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
     monkeypatch.delenv("AI_STRATEGIST_ENDPOINT", raising=False)
     monkeypatch.setenv("AI_STRATEGIST_MODEL", "gpt-x")
@@ -20,6 +21,6 @@ def test_provider_openai_fallback_when_missing_endpoint(monkeypatch):
     }
     out = decide_trade(state)
 
-    # Missing endpoint -> RuleStrategist fallback (may BUY depending on rule)
-    assert out["decision_trace"]["strategy"] in ("RuleStrategist", "builtin_rule")
-    assert out["decision_packet"]["intent"]["action"] in ("BUY", "NOOP")
+    assert out["decision_trace"]["strategy"] == "BlockedStrategist"
+    assert out["decision_packet"]["intent"]["action"] == "NOOP"
+    assert out["decision_packet"]["intent"]["reason"] == "strategist_llm_required"

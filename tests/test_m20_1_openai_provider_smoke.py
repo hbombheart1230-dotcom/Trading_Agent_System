@@ -36,6 +36,24 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     assert s.json_response_format is False
 
 
+def test_m20_1_from_env_normalizes_openrouter_alias_model(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "k")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions")
+    monkeypatch.setenv("AI_STRATEGIST_MODEL", "free")
+
+    s = prov.OpenAIStrategist.from_env()
+    assert s.model == "openrouter/free"
+
+
+def test_m20_1_from_env_preserves_direct_provider_model_name(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "k")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions")
+    monkeypatch.setenv("AI_STRATEGIST_MODEL", "minimax/minimax-m2.5")
+
+    s = prov.OpenAIStrategist.from_env()
+    assert s.model == "minimax/minimax-m2.5"
+
+
 def test_m20_1_from_env_falls_back_to_openrouter_api_key(monkeypatch):
     monkeypatch.delenv("AI_STRATEGIST_API_KEY", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

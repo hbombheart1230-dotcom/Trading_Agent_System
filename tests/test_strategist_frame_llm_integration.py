@@ -228,6 +228,8 @@ def test_strategist_frame_llm_parse_error_falls_back_to_deterministic(monkeypatc
     assert strategist_llm.get("reason") == "strategist_llm_response_not_json"
     assert strategist_llm.get("attempts") == 2
     assert strategist_llm.get("repair_used") is True
+    assert strategist_llm.get("blocked") is True
+    assert strategist_llm.get("blocked_reason") == "strategist_llm_failed"
 
 
 def test_strategist_frame_llm_empty_response_is_classified(monkeypatch):

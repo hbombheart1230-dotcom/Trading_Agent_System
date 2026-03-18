@@ -47,6 +47,32 @@ class RuleStrategist:
         return StrategyDecision(intent={"action": "NOOP", "reason": "conditions_not_met"}, rationale="rule:no_trade")
 
 
+class BlockedStrategist:
+    """Explicit NOOP strategist used when AI strategist mode is required but unavailable."""
+
+    def __init__(self, *, reason: str, error: str = "") -> None:
+        self.reason = str(reason or "strategist_llm_required")
+        self.error = str(error or "").strip()
+        self.model = ""
+
+    def decide(self, x: StrategyInput) -> StrategyDecision:
+        rationale = self.reason
+        if self.error:
+            rationale = f"{self.reason}:{self.error}"
+        return StrategyDecision(
+            intent={"action": "NOOP", "reason": self.reason},
+            rationale=rationale,
+            meta={
+                "status": "error",
+                "error": self.error or self.reason,
+                "error_type": "StrategistBlocked",
+                "attempts": 0,
+                "strict_required": True,
+                "blocked_reason": self.reason,
+            },
+        )
+
+
 def _to_float(v: Any, default: float = 0.0) -> float:
     try:
         return float(v)

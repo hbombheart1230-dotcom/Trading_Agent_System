@@ -1,8 +1,11 @@
 """Role-based LLM router.
 
-Goal:
-- Different agent roles can use different OpenRouter models.
-- Switching providers later only requires swapping this router/client.
+LLM call path summary:
+- Strategist frame: `graphs/nodes/strategist_node.py` -> `LLMRouter.chat("strategist", ...)`
+- AI trade report: `libs/reporting/trade_report_ai.py` -> `LLMRouter.chat("trade_report", ...)`
+- Operator brief: `apps/operator_ui/data_access.py` -> `LLMRouter.chat("operator_ui", ...)`
+- Daily report: `libs/reporting/llm_daily_summary.py` -> `LLMRouter.chat("daily_report", ...)`
+- Reporter final review: `libs/reporting/reporter_ai_review.py` -> `LLMRouter.chat("reporter_final", ...)`
 
 Env:
 - OPENROUTER_DEFAULT_MODEL
@@ -16,6 +19,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.openrouter_client import OpenRouterClient
 
 
@@ -68,17 +72,6 @@ def _role_env_model_keys(role: str) -> List[str]:
         out.append(key)
     return out
 
-
-def _normalize_model_name(model: str) -> str:
-    raw = str(model or "").strip()
-    lowered = raw.lower()
-    if lowered == "auto":
-        return "openrouter/auto"
-    if lowered == "free":
-        return "openrouter/free"
-    return raw
-
-
 @dataclass
 class LLMRoute:
     role: str
@@ -98,18 +91,17 @@ class LLMRouter:
     def resolve(self, role: str, *, policy: Optional[Dict[str, Any]] = None) -> LLMRoute:
         policy = policy or {}
         # policy overrides env
-        model = _normalize_model_name(str(policy.get("openrouter_model") or policy.get("model") or "").strip())
+        model = normalize_openrouter_model_name(str(policy.get("openrouter_model") or policy.get("model") or "").strip())
         if not model:
             for key in _role_env_model_keys(role):
-                candidate = _normalize_model_name(os.getenv(key, "") or "")
+                candidate = normalize_openrouter_model_name(os.getenv(key, "") or "")
                 if candidate:
                     model = candidate
                     break
         if not model:
-            model = _normalize_model_name(os.getenv("OPENROUTER_DEFAULT_MODEL", "") or "")
+            model = normalize_openrouter_model_name(os.getenv("OPENROUTER_DEFAULT_MODEL", "") or "")
         if not model:
-            # conservative default (user can override)
-            model = "openai/gpt-4o-mini"
+            model = "openrouter/auto"
 
         temperature = float(policy.get("temperature") or os.getenv("OPENROUTER_DEFAULT_TEMPERATURE", "0.2"))
         max_tokens = int(policy.get("max_tokens") or os.getenv("OPENROUTER_DEFAULT_MAX_TOKENS", "512"))

@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
+from libs.llm.model_names import normalize_openrouter_model_name
+
 DEFAULT_PROMPT_VERSION = "m20-6"
 DEFAULT_SCHEMA_VERSION = "intent.v1"
 DEFAULT_CB_FAIL_THRESHOLD = 0
@@ -308,11 +310,11 @@ class OpenAIStrategist:
         self.json_response_format = bool(json_response_format)
 
     def _effective_model(self) -> str:
-        model = str(self.model or "").strip()
+        model = normalize_openrouter_model_name(self.model)
         if _looks_like_chat_completions_endpoint(self.endpoint):
             # OpenRouter often expects provider/model style names.
             if (not model) or ("/" not in model):
-                env_model = (
+                env_model = normalize_openrouter_model_name(
                     (os.getenv("OPENROUTER_MODEL_STRATEGIST") or "").strip()
                     or (os.getenv("OPENROUTER_DEFAULT_MODEL") or "").strip()
                 )
@@ -327,13 +329,13 @@ class OpenAIStrategist:
             or (os.getenv("OPENROUTER_API_KEY") or "").strip()
         )
         endpoint = (os.getenv("AI_STRATEGIST_ENDPOINT") or "").strip()
-        model = (os.getenv("AI_STRATEGIST_MODEL") or "").strip()
+        model = normalize_openrouter_model_name(os.getenv("AI_STRATEGIST_MODEL") or "")
         if not model:
             if _looks_like_chat_completions_endpoint(endpoint):
-                model = (
+                model = normalize_openrouter_model_name(
                     (os.getenv("OPENROUTER_MODEL_STRATEGIST") or "").strip()
                     or (os.getenv("OPENROUTER_DEFAULT_MODEL") or "").strip()
-                    or "openai/gpt-4o-mini"
+                    or "openrouter/auto"
                 )
             else:
                 model = "gpt-4.1-mini"

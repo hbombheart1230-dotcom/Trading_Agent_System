@@ -7,8 +7,9 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
-from libs.reporting.llm_artifacts import build_llm_response_artifact, make_attempt
+from libs.reporting.llm_artifacts import build_llm_response_artifact, classify_llm_exception, make_attempt
 
 
 def _utc_now_iso() -> str:
@@ -322,7 +323,7 @@ def _fallback_report(
     ][:24]
 
     out = {
-        "schema_version": "trade_report.v2",
+        "schema_version": "ai_trade_report.v2",
         "generated_at": _utc_now_iso(),
         "trade_id": trade_id,
         "story_id": _clip(story_input.get("story_id"), max_len=120) or trade_id,
@@ -391,6 +392,189 @@ def _fallback_report(
     out["monitor_trigger_reasoning"] = dict(out.get("holding_monitoring_story") or {})
     out["execution_result"] = dict(out.get("execution_quality") or {})
     return out
+
+
+def _failure_report(
+    story_input: Dict[str, Any],
+    *,
+    status: str,
+    mode: str,
+    model: str,
+    reason: str,
+    error: str = "",
+) -> Dict[str, Any]:
+    trade_id = _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120)
+    action = _actual_lifecycle_action(story_input)
+    symbol = _clip(story_input.get("symbol"), max_len=32) or "unknown"
+    status_text = _clip(story_input.get("status"), max_len=32) or "unknown"
+    reporter_status = story_input.get("reporter_status_human") if isinstance(story_input.get("reporter_status_human"), dict) else {}
+    monitor_reason = story_input.get("monitor_reason_human") if isinstance(story_input.get("monitor_reason_human"), dict) else {}
+    full_timeline = [
+        row
+        for row in list(story_input.get("timeline") or [])
+        if isinstance(row, dict)
+    ][:24]
+    out = {
+        "schema_version": "ai_trade_report.v2",
+        "generated_at": _utc_now_iso(),
+        "trade_id": trade_id,
+        "story_id": _clip(story_input.get("story_id"), max_len=120) or trade_id,
+        "run_id": _clip(story_input.get("run_id"), max_len=120),
+        "symbol": symbol,
+        "action": action,
+        "status": status_text,
+        "story_type": _clip(story_input.get("story_type"), max_len=40),
+        "execution_mode_label": _clip(story_input.get("execution_mode_label"), max_len=80),
+        "generation": {
+            "status": status,
+            "mode": mode,
+            "model": _clip(model, max_len=120),
+            "reason": _clip(reason, max_len=320),
+        },
+        "failure": {
+            "status": status,
+            "reason": _clip(reason, max_len=320),
+            "error": _clip(error, max_len=500),
+        },
+        "executive_summary": {
+            "headline": f"AI trade report failed for {symbol}",
+            "action": action,
+            "symbol": symbol,
+            "confidence": "not_available",
+            "summary": "AI trade report generation failed after retry attempts. Review the saved LLM response artifact for details.",
+        },
+        "market_context_at_entry": {
+            "summary": "AI generation failed before a rendered market-context section was produced.",
+            "bullets": [],
+        },
+        "why_this_symbol_was_chosen": {
+            "summary": "AI generation failed before a rendered symbol-selection section was produced.",
+            "bullets": [],
+        },
+        "entry_decision": {
+            "summary": "AI generation failed before a rendered entry-decision section was produced.",
+            "bullets": [],
+        },
+        "holding_monitoring_story": {
+            "summary": "AI generation failed before a rendered holding-monitoring section was produced.",
+            "bullets": _listify(monitor_reason.get("bullets"), max_items=8, max_len=260),
+        },
+        "exit_decision": {
+            "summary": "AI generation failed before a rendered exit-decision section was produced.",
+            "bullets": [],
+        },
+        "execution_quality": {
+            "summary": "AI generation failed before a rendered execution-quality section was produced.",
+            "bullets": [],
+        },
+        "monitor_snapshot": {
+            "posture": _clip(monitor_reason.get("posture"), max_len=40) or action or "WAIT",
+            "trigger_type": _clip(monitor_reason.get("trigger_type"), max_len=80) or "not_captured",
+            "position_age_seconds": int(monitor_reason.get("position_age_seconds") or 0),
+            "stop_loss_pct": monitor_reason.get("stop_loss_pct"),
+            "effective_stop_loss_pct": monitor_reason.get("effective_stop_loss_pct"),
+            "effective_stop_reason": _clip(monitor_reason.get("effective_stop_reason"), max_len=80) or "not_captured",
+            "take_profit_pct": monitor_reason.get("take_profit_pct"),
+            "exit_triggered": bool(monitor_reason.get("exit_triggered")),
+            "current_price": monitor_reason.get("current_price"),
+            "average_price": monitor_reason.get("average_price"),
+            "peak_price": monitor_reason.get("peak_price"),
+            "current_drawdown": monitor_reason.get("current_drawdown"),
+            "peak_drawdown": monitor_reason.get("peak_drawdown"),
+            "vwap_distance": monitor_reason.get("vwap_distance"),
+            "active_exit_axis": _clip(monitor_reason.get("active_exit_axis"), max_len=80),
+            "watch_axes": _listify(monitor_reason.get("watch_axes"), max_items=8, max_len=120),
+            "price_source": _clip(monitor_reason.get("price_source"), max_len=120) or "not_captured",
+            "feature_source": _clip(monitor_reason.get("feature_source"), max_len=120) or "not_captured",
+            "price_source_policy": _clip(monitor_reason.get("price_source_policy"), max_len=260) or "",
+        },
+        "scanner_filters": {
+            "summary": "AI generation failed before a rendered scanner-filter section was produced.",
+            "bullets": [],
+        },
+        "guard_approval_result": {
+            "summary": "AI generation failed before a rendered guard-approval section was produced.",
+            "bullets": [],
+        },
+        "reporter_evaluation": {
+            "summary": _clip(reporter_status.get("summary"), max_len=600) or "Reporter linkage status was recorded separately.",
+            "status": _clip(reporter_status.get("status"), max_len=40) or "missing",
+            "grade": _clip(reporter_status.get("grade"), max_len=16) or "N/A",
+            "bullets": _listify(reporter_status.get("bullets"), max_items=8, max_len=260),
+        },
+        "errors_weaknesses_improvement_points": {
+            "summary": "AI generation failed and no rendered improvement section is available.",
+            "bullets": [entry for entry in [_clip(reason, max_len=240), _clip(error, max_len=240)] if entry],
+        },
+        "full_timeline": full_timeline,
+        "timeline": full_timeline,
+        "final_operator_conclusion": {
+            "summary": "AI generation failed. Review lifecycle artifacts and the saved LLM response artifact before taking action.",
+            "current_action": "HOLD" if status_text.lower() == "open" and action == "BUY" else action,
+            "watch_next": [],
+            "thesis_invalidation": [],
+        },
+    }
+    out["market_context"] = dict(out.get("market_context_at_entry") or {})
+    out["why_this_symbol"] = dict(out.get("why_this_symbol_was_chosen") or {})
+    out["scanner_logic_and_filters"] = dict(out.get("scanner_filters") or {})
+    out["monitor_trigger_reasoning"] = dict(out.get("holding_monitoring_story") or {})
+    out["execution_result"] = dict(out.get("execution_quality") or {})
+    return out
+
+
+def _build_repair_messages(story_input: Dict[str, Any], raw_response: Any) -> List[Dict[str, str]]:
+    compact_input = {
+        "trade_id": story_input.get("trade_id") or story_input.get("story_id"),
+        "story_id": story_input.get("story_id"),
+        "run_id": story_input.get("run_id"),
+        "symbol": story_input.get("symbol"),
+        "action": story_input.get("action"),
+        "status": story_input.get("status"),
+        "story_type": story_input.get("story_type"),
+        "execution_mode_label": story_input.get("execution_mode_label"),
+        "market_context_human": story_input.get("market_context_human"),
+        "scanner_reason_human": story_input.get("scanner_reason_human"),
+        "filters_human": story_input.get("filters_human"),
+        "monitor_reason_human": story_input.get("monitor_reason_human"),
+        "guard_reason_human": story_input.get("guard_reason_human"),
+        "execution_outcome_human": story_input.get("execution_outcome_human"),
+        "reporter_status_human": story_input.get("reporter_status_human"),
+        "operator_conclusion_human": story_input.get("operator_conclusion_human"),
+        "timeline": story_input.get("timeline"),
+        "warnings": story_input.get("warnings"),
+    }
+    contract = {
+        "executive_summary": {"headline": "str", "action": "str", "symbol": "str", "confidence": "str", "summary": "str"},
+        "market_context_at_entry": {"summary": "str", "bullets": ["str"]},
+        "why_this_symbol_was_chosen": {"summary": "str", "bullets": ["str"]},
+        "entry_decision": {"summary": "str", "bullets": ["str"]},
+        "holding_monitoring_story": {"summary": "str", "bullets": ["str"]},
+        "exit_decision": {"summary": "str", "bullets": ["str"]},
+        "execution_quality": {"summary": "str", "bullets": ["str"]},
+        "scanner_filters": {"summary": "str", "bullets": ["str"]},
+        "guard_approval_result": {"summary": "str", "bullets": ["str"]},
+        "reporter_evaluation": {"summary": "str", "status": "str", "grade": "str", "bullets": ["str"]},
+        "errors_weaknesses_improvement_points": {"summary": "str", "bullets": ["str"]},
+        "full_timeline": [{"event": "str", "ts": "str", "description": "str"}],
+        "final_operator_conclusion": {"summary": "str", "current_action": "str", "watch_next": ["str"], "thesis_invalidation": ["str"]},
+    }
+    return [
+        {
+            "role": "system",
+            "content": "You repair AI trade report outputs. Return one strict JSON object only. No markdown, no prose, no code fences.",
+        },
+        {
+            "role": "user",
+            "content": (
+                "The previous response did not match the required JSON contract. "
+                "Regenerate the report as valid JSON only.\n"
+                f"JSON contract:\n{json.dumps(contract, ensure_ascii=False)}\n\n"
+                f"Input:\n{json.dumps(compact_input, ensure_ascii=False)}\n\n"
+                f"Previous response:\n{str(raw_response or '')[:1800]}"
+            ),
+        },
+    ]
 
 
 def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -472,7 +656,7 @@ def build_ai_trade_report(
     max_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
     is_enabled = _env_bool("TRADE_REPORT_AI_ENABLED", True) if enabled is None else bool(enabled)
-    chosen_model = (
+    chosen_model = normalize_openrouter_model_name(
         str(model or "").strip()
         or str(os.getenv("TRADE_REPORT_AI_MODEL", "")).strip()
         or str(os.getenv("OPENROUTER_MODEL_TRADE_REPORT", "")).strip()
@@ -480,8 +664,9 @@ def build_ai_trade_report(
     trade_id = str(story_input.get("trade_id") or story_input.get("story_id") or "")
     run_id = str(story_input.get("run_id") or "")
     day = str(story_input.get("day") or "")
+    retry_max = max(0, int(float(str(os.getenv("TRADE_REPORT_AI_RETRY_MAX", "2")).strip() or "2")))
     if not is_enabled:
-        report = _fallback_report(
+        report = _failure_report(
             story_input,
             status="disabled",
             mode="fallback",
@@ -504,10 +689,10 @@ def build_ai_trade_report(
 
     router = LLMRouter.from_env()
     if router.client is None:
-        report = _fallback_report(
+        report = _failure_report(
             story_input,
-            status="unavailable",
-            mode="fallback",
+            status="error",
+            mode="ai",
             model=chosen_model,
             reason="OPENROUTER_API_KEY is not configured",
         )
@@ -517,11 +702,11 @@ def build_ai_trade_report(
             trade_id=trade_id,
             story_id=trade_id,
             day=day,
-            status="fallback",
+            status="error",
             attempts=[],
             parsed_output={},
             model_info={"provider": "OpenRouter", "model": chosen_model or "openrouter/free"},
-            meta={"reason": "OPENROUTER_API_KEY is not configured"},
+            meta={"reason": "OPENROUTER_API_KEY is not configured", "error": "llm_client_unavailable"},
         )
         return report
 
@@ -535,77 +720,118 @@ def build_ai_trade_report(
         if max_tokens is not None
         else str(os.getenv("TRADE_REPORT_AI_MAX_TOKENS", "1400")).strip() or "1400"
     )
-    raw = ""
     messages = _build_messages(story_input)
     attempts: List[Dict[str, Any]] = []
-    t0 = time.perf_counter()
-    try:
-        raw = router.chat(
+    resolved_model = str(
+        router.resolve(
             "trade_report",
-            messages,
             policy={
                 "temperature": temp,
                 "max_tokens": max(600, token_budget),
-                "response_format": {"type": "json_object"},
                 **({"model": chosen_model} if chosen_model else {}),
             },
-        )
-    except Exception as exc:
-        latency_ms = int((time.perf_counter() - t0) * 1000)
-        attempts.append(
-            make_attempt(
-                step="primary",
-                messages=messages,
-                raw_response_text=f"ERROR:{type(exc).__name__}:{exc}",
-                parsed_output={},
-                model=chosen_model or str(router.resolve("trade_report").model),
-                latency_ms=latency_ms,
-                status="error",
+        ).model
+    )
+    final_status = "error"
+    final_reason = ""
+    final_error = ""
+    final_latency_ms = 0
+    parsed: Optional[Dict[str, Any]] = None
+    raw = ""
+    current_messages = list(messages)
+    current_policy = {
+        "temperature": temp,
+        "max_tokens": max(600, token_budget),
+        "response_format": {"type": "json_object"},
+        **({"model": chosen_model} if chosen_model else {}),
+    }
+    for attempt_index in range(retry_max + 1):
+        step = "primary" if attempt_index == 0 else f"retry_{attempt_index}"
+        t0 = time.perf_counter()
+        try:
+            raw = router.chat("trade_report", current_messages, policy=current_policy)
+        except Exception as exc:
+            final_latency_ms = int((time.perf_counter() - t0) * 1000)
+            final_status = classify_llm_exception(exc)
+            final_reason = f"trade_report_ai_exception:{type(exc).__name__}:{exc}"
+            final_error = f"{type(exc).__name__}:{exc}"
+            attempts.append(
+                make_attempt(
+                    step=step,
+                    messages=current_messages,
+                    raw_response_text=f"ERROR:{final_error}",
+                    parsed_output={},
+                    model=chosen_model or resolved_model,
+                    latency_ms=final_latency_ms,
+                    status=final_status,
+                    meta={"role": "ai_trade_report", "error": final_error},
+                )
             )
-        )
-        report = _fallback_report(
-            story_input,
-            status="error",
-            mode="fallback",
-            model=chosen_model,
-            reason=f"trade_report_ai_exception:{type(exc).__name__}:{exc}",
-        )
-        report["llm_response_artifact"] = build_llm_response_artifact(
-            component="ai_trade_report",
-            run_id=run_id,
-            trade_id=trade_id,
-            story_id=trade_id,
-            day=day,
-            status="error",
-            attempts=attempts,
-            parsed_output={},
-            model_info={"provider": "OpenRouter", "model": chosen_model or str(router.resolve("trade_report").model)},
-            latency_ms=latency_ms,
-            meta={"reason": f"trade_report_ai_exception:{type(exc).__name__}:{exc}"},
-        )
-        return report
+        else:
+            final_latency_ms = int((time.perf_counter() - t0) * 1000)
+            parsed = _extract_json_object(raw)
+            if not str(raw or "").strip():
+                final_status = "empty_response"
+                final_reason = "trade_report_ai returned an empty response"
+                attempts.append(
+                    make_attempt(
+                        step=step,
+                        messages=current_messages,
+                        raw_response_text=raw,
+                        parsed_output={},
+                        model=chosen_model or resolved_model,
+                        latency_ms=final_latency_ms,
+                        status=final_status,
+                        meta={"role": "ai_trade_report", "error": final_reason},
+                    )
+                )
+            elif not parsed:
+                final_status = "parse_error"
+                final_reason = "trade_report_ai returned non-JSON response"
+                attempts.append(
+                    make_attempt(
+                        step=step,
+                        messages=current_messages,
+                        raw_response_text=raw,
+                        parsed_output={},
+                        model=chosen_model or resolved_model,
+                        latency_ms=final_latency_ms,
+                        status=final_status,
+                        meta={"role": "ai_trade_report", "error": final_reason},
+                    )
+                )
+            else:
+                final_status = "ok"
+                attempts.append(
+                    make_attempt(
+                        step=step,
+                        messages=current_messages,
+                        raw_response_text=raw,
+                        parsed_output=parsed,
+                        model=chosen_model or resolved_model,
+                        latency_ms=final_latency_ms,
+                        status="ok",
+                        meta={"role": "ai_trade_report"},
+                    )
+                )
+                break
+        if attempt_index < retry_max:
+            if final_status == "parse_error":
+                current_messages = _build_repair_messages(story_input, raw)
+            current_policy = {
+                **current_policy,
+                "temperature": 0.0,
+                "max_tokens": min(max(800, token_budget), 1800),
+            }
 
-    latency_ms = int((time.perf_counter() - t0) * 1000)
-
-    parsed = _extract_json_object(raw)
     if not parsed:
-        attempts.append(
-            make_attempt(
-                step="primary",
-                messages=messages,
-                raw_response_text=raw,
-                parsed_output={},
-                model=chosen_model or str(router.resolve("trade_report").model),
-                latency_ms=latency_ms,
-                status="fallback",
-            )
-        )
-        report = _fallback_report(
+        report = _failure_report(
             story_input,
-            status="parse_error",
-            mode="fallback",
-            model=chosen_model,
-            reason="trade_report_ai returned non-JSON response",
+            status=final_status,
+            mode="ai",
+            model=chosen_model or resolved_model,
+            reason=final_reason or "AI trade report generation failed",
+            error=final_error,
         )
         report["llm_response_artifact"] = build_llm_response_artifact(
             component="ai_trade_report",
@@ -613,12 +839,12 @@ def build_ai_trade_report(
             trade_id=trade_id,
             story_id=trade_id,
             day=day,
-            status="fallback",
+            status=final_status,
             attempts=attempts,
             parsed_output={},
-            model_info={"provider": "OpenRouter", "model": chosen_model or str(router.resolve("trade_report").model)},
-            latency_ms=latency_ms,
-            meta={"reason": "trade_report_ai returned non-JSON response"},
+            model_info={"provider": "OpenRouter", "model": chosen_model or resolved_model},
+            latency_ms=sum(int(row.get("latency_ms") or 0) for row in attempts),
+            meta={"reason": final_reason, "error": final_error},
         )
         return report
 
@@ -626,24 +852,13 @@ def build_ai_trade_report(
         story_input,
         status="ok",
         mode="ai",
-        model=chosen_model or str(router.resolve("trade_report").model),
+        model=chosen_model or resolved_model,
         reason="",
-    )
-    attempts.append(
-        make_attempt(
-            step="primary",
-            messages=messages,
-            raw_response_text=raw,
-            parsed_output=parsed,
-            model=chosen_model or str(router.resolve("trade_report").model),
-            latency_ms=latency_ms,
-            status="ok",
-        )
     )
     out["generation"] = {
         "status": "ok",
         "mode": "ai",
-        "model": _clip(chosen_model or str(router.resolve("trade_report").model), max_len=120),
+        "model": _clip(chosen_model or resolved_model, max_len=120),
         "reason": "",
     }
     out["executive_summary"] = _merge_section_with_fallback(
@@ -753,13 +968,33 @@ def build_ai_trade_report(
         status="ok",
         attempts=attempts,
         parsed_output=parsed,
-        model_info={"provider": "OpenRouter", "model": chosen_model or str(router.resolve("trade_report").model)},
-        latency_ms=latency_ms,
+        model_info={"provider": "OpenRouter", "model": chosen_model or resolved_model},
+        latency_ms=sum(int(row.get("latency_ms") or 0) for row in attempts),
     )
     return _normalize_trade_report_output(story_input, out)
 
 
 def render_trade_report_markdown(report: Dict[str, Any]) -> str:
+    generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
+    if str(generation.get("status") or "").strip().lower() not in {"", "ok"}:
+        failure = report.get("failure") if isinstance(report.get("failure"), dict) else {}
+        lines = [
+            f"# AI Trade Report ({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})",
+            "",
+            f"- action: **{report.get('action') or '-'} {report.get('symbol') or '-'}**",
+            f"- lifecycle_status: **{report.get('status') or '-'}**",
+            f"- generation_status: `{generation.get('status') or '-'}`",
+            f"- model: `{generation.get('model') or '-'}`",
+            "",
+            "## Failure",
+            "",
+            f"- reason: {failure.get('reason') or generation.get('reason') or '-'}",
+        ]
+        if str(failure.get("error") or "").strip():
+            lines.append(f"- error: {failure.get('error')}")
+        lines.append("")
+        return "\n".join(lines)
+
     executive = report.get("executive_summary") if isinstance(report.get("executive_summary"), dict) else {}
     market_context = (
         report.get("market_context_at_entry")
@@ -815,7 +1050,6 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
     lines.append(f"- lifecycle_status: **{report.get('status') or '-'}**")
     lines.append(f"- story_type: **{report.get('story_type') or '-'}**")
     lines.append(f"- execution_mode: **{report.get('execution_mode_label') or '-'}**")
-    generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
     lines.append(
         f"- report_generation: status=`{generation.get('status') or '-'}` mode=`{generation.get('mode') or '-'}` "
         f"model=`{generation.get('model') or '-'}`"

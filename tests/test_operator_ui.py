@@ -96,6 +96,14 @@ class _LineRepairRouter:
         )
 
 
+class _AlwaysEmptyRouter:
+    def __init__(self) -> None:
+        self.client = object()
+
+    def chat(self, role: str, messages: list[dict], *, policy: dict | None = None) -> str:
+        return ""
+
+
 def _make_config(tmp_path: Path) -> OperatorUIConfig:
     reports = tmp_path / "reports"
     events = tmp_path / "data" / "logs" / "events.jsonl"
@@ -593,7 +601,7 @@ def test_operator_ui_run_detail_repairs_non_json_llm_output(tmp_path: Path, monk
 
     detail = client.get("/runs/run-1")
     assert detail.status_code == 200
-    assert "brief=repaired" in detail.text
+    assert "brief=ok" in detail.text
     assert "repair 경로가 동작했습니다." in detail.text
 
 
@@ -605,7 +613,7 @@ def test_operator_ui_run_detail_uses_line_repair_for_free_model(tmp_path: Path, 
 
     detail = client.get("/runs/run-1")
     assert detail.status_code == 200
-    assert "brief=line_repaired" in detail.text
+    assert "brief=ok" in detail.text
     assert "line repair 동작" in detail.text
 
 
@@ -801,7 +809,7 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert saved["run_id"] == "run-1"
     assert saved["trade_id"] == "20260316_005930_buy_run-1"
     assert saved["report_status"] == "available"
-    assert saved["version"] == 8
+    assert saved["version"] == 9
     assert saved["monitor_snapshot"]["price_source"] == "-"
     assert str(saved["monitor_snapshot"]["effective_stop_reason"] or "") in {"", "-", "Hard stop"}
     md_text = brief_md.read_text(encoding="utf-8")
@@ -828,6 +836,23 @@ def test_operator_brief_saved_artifact_is_reused(tmp_path: Path, monkeypatch) ->
     second = data_access.load_run_detail(cfg, "run-1")
 
     assert second["operator_brief"]["headline"] == "saved artifact headline"
+
+
+def test_operator_brief_writes_failure_artifact_after_retries(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _AlwaysEmptyRouter()))
+    cfg = _make_config(tmp_path)
+
+    detail = data_access.load_run_detail(cfg, "run-1")
+    brief = detail["operator_brief"]
+    brief_json = Path(str(detail["trade_report"].get("operator_brief_json_path") or ""))
+    brief_llm = brief_json.parent / "brief_llm_response.json"
+    artifact = json.loads(brief_llm.read_text(encoding="utf-8"))
+
+    assert brief["status"] == "empty_response"
+    assert artifact["status"] == "empty_response"
+    assert artifact["retry_count"] >= 1
+    assert artifact["raw_response_text"] == ""
+    assert brief["headline"].startswith("AI Brief Failed")
 
 
 def test_operator_ui_reads_new_trade_artifact_layout(tmp_path: Path, monkeypatch) -> None:

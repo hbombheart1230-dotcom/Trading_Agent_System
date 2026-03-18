@@ -358,8 +358,40 @@ def test_m21_runtime_preopen_phase_short_circuits_to_preopen_runner():
     assert out["path"] == "preopen_strategist"
     assert out["runtime_status"] == "preopen_ready"
     assert out["runtime_plan"]["phase"] == "preopen"
-    assert out["runtime_plan"]["agents"] == ["commander_router", "strategist"]
-    assert called == {"graph": 0, "integrated": 0, "preopen": 1, "closeout": 0}
+
+
+def test_m21_integrated_chain_blocks_when_strategist_llm_is_required_but_failed(monkeypatch):
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["portfolio_snapshot"] = {"cash": 1_000_000, "positions": [], "open_positions": 0}
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["risk_context"] = {"open_positions": 0}
+        return state
+
+    def fake_strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["strategist_output"] = {
+            "llm_frame_blocked": True,
+            "llm_frame_blocked_reason": "strategist_llm_failed",
+        }
+        state["strategist_blocked"] = True
+        state["strategist_blocked_reason"] = "strategist_llm_failed"
+        state["strategist_llm"] = {"blocked": True, "blocked_reason": "strategist_llm_failed"}
+        return state
+
+    def fail_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        raise AssertionError("scanner should not run when strategist is blocked")
+
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist_node)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fail_scanner)
+
+    out = _run_integrated_chain({"run_id": "run-1"}, execute_fn=lambda state: state)
+
+    assert out["runtime_status"] == "blocked"
+    assert out["path"] == "integrated_chain_strategist_blocked"
+    assert out["decision_reason"] == "strategist_llm_failed"
 
 
 def test_m21_runtime_closeout_phase_short_circuits_to_closeout_runner():

@@ -9,6 +9,7 @@ from typing import Any, Dict
 import pytest
 
 from graphs.pipelines.m13_eod_report import run_m13_eod_report
+from libs.reporting.llm_daily_summary import summarize_daily_report_with_artifact
 
 
 def test_m19_6_llm_daily_report_appends_summary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -45,3 +46,32 @@ def test_m19_6_llm_daily_report_appends_summary(monkeypatch: pytest.MonkeyPatch,
     llm_artifact = json.loads(llm_path.read_text(encoding="utf-8"))
     assert llm_artifact["component"] == "daily_report"
     assert llm_artifact["status"] == "fallback"
+
+
+class _EmptyDailyRouter:
+    def __init__(self) -> None:
+        self.client = object()
+
+    @staticmethod
+    def from_env() -> "_EmptyDailyRouter":
+        return _EmptyDailyRouter()
+
+    def chat(self, role: str, messages: list[dict], *, policy: dict | None = None) -> str:
+        return ""
+
+
+def test_m19_6_daily_summary_retries_and_records_failure_artifact(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("DRY_RUN", "0")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "dummy")
+    monkeypatch.setenv("DAILY_REPORT_LLM_RETRY_MAX", "2")
+    monkeypatch.setattr("libs.reporting.llm_daily_summary.LLMRouter", _EmptyDailyRouter)
+
+    summary, artifact = summarize_daily_report_with_artifact(
+        state={"eod_day": "2026-03-18", "daily_report": {"approvals": 1, "denials": 0, "runs": 3}},
+        policy={},
+    )
+
+    assert summary == ""
+    assert artifact["status"] == "empty_response"
+    assert artifact["retry_count"] == 2
+    assert len(artifact["attempts"]) == 3

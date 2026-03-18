@@ -471,6 +471,8 @@ def _persist_strategist_output_cache(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
     if not strategist_output:
         return state
+    if bool(state.get("strategist_blocked")) or bool(strategist_output.get("llm_frame_blocked")):
+        return state
     persisted_state = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
     persisted_state["strategist_output_cache"] = {
         "output": dict(strategist_output),
@@ -478,6 +480,30 @@ def _persist_strategist_output_cache(state: Dict[str, Any]) -> Dict[str, Any]:
         "source": "strategist_node",
     }
     state["persisted_state"] = persisted_state
+    return state
+
+
+def _strategist_frame_blocked(state: Dict[str, Any]) -> bool:
+    if bool(state.get("strategist_blocked")):
+        return True
+    strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    strategist_llm = state.get("strategist_llm") if isinstance(state.get("strategist_llm"), dict) else {}
+    return bool(strategist_output.get("llm_frame_blocked")) or bool(strategist_llm.get("blocked"))
+
+
+def _apply_strategist_block(state: Dict[str, Any], *, phase: str) -> Dict[str, Any]:
+    reason = str(
+        state.get("strategist_blocked_reason")
+        or ((state.get("strategist_output") or {}).get("llm_frame_blocked_reason") if isinstance(state.get("strategist_output"), dict) else "")
+        or ((state.get("strategist_llm") or {}).get("blocked_reason") if isinstance(state.get("strategist_llm"), dict) else "")
+        or "strategist_llm_failed"
+    )
+    payload = {"path": "strategist_llm_blocked", "phase": phase, "reason": reason}
+    _log_commander_event(state, "fast_path", payload)
+    state["runtime_status"] = "blocked"
+    state["path"] = f"{phase}_strategist_blocked"
+    state["decision"] = "noop"
+    state["decision_reason"] = reason
     return state
 
 
@@ -737,6 +763,8 @@ def _run_integrated_chain(
         _log_commander_event(state, "fast_path", {"path": "integrated_chain_cached_frame", **cache_payload})
     else:
         state = strategist_node(state)
+        if _strategist_frame_blocked(state):
+            return _apply_strategist_block(state, phase="integrated_chain")
         state = _persist_strategist_output_cache(state)
     state = scanner_node(state)
     state = _hydrate_monitor_symbol_features(state)
@@ -776,6 +804,8 @@ def _run_preopen_phase(state: Dict[str, Any]) -> Dict[str, Any]:
         return state
     state = build_risk_context(state)
     state = strategist_node(state)
+    if _strategist_frame_blocked(state):
+        return _apply_strategist_block(state, phase="preopen")
     state = _persist_strategist_output_cache(state)
     state["path"] = "preopen_strategist"
     state["runtime_status"] = str(state.get("runtime_status") or "preopen_ready")
