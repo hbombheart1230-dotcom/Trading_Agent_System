@@ -77,5 +77,5 @@ def test_reporter_review_partial_output_is_not_marked_ok(monkeypatch) -> None:
         model="openrouter/free",
     )
     assert out["status"] == "parse_error"
-    assert out["llm_status"] == "partial"
+    assert out["llm_status"] == "error"
     assert out["parse_mode"] in {"partial", "none"}

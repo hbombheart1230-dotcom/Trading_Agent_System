@@ -154,10 +154,35 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
         out["section_provenance"] = _report_section_provenance(story_input)
     if "evidence_source" not in out:
         out["evidence_source"] = str(story_input.get("evidence_source") or "fallback")
+    section_provenance = out.get("section_provenance") if isinstance(out.get("section_provenance"), dict) else {}
+    for section_key in (
+        "executive_summary",
+        "market_context_at_entry",
+        "why_this_symbol_was_chosen",
+        "entry_decision",
+        "holding_monitoring_story",
+        "exit_decision",
+        "execution_quality",
+        "scanner_filters",
+        "guard_approval_result",
+        "reporter_evaluation",
+        "errors_weaknesses_improvement_points",
+        "final_operator_conclusion",
+    ):
+        section = out.get(section_key) if isinstance(out.get(section_key), dict) else {}
+        source_entry = (
+            _normalize_provenance_entry(section_provenance.get(section_key))
+            if isinstance(section_provenance.get(section_key), dict)
+            else _normalize_provenance_entry({})
+        )
+        section["evidence_source"] = str(source_entry.get("evidence_source") or "fallback")
+        section["confidence"] = str(source_entry.get("confidence") or "low")
+        section["completeness"] = float(source_entry.get("completeness") or 0.0)
+        out[section_key] = section
     return out
 
 
-def _normalize_provenance_entry(entry: Any) -> Dict[str, str]:
+def _normalize_provenance_entry(entry: Any) -> Dict[str, Any]:
     row = entry if isinstance(entry, dict) else {}
     source = str(row.get("source") or "fallback").strip().lower()
     path = str(row.get("artifact_path") or "").strip()
@@ -169,10 +194,18 @@ def _normalize_provenance_entry(entry: Any) -> Dict[str, str]:
             confidence = "medium"
         else:
             confidence = "low"
+    if confidence == "high":
+        completeness = 1.0
+    elif confidence == "medium":
+        completeness = 0.75
+    else:
+        completeness = 0.5 if source != "fallback" else 0.35
     return {
         "source": source or "fallback",
+        "evidence_source": source or "fallback",
         "artifact_path": path,
         "confidence": confidence,
+        "completeness": completeness,
     }
 
 

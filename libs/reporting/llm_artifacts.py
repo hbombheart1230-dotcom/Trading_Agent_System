@@ -73,6 +73,15 @@ def normalize_llm_status(value: Any, *, default: str = "fallback") -> str:
     return default
 
 
+def canonical_llm_status(value: Any, *, default: str = "fallback") -> str:
+    raw = normalize_llm_status(value, default=default)
+    if raw in {"ok", "partial", "salvaged", "repaired", "fallback", "error"}:
+        return raw
+    if raw in {"parse_error", "timeout", "network_error", "empty_response"}:
+        return "error"
+    return default
+
+
 def classify_llm_exception(exc: Exception) -> str:
     text = str(exc or "").strip().lower()
     if isinstance(exc, TimeoutError) or "timeout" in text or "timed out" in text:
@@ -108,6 +117,7 @@ def make_attempt(
         },
         "latency_ms": int(float(latency_ms or 0)),
         "status": normalize_llm_status(status),
+        "llm_status": canonical_llm_status(status),
     }
     if isinstance(meta, dict):
         for key, value in meta.items():
@@ -141,6 +151,7 @@ def build_llm_response_artifact(
         "day": str(day or ""),
         "saved_at": utc_now_iso(),
         "status": normalize_llm_status(status),
+        "llm_status": canonical_llm_status(status),
         "latency_ms": int(float(latency_ms or 0)),
         "parsed_output": parsed_output if isinstance(parsed_output, (dict, list)) else {},
         "model_info": dict(model_info or {}),

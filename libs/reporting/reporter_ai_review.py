@@ -12,6 +12,7 @@ from libs.llm.json_response import (
     strip_fenced_code_block,
 )
 from libs.research.evidence_ledger import record_llm_prompt, record_llm_response, record_raw_input
+from libs.reporting.llm_artifacts import canonical_llm_status
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -42,14 +43,7 @@ REPORTER_AI_REVIEW_REQUIRED_KEYS = [
 
 
 def _normalize_llm_status(status: str) -> str:
-    raw = str(status or "").strip().lower()
-    if raw == "ok":
-        return "ok"
-    if raw in {"parse_error"}:
-        return "partial"
-    if raw in {"disabled", "dry_run", "unavailable"}:
-        return "fallback"
-    return "error"
+    return canonical_llm_status(status, default="fallback")
 
 
 def _clip_str(v: Any, *, max_len: int = 400) -> str:
