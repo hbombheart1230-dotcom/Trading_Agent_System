@@ -7,9 +7,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 import re
+import time
 
 from libs.llm.llm_router import LLMRouter
 from libs.core.symbols import normalize_symbol
+from libs.reporting.llm_artifacts import (
+    build_llm_response_artifact,
+    make_attempt,
+    trade_artifact_paths,
+)
 
 
 KST = timezone(timedelta(hours=9), name="KST")
@@ -392,6 +398,57 @@ def _read_exact_day(path: Path, prefix: str, day: str) -> Dict[str, Any]:
         return {}
     exact = path / f"{prefix}_{day}.json"
     return _read_json(exact)
+
+
+def _trade_root_from_bundle_path(bundle_path: Path) -> Path:
+    parent = bundle_path.parent
+    if parent.name == "lifecycle":
+        return parent.parent
+    return parent
+
+
+def _trade_paths_from_bundle(bundle_path: Path, *, day_hint: str = "", trade_id_hint: str = "") -> Dict[str, Path]:
+    trade_root = _trade_root_from_bundle_path(bundle_path)
+    if day_hint and trade_id_hint:
+        try:
+            paths = trade_artifact_paths(bundle_path.parents[2], day_hint, trade_id_hint)
+            # Only trust helper paths when root already matches trade root pattern.
+            if str(paths["trade_root"]) == str(trade_root):
+                return paths
+        except Exception:
+            pass
+    legacy_root = trade_root
+    if trade_root.name in {"brief", "ai_trade_report", "lifecycle", "strategist", "evidence"}:
+        trade_root = trade_root.parent
+    return {
+        "trade_root": trade_root,
+        "legacy_trade_root": legacy_root,
+        "strategist_llm_response_json": trade_root / "strategist" / "strategist_llm_response.json",
+        "ai_trade_report_input_json": trade_root / "ai_trade_report" / "ai_trade_report_input.json",
+        "ai_trade_report_json": trade_root / "ai_trade_report" / "ai_trade_report.json",
+        "ai_trade_report_md": trade_root / "ai_trade_report" / "ai_trade_report.md",
+        "ai_trade_report_llm_response_json": trade_root / "ai_trade_report" / "ai_trade_report_llm_response.json",
+        "brief_json": trade_root / "brief" / "operator_brief.json",
+        "brief_md": trade_root / "brief" / "operator_brief.md",
+        "brief_llm_response_json": trade_root / "brief" / "brief_llm_response.json",
+        "trade_lifecycle_json": trade_root / "lifecycle" / "trade_lifecycle.json",
+        "aggregated_execution_bundle_json": trade_root / "lifecycle" / "aggregated_execution_bundle.json",
+        "legacy_trade_story_input_json": trade_root / "trade_story_input.json",
+        "legacy_trade_report_json": trade_root / "trade_report.json",
+        "legacy_trade_report_md": trade_root / "trade_report.md",
+        "legacy_trade_lifecycle_json": trade_root / "trade_lifecycle.json",
+        "legacy_aggregated_execution_bundle_json": trade_root / "aggregated_execution_bundle.json",
+        "legacy_operator_brief_json": trade_root / "operator_brief.json",
+        "legacy_operator_brief_md": trade_root / "operator_brief.md",
+    }
+
+
+def _existing_trade_path(paths: Dict[str, Path], *keys: str) -> Path:
+    for key in keys:
+        path = paths.get(key)
+        if isinstance(path, Path) and path.exists():
+            return path
+    return Path()
 
 
 def _normalize_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -827,18 +884,28 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
 
     by_run_id: Dict[str, Dict[str, Any]] = {}
     by_story_id: Dict[str, Dict[str, Any]] = {}
-    for bundle_path in sorted(root.glob("*/*/*/aggregated_execution_bundle.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+    seen_bundle_paths: set[str] = set()
+    bundle_candidates = sorted(root.glob("**/aggregated_execution_bundle.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for bundle_path in bundle_candidates:
+        key_path = str(bundle_path.resolve())
+        if key_path in seen_bundle_paths:
+            continue
+        seen_bundle_paths.add(key_path)
         bundle = _read_json(bundle_path)
         if not bundle:
             continue
 
-        lifecycle_path = bundle_path.parent / "trade_lifecycle.json"
+        bundle_day = str(bundle.get("day") or "").strip()
+        lifecycle_status_hint = str(bundle.get("trade_lifecycle_status") or "").strip()
+        trade_id_hint = str(bundle.get("trade_id") or bundle.get("story_id") or "").strip()
+        paths = _trade_paths_from_bundle(bundle_path, day_hint=bundle_day, trade_id_hint=trade_id_hint)
+        lifecycle_path = _existing_trade_path(paths, "trade_lifecycle_json", "legacy_trade_lifecycle_json")
         lifecycle = _read_json(lifecycle_path) if lifecycle_path.exists() else {}
         trade_id = str(
             lifecycle.get("trade_id")
             or bundle.get("trade_id")
             or bundle.get("story_id")
-            or bundle_path.parent.name
+            or paths.get("trade_root", bundle_path.parent).name
         ).strip()
         story_id = trade_id
         run_id = str(bundle.get("run_id") or "").strip()
@@ -867,11 +934,14 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
         operator_conclusion_human = bundle.get("operator_conclusion_human") if isinstance(bundle.get("operator_conclusion_human"), dict) else {}
         execution_outcome_human = bundle.get("execution_outcome_human") if isinstance(bundle.get("execution_outcome_human"), dict) else {}
 
-        report_json_path = bundle_path.parent / "trade_report.json"
-        report_md_path = bundle_path.parent / "trade_report.md"
-        story_input_path = bundle_path.parent / "trade_story_input.json"
-        operator_brief_json_path = bundle_path.parent / "operator_brief.json"
-        operator_brief_md_path = bundle_path.parent / "operator_brief.md"
+        report_json_path = _existing_trade_path(paths, "ai_trade_report_json", "legacy_trade_report_json")
+        report_md_path = _existing_trade_path(paths, "ai_trade_report_md", "legacy_trade_report_md")
+        story_input_path = _existing_trade_path(paths, "ai_trade_report_input_json", "legacy_trade_story_input_json")
+        operator_brief_json_path = _existing_trade_path(paths, "brief_json", "legacy_operator_brief_json")
+        operator_brief_md_path = _existing_trade_path(paths, "brief_md", "legacy_operator_brief_md")
+        strategist_llm_response_path = _existing_trade_path(paths, "strategist_llm_response_json")
+        ai_trade_report_llm_response_path = _existing_trade_path(paths, "ai_trade_report_llm_response_json")
+        brief_llm_response_path = _existing_trade_path(paths, "brief_llm_response_json")
         report = _read_json(report_json_path)
         executive = report.get("executive_summary") if isinstance(report.get("executive_summary"), dict) else {}
         reporter_eval = report.get("reporter_evaluation") if isinstance(report.get("reporter_evaluation"), dict) else {}
@@ -902,6 +972,7 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
         ts_epoch = _to_epoch(bundle.get("ts"))
         if ts_epoch is None:
             ts_epoch = int(bundle_path.stat().st_mtime)
+        path_priority = 2 if bundle_path.parent.name == "lifecycle" else 1
         symbol = normalize_symbol(
             execution.get("symbol") or report.get("symbol") or "",
             allow_test_symbols=True,
@@ -961,18 +1032,40 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
             "trade_report_json_path": str(report_json_path) if report_json_path.exists() else "",
             "trade_report_md_path": str(report_md_path) if report_md_path.exists() else "",
             "trade_story_input_path": str(story_input_path) if story_input_path.exists() else "",
+            "ai_trade_report_json_path": str(report_json_path) if report_json_path.exists() else "",
+            "ai_trade_report_md_path": str(report_md_path) if report_md_path.exists() else "",
+            "ai_trade_report_input_path": str(story_input_path) if story_input_path.exists() else "",
             "trade_lifecycle_json_path": str(lifecycle_path) if lifecycle_path.exists() else "",
             "operator_brief_json_path": str(operator_brief_json_path) if operator_brief_json_path.exists() else "",
             "operator_brief_md_path": str(operator_brief_md_path) if operator_brief_md_path.exists() else "",
+            "strategist_llm_response_path": str(strategist_llm_response_path) if strategist_llm_response_path.exists() else "",
+            "ai_trade_report_llm_response_path": str(ai_trade_report_llm_response_path) if ai_trade_report_llm_response_path.exists() else "",
+            "brief_llm_response_path": str(brief_llm_response_path) if brief_llm_response_path.exists() else "",
             "aggregated_bundle_path": str(bundle_path),
+            "trade_root_path": str(paths.get("trade_root") or ""),
             "ts_epoch": ts_epoch,
+            "_path_priority": path_priority,
         }
 
         if story_id:
-            by_story_id[story_id] = record
+            current_story = by_story_id.get(story_id)
+            if (not current_story) or (
+                int(record.get("_path_priority") or 0) > int(current_story.get("_path_priority") or 0)
+                or (
+                    int(record.get("_path_priority") or 0) == int(current_story.get("_path_priority") or 0)
+                    and int(record.get("ts_epoch") or 0) >= int(current_story.get("ts_epoch") or 0)
+                )
+            ):
+                by_story_id[story_id] = record
         for rid in linked_run_ids:
             current = by_run_id.get(rid)
-            if (not current) or int(record.get("ts_epoch") or 0) >= int(current.get("ts_epoch") or 0):
+            if (not current) or (
+                int(record.get("_path_priority") or 0) > int(current.get("_path_priority") or 0)
+                or (
+                    int(record.get("_path_priority") or 0) == int(current.get("_path_priority") or 0)
+                    and int(record.get("ts_epoch") or 0) >= int(current.get("ts_epoch") or 0)
+                )
+            ):
                 by_run_id[rid] = record
 
     return {"by_run_id": by_run_id, "by_story_id": by_story_id}
@@ -1967,8 +2060,14 @@ def load_trade_report_detail(config: OperatorUIConfig, story_id: str) -> Dict[st
             "trade_report_json": str(meta.get("trade_report_json_path") or ""),
             "trade_report_md": str(meta.get("trade_report_md_path") or ""),
             "trade_story_input": str(meta.get("trade_story_input_path") or ""),
+            "ai_trade_report_json": str(meta.get("ai_trade_report_json_path") or meta.get("trade_report_json_path") or ""),
+            "ai_trade_report_md": str(meta.get("ai_trade_report_md_path") or meta.get("trade_report_md_path") or ""),
+            "ai_trade_report_input": str(meta.get("ai_trade_report_input_path") or meta.get("trade_story_input_path") or ""),
             "trade_lifecycle": str(meta.get("trade_lifecycle_json_path") or ""),
             "aggregated_execution_bundle": str(meta.get("aggregated_bundle_path") or ""),
+            "strategist_llm_response": str(meta.get("strategist_llm_response_path") or ""),
+            "ai_trade_report_llm_response": str(meta.get("ai_trade_report_llm_response_path") or ""),
+            "brief_llm_response": str(meta.get("brief_llm_response_path") or ""),
         },
         "raw_report": report if isinstance(report, dict) else {},
     }
@@ -3446,6 +3545,12 @@ def _build_operator_brief_line_messages(compact_input: Dict[str, Any]) -> List[D
 
 def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     fallback = _fallback_operator_brief(detail)
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    run_id = str(detail.get("run_id") or "").strip()
+    trade_id = str(trade_report.get("trade_id") or trade_report.get("story_id") or "").strip()
+    day_match = re.search(r"\d{4}-\d{2}-\d{2}", str(detail.get("started_at") or ""))
+    day = day_match.group(0) if day_match else ""
+    attempts: List[Dict[str, Any]] = []
 
     def finalize(result: Dict[str, Any]) -> Dict[str, Any]:
         out = dict(result)
@@ -3464,11 +3569,40 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
             out["headline"] = fallback_headline
         elif expected_date and headline_date and headline_date != expected_date:
             out["headline"] = fallback_headline
+        parsed_output = {
+            "headline": str(out.get("headline") or ""),
+            "commander_summary": str(out.get("commander_summary") or ""),
+            "strategist_summary": str(out.get("strategist_summary") or ""),
+            "scanner_summary": str(out.get("scanner_summary") or ""),
+            "monitor_summary": str(out.get("monitor_summary") or ""),
+            "supervisor_summary": str(out.get("supervisor_summary") or ""),
+            "executor_summary": str(out.get("executor_summary") or ""),
+            "reporter_summary": str(out.get("reporter_summary") or ""),
+            "operator_takeaways": [str(x or "") for x in list(out.get("operator_takeaways") or []) if str(x or "").strip()],
+        }
+        latency_ms = 0
+        if attempts:
+            latency_ms = sum(int(row.get("latency_ms") or 0) for row in attempts)
+        out["llm_response_artifact"] = build_llm_response_artifact(
+            component="brief",
+            run_id=run_id,
+            trade_id=trade_id,
+            story_id=trade_id,
+            day=day,
+            status=str(out.get("status") or "fallback"),
+            attempts=attempts,
+            parsed_output=parsed_output,
+            model_info={"provider": "OpenRouter", "model": str(out.get("model") or "")},
+            latency_ms=latency_ms,
+            meta={"reason": str(out.get("reason") or "")},
+        )
         return out
 
     router = LLMRouter.from_env()
     if router.client is None:
-        return fallback
+        fallback["status"] = "fallback"
+        fallback["reason"] = "llm_client_unavailable"
+        return finalize(fallback)
     explicit_model = str(
         os.getenv("OPERATOR_UI_RUN_BRIEF_MODEL", "")
         or os.getenv("OPENROUTER_MODEL_OPERATOR_UI", "")
@@ -3486,45 +3620,93 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         )
     compact_input = _build_operator_brief_input(detail)
     messages = _build_operator_brief_messages(compact_input)
+    primary_policy = {
+        "temperature": float(os.getenv("OPERATOR_UI_RUN_BRIEF_TEMPERATURE", "0.1")),
+        "max_tokens": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_MAX_TOKENS", "700"))),
+        "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
+        "response_format": {"type": "json_object"},
+        **({"model": model} if model else {}),
+    }
+    primary_t0 = time.perf_counter()
     try:
-        raw = router.chat(
-            "operator_ui",
-            messages,
-            policy={
-                "temperature": float(os.getenv("OPERATOR_UI_RUN_BRIEF_TEMPERATURE", "0.1")),
-                "max_tokens": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_MAX_TOKENS", "700"))),
-                "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
-                "response_format": {"type": "json_object"},
-                **({"model": model} if model else {}),
-            },
-        )
+        raw = router.chat("operator_ui", messages, policy=primary_policy)
     except Exception as exc:
+        attempts.append(
+            make_attempt(
+                step="primary",
+                messages=messages,
+                raw_response_text=f"ERROR:{type(exc).__name__}:{exc}",
+                parsed_output={},
+                model=model,
+                latency_ms=int((time.perf_counter() - primary_t0) * 1000),
+                status="error",
+            )
+        )
+        fallback["status"] = "error"
         fallback["model"] = model
         fallback["reason"] = f"llm_error:{exc}"
         return finalize(fallback)
+    primary_latency_ms = int((time.perf_counter() - primary_t0) * 1000)
     parsed = _extract_json_object(raw)
     if not parsed:
         if _is_free_model(model) and not str(raw or "").strip():
             fallback["status"] = "fallback"
             fallback["model"] = model
             fallback["reason"] = "free_model_empty_response"
+            attempts.append(
+                make_attempt(
+                    step="primary",
+                    messages=messages,
+                    raw_response_text=raw,
+                    parsed_output={},
+                    model=model,
+                    latency_ms=primary_latency_ms,
+                    status="fallback",
+                )
+            )
             return finalize(fallback)
+        attempts.append(
+            make_attempt(
+                step="primary",
+                messages=messages,
+                raw_response_text=raw,
+                parsed_output={},
+                model=model,
+                latency_ms=primary_latency_ms,
+                status="salvaged",
+            )
+        )
+        repair_messages = _build_operator_brief_repair_messages(raw)
+        repair_policy = {
+            "temperature": 0.0,
+            "max_tokens": 600,
+            "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
+            "response_format": {"type": "json_object"},
+            **({"model": model} if model else {}),
+        }
+        repair_t0 = time.perf_counter()
         try:
             repair_raw = router.chat(
                 "operator_ui",
-                _build_operator_brief_repair_messages(raw),
-                policy={
-                    "temperature": 0.0,
-                    "max_tokens": 600,
-                    "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
-                    "response_format": {"type": "json_object"},
-                    **({"model": model} if model else {}),
-                },
+                repair_messages,
+                policy=repair_policy,
             )
         except Exception:
             repair_raw = ""
+        repair_latency_ms = int((time.perf_counter() - repair_t0) * 1000)
         repaired = _extract_json_object(repair_raw)
         if repaired:
+            attempts.append(
+                make_attempt(
+                    step="repair",
+                    messages=repair_messages,
+                    raw_response_text=repair_raw,
+                    parsed_output=repaired,
+                    model=model,
+                    latency_ms=repair_latency_ms,
+                    status="salvaged",
+                )
+            )
             return finalize({
                 "status": "repaired",
                 "model": model,
@@ -3539,6 +3721,18 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 "operator_takeaways": [str(x or "") for x in list(repaired.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
                 "reason": "llm_repair_pass",
             })
+        if repair_raw:
+            attempts.append(
+                make_attempt(
+                    step="repair",
+                    messages=repair_messages,
+                    raw_response_text=repair_raw,
+                    parsed_output={},
+                    model=model,
+                    latency_ms=repair_latency_ms,
+                    status="salvaged",
+                )
+            )
         if _is_free_model(model):
             salvaged = _salvage_operator_brief_fields(raw)
             if salvaged:
@@ -3556,21 +3750,36 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                     "operator_takeaways": [str(x or "") for x in list(salvaged.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
                     "reason": "free_model_salvage_pass",
                 })
+            line_messages = _build_operator_brief_line_messages(compact_input)
+            line_policy = {
+                "temperature": 0.0,
+                "max_tokens": 500,
+                "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
+                **({"model": model} if model else {}),
+            }
+            line_t0 = time.perf_counter()
             try:
                 line_raw = router.chat(
                     "operator_ui",
-                    _build_operator_brief_line_messages(compact_input),
-                    policy={
-                        "temperature": 0.0,
-                        "max_tokens": 500,
-                        "timeout_sec": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "2"))),
-                        **({"model": model} if model else {}),
-                    },
+                    line_messages,
+                    policy=line_policy,
                 )
             except Exception:
                 line_raw = ""
+            line_latency_ms = int((time.perf_counter() - line_t0) * 1000)
             line_parsed = _parse_operator_brief_lines(line_raw)
             if line_parsed:
+                attempts.append(
+                    make_attempt(
+                        step="line_repair",
+                        messages=line_messages,
+                        raw_response_text=line_raw,
+                        parsed_output=line_parsed,
+                        model=model,
+                        latency_ms=line_latency_ms,
+                        status="salvaged",
+                    )
+                )
                 return finalize({
                     "status": "line_repaired",
                     "model": model,
@@ -3585,6 +3794,18 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                     "operator_takeaways": [str(x or "") for x in list(line_parsed.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
                     "reason": "llm_line_repair_pass",
                 })
+            if line_raw:
+                attempts.append(
+                    make_attempt(
+                        step="line_repair",
+                        messages=line_messages,
+                        raw_response_text=line_raw,
+                        parsed_output={},
+                        model=model,
+                        latency_ms=line_latency_ms,
+                        status="salvaged",
+                    )
+                )
         salvaged = _salvage_operator_brief_fields(raw)
         if salvaged:
             return finalize({
@@ -3601,9 +3822,21 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 "operator_takeaways": [str(x or "") for x in list(salvaged.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
                 "reason": "llm_partial_salvage",
             })
+        fallback["status"] = "fallback"
         fallback["model"] = model
         fallback["reason"] = "llm_parse_error"
         return finalize(fallback)
+    attempts.append(
+        make_attempt(
+            step="primary",
+            messages=messages,
+            raw_response_text=raw,
+            parsed_output=parsed,
+            model=model,
+            latency_ms=primary_latency_ms,
+            status="ok",
+        )
+    )
     return finalize({
         "status": "ok",
         "model": model,
@@ -3626,7 +3859,7 @@ def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[s
     cached = _read_json(path)
     if not isinstance(cached, dict):
         return {}
-    if int(cached.get("version") or 0) < 8:
+    if int(cached.get("version") or 0) < 9:
         return {}
     return cached
 
@@ -3637,14 +3870,18 @@ def _save_cached_operator_brief(config: OperatorUIConfig, run_id: str, brief: Di
     path = config.operator_ui_cache_path / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(brief)
-    payload["version"] = 8
+    payload["version"] = 9
     payload["cached_at"] = datetime.now(tz=KST).isoformat()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _operator_brief_artifact_paths(detail: Dict[str, Any]) -> tuple[Path | None, Path | None]:
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    trade_root_path = Path(str(trade_report.get("trade_root_path") or "")).resolve() if str(trade_report.get("trade_root_path") or "").strip() else None
+    if trade_root_path is not None:
+        return trade_root_path / "brief" / "operator_brief.json", trade_root_path / "brief" / "operator_brief.md"
     candidate_paths = [
+        str(trade_report.get("operator_brief_json_path") or ""),
         str(trade_report.get("trade_report_json_path") or ""),
         str(trade_report.get("trade_story_input_path") or ""),
         str(trade_report.get("trade_lifecycle_json_path") or ""),
@@ -3655,7 +3892,18 @@ def _operator_brief_artifact_paths(detail: Dict[str, Any]) -> tuple[Path | None,
         if not text:
             continue
         path = Path(text)
-        parent = path.parent if path.suffix else path
+        if path.name == "operator_brief.json":
+            return path, path.with_suffix(".md")
+        if path.suffix:
+            parent = path.parent
+            if parent.name in {"ai_trade_report", "lifecycle", "strategist", "brief", "evidence"}:
+                parent = parent.parent
+        else:
+            parent = path
+        brief_json = parent / "brief" / "operator_brief.json"
+        brief_md = parent / "brief" / "operator_brief.md"
+        if brief_json.exists() or brief_md.exists():
+            return brief_json, brief_md
         return parent / "operator_brief.json", parent / "operator_brief.md"
     return None, None
 
@@ -3786,7 +4034,7 @@ def _load_saved_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     payload = _read_json(json_path)
     if not isinstance(payload, dict):
         return {}
-    if int(payload.get("version") or 0) < 7:
+    if int(payload.get("version") or 0) < 8:
         return {}
     if not _saved_operator_brief_matches_detail(payload, detail):
         return {}
@@ -3828,7 +4076,7 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         "hold_reasons": [str(x or "") for x in list(monitor_section.get("hold_reasons") or []) if str(x or "").strip()][:6],
         "exit_triggers": [str(x or "") for x in list(monitor_section.get("exit_triggers") or []) if str(x or "").strip()][:6],
     }
-    payload["version"] = 7
+    payload["version"] = 8
     payload["saved_at"] = datetime.now(tz=KST).isoformat()
     payload["run_id"] = str(detail.get("run_id") or "")
     payload["trade_id"] = str(trade_report.get("trade_id") or "")
@@ -3838,6 +4086,37 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(_render_operator_brief_markdown(payload), encoding="utf-8")
+    trade_root = json_path.parent.parent if json_path.parent.name == "brief" else json_path.parent
+    legacy_json_path = trade_root / "operator_brief.json"
+    legacy_md_path = trade_root / "operator_brief.md"
+    if legacy_json_path != json_path:
+        legacy_json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if legacy_md_path != md_path:
+        legacy_md_path.write_text(_render_operator_brief_markdown(payload), encoding="utf-8")
+    llm_response_artifact = payload.get("llm_response_artifact") if isinstance(payload.get("llm_response_artifact"), dict) else {}
+    if llm_response_artifact:
+        brief_llm_path = json_path.parent / "brief_llm_response.json"
+        brief_llm_path.write_text(json.dumps(llm_response_artifact, ensure_ascii=False, indent=2), encoding="utf-8")
+        legacy_brief_llm_path = trade_root / "brief_llm_response.json"
+        if legacy_brief_llm_path != brief_llm_path:
+            legacy_brief_llm_path.write_text(json.dumps(llm_response_artifact, ensure_ascii=False, indent=2), encoding="utf-8")
+    bundle_candidates = [
+        trade_root / "lifecycle" / "aggregated_execution_bundle.json",
+        trade_root / "aggregated_execution_bundle.json",
+    ]
+    for bundle_path in bundle_candidates:
+        if not bundle_path.exists():
+            continue
+        bundle = _read_json(bundle_path)
+        if not isinstance(bundle, dict) or not bundle:
+            continue
+        artifacts = bundle.get("artifacts") if isinstance(bundle.get("artifacts"), dict) else {}
+        artifacts["brief_json"] = str(json_path)
+        artifacts["brief_md"] = str(md_path)
+        artifacts["brief_llm_response_json"] = str(json_path.parent / "brief_llm_response.json") if llm_response_artifact else ""
+        bundle["artifacts"] = artifacts
+        bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
+        break
 
 
 def _load_operator_brief_with_cache(config: OperatorUIConfig, detail: Dict[str, Any]) -> Dict[str, Any]:
@@ -3982,8 +4261,15 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "trade_report_json_path": str(trade_report_meta.get("trade_report_json_path") or ""),
             "trade_report_md_path": str(trade_report_meta.get("trade_report_md_path") or ""),
             "trade_story_input_path": str(trade_report_meta.get("trade_story_input_path") or ""),
+            "ai_trade_report_json_path": str(trade_report_meta.get("ai_trade_report_json_path") or trade_report_meta.get("trade_report_json_path") or ""),
+            "ai_trade_report_md_path": str(trade_report_meta.get("ai_trade_report_md_path") or trade_report_meta.get("trade_report_md_path") or ""),
+            "ai_trade_report_input_path": str(trade_report_meta.get("ai_trade_report_input_path") or trade_report_meta.get("trade_story_input_path") or ""),
             "trade_lifecycle_json_path": str(trade_report_meta.get("trade_lifecycle_json_path") or ""),
             "aggregated_bundle_path": str(trade_report_meta.get("aggregated_bundle_path") or ""),
+            "trade_root_path": str(trade_report_meta.get("trade_root_path") or ""),
+            "strategist_llm_response_path": str(trade_report_meta.get("strategist_llm_response_path") or ""),
+            "ai_trade_report_llm_response_path": str(trade_report_meta.get("ai_trade_report_llm_response_path") or ""),
+            "brief_llm_response_path": str(trade_report_meta.get("brief_llm_response_path") or ""),
             "symbol": str(trade_report_meta.get("symbol") or primary_symbol or ""),
             "action": str(trade_report_meta.get("action") or normalized_execution.get("action") or ""),
             "missing_reason": str(trade_report_meta.get("report_reason_human") or ai_diag.get("report_reason_human") or ""),
@@ -4047,8 +4333,15 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "trade_report_json_path": "",
             "trade_report_md_path": "",
             "trade_story_input_path": "",
+            "ai_trade_report_json_path": "",
+            "ai_trade_report_md_path": "",
+            "ai_trade_report_input_path": "",
             "trade_lifecycle_json_path": "",
             "aggregated_bundle_path": "",
+            "trade_root_path": "",
+            "strategist_llm_response_path": "",
+            "ai_trade_report_llm_response_path": "",
+            "brief_llm_response_path": "",
             "symbol": primary_symbol or str(normalized_execution.get("symbol") or scanner_summary.get("top_stock") or ""),
             "action": str(normalized_execution.get("action") or ""),
             "missing_reason": str(ai_diag.get("report_reason_human") or "No linked trade report for this run."),

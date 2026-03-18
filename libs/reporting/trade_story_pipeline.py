@@ -724,6 +724,7 @@ def build_trade_story_input(
             }
         return {
             "schema_version": "trade_story_input.v2",
+            "day": str(bundle_out.get("day") or ""),
             "trade_id": str(lifecycle.get("trade_id") or bundle_out.get("trade_id") or bundle_out.get("story_id") or ""),
             "story_id": str(lifecycle.get("trade_id") or bundle_out.get("trade_id") or bundle_out.get("story_id") or ""),
             "run_id": str(bundle_out.get("run_id") or entry.get("run_id") or ""),
@@ -781,6 +782,7 @@ def build_trade_story_input(
 
     return {
         "schema_version": "trade_story_input.v1",
+        "day": str(bundle_out.get("day") or ""),
         "trade_id": str(bundle_out.get("trade_id") or bundle_out.get("story_id") or ""),
         "story_id": str(bundle_out.get("story_id") or ""),
         "run_id": str(bundle_out.get("run_id") or ""),

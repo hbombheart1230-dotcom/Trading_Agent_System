@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -39,3 +40,8 @@ def test_m19_6_llm_daily_report_appends_summary(monkeypatch: pytest.MonkeyPatch,
     text = md_path.read_text(encoding="utf-8")
     assert "## LLM Summary" in text
     assert "Takeaway" in text
+    llm_path = Path(str(rep.get("daily_report_llm_response_json") or ""))
+    assert llm_path.exists() is True
+    llm_artifact = json.loads(llm_path.read_text(encoding="utf-8"))
+    assert llm_artifact["component"] == "daily_report"
+    assert llm_artifact["status"] == "fallback"

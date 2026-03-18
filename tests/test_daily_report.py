@@ -17,3 +17,5 @@ def test_generate_daily_report(tmp_path: Path):
     assert md.exists() and js.exists()
     data = json.loads(js.read_text(encoding="utf-8"))
     assert data["approvals"] == 1
+    assert (out_dir / "daily" / "2023-11-14" / "daily_report.json").exists()
+    assert (out_dir / "daily" / "2023-11-14" / "daily_report.md").exists()

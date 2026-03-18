@@ -170,6 +170,30 @@ def _fake_ai_trade_report_ok(story_input: dict, **kwargs):  # type: ignore[no-un
         "full_timeline": [{"event": "entry", "ts": "2026-03-16T00:00:00+00:00", "description": "entry"}],
         "timeline": [{"event": "entry", "ts": "2026-03-16T00:00:00+00:00", "description": "entry"}],
         "final_operator_conclusion": {"summary": "Hold and monitor.", "current_action": action, "watch_next": ["volatility"], "thesis_invalidation": ["stop breach"]},
+        "llm_response_artifact": {
+            "schema_version": "llm_response_artifact.v1",
+            "component": "ai_trade_report",
+            "run_id": str(story_input.get("run_id") or ""),
+            "trade_id": str(story_input.get("trade_id") or story_input.get("story_id") or ""),
+            "story_id": str(story_input.get("story_id") or ""),
+            "day": str(story_input.get("day") or ""),
+            "status": "ok",
+            "latency_ms": 120,
+            "parsed_output": {"summary": "AI report generated."},
+            "model_info": {"provider": "OpenRouter", "model": "openrouter/free"},
+            "attempts": [
+                {
+                    "step": "primary",
+                    "system_prompt": "system",
+                    "user_prompt": "user",
+                    "raw_response_text": "{\"executive_summary\":{\"summary\":\"AI report generated.\"}}",
+                    "parsed_output": {"executive_summary": {"summary": "AI report generated."}},
+                    "model_info": {"provider": "OpenRouter", "model": "openrouter/free"},
+                    "latency_ms": 120,
+                    "status": "ok",
+                }
+            ],
+        },
     }
 
 
@@ -268,11 +292,19 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert bundle_obj["filters_human"]["summary"]
 
     canonical_dir = reports_root / "trades" / "2026" / "03" / lifecycle_row["trade_id"]
+    new_trade_root = reports_root / "trades" / day / lifecycle_row["trade_id"]
     assert (canonical_dir / "trade_lifecycle.json").exists()
     assert (canonical_dir / "aggregated_execution_bundle.json").exists()
     assert (canonical_dir / "trade_story_input.json").exists()
     assert (canonical_dir / "trade_report.json").exists()
     assert (canonical_dir / "trade_report.md").exists()
+    assert (new_trade_root / "lifecycle" / "trade_lifecycle.json").exists()
+    assert (new_trade_root / "lifecycle" / "aggregated_execution_bundle.json").exists()
+    assert (new_trade_root / "ai_trade_report" / "ai_trade_report_input.json").exists()
+    assert (new_trade_root / "ai_trade_report" / "ai_trade_report.json").exists()
+    assert (new_trade_root / "ai_trade_report" / "ai_trade_report.md").exists()
+    assert (new_trade_root / "ai_trade_report" / "ai_trade_report_llm_response.json").exists()
+    assert (new_trade_root / "strategist" / "strategist_llm_response.json").exists()
 
     trade_lifecycle = json.loads((canonical_dir / "trade_lifecycle.json").read_text(encoding="utf-8"))
     assert trade_lifecycle["status"] == "closed"
@@ -298,6 +330,8 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert "Hard stop" in story_input["monitor_reason_human"]["watch_axes"]
 
     trade_report = json.loads((canonical_dir / "trade_report.json").read_text(encoding="utf-8"))
+    llm_response = json.loads((new_trade_root / "ai_trade_report" / "ai_trade_report_llm_response.json").read_text(encoding="utf-8"))
+    strategist_llm = json.loads((new_trade_root / "strategist" / "strategist_llm_response.json").read_text(encoding="utf-8"))
     assert (trade_report.get("ai_report_diagnostics") or {}).get("report_status") == "available"
     assert trade_report["status"] == "closed"
     assert trade_report["monitor_snapshot"]["current_price"] == 70500.0
@@ -319,6 +353,14 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert trade_report["final_operator_conclusion"]["current_action"] == "SELL"
     assert "sentiment" in trade_report["market_context_at_entry"]["summary"].lower()
     assert "price source" in " ".join(trade_report["holding_monitoring_story"]["bullets"]).lower()
+    assert llm_response["component"] == "ai_trade_report"
+    assert llm_response["trade_id"] == lifecycle_row["trade_id"]
+    assert strategist_llm["component"] == "strategist"
+    assert strategist_llm["trade_id"] == lifecycle_row["trade_id"]
+    new_bundle = json.loads((new_trade_root / "lifecycle" / "aggregated_execution_bundle.json").read_text(encoding="utf-8"))
+    assert new_bundle["artifacts"]["strategist_llm_response_json"].endswith("strategist_llm_response.json")
+    assert new_bundle["artifacts"]["ai_trade_report_llm_response_json"].endswith("ai_trade_report_llm_response.json")
+    assert new_bundle["artifacts"]["ai_trade_report_input_json"].endswith("ai_trade_report_input.json")
 
     trade_report_md = (canonical_dir / "trade_report.md").read_text(encoding="utf-8")
     assert "# Trade Report" in trade_report_md
@@ -490,8 +532,11 @@ def test_live_execution_bundle_report_keeps_open_lifecycle_without_exit(tmp_path
     assert lifecycle["report_reason_code"] == ""
     story_id = lifecycle["story_id"]
     trade_dir = reports_root / "trades" / "2026" / "03" / story_id
+    new_trade_root = reports_root / "trades" / day / story_id
     assert (trade_dir / "trade_story_input.json").exists()
     assert (trade_dir / "trade_report.json").exists()
+    assert (new_trade_root / "ai_trade_report" / "ai_trade_report_input.json").exists()
+    assert (new_trade_root / "ai_trade_report" / "ai_trade_report.json").exists()
     bundle = json.loads((trade_dir / "aggregated_execution_bundle.json").read_text(encoding="utf-8"))
     diagnostics = bundle.get("ai_report_diagnostics") or {}
     assert diagnostics.get("report_status") == "available"

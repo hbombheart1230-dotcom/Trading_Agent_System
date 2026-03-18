@@ -801,13 +801,16 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert saved["run_id"] == "run-1"
     assert saved["trade_id"] == "20260316_005930_buy_run-1"
     assert saved["report_status"] == "available"
-    assert saved["version"] == 7
+    assert saved["version"] == 8
     assert saved["monitor_snapshot"]["price_source"] == "-"
     assert str(saved["monitor_snapshot"]["effective_stop_reason"] or "") in {"", "-", "Hard stop"}
     md_text = brief_md.read_text(encoding="utf-8")
     assert "# Operator Brief" in md_text
     assert "price_source:" in md_text
     assert "feature_source:" in md_text
+    brief_llm = brief_json.parent / "brief_llm_response.json"
+    assert brief_llm.exists() is True
+    assert json.loads(brief_llm.read_text(encoding="utf-8"))["component"] == "brief"
 
 
 def test_operator_brief_saved_artifact_is_reused(tmp_path: Path, monkeypatch) -> None:
@@ -825,6 +828,58 @@ def test_operator_brief_saved_artifact_is_reused(tmp_path: Path, monkeypatch) ->
     second = data_access.load_run_detail(cfg, "run-1")
 
     assert second["operator_brief"]["headline"] == "saved artifact headline"
+
+
+def test_operator_ui_reads_new_trade_artifact_layout(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    story_id = "TRD_20260316_005930_99"
+    new_trade_root = cfg.reports_root / "trades" / "2026-03-16" / story_id
+    _write_json(
+        new_trade_root / "lifecycle" / "aggregated_execution_bundle.json",
+        {
+            "schema_version": "live_execution_bundle.v3",
+            "day": "2026-03-16",
+            "run_id": "run-new",
+            "trade_id": story_id,
+            "story_id": story_id,
+            "linked_run_ids": ["run-new"],
+            "story_contract": {"story_type": "simulation", "execution_mode_label": "simulation"},
+            "execution": {"action": "BUY", "symbol": "005930"},
+            "artifacts": {},
+        },
+    )
+    _write_json(
+        new_trade_root / "lifecycle" / "trade_lifecycle.json",
+        {"trade_id": story_id, "status": "open", "symbol": "005930", "run_ids_all": ["run-new"], "summary": {"lifecycle_summary_human": "open lifecycle"}},
+    )
+    _write_json(
+        new_trade_root / "ai_trade_report" / "ai_trade_report_input.json",
+        {"schema_version": "trade_story_input.v2", "trade_id": story_id, "story_id": story_id, "run_id": "run-new", "symbol": "005930", "day": "2026-03-16"},
+    )
+    _write_json(
+        new_trade_root / "ai_trade_report" / "ai_trade_report.json",
+        {
+            "schema_version": "trade_report.v2",
+            "trade_id": story_id,
+            "story_id": story_id,
+            "run_id": "run-new",
+            "symbol": "005930",
+            "action": "BUY",
+            "status": "open",
+            "story_type": "simulation",
+            "execution_mode_label": "simulation",
+            "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free", "reason": ""},
+            "executive_summary": {"headline": "BUY 005930", "summary": "new layout works"},
+            "reporter_evaluation": {"summary": "linked", "status": "linked", "grade": "A"},
+        },
+    )
+
+    report = data_access.load_trade_report_detail(cfg, story_id)
+
+    assert report["found"] is True
+    assert report["paths"]["ai_trade_report_json"].endswith("ai_trade_report.json")
+    assert report["paths"]["ai_trade_report_input"].endswith("ai_trade_report_input.json")
 
 
 def test_operator_ui_overview_does_not_fallback_to_stale_reporter_for_latest_day(tmp_path: Path, monkeypatch) -> None:

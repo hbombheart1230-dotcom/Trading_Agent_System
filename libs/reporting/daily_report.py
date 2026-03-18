@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from libs.reporting.llm_artifacts import daily_artifact_paths
 
 @dataclass
 class Event:
@@ -12,6 +15,28 @@ class Event:
     stage: str
     event: str
     payload: Dict[str, Any]
+
+
+def _to_epoch_utc(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    raw = str(value).strip()
+    if not raw:
+        return 0
+    try:
+        return int(float(raw))
+    except Exception:
+        pass
+    normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return 0
 
 def _iter_events(path: Path) -> Iterable[Event]:
     if not path.exists():
@@ -26,7 +51,7 @@ def _iter_events(path: Path) -> Iterable[Event]:
             except Exception:
                 continue
             yield Event(
-                ts=int(obj.get("ts") or 0),
+                ts=_to_epoch_utc(obj.get("ts")),
                 run_id=str(obj.get("run_id") or ""),
                 stage=str(obj.get("stage") or ""),
                 event=str(obj.get("event") or ""),
@@ -86,8 +111,9 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str) -> Tuple[P
         "events": rows,
     }
 
-    js_path = out_dir / f"daily_{day}.json"
-    md_path = out_dir / f"daily_{day}.md"
+    paths = daily_artifact_paths(out_dir, day)
+    js_path = paths["root_daily_json"]
+    md_path = paths["root_daily_md"]
     js_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     md = [
@@ -100,6 +126,21 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str) -> Tuple[P
         "## Notes",
         "- This report is generated from `EVENT_LOG_PATH` (JSONL).",
     ]
-    md_path.write_text("\n".join(md) + "\n", encoding="utf-8")
+    md_text = "\n".join(md) + "\n"
+    md_path.write_text(md_text, encoding="utf-8")
+
+    # Canonical daily artifact layout for later UI/report linkage.
+    canonical_json_path = paths["daily_report_json"]
+    canonical_md_path = paths["daily_report_md"]
+    canonical_json_path.parent.mkdir(parents=True, exist_ok=True)
+    canonical_json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    canonical_md_path.write_text(md_text, encoding="utf-8")
+
+    # Compatibility copies for readers already using reports/daily/daily_<day>.*
+    legacy_daily_json = paths["legacy_daily_json"]
+    legacy_daily_md = paths["legacy_daily_md"]
+    legacy_daily_json.parent.mkdir(parents=True, exist_ok=True)
+    legacy_daily_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    legacy_daily_md.write_text(md_text, encoding="utf-8")
 
     return md_path, js_path

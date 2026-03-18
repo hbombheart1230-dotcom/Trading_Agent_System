@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from libs.llm.llm_router import LLMRouter
+from libs.reporting.llm_artifacts import build_llm_response_artifact, make_attempt
 
 
 def _utc_now_iso() -> str:
@@ -220,6 +222,7 @@ def _fallback_report(
     operator_conclusion = (
         story_input.get("operator_conclusion_human") if isinstance(story_input.get("operator_conclusion_human"), dict) else {}
     )
+    action = _clip(story_input.get("action"), max_len=24) or "WAIT"
     monitor_snapshot = {
         "posture": _clip(monitor_reason.get("posture"), max_len=40) or action or "WAIT",
         "trigger_type": _clip(monitor_reason.get("trigger_type"), max_len=80) or "not_captured",
@@ -248,7 +251,6 @@ def _fallback_report(
     warnings = _listify(story_input.get("warnings"), max_items=10, max_len=260)
     improvement_points = _listify(story_input.get("improvement_points"), max_items=10, max_len=260)
 
-    action = _clip(story_input.get("action"), max_len=24) or "WAIT"
     symbol = _clip(story_input.get("symbol"), max_len=32) or "unknown"
     trade_id = _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120)
     status_text = _clip(story_input.get("status"), max_len=32) or "closed"
@@ -475,24 +477,53 @@ def build_ai_trade_report(
         or str(os.getenv("TRADE_REPORT_AI_MODEL", "")).strip()
         or str(os.getenv("OPENROUTER_MODEL_TRADE_REPORT", "")).strip()
     )
+    trade_id = str(story_input.get("trade_id") or story_input.get("story_id") or "")
+    run_id = str(story_input.get("run_id") or "")
+    day = str(story_input.get("day") or "")
     if not is_enabled:
-        return _fallback_report(
+        report = _fallback_report(
             story_input,
             status="disabled",
             mode="fallback",
             model=chosen_model,
             reason="TRADE_REPORT_AI_ENABLED is false",
         )
+        report["llm_response_artifact"] = build_llm_response_artifact(
+            component="ai_trade_report",
+            run_id=run_id,
+            trade_id=trade_id,
+            story_id=trade_id,
+            day=day,
+            status="fallback",
+            attempts=[],
+            parsed_output={},
+            model_info={"provider": "OpenRouter", "model": chosen_model or "openrouter/free"},
+            meta={"reason": "TRADE_REPORT_AI_ENABLED is false"},
+        )
+        return report
 
     router = LLMRouter.from_env()
     if router.client is None:
-        return _fallback_report(
+        report = _fallback_report(
             story_input,
             status="unavailable",
             mode="fallback",
             model=chosen_model,
             reason="OPENROUTER_API_KEY is not configured",
         )
+        report["llm_response_artifact"] = build_llm_response_artifact(
+            component="ai_trade_report",
+            run_id=run_id,
+            trade_id=trade_id,
+            story_id=trade_id,
+            day=day,
+            status="fallback",
+            attempts=[],
+            parsed_output={},
+            model_info={"provider": "OpenRouter", "model": chosen_model or "openrouter/free"},
+            meta={"reason": "OPENROUTER_API_KEY is not configured"},
+        )
+        return report
 
     temp = float(
         temperature
@@ -505,10 +536,13 @@ def build_ai_trade_report(
         else str(os.getenv("TRADE_REPORT_AI_MAX_TOKENS", "1400")).strip() or "1400"
     )
     raw = ""
+    messages = _build_messages(story_input)
+    attempts: List[Dict[str, Any]] = []
+    t0 = time.perf_counter()
     try:
         raw = router.chat(
             "trade_report",
-            _build_messages(story_input),
+            messages,
             policy={
                 "temperature": temp,
                 "max_tokens": max(600, token_budget),
@@ -517,23 +551,76 @@ def build_ai_trade_report(
             },
         )
     except Exception as exc:
-        return _fallback_report(
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        attempts.append(
+            make_attempt(
+                step="primary",
+                messages=messages,
+                raw_response_text=f"ERROR:{type(exc).__name__}:{exc}",
+                parsed_output={},
+                model=chosen_model or str(router.resolve("trade_report").model),
+                latency_ms=latency_ms,
+                status="error",
+            )
+        )
+        report = _fallback_report(
             story_input,
             status="error",
             mode="fallback",
             model=chosen_model,
             reason=f"trade_report_ai_exception:{type(exc).__name__}:{exc}",
         )
+        report["llm_response_artifact"] = build_llm_response_artifact(
+            component="ai_trade_report",
+            run_id=run_id,
+            trade_id=trade_id,
+            story_id=trade_id,
+            day=day,
+            status="error",
+            attempts=attempts,
+            parsed_output={},
+            model_info={"provider": "OpenRouter", "model": chosen_model or str(router.resolve("trade_report").model)},
+            latency_ms=latency_ms,
+            meta={"reason": f"trade_report_ai_exception:{type(exc).__name__}:{exc}"},
+        )
+        return report
+
+    latency_ms = int((time.perf_counter() - t0) * 1000)
 
     parsed = _extract_json_object(raw)
     if not parsed:
-        return _fallback_report(
+        attempts.append(
+            make_attempt(
+                step="primary",
+                messages=messages,
+                raw_response_text=raw,
+                parsed_output={},
+                model=chosen_model or str(router.resolve("trade_report").model),
+                latency_ms=latency_ms,
+                status="fallback",
+            )
+        )
+        report = _fallback_report(
             story_input,
             status="parse_error",
             mode="fallback",
             model=chosen_model,
             reason="trade_report_ai returned non-JSON response",
         )
+        report["llm_response_artifact"] = build_llm_response_artifact(
+            component="ai_trade_report",
+            run_id=run_id,
+            trade_id=trade_id,
+            story_id=trade_id,
+            day=day,
+            status="fallback",
+            attempts=attempts,
+            parsed_output={},
+            model_info={"provider": "OpenRouter", "model": chosen_model or str(router.resolve("trade_report").model)},
+            latency_ms=latency_ms,
+            meta={"reason": "trade_report_ai returned non-JSON response"},
+        )
+        return report
 
     out = _fallback_report(
         story_input,
@@ -541,6 +628,17 @@ def build_ai_trade_report(
         mode="ai",
         model=chosen_model or str(router.resolve("trade_report").model),
         reason="",
+    )
+    attempts.append(
+        make_attempt(
+            step="primary",
+            messages=messages,
+            raw_response_text=raw,
+            parsed_output=parsed,
+            model=chosen_model or str(router.resolve("trade_report").model),
+            latency_ms=latency_ms,
+            status="ok",
+        )
     )
     out["generation"] = {
         "status": "ok",
@@ -646,6 +744,18 @@ def build_ai_trade_report(
     out["scanner_logic_and_filters"] = dict(out.get("scanner_filters") or {})
     out["monitor_trigger_reasoning"] = dict(out.get("holding_monitoring_story") or {})
     out["execution_result"] = dict(out.get("execution_quality") or {})
+    out["llm_response_artifact"] = build_llm_response_artifact(
+        component="ai_trade_report",
+        run_id=run_id,
+        trade_id=trade_id,
+        story_id=trade_id,
+        day=day,
+        status="ok",
+        attempts=attempts,
+        parsed_output=parsed,
+        model_info={"provider": "OpenRouter", "model": chosen_model or str(router.resolve("trade_report").model)},
+        latency_ms=latency_ms,
+    )
     return _normalize_trade_report_output(story_input, out)
 
 

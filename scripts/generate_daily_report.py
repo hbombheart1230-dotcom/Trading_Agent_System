@@ -7,6 +7,8 @@ from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
+from libs.reporting.llm_artifacts import daily_artifact_paths
+
 def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
     if not path.exists():
         return []
@@ -62,10 +64,19 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         rows.append({**e, "_day": _day_key(ts)})
     if not rows:
         day = day or date.today().isoformat()
-        md_path = out_dir / f"daily_{day}.md"
-        js_path = out_dir / f"daily_{day}.json"
-        md_path.write_text(f"# Daily Report ({day})\n\nNo events found.\n", encoding="utf-8")
-        js_path.write_text(json.dumps({"day": day, "events": 0}, ensure_ascii=False, indent=2), encoding="utf-8")
+        paths = daily_artifact_paths(out_dir, day)
+        md_path = paths["root_daily_md"]
+        js_path = paths["root_daily_json"]
+        payload = {"day": day, "events": 0}
+        md_text = f"# Daily Report ({day})\n\nNo events found.\n"
+        md_path.write_text(md_text, encoding="utf-8")
+        js_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        paths["daily_report_json"].parent.mkdir(parents=True, exist_ok=True)
+        paths["daily_report_json"].write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        paths["daily_report_md"].write_text(md_text, encoding="utf-8")
+        paths["legacy_daily_json"].parent.mkdir(parents=True, exist_ok=True)
+        paths["legacy_daily_json"].write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        paths["legacy_daily_md"].write_text(md_text, encoding="utf-8")
         return md_path, js_path
 
     day = day or sorted({r["_day"] for r in rows})[-1]
@@ -122,10 +133,17 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     for k, v in stage_counter.most_common():
         md_lines.append(f"- {k}: {v}")
 
-    md_path = out_dir / f"daily_{day}.md"
-    js_path = out_dir / f"daily_{day}.json"
+    paths = daily_artifact_paths(out_dir, day)
+    md_path = paths["root_daily_md"]
+    js_path = paths["root_daily_json"]
     md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     js_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    paths["daily_report_json"].parent.mkdir(parents=True, exist_ok=True)
+    paths["daily_report_json"].write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    paths["daily_report_md"].write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    paths["legacy_daily_json"].parent.mkdir(parents=True, exist_ok=True)
+    paths["legacy_daily_json"].write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    paths["legacy_daily_md"].write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     return md_path, js_path
 
 def main() -> None:

@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from libs.runtime.market_hours import MarketHours, now_kst
 from libs.runtime.dates import kst_day_str, to_kst
+from libs.reporting.llm_artifacts import daily_artifact_paths, write_json
 
 GenerateFn = Callable[[Path, Path, str], Tuple[Path, Path]]
 OperatorBundleFn = Callable[..., Dict[str, Any]]
@@ -68,14 +69,15 @@ def run_m13_eod_report(
     md, js = generate(events_path, report_dir, day=day)  # type: ignore[misc]
 
     report_obj: Dict[str, Any] = {"day": day, "md": str(md), "js": str(js)}
+    state["daily_report"] = report_obj
 
     # Optional: LLM-based summary (M19-6)
     try:
         policy = dict(state.get("policy") or {})
         if bool(policy.get("use_llm_daily_report")):
-            from libs.reporting.llm_daily_summary import summarize_daily_report
+            from libs.reporting.llm_daily_summary import summarize_daily_report_with_artifact
 
-            summary = summarize_daily_report(state=state, policy=policy)
+            summary, llm_artifact = summarize_daily_report_with_artifact(state=state, policy=policy)
             if summary:
                 report_obj["llm_summary"] = summary
                 # append to markdown
@@ -87,6 +89,12 @@ def run_m13_eod_report(
                 except Exception:
                     # do not fail EOD report for summary IO errors
                     pass
+            try:
+                llm_paths = daily_artifact_paths(report_dir, day)
+                write_json(llm_paths["daily_report_llm_response_json"], llm_artifact)
+                report_obj["daily_report_llm_response_json"] = str(llm_paths["daily_report_llm_response_json"])
+            except Exception:
+                pass
     except Exception:
         # do not fail EOD report for summary errors
         pass

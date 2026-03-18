@@ -16,6 +16,14 @@ from libs.core.settings import load_env_file
 from libs.core.symbols import normalize_symbol
 from libs.reporting.agent_pipeline_trace import generate_agent_pipeline_trace_report
 from libs.reporting.reporter_analysis import generate_reporter_analysis_report
+from libs.reporting.llm_artifacts import (
+    build_llm_response_artifact,
+    daily_artifact_paths,
+    split_prompt_text,
+    trade_artifact_paths,
+    write_json,
+    write_text,
+)
 from libs.reporting.trade_explain import generate_trade_explain_report
 from libs.reporting.trade_report_ai import build_ai_trade_report, render_trade_report_markdown
 from libs.reporting.trade_story_pipeline import (
@@ -113,6 +121,60 @@ def _base_diagnostics(model_hint: str) -> Dict[str, Any]:
         "last_error_message": "",
         "next_expected_step": "",
     }
+
+
+def _write_legacy_json(path: Path, payload: Dict[str, Any]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(path)
+
+
+def _write_legacy_text(path: Path, text: str) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(text or ""), encoding="utf-8")
+    return str(path)
+
+
+def _build_strategist_llm_response_artifact(bundle_out: Dict[str, Any], *, day: str, trade_id: str) -> Dict[str, Any]:
+    strategist = bundle_out.get("strategist") if isinstance(bundle_out.get("strategist"), dict) else {}
+    system_prompt, user_prompt = split_prompt_text(strategist.get("llm_prompt") or "")
+    parsed_output = strategist.get("llm_parsed_output") if isinstance(strategist.get("llm_parsed_output"), dict) else {}
+    raw_response = str(strategist.get("llm_response") or "")
+    original_status = "ok" if bool(strategist.get("llm_ok")) else "fallback"
+    if raw_response.startswith("ERROR:"):
+        original_status = "error"
+    attempts = []
+    if system_prompt or user_prompt or raw_response or parsed_output:
+        attempts.append(
+            {
+                "step": "primary",
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "raw_response_text": raw_response,
+                "parsed_output": parsed_output,
+                "model_info": {
+                    "provider": str(strategist.get("llm_provider") or "OpenRouter"),
+                    "model": str(strategist.get("llm_model") or ""),
+                },
+                "latency_ms": int(strategist.get("llm_latency_ms") or 0),
+                "status": original_status,
+            }
+        )
+    return build_llm_response_artifact(
+        component="strategist",
+        run_id=str(bundle_out.get("run_id") or ""),
+        trade_id=trade_id,
+        story_id=trade_id,
+        day=day,
+        status=original_status if attempts else "fallback",
+        attempts=attempts,
+        parsed_output=parsed_output,
+        model_info={
+            "provider": str(strategist.get("llm_provider") or "OpenRouter"),
+            "model": str(strategist.get("llm_model") or ""),
+        },
+        latency_ms=int(strategist.get("llm_latency_ms") or 0),
+    )
 
 
 def _seed_diagnostics_for_policy(
@@ -1284,15 +1346,21 @@ def main(argv: Optional[List[str]] = None) -> int:
             },
         }
 
-        canonical_dir = canonical_trades_root / year_part / month_part / trade_id
-        canonical_dir.mkdir(parents=True, exist_ok=True)
-        trade_lifecycle_path = canonical_dir / "trade_lifecycle.json"
-        aggregated_bundle_path = canonical_dir / "aggregated_execution_bundle.json"
-        story_input_path = canonical_dir / "trade_story_input.json"
-        trade_report_json_path = canonical_dir / "trade_report.json"
-        trade_report_md_path = canonical_dir / "trade_report.md"
+        trade_paths = trade_artifact_paths(reports_root, day, trade_id)
+        trade_root = trade_paths["trade_root"]
+        trade_root.mkdir(parents=True, exist_ok=True)
+        for key in ("strategist_dir", "ai_trade_report_dir", "brief_dir", "lifecycle_dir", "evidence_dir"):
+            trade_paths[key].mkdir(parents=True, exist_ok=True)
+        trade_lifecycle_path = trade_paths["trade_lifecycle_json"]
+        aggregated_bundle_path = trade_paths["aggregated_execution_bundle_json"]
+        story_input_path = trade_paths["ai_trade_report_input_json"]
+        trade_report_json_path = trade_paths["ai_trade_report_json"]
+        trade_report_md_path = trade_paths["ai_trade_report_md"]
+        strategist_llm_response_path = trade_paths["strategist_llm_response_json"]
+        ai_trade_report_llm_response_path = trade_paths["ai_trade_report_llm_response_json"]
 
         trade_story_input = build_trade_story_input(lifecycle_bundle, trade_lifecycle=lifecycle)
+        trade_story_input["day"] = day
         diagnostics, should_attempt_generation = _seed_diagnostics_for_policy(
             lifecycle_status=status,
             story_type=story_type,
@@ -1301,7 +1369,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             model_hint=configured_report_model,
         )
 
+        strategist_llm_artifact = _build_strategist_llm_response_artifact(lifecycle_bundle, day=day, trade_id=trade_id)
+        write_json(strategist_llm_response_path, strategist_llm_artifact)
+
         trade_report: Dict[str, Any] = {}
+        ai_trade_report_llm_artifact: Dict[str, Any] = {}
         if should_attempt_generation:
             diagnostics["generation_attempted"] = True
             diagnostics["generation_ts"] = utc_now_iso()
@@ -1311,6 +1383,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 model=str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else configured_report_model,
                 temperature=args.trade_report_ai_temperature,
                 max_tokens=args.trade_report_ai_max_tokens,
+            )
+            ai_trade_report_llm_artifact = (
+                trade_report.get("llm_response_artifact")
+                if isinstance(trade_report.get("llm_response_artifact"), dict)
+                else {}
             )
             generation = trade_report.get("generation") if isinstance(trade_report.get("generation"), dict) else {}
             generation_status = str(generation.get("status") or "").strip().lower()
@@ -1339,10 +1416,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         trade_report_json_written = ""
         trade_report_md_written = ""
+        ai_trade_report_llm_response_written = ""
         if should_attempt_generation and trade_report:
             try:
-                trade_report_json_path.write_text(json.dumps(trade_report, ensure_ascii=False, indent=2), encoding="utf-8")
-                trade_report_md_path.write_text(render_trade_report_markdown(trade_report), encoding="utf-8")
+                if ai_trade_report_llm_artifact:
+                    ai_trade_report_llm_response_written = str(write_json(ai_trade_report_llm_response_path, ai_trade_report_llm_artifact))
+                trade_report_payload = dict(trade_report)
+                trade_report_json_path.write_text(json.dumps(trade_report_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                trade_report_md_path.write_text(render_trade_report_markdown(trade_report_payload), encoding="utf-8")
                 trade_report_json_written = str(trade_report_json_path)
                 trade_report_md_written = str(trade_report_md_path)
                 diagnostics["report_output_available"] = bool(diagnostics.get("report_status") == "available")
@@ -1360,6 +1441,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 trade_report_json_path.unlink()
             if trade_report_md_path.exists():
                 trade_report_md_path.unlink()
+            if ai_trade_report_llm_response_path.exists():
+                ai_trade_report_llm_response_path.unlink()
 
         lifecycle["ai_report_diagnostics"] = dict(diagnostics)
         lifecycle_bundle["ai_report_diagnostics"] = dict(diagnostics)
@@ -1370,19 +1453,45 @@ def main(argv: Optional[List[str]] = None) -> int:
                 trade_report_json_path.write_text(json.dumps(trade_report, ensure_ascii=False, indent=2), encoding="utf-8")
                 trade_report_md_path.write_text(render_trade_report_markdown(trade_report), encoding="utf-8")
 
-        trade_lifecycle_path.write_text(json.dumps(lifecycle, ensure_ascii=False, indent=2), encoding="utf-8")
-        aggregated_bundle_path.write_text(json.dumps(lifecycle_bundle, ensure_ascii=False, indent=2), encoding="utf-8")
-        story_input_path.write_text(json.dumps(trade_story_input, ensure_ascii=False, indent=2), encoding="utf-8")
-
         lifecycle_bundle["artifacts"].update(
             {
                 "trade_lifecycle_json": str(trade_lifecycle_path),
                 "aggregated_execution_bundle_json": str(aggregated_bundle_path),
+                "ai_trade_report_input_json": str(story_input_path),
                 "trade_story_input_json": str(story_input_path),
                 "trade_report_json": trade_report_json_written,
                 "trade_report_md": trade_report_md_written,
+                "ai_trade_report_json": trade_report_json_written,
+                "ai_trade_report_md": trade_report_md_written,
+                "strategist_llm_response_json": str(strategist_llm_response_path),
+                "ai_trade_report_llm_response_json": ai_trade_report_llm_response_written,
+                "brief_llm_response_json": "",
             }
         )
+
+        if trade_report:
+            trade_report["paths"] = {
+                **(trade_report.get("paths") if isinstance(trade_report.get("paths"), dict) else {}),
+                "ai_trade_report_json": trade_report_json_written,
+                "ai_trade_report_md": trade_report_md_written,
+                "ai_trade_report_input_json": str(story_input_path),
+                "ai_trade_report_llm_response_json": ai_trade_report_llm_response_written,
+                "strategist_llm_response_json": str(strategist_llm_response_path),
+                "trade_lifecycle_json": str(trade_lifecycle_path),
+                "aggregated_execution_bundle_json": str(aggregated_bundle_path),
+            }
+
+        write_json(trade_lifecycle_path, lifecycle)
+        write_json(story_input_path, trade_story_input)
+        write_json(aggregated_bundle_path, lifecycle_bundle)
+
+        # Compatibility mirrors for existing readers and older UI/report paths.
+        _write_legacy_json(trade_paths["legacy_trade_lifecycle_json"], lifecycle)
+        _write_legacy_json(trade_paths["legacy_aggregated_execution_bundle_json"], lifecycle_bundle)
+        _write_legacy_json(trade_paths["legacy_trade_story_input_json"], trade_story_input)
+        if trade_report_json_written:
+            _write_legacy_json(trade_paths["legacy_trade_report_json"], trade_report)
+            _write_legacy_text(trade_paths["legacy_trade_report_md"], render_trade_report_markdown(trade_report))
 
         lifecycle_story_type_counts[story_type] = int(lifecycle_story_type_counts.get(story_type, 0) + 1)
         lifecycle_rows.append(
@@ -1401,8 +1510,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "report_json_path": str(aggregated_bundle_path),
                 "trade_lifecycle_json_path": str(trade_lifecycle_path),
                 "trade_story_input_path": str(story_input_path),
+                "ai_trade_report_input_path": str(story_input_path),
                 "trade_report_json_path": trade_report_json_written,
                 "trade_report_md_path": trade_report_md_written,
+                "ai_trade_report_json_path": trade_report_json_written,
+                "ai_trade_report_md_path": trade_report_md_written,
+                "strategist_llm_response_path": str(strategist_llm_response_path),
+                "ai_trade_report_llm_response_path": ai_trade_report_llm_response_written,
+                "trade_root_path": str(trade_root),
                 "trade_report_summary": str((trade_report.get("executive_summary") or {}).get("summary") or ""),
                 "report_status": str(diagnostics.get("report_status") or ""),
                 "report_reason_code": str(diagnostics.get("report_reason_code") or ""),
@@ -1420,8 +1535,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                 row["story_id"] = trade_id
                 row["trade_lifecycle_json_path"] = str(trade_lifecycle_path)
                 row["trade_story_input_path"] = str(story_input_path)
+                row["ai_trade_report_input_path"] = str(story_input_path)
                 row["trade_report_json_path"] = trade_report_json_written
                 row["trade_report_md_path"] = trade_report_md_written
+                row["ai_trade_report_json_path"] = trade_report_json_written
+                row["ai_trade_report_md_path"] = trade_report_md_written
+                row["strategist_llm_response_path"] = str(strategist_llm_response_path)
+                row["ai_trade_report_llm_response_path"] = ai_trade_report_llm_response_written
+                row["trade_root_path"] = str(trade_root)
                 row["trade_report_summary"] = str((trade_report.get("executive_summary") or {}).get("summary") or "")
                 row["report_status"] = str(diagnostics.get("report_status") or "")
                 row["report_reason_code"] = str(diagnostics.get("report_reason_code") or "")
@@ -1439,8 +1560,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                     {
                         "trade_lifecycle_json": str(trade_lifecycle_path),
                         "trade_story_input_json": str(story_input_path),
+                        "ai_trade_report_input_json": str(story_input_path),
                         "trade_report_json": trade_report_json_written,
                         "trade_report_md": trade_report_md_written,
+                        "ai_trade_report_json": trade_report_json_written,
+                        "ai_trade_report_md": trade_report_md_written,
+                        "strategist_llm_response_json": str(strategist_llm_response_path),
+                        "ai_trade_report_llm_response_json": ai_trade_report_llm_response_written,
                     }
                 )
                 report_json_path = Path(str(bundle.get("report_json_path") or ""))
