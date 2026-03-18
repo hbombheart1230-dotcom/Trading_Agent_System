@@ -201,6 +201,33 @@ def _make_event_logger(state: Dict[str, Any]) -> Any:
     return EventLogger(log_path=resolve_event_log_path())
 
 
+def _emit_scanner_event(
+    state: Dict[str, Any],
+    *,
+    name: str,
+    payload: Dict[str, Any],
+    level: str = "info",
+    symbol: str = "",
+) -> None:
+    try:
+        logger = _make_event_logger(state)
+        from libs.core.event_logger import log_state_event
+
+        log_state_event(
+            logger,
+            state,
+            stage="scanner",
+            event=name,
+            event_name=f"scanner.{name}",
+            payload=dict(payload or {}),
+            level=level,
+            agent="scanner",
+            symbol=str(symbol or ""),
+        )
+    except Exception:
+        return
+
+
 def _compact_selected_snapshot(selected: Dict[str, Any] | None) -> Dict[str, Any]:
     if not isinstance(selected, dict):
         return {}
@@ -251,6 +278,83 @@ def _compact_selected_snapshot(selected: Dict[str, Any] | None) -> Dict[str, Any
             "avoid_theme_penalty_component": components.get("avoid_theme_penalty_component"),
         },
     }
+
+
+def _feature_coverage_summary(row: Dict[str, Any]) -> Dict[str, Any]:
+    features = row.get("features") if isinstance(row.get("features"), dict) else {}
+    if not isinstance(features, dict):
+        return {"present": 0, "total": 0}
+    interesting_keys = [
+        "engine_ma20_gap",
+        "engine_ma60",
+        "engine_ma120",
+        "engine_adx14",
+        "engine_trend_strength",
+        "engine_atr14",
+        "engine_volume_spike20",
+        "engine_volatility20",
+        "engine_vwap_distance",
+        "engine_sector_relative_strength",
+        "engine_cross_section_rank",
+        "engine_regime",
+        "engine_signal_score",
+    ]
+    present = sum(1 for key in interesting_keys if features.get(key) not in (None, ""))
+    return {"present": int(present), "total": int(len(interesting_keys))}
+
+
+def _compact_feature_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
+    features = row.get("features") if isinstance(row.get("features"), dict) else {}
+    if not isinstance(features, dict):
+        return {}
+    return {
+        "skill_quote_price": features.get("skill_quote_price"),
+        "quote_trading_value": features.get("quote_trading_value"),
+        "quote_volume": features.get("quote_volume"),
+        "intraday_change_pct": features.get("intraday_change_pct"),
+        "engine_ma20_gap": features.get("engine_ma20_gap"),
+        "engine_adx14": features.get("engine_adx14"),
+        "engine_trend_strength": features.get("engine_trend_strength"),
+        "engine_volume_spike20": features.get("engine_volume_spike20"),
+        "engine_volatility20": features.get("engine_volatility20"),
+        "engine_vwap_distance": features.get("engine_vwap_distance"),
+        "engine_sector_relative_strength": features.get("engine_sector_relative_strength"),
+        "engine_cross_section_rank": features.get("engine_cross_section_rank"),
+        "engine_regime": features.get("engine_regime"),
+        "engine_signal_score": features.get("engine_signal_score"),
+    }
+
+
+def _candidate_theme_match(row: Dict[str, Any]) -> Any:
+    candidate = row.get("candidate") if isinstance(row.get("candidate"), dict) else {}
+    components = row.get("components") if isinstance(row.get("components"), dict) else {}
+    sources = [str(x or "").strip() for x in list(candidate.get("sources") or []) if str(x or "").strip()]
+    if "sector_theme" in sources:
+        return True
+    return bool(_to_float(components.get("theme_boost_component")) > 0.0)
+
+
+def _ranking_table_rows(rows: List[Dict[str, Any]], *, max_rows: int = 5) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for idx, row in enumerate(list(rows or [])[: max(0, int(max_rows))], start=1):
+        candidate = row.get("candidate") if isinstance(row.get("candidate"), dict) else {}
+        out.append(
+            {
+                "rank": int(idx),
+                "symbol": str(row.get("symbol") or ""),
+                "score_total": float(_to_float(row.get("score_total") or row.get("score"))),
+                "score_breakdown": dict(row.get("score_breakdown") or {}),
+                "source_scores": dict(candidate.get("source_scores") or {}),
+                "risk_score": float(_to_float(row.get("risk_score"))),
+                "confidence": float(_to_float(row.get("confidence"))),
+                "theme_match": _candidate_theme_match(row),
+                "feature_coverage": _feature_coverage_summary(row),
+                "status": "selected" if idx == 1 else "runner_up",
+                "exclusion_reason": str(row.get("exclusion_reason") or ""),
+                "compact_feature_snapshot": _compact_feature_snapshot(row),
+            }
+        )
+    return out
 
 
 def _log_scanner_summary(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
@@ -1868,6 +1972,94 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "fallback_reasons": list(feature_errors),
         "error_count": len(feature_errors),
     }
+    ranking_table = _ranking_table_rows(scan_results_sorted, max_rows=5)
+    selected_snapshot = _compact_selected_snapshot(selected if isinstance(selected, dict) else None)
+    runner_up_reasons: List[Dict[str, Any]] = []
+    if len(scan_results_sorted) > 1 and isinstance(selected, dict):
+        selected_score = float(_to_float(selected.get("score_total") or selected.get("score")))
+        selected_confidence = float(_to_float(selected.get("confidence")))
+        selected_risk = float(_to_float(selected.get("risk_score")))
+        for row in list(scan_results_sorted[1:3]):
+            if not isinstance(row, dict):
+                continue
+            reasons: List[str] = []
+            row_score = float(_to_float(row.get("score_total") or row.get("score")))
+            row_conf = float(_to_float(row.get("confidence")))
+            row_risk = float(_to_float(row.get("risk_score")))
+            if row_score < selected_score:
+                reasons.append(f"lower total score ({row_score:.3f} vs {selected_score:.3f})")
+            if row_conf < selected_confidence:
+                reasons.append(f"lower confidence ({row_conf:.2f} vs {selected_confidence:.2f})")
+            if row_risk > selected_risk:
+                reasons.append(f"higher risk ({row_risk:.2f} vs {selected_risk:.2f})")
+            if not reasons:
+                reasons.append("lost on tie-break after score, confidence, and risk comparison")
+            runner_up_reasons.append(
+                {
+                    "symbol": str(row.get("symbol") or ""),
+                    "why_lost": reasons,
+                }
+            )
+    _emit_scanner_event(
+        state,
+        name="candidate_pool_snapshot",
+        payload={
+            "candidate_source": str(pool_meta.get("candidate_source") or ""),
+            "candidate_pool_before_filter": int(pool_meta.get("candidate_pool_before_filter") or 0),
+            "candidate_pool_after_filter": int(pool_meta.get("candidate_pool_after_filter") or len(scan_results_sorted)),
+            "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
+            "avoid_filter_applied": bool(pool_meta.get("avoid_filter_applied")),
+            "source_mix": dict(pool_meta.get("pool_source_mix") or {}),
+            "scanner_source_policy": dict(pool_meta.get("scanner_source_policy") or {}),
+            "candidate_symbols": [str((row or {}).get("symbol") or "") for row in list(scan_results_sorted or [])[:10] if isinstance(row, dict)],
+            "fallback_reason": str(pool_meta.get("fallback_reason") or ""),
+            "backfill_used": bool(pool_meta.get("backfill_used")),
+            "backfill_count": int(pool_meta.get("backfill_count") or 0),
+        },
+    )
+    _emit_scanner_event(
+        state,
+        name="candidate_ranking_table",
+        payload={
+            "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
+            "rows": ranking_table,
+        },
+        symbol=str((selected or {}).get("symbol") or ""),
+    )
+    _emit_scanner_event(
+        state,
+        name="candidate_selection_reason",
+        payload={
+            "selected_symbol": str((selected or {}).get("symbol") or ""),
+            "why_selected": [
+                f"highest total score ({float(_to_float((selected or {}).get('score_total') or (selected or {}).get('score'))):.3f})"
+                if isinstance(selected, dict)
+                else "no candidate selected",
+                f"confidence {float(_to_float((selected or {}).get('confidence'))):.2f} and risk {float(_to_float((selected or {}).get('risk_score'))):.2f}"
+                if isinstance(selected, dict)
+                else "",
+                f"source mix: {', '.join(list(((selected or {}).get('candidate') or {}).get('sources') or [])[:4])}"
+                if isinstance(selected, dict)
+                else "",
+                f"playbook alignment: {playbook or 'not_captured'}",
+            ],
+            "runner_ups_lost": runner_up_reasons,
+            "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
+            "final_decision_basis": "Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties.",
+        },
+        symbol=str((selected or {}).get("symbol") or ""),
+    )
+    _emit_scanner_event(
+        state,
+        name="selection_output",
+        payload={
+            "selected_symbol": state.get("top_stock") or None,
+            "candidate_count": int(len(scan_results_sorted)),
+            "ranking_top_n": ranking_table,
+            "selected_candidate": selected_snapshot,
+        },
+        symbol=str((selected or {}).get("symbol") or ""),
+    )
 
     _log_scanner_summary(
         state,

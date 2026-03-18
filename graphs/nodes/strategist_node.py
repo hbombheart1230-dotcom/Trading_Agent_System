@@ -2392,6 +2392,33 @@ def _make_event_logger(state: Dict[str, Any]) -> Any:
     return EventLogger(log_path=resolve_event_log_path())
 
 
+def _emit_strategist_event(
+    state: Dict[str, Any],
+    *,
+    name: str,
+    payload: Dict[str, Any],
+    level: str = "info",
+    symbol: str = "",
+) -> None:
+    try:
+        logger = _make_event_logger(state)
+        from libs.core.event_logger import log_state_event
+
+        log_state_event(
+            logger,
+            state,
+            stage="strategist",
+            event=name,
+            event_name=f"strategist.{name}",
+            payload=dict(payload or {}),
+            level=level,
+            agent="strategist",
+            symbol=str(symbol or ""),
+        )
+    except Exception:
+        return
+
+
 def _log_strategist_summary(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
     try:
         logger = _make_event_logger(state)
@@ -2433,6 +2460,88 @@ def _sample_news_for_evidence(
                     sample.append(str(item))
         out[str(symbol)] = {"count": len(rows) if isinstance(rows, list) else 0, "sample": sample}
     return out
+
+
+def _rank_news_evidence_rows(
+    items_by_target: Dict[str, List[Any]],
+    signal_map: Dict[str, Dict[str, Any]],
+    *,
+    used_targets: List[str],
+    scope: str,
+    max_rows: int = 10,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    used_set = {str(item or "").strip() for item in list(used_targets or []) if str(item or "").strip()}
+    for target, rows_raw in (items_by_target or {}).items():
+        target_text = str(target or "").strip()
+        signal = signal_map.get(target_text) if isinstance(signal_map.get(target_text), dict) else {}
+        sample_titles: List[str] = []
+        for row in list(rows_raw or [])[:3]:
+            if isinstance(row, dict):
+                title = str(row.get("title") or "").strip()
+            else:
+                title = str(row or "").strip()
+            if title:
+                sample_titles.append(title)
+        rows.append(
+            {
+                "target": target_text,
+                "scope": str(scope or ""),
+                "score": _round_optional(signal.get("score"), 4),
+                "status": str(signal.get("status") or ""),
+                "source": str(signal.get("source") or ""),
+                "reason": str(signal.get("reason") or ""),
+                "headline_count": int(len(list(rows_raw or []))),
+                "sample_titles": sample_titles,
+                "used_in_decision": bool(target_text in used_set),
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            -abs(float(row.get("score") or 0.0)),
+            -int(row.get("headline_count") or 0),
+            str(row.get("target") or ""),
+        )
+    )
+    return rows[: max(0, int(max_rows))]
+
+
+def _global_sentiment_breakdown_payload(global_signal: Dict[str, Any]) -> Dict[str, Any]:
+    weights = global_signal.get("weights") if isinstance(global_signal.get("weights"), dict) else {}
+    components = global_signal.get("components") if isinstance(global_signal.get("components"), dict) else {}
+    contributions: List[Dict[str, Any]] = []
+    factor_specs = (
+        ("sp500", "sp500_ret"),
+        ("nasdaq", "nasdaq_ret"),
+        ("dow", "dow_ret"),
+        ("vix", "vix_ret"),
+        ("vix_level", "vix_level"),
+        ("dxy", "dxy_ret"),
+        ("tnx", "tnx_delta"),
+    )
+    for weight_key, component_key in factor_specs:
+        weight = _to_float(weights.get(weight_key), 0.0)
+        raw_value = _to_float(components.get(component_key), 0.0)
+        contributions.append(
+            {
+                "factor": str(component_key),
+                "weight": float(weight),
+                "raw_value": float(raw_value),
+                "weighted_contribution": float(weight * raw_value),
+            }
+        )
+    contributions.sort(key=lambda row: -abs(float(row.get("weighted_contribution") or 0.0)))
+    return {
+        "score": _round_optional(global_signal.get("score"), 4),
+        "status": str(global_signal.get("status") or ""),
+        "source": str(global_signal.get("source") or ""),
+        "reason": str(global_signal.get("reason") or ""),
+        "raw_score": _round_optional(global_signal.get("raw_score"), 4),
+        "index_moves": dict(global_signal.get("index_moves") or {}),
+        "macro_moves": dict(global_signal.get("macro_moves") or {}),
+        "fear_index": dict(global_signal.get("fear_index") or {}),
+        "factor_contributions": contributions,
+    }
 
 
 def _merge_news_samples(*samples: Dict[str, Any], limit: int = 12) -> Dict[str, Any]:
@@ -3110,6 +3219,123 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "blocked": bool(strategist_llm_blocked),
         "blocked_reason": str(strategist_llm_block_reason or ""),
     }
+    ranked_market_news = _rank_news_evidence_rows(
+        market_news_items_by_target,
+        market_news_signal_map,
+        used_targets=list(news_query_targets),
+        scope="market",
+        max_rows=6,
+    )
+    ranked_candidate_news = _rank_news_evidence_rows(
+        news_items_by_symbol,
+        news_signal_map,
+        used_targets=list(state.get("candidate_symbols") or []),
+        scope="candidate",
+        max_rows=6,
+    )
+    reason_chain: List[str] = []
+    if str(market_regime or "").strip():
+        reason_chain.append(f"Market regime classified as {market_regime}.")
+    if str(playbook or "").strip():
+        reason_chain.append(f"Playbook set to {playbook}.")
+    if list(themes):
+        reason_chain.append(f"Themes prioritized: {', '.join(list(themes)[:4])}.")
+    if list(avoid_themes):
+        reason_chain.append(f"Avoid themes: {', '.join(list(avoid_themes)[:4])}.")
+    if str(monitor_guidance or "").strip():
+        reason_chain.append(f"Monitor guidance set to {monitor_guidance}.")
+    if str(news_query_reasoning or "").strip():
+        reason_chain.append(f"News query reasoning: {news_query_reasoning}.")
+    if bool(macro_stress_overlay.get("active")) or list(macro_stress_overlay.get("stress_flags") or []):
+        reason_chain.append(
+            "Macro stress overlay active: "
+            + ", ".join([str(x or "") for x in list(macro_stress_overlay.get("stress_flags") or []) if str(x or "").strip()] or ["elevated_stress"])
+            + "."
+        )
+
+    _emit_strategist_event(
+        state,
+        name="market_context_snapshot",
+        payload={
+            "market_structure": str(market_structure or ""),
+            "market_context_inputs": dict(market_context_inputs),
+            "regime_factors": dict(regime_factors),
+            "global_signal": {
+                "score": _round_optional(global_signal.get("score"), 4),
+                "status": str(global_signal.get("status") or ""),
+                "source": str(global_signal.get("source") or ""),
+                "index_moves": dict(global_signal.get("index_moves") or {}),
+                "macro_moves": dict(global_signal.get("macro_moves") or {}),
+                "fear_index": dict(global_signal.get("fear_index") or {}),
+            },
+            "macro_stress_overlay": dict(macro_stress_overlay),
+            "candidate_symbols_hint": list(state.get("candidate_symbols") or [])[:8],
+        },
+    )
+    _emit_strategist_event(
+        state,
+        name="global_sentiment_breakdown",
+        payload=_global_sentiment_breakdown_payload(global_signal),
+    )
+    _emit_strategist_event(
+        state,
+        name="news_evidence_ranked",
+        payload={
+            "news_query_targets": list(news_query_targets),
+            "candidate_news_ranked": ranked_candidate_news,
+            "market_news_ranked": ranked_market_news,
+            "candidate_news_context": dict(candidate_news_ctx),
+            "market_news_context": dict(market_news_ctx),
+            "news_context": dict(news_ctx),
+        },
+    )
+    _emit_strategist_event(
+        state,
+        name="decision_frame",
+        payload={
+            "market_regime": market_regime,
+            "market_sentiment": market_sentiment,
+            "playbook": playbook,
+            "themes": list(themes),
+            "avoid_themes": list(avoid_themes),
+            "scanner_bias": scanner_bias,
+            "scanner_priority": list(scanner_priority),
+            "scanner_source_policy": dict(scanner_source_policy),
+            "trade_aggressiveness": trade_aggressiveness,
+            "risk_tone": risk_tone,
+            "monitor_guidance": monitor_guidance,
+            "report_focus": list(report_focus),
+            "reason_chain": reason_chain,
+            "strategy_policy_summary": {
+                "market_policy": dict(strategy_policy.get("market_policy") or {}),
+                "scanner_policy": {
+                    "candidate_sources": dict((strategy_policy.get("scanner_policy") or {}).get("candidate_sources") or {}),
+                    "filters": dict((strategy_policy.get("scanner_policy") or {}).get("filters") or {}),
+                },
+                "monitor_policy": dict(strategy_policy.get("monitor_policy") or {}),
+            },
+        },
+    )
+    if llm_required:
+        _emit_strategist_event(
+            state,
+            name="llm_response_saved",
+            payload={
+                "status": str(llm_meta.get("status") or "disabled"),
+                "model": str(llm_meta.get("model") or ""),
+                "attempts": int(llm_meta.get("attempts") or 1),
+                "repair_used": bool(llm_meta.get("repair_used")),
+                "blocked": bool(strategist_llm_blocked),
+                "blocked_reason": str(strategist_llm_block_reason or ""),
+                "llm_response_artifact": {
+                    "component": "strategist",
+                    "evidence_log_path": str(Path(os.getenv("EVIDENCE_LEDGER_PATH", "data/evidence_ledger/events.jsonl"))),
+                    "prompt_stage": "theme_selection",
+                    "response_stage": "theme_selection_repair" if bool(llm_meta.get("repair_used")) else "theme_selection",
+                },
+            },
+            level="warning" if strategist_llm_blocked else "info",
+        )
     _log_strategist_summary(
         state,
         {

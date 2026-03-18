@@ -635,6 +635,33 @@ def _make_event_logger(state: Dict[str, Any]) -> Any:
     return EventLogger(log_path=resolve_event_log_path())
 
 
+def _emit_monitor_event(
+    state: Dict[str, Any],
+    *,
+    name: str,
+    payload: Dict[str, Any],
+    level: str = "info",
+    symbol: str = "",
+) -> None:
+    try:
+        logger = _make_event_logger(state)
+        from libs.core.event_logger import log_state_event
+
+        log_state_event(
+            logger,
+            state,
+            stage="monitor",
+            event=name,
+            event_name=f"monitor.{name}",
+            payload=dict(payload or {}),
+            level=level,
+            agent="monitor",
+            symbol=str(symbol or ""),
+        )
+    except Exception:
+        return
+
+
 def _log_monitor_summary(state: Dict[str, Any], payload: Dict[str, Any]) -> None:
     try:
         logger = _make_event_logger(state)
@@ -642,6 +669,83 @@ def _log_monitor_summary(state: Dict[str, Any], payload: Dict[str, Any]) -> None
         logger.log(run_id=run_id, stage="monitor", event="summary", payload=dict(payload))
     except Exception:
         return
+
+
+def _friendly_exit_axis(reason: Any) -> str:
+    text = str(reason or "").strip().replace("_", " ")
+    if not text:
+        return "No trigger"
+    return " ".join(part.capitalize() for part in text.split())
+
+
+def _monitor_watch_axes(thresholds: Dict[str, Any]) -> list[str]:
+    if not isinstance(thresholds, dict):
+        return []
+    out: list[str] = []
+    if _to_float(thresholds.get("hard_stop_pct")) > 0.0:
+        out.append("Hard stop")
+    if _to_float(thresholds.get("stop_loss_pct")) > 0.0:
+        out.append("Adaptive stop")
+    if _to_float(thresholds.get("take_profit_pct")) > 0.0:
+        out.append("Take profit")
+    if _to_float(thresholds.get("trailing_stop_pct")) > 0.0:
+        out.append("Trailing stop")
+    if _to_float(thresholds.get("peak_drawdown_exit_pct")) > 0.0:
+        out.append("Peak drawdown")
+    if _to_float(thresholds.get("vwap_breakdown_pct")) > 0.0:
+        out.append("VWAP breakdown")
+    if _to_float(thresholds.get("intraday_low_break_pct")) > 0.0:
+        out.append("Intraday low break")
+    if _to_float(thresholds.get("trend_strength_floor")) != 0.0:
+        out.append("Trend breakdown")
+    if _to_float(thresholds.get("vol_expansion_ratio")) > 0.0:
+        out.append("Volatility expansion")
+    if _to_float(thresholds.get("news_shock_threshold")) > 0.0:
+        out.append("News shock")
+    if bool(thresholds.get("use_eod_flat")):
+        out.append("EOD flat")
+    return out
+
+
+def _monitor_posture_for_cycle(
+    *,
+    open_position_count: int,
+    intents: list[dict],
+    exit_info: Dict[str, Any],
+    buy_blocked_open_position: bool,
+    buy_blocked_post_exit_cooldown: bool,
+) -> str:
+    if any(str((intent or {}).get("side") or "").strip().upper() == "SELL" for intent in list(intents or [])):
+        return "SELL"
+    if any(str((intent or {}).get("side") or "").strip().upper() == "BUY" for intent in list(intents or [])):
+        return "BUY"
+    if bool(exit_info.get("triggered")):
+        return "SELL"
+    if open_position_count > 0:
+        return "HOLD"
+    if buy_blocked_open_position or buy_blocked_post_exit_cooldown:
+        return "WAIT"
+    return "WAIT"
+
+
+def _load_previous_monitor_state(state: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    raw = persisted.get("monitor_last_state_by_symbol") if isinstance(persisted.get("monitor_last_state_by_symbol"), dict) else {}
+    row = raw.get(_norm_symbol(symbol)) if isinstance(raw, dict) else {}
+    return dict(row) if isinstance(row, dict) else {}
+
+
+def _save_current_monitor_state(state: Dict[str, Any], symbol: str, *, posture: str, reason: str, active_exit_axis: str) -> None:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    rows = persisted.get("monitor_last_state_by_symbol") if isinstance(persisted.get("monitor_last_state_by_symbol"), dict) else {}
+    rows[_norm_symbol(symbol)] = {
+        "posture": str(posture or ""),
+        "reason": str(reason or ""),
+        "active_exit_axis": str(active_exit_axis or ""),
+        "updated_at_epoch": int(_resolve_now_epoch(state)),
+    }
+    persisted["monitor_last_state_by_symbol"] = rows
+    state["persisted_state"] = persisted
 
 
 def _resolve_cash(state: Dict[str, Any]) -> float:
@@ -1675,6 +1779,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "peak_drawdown": decision.get("peak_drawdown"),
             "vwap_distance": decision.get("vwap_distance"),
             "volatility_ratio": decision.get("volatility_ratio"),
+            "volatility_regime": str(features.get("engine_regime") or ""),
             "price_source": str(decision.get("_price_source") or ""),
             "price_source_policy": "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized",
             "feature_source": str(decision.get("_feature_source") or ""),
@@ -1701,6 +1806,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "trade_aggressiveness": str(frame_applied.get("trade_aggressiveness") or ""),
             "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
             "exit_policy_guard_adjustments": list(exit_policy_guard_adjustments),
+            "active_exit_axis": _friendly_exit_axis(str(decision.get("reason") or monitor_reason or "hold")),
+            "watch_axes": _monitor_watch_axes(decision.get("thresholds") if isinstance(decision.get("thresholds"), dict) else {}),
         }
         if bool(exit_signal_detected) and not bool(sell_guard_blocked) and qty > 0:
             intents = [
@@ -1800,6 +1907,110 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     }
     state["monitor_exit"] = exit_info
     state["monitor_sizing"] = sizing_info
+    monitor_symbol = str(exit_info.get("symbol") or (selected.get("symbol") if isinstance(selected, dict) else "") or "")
+    current_posture = _monitor_posture_for_cycle(
+        open_position_count=open_position_count,
+        intents=intents,
+        exit_info=exit_info,
+        buy_blocked_open_position=buy_blocked_open_position,
+        buy_blocked_post_exit_cooldown=buy_blocked_post_exit_cooldown,
+    )
+    current_reason = str(exit_info.get("monitor_reason") or exit_info.get("reason") or (state.get("monitor_output") or {}).get("entry_exit_reason") or "").strip()
+    previous_monitor_state = _load_previous_monitor_state(state, monitor_symbol) if monitor_symbol else {}
+    previous_posture = str(previous_monitor_state.get("posture") or "").strip()
+    previous_reason = str(previous_monitor_state.get("reason") or "").strip()
+    state_changed = bool(previous_posture != current_posture or previous_reason != current_reason)
+    if monitor_symbol:
+        _save_current_monitor_state(
+            state,
+            monitor_symbol,
+            posture=current_posture,
+            reason=current_reason,
+            active_exit_axis=str(exit_info.get("active_exit_axis") or ""),
+        )
+
+    thresholds = dict(exit_info.get("thresholds") or {}) if isinstance(exit_info.get("thresholds"), dict) else {}
+    pnl_ratio = _to_float(exit_info.get("pnl_ratio")) if exit_info.get("pnl_ratio") not in (None, "") else None
+    threshold_snapshot = {
+        "current_price": exit_info.get("price"),
+        "avg_price": exit_info.get("avg_price"),
+        "peak_price": exit_info.get("peak_price"),
+        "pnl_pct": pnl_ratio,
+        "drawdown_pct": exit_info.get("peak_drawdown"),
+        "stop_loss_pct": thresholds.get("stop_loss_pct"),
+        "effective_stop_loss_pct": thresholds.get("effective_stop_loss_pct"),
+        "take_profit_pct": thresholds.get("take_profit_pct"),
+        "trailing_stop_pct": thresholds.get("trailing_stop_pct"),
+        "vwap_distance_pct": exit_info.get("vwap_distance"),
+        "volatility_regime": str(exit_info.get("volatility_regime") or ""),
+        "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
+        "watch_axes": list(exit_info.get("watch_axes") or []),
+        "exit_confirm_required": int(exit_info.get("exit_confirm_ticks") or 0),
+        "exit_confirm_count": int(exit_info.get("exit_confirm_count") or 0),
+    }
+    _emit_monitor_event(
+        state,
+        name="threshold_snapshot",
+        payload=threshold_snapshot,
+        symbol=monitor_symbol,
+    )
+    _emit_monitor_event(
+        state,
+        name="state_transition",
+        payload={
+            "previous_posture": previous_posture,
+            "current_posture": current_posture,
+            "previous_reason": previous_reason,
+            "current_reason": current_reason,
+            "state_changed": bool(state_changed),
+            "trigger_delta": {
+                "previous_active_exit_axis": str(previous_monitor_state.get("active_exit_axis") or ""),
+                "current_active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
+                "exit_triggered": bool(exit_info.get("triggered")),
+            },
+        },
+        symbol=monitor_symbol,
+    )
+    sell_submitted = any(str((intent or {}).get("side") or "").strip().upper() == "SELL" for intent in list(intents or []))
+    sell_skipped_reason = ""
+    if bool(exit_info.get("exit_signal_detected")) and not bool(sell_submitted):
+        sell_skipped_reason = str(exit_info.get("sell_guard_reason") or exit_info.get("reason") or "sell_not_submitted").strip()
+    _emit_monitor_event(
+        state,
+        name="exit_decision_detail",
+        payload={
+            "exit_triggered": bool(exit_info.get("triggered")),
+            "triggered_rule": str(exit_info.get("reason") or ""),
+            "confirm_count": int(exit_info.get("exit_confirm_count") or 0),
+            "confirm_required": int(exit_info.get("exit_confirm_ticks") or 0),
+            "guard_blocked": bool(exit_info.get("sell_guard_blocked")),
+            "guard_reason": str(exit_info.get("sell_guard_reason") or ""),
+            "sell_submitted": bool(sell_submitted),
+            "sell_skipped_reason": sell_skipped_reason,
+            "final_reason": current_reason,
+        },
+        level="warning" if bool(exit_info.get("triggered")) else "info",
+        symbol=monitor_symbol,
+    )
+    _emit_monitor_event(
+        state,
+        name="cycle_summary",
+        payload={
+            "selected_symbol": str((selected.get("symbol") if isinstance(selected, dict) else "") or ""),
+            "monitor_symbol": monitor_symbol,
+            "posture": current_posture,
+            "monitor_reason": current_reason,
+            "open_position_count": int(open_position_count),
+            "has_intent": bool(intents),
+            "intent_side": str((state.get("monitor_output") or {}).get("intent_side") or "NOOP"),
+            "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
+            "price_source": str(exit_info.get("price_source") or ""),
+            "feature_source": str(exit_info.get("feature_source") or ""),
+            "buy_blocked_open_position": bool(buy_blocked_open_position),
+            "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
+        },
+        symbol=monitor_symbol,
+    )
     _log_monitor_summary(
         state,
         {

@@ -3642,6 +3642,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
             or ""
         )
     compact_input = _build_operator_brief_input(detail)
+    _save_operator_brief_input_artifact(detail, compact_input)
     messages = _build_operator_brief_messages(compact_input)
     primary_policy = {
         "temperature": float(os.getenv("OPERATOR_UI_RUN_BRIEF_TEMPERATURE", "0.1")),
@@ -3883,6 +3884,30 @@ def _operator_brief_artifact_paths(detail: Dict[str, Any]) -> tuple[Path | None,
             return brief_json, brief_md
         return parent / "operator_brief.json", parent / "operator_brief.md"
     return None, None
+
+
+def _operator_brief_input_artifact_path(detail: Dict[str, Any]) -> Path | None:
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    trade_root_path = Path(str(trade_report.get("trade_root_path") or "")).resolve() if str(trade_report.get("trade_root_path") or "").strip() else None
+    if trade_root_path is not None:
+        return trade_root_path / "brief" / "brief_input.json"
+    brief_json, _brief_md = _operator_brief_artifact_paths(detail)
+    if brief_json is None:
+        return None
+    return brief_json.parent / "brief_input.json"
+
+
+def _save_operator_brief_input_artifact(detail: Dict[str, Any], compact_input: Dict[str, Any]) -> None:
+    path = _operator_brief_input_artifact_path(detail)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = dict(compact_input or {})
+        payload["saved_at"] = datetime.now(tz=KST).isoformat()
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        return
 
 
 def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:

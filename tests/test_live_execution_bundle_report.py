@@ -208,8 +208,261 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
         event_log,
         [
             {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "strategist",
+                "event": "market_context_snapshot",
+                "event_name": "strategist.market_context_snapshot",
+                "agent": "strategist",
+                "phase": "session",
+                "symbol": "000660",
+                "payload": {
+                    "market_regime": "neutral",
+                    "market_sentiment": "neutral",
+                    "playbook": "pullback",
+                    "macro_inputs": {"kospi_pct": -0.2, "dxy_pct": 0.4, "vix": 25.4},
+                },
+            },
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "strategist",
+                "event": "global_sentiment_breakdown",
+                "event_name": "strategist.global_sentiment_breakdown",
+                "agent": "strategist",
+                "phase": "session",
+                "symbol": "000660",
+                "payload": {
+                    "global_sentiment_score": -0.12,
+                    "factor_contributions": [
+                        {"name": "vix", "value": 25.4, "contribution": -0.05},
+                        {"name": "dxy_pct", "value": 0.4, "contribution": -0.03},
+                    ],
+                },
+            },
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "strategist",
+                "event": "news_evidence_ranked",
+                "event_name": "strategist.news_evidence_ranked",
+                "agent": "strategist",
+                "phase": "session",
+                "symbol": "000660",
+                "payload": {
+                    "ranked_news": [
+                        {"rank": 1, "title": "Chip demand stabilizes", "used_in_decision": True},
+                        {"rank": 2, "title": "Macro remains defensive", "used_in_decision": True},
+                    ],
+                },
+            },
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:02+00:00",
+                "stage": "strategist",
+                "event": "decision_frame",
+                "event_name": "strategist.decision_frame",
+                "agent": "strategist",
+                "phase": "session",
+                "symbol": "000660",
+                "payload": {
+                    "playbook": "pullback",
+                    "themes": ["semiconductor"],
+                    "avoid_themes": ["speculative_small_cap"],
+                    "monitor_guidance": "tighten risk if leadership weakens",
+                    "reason_chain": [
+                        "Global sentiment stayed slightly negative.",
+                        "Liquidity remained concentrated in semiconductor leaders.",
+                    ],
+                },
+            },
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:02+00:00",
+                "stage": "strategist",
+                "event": "llm_response_saved",
+                "event_name": "strategist.llm_response_saved",
+                "agent": "strategist",
+                "phase": "session",
+                "symbol": "000660",
+                "payload": {
+                    "status": "ok",
+                    "llm_response_artifact": {"path": f"reports/trades/{day}/TRD_TEST/strategist/strategist_llm_response.json"},
+                },
+            },
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:02+00:00",
+                "stage": "scanner",
+                "event": "candidate_pool_snapshot",
+                "event_name": "scanner.candidate_pool_snapshot",
+                "agent": "scanner",
+                "phase": "session",
+                "payload": {"candidate_count": 5, "source_mix": {"top_value": 3, "sector_theme": 2}},
+            },
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:03+00:00",
+                "stage": "scanner",
+                "event": "candidate_ranking_table",
+                "event_name": "scanner.candidate_ranking_table",
+                "agent": "scanner",
+                "phase": "session",
+                "payload": {
+                    "rows": [
+                        {
+                            "rank": 1,
+                            "symbol": "000660",
+                            "score_total": 1.23,
+                            "score_breakdown": {"trading_value": 0.3, "theme_boost": 0.1},
+                            "source_scores": {"top_value": 1.0, "sector_theme": 0.8},
+                            "risk_score": 0.2,
+                            "confidence": 0.91,
+                            "theme_match": True,
+                            "feature_coverage": {"present": 10, "total": 12},
+                            "status": "selected",
+                            "exclusion_reason": "",
+                            "compact_feature_snapshot": {"engine_signal_score": 0.8},
+                        },
+                        {
+                            "rank": 2,
+                            "symbol": "005930",
+                            "score_total": 1.11,
+                            "score_breakdown": {"trading_value": 0.28},
+                            "source_scores": {"top_value": 0.9},
+                            "risk_score": 0.18,
+                            "confidence": 0.82,
+                            "theme_match": False,
+                            "feature_coverage": {"present": 9, "total": 12},
+                            "status": "runner_up",
+                            "exclusion_reason": "weaker theme fit",
+                            "compact_feature_snapshot": {"engine_signal_score": 0.7},
+                        },
+                    ]
+                },
+            },
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:03+00:00",
+                "stage": "scanner",
+                "event": "candidate_selection_reason",
+                "event_name": "scanner.candidate_selection_reason",
+                "agent": "scanner",
+                "phase": "session",
+                "symbol": "000660",
+                "payload": {
+                    "why_selected": ["highest combined score", "strongest theme match"],
+                    "runner_up_reasons": [{"symbol": "005930", "lost_because": ["weaker theme fit"]}],
+                    "tie_break_rule": "higher confidence wins",
+                    "final_decision_basis": "value plus sector-theme alignment",
+                },
+            },
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:03+00:00",
+                "stage": "scanner",
+                "event": "selection_output",
+                "event_name": "scanner.selection_output",
+                "agent": "scanner",
+                "phase": "session",
+                "symbol": "000660",
+                "payload": {
+                    "selected_symbol": "000660",
+                    "selected_rank": 1,
+                    "selected_snapshot": {"score_total": 1.23, "confidence": 0.91},
+                },
+            },
             {"run_id": "run-3", "ts": f"{day}T00:05:00+00:00", "stage": "scanner", "event": "summary", "payload": {"top_stock": "000660"}},
             {"run_id": "run-3", "ts": f"{day}T00:05:01+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "hold_position", "exit_reason": "hold"}},
+            {
+                "run_id": "run-3",
+                "ts": f"{day}T00:05:01+00:00",
+                "stage": "monitor",
+                "event": "threshold_snapshot",
+                "event_name": "monitor.threshold_snapshot",
+                "agent": "monitor",
+                "phase": "session",
+                "symbol": "000660",
+                "payload": {
+                    "current_price": 70500.0,
+                    "avg_price": 70000.0,
+                    "peak_price": 71600.0,
+                    "pnl_pct": 0.007142857,
+                    "drawdown_pct": -0.0154,
+                    "stop_loss_pct": 0.08,
+                    "effective_stop_loss_pct": 0.03,
+                    "take_profit_pct": 0.02,
+                    "trailing_stop_pct": 0.01,
+                    "vwap_distance_pct": -0.006,
+                    "volatility_regime": "normal",
+                    "active_exit_axis": "Hold",
+                    "watch_axes": ["Hard stop", "Peak drawdown"],
+                    "exit_confirm_required": 2,
+                    "exit_confirm_count": 0,
+                },
+            },
+            {
+                "run_id": "run-3",
+                "ts": f"{day}T00:05:01+00:00",
+                "stage": "monitor",
+                "event": "state_transition",
+                "event_name": "monitor.state_transition",
+                "agent": "monitor",
+                "phase": "session",
+                "symbol": "000660",
+                "payload": {
+                    "previous_posture": "BUY",
+                    "current_posture": "HOLD",
+                    "previous_reason": "entry_ready",
+                    "current_reason": "hold_position",
+                    "state_changed": True,
+                    "trigger_delta": {"previous_active_exit_axis": "", "current_active_exit_axis": "Hold"},
+                },
+            },
+            {
+                "run_id": "run-3",
+                "ts": f"{day}T00:05:02+00:00",
+                "stage": "monitor",
+                "event": "exit_decision_detail",
+                "event_name": "monitor.exit_decision_detail",
+                "agent": "monitor",
+                "phase": "session",
+                "symbol": "000660",
+                "payload": {
+                    "exit_triggered": False,
+                    "triggered_rule": "hold",
+                    "confirm_count": 0,
+                    "confirm_required": 2,
+                    "guard_blocked": False,
+                    "guard_reason": "",
+                    "sell_submitted": False,
+                    "sell_skipped_reason": "",
+                    "final_reason": "hold_position",
+                },
+            },
+            {
+                "run_id": "run-3",
+                "ts": f"{day}T00:05:02+00:00",
+                "stage": "monitor",
+                "event": "cycle_summary",
+                "event_name": "monitor.cycle_summary",
+                "agent": "monitor",
+                "phase": "session",
+                "symbol": "000660",
+                "payload": {
+                    "selected_symbol": "000660",
+                    "monitor_symbol": "000660",
+                    "posture": "HOLD",
+                    "monitor_reason": "hold_position",
+                    "open_position_count": 1,
+                    "has_intent": False,
+                    "intent_side": "NOOP",
+                    "active_exit_axis": "Hold",
+                    "price_source": "position.current_price",
+                    "feature_source": "selected.features",
+                },
+            },
             {
                 "run_id": "run-3",
                 "ts": f"{day}T00:05:02+00:00",
@@ -305,6 +558,9 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert (new_trade_root / "ai_trade_report" / "ai_trade_report.md").exists()
     assert (new_trade_root / "ai_trade_report" / "ai_trade_report_llm_response.json").exists()
     assert (new_trade_root / "strategist" / "strategist_llm_response.json").exists()
+    assert (new_trade_root / "evidence" / "strategist_evidence.json").exists()
+    assert (new_trade_root / "evidence" / "scanner_evidence.json").exists()
+    assert (new_trade_root / "evidence" / "monitor_timeline.json").exists()
 
     trade_lifecycle = json.loads((canonical_dir / "trade_lifecycle.json").read_text(encoding="utf-8"))
     assert trade_lifecycle["status"] == "closed"
@@ -312,6 +568,9 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert trade_lifecycle["exit"]["run_id"] == "run-2"
     assert "run-3" in trade_lifecycle["holding"]["run_ids"]
     assert trade_lifecycle["summary"]["holding_duration"]
+    assert (trade_lifecycle.get("evidence") or {}).get("strategist_event_count", 0) >= 1
+    assert (trade_lifecycle.get("evidence") or {}).get("scanner_event_count", 0) >= 1
+    assert (trade_lifecycle.get("evidence") or {}).get("monitor_event_count", 0) >= 1
 
     story_input = json.loads((canonical_dir / "trade_story_input.json").read_text(encoding="utf-8"))
     assert story_input["schema_version"] == "trade_story_input.v2"
@@ -328,6 +587,9 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert story_input["monitor_reason_human"]["peak_drawdown"] == -0.0154
     assert story_input["monitor_reason_human"]["active_exit_axis"] == "Hold"
     assert "Hard stop" in story_input["monitor_reason_human"]["watch_axes"]
+    assert story_input["strategist_evidence"]["market_context_snapshots"][0]["event_name"] == "strategist.market_context_snapshot"
+    assert story_input["scanner_evidence"]["candidate_ranking_tables"][0]["payload"]["rows"][0]["symbol"] == "000660"
+    assert story_input["monitor_timeline"]["threshold_snapshots"][0]["payload"]["active_exit_axis"] == "Hold"
 
     trade_report = json.loads((canonical_dir / "trade_report.json").read_text(encoding="utf-8"))
     llm_response = json.loads((new_trade_root / "ai_trade_report" / "ai_trade_report_llm_response.json").read_text(encoding="utf-8"))
@@ -357,7 +619,19 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert llm_response["trade_id"] == lifecycle_row["trade_id"]
     assert strategist_llm["component"] == "strategist"
     assert strategist_llm["trade_id"] == lifecycle_row["trade_id"]
+    strategist_evidence = json.loads((new_trade_root / "evidence" / "strategist_evidence.json").read_text(encoding="utf-8"))
+    scanner_evidence = json.loads((new_trade_root / "evidence" / "scanner_evidence.json").read_text(encoding="utf-8"))
+    monitor_timeline = json.loads((new_trade_root / "evidence" / "monitor_timeline.json").read_text(encoding="utf-8"))
+    assert strategist_evidence["decision_frames"][0]["payload"]["playbook"] == "pullback"
+    assert scanner_evidence["candidate_selection_reasons"][0]["payload"]["final_decision_basis"] == "value plus sector-theme alignment"
+    assert monitor_timeline["threshold_snapshots"][0]["payload"]["watch_axes"] == ["Hard stop", "Peak drawdown"]
     new_bundle = json.loads((new_trade_root / "lifecycle" / "aggregated_execution_bundle.json").read_text(encoding="utf-8"))
+    assert (new_bundle.get("artifacts") or {}).get("strategist_evidence_json", "").endswith("strategist_evidence.json")
+    assert (new_bundle.get("artifacts") or {}).get("scanner_evidence_json", "").endswith("scanner_evidence.json")
+    assert (new_bundle.get("artifacts") or {}).get("monitor_timeline_json", "").endswith("monitor_timeline.json")
+    assert (new_bundle.get("evidence") or {}).get("paths", {}).get("strategist_evidence_json", "").endswith("strategist_evidence.json")
+    assert (new_bundle.get("evidence") or {}).get("paths", {}).get("scanner_evidence_json", "").endswith("scanner_evidence.json")
+    assert (new_bundle.get("evidence") or {}).get("paths", {}).get("monitor_timeline_json", "").endswith("monitor_timeline.json")
     assert new_bundle["artifacts"]["strategist_llm_response_json"].endswith("strategist_llm_response.json")
     assert new_bundle["artifacts"]["ai_trade_report_llm_response_json"].endswith("ai_trade_report_llm_response.json")
     assert new_bundle["artifacts"]["ai_trade_report_input_json"].endswith("ai_trade_report_input.json")

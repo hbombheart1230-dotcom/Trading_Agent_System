@@ -37,6 +37,14 @@ def test_event_logger_writes_jsonl(tmp_path: Path) -> None:
     assert obj["ts_kst"] == "2026-02-07T09:00:00+09:00"
     assert obj["stage"] == "strategist_plan"
     assert obj["event"] == "decision"
+    assert obj["event_name"] == "strategist_plan.decision"
+    assert obj["level"] == "info"
+    assert obj["trade_id"] == ""
+    assert obj["session_id"] == ""
+    assert obj["cycle_id"] == ""
+    assert obj["agent"] == "strategist_plan"
+    assert obj["phase"] == ""
+    assert obj["symbol"] == ""
     assert isinstance(obj["payload"], dict)
 
     # returned record matches stored record

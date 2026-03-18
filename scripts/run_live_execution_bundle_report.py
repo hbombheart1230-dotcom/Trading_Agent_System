@@ -480,6 +480,130 @@ def _latest_decision_trace_payload(rows: List[Dict[str, Any]], *, event: str, ag
     return {}
 
 
+def _row_event_name(row: Dict[str, Any]) -> str:
+    text = str(row.get("event_name") or "").strip()
+    if text:
+        return text
+    stage = str(row.get("stage") or "").strip()
+    event = str(row.get("event") or "").strip()
+    return ".".join(part for part in (stage, event) if part)
+
+
+def _filter_canonical_events(
+    rows: List[Dict[str, Any]],
+    *,
+    run_ids: List[str],
+    agent: str,
+    event_names: List[str],
+) -> List[Dict[str, Any]]:
+    run_set = {str(item or "").strip() for item in list(run_ids or []) if str(item or "").strip()}
+    names = {str(item or "").strip() for item in list(event_names or []) if str(item or "").strip()}
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if run_set and str(row.get("run_id") or "").strip() not in run_set:
+            continue
+        row_agent = str(row.get("agent") or row.get("stage") or "").strip().lower()
+        if row_agent != str(agent or "").strip().lower():
+            continue
+        if names and _row_event_name(row) not in names:
+            continue
+        out.append(
+            {
+                "ts": str(row.get("ts") or ""),
+                "event_name": _row_event_name(row),
+                "level": str(row.get("level") or "info"),
+                "run_id": str(row.get("run_id") or ""),
+                "trade_id": str(row.get("trade_id") or ""),
+                "session_id": str(row.get("session_id") or ""),
+                "cycle_id": str(row.get("cycle_id") or ""),
+                "agent": str(row.get("agent") or row.get("stage") or ""),
+                "phase": str(row.get("phase") or ""),
+                "symbol": str(row.get("symbol") or ""),
+                "payload": dict(row.get("payload") or {}) if isinstance(row.get("payload"), dict) else {},
+            }
+        )
+    out.sort(key=lambda item: _to_epoch(item.get("ts")) or 0)
+    return out
+
+
+def _build_trade_evidence_from_events(
+    *,
+    event_rows: List[Dict[str, Any]],
+    lifecycle: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    run_ids = [str(x or "") for x in list(lifecycle.get("run_ids_all") or []) if str(x or "").strip()]
+    trade_id = str(lifecycle.get("trade_id") or "")
+    symbol = str(lifecycle.get("symbol") or "")
+
+    strategist_events = _filter_canonical_events(
+        event_rows,
+        run_ids=run_ids,
+        agent="strategist",
+        event_names=[
+            "strategist.market_context_snapshot",
+            "strategist.global_sentiment_breakdown",
+            "strategist.news_evidence_ranked",
+            "strategist.decision_frame",
+            "strategist.llm_response_saved",
+        ],
+    )
+    scanner_events = _filter_canonical_events(
+        event_rows,
+        run_ids=run_ids,
+        agent="scanner",
+        event_names=[
+            "scanner.candidate_pool_snapshot",
+            "scanner.candidate_ranking_table",
+            "scanner.candidate_selection_reason",
+            "scanner.selection_output",
+        ],
+    )
+    monitor_events = _filter_canonical_events(
+        event_rows,
+        run_ids=run_ids,
+        agent="monitor",
+        event_names=[
+            "monitor.threshold_snapshot",
+            "monitor.state_transition",
+            "monitor.exit_decision_detail",
+            "monitor.cycle_summary",
+        ],
+    )
+
+    strategist_evidence = {
+        "schema_version": "trade_strategist_evidence.v1",
+        "trade_id": trade_id,
+        "symbol": symbol,
+        "run_ids": run_ids,
+        "market_context_snapshots": [row for row in strategist_events if row.get("event_name") == "strategist.market_context_snapshot"],
+        "global_sentiment_breakdowns": [row for row in strategist_events if row.get("event_name") == "strategist.global_sentiment_breakdown"],
+        "news_evidence_ranked": [row for row in strategist_events if row.get("event_name") == "strategist.news_evidence_ranked"],
+        "decision_frames": [row for row in strategist_events if row.get("event_name") == "strategist.decision_frame"],
+        "llm_response_saved": [row for row in strategist_events if row.get("event_name") == "strategist.llm_response_saved"],
+    }
+    scanner_evidence = {
+        "schema_version": "trade_scanner_evidence.v1",
+        "trade_id": trade_id,
+        "symbol": symbol,
+        "run_ids": run_ids,
+        "candidate_pool_snapshots": [row for row in scanner_events if row.get("event_name") == "scanner.candidate_pool_snapshot"],
+        "candidate_ranking_tables": [row for row in scanner_events if row.get("event_name") == "scanner.candidate_ranking_table"],
+        "candidate_selection_reasons": [row for row in scanner_events if row.get("event_name") == "scanner.candidate_selection_reason"],
+        "selection_outputs": [row for row in scanner_events if row.get("event_name") == "scanner.selection_output"],
+    }
+    monitor_timeline = {
+        "schema_version": "trade_monitor_timeline.v1",
+        "trade_id": trade_id,
+        "symbol": symbol,
+        "run_ids": run_ids,
+        "threshold_snapshots": [row for row in monitor_events if row.get("event_name") == "monitor.threshold_snapshot"],
+        "state_transitions": [row for row in monitor_events if row.get("event_name") == "monitor.state_transition"],
+        "exit_decision_details": [row for row in monitor_events if row.get("event_name") == "monitor.exit_decision_detail"],
+        "cycle_summaries": [row for row in monitor_events if row.get("event_name") == "monitor.cycle_summary"],
+    }
+    return strategist_evidence, scanner_evidence, monitor_timeline
+
+
 def _resolve_execution_runs(event_log_path: Path, day: str) -> List[Dict[str, Any]]:
     seen: set[str] = set()
     out: List[Dict[str, Any]] = []
@@ -1043,6 +1167,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(out, ensure_ascii=False) if bool(args.json) else "ok=false error=no_execution_day_detected")
         return 3
 
+    day_event_rows = [row for row in _iter_jsonl(event_log_path) if not day or _utc_day(row.get("ts")) == day]
     execution_runs = _resolve_execution_runs(event_log_path, day)[: max(1, int(args.max_runs))]
     trade_md, trade_js, trade_obj = _load_or_generate_trade_explain(event_log_path, analysis_root, day)
     reporter_md, reporter_js, reporter_obj = _load_or_generate_reporter_analysis(event_log_path, analysis_root, reports_root, intents_path, day)
@@ -1353,6 +1478,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         trade_report_md_path = trade_paths["ai_trade_report_md"]
         strategist_llm_response_path = trade_paths["strategist_llm_response_json"]
         ai_trade_report_llm_response_path = trade_paths["ai_trade_report_llm_response_json"]
+        strategist_evidence_path = trade_paths["strategist_evidence_json"]
+        scanner_evidence_path = trade_paths["scanner_evidence_json"]
+        monitor_timeline_path = trade_paths["monitor_timeline_json"]
+
+        strategist_evidence, scanner_evidence, monitor_timeline = _build_trade_evidence_from_events(
+            event_rows=day_event_rows,
+            lifecycle=lifecycle,
+        )
+        write_json(strategist_evidence_path, strategist_evidence)
+        write_json(scanner_evidence_path, scanner_evidence)
+        write_json(monitor_timeline_path, monitor_timeline)
+        lifecycle["evidence"] = {
+            "paths": {
+                "strategist_evidence_json": str(strategist_evidence_path),
+                "scanner_evidence_json": str(scanner_evidence_path),
+                "monitor_timeline_json": str(monitor_timeline_path),
+            },
+            "strategist_event_count": sum(len(list(strategist_evidence.get(key) or [])) for key in ("market_context_snapshots", "global_sentiment_breakdowns", "news_evidence_ranked", "decision_frames", "llm_response_saved")),
+            "scanner_event_count": sum(len(list(scanner_evidence.get(key) or [])) for key in ("candidate_pool_snapshots", "candidate_ranking_tables", "candidate_selection_reasons", "selection_outputs")),
+            "monitor_event_count": sum(len(list(monitor_timeline.get(key) or [])) for key in ("threshold_snapshots", "state_transitions", "exit_decision_details", "cycle_summaries")),
+        }
 
         trade_story_input = build_trade_story_input(lifecycle_bundle, trade_lifecycle=lifecycle)
         trade_story_input["day"] = day
@@ -1404,8 +1550,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         diagnostics["report_artifact_available"] = False
 
         lifecycle["ai_report_diagnostics"] = dict(diagnostics)
+        lifecycle["evidence_artifacts"] = dict(lifecycle.get("evidence") or {})
         lifecycle_bundle["ai_report_diagnostics"] = dict(diagnostics)
+        lifecycle_bundle["evidence"] = {
+            "strategist": strategist_evidence,
+            "scanner": scanner_evidence,
+            "monitor": monitor_timeline,
+            "paths": {
+                "strategist_evidence_json": str(strategist_evidence_path),
+                "scanner_evidence_json": str(scanner_evidence_path),
+                "monitor_timeline_json": str(monitor_timeline_path),
+            },
+        }
         trade_story_input["ai_report_diagnostics"] = dict(diagnostics)
+        trade_story_input["strategist_evidence"] = dict(strategist_evidence)
+        trade_story_input["scanner_evidence"] = dict(scanner_evidence)
+        trade_story_input["monitor_timeline"] = dict(monitor_timeline)
         if trade_report:
             trade_report["ai_report_diagnostics"] = dict(diagnostics)
 
@@ -1460,6 +1620,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "ai_trade_report_md": trade_report_md_written,
                 "strategist_llm_response_json": str(strategist_llm_response_path),
                 "ai_trade_report_llm_response_json": ai_trade_report_llm_response_written,
+                "strategist_evidence_json": str(strategist_evidence_path),
+                "scanner_evidence_json": str(scanner_evidence_path),
+                "monitor_timeline_json": str(monitor_timeline_path),
                 "brief_llm_response_json": "",
             }
         )
@@ -1512,6 +1675,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "ai_trade_report_md_path": trade_report_md_written,
                 "strategist_llm_response_path": str(strategist_llm_response_path),
                 "ai_trade_report_llm_response_path": ai_trade_report_llm_response_written,
+                "strategist_evidence_json_path": str(strategist_evidence_path),
+                "scanner_evidence_json_path": str(scanner_evidence_path),
+                "monitor_timeline_json_path": str(monitor_timeline_path),
                 "trade_root_path": str(trade_root),
                 "trade_report_summary": str((trade_report.get("executive_summary") or {}).get("summary") or ""),
                 "report_status": str(diagnostics.get("report_status") or ""),
@@ -1537,6 +1703,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 row["ai_trade_report_md_path"] = trade_report_md_written
                 row["strategist_llm_response_path"] = str(strategist_llm_response_path)
                 row["ai_trade_report_llm_response_path"] = ai_trade_report_llm_response_written
+                row["strategist_evidence_json_path"] = str(strategist_evidence_path)
+                row["scanner_evidence_json_path"] = str(scanner_evidence_path)
+                row["monitor_timeline_json_path"] = str(monitor_timeline_path)
                 row["trade_root_path"] = str(trade_root)
                 row["trade_report_summary"] = str((trade_report.get("executive_summary") or {}).get("summary") or "")
                 row["report_status"] = str(diagnostics.get("report_status") or "")
@@ -1562,6 +1731,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "ai_trade_report_md": trade_report_md_written,
                         "strategist_llm_response_json": str(strategist_llm_response_path),
                         "ai_trade_report_llm_response_json": ai_trade_report_llm_response_written,
+                        "strategist_evidence_json": str(strategist_evidence_path),
+                        "scanner_evidence_json": str(scanner_evidence_path),
+                        "monitor_timeline_json": str(monitor_timeline_path),
                     }
                 )
                 report_json_path = Path(str(bundle.get("report_json_path") or ""))
@@ -1603,6 +1775,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     }
     summary_json = report_dir / f"live_execution_bundles_{day}.json"
     summary_md = report_dir / f"live_execution_bundles_{day}.md"
+    report_dir.mkdir(parents=True, exist_ok=True)
     summary_out["report_json_path"] = str(summary_json)
     summary_out["report_md_path"] = str(summary_md)
     summary_json.write_text(json.dumps(summary_out, ensure_ascii=False, indent=2), encoding="utf-8")

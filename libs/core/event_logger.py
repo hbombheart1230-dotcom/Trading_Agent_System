@@ -48,6 +48,99 @@ def resolve_event_log_path(default: str = "./data/logs/events.jsonl") -> Path:
     return Path(default)
 
 
+def _sanitize_payload(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, item in value.items():
+            out[str(key)] = _sanitize_payload(item)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_payload(item) for item in value]
+    return str(value)
+
+
+def build_event_envelope(
+    *,
+    run_id: str,
+    stage: str,
+    event: str,
+    payload: Optional[Dict[str, Any]] = None,
+    ts: Optional[str] = None,
+    event_name: str = "",
+    level: str = "info",
+    trade_id: str = "",
+    session_id: str = "",
+    cycle_id: str = "",
+    agent: str = "",
+    phase: str = "",
+    symbol: str = "",
+) -> Dict[str, Any]:
+    ts_utc = ts or _utc_iso()
+    safe_payload = _sanitize_payload(payload or {})
+    stage_text = str(stage or "").strip()
+    event_text = str(event or "").strip()
+    event_name_text = str(event_name or "").strip() or ".".join(part for part in (stage_text, event_text) if part)
+    agent_text = str(agent or "").strip() or stage_text
+    phase_text = str(phase or "").strip()
+    symbol_text = str(symbol or "").strip()
+    trade_id_text = str(trade_id or "").strip()
+    session_id_text = str(session_id or "").strip()
+    cycle_id_text = str(cycle_id or "").strip()
+    return {
+        "run_id": run_id,
+        "ts": ts_utc,
+        "ts_kst": _to_kst_iso(ts_utc),
+        "stage": stage_text,
+        "event": event_text,
+        "event_name": event_name_text,
+        "level": str(level or "info").strip().lower() or "info",
+        "trade_id": trade_id_text,
+        "session_id": session_id_text,
+        "cycle_id": cycle_id_text,
+        "agent": agent_text,
+        "phase": phase_text,
+        "symbol": symbol_text,
+        "payload": safe_payload,
+    }
+
+
+def log_state_event(
+    logger: "EventLogger",
+    state: Dict[str, Any],
+    *,
+    stage: str,
+    event: str,
+    event_name: str,
+    payload: Optional[Dict[str, Any]] = None,
+    level: str = "info",
+    agent: str = "",
+    phase: str = "",
+    symbol: str = "",
+    trade_id: str = "",
+    session_id: str = "",
+    cycle_id: str = "",
+    ts: Optional[str] = None,
+) -> Dict[str, Any]:
+    runtime_plan = state.get("runtime_plan") if isinstance(state.get("runtime_plan"), dict) else {}
+    return logger.log(
+        run_id=str(state.get("run_id") or "").strip() or "unknown-run",
+        stage=stage,
+        event=event,
+        event_name=event_name,
+        level=level,
+        trade_id=str(trade_id or state.get("trade_id") or "").strip(),
+        session_id=str(session_id or state.get("session_id") or runtime_plan.get("session_id") or "").strip(),
+        cycle_id=str(cycle_id or state.get("cycle_id") or "").strip(),
+        agent=str(agent or stage or "").strip(),
+        phase=str(phase or state.get("phase") or runtime_plan.get("phase") or "").strip(),
+        symbol=str(symbol or state.get("symbol") or "").strip(),
+        payload=payload or {},
+        ts=ts,
+    )
+
+
 @dataclass
 class EventLogger:
     """
@@ -70,6 +163,14 @@ class EventLogger:
         event: str,
         payload: Optional[Dict[str, Any]] = None,
         ts: Optional[str] = None,
+        event_name: str = "",
+        level: str = "info",
+        trade_id: str = "",
+        session_id: str = "",
+        cycle_id: str = "",
+        agent: str = "",
+        phase: str = "",
+        symbol: str = "",
     ) -> Dict[str, Any]:
         """
         Append one event to JSONL.
@@ -91,15 +192,21 @@ class EventLogger:
         if not event or not isinstance(event, str):
             raise ValueError("event must be a non-empty string")
 
-        ts_utc = ts or _utc_iso()
-        rec: Dict[str, Any] = {
-            "run_id": run_id,
-            "ts": ts_utc,
-            "ts_kst": _to_kst_iso(ts_utc),
-            "stage": stage,
-            "event": event,
-            "payload": payload or {},
-        }
+        rec = build_event_envelope(
+            run_id=run_id,
+            stage=stage,
+            event=event,
+            payload=payload,
+            ts=ts,
+            event_name=event_name,
+            level=level,
+            trade_id=trade_id,
+            session_id=session_id,
+            cycle_id=cycle_id,
+            agent=agent,
+            phase=phase,
+            symbol=symbol,
+        )
 
         # Ensure directory exists
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
