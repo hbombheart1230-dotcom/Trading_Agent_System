@@ -1,0 +1,32 @@
+{
+  "schema_version": "llm_response_artifact.v1",
+  "component": "strategist",
+  "role": "strategist",
+  "run_id": "78b1ebd804054abc8dc6c25c9a522b12",
+  "trade_id": "TRD_20260318_000660_03",
+  "story_id": "TRD_20260318_000660_03",
+  "day": "2026-03-18",
+  "saved_at": "2026-03-18T13:59:02.437064+00:00",
+  "status": "fallback",
+  "llm_status": "fallback",
+  "latency_ms": 0,
+  "parsed_output": {},
+  "model_info": {
+    "provider": "OpenRouter",
+    "model": ""
+  },
+  "model": "",
+  "attempts": [],
+  "system_prompt": "",
+  "user_prompt": "",
+  "raw_response_text": "",
+  "error": "",
+  "retry_count": 0,
+  "parse_mode": "none",
+  "required_keys_expected": [],
+  "required_keys_present": [],
+  "required_keys_missing": [],
+  "completeness_score": 0.0,
+  "used_fallback_sections": [],
+  "finish_reason": ""
+}

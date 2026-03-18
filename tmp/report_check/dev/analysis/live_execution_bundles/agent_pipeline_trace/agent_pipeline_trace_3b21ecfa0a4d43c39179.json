@@ -1,0 +1,585 @@
+{
+  "schema_version": "agent_pipeline_trace.v1",
+  "run_id": "3b21ecfa0a4d43c391796daf635e275b",
+  "day": "2026-03-18",
+  "event_log_path": "data\\logs\\events.jsonl",
+  "evidence_log_path": "data\\evidence_ledger\\events.jsonl",
+  "commander": {
+    "mode": "integrated_chain",
+    "agents": [
+      "commander_router",
+      "strategist",
+      "scanner",
+      "monitor",
+      "decision",
+      "supervisor",
+      "executor",
+      "reporter"
+    ],
+    "route_ts": "2026-03-18T00:36:34+00:00",
+    "end_ts": "2026-03-18T00:38:46+00:00",
+    "end_status": "ok",
+    "path": "integrated_chain"
+  },
+  "strategist": {
+    "news_source": "naver",
+    "news_total_headlines": 60,
+    "news_symbol_count": 12,
+    "news_by_symbol": {
+      "코스피": {
+        "count": 5,
+        "sample_titles": [
+          "NewsItem(title=\"[속보]<b>코스피</b> 5700 회복…'100만닉스' '20만전자' 돌아왔다\", url='https://n.news.naver.com/mnews/article/079/000412602",
+          "[속보] <b>코스피</b> 5800 회복 … 20만전자·100만닉스",
+          "NewsItem(title=\"'20만전자·100만닉스 컴백'… 엔비디아 '깐부 효과'에 반도체 다시 달린...\", url='https://www.ggilbo.com/news/articleView.html?idxno="
+        ]
+      },
+      "코스닥": {
+        "count": 5,
+        "sample_titles": [
+          "메쥬, 청약 경쟁률 2428.25대 1…증거금 8.8조",
+          "메쥬, 청약 증거금 8조 8억원 집계...오는 26일 <b>코스닥</b> 상장",
+          "<b>코스닥</b> 상장 청구 앞둔 인텔리빅스…AI로 사상 최대 54억 순이익"
+        ]
+      },
+      "미국 증시": {
+        "count": 5,
+        "sample_titles": [
+          "코스피, 5800 회복 도전...삼성전자 20만원·하이닉스 100만원 복귀",
+          "미 <b>증시</b> 훈풍·정책 기대감 ‘겹호재’…코스피 2%대 급등 출발",
+          "코스피, 국제유가 반등에도 2%대 강세…‘20만전자·100만닉스’ 탈환"
+        ]
+      },
+      "증시 전망": {
+        "count": 5,
+        "sample_titles": [
+          "[AI MY <b>증시전망</b>] 코스피, 변동성 확대…반도체 기대 vs 중동 리스크",
+          "[오늘의 투자전략] 유가 불안에도 국내 <b>증시</b>는 상승 <b>전망</b>⋯“자본시장...",
+          "NewsItem(title=\"[<b>증시전망</b>대] 코스피, 유가 불안 속에도 '반도체 랠리' 이어갈까\", url='http://www.newsroad.co.kr/news/articleView.html?idxno"
+        ]
+      },
+      "거시경제": {
+        "count": 5,
+        "sample_titles": [
+          "비트코인, 바닥은 5월 말 도달?...애널리스트 &quot;진짜 상승 시작 전&quot;",
+          "美 SEC 비트코인 증권성 논란 종지부&quot;대부분 가상자산, 디지털 상품&quot;",
+          "카르다노, 20% 폭락하나...&quot;회복세는 불트랩으로 끝날 수도&quot; 경고"
+        ]
+      },
+      "하락 종목 수": {
+        "count": 5,
+        "sample_titles": [
+          "&quot;15% 달성하면 상환&quot;…카디안자산운용, 첫 목표달성형 펀드 출격",
+          "NewsItem(title=\"카디안운용, 첫 목표달성형 펀드 '카디안 K-TOP 목표달성 15' 출시\", url='https://n.news.naver.com/mnews/article/277/0005736040?si",
+          "[저점 &amp; 반등 시그널] 사이렌 72% 폭등 후 15% 급락…주간·일간 변동성..."
+        ]
+      },
+      "약세 업종": {
+        "count": 5,
+        "sample_titles": [
+          "코스피, 5800선 탈환…20만전자·100만닉스 돌아왔다",
+          "[장중시황] 코스피 2.2% 상승한 5760선 출발...삼성전자·SK하이닉스 상...",
+          "[뉴욕 마켓 브리핑](18일)"
+        ]
+      },
+      "005930": {
+        "count": 5,
+        "sample_titles": [
+          "NewsItem(title=\"'이란 전쟁' 이후 처음 '20만전자·100만닉스' 회복[개장시황]\", url='https://n.news.naver.com/mnews/article/421/0008832479?sid=1",
+          "[국내증시 개장시황] 국내 증시 상승세, 삼성전자와 SK하이닉스 주도",
+          "전영현 &quot;실적 안주 안해…외부 환경 변화에 선제적 대응 노력&quot;"
+        ]
+      },
+      "000660": {
+        "count": 5,
+        "sample_titles": [
+          "NewsItem(title=\"'이란 전쟁' 이후 처음 '20만전자·100만닉스' 회복[개장시황]\", url='https://n.news.naver.com/mnews/article/421/0008832479?sid=1",
+          "[국내증시 개장시황] 국내 증시 상승세, 삼성전자와 SK하이닉스 주도",
+          "코스피, 5800선 탈환…20만전자·100만닉스 돌아왔다"
+        ]
+      },
+      "032820": {
+        "count": 5,
+        "sample_titles": [
+          "우리기술 주가 소폭 상승…국내 원전주는 엇갈린 흐름",
+          "[서울데이터랩]마감 직후 인기 검색 종목 20選",
+          "[서울데이터랩]금일 코스닥 거래량 1위 폴라리스AI 거래대금 990억 돌파"
+        ]
+      },
+      "122630": {
+        "count": 5,
+        "sample_titles": [
+          "롤러코스터 장세에도 거침없는 한국 개미들…美주식 보관액은 감소",
+          "코스피 랠리 다음 타자는 코스닥? 하루에 6천억 쓸어담았다",
+          "개인·외국인, 인버스 비중 줄이고 코스피 상승 베팅 확대"
+        ]
+      },
+      "069500": {
+        "count": 5,
+        "sample_titles": [
+          "코스피 하락-코스닥 상승 예상했는데···",
+          "코스피 랠리 다음 타자는 코스닥? 하루에 6천억 쓸어담았다",
+          "개미들, &quot;코스피 더 간다&quot; 기류로 선회... 인버스 매수세 약화"
+        ]
+      }
+    },
+    "news_sample_titles": [
+      "NewsItem(title=\"[속보]<b>코스피</b> 5700 회복…'100만닉스' '20만전자' 돌아왔다\", url='https://n.news.naver.com/mnews/article/079/000412602",
+      "[속보] <b>코스피</b> 5800 회복 … 20만전자·100만닉스",
+      "NewsItem(title=\"'20만전자·100만닉스 컴백'… 엔비디아 '깐부 효과'에 반도체 다시 달린...\", url='https://www.ggilbo.com/news/articleView.html?idxno=",
+      "메쥬, 청약 경쟁률 2428.25대 1…증거금 8.8조",
+      "메쥬, 청약 증거금 8조 8억원 집계...오는 26일 <b>코스닥</b> 상장"
+    ],
+    "news_query_targets": [
+      "코스피",
+      "코스닥",
+      "미국 증시",
+      "증시 전망",
+      "거시경제",
+      "하락 종목 수",
+      "약세 업종"
+    ],
+    "news_query_reasoning": "global_score=-0.01 macro_risk=0.00 index_trend=0.00 vix=22.37 vix_pressure=0.119; explicit_targets_first=코스피, 코스닥, 미국 증시, 증시 전망; neutral context kept broad market and macro queries; weak breadth added 하락 종목 수/약세 업종 queries",
+    "market_news_total_headlines": 35,
+    "market_news_query_count": 7,
+    "market_news_sample_titles": [
+      "NewsItem(title=\"[속보]<b>코스피</b> 5700 회복…'100만닉스' '20만전자' 돌아왔다\", url='https://n.news.naver.com/mnews/article/079/000412602",
+      "[속보] <b>코스피</b> 5800 회복 … 20만전자·100만닉스",
+      "NewsItem(title=\"'20만전자·100만닉스 컴백'… 엔비디아 '깐부 효과'에 반도체 다시 달린...\", url='https://www.ggilbo.com/news/articleView.html?idxno=",
+      "메쥬, 청약 경쟁률 2428.25대 1…증거금 8.8조",
+      "메쥬, 청약 증거금 8조 8억원 집계...오는 26일 <b>코스닥</b> 상장"
+    ],
+    "candidate_news_total_headlines": 25,
+    "news_context": {
+      "signal_total": 12,
+      "ok": 12,
+      "fallback": 0,
+      "unavailable": 0,
+      "avg_score": 0.23941819746416235,
+      "headline_count": 60,
+      "candidate_signal_total": 5,
+      "candidate_headline_count": 25,
+      "market_signal_total": 7,
+      "market_headline_count": 35
+    },
+    "global_sentiment_score": -0.010282567051781051,
+    "global_sentiment_status": "ok",
+    "global_sentiment_source": "yfinance",
+    "global_sentiment_reason": "",
+    "global_index_moves": {
+      "sp500_pct": 0.24942548757938,
+      "nasdaq_pct": 0.47084477608292374,
+      "dow_pct": 0.0997979661151227
+    },
+    "global_macro_moves": {
+      "vix_pct": -4.848997782007491,
+      "vix_level": 22.3700008392334,
+      "vix_level_pressure": 0.11850004196166992,
+      "dxy_pct": 0.20854239779468653,
+      "tnx_delta": -0.0017999649047851563
+    },
+    "fear_index": {
+      "provider": "yfinance",
+      "ticker": "^VIX",
+      "level": 22.3700008392334,
+      "change_pct": -4.848997782007491,
+      "neutral_level": 20.0,
+      "level_pressure": 0.11850004196166992
+    },
+    "macro_stress_overlay": {
+      "stress_flags": [],
+      "stress_count": 0,
+      "vix_level": 22.3700008392334,
+      "vix_pressure": 0.11850004196166992,
+      "dxy_pct": 0.20854239779468653,
+      "tnx_delta": -0.0017999649047851563,
+      "active": false
+    },
+    "llm_provider": "openrouter",
+    "llm_model": "openrouter/free",
+    "llm_ok": true,
+    "llm_latency_ms": 8908,
+    "llm_prompt": "[system]\nYou are the Strategist agent for an automated trading system. You must output a strategic frame only. Do not select final stock and do not produce order instructions. Return exactly one minified JSON object only. Do not add analysis, markdown, bullet points, or any text before or after the JSON. The first character must be { and the last character must be }.\n\n[user]\nUse the provided market context, news/global sentiment, and candidate hints. Produce a realistic strategic frame for scanner/monitor guidance. Reply with JSON only. No prose.\nJSON contract:\n{\"market_regime\": \"risk_on|neutral|risk_off\", \"market_sentiment\": \"bullish|neutral|bearish\", \"key_events\": [\"string\"], \"themes\": [\"string\"], \"avoid_themes\": [\"string\"], \"playbook\": \"breakout|pullback|reversal|defensive\", \"scanner_bias\": \"large_cap|leader|momentum|value\", \"scanner_priority\": [\"trading_value\", \"trend_strength\", \"volume_surge\", \"leader_quality\"], \"trade_aggressiveness\": \"low|medium|high\", \"risk_tone\": \"conservative|normal|aggressive\", \"monitor_guidance\": \"hold_through_noise|defensive_exit|quick_take_profit\", \"report_focus\": [\"theme_accuracy\", \"exit_quality\", \"overtrading\"]}\n\nInput:\n{\"global_sentiment_signal\": {\"score\": -0.0103, \"status\": \"ok\", \"source\": \"yfinance\", \"index_moves\": {\"sp500_pct\": 0.249, \"nasdaq_pct\": 0.471, \"dow_pct\": 0.1}, \"macro_moves\": {\"vix_pct\": -4.849, \"vix_level\": 22.37, \"vix_level_pressure\": 0.119, \"dxy_pct\": 0.209, \"tnx_delta\": -0.0018}, \"fear_index\": {\"level\": 22.37, \"change_pct\": -4.849, \"level_pressure\": 0.119}}, \"news_context\": {\"signal_total\": 12, \"avg_score\": 0.2394, \"headline_count\": 60, \"candidate_signal_total\": 5, \"market_signal_total\": 7}, \"market_context_inputs\": {\"index_trend\": 0.0, \"realized_volatility\": 0.0, \"market_breadth\": 0.0, \"macro_risk\": 0.0}, \"recent_strategy_feedback\": {\"feedback_window_size\": 3, \"top_recent_strengths\": [\"strategist theme alignment was recently validated\", \"supervisor block rate stayed low in recent runs\", \"monitor flow remained stable under recent guard settings\"], \"top_recent_weaknesses\": [\"overtrading risk persisted in recent monitor runs\", \"rapid buy/sell cycles were observed in recent runs\", \"Monitor shows overtrading risk; tighten exit confirmation or thresholds.\", \"scanner produced no-candidate outcomes in recent runs\"], \"recent_reporter_summary\": [\"2026-03-13: health=YELLOW\", \"trade_count=63 symbols=6\"], \"suggested_report_focus\": [\"exit_quality\", \"scanner_fit\", \"guard_blocks\", \"overtrading\"], \"recent_theme_performance\": {\"broad_market_leaders\": {\"appearance_count\": 2, \"win_rate\": 0.5, \"avg_return\": 138200.0}, \"defensive_large_cap\": {\"appearance_count\": 2, \"win_rate\": 0.5, \"avg_return\": 138200.0}, \"defensive_assets\": {\"appearance_count\": 1, \"win_rate\": 1.0, \"avg_return\": 276400.0}}, \"recent_playbook_performance\": {\"pullback\": {\"appearance_count\": 432, \"win_rate\": 0.0023, \"avg_return\": 639.8148}, \"defensive\": {\"appearance_count\": 78, \"win_rate\": 0.0128, \"avg_return\": 3543.5897}, \"breakout\": {\"appearance_count\": 9, \"win_rate\": 0.1111, \"avg_return\": 30711.1111}}, \"advisory_only\": true}, \"macro_stress_overlay_hint\": {\"active\": false, \"stress_flags\": [], \"reason\": \"\"}, \"market_regime_hint\": \"neutral\", \"market_sentiment_hint\": \"neutral\", \"market_structure_hint\": \"range\", \"playbook_hint\": \"defensive\", \"theme_strength\": {}, \"themes_hint\": [\"broad_market_leaders\"], \"news_query_targets\": [\"코스피\", \"코스닥\", \"미국 증시\", \"증시 전망\", \"거시경제\", \"하락 종목 수\", \"약세 업종\"], \"market_news_sample\": {\"코스피\": {\"count\": 5, \"titles\": [\"NewsItem(title=\\\"[속보]<b>코스피</b> 5700 회복…'100만닉스' '20만전자' 돌아왔다\\\", url='https://n.news.naver.com/mnews/article/079/000412...\"]}, \"코스닥\": {\"count\": 5, \"titles\": [\"NewsItem(title='메쥬, 청약 경쟁률 2428.25대 1…증거금 8.8조', url='https://www.newstopkorea.com/news/articleView.html?idxno=43881'...\"]}, \"미국 증시\": {\"count\": 5, \"titles\": [\"NewsItem(title='코스피, 5800 회복 도전...삼성전자 20만원·하이닉스 100만원 복귀', url='http://www.opinionnews.co.kr/news/articleView.html?i...\"]}, \"증시 전망\": {\"count\": 5, \"titles\": [\"NewsItem(title='[AI MY <b>증시전망</b>] 코스피, 변동성 확대…반도체 기대 vs 중동 리스크', url='https://www.newspim.com/news/view/20260318000...\"]}}, \"candidate_news_sample\": {\"005930\": {\"count\": 5, \"titles\": [\"NewsItem(title=\\\"'이란 전쟁' 이후 처음 '20만전자·100만닉스' 회복[개장시황]\\\", url='https://n.news.naver.com/mnews/article/421/0008832479?si...\"]}, \"000660\": {\"count\": 5, \"titles\": [\"NewsItem(title=\\\"'이란 전쟁' 이후 처음 '20만전자·100만닉스' 회복[개장시황]\\\", url='https://n.news.naver.com/mnews/article/421/0008832479?si...\"]}, \"032820\": {\"count\": 5, \"titles\": [\"NewsItem(title='우리기술 주가 소폭 상승…국내 원전주는 엇갈린 흐름', url='https://www.cbci.co.kr/news/articleView.html?idxno=561500', sourc...\"]}, \"122630\": {\"count\": 5, \"titles\": [\"NewsItem(title='롤러코스터 장세에도 거침없는 한국 개미들…美주식 보관액은 감소', url='https://www.jnilbo.com/news/articleView.html?idxno=90000025...\"]}}, \"candidate_symbols_hint\": [\"000660\", \"005930\", \"032820\", \"122630\", \"069500\"], \"key_events_hint\": [\"global_sentiment score=-0.010 status=ok source=yfinance\", \"us_indices sp500=0.25% nasdaq=0.47% dow=0.10%\", \"fear_index vix=22.37 change=-4.85% pressure=0.119\", \"market_context index_trend=0.000 breadth=0.000 realized_vol=0.000 macro_risk=0.000\"]}",
+    "llm_response": "",
+    "llm_parsed_output": {
+      "market_regime": "neutral",
+      "market_sentiment": "neutral",
+      "themes": [
+        "broad_market_leaders"
+      ],
+      "avoid_themes": [
+        "illiquid_microcap",
+        "headline_only_momentum",
+        "high_gap_speculative"
+      ],
+      "playbook": "defensive",
+      "scanner_bias": "large_cap",
+      "scanner_priority": [
+        "trading_value",
+        "trend_strength",
+        "volume_surge",
+        "leader_quality",
+        "liquidity",
+        "risk_penalty"
+      ],
+      "scanner_source_policy": {
+        "preferred_sources": [
+          "top_value",
+          "top_volume",
+          "sector_theme",
+          "operator_watchlist"
+        ],
+        "include_top_value": true,
+        "include_top_volume": true,
+        "include_change_rate": false,
+        "include_condition_search": false,
+        "include_sector_candidates": true,
+        "include_watchlist": true,
+        "top_candidate_pool": 18,
+        "condition_limit": 0,
+        "source_weights": {
+          "top_value": 2.2,
+          "top_volume": 1.9,
+          "condition_search": 0.0,
+          "sector_theme": 1.8,
+          "operator_watchlist": 1.1,
+          "top_change_rate": 0.0
+        },
+        "reason": "defensive frame prioritizes liquid leaders and suppresses fast-mover sources"
+      },
+      "trade_aggressiveness": "low",
+      "risk_tone": "conservative",
+      "monitor_guidance": "defensive_exit",
+      "report_focus": [
+        "exit_quality",
+        "scanner_fit",
+        "guard_blocks",
+        "overtrading",
+        "theme_accuracy"
+      ],
+      "macro_stress_overlay": {
+        "stress_flags": [],
+        "stress_count": 0,
+        "vix_level": 22.3700008392334,
+        "vix_pressure": 0.11850004196166992,
+        "dxy_pct": 0.20854239779468653,
+        "tnx_delta": -0.0017999649047851563,
+        "active": false
+      },
+      "recent_strategy_feedback": {
+        "feedback_window_size": 3,
+        "top_recent_strengths": [
+          "strategist theme alignment was recently validated",
+          "supervisor block rate stayed low in recent runs",
+          "monitor flow remained stable under recent guard settings"
+        ],
+        "top_recent_weaknesses": [
+          "overtrading risk persisted in recent monitor runs",
+          "rapid buy/sell cycles were observed in recent runs",
+          "Monitor shows overtrading risk; tighten exit confirmation or thresholds."
+        ]
+      },
+      "news_query_targets": [
+        "코스피",
+        "코스닥",
+        "미국 증시",
+        "증시 전망",
+        "거시경제",
+        "하락 종목 수",
+        "약세 업종"
+      ],
+      "news_query_reasoning": "global_score=-0.01 macro_risk=0.00 index_trend=0.00 vix=22.37 vix_pressure=0.119; explicit_targets_first=코스피, 코스닥, 미국 증시, 증시 전망; neutral context kept broad market and macro queries; weak breadth added 하락 종목 수/약세 업종 queries",
+      "candidate_symbols": [
+        "000660",
+        "005930",
+        "032820",
+        "122630",
+        "069500"
+      ]
+    },
+    "themes": [
+      "broad_market_leaders"
+    ],
+    "playbook": "defensive",
+    "scanner_bias": "large_cap",
+    "scanner_priority": [
+      "trading_value",
+      "trend_strength",
+      "volume_surge",
+      "leader_quality",
+      "liquidity",
+      "risk_penalty"
+    ],
+    "scanner_source_policy": {
+      "preferred_sources": [
+        "top_value",
+        "top_volume",
+        "sector_theme",
+        "operator_watchlist"
+      ],
+      "include_top_value": true,
+      "include_top_volume": true,
+      "include_change_rate": false,
+      "include_condition_search": false,
+      "include_sector_candidates": true,
+      "include_watchlist": true,
+      "top_candidate_pool": 18,
+      "condition_limit": 0,
+      "source_weights": {
+        "top_value": 2.2,
+        "top_volume": 1.9,
+        "condition_search": 0.0,
+        "sector_theme": 1.8,
+        "operator_watchlist": 1.1,
+        "top_change_rate": 0.0
+      },
+      "reason": "defensive frame prioritizes liquid leaders and suppresses fast-mover sources"
+    },
+    "monitor_guidance": "defensive_exit",
+    "risk_tone": "conservative"
+  },
+  "scanner": {
+    "candidate_source": "kiwoom_market_data",
+    "candidate_pool_before_filter": 5,
+    "candidate_pool_after_filter": 5,
+    "top_stock": "000660",
+    "top_score": 1.2721118144378876,
+    "top_ranked_symbols": [
+      "000660",
+      "005930",
+      "032820",
+      "069500",
+      "122630"
+    ],
+    "score_breakdown_summary": {
+      "trading_value": 0.2613600000000001,
+      "momentum": 0.209,
+      "trend": 0.04556731372578012,
+      "ma_alignment": 0.03465,
+      "adx_trend": 0.0,
+      "volume_surge": 0.0,
+      "intraday_strength": 0.034199999999999994,
+      "vwap_alignment": 0.034199999999999994,
+      "theme_boost": 0.06,
+      "sentiment": 0.0153195717951605,
+      "cross_section_rank": 0.037500000000000006,
+      "avoid_theme_penalty": -0.0,
+      "repeat_symbol_penalty": -0.24,
+      "risk_penalty": -0.11630414192554517,
+      "rank_bonus": 0.00697508896797153
+    },
+    "selected_candidate": {
+      "symbol": "000660",
+      "why": "top_value+sector_theme",
+      "sources": [
+        "top_value",
+        "sector_theme"
+      ],
+      "source_scores": {
+        "top_value": 2.18,
+        "sector_theme": 1.74
+      },
+      "rank_score": 0.697508896797153,
+      "universe_score": 3.92,
+      "score_total": 1.2721118144378876,
+      "risk_score": 0.461933069014698,
+      "confidence": 0.8463079178034512,
+      "score_breakdown": {
+        "trading_value": 0.2613600000000001,
+        "momentum": 0.209,
+        "trend": 0.04556731372578012,
+        "ma_alignment": 0.03465,
+        "adx_trend": 0.0,
+        "volume_surge": 0.0,
+        "intraday_strength": 0.034199999999999994,
+        "vwap_alignment": 0.034199999999999994,
+        "theme_boost": 0.06,
+        "sentiment": 0.0153195717951605,
+        "cross_section_rank": 0.037500000000000006,
+        "avoid_theme_penalty": -0.0,
+        "repeat_symbol_penalty": -0.24,
+        "risk_penalty": -0.11630414192554517,
+        "rank_bonus": 0.00697508896797153
+      },
+      "feature_snapshot": {
+        "quote_trading_value": 0.0,
+        "quote_volume": 0.0,
+        "intraday_change_pct": 0.0,
+        "skill_quote_price": null,
+        "engine_ma20_gap": 0.052935684090262836,
+        "engine_ma60": null,
+        "engine_ma120": null,
+        "engine_adx14": 11.027589622000113,
+        "engine_trend_strength": 0.11027589622000113,
+        "engine_volume_spike20": 0.04212608953301986,
+        "engine_volatility20": 0.06322326557023951,
+        "engine_vwap_distance": 0.20657727537709136,
+        "engine_sector_relative_strength": 0.006711931851584474,
+        "engine_cross_section_rank": 0.75,
+        "engine_regime": "high_volatility",
+        "engine_signal_score": 0.0
+      },
+      "component_snapshot": {
+        "news_sentiment": 0.3691585238593467,
+        "global_sentiment": -0.010282567051781051,
+        "trading_value_component": 1.0,
+        "momentum_component": 1.0,
+        "trend_component": 0.20712415329900052,
+        "volume_surge_component": 0.0,
+        "intraday_strength_component": 0.3,
+        "theme_boost_component": 1.0,
+        "sentiment_component": 0.25532619658600836,
+        "volatility_penalty_component": 0.6644653114047901,
+        "gap_penalty_component": 0.013254786450661185,
+        "avoid_theme_penalty_component": 0.0
+      }
+    },
+    "kiwoom_source_mix": {
+      "top_value": 18,
+      "top_volume": 18,
+      "top_change_rate": 0,
+      "condition_search": 0,
+      "sector_theme": 5,
+      "operator_watchlist": 0
+    },
+    "condition_search_status": "disabled",
+    "condition_search_source": "disabled",
+    "condition_search_reason": "condition_search_baseline_disabled",
+    "scanner_source_policy": {
+      "include_top_value": true,
+      "include_top_volume": true,
+      "include_change_rate": false,
+      "include_condition_search": false,
+      "include_sector_candidates": true,
+      "include_watchlist": true,
+      "top_candidate_pool": 18,
+      "condition_limit": 0,
+      "preferred_sources": [
+        "top_value",
+        "top_volume",
+        "sector_theme",
+        "operator_watchlist"
+      ],
+      "source_weights": {
+        "top_value": 2.2,
+        "top_volume": 1.9,
+        "condition_search": 0.0,
+        "sector_theme": 1.8,
+        "operator_watchlist": 1.1,
+        "top_change_rate": 0.0
+      },
+      "reason": "defensive frame prioritizes liquid leaders and suppresses fast-mover sources"
+    },
+    "candidate_preview": [
+      {
+        "symbol": "032820",
+        "why": "top_value+top_volume+sector_theme",
+        "sources": [
+          "top_value",
+          "top_volume",
+          "sector_theme"
+        ],
+        "rank_score": 1.0
+      },
+      {
+        "symbol": "005930",
+        "why": "top_value+sector_theme",
+        "sources": [
+          "top_value",
+          "sector_theme"
+        ],
+        "rank_score": 0.708185053380783
+      },
+      {
+        "symbol": "122630",
+        "why": "top_value+sector_theme",
+        "sources": [
+          "top_value",
+          "sector_theme"
+        ],
+        "rank_score": 0.7046263345195729
+      },
+      {
+        "symbol": "000660",
+        "why": "top_value+sector_theme",
+        "sources": [
+          "top_value",
+          "sector_theme"
+        ],
+        "rank_score": 0.697508896797153
+      },
+      {
+        "symbol": "069500",
+        "why": "top_value+sector_theme",
+        "sources": [
+          "top_value",
+          "sector_theme"
+        ],
+        "rank_score": 0.6832740213523131
+      }
+    ]
+  },
+  "monitor": {
+    "selected_symbol": "000660",
+    "entry_reason": "no_position",
+    "exit_reason": "no_position",
+    "monitor_reason": "no_position",
+    "thresholds": {
+      "hard_stop_pct": 0.01,
+      "stop_loss_pct": 0.06006210229172753,
+      "take_profit_pct": 0.005939899776,
+      "max_hold_sec": 0,
+      "time_stop_sec": 0,
+      "trailing_stop_pct": 0.030031051145863765,
+      "vol_expansion_ratio": 1.6,
+      "news_shock_threshold": 0.0,
+      "peak_drawdown_exit_pct": 0.0033120000000000003,
+      "vwap_breakdown_pct": 0.005,
+      "intraday_low_break_pct": 0.002,
+      "trend_strength_floor": -0.15,
+      "eod_flat_cutoff_min": 10
+    },
+    "position_age_seconds": null,
+    "min_hold_sec": 600,
+    "sell_cooldown_sec": 300,
+    "exit_confirm_ticks": 3,
+    "min_hold_blocked": false,
+    "sell_cooldown_blocked": false,
+    "exit_triggered": false,
+    "strategy_frame_adjustments": [
+      "monitor_guidance:defensive_exit",
+      "risk_tone:conservative",
+      "trade_aggressiveness:low"
+    ]
+  },
+  "supervisor": {
+    "verdict": "approve",
+    "guard_reason": "Allowed",
+    "supervisor_allow": true,
+    "supervisor_reason": "Allowed",
+    "action": "BUY",
+    "symbol": "000660"
+  },
+  "executor": {
+    "execution_attempted": true,
+    "execution_ok": true,
+    "broker_code": "0",
+    "broker_message": "모의투자 매수주문완료",
+    "order_api_id": "ORDER_SUBMIT",
+    "order_action": "BUY",
+    "order_symbol": "000660",
+    "order_qty": 1,
+    "order_url": "https://mockapi.kiwoom.com/api/dostk/ordr",
+    "mode": "real",
+    "execution_mode": "real",
+    "kiwoom_mode": "mock",
+    "broker_env": "mock",
+    "effective_mode": "mock_broker_http"
+  },
+  "reporter": {
+    "in_run_trace_available": false,
+    "reporter_analysis_day_file_found": true,
+    "reporter_analysis_found": true,
+    "reporter_analysis_path": "tmp\\report_check\\dev\\analysis\\reporter_analysis\\reporter_analysis_2026-03-18.json"
+  }
+}

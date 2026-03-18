@@ -1,0 +1,137 @@
+{
+  "schema_version": "operator_summary.v1",
+  "day": "2026-03-18",
+  "inputs": {
+    "event_log_path": "data\\logs\\events.jsonl",
+    "metrics_json_path": "tmp\\report_check\\metrics\\metrics_2026-03-18.json",
+    "m30_post_golive_json_path": "tmp\\report_check\\milestones\\m30_post_golive\\m30_post_golive_policy_2026-03-18.json",
+    "m30_golive_json_path": "tmp\\report_check\\milestones\\m30_golive\\m30_final_golive_signoff_2026-03-18.json",
+    "m31_slo_incident_json_path": "tmp\\report_check\\m31_slo_incident\\m31_slo_incident_2026-03-18.json"
+  },
+  "executive_summary": {
+    "system_status": "GREEN",
+    "summary_lines": [
+      "[GREEN] runs=338, executions=12 (ok=12, fail=0), blocks=215.",
+      "Top guard block: NOOP intent skipped (no order sent) (215)",
+      "LLM success_rate=61.54%, interventions=0, cooldowns=0."
+    ]
+  },
+  "system_health_status": {
+    "system_health_level": "GREEN",
+    "reasoning": [
+      "no critical or warning issues detected"
+    ],
+    "recommended_action": [
+      "Continue current configuration and monitor next session for regression signals."
+    ]
+  },
+  "trading_activity_summary": {
+    "run_total": 338,
+    "decision_action_counts": {
+      "NOOP": 2
+    },
+    "strategy_counts": {
+      "defensive": 25,
+      "RegimeMomentumV1": 1,
+      "OpenAIStrategist": 1
+    },
+    "executions_total": 12,
+    "executions_ok_total": 12,
+    "executions_fail_total": 0,
+    "blocked_total": 215,
+    "blocked_reason_top": {
+      "noop_intent_skipped": 215
+    },
+    "blocked_reason_top_human": [
+      {
+        "reason": "noop_intent_skipped",
+        "label": "NOOP intent skipped (no order sent)",
+        "count": 215
+      }
+    ],
+    "noop_reason_top_human": [
+      {
+        "reason": "NO_CANDIDATE",
+        "label": "NO_CANDIDATE (no candidate met entry conditions)",
+        "count": 2
+      }
+    ],
+    "fallback_signal_status_top_human": [
+      {
+        "reason": "symbol_sentiment_status:fallback",
+        "label": "symbol_sentiment_status:fallback",
+        "count": 1
+      },
+      {
+        "reason": "global_sentiment_status:fallback",
+        "label": "global_sentiment_status:fallback",
+        "count": 1
+      }
+    ]
+  },
+  "safety_guard_interventions": {
+    "blocked_total": 215,
+    "blocked_reason_top": {
+      "noop_intent_skipped": 215
+    },
+    "blocked_reason_top_human": [
+      {
+        "reason": "noop_intent_skipped",
+        "label": "NOOP intent skipped (no order sent)",
+        "count": 215
+      }
+    ],
+    "operator_intervention_total": 0,
+    "cooldown_transition_total": 0,
+    "duplicate_execution_total": 0,
+    "guard_precedence_violation_total": 0
+  },
+  "top_issues": [
+    {
+      "code": "none",
+      "severity": "GREEN",
+      "detail": "no critical or warning issues detected"
+    }
+  ],
+  "recommended_operator_actions": [
+    "Continue current configuration and monitor next session for regression signals."
+  ],
+  "raw_snapshot": {
+    "metrics_execution": {
+      "intents_created": 0,
+      "intents_approved": 12,
+      "intents_blocked": 215,
+      "intents_executed": 12,
+      "blocked_reason_topN": [
+        {
+          "reason": "noop_intent_skipped",
+          "count": 215
+        }
+      ]
+    },
+    "metrics_commander_resilience": {
+      "total": 935,
+      "cooldown_transition_total": 0,
+      "intervention_total": 0,
+      "error_total": 0,
+      "transition_total": {},
+      "runtime_status_total": {
+        "ok": 206,
+        "preflight_blocked": 130
+      },
+      "cooldown_reason_total": {}
+    },
+    "metrics_broker_api": {
+      "api_error_total_by_api_id": {},
+      "api_429_total": 0,
+      "api_429_rate": 0.0
+    },
+    "m30_post_golive": {},
+    "m30_golive": {},
+    "m31_slo_incident": {},
+    "stage_error_top": {},
+    "run_story_total": 338
+  },
+  "report_json_path": "tmp\\report_check\\operator_summary\\operator_summary_2026-03-18.json",
+  "report_md_path": "tmp\\report_check\\operator_summary\\operator_summary_2026-03-18.md"
+}

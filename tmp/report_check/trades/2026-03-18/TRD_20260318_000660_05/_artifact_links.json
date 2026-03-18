@@ -1,0 +1,27 @@
+{
+  "schema_version": "trade_artifact_links.v1",
+  "trade_id": "TRD_20260318_000660_05",
+  "run_id": "bd1c8b9cf8924e5d91fa118dd361f9e6",
+  "day": "2026-03-18",
+  "links": {
+    "agent_pipeline_trace_json": "tmp\\report_check\\dev\\analysis\\live_execution_bundles\\agent_pipeline_trace\\agent_pipeline_trace_bd1c8b9cf8924e5d91fa.json",
+    "agent_pipeline_trace_md": "tmp\\report_check\\dev\\analysis\\live_execution_bundles\\agent_pipeline_trace\\agent_pipeline_trace_bd1c8b9cf8924e5d91fa.md",
+    "trade_explain_json": "tmp\\report_check\\dev\\analysis\\trade_explain\\trade_explain_2026-03-18.json",
+    "trade_explain_md": "tmp\\report_check\\dev\\analysis\\trade_explain\\trade_explain_2026-03-18.md",
+    "reporter_analysis_json": "tmp\\report_check\\dev\\analysis\\reporter_analysis\\reporter_analysis_2026-03-18.json",
+    "reporter_analysis_md": "tmp\\report_check\\dev\\analysis\\reporter_analysis\\reporter_analysis_2026-03-18.md",
+    "operator_summary_json": "tmp\\report_check\\operator_summary\\operator_summary_2026-03-18.json",
+    "operator_summary_md": "tmp\\report_check\\operator_summary\\operator_summary_2026-03-18.md",
+    "trade_lifecycle_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_000660_05\\lifecycle\\trade_lifecycle.json",
+    "aggregated_execution_bundle_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_000660_05\\lifecycle\\aggregated_execution_bundle.json",
+    "ai_trade_report_input_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_000660_05\\ai_trade_report\\ai_trade_report_input.json",
+    "trade_story_input_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_000660_05\\ai_trade_report\\ai_trade_report_input.json",
+    "strategist_llm_response_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_000660_05\\strategist\\strategist_llm_response.json",
+    "strategist_evidence_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_000660_05\\evidence\\strategist_evidence.json",
+    "scanner_evidence_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_000660_05\\evidence\\scanner_evidence.json",
+    "monitor_timeline_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_000660_05\\evidence\\monitor_timeline.json",
+    "trade_provenance_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_000660_05\\_provenance.json",
+    "trade_health_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_000660_05\\_health.json",
+    "trade_artifact_links_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_000660_05\\_artifact_links.json"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "schema_version": "trade_health.v1",
+  "trade_id": "TRD_20260318_005930_01",
+  "run_id": "5b8241c60c1f4d608dfe65d658aca9b3",
+  "day": "2026-03-18",
+  "lifecycle_status": "closed",
+  "ai_report_diagnostics": {
+    "report_status": "skipped",
+    "report_reason_code": "report_not_requested",
+    "report_reason_human": "AI trade report generation was not requested for this run.",
+    "generation_attempted": false,
+    "generation_ts": "",
+    "story_input_available": true,
+    "report_output_available": false,
+    "report_artifact_available": false,
+    "llm_provider": "OpenRouter",
+    "llm_model_used": "openrouter/free",
+    "expected_generation_mode": "per-trade free model report",
+    "last_error_message": "",
+    "next_expected_step": "Enable AI report generation policy and rerun."
+  },
+  "report_generation": {},
+  "llm_response_status": "",
+  "llm_parse_mode": "",
+  "llm_completeness_score": 0.0,
+  "llm_required_keys_missing": [],
+  "evidence_counts": {
+    "strategist_events": 0,
+    "scanner_events": 0,
+    "monitor_events": 0
+  }
+}

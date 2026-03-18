@@ -1,0 +1,12 @@
+{
+  "schema_version": "trade_scanner_evidence.v1",
+  "trade_id": "TRD_20260318_322000_01",
+  "symbol": "322000",
+  "run_ids": [
+    "557b9830e01b47b8ba5a254085d50856"
+  ],
+  "candidate_pool_snapshots": [],
+  "candidate_ranking_tables": [],
+  "candidate_selection_reasons": [],
+  "selection_outputs": []
+}

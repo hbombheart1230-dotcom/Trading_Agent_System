@@ -1,0 +1,205 @@
+{
+  "trade_id": "TRD_20260318_322000_01",
+  "symbol": "322000",
+  "day": "2026-03-18",
+  "status": "partial",
+  "execution_mode_label": "simulation (mock broker)",
+  "story_type": "simulation",
+  "entry": {},
+  "holding": {
+    "run_ids": [],
+    "holding_events": [],
+    "posture_history": [],
+    "monitor_updates": [],
+    "noteworthy_changes": []
+  },
+  "exit": {
+    "run_id": "557b9830e01b47b8ba5a254085d50856",
+    "ts": "2026-03-18T00:20:36+00:00",
+    "action": "SELL",
+    "price": null,
+    "qty": 1,
+    "reason_human": "SELL was triggered because hard_stop.",
+    "monitor_context": {
+      "posture": "SELL",
+      "trigger_type": "hard_stop",
+      "summary": "SELL was triggered because hard_stop.",
+      "bullets": [
+        "Posture: SELL",
+        "Trigger type: hard_stop",
+        "Monitor reason: confirmed_exit_signal",
+        "Position age: 81789 seconds",
+        "Stop loss: 8.00%",
+        "Effective stop: 1.00%",
+        "Effective stop reason: hard_stop",
+        "Take profit: 0.94%",
+        "Min hold blocked: no",
+        "Sell cooldown blocked: no",
+        "Exit triggered: yes"
+      ],
+      "position_age_seconds": 81789,
+      "stop_loss_pct": 0.08,
+      "effective_stop_loss_pct": 0.01,
+      "effective_stop_reason": "hard_stop",
+      "take_profit_pct": 0.009355500000000003,
+      "exit_triggered": true,
+      "current_price": null,
+      "average_price": null,
+      "peak_price": null,
+      "current_drawdown": null,
+      "peak_drawdown": null,
+      "vwap_distance": null,
+      "active_exit_axis": "Hard Stop",
+      "watch_axes": [
+        "Hard stop",
+        "Take profit",
+        "Trailing stop",
+        "Peak drawdown",
+        "VWAP breakdown",
+        "Intraday low break",
+        "Trend breakdown",
+        "Volatility expansion"
+      ],
+      "price_source": "",
+      "feature_source": "",
+      "price_source_policy": ""
+    },
+    "guard_context": {
+      "summary": "Supervisor approved the order because Allowed.",
+      "bullets": [
+        "Supervisor verdict: approve",
+        "Supervisor allow: yes",
+        "Guard reason: Allowed",
+        "Action reviewed: SELL",
+        "Symbol reviewed: 322000",
+        "Approval mode: not captured in the execution trace"
+      ],
+      "allow": true,
+      "verdict": "approve"
+    },
+    "execution_context": {
+      "summary": "SELL order for 322000 x1 was approved and recorded successfully in simulation mode.",
+      "outcome": "recorded",
+      "quantity": 1,
+      "status_text": "모의투자 매도주문완료",
+      "bullets": [
+        "Execution outcome: recorded",
+        "Quantity: 1",
+        "Execution mode: simulation (mock broker)",
+        "Broker environment: mock",
+        "Order status: 모의투자 매도주문완료",
+        "Order number: 0030001"
+      ]
+    }
+  },
+  "run_ids_all": [
+    "557b9830e01b47b8ba5a254085d50856"
+  ],
+  "summary": {
+    "holding_duration": "0m",
+    "entry_reason_human": "Entry reason was not captured.",
+    "exit_reason_human": "SELL was triggered because hard_stop.",
+    "lifecycle_summary_human": "Trade TRD_20260318_322000_01 for 322000 is partial. Holding duration is 0m. Entry: Entry reason was not captured. Exit: SELL was triggered because hard_stop.",
+    "operator_conclusion_human": "Current lifecycle status is partial. Entry and exit are connected in one lifecycle story."
+  },
+  "reporter": {
+    "status_human": "linked",
+    "summary": "Monitor behavior showed overtrading or rapid exit pressure in this run window.",
+    "grade": "N/A",
+    "improvement_points": [
+      "Holding-phase evidence is thin; preserve more monitor context between entry and exit."
+    ]
+  },
+  "timeline": [
+    {
+      "event": "exit",
+      "ts": "2026-03-18T00:20:36+00:00",
+      "description": "Exit SELL was executed by run 557b9830e01b47b8ba5a254085d50856."
+    }
+  ],
+  "warnings": [
+    "Lifecycle is partial because entry or exit evidence is incomplete."
+  ],
+  "evidence": {
+    "paths": {
+      "strategist_evidence_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_322000_01\\evidence\\strategist_evidence.json",
+      "scanner_evidence_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_322000_01\\evidence\\scanner_evidence.json",
+      "monitor_timeline_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_322000_01\\evidence\\monitor_timeline.json"
+    },
+    "strategist_event_count": 0,
+    "scanner_event_count": 0,
+    "monitor_event_count": 0
+  },
+  "ai_report_diagnostics": {
+    "report_status": "skipped",
+    "report_reason_code": "report_not_requested",
+    "report_reason_human": "AI trade report generation was not requested for this run.",
+    "generation_attempted": false,
+    "generation_ts": "",
+    "story_input_available": true,
+    "report_output_available": false,
+    "report_artifact_available": false,
+    "llm_provider": "OpenRouter",
+    "llm_model_used": "openrouter/free",
+    "expected_generation_mode": "per-trade free model report",
+    "last_error_message": "",
+    "next_expected_step": "Enable AI report generation policy and rerun."
+  },
+  "evidence_artifacts": {
+    "paths": {
+      "strategist_evidence_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_322000_01\\evidence\\strategist_evidence.json",
+      "scanner_evidence_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_322000_01\\evidence\\scanner_evidence.json",
+      "monitor_timeline_json": "tmp\\report_check\\trades\\2026-03-18\\TRD_20260318_322000_01\\evidence\\monitor_timeline.json"
+    },
+    "strategist_event_count": 0,
+    "scanner_event_count": 0,
+    "monitor_event_count": 0
+  },
+  "section_provenance": {
+    "market_context_human": {
+      "source": "direct_artifact",
+      "artifact_path": "tmp\\report_check\\dev\\analysis\\live_execution_bundles\\agent_pipeline_trace\\agent_pipeline_trace_557b9830e01b47b8ba5a.json",
+      "confidence": "medium"
+    },
+    "scanner_reason_human": {
+      "source": "direct_artifact",
+      "artifact_path": "tmp\\report_check\\dev\\analysis\\live_execution_bundles\\agent_pipeline_trace\\agent_pipeline_trace_557b9830e01b47b8ba5a.json",
+      "confidence": "medium"
+    },
+    "filters_human": {
+      "source": "direct_artifact",
+      "artifact_path": "tmp\\report_check\\dev\\analysis\\live_execution_bundles\\agent_pipeline_trace\\agent_pipeline_trace_557b9830e01b47b8ba5a.json",
+      "confidence": "medium"
+    },
+    "monitor_reason_human": {
+      "source": "direct_artifact",
+      "artifact_path": "tmp\\report_check\\dev\\analysis\\live_execution_bundles\\agent_pipeline_trace\\agent_pipeline_trace_557b9830e01b47b8ba5a.json",
+      "confidence": "medium"
+    },
+    "guard_reason_human": {
+      "source": "direct_artifact",
+      "artifact_path": "tmp\\report_check\\dev\\analysis\\live_execution_bundles\\agent_pipeline_trace\\agent_pipeline_trace_557b9830e01b47b8ba5a.json",
+      "confidence": "medium"
+    },
+    "execution_outcome_human": {
+      "source": "direct_artifact",
+      "artifact_path": "tmp\\report_check\\dev\\analysis\\live_execution_bundles\\agent_pipeline_trace\\agent_pipeline_trace_557b9830e01b47b8ba5a.json",
+      "confidence": "medium"
+    },
+    "reporter_status_human": {
+      "source": "direct_artifact",
+      "artifact_path": "tmp\\report_check\\dev\\analysis\\reporter_analysis\\reporter_analysis_2026-03-18.json",
+      "confidence": "medium"
+    },
+    "operator_conclusion_human": {
+      "source": "direct_artifact",
+      "artifact_path": "tmp\\report_check\\dev\\analysis\\live_execution_bundles\\agent_pipeline_trace\\agent_pipeline_trace_557b9830e01b47b8ba5a.json",
+      "confidence": "medium"
+    },
+    "timeline": {
+      "source": "direct_artifact",
+      "artifact_path": "tmp\\report_check\\dev\\analysis\\live_execution_bundles\\agent_pipeline_trace\\agent_pipeline_trace_557b9830e01b47b8ba5a.json",
+      "confidence": "medium"
+    }
+  }
+}
