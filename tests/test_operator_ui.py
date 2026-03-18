@@ -828,6 +828,11 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert "# Operator Brief" in md_text
     assert "price_source:" in md_text
     assert "feature_source:" in md_text
+    brief_compact = brief_json.parent / "brief_compact_input.json"
+    assert brief_compact.exists() is True
+    compact_payload = json.loads(brief_compact.read_text(encoding="utf-8"))
+    assert compact_payload["component"] == "brief"
+    assert isinstance(compact_payload["compact_input"], dict)
     brief_llm = brief_json.parent / "brief_llm_response.json"
     assert brief_llm.exists() is True
     assert json.loads(brief_llm.read_text(encoding="utf-8"))["component"] == "brief"
@@ -848,6 +853,28 @@ def test_operator_brief_saved_artifact_is_reused(tmp_path: Path, monkeypatch) ->
     second = data_access.load_run_detail(cfg, "run-1")
 
     assert second["operator_brief"]["headline"] == "saved artifact headline"
+
+
+def test_operator_brief_detail_force_regenerates_saved_artifact(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    detail = data_access.load_run_detail(cfg, "run-1")
+    trade_report = detail["trade_report"]
+    story_id = str(trade_report.get("trade_id") or trade_report.get("story_id") or "")
+    brief_json = Path(str(trade_report.get("operator_brief_json_path") or ""))
+    brief_input = brief_json.parent / "brief_input.json"
+
+    payload = json.loads(brief_json.read_text(encoding="utf-8"))
+    payload["headline"] = "stale saved headline"
+    brief_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if brief_input.exists():
+        brief_input.unlink()
+
+    monkeypatch.setenv("OPERATOR_UI_RUN_BRIEF_FORCE_REGENERATE", "1")
+    refreshed = data_access.load_operator_brief_detail(cfg, story_id)
+
+    assert refreshed["headline"] != "stale saved headline"
+    assert brief_input.exists() is True
 
 
 def test_operator_brief_writes_failure_artifact_after_retries(tmp_path: Path, monkeypatch) -> None:

@@ -166,3 +166,49 @@ def test_ai_trade_report_missing_required_keys_is_downgraded(monkeypatch):
     assert "executive_summary" in artifact["required_keys_present"]
     assert "entry_decision" in artifact["required_keys_missing"]
     assert artifact["completeness_score"] < 1.0
+
+
+def test_ai_trade_report_messages_use_compact_projection() -> None:
+    story_input = _story_input()
+    story_input["entry_summary"] = {"run_id": "run-entry", "reason_human": "entry reason"}
+    story_input["holding_summary"] = {
+        "run_ids": [f"run-{i}" for i in range(40)],
+        "holding_events": [{"event": "hold", "description": "x" * 200} for _ in range(20)],
+        "posture_history": [{"ts": f"2026-03-18T00:00:{i:02d}+00:00", "posture": "HOLD", "reason": "monitor"} for i in range(12)],
+        "monitor_updates": [f"update-{i}-" + ("y" * 200) for i in range(30)],
+    }
+    story_input["timeline"] = [
+        {"ts": f"2026-03-18T00:00:{i:02d}+00:00", "event": "monitor", "description": "z" * 200}
+        for i in range(20)
+    ]
+    story_input["market_context_human"] = {"summary": "market context", "bullets": ["vix", "news", "macro"]}
+    story_input["scanner_reason_human"] = {"summary": "scanner context", "runner_ups": ["A", "B", "C"]}
+
+    messages = mod._build_messages(story_input)
+    user_prompt = str(messages[1]["content"])
+
+    assert "holding_event_count" in user_prompt
+    assert "recent_monitor_updates" in user_prompt
+    assert "holding_events" not in user_prompt
+    assert "posture_history" not in user_prompt
+    assert len(user_prompt) < 12000
+
+
+def test_ai_trade_report_compact_input_is_smaller_than_full_story() -> None:
+    story_input = _story_input()
+    story_input["holding_summary"] = {
+        "run_ids": [f"run-{i}" for i in range(40)],
+        "holding_events": [{"event": "hold", "description": "x" * 200} for _ in range(30)],
+        "monitor_updates": [f"update-{i}-" + ("y" * 200) for i in range(20)],
+    }
+    story_input["timeline"] = [
+        {"ts": f"2026-03-18T00:00:{i:02d}+00:00", "event": "monitor", "description": "z" * 200}
+        for i in range(20)
+    ]
+
+    compact_input = mod.build_ai_trade_report_compact_input(story_input)
+    full_len = len(json.dumps(story_input, ensure_ascii=False))
+    compact_len = len(json.dumps(compact_input, ensure_ascii=False))
+
+    assert compact_len < full_len
+    assert "holding_events" not in json.dumps(compact_input, ensure_ascii=False)

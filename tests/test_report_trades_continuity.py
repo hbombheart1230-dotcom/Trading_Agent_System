@@ -25,3 +25,5 @@ def test_report_trades_path_contract_is_backward_compatible() -> None:
     assert paths["trade_provenance_json"] == paths["trade_root"] / "_provenance.json"
     assert paths["trade_health_json"] == paths["trade_root"] / "_health.json"
     assert paths["trade_artifact_links_json"] == paths["trade_root"] / "_artifact_links.json"
+    assert paths["ai_trade_report_compact_input_json"] == paths["trade_root"] / "ai_trade_report" / "ai_trade_report_compact_input.json"
+    assert paths["brief_compact_input_json"] == paths["trade_root"] / "brief" / "brief_compact_input.json"

@@ -18,6 +18,7 @@ from libs.llm.model_names import normalize_openrouter_model_name
 from libs.reporting.agent_pipeline_trace import generate_agent_pipeline_trace_report
 from libs.reporting.reporter_analysis import generate_reporter_analysis_report
 from libs.reporting.llm_artifacts import (
+    build_compact_input_artifact,
     build_llm_response_artifact,
     daily_artifact_paths,
     split_prompt_text,
@@ -26,7 +27,7 @@ from libs.reporting.llm_artifacts import (
     write_text,
 )
 from libs.reporting.trade_explain import generate_trade_explain_report
-from libs.reporting.trade_report_ai import build_ai_trade_report, render_trade_report_markdown
+from libs.reporting.trade_report_ai import build_ai_trade_report, build_ai_trade_report_compact_input, render_trade_report_markdown
 from libs.reporting.trade_story_pipeline import (
     build_execution_outcome_human,
     build_filters_human,
@@ -1637,6 +1638,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         trade_lifecycle_path = trade_paths["trade_lifecycle_json"]
         aggregated_bundle_path = trade_paths["aggregated_execution_bundle_json"]
         story_input_path = trade_paths["ai_trade_report_input_json"]
+        compact_story_input_path = trade_paths["ai_trade_report_compact_input_json"]
         trade_report_json_path = trade_paths["ai_trade_report_json"]
         trade_report_md_path = trade_paths["ai_trade_report_md"]
         strategist_llm_response_path = trade_paths["strategist_llm_response_json"]
@@ -1668,6 +1670,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         trade_story_input = build_trade_story_input(lifecycle_bundle, trade_lifecycle=lifecycle)
         trade_story_input["day"] = day
+        trade_story_compact_input = build_ai_trade_report_compact_input(trade_story_input)
         diagnostics, should_attempt_generation = _seed_diagnostics_for_policy(
             lifecycle_status=status,
             story_type=story_type,
@@ -1781,6 +1784,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "trade_lifecycle_json": str(trade_lifecycle_path),
                 "aggregated_execution_bundle_json": str(aggregated_bundle_path),
                 "ai_trade_report_input_json": str(story_input_path),
+                "ai_trade_report_compact_input_json": str(compact_story_input_path),
                 "trade_story_input_json": str(story_input_path),
                 "trade_report_json": trade_report_json_written,
                 "trade_report_md": trade_report_md_written,
@@ -1804,6 +1808,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "ai_trade_report_json": trade_report_json_written,
                 "ai_trade_report_md": trade_report_md_written,
                 "ai_trade_report_input_json": str(story_input_path),
+                "ai_trade_report_compact_input_json": str(compact_story_input_path),
                 "ai_trade_report_llm_response_json": ai_trade_report_llm_response_written,
                 "strategist_llm_response_json": str(strategist_llm_response_path),
                 "trade_lifecycle_json": str(trade_lifecycle_path),
@@ -1865,6 +1870,19 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         write_json(trade_lifecycle_path, lifecycle)
         write_json(story_input_path, trade_story_input)
+        write_json(
+            compact_story_input_path,
+            build_compact_input_artifact(
+                component="ai_trade_report",
+                run_id=anchor_run_id,
+                trade_id=trade_id,
+                story_id=trade_id,
+                day=day,
+                source_artifact_path=str(story_input_path),
+                source_input=trade_story_input,
+                compact_input=trade_story_compact_input,
+            ),
+        )
         write_json(aggregated_bundle_path, lifecycle_bundle)
         write_json(trade_provenance_path, trade_provenance_payload)
         write_json(trade_health_path, trade_health_payload)
@@ -1896,6 +1914,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "trade_lifecycle_json_path": str(trade_lifecycle_path),
                 "trade_story_input_path": str(story_input_path),
                 "ai_trade_report_input_path": str(story_input_path),
+                "ai_trade_report_compact_input_path": str(compact_story_input_path),
                 "trade_report_json_path": trade_report_json_written,
                 "trade_report_md_path": trade_report_md_written,
                 "ai_trade_report_json_path": trade_report_json_written,
@@ -1927,6 +1946,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 row["trade_lifecycle_json_path"] = str(trade_lifecycle_path)
                 row["trade_story_input_path"] = str(story_input_path)
                 row["ai_trade_report_input_path"] = str(story_input_path)
+                row["ai_trade_report_compact_input_path"] = str(compact_story_input_path)
                 row["trade_report_json_path"] = trade_report_json_written
                 row["trade_report_md_path"] = trade_report_md_written
                 row["ai_trade_report_json_path"] = trade_report_json_written
@@ -1958,6 +1978,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "trade_lifecycle_json": str(trade_lifecycle_path),
                         "trade_story_input_json": str(story_input_path),
                         "ai_trade_report_input_json": str(story_input_path),
+                        "ai_trade_report_compact_input_json": str(compact_story_input_path),
                         "trade_report_json": trade_report_json_written,
                         "trade_report_md": trade_report_md_written,
                         "ai_trade_report_json": trade_report_json_written,

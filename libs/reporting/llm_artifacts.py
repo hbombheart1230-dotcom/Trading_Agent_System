@@ -164,6 +164,11 @@ def build_llm_response_artifact(
     out["raw_response_text"] = str(final_attempt.get("raw_response_text") or "")
     if not out["parsed_output"] and isinstance(final_attempt.get("parsed_output"), (dict, list)):
         out["parsed_output"] = final_attempt.get("parsed_output")
+    if isinstance(final_attempt.get("model_info"), dict):
+        if not out["model_info"]:
+            out["model_info"] = dict(final_attempt.get("model_info") or {})
+        if not str(out.get("model") or "").strip():
+            out["model"] = str((final_attempt.get("model_info") or {}).get("model") or "")
     out["error"] = str(final_attempt.get("error") or "")
     out["retry_count"] = max(0, len(out["attempts"]) - 1)
     if isinstance(meta, dict):
@@ -229,6 +234,44 @@ def write_text(path: Path, text: str) -> Path:
     return path
 
 
+def build_compact_input_artifact(
+    *,
+    component: str,
+    run_id: Any,
+    trade_id: Any = "",
+    story_id: Any = "",
+    day: Any = "",
+    source_artifact_path: Any = "",
+    source_input: Any = None,
+    compact_input: Any = None,
+) -> Dict[str, Any]:
+    source_payload = source_input if isinstance(source_input, (dict, list)) else {}
+    compact_payload = compact_input if isinstance(compact_input, (dict, list)) else {}
+    source_text = json.dumps(source_payload, ensure_ascii=False)
+    compact_text = json.dumps(compact_payload, ensure_ascii=False)
+    source_char_count = len(source_text)
+    compact_char_count = len(compact_text)
+    reduction_ratio = 0.0
+    if source_char_count > 0:
+        reduction_ratio = max(0.0, 1.0 - (compact_char_count / float(source_char_count)))
+    return {
+        "schema_version": "llm_compact_input.v1",
+        "component": str(component or "").strip(),
+        "role": str(component or "").strip(),
+        "run_id": str(run_id or ""),
+        "trade_id": str(trade_id or ""),
+        "story_id": str(story_id or trade_id or ""),
+        "day": str(day or ""),
+        "saved_at": utc_now_iso(),
+        "input_variant": "llm_compact_input",
+        "source_artifact_path": str(source_artifact_path or ""),
+        "source_char_count": source_char_count,
+        "compact_input_char_count": compact_char_count,
+        "reduction_ratio": reduction_ratio,
+        "compact_input": compact_payload,
+    }
+
+
 def trade_artifact_paths(reports_root: Path, day: str, trade_id: str) -> Dict[str, Path]:
     normalized_day = str(day or "").strip()
     trade_root = reports_root / "trades" / normalized_day / str(trade_id or "").strip()
@@ -243,10 +286,12 @@ def trade_artifact_paths(reports_root: Path, day: str, trade_id: str) -> Dict[st
         "evidence_dir": trade_root / "evidence",
         "strategist_llm_response_json": trade_root / "strategist" / "strategist_llm_response.json",
         "ai_trade_report_input_json": trade_root / "ai_trade_report" / "ai_trade_report_input.json",
+        "ai_trade_report_compact_input_json": trade_root / "ai_trade_report" / "ai_trade_report_compact_input.json",
         "ai_trade_report_json": trade_root / "ai_trade_report" / "ai_trade_report.json",
         "ai_trade_report_md": trade_root / "ai_trade_report" / "ai_trade_report.md",
         "ai_trade_report_llm_response_json": trade_root / "ai_trade_report" / "ai_trade_report_llm_response.json",
         "brief_input_json": trade_root / "brief" / "brief_input.json",
+        "brief_compact_input_json": trade_root / "brief" / "brief_compact_input.json",
         "brief_json": trade_root / "brief" / "operator_brief.json",
         "brief_md": trade_root / "brief" / "operator_brief.md",
         "brief_llm_response_json": trade_root / "brief" / "brief_llm_response.json",

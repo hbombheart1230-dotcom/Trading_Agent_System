@@ -24,3 +24,21 @@ def test_llm_artifact_exposes_canonical_status_field() -> None:
     )
     assert artifact["status"] == "timeout"
     assert artifact["llm_status"] == "error"
+
+
+def test_llm_artifact_backfills_model_from_final_attempt() -> None:
+    artifact = build_llm_response_artifact(
+        component="brief",
+        run_id="run-1",
+        trade_id="TRD_1",
+        status="ok",
+        model_info={},
+        attempts=[
+            {
+                "status": "ok",
+                "model_info": {"provider": "OpenRouter", "model": "openrouter/free"},
+            }
+        ],
+    )
+    assert artifact["model"] == "openrouter/free"
+    assert artifact["model_info"]["model"] == "openrouter/free"

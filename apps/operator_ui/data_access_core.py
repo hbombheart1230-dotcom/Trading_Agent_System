@@ -45,6 +45,7 @@ from libs.llm.json_response import parse_llm_json_response, required_key_metadat
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.core.symbols import normalize_symbol
 from libs.reporting.llm_artifacts import (
+    build_compact_input_artifact,
     build_llm_response_artifact,
     classify_llm_exception,
     make_attempt,
@@ -1830,7 +1831,9 @@ def load_operator_brief_detail(config: OperatorUIConfig, story_id: str) -> Dict[
     run_id = str(meta.get("run_id") or "").strip()
     json_path = Path(str(meta.get("operator_brief_json_path") or ""))
     md_path = Path(str(meta.get("operator_brief_md_path") or ""))
-    brief = _read_json(json_path) if json_path.exists() else {}
+    brief = {}
+    if not _operator_brief_force_regenerate_enabled():
+        brief = _read_json(json_path) if json_path.exists() else {}
 
     if not isinstance(brief, dict) or not brief:
         if run_id:
@@ -3352,6 +3355,11 @@ def _build_operator_brief_line_messages(compact_input: Dict[str, Any]) -> List[D
     ]
 
 
+def _operator_brief_force_regenerate_enabled() -> bool:
+    raw = str(os.getenv("OPERATOR_UI_RUN_BRIEF_FORCE_REGENERATE", "") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     fallback = _fallback_operator_brief(detail)
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
@@ -3735,6 +3743,8 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
+    if _operator_brief_force_regenerate_enabled():
+        return {}
     if not run_id:
         return {}
     path = config.operator_ui_cache_path / f"{run_id}.json"
@@ -3801,15 +3811,42 @@ def _operator_brief_input_artifact_path(detail: Dict[str, Any]) -> Path | None:
     return brief_json.parent / "brief_input.json"
 
 
+def _operator_brief_compact_input_artifact_path(detail: Dict[str, Any]) -> Path | None:
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    trade_root_path = Path(str(trade_report.get("trade_root_path") or "")).resolve() if str(trade_report.get("trade_root_path") or "").strip() else None
+    if trade_root_path is not None:
+        return trade_root_path / "brief" / "brief_compact_input.json"
+    brief_json, _brief_md = _operator_brief_artifact_paths(detail)
+    if brief_json is None:
+        return None
+    return brief_json.parent / "brief_compact_input.json"
+
+
 def _save_operator_brief_input_artifact(detail: Dict[str, Any], compact_input: Dict[str, Any]) -> None:
     path = _operator_brief_input_artifact_path(detail)
-    if path is None:
+    compact_path = _operator_brief_compact_input_artifact_path(detail)
+    if path is None and compact_path is None:
         return
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = dict(compact_input or {})
         payload["saved_at"] = datetime.now(tz=KST).isoformat()
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        if compact_path is not None:
+            trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+            compact_path.parent.mkdir(parents=True, exist_ok=True)
+            compact_artifact = build_compact_input_artifact(
+                component="brief",
+                run_id=str(detail.get("run_id") or ""),
+                trade_id=str(trade_report.get("trade_id") or trade_report.get("story_id") or ""),
+                story_id=str(trade_report.get("story_id") or trade_report.get("trade_id") or ""),
+                day=str((trade_report.get("day") or "")).strip(),
+                source_artifact_path=str(path) if path is not None else "",
+                source_input=payload,
+                compact_input=compact_input,
+            )
+            compact_path.write_text(json.dumps(compact_artifact, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         return
 
@@ -3950,6 +3987,8 @@ def _saved_operator_brief_matches_detail(saved: Dict[str, Any], detail: Dict[str
 
 
 def _load_saved_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
+    if _operator_brief_force_regenerate_enabled():
+        return {}
     json_path, _ = _operator_brief_artifact_paths(detail)
     if json_path is None or not json_path.exists():
         return {}
@@ -4033,8 +4072,12 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         if not isinstance(bundle, dict) or not bundle:
             continue
         artifacts = bundle.get("artifacts") if isinstance(bundle.get("artifacts"), dict) else {}
+        brief_input_path = json_path.parent / "brief_input.json"
+        brief_compact_input_path = json_path.parent / "brief_compact_input.json"
         artifacts["brief_json"] = str(json_path)
         artifacts["brief_md"] = str(md_path)
+        artifacts["brief_input_json"] = str(brief_input_path) if brief_input_path.exists() else ""
+        artifacts["brief_compact_input_json"] = str(brief_compact_input_path) if brief_compact_input_path.exists() else ""
         artifacts["brief_llm_response_json"] = str(json_path.parent / "brief_llm_response.json") if llm_response_artifact else ""
         bundle["artifacts"] = artifacts
         bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")

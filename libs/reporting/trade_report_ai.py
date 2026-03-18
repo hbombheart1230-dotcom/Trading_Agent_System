@@ -182,6 +182,257 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
     return out
 
 
+def _tail_list(values: Any, *, max_items: int = 6, max_len: int = 220) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    return _listify(values[-max(1, max_items) :], max_items=max_items, max_len=max_len)
+
+
+def _compact_event_row(row: Any) -> Dict[str, Any]:
+    item = row if isinstance(row, dict) else {}
+    description = (
+        item.get("description")
+        or item.get("summary")
+        or item.get("reason_human")
+        or item.get("reason")
+        or item.get("monitor_reason")
+        or item.get("event_name")
+        or item.get("event")
+        or ""
+    )
+    out: Dict[str, Any] = {
+        "ts": _clip(item.get("ts"), max_len=40),
+        "event": _clip(item.get("event") or item.get("event_name"), max_len=80),
+        "stage": _clip(item.get("stage") or item.get("agent"), max_len=48),
+        "action": _clip(item.get("action") or item.get("side"), max_len=32),
+        "description": _clip(description, max_len=220),
+    }
+    return {key: value for key, value in out.items() if value not in {"", None}}
+
+
+def _compact_timeline_rows(values: Any, *, head: int = 3, tail: int = 9) -> List[Dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    picked: List[Any] = []
+    picked.extend(values[: max(0, head)])
+    if len(values) > head:
+        picked.extend(values[-max(0, tail) :])
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for row in picked:
+        compact = _compact_event_row(row)
+        marker = (
+            str(compact.get("ts") or ""),
+            str(compact.get("event") or ""),
+            str(compact.get("description") or ""),
+        )
+        if not compact or marker in seen:
+            continue
+        seen.add(marker)
+        out.append(compact)
+    return out[:12]
+
+
+def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
+    data = section if isinstance(section, dict) else {}
+    out: Dict[str, Any] = {
+        "posture": _clip(data.get("posture"), max_len=32),
+        "trigger_type": _clip(data.get("trigger_type"), max_len=48),
+        "summary": _clip(data.get("summary"), max_len=320),
+        "bullets": _listify(data.get("bullets"), max_items=6, max_len=220),
+        "position_age_seconds": data.get("position_age_seconds"),
+        "stop_loss_pct": data.get("stop_loss_pct"),
+        "effective_stop_loss_pct": data.get("effective_stop_loss_pct"),
+        "effective_stop_reason": _clip(data.get("effective_stop_reason"), max_len=80),
+        "take_profit_pct": data.get("take_profit_pct"),
+        "exit_triggered": data.get("exit_triggered"),
+        "current_price": data.get("current_price"),
+        "average_price": data.get("average_price"),
+        "peak_price": data.get("peak_price"),
+        "current_drawdown": data.get("current_drawdown"),
+        "peak_drawdown": data.get("peak_drawdown"),
+        "vwap_distance": data.get("vwap_distance"),
+        "active_exit_axis": _clip(data.get("active_exit_axis"), max_len=48),
+        "watch_axes": _listify(data.get("watch_axes"), max_items=5, max_len=80),
+        "price_source": _clip(data.get("price_source"), max_len=80),
+        "feature_source": _clip(data.get("feature_source"), max_len=80),
+    }
+    return {key: value for key, value in out.items() if value not in ("", None, [])}
+
+
+def _compact_holding_summary(holding: Any) -> Dict[str, Any]:
+    data = holding if isinstance(holding, dict) else {}
+    posture_rows = data.get("posture_history") if isinstance(data.get("posture_history"), list) else []
+    recent_posture = [_compact_event_row(row) for row in posture_rows[-4:] if isinstance(row, dict)]
+    recent_posture = [row for row in recent_posture if row]
+    return {
+        "run_count": len(list(data.get("run_ids") or [])),
+        "recent_run_ids": [str(x or "") for x in list(data.get("run_ids") or [])[-6:] if str(x or "").strip()],
+        "holding_event_count": len(list(data.get("holding_events") or [])),
+        "recent_posture_history": recent_posture,
+        "recent_monitor_updates": _tail_list(data.get("monitor_updates"), max_items=6, max_len=200),
+    }
+
+
+def _compact_entry_or_exit_summary(summary: Any) -> Dict[str, Any]:
+    data = summary if isinstance(summary, dict) else {}
+    strategist_ctx = data.get("strategist_context") if isinstance(data.get("strategist_context"), dict) else {}
+    scanner_ctx = data.get("scanner_context") if isinstance(data.get("scanner_context"), dict) else {}
+    monitor_ctx = data.get("monitor_context") if isinstance(data.get("monitor_context"), dict) else {}
+    guard_ctx = data.get("guard_context") if isinstance(data.get("guard_context"), dict) else {}
+    execution_ctx = data.get("execution_context") if isinstance(data.get("execution_context"), dict) else {}
+    return {
+        "run_id": _clip(data.get("run_id"), max_len=40),
+        "ts": _clip(data.get("ts"), max_len=40),
+        "action": _clip(data.get("action"), max_len=24),
+        "reason_human": _clip(data.get("reason_human"), max_len=280),
+        "strategist_context": {
+            "market_regime": _clip(strategist_ctx.get("market_regime"), max_len=32),
+            "market_sentiment": _clip(strategist_ctx.get("market_sentiment"), max_len=32),
+            "playbook": _clip(strategist_ctx.get("playbook"), max_len=40),
+            "themes": _listify(strategist_ctx.get("themes"), max_items=4, max_len=80),
+            "global_sentiment_score": strategist_ctx.get("global_sentiment_score"),
+            "vix_level": strategist_ctx.get("vix_level"),
+        },
+        "scanner_context": {
+            "selected_symbol": _clip(scanner_ctx.get("selected_symbol"), max_len=24),
+            "selected_rank": scanner_ctx.get("selected_rank"),
+            "universe_size": scanner_ctx.get("universe_size"),
+            "score_total": scanner_ctx.get("score_total"),
+            "confidence": scanner_ctx.get("confidence"),
+            "top_candidates": _listify(scanner_ctx.get("top_candidates"), max_items=3, max_len=80),
+            "selection_reason": _clip(scanner_ctx.get("selection_reason"), max_len=220),
+        },
+        "monitor_context": _compact_monitor_snapshot(monitor_ctx),
+        "guard_context": {
+            "status": _clip(guard_ctx.get("status") or guard_ctx.get("verdict"), max_len=32),
+            "summary": _clip(guard_ctx.get("summary") or guard_ctx.get("reason"), max_len=220),
+        },
+        "execution_context": {
+            "status": _clip(execution_ctx.get("status"), max_len=32),
+            "summary": _clip(execution_ctx.get("summary") or execution_ctx.get("message"), max_len=220),
+            "qty": execution_ctx.get("qty"),
+            "price": execution_ctx.get("price"),
+        },
+    }
+
+
+def _evidence_digest(evidence: Any, keys: List[str]) -> Dict[str, int]:
+    data = evidence if isinstance(evidence, dict) else {}
+    return {key: len(list(data.get(key) or [])) for key in keys}
+
+
+def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    market_context = story_input.get("market_context_human") if isinstance(story_input.get("market_context_human"), dict) else {}
+    scanner_reason = story_input.get("scanner_reason_human") if isinstance(story_input.get("scanner_reason_human"), dict) else {}
+    filters_human = story_input.get("filters_human") if isinstance(story_input.get("filters_human"), dict) else {}
+    monitor_reason = story_input.get("monitor_reason_human") if isinstance(story_input.get("monitor_reason_human"), dict) else {}
+    guard_reason = story_input.get("guard_reason_human") if isinstance(story_input.get("guard_reason_human"), dict) else {}
+    execution_outcome = story_input.get("execution_outcome_human") if isinstance(story_input.get("execution_outcome_human"), dict) else {}
+    reporter_status = story_input.get("reporter_status_human") if isinstance(story_input.get("reporter_status_human"), dict) else {}
+    operator_conclusion = story_input.get("operator_conclusion_human") if isinstance(story_input.get("operator_conclusion_human"), dict) else {}
+    lifecycle_summary = story_input.get("lifecycle_summary") if isinstance(story_input.get("lifecycle_summary"), dict) else {}
+    diagnostics = story_input.get("ai_report_diagnostics") if isinstance(story_input.get("ai_report_diagnostics"), dict) else {}
+    return {
+        "trade_id": story_input.get("trade_id") or story_input.get("story_id"),
+        "story_id": story_input.get("story_id"),
+        "run_id": story_input.get("run_id"),
+        "symbol": story_input.get("symbol"),
+        "action": story_input.get("action"),
+        "status": story_input.get("status"),
+        "story_type": story_input.get("story_type"),
+        "execution_mode_label": story_input.get("execution_mode_label"),
+        "entry_summary": _compact_entry_or_exit_summary(story_input.get("entry_summary")),
+        "holding_summary": _compact_holding_summary(story_input.get("holding_summary")),
+        "exit_summary": _compact_entry_or_exit_summary(story_input.get("exit_summary")),
+        "lifecycle_summary": {
+            "holding_duration": _clip(lifecycle_summary.get("holding_duration"), max_len=40),
+            "entry_reason_human": _clip(lifecycle_summary.get("entry_reason_human"), max_len=240),
+            "exit_reason_human": _clip(lifecycle_summary.get("exit_reason_human"), max_len=240),
+            "lifecycle_summary_human": _clip(lifecycle_summary.get("lifecycle_summary_human"), max_len=320),
+        },
+        "market_context_human": {
+            "regime": _clip(market_context.get("regime"), max_len=24),
+            "market_sentiment": _clip(market_context.get("market_sentiment"), max_len=24),
+            "playbook": _clip(market_context.get("playbook"), max_len=32),
+            "themes": _listify(market_context.get("themes"), max_items=4, max_len=80),
+            "global_sentiment_score": market_context.get("global_sentiment_score"),
+            "vix_level": market_context.get("vix_level"),
+            "stress_flags": _listify(market_context.get("stress_flags"), max_items=4, max_len=80),
+            "news_input_summary": _clip(market_context.get("news_input_summary"), max_len=220),
+            "summary": _clip(market_context.get("summary"), max_len=320),
+            "bullets": _listify(market_context.get("bullets"), max_items=6, max_len=220),
+        },
+        "scanner_reason_human": {
+            "selected_symbol": _clip(scanner_reason.get("selected_symbol"), max_len=24),
+            "selected_rank": scanner_reason.get("selected_rank"),
+            "universe_size": scanner_reason.get("universe_size"),
+            "ranking_basis": _clip(scanner_reason.get("ranking_basis"), max_len=180),
+            "confidence": scanner_reason.get("confidence"),
+            "confidence_label": _clip(scanner_reason.get("confidence_label"), max_len=32),
+            "top_reasons": _listify(scanner_reason.get("top_reasons"), max_items=5, max_len=180),
+            "runner_ups": _listify(scanner_reason.get("runner_ups"), max_items=3, max_len=180),
+            "summary": _clip(scanner_reason.get("summary"), max_len=320),
+            "comparison": _clip(scanner_reason.get("comparison"), max_len=240),
+            "bullets": _listify(scanner_reason.get("bullets"), max_items=6, max_len=220),
+        },
+        "filters_human": {
+            "summary": _clip(filters_human.get("summary"), max_len=280),
+            "bullets": _listify(filters_human.get("bullets"), max_items=6, max_len=220),
+        },
+        "monitor_reason_human": _compact_monitor_snapshot(monitor_reason),
+        "guard_reason_human": {
+            "summary": _clip(guard_reason.get("summary"), max_len=280),
+            "status": _clip(guard_reason.get("status"), max_len=32),
+            "bullets": _listify(guard_reason.get("bullets"), max_items=6, max_len=220),
+        },
+        "execution_outcome_human": {
+            "summary": _clip(execution_outcome.get("summary"), max_len=280),
+            "status": _clip(execution_outcome.get("status"), max_len=32),
+            "bullets": _listify(execution_outcome.get("bullets"), max_items=6, max_len=220),
+        },
+        "reporter_status_human": {
+            "summary": _clip(reporter_status.get("summary"), max_len=280),
+            "status": _clip(reporter_status.get("status"), max_len=32),
+            "grade": _clip(reporter_status.get("grade"), max_len=16),
+            "bullets": _listify(reporter_status.get("bullets"), max_items=5, max_len=180),
+        },
+        "operator_conclusion_human": {
+            "summary": _clip(operator_conclusion.get("summary"), max_len=280),
+            "current_action": _clip(operator_conclusion.get("current_action"), max_len=24),
+            "watch_next": _listify(operator_conclusion.get("watch_next"), max_items=5, max_len=180),
+            "thesis_invalidation": _listify(operator_conclusion.get("thesis_invalidation"), max_items=5, max_len=180),
+        },
+        "timeline": _compact_timeline_rows(story_input.get("timeline")),
+        "warnings": _listify(story_input.get("warnings"), max_items=8, max_len=180),
+        "improvement_points": _listify(story_input.get("improvement_points"), max_items=6, max_len=180),
+        "evidence_digest": {
+            "strategist": _evidence_digest(
+                story_input.get("strategist_evidence"),
+                ["market_context_snapshots", "global_sentiment_breakdowns", "news_evidence_ranked", "decision_frames", "llm_response_saved"],
+            ),
+            "scanner": _evidence_digest(
+                story_input.get("scanner_evidence"),
+                ["candidate_pool_snapshots", "candidate_ranking_tables", "candidate_selection_reasons", "selection_outputs"],
+            ),
+            "monitor": _evidence_digest(
+                story_input.get("monitor_timeline"),
+                ["threshold_snapshots", "state_transitions", "exit_decision_details", "cycle_summaries"],
+            ),
+        },
+        "ai_report_diagnostics": {
+            "report_status": _clip(diagnostics.get("report_status"), max_len=24),
+            "report_reason_code": _clip(diagnostics.get("report_reason_code"), max_len=48),
+            "report_reason_human": _clip(diagnostics.get("report_reason_human"), max_len=220),
+            "next_expected_step": _clip(diagnostics.get("next_expected_step"), max_len=220),
+        },
+    }
+
+
+def build_ai_trade_report_compact_input(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    return _compact_story_input_for_llm(story_input)
+
+
 def _normalize_provenance_entry(entry: Any) -> Dict[str, Any]:
     row = entry if isinstance(entry, dict) else {}
     source = str(row.get("source") or "fallback").strip().lower()
@@ -687,26 +938,7 @@ def _failure_report(
 
 
 def _build_repair_messages(story_input: Dict[str, Any], raw_response: Any) -> List[Dict[str, str]]:
-    compact_input = {
-        "trade_id": story_input.get("trade_id") or story_input.get("story_id"),
-        "story_id": story_input.get("story_id"),
-        "run_id": story_input.get("run_id"),
-        "symbol": story_input.get("symbol"),
-        "action": story_input.get("action"),
-        "status": story_input.get("status"),
-        "story_type": story_input.get("story_type"),
-        "execution_mode_label": story_input.get("execution_mode_label"),
-        "market_context_human": story_input.get("market_context_human"),
-        "scanner_reason_human": story_input.get("scanner_reason_human"),
-        "filters_human": story_input.get("filters_human"),
-        "monitor_reason_human": story_input.get("monitor_reason_human"),
-        "guard_reason_human": story_input.get("guard_reason_human"),
-        "execution_outcome_human": story_input.get("execution_outcome_human"),
-        "reporter_status_human": story_input.get("reporter_status_human"),
-        "operator_conclusion_human": story_input.get("operator_conclusion_human"),
-        "timeline": story_input.get("timeline"),
-        "warnings": story_input.get("warnings"),
-    }
+    compact_input = _compact_story_input_for_llm(story_input)
     contract = {
         "executive_summary": {"headline": "str", "action": "str", "symbol": "str", "confidence": "str", "summary": "str"},
         "market_context_at_entry": {"summary": "str", "bullets": ["str"]},
@@ -741,30 +973,7 @@ def _build_repair_messages(story_input: Dict[str, Any], raw_response: Any) -> Li
 
 
 def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
-    compact_input = {
-        "trade_id": story_input.get("trade_id") or story_input.get("story_id"),
-        "story_id": story_input.get("story_id"),
-        "run_id": story_input.get("run_id"),
-        "symbol": story_input.get("symbol"),
-        "action": story_input.get("action"),
-        "status": story_input.get("status"),
-        "story_type": story_input.get("story_type"),
-        "execution_mode_label": story_input.get("execution_mode_label"),
-        "entry_summary": story_input.get("entry_summary"),
-        "holding_summary": story_input.get("holding_summary"),
-        "exit_summary": story_input.get("exit_summary"),
-        "lifecycle_summary": story_input.get("lifecycle_summary"),
-        "market_context_human": story_input.get("market_context_human"),
-        "scanner_reason_human": story_input.get("scanner_reason_human"),
-        "filters_human": story_input.get("filters_human"),
-        "monitor_reason_human": story_input.get("monitor_reason_human"),
-        "guard_reason_human": story_input.get("guard_reason_human"),
-        "execution_outcome_human": story_input.get("execution_outcome_human"),
-        "reporter_status_human": story_input.get("reporter_status_human"),
-        "operator_conclusion_human": story_input.get("operator_conclusion_human"),
-        "timeline": story_input.get("timeline"),
-        "warnings": story_input.get("warnings"),
-    }
+    compact_input = _compact_story_input_for_llm(story_input)
     return [
         {
             "role": "system",
