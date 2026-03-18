@@ -6,7 +6,11 @@ from typing import Any, Dict, List, Optional
 
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
-from libs.llm.json_response import extract_json_object_loose, strip_fenced_code_block
+from libs.llm.json_response import (
+    parse_llm_json_response,
+    required_key_metadata,
+    strip_fenced_code_block,
+)
 from libs.research.evidence_ledger import record_llm_prompt, record_llm_response, record_raw_input
 
 
@@ -20,8 +24,32 @@ def _strip_fenced_block(text: str) -> str:
 
 
 def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
-    obj = extract_json_object_loose(text)
-    return obj if obj else None
+    parsed = parse_llm_json_response(text)
+    if isinstance(parsed.get("full_object"), dict):
+        return dict(parsed.get("full_object") or {})
+    return None
+
+
+REPORTER_AI_REVIEW_REQUIRED_KEYS = [
+    "ai_summary",
+    "ai_findings",
+    "ai_root_causes",
+    "ai_improvement_suggestions",
+    "ai_run_grade",
+    "ai_agent_evaluations",
+    "ai_evidence_links",
+]
+
+
+def _normalize_llm_status(status: str) -> str:
+    raw = str(status or "").strip().lower()
+    if raw == "ok":
+        return "ok"
+    if raw in {"parse_error"}:
+        return "partial"
+    if raw in {"disabled", "dry_run", "unavailable"}:
+        return "fallback"
+    return "error"
 
 
 def _clip_str(v: Any, *, max_len: int = 400) -> str:
@@ -59,11 +87,15 @@ def _dict_str(v: Any, *, max_items: int = 8, max_key_len: int = 64, max_val_len:
 
 
 def _default_result(*, enabled: bool, status: str, reason: str = "", model: str = "") -> Dict[str, Any]:
+    meta = required_key_metadata({}, REPORTER_AI_REVIEW_REQUIRED_KEYS)
     return {
         "enabled": bool(enabled),
         "status": str(status),
+        "llm_status": _normalize_llm_status(status),
         "model": str(model or ""),
         "reason": _clip_str(reason, max_len=320),
+        "parse_mode": "none",
+        **meta,
         "ai_summary": "",
         "ai_findings": [],
         "ai_root_causes": [],
@@ -97,11 +129,15 @@ def _normalize_evidence_link_items(v: Any, *, max_items: int = 10) -> List[Dict[
 
 def _normalize_result(obj: Dict[str, Any], *, enabled: bool, model: str) -> Dict[str, Any]:
     evidence_links = obj.get("ai_evidence_links") if isinstance(obj.get("ai_evidence_links"), dict) else {}
+    meta = required_key_metadata(obj, REPORTER_AI_REVIEW_REQUIRED_KEYS)
     return {
         "enabled": bool(enabled),
         "status": "ok",
+        "llm_status": "ok",
         "model": str(model or ""),
         "reason": "",
+        "parse_mode": "full",
+        **meta,
         "ai_summary": _clip_str(obj.get("ai_summary"), max_len=600),
         "ai_findings": _list_str(obj.get("ai_findings"), max_items=12, max_len=260),
         "ai_root_causes": _list_str(obj.get("ai_root_causes"), max_items=10, max_len=260),
@@ -367,25 +403,43 @@ def build_ai_reporter_review(
             pass
         return _default_result(enabled=True, status="error", reason=f"ai_call_failed:{e}", model=route.model)
 
-    obj = _extract_json_object(raw)
-    if not isinstance(obj, dict):
+    parsed_result = parse_llm_json_response(raw)
+    obj = parsed_result.get("full_object") if isinstance(parsed_result.get("full_object"), dict) else None
+    candidate = obj
+    if candidate is None and isinstance(parsed_result.get("partial_object"), dict):
+        candidate = dict(parsed_result.get("partial_object") or {})
+    key_meta = required_key_metadata(candidate if isinstance(candidate, dict) else {}, REPORTER_AI_REVIEW_REQUIRED_KEYS)
+    parse_mode = "full" if bool(parsed_result.get("is_full")) else "partial" if bool(parsed_result.get("is_partial")) else "none"
+
+    if not isinstance(obj, dict) or bool(key_meta.get("required_keys_missing")):
+        parse_reason = "ai_response_not_full_json"
+        if not bool(parsed_result.get("raw_nonempty")):
+            parse_reason = "ai_response_empty"
+        elif bool(parsed_result.get("is_partial")):
+            parse_reason = "ai_response_partial_json"
+        elif bool(key_meta.get("required_keys_missing")):
+            missing = ", ".join(list(key_meta.get("required_keys_missing") or []))
+            parse_reason = f"ai_response_missing_required_keys:{missing}"
         try:
             record_llm_response(
                 run_id=run_id,
                 agent="reporter",
                 stage="post_run_analysis",
                 llm_response=str(raw or ""),
-                parsed_output={},
-                decision_link={"status": "parse_error"},
+                parsed_output=dict(candidate or {}) if isinstance(candidate, dict) else {},
+                decision_link={"status": "parse_error", "parse_mode": parse_mode, **key_meta},
             )
         except Exception:
             pass
-        return _default_result(
+        result = _default_result(
             enabled=True,
             status="parse_error",
-            reason=f"ai_response_not_json:{_clip_str(raw, max_len=220)}",
+            reason=f"{parse_reason}:{_clip_str(raw, max_len=220)}",
             model=route.model,
         )
+        result["parse_mode"] = parse_mode
+        result.update(key_meta)
+        return result
     try:
         record_llm_response(
             run_id=run_id,

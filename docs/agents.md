@@ -185,10 +185,21 @@
   - per-entry keys: `raw_input`, `llm_prompt`, `llm_response`, `parsed_output`, `decision_link`
   - passive only (no runtime control impact)
 - Runtime report generators: `libs/reporting/*`, `scripts/run_*report*.py`
+- Presentation outputs remain centered on `reports/trades/` for operator workflows.
+  - canonical artifacts are internal source evidence
+  - LLM reports/briefs are downstream narrative artifacts
+  - additive trade metadata files (`_provenance.json`, `_health.json`, `_artifact_links.json`) expose source linkage and health without changing existing paths
 - Operator UI consumes Reporter outputs in a same-day-safe way:
   - same-day reporter artifacts are preferred
   - stale previous-day reporter artifacts are not silently reused for today's run detail
   - if same-day reporter output is missing, the UI surfaces that state explicitly and falls back to deterministic/live summaries
+- Operator UI backend access is split by responsibility:
+  - runs: `apps/operator_ui/data_access_runs.py`
+  - reports: `apps/operator_ui/data_access_reports.py`
+  - brief handling: `apps/operator_ui/data_access_brief.py`
+  - status semantics: `apps/operator_ui/data_access_status.py`
+  - linkage: `apps/operator_ui/data_access_linkage.py`
+  - compatibility facade: `apps/operator_ui/data_access.py`
 - Single-run full-chain trace report:
   - `scripts/run_agent_pipeline_trace_report.py` -> `agent_pipeline_trace.v1`
   - summarizes Commander/Strategist/Scanner/Monitor/Supervisor/Executor/Reporter in one artifact

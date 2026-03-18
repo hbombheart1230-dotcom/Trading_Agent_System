@@ -11,6 +11,35 @@ import time
 
 from apps.operator_ui.data_access_reports import load_trade_report_payloads
 from apps.operator_ui.data_access_runs import load_run_canonical_sources, prefer_canonical_agent_payload
+from apps.operator_ui.data_access_linkage import (
+    existing_trade_path as _link_existing_trade_path,
+    trade_paths_from_bundle as _link_trade_paths_from_bundle,
+    trade_root_from_bundle_path as _link_trade_root_from_bundle_path,
+)
+from apps.operator_ui.data_access_status import (
+    build_portfolio_sync_card as _status_build_portfolio_sync_card,
+    normalize_ai_report_diagnostics as _status_normalize_ai_report_diagnostics,
+    normalize_report_status as _status_normalize_report_status,
+    portfolio_reconciliation_label as _status_portfolio_reconciliation_label,
+    portfolio_positions_source_label as _status_portfolio_positions_source_label,
+    portfolio_sync_badge_class as _status_portfolio_sync_badge_class,
+    portfolio_sync_label as _status_portfolio_sync_label,
+    portfolio_sync_sentence as _status_portfolio_sync_sentence,
+    report_next_step as _status_report_next_step,
+    report_reason_human as _status_report_reason_human,
+    report_status_badge_class as _status_report_status_badge_class,
+    report_status_label as _status_report_status_label,
+    story_type_badge_class as _status_story_type_badge_class,
+    story_type_label as _status_story_type_label,
+)
+from apps.operator_ui.data_access_brief import (
+    OPERATOR_BRIEF_REQUIRED_KEYS as BRIEF_REQUIRED_KEYS_MODULE,
+    clean_brief_list as _brief_clean_list,
+    clean_brief_text as _brief_clean_text,
+    is_retryable_brief_failure as _brief_is_retryable_failure,
+    operator_brief_is_complete as _brief_is_complete,
+    operator_brief_parse_meta as _brief_parse_meta,
+)
 from libs.llm.llm_router import LLMRouter
 from libs.llm.json_response import parse_llm_json_response, required_key_metadata
 from libs.llm.model_names import normalize_openrouter_model_name
@@ -254,26 +283,11 @@ def _truncate_json(v: Any, max_len: int = 800) -> str:
 
 
 def _clean_brief_text(v: Any) -> str:
-    s = str(v or "").strip()
-    if not s:
-        return ""
-    s = re.sub(r"^\s*From\s+[A-Za-z0-9_]+\s*-\s*", "", s)
-    s = re.sub(r"^\s*[A-Za-z0-9_]+_hint\s*-\s*", "", s)
-    s = re.sub(r"\s+", " ", s).strip(" -")
-    return s
+    return _brief_clean_text(v)
 
 
 def _clean_brief_list(v: Any, *, limit: int) -> List[str]:
-    if not isinstance(v, list):
-        return []
-    out: List[str] = []
-    for item in v:
-        cleaned = _clean_brief_text(item)
-        if cleaned:
-            out.append(cleaned)
-        if len(out) >= limit:
-            break
-    return out
+    return _brief_clean_list(v, limit=limit)
 
 
 def _extract_json_object(text: Any) -> Dict[str, Any]:
@@ -379,54 +393,15 @@ def _read_exact_day(path: Path, prefix: str, day: str) -> Dict[str, Any]:
 
 
 def _trade_root_from_bundle_path(bundle_path: Path) -> Path:
-    parent = bundle_path.parent
-    if parent.name == "lifecycle":
-        return parent.parent
-    return parent
+    return _link_trade_root_from_bundle_path(bundle_path)
 
 
 def _trade_paths_from_bundle(bundle_path: Path, *, day_hint: str = "", trade_id_hint: str = "") -> Dict[str, Path]:
-    trade_root = _trade_root_from_bundle_path(bundle_path)
-    if day_hint and trade_id_hint:
-        try:
-            paths = trade_artifact_paths(bundle_path.parents[2], day_hint, trade_id_hint)
-            # Only trust helper paths when root already matches trade root pattern.
-            if str(paths["trade_root"]) == str(trade_root):
-                return paths
-        except Exception:
-            pass
-    legacy_root = trade_root
-    if trade_root.name in {"brief", "ai_trade_report", "lifecycle", "strategist", "evidence"}:
-        trade_root = trade_root.parent
-    return {
-        "trade_root": trade_root,
-        "legacy_trade_root": legacy_root,
-        "strategist_llm_response_json": trade_root / "strategist" / "strategist_llm_response.json",
-        "ai_trade_report_input_json": trade_root / "ai_trade_report" / "ai_trade_report_input.json",
-        "ai_trade_report_json": trade_root / "ai_trade_report" / "ai_trade_report.json",
-        "ai_trade_report_md": trade_root / "ai_trade_report" / "ai_trade_report.md",
-        "ai_trade_report_llm_response_json": trade_root / "ai_trade_report" / "ai_trade_report_llm_response.json",
-        "brief_json": trade_root / "brief" / "operator_brief.json",
-        "brief_md": trade_root / "brief" / "operator_brief.md",
-        "brief_llm_response_json": trade_root / "brief" / "brief_llm_response.json",
-        "trade_lifecycle_json": trade_root / "lifecycle" / "trade_lifecycle.json",
-        "aggregated_execution_bundle_json": trade_root / "lifecycle" / "aggregated_execution_bundle.json",
-        "legacy_trade_story_input_json": trade_root / "trade_story_input.json",
-        "legacy_trade_report_json": trade_root / "trade_report.json",
-        "legacy_trade_report_md": trade_root / "trade_report.md",
-        "legacy_trade_lifecycle_json": trade_root / "trade_lifecycle.json",
-        "legacy_aggregated_execution_bundle_json": trade_root / "aggregated_execution_bundle.json",
-        "legacy_operator_brief_json": trade_root / "operator_brief.json",
-        "legacy_operator_brief_md": trade_root / "operator_brief.md",
-    }
+    return _link_trade_paths_from_bundle(bundle_path, day_hint=day_hint, trade_id_hint=trade_id_hint)
 
 
 def _existing_trade_path(paths: Dict[str, Path], *keys: str) -> Path:
-    for key in keys:
-        path = paths.get(key)
-        if isinstance(path, Path) and path.exists():
-            return path
-    return Path()
+    return _link_existing_trade_path(paths, *keys)
 
 
 def _normalize_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -471,219 +446,55 @@ def _clean_str_list(values: Any, *, limit: int = 8, max_len: int = 220) -> List[
 
 
 def _story_type_label(story_type: Any) -> str:
-    raw = str(story_type or "").strip().lower()
-    mapping = {
-        "live_trade": "Live trade report",
-        "simulation": "Simulation trade report",
-        "failed_execution": "Failed execution report",
-        "decision_only": "Decision-only summary",
-    }
-    return mapping.get(raw, "Unknown report type")
+    return _status_story_type_label(story_type)
 
 
 def _story_type_badge_class(story_type: Any) -> str:
-    raw = str(story_type or "").strip().lower()
-    if raw == "live_trade":
-        return "status-badge status-badge--ok"
-    if raw == "failed_execution":
-        return "status-badge status-badge--critical"
-    if raw == "simulation":
-        return "status-badge status-badge--warn"
-    if raw == "decision_only":
-        return "status-badge status-badge--warn"
-    return "status-badge"
+    return _status_story_type_badge_class(story_type)
 
 
 def _normalize_report_status(value: Any) -> str:
-    raw = str(value or "").strip().lower()
-    if raw in {"available", "skipped", "pending", "failed"}:
-        return raw
-    return ""
+    return _status_normalize_report_status(value)
 
 
 def _report_status_label(status: Any) -> str:
-    raw = _normalize_report_status(status)
-    if raw == "available":
-        return "AI Report Available"
-    if raw == "pending":
-        return "AI Report Pending"
-    if raw == "failed":
-        return "AI Report Failed"
-    if raw == "skipped":
-        return "AI Report Skipped"
-    return "AI Report"
+    return _status_report_status_label(status)
 
 
 def _report_status_badge_class(status: Any) -> str:
-    raw = _normalize_report_status(status)
-    if raw == "available":
-        return "status-badge status-badge--ok"
-    if raw in {"pending", "skipped"}:
-        return "status-badge status-badge--warn"
-    if raw == "failed":
-        return "status-badge status-badge--critical"
-    return "status-badge"
+    return _status_report_status_badge_class(status)
 
 
 def _report_reason_human(code: Any) -> str:
-    raw = str(code or "").strip().lower()
-    mapping = {
-        "no_executed_lifecycle": "No executed trade lifecycle was created for this run.",
-        "decision_only_run": "This run was decision-only, so a full AI trade report was not generated.",
-        "hold_only_run": "This run only updated hold/monitor state, so a full AI trade report was not generated.",
-        "execution_failed": "Execution did not complete successfully, so a full AI trade report was skipped.",
-        "missing_story_input": "Trade story input was not created, so report generation could not continue.",
-        "llm_generation_failed": "Trade story input existed, but AI report generation failed.",
-        "artifact_write_failed": "AI report generation ran, but writing report artifacts failed.",
-        "missing_report_linkage": "A linked AI trade report could not be found for this run.",
-        "report_not_requested": "AI trade report generation was not requested for this run.",
-        "still_open_lifecycle": "This trade lifecycle is still open, so the full AI report is pending.",
-        "awaiting_exit_for_full_report": "This trade is still open. The full AI report is generated after exit/closure.",
-    }
-    return mapping.get(raw, "AI trade report status is not fully classified yet.")
+    return _status_report_reason_human(code)
 
 
 def _report_next_step(code: Any) -> str:
-    raw = str(code or "").strip().lower()
-    mapping = {
-        "no_executed_lifecycle": "Keep using the Operator Brief. A full report is generated only for executed trade lifecycles.",
-        "decision_only_run": "Continue with the Operator Brief. Generate AI reports only after executed lifecycle events.",
-        "hold_only_run": "Continue monitoring. Generate the full AI report after an executed entry/exit lifecycle is formed.",
-        "execution_failed": "Review execution failure details and rerun after execution stabilizes.",
-        "missing_story_input": "Inspect story input generation first, then retry report generation.",
-        "llm_generation_failed": "Check OpenRouter/model connectivity and retry report generation.",
-        "artifact_write_failed": "Check filesystem write path and permissions, then retry.",
-        "missing_report_linkage": "Regenerate lifecycle/report linkage for this run and retry.",
-        "report_not_requested": "Enable AI trade report generation policy, then rerun.",
-        "still_open_lifecycle": "Generate the full AI report after lifecycle exit/closure.",
-        "awaiting_exit_for_full_report": "Generate the final AI report after exit/closure.",
-    }
-    return mapping.get(raw, "Review diagnostics and proceed with the Operator Brief in the meantime.")
+    return _status_report_next_step(code)
 
 
 def _portfolio_sync_badge_class(status: Any) -> str:
-    raw = str(status or "").strip().lower()
-    if raw in {"aligned", "reconciled"}:
-        return "status-badge status-badge--ok"
-    if raw == "unavailable":
-        return "status-badge"
-    return "status-badge status-badge--critical"
+    return _status_portfolio_sync_badge_class(status)
 
 
 def _portfolio_sync_label(status: Any) -> str:
-    raw = str(status or "").strip().lower()
-    mapping = {
-        "aligned": "Portfolio Sync OK",
-        "reconciled": "Portfolio Reconciled",
-        "mismatch": "Portfolio Mismatch",
-        "reader_error": "Portfolio Reader Error",
-        "unavailable": "Sync status unavailable",
-    }
-    return mapping.get(raw, "Portfolio Sync")
+    return _status_portfolio_sync_label(status)
 
 
 def _portfolio_sync_sentence(status: Any) -> str:
-    raw = str(status or "").strip().lower()
-    mapping = {
-        "aligned": "계좌 보유 종목과 로컬 상태가 일치했습니다.",
-        "reconciled": "계좌 보유 종목을 기준으로 로컬 상태를 자동 정합화했습니다.",
-        "mismatch": "계좌 보유 종목과 로컬 상태 불일치가 남아 있습니다. 신규 BUY는 차단됩니다.",
-        "reader_error": "계좌 조회에 실패했습니다. 신규 BUY는 차단됩니다.",
-        "unavailable": "이 run에는 계좌 동기화 상태가 기록되지 않았습니다.",
-    }
-    return mapping.get(raw, "계좌 동기화 상태를 확인하세요.")
+    return _status_portfolio_sync_sentence(status)
 
 
 def _portfolio_positions_source_label(value: Any) -> str:
-    raw = str(value or "").strip().lower()
-    mapping = {
-        "reader_positions_authoritative": "Reader positions",
-        "reader_positions_authoritative_empty": "Reader says no positions",
-        "reader_positions": "Reader positions",
-        "persisted_mock_positions": "Local fallback positions",
-        "reader_positions_empty": "No positions",
-    }
-    return mapping.get(raw, raw.replace("_", " ") if raw else "")
+    return _status_portfolio_positions_source_label(value)
 
 
 def _portfolio_reconciliation_label(value: Any) -> str:
-    raw = str(value or "").strip().lower()
-    mapping = {
-        "aligned": "Already aligned",
-        "reader_aligned": "Already aligned",
-        "reconciled_to_reader": "Reconciled to account reader",
-        "persisted_fallback": "Using local fallback",
-        "empty": "No active positions",
-    }
-    return mapping.get(raw, raw.replace("_", " ") if raw else "")
+    return _status_portfolio_reconciliation_label(value)
 
 
 def _build_portfolio_sync_card(raw: Any) -> Dict[str, Any]:
-    guard = raw if isinstance(raw, dict) else {}
-    if not guard:
-        status = "unavailable"
-        return {
-            "available": False,
-            "status": status,
-            "status_label": _portfolio_sync_label(status),
-            "badge_class": _portfolio_sync_badge_class(status),
-            "sentence": _portfolio_sync_sentence(status),
-            "note": "",
-            "positions_source": "",
-            "positions_source_label": "",
-            "reconciliation_status": "",
-            "reconciliation_label": "",
-            "reader_ok": None,
-            "reader_error": "",
-            "reader_positions_authoritative": False,
-            "positions_mismatch_detected": False,
-            "reconciliation_applied": False,
-            "reader_positions_count": 0,
-            "persisted_positions_count": 0,
-        }
-
-    reader_ok = bool(guard.get("reader_ok"))
-    mismatch = bool(guard.get("positions_mismatch_detected"))
-    reconciled = bool(guard.get("reconciliation_applied"))
-    if not reader_ok:
-        status = "reader_error"
-    elif mismatch and reconciled:
-        status = "reconciled"
-    elif mismatch:
-        status = "mismatch"
-    else:
-        status = "aligned"
-
-    positions_source = str(guard.get("positions_source") or "")
-    reconciliation_status = str(guard.get("reconciliation_status") or "")
-    counts_note = (
-        f"Reader { _safe_int(guard.get('reader_positions_count'), 0) } / local { _safe_int(guard.get('persisted_positions_count'), 0) }"
-    )
-    note_bits = [bit for bit in [
-        _portfolio_positions_source_label(positions_source),
-        _portfolio_reconciliation_label(reconciliation_status),
-        counts_note,
-    ] if bit]
-
-    return {
-        "available": True,
-        "status": status,
-        "status_label": _portfolio_sync_label(status),
-        "badge_class": _portfolio_sync_badge_class(status),
-        "sentence": _portfolio_sync_sentence(status),
-        "note": " | ".join(note_bits),
-        "positions_source": positions_source,
-        "positions_source_label": _portfolio_positions_source_label(positions_source),
-        "reconciliation_status": reconciliation_status,
-        "reconciliation_label": _portfolio_reconciliation_label(reconciliation_status),
-        "reader_ok": reader_ok,
-        "reader_error": str(guard.get("reader_error") or ""),
-        "reader_positions_authoritative": bool(guard.get("reader_positions_authoritative")),
-        "positions_mismatch_detected": mismatch,
-        "reconciliation_applied": reconciled,
-        "reader_positions_count": _safe_int(guard.get("reader_positions_count"), 0),
-        "persisted_positions_count": _safe_int(guard.get("persisted_positions_count"), 0),
-    }
+    return _status_build_portfolio_sync_card(raw)
 
 
 def _run_activity_meta(runtime_path: Any, execution: Dict[str, Any], guard_reason: Any, monitor_reason: Any) -> Dict[str, str]:
@@ -766,86 +577,14 @@ def _normalize_ai_report_diagnostics(
     model_hint: Any = "",
     generation: Any = None,
 ) -> Dict[str, Any]:
-    diag = raw if isinstance(raw, dict) else {}
-    generation_obj = generation if isinstance(generation, dict) else {}
-    lifecycle = str(lifecycle_status or "").strip().lower()
-    story = str(story_type or "").strip().lower()
-
-    status = _normalize_report_status(diag.get("report_status"))
-    reason_code = str(diag.get("report_reason_code") or "").strip().lower()
-
-    if not status:
-        if report_exists:
-            status = "available"
-            reason_code = reason_code or ""
-        elif lifecycle == "open":
-            status = "pending"
-            reason_code = reason_code or "awaiting_exit_for_full_report"
-        elif story == "decision_only":
-            status = "skipped"
-            reason_code = reason_code or "decision_only_run"
-        elif story == "failed_execution":
-            status = "skipped"
-            reason_code = reason_code or "execution_failed"
-        else:
-            status = "failed"
-            reason_code = reason_code or "missing_report_linkage"
-
-    if status == "available" and not report_exists:
-        status = "failed"
-        reason_code = "missing_report_linkage"
-
-    reason_human = _trim_text(diag.get("report_reason_human"), max_len=320)
-    if not reason_human:
-        reason_human = _report_reason_human(reason_code)
-
-    next_step = _trim_text(diag.get("next_expected_step"), max_len=320)
-    if not next_step:
-        next_step = _report_next_step(reason_code)
-
-    model_used = (
-        _trim_text(diag.get("llm_model_used"), max_len=120)
-        or _trim_text(diag.get("llm_model"), max_len=120)
-        or _trim_text(generation_obj.get("model"), max_len=120)
-        or _trim_text(model_hint, max_len=120)
-        or "not_captured"
+    return _status_normalize_ai_report_diagnostics(
+        raw,
+        report_exists=report_exists,
+        lifecycle_status=lifecycle_status,
+        story_type=story_type,
+        model_hint=model_hint,
+        generation=generation,
     )
-    provider = _trim_text(diag.get("llm_provider"), max_len=64) or "OpenRouter"
-
-    generation_attempted = bool(diag.get("generation_attempted"))
-    if not generation_attempted and str(generation_obj.get("status") or "").strip():
-        generation_attempted = True
-    generation_ts = _trim_text(diag.get("generation_ts"), max_len=64)
-    last_error_message = _trim_text(diag.get("last_error_message"), max_len=260)
-    if not last_error_message and status == "failed":
-        last_error_message = _trim_text(generation_obj.get("reason"), max_len=260)
-
-    story_input_available = bool(diag.get("story_input_available")) if "story_input_available" in diag else True
-    report_output_available = (
-        bool(diag.get("report_output_available"))
-        if "report_output_available" in diag
-        else bool(diag.get("report_artifact_available"))
-        if "report_artifact_available" in diag
-        else report_exists
-    )
-
-    return {
-        "report_status": status,
-        "report_status_label": _report_status_label(status),
-        "report_status_badge_class": _report_status_badge_class(status),
-        "report_reason_code": reason_code,
-        "report_reason_human": reason_human,
-        "generation_attempted": generation_attempted,
-        "generation_ts": generation_ts,
-        "story_input_available": story_input_available,
-        "report_output_available": report_output_available,
-        "report_artifact_available": report_output_available,
-        "llm_provider": provider,
-        "llm_model_used": model_used,
-        "expected_generation_mode": _trim_text(diag.get("expected_generation_mode"), max_len=120) or "per-trade free model report",
-        "next_expected_step": next_step,
-        "last_error_message": last_error_message,
-    }
 
 
 def _short_run_id(run_id: Any) -> str:
@@ -920,6 +659,11 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
         strategist_llm_response_path = _existing_trade_path(paths, "strategist_llm_response_json")
         ai_trade_report_llm_response_path = _existing_trade_path(paths, "ai_trade_report_llm_response_json")
         brief_llm_response_path = _existing_trade_path(paths, "brief_llm_response_json")
+        trade_provenance_path = _existing_trade_path(paths, "trade_provenance_json")
+        trade_health_path = _existing_trade_path(paths, "trade_health_json")
+        trade_artifact_links_path = _existing_trade_path(paths, "trade_artifact_links_json")
+        trade_provenance = _read_json(trade_provenance_path) if trade_provenance_path.exists() else {}
+        trade_health = _read_json(trade_health_path) if trade_health_path.exists() else {}
         report = _read_json(report_json_path)
         executive = report.get("executive_summary") if isinstance(report.get("executive_summary"), dict) else {}
         reporter_eval = report.get("reporter_evaluation") if isinstance(report.get("reporter_evaluation"), dict) else {}
@@ -964,6 +708,8 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
             if isinstance(bundle.get("ai_report_diagnostics"), dict)
             else lifecycle.get("ai_report_diagnostics")
             if isinstance(lifecycle.get("ai_report_diagnostics"), dict)
+            else trade_health.get("ai_report_diagnostics")
+            if isinstance(trade_health.get("ai_report_diagnostics"), dict)
             else {}
         )
         diagnostics = _normalize_ai_report_diagnostics(
@@ -1019,6 +765,14 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
             "strategist_llm_response_path": str(strategist_llm_response_path) if strategist_llm_response_path.exists() else "",
             "ai_trade_report_llm_response_path": str(ai_trade_report_llm_response_path) if ai_trade_report_llm_response_path.exists() else "",
             "brief_llm_response_path": str(brief_llm_response_path) if brief_llm_response_path.exists() else "",
+            "trade_provenance_json_path": str(trade_provenance_path) if trade_provenance_path.exists() else "",
+            "trade_health_json_path": str(trade_health_path) if trade_health_path.exists() else "",
+            "trade_artifact_links_json_path": str(trade_artifact_links_path) if trade_artifact_links_path.exists() else "",
+            "section_provenance": (
+                dict(trade_provenance.get("section_provenance") or {})
+                if isinstance(trade_provenance, dict)
+                else {}
+            ),
             "aggregated_bundle_path": str(bundle_path),
             "trade_root_path": str(paths.get("trade_root") or ""),
             "ts_epoch": ts_epoch,
@@ -1824,47 +1578,20 @@ def load_recent_runs(
 
 
 OPERATOR_BRIEF_REQUIRED_KEYS = [
-    "headline",
-    "commander_summary",
-    "strategist_summary",
-    "scanner_summary",
-    "monitor_summary",
-    "supervisor_summary",
-    "executor_summary",
-    "reporter_summary",
-    "operator_takeaways",
+    *list(BRIEF_REQUIRED_KEYS_MODULE),
 ]
 
 
 def _operator_brief_parse_meta(raw: Any, parsed: Dict[str, Any] | None) -> Dict[str, Any]:
-    result = parse_llm_json_response(raw)
-    candidate = parsed if isinstance(parsed, dict) else {}
-    key_meta = required_key_metadata(candidate, OPERATOR_BRIEF_REQUIRED_KEYS)
-    parse_mode = "none"
-    if bool(result.get("is_full")):
-        parse_mode = "full"
-    elif bool(result.get("is_partial")):
-        parse_mode = "partial"
-    return {
-        "parse_mode": parse_mode,
-        **key_meta,
-        "trailing_text": str(result.get("trailing_text") or ""),
-        "raw_nonempty": bool(result.get("raw_nonempty")),
-        "parse_error": str(result.get("error") or ""),
-    }
+    return _brief_parse_meta(raw, parsed)
 
 
 def _operator_brief_is_complete(parsed: Dict[str, Any]) -> bool:
-    meta = required_key_metadata(parsed, OPERATOR_BRIEF_REQUIRED_KEYS)
-    return not bool(meta.get("required_keys_missing"))
+    return _brief_is_complete(parsed)
 
 
 def _is_retryable_brief_failure(status: str, reason: str = "") -> bool:
-    status_text = str(status or "").strip().lower()
-    reason_text = str(reason or "").strip().lower()
-    if status_text in {"timeout", "network_error", "empty_response"}:
-        return True
-    return "429" in reason_text or "rate" in reason_text
+    return _brief_is_retryable_failure(status, reason)
 
 
 def _latest_evidence(rows: List[Dict[str, Any]], *, agent: str, stage: str) -> Dict[str, Any]:
@@ -4543,6 +4270,10 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "strategist_llm_response_path": str(trade_report_meta.get("strategist_llm_response_path") or ""),
             "ai_trade_report_llm_response_path": str(trade_report_meta.get("ai_trade_report_llm_response_path") or ""),
             "brief_llm_response_path": str(trade_report_meta.get("brief_llm_response_path") or ""),
+            "trade_provenance_json_path": str(trade_report_meta.get("trade_provenance_json_path") or ""),
+            "trade_health_json_path": str(trade_report_meta.get("trade_health_json_path") or ""),
+            "trade_artifact_links_json_path": str(trade_report_meta.get("trade_artifact_links_json_path") or ""),
+            "section_provenance": dict(trade_report_meta.get("section_provenance") or {}) if isinstance(trade_report_meta.get("section_provenance"), dict) else {},
             "symbol": str(trade_report_meta.get("symbol") or primary_symbol or ""),
             "action": str(trade_report_meta.get("action") or normalized_execution.get("action") or ""),
             "missing_reason": str(trade_report_meta.get("report_reason_human") or ai_diag.get("report_reason_human") or ""),
@@ -4615,6 +4346,10 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "strategist_llm_response_path": "",
             "ai_trade_report_llm_response_path": "",
             "brief_llm_response_path": "",
+            "trade_provenance_json_path": "",
+            "trade_health_json_path": "",
+            "trade_artifact_links_json_path": "",
+            "section_provenance": {},
             "symbol": primary_symbol or str(normalized_execution.get("symbol") or scanner_summary.get("top_stock") or ""),
             "action": str(normalized_execution.get("action") or ""),
             "missing_reason": str(ai_diag.get("report_reason_human") or "No linked trade report for this run."),

@@ -29,6 +29,11 @@ Downstream readers should prefer:
 ## Reporting impact
 - `scripts/run_live_execution_bundle_report.py` now prefers canonical agent artifacts when building run snapshots and lifecycle bundles.
 - `libs/reporting/trade_story_pipeline.py` carries canonical artifact references and provenance into trade story input.
+- Trade-scope evidence metadata is additive under `reports/trades/<day>/<trade_id>/`:
+  - `_provenance.json`
+  - `_health.json`
+  - `_artifact_links.json`
+- Existing `report/trades` report files remain unchanged for backward compatibility.
 
 ## Operator UI impact
 - `apps/operator_ui/data_access.py` now loads canonical run artifacts first through small adapters.
@@ -41,3 +46,8 @@ Downstream payloads now carry lightweight provenance metadata such as:
 - `event_log`
 
 This keeps backward compatibility while making missing-source vs source-backed reasoning explicit.
+
+## LLM Narrative Boundary
+- Canonical artifacts are source-of-truth for decisions.
+- LLM outputs (trade report, brief, daily summary) are narrative outputs that must read source evidence first.
+- Partial/salvaged/fallback LLM states are explicit in artifacts and must not be treated as full success.

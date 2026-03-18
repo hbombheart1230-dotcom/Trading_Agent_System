@@ -150,7 +150,50 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
     normalized_conclusion = dict(final_conclusion)
     normalized_conclusion["current_action"] = "HOLD" if status_text.lower() == "open" and action == "BUY" else action
     out["final_operator_conclusion"] = normalized_conclusion
+    if "section_provenance" not in out:
+        out["section_provenance"] = _report_section_provenance(story_input)
+    if "evidence_source" not in out:
+        out["evidence_source"] = str(story_input.get("evidence_source") or "fallback")
     return out
+
+
+def _normalize_provenance_entry(entry: Any) -> Dict[str, str]:
+    row = entry if isinstance(entry, dict) else {}
+    source = str(row.get("source") or "fallback").strip().lower()
+    path = str(row.get("artifact_path") or "").strip()
+    confidence = str(row.get("confidence") or "").strip().lower()
+    if confidence not in {"high", "medium", "low"}:
+        if source == "canonical":
+            confidence = "high"
+        elif source in {"direct_artifact", "direct"}:
+            confidence = "medium"
+        else:
+            confidence = "low"
+    return {
+        "source": source or "fallback",
+        "artifact_path": path,
+        "confidence": confidence,
+    }
+
+
+def _report_section_provenance(story_input: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    source = story_input.get("section_provenance") if isinstance(story_input.get("section_provenance"), dict) else {}
+    fallback = _normalize_provenance_entry({"source": "fallback", "artifact_path": "", "confidence": "low"})
+    return {
+        "executive_summary": _normalize_provenance_entry(source.get("operator_conclusion_human") or fallback),
+        "market_context_at_entry": _normalize_provenance_entry(source.get("market_context_human") or fallback),
+        "why_this_symbol_was_chosen": _normalize_provenance_entry(source.get("scanner_reason_human") or fallback),
+        "entry_decision": _normalize_provenance_entry(source.get("scanner_reason_human") or fallback),
+        "holding_monitoring_story": _normalize_provenance_entry(source.get("monitor_reason_human") or fallback),
+        "exit_decision": _normalize_provenance_entry(source.get("monitor_reason_human") or fallback),
+        "execution_quality": _normalize_provenance_entry(source.get("execution_outcome_human") or fallback),
+        "scanner_filters": _normalize_provenance_entry(source.get("filters_human") or fallback),
+        "guard_approval_result": _normalize_provenance_entry(source.get("guard_reason_human") or fallback),
+        "reporter_evaluation": _normalize_provenance_entry(source.get("reporter_status_human") or fallback),
+        "errors_weaknesses_improvement_points": _normalize_provenance_entry(source.get("reporter_status_human") or fallback),
+        "full_timeline": _normalize_provenance_entry(source.get("timeline") or fallback),
+        "final_operator_conclusion": _normalize_provenance_entry(source.get("operator_conclusion_human") or fallback),
+    }
 
 
 def _contains_hangul(value: Any) -> bool:
@@ -607,7 +650,7 @@ def _failure_report(
     out["scanner_logic_and_filters"] = dict(out.get("scanner_filters") or {})
     out["monitor_trigger_reasoning"] = dict(out.get("holding_monitoring_story") or {})
     out["execution_result"] = dict(out.get("execution_quality") or {})
-    return out
+    return _normalize_trade_report_output(story_input, out)
 
 
 def _build_repair_messages(story_input: Dict[str, Any], raw_response: Any) -> List[Dict[str, str]]:
@@ -1123,6 +1166,24 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         lines.append(
             f"- reason: {generation.get('reason') or 'The report was reconstructed from a repaired or partial LLM response.'}"
         )
+        lines.append("")
+    section_provenance = report.get("section_provenance") if isinstance(report.get("section_provenance"), dict) else {}
+    if section_provenance:
+        lines.append("## Evidence Provenance")
+        lines.append("")
+        for section_key in (
+            "market_context_at_entry",
+            "why_this_symbol_was_chosen",
+            "holding_monitoring_story",
+            "execution_quality",
+            "reporter_evaluation",
+        ):
+            entry = section_provenance.get(section_key) if isinstance(section_provenance.get(section_key), dict) else {}
+            lines.append(
+                f"- {section_key}: source={entry.get('source') or 'fallback'} "
+                f"confidence={entry.get('confidence') or 'low'} "
+                f"path={entry.get('artifact_path') or '-'}"
+            )
         lines.append("")
     if monitor_snapshot:
         lines.append("## Monitor Snapshot")

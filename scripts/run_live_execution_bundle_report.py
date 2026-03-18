@@ -1467,6 +1467,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "trade_report_json_path": "",
                 "trade_report_md_path": "",
                 "trade_lifecycle_json_path": "",
+                "trade_provenance_json_path": "",
+                "trade_health_json_path": "",
+                "trade_artifact_links_json_path": "",
                 "trade_report_summary": "",
                 "report_status": "failed",
                 "report_reason_code": "missing_report_linkage",
@@ -1641,6 +1644,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         strategist_evidence_path = trade_paths["strategist_evidence_json"]
         scanner_evidence_path = trade_paths["scanner_evidence_json"]
         monitor_timeline_path = trade_paths["monitor_timeline_json"]
+        trade_provenance_path = trade_paths["trade_provenance_json"]
+        trade_health_path = trade_paths["trade_health_json"]
+        trade_artifact_links_path = trade_paths["trade_artifact_links_json"]
 
         strategist_evidence, scanner_evidence, monitor_timeline = _build_trade_evidence_from_events(
             event_rows=day_event_rows,
@@ -1711,7 +1717,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         lifecycle["ai_report_diagnostics"] = dict(diagnostics)
         lifecycle["evidence_artifacts"] = dict(lifecycle.get("evidence") or {})
+        lifecycle["section_provenance"] = dict(trade_story_input.get("section_provenance") or {})
         lifecycle_bundle["ai_report_diagnostics"] = dict(diagnostics)
+        lifecycle_bundle["section_provenance"] = dict(trade_story_input.get("section_provenance") or {})
         lifecycle_bundle["evidence"] = {
             "strategist": strategist_evidence,
             "scanner": scanner_evidence,
@@ -1783,6 +1791,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "strategist_evidence_json": str(strategist_evidence_path),
                 "scanner_evidence_json": str(scanner_evidence_path),
                 "monitor_timeline_json": str(monitor_timeline_path),
+                "trade_provenance_json": str(trade_provenance_path),
+                "trade_health_json": str(trade_health_path),
+                "trade_artifact_links_json": str(trade_artifact_links_path),
                 "brief_llm_response_json": "",
             }
         )
@@ -1797,11 +1808,67 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "strategist_llm_response_json": str(strategist_llm_response_path),
                 "trade_lifecycle_json": str(trade_lifecycle_path),
                 "aggregated_execution_bundle_json": str(aggregated_bundle_path),
+                "trade_provenance_json": str(trade_provenance_path),
+                "trade_health_json": str(trade_health_path),
+                "trade_artifact_links_json": str(trade_artifact_links_path),
             }
+
+        section_provenance = (
+            trade_story_input.get("section_provenance")
+            if isinstance(trade_story_input.get("section_provenance"), dict)
+            else {}
+        )
+        trade_provenance_payload = {
+            "schema_version": "trade_provenance.v1",
+            "trade_id": trade_id,
+            "run_id": anchor_run_id,
+            "day": day,
+            "lifecycle_status": status,
+            "evidence_source": str(trade_story_input.get("evidence_source") or "fallback"),
+            "agent_sources": dict(lifecycle_bundle.get("evidence_provenance") or {}),
+            "section_provenance": dict(section_provenance),
+            "canonical_agent_artifact_paths": {
+                key: str(value or "")
+                for key, value in dict(lifecycle_bundle.get("artifacts") or {}).items()
+                if str(key).startswith("canonical_") and str(key).endswith("_json")
+            },
+        }
+        trade_health_payload = {
+            "schema_version": "trade_health.v1",
+            "trade_id": trade_id,
+            "run_id": anchor_run_id,
+            "day": day,
+            "lifecycle_status": status,
+            "ai_report_diagnostics": dict(diagnostics),
+            "report_generation": dict(trade_report.get("generation") or {}) if isinstance(trade_report, dict) else {},
+            "llm_response_status": str(ai_trade_report_llm_artifact.get("status") or ""),
+            "llm_parse_mode": str(ai_trade_report_llm_artifact.get("parse_mode") or ""),
+            "llm_completeness_score": float(ai_trade_report_llm_artifact.get("completeness_score") or 0.0),
+            "llm_required_keys_missing": [str(x or "") for x in list(ai_trade_report_llm_artifact.get("required_keys_missing") or []) if str(x or "").strip()],
+            "evidence_counts": {
+                "strategist_events": int((lifecycle.get("evidence") or {}).get("strategist_event_count") or 0),
+                "scanner_events": int((lifecycle.get("evidence") or {}).get("scanner_event_count") or 0),
+                "monitor_events": int((lifecycle.get("evidence") or {}).get("monitor_event_count") or 0),
+            },
+        }
+        trade_artifact_links_payload = {
+            "schema_version": "trade_artifact_links.v1",
+            "trade_id": trade_id,
+            "run_id": anchor_run_id,
+            "day": day,
+            "links": {
+                key: str(value or "")
+                for key, value in dict(lifecycle_bundle.get("artifacts") or {}).items()
+                if str(value or "").strip()
+            },
+        }
 
         write_json(trade_lifecycle_path, lifecycle)
         write_json(story_input_path, trade_story_input)
         write_json(aggregated_bundle_path, lifecycle_bundle)
+        write_json(trade_provenance_path, trade_provenance_payload)
+        write_json(trade_health_path, trade_health_payload)
+        write_json(trade_artifact_links_path, trade_artifact_links_payload)
 
         # Compatibility mirrors for existing readers and older UI/report paths.
         _write_legacy_json(trade_paths["legacy_trade_lifecycle_json"], lifecycle)
@@ -1838,6 +1905,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "strategist_evidence_json_path": str(strategist_evidence_path),
                 "scanner_evidence_json_path": str(scanner_evidence_path),
                 "monitor_timeline_json_path": str(monitor_timeline_path),
+                "trade_provenance_json_path": str(trade_provenance_path),
+                "trade_health_json_path": str(trade_health_path),
+                "trade_artifact_links_json_path": str(trade_artifact_links_path),
                 "trade_root_path": str(trade_root),
                 "trade_report_summary": str((trade_report.get("executive_summary") or {}).get("summary") or ""),
                 "report_status": str(diagnostics.get("report_status") or ""),
@@ -1866,6 +1936,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 row["strategist_evidence_json_path"] = str(strategist_evidence_path)
                 row["scanner_evidence_json_path"] = str(scanner_evidence_path)
                 row["monitor_timeline_json_path"] = str(monitor_timeline_path)
+                row["trade_provenance_json_path"] = str(trade_provenance_path)
+                row["trade_health_json_path"] = str(trade_health_path)
+                row["trade_artifact_links_json_path"] = str(trade_artifact_links_path)
                 row["trade_root_path"] = str(trade_root)
                 row["trade_report_summary"] = str((trade_report.get("executive_summary") or {}).get("summary") or "")
                 row["report_status"] = str(diagnostics.get("report_status") or "")

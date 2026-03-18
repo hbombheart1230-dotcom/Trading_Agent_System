@@ -6,6 +6,7 @@ from typing import Any, Dict, List, TypedDict
 
 
 AGENT_OUTPUT_SCHEMA_VERSION = "agent_output.v1"
+AGENT_VALIDATION_SCHEMA_VERSION = "agent_output_validation.v1"
 
 
 class AgentOutput(TypedDict, total=False):
@@ -18,6 +19,7 @@ class AgentOutput(TypedDict, total=False):
     status: str
     evidence_refs: Dict[str, Any]
     source_refs: Dict[str, Any]
+    validation: Dict[str, Any]
 
 
 def _utc_now_iso() -> str:
@@ -86,6 +88,111 @@ def _base_output(state: Dict[str, Any], *, agent: str, symbol: str = "", status:
         "phase": _phase(state),
         "symbol": str(symbol or "").strip(),
         "status": str(status or "ok").strip(),
+    }
+
+
+def _is_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return True
+
+
+def _required_keys_for_agent(agent: str) -> List[str]:
+    base = ["schema_version", "agent", "run_id", "ts", "phase", "status"]
+    specific: Dict[str, List[str]] = {
+        "strategist": [
+            "market_regime",
+            "market_context_summary",
+            "news_evidence_summary",
+            "sentiment_evidence_summary",
+            "volatility_context",
+            "strategy_thesis",
+            "playbook",
+            "llm_metadata_summary",
+            "source_refs",
+        ],
+        "scanner": [
+            "universe_size",
+            "candidate_list_summary",
+            "ranking_table",
+            "selected_symbol",
+            "selected_rank",
+            "selection_reason",
+            "filter_feature_summary",
+            "evidence_refs",
+        ],
+        "monitor": [
+            "position_snapshot",
+            "thresholds_guards_used",
+            "evaluation_summary",
+            "decision",
+            "decision_reason_chain",
+            "trigger_details",
+            "evidence_refs",
+        ],
+        "supervisor": [
+            "invoked_agents",
+            "command",
+            "decision",
+            "approval_result",
+            "reason",
+            "blocked_allowed_details",
+        ],
+        "executor": [
+            "action",
+            "order_request_summary",
+            "execution_enabled",
+            "approval_mode",
+            "broker_result",
+            "final_execution_status",
+            "failure_reason",
+        ],
+        "commander": [
+            "mode",
+            "phase",
+            "path",
+            "invoked_agents",
+            "command",
+            "decision",
+            "approval_result",
+            "reason",
+            "blocked_allowed_details",
+        ],
+    }
+    out = list(base)
+    out.extend(list(specific.get(str(agent or "").strip().lower(), [])))
+    return out
+
+
+def validate_artifact(artifact: Dict[str, Any]) -> Dict[str, Any]:
+    obj = dict(artifact or {}) if isinstance(artifact, dict) else {}
+    agent = str(obj.get("agent") or "").strip().lower()
+    expected = _required_keys_for_agent(agent)
+    present: List[str] = []
+    missing: List[str] = []
+    for key in expected:
+        if _is_present(obj.get(key)):
+            present.append(key)
+        else:
+            missing.append(key)
+    completeness = float(len(present)) / float(len(expected)) if expected else 1.0
+    if not missing:
+        status = "ok"
+    elif not present:
+        status = "invalid"
+    else:
+        status = "partial"
+    return {
+        "schema_version": AGENT_VALIDATION_SCHEMA_VERSION,
+        "status": status,
+        "required_keys_expected": expected,
+        "required_keys_present": present,
+        "required_keys_missing": missing,
+        "completeness_score": completeness,
     }
 
 
@@ -177,6 +284,7 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "playbook_summary": summary,
         }
     )
+    artifact["validation"] = validate_artifact(artifact)
     return artifact
 
 
@@ -264,6 +372,7 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "candidate_preview": candidate_preview,
         }
     )
+    artifact["validation"] = validate_artifact(artifact)
     return artifact
 
 
@@ -339,6 +448,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),
         }
     )
+    artifact["validation"] = validate_artifact(artifact)
     return artifact
 
 
@@ -376,6 +486,7 @@ def build_supervisor_output_artifact(
             "strategy_policy_summary": _dict(strategy_policy_summary),
         }
     )
+    artifact["validation"] = validate_artifact(artifact)
     return artifact
 
 
@@ -427,6 +538,7 @@ def build_executor_output_artifact(
             "strategy_policy_summary": _dict(execution.get("strategy_policy_summary")),
         }
     )
+    artifact["validation"] = validate_artifact(artifact)
     return artifact
 
 
@@ -459,4 +571,5 @@ def build_commander_output_artifact(
             },
         }
     )
+    artifact["validation"] = validate_artifact(artifact)
     return artifact

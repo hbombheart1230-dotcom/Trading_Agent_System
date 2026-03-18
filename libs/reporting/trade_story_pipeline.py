@@ -49,6 +49,88 @@ def format_exit_label(value: Any) -> str:
     return " ".join(part.capitalize() for part in text.split())
 
 
+def _source_confidence_label(source: Any) -> str:
+    raw = str(source or "").strip().lower()
+    if raw == "canonical":
+        return "high"
+    if raw in {"direct_artifact", "direct"}:
+        return "medium"
+    if raw in {"event_log", "fallback", "inferred"}:
+        return "low"
+    return "low"
+
+
+def _section_source_entry(
+    *,
+    source: str,
+    artifact_path: str = "",
+) -> Dict[str, str]:
+    return {
+        "source": str(source or "fallback"),
+        "artifact_path": str(artifact_path or ""),
+        "confidence": _source_confidence_label(source),
+    }
+
+
+def build_section_provenance(bundle_out: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    artifacts = bundle_out.get("artifacts") if isinstance(bundle_out.get("artifacts"), dict) else {}
+    evidence_provenance = (
+        bundle_out.get("evidence_provenance") if isinstance(bundle_out.get("evidence_provenance"), dict) else {}
+    )
+
+    def _agent_source(agent: str) -> str:
+        return str(evidence_provenance.get(agent) or "fallback").strip().lower()
+
+    def _agent_path(agent: str) -> str:
+        canonical_key = f"canonical_{agent}_json"
+        canonical_path = str(artifacts.get(canonical_key) or "").strip()
+        if canonical_path:
+            return canonical_path
+        if agent == "reporter":
+            return str(artifacts.get("reporter_analysis_json") or "").strip()
+        return str(artifacts.get("agent_pipeline_trace_json") or "").strip()
+
+    strategist_entry = _section_source_entry(
+        source=_agent_source("strategist"),
+        artifact_path=_agent_path("strategist"),
+    )
+    scanner_entry = _section_source_entry(
+        source=_agent_source("scanner"),
+        artifact_path=_agent_path("scanner"),
+    )
+    monitor_entry = _section_source_entry(
+        source=_agent_source("monitor"),
+        artifact_path=_agent_path("monitor"),
+    )
+    supervisor_entry = _section_source_entry(
+        source=_agent_source("supervisor"),
+        artifact_path=_agent_path("supervisor"),
+    )
+    executor_entry = _section_source_entry(
+        source=_agent_source("executor"),
+        artifact_path=_agent_path("executor"),
+    )
+    reporter_entry = _section_source_entry(
+        source=_agent_source("reporter"),
+        artifact_path=_agent_path("reporter"),
+    )
+    commander_entry = _section_source_entry(
+        source=_agent_source("commander"),
+        artifact_path=_agent_path("commander"),
+    )
+    return {
+        "market_context_human": strategist_entry,
+        "scanner_reason_human": scanner_entry,
+        "filters_human": scanner_entry,
+        "monitor_reason_human": monitor_entry,
+        "guard_reason_human": supervisor_entry,
+        "execution_outcome_human": executor_entry,
+        "reporter_status_human": reporter_entry,
+        "operator_conclusion_human": commander_entry,
+        "timeline": commander_entry,
+    }
+
+
 def slug(value: Any, *, max_len: int = 80) -> str:
     text = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(value or "").strip()).strip("_")
     if not text:
@@ -651,6 +733,7 @@ def build_trade_story_input(
     trade_lifecycle: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     story_contract = bundle_out.get("story_contract") if isinstance(bundle_out.get("story_contract"), dict) else {}
+    section_provenance = build_section_provenance(bundle_out)
     lifecycle = (
         trade_lifecycle
         if isinstance(trade_lifecycle, dict)
@@ -782,6 +865,7 @@ def build_trade_story_input(
             "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
             "canonical_agent_artifacts": dict(bundle_out.get("canonical_agent_artifacts") or {}),
             "evidence_provenance": dict(bundle_out.get("evidence_provenance") or {}),
+            "section_provenance": dict(section_provenance),
             "evidence_source": "canonical" if any(
                 str(source or "").strip().lower() == "canonical"
                 for source in dict(bundle_out.get("evidence_provenance") or {}).values()
@@ -815,6 +899,7 @@ def build_trade_story_input(
         "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
         "canonical_agent_artifacts": dict(bundle_out.get("canonical_agent_artifacts") or {}),
         "evidence_provenance": dict(bundle_out.get("evidence_provenance") or {}),
+        "section_provenance": dict(section_provenance),
         "evidence_source": "canonical" if any(
             str(source or "").strip().lower() == "canonical"
             for source in dict(bundle_out.get("evidence_provenance") or {}).values()

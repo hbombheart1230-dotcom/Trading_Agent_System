@@ -13,6 +13,7 @@ from libs.contracts.agent_outputs import (
     build_scanner_output_artifact,
     build_strategist_output_artifact,
     build_supervisor_output_artifact,
+    validate_artifact,
 )
 
 
@@ -64,9 +65,16 @@ def canonical_run_artifact_paths(
     }
 
 
+def _with_validation(payload: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(payload or {}) if isinstance(payload, dict) else {}
+    if not isinstance(out.get("validation"), dict):
+        out["validation"] = validate_artifact(out)
+    return out
+
+
 def _write_artifact(path: Path, payload: Dict[str, Any]) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(_with_validation(payload), ensure_ascii=False, indent=2), encoding="utf-8")
     return str(path)
 
 

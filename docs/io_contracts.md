@@ -15,6 +15,17 @@
   2. direct run/trade artifact
   3. event log / inferred fallback
 
+### Canonical Artifact Validation Metadata
+- Every canonical artifact includes additive `validation` metadata.
+- Contract:
+  - `status`: `ok | partial | invalid`
+  - `required_keys_expected[]`
+  - `required_keys_present[]`
+  - `required_keys_missing[]`
+  - `completeness_score` (0.0~1.0)
+  - `schema_version` (e.g. `agent_output_validation.v1`)
+- Artifact emission is never blocked by validation; missing fields should be emitted as null/empty with partial status.
+
 ## RunConfig (Supervisor output)
 - `goal`, `scan_interval_sec`, `monitor_interval_sec`, `report_interval_sec`
 - `risk.daily_loss_limit`, `risk.per_trade_limit`, `risk.max_positions`, `risk.cooldown`
@@ -305,6 +316,17 @@
     - `timestamp`
   - `ai_review.fallback_enriched`
     - `true` when deterministic evidence backfills otherwise-empty AI findings/root causes/improvements
+
+## Trade Narrative Provenance (report/trades)
+- Trade-story and AI trade report inputs can include `section_provenance`:
+  - section key -> `{source, artifact_path, confidence}`
+  - `source`: `canonical | direct_artifact | event_log | fallback`
+  - `confidence`: `high | medium | low`
+- Additive trade metadata files under `reports/trades/<day>/<trade_id>/`:
+  - `_provenance.json`
+  - `_health.json`
+  - `_artifact_links.json`
+- Existing trade report/brief/lifecycle files and legacy mirrors stay backward-compatible.
 
 ## StrategyFeedbackRecord (`strategy_feedback.v1`)
 - File: `data/strategy_memory/feedback.jsonl` (`STRATEGY_MEMORY_PATH` override)
