@@ -550,6 +550,41 @@ def test_operator_ui_runs_support_trade_and_monitoring_filters(tmp_path: Path, m
     assert "integrated_chain_monitor_only" in monitoring.text
 
 
+def test_operator_ui_trades_filter_looks_across_latest_day_not_just_latest_limit(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
+    cfg = _make_config(tmp_path)
+    events_path = cfg.event_log_path
+    rows = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows.extend(
+        [
+            {"run_id": "run-trade", "ts": "2026-03-16T00:05:00+00:00", "stage": "commander_router", "event": "route", "payload": {"mode": "integrated_chain", "phase": "session", "agents": ["monitor", "executor"]}},
+            {"run_id": "run-trade", "ts": "2026-03-16T00:05:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"allowed": True, "order": {"action": "BUY", "symbol": "000660", "qty": 1, "ord_qty": "1"}, "payload": {"order_id": "A0004", "broker_message": "EXECUTED_OK", "response_payload": {"ord_no": "A0004", "return_msg": "EXECUTED_OK"}}}},
+        ]
+    )
+    for idx in range(60):
+        rid = f"run-monitor-{idx:02d}"
+        minute = 10 + idx
+        rows.extend(
+            [
+                {"run_id": rid, "ts": f"2026-03-16T01:{minute:02d}:00+00:00", "stage": "commander_router", "event": "route", "payload": {"mode": "integrated_chain", "phase": "session", "agents": ["monitor", "executor"]}},
+                {"run_id": rid, "ts": f"2026-03-16T01:{minute:02d}:01+00:00", "stage": "commander_router", "event": "fast_path", "payload": {"path": "integrated_chain_monitor_only", "enabled": True, "open_position_count": 1}},
+                {"run_id": rid, "ts": f"2026-03-16T01:{minute:02d}:02+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "hold", "exit_reason": "hold", "selected_symbol": "005930"}},
+                {"run_id": rid, "ts": f"2026-03-16T01:{minute:02d}:03+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": False, "reason": "noop_intent_skipped"}},
+                {"run_id": rid, "ts": f"2026-03-16T01:{minute:02d}:04+00:00", "stage": "commander_router", "event": "end", "payload": {"status": "ok", "path": "integrated_chain_monitor_only"}},
+            ]
+        )
+    _write_jsonl(events_path, rows)
+
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    trades = client.get("/runs?activity_view=trades&limit=10")
+    assert trades.status_code == 200
+    assert "run-trade" in trades.text
+    assert "BUY EXECUTED_OK" in trades.text
+
+
 def test_operator_ui_run_detail_repairs_non_json_llm_output(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _RepairRouter()))
     monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")

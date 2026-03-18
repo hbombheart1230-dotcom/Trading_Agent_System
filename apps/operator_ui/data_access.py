@@ -1540,7 +1540,12 @@ def load_recent_runs(
 ) -> List[Dict[str, Any]]:
     rows = list(_iter_jsonl(config.event_log_path))
     route_rows = [row for row in rows if str(row.get("stage") or "") == "commander_router" and str(row.get("event") or "") == "route"]
-    route_rows = sorted(route_rows, key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)[: max(1, int(limit))]
+    route_rows = sorted(route_rows, key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)
+    latest_day = _latest_event_day(config.event_log_path)
+    if activity_view == "trades" and latest_day:
+        day_filtered = [row for row in route_rows if _event_day(row.get("ts")) == latest_day]
+        if day_filtered:
+            route_rows = day_filtered
     target_run_ids = {str(row.get("run_id") or "").strip() for row in route_rows if str(row.get("run_id") or "").strip()}
     grouped: Dict[str, List[Dict[str, Any]]] = {rid: [] for rid in target_run_ids}
     report_index = _trade_report_index(config)
@@ -1742,6 +1747,8 @@ def load_recent_runs(
         if activity_view == "monitoring" and row.get("activity_kind") != "monitoring":
             continue
         out.append(row)
+        if activity_view != "trades" and len(out) >= max(1, int(limit)):
+            break
     return out
 
 
