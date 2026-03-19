@@ -53,6 +53,10 @@ def test_audit_reports_trades_health_flags_partial_and_mismatch(tmp_path: Path) 
             "status": "fallback",
             "parse_mode": "none",
             "raw_response_text": "",
+            "meta": {
+                "synthetic_placeholder": True,
+                "reason_code": "no_linked_strategist_llm_evidence",
+            },
         },
     )
 
@@ -61,11 +65,11 @@ def test_audit_reports_trades_health_flags_partial_and_mismatch(tmp_path: Path) 
     assert out["trade_dir_count"] == 1
     assert out["llm_status_counts"]["ai_trade_report:salvaged"] == 1
     assert out["llm_status_counts"]["brief:error"] == 1
-    assert out["llm_status_counts"]["strategist:fallback"] == 1
+    assert out["llm_status_counts"]["strategist:synthetic_placeholder"] == 1
     assert out["lifecycle_report_status_counts"]["failed"] == 1
     assert out["duplicate_counts"]["brief_llm_response:identical"] == 1
     assert out["issue_counts"]["llm_partial"] == 1
     assert out["issue_counts"]["llm_error"] == 1
-    assert out["issue_counts"]["llm_fallback"] == 1
+    assert out["issue_counts"].get("llm_fallback", 0) == 0
     assert out["issue_counts"]["diagnostic_status_mismatch"] == 1
     assert out["issue_counts"]["sidecar_missing"] == 3

@@ -6,6 +6,13 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
+from libs.ai.strategist_config import (
+    strategist_api_key,
+    strategist_endpoint,
+    strategist_max_tokens,
+    strategist_model,
+    strategist_timeout_sec,
+)
 from libs.llm.json_response import extract_json_object_loose, strip_fenced_code_block
 from libs.llm.model_names import normalize_openrouter_model_name
 
@@ -187,35 +194,13 @@ def _extract_usage(resp: Dict[str, Any]) -> Dict[str, int]:
     return out
 
 
-def _to_float_env(name: str, default: float) -> float:
-    raw = str(os.getenv(name, str(default)) or str(default)).strip()
-    try:
-        return float(raw)
-    except Exception:
-        return float(default)
-
-
 def _strategy_policy_text() -> str:
-    buy_th = _to_float_env("AI_STRATEGIST_BUY_THRESHOLD", 0.10)
-    sell_th = _to_float_env("AI_STRATEGIST_SELL_THRESHOLD", -0.10)
-    high_vol_abs_th = _to_float_env("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", 0.12)
-    news_buy_th = _to_float_env("AI_STRATEGIST_NEWS_BUY_THRESHOLD", 0.15)
-    news_sell_th = _to_float_env("AI_STRATEGIST_NEWS_SELL_THRESHOLD", -0.15)
-
     return (
-        "Action rubric: "
-        "Compute composite_score = "
-        "0.55*technical.signal_score + "
-        "0.20*clip(technical.ma20_gap,-0.20,0.20) + "
-        "0.20*news.symbol_sentiment_score + "
-        "0.05*news.global_sentiment_score. "
-        f"If open_positions==0 and composite_score >= {buy_th:.3f}, prefer BUY. "
-        f"If open_positions>0 and composite_score <= {sell_th:.3f}, prefer SELL. "
-        f"If regime==high_volatility, require abs(composite_score) >= {high_vol_abs_th:.3f} for BUY/SELL. "
-        f"If open_positions==0 and news.symbol_sentiment_score >= {news_buy_th:.3f}, allow small BUY (qty>=1) "
-        "unless clear risk_limit. "
-        f"If open_positions>0 and news.symbol_sentiment_score <= {news_sell_th:.3f}, prefer SELL. "
-        "If none of rules fire, return NOOP with reason model_no_signal."
+        "Decision policy: "
+        "Use only the evidence present in the provided snapshots. "
+        "Do not apply hidden threshold rubrics, score overrides, or deterministic fallback trading rules. "
+        "Prefer NOOP whenever evidence is incomplete, contradictory, weak, or not actionable. "
+        "BUY or SELL is allowed only when the evidence clearly supports a trade and the rationale can explain that chain."
     )
 
 @dataclass
@@ -282,8 +267,7 @@ class OpenAIStrategist:
             # OpenRouter often expects provider/model style names.
             if (not model) or ("/" not in model):
                 env_model = normalize_openrouter_model_name(
-                    (os.getenv("OPENROUTER_MODEL_STRATEGIST") or "").strip()
-                    or (os.getenv("OPENROUTER_DEFAULT_MODEL") or "").strip()
+                    (os.getenv("OPENROUTER_DEFAULT_MODEL") or "").strip()
                 )
                 if env_model:
                     model = env_model
@@ -291,30 +275,20 @@ class OpenAIStrategist:
 
     @classmethod
     def from_env(cls) -> "OpenAIStrategist":
-        api_key = (
-            (os.getenv("AI_STRATEGIST_API_KEY") or "").strip()
-            or (os.getenv("OPENROUTER_API_KEY") or "").strip()
-        )
-        endpoint = (os.getenv("AI_STRATEGIST_ENDPOINT") or "").strip()
-        model = normalize_openrouter_model_name(os.getenv("AI_STRATEGIST_MODEL") or "")
+        api_key = strategist_api_key()
+        endpoint = strategist_endpoint()
+        model = strategist_model()
         if not model:
             if _looks_like_chat_completions_endpoint(endpoint):
                 model = normalize_openrouter_model_name(
-                    (os.getenv("OPENROUTER_MODEL_STRATEGIST") or "").strip()
-                    or (os.getenv("OPENROUTER_DEFAULT_MODEL") or "").strip()
+                    (os.getenv("OPENROUTER_DEFAULT_MODEL") or "").strip()
                     or "openrouter/auto"
                 )
             else:
                 model = "gpt-4.1-mini"
-        timeout_sec = float(os.getenv("AI_STRATEGIST_TIMEOUT_SEC") or "15")
-        raw_max = (os.getenv("AI_STRATEGIST_MAX_TOKENS") or "").strip()
-        max_tokens: Optional[int] = None
-        if raw_max:
-            try:
-                v = int(raw_max)
-                max_tokens = v if v > 0 else None
-            except Exception:
-                max_tokens = None
+        timeout_sec = strategist_timeout_sec()
+        resolved_max_tokens = strategist_max_tokens()
+        max_tokens: Optional[int] = int(resolved_max_tokens) if int(resolved_max_tokens) > 0 else None
 
         raw_retry_max = (os.getenv("AI_STRATEGIST_RETRY_MAX") or "1").strip()
         retry_max = 1
@@ -329,26 +303,15 @@ class OpenAIStrategist:
             retry_backoff_sec = max(0.0, float(raw_backoff))
         except Exception:
             retry_backoff_sec = 0.5
-        prompt_version = (os.getenv("AI_STRATEGIST_PROMPT_VERSION") or "").strip() or DEFAULT_PROMPT_VERSION
-        schema_version = (os.getenv("AI_STRATEGIST_SCHEMA_VERSION") or "").strip() or DEFAULT_SCHEMA_VERSION
-        raw_prompt_cost = (os.getenv("AI_STRATEGIST_PROMPT_COST_PER_1K_USD") or "0").strip()
-        raw_completion_cost = (os.getenv("AI_STRATEGIST_COMPLETION_COST_PER_1K_USD") or "0").strip()
+        prompt_version = DEFAULT_PROMPT_VERSION
+        schema_version = DEFAULT_SCHEMA_VERSION
         raw_cb_fail_threshold = (os.getenv("AI_STRATEGIST_CB_FAIL_THRESHOLD") or str(DEFAULT_CB_FAIL_THRESHOLD)).strip()
         raw_cb_cooldown_sec = (os.getenv("AI_STRATEGIST_CB_COOLDOWN_SEC") or str(DEFAULT_CB_COOLDOWN_SEC)).strip()
-        raw_json_response_format = (os.getenv("AI_STRATEGIST_JSON_RESPONSE_FORMAT") or "true").strip().lower()
         prompt_cost_per_1k_usd = 0.0
         completion_cost_per_1k_usd = 0.0
         cb_fail_threshold = DEFAULT_CB_FAIL_THRESHOLD
         cb_cooldown_sec = DEFAULT_CB_COOLDOWN_SEC
-        json_response_format = raw_json_response_format not in ("0", "false", "no", "off")
-        try:
-            prompt_cost_per_1k_usd = max(0.0, float(raw_prompt_cost))
-        except Exception:
-            prompt_cost_per_1k_usd = 0.0
-        try:
-            completion_cost_per_1k_usd = max(0.0, float(raw_completion_cost))
-        except Exception:
-            completion_cost_per_1k_usd = 0.0
+        json_response_format = True
         try:
             cb_fail_threshold = max(0, int(raw_cb_fail_threshold))
         except Exception:

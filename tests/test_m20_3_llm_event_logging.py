@@ -36,10 +36,6 @@ def test_m20_3_llm_event_logged_on_success(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
     monkeypatch.setenv("AI_STRATEGIST_MODEL", "test-model")
     monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
-    monkeypatch.setenv("AI_STRATEGIST_PROMPT_VERSION", "pv-log")
-    monkeypatch.setenv("AI_STRATEGIST_SCHEMA_VERSION", "intent.v1-log")
-    monkeypatch.setenv("AI_STRATEGIST_PROMPT_COST_PER_1K_USD", "0.003")
-    monkeypatch.setenv("AI_STRATEGIST_COMPLETION_COST_PER_1K_USD", "0.015")
 
     def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
         return {
@@ -73,12 +69,12 @@ def test_m20_3_llm_event_logged_on_success(monkeypatch, tmp_path: Path):
     assert p.get("intent_action") == "BUY"
     assert isinstance(p.get("latency_ms"), int)
     assert p.get("attempts") == 1
-    assert p.get("prompt_version") == "pv-log"
-    assert p.get("schema_version") == "intent.v1-log"
+    assert p.get("prompt_version") == prov.DEFAULT_PROMPT_VERSION
+    assert p.get("schema_version") == prov.DEFAULT_SCHEMA_VERSION
     assert p.get("prompt_tokens") == 120
     assert p.get("completion_tokens") == 80
     assert p.get("total_tokens") == 200
-    assert abs(float(p.get("estimated_cost_usd") or 0.0) - 0.00156) < 1e-12
+    assert p.get("estimated_cost_usd") is None
 
 
 def test_m20_3_llm_event_logs_signal_status_fields(monkeypatch, tmp_path: Path):
@@ -136,8 +132,6 @@ def test_m20_3_llm_event_logged_on_error(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
     monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
     monkeypatch.setenv("AI_STRATEGIST_RETRY_BACKOFF_SEC", "0")
-    monkeypatch.setenv("AI_STRATEGIST_PROMPT_VERSION", "pv-log")
-    monkeypatch.setenv("AI_STRATEGIST_SCHEMA_VERSION", "intent.v1-log")
 
     def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
         raise TimeoutError("timeout")
@@ -160,8 +154,8 @@ def test_m20_3_llm_event_logged_on_error(monkeypatch, tmp_path: Path):
     assert p.get("intent_action") == "NOOP"
     assert p.get("intent_reason") == "strategist_error"
     assert p.get("error_type") in ("TimeoutError", "Exception")
-    assert p.get("prompt_version") == "pv-log"
-    assert p.get("schema_version") == "intent.v1-log"
+    assert p.get("prompt_version") == prov.DEFAULT_PROMPT_VERSION
+    assert p.get("schema_version") == prov.DEFAULT_SCHEMA_VERSION
 
 
 def test_m20_9_llm_event_logs_circuit_breaker_fields(monkeypatch, tmp_path: Path):
@@ -173,8 +167,6 @@ def test_m20_9_llm_event_logs_circuit_breaker_fields(monkeypatch, tmp_path: Path
     monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
     monkeypatch.setenv("AI_STRATEGIST_CB_FAIL_THRESHOLD", "1")
     monkeypatch.setenv("AI_STRATEGIST_CB_COOLDOWN_SEC", "60")
-    monkeypatch.setenv("AI_STRATEGIST_PROMPT_VERSION", "pv-log")
-    monkeypatch.setenv("AI_STRATEGIST_SCHEMA_VERSION", "intent.v1-log")
     monkeypatch.setattr(prov.time, "time", lambda: 1000.0)
 
     # isolate breaker state for this test

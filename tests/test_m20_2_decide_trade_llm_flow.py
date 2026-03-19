@@ -221,7 +221,7 @@ def test_m20_2_decide_trade_openai_timeout_is_safe_noop(monkeypatch):
     assert out["decision_trace"]["raw_intent"]["reason"] == "strategist_error"
 
 
-def test_m20_2_decide_trade_non_openai_exception_falls_back_to_rule():
+def test_m20_2_decide_trade_non_openai_exception_returns_safe_noop():
     class BrokenStrategist:
         def decide(self, x):  # type: ignore[no-untyped-def]
             raise RuntimeError("boom")
@@ -234,8 +234,41 @@ def test_m20_2_decide_trade_non_openai_exception_falls_back_to_rule():
     }
     out = decide_trade(state)
 
-    assert out["decision_trace"]["strategy"] == "RuleStrategist"
-    assert out["decision_packet"]["intent"]["action"] in ("BUY", "NOOP")
+    assert out["decision_trace"]["strategy"] == "BrokenStrategist"
+    assert out["decision_packet"]["intent"]["action"] == "NOOP"
+    assert out["decision_packet"]["intent"]["reason"] == "strategist_error"
+
+
+def test_m20_2_decide_trade_ignores_strategy_v1_runtime_when_ai_strategist_provider_openai(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
+    monkeypatch.setenv("USE_STRATEGY_V1", "true")
+
+    import libs.strategies.v1.registry as registry
+
+    called = {"v1": 0}
+
+    def fake_resolve_strategy_v1_name(policy, llm_context):  # type: ignore[no-untyped-def]
+        called["v1"] += 1
+        return "fake_v1"
+
+    def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
+        return {"intent": {"action": "NOOP", "reason": "model_no_signal"}, "rationale": "llm-hold"}
+
+    monkeypatch.setattr(registry, "resolve_strategy_v1_name", fake_resolve_strategy_v1_name)
+    monkeypatch.setattr(prov, "_post_json", fake_post_json)
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+    }
+    out = decide_trade(state)
+
+    assert called["v1"] == 0
+    assert out["decision_trace"]["strategy"] == "OpenAIStrategist"
+    assert out["decision_trace"]["decision_source"] == "llm"
 
 
 def test_m20_2_decide_trade_blocks_buy_when_position_already_open(monkeypatch):
@@ -423,13 +456,10 @@ def test_m20_2_decide_trade_blocks_fast_sell_with_min_hold_guard(monkeypatch):
     assert out["decision_trace"]["sell_timing_guard"]["blocked"] is True
 
 
-def test_m20_2_decide_trade_score_override_converts_noop_to_buy(monkeypatch):
+def test_m20_2_decide_trade_does_not_convert_noop_to_buy_via_env_thresholds(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
-    monkeypatch.setenv("AI_STRATEGIST_SCORE_OVERRIDE", "true")
-    monkeypatch.setenv("AI_STRATEGIST_BUY_THRESHOLD", "0.05")
-    monkeypatch.setenv("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", "0.06")
 
     def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
         return {"intent": {"action": "NOOP", "reason": "model_no_signal"}, "rationale": "hold"}
@@ -458,17 +488,14 @@ def test_m20_2_decide_trade_score_override_converts_noop_to_buy(monkeypatch):
     }
     out = decide_trade(state)
 
-    assert out["decision_packet"]["intent"]["action"] == "BUY"
-    assert out["decision_trace"]["score_override_applied"] is True
+    assert out["decision_packet"]["intent"]["action"] == "NOOP"
+    assert out["decision_trace"]["score_override_applied"] is False
 
 
-def test_m20_2_decide_trade_score_override_prefers_strategy_policy_thresholds(monkeypatch):
+def test_m20_2_decide_trade_strategy_policy_thresholds_do_not_override_llm_noop(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
-    monkeypatch.setenv("AI_STRATEGIST_SCORE_OVERRIDE", "false")
-    monkeypatch.setenv("AI_STRATEGIST_BUY_THRESHOLD", "0.30")
-    monkeypatch.setenv("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", "0.30")
 
     def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
         return {"intent": {"action": "NOOP", "reason": "model_no_signal"}, "rationale": "hold"}
@@ -507,17 +534,13 @@ def test_m20_2_decide_trade_score_override_prefers_strategy_policy_thresholds(mo
     }
     out = decide_trade(state)
 
-    assert out["decision_packet"]["intent"]["action"] == "BUY"
-    assert out["decision_trace"]["score_override_applied"] is True
+    assert out["decision_packet"]["intent"]["action"] == "NOOP"
+    assert out["decision_trace"]["score_override_applied"] is False
     why = out["decision_packet"]["why"]
     assert float((why.get("policy") or {}).get("buy_threshold") or 0.0) == 0.05
 
 
 def test_m20_2_decide_trade_score_override_does_not_override_strategy_v1_noop(monkeypatch):
-    monkeypatch.setenv("AI_STRATEGIST_SCORE_OVERRIDE", "true")
-    monkeypatch.setenv("AI_STRATEGIST_BUY_THRESHOLD", "0.05")
-    monkeypatch.setenv("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", "0.06")
-
     from libs.strategies.contracts import StrategyDecision
     import libs.strategies.v1.registry as registry
 

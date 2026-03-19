@@ -74,6 +74,20 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _env_int_with_fallback(*names: str, default: int) -> int:
+    for name in names:
+        raw = str(os.getenv(name, "") or "").strip()
+        if not raw:
+            continue
+        try:
+            value = int(float(raw))
+        except Exception:
+            continue
+        if value > 0:
+            return value
+    return int(default)
+
+
 def _normalize_section(section: Any, *, default_summary: str = "", bullet_key: str = "bullets") -> Dict[str, Any]:
     data = section if isinstance(section, dict) else {}
     out = {
@@ -1095,10 +1109,20 @@ def build_ai_trade_report(
         if temperature is not None
         else str(os.getenv("TRADE_REPORT_AI_TEMPERATURE", "0.1")).strip() or "0.1"
     )
-    token_budget = int(
-        max_tokens
+    token_budget = (
+        int(max_tokens)
         if max_tokens is not None
-        else str(os.getenv("TRADE_REPORT_AI_MAX_TOKENS", "1400")).strip() or "1400"
+        else _env_int_with_fallback(
+            "TRADE_REPORT_AI_MAX_TOKENS",
+            "OPENROUTER_DEFAULT_MAX_TOKENS",
+            default=1400,
+        )
+    )
+    retry_token_budget = _env_int_with_fallback(
+        "TRADE_REPORT_AI_REPAIR_MAX_TOKENS",
+        "TRADE_REPORT_AI_MAX_TOKENS",
+        "OPENROUTER_DEFAULT_MAX_TOKENS",
+        default=max(800, token_budget),
     )
     messages = _build_messages(story_input)
     attempts: List[Dict[str, Any]] = []
@@ -1230,7 +1254,7 @@ def build_ai_trade_report(
             current_policy = {
                 **current_policy,
                 "temperature": 0.0,
-                "max_tokens": min(max(800, token_budget), 1800),
+                "max_tokens": max(800, retry_token_budget),
             }
 
     if not parsed and best_partial:

@@ -16,6 +16,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from libs.ai.strategist_config import (
+    strategist_llm_requested,
+    strategist_llm_strict,
+    strategist_runtime_settings,
+)
 from libs.data_quality.signal_contract import SIGNAL_STATUS_FALLBACK, make_signal
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
@@ -339,35 +344,16 @@ def _classify_llm_parse_failure(raw: Any) -> str:
 
 
 def _resolve_strategist_frame_llm_enabled(policy: Dict[str, Any]) -> bool:
-    if policy.get("strategist_frame_use_llm") is not None:
-        return _is_trueish(policy.get("strategist_frame_use_llm"))
-
-    env_raw = str(os.getenv("STRATEGIST_FRAME_USE_LLM", "") or "").strip()
-    if env_raw:
-        return _is_trueish(env_raw)
-
-    if os.getenv("PYTEST_CURRENT_TEST"):
-        return False
-
-    provider = str(os.getenv("AI_STRATEGIST_PROVIDER", "") or "").strip().lower()
-    if provider not in ("openai", "http", "api"):
-        return False
-
-    has_key = bool(
-        (os.getenv("OPENROUTER_API_KEY", "") or "").strip()
-        or (os.getenv("AI_STRATEGIST_API_KEY", "") or "").strip()
-    )
-    return has_key
+    if os.getenv("PYTEST_CURRENT_TEST") and policy.get("strategist_frame_use_llm") is None:
+        raw_env = str(os.getenv("STRATEGIST_FRAME_USE_LLM", "") or "").strip()
+        provider = str(os.getenv("AI_STRATEGIST_PROVIDER", "") or "").strip().lower()
+        if not raw_env and provider not in ("openai", "http", "api"):
+            return False
+    return strategist_llm_requested(policy)
 
 
 def _resolve_strategist_frame_llm_strict_enabled(policy: Dict[str, Any]) -> bool:
-    raw = policy.get("strategist_frame_llm_strict")
-    if raw is not None:
-        return _is_trueish(raw)
-    env_raw = str(os.getenv("STRATEGIST_FRAME_LLM_STRICT", "true") or "").strip()
-    if env_raw:
-        return _is_trueish(env_raw)
-    return True
+    return strategist_llm_strict(policy)
 
 
 def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -636,44 +622,39 @@ def _run_strategist_frame_llm(
     payload: Dict[str, Any],
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     run_id = str(state.get("run_id") or "").strip() or "strategist-unknown"
-    if not _resolve_strategist_frame_llm_enabled(policy):
+    runtime = strategist_runtime_settings(policy)
+    if not bool(runtime.get("requested")):
         return {}, {"enabled": False, "status": "disabled", "reason": "strategist_frame_llm_disabled"}
 
     if _env_bool("DRY_RUN", False):
         return {}, {"enabled": True, "status": "dry_run", "reason": "dry_run"}
 
-    model = normalize_openrouter_model_name(
-        policy.get("strategist_frame_llm_model")
-        or os.getenv("STRATEGIST_FRAME_LLM_MODEL", "")
-        or os.getenv("AI_STRATEGIST_MODEL", "")
-        or os.getenv("OPENROUTER_MODEL_STRATEGIST", "")
-        or os.getenv("OPENROUTER_DEFAULT_MODEL", "")
-        or ""
-    )
-    temp_raw = (
-        policy.get("strategist_frame_llm_temperature")
-        if policy.get("strategist_frame_llm_temperature") is not None
-        else os.getenv("STRATEGIST_FRAME_LLM_TEMPERATURE", "0.1")
-    )
-    max_tokens_raw = (
-        policy.get("strategist_frame_llm_max_tokens")
-        if policy.get("strategist_frame_llm_max_tokens") is not None
-        else os.getenv("STRATEGIST_FRAME_LLM_MAX_TOKENS", os.getenv("AI_STRATEGIST_MAX_TOKENS", "320"))
-    )
-    try:
-        temperature = float(temp_raw)
-    except Exception:
-        temperature = 0.1
-    try:
-        max_tokens = max(256, int(float(max_tokens_raw)))
-    except Exception:
-        max_tokens = max(256, int(float(os.getenv("AI_STRATEGIST_MAX_TOKENS", "320"))))
+    if not bool(runtime.get("uses_ai")):
+        return {}, {"enabled": True, "status": "disabled", "reason": "strategist_provider_not_ai"}
+
+    if not str(runtime.get("api_key") or "").strip() or not str(runtime.get("endpoint") or "").strip():
+        return {}, {
+            "enabled": True,
+            "status": "unavailable",
+            "reason": "missing_api_key_or_endpoint",
+            "error_type": "StrategistConfigError",
+            "model": str(runtime.get("model") or ""),
+        }
+
+    model = normalize_openrouter_model_name(str(runtime.get("model") or ""))
+    temperature = float(runtime.get("temperature") or 0.1)
+    max_tokens = max(256, int(runtime.get("max_tokens") or 320))
+    timeout_sec = max(1.0, float(runtime.get("timeout_sec") or 15.0))
 
     router = LLMRouter.from_env()
     if router.client is None:
         return {}, {"enabled": True, "status": "unavailable", "reason": "llm_client_unavailable"}
 
-    route_policy: Dict[str, Any] = {"temperature": float(temperature), "max_tokens": int(max_tokens)}
+    route_policy: Dict[str, Any] = {
+        "temperature": float(temperature),
+        "max_tokens": int(max_tokens),
+        "timeout_sec": float(timeout_sec),
+    }
     if _env_bool("STRATEGIST_FRAME_LLM_JSON_RESPONSE_FORMAT", True):
         route_policy["response_format"] = {"type": "json_object"}
     if model:
@@ -694,6 +675,7 @@ def _run_strategist_frame_llm(
                 "provider": "strategist_router",
                 "temperature": float(temperature),
                 "max_tokens": int(max_tokens),
+                "timeout_sec": float(timeout_sec),
             },
         )
     except Exception:
@@ -2174,17 +2156,11 @@ def _build_strategy_policy(
             },
         },
         "decision_policy": {
-            "use_strategy_v1_engine": _is_trueish(os.getenv("USE_STRATEGY_V1", "false")),
-            "allow_score_override": _is_trueish(os.getenv("AI_STRATEGIST_SCORE_OVERRIDE", "false")),
-            "score_override_scope": str(
-                os.getenv("AI_STRATEGIST_SCORE_OVERRIDE_SCOPE", "llm_only") or "llm_only"
-            ).strip().lower(),
-            "strategy_v1_name": str(os.getenv("STRATEGY_V1_NAME", "regime_momentum_v1") or "regime_momentum_v1"),
-            "buy_threshold": _to_float(os.getenv("AI_STRATEGIST_BUY_THRESHOLD", "0.10"), 0.10),
-            "sell_threshold": _to_float(os.getenv("AI_STRATEGIST_SELL_THRESHOLD", "-0.10"), -0.10),
-            "high_vol_abs_threshold": _to_float(os.getenv("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", "0.12"), 0.12),
-            "news_buy_threshold": _to_float(os.getenv("AI_STRATEGIST_NEWS_BUY_THRESHOLD", "0.15"), 0.15),
-            "news_sell_threshold": _to_float(os.getenv("AI_STRATEGIST_NEWS_SELL_THRESHOLD", "-0.15"), -0.15),
+            "use_strategy_v1_engine": False,
+            "allow_score_override": False,
+            "score_override_scope": "disabled",
+            "strategy_v1_name": "",
+            "strategy_variant_hint": "unified_ai_strategist",
         },
         "operator_explain": {
             "why_this_playbook": (

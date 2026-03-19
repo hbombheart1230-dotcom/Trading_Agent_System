@@ -70,6 +70,20 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _env_int_with_fallback(*names: str, default: int) -> int:
+    for name in names:
+        raw = str(os.getenv(name, "") or "").strip()
+        if not raw:
+            continue
+        try:
+            value = int(float(raw))
+        except Exception:
+            continue
+        if value > 0:
+            return value
+    return int(default)
+
+
 def _to_epoch(ts: Any) -> Optional[int]:
     if ts is None:
         return None
@@ -3255,6 +3269,183 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _compact_scalar_map(data: Any, *, limit: int = 8, max_len: int = 120) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key, value in list(data.items()):
+        if len(out) >= max(1, int(limit)):
+            break
+        if isinstance(value, (int, float, bool)) or value is None:
+            out[str(key)] = value
+            continue
+        text = _trim_text(value, max_len=max_len)
+        if text:
+            out[str(key)] = text
+    return out
+
+
+def _compact_ranked_symbols(rows: Any, *, limit: int = 3) -> List[Dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in rows:
+        if len(out) >= max(1, int(limit)):
+            break
+        if isinstance(item, dict):
+            row = {
+                "symbol": _trim_text(item.get("symbol") or item.get("code") or item.get("ticker"), max_len=24),
+                "score": item.get("score_total") if item.get("score_total") is not None else item.get("score"),
+                "reason": _trim_text(item.get("reason") or item.get("why"), max_len=160),
+            }
+        else:
+            row = {
+                "symbol": _trim_text(item, max_len=24),
+                "score": None,
+                "reason": "",
+            }
+        if row["symbol"]:
+            out.append(row)
+    return out
+
+
+def _compact_monitor_thresholds(data: Any) -> Dict[str, Any]:
+    row = data if isinstance(data, dict) else {}
+    keys = (
+        "hard_stop_pct",
+        "effective_stop_loss_pct",
+        "effective_stop_reason",
+        "take_profit_pct",
+        "peak_drawdown_exit_pct",
+        "trailing_stop_pct",
+        "vwap_breakdown_pct",
+        "intraday_low_break_pct",
+        "trend_strength_floor",
+        "exit_confirm_required",
+        "exit_confirm_count",
+    )
+    return {key: row.get(key) for key in keys if key in row}
+
+
+def _compact_canonical_trade_for_brief(data: Any) -> Dict[str, Any]:
+    row = data if isinstance(data, dict) else {}
+    return {
+        "available": bool(row.get("available")),
+        "trade_id": _trim_text(row.get("trade_id"), max_len=80),
+        "story_type": _trim_text(row.get("story_type"), max_len=32),
+        "execution_mode_label": _trim_text(row.get("execution_mode_label"), max_len=48),
+        "lifecycle_status": _trim_text(row.get("lifecycle_status"), max_len=24),
+        "lifecycle_summary": _trim_text(row.get("lifecycle_summary"), max_len=220),
+        "market_context_summary": _trim_text(row.get("market_context_summary"), max_len=220),
+        "market_context_bullets": _clean_str_list(row.get("market_context_bullets"), limit=4, max_len=180),
+        "selection_summary": _trim_text(row.get("selection_summary"), max_len=220),
+        "selection_bullets": _clean_str_list(row.get("selection_bullets"), limit=4, max_len=180),
+        "filters_summary": _trim_text(row.get("filters_summary"), max_len=220),
+        "filter_bullets": _clean_str_list(row.get("filter_bullets"), limit=5, max_len=180),
+        "monitor_summary": _trim_text(row.get("monitor_summary"), max_len=220),
+        "monitor_bullets": _clean_str_list(row.get("monitor_bullets"), limit=4, max_len=180),
+        "monitor_snapshot": _compact_scalar_map(row.get("monitor_snapshot"), limit=10, max_len=120),
+        "guard_summary": _trim_text(row.get("guard_summary"), max_len=180),
+        "execution_summary": _trim_text(row.get("execution_summary"), max_len=180),
+        "execution_bullets": _clean_str_list(row.get("execution_bullets"), limit=4, max_len=160),
+        "reporter_summary": _trim_text(row.get("reporter_summary"), max_len=180),
+        "reporter_status": _trim_text(row.get("reporter_status"), max_len=32),
+        "reporter_grade": _trim_text(row.get("reporter_grade"), max_len=16),
+    }
+
+
+def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dict[str, Any]:
+    strategist = prepared_input.get("strategist") if isinstance(prepared_input.get("strategist"), dict) else {}
+    scanner = prepared_input.get("scanner") if isinstance(prepared_input.get("scanner"), dict) else {}
+    monitor = prepared_input.get("monitor") if isinstance(prepared_input.get("monitor"), dict) else {}
+    commander = prepared_input.get("commander") if isinstance(prepared_input.get("commander"), dict) else {}
+    reporter = prepared_input.get("reporter") if isinstance(prepared_input.get("reporter"), dict) else {}
+    supervisor = prepared_input.get("supervisor") if isinstance(prepared_input.get("supervisor"), dict) else {}
+    executor = prepared_input.get("executor") if isinstance(prepared_input.get("executor"), dict) else {}
+    trade_report = prepared_input.get("trade_report") if isinstance(prepared_input.get("trade_report"), dict) else {}
+    return {
+        "run_id": _trim_text(prepared_input.get("run_id"), max_len=80),
+        "commander": {
+            "mode": _trim_text(commander.get("mode"), max_len=24),
+            "phase": _trim_text(commander.get("phase"), max_len=24),
+            "path": _trim_text(commander.get("path"), max_len=80),
+            "status": _trim_text(commander.get("status"), max_len=24),
+        },
+        "strategist": {
+            "market_regime": _trim_text(strategist.get("market_regime"), max_len=24),
+            "market_sentiment": _trim_text(strategist.get("market_sentiment"), max_len=24),
+            "themes": _clean_str_list(strategist.get("themes"), limit=4, max_len=80),
+            "playbook": _trim_text(strategist.get("playbook"), max_len=32),
+            "scanner_bias": _trim_text(strategist.get("scanner_bias"), max_len=120),
+            "risk_tone": _trim_text(strategist.get("risk_tone"), max_len=120),
+            "monitor_guidance": _trim_text(strategist.get("monitor_guidance"), max_len=180),
+            "news_query_targets": _clean_str_list(strategist.get("news_query_targets"), limit=5, max_len=80),
+            "news_query_reasoning": _trim_text(strategist.get("news_query_reasoning"), max_len=180),
+            "global_sentiment_inputs": _compact_scalar_map(strategist.get("global_sentiment_inputs"), limit=8, max_len=80),
+            "market_news_titles": _clean_str_list(strategist.get("market_news_titles"), limit=3, max_len=120),
+            "candidate_news_titles": _clean_str_list(strategist.get("candidate_news_titles"), limit=3, max_len=120),
+            "llm_status": _trim_text(strategist.get("llm_status"), max_len=24),
+            "llm_low_confidence": strategist.get("llm_low_confidence"),
+            "canonical_summary": _trim_text(strategist.get("canonical_summary"), max_len=220),
+            "canonical_bullets": _clean_str_list(strategist.get("canonical_bullets"), limit=4, max_len=180),
+        },
+        "scanner": {
+            "candidate_source": _trim_text(scanner.get("candidate_source"), max_len=60),
+            "candidate_pool_before_filter": scanner.get("candidate_pool_before_filter"),
+            "candidate_pool_after_filter": scanner.get("candidate_pool_after_filter"),
+            "top_ranked_symbols": _compact_ranked_symbols(scanner.get("top_ranked_symbols"), limit=3),
+            "source_mix": _compact_scalar_map(scanner.get("source_mix"), limit=6, max_len=60),
+            "selected_symbol": _trim_text(scanner.get("selected_symbol"), max_len=24),
+            "selected_reason": _trim_text(scanner.get("selected_reason"), max_len=220),
+            "source_scores": _compact_scalar_map(scanner.get("source_scores"), limit=6, max_len=80),
+            "score_total": scanner.get("score_total"),
+            "confidence": scanner.get("confidence"),
+            "feature_coverage": _compact_scalar_map(scanner.get("feature_coverage"), limit=6, max_len=80),
+            "quote_metrics": _compact_scalar_map(scanner.get("quote_metrics"), limit=6, max_len=80),
+            "score_breakdown": _compact_scalar_map(scanner.get("score_breakdown"), limit=8, max_len=80),
+            "canonical_bullets": _clean_str_list(scanner.get("canonical_bullets"), limit=4, max_len=180),
+            "canonical_filters_summary": _trim_text(scanner.get("canonical_filters_summary"), max_len=180),
+            "canonical_filter_bullets": _clean_str_list(scanner.get("canonical_filter_bullets"), limit=4, max_len=160),
+        },
+        "monitor": {
+            "monitor_reason": _trim_text(monitor.get("monitor_reason"), max_len=220),
+            "exit_reason": _trim_text(monitor.get("exit_reason"), max_len=120),
+            "position_age_seconds": monitor.get("position_age_seconds"),
+            "thresholds": _compact_monitor_thresholds(monitor.get("thresholds")),
+            "strategy_frame_adjustments": _clean_str_list(monitor.get("strategy_frame_adjustments"), limit=4, max_len=120),
+            "exit_policy_guard_adjustments": _clean_str_list(monitor.get("exit_policy_guard_adjustments"), limit=4, max_len=120),
+            "canonical_bullets": _clean_str_list(monitor.get("canonical_bullets"), limit=4, max_len=160),
+            "canonical_snapshot": _compact_scalar_map(monitor.get("canonical_snapshot"), limit=10, max_len=120),
+        },
+        "supervisor": _compact_scalar_map(supervisor, limit=8, max_len=120),
+        "executor": {
+            "action": _trim_text(executor.get("action"), max_len=24),
+            "symbol": _trim_text(executor.get("symbol"), max_len=24),
+            "qty": executor.get("qty"),
+            "status": _trim_text(executor.get("status"), max_len=160),
+            "canonical_summary": _trim_text(executor.get("canonical_summary"), max_len=180),
+            "canonical_bullets": _clean_str_list(executor.get("canonical_bullets"), limit=4, max_len=160),
+        },
+        "reporter": {
+            "ai_summary": _trim_text(reporter.get("ai_summary"), max_len=180),
+            "ai_run_grade": _trim_text(reporter.get("ai_run_grade"), max_len=16),
+            "found": reporter.get("found"),
+            "status": _trim_text(reporter.get("status"), max_len=24),
+            "reason": _trim_text(reporter.get("reason"), max_len=180),
+        },
+        "trade_report": {
+            "report_available": trade_report.get("report_available"),
+            "trade_id": _trim_text(trade_report.get("trade_id"), max_len=80),
+            "lifecycle_status": _trim_text(trade_report.get("lifecycle_status"), max_len=24),
+            "lifecycle_summary": _trim_text(trade_report.get("lifecycle_summary"), max_len=180),
+            "story_type": _trim_text(trade_report.get("story_type"), max_len=32),
+            "execution_mode_label": _trim_text(trade_report.get("execution_mode_label"), max_len=48),
+            "summary": _trim_text(trade_report.get("summary"), max_len=180),
+        },
+        "canonical_trade": _compact_canonical_trade_for_brief(prepared_input.get("canonical_trade")),
+    }
+
+
 def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[str, str]]:
     contract = {
         "headline": "string",
@@ -3453,14 +3644,33 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
             or os.getenv("OPENROUTER_DEFAULT_MODEL", "")
             or ""
         )
-    compact_input = _build_operator_brief_input(detail)
-    _save_operator_brief_input_artifact(detail, compact_input)
+    prepared_input = _build_operator_brief_input(detail)
+    compact_input = _compact_operator_brief_input_for_llm(prepared_input)
+    _save_operator_brief_input_artifact(detail, prepared_input, compact_input)
     messages = _build_operator_brief_messages(compact_input)
     timeout_sec = int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_TIMEOUT_SEC", "8")))
     retry_max = max(0, int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_RETRY_MAX", "1"))))
+    brief_token_budget = _env_int_with_fallback(
+        "OPERATOR_UI_RUN_BRIEF_MAX_TOKENS",
+        "OPENROUTER_DEFAULT_MAX_TOKENS",
+        default=700,
+    )
+    brief_repair_token_budget = _env_int_with_fallback(
+        "OPERATOR_UI_RUN_BRIEF_REPAIR_MAX_TOKENS",
+        "OPERATOR_UI_RUN_BRIEF_MAX_TOKENS",
+        "OPENROUTER_DEFAULT_MAX_TOKENS",
+        default=max(600, brief_token_budget),
+    )
+    brief_line_token_budget = _env_int_with_fallback(
+        "OPERATOR_UI_RUN_BRIEF_LINE_MAX_TOKENS",
+        "OPERATOR_UI_RUN_BRIEF_REPAIR_MAX_TOKENS",
+        "OPERATOR_UI_RUN_BRIEF_MAX_TOKENS",
+        "OPENROUTER_DEFAULT_MAX_TOKENS",
+        default=max(500, brief_token_budget),
+    )
     primary_policy = {
         "temperature": float(os.getenv("OPERATOR_UI_RUN_BRIEF_TEMPERATURE", "0.1")),
-        "max_tokens": int(float(os.getenv("OPERATOR_UI_RUN_BRIEF_MAX_TOKENS", "700"))),
+        "max_tokens": brief_token_budget,
         "timeout_sec": timeout_sec,
         "response_format": {"type": "json_object"},
         **({"model": model} if model else {}),
@@ -3577,7 +3787,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     repair_messages = _build_operator_brief_repair_messages(primary_raw)
     repair_policy = {
         "temperature": 0.0,
-        "max_tokens": 600,
+        "max_tokens": brief_repair_token_budget,
         "timeout_sec": timeout_sec,
         "response_format": {"type": "json_object"},
         **({"model": model} if model else {}),
@@ -3648,7 +3858,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         line_messages = _build_operator_brief_line_messages(compact_input)
         line_policy = {
             "temperature": 0.0,
-            "max_tokens": 500,
+            "max_tokens": brief_line_token_budget,
             "timeout_sec": timeout_sec,
             **({"model": model} if model else {}),
         }
@@ -3822,14 +4032,15 @@ def _operator_brief_compact_input_artifact_path(detail: Dict[str, Any]) -> Path 
     return brief_json.parent / "brief_compact_input.json"
 
 
-def _save_operator_brief_input_artifact(detail: Dict[str, Any], compact_input: Dict[str, Any]) -> None:
+def _save_operator_brief_input_artifact(detail: Dict[str, Any], prepared_input: Dict[str, Any], llm_compact_input: Dict[str, Any] | None = None) -> None:
     path = _operator_brief_input_artifact_path(detail)
     compact_path = _operator_brief_compact_input_artifact_path(detail)
     if path is None and compact_path is None:
         return
     try:
-        payload = dict(compact_input or {})
+        payload = dict(prepared_input or {})
         payload["saved_at"] = datetime.now(tz=KST).isoformat()
+        compact_payload = dict(llm_compact_input or _compact_operator_brief_input_for_llm(payload))
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3844,7 +4055,7 @@ def _save_operator_brief_input_artifact(detail: Dict[str, Any], compact_input: D
                 day=str((trade_report.get("day") or "")).strip(),
                 source_artifact_path=str(path) if path is not None else "",
                 source_input=payload,
-                compact_input=compact_input,
+                compact_input=compact_payload,
             )
             compact_path.write_text(json.dumps(compact_artifact, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:

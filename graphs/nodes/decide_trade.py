@@ -6,6 +6,11 @@ from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
 
+from libs.ai.strategist_config import (
+    strategist_provider,
+    strategist_runtime_settings,
+    strategist_uses_legacy_v1,
+)
 from libs.ai.intent_schema import normalize_intent
 from libs.data_quality.signal_contract import (
     SIGNAL_STATUS_FALLBACK,
@@ -34,6 +39,16 @@ def _rule_intent(symbol: Any, price: Any, cash: Any, open_positions: Any) -> Dic
 
 def _is_trueish(v: Any) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _legacy_rule_runtime_enabled(state: Dict[str, Any] | None = None) -> bool:
+    policy = state.get("policy") if isinstance(state, dict) and isinstance(state.get("policy"), dict) else {}
+    if policy.get("allow_legacy_rule_runtime") is not None:
+        return _is_trueish(policy.get("allow_legacy_rule_runtime"))
+    env_raw = str(os.getenv("ALLOW_LEGACY_RULE_RUNTIME", "") or "").strip()
+    if env_raw:
+        return _is_trueish(env_raw)
+    return False
 
 
 def _enforce_rationale_for_trade_intent(raw_intent: Dict[str, Any]) -> Dict[str, Any]:
@@ -69,22 +84,8 @@ def _clip(v: float, lo: float, hi: float) -> float:
     return x
 
 
-def _read_env_float(name: str, default: float) -> float:
-    raw = str(os.getenv(name, str(default)) or str(default)).strip()
-    try:
-        return float(raw)
-    except Exception:
-        return float(default)
-
-
 def _policy_thresholds(state: Dict[str, Any] | None = None) -> Dict[str, float]:
-    out = {
-        "buy_threshold": _read_env_float("AI_STRATEGIST_BUY_THRESHOLD", 0.10),
-        "sell_threshold": _read_env_float("AI_STRATEGIST_SELL_THRESHOLD", -0.10),
-        "high_vol_abs_threshold": _read_env_float("AI_STRATEGIST_HIGH_VOL_ABS_THRESHOLD", 0.12),
-        "news_buy_threshold": _read_env_float("AI_STRATEGIST_NEWS_BUY_THRESHOLD", 0.15),
-        "news_sell_threshold": _read_env_float("AI_STRATEGIST_NEWS_SELL_THRESHOLD", -0.15),
-    }
+    out: Dict[str, float] = {}
     if not isinstance(state, dict):
         return out
     strategist_output = state.get("strategist_output")
@@ -104,32 +105,16 @@ def _policy_thresholds(state: Dict[str, Any] | None = None) -> Dict[str, float]:
         "news_sell_threshold",
     ):
         if decision_policy.get(key) is not None:
-            out[key] = _to_float(decision_policy.get(key), out[key])
+            out[key] = _to_float(decision_policy.get(key), 0.0)
     return out
 
 
 def _score_override_enabled(state: Dict[str, Any] | None = None) -> bool:
-    if isinstance(state, dict):
-        strategist_output = state.get("strategist_output")
-        if isinstance(strategist_output, dict):
-            strategy_policy = strategist_output.get("strategy_policy")
-            if isinstance(strategy_policy, dict):
-                decision_policy = strategy_policy.get("decision_policy")
-                if isinstance(decision_policy, dict) and decision_policy.get("allow_score_override") is not None:
-                    return _is_trueish(decision_policy.get("allow_score_override"))
-    return _is_trueish(os.getenv("AI_STRATEGIST_SCORE_OVERRIDE", "false"))
+    return False
 
 
 def _score_override_scope(state: Dict[str, Any] | None = None) -> str:
-    if isinstance(state, dict):
-        strategist_output = state.get("strategist_output")
-        if isinstance(strategist_output, dict):
-            strategy_policy = strategist_output.get("strategy_policy")
-            if isinstance(strategy_policy, dict):
-                decision_policy = strategy_policy.get("decision_policy")
-                if isinstance(decision_policy, dict) and decision_policy.get("score_override_scope") not in (None, ""):
-                    return str(decision_policy.get("score_override_scope") or "llm_only").strip().lower()
-    return str(os.getenv("AI_STRATEGIST_SCORE_OVERRIDE_SCOPE", "llm_only") or "llm_only").strip().lower()
+    return "disabled"
 
 
 def _score_override_scope_allows(decision_source: str, scope: str) -> bool:
@@ -164,69 +149,7 @@ def _maybe_override_noop_by_score(
     open_positions: Any,
     portfolio: Dict[str, Any],
 ) -> tuple[Dict[str, Any], bool]:
-    if not _score_override_enabled(state):
-        return dict(intent or {}), False
-    if not _score_override_scope_allows(decision_source, _score_override_scope(state)):
-        return dict(intent or {}), False
-
-    base = dict(intent or {})
-    action = str(base.get("action") or "").strip().upper()
-    reason = str(base.get("reason") or "").strip().lower()
-    if action != "NOOP":
-        return base, False
-    if reason not in ("", "model_no_signal", "conditions_not_met"):
-        return base, False
-
-    technical = llm_context.get("technical") if isinstance(llm_context.get("technical"), dict) else {}
-    news = llm_context.get("news") if isinstance(llm_context.get("news"), dict) else {}
-    policy = llm_context.get("decision_policy") if isinstance(llm_context.get("decision_policy"), dict) else {}
-
-    composite = _to_float(policy.get("composite_score"), _composite_score(technical, news))
-    regime = str(technical.get("regime") or "").strip().lower() or "unknown"
-    sym_news = _to_float(news.get("symbol_sentiment_score"), 0.0)
-    th = _policy_thresholds(state)
-
-    high_vol_ok = True
-    if regime == "high_volatility":
-        high_vol_ok = abs(composite) >= float(th["high_vol_abs_threshold"])
-
-    sym = str(symbol or "").strip().upper()
-    px = _to_float(price, 0.0) if price is not None else 0.0
-
-    if int(open_positions or 0) <= 0:
-        if high_vol_ok and (composite >= float(th["buy_threshold"]) or sym_news >= float(th["news_buy_threshold"])):
-            return (
-                {
-                    "action": "BUY",
-                    "symbol": sym,
-                    "qty": 1,
-                    "price": px if px > 0.0 else None,
-                    "order_type": "market",
-                    "order_api_id": "ORDER_SUBMIT",
-                    "rationale": f"score_override:buy composite={composite:.4f} regime={regime}",
-                },
-                True,
-            )
-        return base, False
-
-    pos = _extract_position_for_symbol(portfolio, sym)
-    qty = int(pos.get("qty") or 0) if isinstance(pos, dict) else 0
-    if qty <= 0:
-        return base, False
-    if high_vol_ok and (composite <= float(th["sell_threshold"]) or sym_news <= float(th["news_sell_threshold"])):
-        return (
-            {
-                "action": "SELL",
-                "symbol": sym,
-                "qty": qty,
-                "price": px if px > 0.0 else None,
-                "order_type": "market",
-                "order_api_id": "ORDER_SUBMIT",
-                "rationale": f"score_override:sell composite={composite:.4f} regime={regime}",
-            },
-            True,
-        )
-    return base, False
+    return dict(intent or {}), False
 
 
 def _extract_position_for_symbol(portfolio: Dict[str, Any], symbol: Any) -> Dict[str, Any]:
@@ -817,14 +740,24 @@ def _strategy_v1_policy_from_strategy_policy(state: Dict[str, Any], base_policy:
 
 
 def _strategy_v1_enabled(state: Dict[str, Any]) -> bool:
+    runtime = strategist_runtime_settings(state.get("policy") if isinstance(state.get("policy"), dict) else {})
+    if bool(runtime.get("uses_ai")):
+        return False
     strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
     strategy_policy = strategist_output.get("strategy_policy") if isinstance(strategist_output.get("strategy_policy"), dict) else {}
     decision_policy = strategy_policy.get("decision_policy") if isinstance(strategy_policy.get("decision_policy"), dict) else {}
     if decision_policy.get("use_strategy_v1_engine") is not None:
         return _is_trueish(decision_policy.get("use_strategy_v1_engine"))
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    if policy.get("allow_legacy_strategy_v1_runtime") is not None:
+        return _is_trueish(policy.get("allow_legacy_strategy_v1_runtime"))
     if policy.get("use_strategy_v1") is not None:
         return _is_trueish(policy.get("use_strategy_v1"))
+    legacy_env = os.getenv("ALLOW_LEGACY_STRATEGY_V1_RUNTIME", "")
+    if str(legacy_env or "").strip():
+        return _is_trueish(legacy_env)
+    if strategist_uses_legacy_v1():
+        return True
     return _is_trueish(os.getenv("USE_STRATEGY_V1", "false"))
 
 
@@ -990,6 +923,7 @@ def _sync_legacy_circuit_fields(state: dict, llm_meta: Dict[str, Any]) -> None:
 def decide_trade(state: dict) -> dict:
     market: Dict[str, Any] = state.get("market_snapshot", {}) or {}
     portfolio: Dict[str, Any] = state.get("portfolio_snapshot", {}) or {}
+    runtime = strategist_runtime_settings(state.get("policy") if isinstance(state.get("policy"), dict) else {})
 
     symbol = state.get("symbol") or state.get("selected_symbol") or market.get("symbol")
 
@@ -1150,7 +1084,7 @@ def decide_trade(state: dict) -> dict:
     elif strategist is not None and hasattr(strategist, "decide"):
         decision_source = "llm"
         llm_t0 = 0.0
-        do_llm_log = strategy_name == "OpenAIStrategist"
+        do_llm_log = strategy_name in {"OpenAIStrategist", "BlockedStrategist"} or bool(runtime.get("uses_ai"))
         runtime_gate: Dict[str, Any] = {}
         runtime_gate_blocked = False
         runtime_circuit_update: Dict[str, Any] = {}
@@ -1202,16 +1136,12 @@ def decide_trade(state: dict) -> dict:
                     raw_intent["rationale"] = dec_rationale
             except Exception as e:
                 error = str(e)
-                # If this is OpenAIStrategist, keep it and return NOOP (do not swap strategy)
-                if strategy_name == "OpenAIStrategist":
-                    raw_intent = {"action": "NOOP", "reason": "strategist_error", "rationale": error}
-                else:
-                    from libs.ai.strategist import RuleStrategist
-                    strategist = RuleStrategist()
-                    state["strategist"] = strategist
-                    strategy_name = "RuleStrategist"
-                    decision_source = "rule"
-                    raw_intent = _rule_intent(symbol, price, cash, open_positions)
+                raw_intent = {
+                    "action": "NOOP",
+                    "reason": "strategist_llm_failed" if bool(runtime.get("uses_ai")) else "strategist_error",
+                    "rationale": error,
+                }
+                decision_source = "llm"
 
         raw_intent = _enforce_rationale_for_trade_intent(raw_intent)
 
@@ -1250,7 +1180,7 @@ def decide_trade(state: dict) -> dict:
             llm_ok = not bool(error) and not bool(meta_error) and intent_reason != "strategist_error"
             payload: Dict[str, Any] = {
                 "strategy": strategy_name,
-                "provider": str(os.getenv("AI_STRATEGIST_PROVIDER", "rule") or "rule"),
+                "provider": str(runtime.get("provider") or strategist_provider() or "rule"),
                 "model": str(getattr(strategist, "model", "") or ""),
                 "latency_ms": latency_ms,
                 "ok": bool(llm_ok),
@@ -1314,7 +1244,18 @@ def decide_trade(state: dict) -> dict:
                 payload["error_type"] = "Exception"
             _log_llm_call(state, payload)
     else:
-        raw_intent = _rule_intent(symbol, price, cash, open_positions)
+        if _legacy_rule_runtime_enabled(state):
+            raw_intent = _rule_intent(symbol, price, cash, open_positions)
+            strategy_name = "RuleStrategist"
+            decision_source = "rule"
+        else:
+            raw_intent = {
+                "action": "NOOP",
+                "reason": "strategist_llm_required" if bool(runtime.get("uses_ai")) else "strategist_unavailable",
+                "rationale": "strategist_unavailable",
+            }
+            strategy_name = "BlockedStrategist"
+            decision_source = "llm"
 
     raw_intent = _enforce_rationale_for_trade_intent(raw_intent)
 

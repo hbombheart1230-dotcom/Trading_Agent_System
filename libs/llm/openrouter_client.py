@@ -45,7 +45,10 @@ class OpenRouterClient:
 
     @staticmethod
     def from_env() -> Optional["OpenRouterClient"]:
-        api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+        api_key = (
+            os.getenv("OPENROUTER_API_KEY", "").strip()
+            or os.getenv("AI_STRATEGIST_API_KEY", "").strip()
+        )
         if not api_key:
             return None
         cfg = OpenRouterConfig(
@@ -53,7 +56,12 @@ class OpenRouterClient:
             base_url=os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL,
             http_referer=os.getenv("OPENROUTER_HTTP_REFERER") or None,
             x_title=os.getenv("OPENROUTER_X_TITLE") or None,
-            timeout_sec=int(os.getenv("OPENROUTER_TIMEOUT_SEC", str(DEFAULT_TIMEOUT_SEC))),
+            timeout_sec=int(
+                os.getenv(
+                    "OPENROUTER_TIMEOUT_SEC",
+                    os.getenv("AI_STRATEGIST_TIMEOUT_SEC", str(DEFAULT_TIMEOUT_SEC)),
+                )
+            ),
         )
         return OpenRouterClient(cfg)
 

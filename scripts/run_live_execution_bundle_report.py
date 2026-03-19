@@ -137,11 +137,25 @@ def _build_strategist_llm_response_artifact(bundle_out: Dict[str, Any], *, day: 
     system_prompt, user_prompt = split_prompt_text(strategist.get("llm_prompt") or "")
     parsed_output = strategist.get("llm_parsed_output") if isinstance(strategist.get("llm_parsed_output"), dict) else {}
     raw_response = str(strategist.get("llm_response") or "")
+    llm_error = str(strategist.get("llm_error") or "")
+    has_linked_llm_evidence = any(
+        (
+            bool(system_prompt),
+            bool(user_prompt),
+            bool(raw_response),
+            bool(parsed_output),
+            bool(strategist.get("llm_model")),
+            bool(strategist.get("llm_provider")),
+            bool(strategist.get("llm_latency_ms")),
+            "llm_ok" in strategist,
+            bool(llm_error),
+        )
+    )
     original_status = "ok" if bool(strategist.get("llm_ok")) else "fallback"
     if raw_response.startswith("ERROR:"):
         original_status = "error"
     attempts = []
-    if system_prompt or user_prompt or raw_response or parsed_output:
+    if has_linked_llm_evidence:
         attempts.append(
             {
                 "step": "primary",
@@ -155,15 +169,24 @@ def _build_strategist_llm_response_artifact(bundle_out: Dict[str, Any], *, day: 
                 },
                 "latency_ms": int(strategist.get("llm_latency_ms") or 0),
                 "status": original_status,
+                "error": llm_error,
             }
         )
+    meta: Dict[str, Any] = {}
+    if not has_linked_llm_evidence:
+        meta = {
+            "synthetic_placeholder": True,
+            "reason_code": "no_linked_strategist_llm_evidence",
+            "reason": "No linked strategist LLM evidence was available for this trade bundle.",
+            "evidence_available": False,
+        }
     return build_llm_response_artifact(
         component="strategist",
         run_id=str(bundle_out.get("run_id") or ""),
         trade_id=trade_id,
         story_id=trade_id,
         day=day,
-        status=original_status if attempts else "fallback",
+        status=original_status if has_linked_llm_evidence else "fallback",
         attempts=attempts,
         parsed_output=parsed_output,
         model_info={
@@ -171,6 +194,7 @@ def _build_strategist_llm_response_artifact(bundle_out: Dict[str, Any], *, day: 
             "model": str(strategist.get("llm_model") or ""),
         },
         latency_ms=int(strategist.get("llm_latency_ms") or 0),
+        meta=meta,
     )
 
 

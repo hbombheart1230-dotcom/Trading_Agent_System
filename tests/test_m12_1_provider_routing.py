@@ -24,3 +24,18 @@ def test_provider_openai_fallback_when_missing_endpoint(monkeypatch):
     assert out["decision_trace"]["strategy"] == "BlockedStrategist"
     assert out["decision_packet"]["intent"]["action"] == "NOOP"
     assert out["decision_packet"]["intent"]["reason"] == "strategist_llm_required"
+
+
+def test_provider_rule_is_blocked_when_legacy_runtime_disabled(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "rule")
+    monkeypatch.setenv("ALLOW_LEGACY_RULE_RUNTIME", "false")
+
+    state = {
+        "market_snapshot": {"symbol": "005930", "price": 70000},
+        "portfolio_snapshot": {"cash": 2000000, "open_positions": 0},
+    }
+    out = decide_trade(state)
+
+    assert out["decision_trace"]["strategy"] == "BlockedStrategist"
+    assert out["decision_packet"]["intent"]["action"] == "NOOP"
+    assert out["decision_packet"]["intent"]["reason"] == "strategist_llm_required"

@@ -32,7 +32,7 @@ def test_strategy_policy_decision_policy_controls_score_override() -> None:
         "strategist_output": {
             "strategy_policy": {
                 "decision_policy": {
-                    "allow_score_override": False,
+                    "allow_score_override": True,
                 }
             }
         }
@@ -75,8 +75,8 @@ def test_strategy_policy_decision_policy_controls_score_override_scope() -> None
         }
     }
 
-    assert _score_override_scope(state) == "llm_only"
-    assert _score_override_scope_allows("llm", "llm_only") is True
+    assert _score_override_scope(state) == "disabled"
+    assert _score_override_scope_allows("llm", "disabled") is False
     assert _score_override_scope_allows("strategy_v1", "llm_only") is False
 
 

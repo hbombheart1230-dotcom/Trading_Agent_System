@@ -215,7 +215,15 @@ Example scanner output:
   - when enabled, Strategist calls LLM with news/global sentiment + market context
   - the strategist prompt includes detailed US index moves, not just a compressed global sentiment score
   - LLM returns frame overrides (`themes`, `playbook`, `scanner_priority`, `monitor_guidance`, etc.)
-  - deterministic strategist logic remains baseline fallback on error/parse-fail
+  - in `AI_STRATEGIST_PROVIDER=openai` mode, no trade should proceed from missing strategist LLM config/response
+  - canonical strategist envs:
+    - `AI_STRATEGIST_PROVIDER=openai`
+    - `AI_STRATEGIST_ENDPOINT=https://openrouter.ai/api/v1/chat/completions`
+    - `AI_STRATEGIST_MODEL=<provider/model>`
+    - `AI_STRATEGIST_TIMEOUT_SEC=<seconds>`
+    - `AI_STRATEGIST_MAX_TOKENS=<tokens>`
+    - `OPENROUTER_API_KEY=<key>`
+  - `STRATEGIST_FRAME_*` variables remain compatibility aliases only
   - observability: EventLog `stage=strategist_llm`, `event=result`
   - additive confidence flags expose repaired / salvaged responses:
     - `llm_frame_low_confidence`
@@ -362,7 +370,14 @@ OPENROUTER_MODEL_OPERATOR_UI=openrouter/free
 OPENROUTER_MODEL_REPORTER_INTRADAY=openrouter/free
 OPENROUTER_MODEL_REPORTER_FINAL=openrouter/auto
 OPENROUTER_MODEL_DAILY_REPORT=openrouter/auto
+AI_STRATEGIST_PROVIDER=openai
+AI_STRATEGIST_ENDPOINT=https://openrouter.ai/api/v1/chat/completions
 AI_STRATEGIST_MODEL=openrouter/auto
+AI_STRATEGIST_TIMEOUT_SEC=15
+AI_STRATEGIST_MAX_TOKENS=4096
+AI_STRATEGIST_STRICT=true
+ALLOW_LEGACY_RULE_RUNTIME=false
+ALLOW_LEGACY_STRATEGY_V1_RUNTIME=false
 ```
 
 Next Steps:

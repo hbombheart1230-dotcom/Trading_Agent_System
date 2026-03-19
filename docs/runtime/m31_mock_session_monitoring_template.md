@@ -82,7 +82,8 @@ Get-Content data/logs/dev/live/events_live.jsonl -Tail 30
 
 - If `strategist_error` increases:
   - check provider/API health and retry behavior.
-  - if needed, switch to fallback (`AI_STRATEGIST_PROVIDER=rule`) and continue safely.
+  - do not switch to implicit rule fallback during canonical AI strategist operation.
+  - keep strategist blocked/noop, inspect `AI_STRATEGIST_*` config and provider health first.
 - If `model_no_signal` is dominant:
   - verify snapshot quality (`price/cash/open_positions`), then review feature inputs.
 - If latency is persistently high:

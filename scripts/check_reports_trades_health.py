@@ -137,11 +137,14 @@ def audit_reports_trades_health(reports_root: Path, *, day: str = "") -> Dict[st
             if not payload:
                 continue
             status = str(payload.get("status") or "").strip().lower()
+            meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+            if component == "strategist" and bool(meta.get("synthetic_placeholder")):
+                llm_status_counts["strategist:synthetic_placeholder"] += 1
+                continue
             if status:
                 llm_status_counts[f"{component}:{status}"] += 1
             if component == "ai_trade_report" and status in {"partial", "salvaged", "repaired"}:
                 missing = payload.get("required_keys_missing") if isinstance(payload.get("required_keys_missing"), list) else []
-                meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
                 parse_error = str(meta.get("parse_error") or payload.get("error") or "").strip()
                 issues.append(
                     _issue(
@@ -155,7 +158,6 @@ def audit_reports_trades_health(reports_root: Path, *, day: str = "") -> Dict[st
                 )
                 issue_counts["llm_partial"] += 1
             elif component == "brief" and status == "error":
-                meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
                 reason = str(meta.get("reason") or payload.get("error") or "").strip()
                 issues.append(
                     _issue(

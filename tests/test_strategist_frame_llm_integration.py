@@ -3,8 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+import pytest
+
 from graphs.nodes.strategist_node import _build_compact_strategist_llm_payload, strategist_node
 from libs.research.strategy_memory_store import save_strategy_feedback
+
+
+@pytest.fixture(autouse=True)
+def _default_strategist_llm_env(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "dummy")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions")
 
 
 class _MemoryLogger:
@@ -542,3 +552,37 @@ def test_strategist_frame_llm_max_tokens_falls_back_to_ai_strategist_setting(mon
 
     assert isinstance(_FakeRouterCapturePolicy.last_policy, dict)
     assert int(_FakeRouterCapturePolicy.last_policy.get("max_tokens") or 0) == 320
+
+
+def test_strategist_frame_llm_timeout_falls_back_to_ai_strategist_setting(monkeypatch):
+    monkeypatch.delenv("STRATEGIST_FRAME_LLM_TIMEOUT_SEC", raising=False)
+    monkeypatch.setenv("AI_STRATEGIST_TIMEOUT_SEC", "15")
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterCapturePolicy)
+
+    logger = _MemoryLogger()
+    strategist_node(_base_state(logger))
+
+    assert isinstance(_FakeRouterCapturePolicy.last_policy, dict)
+    assert float(_FakeRouterCapturePolicy.last_policy.get("timeout_sec") or 0.0) == 15.0
+
+
+def test_strategist_frame_llm_missing_config_blocks_runtime(monkeypatch):
+    monkeypatch.delenv("STRATEGIST_FRAME_USE_LLM", raising=False)
+    monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
+    monkeypatch.delenv("AI_STRATEGIST_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("AI_STRATEGIST_ENDPOINT", raising=False)
+    monkeypatch.setenv("DRY_RUN", "false")
+
+    logger = _MemoryLogger()
+    out = strategist_node(_base_state(logger))
+
+    strategist_output = out.get("strategist_output") or {}
+    strategist_llm = out.get("strategist_llm") or {}
+    assert strategist_output.get("llm_frame_status") == "unavailable"
+    assert strategist_output.get("llm_frame_blocked") is True
+    assert strategist_output.get("llm_frame_blocked_reason") == "strategist_llm_required"
+    assert strategist_llm.get("blocked") is True
+    assert strategist_llm.get("blocked_reason") == "strategist_llm_required"

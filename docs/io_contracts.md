@@ -109,7 +109,7 @@
   - Strategist owns generation
   - Scanner consumes `scanner_policy`
   - Monitor consumes `monitor_policy`
-  - decide/strategy-v1 consumes `entry_policy` and `decision_policy`
+  - decide consumes `entry_policy` and `decision_policy`
   - Commander must not mutate numeric strategy math
 - `strategist_llm` (additive runtime snapshot)
   - `status`
@@ -216,8 +216,6 @@
   - `supervisor_details`
 
 ## Strategy Policy Decision Contract (`strategy_policy.decision_policy`)
-- `use_strategy_v1_engine`
-- `strategy_v1_name`
 - `allow_score_override`
 - `score_override_scope`
 - `buy_threshold`
@@ -225,12 +223,16 @@
 - `high_vol_abs_threshold`
 - `news_buy_threshold`
 - `news_sell_threshold`
+- legacy-only optional fields:
+  - `use_strategy_v1_engine`
+  - `strategy_v1_name`
+  - `strategy_variant_hint`
 - preferred precedence: strategist-owned policy first, environment fallback second
 - recommended default: `score_override_scope=llm_only`
   - expected usage:
     - read-only policy context
     - sizing / hard-rail guard explanation
-    - not a second strategy engine
+    - not a second active runtime strategy engine in canonical AI strategist mode
 
 ## Minimal Decision Trace / Reason Ledger (additive)
 - Runtime keys:

@@ -11,13 +11,8 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_MAX_TOKENS", "256")
     monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "3")
     monkeypatch.setenv("AI_STRATEGIST_RETRY_BACKOFF_SEC", "0.25")
-    monkeypatch.setenv("AI_STRATEGIST_PROMPT_VERSION", "pv-test")
-    monkeypatch.setenv("AI_STRATEGIST_SCHEMA_VERSION", "intent.v1-test")
-    monkeypatch.setenv("AI_STRATEGIST_PROMPT_COST_PER_1K_USD", "0.003")
-    monkeypatch.setenv("AI_STRATEGIST_COMPLETION_COST_PER_1K_USD", "0.015")
     monkeypatch.setenv("AI_STRATEGIST_CB_FAIL_THRESHOLD", "4")
     monkeypatch.setenv("AI_STRATEGIST_CB_COOLDOWN_SEC", "90")
-    monkeypatch.setenv("AI_STRATEGIST_JSON_RESPONSE_FORMAT", "false")
 
     s = prov.OpenAIStrategist.from_env()
     assert s.api_key == "k"
@@ -27,13 +22,13 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     assert s.max_tokens == 256
     assert s.retry_max == 3
     assert abs(float(s.retry_backoff_sec) - 0.25) < 1e-9
-    assert s.prompt_version == "pv-test"
-    assert s.schema_version == "intent.v1-test"
-    assert abs(float(s.prompt_cost_per_1k_usd) - 0.003) < 1e-12
-    assert abs(float(s.completion_cost_per_1k_usd) - 0.015) < 1e-12
+    assert s.prompt_version == prov.DEFAULT_PROMPT_VERSION
+    assert s.schema_version == prov.DEFAULT_SCHEMA_VERSION
+    assert abs(float(s.prompt_cost_per_1k_usd) - 0.0) < 1e-12
+    assert abs(float(s.completion_cost_per_1k_usd) - 0.0) < 1e-12
     assert s.cb_fail_threshold == 4
     assert abs(float(s.cb_cooldown_sec) - 90.0) < 1e-9
-    assert s.json_response_format is False
+    assert s.json_response_format is True
 
 
 def test_m20_1_from_env_normalizes_openrouter_alias_model(monkeypatch):
@@ -344,7 +339,7 @@ def test_m20_1_openrouter_chat_content_json_is_adapted(monkeypatch):
         }
 
     monkeypatch.setattr(prov, "_post_json", fake_post_json)
-    monkeypatch.setenv("OPENROUTER_MODEL_STRATEGIST", "anthropic/claude-3.5-sonnet")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "anthropic/claude-3.5-sonnet")
 
     s = prov.OpenAIStrategist(
         api_key="k",

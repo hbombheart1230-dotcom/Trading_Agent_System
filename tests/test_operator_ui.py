@@ -116,6 +116,34 @@ class _TimeoutThenEmptyRouter:
         return ""
 
 
+class _CaptureBriefPolicyRouter:
+    policies: list[dict] = []
+
+    def __init__(self) -> None:
+        self.client = object()
+
+    def chat(self, role: str, messages: list[dict], *, policy: dict | None = None) -> str:
+        _CaptureBriefPolicyRouter.policies.append(dict(policy or {}))
+        model = (policy or {}).get("model") or ""
+        return json.dumps(
+            {
+                "headline": "run-1 운영 요약",
+                "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
+                "strategist_summary": f"전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다. model={model}",
+                "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 1등으로 골랐습니다.",
+                "monitor_summary": "모니터는 no_position 상태를 보고 진입 가능 상태로 판단했습니다.",
+                "supervisor_summary": "감독관은 주문을 허용했습니다.",
+                "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
+                "reporter_summary": "리포터는 오늘 run을 정상으로 요약했습니다.",
+                "operator_takeaways": [
+                    "뉴스/거시 입력이 포함됐습니다.",
+                    "차트/feature coverage가 strong입니다.",
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+
 def _make_config(tmp_path: Path) -> OperatorUIConfig:
     reports = tmp_path / "reports"
     events = tmp_path / "data" / "logs" / "events.jsonl"
@@ -833,6 +861,7 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     compact_payload = json.loads(brief_compact.read_text(encoding="utf-8"))
     assert compact_payload["component"] == "brief"
     assert isinstance(compact_payload["compact_input"], dict)
+    assert compact_payload["compact_input_char_count"] < compact_payload["source_char_count"]
     brief_llm = brief_json.parent / "brief_llm_response.json"
     assert brief_llm.exists() is True
     assert json.loads(brief_llm.read_text(encoding="utf-8"))["component"] == "brief"
@@ -875,6 +904,20 @@ def test_operator_brief_detail_force_regenerates_saved_artifact(tmp_path: Path, 
 
     assert refreshed["headline"] != "stale saved headline"
     assert brief_input.exists() is True
+
+
+def test_operator_brief_uses_openrouter_default_max_tokens_when_role_value_missing(tmp_path: Path, monkeypatch) -> None:
+    _CaptureBriefPolicyRouter.policies = []
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _CaptureBriefPolicyRouter()))
+    monkeypatch.delenv("OPERATOR_UI_RUN_BRIEF_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MAX_TOKENS", "4096")
+    cfg = _make_config(tmp_path)
+
+    detail = data_access.load_run_detail(cfg, "run-1")
+
+    assert detail["operator_brief"]["status"] == "ok"
+    assert _CaptureBriefPolicyRouter.policies
+    assert int(_CaptureBriefPolicyRouter.policies[0]["max_tokens"]) == 4096
 
 
 def test_operator_brief_writes_failure_artifact_after_retries(tmp_path: Path, monkeypatch) -> None:

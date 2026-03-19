@@ -97,6 +97,39 @@ class _MissingKeysRouter:
         )
 
 
+class _CapturePolicyRouter:
+    last_policies: List[Dict[str, Any]] = []
+
+    def __init__(self) -> None:
+        self.client = object()
+
+    @staticmethod
+    def from_env() -> "_CapturePolicyRouter":
+        _CapturePolicyRouter.last_policies = []
+        return _CapturePolicyRouter()
+
+    def resolve(self, role: str, *, policy: Dict[str, Any] | None = None) -> _Route:
+        return _Route(str((policy or {}).get("model") or "openrouter/free"))
+
+    def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+        _CapturePolicyRouter.last_policies.append(dict(policy or {}))
+        return (
+            '{"executive_summary":{"headline":"HOLD 000660","action":"HOLD","symbol":"000660","confidence":"high","summary":"ok"},'
+            '"market_context_at_entry":{"summary":"context","bullets":["vix noted"]},'
+            '"why_this_symbol_was_chosen":{"summary":"rank #1","bullets":["top value"]},'
+            '"entry_decision":{"summary":"entry","bullets":[]},'
+            '"holding_monitoring_story":{"summary":"hold","bullets":[]},'
+            '"exit_decision":{"summary":"open trade","bullets":[]},'
+            '"execution_quality":{"summary":"execution","bullets":[]},'
+            '"scanner_filters":{"summary":"filters","bullets":[]},'
+            '"guard_approval_result":{"summary":"guard","bullets":[]},'
+            '"reporter_evaluation":{"summary":"reporter","status":"pending","grade":"N/A","bullets":[]},'
+            '"errors_weaknesses_improvement_points":{"summary":"none","bullets":[]},'
+            '"full_timeline":[{"event":"entry","ts":"2026-03-18T00:00:00+00:00","description":"entry"}],'
+            '"final_operator_conclusion":{"summary":"hold","current_action":"HOLD","watch_next":["watch"],"thesis_invalidation":["stop"]}}'
+        )
+
+
 def _story_input() -> Dict[str, Any]:
     return {
         "trade_id": "TRD_20260318_000660_01",
@@ -212,3 +245,15 @@ def test_ai_trade_report_compact_input_is_smaller_than_full_story() -> None:
 
     assert compact_len < full_len
     assert "holding_events" not in json.dumps(compact_input, ensure_ascii=False)
+
+
+def test_ai_trade_report_uses_openrouter_default_max_tokens_when_role_value_missing(monkeypatch) -> None:
+    monkeypatch.setattr(mod, "LLMRouter", _CapturePolicyRouter)
+    monkeypatch.delenv("TRADE_REPORT_AI_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MAX_TOKENS", "4096")
+
+    report = mod.build_ai_trade_report(_story_input(), enabled=True, model="free")
+
+    assert report["generation"]["status"] == "ok"
+    assert _CapturePolicyRouter.last_policies
+    assert int(_CapturePolicyRouter.last_policies[0]["max_tokens"]) == 4096

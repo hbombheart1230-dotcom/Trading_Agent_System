@@ -29,7 +29,7 @@
   - `scanner_policy` for candidate-source/score-weight/filter control
   - `entry_policy` for deterministic entry thresholds/sizing bounds
   - `monitor_policy` for deterministic exit guards and adaptive exit baseline
-  - `decision_policy` for strategy-v1 / score-override gating
+  - `decision_policy` for score-override and legacy strategy variant hints
 - May provide candidate hints (Top-N) as an additive signal.
 - Strategist defines HOW to fight; final stock selection remains Scanner responsibility.
 - Emits additive strategist contract fields in canonical `state["strategist_output"]`.
@@ -38,7 +38,9 @@
   - Strategist prefers deduped daily latest summaries under `data/strategy_memory/daily/`
   - advisory only; does not hard-force themes/playbooks or mutate runtime configs
 - Optional LLM strategic-frame pass can override strategist fields additively.
-  - bounded by strategist contract normalization + deterministic fallback
+  - bounded by strategist contract normalization
+  - canonical env path is `AI_STRATEGIST_*`
+  - in `AI_STRATEGIST_PROVIDER=openai` mode, missing config/response should block trading rather than fall back to rule/v1 runtime
   - observability via EventLog `stage=strategist_llm`, `event=result`
 - Writes a canonical per-run source artifact under `reports/canonical/<day>/<run_id>/strategist.json`.
   - this artifact is the primary source of strategist rationale for reporting/UI
@@ -137,8 +139,6 @@
 ## Decision Policy
 - `strategy_policy.decision_policy` should be the preferred owner for deterministic decision toggles.
 - Current preferred fields:
-  - `use_strategy_v1_engine`
-  - `strategy_v1_name`
   - `allow_score_override`
   - `score_override_scope`
   - `buy_threshold`
@@ -146,8 +146,12 @@
   - `high_vol_abs_threshold`
   - `news_buy_threshold`
   - `news_sell_threshold`
+- Legacy-only fields:
+  - `use_strategy_v1_engine`
+  - `strategy_v1_name`
+  - `strategy_variant_hint`
 - recommended default: `score_override_scope=llm_only`
-- intent: score-override remains a salvage path for LLM NOOPs, not a competing override on deterministic strategy-v1 decisions
+- intent: score-override remains a salvage path for strategist LLM NOOPs, not a competing runtime path against canonical strategist mode
 - Environment variables may remain as fallback defaults, but operator-visible behavior should prefer strategist-owned policy when present.
   - must not recompute playbook/theme/news interpretation
   - should explain blocks in operator-facing terms using policy-aware guard details
