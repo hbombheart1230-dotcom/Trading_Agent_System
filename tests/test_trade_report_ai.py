@@ -100,6 +100,7 @@ class _MissingKeysRouter:
 class _ProseThenCompleteJsonRouter:
     def __init__(self) -> None:
         self.client = object()
+        self.calls = 0
 
     @staticmethod
     def from_env() -> "_ProseThenCompleteJsonRouter":
@@ -109,8 +110,11 @@ class _ProseThenCompleteJsonRouter:
         return _Route(str((policy or {}).get("model") or "openrouter/free"))
 
     def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+        self.calls += 1
+        prefix = "I will now return the final JSON object only. " if self.calls == 1 else ""
         return (
-            "I will now return the final JSON object only. "
+            prefix
+            +
             '{"executive_summary":{"headline":"HOLD 000660","action":"HOLD","symbol":"000660","confidence":"high","summary":"ok"},'
             '"market_context_at_entry":{"summary":"context","bullets":["vix noted"]},'
             '"why_this_symbol_was_chosen":{"summary":"rank #1","bullets":["top value"]},'
@@ -236,12 +240,32 @@ def test_ai_trade_report_complete_json_with_leading_prose_is_repaired(monkeypatc
 
     report = mod.build_ai_trade_report(_story_input(), enabled=True, model="free")
 
-    assert report["generation"]["status"] == "repaired"
+    assert report["generation"]["status"] == "ok"
     artifact = report["llm_response_artifact"]
-    assert artifact["status"] == "repaired"
+    assert artifact["status"] == "ok"
+    assert artifact["parse_mode"] == "full"
+    assert artifact["required_keys_missing"] == []
+    assert artifact["completeness_score"] == 1.0
+    assert artifact["retry_count"] == 1
+    assert len(artifact["attempts"]) == 2
+    assert artifact["attempts"][0]["status"] == "partial"
+    assert artifact["attempts"][1]["status"] == "ok"
+
+
+def test_ai_trade_report_complete_json_with_leading_prose_is_ok_when_extracted_cleanly(monkeypatch):
+    monkeypatch.setattr(mod, "LLMRouter", _ProseThenCompleteJsonRouter)
+    monkeypatch.setenv("TRADE_REPORT_AI_RETRY_MAX", "0")
+
+    report = mod.build_ai_trade_report(_story_input(), enabled=True, model="free")
+
+    assert report["generation"]["status"] == "ok"
+    artifact = report["llm_response_artifact"]
+    assert artifact["status"] == "ok"
     assert artifact["parse_mode"] == "partial"
     assert artifact["required_keys_missing"] == []
     assert artifact["completeness_score"] == 1.0
+    assert artifact["retry_count"] == 0
+    assert artifact["finish_reason"] == "complete_json_extracted_after_protocol_deviation"
 
 
 def test_ai_trade_report_messages_use_compact_projection() -> None:
@@ -295,6 +319,18 @@ def test_ai_trade_report_repair_messages_do_not_reinject_non_json_reasoning() ->
     assert "[previous response was non-JSON reasoning or invalid text; ignore it]" in user_prompt
     assert "First, the user says" not in user_prompt
     assert "Never describe your plan" in system_prompt
+
+
+def test_ai_trade_report_repair_messages_strip_reasoning_from_partial_json_response() -> None:
+    raw = (
+        "First, I will think step by step. "
+        '{"executive_summary":{"headline":"HOLD 000660","action":"HOLD","symbol":"000660","confidence":"high","summary":"ok"}}'
+    )
+    messages = mod._build_repair_messages(_story_input(), raw)
+    user_prompt = str(messages[1]["content"])
+
+    assert "First, I will think step by step." not in user_prompt
+    assert '"executive_summary"' in user_prompt
 
 
 def test_ai_trade_report_sparse_repair_messages_use_shorter_contract() -> None:
@@ -426,6 +462,49 @@ def test_ai_trade_report_fallback_preserves_structured_market_context_fields() -
     assert report["why_this_symbol_was_chosen"]["universe_size"] == 5
 
 
+def test_ai_trade_report_fallback_enriches_scanner_summary_and_basis() -> None:
+    story_input = _story_input()
+    story_input["market_context_human"] = {
+        "playbook": "breakout",
+    }
+    story_input["scanner_reason_human"] = {
+        "selected_symbol": "000660",
+        "selected_rank": 1,
+        "universe_size": 5,
+        "selected_score": 1.178,
+        "ranking_basis": ["trading value", "theme and sector alignment"],
+        "selected_sources": ["top_value", "sector_theme"],
+        "confidence": 0.81,
+        "runner_ups_lost": [
+            {"symbol": "005930", "summary": "lower total score and higher risk"},
+            {"symbol": "047040", "summary": "lower confidence and higher risk"},
+        ],
+        "summary": "scanner selected rank #1",
+        "bullets": ["Universe scanned: 5", "Selected rank: #1"],
+    }
+    story_input["entry_summary"] = {
+        "run_id": "run-entry",
+        "ts": "2026-03-18T00:00:00+00:00",
+        "action": "BUY",
+    }
+
+    report = mod._fallback_report(
+        story_input,
+        status="salvaged",
+        mode="ai",
+        model="openrouter/free",
+        reason="partial",
+    )
+
+    why_summary = report["why_this_symbol_was_chosen"]["summary"]
+    entry_summary = report["entry_decision"]["summary"]
+    assert "Scanner selected 000660 as rank #1 out of 5 candidates with score 1.178" in why_summary
+    assert "source mix: top_value, sector_theme" in why_summary
+    assert "005930 trailed because lower total score and higher risk" in why_summary
+    assert report["why_this_symbol_was_chosen"]["basis"] == "trading value, theme and sector alignment"
+    assert "The entry decision proceeded as BUY." in entry_summary
+
+
 def test_ai_trade_report_merge_keeps_priority_fallback_scanner_bullets() -> None:
     story_input = _story_input()
     story_input["scanner_reason_human"] = {
@@ -532,3 +611,82 @@ def test_ai_trade_report_merge_prefers_detailed_monitor_fallback_when_ai_bullets
     assert any(str(row).startswith("Posture:") for row in bullets)
     assert any(str(row).startswith("Effective stop:") for row in bullets)
     assert any(str(row).startswith("Decision chain:") for row in bullets)
+
+
+def test_ai_trade_report_fallback_exit_decision_uses_exit_monitor_context_details() -> None:
+    story_input = _story_input()
+    story_input["status"] = "closed"
+    story_input["exit_summary"] = {
+        "run_id": "run-exit",
+        "ts": "2026-03-18T00:10:00+00:00",
+        "action": "SELL",
+        "reason_human": "SELL was triggered because hard_stop.",
+        "monitor_context": {
+            "trigger_type": "hard_stop",
+            "active_exit_axis": "Hard Stop",
+            "confirm_required": 3,
+            "confirm_count": 0,
+            "effective_stop_loss_pct": 0.01,
+            "effective_stop_reason": "hard_stop",
+            "take_profit_pct": 0.0084,
+            "current_price": 29300.0,
+            "average_price": 29650.0,
+            "peak_price": 29650.0,
+            "current_drawdown": -0.0118,
+            "decision_reason_chain": ["confirmed_exit_signal", "hard_stop", "hard_stop"],
+            "price_source": "position.current_price",
+            "feature_source": "selected.features",
+        },
+        "guard_context": {"summary": "Supervisor approved the order because Allowed."},
+        "execution_context": {"summary": "SELL order for 032820 x1 was approved and recorded successfully in simulation mode."},
+    }
+
+    report = mod._fallback_report(
+        story_input,
+        status="salvaged",
+        mode="ai",
+        model="openrouter/free",
+        reason="partial",
+    )
+
+    summary = report["exit_decision"]["summary"]
+    bullets = report["exit_decision"]["bullets"]
+    assert "hard_stop" in summary
+    assert "confirmation 0/3" in summary
+    assert "current price 29300.00 versus average 29650.00" in summary
+    assert any(str(row).startswith("Trigger type: hard_stop") for row in bullets)
+    assert any(str(row).startswith("Effective stop at exit: 1.00%") for row in bullets)
+    assert any(str(row).startswith("Current price / avg / peak: 29300.00 / 29650.00 / 29650.00") for row in bullets)
+    assert any(str(row).startswith("Decision chain: confirmed_exit_signal -> hard_stop -> hard_stop") for row in bullets)
+
+
+def test_ai_trade_report_prefers_hangul_execution_bullets_without_english_duplicates() -> None:
+    story_input = _story_input()
+    report = mod._merge_trade_report_candidate(
+        story_input,
+        {
+            "executive_summary": {"headline": "HOLD 000660", "action": "HOLD", "symbol": "000660", "confidence": "high", "summary": "ok"},
+            "market_context_at_entry": {"summary": "context", "bullets": ["vix noted"]},
+            "why_this_symbol_was_chosen": {"summary": "rank #1", "bullets": ["selected for strength"]},
+            "entry_decision": {"summary": "entry", "bullets": []},
+            "holding_monitoring_story": {"summary": "hold", "bullets": []},
+            "exit_decision": {"summary": "open trade", "bullets": []},
+            "execution_quality": {
+                "summary": "실행이 정상 완료되었습니다.",
+                "bullets": ["실행 결과: 기록됨", "수량: 1", "실행 모드: 시뮬레이션 (모의 브로커)"],
+            },
+            "scanner_filters": {"summary": "filters", "bullets": []},
+            "guard_approval_result": {"summary": "guard", "bullets": []},
+            "reporter_evaluation": {"summary": "reporter", "status": "pending", "grade": "N/A", "bullets": []},
+            "errors_weaknesses_improvement_points": {"summary": "none", "bullets": []},
+            "full_timeline": [{"event": "entry", "ts": "2026-03-18T00:00:00+00:00", "description": "entry"}],
+            "final_operator_conclusion": {"summary": "hold", "current_action": "HOLD", "watch_next": ["watch"], "thesis_invalidation": ["stop"]},
+        },
+        status="ok",
+        mode="ai",
+        model="openrouter/free",
+        reason="ok",
+    )
+
+    bullets = report["execution_quality"]["bullets"]
+    assert bullets == ["실행 결과: 기록됨", "수량: 1", "실행 모드: 시뮬레이션 (모의 브로커)"]

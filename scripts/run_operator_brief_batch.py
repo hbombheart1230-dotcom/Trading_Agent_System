@@ -28,10 +28,28 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate operator briefs under reports/trades for one day.")
     parser.add_argument("--env-path", default=".env")
     parser.add_argument("--day", required=True)
-    parser.add_argument("--trade-id", default="", help="Optional single trade_id filter.")
+    parser.add_argument("--trade-id", action="append", default=[], help="Optional trade_id filter. Repeat the flag to process multiple trades.")
     parser.add_argument("--force", action="store_true", help="Force brief regeneration even if saved artifacts already exist.")
     parser.add_argument("--json", action="store_true")
     return parser
+
+
+def _normalize_trade_id_filters(values: Any) -> List[str]:
+    raw_values: List[str] = []
+    if isinstance(values, list):
+        raw_values = [str(value or "") for value in values]
+    elif values not in (None, ""):
+        raw_values = [str(values or "")]
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        for part in str(raw or "").split(","):
+            trade_id = str(part or "").strip()
+            if not trade_id or trade_id in seen:
+                continue
+            out.append(trade_id)
+            seen.add(trade_id)
+    return out
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -52,8 +70,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     rows: List[Dict[str, Any]] = []
     trade_dirs = sorted(path for path in trade_day_root.iterdir() if path.is_dir())
-    if str(args.trade_id or "").strip():
-        trade_dirs = [path for path in trade_dirs if path.name == str(args.trade_id or "").strip()]
+    trade_id_filters = _normalize_trade_id_filters(args.trade_id)
+    if trade_id_filters:
+        allowed = set(trade_id_filters)
+        trade_dirs = [path for path in trade_dirs if path.name in allowed]
     for trade_dir in trade_dirs:
         story_id = trade_dir.name
         brief = dac.load_operator_brief_detail(cfg, story_id)

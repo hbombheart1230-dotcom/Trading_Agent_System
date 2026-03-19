@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -133,6 +134,16 @@ def _write_legacy_text(path: Path, text: str) -> str:
     return str(path)
 
 
+def _read_json_if_exists(path: Path) -> Dict[str, Any]:
+    try:
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
 def _latest_strategist_evidence_ledger_row(
     evidence_rows: List[Dict[str, Any]],
     strategist_run_ids: List[str],
@@ -218,15 +229,15 @@ def _flatten_news_titles(sample: Any, *, max_groups: int = 3, max_titles_per_gro
 
     def _extract_title(row: Any) -> str:
         if isinstance(row, dict):
-            return str(row.get("title") or "").strip()
+            return html.unescape(str(row.get("title") or "").strip())
         text = str(row or "").strip()
         if not text:
             return ""
         for pattern in (r"title='([^']+)'", r'title="([^"]+)"'):
             match = re.search(pattern, text)
             if match:
-                return str(match.group(1) or "").strip()
-        return text[:160]
+                return html.unescape(str(match.group(1) or "").strip())
+        return html.unescape(text[:160])
 
     for symbol, rows in list(sample.items())[:max_groups]:
         items = rows
@@ -2437,6 +2448,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         trade_report: Dict[str, Any] = {}
         ai_trade_report_llm_artifact: Dict[str, Any] = {}
+        existing_trade_report_artifact = _read_json_if_exists(trade_report_json_path)
+        existing_ai_trade_report_llm_artifact = _read_json_if_exists(ai_trade_report_llm_response_path)
         if should_attempt_generation:
             diagnostics["generation_attempted"] = True
             diagnostics["generation_ts"] = utc_now_iso()
@@ -2522,12 +2535,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                 diagnostics["report_output_available"] = False
                 diagnostics["report_artifact_available"] = False
         else:
-            if trade_report_json_path.exists():
-                trade_report_json_path.unlink()
-            if trade_report_md_path.exists():
-                trade_report_md_path.unlink()
-            if ai_trade_report_llm_response_path.exists():
-                ai_trade_report_llm_response_path.unlink()
+            if trade_report_json_path.exists() or trade_report_md_path.exists() or ai_trade_report_llm_response_path.exists():
+                trade_report_json_written = str(trade_report_json_path) if trade_report_json_path.exists() else ""
+                trade_report_md_written = str(trade_report_md_path) if trade_report_md_path.exists() else ""
+                ai_trade_report_llm_response_written = (
+                    str(ai_trade_report_llm_response_path) if ai_trade_report_llm_response_path.exists() else ""
+                )
+                diagnostics["report_output_available"] = bool(trade_report_json_written or trade_report_md_written)
+                diagnostics["report_artifact_available"] = bool(trade_report_json_written or trade_report_md_written)
+                llm_model_hint = (
+                    existing_ai_trade_report_llm_artifact.get("model")
+                    or ((existing_trade_report_artifact.get("generation") or {}).get("model") if isinstance(existing_trade_report_artifact.get("generation"), dict) else "")
+                    or configured_report_model
+                )
+                diagnostics["llm_model_used"] = _normalize_model_name(llm_model_hint) or diagnostics.get("llm_model_used") or "openrouter/free"
+                diagnostics["report_status"] = "available"
+                diagnostics["report_reason_code"] = ""
+                diagnostics["report_reason_human"] = "Existing AI trade report artifact was preserved during bundle refresh."
+                diagnostics["next_expected_step"] = "Open the full report for detailed lifecycle analysis."
 
         lifecycle["ai_report_diagnostics"] = dict(diagnostics)
         lifecycle_bundle["ai_report_diagnostics"] = dict(diagnostics)
@@ -2657,7 +2682,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         _write_legacy_json(trade_paths["legacy_trade_lifecycle_json"], lifecycle)
         _write_legacy_json(trade_paths["legacy_aggregated_execution_bundle_json"], lifecycle_bundle)
         _write_legacy_json(trade_paths["legacy_trade_story_input_json"], trade_story_input)
-        if trade_report_json_written:
+        if trade_report_json_written and trade_report:
             _write_legacy_json(trade_paths["legacy_trade_report_json"], trade_report)
             _write_legacy_text(trade_paths["legacy_trade_report_md"], render_trade_report_markdown(trade_report))
 

@@ -380,6 +380,78 @@ def _build_market_context_bullets(section: Any) -> List[str]:
     return _dedupe_list(bullets + extras, max_items=12, max_len=260)
 
 
+def _fmt_num(value: Any, *, digits: int = 3) -> str:
+    try:
+        return f"{float(value):.{digits}f}"
+    except Exception:
+        return "-"
+
+
+def _scanner_basis_text(scanner_reason: Dict[str, Any]) -> str:
+    basis = scanner_reason.get("ranking_basis")
+    if isinstance(basis, list):
+        return ", ".join(_listify(basis, max_items=4, max_len=80))
+    return _clip(basis, max_len=220)
+
+
+def _build_scanner_choice_summary(scanner_reason: Dict[str, Any], market_context: Dict[str, Any]) -> str:
+    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "the selected symbol"
+    rank = scanner_reason.get("selected_rank")
+    universe = scanner_reason.get("universe_size")
+    score_text = _fmt_num(scanner_reason.get("selected_score"))
+    basis = _scanner_basis_text(scanner_reason)
+    sources = ", ".join(_listify(scanner_reason.get("selected_sources"), max_items=4, max_len=80))
+    confidence = _fmt_num(scanner_reason.get("confidence"))
+    playbook = _clip(market_context.get("playbook"), max_len=32)
+    comparison_bits: List[str] = []
+    for row in list(scanner_reason.get("runner_ups_lost") or [])[:2]:
+        if not isinstance(row, dict):
+            continue
+        runner_symbol = _clip(row.get("symbol"), max_len=24)
+        runner_summary = _clip(row.get("summary"), max_len=180)
+        if runner_symbol and runner_summary:
+            comparison_bits.append(f"{runner_symbol} trailed because {runner_summary}")
+
+    summary = f"Scanner selected {symbol}"
+    if rank not in (None, ""):
+        summary += f" as rank #{rank}"
+    if universe not in (None, ""):
+        summary += f" out of {int(universe)} candidates"
+    if score_text != "-":
+        summary += f" with score {score_text}"
+    if basis:
+        summary += f" on {basis}"
+    summary += "."
+    details: List[str] = []
+    if sources:
+        details.append(f"source mix: {sources}")
+    if confidence != "-":
+        details.append(f"confidence {confidence}")
+    if playbook:
+        details.append(f"aligned with strategist playbook {playbook}")
+    if details:
+        summary += " " + ", ".join(details) + "."
+    if comparison_bits:
+        summary += " " + " ".join(comparison_bits) + "."
+    return summary
+
+
+def _build_entry_decision_summary(
+    entry_summary: Dict[str, Any],
+    scanner_reason: Dict[str, Any],
+    market_context: Dict[str, Any],
+    action: str,
+) -> str:
+    reason_human = _clip(entry_summary.get("reason_human"), max_len=600)
+    if reason_human:
+        return reason_human
+    scanner_summary = _build_scanner_choice_summary(scanner_reason, market_context)
+    if scanner_summary:
+        entry_action = _clip(entry_summary.get("action"), max_len=24) or action or "BUY"
+        return f"{scanner_summary} The entry decision proceeded as {entry_action}."
+    return "Entry decision rationale was not captured."
+
+
 def _build_holding_story_summary(hold_count: int, monitor_reason: Dict[str, Any], status_text: str) -> str:
     posture = _clip(monitor_reason.get("posture"), max_len=32) or "not_captured"
     trigger = _clip(monitor_reason.get("trigger_type"), max_len=48) or "not_captured"
@@ -450,6 +522,90 @@ def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason
     ]
     for item in recent_updates:
         bullets.append(f"Recent monitor update: {item}")
+    return _dedupe_list(bullets, max_items=12, max_len=260)
+
+
+def _build_exit_decision_summary(
+    exit_summary: Dict[str, Any],
+    monitor_context: Dict[str, Any],
+    *,
+    status_text: str,
+) -> str:
+    reason = _clip(exit_summary.get("reason_human"), max_len=600)
+    if status_text.lower() == "open":
+        return reason or "Position is still open; no closing SELL execution has been captured yet."
+    if reason:
+        price = _fmt_price(monitor_context.get("current_price"))
+        avg_price = _fmt_price(monitor_context.get("average_price"))
+        drawdown = _fmt_pct(monitor_context.get("current_drawdown"))
+        axis = _clip(monitor_context.get("active_exit_axis"), max_len=64)
+        confirm_required = monitor_context.get("confirm_required")
+        confirm_count = monitor_context.get("confirm_count")
+        details: List[str] = []
+        if axis:
+            details.append(f"active exit axis {axis}")
+        if confirm_required is not None:
+            details.append(f"confirmation {int(confirm_count or 0)}/{int(confirm_required or 0)}")
+        if price != "-" and avg_price != "-":
+            details.append(f"current price {price} versus average {avg_price}")
+        if drawdown != "-":
+            details.append(f"drawdown {drawdown}")
+        if details:
+            return f"{reason} Exit context: " + ", ".join(details) + "."
+        return reason
+    return "Exit reasoning was not captured."
+
+
+def _build_exit_decision_bullets(
+    exit_summary: Dict[str, Any],
+    monitor_context: Dict[str, Any],
+    *,
+    status_text: str,
+) -> List[str]:
+    guard_context = exit_summary.get("guard_context") if isinstance(exit_summary.get("guard_context"), dict) else {}
+    execution_context = exit_summary.get("execution_context") if isinstance(exit_summary.get("execution_context"), dict) else {}
+    bullets: List[str] = [
+        f"Exit run: {_clip(exit_summary.get('run_id'), max_len=80) or 'not_captured'}",
+        f"Exit time: {_clip(exit_summary.get('ts'), max_len=80) or 'not_captured'}",
+        f"Exit action: {_clip(exit_summary.get('action'), max_len=40) or ('HOLD' if status_text == 'open' else 'not_captured')}",
+        f"Exit reason: {_clip(exit_summary.get('reason_human'), max_len=220) or ('position still open' if status_text == 'open' else 'not_captured')}",
+    ]
+    if _clip(monitor_context.get("trigger_type"), max_len=80):
+        bullets.append(f"Trigger type: {_clip(monitor_context.get('trigger_type'), max_len=80)}")
+    if _clip(monitor_context.get("active_exit_axis"), max_len=120):
+        bullets.append(f"Active exit axis: {_clip(monitor_context.get('active_exit_axis'), max_len=120)}")
+    if monitor_context.get("confirm_required") is not None:
+        bullets.append(
+            f"Exit confirmation: {int(monitor_context.get('confirm_count') or 0)}/{int(monitor_context.get('confirm_required') or 0)}"
+        )
+    effective_stop = _fmt_pct(monitor_context.get("effective_stop_loss_pct"))
+    if effective_stop != "-":
+        stop_reason = _clip(monitor_context.get("effective_stop_reason"), max_len=64)
+        suffix = f" ({stop_reason})" if stop_reason else ""
+        bullets.append(f"Effective stop at exit: {effective_stop}{suffix}")
+    take_profit = _fmt_pct(monitor_context.get("take_profit_pct"))
+    if take_profit != "-":
+        bullets.append(f"Take profit target at exit: {take_profit}")
+    current_price = _fmt_price(monitor_context.get("current_price"))
+    average_price = _fmt_price(monitor_context.get("average_price"))
+    peak_price = _fmt_price(monitor_context.get("peak_price"))
+    if current_price != "-" or average_price != "-" or peak_price != "-":
+        bullets.append(f"Current price / avg / peak: {current_price} / {average_price} / {peak_price}")
+    current_drawdown = _fmt_pct(monitor_context.get("current_drawdown"))
+    peak_drawdown = _fmt_pct(monitor_context.get("peak_drawdown"))
+    if current_drawdown != "-" or peak_drawdown != "-":
+        bullets.append(f"Current drawdown / peak drawdown: {current_drawdown} / {peak_drawdown}")
+    decision_chain = " -> ".join(_listify(monitor_context.get("decision_reason_chain"), max_items=5, max_len=80))
+    if decision_chain:
+        bullets.append(f"Decision chain: {decision_chain}")
+    if _clip(guard_context.get("summary"), max_len=220):
+        bullets.append(f"Guard verdict: {_clip(guard_context.get('summary'), max_len=220)}")
+    if _clip(execution_context.get("summary"), max_len=220):
+        bullets.append(f"Execution outcome: {_clip(execution_context.get('summary'), max_len=220)}")
+    if _clip(monitor_context.get("price_source"), max_len=80):
+        bullets.append(f"Price source: {_clip(monitor_context.get('price_source'), max_len=80)}")
+    if _clip(monitor_context.get("feature_source"), max_len=80):
+        bullets.append(f"Feature source: {_clip(monitor_context.get('feature_source'), max_len=80)}")
     return _dedupe_list(bullets, max_items=12, max_len=260)
 
 
@@ -650,7 +806,7 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_ai_trade_report_compact_input(story_input: Dict[str, Any]) -> Dict[str, Any]:
-    return _compact_story_input_for_llm(story_input)
+    return _sparse_story_input_for_llm(story_input)
 
 
 def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
@@ -954,6 +1110,8 @@ def _merge_section_with_fallback(ai_section: Any, fallback_section: Dict[str, An
     fallback_bullets = _listify(fallback.get("bullets"), max_items=12, max_len=260)
     if not ai_bullets:
         merged["bullets"] = fallback_bullets
+    elif section_key in {"execution_quality", "guard_approval_result"} and any(_contains_hangul(item) for item in ai_bullets):
+        merged["bullets"] = ai_bullets[:12]
     elif (
         fallback_bullets
         and section_key in {"holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision"}
@@ -1145,13 +1303,10 @@ def _fallback_report(
         or "The decision path was recorded, but the operator-facing summary is limited."
     )
     confidence = _clip(scanner_reason.get("confidence_label"), max_len=24) or _clip(scanner_reason.get("confidence"), max_len=24)
+    scanner_choice_summary = _build_scanner_choice_summary(scanner_reason, market_context)
 
     entry_decision = {
-        "summary": (
-            _clip(entry_summary.get("reason_human"), max_len=600)
-            or _clip(scanner_reason.get("summary"), max_len=600)
-            or "Entry decision rationale was not captured."
-        ),
+        "summary": _build_entry_decision_summary(entry_summary, scanner_reason, market_context, action),
         "bullets": [
             f"Entry run: {_clip(entry_summary.get('run_id'), max_len=80) or 'not_captured'}",
             f"Entry time: {_clip(entry_summary.get('ts'), max_len=80) or 'not_captured'}",
@@ -1173,32 +1328,14 @@ def _fallback_report(
         "summary": _build_holding_story_summary(hold_count, monitor_reason, status_text),
         "bullets": _build_holding_story_bullets(holding_summary, monitor_reason),
     }
+    exit_monitor_context = exit_summary.get("monitor_context") if isinstance(exit_summary.get("monitor_context"), dict) else {}
+    if exit_monitor_context:
+        exit_monitor_context = dict(exit_monitor_context)
+    else:
+        exit_monitor_context = dict(monitor_reason or {})
     exit_decision = {
-        "summary": (
-            _clip(exit_summary.get("reason_human"), max_len=600)
-            or ("Position is still open; no closing SELL execution has been captured yet." if status_text == "open" else "Exit reasoning was not captured.")
-        ),
-        "bullets": [
-            f"Exit run: {_clip(exit_summary.get('run_id'), max_len=80) or 'not_captured'}",
-            f"Exit time: {_clip(exit_summary.get('ts'), max_len=80) or 'not_captured'}",
-            f"Exit action: {_clip(exit_summary.get('action'), max_len=40) or ('HOLD' if status_text == 'open' else 'not_captured')}",
-            f"Exit reason: {_clip(exit_summary.get('reason_human'), max_len=220) or ('position still open' if status_text == 'open' else 'not_captured')}",
-        ]
-        + (
-            [f"Active exit axis: {_clip(monitor_reason.get('active_exit_axis'), max_len=120)}"]
-            if _clip(monitor_reason.get("active_exit_axis"), max_len=120)
-            else []
-        )
-        + (
-            [f"Exit confirmation: {int(monitor_reason.get('confirm_count') or 0)}/{int(monitor_reason.get('confirm_required') or 0)}"]
-            if monitor_reason.get("confirm_required") is not None
-            else []
-        )
-        + (
-            [f"Decision chain: {' -> '.join(_listify(monitor_reason.get('decision_reason_chain'), max_items=4, max_len=80))}"]
-            if _listify(monitor_reason.get("decision_reason_chain"), max_items=4, max_len=80)
-            else []
-        ),
+        "summary": _build_exit_decision_summary(exit_summary, exit_monitor_context, status_text=status_text),
+        "bullets": _build_exit_decision_bullets(exit_summary, exit_monitor_context, status_text=status_text),
     }
     execution_quality = {
         "summary": (
@@ -1257,12 +1394,12 @@ def _fallback_report(
             "stress_flags": _listify(market_context.get("stress_flags"), max_items=6, max_len=80),
         },
         "why_this_symbol_was_chosen": {
-            "summary": _clip(scanner_reason.get("summary"), max_len=600),
+            "summary": _clip(scanner_choice_summary or scanner_reason.get("summary"), max_len=600),
             "bullets": _listify(scanner_reason.get("bullets"), max_items=12, max_len=260),
             "selected_rank": scanner_reason.get("selected_rank"),
             "universe_size": scanner_reason.get("universe_size"),
             "symbol": _clip(scanner_reason.get("selected_symbol") or story_input.get("symbol"), max_len=32),
-            "basis": _clip(scanner_reason.get("ranking_basis"), max_len=220),
+            "basis": _scanner_basis_text(scanner_reason),
         },
         "entry_decision": entry_decision,
         "holding_monitoring_story": holding_story,
@@ -1435,7 +1572,7 @@ def _failure_report(
 
 def _trade_report_output_template() -> Dict[str, Any]:
     return {
-        "executive_summary": {"headline": "", "action": "", "symbol": "", "confidence": "", "summary": ""},
+        "executive_summary": {"headline": "", "summary": ""},
         "market_context_at_entry": {"summary": "", "bullets": [""]},
         "why_this_symbol_was_chosen": {"summary": "", "bullets": [""]},
         "entry_decision": {"summary": "", "bullets": [""]},
@@ -1444,10 +1581,10 @@ def _trade_report_output_template() -> Dict[str, Any]:
         "execution_quality": {"summary": "", "bullets": [""]},
         "scanner_filters": {"summary": "", "bullets": [""]},
         "guard_approval_result": {"summary": "", "bullets": [""]},
-        "reporter_evaluation": {"summary": "", "status": "", "grade": "", "bullets": [""]},
+        "reporter_evaluation": {"summary": "", "bullets": [""]},
         "errors_weaknesses_improvement_points": {"summary": "", "bullets": [""]},
         "full_timeline": [{"event": "", "ts": "", "description": ""}],
-        "final_operator_conclusion": {"summary": "", "current_action": "", "watch_next": [""], "thesis_invalidation": [""]},
+        "final_operator_conclusion": {"summary": "", "watch_next": [""], "thesis_invalidation": [""]},
     }
 
 
@@ -1503,8 +1640,11 @@ def _build_repair_messages(
     contract = _trade_report_output_template()
     previous_response = str(raw_response or "").strip()
     previous_parse = parse_llm_json_response(previous_response)
-    include_previous_response = bool(previous_parse.get("is_full") or previous_parse.get("is_partial"))
-    previous_response_text = previous_response[:1800] if include_previous_response else "[previous response was non-JSON reasoning or invalid text; ignore it]"
+    previous_response_text = "[previous response was non-JSON reasoning or invalid text; ignore it]"
+    if bool(previous_parse.get("is_full")):
+        previous_response_text = previous_response[:1800]
+    elif bool(previous_parse.get("is_partial")) and isinstance(previous_parse.get("partial_object"), dict):
+        previous_response_text = json.dumps(previous_parse.get("partial_object") or {}, ensure_ascii=False)[:1800]
     partial_note = ""
     if str(story_input.get("status") or "").strip().lower() == "partial":
         partial_note = (
@@ -1556,7 +1696,7 @@ def _build_repair_messages(
 
 
 def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
-    compact_input = _compact_story_input_for_llm(story_input)
+    compact_input = _sparse_story_input_for_llm(story_input)
     contract = _trade_report_output_template()
     partial_note = ""
     if str(story_input.get("status") or "").strip().lower() == "partial":
@@ -1572,7 +1712,7 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
                 "Use only the supplied input. Do not invent numbers, events, reasons, or evidence. "
                 "Return exactly one JSON object only. Do not add markdown, prose before the JSON, analysis text, or code fences. "
                 "Never describe your plan or say phrases like 'First, I need'. Any text before the JSON is invalid. "
-                "Begin with '{' and end with '}'. Keep the JSON keys exactly as specified. "
+                "Your first output character must be '{' and your final output character must be '}'. Keep the JSON keys exactly as specified. "
                 f"{AI_TRADE_REPORT_KOREAN_RULES} "
                 "If a value is not available, use an empty string, empty list, or null instead of guessing."
             ),
@@ -1594,12 +1734,15 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
                 "- If reporter linkage is missing, explain that clearly in Korean.\n"
                 "- Translate all human-readable text into Korean. Do not copy English source sentences into the final JSON.\n"
                 "- Keep symbol codes, JSON keys, BUY/SELL/HOLD/WAIT action codes, VIX, Kiwoom source ids, and timestamps unchanged.\n"
+                "- The deterministic report skeleton already exists. Only provide section narrative content instead of rebuilding metadata.\n"
+                "- Focus on section summaries, ranked comparisons, monitor reasoning, and operator-facing bullets.\n"
                 f"{partial_note}"
                 "Return only this JSON template with values filled in:\n"
                 f"{json.dumps(contract, ensure_ascii=False)}\n"
                 "Write 3 to 6 bullets for each section when evidence is available.\n"
                 "Make the summaries concise but operationally useful.\n"
                 "Do not omit ranked comparison details if they exist in the input.\n"
+                "Do not repeat action/symbol/status metadata outside the section narrative fields.\n"
                 f"Input:\n{json.dumps(compact_input, ensure_ascii=False)}"
             ),
         },
@@ -1678,7 +1821,7 @@ def build_ai_trade_report(
     temp = float(
         temperature
         if temperature is not None
-        else str(os.getenv("TRADE_REPORT_AI_TEMPERATURE", "0.1")).strip() or "0.1"
+        else str(os.getenv("TRADE_REPORT_AI_TEMPERATURE", "0.0")).strip() or "0.0"
     )
     token_budget = (
         int(max_tokens)
@@ -1793,7 +1936,8 @@ def build_ai_trade_report(
                     )
                 else:
                     parsed = candidate
-                    final_status = "repaired" if step.startswith("repair") else "ok"
+                    final_reason = ""
+                    final_status = "ok"
                     attempts.append(
                         make_attempt(
                             step=step,
@@ -1808,10 +1952,10 @@ def build_ai_trade_report(
                     )
                     break
             elif bool(parse_result.get("is_partial")) and candidate and not parse_meta.get("required_keys_missing"):
-                if bool(language_meta.get("requires_korean_repair")) and attempt_index < retry_max:
+                if attempt_index < retry_max:
                     final_status = "partial"
-                    final_reason = "trade_report_ai returned a complete JSON object with extra text, but the report sections remained mostly English"
-                    needs_korean_repair = True
+                    final_reason = "trade_report_ai returned a complete JSON object with extra non-JSON text; retrying strict JSON-only regeneration"
+                    needs_korean_repair = bool(language_meta.get("requires_korean_repair"))
                     attempts.append(
                         make_attempt(
                             step=step,
@@ -1826,8 +1970,8 @@ def build_ai_trade_report(
                     )
                 else:
                     parsed = candidate
-                    final_status = "repaired"
-                    final_reason = "trade_report_ai returned a complete JSON object with extra non-JSON text; the JSON payload was extracted and repaired"
+                    final_status = "ok"
+                    final_reason = ""
                     attempts.append(
                         make_attempt(
                             step=step,
@@ -1837,7 +1981,12 @@ def build_ai_trade_report(
                             model=chosen_model or resolved_model,
                             latency_ms=final_latency_ms,
                             status=final_status,
-                            meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
+                            meta={
+                                "role": "ai_trade_report",
+                                "finish_reason": "complete_json_extracted_after_protocol_deviation",
+                                **parse_meta,
+                                **language_meta,
+                            },
                         )
                     )
                     break

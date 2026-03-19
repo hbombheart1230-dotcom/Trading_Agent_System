@@ -67,6 +67,28 @@ def _issue(
     }
 
 
+def _ai_trade_report_is_complete(trade_dir: Path) -> bool:
+    report_path = _artifact_path(trade_dir, "ai_trade_report/ai_trade_report.json", "trade_report.json")
+    report = _read_json(report_path)
+    if not report:
+        return False
+    required_sections = (
+        "executive_summary",
+        "market_context_at_entry",
+        "why_this_symbol_was_chosen",
+        "entry_decision",
+        "holding_monitoring_story",
+        "exit_decision",
+        "execution_quality",
+        "scanner_filters",
+        "guard_approval_result",
+        "reporter_evaluation",
+        "errors_weaknesses_improvement_points",
+        "final_operator_conclusion",
+    )
+    return all(isinstance(report.get(key), dict) for key in required_sections)
+
+
 def audit_reports_trades_health(reports_root: Path, *, day: str = "") -> Dict[str, Any]:
     trade_dirs = _iter_trade_dirs(reports_root, day=day)
     issues: List[Dict[str, Any]] = []
@@ -156,17 +178,30 @@ def audit_reports_trades_health(reports_root: Path, *, day: str = "") -> Dict[st
             if component == "ai_trade_report" and status in {"partial", "salvaged", "repaired"}:
                 missing = payload.get("required_keys_missing") if isinstance(payload.get("required_keys_missing"), list) else []
                 parse_error = str(meta.get("parse_error") or payload.get("error") or "").strip()
-                issues.append(
-                    _issue(
-                        severity="warn",
-                        trade_id=trade_id,
-                        component=component,
-                        code="llm_partial",
-                        message=f"AI trade report LLM output is {status}; missing_keys={len(missing)} parse_error={parse_error[:120]}",
-                        path=path,
+                if _ai_trade_report_is_complete(trade_dir):
+                    issues.append(
+                        _issue(
+                            severity="info",
+                            trade_id=trade_id,
+                            component=component,
+                            code="llm_recovered",
+                            message=f"AI trade report LLM output is {status}, but the final report artifact is structurally complete.",
+                            path=path,
+                        )
                     )
-                )
-                issue_counts["llm_partial"] += 1
+                    issue_counts["llm_recovered"] += 1
+                else:
+                    issues.append(
+                        _issue(
+                            severity="warn",
+                            trade_id=trade_id,
+                            component=component,
+                            code="llm_partial",
+                            message=f"AI trade report LLM output is {status}; missing_keys={len(missing)} parse_error={parse_error[:120]}",
+                            path=path,
+                        )
+                    )
+                    issue_counts["llm_partial"] += 1
             elif component == "brief" and status == "error":
                 reason = str(meta.get("reason") or payload.get("error") or "").strip()
                 issues.append(

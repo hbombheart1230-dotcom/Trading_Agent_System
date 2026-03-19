@@ -3451,6 +3451,9 @@ def _compact_canonical_trade_for_brief(data: Any) -> Dict[str, Any]:
         "execution_mode_label": _trim_text(row.get("execution_mode_label"), max_len=48),
         "lifecycle_status": _trim_text(row.get("lifecycle_status"), max_len=24),
         "lifecycle_summary": _trim_text(row.get("lifecycle_summary"), max_len=220),
+        "current_action": _trim_text(row.get("current_action"), max_len=24),
+        "entry_reason": _trim_text(row.get("entry_reason"), max_len=180),
+        "exit_reason": _trim_text(row.get("exit_reason"), max_len=180),
         "market_context_summary": _trim_text(row.get("market_context_summary"), max_len=220),
         "market_context_bullets": _clean_str_list(row.get("market_context_bullets"), limit=6, max_len=180),
         "headline_count": row.get("headline_count"),
@@ -3593,6 +3596,120 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
     }
 
 
+_BRIEF_INTERNAL_TEXT_MARKERS = (
+    "canonical_trade.available",
+    "reports/trades",
+    "source of truth",
+    "run-level",
+    "1차 source of truth",
+)
+
+
+def _contains_internal_brief_marker(text: Any) -> bool:
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return False
+    return any(marker in raw for marker in _BRIEF_INTERNAL_TEXT_MARKERS)
+
+
+def _sanitize_operator_brief_text(text: Any) -> str:
+    cleaned = _trim_text(text, max_len=1000)
+    if not cleaned:
+        return ""
+    if _contains_internal_brief_marker(cleaned):
+        return ""
+    return cleaned
+
+
+def _count_hangul_chars(text: Any) -> int:
+    raw = str(text or "")
+    return sum(1 for ch in raw if "\uac00" <= ch <= "\ud7a3")
+
+
+def _prefer_richer_brief_text(primary: Any, fallback: Any, *, min_primary_len: int = 48) -> str:
+    cleaned_primary = _sanitize_operator_brief_text(primary)
+    cleaned_fallback = _sanitize_operator_brief_text(fallback)
+    if not cleaned_primary:
+        return cleaned_fallback
+    if not cleaned_fallback:
+        return cleaned_primary
+    primary_hangul = _count_hangul_chars(cleaned_primary) > 0
+    fallback_hangul = _count_hangul_chars(cleaned_fallback) > 0
+    if fallback_hangul and not primary_hangul and len(cleaned_fallback) >= len(cleaned_primary) + 16:
+        return cleaned_fallback
+    if len(cleaned_primary) < min_primary_len and len(cleaned_fallback) >= len(cleaned_primary) + 20:
+        return cleaned_fallback
+    return cleaned_primary
+
+
+def _should_replace_brief_monitor_summary(detail: Dict[str, Any], summary_text: str) -> bool:
+    raw = str(summary_text or "").strip().lower()
+    if not raw:
+        return True
+    if "no_position" not in raw and "포지션 없음" not in raw:
+        return False
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    lifecycle_status = str(trade_report.get("lifecycle_status") or "").strip().lower()
+    report_action = str(trade_report.get("action") or "").strip().upper()
+    executor = detail.get("executor") if isinstance(detail.get("executor"), dict) else {}
+    execution = executor.get("execution") if isinstance(executor.get("execution"), dict) else {}
+    execution_action = str(execution.get("action") or "").strip().upper()
+    if lifecycle_status == "open" and (report_action == "BUY" or execution_action == "BUY"):
+        return True
+    if lifecycle_status == "closed" and (report_action == "SELL" or execution_action == "SELL"):
+        return True
+    return False
+
+
+def _sanitize_operator_brief_result(detail: Dict[str, Any], candidate: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(candidate or {})
+    for key in (
+        "headline",
+        "commander_summary",
+        "strategist_summary",
+        "scanner_summary",
+        "monitor_summary",
+        "supervisor_summary",
+        "executor_summary",
+        "reporter_summary",
+    ):
+        cleaned = _prefer_richer_brief_text(out.get(key), fallback.get(key))
+        if key == "monitor_summary" and _should_replace_brief_monitor_summary(detail, cleaned):
+            cleaned = _sanitize_operator_brief_text(fallback.get(key))
+        out[key] = cleaned
+
+    candidate_takeaways: List[str] = []
+    fallback_takeaways: List[str] = []
+    seen_takeaways: set[str] = set()
+
+    def _collect_takeaways(values: Any, target: List[str]) -> None:
+        for value in list(values or []):
+            cleaned = _sanitize_operator_brief_text(value)
+            if not cleaned:
+                continue
+            lowered = cleaned.lower()
+            if lowered in seen_takeaways:
+                continue
+            target.append(cleaned)
+            seen_takeaways.add(lowered)
+            if len(target) >= 5:
+                break
+
+    _collect_takeaways(out.get("operator_takeaways"), candidate_takeaways)
+    _collect_takeaways(fallback.get("operator_takeaways"), fallback_takeaways)
+    candidate_hangul = sum(1 for item in candidate_takeaways if _count_hangul_chars(item) > 0)
+    fallback_hangul = sum(1 for item in fallback_takeaways if _count_hangul_chars(item) > 0)
+    if (
+        len(candidate_takeaways) < 4
+        or (fallback_hangul > candidate_hangul and len(fallback_takeaways) >= len(candidate_takeaways))
+        or (sum(len(item) for item in candidate_takeaways) < max(120, sum(len(item) for item in fallback_takeaways) // 2))
+    ):
+        out["operator_takeaways"] = fallback_takeaways[:5] or candidate_takeaways[:5]
+    else:
+        out["operator_takeaways"] = candidate_takeaways[:5]
+    return out
+
+
 def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[str, str]]:
     contract = {
         "headline": "string",
@@ -3614,7 +3731,7 @@ def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[s
         "아래 실행 기록을 바탕으로 지휘자, 전략가, 스캐너, 모니터, 감독관, 수행자, 리포터가 각각 무엇을 했는지 "
         "운영자에게 바로 읽히는 한국어로 요약하세요.\n"
         "브리프에는 다음이 포함돼야 합니다.\n"
-        "- canonical_trade.available=true 면 reports/trades 산출물(trade_story_input, trade_lifecycle, trade_report)을 1차 source of truth로 사용하고 run-level 로그는 빈칸 보완에만 사용\n"
+        "- trade-level canonical artifact가 있으면 그 내용을 우선 사용하고 run-level 로그는 빈칸 보완에만 사용\n"
         "- 전략가가 어떤 뉴스/글로벌 감성/VIX/거시 입력을 봤는지\n"
         "- 스캐너가 Kiwoom 후보 몇 개를 봤고 어떤 소스(top_value/top_volume/sector_theme 등)와 수치 계산으로 왜 1등을 골랐는지\n"
         "- 차트/feature/실시간 quote가 얼마나 채워졌는지와 주요 점수/coverage가 무엇인지\n"
@@ -3623,6 +3740,9 @@ def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[s
         "- 리포터의 사후 평가\n"
         "각 항목은 1~3문장으로 쓰되 숫자와 근거를 포함하세요.\n"
         "영어 문장보다 한국어 문장을 우선하고, 종목코드/지표명만 필요한 경우 유지하세요.\n"
+        "내부 플래그명이나 파일 경로(canonical_trade.available, reports/trades, source of truth, run-level 등)를 운영자 문장에 그대로 쓰지 마세요.\n"
+        "BUY 체결 후 lifecycle이 open이면 '포지션 없음'이라고 쓰지 말고 현재는 보유/모니터링 상태라고 설명하세요.\n"
+        "SELL 체결로 lifecycle이 closed이면 '포지션 없음'이라고 쓰지 말고 청산 사유와 exit trigger를 설명하세요.\n"
         "operator_takeaways는 5개 이하로 작성하세요.\n"
         f"계약: {json.dumps(contract, ensure_ascii=False)}\n"
         f"입력: {json.dumps(compact_input, ensure_ascii=False)}"
@@ -3708,7 +3828,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     attempts: List[Dict[str, Any]] = []
 
     def finalize(result: Dict[str, Any]) -> Dict[str, Any]:
-        out = dict(result)
+        out = _sanitize_operator_brief_result(detail, result, fallback)
         headline = str(out.get("headline") or "").strip()
         fallback_headline = str(fallback.get("headline") or "").strip()
         expected_date = ""

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from libs.reporting.llm_artifacts import trade_artifact_paths
-from scripts.run_ai_trade_report_batch import _finalize_report_diagnostics, _sync_report_diagnostics
+from scripts.run_ai_trade_report_batch import _finalize_report_diagnostics, _normalize_trade_id_filters, _sync_report_diagnostics
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -61,3 +61,11 @@ def test_run_ai_trade_report_batch_syncs_salvaged_diagnostics_to_all_artifacts(t
         diag = payload.get("ai_report_diagnostics") or {}
         assert diag["report_status"] == "available"
         assert diag["report_output_available"] is True
+
+
+def test_run_ai_trade_report_batch_normalizes_multiple_trade_id_filters() -> None:
+    values = _normalize_trade_id_filters(
+        ["TRD_1", "TRD_2,TRD_3", "TRD_2", "", "  TRD_4  "]
+    )
+
+    assert values == ["TRD_1", "TRD_2", "TRD_3", "TRD_4"]

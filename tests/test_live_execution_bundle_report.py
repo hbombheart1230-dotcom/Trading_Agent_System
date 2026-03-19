@@ -203,7 +203,7 @@ def test_flatten_news_titles_handles_count_sample_mapping_with_string_rows() -> 
             "count": 5,
             "sample": [
                 "NewsItem(title='코스피 약세 지속', url='https://example.com/1')",
-                "NewsItem(title='외인 매도 확대', url='https://example.com/2')",
+                "NewsItem(title='외인 &amp; 기관 매도 확대', url='https://example.com/2')",
             ],
         },
         "000660": {
@@ -218,7 +218,7 @@ def test_flatten_news_titles_handles_count_sample_mapping_with_string_rows() -> 
 
     assert titles == [
         "코스피: 코스피 약세 지속",
-        "코스피: 외인 매도 확대",
+        "코스피: 외인 & 기관 매도 확대",
         "000660: SK하이닉스 변동성 확대",
     ]
 
@@ -1060,6 +1060,83 @@ def test_live_execution_bundle_report_marks_skipped_when_report_not_requested(tm
     diagnostics = bundle.get("ai_report_diagnostics") or {}
     assert diagnostics.get("report_status") == "skipped"
     assert diagnostics.get("report_reason_code") == "report_not_requested"
+
+
+def test_live_execution_bundle_report_preserves_existing_ai_report_when_generation_is_disabled(tmp_path: Path, capsys, monkeypatch) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:10:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}}},
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
+
+    first_rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    first_out = json.loads(capsys.readouterr().out.strip())
+    assert first_rc == 0
+    trade_id = str(first_out["bundles"][0]["trade_id"])
+    trade_dir = reports_root / "trades" / "2026" / "03" / trade_id
+    llm_response_path = trade_dir / "ai_trade_report_llm_response.json"
+    if not llm_response_path.exists():
+        llm_response_path = trade_dir / "ai_trade_report" / "ai_trade_report_llm_response.json"
+    existing_report = (trade_dir / "trade_report.json").read_text(encoding="utf-8")
+    existing_md = (trade_dir / "trade_report.md").read_text(encoding="utf-8")
+    existing_llm = llm_response_path.read_text(encoding="utf-8") if llm_response_path.exists() else ""
+
+    second_rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--no-trade-report-ai",
+            "--json",
+        ]
+    )
+    second_out = json.loads(capsys.readouterr().out.strip())
+    assert second_rc == 0
+    lifecycle = second_out["bundles"][0]
+    assert lifecycle["report_status"] == "available"
+
+    diagnostics = json.loads((trade_dir / "aggregated_execution_bundle.json").read_text(encoding="utf-8")).get("ai_report_diagnostics") or {}
+    assert diagnostics.get("report_status") == "available"
+    assert "preserved" in str(diagnostics.get("report_reason_human") or "").lower()
+    assert (trade_dir / "trade_report.json").read_text(encoding="utf-8") == existing_report
+    assert (trade_dir / "trade_report.md").read_text(encoding="utf-8") == existing_md
+    if existing_llm:
+        assert llm_response_path.read_text(encoding="utf-8") == existing_llm
 
 
 def test_story_type_classification_is_deterministic() -> None:

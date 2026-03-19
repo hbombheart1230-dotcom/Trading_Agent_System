@@ -144,6 +144,30 @@ class _CaptureBriefPolicyRouter:
         )
 
 
+class _LeakyBriefRouter:
+    def __init__(self) -> None:
+        self.client = object()
+
+    def chat(self, role: str, messages: list[dict], *, policy: dict | None = None) -> str:
+        return json.dumps(
+            {
+                "headline": "run-1 운영 요약",
+                "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
+                "strategist_summary": "전략가는 뉴스와 글로벌 감성을 읽었습니다.",
+                "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 골랐습니다.",
+                "monitor_summary": "포지션 없음(no_position) 상태를 확인했습니다.",
+                "supervisor_summary": "감독관은 주문을 허용했습니다.",
+                "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
+                "reporter_summary": "리포터는 정상 run으로 평가했습니다.",
+                "operator_takeaways": [
+                    "canonical_trade.available=true 이므로 reports/trades를 source of truth로 사용합니다.",
+                    "차트/feature coverage가 strong입니다.",
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+
 def _make_config(tmp_path: Path) -> OperatorUIConfig:
     reports = tmp_path / "reports"
     events = tmp_path / "data" / "logs" / "events.jsonl"
@@ -947,6 +971,53 @@ def test_operator_brief_uses_openrouter_default_max_tokens_when_role_value_missi
     assert detail["operator_brief"]["status"] == "ok"
     assert _CaptureBriefPolicyRouter.policies
     assert int(_CaptureBriefPolicyRouter.policies[0]["max_tokens"]) == 4096
+
+
+def test_operator_brief_sanitizes_internal_prompt_leakage_and_bad_monitor_summary(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _LeakyBriefRouter()))
+    cfg = _make_config(tmp_path)
+
+    detail = data_access.load_run_detail(cfg, "run-1")
+    brief = detail["operator_brief"]
+
+    assert brief["status"] == "ok"
+    assert all("canonical_trade.available" not in str(item) for item in brief["operator_takeaways"])
+    assert all("reports/trades" not in str(item) for item in brief["operator_takeaways"])
+
+    normalized = data_access._sanitize_operator_brief_result(
+        {
+            "trade_report": {"lifecycle_status": "open", "action": "BUY"},
+            "executor": {"execution": {"action": "BUY"}},
+        },
+        {"monitor_summary": "포지션 없음(no_position) 상태를 확인했습니다.", "operator_takeaways": []},
+        {"monitor_summary": "현재는 보유/모니터링 상태입니다.", "operator_takeaways": []},
+    )
+    assert normalized["monitor_summary"] == "현재는 보유/모니터링 상태입니다."
+
+
+def test_operator_brief_prefers_richer_fallback_text_and_takeaways() -> None:
+    normalized = data_access._sanitize_operator_brief_result(
+        {"trade_report": {"lifecycle_status": "open", "action": "BUY"}, "executor": {"execution": {"action": "BUY"}}},
+        {
+            "monitor_summary": "HOLD posture, effective stop 1.00%",
+            "operator_takeaways": [
+                "Monitor enforces tight 1% stop",
+                "Trade executed",
+            ],
+        },
+        {
+            "monitor_summary": "현재 포지션 보유 중이며 HOLD 결정. 평균 매수가 1,011,000원, 현재가 1,012,000원으로 약 +0.10% 평가.",
+            "operator_takeaways": [
+                "중립 시장에서 브레이크아웃 전략 실행, 글로벌 감성 -0.22 및 VIX 25.09 고려",
+                "스캐너가 5개 후보 중 000660을 trading value와 sector_theme 근거로 선정",
+                "모니터링 결과 HOLD, 유효 스톱 1.00% 및 테이크 프로핏 1.23% 적용",
+                "BUY 주문 승인 및 시뮬레이션 체결 완료",
+            ],
+        },
+    )
+
+    assert "현재 포지션 보유 중이며 HOLD 결정" in normalized["monitor_summary"]
+    assert normalized["operator_takeaways"][0].startswith("중립 시장에서 브레이크아웃 전략 실행")
 
 
 def test_operator_brief_writes_failure_artifact_after_retries(tmp_path: Path, monkeypatch) -> None:
