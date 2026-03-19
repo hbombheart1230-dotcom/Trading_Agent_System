@@ -2486,25 +2486,40 @@ def _rank_news_evidence_rows(
 def _global_sentiment_breakdown_payload(global_signal: Dict[str, Any]) -> Dict[str, Any]:
     weights = global_signal.get("weights") if isinstance(global_signal.get("weights"), dict) else {}
     components = global_signal.get("components") if isinstance(global_signal.get("components"), dict) else {}
+    fear_index = global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {}
+    neutral_vix = max(1.0, _to_float(fear_index.get("neutral_level"), _to_float(weights.get("vix_neutral_level"), 20.0)))
+    vix_level = _to_float(components.get("vix_level"), 0.0)
+    vix_level_pressure = max(0.0, min((vix_level - neutral_vix) / neutral_vix, 2.0))
     contributions: List[Dict[str, Any]] = []
     factor_specs = (
-        ("sp500", "sp500_ret"),
-        ("nasdaq", "nasdaq_ret"),
-        ("dow", "dow_ret"),
-        ("vix", "vix_ret"),
-        ("vix_level", "vix_level"),
-        ("dxy", "dxy_ret"),
-        ("tnx", "tnx_delta"),
+        ("sp500", "sp500_ret", 1.0, ""),
+        ("nasdaq", "nasdaq_ret", 1.0, ""),
+        ("dow", "dow_ret", 1.0, ""),
+        ("vix", "vix_ret", -1.0, "higher VIX change reduces risk appetite"),
+        (
+            "vix_level",
+            "vix_level",
+            -1.0,
+            "weighted contribution uses normalized vix_level_pressure instead of raw VIX level",
+        ),
+        ("dxy", "dxy_ret", -1.0, "stronger dollar reduces risk appetite"),
+        ("tnx", "tnx_delta", -1.0, "higher yields reduce risk appetite"),
     )
-    for weight_key, component_key in factor_specs:
+    for weight_key, component_key, direction, note in factor_specs:
         weight = _to_float(weights.get(weight_key), 0.0)
         raw_value = _to_float(components.get(component_key), 0.0)
+        effective_value = vix_level_pressure if component_key == "vix_level" else raw_value
+        signed_effective_value = float(direction * effective_value)
         contributions.append(
             {
                 "factor": str(component_key),
                 "weight": float(weight),
                 "raw_value": float(raw_value),
-                "weighted_contribution": float(weight * raw_value),
+                "effective_value": float(effective_value),
+                "signed_effective_value": signed_effective_value,
+                "weighted_contribution": float(weight * signed_effective_value),
+                "direction": "risk_on_supportive" if direction > 0 else "risk_off_pressure",
+                "note": str(note or ""),
             }
         )
     contributions.sort(key=lambda row: -abs(float(row.get("weighted_contribution") or 0.0)))
@@ -2516,7 +2531,7 @@ def _global_sentiment_breakdown_payload(global_signal: Dict[str, Any]) -> Dict[s
         "raw_score": _round_optional(global_signal.get("raw_score"), 4),
         "index_moves": dict(global_signal.get("index_moves") or {}),
         "macro_moves": dict(global_signal.get("macro_moves") or {}),
-        "fear_index": dict(global_signal.get("fear_index") or {}),
+        "fear_index": dict(fear_index or {}),
         "factor_contributions": contributions,
     }
 
@@ -2962,6 +2977,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     if llm_required:
         llm_payload_log: Dict[str, Any] = {
+            "call_kind": "strategic_frame",
             "provider": "openrouter",
             "model": str(llm_meta.get("model") or ""),
             "ok": str(llm_meta.get("status") or "") == "ok",

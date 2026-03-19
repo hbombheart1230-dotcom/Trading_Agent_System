@@ -15,6 +15,23 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _infer_call_kind(payload: Dict[str, Any]) -> str:
+    explicit = str(payload.get("call_kind") or "").strip()
+    if explicit:
+        return explicit
+    schema_version = str(payload.get("schema_version") or "").strip().lower()
+    prompt_version = str(payload.get("prompt_version") or "").strip().lower()
+    intent_action = str(payload.get("intent_action") or "").strip().upper()
+    error_type = str(payload.get("error_type") or "").strip()
+    if schema_version == "strategist_output.v1" or prompt_version.startswith("m31-strategic-frame"):
+        return "strategic_frame"
+    if schema_version == "intent.v1" or intent_action in {"BUY", "SELL", "NOOP"}:
+        return "legacy_trade_intent"
+    if error_type == "StrategistBlocked":
+        return "blocked_legacy_runtime"
+    return "unknown"
+
+
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     if not path.exists():
@@ -37,12 +54,15 @@ def _filtered_events(
     rows: List[Dict[str, Any]],
     *,
     run_id: str = "",
+    day: str = "",
     only_failures: bool = False,
     only_nonzero_news: bool = False,
 ) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for rec in rows:
         if rec.get("stage") != "strategist_llm" or rec.get("event") != "result":
+            continue
+        if day and not str(rec.get("ts_kst") or rec.get("ts") or "").startswith(day):
             continue
         if run_id and str(rec.get("run_id") or "") != run_id:
             continue
@@ -63,6 +83,7 @@ def _print_human(path: Path, rows: List[Dict[str, Any]]) -> None:
         p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
         ts = str(rec.get("ts") or "")
         run_id = str(rec.get("run_id") or "")
+        call_kind = _infer_call_kind(p)
         ok = p.get("ok")
         action = str(p.get("intent_action") or "")
         reason = str(p.get("intent_reason") or "")
@@ -83,7 +104,7 @@ def _print_human(path: Path, rows: List[Dict[str, Any]]) -> None:
         composite = p.get("context_composite_score")
         err = str(p.get("error_type") or "")
         print(
-            f"{ts} run_id={run_id} ok={ok} action={action} reason={reason} "
+            f"{ts} run_id={run_id} call_kind={call_kind} ok={ok} action={action} reason={reason} "
             f"latency_ms={latency} attempts={attempts} "
             f"prompt_version={prompt_version} schema_version={schema_version} "
             f"prompt_tokens={prompt_tokens} completion_tokens={completion_tokens} "
@@ -97,10 +118,34 @@ def _print_human(path: Path, rows: List[Dict[str, Any]]) -> None:
         )
 
 
+def _print_summary(rows: List[Dict[str, Any]]) -> None:
+    by_kind: Dict[str, Dict[str, int]] = {}
+    by_reason: Dict[str, int] = {}
+    by_action: Dict[str, int] = {}
+    for rec in rows:
+        p = rec.get("payload") if isinstance(rec.get("payload"), dict) else {}
+        call_kind = _infer_call_kind(p)
+        ok = "ok" if bool(p.get("ok")) else "non_ok"
+        by_kind.setdefault(call_kind, {})
+        by_kind[call_kind][ok] = int(by_kind[call_kind].get(ok) or 0) + 1
+        reason = str(p.get("intent_reason") or p.get("status") or "none")
+        by_reason[reason] = int(by_reason.get(reason) or 0) + 1
+        action = str(p.get("intent_action") or "none")
+        by_action[action] = int(by_action.get(action) or 0) + 1
+
+    print("summary.call_kind=", json.dumps(by_kind, ensure_ascii=False, sort_keys=True))
+    print("summary.intent_action=", json.dumps(by_action, ensure_ascii=False, sort_keys=True))
+    print(
+        "summary.intent_reason_top=",
+        json.dumps(sorted(by_reason.items(), key=lambda kv: kv[1], reverse=True)[:10], ensure_ascii=False),
+    )
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Query strategist_llm result events from EVENT_LOG_PATH JSONL.")
     p.add_argument("--path", default=os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl"))
     p.add_argument("--run-id", default="", help="Filter by exact run_id.")
+    p.add_argument("--day", default="", help="Filter by day prefix in ts/ts_kst, e.g. 2026-03-19.")
     p.add_argument("--limit", type=int, default=20, help="Show last N matched rows.")
     p.add_argument("--only-failures", action="store_true", help="Only include rows where payload.ok is false.")
     p.add_argument(
@@ -108,6 +153,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Only include rows where payload.context_symbol_sentiment_score is non-zero.",
     )
+    p.add_argument("--summary", action="store_true", help="Print compact summary counters before rows.")
     p.add_argument("--json", action="store_true", help="Print JSON array instead of human-readable lines.")
     args = p.parse_args(argv)
 
@@ -120,6 +166,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     matched = _filtered_events(
         rows,
         run_id=str(args.run_id or "").strip(),
+        day=str(args.day or "").strip(),
         only_failures=bool(args.only_failures),
         only_nonzero_news=bool(args.only_nonzero_news),
     )
@@ -129,6 +176,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.json:
         print(json.dumps(shown, ensure_ascii=False))
     else:
+        if args.summary:
+            _print_summary(matched)
         _print_human(path, shown)
     return 0
 

@@ -141,6 +141,16 @@ def audit_reports_trades_health(reports_root: Path, *, day: str = "") -> Dict[st
             if component == "strategist" and bool(meta.get("synthetic_placeholder")):
                 llm_status_counts["strategist:synthetic_placeholder"] += 1
                 continue
+            if (
+                component == "strategist"
+                and status == "fallback"
+                and not str(payload.get("model") or "").strip()
+                and not str(payload.get("raw_response_text") or "").strip()
+                and not str(payload.get("error") or "").strip()
+                and int(payload.get("retry_count") or 0) == 0
+            ):
+                llm_status_counts["strategist:synthetic_placeholder"] += 1
+                continue
             if status:
                 llm_status_counts[f"{component}:{status}"] += 1
             if component == "ai_trade_report" and status in {"partial", "salvaged", "repaired"}:

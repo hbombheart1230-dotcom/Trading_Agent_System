@@ -849,7 +849,8 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert saved["run_id"] == "run-1"
     assert saved["trade_id"] == "20260316_005930_buy_run-1"
     assert saved["report_status"] == "available"
-    assert saved["version"] == 10
+    assert saved["version"] == 12
+    assert str(saved.get("source_signature") or "").strip()
     assert saved["monitor_snapshot"]["price_source"] == "-"
     assert str(saved["monitor_snapshot"]["effective_stop_reason"] or "") in {"", "-", "Hard stop"}
     md_text = brief_md.read_text(encoding="utf-8")
@@ -882,6 +883,34 @@ def test_operator_brief_saved_artifact_is_reused(tmp_path: Path, monkeypatch) ->
     second = data_access.load_run_detail(cfg, "run-1")
 
     assert second["operator_brief"]["headline"] == "saved artifact headline"
+
+
+def test_operator_brief_saved_artifact_is_invalidated_when_trade_report_changes(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+
+    first = data_access.load_run_detail(cfg, "run-1")
+    trade_report = first["trade_report"]
+    brief_json = Path(str(trade_report.get("operator_brief_json_path") or ""))
+    report_json = Path(str(trade_report.get("trade_report_json_path") or ""))
+
+    payload = json.loads(brief_json.read_text(encoding="utf-8"))
+    payload["headline"] = "stale saved headline"
+    brief_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    report_payload = json.loads(report_json.read_text(encoding="utf-8"))
+    executive = report_payload.get("executive_summary") if isinstance(report_payload.get("executive_summary"), dict) else {}
+    executive["summary"] = "trade report changed after the brief was saved"
+    report_payload["executive_summary"] = executive
+    report_json.write_text(json.dumps(report_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    cache_path = cfg.operator_ui_cache_path / "run-1.json"
+    if cache_path.exists():
+        cache_path.unlink()
+
+    second = data_access.load_run_detail(cfg, "run-1")
+
+    assert second["operator_brief"]["headline"] != "stale saved headline"
 
 
 def test_operator_brief_detail_force_regenerates_saved_artifact(tmp_path: Path, monkeypatch) -> None:

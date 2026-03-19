@@ -2111,6 +2111,45 @@ def _trade_report_section_payload(*sections: Any) -> Dict[str, Any]:
     return {}
 
 
+def _section_value_quality(value: Any) -> int:
+    if value in (None, "", [], {}):
+        return 0
+    if isinstance(value, str):
+        lower = value.strip().lower()
+        if not lower or lower in {"not_captured", "-", "unknown", "none"} or "not_captured" in lower:
+            return 0
+        return 2
+    if isinstance(value, bool):
+        return 1
+    if isinstance(value, (int, float)):
+        return 1
+    if isinstance(value, list):
+        return sum(_section_value_quality(item) for item in value[:12])
+    if isinstance(value, dict):
+        return sum(_section_value_quality(item) for item in list(value.values())[:20])
+    return 0
+
+
+def _prefer_richer_trade_report_section(*sections: Any) -> Dict[str, Any]:
+    best: Dict[str, Any] = {}
+    best_score = -1
+    for section in sections:
+        if not isinstance(section, dict) or not section:
+            continue
+        score = 0
+        for key, value in section.items():
+            if key == "summary":
+                score += _section_value_quality(value)
+            elif key == "bullets":
+                score += _section_value_quality(value)
+            else:
+                score += _section_value_quality(value)
+        if score > best_score:
+            best = section
+            best_score = score
+    return dict(best or {})
+
+
 def _trade_report_section_summary(section: Dict[str, Any], fallback: str = "") -> str:
     if not isinstance(section, dict):
         return str(fallback or "")
@@ -2281,46 +2320,46 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
             "reporter_summary": str(trade_report.get("reporter_status_human") or ""),
         }
 
-    market_context = _trade_report_section_payload(
+    market_context = _prefer_richer_trade_report_section(
         story_input.get("market_context_human"),
         report.get("market_context_at_entry"),
         report.get("market_context"),
     )
-    selection = _trade_report_section_payload(
+    selection = _prefer_richer_trade_report_section(
         story_input.get("scanner_reason_human"),
         report.get("why_this_symbol_was_chosen"),
         report.get("why_this_symbol"),
     )
-    filters = _trade_report_section_payload(
+    filters = _prefer_richer_trade_report_section(
         story_input.get("filters_human"),
         report.get("scanner_filters"),
         report.get("scanner_logic_and_filters"),
     )
-    monitor = _trade_report_section_payload(
+    monitor = _prefer_richer_trade_report_section(
         story_input.get("monitor_reason_human"),
         report.get("holding_monitoring_story"),
         report.get("monitor_trigger_reasoning"),
     )
-    guard = _trade_report_section_payload(
+    guard = _prefer_richer_trade_report_section(
         story_input.get("guard_reason_human"),
         report.get("guard_approval_result"),
     )
-    execution = _trade_report_section_payload(
+    execution = _prefer_richer_trade_report_section(
         story_input.get("execution_outcome_human"),
         report.get("execution_quality"),
         report.get("execution_result"),
     )
-    reporter_eval = _trade_report_section_payload(
+    reporter_eval = _prefer_richer_trade_report_section(
         story_input.get("reporter_status_human"),
         report.get("reporter_evaluation"),
         lifecycle.get("reporter"),
     )
-    conclusion = _trade_report_section_payload(
+    conclusion = _prefer_richer_trade_report_section(
         story_input.get("operator_conclusion_human"),
         report.get("final_operator_conclusion"),
         lifecycle.get("summary"),
     )
-    executive = _trade_report_section_payload(report.get("executive_summary"))
+    executive = _prefer_richer_trade_report_section(report.get("executive_summary"))
     lifecycle_summary = lifecycle.get("summary") if isinstance(lifecycle.get("summary"), dict) else {}
     entry_summary = story_input.get("entry_summary") if isinstance(story_input.get("entry_summary"), dict) else {}
     exit_summary = story_input.get("exit_summary") if isinstance(story_input.get("exit_summary"), dict) else {}
@@ -2333,24 +2372,28 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
     filter_bullets = _trade_report_section_bullets(filters, limit=8)
     monitor_bullets = _trade_report_section_bullets(monitor)
     execution_bullets = _trade_report_section_bullets(execution)
-    market_regime = str(market_context.get("regime") or _extract_labeled_bullet(market_bullets, ["market regime", "regime"]) or "")
+    market_regime = str(
+        market_context.get("regime")
+        or _extract_labeled_bullet(market_bullets, ["market regime", "regime", "시장 레짐", "시장 환경"])
+        or ""
+    )
     market_sentiment = str(
         market_context.get("market_sentiment")
-        or _extract_labeled_bullet(market_bullets, ["market sentiment"])
+        or _extract_labeled_bullet(market_bullets, ["market sentiment", "시장 심리"])
         or ""
     )
     global_sentiment = str(
         market_context.get("global_sentiment_score")
-        or _extract_labeled_bullet(market_bullets, ["global sentiment score", "global sentiment"])
+        or _extract_labeled_bullet(market_bullets, ["global sentiment score", "global sentiment", "글로벌 감성 점수"])
         or ""
     )
     vix_level = str(
         market_context.get("vix_level")
-        or _extract_labeled_bullet(market_bullets, ["vix / fear index level", "vix"])
+        or _extract_labeled_bullet(market_bullets, ["vix / fear index level", "vix", "vix 수준", "vix / fear index", "vix / 공포 지수 수준"])
         or ""
     )
-    universe_size = _extract_labeled_int(selection_bullets, ["universe scanned"])
-    selected_rank = _extract_labeled_int(selection_bullets, ["selected rank"])
+    universe_size = _extract_labeled_int(selection_bullets, ["universe scanned", "스캐너 후보 수", "후보 수"])
+    selected_rank = _extract_labeled_int(selection_bullets, ["selected rank", "최종 선정 순위", "선정 순위"])
     canonical_filter_rows = _parse_canonical_filter_bullets(filter_bullets)
     strategist_evidence = story_input.get("strategist_evidence") if isinstance(story_input.get("strategist_evidence"), dict) else {}
     scanner_evidence = story_input.get("scanner_evidence") if isinstance(story_input.get("scanner_evidence"), dict) else {}
@@ -3961,7 +4004,7 @@ def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[s
     cached = _read_json(path)
     if not isinstance(cached, dict):
         return {}
-    if int(cached.get("version") or 0) < 11:
+    if int(cached.get("version") or 0) < 12:
         return {}
     return cached
 
@@ -3972,7 +4015,7 @@ def _save_cached_operator_brief(config: OperatorUIConfig, run_id: str, brief: Di
     path = config.operator_ui_cache_path / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(brief)
-    payload["version"] = 11
+    payload["version"] = 12
     payload["cached_at"] = datetime.now(tz=KST).isoformat()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -4182,6 +4225,36 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _operator_brief_source_signature(detail: Dict[str, Any]) -> str:
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    candidate_paths = [
+        trade_report.get("trade_report_json_path"),
+        trade_report.get("trade_story_input_path"),
+        trade_report.get("trade_lifecycle_json_path"),
+        trade_report.get("ai_trade_report_llm_response_path"),
+    ]
+    parts: List[str] = []
+    for raw in candidate_paths:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        path = Path(text)
+        if not path.exists() or path.is_dir():
+            continue
+        stat = path.stat()
+        parts.append(f"{path.name}:{stat.st_mtime_ns}:{stat.st_size}")
+    if not parts:
+        parts.extend(
+            [
+                f"run_id:{str(detail.get('run_id') or '').strip()}",
+                f"trade_id:{str(trade_report.get('trade_id') or '').strip()}",
+                f"report_status:{str(trade_report.get('report_status') or '').strip()}",
+                f"lifecycle_status:{str(trade_report.get('lifecycle_status') or '').strip()}",
+            ]
+        )
+    return "|".join(parts)
+
+
 def _saved_operator_brief_matches_detail(saved: Dict[str, Any], detail: Dict[str, Any]) -> bool:
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
     if str(saved.get("run_id") or "").strip() != str(detail.get("run_id") or "").strip():
@@ -4193,6 +4266,8 @@ def _saved_operator_brief_matches_detail(saved: Dict[str, Any], detail: Dict[str
     if str(saved.get("lifecycle_status") or "").strip() != str(trade_report.get("lifecycle_status") or "").strip():
         return False
     if str(saved.get("report_status") or "").strip() != str(trade_report.get("report_status") or "").strip():
+        return False
+    if str(saved.get("source_signature") or "").strip() != _operator_brief_source_signature(detail):
         return False
     return True
 
@@ -4206,7 +4281,7 @@ def _load_saved_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     payload = _read_json(json_path)
     if not isinstance(payload, dict):
         return {}
-    if int(payload.get("version") or 0) < 10:
+    if int(payload.get("version") or 0) < 12:
         return {}
     if not _saved_operator_brief_matches_detail(payload, detail):
         return {}
@@ -4248,13 +4323,14 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         "hold_reasons": [str(x or "") for x in list(monitor_section.get("hold_reasons") or []) if str(x or "").strip()][:6],
         "exit_triggers": [str(x or "") for x in list(monitor_section.get("exit_triggers") or []) if str(x or "").strip()][:6],
     }
-    payload["version"] = 10
+    payload["version"] = 12
     payload["saved_at"] = datetime.now(tz=KST).isoformat()
     payload["run_id"] = str(detail.get("run_id") or "")
     payload["trade_id"] = str(trade_report.get("trade_id") or "")
     payload["story_id"] = str(trade_report.get("story_id") or "")
     payload["lifecycle_status"] = str(trade_report.get("lifecycle_status") or "")
     payload["report_status"] = str(trade_report.get("report_status") or "")
+    payload["source_signature"] = _operator_brief_source_signature(detail)
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(_render_operator_brief_markdown(payload), encoding="utf-8")
@@ -4302,7 +4378,7 @@ def _load_operator_brief_with_cache(config: OperatorUIConfig, detail: Dict[str, 
         _save_cached_operator_brief(config, run_id, saved)
         return _attach_operator_brief_sections(saved, detail)
     cached = _load_cached_operator_brief(config, run_id)
-    if cached:
+    if cached and _saved_operator_brief_matches_detail(cached, detail):
         _save_operator_brief_artifact(detail, _attach_operator_brief_sections(cached, detail))
         return _attach_operator_brief_sections(cached, detail)
     brief = _attach_operator_brief_sections(_load_operator_brief(detail), detail)

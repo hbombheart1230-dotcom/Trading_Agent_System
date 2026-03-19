@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from graphs.nodes.strategist_node import strategist_node
+from graphs.nodes.strategist_node import _global_sentiment_breakdown_payload, strategist_node
 
 
 def test_strategist_reasoning_uses_market_news_macro_context(monkeypatch):
@@ -466,3 +466,54 @@ def test_strategist_news_query_targets_become_defensive_when_vix_is_elevated(mon
     assert "\uc911\ub3d9" in targets
     assert "elevated fear index" in reasoning
     assert "vix=28.40" in reasoning
+
+
+def test_global_sentiment_breakdown_uses_signed_effective_vix_contribution():
+    payload = _global_sentiment_breakdown_payload(
+        {
+            "score": -0.22,
+            "raw_score": -0.22,
+            "status": "ok",
+            "source": "mock_global",
+            "weights": {
+                "sp500": 0.30,
+                "nasdaq": 0.35,
+                "dow": 0.20,
+                "vix": 0.10,
+                "vix_level": 0.08,
+                "dxy": 0.075,
+                "tnx": 0.075,
+                "vix_neutral_level": 20.0,
+            },
+            "components": {
+                "sp500_ret": -0.01,
+                "nasdaq_ret": -0.015,
+                "dow_ret": -0.012,
+                "vix_ret": 0.12,
+                "vix_level": 25.0,
+                "dxy_ret": 0.006,
+                "tnx_delta": 0.005,
+            },
+            "fear_index": {
+                "level": 25.0,
+                "change_pct": 12.0,
+                "neutral_level": 20.0,
+                "level_pressure": 0.25,
+            },
+        }
+    )
+
+    contributions = {row["factor"]: row for row in payload["factor_contributions"]}
+    vix_level = contributions["vix_level"]
+    vix_ret = contributions["vix_ret"]
+
+    assert vix_level["raw_value"] == 25.0
+    assert vix_level["effective_value"] == 0.25
+    assert vix_level["signed_effective_value"] == -0.25
+    assert vix_level["weighted_contribution"] == -0.02
+    assert vix_level["direction"] == "risk_off_pressure"
+    assert "normalized vix_level_pressure" in vix_level["note"]
+
+    assert vix_ret["raw_value"] == 0.12
+    assert vix_ret["signed_effective_value"] == -0.12
+    assert vix_ret["weighted_contribution"] == -0.012

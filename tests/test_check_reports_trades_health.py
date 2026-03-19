@@ -73,3 +73,38 @@ def test_audit_reports_trades_health_flags_partial_and_mismatch(tmp_path: Path) 
     assert out["issue_counts"].get("llm_fallback", 0) == 0
     assert out["issue_counts"]["diagnostic_status_mismatch"] == 1
     assert out["issue_counts"]["sidecar_missing"] == 3
+
+
+def test_audit_reports_trades_health_treats_empty_strategist_fallback_as_placeholder(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    trade_root = reports_root / "trades" / "2026-03-19" / "TRD_20260319_005930_01"
+
+    _write_json(
+        trade_root / "lifecycle" / "trade_lifecycle.json",
+        {
+            "status": "closed",
+            "ai_report_diagnostics": {
+                "report_status": "available",
+            },
+        },
+    )
+    _write_json(trade_root / "_provenance.json", {})
+    _write_json(trade_root / "_health.json", {})
+    _write_json(trade_root / "_artifact_links.json", {})
+    _write_json(
+        trade_root / "strategist" / "strategist_llm_response.json",
+        {
+            "status": "fallback",
+            "parse_mode": "none",
+            "model": "",
+            "raw_response_text": "",
+            "error": "",
+            "retry_count": 0,
+            "meta": {},
+        },
+    )
+
+    out = audit_reports_trades_health(reports_root, day="2026-03-19")
+
+    assert out["llm_status_counts"]["strategist:synthetic_placeholder"] == 1
+    assert out["issue_counts"].get("llm_fallback", 0) == 0

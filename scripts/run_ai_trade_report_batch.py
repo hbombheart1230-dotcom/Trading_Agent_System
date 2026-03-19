@@ -100,6 +100,7 @@ def _sync_report_diagnostics(trade_paths: Dict[str, Path], report: Dict[str, Any
         trade_paths["trade_lifecycle_json"],
         trade_paths["aggregated_execution_bundle_json"],
         trade_paths["ai_trade_report_input_json"],
+        trade_paths["trade_health_json"],
     ):
         payload = _read_json(path)
         if not payload:
@@ -107,6 +108,25 @@ def _sync_report_diagnostics(trade_paths: Dict[str, Path], report: Dict[str, Any
         payload["ai_report_diagnostics"] = dict(diagnostics)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return diagnostics
+
+
+def _finalize_report_diagnostics(
+    trade_paths: Dict[str, Path],
+    report_json_path: Path,
+    diagnostics: Dict[str, Any],
+) -> None:
+    for path in (
+        report_json_path,
+        trade_paths["trade_lifecycle_json"],
+        trade_paths["aggregated_execution_bundle_json"],
+        trade_paths["ai_trade_report_input_json"],
+        trade_paths["trade_health_json"],
+    ):
+        payload = _read_json(path)
+        if not payload:
+            continue
+        payload["ai_report_diagnostics"] = dict(diagnostics)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -176,6 +196,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report_md_path.write_text(render_trade_report_markdown(report), encoding="utf-8")
         if llm_artifact:
             write_json(llm_path, llm_artifact)
+        _finalize_report_diagnostics(trade_paths, report_json_path, diagnostics)
 
         rows.append(
             {

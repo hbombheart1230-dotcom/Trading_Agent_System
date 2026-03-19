@@ -53,6 +53,16 @@ def _fmt_price(value: Any) -> str:
     return f"{number:.2f}"
 
 
+def _count_hangul(text: Any) -> int:
+    raw = str(text or "")
+    return sum(1 for ch in raw if "\uac00" <= ch <= "\ud7a3")
+
+
+def _count_latin(text: Any) -> int:
+    raw = str(text or "")
+    return sum(1 for ch in raw if ("a" <= ch.lower() <= "z"))
+
+
 AI_TRADE_REPORT_REQUIRED_KEYS = [
     "executive_summary",
     "market_context_at_entry",
@@ -67,6 +77,15 @@ AI_TRADE_REPORT_REQUIRED_KEYS = [
     "errors_weaknesses_improvement_points",
     "final_operator_conclusion",
 ]
+
+AI_TRADE_REPORT_KOREAN_RULES = (
+    "All human-readable values must be written in Korean. "
+    "This includes executive_summary.headline, every *.summary field, every bullets item, "
+    "full_timeline.description, final_operator_conclusion.watch_next, and final_operator_conclusion.thesis_invalidation. "
+    "The only text allowed to remain in English is JSON keys, symbol codes, ISO timestamps, BUY/SELL/HOLD/WAIT action codes, "
+    "VIX, Kiwoom source ids such as top_value/top_volume/sector_theme, and explicit placeholders like not_captured. "
+    "Do not leave English sentences or English bullet lines in the final JSON."
+)
 
 
 def _env_bool(name: str, default: bool = True) -> bool:
@@ -159,6 +178,7 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
     if not str(executive_summary.get("headline") or "").strip():
         executive_summary["headline"] = f"{action} {symbol}"
     out["executive_summary"] = executive_summary
+    out["report_generation"] = dict(out.get("generation") or {})
 
     final_conclusion = out.get("final_operator_conclusion") if isinstance(out.get("final_operator_conclusion"), dict) else {}
     normalized_conclusion = dict(final_conclusion)
@@ -447,6 +467,125 @@ def build_ai_trade_report_compact_input(story_input: Dict[str, Any]) -> Dict[str
     return _compact_story_input_for_llm(story_input)
 
 
+def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    compact = _compact_story_input_for_llm(story_input)
+    entry = compact.get("entry_summary") if isinstance(compact.get("entry_summary"), dict) else {}
+    exit_summary = compact.get("exit_summary") if isinstance(compact.get("exit_summary"), dict) else {}
+    market = compact.get("market_context_human") if isinstance(compact.get("market_context_human"), dict) else {}
+    scanner = compact.get("scanner_reason_human") if isinstance(compact.get("scanner_reason_human"), dict) else {}
+    monitor = compact.get("monitor_reason_human") if isinstance(compact.get("monitor_reason_human"), dict) else {}
+    filters_human = compact.get("filters_human") if isinstance(compact.get("filters_human"), dict) else {}
+    guard = compact.get("guard_reason_human") if isinstance(compact.get("guard_reason_human"), dict) else {}
+    execution = compact.get("execution_outcome_human") if isinstance(compact.get("execution_outcome_human"), dict) else {}
+    reporter = compact.get("reporter_status_human") if isinstance(compact.get("reporter_status_human"), dict) else {}
+    conclusion = compact.get("operator_conclusion_human") if isinstance(compact.get("operator_conclusion_human"), dict) else {}
+    holding = compact.get("holding_summary") if isinstance(compact.get("holding_summary"), dict) else {}
+    lifecycle = compact.get("lifecycle_summary") if isinstance(compact.get("lifecycle_summary"), dict) else {}
+    diagnostics = compact.get("ai_report_diagnostics") if isinstance(compact.get("ai_report_diagnostics"), dict) else {}
+    return {
+        "trade_id": compact.get("trade_id"),
+        "story_id": compact.get("story_id"),
+        "run_id": compact.get("run_id"),
+        "symbol": compact.get("symbol"),
+        "action": compact.get("action"),
+        "status": compact.get("status"),
+        "story_type": compact.get("story_type"),
+        "execution_mode_label": compact.get("execution_mode_label"),
+        "lifecycle_summary": {
+            "holding_duration": lifecycle.get("holding_duration"),
+            "entry_reason_human": lifecycle.get("entry_reason_human"),
+            "exit_reason_human": lifecycle.get("exit_reason_human"),
+            "lifecycle_summary_human": lifecycle.get("lifecycle_summary_human"),
+        },
+        "market_context": {
+            "regime": market.get("regime"),
+            "market_sentiment": market.get("market_sentiment"),
+            "playbook": market.get("playbook"),
+            "themes": _listify(market.get("themes"), max_items=3, max_len=60),
+            "global_sentiment_score": market.get("global_sentiment_score"),
+            "vix_level": market.get("vix_level"),
+            "stress_flags": _listify(market.get("stress_flags"), max_items=3, max_len=60),
+            "news_input_summary": market.get("news_input_summary"),
+        },
+        "entry": {
+            "ts": entry.get("ts"),
+            "action": entry.get("action"),
+            "reason_human": entry.get("reason_human"),
+        },
+        "scanner": {
+            "selected_symbol": scanner.get("selected_symbol"),
+            "selected_rank": scanner.get("selected_rank"),
+            "universe_size": scanner.get("universe_size"),
+            "ranking_basis": scanner.get("ranking_basis"),
+            "confidence": scanner.get("confidence"),
+            "confidence_label": scanner.get("confidence_label"),
+            "top_reasons": _listify(scanner.get("top_reasons"), max_items=3, max_len=140),
+            "runner_ups": _listify(scanner.get("runner_ups"), max_items=2, max_len=140),
+            "summary": scanner.get("summary"),
+        },
+        "filters": {
+            "summary": filters_human.get("summary"),
+            "bullets": _listify(filters_human.get("bullets"), max_items=4, max_len=180),
+        },
+        "holding": {
+            "run_count": holding.get("run_count"),
+            "holding_event_count": holding.get("holding_event_count"),
+            "recent_monitor_updates": _listify(holding.get("recent_monitor_updates"), max_items=4, max_len=140),
+        },
+        "monitor": {
+            "posture": monitor.get("posture"),
+            "trigger_type": monitor.get("trigger_type"),
+            "summary": monitor.get("summary"),
+            "position_age_seconds": monitor.get("position_age_seconds"),
+            "stop_loss_pct": monitor.get("stop_loss_pct"),
+            "effective_stop_loss_pct": monitor.get("effective_stop_loss_pct"),
+            "take_profit_pct": monitor.get("take_profit_pct"),
+            "current_price": monitor.get("current_price"),
+            "average_price": monitor.get("average_price"),
+            "peak_price": monitor.get("peak_price"),
+            "current_drawdown": monitor.get("current_drawdown"),
+            "peak_drawdown": monitor.get("peak_drawdown"),
+            "active_exit_axis": monitor.get("active_exit_axis"),
+            "watch_axes": _listify(monitor.get("watch_axes"), max_items=4, max_len=80),
+            "price_source": monitor.get("price_source"),
+        },
+        "exit": {
+            "ts": exit_summary.get("ts"),
+            "action": exit_summary.get("action"),
+            "reason_human": exit_summary.get("reason_human"),
+        },
+        "guard": {
+            "summary": guard.get("summary"),
+            "status": guard.get("status"),
+            "bullets": _listify(guard.get("bullets"), max_items=4, max_len=180),
+        },
+        "execution": {
+            "summary": execution.get("summary"),
+            "status": execution.get("status"),
+            "bullets": _listify(execution.get("bullets"), max_items=4, max_len=180),
+        },
+        "reporter": {
+            "summary": reporter.get("summary"),
+            "status": reporter.get("status"),
+            "grade": reporter.get("grade"),
+            "bullets": _listify(reporter.get("bullets"), max_items=3, max_len=160),
+        },
+        "operator_conclusion": {
+            "summary": conclusion.get("summary"),
+            "current_action": conclusion.get("current_action"),
+            "watch_next": _listify(conclusion.get("watch_next"), max_items=3, max_len=140),
+            "thesis_invalidation": _listify(conclusion.get("thesis_invalidation"), max_items=3, max_len=140),
+        },
+        "timeline": _compact_timeline_rows(story_input.get("timeline"), head=1, tail=5),
+        "improvement_points": _listify(compact.get("improvement_points"), max_items=4, max_len=140),
+        "ai_report_diagnostics": {
+            "report_status": diagnostics.get("report_status"),
+            "report_reason_code": diagnostics.get("report_reason_code"),
+            "report_reason_human": diagnostics.get("report_reason_human"),
+        },
+    }
+
+
 def _normalize_provenance_entry(entry: Any) -> Dict[str, Any]:
     row = entry if isinstance(entry, dict) else {}
     source = str(row.get("source") or "fallback").strip().lower()
@@ -524,6 +663,11 @@ def _merge_section_with_fallback(ai_section: Any, fallback_section: Dict[str, An
     for key in ("headline", "action", "confidence", "status", "grade", "current_action", "symbol"):
         if not str(merged.get(key) or "").strip() and str(fallback.get(key) or "").strip():
             merged[key] = fallback.get(key)
+    for key, value in fallback.items():
+        if key in {"summary", "bullets"}:
+            continue
+        if key not in merged or merged.get(key) in (None, "", [], {}):
+            merged[key] = value
     return merged
 
 
@@ -777,10 +921,21 @@ def _fallback_report(
         "market_context_at_entry": {
             "summary": _clip(market_context.get("summary"), max_len=600),
             "bullets": _listify(market_context.get("bullets"), max_items=8, max_len=260),
+            "regime": _clip(market_context.get("regime"), max_len=40),
+            "market_sentiment": _clip(market_context.get("market_sentiment"), max_len=40),
+            "playbook": _clip(market_context.get("playbook"), max_len=40),
+            "themes": _listify(market_context.get("themes"), max_items=6, max_len=80),
+            "global_sentiment_score": market_context.get("global_sentiment_score"),
+            "vix_level": market_context.get("vix_level"),
+            "stress_flags": _listify(market_context.get("stress_flags"), max_items=6, max_len=80),
         },
         "why_this_symbol_was_chosen": {
             "summary": _clip(scanner_reason.get("summary"), max_len=600),
             "bullets": _listify(scanner_reason.get("bullets"), max_items=8, max_len=260),
+            "selected_rank": scanner_reason.get("selected_rank"),
+            "universe_size": scanner_reason.get("universe_size"),
+            "symbol": _clip(scanner_reason.get("selected_symbol") or story_input.get("symbol"), max_len=32),
+            "basis": _clip(scanner_reason.get("ranking_basis"), max_len=220),
         },
         "entry_decision": entry_decision,
         "holding_monitoring_story": holding_story,
@@ -951,36 +1106,118 @@ def _failure_report(
     return _normalize_trade_report_output(story_input, out)
 
 
-def _build_repair_messages(story_input: Dict[str, Any], raw_response: Any) -> List[Dict[str, str]]:
-    compact_input = _compact_story_input_for_llm(story_input)
-    contract = {
-        "executive_summary": {"headline": "str", "action": "str", "symbol": "str", "confidence": "str", "summary": "str"},
-        "market_context_at_entry": {"summary": "str", "bullets": ["str"]},
-        "why_this_symbol_was_chosen": {"summary": "str", "bullets": ["str"]},
-        "entry_decision": {"summary": "str", "bullets": ["str"]},
-        "holding_monitoring_story": {"summary": "str", "bullets": ["str"]},
-        "exit_decision": {"summary": "str", "bullets": ["str"]},
-        "execution_quality": {"summary": "str", "bullets": ["str"]},
-        "scanner_filters": {"summary": "str", "bullets": ["str"]},
-        "guard_approval_result": {"summary": "str", "bullets": ["str"]},
-        "reporter_evaluation": {"summary": "str", "status": "str", "grade": "str", "bullets": ["str"]},
-        "errors_weaknesses_improvement_points": {"summary": "str", "bullets": ["str"]},
-        "full_timeline": [{"event": "str", "ts": "str", "description": "str"}],
-        "final_operator_conclusion": {"summary": "str", "current_action": "str", "watch_next": ["str"], "thesis_invalidation": ["str"]},
+def _trade_report_output_template() -> Dict[str, Any]:
+    return {
+        "executive_summary": {"headline": "", "action": "", "symbol": "", "confidence": "", "summary": ""},
+        "market_context_at_entry": {"summary": "", "bullets": [""]},
+        "why_this_symbol_was_chosen": {"summary": "", "bullets": [""]},
+        "entry_decision": {"summary": "", "bullets": [""]},
+        "holding_monitoring_story": {"summary": "", "bullets": [""]},
+        "exit_decision": {"summary": "", "bullets": [""]},
+        "execution_quality": {"summary": "", "bullets": [""]},
+        "scanner_filters": {"summary": "", "bullets": [""]},
+        "guard_approval_result": {"summary": "", "bullets": [""]},
+        "reporter_evaluation": {"summary": "", "status": "", "grade": "", "bullets": [""]},
+        "errors_weaknesses_improvement_points": {"summary": "", "bullets": [""]},
+        "full_timeline": [{"event": "", "ts": "", "description": ""}],
+        "final_operator_conclusion": {"summary": "", "current_action": "", "watch_next": [""], "thesis_invalidation": [""]},
     }
+
+
+def _trade_report_language_meta(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    sample_fields: List[str] = []
+
+    def _collect(section: Any) -> None:
+        if isinstance(section, dict):
+            for key, value in section.items():
+                if key in {"headline", "summary", "description"} and str(value or "").strip():
+                    sample_fields.append(str(value or "").strip())
+                elif key in {"bullets", "watch_next", "thesis_invalidation"} and isinstance(value, list):
+                    for row in value:
+                        if str(row or "").strip():
+                            sample_fields.append(str(row or "").strip())
+                elif key == "full_timeline" and isinstance(value, list):
+                    for row in value:
+                        if isinstance(row, dict) and str(row.get("description") or "").strip():
+                            sample_fields.append(str(row.get("description") or "").strip())
+                elif isinstance(value, dict):
+                    _collect(value)
+
+    _collect(candidate)
+    hangul_total = sum(_count_hangul(item) for item in sample_fields)
+    latin_total = sum(_count_latin(item) for item in sample_fields)
+    english_like = [
+        item
+        for item in sample_fields
+        if _count_hangul(item) == 0 and _count_latin(item) >= 8
+    ]
+    requires_korean_repair = bool(
+        sample_fields
+        and len(english_like) >= 6
+        and (hangul_total == 0 or hangul_total < max(20, latin_total * 0.2))
+    )
+    return {
+        "language_sample_count": len(sample_fields),
+        "language_hangul_chars": hangul_total,
+        "language_latin_chars": latin_total,
+        "language_english_like_count": len(english_like),
+        "requires_korean_repair": requires_korean_repair,
+    }
+
+
+def _build_repair_messages(
+    story_input: Dict[str, Any],
+    raw_response: Any,
+    *,
+    sparse: bool = False,
+    enforce_korean: bool = False,
+) -> List[Dict[str, str]]:
+    compact_input = _sparse_story_input_for_llm(story_input) if sparse else _compact_story_input_for_llm(story_input)
+    contract = _trade_report_output_template()
+    previous_response = str(raw_response or "").strip()
+    previous_parse = parse_llm_json_response(previous_response)
+    include_previous_response = bool(previous_parse.get("is_full") or previous_parse.get("is_partial"))
+    previous_response_text = previous_response[:1800] if include_previous_response else "[previous response was non-JSON reasoning or invalid text; ignore it]"
+    partial_note = ""
+    if str(story_input.get("status") or "").strip().lower() == "partial":
+        partial_note = (
+            "\nThis lifecycle is partial. Some entry or holding evidence is missing. "
+            "Do not invent missing entry evidence; state that it was not captured."
+        )
+    shape_note = ""
+    if sparse:
+        shape_note = (
+            "\nThis is the final repair pass. Keep each summary under 2 sentences, write 1 to 3 bullets per section, "
+            "and limit full_timeline to at most 8 rows."
+        )
+    language_note = ""
+    if enforce_korean:
+        language_note = (
+            "\nTranslate any remaining English human-readable text into Korean before returning the final JSON. "
+            "Keep JSON keys, timestamps, numbers, action codes, and symbol codes unchanged."
+        )
     return [
         {
             "role": "system",
-            "content": "You repair AI trade report outputs. Return one strict JSON object only. No markdown, no prose, no code fences.",
+            "content": (
+                "You repair AI trade report outputs. Return exactly one JSON object only. "
+                "Do not explain, do not think aloud, do not restate instructions, and do not use markdown or code fences. "
+                "Never describe your plan or say phrases like 'First, I need'. Any text before the JSON is invalid. "
+                "Begin with '{' and end with '}'. Keep the JSON keys exactly as specified. "
+                f"{AI_TRADE_REPORT_KOREAN_RULES} "
+                "If a value is unknown, use an empty string, empty list, or null."
+            ),
         },
         {
             "role": "user",
             "content": (
-                "The previous response did not match the required JSON contract. "
-                "Regenerate the report as valid JSON only.\n"
-                f"JSON contract:\n{json.dumps(contract, ensure_ascii=False)}\n\n"
+                "The previous response did not match the required JSON contract. Regenerate the report as valid JSON only.\n"
+                f"Output template:\n{json.dumps(contract, ensure_ascii=False)}\n"
+                "Replace the template values with report content. Keep the same keys and nested structure."
+                f"{partial_note}{shape_note}{language_note}\n\n"
+                "If the source input is in English, translate it into Korean instead of copying the English sentence.\n"
                 f"Input:\n{json.dumps(compact_input, ensure_ascii=False)}\n\n"
-                f"Previous response:\n{str(raw_response or '')[:1800]}"
+                f"Previous response:\n{previous_response_text}"
             ),
         },
     ]
@@ -988,51 +1225,48 @@ def _build_repair_messages(story_input: Dict[str, Any], raw_response: Any) -> Li
 
 def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
     compact_input = _compact_story_input_for_llm(story_input)
+    contract = _trade_report_output_template()
+    partial_note = ""
+    if str(story_input.get("status") or "").strip().lower() == "partial":
+        partial_note = (
+            "This lifecycle is partial. Some entry or holding evidence is missing. "
+            "Do not invent missing entry evidence; state that it was not captured.\n"
+        )
     return [
         {
             "role": "system",
             "content": (
-                "당신은 트레이딩 시스템의 거래별 운영 리포트를 작성하는 한국어 분석기입니다. "
-                "입력으로 제공된 사실만 사용하고 숫자나 사건을 지어내지 마세요. "
-                "모든 출력은 한국어 JSON 객체 하나만 반환하세요."
+                "You write operator-facing AI trade reports for a trading system. "
+                "Use only the supplied input. Do not invent numbers, events, reasons, or evidence. "
+                "Return exactly one JSON object only. Do not add markdown, prose before the JSON, analysis text, or code fences. "
+                "Never describe your plan or say phrases like 'First, I need'. Any text before the JSON is invalid. "
+                "Begin with '{' and end with '}'. Keep the JSON keys exactly as specified. "
+                f"{AI_TRADE_REPORT_KOREAN_RULES} "
+                "If a value is not available, use an empty string, empty list, or null instead of guessing."
             ),
         },
         {
             "role": "user",
             "content": (
-                "아래 trade story input을 운영자가 한눈에 이해할 수 있는 한국어 AI 거래 리포트로 정리하세요.\n"
-                "파이프라인 순서를 반드시 유지하세요: 전략가 -> 스캐너 -> 모니터 -> 감독관 -> 수행자 -> 리포터.\n"
-                "다음 원칙을 지키세요.\n"
-                "- 글로벌 감성 점수, VIX, 수집한 뉴스 수와 질의 대상 수를 가능한 한 숫자로 적기\n"
-                "- 스캐너는 후보 수, 1등 종목, runner-up, Kiwoom 소스(top_value/top_volume/sector_theme 등), 점수/feature coverage를 구체적으로 적기\n"
-                "- 모니터는 전달받은 감시 기준(stop, effective stop, take profit, watch axis, 가격 source)을 구체적으로 적기\n"
-                "- 감독관과 수행자는 승인/체결 결과를 분리해서 적기\n"
-                "- 리포터 linkage가 없으면 원인을 한국어로 설명하기\n"
-                "- 영어 문장 대신 한국어 문장으로 쓰되, 종목코드와 key 이름은 필요한 경우 유지 가능\n"
-                "아래 JSON 스키마로만 반환하세요:\n"
-                "{"
-                "\"executive_summary\": {\"headline\": str, \"action\": str, \"symbol\": str, \"confidence\": str, \"summary\": str}, "
-                "\"market_context_at_entry\": {\"summary\": str, \"bullets\": [str]}, "
-                "\"why_this_symbol_was_chosen\": {\"summary\": str, \"bullets\": [str]}, "
-                "\"entry_decision\": {\"summary\": str, \"bullets\": [str]}, "
-                "\"holding_monitoring_story\": {\"summary\": str, \"bullets\": [str]}, "
-                "\"exit_decision\": {\"summary\": str, \"bullets\": [str]}, "
-                "\"execution_quality\": {\"summary\": str, \"bullets\": [str]}, "
-                "\"scanner_filters\": {\"summary\": str, \"bullets\": [str]}, "
-                "\"guard_approval_result\": {\"summary\": str, \"bullets\": [str]}, "
-                "\"reporter_evaluation\": {\"summary\": str, \"status\": str, \"grade\": str, \"bullets\": [str]}, "
-                "\"errors_weaknesses_improvement_points\": {\"summary\": str, \"bullets\": [str]}, "
-                "\"full_timeline\": [{\"event\": str, \"ts\": str, \"description\": str}], "
-                "\"final_operator_conclusion\": {\"summary\": str, \"current_action\": str, \"watch_next\": [str], \"thesis_invalidation\": [str]}"
-                "}\n"
-                "각 section의 bullets는 3~6개 정도로 충분히 자세하게 작성하세요.\n"
-                "summary는 운영자가 바로 의사결정할 수 있도록 명확하게 쓰세요.\n"
+                "Create an operator-facing AI trade report from the trade story input below.\n"
+                "Follow the pipeline order exactly: strategist -> scanner -> monitor -> supervisor -> executor -> reporter.\n"
+                "Requirements:\n"
+                "- Include concrete numbers when available for global sentiment score, VIX, headline counts, and query-target counts.\n"
+                "- Explain scanner candidate count, selected symbol, runner-ups, Kiwoom source mix (top_value, top_volume, sector_theme, etc.), score breakdown, and feature coverage.\n"
+                "- Explain monitor thresholds and watch axes, including stop, effective stop, take profit, current price, and price source.\n"
+                "- Separate supervisor approval from executor result.\n"
+                "- If reporter linkage is missing, explain that clearly in Korean.\n"
+                "- Translate all human-readable text into Korean. Do not copy English source sentences into the final JSON.\n"
+                "- Keep symbol codes, JSON keys, BUY/SELL/HOLD/WAIT action codes, VIX, Kiwoom source ids, and timestamps unchanged.\n"
+                f"{partial_note}"
+                "Return only this JSON template with values filled in:\n"
+                f"{json.dumps(contract, ensure_ascii=False)}\n"
+                "Write 3 to 6 bullets for each section when evidence is available.\n"
+                "Make the summaries concise but operationally useful.\n"
                 f"Input:\n{json.dumps(compact_input, ensure_ascii=False)}"
             ),
         },
     ]
-
-
 def build_ai_trade_report(
     story_input: Dict[str, Any],
     *,
@@ -1149,10 +1383,12 @@ def build_ai_trade_report(
         "temperature": temp,
         "max_tokens": max(600, token_budget),
         "response_format": {"type": "json_object"},
+        "plugins": [{"id": "response-healing"}],
         **({"model": chosen_model} if chosen_model else {}),
     }
     for attempt_index in range(retry_max + 1):
         step = "primary" if attempt_index == 0 else f"retry_{attempt_index}"
+        needs_korean_repair = False
         t0 = time.perf_counter()
         try:
             raw = router.chat("trade_report", current_messages, policy=current_policy)
@@ -1179,6 +1415,13 @@ def build_ai_trade_report(
             candidate = parse_result.get("full_object") if isinstance(parse_result.get("full_object"), dict) else parse_result.get("partial_object")
             candidate = dict(candidate) if isinstance(candidate, dict) else {}
             parse_meta = _trade_report_parse_meta(raw, candidate)
+            language_meta = _trade_report_language_meta(candidate) if candidate else {
+                "language_sample_count": 0,
+                "language_hangul_chars": 0,
+                "language_latin_chars": 0,
+                "language_english_like_count": 0,
+                "requires_korean_repair": False,
+            }
             if not bool(parse_result.get("raw_nonempty")):
                 final_status = "empty_response"
                 final_reason = "trade_report_ai returned an empty response"
@@ -1191,25 +1434,76 @@ def build_ai_trade_report(
                         model=chosen_model or resolved_model,
                         latency_ms=final_latency_ms,
                         status=final_status,
-                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta},
+                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
                     )
                 )
             elif bool(parse_result.get("is_full")) and not parse_meta.get("required_keys_missing"):
-                parsed = candidate
-                final_status = "repaired" if step.startswith("repair") else "ok"
-                attempts.append(
-                    make_attempt(
-                        step=step,
-                        messages=current_messages,
-                        raw_response_text=raw,
-                        parsed_output=parsed,
-                        model=chosen_model or resolved_model,
-                        latency_ms=final_latency_ms,
-                        status=final_status,
-                        meta={"role": "ai_trade_report", **parse_meta},
+                if bool(language_meta.get("requires_korean_repair")) and attempt_index < retry_max:
+                    final_status = "partial"
+                    final_reason = "trade_report_ai returned valid JSON but human-readable sections remained mostly English"
+                    needs_korean_repair = True
+                    attempts.append(
+                        make_attempt(
+                            step=step,
+                            messages=current_messages,
+                            raw_response_text=raw,
+                            parsed_output=candidate,
+                            model=chosen_model or resolved_model,
+                            latency_ms=final_latency_ms,
+                            status=final_status,
+                            meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
+                        )
                     )
-                )
-                break
+                else:
+                    parsed = candidate
+                    final_status = "repaired" if step.startswith("repair") else "ok"
+                    attempts.append(
+                        make_attempt(
+                            step=step,
+                            messages=current_messages,
+                            raw_response_text=raw,
+                            parsed_output=parsed,
+                            model=chosen_model or resolved_model,
+                            latency_ms=final_latency_ms,
+                            status=final_status,
+                            meta={"role": "ai_trade_report", **parse_meta, **language_meta},
+                        )
+                    )
+                    break
+            elif bool(parse_result.get("is_partial")) and candidate and not parse_meta.get("required_keys_missing"):
+                if bool(language_meta.get("requires_korean_repair")) and attempt_index < retry_max:
+                    final_status = "partial"
+                    final_reason = "trade_report_ai returned a complete JSON object with extra text, but the report sections remained mostly English"
+                    needs_korean_repair = True
+                    attempts.append(
+                        make_attempt(
+                            step=step,
+                            messages=current_messages,
+                            raw_response_text=raw,
+                            parsed_output=candidate,
+                            model=chosen_model or resolved_model,
+                            latency_ms=final_latency_ms,
+                            status=final_status,
+                            meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
+                        )
+                    )
+                else:
+                    parsed = candidate
+                    final_status = "repaired"
+                    final_reason = "trade_report_ai returned a complete JSON object with extra non-JSON text; the JSON payload was extracted and repaired"
+                    attempts.append(
+                        make_attempt(
+                            step=step,
+                            messages=current_messages,
+                            raw_response_text=raw,
+                            parsed_output=parsed,
+                            model=chosen_model or resolved_model,
+                            latency_ms=final_latency_ms,
+                            status=final_status,
+                            meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
+                        )
+                    )
+                    break
             elif candidate:
                 best_partial = dict(candidate)
                 best_partial_meta = dict(parse_meta)
@@ -1230,7 +1524,7 @@ def build_ai_trade_report(
                         model=chosen_model or resolved_model,
                         latency_ms=final_latency_ms,
                         status=final_status,
-                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta},
+                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
                     )
                 )
             else:
@@ -1245,12 +1539,17 @@ def build_ai_trade_report(
                         model=chosen_model or resolved_model,
                         latency_ms=final_latency_ms,
                         status=final_status,
-                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta},
+                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
                     )
                 )
         if attempt_index < retry_max:
             if final_status in {"parse_error", "partial"}:
-                current_messages = _build_repair_messages(story_input, raw)
+                current_messages = _build_repair_messages(
+                    story_input,
+                    raw,
+                    sparse=(attempt_index + 1) >= retry_max,
+                    enforce_korean=needs_korean_repair,
+                )
             current_policy = {
                 **current_policy,
                 "temperature": 0.0,

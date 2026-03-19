@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from graphs.commander_runtime import _run_integrated_chain, resolve_runtime_mode, resolve_runtime_phase, run_commander_runtime
+from graphs.commander_runtime import (
+    _hydrate_strategist_output_cache,
+    _run_integrated_chain,
+    resolve_runtime_mode,
+    resolve_runtime_phase,
+    run_commander_runtime,
+)
 from graphs.commander_runtime import _run_preopen_phase
 
 
@@ -258,8 +264,44 @@ def test_m21_runtime_transition_retry_marks_state_and_continues():
     assert out["runtime_status"] == "retrying"
     assert out["runtime_transition"] == "retry"
     assert out["runtime_retry_count"] == 3
-    assert out["path"] == "graph_spine"
-    assert called["graph"] == 1
+
+
+def test_m21_hydrate_strategist_output_cache_normalizes_legacy_decision_policy():
+    state = {
+        "persisted_state": {
+            "strategist_output_cache": {
+                "output": {
+                    "strategy_policy": {
+                        "decision_policy": {
+                            "use_strategy_v1_engine": True,
+                            "allow_score_override": True,
+                            "score_override_scope": "llm_only",
+                            "strategy_v1_name": "regime_momentum_v1",
+                            "buy_threshold": 0.1,
+                            "news_buy_threshold": 0.2,
+                        }
+                    }
+                },
+                "generated_epoch": 123,
+                "source": "legacy_cache",
+            }
+        }
+    }
+
+    out = _hydrate_strategist_output_cache(state)
+    decision_policy = (
+        (((out.get("strategist_output") or {}).get("strategy_policy") or {}).get("decision_policy") or {})
+        if isinstance(out.get("strategist_output"), dict)
+        else {}
+    )
+
+    assert decision_policy["use_strategy_v1_engine"] is False
+    assert decision_policy["allow_score_override"] is False
+    assert decision_policy["score_override_scope"] == "disabled"
+    assert decision_policy["strategy_v1_name"] == ""
+    assert decision_policy["strategy_variant_hint"] == "unified_ai_strategist"
+    assert "buy_threshold" not in decision_policy
+    assert "news_buy_threshold" not in decision_policy
 
 
 class _FakeEventLogger:

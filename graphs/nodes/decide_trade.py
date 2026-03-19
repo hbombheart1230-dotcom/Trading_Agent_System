@@ -1179,6 +1179,7 @@ def decide_trade(state: dict) -> dict:
             meta_error = str(llm_meta.get("error") or "")
             llm_ok = not bool(error) and not bool(meta_error) and intent_reason != "strategist_error"
             payload: Dict[str, Any] = {
+                "call_kind": "legacy_trade_intent",
                 "strategy": strategy_name,
                 "provider": str(runtime.get("provider") or strategist_provider() or "rule"),
                 "model": str(getattr(strategist, "model", "") or ""),

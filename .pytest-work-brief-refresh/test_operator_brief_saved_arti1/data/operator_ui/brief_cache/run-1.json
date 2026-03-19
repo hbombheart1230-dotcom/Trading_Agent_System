@@ -1,0 +1,379 @@
+{
+  "status": "ok",
+  "model": "",
+  "headline": "run-1 운영 요약",
+  "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
+  "strategist_summary": "전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다. model=",
+  "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 1등으로 골랐습니다.",
+  "monitor_summary": "모니터는 no_position 상태를 보고 진입 가능 상태로 판단했습니다.",
+  "supervisor_summary": "감독관은 주문을 허용했습니다.",
+  "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
+  "reporter_summary": "리포터는 오늘 run을 정상으로 요약했습니다.",
+  "operator_takeaways": [
+    "뉴스/거시 입력이 포함됐습니다.",
+    "차트/feature coverage가 strong입니다."
+  ],
+  "parse_mode": "full",
+  "required_keys_expected": [
+    "headline",
+    "commander_summary",
+    "strategist_summary",
+    "scanner_summary",
+    "monitor_summary",
+    "supervisor_summary",
+    "executor_summary",
+    "reporter_summary",
+    "operator_takeaways"
+  ],
+  "required_keys_present": [
+    "headline",
+    "commander_summary",
+    "strategist_summary",
+    "scanner_summary",
+    "monitor_summary",
+    "supervisor_summary",
+    "executor_summary",
+    "reporter_summary",
+    "operator_takeaways"
+  ],
+  "required_keys_missing": [],
+  "completeness_score": 1.0,
+  "trailing_text": "",
+  "raw_nonempty": true,
+  "parse_error": "",
+  "used_fallback_sections": [],
+  "llm_response_artifact": {
+    "schema_version": "llm_response_artifact.v1",
+    "component": "brief",
+    "role": "brief",
+    "run_id": "run-1",
+    "trade_id": "20260316_005930_buy_run-1",
+    "story_id": "20260316_005930_buy_run-1",
+    "day": "2026-03-16",
+    "saved_at": "2026-03-19T02:58:13.852572+00:00",
+    "status": "ok",
+    "llm_status": "ok",
+    "latency_ms": 0,
+    "parsed_output": {
+      "headline": "run-1 운영 요약",
+      "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
+      "strategist_summary": "전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다. model=",
+      "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 1등으로 골랐습니다.",
+      "monitor_summary": "모니터는 no_position 상태를 보고 진입 가능 상태로 판단했습니다.",
+      "supervisor_summary": "감독관은 주문을 허용했습니다.",
+      "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
+      "reporter_summary": "리포터는 오늘 run을 정상으로 요약했습니다.",
+      "operator_takeaways": [
+        "뉴스/거시 입력이 포함됐습니다.",
+        "차트/feature coverage가 strong입니다."
+      ]
+    },
+    "model_info": {
+      "provider": "OpenRouter",
+      "model": ""
+    },
+    "model": "",
+    "attempts": [
+      {
+        "step": "primary",
+        "role": "brief",
+        "system_prompt": "당신은 트레이딩 운영 화면용 한글 브리프 작성기입니다. 운영자가 한 번에 이해할 수 있도록 파이프라인 순서대로 정확하고 충분히 구체적으로 정리하세요. 반드시 JSON만 출력하고 설명문이나 주석은 쓰지 마세요.",
+        "user_prompt": "아래 실행 기록을 바탕으로 지휘자, 전략가, 스캐너, 모니터, 감독관, 수행자, 리포터가 각각 무엇을 했는지 운영자에게 바로 읽히는 한국어로 요약하세요.\n브리프에는 다음이 포함돼야 합니다.\n- canonical_trade.available=true 면 reports/trades 산출물(trade_story_input, trade_lifecycle, trade_report)을 1차 source of truth로 사용하고 run-level 로그는 빈칸 보완에만 사용\n- 전략가가 어떤 뉴스/글로벌 감성/VIX/거시 입력을 봤는지\n- 스캐너가 Kiwoom 후보 몇 개를 봤고 어떤 소스(top_value/top_volume/sector_theme 등)와 수치 계산으로 왜 1등을 골랐는지\n- 차트/feature/실시간 quote가 얼마나 채워졌는지와 주요 점수/coverage가 무엇인지\n- 모니터가 어떤 stop/effective stop/take profit/watch axis/current price를 받아 왜 hold/buy/sell/block 했는지\n- 감독관이 무엇을 승인 또는 차단했고 수행자가 실제로 무엇을 주문/체결했는지\n- 리포터의 사후 평가\n각 항목은 1~3문장으로 쓰되 숫자와 근거를 포함하세요.\n영어 문장보다 한국어 문장을 우선하고, 종목코드/지표명만 필요한 경우 유지하세요.\noperator_takeaways는 5개 이하로 작성하세요.\n계약: {\"headline\": \"string\", \"commander_summary\": \"string\", \"strategist_summary\": \"string\", \"scanner_summary\": \"string\", \"monitor_summary\": \"string\", \"supervisor_summary\": \"string\", \"executor_summary\": \"string\", \"reporter_summary\": \"string\", \"operator_takeaways\": [\"string\"]}\n입력: {\"run_id\": \"run-1\", \"commander\": {\"mode\": \"integrated_chain\", \"phase\": \"session\", \"path\": \"integrated_chain\", \"status\": \"ok\"}, \"strategist\": {\"market_regime\": \"neutral\", \"market_sentiment\": \"\", \"themes\": [\"quality\"], \"playbook\": \"defensive\", \"scanner_bias\": \"\", \"risk_tone\": \"conservative\", \"monitor_guidance\": \"\", \"news_query_targets\": [\"코스피\", \"미국 증시\"], \"news_query_reasoning\": \"\", \"global_sentiment_inputs\": {\"score\": -0.2, \"fear_index\": \"{'level': 24.5}\", \"macro_moves\": \"{'dxy_pct': 0.3}\"}, \"market_news_titles\": [\"코스피 장중 흐름 점검\"], \"candidate_news_titles\": [\"삼성전자 수급 집중\"], \"llm_status\": \"\", \"llm_low_confidence\": null, \"canonical_summary\": \"Market regime was neutral with elevated volatility and defensive posture.\", \"canonical_bullets\": [\"Regime: neutral\", \"Global sentiment: -0.20\", \"VIX: 24.50\"]}, \"scanner\": {\"candidate_source\": \"\", \"candidate_pool_before_filter\": null, \"candidate_pool_after_filter\": 5, \"top_ranked_symbols\": [], \"source_mix\": {\"top_value\": 5, \"top_volume\": 5}, \"selected_symbol\": \"005930\", \"selected_reason\": \"top_value+trend\", \"source_scores\": {}, \"score_total\": null, \"confidence\": null, \"feature_coverage\": {\"present\": 12, \"total\": 12, \"coverage_ratio\": 1.0, \"quality\": \"strong\", \"present_keys\": \"['engine_ma20_gap', 'engine_ma60', 'engine_ma120', 'engine_adx14', 'engine_tr...\"}, \"quote_metrics\": {\"present\": true, \"skill_quote_price\": 70500, \"quote_volume\": 1234567, \"quote_trading_value\": 89012345678, \"intraday_change_pct\": 2.15}, \"score_breakdown\": {}, \"canonical_bullets\": [\"Universe scanned: 5\", \"Selected rank: #1\", \"Runner-up symbols had weaker coverage\"], \"canonical_filters_summary\": \"Primary filters passed and chart completeness remained strong.\", \"canonical_filter_bullets\": [\"liquidity filter: PASS\", \"turnover filter: PASS\", \"chart completeness filter: PASS (12/12)\"]}, \"monitor\": {\"monitor_reason\": \"no_position\", \"exit_reason\": \"no_position\", \"position_age_seconds\": null, \"thresholds\": {}, \"strategy_frame_adjustments\": [], \"exit_policy_guard_adjustments\": [], \"canonical_bullets\": [\"Posture: BUY\", \"Trigger: no_position\", \"Exit trigger: no\"], \"canonical_snapshot\": {}}, \"supervisor\": {\"allowed\": true, \"reason\": \"Allowed\", \"portfolio_guard\": \"{'reader_ok': True, 'positions_source': 'reader_positions_authoritative_empty', 'reconciliation_status': 'reader_alig...\", \"canonical_summary\": \"Supervisor approved execution in manual mode.\"}, \"executor\": {\"action\": \"\", \"symbol\": \"\", \"qty\": null, \"status\": \"\", \"canonical_summary\": \"BUY order was recorded successfully in simulation mode.\", \"canonical_bullets\": [\"Outcome: recorded\", \"Quantity: 1\", \"Order status: EXECUTED_OK\"]}, \"reporter\": {\"ai_summary\": \"Today reporter summary\", \"ai_run_grade\": \"A-\", \"found\": true, \"status\": \"linked\", \"reason\": \"\"}, \"trade_report\": {\"report_available\": true, \"trade_id\": \"20260316_005930_buy_run-1\", \"lifecycle_status\": \"closed\", \"lifecycle_summary\": \"Trade lifecycle was closed with approved simulation execution.\", \"story_type\": \"Simulation trade report\", \"execution_mode_label\": \"simulation (mock broker)\", \"summary\": \"trade report changed after the brief was saved\"}, \"canonical_trade\": {\"available\": true, \"trade_id\": \"20260316_005930_buy_run-1\", \"story_type\": \"Simulation trade report\", \"execution_mode_label\": \"simulation (mock broker)\", \"lifecycle_status\": \"closed\", \"lifecycle_summary\": \"Trade lifecycle was closed with approved simulation execution.\", \"market_context_summary\": \"Market regime was neutral with elevated volatility and defensive posture.\", \"market_context_bullets\": [\"Regime: neutral\", \"Global sentiment: -0.20\", \"VIX: 24.50\"], \"selection_summary\": \"Selected as top ranked symbol due to value/volume blend.\", \"selection_bullets\": [\"Universe scanned: 5\", \"Selected rank: #1\", \"Runner-up symbols had weaker coverage\"], \"filters_summary\": \"Primary filters passed and chart completeness remained strong.\", \"filter_bullets\": [\"liquidity filter: PASS\", \"turnover filter: PASS\", \"chart completeness filter: PASS (12/12)\"], \"monitor_summary\": \"Monitor allowed BUY because no position was open.\", \"monitor_bullets\": [\"Posture: BUY\", \"Trigger: no_position\", \"Exit trigger: no\"], \"monitor_snapshot\": {}, \"guard_summary\": \"Supervisor approved execution in manual mode.\", \"execution_summary\": \"BUY order was recorded successfully in simulation mode.\", \"execution_bullets\": [\"Outcome: recorded\", \"Quantity: 1\", \"Order status: EXECUTED_OK\"], \"reporter_summary\": \"Reporter linked and graded the run A-.\", \"reporter_status\": \"linked\", \"reporter_grade\": \"A-\"}}",
+        "raw_response_text": "{\"headline\": \"run-1 운영 요약\", \"commander_summary\": \"지휘자는 integrated_chain 세션을 실행했습니다.\", \"strategist_summary\": \"전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다. model=\", \"scanner_summary\": \"스캐너는 Kiwoom 후보 중 005930을 1등으로 골랐습니다.\", \"monitor_summary\": \"모니터는 no_position 상태를 보고 진입 가능 상태로 판단했습니다.\", \"supervisor_summary\": \"감독관은 주문을 허용했습니다.\", \"executor_summary\": \"수행자는 BUY 005930 1주를 실행했습니다.\", \"reporter_summary\": \"리포터는 오늘 run을 정상으로 요약했습니다.\", \"operator_takeaways\": [\"뉴스/거시 입력이 포함됐습니다.\", \"차트/feature coverage가 strong입니다.\"]}",
+        "parsed_output": {
+          "headline": "run-1 운영 요약",
+          "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
+          "strategist_summary": "전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다. model=",
+          "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 1등으로 골랐습니다.",
+          "monitor_summary": "모니터는 no_position 상태를 보고 진입 가능 상태로 판단했습니다.",
+          "supervisor_summary": "감독관은 주문을 허용했습니다.",
+          "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
+          "reporter_summary": "리포터는 오늘 run을 정상으로 요약했습니다.",
+          "operator_takeaways": [
+            "뉴스/거시 입력이 포함됐습니다.",
+            "차트/feature coverage가 strong입니다."
+          ]
+        },
+        "model_info": {
+          "provider": "OpenRouter",
+          "model": ""
+        },
+        "latency_ms": 0,
+        "status": "ok",
+        "llm_status": "ok",
+        "parse_mode": "full",
+        "required_keys_expected": [
+          "headline",
+          "commander_summary",
+          "strategist_summary",
+          "scanner_summary",
+          "monitor_summary",
+          "supervisor_summary",
+          "executor_summary",
+          "reporter_summary",
+          "operator_takeaways"
+        ],
+        "required_keys_present": [
+          "headline",
+          "commander_summary",
+          "strategist_summary",
+          "scanner_summary",
+          "monitor_summary",
+          "supervisor_summary",
+          "executor_summary",
+          "reporter_summary",
+          "operator_takeaways"
+        ],
+        "required_keys_missing": [],
+        "completeness_score": 1.0,
+        "trailing_text": "",
+        "raw_nonempty": true,
+        "parse_error": ""
+      }
+    ],
+    "system_prompt": "당신은 트레이딩 운영 화면용 한글 브리프 작성기입니다. 운영자가 한 번에 이해할 수 있도록 파이프라인 순서대로 정확하고 충분히 구체적으로 정리하세요. 반드시 JSON만 출력하고 설명문이나 주석은 쓰지 마세요.",
+    "user_prompt": "아래 실행 기록을 바탕으로 지휘자, 전략가, 스캐너, 모니터, 감독관, 수행자, 리포터가 각각 무엇을 했는지 운영자에게 바로 읽히는 한국어로 요약하세요.\n브리프에는 다음이 포함돼야 합니다.\n- canonical_trade.available=true 면 reports/trades 산출물(trade_story_input, trade_lifecycle, trade_report)을 1차 source of truth로 사용하고 run-level 로그는 빈칸 보완에만 사용\n- 전략가가 어떤 뉴스/글로벌 감성/VIX/거시 입력을 봤는지\n- 스캐너가 Kiwoom 후보 몇 개를 봤고 어떤 소스(top_value/top_volume/sector_theme 등)와 수치 계산으로 왜 1등을 골랐는지\n- 차트/feature/실시간 quote가 얼마나 채워졌는지와 주요 점수/coverage가 무엇인지\n- 모니터가 어떤 stop/effective stop/take profit/watch axis/current price를 받아 왜 hold/buy/sell/block 했는지\n- 감독관이 무엇을 승인 또는 차단했고 수행자가 실제로 무엇을 주문/체결했는지\n- 리포터의 사후 평가\n각 항목은 1~3문장으로 쓰되 숫자와 근거를 포함하세요.\n영어 문장보다 한국어 문장을 우선하고, 종목코드/지표명만 필요한 경우 유지하세요.\noperator_takeaways는 5개 이하로 작성하세요.\n계약: {\"headline\": \"string\", \"commander_summary\": \"string\", \"strategist_summary\": \"string\", \"scanner_summary\": \"string\", \"monitor_summary\": \"string\", \"supervisor_summary\": \"string\", \"executor_summary\": \"string\", \"reporter_summary\": \"string\", \"operator_takeaways\": [\"string\"]}\n입력: {\"run_id\": \"run-1\", \"commander\": {\"mode\": \"integrated_chain\", \"phase\": \"session\", \"path\": \"integrated_chain\", \"status\": \"ok\"}, \"strategist\": {\"market_regime\": \"neutral\", \"market_sentiment\": \"\", \"themes\": [\"quality\"], \"playbook\": \"defensive\", \"scanner_bias\": \"\", \"risk_tone\": \"conservative\", \"monitor_guidance\": \"\", \"news_query_targets\": [\"코스피\", \"미국 증시\"], \"news_query_reasoning\": \"\", \"global_sentiment_inputs\": {\"score\": -0.2, \"fear_index\": \"{'level': 24.5}\", \"macro_moves\": \"{'dxy_pct': 0.3}\"}, \"market_news_titles\": [\"코스피 장중 흐름 점검\"], \"candidate_news_titles\": [\"삼성전자 수급 집중\"], \"llm_status\": \"\", \"llm_low_confidence\": null, \"canonical_summary\": \"Market regime was neutral with elevated volatility and defensive posture.\", \"canonical_bullets\": [\"Regime: neutral\", \"Global sentiment: -0.20\", \"VIX: 24.50\"]}, \"scanner\": {\"candidate_source\": \"\", \"candidate_pool_before_filter\": null, \"candidate_pool_after_filter\": 5, \"top_ranked_symbols\": [], \"source_mix\": {\"top_value\": 5, \"top_volume\": 5}, \"selected_symbol\": \"005930\", \"selected_reason\": \"top_value+trend\", \"source_scores\": {}, \"score_total\": null, \"confidence\": null, \"feature_coverage\": {\"present\": 12, \"total\": 12, \"coverage_ratio\": 1.0, \"quality\": \"strong\", \"present_keys\": \"['engine_ma20_gap', 'engine_ma60', 'engine_ma120', 'engine_adx14', 'engine_tr...\"}, \"quote_metrics\": {\"present\": true, \"skill_quote_price\": 70500, \"quote_volume\": 1234567, \"quote_trading_value\": 89012345678, \"intraday_change_pct\": 2.15}, \"score_breakdown\": {}, \"canonical_bullets\": [\"Universe scanned: 5\", \"Selected rank: #1\", \"Runner-up symbols had weaker coverage\"], \"canonical_filters_summary\": \"Primary filters passed and chart completeness remained strong.\", \"canonical_filter_bullets\": [\"liquidity filter: PASS\", \"turnover filter: PASS\", \"chart completeness filter: PASS (12/12)\"]}, \"monitor\": {\"monitor_reason\": \"no_position\", \"exit_reason\": \"no_position\", \"position_age_seconds\": null, \"thresholds\": {}, \"strategy_frame_adjustments\": [], \"exit_policy_guard_adjustments\": [], \"canonical_bullets\": [\"Posture: BUY\", \"Trigger: no_position\", \"Exit trigger: no\"], \"canonical_snapshot\": {}}, \"supervisor\": {\"allowed\": true, \"reason\": \"Allowed\", \"portfolio_guard\": \"{'reader_ok': True, 'positions_source': 'reader_positions_authoritative_empty', 'reconciliation_status': 'reader_alig...\", \"canonical_summary\": \"Supervisor approved execution in manual mode.\"}, \"executor\": {\"action\": \"\", \"symbol\": \"\", \"qty\": null, \"status\": \"\", \"canonical_summary\": \"BUY order was recorded successfully in simulation mode.\", \"canonical_bullets\": [\"Outcome: recorded\", \"Quantity: 1\", \"Order status: EXECUTED_OK\"]}, \"reporter\": {\"ai_summary\": \"Today reporter summary\", \"ai_run_grade\": \"A-\", \"found\": true, \"status\": \"linked\", \"reason\": \"\"}, \"trade_report\": {\"report_available\": true, \"trade_id\": \"20260316_005930_buy_run-1\", \"lifecycle_status\": \"closed\", \"lifecycle_summary\": \"Trade lifecycle was closed with approved simulation execution.\", \"story_type\": \"Simulation trade report\", \"execution_mode_label\": \"simulation (mock broker)\", \"summary\": \"trade report changed after the brief was saved\"}, \"canonical_trade\": {\"available\": true, \"trade_id\": \"20260316_005930_buy_run-1\", \"story_type\": \"Simulation trade report\", \"execution_mode_label\": \"simulation (mock broker)\", \"lifecycle_status\": \"closed\", \"lifecycle_summary\": \"Trade lifecycle was closed with approved simulation execution.\", \"market_context_summary\": \"Market regime was neutral with elevated volatility and defensive posture.\", \"market_context_bullets\": [\"Regime: neutral\", \"Global sentiment: -0.20\", \"VIX: 24.50\"], \"selection_summary\": \"Selected as top ranked symbol due to value/volume blend.\", \"selection_bullets\": [\"Universe scanned: 5\", \"Selected rank: #1\", \"Runner-up symbols had weaker coverage\"], \"filters_summary\": \"Primary filters passed and chart completeness remained strong.\", \"filter_bullets\": [\"liquidity filter: PASS\", \"turnover filter: PASS\", \"chart completeness filter: PASS (12/12)\"], \"monitor_summary\": \"Monitor allowed BUY because no position was open.\", \"monitor_bullets\": [\"Posture: BUY\", \"Trigger: no_position\", \"Exit trigger: no\"], \"monitor_snapshot\": {}, \"guard_summary\": \"Supervisor approved execution in manual mode.\", \"execution_summary\": \"BUY order was recorded successfully in simulation mode.\", \"execution_bullets\": [\"Outcome: recorded\", \"Quantity: 1\", \"Order status: EXECUTED_OK\"], \"reporter_summary\": \"Reporter linked and graded the run A-.\", \"reporter_status\": \"linked\", \"reporter_grade\": \"A-\"}}",
+    "raw_response_text": "{\"headline\": \"run-1 운영 요약\", \"commander_summary\": \"지휘자는 integrated_chain 세션을 실행했습니다.\", \"strategist_summary\": \"전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다. model=\", \"scanner_summary\": \"스캐너는 Kiwoom 후보 중 005930을 1등으로 골랐습니다.\", \"monitor_summary\": \"모니터는 no_position 상태를 보고 진입 가능 상태로 판단했습니다.\", \"supervisor_summary\": \"감독관은 주문을 허용했습니다.\", \"executor_summary\": \"수행자는 BUY 005930 1주를 실행했습니다.\", \"reporter_summary\": \"리포터는 오늘 run을 정상으로 요약했습니다.\", \"operator_takeaways\": [\"뉴스/거시 입력이 포함됐습니다.\", \"차트/feature coverage가 strong입니다.\"]}",
+    "error": "",
+    "retry_count": 0,
+    "meta": {
+      "reason": "",
+      "parse_mode": "full",
+      "required_keys_expected": [
+        "headline",
+        "commander_summary",
+        "strategist_summary",
+        "scanner_summary",
+        "monitor_summary",
+        "supervisor_summary",
+        "executor_summary",
+        "reporter_summary",
+        "operator_takeaways"
+      ],
+      "required_keys_present": [
+        "headline",
+        "commander_summary",
+        "strategist_summary",
+        "scanner_summary",
+        "monitor_summary",
+        "supervisor_summary",
+        "executor_summary",
+        "reporter_summary",
+        "operator_takeaways"
+      ],
+      "required_keys_missing": [],
+      "completeness_score": 1.0,
+      "used_fallback_sections": [],
+      "finish_reason": "",
+      "error": ""
+    },
+    "parse_mode": "full",
+    "required_keys_expected": [
+      "headline",
+      "commander_summary",
+      "strategist_summary",
+      "scanner_summary",
+      "monitor_summary",
+      "supervisor_summary",
+      "executor_summary",
+      "reporter_summary",
+      "operator_takeaways"
+    ],
+    "required_keys_present": [
+      "headline",
+      "commander_summary",
+      "strategist_summary",
+      "scanner_summary",
+      "monitor_summary",
+      "supervisor_summary",
+      "executor_summary",
+      "reporter_summary",
+      "operator_takeaways"
+    ],
+    "required_keys_missing": [],
+    "completeness_score": 1.0,
+    "used_fallback_sections": [],
+    "finish_reason": ""
+  },
+  "sections": {
+    "executive_decision": {
+      "final_action": "BUY",
+      "symbol": "005930",
+      "reason": "trade report changed after the brief was saved",
+      "confidence": "",
+      "selected_rank": 1,
+      "universe_size": 5
+    },
+    "why_symbol_chosen": {
+      "selected": true,
+      "universe_size": 5,
+      "selected_rank": 1,
+      "selection_reasons": [
+        "Selected as top ranked symbol due to value/volume blend.",
+        "top_value+trend",
+        "Universe scanned: 5",
+        "Selected rank: #1",
+        "Runner-up symbols had weaker coverage",
+        "chart feature coverage 12/12 (strong)",
+        "acceptable turnover and tradability",
+        "aligned with playbook defensive"
+      ],
+      "comparison_reasons": [
+        "only one ranked candidate was persisted for this run"
+      ],
+      "top_candidates": [
+        {
+          "rank": 1,
+          "symbol": "005930",
+          "reason": "",
+          "score": null
+        }
+      ]
+    },
+    "market_context": {
+      "market_regime": "neutral",
+      "global_sentiment": "-0.20",
+      "vix": "24.50",
+      "macro_summary": [
+        "DXY change 30.00%",
+        "Regime: neutral",
+        "Global sentiment: -0.20",
+        "VIX: 24.50"
+      ],
+      "news_summary": "Market regime was neutral with elevated volatility and defensive posture.",
+      "news_targets": [
+        "코스피",
+        "미국 증시"
+      ],
+      "defensive_mode": "enabled"
+    },
+    "theme_detection": {
+      "detected_themes": [
+        "quality"
+      ],
+      "symbol_theme_match": "not explicitly tagged",
+      "priority_alignment": "partial",
+      "theme_priority_bucket": "fallback theme match"
+    },
+    "filters_and_gates": [
+      {
+        "name": "Liquidity Filter",
+        "status": "PASS",
+        "note": "PASS"
+      },
+      {
+        "name": "Turnover Filter",
+        "status": "PASS",
+        "note": "PASS"
+      },
+      {
+        "name": "Chart Completeness Filter",
+        "status": "PASS",
+        "note": "(12/12)"
+      }
+    ],
+    "scanner_ranking_explanation": {
+      "ranking_basis": [
+        "trading value",
+        "volume",
+        "sector strength",
+        "chart feature coverage"
+      ],
+      "component_scores": [],
+      "tie_break_rule": "higher composite score, then stronger feature coverage",
+      "positive_factors": [
+        "top_value+trend",
+        "strong tradable turnover",
+        "robust chart feature coverage",
+        "sector alignment is acceptable"
+      ],
+      "weak_factors": [
+        "no major weakness persisted in this run snapshot"
+      ]
+    },
+    "chart_feature_coverage": {
+      "present": 12,
+      "total": 12,
+      "quality": "strong",
+      "confirmed_features": [
+        "MA20 gap support",
+        "MA60 trend anchor",
+        "MA120 long trend",
+        "ADX trend strength",
+        "trend strength score",
+        "volume expansion"
+      ],
+      "missing_features": [],
+      "interpretation": "feature coverage is robust enough for scanner ranking confidence"
+    },
+    "position_monitor_reasoning": {
+      "posture": "BUY",
+      "holding_time": "-",
+      "stop_loss": "-",
+      "effective_stop": "-",
+      "effective_stop_reason": "-",
+      "take_profit": "-",
+      "current_price": "-",
+      "average_price": "-",
+      "peak_price": "-",
+      "current_drawdown": "-",
+      "peak_drawdown": "-",
+      "vwap_distance": "-",
+      "price_source": "-",
+      "feature_source": "-",
+      "price_source_policy": "",
+      "active_exit_axis": "No position",
+      "watch_axes": [],
+      "hold_reasons": [
+        "Posture: BUY",
+        "Trigger: no_position",
+        "Exit trigger: no"
+      ],
+      "exit_triggers": [
+        "stop-loss breach",
+        "take-profit hit",
+        "monitor quality deterioration"
+      ]
+    },
+    "reporter_evaluation": {
+      "status": "linked",
+      "reason": "same-day reporter analysis is linked to this run",
+      "strategy_alignment": "strategy frame and scanner trace were captured",
+      "execution_quality": "execution log present",
+      "monitor_consistency": "monitor=Monitor allowed BUY because no position was open. / exit=simulated closeout",
+      "run_grade": "A-",
+      "trade_quality": "grade A-",
+      "key_finding": "Today reporter summary"
+    },
+    "ai_trade_report": {
+      "status": "available",
+      "status_label": "AI Report Available",
+      "status_badge_class": "status-badge status-badge--ok",
+      "reason": "AI trade report status is not fully classified yet.",
+      "next_step": "Review diagnostics and proceed with the Operator Brief in the meantime.",
+      "model": "openrouter/free",
+      "available": true,
+      "trade_id": "20260316_005930_buy_run-1",
+      "lifecycle_status": "closed",
+      "lifecycle_summary": "Trade lifecycle was closed with approved simulation execution.",
+      "story_type": "Simulation trade report",
+      "execution_mode_label": "simulation (mock broker)",
+      "summary": "trade report changed after the brief was saved",
+      "link": "/reports/trade/20260316_005930_buy_run-1"
+    },
+    "operator_conclusion": {
+      "current_action": "BUY",
+      "watch_next": [
+        "volatility trend (VIX 24.50)",
+        "theme strength drift (quality)"
+      ],
+      "thesis_invalidation": [
+        "stop-loss breach or abnormal drawdown",
+        "scanner and monitor signal divergence",
+        "negative macro/news regime shift"
+      ]
+    }
+  },
+  "version": 12,
+  "cached_at": "2026-03-19T11:58:13.853896+09:00"
+}

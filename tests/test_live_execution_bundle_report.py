@@ -1098,3 +1098,120 @@ def test_build_run_snapshots_prefers_canonical_agent_artifacts(tmp_path: Path) -
     assert row["execution"]["symbol"] == "AAA"
     assert row["evidence_provenance"]["scanner"] == "canonical"
     assert row["evidence_provenance"]["monitor"] == "canonical"
+
+
+def test_trade_evidence_links_cached_strategist_frame_run() -> None:
+    day = "2026-03-19"
+    lifecycle = {
+        "trade_id": "TRD_20260319_032820_02",
+        "symbol": "032820",
+        "run_ids_all": ["cached-buy-run"],
+    }
+    event_rows = [
+        {
+            "ts": f"{day}T01:49:30+00:00",
+            "run_id": "strategist-source-run",
+            "event_name": "strategist.market_context_snapshot",
+            "agent": "strategist",
+            "payload": {
+                "global_signal": {
+                    "score": -0.22,
+                    "status": "ok",
+                    "source": "yfinance",
+                    "macro_moves": {"vix_level": 25.09, "dxy_pct": 0.59},
+                    "fear_index": {"level": 25.09, "level_pressure": 0.2545},
+                },
+                "macro_stress_overlay": {"active": True, "stress_flags": ["elevated_vix"]},
+            },
+        },
+        {
+            "ts": f"{day}T01:49:30+00:00",
+            "run_id": "strategist-source-run",
+            "event_name": "strategist.decision_frame",
+            "agent": "strategist",
+            "payload": {
+                "market_regime": "neutral",
+                "market_sentiment": "bearish",
+                "playbook": "defensive",
+                "themes": ["defensive_assets"],
+            },
+        },
+        {
+            "ts": f"{day}T01:50:19+00:00",
+            "run_id": "cached-buy-run",
+            "event_name": "commander_router.fast_path",
+            "agent": "commander_router",
+            "payload": {"path": "integrated_chain_cached_frame", "reuse_sec": 180, "reason": "flat_position_cached_strategist"},
+        },
+    ]
+
+    strategist_evidence, _scanner_evidence, _monitor_timeline = mod._build_trade_evidence_from_events(
+        event_rows=event_rows,
+        lifecycle=lifecycle,
+    )
+    hydrated = mod._hydrate_strategist_payload_from_evidence({}, strategist_evidence)
+
+    assert strategist_evidence["run_ids"] == ["strategist-source-run"]
+    assert strategist_evidence["linked_cached_frame_sources"] == {"cached-buy-run": "strategist-source-run"}
+    assert hydrated["market_regime"] == "neutral"
+    assert hydrated["market_sentiment"] == "bearish"
+    assert hydrated["playbook"] == "defensive"
+    assert hydrated["global_sentiment_score"] == -0.22
+    assert hydrated["fear_index"]["level"] == 25.09
+
+
+def test_build_strategist_llm_response_artifact_reconstructs_cached_evidence() -> None:
+    artifact = mod._build_strategist_llm_response_artifact(
+        {
+            "run_id": "cached-buy-run",
+            "strategist": {
+                "llm_ok": False,
+                "llm_response": "",
+                "llm_parsed_output": {"market_regime": "stale"},
+            },
+        },
+        day="2026-03-19",
+        trade_id="TRD_20260319_000660_02",
+        strategist_evidence={
+            "run_ids": ["source-strategist-run"],
+            "llm_response_saved": [
+                {
+                    "event_name": "strategist.llm_response_saved",
+                    "payload": {
+                        "status": "ok",
+                        "model": "minimax/minimax-m2.5",
+                        "provider": "OpenRouter",
+                        "attempts": 1,
+                    },
+                }
+            ],
+        },
+        evidence_rows=[
+            {
+                "timestamp": "2026-03-19T02:20:02+00:00",
+                "run_id": "source-strategist-run",
+                "agent": "strategist",
+                "stage": "theme_selection",
+                "llm_prompt": "[system]\nFollow schema.\n[user]\nAssess macro context.",
+                "llm_response": "{\"market_regime\": \"neutral\", \"market_sentiment\": \"bearish\"}",
+                "parsed_output": {
+                    "market_regime": "neutral",
+                    "market_sentiment": "bearish",
+                    "playbook": "defensive",
+                },
+            }
+        ],
+    )
+
+    assert artifact["component"] == "strategist"
+    assert artifact["trade_id"] == "TRD_20260319_000660_02"
+    assert artifact["status"] == "ok"
+    assert artifact["llm_status"] == "ok"
+    assert artifact["model"] == "minimax/minimax-m2.5"
+    assert artifact["raw_response_text"].startswith("{\"market_regime\"")
+    assert artifact["parsed_output"]["market_regime"] == "neutral"
+    assert artifact["parsed_output"]["playbook"] == "defensive"
+    assert artifact["retry_count"] == 0
+    assert artifact["meta"]["reconstructed_from_evidence_ledger"] is True
+    assert artifact["meta"]["source_run_id"] == "source-strategist-run"
+    assert artifact["meta"]["source_stage"] == "theme_selection"

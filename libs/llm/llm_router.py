@@ -119,7 +119,7 @@ class LLMRouter:
         }
         # allow advanced OpenRouter passthrough fields
         if policy:
-            for k in ("top_p", "presence_penalty", "frequency_penalty", "seed", "response_format"):
+            for k in ("top_p", "presence_penalty", "frequency_penalty", "seed", "response_format", "plugins", "provider", "prediction"):
                 if k in policy:
                     payload[k] = policy[k]
             if "timeout_sec" in policy:

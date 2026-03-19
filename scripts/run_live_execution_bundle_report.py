@@ -132,26 +132,93 @@ def _write_legacy_text(path: Path, text: str) -> str:
     return str(path)
 
 
-def _build_strategist_llm_response_artifact(bundle_out: Dict[str, Any], *, day: str, trade_id: str) -> Dict[str, Any]:
+def _latest_strategist_evidence_ledger_row(
+    evidence_rows: List[Dict[str, Any]],
+    strategist_run_ids: List[str],
+) -> Dict[str, Any]:
+    run_set = {str(item or "").strip() for item in list(strategist_run_ids or []) if str(item or "").strip()}
+    candidates: List[Dict[str, Any]] = []
+    for row in list(evidence_rows or []):
+        if run_set and str(row.get("run_id") or "").strip() not in run_set:
+            continue
+        if str(row.get("agent") or "").strip().lower() != "strategist":
+            continue
+        if str(row.get("stage") or "").strip() not in {"theme_selection", "theme_selection_repair"}:
+            continue
+        if not any(
+            (
+                bool(str(row.get("llm_prompt") or "").strip()),
+                bool(str(row.get("llm_response") or "").strip()),
+                isinstance(row.get("parsed_output"), dict) and bool(row.get("parsed_output")),
+            )
+        ):
+            continue
+        candidates.append(row)
+    if not candidates:
+        return {}
+    candidates.sort(key=lambda item: _to_epoch(item.get("timestamp") or item.get("ts")) or 0)
+    return dict(candidates[-1])
+
+
+def _build_strategist_llm_response_artifact(
+    bundle_out: Dict[str, Any],
+    *,
+    day: str,
+    trade_id: str,
+    strategist_evidence: Dict[str, Any] | None = None,
+    evidence_rows: List[Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
     strategist = bundle_out.get("strategist") if isinstance(bundle_out.get("strategist"), dict) else {}
-    system_prompt, user_prompt = split_prompt_text(strategist.get("llm_prompt") or "")
+    strategist_evidence = strategist_evidence if isinstance(strategist_evidence, dict) else {}
+    evidence_row = _latest_strategist_evidence_ledger_row(
+        list(evidence_rows or []),
+        list(strategist_evidence.get("run_ids") or []),
+    )
+    llm_saved = _latest_event_payload(list(strategist_evidence.get("llm_response_saved") or []))
+    llm_prompt = strategist.get("llm_prompt") or evidence_row.get("llm_prompt") or ""
+    system_prompt, user_prompt = split_prompt_text(llm_prompt)
+    has_direct_strategist_llm_fields = any(
+        (
+            bool(str(strategist.get("llm_prompt") or "").strip()),
+            bool(str(strategist.get("llm_response") or "").strip()),
+            bool(str(strategist.get("llm_error") or "").strip()),
+        )
+    )
     parsed_output = strategist.get("llm_parsed_output") if isinstance(strategist.get("llm_parsed_output"), dict) else {}
-    raw_response = str(strategist.get("llm_response") or "")
+    if (not has_direct_strategist_llm_fields or not parsed_output) and isinstance(evidence_row.get("parsed_output"), dict):
+        parsed_output = dict(evidence_row.get("parsed_output") or {})
+    if not parsed_output and isinstance(llm_saved.get("parsed_output"), dict):
+        parsed_output = dict(llm_saved.get("parsed_output") or {})
+    raw_response = str(strategist.get("llm_response") or evidence_row.get("llm_response") or "")
     llm_error = str(strategist.get("llm_error") or "")
+    if not llm_error:
+        llm_error = str(llm_saved.get("blocked_reason") or llm_saved.get("error") or "")
+    llm_ok = strategist.get("llm_ok")
+    saved_status = str(llm_saved.get("status") or "").strip().lower()
+    if saved_status and (not has_direct_strategist_llm_fields or "llm_ok" not in strategist):
+        llm_ok = saved_status == "ok"
+    elif evidence_row and not has_direct_strategist_llm_fields:
+        llm_ok = bool(raw_response or parsed_output) and not str(raw_response).startswith("ERROR:")
+    elif llm_ok is None and evidence_row:
+        llm_ok = bool(raw_response or parsed_output) and not str(raw_response).startswith("ERROR:")
+    llm_model = str(strategist.get("llm_model") or llm_saved.get("model") or "")
+    llm_provider = str(strategist.get("llm_provider") or llm_saved.get("provider") or "OpenRouter")
+    llm_latency_ms = int(strategist.get("llm_latency_ms") or 0)
+    llm_attempts = safe_int(llm_saved.get("attempts"), 1)
     has_linked_llm_evidence = any(
         (
             bool(system_prompt),
             bool(user_prompt),
             bool(raw_response),
             bool(parsed_output),
-            bool(strategist.get("llm_model")),
-            bool(strategist.get("llm_provider")),
-            bool(strategist.get("llm_latency_ms")),
-            "llm_ok" in strategist,
+            bool(llm_model),
+            bool(llm_provider),
+            bool(llm_latency_ms),
+            llm_ok is not None,
             bool(llm_error),
         )
     )
-    original_status = "ok" if bool(strategist.get("llm_ok")) else "fallback"
+    original_status = "ok" if bool(llm_ok) else "fallback"
     if raw_response.startswith("ERROR:"):
         original_status = "error"
     attempts = []
@@ -164,10 +231,10 @@ def _build_strategist_llm_response_artifact(bundle_out: Dict[str, Any], *, day: 
                 "raw_response_text": raw_response,
                 "parsed_output": parsed_output,
                 "model_info": {
-                    "provider": str(strategist.get("llm_provider") or "OpenRouter"),
-                    "model": str(strategist.get("llm_model") or ""),
+                    "provider": llm_provider,
+                    "model": llm_model,
                 },
-                "latency_ms": int(strategist.get("llm_latency_ms") or 0),
+                "latency_ms": llm_latency_ms,
                 "status": original_status,
                 "error": llm_error,
             }
@@ -180,6 +247,10 @@ def _build_strategist_llm_response_artifact(bundle_out: Dict[str, Any], *, day: 
             "reason": "No linked strategist LLM evidence was available for this trade bundle.",
             "evidence_available": False,
         }
+    elif evidence_row:
+        meta["reconstructed_from_evidence_ledger"] = True
+        meta["source_run_id"] = str(evidence_row.get("run_id") or "")
+        meta["source_stage"] = str(evidence_row.get("stage") or "")
     return build_llm_response_artifact(
         component="strategist",
         run_id=str(bundle_out.get("run_id") or ""),
@@ -190,10 +261,10 @@ def _build_strategist_llm_response_artifact(bundle_out: Dict[str, Any], *, day: 
         attempts=attempts,
         parsed_output=parsed_output,
         model_info={
-            "provider": str(strategist.get("llm_provider") or "OpenRouter"),
-            "model": str(strategist.get("llm_model") or ""),
+            "provider": llm_provider,
+            "model": llm_model,
         },
-        latency_ms=int(strategist.get("llm_latency_ms") or 0),
+        latency_ms=llm_latency_ms,
         meta=meta,
     )
 
@@ -552,6 +623,147 @@ def _filter_canonical_events(
     return out
 
 
+def _resolve_strategist_source_run_ids(
+    *,
+    event_rows: List[Dict[str, Any]],
+    lifecycle: Dict[str, Any],
+) -> Tuple[List[str], Dict[str, str]]:
+    lifecycle_run_ids = [str(x or "").strip() for x in list(lifecycle.get("run_ids_all") or []) if str(x or "").strip()]
+    if not lifecycle_run_ids:
+        return [], {}
+
+    strategist_event_names = {
+        "strategist.market_context_snapshot",
+        "strategist.global_sentiment_breakdown",
+        "strategist.news_evidence_ranked",
+        "strategist.decision_frame",
+        "strategist.llm_response_saved",
+    }
+    strategist_run_ids = {
+        str(row.get("run_id") or "").strip()
+        for row in event_rows
+        if str(row.get("run_id") or "").strip() in set(lifecycle_run_ids)
+        and str(row.get("agent") or row.get("stage") or "").strip().lower() == "strategist"
+        and _row_event_name(row) in strategist_event_names
+    }
+
+    strategist_frame_rows = [
+        row
+        for row in event_rows
+        if str(row.get("agent") or row.get("stage") or "").strip().lower() == "strategist"
+        and _row_event_name(row) == "strategist.decision_frame"
+    ]
+    strategist_frame_rows.sort(key=lambda row: _to_epoch(row.get("ts")) or 0)
+
+    linked_cached_frames: Dict[str, str] = {}
+    for run_id in lifecycle_run_ids:
+        if run_id in strategist_run_ids:
+            continue
+        fast_path_rows = [
+            row
+            for row in event_rows
+            if str(row.get("run_id") or "").strip() == run_id
+            and _row_event_name(row) == "commander_router.fast_path"
+        ]
+        if not fast_path_rows:
+            continue
+        fast_path = fast_path_rows[-1]
+        payload = fast_path.get("payload") if isinstance(fast_path.get("payload"), dict) else {}
+        if str(payload.get("path") or "").strip() != "integrated_chain_cached_frame":
+            continue
+        target_ts = _to_epoch(fast_path.get("ts")) or 0
+        reuse_sec = max(30, safe_int(payload.get("reuse_sec"), 180))
+        candidate_rows = [
+            row
+            for row in strategist_frame_rows
+            if str(row.get("run_id") or "").strip() != run_id
+            and (_to_epoch(row.get("ts")) or 0) <= target_ts
+            and target_ts - (_to_epoch(row.get("ts")) or 0) <= reuse_sec + 30
+        ]
+        if not candidate_rows:
+            continue
+        source_run_id = str(candidate_rows[-1].get("run_id") or "").strip()
+        if not source_run_id:
+            continue
+        strategist_run_ids.add(source_run_id)
+        linked_cached_frames[run_id] = source_run_id
+
+    return sorted(strategist_run_ids), linked_cached_frames
+
+
+def _latest_event_payload(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not rows:
+        return {}
+    payload = rows[-1].get("payload") if isinstance(rows[-1], dict) else {}
+    return dict(payload or {}) if isinstance(payload, dict) else {}
+
+
+def _headline_count(news_rows: List[Dict[str, Any]]) -> int:
+    total = 0
+    for row in list(news_rows or []):
+        if not isinstance(row, dict):
+            continue
+        total += safe_int(row.get("headline_count"), 0)
+    return total
+
+
+def _hydrate_strategist_payload_from_evidence(
+    strategist_payload: Dict[str, Any],
+    strategist_evidence: Dict[str, Any],
+) -> Dict[str, Any]:
+    out = dict(strategist_payload or {})
+    snapshot = _latest_event_payload(list(strategist_evidence.get("market_context_snapshots") or []))
+    decision_frame = _latest_event_payload(list(strategist_evidence.get("decision_frames") or []))
+    news_ranked = _latest_event_payload(list(strategist_evidence.get("news_evidence_ranked") or []))
+    llm_saved = _latest_event_payload(list(strategist_evidence.get("llm_response_saved") or []))
+
+    global_signal = snapshot.get("global_signal") if isinstance(snapshot.get("global_signal"), dict) else {}
+    if not isinstance(out.get("llm_parsed_output"), dict) or not out.get("llm_parsed_output"):
+        out["llm_parsed_output"] = dict(decision_frame or {})
+    if not str(out.get("market_regime") or "").strip():
+        out["market_regime"] = str(decision_frame.get("market_regime") or "")
+    if not str(out.get("market_sentiment") or "").strip():
+        out["market_sentiment"] = str(decision_frame.get("market_sentiment") or "")
+    if not str(out.get("playbook") or "").strip():
+        out["playbook"] = str(decision_frame.get("playbook") or "")
+    if not list(out.get("themes") or []):
+        out["themes"] = [str(x or "") for x in list(decision_frame.get("themes") or []) if str(x or "").strip()]
+    existing_global_score = out.get("global_sentiment_score")
+    existing_global_status = str(out.get("global_sentiment_status") or "").strip()
+    if existing_global_score in (None, "") or (
+        _safe_float(existing_global_score, None) == 0.0
+        and not existing_global_status
+        and isinstance(global_signal, dict)
+        and global_signal.get("score") not in (None, "")
+    ):
+        out["global_sentiment_score"] = global_signal.get("score")
+    if not str(out.get("global_sentiment_status") or "").strip():
+        out["global_sentiment_status"] = str(global_signal.get("status") or "")
+    if not str(out.get("global_sentiment_source") or "").strip():
+        out["global_sentiment_source"] = str(global_signal.get("source") or "")
+    if not isinstance(out.get("fear_index"), dict) or not out.get("fear_index"):
+        out["fear_index"] = dict(global_signal.get("fear_index") or {})
+    if not isinstance(out.get("global_macro_moves"), dict) or not out.get("global_macro_moves"):
+        out["global_macro_moves"] = dict(global_signal.get("macro_moves") or {})
+    if not isinstance(out.get("macro_stress_overlay"), dict) or not out.get("macro_stress_overlay"):
+        out["macro_stress_overlay"] = dict(snapshot.get("macro_stress_overlay") or {})
+    if not str(out.get("news_query_reasoning") or "").strip():
+        reasons = list(decision_frame.get("reason_chain") or [])
+        out["news_query_reasoning"] = str(reasons[-1] or "") if reasons else ""
+    if not list(out.get("news_query_targets") or []):
+        out["news_query_targets"] = [str(x or "") for x in list(news_ranked.get("news_query_targets") or []) if str(x or "").strip()]
+    if safe_int(out.get("market_news_query_count"), 0) <= 0:
+        out["market_news_query_count"] = len(list(news_ranked.get("news_query_targets") or []))
+    if safe_int(out.get("market_news_total_headlines"), 0) <= 0:
+        ranked_rows = list(news_ranked.get("market_news_ranked") or []) + list(news_ranked.get("candidate_news_ranked") or [])
+        out["market_news_total_headlines"] = _headline_count(ranked_rows)
+    if not str(out.get("llm_provider") or "").strip():
+        out["llm_provider"] = str(llm_saved.get("provider") or "OpenRouter")
+    if not str(out.get("llm_model") or "").strip():
+        out["llm_model"] = str(llm_saved.get("model") or "")
+    return out
+
+
 def _build_trade_evidence_from_events(
     *,
     event_rows: List[Dict[str, Any]],
@@ -560,10 +772,14 @@ def _build_trade_evidence_from_events(
     run_ids = [str(x or "") for x in list(lifecycle.get("run_ids_all") or []) if str(x or "").strip()]
     trade_id = str(lifecycle.get("trade_id") or "")
     symbol = str(lifecycle.get("symbol") or "")
+    strategist_run_ids, linked_cached_frames = _resolve_strategist_source_run_ids(
+        event_rows=event_rows,
+        lifecycle=lifecycle,
+    )
 
     strategist_events = _filter_canonical_events(
         event_rows,
-        run_ids=run_ids,
+        run_ids=strategist_run_ids,
         agent="strategist",
         event_names=[
             "strategist.market_context_snapshot",
@@ -600,7 +816,8 @@ def _build_trade_evidence_from_events(
         "schema_version": "trade_strategist_evidence.v1",
         "trade_id": trade_id,
         "symbol": symbol,
-        "run_ids": run_ids,
+        "run_ids": strategist_run_ids,
+        "linked_cached_frame_sources": dict(linked_cached_frames),
         "market_context_snapshots": [row for row in strategist_events if row.get("event_name") == "strategist.market_context_snapshot"],
         "global_sentiment_breakdowns": [row for row in strategist_events if row.get("event_name") == "strategist.global_sentiment_breakdown"],
         "news_evidence_ranked": [row for row in strategist_events if row.get("event_name") == "strategist.news_evidence_ranked"],
@@ -1293,6 +1510,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 3
 
     day_event_rows = [row for row in _iter_jsonl(event_log_path) if not day or _utc_day(row.get("ts")) == day]
+    day_evidence_rows = [
+        row
+        for row in _iter_jsonl(evidence_log_path)
+        if not day or _utc_day(row.get("timestamp") or row.get("ts")) == day
+    ]
     execution_runs = _resolve_execution_runs(event_log_path, day)[: max(1, int(args.max_runs))]
     trade_md, trade_js, trade_obj = _load_or_generate_trade_explain(event_log_path, analysis_root, day)
     reporter_md, reporter_js, reporter_obj = _load_or_generate_reporter_analysis(event_log_path, analysis_root, reports_root, intents_path, day)
@@ -1678,6 +1900,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             event_rows=day_event_rows,
             lifecycle=lifecycle,
         )
+        lifecycle_bundle["strategist"] = _hydrate_strategist_payload_from_evidence(
+            dict(lifecycle_bundle.get("strategist") or {}),
+            strategist_evidence,
+        )
+        existing_market_context = (
+            lifecycle_bundle.get("market_context_human")
+            if isinstance(lifecycle_bundle.get("market_context_human"), dict)
+            else {}
+        )
+        existing_regime = str(existing_market_context.get("regime") or "").strip().lower()
+        existing_playbook = str(existing_market_context.get("playbook") or "").strip().lower()
+        existing_vix = existing_market_context.get("vix_level")
+        if (
+            not existing_market_context
+            or existing_regime in {"", "not_captured"}
+            or existing_playbook in {"", "not_captured"}
+            or existing_vix in (None, "", "not_captured")
+        ):
+            lifecycle_bundle["market_context_human"] = build_market_context_human(
+                lifecycle_bundle.get("strategist") if isinstance(lifecycle_bundle.get("strategist"), dict) else {}
+            )
         write_json(strategist_evidence_path, strategist_evidence)
         write_json(scanner_evidence_path, scanner_evidence)
         write_json(monitor_timeline_path, monitor_timeline)
@@ -1703,7 +1946,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             model_hint=configured_report_model,
         )
 
-        strategist_llm_artifact = _build_strategist_llm_response_artifact(lifecycle_bundle, day=day, trade_id=trade_id)
+        strategist_llm_artifact = _build_strategist_llm_response_artifact(
+            lifecycle_bundle,
+            day=day,
+            trade_id=trade_id,
+            strategist_evidence=strategist_evidence,
+            evidence_rows=day_evidence_rows,
+        )
         write_json(strategist_llm_response_path, strategist_llm_artifact)
 
         trade_report: Dict[str, Any] = {}
@@ -1727,11 +1976,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             generation_status = str(generation.get("status") or "").strip().lower()
             generation_mode = str(generation.get("mode") or "").strip().lower()
             diagnostics["llm_model_used"] = _normalize_model_name(generation.get("model") or configured_report_model) or "openrouter/free"
-            if generation_status == "ok" and generation_mode == "ai":
+            if generation_status in {"ok", "repaired"} and generation_mode == "ai":
                 diagnostics["report_status"] = "available"
                 diagnostics["report_reason_code"] = ""
                 diagnostics["report_reason_human"] = "AI trade report was generated successfully."
                 diagnostics["next_expected_step"] = "Open the full report for detailed lifecycle analysis."
+            elif generation_status in {"salvaged", "partial"} and generation_mode == "ai":
+                diagnostics["report_status"] = "available"
+                diagnostics["report_reason_code"] = ""
+                diagnostics["report_reason_human"] = "AI trade report was generated with partial recovery. Review the generation note before relying on details."
+                diagnostics["next_expected_step"] = "Open the full report and inspect the generation note / completeness metadata."
+                diagnostics["last_error_message"] = _sanitize_error_message(generation.get("reason"))
             else:
                 diagnostics["report_status"] = "failed"
                 diagnostics["report_reason_code"] = "llm_generation_failed"
@@ -1776,8 +2031,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 trade_report_md_path.write_text(render_trade_report_markdown(trade_report_payload), encoding="utf-8")
                 trade_report_json_written = str(trade_report_json_path)
                 trade_report_md_written = str(trade_report_md_path)
-                diagnostics["report_output_available"] = bool(diagnostics.get("report_status") == "available")
-                diagnostics["report_artifact_available"] = bool(diagnostics.get("report_status") == "available")
+                diagnostics["report_output_available"] = True
+                diagnostics["report_artifact_available"] = True
             except Exception as exc:
                 diagnostics["report_status"] = "failed"
                 diagnostics["report_reason_code"] = "artifact_write_failed"
