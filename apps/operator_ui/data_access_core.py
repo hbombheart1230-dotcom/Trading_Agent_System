@@ -2398,6 +2398,39 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
     strategist_evidence = story_input.get("strategist_evidence") if isinstance(story_input.get("strategist_evidence"), dict) else {}
     scanner_evidence = story_input.get("scanner_evidence") if isinstance(story_input.get("scanner_evidence"), dict) else {}
     monitor_timeline = story_input.get("monitor_timeline") if isinstance(story_input.get("monitor_timeline"), dict) else {}
+    top_candidates = [dict(row) for row in list(selection.get("top_candidates") or []) if isinstance(row, dict)][:3]
+    runner_ups = [dict(row) for row in list(selection.get("runner_ups") or []) if isinstance(row, dict)][:3]
+    selection_reason_rows = [dict(row) for row in list(scanner_evidence.get("candidate_selection_reasons") or []) if isinstance(row, dict)]
+    selection_reason_payload = (
+        selection_reason_rows[0].get("payload")
+        if selection_reason_rows and isinstance(selection_reason_rows[0].get("payload"), dict)
+        else {}
+    )
+    why_selected = [str(x or "") for x in list(selection.get("why_selected") or selection_reason_payload.get("why_selected") or []) if str(x or "").strip()][:4]
+    runner_ups_lost: List[Dict[str, Any]] = []
+    for row in list(selection.get("runner_ups_lost") or selection_reason_payload.get("runner_ups_lost") or selection_reason_payload.get("runner_up_reasons") or []):
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip()
+        why_lost = [
+            str(x or "")
+            for x in list(row.get("why_lost") or row.get("lost_because") or [])
+            if str(x or "").strip()
+        ][:4]
+        summary = str(row.get("summary") or "; ".join(why_lost)).strip()
+        if not symbol and not summary:
+            continue
+        runner_ups_lost.append(
+            {
+                "symbol": symbol,
+                "why_lost": why_lost,
+                "summary": summary,
+            }
+        )
+        if len(runner_ups_lost) >= 3:
+            break
+    selection_basis = str(selection.get("selection_basis") or selection_reason_payload.get("final_decision_basis") or "").strip()
+    tie_break_rule = str(selection.get("tie_break_rule") or selection_reason_payload.get("tie_break_rule") or "").strip()
 
     return {
         "available": True,
@@ -2427,18 +2460,32 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
         "vix": vix_level,
         "playbook": str(market_context.get("playbook") or ""),
         "themes": [str(x or "") for x in list(market_context.get("themes") or [])[:6] if str(x or "").strip()],
+        "headline_count": market_context.get("headline_count"),
+        "news_query_count": market_context.get("news_query_count"),
+        "news_query_targets": [str(x or "") for x in list(market_context.get("news_query_targets") or [])[:6] if str(x or "").strip()],
+        "market_news_titles": [str(x or "") for x in list(market_context.get("market_news_titles") or [])[:3] if str(x or "").strip()],
+        "candidate_news_titles": [str(x or "") for x in list(market_context.get("candidate_news_titles") or [])[:3] if str(x or "").strip()],
         "market_context_summary": _trade_report_section_summary(market_context),
         "market_context_bullets": market_bullets,
         "selection_summary": _trade_report_section_summary(selection),
         "selection_bullets": selection_bullets,
         "universe_size": universe_size,
         "selected_rank": selected_rank,
+        "selected_score": selection.get("selected_score"),
+        "selected_sources": [str(x or "") for x in list(selection.get("selected_sources") or [])[:5] if str(x or "").strip()],
+        "why_selected": why_selected,
+        "selection_basis": selection_basis,
+        "tie_break_rule": tie_break_rule,
+        "top_candidates": top_candidates,
+        "runner_ups": runner_ups,
+        "runner_ups_lost": runner_ups_lost,
         "filters_summary": _trade_report_section_summary(filters),
         "filter_bullets": filter_bullets,
         "filter_rows": canonical_filter_rows,
         "monitor_summary": _trade_report_section_summary(monitor),
         "monitor_bullets": monitor_bullets,
         "monitor_snapshot": monitor_snapshot if isinstance(monitor_snapshot, dict) else {},
+        "monitor_decision_chain": [str(x or "") for x in list(monitor.get("decision_reason_chain") or [])[:6] if str(x or "").strip()],
         "guard_summary": _trade_report_section_summary(guard),
         "execution_summary": _trade_report_section_summary(execution),
         "execution_bullets": execution_bullets,
@@ -2561,8 +2608,15 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
 
     selection_reasons: List[str] = []
     selected_why = _clean_brief_text(selected_candidate.get("why") or scanner_trace.get("selected_reason") or "")
+    canonical_selection_basis = _clean_brief_text(canonical_trade.get("selection_basis") or "")
     if canonical_trade.get("selection_summary"):
         selection_reasons.append(str(canonical_trade.get("selection_summary")))
+    if canonical_selection_basis and canonical_selection_basis not in selection_reasons:
+        selection_reasons.append(canonical_selection_basis)
+    for reason in list(canonical_trade.get("why_selected") or [])[:4]:
+        cleaned = _clean_brief_text(reason)
+        if cleaned and cleaned not in selection_reasons:
+            selection_reasons.append(cleaned)
     if selected_why and selected_why not in selection_reasons:
         selection_reasons.append(selected_why)
     for bullet in list(canonical_trade.get("selection_bullets") or [])[:4]:
@@ -2578,7 +2632,14 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         selection_reasons.append(f"aligned with playbook {strategist_summary.get('playbook')}")
 
     comparison_reasons: List[str] = []
-    if len(top_candidates) >= 2:
+    canonical_runner_ups_lost = [dict(row) for row in list(canonical_trade.get("runner_ups_lost") or []) if isinstance(row, dict)]
+    if canonical_runner_ups_lost:
+        for row in canonical_runner_ups_lost[:3]:
+            symbol = str(row.get("symbol") or "").strip()
+            summary = _clean_brief_text(row.get("summary") or "; ".join(list(row.get("why_lost") or [])))
+            if symbol and summary:
+                comparison_reasons.append(f"{symbol} was weaker: {summary}")
+    elif len(top_candidates) >= 2:
         for row in top_candidates[1:3]:
             reason = _clean_brief_text(row.get("reason"))
             if reason:
@@ -2963,7 +3024,7 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
             "selected_rank": selected_rank or None,
             "selection_reasons": selection_reasons or ["selection rationale was not explicitly persisted"],
             "comparison_reasons": comparison_reasons,
-            "top_candidates": top_candidates[:3],
+            "top_candidates": list(canonical_trade.get("top_candidates") or top_candidates[:3])[:3],
         },
         "market_context": {
             "market_regime": str(canonical_trade.get("market_regime") or strategist_summary.get("market_regime") or strategist_trace.get("market_regime") or "-"),
@@ -2984,7 +3045,7 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_ranking_explanation": {
             "ranking_basis": ranking_basis,
             "component_scores": component_scores,
-            "tie_break_rule": str(scanner_trace.get("tie_break_rule") or "higher composite score, then stronger feature coverage"),
+            "tie_break_rule": str(canonical_trade.get("tie_break_rule") or scanner_trace.get("tie_break_rule") or "higher composite score, then stronger feature coverage"),
             "positive_factors": positive_factors[:5],
             "weak_factors": weak_factors[:4],
         },
@@ -3242,11 +3303,11 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_bias": strategist_summary.get("scanner_bias"),
             "risk_tone": strategist_summary.get("risk_tone"),
             "monitor_guidance": strategist_summary.get("monitor_guidance"),
-            "news_query_targets": list(strategist_summary.get("news_query_targets") or [])[:8],
+            "news_query_targets": list(strategist_summary.get("news_query_targets") or canonical_trade.get("news_query_targets") or [])[:8],
             "news_query_reasoning": strategist_summary.get("news_query_reasoning"),
             "global_sentiment_inputs": raw_input.get("global_sentiment_inputs") if isinstance(raw_input.get("global_sentiment_inputs"), dict) else {},
-            "market_news_titles": [str((x or {}).get("title") or "") for x in list(raw_input.get("collected_market_news") or [])[:4] if isinstance(x, dict)],
-            "candidate_news_titles": [str((x or {}).get("title") or "") for x in list(raw_input.get("collected_candidate_news") or [])[:4] if isinstance(x, dict)],
+            "market_news_titles": [str((x or {}).get("title") or "") for x in list(raw_input.get("collected_market_news") or [])[:4] if isinstance(x, dict)] or list(canonical_trade.get("market_news_titles") or [])[:4],
+            "candidate_news_titles": [str((x or {}).get("title") or "") for x in list(raw_input.get("collected_candidate_news") or [])[:4] if isinstance(x, dict)] or list(canonical_trade.get("candidate_news_titles") or [])[:4],
             "llm_status": strategist_summary.get("llm_frame_status"),
             "llm_low_confidence": strategist_summary.get("llm_frame_low_confidence"),
             "canonical_summary": canonical_trade.get("market_context_summary"),
@@ -3256,10 +3317,17 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "candidate_source": scanner.get("summary", {}).get("candidate_source") if isinstance(scanner.get("summary"), dict) else "",
             "candidate_pool_before_filter": (scanner.get("summary") or {}).get("candidate_pool_before_filter") if isinstance(scanner.get("summary"), dict) else None,
             "candidate_pool_after_filter": (scanner.get("summary") or {}).get("candidate_pool_after_filter") if isinstance(scanner.get("summary"), dict) else None,
-            "top_ranked_symbols": list((scanner.get("summary") or {}).get("top_ranked_symbols") or [])[:5] if isinstance(scanner.get("summary"), dict) else [],
+            "top_ranked_symbols": list(canonical_trade.get("top_candidates") or [])[:5]
+            or (
+                list((scanner.get("summary") or {}).get("top_ranked_symbols") or [])[:5]
+                if isinstance(scanner.get("summary"), dict)
+                else []
+            ),
             "source_mix": scanner_trace.get("kiwoom_pool_source_mix") if isinstance(scanner_trace.get("kiwoom_pool_source_mix"), dict) else {},
             "selected_symbol": scanner_trace.get("selected_symbol") or selected.get("symbol"),
-            "selected_reason": selected.get("why") or canonical_trade.get("selection_summary"),
+            "selected_reason": canonical_trade.get("selection_basis")
+            or canonical_trade.get("selection_summary")
+            or selected.get("why"),
             "source_scores": selected.get("source_scores") if isinstance(selected.get("source_scores"), dict) else {},
             "score_total": selected.get("score_total"),
             "confidence": selected.get("confidence"),
@@ -3268,6 +3336,10 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "score_breakdown": score_breakdown,
             "component_snapshot": component_snapshot,
             "feature_snapshot": feature_snapshot,
+            "why_selected": list(canonical_trade.get("why_selected") or [])[:4],
+            "tie_break_rule": canonical_trade.get("tie_break_rule"),
+            "runner_ups": list(canonical_trade.get("runner_ups") or [])[:3],
+            "runner_ups_lost": list(canonical_trade.get("runner_ups_lost") or [])[:3],
             "canonical_bullets": list(canonical_trade.get("selection_bullets") or [])[:6],
             "canonical_filters_summary": canonical_trade.get("filters_summary"),
             "canonical_filter_bullets": list(canonical_trade.get("filter_bullets") or [])[:8],
@@ -3380,14 +3452,35 @@ def _compact_canonical_trade_for_brief(data: Any) -> Dict[str, Any]:
         "lifecycle_status": _trim_text(row.get("lifecycle_status"), max_len=24),
         "lifecycle_summary": _trim_text(row.get("lifecycle_summary"), max_len=220),
         "market_context_summary": _trim_text(row.get("market_context_summary"), max_len=220),
-        "market_context_bullets": _clean_str_list(row.get("market_context_bullets"), limit=4, max_len=180),
+        "market_context_bullets": _clean_str_list(row.get("market_context_bullets"), limit=6, max_len=180),
+        "headline_count": row.get("headline_count"),
+        "news_query_count": row.get("news_query_count"),
+        "news_query_targets": _clean_str_list(row.get("news_query_targets"), limit=6, max_len=80),
+        "market_news_titles": _clean_str_list(row.get("market_news_titles"), limit=3, max_len=120),
+        "candidate_news_titles": _clean_str_list(row.get("candidate_news_titles"), limit=3, max_len=120),
         "selection_summary": _trim_text(row.get("selection_summary"), max_len=220),
-        "selection_bullets": _clean_str_list(row.get("selection_bullets"), limit=4, max_len=180),
+        "selection_bullets": _clean_str_list(row.get("selection_bullets"), limit=6, max_len=180),
+        "selected_score": row.get("selected_score"),
+        "selected_sources": _clean_str_list(row.get("selected_sources"), limit=5, max_len=80),
+        "why_selected": _clean_str_list(row.get("why_selected"), limit=4, max_len=160),
+        "selection_basis": _trim_text(row.get("selection_basis"), max_len=220),
+        "tie_break_rule": _trim_text(row.get("tie_break_rule"), max_len=160),
+        "top_candidates": _compact_ranked_symbols(row.get("top_candidates"), limit=3),
+        "runner_ups": _compact_ranked_symbols(row.get("runner_ups"), limit=3),
+        "runner_ups_lost": [
+            {
+                "symbol": _trim_text((item or {}).get("symbol"), max_len=24),
+                "summary": _trim_text((item or {}).get("summary"), max_len=180),
+            }
+            for item in list(row.get("runner_ups_lost") or [])[:3]
+            if isinstance(item, dict) and (_trim_text((item or {}).get("symbol"), max_len=24) or _trim_text((item or {}).get("summary"), max_len=180))
+        ],
         "filters_summary": _trim_text(row.get("filters_summary"), max_len=220),
         "filter_bullets": _clean_str_list(row.get("filter_bullets"), limit=5, max_len=180),
         "monitor_summary": _trim_text(row.get("monitor_summary"), max_len=220),
-        "monitor_bullets": _clean_str_list(row.get("monitor_bullets"), limit=4, max_len=180),
+        "monitor_bullets": _clean_str_list(row.get("monitor_bullets"), limit=6, max_len=180),
         "monitor_snapshot": _compact_scalar_map(row.get("monitor_snapshot"), limit=10, max_len=120),
+        "monitor_decision_chain": _clean_str_list(row.get("monitor_decision_chain"), limit=5, max_len=120),
         "guard_summary": _trim_text(row.get("guard_summary"), max_len=180),
         "execution_summary": _trim_text(row.get("execution_summary"), max_len=180),
         "execution_bullets": _clean_str_list(row.get("execution_bullets"), limit=4, max_len=160),
@@ -3446,6 +3539,17 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "feature_coverage": _compact_scalar_map(scanner.get("feature_coverage"), limit=6, max_len=80),
             "quote_metrics": _compact_scalar_map(scanner.get("quote_metrics"), limit=6, max_len=80),
             "score_breakdown": _compact_scalar_map(scanner.get("score_breakdown"), limit=8, max_len=80),
+            "why_selected": _clean_str_list(scanner.get("why_selected"), limit=4, max_len=160),
+            "tie_break_rule": _trim_text(scanner.get("tie_break_rule"), max_len=160),
+            "runner_ups": _compact_ranked_symbols(scanner.get("runner_ups"), limit=3),
+            "runner_ups_lost": [
+                {
+                    "symbol": _trim_text((item or {}).get("symbol"), max_len=24),
+                    "summary": _trim_text((item or {}).get("summary"), max_len=160),
+                }
+                for item in list(scanner.get("runner_ups_lost") or [])[:3]
+                if isinstance(item, dict)
+            ],
             "canonical_bullets": _clean_str_list(scanner.get("canonical_bullets"), limit=4, max_len=180),
             "canonical_filters_summary": _trim_text(scanner.get("canonical_filters_summary"), max_len=180),
             "canonical_filter_bullets": _clean_str_list(scanner.get("canonical_filter_bullets"), limit=4, max_len=160),
@@ -4148,16 +4252,31 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
         f"- regime: {str(market.get('market_regime') or '-')}",
         f"- global_sentiment: {str(market.get('global_sentiment') or '-')}",
         f"- vix: {str(market.get('vix') or '-')}",
-        "",
-        "## Selection",
-        "",
-        f"- universe_scanned: {str(selection.get('universe_size') or '-')}",
-        f"- selected_rank: {str(selection.get('selected_rank') or '-')}",
+        f"- news_summary: {str(market.get('news_summary') or '-')}",
     ]
+    news_targets = market.get("news_targets") if isinstance(market.get("news_targets"), list) else []
+    for target in news_targets[:4]:
+        lines.append(f"- news_target: {str(target)}")
+    lines.extend(
+        [
+            "",
+            "## Selection",
+            "",
+            f"- universe_scanned: {str(selection.get('universe_size') or '-')}",
+            f"- selected_rank: {str(selection.get('selected_rank') or '-')}",
+        ]
+    )
 
     selection_reasons = selection.get("selection_reasons") if isinstance(selection.get("selection_reasons"), list) else []
     for reason in selection_reasons[:4]:
         lines.append(f"- why: {str(reason)}")
+    for row in list(selection.get("top_candidates") or [])[:3]:
+        if isinstance(row, dict):
+            lines.append(
+                f"- top_candidate: {str(row.get('symbol') or '-')} score {str(row.get('score') if row.get('score') is not None else row.get('score_total') or '-')}"
+            )
+    for reason in list(selection.get("comparison_reasons") or [])[:2]:
+        lines.append(f"- runner_up: {str(reason)}")
 
     lines.extend(
         [

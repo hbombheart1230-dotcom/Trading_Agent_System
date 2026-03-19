@@ -1320,3 +1320,65 @@ def test_load_run_detail_prefers_canonical_run_artifacts(tmp_path: Path, monkeyp
     assert compact["strategist"]["playbook"] == "canonical_defensive"
     assert compact["scanner"]["selected_symbol"] == "000660"
     assert compact["monitor"]["monitor_reason"] == "canonical_hold"
+
+
+
+def test_operator_brief_sections_surface_canonical_scanner_reasoning_details(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    detail = data_access.load_run_detail(cfg, "run-1")
+    trade_report = detail["trade_report"]
+    story_input = trade_report["story_input_data"]
+    story_input["scanner_reason_human"] = {
+        "summary": "Scanner selected 005930 as rank #1 out of 5 candidates with score 1.230.",
+        "bullets": [
+            "Universe scanned: 5",
+            "Selected rank: #1",
+            "Top candidates: #1 005930 score 1.230; #2 000660 score 1.205; #3 035420 score 1.180",
+        ],
+        "selected_symbol": "005930",
+        "selected_rank": 1,
+        "universe_size": 5,
+        "selected_score": 1.23,
+        "selection_basis": "Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties.",
+        "why_selected": [
+            "highest total score (1.230)",
+            "confidence 0.84 and lower risk 0.18",
+            "source mix: top_value, top_volume",
+        ],
+        "top_candidates": [
+            {"rank": 1, "symbol": "005930", "score_total": 1.23, "risk_score": 0.18, "confidence": 0.84},
+            {"rank": 2, "symbol": "000660", "score_total": 1.205, "risk_score": 0.22, "confidence": 0.81},
+            {"rank": 3, "symbol": "035420", "score_total": 1.18, "risk_score": 0.27, "confidence": 0.79},
+        ],
+        "runner_ups_lost": [
+            {"symbol": "000660", "why_lost": ["lower total score (1.205 vs 1.230)", "higher risk (0.22 vs 0.18)"], "summary": "lower total score (1.205 vs 1.230); higher risk (0.22 vs 0.18)"},
+            {"symbol": "035420", "why_lost": ["lower total score (1.180 vs 1.230)", "lower confidence (0.79 vs 0.84)"], "summary": "lower total score (1.180 vs 1.230); lower confidence (0.79 vs 0.84)"},
+        ],
+        "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
+    }
+    story_input["scanner_evidence"] = {
+        "candidate_selection_reasons": [
+            {
+                "payload": {
+                    "selected_symbol": "005930",
+                    "why_selected": [
+                        "highest total score (1.230)",
+                        "confidence 0.84 and lower risk 0.18",
+                    ],
+                    "runner_ups_lost": [
+                        {"symbol": "000660", "why_lost": ["lower total score (1.205 vs 1.230)", "higher risk (0.22 vs 0.18)"]}
+                    ],
+                    "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
+                    "final_decision_basis": "Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties.",
+                }
+            }
+        ]
+    }
+
+    sections = data_access._build_operator_brief_sections(detail)
+
+    assert any("highest-ranked candidate after strategist-guided weighting" in row for row in sections["why_symbol_chosen"]["selection_reasons"])
+    assert any("confidence 0.84 and lower risk 0.18" in row for row in sections["why_symbol_chosen"]["selection_reasons"])
+    assert sections["why_symbol_chosen"]["comparison_reasons"][0].startswith("000660 was weaker:")
+    assert sections["scanner_ranking_explanation"]["tie_break_rule"] == "score_total desc -> confidence desc -> risk_score asc"

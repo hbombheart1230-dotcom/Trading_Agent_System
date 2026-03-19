@@ -197,6 +197,64 @@ def _fake_ai_trade_report_ok(story_input: dict, **kwargs):  # type: ignore[no-un
     }
 
 
+def test_flatten_news_titles_handles_count_sample_mapping_with_string_rows() -> None:
+    sample = {
+        "코스피": {
+            "count": 5,
+            "sample": [
+                "NewsItem(title='코스피 약세 지속', url='https://example.com/1')",
+                "NewsItem(title='외인 매도 확대', url='https://example.com/2')",
+            ],
+        },
+        "000660": {
+            "count": 3,
+            "sample": [
+                "NewsItem(title='SK하이닉스 변동성 확대', url='https://example.com/3')",
+            ],
+        },
+    }
+
+    titles = mod._flatten_news_titles(sample, max_groups=2, max_titles_per_group=2)
+
+    assert titles == [
+        "코스피: 코스피 약세 지속",
+        "코스피: 외인 매도 확대",
+        "000660: SK하이닉스 변동성 확대",
+    ]
+
+
+def test_build_strategist_input_summary_surfaces_news_titles_from_sample_mapping() -> None:
+    source_input = {
+        "news_query_targets": ["코스피", "미국 증시"],
+        "market_news_sample": {
+            "코스피": {
+                "count": 5,
+                "sample": [
+                    "NewsItem(title='코스피 약세 지속', url='https://example.com/1')",
+                ],
+            }
+        },
+        "candidate_news_sample": {
+            "000660": {
+                "count": 3,
+                "sample": [
+                    "NewsItem(title='SK하이닉스 변동성 확대', url='https://example.com/2')",
+                ],
+            }
+        },
+        "global_sentiment_signal": {
+            "score": -0.22,
+            "fear_index": {"level": 25.09, "change_pct": 12.16, "level_pressure": 0.255},
+        },
+        "news_context": {"headline_count": 75, "candidate_signal_total": 5, "market_signal_total": 10},
+    }
+
+    summary = mod._build_strategist_input_summary(source_input, {})
+
+    assert summary["market_news_titles"] == ["코스피: 코스피 약세 지속"]
+    assert summary["candidate_news_titles"] == ["000660: SK하이닉스 변동성 확대"]
+
+
 def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exit(tmp_path: Path, capsys, monkeypatch) -> None:
     day = "2026-03-16"
     event_log = tmp_path / "events.jsonl"
@@ -1215,3 +1273,154 @@ def test_build_strategist_llm_response_artifact_reconstructs_cached_evidence() -
     assert artifact["meta"]["reconstructed_from_evidence_ledger"] is True
     assert artifact["meta"]["source_run_id"] == "source-strategist-run"
     assert artifact["meta"]["source_stage"] == "theme_selection"
+
+
+def test_build_strategist_input_artifacts_reconstructs_trade_visible_input() -> None:
+    input_artifact, compact_artifact = mod._build_strategist_input_artifacts(
+        {
+            "run_id": "cached-buy-run",
+            "strategist": {},
+        },
+        day="2026-03-19",
+        trade_id="TRD_20260319_005930_01",
+        strategist_evidence={"run_ids": ["source-strategist-run"]},
+        evidence_rows=[
+            {
+                "timestamp": "2026-03-19T02:19:59+00:00",
+                "run_id": "source-strategist-run",
+                "agent": "strategist",
+                "stage": "theme_selection",
+                "decision_link": {"stage": "strategist_input_collection"},
+                "raw_input": {
+                    "global_sentiment_inputs": {"score": -0.22, "fear_index": {"level": 25.09}},
+                    "news_query_targets": ["KOSPI", "semiconductor"],
+                    "llm_payload": {
+                        "global_sentiment_signal": {"score": -0.22, "fear_index": {"level": 25.09}},
+                        "news_context": {"headline_count": 75, "signal_total": 5},
+                        "candidate_symbols_hint": ["005930", "000660"],
+                    },
+                },
+            },
+            {
+                "timestamp": "2026-03-19T02:20:00+00:00",
+                "run_id": "source-strategist-run",
+                "agent": "strategist",
+                "stage": "theme_selection",
+                "llm_prompt": "[system]\nFollow schema.\n[user]\nAssess entry setup.",
+                "raw_input": {
+                    "global_sentiment_signal": {"score": -0.22},
+                    "news_context": {"headline_count": 75},
+                    "candidate_symbols_hint": ["005930"],
+                },
+            },
+        ],
+    )
+
+    assert input_artifact["component"] == "strategist"
+    assert input_artifact["run_id"] == "cached-buy-run"
+    assert input_artifact["trade_id"] == "TRD_20260319_005930_01"
+    assert input_artifact["status"] == "ok"
+    assert input_artifact["source_input"]["global_sentiment_signal"]["score"] == -0.22
+    assert input_artifact["source_input"]["news_context"]["headline_count"] == 75
+    assert input_artifact["summary"]["global_sentiment_score"] == -0.22
+    assert input_artifact["summary"]["headline_count"] == 75
+    assert input_artifact["summary"]["candidate_symbols_hint"] == ["005930", "000660"]
+    assert input_artifact["system_prompt"] == "Follow schema."
+    assert input_artifact["user_prompt"] == "Assess entry setup."
+    assert input_artifact["meta"]["source_run_id"] == "source-strategist-run"
+    assert compact_artifact["component"] == "strategist"
+    assert compact_artifact["compact_input"]["candidate_symbols_hint"] == ["005930"]
+    assert compact_artifact["meta"]["reconstructed_from_evidence_ledger"] is True
+
+
+def test_attach_strategy_anchor_adds_linkage_metadata() -> None:
+    enriched = mod._attach_strategy_anchor(
+        {"summary": "scanner selected 005930"},
+        strategy_anchor_run_id="strategist-run-1",
+        strategist_input_path=Path("reports/trades/2026-03-19/TRD_20260319_005930_01/strategist/strategist_input.json"),
+        strategist_compact_input_path=Path("reports/trades/2026-03-19/TRD_20260319_005930_01/strategist/strategist_compact_input.json"),
+        strategist_llm_response_path=Path("reports/trades/2026-03-19/TRD_20260319_005930_01/strategist/strategist_llm_response.json"),
+    )
+
+    assert enriched["entry_strategist_run_id"] == "strategist-run-1"
+    assert enriched["strategy_anchor_run_id"] == "strategist-run-1"
+    assert enriched["strategy_anchor"]["run_id"] == "strategist-run-1"
+    assert enriched["strategy_anchor"]["artifacts"]["strategist_input_json"].endswith("strategist_input.json")
+
+
+def test_enrich_strategist_from_input_summary_backfills_market_context_fields() -> None:
+    enriched = mod._enrich_strategist_from_input_summary(  # type: ignore[attr-defined]
+        {
+            "market_regime": "neutral",
+            "market_sentiment": "neutral",
+            "playbook": "breakout",
+            "global_sentiment_score": None,
+            "fear_index": {},
+            "global_macro_moves": {},
+            "news_context": {"signal_total": 15},
+            "market_news_query_count": 0,
+            "market_news_total_headlines": None,
+        },
+        {
+            "summary": {
+                "global_sentiment_score": -0.2235,
+                "vix_level": 25.09,
+                "vix_change_pct": 12.16,
+                "vix_level_pressure": 0.255,
+                "headline_count": 75,
+                "candidate_signal_total": 5,
+                "market_signal_total": 10,
+                "news_query_targets": ["코스피", "미국 증시", "국제유가", "환율"],
+            }
+        },
+    )
+
+    assert enriched["global_sentiment_score"] == -0.2235
+    assert enriched["fear_index"]["level"] == 25.09
+    assert enriched["global_macro_moves"]["vix_pct"] == 12.16
+    assert enriched["news_context"]["headline_count"] == 75
+    assert enriched["news_context"]["candidate_signal_total"] == 5
+    assert enriched["news_context"]["market_signal_total"] == 10
+    assert enriched["market_news_total_headlines"] == 75
+    assert enriched["market_news_query_count"] == 4
+    assert enriched["news_query_targets"] == ["코스피", "미국 증시", "국제유가", "환율"]
+
+
+
+def test_enrich_scanner_reason_from_evidence_surfaces_selection_basis_and_runner_ups() -> None:
+    enriched = mod._enrich_scanner_reason_from_evidence(  # type: ignore[attr-defined]
+        {
+            "summary": "Scanner selected 000660 as rank #1.",
+            "bullets": ["Universe scanned: 5"],
+        },
+        {
+            "candidate_selection_reasons": [
+                {
+                    "payload": {
+                        "why_selected": [
+                            "highest total score (1.178)",
+                            "confidence 0.81 and risk 0.63",
+                        ],
+                        "runner_ups_lost": [
+                            {
+                                "symbol": "005930",
+                                "why_lost": [
+                                    "lower total score (1.152 vs 1.178)",
+                                    "higher risk (0.73 vs 0.63)",
+                                ],
+                            }
+                        ],
+                        "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
+                        "final_decision_basis": "Scanner selected the highest-ranked candidate after strategist-guided weighting.",
+                    }
+                }
+            ]
+        },
+    )
+
+    assert enriched["why_selected"][0] == "highest total score (1.178)"
+    assert enriched["selection_basis"] == "Scanner selected the highest-ranked candidate after strategist-guided weighting."
+    assert enriched["tie_break_rule"] == "score_total desc -> confidence desc -> risk_score asc"
+    assert enriched["runner_ups_lost"][0]["symbol"] == "005930"
+    assert "Selection decision:" in " ".join(enriched["bullets"])
+    assert "Runner-ups lost because:" in " ".join(enriched["bullets"])

@@ -284,6 +284,8 @@ def trade_artifact_paths(reports_root: Path, day: str, trade_id: str) -> Dict[st
         "brief_dir": trade_root / "brief",
         "lifecycle_dir": trade_root / "lifecycle",
         "evidence_dir": trade_root / "evidence",
+        "strategist_input_json": trade_root / "strategist" / "strategist_input.json",
+        "strategist_compact_input_json": trade_root / "strategist" / "strategist_compact_input.json",
         "strategist_llm_response_json": trade_root / "strategist" / "strategist_llm_response.json",
         "ai_trade_report_input_json": trade_root / "ai_trade_report" / "ai_trade_report_input.json",
         "ai_trade_report_compact_input_json": trade_root / "ai_trade_report" / "ai_trade_report_compact_input.json",

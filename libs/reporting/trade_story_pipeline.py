@@ -49,6 +49,28 @@ def format_exit_label(value: Any) -> str:
     return " ".join(part.capitalize() for part in text.split())
 
 
+def _list_text(values: Any, *, limit: int = 6, max_len: int = 220) -> List[str]:
+    if not isinstance(values, list):
+        return []
+    out: List[str] = []
+    for value in values:
+        text = clip(value, max_len=max_len)
+        if not text:
+            continue
+        out.append(text)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def _merge_missing_values(base: Dict[str, Any], fallback: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(base or {})
+    for key, value in dict(fallback or {}).items():
+        if key not in out or out.get(key) in (None, "", [], {}):
+            out[key] = value
+    return out
+
+
 def _source_confidence_label(source: Any) -> str:
     raw = str(source or "").strip().lower()
     if raw == "canonical":
@@ -244,21 +266,72 @@ def build_story_contract(bundle_out: Dict[str, Any]) -> Dict[str, Any]:
 
 def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
     llm_parsed = strategist.get("llm_parsed_output") if isinstance(strategist.get("llm_parsed_output"), dict) else {}
+    input_summary = strategist.get("input_summary") if isinstance(strategist.get("input_summary"), dict) else {}
     fear_index = strategist.get("fear_index") if isinstance(strategist.get("fear_index"), dict) else {}
     macro_overlay = strategist.get("macro_stress_overlay") if isinstance(strategist.get("macro_stress_overlay"), dict) else {}
+    macro_moves = strategist.get("global_macro_moves") if isinstance(strategist.get("global_macro_moves"), dict) else {}
+    news_context = strategist.get("news_context") if isinstance(strategist.get("news_context"), dict) else {}
     regime = str(llm_parsed.get("market_regime") or strategist.get("market_regime") or "not_captured")
     sentiment_state = str(llm_parsed.get("market_sentiment") or strategist.get("market_sentiment") or strategist.get("global_sentiment_status") or "not_captured")
     playbook = str(strategist.get("playbook") or llm_parsed.get("playbook") or "not_captured")
     themes = [str(x or "") for x in list(strategist.get("themes") or []) if str(x or "").strip()][:4]
     global_sentiment_score = strategist.get("global_sentiment_score")
-    vix_level = fear_index.get("level") if fear_index else None
-    dxy_pct = (strategist.get("global_macro_moves") or {}).get("dxy_pct") if isinstance(strategist.get("global_macro_moves"), dict) else None
-    news_total = safe_int(strategist.get("market_news_total_headlines"), safe_int(strategist.get("news_total_headlines"), 0))
-    query_count = safe_int(strategist.get("market_news_query_count"), safe_int(strategist.get("news_symbol_count"), 0))
+    if global_sentiment_score in (None, ""):
+        global_sentiment_score = input_summary.get("global_sentiment_score")
+    if not fear_index and input_summary:
+        fear_index = {
+            "level": input_summary.get("vix_level"),
+            "change_pct": input_summary.get("vix_change_pct"),
+            "level_pressure": input_summary.get("vix_level_pressure"),
+        }
+    if not macro_moves and input_summary:
+        macro_moves = {
+            "vix_level": input_summary.get("vix_level"),
+            "vix_pct": input_summary.get("vix_change_pct"),
+            "vix_level_pressure": input_summary.get("vix_level_pressure"),
+        }
+    vix_level = (
+        fear_index.get("level")
+        if fear_index
+        else macro_moves.get("vix_level")
+        if macro_moves
+        else macro_overlay.get("vix_level")
+        if macro_overlay
+        else input_summary.get("vix_level")
+    )
+    dxy_pct = (
+        macro_moves.get("dxy_pct")
+        if macro_moves
+        else macro_overlay.get("dxy_pct")
+        if macro_overlay
+        else None
+    )
+    news_total = safe_int(
+        news_context.get("headline_count"),
+        safe_int(
+            strategist.get("market_news_total_headlines"),
+            safe_int(strategist.get("news_total_headlines"), safe_int(input_summary.get("headline_count"), 0)),
+        ),
+    )
+    query_targets = _list_text(
+        strategist.get("news_query_targets") or input_summary.get("news_query_targets") or [],
+        limit=8,
+        max_len=80,
+    )
+    query_count = safe_int(
+        strategist.get("market_news_query_count"),
+        safe_int(strategist.get("news_symbol_count"), len(query_targets)),
+    )
+    market_signal_total = safe_int(news_context.get("market_signal_total"), safe_int(input_summary.get("market_signal_total"), 0))
+    candidate_signal_total = safe_int(news_context.get("candidate_signal_total"), safe_int(input_summary.get("candidate_signal_total"), 0))
     stress_flags = [str(x or "") for x in list(macro_overlay.get("stress_flags") or []) if str(x or "").strip()]
     defensive_mode = bool(macro_overlay.get("active")) or bool(stress_flags) or (safe_float(vix_level, 0.0) >= 25.0)
+    market_news_titles = _list_text(input_summary.get("market_news_titles"), limit=3, max_len=140)
+    candidate_news_titles = _list_text(input_summary.get("candidate_news_titles"), limit=3, max_len=140)
+    key_events_hint = _list_text(input_summary.get("key_events_hint"), limit=5, max_len=180)
     news_summary = (
-        f"{news_total} headlines were considered across {query_count} market or symbol targets."
+        f"{news_total} headlines were considered across {query_count} targets "
+        f"({market_signal_total} market / {candidate_signal_total} candidate signals)."
         if news_total > 0
         else "No strong news input was captured for this run."
     )
@@ -283,6 +356,10 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
         f"Defensive mode: {'enabled' if defensive_mode else 'not enabled'}",
         f"News input: {news_summary}",
     ]
+    if query_targets:
+        bullets.append(f"News query targets: {', '.join(query_targets)}")
+    if key_events_hint:
+        bullets.append("Key strategist inputs: " + "; ".join(key_events_hint[:3]))
     return {
         "regime": regime,
         "market_sentiment": sentiment_state,
@@ -292,6 +369,14 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
         "vix_level": vix_level,
         "stress_flags": stress_flags,
         "defensive_mode": defensive_mode,
+        "headline_count": news_total,
+        "news_query_count": query_count,
+        "market_signal_total": market_signal_total,
+        "candidate_signal_total": candidate_signal_total,
+        "news_query_targets": query_targets,
+        "key_events_hint": key_events_hint,
+        "market_news_titles": market_news_titles,
+        "candidate_news_titles": candidate_news_titles,
         "news_input_summary": news_summary,
         "summary": summary,
         "bullets": bullets,
@@ -301,16 +386,27 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
 def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, Any]) -> Dict[str, Any]:
     selected = scanner.get("selected_candidate") if isinstance(scanner.get("selected_candidate"), dict) else {}
     selected_symbol = str(selected.get("symbol") or scanner.get("top_stock") or "").strip()
-    top_ranked_symbols = [str(x or "") for x in list(scanner.get("top_ranked_symbols") or []) if str(x or "").strip()]
+    ranking_table = [dict(row) for row in list(scanner.get("ranking_table") or []) if isinstance(row, dict)]
+    top_ranked_symbols = [str(row.get("symbol") or "").strip() for row in ranking_table if str(row.get("symbol") or "").strip()]
+    if not top_ranked_symbols:
+        top_ranked_symbols = [str(x or "") for x in list(scanner.get("top_ranked_symbols") or []) if str(x or "").strip()]
     selected_rank = 0
-    if selected_symbol and selected_symbol in top_ranked_symbols:
+    selected_row = next(
+        (row for row in ranking_table if str(row.get("symbol") or "").strip() == selected_symbol),
+        {},
+    )
+    if selected_row:
+        selected_rank = safe_int(selected_row.get("rank"), 0)
+    elif selected_symbol and selected_symbol in top_ranked_symbols:
         selected_rank = int(top_ranked_symbols.index(selected_symbol) + 1)
     elif selected_symbol:
         selected_rank = 1
     universe_size = max(
         0,
-        safe_int(scanner.get("candidate_pool_after_filter"), 0)
+        safe_int(scanner.get("universe_size"), 0)
+        or safe_int(scanner.get("candidate_pool_after_filter"), 0)
         or safe_int(scanner.get("candidate_pool_before_filter"), 0)
+        or len(ranking_table)
         or len(top_ranked_symbols),
     )
     selected_sources = [str(x or "") for x in list(selected.get("sources") or []) if str(x or "").strip()]
@@ -332,19 +428,70 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
     if not basis:
         basis.append("combined scanner ranking score")
     coverage = feature_coverage(selected)
+    selected_score = selected.get("score_total")
+    if selected_score in (None, ""):
+        selected_score = selected_row.get("score_total")
+    selected_risk = selected.get("risk_score")
+    if selected_risk in (None, ""):
+        selected_risk = selected_row.get("risk_score")
+    selected_confidence = selected.get("confidence")
+    if selected_confidence in (None, ""):
+        selected_confidence = selected_row.get("confidence")
     top_reasons: List[str] = [
-        f"highest combined scanner score ({safe_float(selected.get('score_total'), 0.0):.3f})",
+        f"highest combined scanner score ({safe_float(selected_score, 0.0):.3f})",
         f"selected from {', '.join(selected_sources) if selected_sources else 'captured scanner sources'}",
         f"chart feature coverage {coverage['present']}/{coverage['total']}" if coverage["total"] > 0 else "chart feature coverage was not captured",
         f"aligned with strategist playbook {strategist.get('playbook') or 'not_captured'}",
     ]
     runner_ups: List[Dict[str, Any]] = []
-    for symbol in top_ranked_symbols[1:3]:
+    ranked_preview = ranking_table[:3] if ranking_table else []
+    for row in ranked_preview:
+        symbol = str(row.get("symbol") or "").strip()
+        if not symbol or symbol == selected_symbol:
+            continue
         preview = preview_map.get(symbol, {})
+        why_parts: List[str] = []
+        preview_why = clip(preview.get("why") or row.get("why"), max_len=140)
+        if preview_why:
+            why_parts.append(preview_why)
+        score_gap = None
+        if selected_score not in (None, "") and row.get("score_total") not in (None, ""):
+            score_gap = safe_float(selected_score, 0.0) - safe_float(row.get("score_total"), 0.0)
+            why_parts.append(f"score gap {score_gap:.3f}")
+        row_risk = row.get("risk_score")
+        if selected_risk not in (None, "") and row_risk not in (None, "") and safe_float(row_risk, 0.0) > safe_float(selected_risk, 0.0):
+            why_parts.append(
+                f"higher risk ({safe_float(row_risk, 0.0):.3f} vs {safe_float(selected_risk, 0.0):.3f})"
+            )
+        row_confidence = row.get("confidence")
+        if selected_confidence not in (None, "") and row_confidence not in (None, "") and safe_float(row_confidence, 0.0) < safe_float(selected_confidence, 0.0):
+            why_parts.append(
+                f"lower confidence ({safe_float(row_confidence, 0.0):.3f} vs {safe_float(selected_confidence, 0.0):.3f})"
+            )
         runner_ups.append(
             {
                 "symbol": symbol,
-                "why": clip(preview.get("why"), max_len=120) or "lower final ranking than the selected symbol",
+                "rank": safe_int(row.get("rank"), 0),
+                "score_total": row.get("score_total"),
+                "risk_score": row.get("risk_score"),
+                "confidence": row.get("confidence"),
+                "why": "; ".join(why_parts) if why_parts else "lower final ranking than the selected symbol",
+            }
+        )
+        if len(runner_ups) >= 2:
+            break
+    top_candidates: List[Dict[str, Any]] = []
+    for row in ranked_preview:
+        symbol = str(row.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        top_candidates.append(
+            {
+                "rank": safe_int(row.get("rank"), 0),
+                "symbol": symbol,
+                "score_total": row.get("score_total"),
+                "risk_score": row.get("risk_score"),
+                "confidence": row.get("confidence"),
             }
         )
     bullets = [
@@ -355,20 +502,33 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
         f"Selection sources: {', '.join(selected_sources) if selected_sources else 'not captured'}",
         f"Chart / feature coverage: {coverage['present']}/{coverage['total']}" if coverage["total"] else "Chart / feature coverage: not captured",
     ]
+    if top_candidates:
+        bullets.append(
+            "Top candidates: "
+            + "; ".join(
+                f"#{safe_int(row.get('rank'), 0)} {row.get('symbol')} score {safe_float(row.get('score_total'), 0.0):.3f}"
+                for row in top_candidates
+            )
+        )
     if runner_ups:
         bullets.append("Why not others: " + "; ".join(f"{row['symbol']} was weaker because {row['why']}" for row in runner_ups))
     return {
         "selected_symbol": selected_symbol,
         "selected_rank": selected_rank,
         "universe_size": universe_size,
+        "selected_score": selected_score,
+        "selected_sources": selected_sources,
+        "source_scores": selected.get("source_scores") if isinstance(selected.get("source_scores"), dict) else {},
+        "score_breakdown": score_breakdown,
         "ranking_basis": basis,
-        "confidence": selected.get("confidence"),
-        "confidence_label": confidence_label(selected.get("confidence")),
+        "confidence": selected_confidence,
+        "confidence_label": confidence_label(selected_confidence),
         "top_reasons": top_reasons,
+        "top_candidates": top_candidates,
         "runner_ups": runner_ups,
         "summary": (
             f"Scanner selected {selected_symbol or '-'} as rank #{selected_rank or 1} out of {universe_size or 0} candidates "
-            f"because it led on {', '.join(basis[:3])}."
+            f"with score {safe_float(selected_score, 0.0):.3f} because it led on {', '.join(basis[:3])}."
         ),
         "comparison": (
             f"{selected_symbol} ranked #{selected_rank} out of {universe_size} because it had the strongest overall blend of "
@@ -378,6 +538,81 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
         ),
         "bullets": bullets,
     }
+
+
+def enrich_scanner_reason_from_evidence(
+    scanner_reason_human: Dict[str, Any],
+    scanner_evidence: Dict[str, Any],
+) -> Dict[str, Any]:
+    out = dict(scanner_reason_human or {})
+    evidence = scanner_evidence if isinstance(scanner_evidence, dict) else {}
+    reason_rows = [dict(row) for row in list(evidence.get("candidate_selection_reasons") or []) if isinstance(row, dict)]
+    payload = (
+        reason_rows[0].get("payload")
+        if reason_rows and isinstance(reason_rows[0].get("payload"), dict)
+        else {}
+    )
+    if not isinstance(payload, dict) or not payload:
+        return out
+
+    why_selected = [str(x or "") for x in list(payload.get("why_selected") or []) if str(x or "").strip()][:4]
+    selection_basis = clip(payload.get("final_decision_basis"), max_len=260)
+    tie_break_rule = clip(payload.get("tie_break_rule"), max_len=180)
+    runner_ups_lost: List[Dict[str, Any]] = []
+    for row in list(payload.get("runner_ups_lost") or payload.get("runner_up_reasons") or []):
+        if not isinstance(row, dict):
+            continue
+        symbol = clip(row.get("symbol"), max_len=24)
+        why_lost = [
+            clip(x, max_len=140)
+            for x in list(row.get("why_lost") or row.get("lost_because") or [])
+            if clip(x, max_len=140)
+        ][:4]
+        summary = clip(row.get("summary") or "; ".join(why_lost), max_len=240)
+        if not symbol and not summary:
+            continue
+        runner_ups_lost.append(
+            {
+                "symbol": symbol,
+                "why_lost": why_lost,
+                "summary": summary,
+            }
+        )
+        if len(runner_ups_lost) >= 3:
+            break
+
+    if why_selected:
+        out["why_selected"] = why_selected
+    if selection_basis:
+        out["selection_basis"] = selection_basis
+    if tie_break_rule:
+        out["tie_break_rule"] = tie_break_rule
+    if runner_ups_lost:
+        out["runner_ups_lost"] = runner_ups_lost
+
+    bullets = [str(x or "") for x in list(out.get("bullets") or []) if str(x or "").strip()]
+    if why_selected:
+        bullets.append("Selection decision: " + "; ".join(why_selected))
+    if selection_basis:
+        bullets.append(f"Final decision basis: {selection_basis}")
+    if tie_break_rule:
+        bullets.append(f"Tie-break rule: {tie_break_rule}")
+    if runner_ups_lost:
+        bullets.append(
+            "Runner-ups lost because: "
+            + "; ".join(
+                f"{row.get('symbol')}: {row.get('summary')}" for row in runner_ups_lost if row.get("symbol")
+            )
+        )
+    if bullets:
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for bullet in bullets:
+            if bullet not in seen:
+                deduped.append(bullet)
+                seen.add(bullet)
+        out["bullets"] = deduped[:12]
+    return out
 
 
 def build_filters_human(scanner: Dict[str, Any], strategist: Dict[str, Any], supervisor: Dict[str, Any]) -> Dict[str, Any]:
@@ -434,10 +669,34 @@ def build_filters_human(scanner: Dict[str, Any], strategist: Dict[str, Any], sup
 
 def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any]) -> Dict[str, Any]:
     action = str(execution.get("action") or "").upper()
+    thresholds = monitor.get("thresholds") if isinstance(monitor.get("thresholds"), dict) else {}
+    thresholds_guards_used = (
+        monitor.get("thresholds_guards_used")
+        if isinstance(monitor.get("thresholds_guards_used"), dict)
+        else {}
+    )
+    thresholds = _merge_missing_values(
+        thresholds,
+        thresholds_guards_used.get("thresholds") if isinstance(thresholds_guards_used.get("thresholds"), dict) else {},
+    )
+    for key in (
+        "stop_loss_pct",
+        "effective_stop_loss_pct",
+        "effective_stop_reason",
+        "take_profit_pct",
+        "peak_drawdown_exit_pct",
+        "trailing_stop_pct",
+        "vwap_breakdown_pct",
+        "intraday_low_break_pct",
+        "trend_strength_floor",
+    ):
+        if thresholds.get(key) in (None, "", [], {}):
+            thresholds[key] = monitor.get(key)
+    trigger_details = monitor.get("trigger_details") if isinstance(monitor.get("trigger_details"), dict) else {}
+    decision_reason_chain = [str(x or "") for x in list(monitor.get("decision_reason_chain") or []) if str(x or "").strip()]
     entry_reason = str(monitor.get("entry_reason") or "").strip()
     exit_reason = str(monitor.get("exit_reason") or "").strip()
-    monitor_reason = str(monitor.get("monitor_reason") or "").strip()
-    thresholds = monitor.get("thresholds") if isinstance(monitor.get("thresholds"), dict) else {}
+    monitor_reason = str(monitor.get("monitor_reason") or monitor.get("evaluation_summary") or "").strip()
     price_source = str(monitor.get("price_source") or "").strip()
     price_source_policy = str(monitor.get("price_source_policy") or "").strip()
     feature_source = str(monitor.get("feature_source") or "").strip()
@@ -456,45 +715,67 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
     if current_drawdown in (None, "") and peak_drawdown not in (None, ""):
         current_drawdown = peak_drawdown
 
-    watch_axes: List[str] = []
-    if thresholds.get("hard_stop_pct") not in (None, "") or thresholds.get("stop_loss_pct") not in (None, ""):
+    watch_axes: List[str] = [str(x or "") for x in list(monitor.get("watch_axes") or trigger_details.get("watch_axes") or []) if str(x or "").strip()]
+    if "Hard stop" not in watch_axes and (thresholds.get("hard_stop_pct") not in (None, "") or thresholds.get("stop_loss_pct") not in (None, "")):
         watch_axes.append("Hard stop")
-    if thresholds.get("take_profit_pct") not in (None, ""):
+    if "Take profit" not in watch_axes and thresholds.get("take_profit_pct") not in (None, ""):
         watch_axes.append("Take profit")
-    if thresholds.get("trailing_stop_pct") not in (None, ""):
+    if "Trailing stop" not in watch_axes and thresholds.get("trailing_stop_pct") not in (None, ""):
         watch_axes.append("Trailing stop")
-    if thresholds.get("peak_drawdown_exit_pct") not in (None, ""):
+    if "Peak drawdown" not in watch_axes and thresholds.get("peak_drawdown_exit_pct") not in (None, ""):
         watch_axes.append("Peak drawdown")
-    if thresholds.get("vwap_breakdown_pct") not in (None, ""):
+    if "VWAP breakdown" not in watch_axes and thresholds.get("vwap_breakdown_pct") not in (None, ""):
         watch_axes.append("VWAP breakdown")
-    if thresholds.get("intraday_low_break_pct") not in (None, ""):
+    if "Intraday low break" not in watch_axes and thresholds.get("intraday_low_break_pct") not in (None, ""):
         watch_axes.append("Intraday low break")
-    if thresholds.get("trend_strength_floor") not in (None, ""):
+    if "Trend breakdown" not in watch_axes and thresholds.get("trend_strength_floor") not in (None, ""):
         watch_axes.append("Trend breakdown")
-    if thresholds.get("vol_expansion_ratio") not in (None, ""):
+    if "Volatility expansion" not in watch_axes and thresholds.get("vol_expansion_ratio") not in (None, ""):
         watch_axes.append("Volatility expansion")
 
-    trigger_type = exit_reason if action == "SELL" else entry_reason or monitor_reason
-    active_exit_axis = format_exit_label(trigger_type)
+    trigger_type = str(monitor.get("trigger_type") or "").strip()
+    if not trigger_type:
+        trigger_type = exit_reason if action == "SELL" else entry_reason or monitor_reason
+    if not trigger_type and decision_reason_chain:
+        trigger_type = decision_reason_chain[-1]
+    active_exit_axis = str(monitor.get("active_exit_axis") or trigger_details.get("active_exit_axis") or "").strip() or format_exit_label(trigger_type)
+    confirm_required = safe_int(
+        thresholds_guards_used.get("exit_confirm_ticks"),
+        safe_int(thresholds_guards_used.get("exit_confirm_required"), safe_int(monitor.get("exit_confirm_required"), 0)),
+    )
+    confirm_count = safe_int(
+        thresholds_guards_used.get("exit_confirm_count"),
+        safe_int(monitor.get("exit_confirm_count"), 0),
+    )
+    guard_blocked = bool(trigger_details.get("sell_guard_blocked") or monitor.get("guard_blocked") or monitor.get("sell_guard_blocked"))
+    guard_reason = str(trigger_details.get("sell_guard_reason") or monitor.get("guard_reason") or monitor.get("sell_guard_reason") or "").strip()
     if action == "BUY":
         summary = f"BUY was triggered because {entry_reason or monitor_reason or 'the entry condition passed'}."
     elif action == "SELL":
-        summary = f"SELL was triggered because {exit_reason or monitor_reason or 'the exit condition passed'}."
+        summary = f"SELL was triggered because {trigger_type or monitor_reason or 'the exit condition passed'}."
     else:
         summary = f"Monitor posture was {action or 'WAIT'} with trigger {trigger_type or 'not_captured'}."
     bullets = [
         f"Posture: {action or 'WAIT'}",
         f"Trigger type: {trigger_type or 'not_captured'}",
-        f"Monitor reason: {monitor_reason or 'not_captured'}",
+        f"Monitor reason: {monitor_reason or trigger_type or 'not_captured'}",
         f"Position age: {safe_int(monitor.get('position_age_seconds'), 0)} seconds",
         f"Stop loss: {format_ratio_pct(thresholds.get('stop_loss_pct'))}%",
         f"Effective stop: {format_ratio_pct(thresholds.get('effective_stop_loss_pct'))}%",
         f"Effective stop reason: {str(thresholds.get('effective_stop_reason') or 'not_captured')}",
         f"Take profit: {format_ratio_pct(thresholds.get('take_profit_pct'))}%",
+        f"Active exit axis: {active_exit_axis or 'not_captured'}",
+        f"Exit confirmation: {confirm_count}/{confirm_required}" if confirm_required > 0 else "Exit confirmation: not required",
         f"Min hold blocked: {'yes' if monitor.get('min_hold_blocked') else 'no'}",
         f"Sell cooldown blocked: {'yes' if monitor.get('sell_cooldown_blocked') else 'no'}",
         f"Exit triggered: {'yes' if monitor.get('exit_triggered') else 'no'}",
     ]
+    if watch_axes:
+        bullets.append("Watch axes: " + ", ".join(watch_axes[:8]))
+    if decision_reason_chain:
+        bullets.append("Decision chain: " + " -> ".join(decision_reason_chain[:5]))
+    if guard_blocked or guard_reason:
+        bullets.append(f"Guard blocked: {'yes' if guard_blocked else 'no'} ({guard_reason or 'no guard reason captured'})")
     if current_price not in (None, ""):
         bullets.append(f"Current price: {safe_float(current_price, 0.0):.2f}")
     if average_price not in (None, ""):
@@ -532,6 +813,11 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "vwap_distance": vwap_distance,
         "active_exit_axis": active_exit_axis,
         "watch_axes": watch_axes[:8],
+        "confirm_required": confirm_required,
+        "confirm_count": confirm_count,
+        "guard_blocked": guard_blocked,
+        "guard_reason": guard_reason,
+        "decision_reason_chain": decision_reason_chain[:6],
         "price_source": price_source,
         "feature_source": feature_source,
         "price_source_policy": price_source_policy,
@@ -754,6 +1040,8 @@ def build_trade_story_input(
         lifecycle_action = exit_action or entry_action or "WAIT"
         market_context_human = dict(bundle_out.get("market_context_human") or {})
         scanner_reason_human = dict(bundle_out.get("scanner_reason_human") or {})
+        scanner_evidence = dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {})
+        scanner_reason_human = enrich_scanner_reason_from_evidence(scanner_reason_human, scanner_evidence)
         filters_human = dict(bundle_out.get("filters_human") or {})
         monitor_reason_human = dict(bundle_out.get("monitor_reason_human") or {})
         guard_reason_human = dict(bundle_out.get("guard_reason_human") or {})
@@ -861,7 +1149,7 @@ def build_trade_story_input(
             "warnings": [str(x or "") for x in list(bundle_out.get("warnings") or lifecycle.get("warnings") or []) if str(x or "").strip()][:20],
             "improvement_points": [str(x or "") for x in list(reporter.get("improvement_points") or []) if str(x or "").strip()][:12],
             "strategist_evidence": dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
-            "scanner_evidence": dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
+            "scanner_evidence": scanner_evidence,
             "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
             "canonical_agent_artifacts": dict(bundle_out.get("canonical_agent_artifacts") or {}),
             "evidence_provenance": dict(bundle_out.get("evidence_provenance") or {}),
@@ -885,7 +1173,10 @@ def build_trade_story_input(
         "story_type": str(story_contract.get("story_type") or ""),
         "execution_mode_label": str(story_contract.get("execution_mode_label") or ""),
         "market_context_human": dict(bundle_out.get("market_context_human") or {}),
-        "scanner_reason_human": dict(bundle_out.get("scanner_reason_human") or {}),
+        "scanner_reason_human": enrich_scanner_reason_from_evidence(
+            dict(bundle_out.get("scanner_reason_human") or {}),
+            dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
+        ),
         "filters_human": dict(bundle_out.get("filters_human") or {}),
         "monitor_reason_human": dict(bundle_out.get("monitor_reason_human") or {}),
         "guard_reason_human": dict(bundle_out.get("guard_reason_human") or {}),

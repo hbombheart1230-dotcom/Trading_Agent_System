@@ -1,1 +1,0 @@
-{"run_id": "r1", "ts": "2026-02-14T00:00:00+00:00", "stage": "strategist_llm", "event": "result", "payload": {"ok": true, "intent_action": "BUY", "prompt_tokens": 111, "completion_tokens": 22, "total_tokens": 133, "estimated_cost_usd": 0.00123}}

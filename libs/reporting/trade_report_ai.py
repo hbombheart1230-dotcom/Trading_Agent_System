@@ -37,6 +37,43 @@ def _listify(values: Any, *, max_items: int = 6, max_len: int = 240) -> List[str
     return out
 
 
+def _dedupe_list(values: List[str], *, max_items: int = 12, max_len: int = 260) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _clip(value, max_len=max_len)
+        if not text or text in seen:
+            continue
+        out.append(text)
+        seen.add(text)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _compact_named_rows(values: Any, *, max_items: int = 3) -> List[Dict[str, Any]]:
+    if not isinstance(values, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for value in values:
+        if len(out) >= max(1, int(max_items)):
+            break
+        if not isinstance(value, dict):
+            continue
+        row = {
+            "rank": value.get("rank"),
+            "symbol": _clip(value.get("symbol"), max_len=24),
+            "score_total": value.get("score_total"),
+            "risk_score": value.get("risk_score"),
+            "confidence": value.get("confidence"),
+            "why": _clip(value.get("why"), max_len=180),
+        }
+        row = {key: item for key, item in row.items() if item not in ("", None, [])}
+        if row.get("symbol"):
+            out.append(row)
+    return out
+
+
 def _fmt_pct(value: Any) -> str:
     try:
         number = float(value)
@@ -51,6 +88,17 @@ def _fmt_price(value: Any) -> str:
     except Exception:
         return "-"
     return f"{number:.2f}"
+
+
+def _is_low_information_bullet(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return True
+    if text in {"hold", "wait", "buy", "sell", "noop", "monitor", "monitoring"}:
+        return True
+    if len(text) <= 12 and re.fullmatch(r"[a-z_\- ]+", text):
+        return True
+    return False
 
 
 def _count_hangul(text: Any) -> int:
@@ -288,10 +336,121 @@ def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
         "vwap_distance": data.get("vwap_distance"),
         "active_exit_axis": _clip(data.get("active_exit_axis"), max_len=48),
         "watch_axes": _listify(data.get("watch_axes"), max_items=5, max_len=80),
+        "confirm_required": data.get("confirm_required"),
+        "confirm_count": data.get("confirm_count"),
+        "guard_blocked": data.get("guard_blocked"),
+        "guard_reason": _clip(data.get("guard_reason"), max_len=120),
+        "decision_reason_chain": _listify(data.get("decision_reason_chain"), max_items=5, max_len=120),
         "price_source": _clip(data.get("price_source"), max_len=80),
         "feature_source": _clip(data.get("feature_source"), max_len=80),
     }
     return {key: value for key, value in out.items() if value not in ("", None, [])}
+
+
+def _build_market_context_bullets(section: Any) -> List[str]:
+    data = section if isinstance(section, dict) else {}
+    bullets = _listify(data.get("bullets"), max_items=12, max_len=260)
+    extras: List[str] = []
+    existing_prefixes = {
+        prefix
+        for prefix in (
+            "News input:",
+            "News query targets:",
+            "Key strategist inputs:",
+            "Market news titles:",
+            "Candidate news titles:",
+        )
+        if any(str(row).startswith(prefix) for row in bullets)
+    }
+    news_input = _clip(data.get("news_input_summary"), max_len=220)
+    news_targets = ", ".join(_listify(data.get("news_query_targets"), max_items=6, max_len=80))
+    key_events = "; ".join(_listify(data.get("key_events_hint"), max_items=4, max_len=160))
+    market_titles = "; ".join(_listify(data.get("market_news_titles"), max_items=3, max_len=120))
+    candidate_titles = "; ".join(_listify(data.get("candidate_news_titles"), max_items=3, max_len=120))
+    if news_input and "News input:" not in existing_prefixes:
+        extras.append(f"News input: {news_input}")
+    if news_targets and "News query targets:" not in existing_prefixes:
+        extras.append(f"News query targets: {news_targets}")
+    if key_events and "Key strategist inputs:" not in existing_prefixes:
+        extras.append(f"Key strategist inputs: {key_events}")
+    if market_titles and "Market news titles:" not in existing_prefixes:
+        extras.append(f"Market news titles: {market_titles}")
+    if candidate_titles and "Candidate news titles:" not in existing_prefixes:
+        extras.append(f"Candidate news titles: {candidate_titles}")
+    return _dedupe_list(bullets + extras, max_items=12, max_len=260)
+
+
+def _build_holding_story_summary(hold_count: int, monitor_reason: Dict[str, Any], status_text: str) -> str:
+    posture = _clip(monitor_reason.get("posture"), max_len=32) or "not_captured"
+    trigger = _clip(monitor_reason.get("trigger_type"), max_len=48) or "not_captured"
+    axis = _clip(monitor_reason.get("active_exit_axis"), max_len=64) or trigger
+    confirm_required = monitor_reason.get("confirm_required")
+    confirm_count = monitor_reason.get("confirm_count")
+    exit_triggered = bool(monitor_reason.get("exit_triggered"))
+    if hold_count > 0:
+        base = f"Holding phase captured {hold_count} monitor runs. Posture remained {posture} with active exit axis {axis}."
+    else:
+        base = "Holding phase evidence is limited for this lifecycle."
+    if confirm_required is not None:
+        base += f" Exit confirmation was {int(confirm_count or 0)}/{int(confirm_required or 0)}."
+    if status_text.lower() == "open" and not exit_triggered:
+        base += " No sell trigger was confirmed yet."
+    return base
+
+
+def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason: Dict[str, Any]) -> List[str]:
+    hold_count = len(list(holding_summary.get("run_ids") or []))
+    watch_axes = ", ".join(_listify(monitor_reason.get("watch_axes"), max_items=6, max_len=80))
+    decision_chain = " -> ".join(_listify(monitor_reason.get("decision_reason_chain"), max_items=5, max_len=60))
+    effective_stop = _fmt_pct(monitor_reason.get("effective_stop_loss_pct"))
+    take_profit = _fmt_pct(monitor_reason.get("take_profit_pct"))
+    current_price = _fmt_price(monitor_reason.get("current_price"))
+    average_price = _fmt_price(monitor_reason.get("average_price"))
+    peak_price = _fmt_price(monitor_reason.get("peak_price"))
+    current_drawdown = _fmt_pct(monitor_reason.get("current_drawdown"))
+    peak_drawdown = _fmt_pct(monitor_reason.get("peak_drawdown"))
+    bullets: List[str] = []
+    if hold_count:
+        bullets.append(f"Monitor runs: {hold_count}")
+    if _clip(monitor_reason.get("posture"), max_len=48):
+        bullets.append(f"Posture: {_clip(monitor_reason.get('posture'), max_len=48)}")
+    if _clip(monitor_reason.get("trigger_type"), max_len=64):
+        bullets.append(f"Trigger type: {_clip(monitor_reason.get('trigger_type'), max_len=64)}")
+    if monitor_reason.get("position_age_seconds") not in (None, ""):
+        bullets.append(f"Position age: {int(monitor_reason.get('position_age_seconds') or 0)} seconds")
+    if effective_stop != "-":
+        stop_reason = _clip(monitor_reason.get("effective_stop_reason"), max_len=64)
+        suffix = f" ({stop_reason})" if stop_reason else ""
+        bullets.append(f"Effective stop: {effective_stop}{suffix}")
+    if take_profit != "-":
+        bullets.append(f"Take profit: {take_profit}")
+    if _clip(monitor_reason.get("active_exit_axis"), max_len=80):
+        bullets.append(f"Active exit axis: {_clip(monitor_reason.get('active_exit_axis'), max_len=80)}")
+    if monitor_reason.get("confirm_required") is not None:
+        bullets.append(
+            f"Exit confirmation: {int(monitor_reason.get('confirm_count') or 0)}/{int(monitor_reason.get('confirm_required') or 0)}"
+        )
+    if watch_axes:
+        bullets.append(f"Watch axes: {watch_axes}")
+    if decision_chain:
+        bullets.append(f"Decision chain: {decision_chain}")
+    if current_price != "-" or average_price != "-" or peak_price != "-":
+        bullets.append(f"Current price / avg / peak: {current_price} / {average_price} / {peak_price}")
+    if current_drawdown != "-" or peak_drawdown != "-":
+        bullets.append(f"Current drawdown / peak drawdown: {current_drawdown} / {peak_drawdown}")
+    if _clip(monitor_reason.get("price_source"), max_len=80):
+        bullets.append(f"Price source: {_clip(monitor_reason.get('price_source'), max_len=80)}")
+    if _clip(monitor_reason.get("feature_source"), max_len=80):
+        bullets.append(f"Feature source: {_clip(monitor_reason.get('feature_source'), max_len=80)}")
+
+    recent_updates = [
+        _clip(item, max_len=180)
+        for item in list(holding_summary.get("monitor_updates") or [])[-4:]
+        if str(item or "").strip() and not _is_low_information_bullet(item)
+    ]
+    for item in recent_updates:
+        bullets.append(f"Recent monitor update: {item}")
+    return _dedupe_list(bullets, max_items=12, max_len=260)
 
 
 def _compact_holding_summary(holding: Any) -> Dict[str, Any]:
@@ -327,6 +486,9 @@ def _compact_entry_or_exit_summary(summary: Any) -> Dict[str, Any]:
             "themes": _listify(strategist_ctx.get("themes"), max_items=4, max_len=80),
             "global_sentiment_score": strategist_ctx.get("global_sentiment_score"),
             "vix_level": strategist_ctx.get("vix_level"),
+            "headline_count": strategist_ctx.get("headline_count"),
+            "news_query_targets": _listify(strategist_ctx.get("news_query_targets"), max_items=5, max_len=80),
+            "stress_flags": _listify(strategist_ctx.get("stress_flags"), max_items=4, max_len=80),
         },
         "scanner_context": {
             "selected_symbol": _clip(scanner_ctx.get("selected_symbol"), max_len=24),
@@ -334,7 +496,7 @@ def _compact_entry_or_exit_summary(summary: Any) -> Dict[str, Any]:
             "universe_size": scanner_ctx.get("universe_size"),
             "score_total": scanner_ctx.get("score_total"),
             "confidence": scanner_ctx.get("confidence"),
-            "top_candidates": _listify(scanner_ctx.get("top_candidates"), max_items=3, max_len=80),
+            "top_candidates": _compact_named_rows(scanner_ctx.get("top_candidates"), max_items=3),
             "selection_reason": _clip(scanner_ctx.get("selection_reason"), max_len=220),
         },
         "monitor_context": _compact_monitor_snapshot(monitor_ctx),
@@ -392,6 +554,14 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "themes": _listify(market_context.get("themes"), max_items=4, max_len=80),
             "global_sentiment_score": market_context.get("global_sentiment_score"),
             "vix_level": market_context.get("vix_level"),
+            "headline_count": market_context.get("headline_count"),
+            "news_query_count": market_context.get("news_query_count"),
+            "market_signal_total": market_context.get("market_signal_total"),
+            "candidate_signal_total": market_context.get("candidate_signal_total"),
+            "news_query_targets": _listify(market_context.get("news_query_targets"), max_items=6, max_len=80),
+            "key_events_hint": _listify(market_context.get("key_events_hint"), max_items=4, max_len=180),
+            "market_news_titles": _listify(market_context.get("market_news_titles"), max_items=3, max_len=140),
+            "candidate_news_titles": _listify(market_context.get("candidate_news_titles"), max_items=3, max_len=140),
             "stress_flags": _listify(market_context.get("stress_flags"), max_items=4, max_len=80),
             "news_input_summary": _clip(market_context.get("news_input_summary"), max_len=220),
             "summary": _clip(market_context.get("summary"), max_len=320),
@@ -402,10 +572,26 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "selected_rank": scanner_reason.get("selected_rank"),
             "universe_size": scanner_reason.get("universe_size"),
             "ranking_basis": _clip(scanner_reason.get("ranking_basis"), max_len=180),
+            "selected_score": scanner_reason.get("selected_score"),
+            "selected_sources": _listify(scanner_reason.get("selected_sources"), max_items=5, max_len=80),
+            "source_scores": scanner_reason.get("source_scores") if isinstance(scanner_reason.get("source_scores"), dict) else {},
+            "score_breakdown": scanner_reason.get("score_breakdown") if isinstance(scanner_reason.get("score_breakdown"), dict) else {},
+            "why_selected": _listify(scanner_reason.get("why_selected"), max_items=4, max_len=160),
+            "selection_basis": _clip(scanner_reason.get("selection_basis"), max_len=240),
+            "tie_break_rule": _clip(scanner_reason.get("tie_break_rule"), max_len=180),
+            "top_candidates": _compact_named_rows(scanner_reason.get("top_candidates"), max_items=3),
             "confidence": scanner_reason.get("confidence"),
             "confidence_label": _clip(scanner_reason.get("confidence_label"), max_len=32),
             "top_reasons": _listify(scanner_reason.get("top_reasons"), max_items=5, max_len=180),
-            "runner_ups": _listify(scanner_reason.get("runner_ups"), max_items=3, max_len=180),
+            "runner_ups": _compact_named_rows(scanner_reason.get("runner_ups"), max_items=3),
+            "runner_ups_lost": [
+                {
+                    "symbol": _clip((row or {}).get("symbol"), max_len=24),
+                    "summary": _clip((row or {}).get("summary"), max_len=180),
+                }
+                for row in list(scanner_reason.get("runner_ups_lost") or [])[:3]
+                if isinstance(row, dict)
+            ],
             "summary": _clip(scanner_reason.get("summary"), max_len=320),
             "comparison": _clip(scanner_reason.get("comparison"), max_len=240),
             "bullets": _listify(scanner_reason.get("bullets"), max_items=6, max_len=220),
@@ -520,7 +706,18 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "confidence": scanner.get("confidence"),
             "confidence_label": scanner.get("confidence_label"),
             "top_reasons": _listify(scanner.get("top_reasons"), max_items=3, max_len=140),
+            "why_selected": _listify(scanner.get("why_selected"), max_items=4, max_len=140),
+            "selection_basis": scanner.get("selection_basis"),
+            "tie_break_rule": scanner.get("tie_break_rule"),
             "runner_ups": _listify(scanner.get("runner_ups"), max_items=2, max_len=140),
+            "runner_ups_lost": [
+                {
+                    "symbol": _clip((row or {}).get("symbol"), max_len=24),
+                    "summary": _clip((row or {}).get("summary"), max_len=180),
+                }
+                for row in list(scanner.get("runner_ups_lost") or [])[:3]
+                if isinstance(row, dict)
+            ],
             "summary": scanner.get("summary"),
         },
         "filters": {
@@ -647,7 +844,108 @@ def _prefer_fallback_text(ai_text: Any, fallback_text: Any) -> str:
     return ai_clean
 
 
-def _merge_section_with_fallback(ai_section: Any, fallback_section: Dict[str, Any]) -> Dict[str, Any]:
+def _trade_report_priority_bullet_prefixes(section_key: str) -> List[str]:
+    key = str(section_key or "").strip().lower()
+    if key in {"market_context_at_entry", "market_context"}:
+        return [
+            "Market regime:",
+            "Global sentiment score:",
+            "VIX",
+            "News input:",
+            "News query targets:",
+            "Key strategist inputs:",
+            "Market news titles:",
+            "Candidate news titles:",
+        ]
+    if key in {"why_this_symbol_was_chosen", "why_this_symbol", "entry_decision"}:
+        return [
+            "Top candidates:",
+            "Why not others:",
+            "Selection decision:",
+            "Final decision basis:",
+            "Tie-break rule:",
+            "Runner-ups lost because:",
+            "Selection sources:",
+            "Ranking basis:",
+        ]
+    if key in {"holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision"}:
+        return [
+            "Monitor runs:",
+            "Posture:",
+            "Trigger type:",
+            "Position age:",
+            "Effective stop:",
+            "Take profit:",
+            "Active exit axis:",
+            "Exit confirmation:",
+            "Watch axes:",
+            "Decision chain:",
+            "Current price / avg / peak:",
+            "Current drawdown / peak drawdown:",
+            "Price source:",
+            "Feature source:",
+        ]
+    return []
+
+
+def _merge_bullets_with_fallback(section_key: str, ai_bullets: List[str], fallback_bullets: List[str]) -> List[str]:
+    if not ai_bullets:
+        return fallback_bullets[:12]
+    if not fallback_bullets:
+        return ai_bullets[:12]
+
+    merged: List[str] = []
+    seen: set[str] = set()
+
+    def _append(values: List[str]) -> None:
+        for value in values:
+            bullet = _clip(value, max_len=260)
+            if not bullet or bullet in seen:
+                continue
+            merged.append(bullet)
+            seen.add(bullet)
+            if len(merged) >= 12:
+                break
+
+    _append(ai_bullets)
+    if len(merged) >= 12:
+        return merged[:12]
+
+    priority_prefixes = _trade_report_priority_bullet_prefixes(section_key)
+    for prefix in priority_prefixes:
+        if len(merged) >= 12:
+            break
+        if any(str(row).startswith(prefix) for row in merged):
+            continue
+        for row in fallback_bullets:
+            if str(row).startswith(prefix):
+                _append([row])
+                break
+
+    if len(merged) < 8:
+        _append(fallback_bullets)
+    prefixes = _trade_report_priority_bullet_prefixes(section_key)
+    if not prefixes:
+        return merged[:12]
+    deduped: List[str] = []
+    seen: set[str] = set()
+    seen_prefixes: set[str] = set()
+    for bullet in merged:
+        if bullet in seen:
+            continue
+        matched_prefix = next((prefix for prefix in prefixes if str(bullet).startswith(prefix)), "")
+        if matched_prefix:
+            if matched_prefix in seen_prefixes:
+                continue
+            seen_prefixes.add(matched_prefix)
+        deduped.append(bullet)
+        seen.add(bullet)
+        if len(deduped) >= 12:
+            break
+    return deduped[:12]
+
+
+def _merge_section_with_fallback(ai_section: Any, fallback_section: Dict[str, Any], *, section_key: str = "") -> Dict[str, Any]:
     section = ai_section if isinstance(ai_section, dict) else {}
     fallback = fallback_section if isinstance(fallback_section, dict) else {}
     merged = dict(section)
@@ -656,10 +954,16 @@ def _merge_section_with_fallback(ai_section: Any, fallback_section: Dict[str, An
     fallback_bullets = _listify(fallback.get("bullets"), max_items=12, max_len=260)
     if not ai_bullets:
         merged["bullets"] = fallback_bullets
+    elif (
+        fallback_bullets
+        and section_key in {"holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision"}
+        and sum(1 for item in ai_bullets if _is_low_information_bullet(item)) >= max(3, len(ai_bullets) // 2)
+    ):
+        merged["bullets"] = fallback_bullets
     elif fallback_bullets and not any(_contains_hangul(item) for item in ai_bullets) and any(_contains_hangul(item) for item in fallback_bullets):
         merged["bullets"] = fallback_bullets
     else:
-        merged["bullets"] = ai_bullets
+        merged["bullets"] = _merge_bullets_with_fallback(section_key, ai_bullets, fallback_bullets)
     for key in ("headline", "action", "confidence", "status", "grade", "current_action", "symbol"):
         if not str(merged.get(key) or "").strip() and str(fallback.get(key) or "").strip():
             merged[key] = fallback.get(key)
@@ -718,7 +1022,11 @@ def _merge_trade_report_candidate(
             source_value,
             default_summary=(out.get(section_key) or {}).get("summary") or "",
         )
-        merged = _merge_section_with_fallback(normalized, out.get(section_key) if isinstance(out.get(section_key), dict) else {})
+        merged = _merge_section_with_fallback(
+            normalized,
+            out.get(section_key) if isinstance(out.get(section_key), dict) else {},
+            section_key=section_key,
+        )
         if not (isinstance(source_value, dict) and source_value):
             used_fallback_sections.append(section_key)
         out[section_key] = merged
@@ -737,6 +1045,7 @@ def _merge_trade_report_candidate(
     out["reporter_evaluation"] = _merge_section_with_fallback(
         _normalize_section(candidate.get("reporter_evaluation"), default_summary=out["reporter_evaluation"]["summary"]),
         out["reporter_evaluation"],
+        section_key="reporter_evaluation",
     )
     if not isinstance(candidate.get("reporter_evaluation"), dict):
         used_fallback_sections.append("reporter_evaluation")
@@ -746,6 +1055,7 @@ def _merge_trade_report_candidate(
             default_summary=out["errors_weaknesses_improvement_points"]["summary"],
         ),
         out["errors_weaknesses_improvement_points"],
+        section_key="errors_weaknesses_improvement_points",
     )
     if not isinstance(candidate.get("errors_weaknesses_improvement_points"), dict):
         used_fallback_sections.append("errors_weaknesses_improvement_points")
@@ -847,19 +1157,21 @@ def _fallback_report(
             f"Entry time: {_clip(entry_summary.get('ts'), max_len=80) or 'not_captured'}",
             f"Entry action: {_clip(entry_summary.get('action'), max_len=40) or action}",
             f"Entry reason: {_clip(entry_summary.get('reason_human'), max_len=220) or 'not_captured'}",
-        ],
+        ]
+        + (
+            [f"Selection decision: {item}" for item in _listify(scanner_reason.get("why_selected"), max_items=2, max_len=180)]
+            or []
+        )
+        + (
+            [f"Final decision basis: {_clip(scanner_reason.get('selection_basis'), max_len=220)}"]
+            if _clip(scanner_reason.get("selection_basis"), max_len=220)
+            else []
+        ),
     }
     hold_count = len(list(holding_summary.get("run_ids") or []))
     holding_story = {
-        "summary": (
-            f"Holding phase captured {hold_count} monitor runs."
-            if hold_count > 0
-            else "Holding phase evidence is limited for this lifecycle."
-        ),
-        "bullets": (
-            _listify(holding_summary.get("monitor_updates"), max_items=10, max_len=260)
-            or _listify(monitor_reason.get("bullets"), max_items=10, max_len=260)
-        ),
+        "summary": _build_holding_story_summary(hold_count, monitor_reason, status_text),
+        "bullets": _build_holding_story_bullets(holding_summary, monitor_reason),
     }
     exit_decision = {
         "summary": (
@@ -871,7 +1183,22 @@ def _fallback_report(
             f"Exit time: {_clip(exit_summary.get('ts'), max_len=80) or 'not_captured'}",
             f"Exit action: {_clip(exit_summary.get('action'), max_len=40) or ('HOLD' if status_text == 'open' else 'not_captured')}",
             f"Exit reason: {_clip(exit_summary.get('reason_human'), max_len=220) or ('position still open' if status_text == 'open' else 'not_captured')}",
-        ],
+        ]
+        + (
+            [f"Active exit axis: {_clip(monitor_reason.get('active_exit_axis'), max_len=120)}"]
+            if _clip(monitor_reason.get("active_exit_axis"), max_len=120)
+            else []
+        )
+        + (
+            [f"Exit confirmation: {int(monitor_reason.get('confirm_count') or 0)}/{int(monitor_reason.get('confirm_required') or 0)}"]
+            if monitor_reason.get("confirm_required") is not None
+            else []
+        )
+        + (
+            [f"Decision chain: {' -> '.join(_listify(monitor_reason.get('decision_reason_chain'), max_items=4, max_len=80))}"]
+            if _listify(monitor_reason.get("decision_reason_chain"), max_items=4, max_len=80)
+            else []
+        ),
     }
     execution_quality = {
         "summary": (
@@ -920,7 +1247,7 @@ def _fallback_report(
         },
         "market_context_at_entry": {
             "summary": _clip(market_context.get("summary"), max_len=600),
-            "bullets": _listify(market_context.get("bullets"), max_items=8, max_len=260),
+            "bullets": _build_market_context_bullets(market_context),
             "regime": _clip(market_context.get("regime"), max_len=40),
             "market_sentiment": _clip(market_context.get("market_sentiment"), max_len=40),
             "playbook": _clip(market_context.get("playbook"), max_len=40),
@@ -931,7 +1258,7 @@ def _fallback_report(
         },
         "why_this_symbol_was_chosen": {
             "summary": _clip(scanner_reason.get("summary"), max_len=600),
-            "bullets": _listify(scanner_reason.get("bullets"), max_items=8, max_len=260),
+            "bullets": _listify(scanner_reason.get("bullets"), max_items=12, max_len=260),
             "selected_rank": scanner_reason.get("selected_rank"),
             "universe_size": scanner_reason.get("universe_size"),
             "symbol": _clip(scanner_reason.get("selected_symbol") or story_input.get("symbol"), max_len=32),
@@ -1216,6 +1543,11 @@ def _build_repair_messages(
                 "Replace the template values with report content. Keep the same keys and nested structure."
                 f"{partial_note}{shape_note}{language_note}\n\n"
                 "If the source input is in English, translate it into Korean instead of copying the English sentence.\n"
+                "Critical evidence rules:\n"
+                "- If market_context_human has headline_count, news_query_count, news_query_targets, or key_events_hint, reflect them in market_context_at_entry.\n"
+                "- If scanner_reason_human has why_selected, selection_basis, tie_break_rule, top_candidates, or runner_ups_lost, reflect them in why_this_symbol_was_chosen and entry_decision.\n"
+                "- If monitor_reason_human has effective_stop_loss_pct, take_profit_pct, active_exit_axis, watch_axes, confirm_required, confirm_count, or decision_reason_chain, reflect them in holding_monitoring_story and exit_decision.\n"
+                "- Do not replace concrete numeric evidence with vague wording.\n"
                 f"Input:\n{json.dumps(compact_input, ensure_ascii=False)}\n\n"
                 f"Previous response:\n{previous_response_text}"
             ),
@@ -1252,8 +1584,12 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
                 "Follow the pipeline order exactly: strategist -> scanner -> monitor -> supervisor -> executor -> reporter.\n"
                 "Requirements:\n"
                 "- Include concrete numbers when available for global sentiment score, VIX, headline counts, and query-target counts.\n"
+                "- In Market Context at Entry, use headline_count, news_query_count, news_query_targets, and key_events_hint when they exist.\n"
                 "- Explain scanner candidate count, selected symbol, runner-ups, Kiwoom source mix (top_value, top_volume, sector_theme, etc.), score breakdown, and feature coverage.\n"
+                "- In Why This Symbol Was Chosen, explicitly mention why_selected, selection_basis, tie_break_rule, top_candidates, and runner_ups_lost when available.\n"
+                "- In Entry Decision, explain how strategist guidance and scanner ranking led to the selected symbol instead of repeating a generic sentence.\n"
                 "- Explain monitor thresholds and watch axes, including stop, effective stop, take profit, current price, and price source.\n"
+                "- In Holding / Monitoring Story and Exit Decision, explicitly mention active_exit_axis, confirm_required, confirm_count, decision_reason_chain, and watch_axes when available.\n"
                 "- Separate supervisor approval from executor result.\n"
                 "- If reporter linkage is missing, explain that clearly in Korean.\n"
                 "- Translate all human-readable text into Korean. Do not copy English source sentences into the final JSON.\n"
@@ -1263,6 +1599,7 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
                 f"{json.dumps(contract, ensure_ascii=False)}\n"
                 "Write 3 to 6 bullets for each section when evidence is available.\n"
                 "Make the summaries concise but operationally useful.\n"
+                "Do not omit ranked comparison details if they exist in the input.\n"
                 f"Input:\n{json.dumps(compact_input, ensure_ascii=False)}"
             ),
         },

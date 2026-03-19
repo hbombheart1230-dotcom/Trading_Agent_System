@@ -690,7 +690,7 @@ def _should_use_cached_strategist_when_flat(state: Dict[str, Any]) -> Tuple[bool
     enabled = _is_trueish(
         state.get("enable_cached_strategist_when_flat")
         if state.get("enable_cached_strategist_when_flat") is not None
-        else os.getenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
+        else os.getenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "false")
     )
     open_position_count = _portfolio_open_position_count(state)
     cache_payload = _strategist_cache_payload(state)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -158,6 +159,359 @@ def _latest_strategist_evidence_ledger_row(
         return {}
     candidates.sort(key=lambda item: _to_epoch(item.get("timestamp") or item.get("ts")) or 0)
     return dict(candidates[-1])
+
+
+def _latest_strategist_input_collection_row(
+    evidence_rows: List[Dict[str, Any]],
+    strategist_run_ids: List[str],
+) -> Dict[str, Any]:
+    run_set = {str(item or "").strip() for item in list(strategist_run_ids or []) if str(item or "").strip()}
+    candidates: List[Dict[str, Any]] = []
+    for row in list(evidence_rows or []):
+        if run_set and str(row.get("run_id") or "").strip() not in run_set:
+            continue
+        if str(row.get("agent") or "").strip().lower() != "strategist":
+            continue
+        raw_input = row.get("raw_input")
+        if not isinstance(raw_input, dict) or not raw_input:
+            continue
+        if str(row.get("stage") or "").strip() != "theme_selection":
+            continue
+        decision_link = row.get("decision_link") if isinstance(row.get("decision_link"), dict) else {}
+        if str(decision_link.get("stage") or "").strip() != "strategist_input_collection" and "llm_payload" not in raw_input:
+            continue
+        candidates.append(row)
+    if not candidates:
+        return {}
+    candidates.sort(key=lambda item: _to_epoch(item.get("timestamp") or item.get("ts")) or 0)
+    return dict(candidates[-1])
+
+
+def _latest_strategist_prompt_input_row(
+    evidence_rows: List[Dict[str, Any]],
+    strategist_run_ids: List[str],
+) -> Dict[str, Any]:
+    run_set = {str(item or "").strip() for item in list(strategist_run_ids or []) if str(item or "").strip()}
+    candidates: List[Dict[str, Any]] = []
+    for row in list(evidence_rows or []):
+        if run_set and str(row.get("run_id") or "").strip() not in run_set:
+            continue
+        if str(row.get("agent") or "").strip().lower() != "strategist":
+            continue
+        if str(row.get("stage") or "").strip() != "theme_selection":
+            continue
+        if not isinstance(row.get("raw_input"), dict) or not dict(row.get("raw_input") or {}):
+            continue
+        if not str(row.get("llm_prompt") or "").strip():
+            continue
+        candidates.append(row)
+    if not candidates:
+        return {}
+    candidates.sort(key=lambda item: _to_epoch(item.get("timestamp") or item.get("ts")) or 0)
+    return dict(candidates[-1])
+
+
+def _flatten_news_titles(sample: Any, *, max_groups: int = 3, max_titles_per_group: int = 2) -> List[str]:
+    out: List[str] = []
+    if not isinstance(sample, dict):
+        return out
+
+    def _extract_title(row: Any) -> str:
+        if isinstance(row, dict):
+            return str(row.get("title") or "").strip()
+        text = str(row or "").strip()
+        if not text:
+            return ""
+        for pattern in (r"title='([^']+)'", r'title="([^"]+)"'):
+            match = re.search(pattern, text)
+            if match:
+                return str(match.group(1) or "").strip()
+        return text[:160]
+
+    for symbol, rows in list(sample.items())[:max_groups]:
+        items = rows
+        if isinstance(rows, dict):
+            items = rows.get("sample")
+        if not isinstance(items, list):
+            continue
+        for row in items[:max_titles_per_group]:
+            title = _extract_title(row)
+            if not title:
+                continue
+            out.append(f"{symbol}: {title}")
+    return out
+
+
+def _build_strategist_input_summary(
+    source_input: Dict[str, Any],
+    compact_input: Dict[str, Any],
+) -> Dict[str, Any]:
+    src = source_input if isinstance(source_input, dict) else {}
+    compact = compact_input if isinstance(compact_input, dict) else {}
+    global_signal = src.get("global_sentiment_signal") if isinstance(src.get("global_sentiment_signal"), dict) else {}
+    if not global_signal and isinstance(compact.get("global_sentiment_signal"), dict):
+        global_signal = dict(compact.get("global_sentiment_signal") or {})
+    news_ctx = src.get("news_context") if isinstance(src.get("news_context"), dict) else {}
+    if not news_ctx and isinstance(compact.get("news_context"), dict):
+        news_ctx = dict(compact.get("news_context") or {})
+    macro_moves = global_signal.get("macro_moves") if isinstance(global_signal.get("macro_moves"), dict) else {}
+    fear_index = global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {}
+    macro_stress = src.get("macro_stress_overlay_hint") if isinstance(src.get("macro_stress_overlay_hint"), dict) else {}
+    if not macro_stress and isinstance(compact.get("macro_stress_overlay_hint"), dict):
+        macro_stress = dict(compact.get("macro_stress_overlay_hint") or {})
+    market_news_sample = src.get("market_news_sample") if isinstance(src.get("market_news_sample"), dict) else {}
+    candidate_news_sample = src.get("candidate_news_sample") if isinstance(src.get("candidate_news_sample"), dict) else {}
+    if not market_news_sample and isinstance(compact.get("market_news_sample"), dict):
+        market_news_sample = dict(compact.get("market_news_sample") or {})
+    if not candidate_news_sample and isinstance(compact.get("candidate_news_sample"), dict):
+        candidate_news_sample = dict(compact.get("candidate_news_sample") or {})
+    return {
+        "global_sentiment_score": _safe_float(global_signal.get("score"), None),
+        "vix_level": _safe_float(fear_index.get("level"), _safe_float(macro_moves.get("vix_level"), None)),
+        "vix_change_pct": _safe_float(fear_index.get("change_pct"), _safe_float(macro_moves.get("vix_pct"), None)),
+        "vix_level_pressure": _safe_float(fear_index.get("level_pressure"), _safe_float(macro_moves.get("vix_level_pressure"), None)),
+        "headline_count": safe_int(news_ctx.get("headline_count"), 0),
+        "candidate_signal_total": safe_int(news_ctx.get("candidate_signal_total"), 0),
+        "market_signal_total": safe_int(news_ctx.get("market_signal_total"), 0),
+        "news_query_targets": [str(x or "") for x in list(src.get("news_query_targets") or compact.get("news_query_targets") or []) if str(x or "").strip()][:8],
+        "candidate_symbols_hint": [str(x or "") for x in list(src.get("candidate_symbols_hint") or compact.get("candidate_symbols_hint") or []) if str(x or "").strip()][:6],
+        "themes_hint": [str(x or "") for x in list(src.get("themes_hint") or compact.get("themes_hint") or []) if str(x or "").strip()][:6],
+        "key_events_hint": [str(x or "") for x in list(src.get("key_events_hint") or compact.get("key_events_hint") or []) if str(x or "").strip()][:6],
+        "macro_stress_active": bool(macro_stress.get("active")),
+        "macro_stress_flags": [str(x or "") for x in list(macro_stress.get("stress_flags") or []) if str(x or "").strip()][:6],
+        "market_news_titles": _flatten_news_titles(market_news_sample),
+        "candidate_news_titles": _flatten_news_titles(candidate_news_sample),
+    }
+
+
+def _enrich_strategist_from_input_summary(
+    strategist_payload: Dict[str, Any],
+    strategist_input_artifact: Dict[str, Any],
+) -> Dict[str, Any]:
+    out = dict(strategist_payload or {})
+    summary = strategist_input_artifact.get("summary") if isinstance(strategist_input_artifact.get("summary"), dict) else {}
+    if not summary:
+        return out
+    out["input_summary"] = dict(summary)
+    if out.get("global_sentiment_score") in (None, ""):
+        out["global_sentiment_score"] = summary.get("global_sentiment_score")
+
+    fear_index = out.get("fear_index") if isinstance(out.get("fear_index"), dict) else {}
+    if not fear_index and summary.get("vix_level") not in (None, ""):
+        fear_index = {
+            "level": summary.get("vix_level"),
+            "change_pct": summary.get("vix_change_pct"),
+            "level_pressure": summary.get("vix_level_pressure"),
+        }
+    out["fear_index"] = dict(fear_index or {})
+
+    macro_moves = out.get("global_macro_moves") if isinstance(out.get("global_macro_moves"), dict) else {}
+    if summary.get("vix_level") not in (None, "") and macro_moves.get("vix_level") in (None, ""):
+        macro_moves["vix_level"] = summary.get("vix_level")
+    if summary.get("vix_change_pct") not in (None, "") and macro_moves.get("vix_pct") in (None, ""):
+        macro_moves["vix_pct"] = summary.get("vix_change_pct")
+    if summary.get("vix_level_pressure") not in (None, "") and macro_moves.get("vix_level_pressure") in (None, ""):
+        macro_moves["vix_level_pressure"] = summary.get("vix_level_pressure")
+    out["global_macro_moves"] = dict(macro_moves or {})
+
+    news_context = out.get("news_context") if isinstance(out.get("news_context"), dict) else {}
+    if summary.get("headline_count") not in (None, "") and news_context.get("headline_count") in (None, ""):
+        news_context["headline_count"] = summary.get("headline_count")
+    if summary.get("candidate_signal_total") not in (None, "") and news_context.get("candidate_signal_total") in (None, ""):
+        news_context["candidate_signal_total"] = summary.get("candidate_signal_total")
+    if summary.get("market_signal_total") not in (None, "") and news_context.get("market_signal_total") in (None, ""):
+        news_context["market_signal_total"] = summary.get("market_signal_total")
+    out["news_context"] = dict(news_context or {})
+
+    if safe_int(out.get("market_news_total_headlines"), 0) <= 0:
+        out["market_news_total_headlines"] = safe_int(summary.get("headline_count"), 0)
+    if safe_int(out.get("market_news_query_count"), 0) <= 0:
+        out["market_news_query_count"] = len(list(summary.get("news_query_targets") or []))
+    if not list(out.get("news_query_targets") or []):
+        out["news_query_targets"] = [str(x or "") for x in list(summary.get("news_query_targets") or []) if str(x or "").strip()]
+    return out
+
+
+def _enrich_scanner_reason_from_evidence(
+    scanner_reason_human: Dict[str, Any],
+    scanner_evidence: Dict[str, Any],
+) -> Dict[str, Any]:
+    out = dict(scanner_reason_human or {})
+    selection_rows = [
+        dict(row)
+        for row in list((scanner_evidence or {}).get("candidate_selection_reasons") or [])
+        if isinstance(row, dict)
+    ]
+    payload = (
+        selection_rows[0].get("payload")
+        if selection_rows and isinstance(selection_rows[0].get("payload"), dict)
+        else {}
+    )
+    if not isinstance(payload, dict) or not payload:
+        return out
+
+    why_selected = [str(x or "") for x in list(payload.get("why_selected") or []) if str(x or "").strip()][:4]
+    selection_basis = str(payload.get("final_decision_basis") or "").strip()
+    tie_break_rule = str(payload.get("tie_break_rule") or "").strip()
+    runner_ups_lost: List[Dict[str, Any]] = []
+    for row in list(payload.get("runner_ups_lost") or payload.get("runner_up_reasons") or []):
+        if not isinstance(row, dict):
+            continue
+        symbol = normalize_symbol(row.get("symbol") or "", allow_test_symbols=True)
+        why_lost = [
+            str(x or "")
+            for x in list(row.get("why_lost") or row.get("lost_because") or [])
+            if str(x or "").strip()
+        ][:4]
+        if not symbol and not why_lost:
+            continue
+        runner_ups_lost.append(
+            {
+                "symbol": symbol,
+                "why_lost": why_lost,
+                "summary": "; ".join(why_lost),
+            }
+        )
+        if len(runner_ups_lost) >= 3:
+            break
+
+    if why_selected:
+        out["why_selected"] = why_selected
+    if selection_basis:
+        out["selection_basis"] = selection_basis
+    if tie_break_rule:
+        out["tie_break_rule"] = tie_break_rule
+    if runner_ups_lost:
+        out["runner_ups_lost"] = runner_ups_lost
+
+    bullets = [str(x or "") for x in list(out.get("bullets") or []) if str(x or "").strip()]
+    if why_selected:
+        selection_text = "Selection decision: " + "; ".join(why_selected)
+        if selection_text not in bullets:
+            bullets.append(selection_text)
+    if selection_basis:
+        basis_text = f"Final decision basis: {selection_basis}"
+        if basis_text not in bullets:
+            bullets.append(basis_text)
+    if tie_break_rule:
+        tie_text = f"Tie-break rule: {tie_break_rule}"
+        if tie_text not in bullets:
+            bullets.append(tie_text)
+    if runner_ups_lost:
+        runner_text = "Runner-ups lost because: " + "; ".join(
+            f"{row.get('symbol')}: {row.get('summary')}" for row in runner_ups_lost if row.get("symbol")
+        )
+        if runner_text not in bullets:
+            bullets.append(runner_text)
+    if bullets:
+        out["bullets"] = bullets[:12]
+    return out
+
+
+def _attach_strategy_anchor(
+    payload: Dict[str, Any] | None,
+    *,
+    strategy_anchor_run_id: str,
+    strategist_input_path: Path,
+    strategist_compact_input_path: Path,
+    strategist_llm_response_path: Path,
+) -> Dict[str, Any]:
+    out = dict(payload or {})
+    out["entry_strategist_run_id"] = str(strategy_anchor_run_id or "")
+    out["strategy_anchor_run_id"] = str(strategy_anchor_run_id or "")
+    out["strategy_anchor"] = {
+        "run_id": str(strategy_anchor_run_id or ""),
+        "artifacts": {
+            "strategist_input_json": str(strategist_input_path),
+            "strategist_compact_input_json": str(strategist_compact_input_path),
+            "strategist_llm_response_json": str(strategist_llm_response_path),
+        },
+    }
+    return out
+
+
+def _build_strategist_input_artifacts(
+    bundle_out: Dict[str, Any],
+    *,
+    day: str,
+    trade_id: str,
+    strategist_evidence: Dict[str, Any] | None = None,
+    evidence_rows: List[Dict[str, Any]] | None = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    strategist = bundle_out.get("strategist") if isinstance(bundle_out.get("strategist"), dict) else {}
+    strategist_evidence = strategist_evidence if isinstance(strategist_evidence, dict) else {}
+    strategist_run_ids = list(strategist_evidence.get("run_ids") or [])
+    input_row = _latest_strategist_input_collection_row(list(evidence_rows or []), strategist_run_ids)
+    prompt_row = _latest_strategist_prompt_input_row(list(evidence_rows or []), strategist_run_ids)
+
+    source_input: Dict[str, Any] = {}
+    raw_input = input_row.get("raw_input") if isinstance(input_row.get("raw_input"), dict) else {}
+    if isinstance(raw_input.get("llm_payload"), dict) and dict(raw_input.get("llm_payload") or {}):
+        source_input = dict(raw_input.get("llm_payload") or {})
+    elif raw_input:
+        source_input = dict(raw_input)
+
+    compact_input = prompt_row.get("raw_input") if isinstance(prompt_row.get("raw_input"), dict) else {}
+    if not compact_input and isinstance(strategist.get("llm_payload"), dict):
+        compact_input = dict(strategist.get("llm_payload") or {})
+    if not source_input and isinstance(strategist.get("llm_payload"), dict):
+        source_input = dict(strategist.get("llm_payload") or {})
+    if not source_input and compact_input:
+        source_input = dict(compact_input)
+
+    prompt_text = str(prompt_row.get("llm_prompt") or "")
+    system_prompt, user_prompt = split_prompt_text(prompt_text)
+    source_run_id = str(
+        prompt_row.get("run_id")
+        or input_row.get("run_id")
+        or (strategist_run_ids[0] if strategist_run_ids else "")
+        or bundle_out.get("run_id")
+        or ""
+    ).strip()
+
+    source_stage = str(prompt_row.get("stage") or input_row.get("stage") or "").strip()
+    reconstructed = bool(source_input or compact_input or system_prompt or user_prompt)
+    input_artifact = {
+        "schema_version": "strategist_input_artifact.v1",
+        "component": "strategist",
+        "role": "strategist",
+        "run_id": str(bundle_out.get("run_id") or ""),
+        "trade_id": str(trade_id or ""),
+        "story_id": str(trade_id or ""),
+        "day": str(day or ""),
+        "saved_at": utc_now_iso(),
+        "status": "ok" if bool(source_input or compact_input) else "placeholder",
+        "summary": _build_strategist_input_summary(source_input, compact_input),
+        "source_input": source_input if isinstance(source_input, dict) else {},
+        "meta": {
+            "source_run_id": source_run_id,
+            "source_stage": source_stage,
+            "reconstructed_from_evidence_ledger": reconstructed,
+            "system_prompt_available": bool(system_prompt),
+            "user_prompt_available": bool(user_prompt),
+        },
+    }
+    if system_prompt:
+        input_artifact["system_prompt"] = system_prompt
+    if user_prompt:
+        input_artifact["user_prompt"] = user_prompt
+
+    compact_artifact = build_compact_input_artifact(
+        component="strategist",
+        run_id=str(bundle_out.get("run_id") or ""),
+        trade_id=trade_id,
+        story_id=trade_id,
+        day=day,
+        source_artifact_path="",
+        source_input=source_input if isinstance(source_input, dict) else {},
+        compact_input=compact_input if isinstance(compact_input, dict) else {},
+    )
+    compact_artifact["meta"] = {
+        "source_run_id": source_run_id,
+        "source_stage": source_stage,
+        "reconstructed_from_evidence_ledger": reconstructed,
+    }
+    return input_artifact, compact_artifact
 
 
 def _build_strategist_llm_response_artifact(
@@ -1887,6 +2241,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         compact_story_input_path = trade_paths["ai_trade_report_compact_input_json"]
         trade_report_json_path = trade_paths["ai_trade_report_json"]
         trade_report_md_path = trade_paths["ai_trade_report_md"]
+        strategist_input_path = trade_paths["strategist_input_json"]
+        strategist_compact_input_path = trade_paths["strategist_compact_input_json"]
         strategist_llm_response_path = trade_paths["strategist_llm_response_json"]
         ai_trade_report_llm_response_path = trade_paths["ai_trade_report_llm_response_json"]
         strategist_evidence_path = trade_paths["strategist_evidence_json"]
@@ -1935,8 +2291,132 @@ def main(argv: Optional[List[str]] = None) -> int:
             "monitor_event_count": sum(len(list(monitor_timeline.get(key) or [])) for key in ("threshold_snapshots", "state_transitions", "exit_decision_details", "cycle_summaries")),
         }
 
+        strategist_input_artifact, strategist_compact_input_artifact = _build_strategist_input_artifacts(
+            lifecycle_bundle,
+            day=day,
+            trade_id=trade_id,
+            strategist_evidence=strategist_evidence,
+            evidence_rows=day_evidence_rows,
+        )
+        lifecycle_bundle["strategist"] = _enrich_strategist_from_input_summary(
+            lifecycle_bundle.get("strategist") if isinstance(lifecycle_bundle.get("strategist"), dict) else {},
+            strategist_input_artifact,
+        )
+        lifecycle_bundle["market_context_human"] = build_market_context_human(
+            lifecycle_bundle.get("strategist") if isinstance(lifecycle_bundle.get("strategist"), dict) else {}
+        )
+        lifecycle_bundle["scanner_reason_human"] = build_scanner_reason_human(
+            lifecycle_bundle.get("scanner") if isinstance(lifecycle_bundle.get("scanner"), dict) else {},
+            lifecycle_bundle.get("strategist") if isinstance(lifecycle_bundle.get("strategist"), dict) else {},
+        )
+        lifecycle_bundle["scanner_reason_human"] = _enrich_scanner_reason_from_evidence(
+            lifecycle_bundle.get("scanner_reason_human")
+            if isinstance(lifecycle_bundle.get("scanner_reason_human"), dict)
+            else {},
+            scanner_evidence,
+        )
+        lifecycle_bundle["filters_human"] = build_filters_human(
+            lifecycle_bundle.get("scanner") if isinstance(lifecycle_bundle.get("scanner"), dict) else {},
+            lifecycle_bundle.get("strategist") if isinstance(lifecycle_bundle.get("strategist"), dict) else {},
+            lifecycle_bundle.get("supervisor") if isinstance(lifecycle_bundle.get("supervisor"), dict) else {},
+        )
+        strategy_anchor_run_id = str(
+            ((strategist_input_artifact.get("meta") or {}).get("source_run_id") or "")
+            or entry_run_id
+            or anchor_run_id
+            or ""
+        ).strip()
+        lifecycle["entry_strategist_run_id"] = strategy_anchor_run_id
+        lifecycle["strategy_anchor_run_id"] = strategy_anchor_run_id
+        lifecycle["strategy_anchor"] = {
+            "run_id": strategy_anchor_run_id,
+            "source": "strategist_input_artifact" if strategy_anchor_run_id else "missing",
+            "artifacts": {
+                "strategist_input_json": str(strategist_input_path),
+                "strategist_compact_input_json": str(strategist_compact_input_path),
+                "strategist_llm_response_json": str(strategist_llm_response_path),
+            },
+        }
+        lifecycle_bundle["entry_strategist_run_id"] = strategy_anchor_run_id
+        lifecycle_bundle["strategy_anchor_run_id"] = strategy_anchor_run_id
+        lifecycle_bundle["market_context_human"] = _attach_strategy_anchor(
+            lifecycle_bundle.get("market_context_human") if isinstance(lifecycle_bundle.get("market_context_human"), dict) else {},
+            strategy_anchor_run_id=strategy_anchor_run_id,
+            strategist_input_path=strategist_input_path,
+            strategist_compact_input_path=strategist_compact_input_path,
+            strategist_llm_response_path=strategist_llm_response_path,
+        )
+        lifecycle_bundle["scanner_reason_human"] = _attach_strategy_anchor(
+            lifecycle_bundle.get("scanner_reason_human") if isinstance(lifecycle_bundle.get("scanner_reason_human"), dict) else {},
+            strategy_anchor_run_id=strategy_anchor_run_id,
+            strategist_input_path=strategist_input_path,
+            strategist_compact_input_path=strategist_compact_input_path,
+            strategist_llm_response_path=strategist_llm_response_path,
+        )
+        lifecycle_bundle["monitor_reason_human"] = _attach_strategy_anchor(
+            lifecycle_bundle.get("monitor_reason_human") if isinstance(lifecycle_bundle.get("monitor_reason_human"), dict) else {},
+            strategy_anchor_run_id=strategy_anchor_run_id,
+            strategist_input_path=strategist_input_path,
+            strategist_compact_input_path=strategist_compact_input_path,
+            strategist_llm_response_path=strategist_llm_response_path,
+        )
+        entry_ctx_live = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+        if entry_ctx_live:
+            entry_ctx_live["strategist_context"] = _attach_strategy_anchor(
+                entry_ctx_live.get("strategist_context") if isinstance(entry_ctx_live.get("strategist_context"), dict) else {},
+                strategy_anchor_run_id=strategy_anchor_run_id,
+                strategist_input_path=strategist_input_path,
+                strategist_compact_input_path=strategist_compact_input_path,
+                strategist_llm_response_path=strategist_llm_response_path,
+            )
+            entry_ctx_live["scanner_context"] = _attach_strategy_anchor(
+                entry_ctx_live.get("scanner_context") if isinstance(entry_ctx_live.get("scanner_context"), dict) else {},
+                strategy_anchor_run_id=strategy_anchor_run_id,
+                strategist_input_path=strategist_input_path,
+                strategist_compact_input_path=strategist_compact_input_path,
+                strategist_llm_response_path=strategist_llm_response_path,
+            )
+            entry_ctx_live["monitor_context"] = _attach_strategy_anchor(
+                entry_ctx_live.get("monitor_context") if isinstance(entry_ctx_live.get("monitor_context"), dict) else {},
+                strategy_anchor_run_id=strategy_anchor_run_id,
+                strategist_input_path=strategist_input_path,
+                strategist_compact_input_path=strategist_compact_input_path,
+                strategist_llm_response_path=strategist_llm_response_path,
+            )
+            lifecycle["entry"] = entry_ctx_live
+        exit_ctx_live = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+        if exit_ctx_live:
+            exit_ctx_live["monitor_context"] = _attach_strategy_anchor(
+                exit_ctx_live.get("monitor_context") if isinstance(exit_ctx_live.get("monitor_context"), dict) else {},
+                strategy_anchor_run_id=strategy_anchor_run_id,
+                strategist_input_path=strategist_input_path,
+                strategist_compact_input_path=strategist_compact_input_path,
+                strategist_llm_response_path=strategist_llm_response_path,
+            )
+            lifecycle["exit"] = exit_ctx_live
+        holding_live = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+        if isinstance(holding_live.get("holding_events"), list):
+            updated_events: List[Dict[str, Any]] = []
+            for event in list(holding_live.get("holding_events") or []):
+                event_obj = dict(event or {})
+                event_obj["monitor_context"] = _attach_strategy_anchor(
+                    event_obj.get("monitor_context") if isinstance(event_obj.get("monitor_context"), dict) else {},
+                    strategy_anchor_run_id=strategy_anchor_run_id,
+                    strategist_input_path=strategist_input_path,
+                    strategist_compact_input_path=strategist_compact_input_path,
+                    strategist_llm_response_path=strategist_llm_response_path,
+                )
+                updated_events.append(event_obj)
+            holding_live["holding_events"] = updated_events
+            lifecycle["holding"] = holding_live
+        write_json(strategist_input_path, strategist_input_artifact)
+        strategist_compact_input_artifact["source_artifact_path"] = str(strategist_input_path)
+        write_json(strategist_compact_input_path, strategist_compact_input_artifact)
+
         trade_story_input = build_trade_story_input(lifecycle_bundle, trade_lifecycle=lifecycle)
         trade_story_input["day"] = day
+        trade_story_input["entry_strategist_run_id"] = strategy_anchor_run_id
+        trade_story_input["strategy_anchor_run_id"] = strategy_anchor_run_id
         trade_story_compact_input = build_ai_trade_report_compact_input(trade_story_input)
         diagnostics, should_attempt_generation = _seed_diagnostics_for_policy(
             lifecycle_status=status,
@@ -2069,6 +2549,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "trade_report_md": trade_report_md_written,
                 "ai_trade_report_json": trade_report_json_written,
                 "ai_trade_report_md": trade_report_md_written,
+                "strategist_input_json": str(strategist_input_path),
+                "strategist_compact_input_json": str(strategist_compact_input_path),
                 "strategist_llm_response_json": str(strategist_llm_response_path),
                 "ai_trade_report_llm_response_json": ai_trade_report_llm_response_written,
                 "strategist_evidence_json": str(strategist_evidence_path),
@@ -2089,6 +2571,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "ai_trade_report_input_json": str(story_input_path),
                 "ai_trade_report_compact_input_json": str(compact_story_input_path),
                 "ai_trade_report_llm_response_json": ai_trade_report_llm_response_written,
+                "strategist_input_json": str(strategist_input_path),
+                "strategist_compact_input_json": str(strategist_compact_input_path),
                 "strategist_llm_response_json": str(strategist_llm_response_path),
                 "trade_lifecycle_json": str(trade_lifecycle_path),
                 "aggregated_execution_bundle_json": str(aggregated_bundle_path),
@@ -2108,6 +2592,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "run_id": anchor_run_id,
             "day": day,
             "lifecycle_status": status,
+            "entry_strategist_run_id": strategy_anchor_run_id,
+            "strategy_anchor_run_id": strategy_anchor_run_id,
             "evidence_source": str(trade_story_input.get("evidence_source") or "fallback"),
             "agent_sources": dict(lifecycle_bundle.get("evidence_provenance") or {}),
             "section_provenance": dict(section_provenance),

@@ -281,6 +281,9 @@ def test_ai_trade_report_messages_use_clean_json_only_instructions() -> None:
     assert "strategist -> scanner -> monitor -> supervisor -> executor -> reporter" in user_prompt
     assert "Return only this JSON template with values filled in" in user_prompt
     assert "Do not copy English source sentences into the final JSON." in user_prompt
+    assert "selection_basis" in user_prompt
+    assert "runner_ups_lost" in user_prompt
+    assert "decision_reason_chain" in user_prompt
 
 
 def test_ai_trade_report_repair_messages_do_not_reinject_non_json_reasoning() -> None:
@@ -387,6 +390,9 @@ def test_ai_trade_report_fallback_preserves_structured_market_context_fields() -
         "global_sentiment_score": -0.22,
         "vix_level": 25.09,
         "stress_flags": ["elevated_vix"],
+        "news_input_summary": "75 headlines were considered across 10 targets.",
+        "news_query_targets": ["코스피", "미국 증시"],
+        "key_events_hint": ["fear_index vix=25.09 change=12.16% pressure=0.255"],
         "summary": "risk-off market context",
         "bullets": ["Market regime: risk_off"],
     }
@@ -413,5 +419,116 @@ def test_ai_trade_report_fallback_preserves_structured_market_context_fields() -
     assert report["market_context_at_entry"]["regime"] == "risk_off"
     assert report["market_context_at_entry"]["global_sentiment_score"] == -0.22
     assert report["market_context_at_entry"]["vix_level"] == 25.09
+    assert any(str(row).startswith("News input:") for row in report["market_context_at_entry"]["bullets"])
+    assert sum(1 for row in report["market_context_at_entry"]["bullets"] if str(row).startswith("News query targets:")) == 1
+    assert any(str(row).startswith("Key strategist inputs:") for row in report["market_context_at_entry"]["bullets"])
     assert report["why_this_symbol_was_chosen"]["selected_rank"] == 1
     assert report["why_this_symbol_was_chosen"]["universe_size"] == 5
+
+
+def test_ai_trade_report_merge_keeps_priority_fallback_scanner_bullets() -> None:
+    story_input = _story_input()
+    story_input["scanner_reason_human"] = {
+        "selected_symbol": "000660",
+        "selected_rank": 1,
+        "universe_size": 5,
+        "summary": "scanner selected rank #1",
+        "bullets": [
+            "Universe scanned: 5",
+            "Top candidates: #1 000660 score 1.178; #2 005930 score 1.152; #3 047040 score 1.141",
+            "Selection decision: highest total score (1.178); confidence 0.81 and risk 0.63",
+            "Final decision basis: Scanner selected the highest-ranked candidate after strategist-guided weighting.",
+            "Tie-break rule: score_total desc -> confidence desc -> risk_score asc",
+            "Runner-ups lost because: 005930: lower total score (1.152 vs 1.178)",
+        ],
+        "why_selected": ["highest total score (1.178)"],
+        "selection_basis": "Scanner selected the highest-ranked candidate after strategist-guided weighting.",
+        "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
+        "runner_ups_lost": [{"symbol": "005930", "summary": "lower total score (1.152 vs 1.178)"}],
+    }
+
+    report = mod._merge_trade_report_candidate(
+        story_input,
+        {
+            "executive_summary": {"headline": "HOLD 000660", "action": "HOLD", "symbol": "000660", "confidence": "high", "summary": "ok"},
+            "market_context_at_entry": {"summary": "context", "bullets": ["vix noted"]},
+            "why_this_symbol_was_chosen": {"summary": "rank #1", "bullets": ["selected for strength"]},
+            "entry_decision": {"summary": "entry", "bullets": []},
+            "holding_monitoring_story": {"summary": "hold", "bullets": []},
+            "exit_decision": {"summary": "open trade", "bullets": []},
+            "execution_quality": {"summary": "execution", "bullets": []},
+            "scanner_filters": {"summary": "filters", "bullets": []},
+            "guard_approval_result": {"summary": "guard", "bullets": []},
+            "reporter_evaluation": {"summary": "reporter", "status": "pending", "grade": "N/A", "bullets": []},
+            "errors_weaknesses_improvement_points": {"summary": "none", "bullets": []},
+            "full_timeline": [{"event": "entry", "ts": "2026-03-18T00:00:00+00:00", "description": "entry"}],
+            "final_operator_conclusion": {"summary": "hold", "current_action": "HOLD", "watch_next": ["watch"], "thesis_invalidation": ["stop"]},
+        },
+        status="ok",
+        mode="ai",
+        model="openrouter/free",
+        reason="ok",
+    )
+
+    bullets = report["why_this_symbol_was_chosen"]["bullets"]
+    assert "selected for strength" in bullets
+    assert any(str(row).startswith("Top candidates:") for row in bullets)
+    assert any(str(row).startswith("Selection decision:") for row in bullets)
+    assert any(str(row).startswith("Tie-break rule:") for row in bullets)
+
+
+def test_ai_trade_report_merge_prefers_detailed_monitor_fallback_when_ai_bullets_are_generic() -> None:
+    story_input = _story_input()
+    story_input["holding_summary"] = {
+        "run_ids": [f"run-{idx}" for idx in range(6)],
+        "monitor_updates": ["hold", "hold", "hold"],
+    }
+    story_input["monitor_reason_human"] = {
+        "posture": "HOLD",
+        "trigger_type": "hold",
+        "position_age_seconds": 1974,
+        "effective_stop_loss_pct": 0.01,
+        "effective_stop_reason": "hard_stop",
+        "take_profit_pct": 0.0123,
+        "active_exit_axis": "Hold",
+        "watch_axes": ["Hard stop", "Take profit", "VWAP breakdown"],
+        "confirm_required": 1,
+        "confirm_count": 0,
+        "decision_reason_chain": ["hold", "hold", "hold"],
+        "current_price": 1012000.0,
+        "average_price": 1011000.0,
+        "peak_price": 1013000.0,
+        "current_drawdown": -0.001,
+        "peak_drawdown": -0.001,
+        "price_source": "position.current_price",
+        "feature_source": "selected.features",
+    }
+
+    report = mod._merge_trade_report_candidate(
+        story_input,
+        {
+            "executive_summary": {"headline": "HOLD 000660", "action": "HOLD", "symbol": "000660", "confidence": "high", "summary": "ok"},
+            "market_context_at_entry": {"summary": "context", "bullets": ["vix noted"]},
+            "why_this_symbol_was_chosen": {"summary": "rank #1", "bullets": ["selected for strength"]},
+            "entry_decision": {"summary": "entry", "bullets": []},
+            "holding_monitoring_story": {"summary": "hold", "bullets": ["hold", "hold", "hold", "hold"]},
+            "exit_decision": {"summary": "open trade", "bullets": ["hold"]},
+            "execution_quality": {"summary": "execution", "bullets": []},
+            "scanner_filters": {"summary": "filters", "bullets": []},
+            "guard_approval_result": {"summary": "guard", "bullets": []},
+            "reporter_evaluation": {"summary": "reporter", "status": "pending", "grade": "N/A", "bullets": []},
+            "errors_weaknesses_improvement_points": {"summary": "none", "bullets": []},
+            "full_timeline": [{"event": "entry", "ts": "2026-03-18T00:00:00+00:00", "description": "entry"}],
+            "final_operator_conclusion": {"summary": "hold", "current_action": "HOLD", "watch_next": ["watch"], "thesis_invalidation": ["stop"]},
+        },
+        status="ok",
+        mode="ai",
+        model="openrouter/free",
+        reason="ok",
+    )
+
+    bullets = report["holding_monitoring_story"]["bullets"]
+    assert any(str(row).startswith("Monitor runs:") for row in bullets)
+    assert any(str(row).startswith("Posture:") for row in bullets)
+    assert any(str(row).startswith("Effective stop:") for row in bullets)
+    assert any(str(row).startswith("Decision chain:") for row in bullets)

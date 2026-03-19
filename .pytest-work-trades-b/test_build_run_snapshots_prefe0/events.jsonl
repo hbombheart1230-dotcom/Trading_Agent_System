@@ -1,5 +1,0 @@
-{"run_id": "run-1", "ts": "2026-03-18T00:00:00+00:00", "stage": "commander_router", "event": "route", "payload": {"mode": "integrated_chain", "phase": "session"}}
-{"run_id": "run-1", "ts": "2026-03-18T00:00:01+00:00", "stage": "scanner", "event": "summary", "payload": {"top_stock": "BBB"}}
-{"run_id": "run-1", "ts": "2026-03-18T00:00:02+00:00", "stage": "monitor", "event": "summary", "payload": {"monitor_reason": "event_log_hold", "exit_reason": "event_log_hold"}}
-{"run_id": "run-1", "ts": "2026-03-18T00:00:03+00:00", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": false, "reason": "event_log_block"}}
-{"run_id": "run-1", "ts": "2026-03-18T00:00:04+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"action": "BUY", "symbol": "BBB", "qty": 1, "status": "EVENT_ONLY"}}
