@@ -16,7 +16,7 @@ from libs.data_quality.signal_contract import (
     SIGNAL_STATUS_FALLBACK,
     make_signal,
 )
-from libs.runtime.exit_policy import evaluate_exit_policy
+from libs.runtime.exit_policy import apply_env_stop_take_fallbacks, evaluate_exit_policy
 from libs.runtime.circuit_breaker import (
     gate_runtime_circuit,
     mark_runtime_circuit_failure,
@@ -181,8 +181,6 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
     cfg = policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else {}
     out = dict(cfg or {})
 
-    sl_raw = str(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "") or "").strip()
-    tp_raw = str(os.getenv("EXIT_POLICY_TAKE_PROFIT_PCT", "") or "").strip()
     mh_raw = str(os.getenv("EXIT_POLICY_MAX_HOLD_SEC", "") or "").strip()
     trail_raw = str(os.getenv("EXIT_POLICY_TRAILING_STOP_PCT", "") or "").strip()
     vol_exp_raw = str(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "") or "").strip()
@@ -191,10 +189,7 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
     eod_cutoff_raw = str(os.getenv("EXIT_POLICY_EOD_FLAT_CUTOFF_MIN", "") or "").strip()
     emergency_raw = str(os.getenv("EXIT_POLICY_EMERGENCY_HALT", "") or "").strip()
 
-    if sl_raw:
-        out["stop_loss_pct"] = _to_float(sl_raw, _to_float(out.get("stop_loss_pct"), 0.03))
-    if tp_raw:
-        out["take_profit_pct"] = _to_float(tp_raw, _to_float(out.get("take_profit_pct"), 0.05))
+    out = apply_env_stop_take_fallbacks(out)
     if mh_raw:
         out["max_hold_sec"] = int(_to_float(mh_raw, _to_float(out.get("max_hold_sec"), 0.0)))
     if trail_raw:

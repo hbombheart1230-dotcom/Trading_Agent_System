@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Optional
 
 
@@ -20,6 +21,23 @@ def _to_bool(v: Any, default: bool = False) -> bool:
     if v is None:
         return bool(default)
     return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def apply_env_stop_take_fallbacks(policy: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Use env stop/take baselines only when policy does not already define them."""
+    out = dict(policy or {})
+    sl_raw = str(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "") or "").strip()
+    tp_raw = str(os.getenv("EXIT_POLICY_TAKE_PROFIT_PCT", "") or "").strip()
+
+    if sl_raw and _to_float(out.get("stop_loss_pct"), 0.0) <= 0.0:
+        sl = _to_float(sl_raw, 0.03)
+        out["stop_loss_pct"] = float(sl if sl > 0.0 else 0.03)
+
+    if tp_raw and _to_float(out.get("take_profit_pct"), 0.0) <= 0.0:
+        tp = _to_float(tp_raw, 0.05)
+        out["take_profit_pct"] = float(tp if tp > 0.0 else 0.05)
+
+    return out
 
 
 def evaluate_exit_policy(

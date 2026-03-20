@@ -22,7 +22,7 @@ from libs.core.symbols import normalize_symbol
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 from libs.runtime.canonical_artifacts import write_monitor_artifact
 from libs.runtime.decision_trace import append_decision_trace
-from libs.runtime.exit_policy import evaluate_exit_policy
+from libs.runtime.exit_policy import apply_env_stop_take_fallbacks, evaluate_exit_policy
 from libs.runtime.feature_engine import build_feature_row
 from libs.runtime.position_sizing import evaluate_position_size
 from libs.strategies.contracts import coerce_strategist_output
@@ -44,6 +44,15 @@ def _to_float(v: Any) -> float:
         return float(v)
     except Exception:
         return 0.0
+
+
+def _optional_float(v: Any) -> float | None:
+    if v in (None, ""):
+        return None
+    try:
+        return float(v)
+    except Exception:
+        return None
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -149,8 +158,6 @@ def _resolve_exit_policy_config(policy: Dict[str, Any]) -> Dict[str, Any]:
         if out.get(dst_key) in (None, "") and policy.get(src_key) not in (None, ""):
             out[dst_key] = policy.get(src_key)
 
-    sl_raw = str(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "") or "").strip()
-    tp_raw = str(os.getenv("EXIT_POLICY_TAKE_PROFIT_PCT", "") or "").strip()
     mh_raw = str(os.getenv("EXIT_POLICY_MAX_HOLD_SEC", "") or "").strip()
     trail_raw = str(os.getenv("EXIT_POLICY_TRAILING_STOP_PCT", "") or "").strip()
     vol_exp_raw = str(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "") or "").strip()
@@ -163,18 +170,7 @@ def _resolve_exit_policy_config(policy: Dict[str, Any]) -> Dict[str, Any]:
     eod_cutoff_raw = str(os.getenv("EXIT_POLICY_EOD_FLAT_CUTOFF_MIN", "") or "").strip()
     emergency_raw = str(os.getenv("EXIT_POLICY_EMERGENCY_HALT", "") or "").strip()
 
-    if sl_raw:
-        base = _to_float(out.get("stop_loss_pct"))
-        if base <= 0.0:
-            base = 0.03
-        x = _to_float(sl_raw)
-        out["stop_loss_pct"] = float(x if x > 0.0 else base)
-    if tp_raw:
-        base = _to_float(out.get("take_profit_pct"))
-        if base <= 0.0:
-            base = 0.05
-        x = _to_float(tp_raw)
-        out["take_profit_pct"] = float(x if x > 0.0 else base)
+    out = apply_env_stop_take_fallbacks(out)
     if mh_raw:
         base = _to_float(out.get("max_hold_sec"))
         x = _to_float(mh_raw)
@@ -1047,6 +1043,154 @@ def _exit_reason_priority(reason: str) -> int:
     return int(order.get(r, 1))
 
 
+def _persist_overnight_decision(
+    state: Dict[str, Any],
+    *,
+    symbol: str,
+    decision: Dict[str, Any] | None = None,
+    clear: bool = False,
+) -> None:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    rows = (
+        persisted.get("overnight_decision_by_symbol")
+        if isinstance(persisted.get("overnight_decision_by_symbol"), dict)
+        else {}
+    )
+    key = _norm_symbol(symbol)
+    if not key:
+        return
+    if clear:
+        rows.pop(key, None)
+    elif isinstance(decision, dict) and decision:
+        rows[key] = dict(decision)
+    if rows:
+        persisted["overnight_decision_by_symbol"] = rows
+    else:
+        persisted.pop("overnight_decision_by_symbol", None)
+    state["persisted_state"] = persisted
+
+
+def _evaluate_overnight_carry_decision(
+    *,
+    state: Dict[str, Any],
+    symbol: str,
+    position: Dict[str, Any],
+    selected: Dict[str, Any] | None,
+    exit_policy_base: Dict[str, Any],
+    primary_decision: Dict[str, Any],
+    frame: Dict[str, Any],
+    hold_sec: int,
+) -> Dict[str, Any]:
+    thresholds = primary_decision.get("thresholds") if isinstance(primary_decision.get("thresholds"), dict) else {}
+    minutes_to_close = _optional_float(primary_decision.get("minutes_to_close"))
+    if minutes_to_close is None:
+        minutes_to_close = _optional_float(exit_policy_base.get("minutes_to_close"))
+    cutoff_min = int(_to_float(thresholds.get("eod_flat_cutoff_min") or exit_policy_base.get("eod_flat_cutoff_min") or 10))
+    use_eod_flat = bool(exit_policy_base.get("use_eod_flat"))
+    qty = max(0, _to_int(position.get("qty")))
+    out: Dict[str, Any] = {
+        "evaluated": False,
+        "approved": False,
+        "action": "not_applicable",
+        "reason": "",
+        "minutes_to_close": minutes_to_close,
+        "cutoff_min": int(cutoff_min),
+        "positive_signals": [],
+        "blockers": [],
+        "non_eod_reason": "",
+        "non_eod_triggered": False,
+        "pnl_ratio": None,
+        "trend_strength": None,
+        "vwap_distance": None,
+        "peak_drawdown": None,
+        "playbook": str(frame.get("playbook") or ""),
+        "monitor_guidance": str(frame.get("monitor_guidance") or ""),
+        "risk_tone": str(frame.get("risk_tone") or ""),
+    }
+    if qty <= 0 or (not use_eod_flat) or minutes_to_close is None or minutes_to_close < 0.0 or minutes_to_close > float(cutoff_min):
+        return out
+
+    out["evaluated"] = True
+    out["action"] = "flatten_before_close"
+
+    no_eod_policy = dict(exit_policy_base or {})
+    no_eod_policy["use_eod_flat"] = False
+    no_eod_policy["minutes_to_close"] = float(minutes_to_close)
+    risk_decision = evaluate_exit_policy(
+        price=primary_decision.get("_price"),
+        avg_price=primary_decision.get("_avg_price"),
+        qty=qty,
+        hold_sec=hold_sec if hold_sec > 0 else None,
+        policy=no_eod_policy,
+    )
+    out["non_eod_reason"] = str(risk_decision.get("reason") or "")
+    out["non_eod_triggered"] = bool(risk_decision.get("triggered"))
+
+    pnl_ratio = _optional_float(risk_decision.get("pnl_ratio"))
+    trend_strength = _optional_float(((selected or {}).get("features") or {}).get("engine_trend_strength"))
+    vwap_distance = _optional_float(((selected or {}).get("features") or {}).get("engine_vwap_distance"))
+    peak_drawdown = _optional_float(risk_decision.get("peak_drawdown"))
+    out["pnl_ratio"] = pnl_ratio
+    out["trend_strength"] = trend_strength
+    out["vwap_distance"] = vwap_distance
+    out["peak_drawdown"] = peak_drawdown
+
+    blockers: list[str] = []
+    positives: list[str] = []
+    if bool(risk_decision.get("triggered")):
+        blockers.append(f"underlying_exit_signal:{str(risk_decision.get('reason') or 'unknown')}")
+    if str(frame.get("monitor_guidance") or "").strip().lower() == "defensive_exit":
+        blockers.append("monitor_guidance:defensive_exit")
+    if str(frame.get("playbook") or "").strip().lower() == "defensive":
+        blockers.append("playbook:defensive")
+    if str(frame.get("risk_tone") or "").strip().lower() == "conservative":
+        blockers.append("risk_tone:conservative")
+
+    if pnl_ratio is None:
+        blockers.append("pnl:unavailable")
+    elif pnl_ratio < -0.003:
+        blockers.append(f"pnl_below_carry_floor:{pnl_ratio:.4f}")
+    else:
+        positives.append(f"pnl_ok:{pnl_ratio:.4f}")
+
+    if trend_strength is not None:
+        if trend_strength < 0.05:
+            blockers.append(f"trend_strength_weak:{trend_strength:.4f}")
+        else:
+            positives.append(f"trend_strength_ok:{trend_strength:.4f}")
+
+    if vwap_distance is not None:
+        if vwap_distance < -0.003:
+            blockers.append(f"vwap_below_floor:{vwap_distance:.4f}")
+        else:
+            positives.append(f"vwap_ok:{vwap_distance:.4f}")
+
+    if peak_drawdown is not None:
+        if peak_drawdown < -0.012:
+            blockers.append(f"peak_drawdown_too_deep:{peak_drawdown:.4f}")
+        else:
+            positives.append(f"peak_drawdown_ok:{peak_drawdown:.4f}")
+
+    playbook = str(frame.get("playbook") or "").strip().lower()
+    if playbook in ("breakout", "pullback"):
+        positives.append(f"playbook:{playbook}")
+    guidance = str(frame.get("monitor_guidance") or "").strip().lower()
+    if guidance in ("hold_through_noise", "trend_follow"):
+        positives.append(f"monitor_guidance:{guidance}")
+
+    out["positive_signals"] = list(positives)
+    out["blockers"] = list(blockers)
+    if not blockers and len(positives) >= 2:
+        out["approved"] = True
+        out["action"] = "carry_overnight"
+        out["reason"] = "carry_overnight_approved"
+    else:
+        out["approved"] = False
+        out["action"] = "flatten_before_close"
+        out["reason"] = str(blockers[0] if blockers else "carry_conditions_not_met")
+    return out
+
+
 def _select_exit_symbol(
     selected_symbol: str,
     pos_map: Dict[str, Dict[str, Any]],
@@ -1655,6 +1799,37 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
             if last_trade_side == "BUY" and last_trade_epoch > 0:
                 hold_sec = max(0, int(now_epoch - last_trade_epoch))
+        eod_carry = _evaluate_overnight_carry_decision(
+            state=state,
+            symbol=symbol,
+            position=pos,
+            selected=selected_for_exit,
+            exit_policy_base=effective_exit_policy_base,
+            primary_decision=decision,
+            frame=frame_applied,
+            hold_sec=hold_sec,
+        )
+        if bool(eod_carry.get("approved")):
+            decision["triggered"] = False
+            decision["reason"] = "carry_overnight_approved"
+        if qty > 0 and bool(eod_carry.get("evaluated")):
+            _persist_overnight_decision(
+                state,
+                symbol=symbol,
+                decision={
+                    "approved": bool(eod_carry.get("approved")),
+                    "action": str(eod_carry.get("action") or ""),
+                    "reason": str(eod_carry.get("reason") or ""),
+                    "minutes_to_close": eod_carry.get("minutes_to_close"),
+                    "cutoff_min": eod_carry.get("cutoff_min"),
+                    "positive_signals": list(eod_carry.get("positive_signals") or []),
+                    "blockers": list(eod_carry.get("blockers") or []),
+                    "decided_at_epoch": int(now_epoch),
+                    "symbol": str(symbol or ""),
+                },
+            )
+        elif qty <= 0:
+            _persist_overnight_decision(state, symbol=symbol, clear=True)
         confirm_map = state.get("_monitor_exit_confirm")
         if not isinstance(confirm_map, dict):
             confirm_map = {}
@@ -1732,7 +1907,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 monitor_reason = "confirmed_exit_signal"
         else:
             _clear_symbol_confirm_keys(confirm_map, symbol)
-            monitor_reason = "hold" if qty > 0 else "no_position"
+            if bool(eod_carry.get("approved")) and qty > 0:
+                monitor_reason = "eod_carry_approved"
+            else:
+                monitor_reason = "hold" if qty > 0 else "no_position"
 
         if not sell_guard_blocked and exit_signal_detected:
             _clear_symbol_confirm_keys(confirm_map, symbol)
@@ -1809,6 +1987,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "exit_policy_guard_adjustments": list(exit_policy_guard_adjustments),
             "active_exit_axis": _friendly_exit_axis(str(decision.get("reason") or monitor_reason or "hold")),
             "watch_axes": _monitor_watch_axes(decision.get("thresholds") if isinstance(decision.get("thresholds"), dict) else {}),
+            "eod_carry_evaluated": bool(eod_carry.get("evaluated")),
+            "eod_carry_approved": bool(eod_carry.get("approved")),
+            "eod_carry_action": str(eod_carry.get("action") or ""),
+            "eod_carry_reason": str(eod_carry.get("reason") or ""),
+            "eod_carry_positive_signals": list(eod_carry.get("positive_signals") or []),
+            "eod_carry_blockers": list(eod_carry.get("blockers") or []),
+            "eod_carry_non_eod_reason": str(eod_carry.get("non_eod_reason") or ""),
+            "eod_carry_non_eod_triggered": bool(eod_carry.get("non_eod_triggered")),
         }
         if bool(exit_signal_detected) and not bool(sell_guard_blocked) and qty > 0:
             intents = [
@@ -1877,6 +2063,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_min_hold_blocked": bool(exit_info.get("min_hold_blocked")),
         "exit_sell_cooldown_blocked": bool(exit_info.get("sell_cooldown_blocked")),
         "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
+        "eod_carry_evaluated": bool(exit_info.get("eod_carry_evaluated")),
+        "eod_carry_approved": bool(exit_info.get("eod_carry_approved")),
+        "eod_carry_action": str(exit_info.get("eod_carry_action") or ""),
+        "eod_carry_reason": str(exit_info.get("eod_carry_reason") or ""),
         "position_sizing_enabled": bool(sizing_info.get("enabled")),
         "position_sizing_evaluated": bool(sizing_info.get("evaluated")),
         "position_sizing_qty": int(sizing_info.get("qty") or 0),

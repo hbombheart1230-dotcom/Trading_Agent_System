@@ -67,7 +67,7 @@ def test_preopen_fail_fast_blocks_after_first_failure(tmp_path: Path, capsys, mo
     assert calls == ["preopen.m30_final_signoff"]
 
 
-def test_session_aborts_when_market_closed(tmp_path: Path, capsys):
+def test_session_skips_cleanly_when_market_closed(tmp_path: Path, capsys):
     env_path = tmp_path / ".env"
     events = tmp_path / "events.jsonl"
     report_dir = tmp_path / "reports"
@@ -100,9 +100,11 @@ def test_session_aborts_when_market_closed(tmp_path: Path, capsys):
         ]
     )
     out = json.loads(capsys.readouterr().out.strip())
-    assert rc == 3
-    assert out["ok"] is False
-    assert str(out["phase_result"]["failure_reason"]).startswith("market_closed:")
+    assert rc == 0
+    assert out["ok"] is True
+    assert out["phase_result"]["ok"] is True
+    assert out["phase_result"]["skipped"] is True
+    assert out["phase_result"]["skip_reason"] == "market_closed"
 
 
 def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
@@ -281,6 +283,101 @@ def test_closeout_backup_liquidation_flattens_mock_positions(tmp_path: Path, cap
     assert "position_peak_price" not in saved
     assert "position_strategy_context" not in saved
     assert saved["closeout_backup_liquidation"]["applied"] is True
+
+
+def test_closeout_backup_liquidation_respects_overnight_carry(tmp_path: Path, capsys, monkeypatch):
+    env_path = tmp_path / ".env"
+    events = tmp_path / "events.jsonl"
+    report_dir = tmp_path / "reports"
+    state_path = tmp_path / "state.json"
+    _write_env(
+        env_path,
+        {
+            "RUNTIME_PROFILE": "staging",
+            "KIWOOM_MODE": "mock",
+            "APPROVAL_MODE": "manual",
+            "ALLOW_REAL_EXECUTION": "false",
+        },
+    )
+    events.write_text("", encoding="utf-8")
+    state_path.write_text(
+        json.dumps(
+            {
+                "open_positions": 2,
+                "mock_positions": [
+                    {"symbol": "000660", "qty": 2, "avg_price": 100500.0},
+                    {"symbol": "005930", "qty": 1, "avg_price": 70000.0},
+                ],
+                "position_peak_price": {"000660": 101100.0, "005930": 70200.0},
+                "position_strategy_context": {"000660": {"playbook": "breakout"}, "005930": {"playbook": "defensive"}},
+                "overnight_decision_by_symbol": {
+                    "000660": {"approved": True, "action": "carry_overnight", "reason": "carry_overnight_approved"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        mod,
+        "_stop_live_loop_processes",
+        lambda common: {
+            "step_id": "closeout.stop_session_loop",
+            "mode": "process_cleanup",
+            "rc": 0,
+            "ok": True,
+            "stopped_pids": [],
+            "stopped_total": 0,
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.001,
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "_run_subprocess",
+        lambda **kwargs: {
+            "step_id": str(kwargs["step_id"]),
+            "command": list(kwargs["command"]),
+            "cwd": str(kwargs["cwd"]),
+            "rc": 0,
+            "ok": True,
+            "stdout_tail": "{}",
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.001,
+        },
+    )
+
+    rc = mod.main(
+        [
+            "--phase",
+            "closeout",
+            "--day",
+            "2026-03-09",
+            "--env-path",
+            str(env_path),
+            "--report-dir",
+            str(report_dir),
+            "--state-path",
+            str(state_path),
+            "--event-log-path",
+            str(events),
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert out["ok"] is True
+    backup_step = out["phase_result"]["steps"][1]
+    assert backup_step["mode"] == "mock_backup_partial_flatten"
+    assert backup_step["carry_forward_symbols"] == ["000660"]
+    assert backup_step["flattened_symbols"] == ["005930"]
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["open_positions"] == 1
+    assert saved["mock_positions"] == [{"symbol": "000660", "qty": 2, "avg_price": 100500.0}]
+    assert saved["closeout_backup_liquidation"]["reason"] == "closeout_respected_overnight_carry"
 
 
 def test_closeout_backup_liquidation_reports_non_mock_positions(tmp_path: Path, capsys, monkeypatch):

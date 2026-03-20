@@ -304,7 +304,7 @@ def test_m20_2_decide_trade_blocks_buy_when_position_already_open(monkeypatch):
     out = decide_trade(state)
 
     assert out["decision_packet"]["intent"]["action"] == "NOOP"
-    assert out["decision_packet"]["intent"]["reason"] == "position_already_open"
+    assert out["decision_packet"]["intent"]["reason"] == "position_hold"
 
 
 def test_m20_2_decide_trade_exit_policy_triggers_sell(monkeypatch):
@@ -345,6 +345,52 @@ def test_m20_2_decide_trade_exit_policy_triggers_sell(monkeypatch):
     assert out["decision_trace"]["strategy"] == "ExitPolicyStrategist"
     assert out["decision_packet"]["intent"]["action"] == "SELL"
     assert out["decision_packet"]["intent"]["qty"] == 2
+
+
+def test_m20_2_decide_trade_stop_take_env_are_fallback_only(monkeypatch):
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    monkeypatch.setenv("EXIT_POLICY_TAKE_PROFIT_PCT", "0.01")
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+
+    class AlwaysBuyStrategist:
+        def decide(self, x):  # type: ignore[no-untyped-def]
+            class Decision:
+                intent = {
+                    "action": "BUY",
+                    "symbol": "005930",
+                    "qty": 1,
+                    "price": 103.0,
+                    "order_type": "limit",
+                    "order_api_id": "ORDER_SUBMIT",
+                }
+                rationale = "always-buy"
+                meta = {}
+
+            return Decision()
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 103.0},
+        "portfolio_snapshot": {
+            "cash": 2_000_000,
+            "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0}],
+            "open_positions": 1,
+        },
+        "policy": {
+            "use_exit_policy": True,
+            "exit_policy": {
+                "take_profit_pct": 0.05,
+                "stop_loss_pct": 0.05,
+            },
+        },
+        "risk_context": {"open_positions": 1, "daily_pnl_ratio": 0.0, "last_order_epoch": 0},
+        "strategist": AlwaysBuyStrategist(),
+    }
+    out = decide_trade(state)
+
+    assert out["decision_packet"]["intent"]["action"] == "NOOP"
+    assert out["decision_packet"]["intent"]["reason"] == "position_hold"
 
 
 def test_m20_2_decide_trade_post_exit_cooldown_blocks_reentry(monkeypatch):

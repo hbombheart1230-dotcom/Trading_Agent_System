@@ -1,6 +1,29 @@
 from __future__ import annotations
 
-from graphs.nodes.strategist_node import _global_sentiment_breakdown_payload, strategist_node
+from graphs.nodes.strategist_node import _exit_policy, _global_sentiment_breakdown_payload, strategist_node
+
+
+def test_strategist_exit_policy_uses_adaptive_playbook_baseline(monkeypatch):
+    monkeypatch.delenv("EXIT_POLICY_STOP_LOSS_PCT", raising=False)
+    monkeypatch.delenv("EXIT_POLICY_TAKE_PROFIT_PCT", raising=False)
+
+    breakout = _exit_policy(
+        playbook="breakout",
+        monitor_guidance="hold_through_noise",
+        trade_aggressiveness="high",
+        risk_tone="aggressive",
+    )
+    defensive = _exit_policy(
+        playbook="defensive",
+        monitor_guidance="defensive_exit",
+        trade_aggressiveness="low",
+        risk_tone="conservative",
+    )
+
+    assert float(breakout.get("stop_loss_pct") or 0.0) > float(defensive.get("stop_loss_pct") or 0.0)
+    assert float(breakout.get("take_profit_pct") or 0.0) > float(defensive.get("take_profit_pct") or 0.0)
+    assert "baseline:breakout" in list(breakout.get("adjustments") or [])
+    assert "baseline:defensive" in list(defensive.get("adjustments") or [])
 
 
 def test_strategist_reasoning_uses_market_news_macro_context(monkeypatch):

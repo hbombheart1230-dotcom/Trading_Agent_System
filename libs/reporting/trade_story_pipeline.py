@@ -749,10 +749,28 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
     )
     guard_blocked = bool(trigger_details.get("sell_guard_blocked") or monitor.get("guard_blocked") or monitor.get("sell_guard_blocked"))
     guard_reason = str(trigger_details.get("sell_guard_reason") or monitor.get("guard_reason") or monitor.get("sell_guard_reason") or "").strip()
-    if action == "BUY":
+    eod_carry_evaluated = bool(monitor.get("eod_carry_evaluated"))
+    eod_carry_approved = bool(monitor.get("eod_carry_approved"))
+    eod_carry_action = str(monitor.get("eod_carry_action") or "").strip()
+    eod_carry_reason = str(monitor.get("eod_carry_reason") or "").strip()
+    eod_carry_positive_signals = _list_text(monitor.get("eod_carry_positive_signals"), limit=6, max_len=120)
+    eod_carry_blockers = _list_text(monitor.get("eod_carry_blockers"), limit=6, max_len=120)
+    minutes_to_close = monitor.get("minutes_to_close")
+    if eod_carry_approved and action not in ("BUY", "SELL"):
+        summary = (
+            f"Monitor kept the position into the close because overnight carry was approved "
+            f"{safe_float(minutes_to_close, 0.0):.1f} minutes before the close."
+        )
+    elif action == "BUY":
         summary = f"BUY was triggered because {entry_reason or monitor_reason or 'the entry condition passed'}."
     elif action == "SELL":
-        summary = f"SELL was triggered because {trigger_type or monitor_reason or 'the exit condition passed'}."
+        if eod_carry_evaluated and not eod_carry_approved and str(trigger_type or "").strip().lower() in ("eod_flat", "carry_overnight_approved"):
+            summary = (
+                f"SELL was triggered to flatten before the close because overnight carry was not approved "
+                f"({eod_carry_reason or 'carry conditions were not met'})."
+            )
+        else:
+            summary = f"SELL was triggered because {trigger_type or monitor_reason or 'the exit condition passed'}."
     else:
         summary = f"Monitor posture was {action or 'WAIT'} with trigger {trigger_type or 'not_captured'}."
     bullets = [
@@ -770,6 +788,17 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         f"Sell cooldown blocked: {'yes' if monitor.get('sell_cooldown_blocked') else 'no'}",
         f"Exit triggered: {'yes' if monitor.get('exit_triggered') else 'no'}",
     ]
+    if eod_carry_evaluated:
+        bullets.append(
+            f"EOD carry decision: {'approved' if eod_carry_approved else 'flatten before close'} "
+            f"({eod_carry_reason or 'not_captured'})"
+        )
+        if minutes_to_close not in (None, ""):
+            bullets.append(f"Minutes to close at decision: {safe_float(minutes_to_close, 0.0):.1f}")
+        if eod_carry_positive_signals:
+            bullets.append("Carry positives: " + "; ".join(eod_carry_positive_signals[:4]))
+        if eod_carry_blockers:
+            bullets.append("Carry blockers: " + "; ".join(eod_carry_blockers[:4]))
     if watch_axes:
         bullets.append("Watch axes: " + ", ".join(watch_axes[:8]))
     if decision_reason_chain:
@@ -817,6 +846,12 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "confirm_count": confirm_count,
         "guard_blocked": guard_blocked,
         "guard_reason": guard_reason,
+        "eod_carry_evaluated": eod_carry_evaluated,
+        "eod_carry_approved": eod_carry_approved,
+        "eod_carry_action": eod_carry_action,
+        "eod_carry_reason": eod_carry_reason,
+        "eod_carry_positive_signals": eod_carry_positive_signals,
+        "eod_carry_blockers": eod_carry_blockers,
         "decision_reason_chain": decision_reason_chain[:6],
         "price_source": price_source,
         "feature_source": feature_source,

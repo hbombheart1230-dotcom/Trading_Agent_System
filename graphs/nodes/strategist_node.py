@@ -1707,8 +1707,37 @@ def _exit_policy(
     trade_aggressiveness: str,
     risk_tone: str,
 ) -> Dict[str, Any]:
-    stop_loss_pct = _to_float(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "0.03"), 0.03)
-    take_profit_pct = _to_float(os.getenv("EXIT_POLICY_TAKE_PROFIT_PCT", "0.05"), 0.05)
+    mode = str(playbook or "").strip().lower()
+    guidance = str(monitor_guidance or "").strip().lower()
+    tone = str(risk_tone or "").strip().lower()
+    aggr = str(trade_aggressiveness or "").strip().lower()
+
+    if mode == "breakout":
+        stop_loss_pct = 0.018
+        take_profit_pct = 0.040
+        baseline_tag = "breakout"
+    elif mode == "pullback":
+        stop_loss_pct = 0.022
+        take_profit_pct = 0.036
+        baseline_tag = "pullback"
+    elif mode == "reversal":
+        stop_loss_pct = 0.016
+        take_profit_pct = 0.026
+        baseline_tag = "reversal"
+    else:
+        stop_loss_pct = 0.014
+        take_profit_pct = 0.022
+        baseline_tag = "defensive"
+
+    env_stop_raw = str(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "") or "").strip()
+    env_take_raw = str(os.getenv("EXIT_POLICY_TAKE_PROFIT_PCT", "") or "").strip()
+    if env_stop_raw:
+        stop_loss_pct = _to_float(env_stop_raw, stop_loss_pct) or stop_loss_pct
+        baseline_tag = "env_stop"
+    if env_take_raw:
+        take_profit_pct = _to_float(env_take_raw, take_profit_pct) or take_profit_pct
+        baseline_tag = "env_take" if baseline_tag == "env_stop" else baseline_tag
+
     trailing_stop_pct = _to_float(os.getenv("EXIT_POLICY_TRAILING_STOP_PCT", "0.0"), 0.0)
     vol_expansion_ratio = _to_float(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "0.0"), 0.0)
     news_shock_threshold = _to_float(os.getenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "0.0"), 0.0)
@@ -1716,12 +1745,7 @@ def _exit_policy(
     vwap_breakdown_pct = _to_float(os.getenv("EXIT_POLICY_VWAP_BREAKDOWN_PCT", "0.0"), 0.0)
     intraday_low_break_pct = _to_float(os.getenv("EXIT_POLICY_INTRADAY_LOW_BREAK_PCT", "0.0"), 0.0)
     trend_strength_floor = _to_float(os.getenv("EXIT_POLICY_TREND_STRENGTH_FLOOR", "0.0"), 0.0)
-    adjustments: List[str] = []
-
-    mode = str(playbook or "").strip().lower()
-    guidance = str(monitor_guidance or "").strip().lower()
-    tone = str(risk_tone or "").strip().lower()
-    aggr = str(trade_aggressiveness or "").strip().lower()
+    adjustments: List[str] = [f"baseline:{baseline_tag}"]
 
     if mode == "breakout":
         stop_loss_pct *= 0.90

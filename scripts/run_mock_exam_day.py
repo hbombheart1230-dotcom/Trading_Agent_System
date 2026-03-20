@@ -437,6 +437,13 @@ def _closeout_backup_liquidation(common: Dict[str, Any]) -> Dict[str, Any]:
         state = store.load()
         raw_positions = state.get("mock_positions")
         positions: List[Dict[str, Any]] = []
+        carry_rows: List[Dict[str, Any]] = []
+        flatten_rows: List[Dict[str, Any]] = []
+        overnight_map = (
+            state.get("overnight_decision_by_symbol")
+            if isinstance(state.get("overnight_decision_by_symbol"), dict)
+            else {}
+        )
         for row in raw_positions if isinstance(raw_positions, list) else []:
             if not isinstance(row, dict):
                 continue
@@ -444,7 +451,13 @@ def _closeout_backup_liquidation(common: Dict[str, Any]) -> Dict[str, Any]:
             symbol = str(row.get("symbol") or "").strip()
             if qty <= 0 or not symbol:
                 continue
-            positions.append({"symbol": symbol, "qty": qty})
+            rec = {"symbol": symbol, "qty": qty, "row": dict(row)}
+            positions.append(rec)
+            decision = overnight_map.get(symbol) if isinstance(overnight_map, dict) else None
+            if isinstance(decision, dict) and bool(decision.get("approved")):
+                carry_rows.append(rec)
+            else:
+                flatten_rows.append(rec)
         out["positions_before"] = len(positions)
         out["qty_total_before"] = sum(int(row.get("qty") or 0) for row in positions)
         out["symbols_before"] = [str(row.get("symbol") or "") for row in positions]
@@ -460,22 +473,53 @@ def _closeout_backup_liquidation(common: Dict[str, Any]) -> Dict[str, Any]:
             out["duration_sec"] = round(max(0.0, float(time.time() - t0)), 3)
             return out
 
-        state["mock_positions"] = []
-        state["open_positions"] = 0
-        state.pop("position_peak_price", None)
-        state.pop("position_strategy_context", None)
+        carry_symbols = [str(row.get("symbol") or "") for row in carry_rows]
+        flatten_symbols = [str(row.get("symbol") or "") for row in flatten_rows]
+        state["mock_positions"] = [dict(row.get("row") or {}) for row in carry_rows]
+        state["open_positions"] = len(carry_rows)
+        if carry_symbols:
+            for key in ("position_peak_price", "position_strategy_context"):
+                existing = state.get(key) if isinstance(state.get(key), dict) else {}
+                filtered = {
+                    str(sym): value
+                    for sym, value in dict(existing).items()
+                    if str(sym) in carry_symbols
+                }
+                if filtered:
+                    state[key] = filtered
+                else:
+                    state.pop(key, None)
+        else:
+            state.pop("position_peak_price", None)
+            state.pop("position_strategy_context", None)
         state["closeout_backup_liquidation"] = {
-            "applied": True,
+            "applied": bool(flatten_rows),
             "applied_at": _utc_now_iso(),
-            "mode": "mock_backup_flatten",
-            "symbols": list(out["symbols_before"]),
-            "qty_total": int(out["qty_total_before"]),
-            "reason": "closeout_forced_flatten_backup",
+            "mode": (
+                "noop_carry_forward"
+                if carry_rows and not flatten_rows
+                else "mock_backup_partial_flatten"
+                if carry_rows and flatten_rows
+                else "mock_backup_flatten"
+            ),
+            "symbols": list(flatten_symbols or out["symbols_before"]),
+            "qty_total": int(sum(int(row.get("qty") or 0) for row in flatten_rows) if flatten_rows else out["qty_total_before"]),
+            "carry_forward_symbols": list(carry_symbols),
+            "flattened_symbols": list(flatten_symbols),
+            "reason": (
+                "overnight_carry_approved"
+                if carry_rows and not flatten_rows
+                else "closeout_respected_overnight_carry"
+                if carry_rows and flatten_rows
+                else "closeout_forced_flatten_backup"
+            ),
         }
         store.save(state)
-        out["mode"] = "mock_backup_flatten"
-        out["positions_after"] = 0
-        out["symbols_after"] = []
+        out["mode"] = str(state["closeout_backup_liquidation"]["mode"])
+        out["positions_after"] = len(carry_rows)
+        out["symbols_after"] = list(carry_symbols)
+        out["carry_forward_symbols"] = list(carry_symbols)
+        out["flattened_symbols"] = list(flatten_symbols)
     except Exception as ex:
         out["ok"] = False
         out["rc"] = 1
@@ -698,7 +742,10 @@ def _run_session(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
             return out
 
         if not bool(getattr(args, "allow_offhours_session_probe", False)):
-            out["failure_reason"] = f"market_closed:{dt.isoformat()}"
+            out["ok"] = True
+            out["skipped"] = True
+            out["skip_reason"] = "market_closed"
+            out["market_closed_at"] = dt.isoformat()
             return out
 
         probe_symbol = str(getattr(args, "probe_symbol", "") or os.getenv("SYMBOL", "005930")).strip() or "005930"
@@ -999,6 +1046,8 @@ def _render_report_md(obj: Dict[str, Any]) -> str:
         "",
         f"- ok: **{bool(phase_obj.get('ok'))}**",
         f"- failure_reason: `{phase_obj.get('failure_reason')}`",
+        f"- skipped: **{bool(phase_obj.get('skipped'))}**",
+        f"- skip_reason: `{phase_obj.get('skip_reason')}`",
         "",
         "### Steps",
         "",
