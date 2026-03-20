@@ -299,12 +299,12 @@ def test_ai_trade_report_messages_use_clean_json_only_instructions() -> None:
     system_prompt = str(messages[0]["content"])
     user_prompt = str(messages[1]["content"])
 
-    assert "Return exactly one JSON object only." in system_prompt
-    assert "Do not invent numbers" in system_prompt
-    assert "All human-readable values must be written in Korean." in system_prompt
+    assert "반드시 JSON 객체 하나만 반환하십시오." in system_prompt
+    assert "숫자, 이벤트, 이유, evidence를 지어내지 마십시오." in system_prompt
+    assert "사람이 읽는 모든 값은 반드시 한국어로 작성해야 합니다." in system_prompt
     assert "strategist -> scanner -> monitor -> supervisor -> executor -> reporter" in user_prompt
-    assert "Return only this JSON template with values filled in" in user_prompt
-    assert "Do not copy English source sentences into the final JSON." in user_prompt
+    assert "아래 JSON 템플릿에 값만 채워 반환하십시오" in user_prompt
+    assert "영어 source 문장을 그대로 복사하지 마십시오." in user_prompt
     assert "selection_basis" in user_prompt
     assert "runner_ups_lost" in user_prompt
     assert "decision_reason_chain" in user_prompt
@@ -315,10 +315,10 @@ def test_ai_trade_report_repair_messages_do_not_reinject_non_json_reasoning() ->
     system_prompt = str(messages[0]["content"])
     user_prompt = str(messages[1]["content"])
 
-    assert "do not think aloud" in system_prompt.lower()
+    assert "사고 과정" in system_prompt
     assert "[previous response was non-JSON reasoning or invalid text; ignore it]" in user_prompt
     assert "First, the user says" not in user_prompt
-    assert "Never describe your plan" in system_prompt
+    assert "계획 문장은 절대 쓰지 마십시오" in system_prompt
 
 
 def test_ai_trade_report_repair_messages_strip_reasoning_from_partial_json_response() -> None:
@@ -345,8 +345,8 @@ def test_ai_trade_report_sparse_repair_messages_use_shorter_contract() -> None:
     regular_prompt = str(regular[1]["content"])
     sparse_prompt = str(sparse[1]["content"])
 
-    assert "final repair pass" in sparse_prompt
-    assert "full_timeline to at most 8 rows" in sparse_prompt
+    assert "마지막 복구 패스" in sparse_prompt
+    assert "full_timeline은 최대 8개 행" in sparse_prompt
     assert len(sparse_prompt) < len(regular_prompt)
 
 
@@ -378,8 +378,8 @@ def test_ai_trade_report_repair_messages_can_enforce_korean() -> None:
     system_prompt = str(messages[0]["content"])
     user_prompt = str(messages[1]["content"])
 
-    assert "All human-readable values must be written in Korean." in system_prompt
-    assert "Translate any remaining English human-readable text into Korean" in user_prompt
+    assert "사람이 읽는 모든 값은 반드시 한국어로 작성해야 합니다." in system_prompt
+    assert "남아 있는 영어 설명 문장을 모두 한국어로 번역하십시오." in user_prompt
     assert "watch_next" in user_prompt
 
 

@@ -127,12 +127,12 @@ AI_TRADE_REPORT_REQUIRED_KEYS = [
 ]
 
 AI_TRADE_REPORT_KOREAN_RULES = (
-    "All human-readable values must be written in Korean. "
-    "This includes executive_summary.headline, every *.summary field, every bullets item, "
-    "full_timeline.description, final_operator_conclusion.watch_next, and final_operator_conclusion.thesis_invalidation. "
-    "The only text allowed to remain in English is JSON keys, symbol codes, ISO timestamps, BUY/SELL/HOLD/WAIT action codes, "
-    "VIX, Kiwoom source ids such as top_value/top_volume/sector_theme, and explicit placeholders like not_captured. "
-    "Do not leave English sentences or English bullet lines in the final JSON."
+    "사람이 읽는 모든 값은 반드시 한국어로 작성해야 합니다. "
+    "여기에는 executive_summary.headline, 모든 *.summary 필드, 모든 bullets 항목, "
+    "full_timeline.description, final_operator_conclusion.watch_next, final_operator_conclusion.thesis_invalidation이 포함됩니다. "
+    "영어로 남겨도 되는 항목은 JSON 키, 종목코드, ISO 타임스탬프, BUY/SELL/HOLD/WAIT 같은 액션 코드, "
+    "VIX, top_value/top_volume/sector_theme 같은 Kiwoom source id, not_captured 같은 명시적 placeholder뿐입니다. "
+    "최종 JSON에는 영어 문장이나 영어 bullet 줄을 남기지 마십시오."
 )
 
 
@@ -1648,48 +1648,48 @@ def _build_repair_messages(
     partial_note = ""
     if str(story_input.get("status") or "").strip().lower() == "partial":
         partial_note = (
-            "\nThis lifecycle is partial. Some entry or holding evidence is missing. "
-            "Do not invent missing entry evidence; state that it was not captured."
+            "\n이 lifecycle은 partial 상태입니다. 일부 entry 또는 holding 근거가 비어 있습니다. "
+            "확인되지 않은 진입 근거는 만들어 쓰지 말고, 저장되지 않았다고 명확히 적으십시오."
         )
     shape_note = ""
     if sparse:
         shape_note = (
-            "\nThis is the final repair pass. Keep each summary under 2 sentences, write 1 to 3 bullets per section, "
-            "and limit full_timeline to at most 8 rows."
+            "\n이번 단계는 마지막 복구 패스입니다. 각 summary는 2문장 이하로 유지하고, 각 섹션의 bullets는 1개에서 3개만 작성하며, "
+            "full_timeline은 최대 8개 행까지만 유지하십시오."
         )
     language_note = ""
     if enforce_korean:
         language_note = (
-            "\nTranslate any remaining English human-readable text into Korean before returning the final JSON. "
-            "Keep JSON keys, timestamps, numbers, action codes, and symbol codes unchanged."
+            "\n최종 JSON을 반환하기 전에 남아 있는 영어 설명 문장을 모두 한국어로 번역하십시오. "
+            "JSON 키, 타임스탬프, 숫자, 액션 코드, 종목코드는 그대로 유지하십시오."
         )
     return [
         {
             "role": "system",
             "content": (
-                "You repair AI trade report outputs. Return exactly one JSON object only. "
-                "Do not explain, do not think aloud, do not restate instructions, and do not use markdown or code fences. "
-                "Never describe your plan or say phrases like 'First, I need'. Any text before the JSON is invalid. "
-                "Begin with '{' and end with '}'. Keep the JSON keys exactly as specified. "
+                "당신은 AI 거래 리포트 출력을 복구하는 역할입니다. 반드시 JSON 객체 하나만 반환하십시오. "
+                "설명문, 사고 과정, 지시문 반복, markdown, code fence는 모두 금지합니다. "
+                "'먼저', '우선', 'First, I need' 같은 계획 문장은 절대 쓰지 마십시오. JSON 앞에 어떤 텍스트가 있어도 실패입니다. "
+                "출력은 반드시 '{'로 시작하고 '}'로 끝나야 하며, JSON 키는 계약과 정확히 일치해야 합니다. "
                 f"{AI_TRADE_REPORT_KOREAN_RULES} "
-                "If a value is unknown, use an empty string, empty list, or null."
+                "값을 알 수 없으면 추측하지 말고 빈 문자열, 빈 리스트, 또는 null을 사용하십시오."
             ),
         },
         {
             "role": "user",
             "content": (
-                "The previous response did not match the required JSON contract. Regenerate the report as valid JSON only.\n"
-                f"Output template:\n{json.dumps(contract, ensure_ascii=False)}\n"
-                "Replace the template values with report content. Keep the same keys and nested structure."
+                "이전 응답이 요구된 JSON 계약을 만족하지 못했습니다. 유효한 JSON만 다시 생성하십시오.\n"
+                f"출력 템플릿:\n{json.dumps(contract, ensure_ascii=False)}\n"
+                "템플릿 값만 실제 리포트 내용으로 채우고, 키 이름과 중첩 구조는 그대로 유지하십시오."
                 f"{partial_note}{shape_note}{language_note}\n\n"
-                "If the source input is in English, translate it into Korean instead of copying the English sentence.\n"
-                "Critical evidence rules:\n"
-                "- If market_context_human has headline_count, news_query_count, news_query_targets, or key_events_hint, reflect them in market_context_at_entry.\n"
-                "- If scanner_reason_human has why_selected, selection_basis, tie_break_rule, top_candidates, or runner_ups_lost, reflect them in why_this_symbol_was_chosen and entry_decision.\n"
-                "- If monitor_reason_human has effective_stop_loss_pct, take_profit_pct, active_exit_axis, watch_axes, confirm_required, confirm_count, or decision_reason_chain, reflect them in holding_monitoring_story and exit_decision.\n"
-                "- Do not replace concrete numeric evidence with vague wording.\n"
-                f"Input:\n{json.dumps(compact_input, ensure_ascii=False)}\n\n"
-                f"Previous response:\n{previous_response_text}"
+                "원본 입력이 영어로 적혀 있어도 그대로 복사하지 말고 한국어로 옮겨 쓰십시오.\n"
+                "핵심 evidence 규칙:\n"
+                "- market_context_human에 headline_count, news_query_count, news_query_targets, key_events_hint가 있으면 market_context_at_entry에 반영하십시오.\n"
+                "- scanner_reason_human에 why_selected, selection_basis, tie_break_rule, top_candidates, runner_ups_lost가 있으면 why_this_symbol_was_chosen과 entry_decision에 반영하십시오.\n"
+                "- monitor_reason_human에 effective_stop_loss_pct, take_profit_pct, active_exit_axis, watch_axes, confirm_required, confirm_count, decision_reason_chain이 있으면 holding_monitoring_story와 exit_decision에 반영하십시오.\n"
+                "- 구체적인 숫자 근거를 모호한 표현으로 바꾸지 마십시오.\n"
+                f"입력:\n{json.dumps(compact_input, ensure_ascii=False)}\n\n"
+                f"이전 응답:\n{previous_response_text}"
             ),
         },
     ]
@@ -1701,49 +1701,49 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
     partial_note = ""
     if str(story_input.get("status") or "").strip().lower() == "partial":
         partial_note = (
-            "This lifecycle is partial. Some entry or holding evidence is missing. "
-            "Do not invent missing entry evidence; state that it was not captured.\n"
+            "이 lifecycle은 partial 상태입니다. 일부 entry 또는 holding 근거가 비어 있습니다. "
+            "확인되지 않은 진입 근거는 만들어 쓰지 말고, 저장되지 않았다고 명확히 적으십시오.\n"
         )
     return [
         {
             "role": "system",
             "content": (
-                "You write operator-facing AI trade reports for a trading system. "
-                "Use only the supplied input. Do not invent numbers, events, reasons, or evidence. "
-                "Return exactly one JSON object only. Do not add markdown, prose before the JSON, analysis text, or code fences. "
-                "Never describe your plan or say phrases like 'First, I need'. Any text before the JSON is invalid. "
-                "Your first output character must be '{' and your final output character must be '}'. Keep the JSON keys exactly as specified. "
+                "당신은 트레이딩 시스템의 operator-facing AI 거래 리포트를 작성합니다. "
+                "반드시 제공된 입력만 사용하고, 숫자, 이벤트, 이유, evidence를 지어내지 마십시오. "
+                "반드시 JSON 객체 하나만 반환하십시오. markdown, JSON 앞 설명문, 분석 문장, code fence는 금지합니다. "
+                "'먼저', '우선', 'First, I need' 같은 계획 문장은 절대 쓰지 마십시오. JSON 앞의 모든 텍스트는 실패입니다. "
+                "출력은 반드시 '{'로 시작하고 '}'로 끝나야 하며, JSON 키는 계약과 정확히 일치해야 합니다. "
                 f"{AI_TRADE_REPORT_KOREAN_RULES} "
-                "If a value is not available, use an empty string, empty list, or null instead of guessing."
+                "값을 알 수 없으면 추측하지 말고 빈 문자열, 빈 리스트, 또는 null을 사용하십시오."
             ),
         },
         {
             "role": "user",
             "content": (
-                "Create an operator-facing AI trade report from the trade story input below.\n"
-                "Follow the pipeline order exactly: strategist -> scanner -> monitor -> supervisor -> executor -> reporter.\n"
-                "Requirements:\n"
-                "- Include concrete numbers when available for global sentiment score, VIX, headline counts, and query-target counts.\n"
-                "- In Market Context at Entry, use headline_count, news_query_count, news_query_targets, and key_events_hint when they exist.\n"
-                "- Explain scanner candidate count, selected symbol, runner-ups, Kiwoom source mix (top_value, top_volume, sector_theme, etc.), score breakdown, and feature coverage.\n"
-                "- In Why This Symbol Was Chosen, explicitly mention why_selected, selection_basis, tie_break_rule, top_candidates, and runner_ups_lost when available.\n"
-                "- In Entry Decision, explain how strategist guidance and scanner ranking led to the selected symbol instead of repeating a generic sentence.\n"
-                "- Explain monitor thresholds and watch axes, including stop, effective stop, take profit, current price, and price source.\n"
-                "- In Holding / Monitoring Story and Exit Decision, explicitly mention active_exit_axis, confirm_required, confirm_count, decision_reason_chain, and watch_axes when available.\n"
-                "- Separate supervisor approval from executor result.\n"
-                "- If reporter linkage is missing, explain that clearly in Korean.\n"
-                "- Translate all human-readable text into Korean. Do not copy English source sentences into the final JSON.\n"
-                "- Keep symbol codes, JSON keys, BUY/SELL/HOLD/WAIT action codes, VIX, Kiwoom source ids, and timestamps unchanged.\n"
-                "- The deterministic report skeleton already exists. Only provide section narrative content instead of rebuilding metadata.\n"
-                "- Focus on section summaries, ranked comparisons, monitor reasoning, and operator-facing bullets.\n"
+                "아래 trade story input을 바탕으로 operator-facing AI 거래 리포트를 작성하십시오.\n"
+                "파이프라인 순서는 strategist -> scanner -> monitor -> supervisor -> executor -> reporter를 정확히 따라야 합니다.\n"
+                "작성 요구사항:\n"
+                "- global sentiment score, VIX, headline count, query-target count가 있으면 구체적인 숫자를 그대로 반영하십시오.\n"
+                "- 시장 환경 요약에는 headline_count, news_query_count, news_query_targets, key_events_hint를 우선 반영하십시오.\n"
+                "- scanner 후보 수, 선택 종목, runner-up, Kiwoom source mix(top_value, top_volume, sector_theme 등), score breakdown, feature coverage를 설명하십시오.\n"
+                "- 선택 종목 상세 분석에는 why_selected, selection_basis, tie_break_rule, top_candidates, runner_ups_lost를 가능한 한 직접 반영하십시오.\n"
+                "- Entry 상세 근거에서는 generic한 문장을 반복하지 말고 strategist guidance와 scanner ranking이 어떻게 연결됐는지 설명하십시오.\n"
+                "- monitor thresholds와 watch axes, stop, effective stop, 목표 수익 실현 기준, 현재가, price source를 설명하십시오.\n"
+                "- Holding 경과와 Exit 판단 근거에는 active_exit_axis, confirm_required, confirm_count, decision_reason_chain, watch_axes를 가능한 한 직접 반영하십시오.\n"
+                "- supervisor 승인과 executor 결과는 분리해서 설명하십시오.\n"
+                "- reporter linkage가 없으면 그 사실을 한국어로 명확하게 설명하십시오.\n"
+                "- 사람이 읽는 모든 문장은 한국어로 옮겨 쓰고, 영어 source 문장을 그대로 복사하지 마십시오.\n"
+                "- 종목코드, JSON 키, BUY/SELL/HOLD/WAIT 액션 코드, VIX, Kiwoom source id, 타임스탬프는 그대로 유지하십시오.\n"
+                "- deterministic report skeleton은 이미 존재하므로 메타데이터를 다시 만들지 말고 section narrative content만 채우십시오.\n"
+                "- section summary, ranked comparison, monitor reasoning, operator-facing bullets에 집중하십시오.\n"
                 f"{partial_note}"
-                "Return only this JSON template with values filled in:\n"
+                "아래 JSON 템플릿에 값만 채워 반환하십시오:\n"
                 f"{json.dumps(contract, ensure_ascii=False)}\n"
-                "Write 3 to 6 bullets for each section when evidence is available.\n"
-                "Make the summaries concise but operationally useful.\n"
-                "Do not omit ranked comparison details if they exist in the input.\n"
-                "Do not repeat action/symbol/status metadata outside the section narrative fields.\n"
-                f"Input:\n{json.dumps(compact_input, ensure_ascii=False)}"
+                "evidence가 있으면 각 section에 bullets를 3개에서 6개까지 작성하십시오.\n"
+                "summary는 간결하되 운영 판단에 실제로 도움이 되게 쓰십시오.\n"
+                "입력에 ranked comparison detail이 있으면 생략하지 마십시오.\n"
+                "section narrative field 바깥에서 action/symbol/status 메타를 반복하지 마십시오.\n"
+                f"입력:\n{json.dumps(compact_input, ensure_ascii=False)}"
             ),
         },
     ]

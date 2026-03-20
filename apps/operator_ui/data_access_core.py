@@ -3832,11 +3832,18 @@ def _sanitize_operator_brief_text(text: Any) -> str:
         ("minute candle", "분봉"),
         ("defensive_exit", "방어형 청산"),
         ("no_position", "포지션 없음"),
-        ("No trigger yet", "아직 청산 신호 없음"),
-        ("Peak drawdown", "피크 드로다운"),
-        ("Hard stop", "하드 스톱"),
+        ("No trigger yet", "아직 청산 신호는 확인되지 않았습니다."),
+        ("Peak drawdown", "고점 대비 하락폭"),
+        ("Hard stop", "고정 손절 기준"),
+        ("Adaptive stop", "상황 대응형 손절 기준"),
+        ("Take profit", "목표 수익 실현 기준"),
         ("Regime", "시장 상태"),
         ("regime", "시장 상태"),
+        ("Universe scanned", "비교 후보 수"),
+        ("Selected rank", "선정 순위"),
+        ("Posture", "현재 포지션 판단"),
+        ("Trigger", "감시 신호"),
+        ("Exit trigger", "청산 신호"),
     ]
     for src, dst in replacements:
         cleaned = cleaned.replace(src, dst)
@@ -4697,6 +4704,97 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
         text = str(value or "").strip()
         return text or "-"
 
+    def _axis_label(value: Any) -> str:
+        raw = _sanitize_operator_brief_text(value)
+        lowered = raw.lower()
+        mapping = {
+            "고정 손절 기준": "고정 손절 기준",
+            "상황 대응형 손절 기준": "상황 대응형 손절 기준",
+            "목표 수익 실현 기준": "목표 수익 실현 기준",
+            "hard stop": "고정 손절 기준",
+            "adaptive stop": "상황 대응형 손절 기준",
+            "take profit": "목표 수익 실현 기준",
+            "vwap breakdown": "VWAP 이탈",
+            "vwap_breakdown": "VWAP 이탈",
+            "peak drawdown": "고점 대비 하락폭 확대",
+            "peak_drawdown": "고점 대비 하락폭 확대",
+            "prior low break": "직전 저점 이탈",
+            "prior_low_break": "직전 저점 이탈",
+            "intraday low break": "장중 저점 이탈",
+            "intraday_low_break": "장중 저점 이탈",
+            "confirmed_exit_signal": "청산 확인 신호",
+            "defensive exit": "방어형 청산 신호",
+            "defensive_exit": "방어형 청산 신호",
+            "방어형 청산": "방어형 청산 신호",
+        }
+        return mapping.get(lowered, raw or "감시 조건 변화")
+
+    def _narrative_text(text: Any) -> str:
+        raw_source = _trim_text(text, max_len=1000)
+        cleaned = _sanitize_operator_brief_text(text)
+        if not cleaned:
+            return ""
+        raw_lower = raw_source.lower()
+        m = re.fullmatch(r"universe scanned\s*:\s*(\d+)", raw_lower)
+        if m:
+            return f"총 {m.group(1)}개 후보를 비교했습니다."
+        m = re.fullmatch(r"selected rank\s*:\s*#?(\d+)", raw_lower)
+        if m:
+            return f"비교 대상 중 {m.group(1)}순위로 선정되었습니다."
+        m = re.fullmatch(r"posture\s*:\s*(buy|sell|hold|wait)", raw_lower)
+        if m:
+            return f"현재 포지션 판단은 {_action_label(m.group(1))}입니다."
+        m = re.fullmatch(r"trigger\s*:\s*(.+)", raw_lower)
+        if m:
+            trigger = m.group(1).strip()
+            if trigger in {"-", "no", "none"}:
+                return "추가 진입 또는 청산을 확정할 신호는 아직 확인되지 않았습니다."
+            return f"현재 감시 신호는 {cleaned.split(':', 1)[-1].strip()}입니다."
+        m = re.fullmatch(r"exit trigger\s*:\s*(.+)", raw_lower)
+        if m:
+            trigger = m.group(1).strip()
+            if trigger in {"-", "no", "none"}:
+                return "아직 청산 신호는 확인되지 않았습니다."
+            return f"현재 확인된 청산 신호는 {cleaned.split(':', 1)[-1].strip()}입니다."
+        if raw_lower.startswith("runner-up symbols had weaker coverage"):
+            return "후순위 후보는 차트 완성도와 보조 신호가 더 약했습니다."
+        m = re.fullmatch(r"chart / feature coverage\s*:\s*(\d+)/(\d+)", raw_lower)
+        if m:
+            return f"차트와 피처 확인 항목은 {m.group(1)}/{m.group(2)} 수준으로 확보되었습니다."
+        m = re.fullmatch(r"chart completeness filter\s*:\s*pass\s*-\s*(.+)", raw_lower)
+        if m:
+            return f"차트 확인 조건은 {m.group(1).strip()} 수준으로 충족되었습니다."
+        if raw_lower.startswith("liquidity filter:"):
+            return "유동성 조건은 충족되었습니다."
+        if raw_lower.startswith("turnover filter:"):
+            return "거래대금 조건은 충족되었습니다."
+        if re.match(r"^[A-Za-z][A-Za-z0-9 /_-]*:\s*", raw_source):
+            return ""
+        return cleaned
+
+    def _append_list(lines: List[str], items: List[str], *, limit: int = 3) -> None:
+        appended = 0
+        for item in items:
+            text = _narrative_text(item)
+            if not text or _count_hangul_chars(text) <= 0:
+                continue
+            lines.append(f"- {text}")
+            appended += 1
+            if appended >= limit:
+                break
+
+    def _vwap_interpretation(value: Any) -> str:
+        raw = _safe_float(value, None)
+        if raw is None:
+            return "-"
+        if raw >= 0.02:
+            return f"{_format_percent(raw, 2)} (과도 확장으로 추격 진입에 주의가 필요한 구간입니다.)"
+        if raw >= 0.0:
+            return f"+{abs(raw) * 100:.2f}% (VWAP 위에서 흐름을 유지하고 있습니다.)"
+        if raw <= -0.01:
+            return f"{_format_percent(raw, 2)} (VWAP 아래로 밀리며 약세 압력이 커진 구간입니다.)"
+        return f"{_format_percent(raw, 2)} (중립 범위 안에서 움직이고 있습니다.)"
+
     def _entry_reason_text(reason_code: str, pattern: str, metrics: Dict[str, Any]) -> str:
         reason = str(reason_code or "").strip().lower()
         metric_map = metrics if isinstance(metrics, dict) else {}
@@ -4706,20 +4804,20 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
         vwap_distance = metric_map.get("vwap_distance")
         pullback_pct = metric_map.get("pullback_pct")
         if pattern == "breakout_vwap_hold":
-            parts = ["분봉 기준 최근 고점 돌파와 VWAP 상회 유지, 거래량 확인이 함께 충족되어 진입했습니다."]
+            parts = ["분봉 기준으로 최근 고점 돌파와 VWAP 상회 유지, 거래량 확인이 함께 맞물려 진입했습니다."]
             if recent_high not in (None, ""):
-                parts.append(f"최근 고점 기준: {_format_float(recent_high, 2)}")
+                parts.append(f"최근 고점 기준값은 {_format_float(recent_high, 2)}였습니다.")
             if vwap not in (None, ""):
-                parts.append(f"VWAP 기준: {_format_float(vwap, 2)}")
+                parts.append(f"당시 VWAP 기준값은 {_format_float(vwap, 2)}였습니다.")
             if volume_ratio not in (None, ""):
-                parts.append(f"거래량 배수: {_format_float(volume_ratio, 2)}배")
+                parts.append(f"거래량은 평시 대비 {_format_float(volume_ratio, 2)}배 수준으로 확인됐습니다.")
             return " ".join(parts)
         if pattern == "pullback_rebound":
-            parts = ["분봉 눌림목 이후 재반등과 VWAP 회복이 확인되어 진입했습니다."]
+            parts = ["분봉 기준으로 눌림 이후 반등이 확인됐고, VWAP 재안착 흐름까지 확인되어 진입했습니다."]
             if pullback_pct not in (None, ""):
-                parts.append(f"눌림 폭: {_format_percent(pullback_pct, 2)}")
+                parts.append(f"눌림 폭은 {_format_percent(pullback_pct, 2)} 수준이었습니다.")
             if volume_ratio not in (None, ""):
-                parts.append(f"거래량 배수: {_format_float(volume_ratio, 2)}배")
+                parts.append(f"거래량은 평시 대비 {_format_float(volume_ratio, 2)}배 수준으로 확인됐습니다.")
             return " ".join(parts)
         mapping = {
             "minute_candle_missing": "이번 거래는 분봉 데이터가 확보되지 않아 진입 근거를 확인할 수 없었습니다. 따라서 신규 진입은 보류 대상으로 해석했습니다.",
@@ -4727,72 +4825,86 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
             "no_breakout_signal": "저장된 분봉 범위에서는 최근 고점 돌파나 첫 눌림목 반등 신호가 확인되지 않았습니다. 따라서 진입은 보류 판단으로 정리했습니다.",
             "vwap_not_confirmed": "분봉 흐름에서 VWAP 상회 유지나 재안착이 확인되지 않았습니다. 추격 진입 위험을 피하기 위해 진입 보류로 해석했습니다.",
             "volume_insufficient": "분봉 거래량이 돌파 신호를 뒷받침할 만큼 충분하지 않았습니다. 따라서 이번 구간은 보수적으로 진입 보류로 판단했습니다.",
-            "too_extended_from_vwap": "VWAP 대비 과도하게 확장되어 추격 진입을 피했습니다.",
-            "post_exit_cooldown": "직전 청산 직후 재진입 쿨다운 구간이라 진입을 보류했습니다.",
+            "too_extended_from_vwap": "VWAP 대비 과도하게 확장된 상태여서 추격 진입을 피했습니다.",
+            "post_exit_cooldown": "직전 청산 직후 재진입 쿨다운 구간이라 신규 진입을 보류했습니다.",
             "buy_blocked_open_position": "기존 보유 포지션이 있어 신규 진입을 차단했습니다.",
             "no_position": "저장된 데이터 범위 안에서는 체결 직전 분봉 진입 근거가 충분히 남아 있지 않았습니다. 이번 문서는 진입 해석보다 이후 보유 관리 기록을 중심으로 정리했습니다.",
             "peak_drawdown": "이번 저장값에는 진입 근거보다 청산 관리 신호가 더 선명하게 남아 있습니다. 진입 시점의 분봉 근거는 별도로 확인되지 않아 보수적으로 정리했습니다.",
             "hard_stop": "이번 저장값에는 진입 근거보다 손절 관리 신호가 더 분명하게 남아 있습니다. 진입 시점의 분봉 근거는 별도로 확인되지 않아 보수적으로 정리했습니다.",
         }
-        text = mapping.get(reason)
-        if text:
-            return text
+        if mapping.get(reason):
+            return mapping[reason]
         if str(reason_code or "").strip():
-            return f"분봉 조건 점검 결과 {str(reason_code or '').strip()} 상태로 진입을 보류했습니다."
+            return f"분봉 조건 점검 결과 {str(reason_code or '').strip()} 상태로 해석되어 진입을 보류했습니다."
         if vwap_distance not in (None, ""):
-            return f"분봉 조건은 있으나 VWAP 이격 {_format_percent(vwap_distance, 2)} 상태를 추가 확인 중입니다."
-        return "분봉 데이터 기준으로 보수적 판단을 유지하며 진입을 보류했습니다."
+            return f"분봉 조건을 점검 중이며 현재 VWAP 이격은 {_format_percent(vwap_distance, 2)} 수준입니다. 추가 확인 전까지는 보수적으로 접근합니다."
+        return "분봉 데이터와 체결 근거를 보수적으로 점검한 결과, 당장 진입을 확정하기보다 추가 확인이 필요한 상태로 해석했습니다."
 
-    def _vwap_interpretation(value: Any) -> str:
-        raw = _safe_float(value, None)
-        if raw is None:
-            return "-"
-        if raw >= 0.02:
-            return f"{_format_percent(raw, 2)} (과도 확장, 추격 진입 주의)"
-        if raw >= 0.0:
-            return f"+{abs(raw) * 100:.2f}% (VWAP 상회 유지)"
-        if raw <= -0.01:
-            return f"{_format_percent(raw, 2)} (VWAP 하회 압력)"
-        return f"{_format_percent(raw, 2)} (중립 범위)"
+    def _default_next_checkpoints(entry: Dict[str, Any], monitor: Dict[str, Any], exit_plan: Dict[str, Any], posture_action: str) -> List[str]:
+        metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
+        watch_axes = [str(x or "").strip() for x in list(exit_plan.get("watch_axes") or monitor.get("watch_axes") or []) if str(x or "").strip()]
+        derived: List[str] = []
+        if posture_action == "WAIT":
+            if metrics.get("recent_high") not in (None, ""):
+                derived.append("분봉 기준으로 최근 고점 재돌파 여부를 다음 체크포인트로 확인합니다.")
+            if metrics.get("volume_ratio") not in (None, ""):
+                derived.append("거래량 증가가 다시 동반되는지 확인합니다.")
+            if not derived:
+                derived.append("분봉 기준으로 재돌파 여부와 거래량 증가 여부를 다음 체크포인트로 설정합니다.")
+        elif posture_action in {"BUY", "HOLD"}:
+            derived.append("분봉 기준으로 지지선 유지 여부와 거래량 둔화 여부를 먼저 확인합니다.")
+            if any("vwap" in axis.lower() for axis in watch_axes):
+                derived.append("VWAP 재이탈 여부와 거래량 감소 여부를 중심으로 모니터링합니다.")
+            derived.append("현재 보유 상태에서는 고점 대비 하락폭과 거래량 둔화를 주요 확인 지표로 봅니다.")
+        else:
+            derived.append("청산 이후에는 동일 종목의 재돌파 여부와 거래대금 회복 여부를 다시 확인합니다.")
+        return derived[:3]
 
-    def _append_list(lines: List[str], items: List[str], *, limit: int = 3) -> None:
-        appended = 0
-        for item in items:
-            text = _sanitize_operator_brief_text(item)
-            if not text:
-                continue
-            if _count_hangul_chars(text) <= 0:
-                continue
-            lines.append(f"- {text}")
-            appended += 1
-            if appended >= limit:
-                break
-
-    if str(brief.get("status") or "").strip().lower() not in {"", "ok", "partial", "salvaged", "repaired", "fallback"}:
+    valid_statuses = {"", "ok", "partial", "salvaged", "repaired", "fallback"}
+    status = str(brief.get("status") or "").strip().lower()
+    if status not in valid_statuses:
         failure = brief.get("failure") if isinstance(brief.get("failure"), dict) else {}
         lines = [
             "# 운영자 브리프",
             "",
             "## 1. 최종 판단 요약",
             "",
-            f"- {str(brief.get('headline') or '브리프 생성에 실패했습니다.')}",
+            "- 저장된 요약 결과가 완전하지 않아 현재 판단을 보수적으로 다시 정리했습니다.",
             "",
-            "## 2. 리포트 상태",
+            "## 2. 종목 선정 이유",
             "",
-            f"- 상태: `{str(brief.get('status') or '-')}`",
-            f"- 사유: {str(failure.get('reason') or brief.get('reason') or '-')}",
+            "- 저장 범위가 제한되어 종목 선정 배경은 간단히만 확인됩니다.",
+            "",
+            "## 3. 진입 근거",
+            "",
+            "- 저장된 데이터가 부족해 진입 시점의 분봉 근거는 보수적으로 해석합니다.",
+            "",
+            "## 4. 현재 상태",
+            "",
+            f"- 현재 브리프 상태는 {_metric_text(brief.get('status'))}이며 추가 확인이 필요합니다.",
+            "",
+            "## 5. 청산 계획",
+            "",
+            "- 청산 계획은 저장된 데이터 범위 안에서 다시 확인해야 합니다.",
+            "",
+            "## 6. 리스크 요인",
+            "",
+            f"- 생성 과정에서 {_metric_text(failure.get('reason') or brief.get('reason'))} 이슈가 있어 일부 설명이 축약되었습니다.",
+            "",
+            "## 7. 다음 체크포인트",
+            "",
+            "- 저장 구조와 LLM 응답 상태를 다시 확인합니다.",
             "",
         ]
         return "\n".join(lines)
 
     sections = brief.get("sections") if isinstance(brief.get("sections"), dict) else {}
-    status = str(brief.get("status") or "").strip().lower()
     executive = sections.get("executive_decision") if isinstance(sections.get("executive_decision"), dict) else {}
     selection = sections.get("why_symbol_chosen") if isinstance(sections.get("why_symbol_chosen"), dict) else {}
     market = sections.get("market_context") if isinstance(sections.get("market_context"), dict) else {}
     monitor = sections.get("position_monitor_reasoning") if isinstance(sections.get("position_monitor_reasoning"), dict) else {}
     entry = sections.get("entry_timing") if isinstance(sections.get("entry_timing"), dict) else {}
-    exit_plan = sections.get("exit_plan") if isinstance(sections.get("exit_plan"), dict) else {}
+    exit_plan = sections.get("exit_plan") if isinstance(exit_plan := sections.get("exit_plan"), dict) else {}
     operator_conclusion = sections.get("operator_conclusion") if isinstance(sections.get("operator_conclusion"), dict) else {}
     risk_alerts = sections.get("risk_alerts") if isinstance(sections.get("risk_alerts"), dict) else {}
 
@@ -4800,25 +4912,39 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
     final_action = str(executive.get("final_action") or operator_conclusion.get("current_action") or "").strip().upper()
     posture_action = str(monitor.get("posture") or final_action).strip().upper()
     headline = str(brief.get("headline") or "").strip()
-    executive_summary = "" if status == "fallback" else (str(brief.get("executive_summary") or "").strip() or headline)
-    scanner_reason = "" if status == "fallback" else str(brief.get("scanner_reason") or brief.get("scanner_summary") or "").strip()
-    holding_summary = "" if status == "fallback" else str(brief.get("holding_summary") or brief.get("monitor_summary") or "").strip()
-    exit_plan_summary = "" if status == "fallback" else str(brief.get("exit_plan_summary") or "").strip()
-    risk_summary = "" if status == "fallback" else str(brief.get("risk_summary") or "").strip()
-    next_checkpoints = [] if status == "fallback" else [str(x or "").strip() for x in list(brief.get("next_checkpoints") or []) if str(x or "").strip()]
-    takeaways = [str(x or "").strip() for x in list(brief.get("operator_takeaways") or []) if str(x or "").strip()]
+    executive_summary = _narrative_text("" if status == "fallback" else (str(brief.get("executive_summary") or "").strip() or headline))
+    scanner_reason = _narrative_text("" if status == "fallback" else str(brief.get("scanner_reason") or brief.get("scanner_summary") or "").strip())
+    holding_summary = _narrative_text("" if status == "fallback" else str(brief.get("holding_summary") or brief.get("monitor_summary") or "").strip())
+    exit_plan_summary = _narrative_text("" if status == "fallback" else str(brief.get("exit_plan_summary") or "").strip())
+    risk_summary = _narrative_text("" if status == "fallback" else str(brief.get("risk_summary") or "").strip())
+    next_checkpoints = [] if status == "fallback" else [_narrative_text(x) for x in list(brief.get("next_checkpoints") or []) if _narrative_text(x)]
+    takeaways = [_narrative_text(x) for x in list(brief.get("operator_takeaways") or []) if _narrative_text(x)]
 
     universe_size_raw = _safe_int(selection.get("universe_size"), 0)
-    if universe_size_raw <= 0:
-        fallback_scanner_reason = "저장된 후보 풀이 충분하지 않아 스캐너 근거는 제한적입니다. 이번 문서는 남아 있는 실행·모니터 기록을 기준으로 정리했습니다."
-    else:
-        fallback_scanner_reason = (
-            f"{_safe_int(selection.get('selected_rank'), 0) or 1}위 후보로 선정되었고, "
-            f"전체 후보 {universe_size_raw}개 중 우선 감시 대상으로 유지되었습니다."
-        )
-    entry_summary = str(brief.get("entry_summary") or "").strip()
+    selected_rank_raw = _safe_int(selection.get("selected_rank"), 0) or 1
+    selection_reasons = [str(x or "").strip() for x in list(selection.get("selection_reasons") or []) if str(x or "").strip()]
+    comparison_reasons = [str(x or "").strip() for x in list(selection.get("comparison_reasons") or []) if str(x or "").strip()]
+    signal_source = " ".join([scanner_reason] + selection_reasons + comparison_reasons).lower()
+    signal_phrases: List[str] = []
+    if any(token in signal_source for token in ["거래량", "volume", "trading value", "거래대금"]):
+        signal_phrases.append("거래량과 거래대금 흐름이 함께 확인되었습니다.")
+    if any(token in signal_source for token in ["돌파", "breakout"]):
+        signal_phrases.append("단기 돌파 시도 흐름이 포착되었습니다.")
+    if any(token in signal_source for token in ["변동성", "volatility"]):
+        signal_phrases.append("단기 변동성 확대가 함께 관찰되었습니다.")
+    if any(token in signal_source for token in ["눌림", "pullback", "반등", "rebound"]):
+        signal_phrases.append("눌림 이후 반등 가능성도 함께 점검됐습니다.")
+    if not scanner_reason or not any(token in scanner_reason for token in ["후보", "선정", "순위"]):
+        if universe_size_raw > 0:
+            scanner_reason = f"총 {universe_size_raw}개 후보 중 {selected_rank_raw}순위 감시 대상으로 선정되었습니다."
+        else:
+            scanner_reason = "저장된 후보 비교 정보는 제한적이지만, 이번 종목은 우선 감시 대상으로 선정되었습니다."
+    if signal_phrases and all(phrase not in scanner_reason for phrase in signal_phrases[:2]):
+        scanner_reason = " ".join([scanner_reason] + signal_phrases[:2])
+
+    entry_summary = _narrative_text(str(brief.get("entry_summary") or "").strip())
     if not entry_summary:
-        entry_reason_text = str(entry.get("reason_text") or "").strip()
+        entry_reason_text = _narrative_text(str(entry.get("reason_text") or "").strip())
         if _count_hangul_chars(entry_reason_text) > 0 and status != "fallback":
             entry_summary = entry_reason_text
         else:
@@ -4827,124 +4953,120 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
                 str(entry.get("pattern") or ""),
                 entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {},
             )
+
+    if not executive_summary:
+        executive_summary = f"{selected_symbol}의 현재 최종 판단은 {_action_label(posture_action)}입니다."
+
     if not holding_summary:
-        posture = _action_label(monitor.get("posture") or final_action)
         holding_summary = (
-            f"{selected_symbol} 현재 상태는 {posture}입니다. "
-            f"현재가 {_metric_text(monitor.get('current_price'))}, 평균가 {_metric_text(monitor.get('average_price'))}, "
-            f"현재 손익 축은 {_sanitize_operator_brief_text(monitor.get('active_exit_axis') or '-')} 기준으로 관리 중입니다."
+            f"{selected_symbol}은 현재 {_action_label(monitor.get('posture') or final_action)} 상태입니다. "
+            f"현재가는 {_metric_text(monitor.get('current_price'))}, 평균 단가는 {_metric_text(monitor.get('average_price'))}이며, "
+            f"현재 관리는 {_axis_label(monitor.get('active_exit_axis') or '-')} 기준으로 이어가고 있습니다."
         )
+
     if not exit_plan_summary:
+        effective_stop = _metric_text(exit_plan.get("effective_stop") or monitor.get("effective_stop"))
+        effective_stop_reason = _axis_label(exit_plan.get("effective_stop_reason") or monitor.get("effective_stop_reason"))
+        take_profit = _metric_text(exit_plan.get("take_profit") or monitor.get("take_profit"))
+        watch_axes = [_axis_label(x) for x in list(exit_plan.get("watch_axes") or monitor.get("watch_axes") or [])[:2] if str(x or "").strip()]
+        axes_text = ", ".join(watch_axes) if watch_axes else "감시 조건 변화"
         exit_plan_summary = (
-            f"유효 손절 {_metric_text(exit_plan.get('effective_stop') or monitor.get('effective_stop'))}"
-            f" ({_metric_text(exit_plan.get('effective_stop_reason') or monitor.get('effective_stop_reason'))})"
-            f" 기준을 우선 보고, {_metric_text(exit_plan.get('take_profit') or monitor.get('take_profit'))} "
-            f"익절 또는 {', '.join(list(exit_plan.get('watch_axes') or monitor.get('watch_axes') or [])[:2]) or '감시 축 변화'}가 나오면 재판단합니다."
+            f"우선 {effective_stop_reason}을 기준으로 대응하고, 기준값은 {effective_stop} 수준으로 보고 있습니다. "
+            f"목표 수익 실현 기준은 {take_profit} 수준이며, {axes_text}가 나타나면 다시 판단합니다."
         )
+
     if not risk_summary:
-        weak_factors = [str(x or "").strip() for x in list(risk_alerts.get("weak_factors") or []) if str(x or "").strip()]
+        weak_factors = [_narrative_text(x) for x in list(risk_alerts.get("weak_factors") or []) if _narrative_text(x)]
         if weak_factors and status != "fallback":
-            risk_summary = " / ".join(weak_factors[:3])
+            risk_summary = " ".join(weak_factors[:3])
         elif bool(risk_alerts.get("defensive_mode")):
-            risk_summary = "거시 스트레스 신호가 남아 있어 방어적으로 대응해야 합니다."
+            risk_summary = "거시 스트레스 신호가 남아 있어 방어적으로 대응할 필요가 있습니다."
         else:
-            risk_summary = "현재 저장된 기준상 중대한 추가 리스크는 제한적이지만, 분봉 구조 훼손 여부를 계속 확인해야 합니다."
+            risk_summary = "현재 확보된 데이터 기준으로 추가 리스크는 제한적이지만, 분봉 구조 변화와 거래량 둔화 여부를 계속 확인해야 합니다."
+
     if not next_checkpoints:
-        next_checkpoints = [str(x or "").strip() for x in list(operator_conclusion.get("watch_next") or []) if str(x or "").strip()]
+        next_checkpoints = [_narrative_text(x) for x in list(operator_conclusion.get("watch_next") or []) if _narrative_text(x)]
     if not next_checkpoints and takeaways:
         next_checkpoints = takeaways[:3]
+    if not next_checkpoints:
+        next_checkpoints = _default_next_checkpoints(entry, monitor, exit_plan, posture_action)
 
     lines = [
         "# 운영자 브리프",
         "",
         "## 1. 최종 판단 요약",
         "",
-        f"- {executive_summary or f'{selected_symbol} 현재 판단은 {_action_label(posture_action)}입니다.'}",
+        f"- {executive_summary}",
         "",
         "## 2. 종목 선정 이유",
         "",
-        f"- {scanner_reason or fallback_scanner_reason}",
+        f"- {scanner_reason}",
     ]
-    selection_reasons = [str(x or "").strip() for x in list(selection.get("selection_reasons") or []) if str(x or "").strip()]
     _append_list(lines, selection_reasons, limit=3)
-    comparison_reasons = [str(x or "").strip() for x in list(selection.get("comparison_reasons") or []) if str(x or "").strip()]
     _append_list(lines, comparison_reasons, limit=2)
 
-    lines.extend(
-        [
-            "",
-            "## 3. 진입 근거",
-            "",
-            f"- {entry_summary}",
-        ]
-    )
+    lines.extend([
+        "",
+        "## 3. 진입 근거",
+        "",
+        f"- {entry_summary}",
+    ])
     entry_metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
     if entry_metrics.get("recent_high") not in (None, ""):
-        lines.append(f"- 최근 고점: {_format_float(entry_metrics.get('recent_high'), 2)}")
+        lines.append(f"- 최근 고점 기준값은 {_format_float(entry_metrics.get('recent_high'), 2)}였습니다.")
     if entry_metrics.get("vwap") not in (None, ""):
-        lines.append(f"- VWAP: {_format_float(entry_metrics.get('vwap'), 2)}")
+        lines.append(f"- 당시 VWAP 기준값은 {_format_float(entry_metrics.get('vwap'), 2)}였습니다.")
     if entry_metrics.get("vwap_distance") not in (None, ""):
-        lines.append(f"- VWAP 이격: {_vwap_interpretation(entry_metrics.get('vwap_distance'))}")
+        lines.append(f"- VWAP 이격은 {_vwap_interpretation(entry_metrics.get('vwap_distance'))}")
     if entry_metrics.get("volume_ratio") not in (None, ""):
-        lines.append(f"- 거래량 배수: {_format_float(entry_metrics.get('volume_ratio'), 2)}배")
+        lines.append(f"- 거래량은 평시 대비 {_format_float(entry_metrics.get('volume_ratio'), 2)}배 수준으로 확인됐습니다.")
     if entry_metrics.get("pullback_pct") not in (None, ""):
-        lines.append(f"- 눌림 폭: {_format_percent(entry_metrics.get('pullback_pct'), 2)}")
+        lines.append(f"- 눌림 폭은 {_format_percent(entry_metrics.get('pullback_pct'), 2)} 수준이었습니다.")
 
-    lines.extend(
-        [
-            "",
-            "## 4. 현재 상태",
-            "",
-            f"- {holding_summary}",
-            f"- 포지션 상태: {_action_label(monitor.get('posture') or final_action)}",
-            f"- 평균가 / 현재가 / 고점: {_metric_text(monitor.get('average_price'))} / {_metric_text(monitor.get('current_price'))} / {_metric_text(monitor.get('peak_price'))}",
-            f"- 현재 손익 / 고점 대비 되밀림: {_metric_text(monitor.get('current_drawdown'))} / {_metric_text(monitor.get('peak_drawdown'))}",
-        ]
-    )
+    lines.extend([
+        "",
+        "## 4. 현재 상태",
+        "",
+        f"- {holding_summary}",
+        f"- 현재 포지션 판단은 {_action_label(monitor.get('posture') or final_action)}입니다.",
+        f"- 평균 단가는 {_metric_text(monitor.get('average_price'))}, 현재가는 {_metric_text(monitor.get('current_price'))}, 장중 고점은 {_metric_text(monitor.get('peak_price'))}입니다.",
+        f"- 현재 손익은 {_metric_text(monitor.get('current_drawdown'))}이며, 고점 대비 하락폭은 {_metric_text(monitor.get('peak_drawdown'))}입니다.",
+    ])
     hold_reasons = [str(x or "").strip() for x in list(monitor.get("hold_reasons") or []) if str(x or "").strip()]
     _append_list(lines, hold_reasons, limit=3)
 
-    lines.extend(
-        [
-            "",
-            "## 5. 청산 계획",
-            "",
-            f"- {exit_plan_summary}",
-            f"- 유효 손절: {_metric_text(exit_plan.get('effective_stop') or monitor.get('effective_stop'))} ({_metric_text(exit_plan.get('effective_stop_reason') or monitor.get('effective_stop_reason'))})",
-            f"- 익절 기준: {_metric_text(exit_plan.get('take_profit') or monitor.get('take_profit'))}",
-            f"- 핵심 감시 축: {', '.join(list(exit_plan.get('watch_axes') or monitor.get('watch_axes') or [])[:3]) or '-'}",
-        ]
-    )
+    lines.extend([
+        "",
+        "## 5. 청산 계획",
+        "",
+        f"- {exit_plan_summary}",
+        f"- 현재 {_axis_label(exit_plan.get('effective_stop_reason') or monitor.get('effective_stop_reason'))}은 {_metric_text(exit_plan.get('effective_stop') or monitor.get('effective_stop'))} 수준으로 보고 있습니다.",
+        f"- 목표 수익 실현 기준은 {_metric_text(exit_plan.get('take_profit') or monitor.get('take_profit'))} 수준입니다.",
+        f"- 주요 감시 조건은 {', '.join([_axis_label(x) for x in list(exit_plan.get('watch_axes') or monitor.get('watch_axes') or [])[:3] if str(x or '').strip()]) or '감시 조건 변화'}입니다.",
+    ])
     exit_triggers = [str(x or "").strip() for x in list(exit_plan.get("exit_triggers") or monitor.get("exit_triggers") or []) if str(x or "").strip()]
     _append_list(lines, exit_triggers, limit=3)
 
-    lines.extend(
-        [
-            "",
-            "## 6. 리스크 요인",
-            "",
-            f"- {risk_summary}",
-        ]
-    )
+    lines.extend([
+        "",
+        "## 6. 리스크 요인",
+        "",
+        f"- {risk_summary}",
+    ])
     weak_factors = [str(x or "").strip() for x in list(risk_alerts.get("weak_factors") or []) if str(x or "").strip()]
     _append_list(lines, weak_factors, limit=3)
     if str(market.get("global_sentiment") or "-") != "-" or str(market.get("vix") or "-") != "-":
-        lines.append(
-            f"- 시장 맥락: 글로벌 감성 {_metric_text(market.get('global_sentiment'))}, VIX {_metric_text(market.get('vix'))}"
-        )
+        lines.append(f"- 시장 맥락상 글로벌 감성은 {_metric_text(market.get('global_sentiment'))}, VIX는 {_metric_text(market.get('vix'))} 수준입니다.")
 
-    lines.extend(
-        [
-            "",
-            "## 7. 다음 체크포인트",
-            "",
-        ]
-    )
+    lines.extend([
+        "",
+        "## 7. 다음 체크포인트",
+        "",
+    ])
     _append_list(lines, next_checkpoints or takeaways, limit=4)
-    lines.append("")
+    if lines[-1] != "":
+        lines.append("")
     return "\n".join(lines)
-
-
 def _operator_brief_source_signature(detail: Dict[str, Any]) -> str:
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
     candidate_paths = [
@@ -5562,3 +5684,4 @@ def load_health(config: OperatorUIConfig) -> Dict[str, Any]:
         "event_log_path": str(config.event_log_path),
         "reports_root": str(config.reports_root),
     }
+

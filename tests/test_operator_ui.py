@@ -1219,6 +1219,117 @@ def test_operator_brief_fallback_markdown_keeps_all_sections_and_natural_korean(
     assert "저장된 데이터 범위 안에서는 체결 직전 분봉 진입 근거가 충분히 남아 있지 않았습니다." in no_entry_markdown
 
 
+def test_operator_brief_markdown_removes_internal_english_labels_and_fills_next_checkpoint() -> None:
+    brief = {
+        "status": "fallback",
+        "headline": "AI Brief Failed HOLD 005930",
+        "operator_takeaways": [],
+        "sections": {
+            "executive_decision": {"symbol": "005930", "final_action": "HOLD"},
+            "why_symbol_chosen": {
+                "universe_size": 5,
+                "selected_rank": 1,
+                "selection_reasons": ["Universe scanned: 5", "Selected rank: #1", "Runner-up symbols had weaker coverage"],
+                "comparison_reasons": [],
+            },
+            "entry_timing": {
+                "reason_code": "minute_candle_missing",
+                "pattern": "",
+                "metrics": {"recent_high": 70500, "volume_ratio": 1.8, "vwap_distance": 0.012},
+            },
+            "position_monitor_reasoning": {
+                "posture": "HOLD",
+                "hold_reasons": ["Posture: HOLD", "Exit trigger: no"],
+                "average_price": "70,100원",
+                "current_price": "70,500원",
+                "peak_price": "70,900원",
+                "current_drawdown": "+0.57%",
+                "peak_drawdown": "-0.30%",
+                "watch_axes": ["Hard stop", "Adaptive stop", "Take profit", "VWAP breakdown"],
+                "effective_stop_reason": "Hard stop",
+                "effective_stop": "-2.5%",
+                "take_profit": "+3.5%",
+            },
+            "exit_plan": {
+                "watch_axes": ["Hard stop", "Adaptive stop", "Take profit", "VWAP breakdown"],
+                "effective_stop_reason": "Adaptive stop",
+                "effective_stop": "-2.0%",
+                "take_profit": "+3.5%",
+            },
+            "risk_alerts": {},
+            "operator_conclusion": {"watch_next": []},
+            "market_context": {"global_sentiment": "-0.20", "vix": "25.09"},
+        },
+    }
+
+    markdown = data_access._render_operator_brief_markdown(brief)
+
+    assert "Posture:" not in markdown
+    assert "Hard stop" not in markdown
+    assert "Adaptive stop" not in markdown
+    assert "Take profit" not in markdown
+    assert "Universe scanned:" not in markdown
+    assert "Selected rank:" not in markdown
+    assert "현재 포지션 판단은 보유 유지입니다." in markdown
+    assert "고정 손절 기준" in markdown
+    assert "상황 대응형 손절 기준" in markdown
+    assert "목표 수익 실현 기준" in markdown
+    assert "## 7. 다음 체크포인트" in markdown
+    assert "다음 체크포인트" in markdown and "분봉 기준" in markdown
+
+
+def test_operator_brief_scanner_reason_is_ranked_narrative_when_brief_text_is_generic() -> None:
+    brief = {
+        "status": "fallback",
+        "headline": "AI Brief Failed WAIT 000660",
+        "operator_takeaways": [],
+        "sections": {
+            "executive_decision": {"symbol": "000660", "final_action": "WAIT"},
+            "why_symbol_chosen": {
+                "universe_size": 5,
+                "selected_rank": 1,
+                "selection_reasons": ["volume expansion observed", "breakout attempt detected"],
+                "comparison_reasons": [],
+            },
+            "entry_timing": {"reason_code": "no_breakout_signal", "pattern": "", "metrics": {}},
+            "position_monitor_reasoning": {"posture": "WAIT"},
+            "exit_plan": {"watch_axes": []},
+            "risk_alerts": {},
+            "operator_conclusion": {"watch_next": []},
+        },
+    }
+
+    markdown = data_access._render_operator_brief_markdown(brief)
+
+    assert "후보" in markdown or "선정" in markdown or "순위" in markdown
+    assert "거래량과 거래대금 흐름이 함께 확인되었습니다." in markdown or "단기 돌파 시도 흐름이 포착되었습니다." in markdown
+
+
+def test_operator_brief_fallback_rendered_stays_readable_and_not_error_stub() -> None:
+    brief = {
+        "status": "fallback",
+        "fallback_rendered": True,
+        "headline": "AI Brief Failed SELL 032820",
+        "operator_takeaways": [],
+        "sections": {
+            "executive_decision": {"symbol": "032820", "final_action": "SELL"},
+            "why_symbol_chosen": {"universe_size": 3, "selected_rank": 1, "selection_reasons": [], "comparison_reasons": []},
+            "entry_timing": {"reason_code": "hard_stop", "pattern": "", "metrics": {}},
+            "position_monitor_reasoning": {"posture": "SELL"},
+            "exit_plan": {"watch_axes": ["VWAP breakdown"]},
+            "risk_alerts": {},
+            "operator_conclusion": {"watch_next": []},
+        },
+    }
+
+    markdown = data_access._render_operator_brief_markdown(brief)
+
+    assert "AI Brief Failed" not in markdown
+    assert "브리프 생성에 실패했습니다" not in markdown
+    assert "## 1. 최종 판단 요약" in markdown
+    assert "## 7. 다음 체크포인트" in markdown
+
+
 def test_operator_brief_prefers_richer_fallback_text_and_takeaways() -> None:
     normalized = data_access._sanitize_operator_brief_result(
         {"trade_report": {"lifecycle_status": "open", "action": "BUY"}, "executor": {"execution": {"action": "BUY"}}},
