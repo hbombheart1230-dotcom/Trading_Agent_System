@@ -1901,6 +1901,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     )
     state["scanner_output"] = {
         "top_stock": state["top_stock"] or None,
+        "primary_watch_symbol": state["top_stock"] or None,
         "score": (
             float(selected.get("score"))
             if isinstance(selected, dict) and selected.get("score") is not None
@@ -1920,6 +1921,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "candidate_count": int(len(scan_results_sorted)),
         "candidate_pool_size": int(len(scan_results_sorted)),
         "ranked_candidates": list(state.get("ranked_candidates") or [])[:5],
+        "watch_candidates": list(state.get("ranked_candidates") or [])[:5],
         "candidate_source": str(pool_meta.get("candidate_source") or ""),
         "fallback_reason": str(pool_meta.get("fallback_reason") or ""),
         "blocked_static_fallback": bool(pool_meta.get("blocked_static_fallback")),

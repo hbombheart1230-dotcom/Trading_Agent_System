@@ -348,6 +348,10 @@ def _enrich_scanner_reason_from_evidence(
     scanner_evidence: Dict[str, Any],
 ) -> Dict[str, Any]:
     out = dict(scanner_reason_human or {})
+    selected_symbol = normalize_symbol(
+        out.get("selected_symbol") or "",
+        allow_test_symbols=True,
+    )
     selection_rows = [
         dict(row)
         for row in list((scanner_evidence or {}).get("candidate_selection_reasons") or [])
@@ -358,8 +362,8 @@ def _enrich_scanner_reason_from_evidence(
         if selection_rows and isinstance(selection_rows[0].get("payload"), dict)
         else {}
     )
-    if not isinstance(payload, dict) or not payload:
-        return out
+    if not isinstance(payload, dict):
+        payload = {}
 
     why_selected = [str(x or "") for x in list(payload.get("why_selected") or []) if str(x or "").strip()][:4]
     selection_basis = str(payload.get("final_decision_basis") or "").strip()
@@ -385,6 +389,36 @@ def _enrich_scanner_reason_from_evidence(
         )
         if len(runner_ups_lost) >= 3:
             break
+
+    coverage = _normalized_feature_coverage_from_scanner_evidence(scanner_evidence, selected_symbol=selected_symbol)
+    if coverage:
+        out["feature_coverage"] = dict(coverage)
+        present = safe_int(coverage.get("present"), 0)
+        total = safe_int(coverage.get("total"), 0)
+        if present > 0 and total > 0:
+            top_reasons = [str(x or "") for x in list(out.get("top_reasons") or []) if str(x or "").strip()]
+            replaced_top_reason = False
+            for idx, reason in enumerate(top_reasons):
+                if reason.lower().startswith("chart feature coverage "):
+                    top_reasons[idx] = f"chart feature coverage {present}/{total}"
+                    replaced_top_reason = True
+                    break
+            if not replaced_top_reason:
+                top_reasons.append(f"chart feature coverage {present}/{total}")
+            out["top_reasons"] = top_reasons[:6]
+
+            bullets = [str(x or "") for x in list(out.get("bullets") or []) if str(x or "").strip()]
+            updated_bullets: List[str] = []
+            replaced_chart_bullet = False
+            for bullet in bullets:
+                if bullet.lower().startswith("chart / feature coverage:"):
+                    updated_bullets.append(f"Chart / feature coverage: {present}/{total}")
+                    replaced_chart_bullet = True
+                else:
+                    updated_bullets.append(bullet)
+            if not replaced_chart_bullet:
+                updated_bullets.append(f"Chart / feature coverage: {present}/{total}")
+            out["bullets"] = updated_bullets[:12]
 
     if why_selected:
         out["why_selected"] = why_selected
@@ -416,6 +450,154 @@ def _enrich_scanner_reason_from_evidence(
             bullets.append(runner_text)
     if bullets:
         out["bullets"] = bullets[:12]
+    return out
+
+
+def _normalized_feature_coverage_from_scanner_evidence(
+    scanner_evidence: Dict[str, Any],
+    *,
+    selected_symbol: str,
+) -> Dict[str, Any]:
+    symbol = normalize_symbol(selected_symbol or "", allow_test_symbols=True)
+    if not symbol:
+        return {}
+    ranking_sources: List[Dict[str, Any]] = []
+    for row in list((scanner_evidence or {}).get("candidate_ranking_tables") or []):
+        payload = row.get("payload") if isinstance(row, dict) and isinstance(row.get("payload"), dict) else {}
+        for ranking_row in list(payload.get("rows") or []):
+            if isinstance(ranking_row, dict):
+                ranking_sources.append(ranking_row)
+    for row in list((scanner_evidence or {}).get("selection_outputs") or []):
+        payload = row.get("payload") if isinstance(row, dict) and isinstance(row.get("payload"), dict) else {}
+        for ranking_row in list(payload.get("ranking_top_n") or []):
+            if isinstance(ranking_row, dict):
+                ranking_sources.append(ranking_row)
+        selected_candidate = payload.get("selected_candidate") if isinstance(payload.get("selected_candidate"), dict) else {}
+        if selected_candidate:
+            ranking_sources.append(selected_candidate)
+
+    matched_row: Dict[str, Any] = {}
+    for row in ranking_sources:
+        row_symbol = normalize_symbol(row.get("symbol") or "", allow_test_symbols=True)
+        if row_symbol == symbol:
+            matched_row = row
+            break
+    if not matched_row:
+        return {}
+
+    snapshot = matched_row.get("compact_feature_snapshot") if isinstance(matched_row.get("compact_feature_snapshot"), dict) else {}
+    if not snapshot:
+        snapshot = matched_row.get("feature_snapshot") if isinstance(matched_row.get("feature_snapshot"), dict) else {}
+    if not snapshot:
+        return {}
+
+    keys = [
+        "engine_ma20_gap",
+        "engine_ma60",
+        "engine_ma120",
+        "engine_adx14",
+        "engine_trend_strength",
+        "engine_volume_spike20",
+        "engine_volatility20",
+        "engine_vwap_distance",
+        "engine_sector_relative_strength",
+        "engine_cross_section_rank",
+        "engine_regime",
+        "engine_signal_score",
+    ]
+    present_keys = [key for key in keys if snapshot.get(key) is not None]
+    missing_keys = [key for key in keys if snapshot.get(key) is None]
+    total = len(keys)
+    present = len(present_keys)
+    coverage_ratio = float(present) / float(total) if total else 0.0
+    if coverage_ratio >= 0.75:
+        quality = "strong"
+    elif coverage_ratio >= 0.5:
+        quality = "partial"
+    else:
+        quality = "weak"
+    return {
+        "present": present,
+        "total": total,
+        "coverage_ratio": coverage_ratio,
+        "quality": quality,
+        "present_keys": present_keys,
+        "missing_keys": missing_keys,
+    }
+
+
+def _enrich_filters_from_evidence(
+    filters_human: Dict[str, Any],
+    scanner_evidence: Dict[str, Any],
+    *,
+    selected_symbol: str,
+) -> Dict[str, Any]:
+    out = dict(filters_human or {})
+    coverage = _normalized_feature_coverage_from_scanner_evidence(scanner_evidence, selected_symbol=selected_symbol)
+    if not coverage:
+        return out
+
+    present = safe_int(coverage.get("present"), 0)
+    total = safe_int(coverage.get("total"), 0)
+    ratio = _safe_float(coverage.get("coverage_ratio"), 0.0) or 0.0
+    if total <= 0:
+        chart_status = "NOT_AVAILABLE"
+        chart_note = "feature snapshot not available"
+    elif ratio >= 0.75:
+        chart_status = "PASS"
+        chart_note = f"{present}/{total} captured chart features"
+    elif ratio >= 0.5:
+        chart_status = "PARTIAL"
+        chart_note = f"{present}/{total} captured chart features"
+    else:
+        chart_status = "FAIL"
+        chart_note = f"{present}/{total} captured chart features"
+
+    summary = str(out.get("summary") or "").strip()
+    if summary:
+        summary = re.sub(
+            r"Chart completeness was [^.]*(?:\.)?",
+            f"Chart completeness was {str(coverage.get('quality') or chart_status.lower()).lower()} with {present}/{total} captured features.",
+            summary,
+            flags=re.IGNORECASE,
+        )
+    else:
+        summary = f"Scanner and guard checks were captured. Chart completeness was {str(coverage.get('quality') or chart_status.lower()).lower()} with {present}/{total} captured features."
+    out["summary"] = summary
+
+    checks = [dict(x) for x in list(out.get("checks") or []) if isinstance(x, dict)]
+    updated_checks: List[Dict[str, Any]] = []
+    replaced_check = False
+    for check in checks:
+        if str(check.get("name") or "").strip().lower() == "chart completeness filter":
+            check["status"] = chart_status
+            check["detail"] = chart_note
+            replaced_check = True
+        updated_checks.append(check)
+    if not replaced_check:
+        updated_checks.append(
+            {
+                "name": "chart completeness filter",
+                "status": chart_status,
+                "detail": chart_note,
+            }
+        )
+    if updated_checks:
+        out["checks"] = updated_checks
+
+    bullets = [str(x or "") for x in list(out.get("bullets") or []) if str(x or "").strip()]
+    updated_bullets: List[str] = []
+    replaced = False
+    for bullet in bullets:
+        if bullet.lower().startswith("chart completeness filter:"):
+            updated_bullets.append(f"chart completeness filter: {chart_status} - {chart_note}")
+            replaced = True
+        else:
+            updated_bullets.append(bullet)
+    if not replaced:
+        updated_bullets.append(f"chart completeness filter: {chart_status} - {chart_note}")
+    out["bullets"] = updated_bullets[:8]
+    out["feature_coverage"] = dict(coverage)
     return out
 
 
@@ -1206,6 +1388,7 @@ def _build_trade_evidence_from_events(
         "run_ids": run_ids,
         "threshold_snapshots": [row for row in monitor_events if row.get("event_name") == "monitor.threshold_snapshot"],
         "state_transitions": [row for row in monitor_events if row.get("event_name") == "monitor.state_transition"],
+        "entry_decision_details": [row for row in monitor_events if row.get("event_name") == "monitor.entry_decision_detail"],
         "exit_decision_details": [row for row in monitor_events if row.get("event_name") == "monitor.exit_decision_detail"],
         "cycle_summaries": [row for row in monitor_events if row.get("event_name") == "monitor.cycle_summary"],
     }
@@ -1574,6 +1757,11 @@ def _build_trade_lifecycles(
 
     def _exit_context(snapshot: Dict[str, Any], bundle: Dict[str, Any]) -> Dict[str, Any]:
         execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
+        has_exit_monitor_trace = bool(
+            str(snapshot.get("exit_reason") or "").strip()
+            or str(snapshot.get("monitor_reason") or "").strip()
+        )
+        monitor_context = dict(bundle.get("monitor_reason_human") or {}) if has_exit_monitor_trace else {}
         return {
             "run_id": str(snapshot.get("run_id") or ""),
             "ts": str(snapshot.get("ts_start") or ""),
@@ -1581,13 +1769,13 @@ def _build_trade_lifecycles(
             "price": execution.get("price"),
             "qty": safe_int(execution.get("qty"), 0),
             "reason_human": str(
-                (bundle.get("monitor_reason_human") or {}).get("summary")
+                (monitor_context or {}).get("summary")
                 or (bundle.get("execution_outcome_human") or {}).get("summary")
                 or snapshot.get("exit_reason")
                 or snapshot.get("monitor_reason")
                 or "Exit reasoning was not captured."
             ),
-            "monitor_context": dict(bundle.get("monitor_reason_human") or {}),
+            "monitor_context": monitor_context,
             "guard_context": dict(bundle.get("guard_reason_human") or {}),
             "execution_context": dict(bundle.get("execution_outcome_human") or {}),
         }
@@ -2299,7 +2487,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             },
             "strategist_event_count": sum(len(list(strategist_evidence.get(key) or [])) for key in ("market_context_snapshots", "global_sentiment_breakdowns", "news_evidence_ranked", "decision_frames", "llm_response_saved")),
             "scanner_event_count": sum(len(list(scanner_evidence.get(key) or [])) for key in ("candidate_pool_snapshots", "candidate_ranking_tables", "candidate_selection_reasons", "selection_outputs")),
-            "monitor_event_count": sum(len(list(monitor_timeline.get(key) or [])) for key in ("threshold_snapshots", "state_transitions", "exit_decision_details", "cycle_summaries")),
+            "monitor_event_count": sum(
+                len(list(monitor_timeline.get(key) or []))
+                for key in ("threshold_snapshots", "state_transitions", "entry_decision_details", "exit_decision_details", "cycle_summaries")
+            ),
         }
 
         strategist_input_artifact, strategist_compact_input_artifact = _build_strategist_input_artifacts(
@@ -2330,6 +2521,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             lifecycle_bundle.get("scanner") if isinstance(lifecycle_bundle.get("scanner"), dict) else {},
             lifecycle_bundle.get("strategist") if isinstance(lifecycle_bundle.get("strategist"), dict) else {},
             lifecycle_bundle.get("supervisor") if isinstance(lifecycle_bundle.get("supervisor"), dict) else {},
+        )
+        lifecycle_bundle["filters_human"] = _enrich_filters_from_evidence(
+            lifecycle_bundle.get("filters_human") if isinstance(lifecycle_bundle.get("filters_human"), dict) else {},
+            scanner_evidence,
+            selected_symbol=str(
+                (
+                    lifecycle_bundle.get("scanner_reason_human")
+                    if isinstance(lifecycle_bundle.get("scanner_reason_human"), dict)
+                    else {}
+                ).get("selected_symbol")
+                or symbol
+            ),
         )
         strategy_anchor_run_id = str(
             ((strategist_input_artifact.get("meta") or {}).get("source_run_id") or "")
@@ -2373,15 +2576,34 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         entry_ctx_live = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
         if entry_ctx_live:
+            refreshed_strategist_context = dict(entry_ctx_live.get("strategist_context") or {}) if isinstance(entry_ctx_live.get("strategist_context"), dict) else {}
+            refreshed_market_context = (
+                lifecycle_bundle.get("market_context_human")
+                if isinstance(lifecycle_bundle.get("market_context_human"), dict)
+                else {}
+            )
+            if refreshed_market_context:
+                refreshed_strategist_context["market_context_summary"] = str(
+                    refreshed_market_context.get("summary")
+                    or refreshed_strategist_context.get("market_context_summary")
+                    or ""
+                )
             entry_ctx_live["strategist_context"] = _attach_strategy_anchor(
-                entry_ctx_live.get("strategist_context") if isinstance(entry_ctx_live.get("strategist_context"), dict) else {},
+                refreshed_strategist_context,
                 strategy_anchor_run_id=strategy_anchor_run_id,
                 strategist_input_path=strategist_input_path,
                 strategist_compact_input_path=strategist_compact_input_path,
                 strategist_llm_response_path=strategist_llm_response_path,
             )
+            refreshed_scanner_context = (
+                dict(lifecycle_bundle.get("scanner_reason_human") or {})
+                if isinstance(lifecycle_bundle.get("scanner_reason_human"), dict)
+                else dict(entry_ctx_live.get("scanner_context") or {})
+                if isinstance(entry_ctx_live.get("scanner_context"), dict)
+                else {}
+            )
             entry_ctx_live["scanner_context"] = _attach_strategy_anchor(
-                entry_ctx_live.get("scanner_context") if isinstance(entry_ctx_live.get("scanner_context"), dict) else {},
+                refreshed_scanner_context,
                 strategy_anchor_run_id=strategy_anchor_run_id,
                 strategist_input_path=strategist_input_path,
                 strategist_compact_input_path=strategist_compact_input_path,

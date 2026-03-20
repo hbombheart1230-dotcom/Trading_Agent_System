@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import libs.reporting.trade_story_pipeline as story_pipeline
 import scripts.run_live_execution_bundle_report as mod
 
 
@@ -254,6 +255,98 @@ def test_build_strategist_input_summary_surfaces_news_titles_from_sample_mapping
     assert summary["market_news_titles"] == ["코스피: 코스피 약세 지속"]
     assert summary["candidate_news_titles"] == ["000660: SK하이닉스 변동성 확대"]
 
+
+
+def test_build_filters_human_prefers_normalized_scanner_feature_coverage() -> None:
+    scanner = {
+        "feature_coverage": {
+            "present": 10,
+            "total": 12,
+            "coverage_ratio": 10 / 12,
+            "quality": "strong",
+            "present_keys": [
+                "engine_ma20_gap",
+                "engine_adx14",
+                "engine_trend_strength",
+                "engine_volume_spike20",
+                "engine_volatility20",
+                "engine_vwap_distance",
+                "engine_sector_relative_strength",
+                "engine_cross_section_rank",
+                "engine_regime",
+                "engine_signal_score",
+            ],
+            "missing_keys": ["engine_ma60", "engine_ma120"],
+        },
+        "selected_candidate": {
+            "sources": ["top_value", "sector_theme"],
+            "risk_score": 0.60,
+            "score_breakdown": {"theme_boost": 0.05},
+            "component_snapshot": {"trading_value_component": 1.0, "sentiment_component": 0.03},
+            "feature_snapshot": {
+                "engine_trend_strength": 0.14,
+                "engine_volume_spike20": 0.59,
+                "engine_volatility20": 0.05,
+                "engine_vwap_distance": 0.21,
+                "engine_sector_relative_strength": 0.0,
+                "engine_cross_section_rank": 0.75,
+            },
+        },
+    }
+    strategist = {"themes": ["defensive_large_cap"], "global_sentiment_score": -0.07}
+    supervisor = {"supervisor_allow": True}
+
+    out = story_pipeline.build_filters_human(scanner, strategist, supervisor)
+
+    assert "10/12 captured features" in out["summary"]
+    assert "strong" in out["summary"]
+    assert any("chart completeness filter: PASS - 10/12 captured chart features" == bullet for bullet in out["bullets"])
+
+
+def test_scanner_evidence_enrichment_normalizes_chart_coverage() -> None:
+    scanner_reason = {
+        "selected_symbol": "005930",
+        "top_reasons": ["highest combined scanner score (1.173)", "chart feature coverage 6/12"],
+        "bullets": ["Chart / feature coverage: 6/12"],
+    }
+    filters_human = {
+        "summary": "Scanner and guard checks passed 4 of 8 visible gates. Chart completeness was partial with 6/12 captured features.",
+        "bullets": ["chart completeness filter: PARTIAL - 6/12 captured chart features"],
+    }
+    scanner_evidence = {
+        "candidate_ranking_tables": [
+            {
+                "payload": {
+                    "rows": [
+                        {
+                            "symbol": "005930",
+                            "compact_feature_snapshot": {
+                                "engine_ma20_gap": 0.03,
+                                "engine_adx14": 14.4,
+                                "engine_trend_strength": 0.14,
+                                "engine_volume_spike20": 0.59,
+                                "engine_volatility20": 0.05,
+                                "engine_vwap_distance": 0.21,
+                                "engine_sector_relative_strength": 0.0,
+                                "engine_cross_section_rank": 0.75,
+                                "engine_regime": "high_volatility",
+                                "engine_signal_score": 0.0,
+                            },
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    enriched_reason = mod._enrich_scanner_reason_from_evidence(scanner_reason, scanner_evidence)
+    enriched_filters = mod._enrich_filters_from_evidence(filters_human, scanner_evidence, selected_symbol="005930")
+
+    assert "chart feature coverage 10/12" in enriched_reason["top_reasons"]
+    assert "Chart / feature coverage: 10/12" in enriched_reason["bullets"]
+    assert "10/12 captured features" in enriched_filters["summary"]
+    assert "strong" in enriched_filters["summary"]
+    assert "chart completeness filter: PASS - 10/12 captured chart features" in enriched_filters["bullets"]
 
 def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exit(tmp_path: Path, capsys, monkeypatch) -> None:
     day = "2026-03-16"

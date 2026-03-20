@@ -31,13 +31,20 @@ class _FakeRouter:
         return json.dumps(
             {
                 "headline": "run-1 운영 요약",
+                "executive_summary": "삼성전자(005930) 후보 감시 후 진입이 승인되어 현재 보유 상태로 관리 중입니다.",
                 "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
                 "strategist_summary": f"전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다. model={model}",
                 "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 1등으로 골랐습니다.",
-                "monitor_summary": "모니터는 no_position 상태를 보고 진입 가능 상태로 판단했습니다.",
+                "scanner_reason": "후보 5개 중 1위로 선정됐고, 거래대금과 추세 점수가 가장 안정적으로 결합됐습니다.",
+                "monitor_summary": "모니터는 분봉 조건을 확인하며 현재 보유 상태를 관리하고 있습니다.",
+                "entry_summary": "3분봉 기준 전고점 돌파와 VWAP 상회 유지, 거래량 증가가 확인되어 진입했습니다.",
+                "holding_summary": "현재 포지션은 보유 유지 상태이며, 가격 흐름은 VWAP 위에서 관리되고 있습니다.",
+                "exit_plan_summary": "VWAP 이탈이나 직전 저점 훼손이 나오면 청산을 우선 검토합니다.",
+                "risk_summary": "거시 변동성이 남아 있어 추격 매수 재발은 경계해야 합니다.",
                 "supervisor_summary": "감독관은 주문을 허용했습니다.",
                 "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
                 "reporter_summary": "리포터는 오늘 run을 정상으로 요약했습니다.",
+                "next_checkpoints": ["VWAP 유지 여부", "직전 저점 방어 여부"],
                 "operator_takeaways": [
                     "뉴스/거시 입력이 포함됐습니다.",
                     "차트/feature coverage가 strong입니다.",
@@ -59,13 +66,20 @@ class _RepairRouter:
         return json.dumps(
             {
                 "headline": "run-1 운영 요약",
+                "executive_summary": "복구 경로에서도 삼성전자(005930) 보유 판단을 이어갑니다.",
                 "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
                 "strategist_summary": "전략가는 뉴스와 글로벌 감성을 읽었습니다.",
                 "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 골랐습니다.",
-                "monitor_summary": "모니터는 no_position을 확인했습니다.",
+                "scanner_reason": "후보 중 점수와 유동성이 가장 안정적이었습니다.",
+                "monitor_summary": "모니터는 현재 보유 상태를 기준으로 감시 중입니다.",
+                "entry_summary": "분봉 조건을 확인한 뒤 진입했습니다.",
+                "holding_summary": "현재 포지션은 보유 상태입니다.",
+                "exit_plan_summary": "VWAP 이탈 시 청산을 검토합니다.",
+                "risk_summary": "단기 변동성 확대는 주의가 필요합니다.",
                 "supervisor_summary": "감독관은 주문을 허용했습니다.",
                 "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
                 "reporter_summary": "리포터는 정상 run으로 평가했습니다.",
+                "next_checkpoints": ["VWAP 유지 여부"],
                 "operator_takeaways": ["repair 경로가 동작했습니다."],
             },
             ensure_ascii=False,
@@ -92,6 +106,13 @@ class _LineRepairRouter:
             "supervisor_summary: 감독관은 주문을 허용했습니다.\n"
             "executor_summary: 수행자는 BUY 005930 1주를 실행했습니다.\n"
             "reporter_summary: 리포터는 정상 run으로 평가했습니다.\n"
+            "executive_summary: 삼성전자 보유 판단 요약입니다.\n"
+            "scanner_reason: 후보 중 1위였습니다.\n"
+            "entry_summary: 분봉 돌파가 확인되어 진입했습니다.\n"
+            "holding_summary: 현재 보유 상태입니다.\n"
+            "exit_plan_summary: VWAP 이탈 시 청산합니다.\n"
+            "risk_summary: 변동성 확대 주의가 필요합니다.\n"
+            "next_checkpoints: VWAP 유지 | 직전 저점 방어\n"
             "operator_takeaways: line repair 동작 | 무료 모델 경로 복구\n"
         )
 
@@ -128,13 +149,20 @@ class _CaptureBriefPolicyRouter:
         return json.dumps(
             {
                 "headline": "run-1 운영 요약",
+                "executive_summary": "운영 요약입니다.",
                 "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
                 "strategist_summary": f"전략가는 뉴스와 글로벌 감성을 읽고 defensive 프레임을 만들었습니다. model={model}",
                 "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 1등으로 골랐습니다.",
-                "monitor_summary": "모니터는 no_position 상태를 보고 진입 가능 상태로 판단했습니다.",
+                "scanner_reason": "후보 중 가장 안정적인 점수를 기록했습니다.",
+                "monitor_summary": "모니터는 보유 상태를 관리하고 있습니다.",
+                "entry_summary": "분봉 조건을 확인해 진입했습니다.",
+                "holding_summary": "보유 상태입니다.",
+                "exit_plan_summary": "핵심 지지 이탈 시 청산합니다.",
+                "risk_summary": "변동성 리스크를 주시합니다.",
                 "supervisor_summary": "감독관은 주문을 허용했습니다.",
                 "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
                 "reporter_summary": "리포터는 오늘 run을 정상으로 요약했습니다.",
+                "next_checkpoints": ["지지 유지 여부"],
                 "operator_takeaways": [
                     "뉴스/거시 입력이 포함됐습니다.",
                     "차트/feature coverage가 strong입니다.",
@@ -152,17 +180,76 @@ class _LeakyBriefRouter:
         return json.dumps(
             {
                 "headline": "run-1 운영 요약",
+                "executive_summary": "누출 테스트 요약입니다.",
                 "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
                 "strategist_summary": "전략가는 뉴스와 글로벌 감성을 읽었습니다.",
                 "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 골랐습니다.",
                 "monitor_summary": "포지션 없음(no_position) 상태를 확인했습니다.",
+                "scanner_reason": "후보 중 우선순위가 가장 높았습니다.",
+                "entry_summary": "분봉 조건을 확인했습니다.",
+                "holding_summary": "현재 포지션은 보유 상태입니다.",
+                "exit_plan_summary": "청산 조건을 계속 감시합니다.",
+                "risk_summary": "내부 지시문은 노출하지 않습니다.",
                 "supervisor_summary": "감독관은 주문을 허용했습니다.",
                 "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
                 "reporter_summary": "리포터는 정상 run으로 평가했습니다.",
+                "next_checkpoints": ["VWAP 유지 여부"],
                 "operator_takeaways": [
                     "canonical_trade.available=true 이므로 reports/trades를 source of truth로 사용합니다.",
                     "차트/feature coverage가 strong입니다.",
                 ],
+            },
+            ensure_ascii=False,
+        )
+
+
+class _MixedLanguageRepairRouter:
+    def __init__(self) -> None:
+        self.client = object()
+        self.calls = 0
+
+    def chat(self, role: str, messages: list[dict], *, policy: dict | None = None) -> str:
+        self.calls += 1
+        if self.calls == 1:
+            return json.dumps(
+                {
+                    "headline": "run-1 운영 요약",
+                    "executive_summary": "中立 시장에서 005930 포지션을 유지합니다.",
+                    "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
+                    "strategist_summary": "전략가는 뉴스와 글로벌 감성을 읽었습니다.",
+                    "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 골랐습니다.",
+                    "scanner_reason": "候補 5개 중 1위였습니다.",
+                    "monitor_summary": "모니터는 보유 상태를 관리합니다.",
+                    "entry_summary": "3분봉 돌파를 보고 진입했습니다.",
+                    "holding_summary": "部分 보유 상태입니다.",
+                    "exit_plan_summary": "VWAP 이탈 시 청산합니다.",
+                    "risk_summary": "變動성 확대는 주의가 필요합니다.",
+                    "supervisor_summary": "감독관은 주문을 허용했습니다.",
+                    "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
+                    "reporter_summary": "리포터는 정상 run으로 평가했습니다.",
+                    "next_checkpoints": ["VWAP 유지 여부"],
+                    "operator_takeaways": ["시장 심리는 아직 중립입니다."],
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "headline": "run-1 운영 요약",
+                "executive_summary": "중립 시장에서 005930 보유 전략을 유지합니다.",
+                "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
+                "strategist_summary": "전략가는 뉴스와 글로벌 감성을 읽었습니다.",
+                "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 골랐습니다.",
+                "scanner_reason": "후보 5개 중 1위였고, 거래대금과 추세 점수가 가장 안정적이었습니다.",
+                "monitor_summary": "모니터는 보유 상태를 관리하고 있습니다.",
+                "entry_summary": "3분봉 돌파와 VWAP 상회 유지가 확인되어 진입했습니다.",
+                "holding_summary": "현재 포지션은 보유 상태이며 가격 흐름을 계속 점검 중입니다.",
+                "exit_plan_summary": "VWAP 이탈이나 직전 저점 훼손 시 청산합니다.",
+                "risk_summary": "단기 변동성 확대와 거래대금 둔화는 계속 주의해야 합니다.",
+                "supervisor_summary": "감독관은 주문을 허용했습니다.",
+                "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
+                "reporter_summary": "리포터는 정상 run으로 평가했습니다.",
+                "next_checkpoints": ["VWAP 유지 여부", "직전 저점 방어 여부"],
+                "operator_takeaways": ["시장 심리는 아직 중립이지만 변동성은 확인이 필요합니다."],
             },
             ensure_ascii=False,
         )
@@ -706,6 +793,57 @@ def test_operator_brief_input_prefers_canonical_trade_artifacts(tmp_path: Path, 
     assert compact["reporter"]["ai_summary"] == "Reporter linked and graded the run A-."
 
 
+def test_operator_brief_input_normalizes_stale_chart_coverage_from_canonical_trade(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    detail = data_access.load_run_detail(cfg, "run-1")
+    detail["scanner"]["feature_coverage"] = {
+        "present": 10,
+        "total": 12,
+        "coverage_ratio": 10 / 12,
+        "quality": "strong",
+        "present_keys": [
+            "engine_ma20_gap",
+            "engine_adx14",
+            "engine_trend_strength",
+            "engine_volume_spike20",
+            "engine_volatility20",
+            "engine_vwap_distance",
+            "engine_sector_relative_strength",
+            "engine_cross_section_rank",
+            "engine_regime",
+            "engine_signal_score",
+        ],
+        "missing_keys": ["engine_ma60", "engine_ma120"],
+    }
+    detail["trade_report"]["story_input_data"]["filters_human"] = {
+        "summary": "Scanner and guard checks passed 4 of 8 visible gates. Chart completeness was partial with 6/12 captured features.",
+        "bullets": ["chart completeness filter: PARTIAL - 6/12 captured chart features"],
+    }
+    detail["trade_report"]["report_data"]["scanner_filters"] = {
+        "summary": "Scanner and guard checks passed 4 of 8 visible gates. Chart completeness was partial with 6/12 captured features.",
+        "bullets": ["chart completeness filter: PARTIAL - 6/12 captured chart features"],
+    }
+    detail["trade_report"]["story_input_data"]["scanner_reason_human"] = {
+        "summary": "Selected as top ranked symbol due to value/volume blend.",
+        "bullets": [
+            "Universe scanned: 5",
+            "Selected rank: #1",
+            "Chart / feature coverage: 6/12",
+        ],
+    }
+
+    compact = data_access._build_operator_brief_input(detail)
+    sections = data_access._build_operator_brief_sections(detail)
+
+    assert "10/12 captured features" in compact["scanner"]["canonical_filters_summary"]
+    assert any("10/12" in bullet for bullet in compact["scanner"]["canonical_filter_bullets"])
+    assert any("10/12" in bullet for bullet in compact["scanner"]["canonical_bullets"])
+    chart_rows = [row for row in sections["filters_and_gates"] if row["name"] == "Chart Completeness Filter"]
+    assert chart_rows
+    assert chart_rows[0]["note"] == "10/12 filled"
+
+
 def test_fallback_operator_brief_uses_canonical_trade_artifacts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
     cfg = _make_config(tmp_path)
@@ -878,9 +1016,9 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert saved["monitor_snapshot"]["price_source"] == "-"
     assert str(saved["monitor_snapshot"]["effective_stop_reason"] or "") in {"", "-", "Hard stop"}
     md_text = brief_md.read_text(encoding="utf-8")
-    assert "# Operator Brief" in md_text
-    assert "price_source:" in md_text
-    assert "feature_source:" in md_text
+    assert "# 운영자 브리프" in md_text
+    assert "## 3. 진입 근거" in md_text
+    assert "## 5. 청산 계획" in md_text
     brief_compact = brief_json.parent / "brief_compact_input.json"
     assert brief_compact.exists() is True
     compact_payload = json.loads(brief_compact.read_text(encoding="utf-8"))
@@ -973,6 +1111,19 @@ def test_operator_brief_uses_openrouter_default_max_tokens_when_role_value_missi
     assert int(_CaptureBriefPolicyRouter.policies[0]["max_tokens"]) == 4096
 
 
+def test_operator_brief_repairs_mixed_language_output(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _MixedLanguageRepairRouter()))
+    cfg = _make_config(tmp_path)
+
+    detail = data_access.load_run_detail(cfg, "run-1")
+    brief = detail["operator_brief"]
+
+    assert brief["status"] == "repaired"
+    assert "中立" not in str(brief.get("executive_summary") or "")
+    assert "候補" not in str(brief.get("scanner_reason") or "")
+    assert "變動" not in str(brief.get("risk_summary") or "")
+
+
 def test_operator_brief_sanitizes_internal_prompt_leakage_and_bad_monitor_summary(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _LeakyBriefRouter()))
     cfg = _make_config(tmp_path)
@@ -1016,7 +1167,7 @@ def test_operator_brief_prefers_richer_fallback_text_and_takeaways() -> None:
         },
     )
 
-    assert "현재 포지션 보유 중이며 HOLD 결정" in normalized["monitor_summary"]
+    assert "현재 포지션 보유 중이며 보유 유지 결정" in normalized["monitor_summary"]
     assert normalized["operator_takeaways"][0].startswith("중립 시장에서 브레이크아웃 전략 실행")
 
 

@@ -24,6 +24,7 @@ from libs.runtime.canonical_artifacts import write_monitor_artifact
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.exit_policy import apply_env_stop_take_fallbacks, evaluate_exit_policy
 from libs.runtime.feature_engine import build_feature_row
+from libs.runtime.intraday_monitor_signals import evaluate_intraday_entry_signal
 from libs.runtime.position_sizing import evaluate_position_size
 from libs.strategies.contracts import coerce_strategist_output
 
@@ -1573,9 +1574,34 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     open_position_count = sum(1 for row in all_pos_map.values() if max(0, _to_int((row or {}).get("qty"))) > 0)
     block_buy_open_position = _resolve_block_buy_when_open_position(state, policy, monitor_policy)
     post_exit_cooldown_sec = _resolve_post_exit_cooldown_sec(state, policy, monitor_policy)
+    strategy_frame = _extract_monitor_strategy_frame(state)
     buy_blocked_open_position = False
     buy_blocked_post_exit_cooldown = False
     post_exit_cooldown_remaining_sec = 0
+    entry_info: Dict[str, Any] = {
+        "enabled": True,
+        "evaluated": False,
+        "triggered": False,
+        "reason": "",
+        "pattern": "",
+        "signal_chain": [],
+        "metrics": {},
+        "thresholds": {},
+        "guard_blocked": False,
+        "guard_reason": "",
+        "intent_cooldown_sec": 0,
+        "intent_cooldown_until": None,
+        "intent_submitted": False,
+        "legacy_fallback_used": False,
+    }
+    entry_signal_detected = False
+    entry_guard_blocked = False
+    entry_guard_reason = ""
+    entry_symbol = _norm_symbol(selected.get("symbol")) if isinstance(selected, dict) and selected.get("symbol") else ""
+    entry_cooldown_map = state.get("_monitor_entry_cooldown_until")
+    if not isinstance(entry_cooldown_map, dict):
+        entry_cooldown_map = {}
+    now_epoch_for_entry = _resolve_now_epoch(state)
     try:
         record_raw_input(
             run_id=run_id,
@@ -1665,7 +1691,6 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
         last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
         last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
-        now_epoch_for_entry = _resolve_now_epoch(state)
         if (
             open_position_count <= 0
             and post_exit_cooldown_sec > 0
@@ -1678,11 +1703,53 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 buy_blocked_post_exit_cooldown = True
                 post_exit_cooldown_remaining_sec = remaining
 
+        entry_rows = []
+        ohlcv_by_symbol = state.get("ohlcv_by_symbol") if isinstance(state.get("ohlcv_by_symbol"), dict) else {}
+        if symbol and isinstance(ohlcv_by_symbol.get(symbol), list):
+            entry_rows = list(ohlcv_by_symbol.get(symbol) or [])
+        entry_info = evaluate_intraday_entry_signal(
+            entry_rows,
+            current_price=selected.get("price") if isinstance(selected, dict) else None,
+            features=selected.get("features") if isinstance(selected, dict) and isinstance(selected.get("features"), dict) else {},
+            policy=monitor_policy,
+            frame=strategy_frame,
+        )
+        entry_info["symbol"] = symbol
+        entry_info["selected_symbol"] = symbol
+        entry_signal_detected = bool(entry_info.get("triggered"))
+        entry_intent_cooldown_sec = max(0, _to_int((entry_info.get("thresholds") or {}).get("intent_cooldown_sec")))
+        cooldown_until = max(0, _to_int(entry_cooldown_map.get(symbol)))
+        if cooldown_until > 0 and cooldown_until <= now_epoch_for_entry:
+            entry_cooldown_map.pop(symbol, None)
+            cooldown_until = 0
+        if max(0, _to_int((all_pos_map.get(symbol) or {}).get("qty"))) > 0:
+            entry_cooldown_map.pop(symbol, None)
+            cooldown_until = 0
+        entry_info["intent_cooldown_sec"] = int(entry_intent_cooldown_sec)
+        entry_info["intent_cooldown_until"] = int(cooldown_until) if cooldown_until > 0 else None
+
+        if bool(block_buy_open_position) and open_position_count > 0:
+            entry_guard_blocked = True
+            entry_guard_reason = "buy_blocked_open_position"
+            buy_blocked_open_position = True
+        elif buy_blocked_post_exit_cooldown:
+            entry_guard_blocked = True
+            entry_guard_reason = "post_exit_cooldown"
+        elif entry_intent_cooldown_sec > 0 and cooldown_until > now_epoch_for_entry:
+            entry_guard_blocked = True
+            entry_guard_reason = f"entry_guard_cooldown:{max(0, cooldown_until - now_epoch_for_entry)}s_remaining"
+
+        entry_info["guard_blocked"] = bool(entry_guard_blocked)
+        entry_info["guard_reason"] = str(entry_guard_reason)
+        entry_info["legacy_fallback_used"] = False
+
         if not symbol:
             intents = []
         elif qty <= 0:
             intents = []
-        elif buy_blocked_post_exit_cooldown:
+        elif entry_guard_blocked:
+            intents = []
+        elif not bool(entry_info.get("triggered")):
             intents = []
         else:
             intent = {
@@ -1694,6 +1761,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "score": selected.get("score"),
                     "risk_score": selected.get("risk_score"),
                     "confidence": selected.get("confidence"),
+                    "entry_signal_source": "monitor_intraday_entry",
+                    "entry_pattern": str(entry_info.get("pattern") or ""),
+                    "entry_reason": str(entry_info.get("reason") or ""),
+                    "entry_signal_chain": list(entry_info.get("signal_chain") or []),
+                    "entry_metrics": dict(entry_info.get("metrics") or {}),
                 },
             }
             if bool(sizing_info.get("enabled")):
@@ -1705,10 +1777,21 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 }
             if post_exit_cooldown_sec > 0:
                 intent["meta"]["post_exit_cooldown_sec"] = int(post_exit_cooldown_sec)
+            if entry_intent_cooldown_sec > 0:
+                intent["meta"]["entry_intent_cooldown_sec"] = int(entry_intent_cooldown_sec)
             intents = [intent]
+            entry_info["intent_submitted"] = True
+            if entry_intent_cooldown_sec > 0:
+                entry_cooldown_map[symbol] = int(now_epoch_for_entry + entry_intent_cooldown_sec)
+                entry_info["intent_cooldown_until"] = int(now_epoch_for_entry + entry_intent_cooldown_sec)
+        entry_info["decision"] = "BUY" if bool(entry_info.get("intent_submitted")) else "WAIT"
     if bool(intents) and block_buy_open_position and open_position_count > 0:
         intents = []
         buy_blocked_open_position = True
+        entry_info["guard_blocked"] = True
+        entry_info["guard_reason"] = "buy_blocked_open_position"
+        entry_info["decision"] = "WAIT"
+    state["_monitor_entry_cooldown_until"] = entry_cooldown_map
 
     # Optional M29-2 exit policy (default disabled for backward compatibility).
     use_exit_policy = _resolve_use_exit_policy(state, policy)
@@ -1740,7 +1823,6 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         min_hold_sec = _resolve_min_hold_sec(state, monitor_policy)
         sell_cooldown_sec = _resolve_sell_cooldown_sec(state, monitor_policy)
         confirm_ticks = _resolve_exit_confirm_ticks(state, monitor_policy)
-        strategy_frame = _extract_monitor_strategy_frame(state)
         frame_applied = _apply_monitor_strategy_frame(
             min_hold_sec=min_hold_sec,
             sell_cooldown_sec=sell_cooldown_sec,
@@ -1909,6 +1991,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             _clear_symbol_confirm_keys(confirm_map, symbol)
             if bool(eod_carry.get("approved")) and qty > 0:
                 monitor_reason = "eod_carry_approved"
+            elif qty <= 0 and bool(entry_info.get("guard_blocked")):
+                monitor_reason = str(entry_info.get("guard_reason") or "entry_guard_blocked")
+            elif qty <= 0 and str(entry_info.get("reason") or "").strip():
+                monitor_reason = str(entry_info.get("reason") or "entry_wait")
+            elif qty <= 0 and bool(entry_info.get("triggered")) and bool(entry_info.get("intent_submitted")):
+                monitor_reason = str(entry_info.get("reason") or "entry_signal_confirmed")
             else:
                 monitor_reason = "hold" if qty > 0 else "no_position"
 
@@ -1995,6 +2083,19 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "eod_carry_blockers": list(eod_carry.get("blockers") or []),
             "eod_carry_non_eod_reason": str(eod_carry.get("non_eod_reason") or ""),
             "eod_carry_non_eod_triggered": bool(eod_carry.get("non_eod_triggered")),
+            "entry_evaluated": bool(entry_info.get("evaluated")),
+            "entry_triggered": bool(entry_info.get("triggered")),
+            "entry_reason": str(entry_info.get("reason") or ""),
+            "entry_pattern": str(entry_info.get("pattern") or ""),
+            "entry_signal_chain": list(entry_info.get("signal_chain") or []),
+            "entry_metrics": dict(entry_info.get("metrics") or {}),
+            "entry_thresholds": dict(entry_info.get("thresholds") or {}),
+            "entry_guard_blocked": bool(entry_info.get("guard_blocked")),
+            "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
+            "entry_intent_submitted": bool(entry_info.get("intent_submitted")),
+            "entry_legacy_fallback_used": bool(entry_info.get("legacy_fallback_used")),
+            "entry_intent_cooldown_sec": int(entry_info.get("intent_cooldown_sec") or 0),
+            "entry_intent_cooldown_until": entry_info.get("intent_cooldown_until"),
         }
         if bool(exit_signal_detected) and not bool(sell_guard_blocked) and qty > 0:
             intents = [
@@ -2077,6 +2178,19 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "post_exit_cooldown_sec": int(post_exit_cooldown_sec),
         "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
         "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
+        "entry_evaluated": bool(entry_info.get("evaluated")),
+        "entry_triggered": bool(entry_info.get("triggered")),
+        "entry_reason": str(entry_info.get("reason") or ""),
+        "entry_pattern": str(entry_info.get("pattern") or ""),
+        "entry_signal_chain": list(entry_info.get("signal_chain") or []),
+        "entry_metrics": dict(entry_info.get("metrics") or {}),
+        "entry_thresholds": dict(entry_info.get("thresholds") or {}),
+        "entry_guard_blocked": bool(entry_info.get("guard_blocked")),
+        "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
+        "entry_intent_submitted": bool(entry_info.get("intent_submitted")),
+        "entry_legacy_fallback_used": bool(entry_info.get("legacy_fallback_used")),
+        "entry_intent_cooldown_sec": int(entry_info.get("intent_cooldown_sec") or 0),
+        "entry_intent_cooldown_until": entry_info.get("intent_cooldown_until"),
     }
     state["monitor_output"] = {
         "selected_symbol": (selected.get("symbol") if isinstance(selected, dict) else None),
@@ -2084,18 +2198,25 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "intent_qty": (int(intents[0].get("qty") or 0) if intents else 0),
         "entry_exit_reason": (
             str(exit_info.get("reason") or "")
-            if bool(exit_info.get("enabled"))
+            if bool(exit_info.get("enabled")) and bool(exit_info.get("exit_signal_detected"))
             else (
                 "post_exit_cooldown"
                 if bool(buy_blocked_post_exit_cooldown)
                 else (
                 "buy_blocked_open_position"
                 if bool(buy_blocked_open_position)
-                else "entry_candidate_selected"
+                else (
+                    str(entry_info.get("guard_reason") or "")
+                    if bool(entry_info.get("guard_blocked"))
+                    else (
+                        str(entry_info.get("reason") or "entry_wait")
+                    )
+                )
                 )
             )
         ),
     }
+    state["monitor_entry"] = dict(entry_info)
     state["monitor_exit"] = exit_info
     state["monitor_sizing"] = sizing_info
     monitor_symbol = str(exit_info.get("symbol") or (selected.get("symbol") if isinstance(selected, dict) else "") or "")
@@ -2121,6 +2242,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     thresholds = dict(exit_info.get("thresholds") or {}) if isinstance(exit_info.get("thresholds"), dict) else {}
+    entry_metrics = dict(entry_info.get("metrics") or {}) if isinstance(entry_info.get("metrics"), dict) else {}
+    entry_thresholds = dict(entry_info.get("thresholds") or {}) if isinstance(entry_info.get("thresholds"), dict) else {}
     pnl_ratio = _to_float(exit_info.get("pnl_ratio")) if exit_info.get("pnl_ratio") not in (None, "") else None
     threshold_snapshot = {
         "current_price": exit_info.get("price"),
@@ -2138,6 +2261,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "watch_axes": list(exit_info.get("watch_axes") or []),
         "exit_confirm_required": int(exit_info.get("exit_confirm_ticks") or 0),
         "exit_confirm_count": int(exit_info.get("exit_confirm_count") or 0),
+        "entry_timeframe_minutes": entry_metrics.get("timeframe_minutes"),
+        "entry_recent_high": entry_metrics.get("recent_high"),
+        "entry_breakout_level": entry_metrics.get("breakout_level"),
+        "entry_vwap": entry_metrics.get("vwap"),
+        "entry_volume_ratio": entry_metrics.get("volume_ratio"),
+        "entry_extended_from_vwap_pct": entry_metrics.get("extended_from_vwap_pct"),
+        "entry_pullback_depth_pct": entry_metrics.get("pullback_depth_pct"),
+        "entry_volume_ratio_min": entry_thresholds.get("volume_ratio_min"),
+        "entry_max_extended_from_vwap_pct": entry_thresholds.get("max_extended_from_vwap_pct"),
     }
     _emit_monitor_event(
         state,
@@ -2158,9 +2290,43 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "previous_active_exit_axis": str(previous_monitor_state.get("active_exit_axis") or ""),
                 "current_active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
                 "exit_triggered": bool(exit_info.get("triggered")),
+                "entry_triggered": bool(entry_info.get("triggered")),
+                "entry_pattern": str(entry_info.get("pattern") or ""),
             },
         },
         symbol=monitor_symbol,
+    )
+    buy_submitted = any(str((intent or {}).get("side") or "").strip().upper() == "BUY" for intent in list(intents or []))
+    buy_skipped_reason = ""
+    if not bool(buy_submitted):
+        buy_skipped_reason = str(entry_info.get("guard_reason") or entry_info.get("reason") or "entry_wait").strip()
+    entry_event_metrics = dict(entry_info.get("metrics") or {}) if isinstance(entry_info.get("metrics"), dict) else {}
+    if "price" not in entry_event_metrics:
+        entry_event_metrics["price"] = entry_event_metrics.get("current_price")
+    if "vwap_distance" not in entry_event_metrics:
+        entry_event_metrics["vwap_distance"] = entry_event_metrics.get("extended_from_vwap_pct")
+    if "pullback_pct" not in entry_event_metrics:
+        entry_event_metrics["pullback_pct"] = entry_event_metrics.get("pullback_depth_pct")
+    _emit_monitor_event(
+        state,
+        name="entry_decision_detail",
+        payload={
+            "decision": "BUY" if bool(buy_submitted) else "WAIT",
+            "reason": str(entry_info.get("guard_reason") or entry_info.get("reason") or "entry_wait"),
+            "entry_evaluated": bool(entry_info.get("evaluated")),
+            "entry_triggered": bool(entry_info.get("triggered")),
+            "entry_pattern": str(entry_info.get("pattern") or ""),
+            "entry_reason": str(entry_info.get("reason") or ""),
+            "signal_chain": list(entry_info.get("signal_chain") or []),
+            "guard_blocked": bool(entry_info.get("guard_blocked")),
+            "guard_reason": str(entry_info.get("guard_reason") or ""),
+            "buy_submitted": bool(buy_submitted),
+            "buy_skipped_reason": buy_skipped_reason,
+            "metrics": entry_event_metrics,
+            "thresholds": dict(entry_info.get("thresholds") or {}),
+        },
+        level="info",
+        symbol=monitor_symbol or entry_symbol,
     )
     sell_submitted = any(str((intent or {}).get("side") or "").strip().upper() == "SELL" for intent in list(intents or []))
     sell_skipped_reason = ""
@@ -2197,6 +2363,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
             "price_source": str(exit_info.get("price_source") or ""),
             "feature_source": str(exit_info.get("feature_source") or ""),
+            "entry_evaluated": bool(entry_info.get("evaluated")),
+            "entry_triggered": bool(entry_info.get("triggered")),
+            "entry_pattern": str(entry_info.get("pattern") or ""),
             "buy_blocked_open_position": bool(buy_blocked_open_position),
             "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
         },
@@ -2243,6 +2412,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "post_exit_cooldown_sec": int(post_exit_cooldown_sec),
             "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
             "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
+            "entry_evaluated": bool(entry_info.get("evaluated")),
+            "entry_triggered": bool(entry_info.get("triggered")),
+            "entry_pattern": str(entry_info.get("pattern") or ""),
+            "entry_reason": str(entry_info.get("reason") or ""),
+            "entry_guard_blocked": bool(entry_info.get("guard_blocked")),
+            "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
+            "entry_metrics": dict(entry_info.get("metrics") or {}),
+            "entry_thresholds": dict(entry_info.get("thresholds") or {}),
         },
     )
     append_decision_trace(
@@ -2274,6 +2451,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "trade_aggressiveness": str(exit_info.get("trade_aggressiveness") or ""),
             "strategy_frame_adjustments": list(exit_info.get("strategy_frame_adjustments") or []),
             "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
+            "entry_evaluated": bool(entry_info.get("evaluated")),
+            "entry_triggered": bool(entry_info.get("triggered")),
+            "entry_pattern": str(entry_info.get("pattern") or ""),
+            "entry_signal_chain": list(entry_info.get("signal_chain") or []),
+            "entry_metrics": dict(entry_info.get("metrics") or {}),
+            "entry_thresholds": dict(entry_info.get("thresholds") or {}),
+            "entry_guard_blocked": bool(entry_info.get("guard_blocked")),
+            "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
         },
     )
     try:
@@ -2316,6 +2501,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "post_exit_cooldown_sec": int(post_exit_cooldown_sec),
                 "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
                 "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
+                "entry_evaluated": bool(entry_info.get("evaluated")),
+                "entry_triggered": bool(entry_info.get("triggered")),
+                "entry_pattern": str(entry_info.get("pattern") or ""),
+                "entry_reason": str(entry_info.get("reason") or ""),
+                "entry_signal_chain": list(entry_info.get("signal_chain") or []),
+                "entry_metrics": dict(entry_info.get("metrics") or {}),
+                "entry_thresholds": dict(entry_info.get("thresholds") or {}),
+                "entry_guard_blocked": bool(entry_info.get("guard_blocked")),
+                "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
             },
             decision_link={
                 "decision_chain": {

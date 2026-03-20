@@ -140,7 +140,7 @@ def test_monitor_blocks_new_buy_when_open_position_guard_enabled(monkeypatch):
     assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "buy_blocked_open_position"
 
 
-def test_monitor_allows_buy_when_open_position_guard_disabled(monkeypatch):
+def test_monitor_waits_when_open_position_guard_disabled_but_minute_candles_missing(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
 
@@ -154,10 +154,109 @@ def test_monitor_allows_buy_when_open_position_guard_disabled(monkeypatch):
         "policy": {},
     }
     out = monitor_node(state)
+    assert out.get("intents") == []
+    monitor = out.get("monitor") or {}
+    assert monitor.get("buy_blocked_open_position") is False
+    assert monitor.get("entry_triggered") is False
+    assert monitor.get("entry_reason") == "minute_candle_missing"
+    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "minute_candle_missing"
+
+
+def test_monitor_requires_intraday_entry_confirmation_when_ohlcv_available(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "ohlcv_by_symbol": {
+            "BBB": [
+                {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+                {"open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+                {"open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+                {"open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+                {"open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+                {"open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 2500, "vwap": 101.2},
+            ]
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {},
+    }
+
+    out = monitor_node(state)
     intents = out.get("intents") or []
     assert len(intents) == 1
     assert intents[0]["side"] == "BUY"
-    assert (out.get("monitor") or {}).get("buy_blocked_open_position") is False
+    monitor = out.get("monitor") or {}
+    assert monitor.get("entry_evaluated") is True
+    assert monitor.get("entry_triggered") is True
+    assert monitor.get("entry_pattern") == "breakout_vwap_hold"
+
+
+def test_monitor_skips_buy_when_intraday_entry_signal_not_confirmed(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 103.2,
+            "features": {"engine_vwap_distance": 0.020, "engine_volume_spike20": 1.6},
+        },
+        "ohlcv_by_symbol": {
+            "BBB": [
+                {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+                {"open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+                {"open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+                {"open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+                {"open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+                {"open": 101.2, "high": 103.4, "low": 101.0, "close": 103.2, "volume": 2500, "vwap": 101.1},
+            ]
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {},
+    }
+
+    out = monitor_node(state)
+    assert out.get("intents") == []
+    monitor = out.get("monitor") or {}
+    assert monitor.get("entry_evaluated") is True
+    assert monitor.get("entry_triggered") is False
+    assert monitor.get("entry_reason") == "too_extended_from_vwap"
+    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "too_extended_from_vwap"
+
+
+def test_monitor_waits_when_minute_candles_missing(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.2,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.3},
+        },
+        "ohlcv_by_symbol": {},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {},
+    }
+
+    out = monitor_node(state)
+    assert out.get("intents") == []
+    monitor = out.get("monitor") or {}
+    assert monitor.get("entry_evaluated") is False
+    assert monitor.get("entry_triggered") is False
+    assert monitor.get("entry_reason") == "minute_candle_missing"
+    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "minute_candle_missing"
 
 
 def test_monitor_blocks_reentry_during_post_exit_cooldown(monkeypatch):
@@ -178,6 +277,45 @@ def test_monitor_blocks_reentry_during_post_exit_cooldown(monkeypatch):
     assert mon.get("buy_blocked_post_exit_cooldown") is True
     assert mon.get("post_exit_cooldown_remaining_sec") == 100
     assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "post_exit_cooldown"
+
+
+def test_monitor_entry_intent_cooldown_suppresses_duplicate_buy_intents(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "60")
+
+    state = {
+        "tick_ts": 1772850000,
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "ohlcv_by_symbol": {
+            "BBB": [
+                {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+                {"open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+                {"open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+                {"open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+                {"open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+                {"open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 2500, "vwap": 101.2},
+            ]
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {},
+    }
+
+    out1 = monitor_node(state)
+    intents1 = out1.get("intents") or []
+    assert len(intents1) == 1
+    assert intents1[0]["side"] == "BUY"
+
+    out2 = monitor_node(out1)
+    assert out2.get("intents") == []
+    monitor2 = out2.get("monitor") or {}
+    assert monitor2.get("entry_guard_blocked") is True
+    assert "entry_guard_cooldown" in str(monitor2.get("entry_guard_reason") or "")
 
 
 def test_monitor_falls_back_to_held_symbol_for_exit_when_selected_has_no_position(monkeypatch):

@@ -265,6 +265,48 @@ def _feature_coverage(feature_snapshot: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _normalized_feature_coverage(reported: Dict[str, Any], feature_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    computed = _feature_coverage(feature_snapshot)
+    if not isinstance(reported, dict) or not reported:
+        return computed
+    present = _safe_int(reported.get("present"), _safe_int(computed.get("present"), 0))
+    total = _safe_int(reported.get("total"), _safe_int(computed.get("total"), 0))
+    ratio = _safe_float(reported.get("coverage_ratio"), (float(present) / float(total) if total else 0.0))
+    quality = str(reported.get("quality") or "").strip().lower()
+    if not quality:
+        if total <= 0:
+            quality = "missing"
+        elif ratio >= 0.75:
+            quality = "strong"
+        elif ratio >= 0.35:
+            quality = "partial"
+        else:
+            quality = "missing"
+    return {
+        "present": present,
+        "total": total,
+        "coverage_ratio": ratio,
+        "quality": quality,
+        "present_keys": list(reported.get("present_keys") or computed.get("present_keys") or []),
+        "missing_keys": list(reported.get("missing_keys") or computed.get("missing_keys") or []),
+    }
+
+
+def _chart_filter_status_and_note(feature_coverage: Dict[str, Any]) -> tuple[str, str]:
+    present = _safe_int(feature_coverage.get("present"), 0)
+    total = _safe_int(feature_coverage.get("total"), 0)
+    ratio = _safe_float(feature_coverage.get("coverage_ratio"), 0.0)
+    if total <= 0:
+        return "SKIPPED", "feature snapshot not available"
+    if ratio >= 0.75:
+        status = "PASS"
+    elif ratio >= 0.5:
+        status = "PARTIAL"
+    else:
+        status = "FAIL"
+    return status, f"{present}/{total} filled"
+
+
 def _quote_metrics_snapshot(feature_snapshot: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(feature_snapshot, dict) or not feature_snapshot:
         return {
@@ -372,6 +414,13 @@ def _parse_operator_brief_lines(text: Any) -> Dict[str, Any]:
         "executor_summary",
         "reporter_summary",
         "operator_takeaways",
+        "executive_summary",
+        "scanner_reason",
+        "entry_summary",
+        "holding_summary",
+        "exit_plan_summary",
+        "risk_summary",
+        "next_checkpoints",
     ]
     out: Dict[str, Any] = {}
     for key in keys:
@@ -379,12 +428,12 @@ def _parse_operator_brief_lines(text: Any) -> Dict[str, Any]:
         matches = re.findall(pattern, raw, flags=re.IGNORECASE)
         if not matches:
             continue
-        if key == "operator_takeaways":
+        if key in {"operator_takeaways", "next_checkpoints"}:
             for candidate in reversed(matches):
                 items = [item.strip(" -*") for item in str(candidate).split("|") if item.strip(" -*")]
                 if not items:
                     continue
-                if all(item.lower().startswith("item") for item in items):
+                if key == "operator_takeaways" and all(item.lower().startswith("item") for item in items):
                     continue
                 out[key] = items[:5]
                 break
@@ -1596,6 +1645,16 @@ OPERATOR_BRIEF_REQUIRED_KEYS = [
     *list(BRIEF_REQUIRED_KEYS_MODULE),
 ]
 
+OPERATOR_BRIEF_OPTIONAL_KEYS = [
+    "executive_summary",
+    "scanner_reason",
+    "entry_summary",
+    "holding_summary",
+    "exit_plan_summary",
+    "risk_summary",
+    "next_checkpoints",
+]
+
 
 def _operator_brief_parse_meta(raw: Any, parsed: Dict[str, Any] | None) -> Dict[str, Any]:
     return _brief_parse_meta(raw, parsed)
@@ -1868,6 +1927,7 @@ def load_operator_brief_detail(config: OperatorUIConfig, story_id: str) -> Dict[
         }
 
     sections = brief.get("sections") if isinstance(brief.get("sections"), dict) else {}
+    status = str(brief.get("status") or "").strip().lower()
     executive = sections.get("executive_decision") if isinstance(sections.get("executive_decision"), dict) else {}
     ai_trade = sections.get("ai_trade_report") if isinstance(sections.get("ai_trade_report"), dict) else {}
     conclusion = sections.get("operator_conclusion") if isinstance(sections.get("operator_conclusion"), dict) else {}
@@ -2546,7 +2606,10 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     feature_snapshot = selected_candidate.get("feature_snapshot") if isinstance(selected_candidate.get("feature_snapshot"), dict) else {}
     score_breakdown = selected_candidate.get("score_breakdown") if isinstance(selected_candidate.get("score_breakdown"), dict) else {}
     source_scores = selected_candidate.get("source_scores") if isinstance(selected_candidate.get("source_scores"), dict) else {}
-    feature_coverage = scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else _feature_coverage(feature_snapshot)
+    feature_coverage = _normalized_feature_coverage(
+        scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else {},
+        feature_snapshot,
+    )
     quote_metrics = scanner.get("quote_metrics") if isinstance(scanner.get("quote_metrics"), dict) else _quote_metrics_snapshot(feature_snapshot)
 
     monitor_summary = monitor.get("summary") if isinstance(monitor.get("summary"), dict) else {}
@@ -2620,8 +2683,11 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     if selected_why and selected_why not in selection_reasons:
         selection_reasons.append(selected_why)
     for bullet in list(canonical_trade.get("selection_bullets") or [])[:4]:
-        if bullet not in selection_reasons:
-            selection_reasons.append(bullet)
+        text = str(bullet or "").strip()
+        if text.lower().startswith("chart / feature coverage:"):
+            continue
+        if text and text not in selection_reasons:
+            selection_reasons.append(text)
     if feature_coverage.get("total"):
         selection_reasons.append(
             f"chart feature coverage {feature_coverage.get('present')}/{feature_coverage.get('total')} ({feature_coverage.get('quality') or '-'})"
@@ -2718,19 +2784,7 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         sector_status = "PASS" if _safe_float(sector_strength, 0.0) >= 0 else "FAIL"
         sector_note = f"sector relative strength {_format_float(sector_strength, 2)}"
 
-    coverage_ratio = _safe_float(feature_coverage.get("coverage_ratio"), 0.0)
-    if _safe_int(feature_coverage.get("total"), 0) <= 0:
-        chart_status = "SKIPPED"
-        chart_note = "feature snapshot not available"
-    elif coverage_ratio >= 0.75:
-        chart_status = "PASS"
-        chart_note = f"{feature_coverage.get('present')}/{feature_coverage.get('total')} filled"
-    elif coverage_ratio >= 0.5:
-        chart_status = "PARTIAL"
-        chart_note = f"{feature_coverage.get('present')}/{feature_coverage.get('total')} filled"
-    else:
-        chart_status = "FAIL"
-        chart_note = f"{feature_coverage.get('present')}/{feature_coverage.get('total')} filled"
+    chart_status, chart_note = _chart_filter_status_and_note(feature_coverage)
 
     risk_status = "PASS" if bool(verdict.get("allowed")) else "FAIL"
     risk_note = str(verdict.get("reason") or ("order allowed" if risk_status == "PASS" else "order blocked"))
@@ -2848,6 +2902,58 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     canonical_watch_axes = [str(x or "") for x in list(canonical_monitor_snapshot.get("watch_axes") or []) if str(x or "").strip()]
     canonical_hold_reasons = [str(x or "") for x in list(canonical_monitor_snapshot.get("hold_reasons") or []) if str(x or "").strip()]
     canonical_exit_triggers = [str(x or "") for x in list(canonical_monitor_snapshot.get("exit_triggers") or []) if str(x or "").strip()]
+
+    entry_evaluated = bool(
+        canonical_monitor_snapshot.get("entry_evaluated")
+        or monitor_summary.get("entry_evaluated")
+        or monitor_trace.get("entry_evaluated")
+    )
+    entry_triggered = bool(
+        canonical_monitor_snapshot.get("entry_triggered")
+        or monitor_summary.get("entry_triggered")
+        or monitor_trace.get("entry_triggered")
+    )
+    entry_reason_code = str(
+        canonical_monitor_snapshot.get("entry_reason")
+        or monitor_summary.get("entry_reason")
+        or monitor_trace.get("entry_reason")
+        or ""
+    ).strip()
+    entry_pattern = str(
+        canonical_monitor_snapshot.get("entry_pattern")
+        or monitor_summary.get("entry_pattern")
+        or monitor_trace.get("entry_pattern")
+        or ""
+    ).strip()
+    entry_metrics = (
+        canonical_monitor_snapshot.get("entry_metrics")
+        if isinstance(canonical_monitor_snapshot.get("entry_metrics"), dict)
+        else (
+            monitor_summary.get("entry_metrics")
+            if isinstance(monitor_summary.get("entry_metrics"), dict)
+            else (
+                monitor_trace.get("entry_metrics")
+                if isinstance(monitor_trace.get("entry_metrics"), dict)
+                else {}
+            )
+        )
+    )
+    entry_guard_reason = str(
+        canonical_monitor_snapshot.get("entry_guard_reason")
+        or monitor_summary.get("entry_guard_reason")
+        or monitor_trace.get("entry_guard_reason")
+        or ""
+    ).strip()
+    entry_signal_chain = [
+        str(x or "")
+        for x in list(
+            canonical_monitor_snapshot.get("entry_signal_chain")
+            or monitor_summary.get("entry_signal_chain")
+            or monitor_trace.get("entry_signal_chain")
+            or []
+        )
+        if str(x or "").strip()
+    ]
 
     hold_reasons: List[str] = []
     if final_action == "HOLD":
@@ -2990,7 +3096,14 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         if bullet not in macro_summary:
             macro_summary.append(bullet)
 
-    filter_rows = list(canonical_trade.get("filter_rows") or [])
+    filter_rows = [dict(row) for row in list(canonical_trade.get("filter_rows") or []) if isinstance(row, dict)]
+    if filter_rows:
+        for row in filter_rows:
+            name = str(row.get("name") or "").strip().lower()
+            if name == "chart completeness filter":
+                row["status"] = chart_status
+                row["note"] = chart_note
+                break
     if filter_rows:
         filters_and_gates = filter_rows[:8]
     else:
@@ -3025,6 +3138,17 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
             "selection_reasons": selection_reasons or ["selection rationale was not explicitly persisted"],
             "comparison_reasons": comparison_reasons,
             "top_candidates": list(canonical_trade.get("top_candidates") or top_candidates[:3])[:3],
+        },
+        "entry_timing": {
+            "decision": "BUY" if entry_triggered or final_action == "BUY" else "WAIT",
+            "evaluated": entry_evaluated,
+            "triggered": entry_triggered,
+            "reason_code": entry_reason_code,
+            "reason_text": str(canonical_trade.get("entry_reason") or ""),
+            "pattern": entry_pattern,
+            "signal_chain": entry_signal_chain[:5],
+            "metrics": dict(entry_metrics or {}),
+            "guard_reason": entry_guard_reason,
         },
         "market_context": {
             "market_regime": str(canonical_trade.get("market_regime") or strategist_summary.get("market_regime") or strategist_trace.get("market_regime") or "-"),
@@ -3081,6 +3205,19 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
             "hold_reasons": canonical_hold_reasons or hold_reasons[:4],
             "exit_triggers": canonical_exit_triggers or exit_triggers[:3],
         },
+        "exit_plan": {
+            "current_action": final_action,
+            "summary": str(canonical_trade.get("exit_reason") or exit_reason or monitor_reason or ""),
+            "effective_stop": canonical_effective_stop or effective_stop_text,
+            "effective_stop_reason": (
+                canonical_effective_stop_reason
+                or (_friendly_exit_reason(effective_stop_reason or "stop_loss") if effective_stop_text != "-" else "-")
+            ),
+            "take_profit": canonical_take_profit or take_profit_text,
+            "active_exit_axis": (_friendly_exit_reason(canonical_active_exit_axis) if canonical_active_exit_axis else "") or active_exit_axis,
+            "exit_triggers": canonical_exit_triggers or exit_triggers[:3],
+            "watch_axes": canonical_watch_axes or watch_axes,
+        },
         "reporter_evaluation": {
             "status": reporter_status,
             "reason": reporter_reason,
@@ -3111,6 +3248,11 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
             "current_action": final_action,
             "watch_next": watch_next[:4],
             "thesis_invalidation": thesis_invalidation,
+        },
+        "risk_alerts": {
+            "defensive_mode": defensive_mode,
+            "weak_factors": weak_factors[:4],
+            "thesis_invalidation": thesis_invalidation[:3],
         },
     }
 
@@ -3154,7 +3296,12 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     if macro_moves.get("dxy_pct") is not None:
         global_bits.append(f"dollar index={_safe_float(macro_moves.get('dxy_pct'), 0.0):.2f}")
 
-    feature_coverage = scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else {}
+    selected_feature_snapshot = selected.get("feature_snapshot") if isinstance(selected.get("feature_snapshot"), dict) else {}
+    feature_coverage = _normalized_feature_coverage(
+        scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else {},
+        selected_feature_snapshot,
+    )
+    _, fallback_chart_note = _chart_filter_status_and_note(feature_coverage)
     quote_metrics = scanner.get("quote_metrics") if isinstance(scanner.get("quote_metrics"), dict) else {}
     canonical_market_summary = str(canonical_trade.get("market_context_summary") or "").strip()
     canonical_selection_summary = str(canonical_trade.get("selection_summary") or "").strip()
@@ -3227,7 +3374,12 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "operator_takeaways": [
             canonical_market_summary or f"News / macro inputs: {', '.join(global_bits) or 'no market inputs captured'}",
-            str(canonical_trade.get("filters_summary") or "") or f"Chart / feature coverage: {feature_coverage.get('quality') or '-'} ({feature_coverage.get('present') or 0}/{feature_coverage.get('total') or 0})",
+            (
+                f"Chart / feature coverage: {fallback_chart_note}"
+                if _safe_int(feature_coverage.get("total"), 0) > 0
+                else str(canonical_trade.get("filters_summary") or "")
+            )
+            or f"Chart / feature coverage: {feature_coverage.get('quality') or '-'} ({feature_coverage.get('present') or 0}/{feature_coverage.get('total') or 0})",
             canonical_lifecycle_summary or canonical_report_summary or f"Live quote: price {quote_metrics.get('skill_quote_price') or '-'} volume {quote_metrics.get('quote_volume') or '-'} trading_value {quote_metrics.get('quote_trading_value') or '-'}",
         ],
     }
@@ -3285,6 +3437,47 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
     score_breakdown = selected.get("score_breakdown") if isinstance(selected.get("score_breakdown"), dict) else {}
     component_snapshot = selected.get("component_snapshot") if isinstance(selected.get("component_snapshot"), dict) else {}
     feature_snapshot = selected.get("feature_snapshot") if isinstance(selected.get("feature_snapshot"), dict) else {}
+    feature_coverage = _normalized_feature_coverage(
+        scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else {},
+        feature_snapshot,
+    )
+    chart_status, chart_note = _chart_filter_status_and_note(feature_coverage)
+    canonical_filter_bullets = list(canonical_trade.get("filter_bullets") or [])[:8]
+    canonical_selection_bullets = list(canonical_trade.get("selection_bullets") or [])[:6]
+    if _safe_int(feature_coverage.get("total"), 0) > 0:
+        updated_bullets: List[str] = []
+        replaced_chart_bullet = False
+        for bullet in canonical_filter_bullets:
+            text = str(bullet or "").strip()
+            if text.lower().startswith("chart completeness filter:"):
+                updated_bullets.append(f"chart completeness filter: {chart_status} - {chart_note}")
+                replaced_chart_bullet = True
+            else:
+                updated_bullets.append(text)
+        if not replaced_chart_bullet:
+            updated_bullets.append(f"chart completeness filter: {chart_status} - {chart_note}")
+        canonical_filter_bullets = updated_bullets[:8]
+        canonical_filters_summary = (
+            f"Scanner and guard checks used normalized chart coverage with {feature_coverage.get('present')}/{feature_coverage.get('total')} captured features."
+        )
+        updated_selection_bullets: List[str] = []
+        replaced_selection_chart_bullet = False
+        for bullet in canonical_selection_bullets:
+            text = str(bullet or "").strip()
+            if text.lower().startswith("chart / feature coverage:"):
+                updated_selection_bullets.append(
+                    f"Chart / feature coverage: {feature_coverage.get('present')}/{feature_coverage.get('total')}"
+                )
+                replaced_selection_chart_bullet = True
+            else:
+                updated_selection_bullets.append(text)
+        if not replaced_selection_chart_bullet:
+            updated_selection_bullets.append(
+                f"Chart / feature coverage: {feature_coverage.get('present')}/{feature_coverage.get('total')}"
+            )
+        canonical_selection_bullets = updated_selection_bullets[:6]
+    else:
+        canonical_filters_summary = canonical_trade.get("filters_summary")
     monitor_summary = monitor.get("summary") if isinstance(monitor.get("summary"), dict) else {}
     monitor_trace = monitor.get("decision_trace") if isinstance(monitor.get("decision_trace"), dict) else {}
     return {
@@ -3331,7 +3524,7 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "source_scores": selected.get("source_scores") if isinstance(selected.get("source_scores"), dict) else {},
             "score_total": selected.get("score_total"),
             "confidence": selected.get("confidence"),
-            "feature_coverage": scanner.get("feature_coverage") if isinstance(scanner.get("feature_coverage"), dict) else {},
+            "feature_coverage": feature_coverage,
             "quote_metrics": scanner.get("quote_metrics") if isinstance(scanner.get("quote_metrics"), dict) else {},
             "score_breakdown": score_breakdown,
             "component_snapshot": component_snapshot,
@@ -3340,14 +3533,22 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "tie_break_rule": canonical_trade.get("tie_break_rule"),
             "runner_ups": list(canonical_trade.get("runner_ups") or [])[:3],
             "runner_ups_lost": list(canonical_trade.get("runner_ups_lost") or [])[:3],
-            "canonical_bullets": list(canonical_trade.get("selection_bullets") or [])[:6],
-            "canonical_filters_summary": canonical_trade.get("filters_summary"),
-            "canonical_filter_bullets": list(canonical_trade.get("filter_bullets") or [])[:8],
+            "canonical_bullets": canonical_selection_bullets,
+            "canonical_filters_summary": canonical_filters_summary,
+            "canonical_filter_bullets": canonical_filter_bullets,
         },
         "monitor": {
             "monitor_reason": monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason") or canonical_trade.get("monitor_summary"),
             "exit_reason": monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason") or canonical_trade.get("exit_reason"),
             "position_age_seconds": monitor_summary.get("position_age_seconds"),
+            "entry_evaluated": monitor_summary.get("entry_evaluated"),
+            "entry_triggered": monitor_summary.get("entry_triggered"),
+            "entry_reason": monitor_summary.get("entry_reason") or monitor_trace.get("entry_reason"),
+            "entry_pattern": monitor_summary.get("entry_pattern") or monitor_trace.get("entry_pattern"),
+            "entry_guard_reason": monitor_summary.get("entry_guard_reason") or monitor_trace.get("entry_guard_reason"),
+            "entry_intent_submitted": monitor_summary.get("entry_intent_submitted"),
+            "entry_metrics": monitor_summary.get("entry_metrics") if isinstance(monitor_summary.get("entry_metrics"), dict) else {},
+            "entry_thresholds": monitor_summary.get("entry_thresholds") if isinstance(monitor_summary.get("entry_thresholds"), dict) else {},
             "thresholds": monitor_trace.get("thresholds") if isinstance(monitor_trace.get("thresholds"), dict) else {},
             "strategy_frame_adjustments": list(monitor_trace.get("strategy_frame_adjustments") or [])[:6],
             "exit_policy_guard_adjustments": list(monitor_trace.get("exit_policy_guard_adjustments") or [])[:6],
@@ -3561,6 +3762,14 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "monitor_reason": _trim_text(monitor.get("monitor_reason"), max_len=220),
             "exit_reason": _trim_text(monitor.get("exit_reason"), max_len=120),
             "position_age_seconds": monitor.get("position_age_seconds"),
+            "entry_evaluated": monitor.get("entry_evaluated"),
+            "entry_triggered": monitor.get("entry_triggered"),
+            "entry_reason": _trim_text(monitor.get("entry_reason"), max_len=160),
+            "entry_pattern": _trim_text(monitor.get("entry_pattern"), max_len=80),
+            "entry_guard_reason": _trim_text(monitor.get("entry_guard_reason"), max_len=120),
+            "entry_intent_submitted": monitor.get("entry_intent_submitted"),
+            "entry_metrics": _compact_scalar_map(monitor.get("entry_metrics"), limit=10, max_len=80),
+            "entry_thresholds": _compact_scalar_map(monitor.get("entry_thresholds"), limit=8, max_len=80),
             "thresholds": _compact_monitor_thresholds(monitor.get("thresholds")),
             "strategy_frame_adjustments": _clean_str_list(monitor.get("strategy_frame_adjustments"), limit=4, max_len=120),
             "exit_policy_guard_adjustments": _clean_str_list(monitor.get("exit_policy_guard_adjustments"), limit=4, max_len=120),
@@ -3618,12 +3827,74 @@ def _sanitize_operator_brief_text(text: Any) -> str:
         return ""
     if _contains_internal_brief_marker(cleaned):
         return ""
+    replacements = [
+        ("minute-candle", "분봉"),
+        ("minute candle", "분봉"),
+        ("defensive_exit", "방어형 청산"),
+        ("no_position", "포지션 없음"),
+        ("No trigger yet", "아직 청산 신호 없음"),
+        ("Peak drawdown", "피크 드로다운"),
+        ("Hard stop", "하드 스톱"),
+        ("Regime", "시장 상태"),
+        ("regime", "시장 상태"),
+    ]
+    for src, dst in replacements:
+        cleaned = cleaned.replace(src, dst)
+    cleaned = re.sub(r"\bBUY\b", "매수", cleaned)
+    cleaned = re.sub(r"\bSELL\b", "매도", cleaned)
+    cleaned = re.sub(r"\bHOLD\b", "보유 유지", cleaned)
+    cleaned = re.sub(r"\bWAIT\b", "진입 보류", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
 
 def _count_hangul_chars(text: Any) -> int:
     raw = str(text or "")
     return sum(1 for ch in raw if "\uac00" <= ch <= "\ud7a3")
+
+
+def _contains_forbidden_brief_script(text: Any) -> bool:
+    raw = str(text or "")
+    return bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", raw))
+
+
+def _operator_brief_language_ok(candidate: Dict[str, Any]) -> bool:
+    text_fields = [
+        "headline",
+        "commander_summary",
+        "strategist_summary",
+        "scanner_summary",
+        "monitor_summary",
+        "supervisor_summary",
+        "executor_summary",
+        "reporter_summary",
+        "executive_summary",
+        "scanner_reason",
+        "entry_summary",
+        "holding_summary",
+        "exit_plan_summary",
+        "risk_summary",
+    ]
+    total_hangul = 0
+    for key in text_fields:
+        value = str(candidate.get(key) or "").strip()
+        if not value:
+            continue
+        if _contains_forbidden_brief_script(value):
+            return False
+        hangul_count = _count_hangul_chars(value)
+        total_hangul += hangul_count
+        ascii_letters = len(re.findall(r"[A-Za-z]", value))
+        if hangul_count == 0 and ascii_letters >= 12:
+            return False
+    for key in ("operator_takeaways", "next_checkpoints"):
+        for item in list(candidate.get(key) or []):
+            value = str(item or "").strip()
+            if not value:
+                continue
+            if _contains_forbidden_brief_script(value):
+                return False
+    return total_hangul > 0
 
 
 def _prefer_richer_brief_text(primary: Any, fallback: Any, *, min_primary_len: int = 48) -> str:
@@ -3678,6 +3949,32 @@ def _sanitize_operator_brief_result(detail: Dict[str, Any], candidate: Dict[str,
             cleaned = _sanitize_operator_brief_text(fallback.get(key))
         out[key] = cleaned
 
+    for key in (
+        "executive_summary",
+        "scanner_reason",
+        "entry_summary",
+        "holding_summary",
+        "exit_plan_summary",
+        "risk_summary",
+    ):
+        out[key] = _sanitize_operator_brief_text(out.get(key))
+
+    next_checkpoints: List[str] = []
+    seen_checkpoints: set[str] = set()
+    for value in list(out.get("next_checkpoints") or []):
+        cleaned = _sanitize_operator_brief_text(value)
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+        if lowered in seen_checkpoints:
+            continue
+        next_checkpoints.append(cleaned)
+        seen_checkpoints.add(lowered)
+        if len(next_checkpoints) >= 5:
+            break
+    if next_checkpoints:
+        out["next_checkpoints"] = next_checkpoints
+
     candidate_takeaways: List[str] = []
     fallback_takeaways: List[str] = []
     seen_takeaways: set[str] = set()
@@ -3721,37 +4018,43 @@ def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[s
         "executor_summary": "string",
         "reporter_summary": "string",
         "operator_takeaways": ["string"],
+        "executive_summary": "string",
+        "scanner_reason": "string",
+        "entry_summary": "string",
+        "holding_summary": "string",
+        "exit_plan_summary": "string",
+        "risk_summary": "string",
+        "next_checkpoints": ["string"],
     }
     system_prompt = (
-        "당신은 트레이딩 운영 화면용 한글 브리프 작성기입니다. "
-        "운영자가 한 번에 이해할 수 있도록 파이프라인 순서대로 정확하고 충분히 구체적으로 정리하세요. "
-        "반드시 JSON만 출력하고 설명문이나 주석은 쓰지 마세요."
+        "You write operator briefs for a Korean trading operator. "
+        "Every value in the JSON must be natural Korean prose. "
+        "Do not write English, Chinese, or Japanese sentences. "
+        "Allowed English is limited to market terms like VWAP, RSI, ADX and symbol codes. "
+        "Return exactly one JSON object and nothing else."
     )
     user_prompt = (
-        "아래 실행 기록을 바탕으로 지휘자, 전략가, 스캐너, 모니터, 감독관, 수행자, 리포터가 각각 무엇을 했는지 "
-        "운영자에게 바로 읽히는 한국어로 요약하세요.\n"
-        "브리프에는 다음이 포함돼야 합니다.\n"
-        "- trade-level canonical artifact가 있으면 그 내용을 우선 사용하고 run-level 로그는 빈칸 보완에만 사용\n"
-        "- 전략가가 어떤 뉴스/글로벌 감성/VIX/거시 입력을 봤는지\n"
-        "- 스캐너가 Kiwoom 후보 몇 개를 봤고 어떤 소스(top_value/top_volume/sector_theme 등)와 수치 계산으로 왜 1등을 골랐는지\n"
-        "- 차트/feature/실시간 quote가 얼마나 채워졌는지와 주요 점수/coverage가 무엇인지\n"
-        "- 모니터가 어떤 stop/effective stop/take profit/watch axis/current price를 받아 왜 hold/buy/sell/block 했는지\n"
-        "- 감독관이 무엇을 승인 또는 차단했고 수행자가 실제로 무엇을 주문/체결했는지\n"
-        "- 리포터의 사후 평가\n"
-        "각 항목은 1~3문장으로 쓰되 숫자와 근거를 포함하세요.\n"
-        "영어 문장보다 한국어 문장을 우선하고, 종목코드/지표명만 필요한 경우 유지하세요.\n"
-        "내부 플래그명이나 파일 경로(canonical_trade.available, reports/trades, source of truth, run-level 등)를 운영자 문장에 그대로 쓰지 마세요.\n"
-        "BUY 체결 후 lifecycle이 open이면 '포지션 없음'이라고 쓰지 말고 현재는 보유/모니터링 상태라고 설명하세요.\n"
-        "SELL 체결로 lifecycle이 closed이면 '포지션 없음'이라고 쓰지 말고 청산 사유와 exit trigger를 설명하세요.\n"
-        "operator_takeaways는 5개 이하로 작성하세요.\n"
-        f"계약: {json.dumps(contract, ensure_ascii=False)}\n"
-        f"입력: {json.dumps(compact_input, ensure_ascii=False)}"
+        "Write a concise operator brief from the input.\n"
+        "Rules:\n"
+        "- Keep a single story flow: Scanner -> Entry -> Holding -> Exit.\n"
+        "- All prose values must be natural Korean.\n"
+        "- entry_summary must describe minute-candle entry timing.\n"
+        "- If minute candles are missing or conditions fail, explain it conservatively in Korean, for example: ?? ??? ???? ?? ??.\n"
+        "- If BUY already happened and lifecycle is open, do not say no_position. Explain the current holding state instead.\n"
+        "- If SELL already happened and lifecycle is closed, explain the exit trigger clearly.\n"
+        "- scanner_reason should explain rank, candidate pool size, and 2-3 key selection reasons.\n"
+        "- holding_summary should explain current PnL/posture/market interpretation.\n"
+        "- exit_plan_summary should explain when to sell using condition-based wording.\n"
+        "- risk_summary should explain 2-3 current risks.\n"
+        "- next_checkpoints should be short operator checkpoints.\n"
+        "- Never expose internal phrases such as canonical_trade.available, reports/trades, source of truth, run-level.\n"
+        f"Contract: {json.dumps(contract, ensure_ascii=False)}\n"
+        f"Input: {json.dumps(compact_input, ensure_ascii=False)}"
     )
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
-
 
 def _build_operator_brief_repair_messages(raw_text: str) -> List[Dict[str, str]]:
     contract = {
@@ -3764,40 +4067,45 @@ def _build_operator_brief_repair_messages(raw_text: str) -> List[Dict[str, str]]
         "executor_summary": "string",
         "reporter_summary": "string",
         "operator_takeaways": ["string"],
+        "executive_summary": "string",
+        "scanner_reason": "string",
+        "entry_summary": "string",
+        "holding_summary": "string",
+        "exit_plan_summary": "string",
+        "risk_summary": "string",
+        "next_checkpoints": ["string"],
     }
     return [
         {
             "role": "system",
             "content": (
-                "\ub2f9\uc2e0\uc740 \ube0c\ub9ac\ud504 \ubcf5\uad6c\uae30\uc785\ub2c8\ub2e4. "
-                "\uc785\ub825 \ud14d\uc2a4\ud2b8\ub97c \uacc4\uc57d\uc5d0 \ub9de\ub294 JSON \ud558\ub098\ub85c\ub9cc \uc815\ub9ac\ud558\uc138\uc694. "
-                "\uc124\uba85\uc774\ub098 \uc8fc\uc11d \uc5c6\uc774 JSON \uac1d\uccb4\ub9cc \ucd9c\ub825\ud558\uc138\uc694."
+                "Repair the operator brief into one JSON object. "
+                "All prose values must be natural Korean only. "
+                "Do not leave Chinese, Japanese, or English sentences in the result."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"\uacc4\uc57d: {json.dumps(contract, ensure_ascii=False)}\n"
-                f"\uc785\ub825: {raw_text}"
+                f"Contract: {json.dumps(contract, ensure_ascii=False)}\n"
+                f"Input: {raw_text}"
             ),
         },
     ]
-
 
 def _build_operator_brief_line_messages(compact_input: Dict[str, Any]) -> List[Dict[str, str]]:
     return [
         {
             "role": "system",
             "content": (
-                "\ub2f9\uc2e0\uc740 \ube0c\ub9ac\ud504 \ubcf5\uad6c\uae30\uc785\ub2c8\ub2e4. "
-                "JSON\uc774 \uc5b4\ub824\uc6b0\uba74 \uc544\ub798 key:value \ud615\uc2dd\uc73c\ub85c\ub9cc \ub2f5\ud558\uc138\uc694. "
-                "\ubd88\ud544\uc694\ud55c \uc11c\ub860 \uc5c6\uc774 \ud544\uc694\ud55c \uc904\ub9cc \ucd9c\ub825\ud558\uc138\uc694."
+                "If JSON is difficult, answer with key:value lines only. "
+                "Every value must still be natural Korean prose."
             ),
         },
         {
             "role": "user",
             "content": (
-                "\ub2e4\uc74c \ud615\uc2dd\uc73c\ub85c\ub9cc \ub2f5\ud558\uc138\uc694:\n"
+                "Use only this format:\n"
                 "headline: ...\n"
                 "commander_summary: ...\n"
                 "strategist_summary: ...\n"
@@ -3806,12 +4114,18 @@ def _build_operator_brief_line_messages(compact_input: Dict[str, Any]) -> List[D
                 "supervisor_summary: ...\n"
                 "executor_summary: ...\n"
                 "reporter_summary: ...\n"
+                "executive_summary: ...\n"
+                "scanner_reason: ...\n"
+                "entry_summary: ...\n"
+                "holding_summary: ...\n"
+                "exit_plan_summary: ...\n"
+                "risk_summary: ...\n"
+                "next_checkpoints: item1 | item2 | item3\n"
                 "operator_takeaways: item1 | item2 | item3\n"
-                f"\uc785\ub825: {json.dumps(compact_input, ensure_ascii=False)}"
+                f"Input: {json.dumps(compact_input, ensure_ascii=False)}"
             ),
         },
     ]
-
 
 def _operator_brief_force_regenerate_enabled() -> bool:
     raw = str(os.getenv("OPERATOR_UI_RUN_BRIEF_FORCE_REGENERATE", "") or "").strip().lower()
@@ -3854,6 +4168,13 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
             "executor_summary": str(out.get("executor_summary") or ""),
             "reporter_summary": str(out.get("reporter_summary") or ""),
             "operator_takeaways": [str(x or "") for x in list(out.get("operator_takeaways") or []) if str(x or "").strip()],
+            "executive_summary": str(out.get("executive_summary") or ""),
+            "scanner_reason": str(out.get("scanner_reason") or ""),
+            "entry_summary": str(out.get("entry_summary") or ""),
+            "holding_summary": str(out.get("holding_summary") or ""),
+            "exit_plan_summary": str(out.get("exit_plan_summary") or ""),
+            "risk_summary": str(out.get("risk_summary") or ""),
+            "next_checkpoints": [str(x or "") for x in list(out.get("next_checkpoints") or []) if str(x or "").strip()],
         }
         latency_ms = 0
         if attempts:
@@ -3997,7 +4318,8 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         parsed_candidate = dict(parsed_candidate) if isinstance(parsed_candidate, dict) else {}
         parse_meta = _operator_brief_parse_meta(raw, parsed_candidate)
         primary_parse_meta = dict(parse_meta)
-        if bool(parsed_result.get("is_full")) and _operator_brief_is_complete(parsed_candidate):
+        language_ok = _operator_brief_language_ok(parsed_candidate)
+        if bool(parsed_result.get("is_full")) and _operator_brief_is_complete(parsed_candidate) and language_ok:
             attempts.append(
                 make_attempt(
                     step=step,
@@ -4007,7 +4329,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                     model=model,
                     latency_ms=primary_latency_ms,
                     status="ok",
-                    meta={"role": "brief", **parse_meta},
+                    meta={"role": "brief", "language_ok": True, **parse_meta},
                 )
             )
             return finalize({
@@ -4022,11 +4344,21 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 "executor_summary": str(parsed_candidate.get("executor_summary") or fallback.get("executor_summary") or ""),
                 "reporter_summary": str(parsed_candidate.get("reporter_summary") or fallback.get("reporter_summary") or ""),
                 "operator_takeaways": [str(x or "") for x in list(parsed_candidate.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
+                "executive_summary": str(parsed_candidate.get("executive_summary") or ""),
+                "scanner_reason": str(parsed_candidate.get("scanner_reason") or ""),
+                "entry_summary": str(parsed_candidate.get("entry_summary") or ""),
+                "holding_summary": str(parsed_candidate.get("holding_summary") or ""),
+                "exit_plan_summary": str(parsed_candidate.get("exit_plan_summary") or ""),
+                "risk_summary": str(parsed_candidate.get("risk_summary") or ""),
+                "next_checkpoints": [str(x or "") for x in list(parsed_candidate.get("next_checkpoints") or [])[:5] if str(x or "").strip()],
                 **parse_meta,
                 "used_fallback_sections": [],
             })
         primary_partial = dict(parsed_candidate) if parsed_candidate else {}
-        if not bool(parsed_result.get("raw_nonempty")):
+        if parsed_candidate and not language_ok:
+            primary_status = "partial"
+            primary_reason = "language_policy_failed"
+        elif not bool(parsed_result.get("raw_nonempty")):
             primary_status = "empty_response"
             primary_reason = "empty_response"
         elif parsed_candidate:
@@ -4044,7 +4376,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 model=model,
                 latency_ms=primary_latency_ms,
                 status=primary_status,
-                meta={"role": "brief", "error": primary_reason, **parse_meta},
+                meta={"role": "brief", "error": primary_reason, "language_ok": language_ok, **parse_meta},
             )
         )
         if attempt_index < retry_max and _is_retryable_brief_failure(primary_status, primary_reason):
@@ -4076,7 +4408,8 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     repaired = repair_result.get("full_object") if isinstance(repair_result.get("full_object"), dict) else repair_result.get("partial_object")
     repaired = dict(repaired) if isinstance(repaired, dict) else {}
     repair_meta = _operator_brief_parse_meta(repair_raw, repaired)
-    if bool(repair_result.get("is_full")) and _operator_brief_is_complete(repaired):
+    repair_language_ok = _operator_brief_language_ok(repaired)
+    if bool(repair_result.get("is_full")) and _operator_brief_is_complete(repaired) and repair_language_ok:
         attempts.append(
             make_attempt(
                 step="repair",
@@ -4086,7 +4419,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 model=model,
                 latency_ms=repair_latency_ms,
                 status="repaired",
-                meta={"role": "brief", **repair_meta},
+                meta={"role": "brief", "language_ok": True, **repair_meta},
             )
         )
         return finalize({
@@ -4101,6 +4434,13 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
             "executor_summary": str(repaired.get("executor_summary") or fallback.get("executor_summary") or ""),
             "reporter_summary": str(repaired.get("reporter_summary") or fallback.get("reporter_summary") or ""),
             "operator_takeaways": [str(x or "") for x in list(repaired.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
+            "executive_summary": str(repaired.get("executive_summary") or ""),
+            "scanner_reason": str(repaired.get("scanner_reason") or ""),
+            "entry_summary": str(repaired.get("entry_summary") or ""),
+            "holding_summary": str(repaired.get("holding_summary") or ""),
+            "exit_plan_summary": str(repaired.get("exit_plan_summary") or ""),
+            "risk_summary": str(repaired.get("risk_summary") or ""),
+            "next_checkpoints": [str(x or "") for x in list(repaired.get("next_checkpoints") or [])[:5] if str(x or "").strip()],
             "reason": "llm_repair_pass",
             **repair_meta,
             "used_fallback_sections": [],
@@ -4116,7 +4456,8 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
             status="empty_response" if not str(repair_raw or "").strip() else ("partial" if repaired else "parse_error"),
             meta={
                 "role": "brief",
-                "error": repair_error or ("repair_empty_response" if not str(repair_raw or "").strip() else "repair_parse_error"),
+                "error": repair_error or ("language_policy_failed" if repaired and not repair_language_ok else ("repair_empty_response" if not str(repair_raw or "").strip() else "repair_parse_error")),
+                "language_ok": repair_language_ok,
                 **repair_meta,
             },
         )
@@ -4144,7 +4485,8 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         line_latency_ms = int((time.perf_counter() - line_t0) * 1000)
         line_parsed = _parse_operator_brief_lines(line_raw)
         line_meta = required_key_metadata(line_parsed, OPERATOR_BRIEF_REQUIRED_KEYS)
-        if line_parsed and not line_meta.get("required_keys_missing"):
+        line_language_ok = _operator_brief_language_ok(line_parsed)
+        if line_parsed and not line_meta.get("required_keys_missing") and line_language_ok:
             attempts.append(
                 make_attempt(
                     step="line_repair",
@@ -4157,6 +4499,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                     meta={
                         "role": "brief",
                         "parse_mode": "none",
+                        "language_ok": True,
                         **line_meta,
                         "used_fallback_sections": [],
                     },
@@ -4174,6 +4517,13 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 "executor_summary": str(line_parsed.get("executor_summary") or fallback.get("executor_summary") or ""),
                 "reporter_summary": str(line_parsed.get("reporter_summary") or fallback.get("reporter_summary") or ""),
                 "operator_takeaways": [str(x or "") for x in list(line_parsed.get("operator_takeaways") or [])[:5] if str(x or "").strip()] or list(fallback.get("operator_takeaways") or []),
+                "executive_summary": str(line_parsed.get("executive_summary") or ""),
+                "scanner_reason": str(line_parsed.get("scanner_reason") or ""),
+                "entry_summary": str(line_parsed.get("entry_summary") or ""),
+                "holding_summary": str(line_parsed.get("holding_summary") or ""),
+                "exit_plan_summary": str(line_parsed.get("exit_plan_summary") or ""),
+                "risk_summary": str(line_parsed.get("risk_summary") or ""),
+                "next_checkpoints": [str(x or "") for x in list(line_parsed.get("next_checkpoints") or [])[:5] if str(x or "").strip()],
                 "reason": "llm_line_repair_pass",
                 "parse_mode": "none",
                 **line_meta,
@@ -4190,8 +4540,9 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
                 status="empty_response" if not str(line_raw or "").strip() else ("partial" if line_parsed else "parse_error"),
                 meta={
                     "role": "brief",
-                    "error": line_error or ("line_repair_empty_response" if not str(line_raw or "").strip() else "line_repair_parse_error"),
+                    "error": line_error or ("language_policy_failed" if line_parsed and not line_language_ok else ("line_repair_empty_response" if not str(line_raw or "").strip() else "line_repair_parse_error")),
                     "parse_mode": "none",
+                    "language_ok": line_language_ok,
                     **line_meta,
                 },
             )
@@ -4330,136 +4681,263 @@ def _save_operator_brief_input_artifact(detail: Dict[str, Any], prepared_input: 
 
 
 def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
-    if str(brief.get("status") or "").strip().lower() not in {"", "ok", "partial", "salvaged", "repaired"}:
+    def _action_label(action: Any) -> str:
+        mapping = {
+            "BUY": "매수",
+            "SELL": "매도",
+            "HOLD": "보유 유지",
+            "WAIT": "진입 보류",
+        }
+        return mapping.get(str(action or "").strip().upper(), str(action or "-").strip() or "-")
+
+    def _metric_text(value: Any) -> str:
+        text = str(value or "").strip()
+        return text or "-"
+
+    def _entry_reason_text(reason_code: str, pattern: str, metrics: Dict[str, Any]) -> str:
+        reason = str(reason_code or "").strip().lower()
+        metric_map = metrics if isinstance(metrics, dict) else {}
+        recent_high = metric_map.get("recent_high")
+        vwap = metric_map.get("vwap")
+        volume_ratio = metric_map.get("volume_ratio")
+        vwap_distance = metric_map.get("vwap_distance")
+        pullback_pct = metric_map.get("pullback_pct")
+        if pattern == "breakout_vwap_hold":
+            parts = ["분봉 기준 최근 고점 돌파와 VWAP 상회 유지, 거래량 확인이 함께 충족되어 진입했습니다."]
+            if recent_high not in (None, ""):
+                parts.append(f"최근 고점 기준: {_format_float(recent_high, 2)}")
+            if vwap not in (None, ""):
+                parts.append(f"VWAP 기준: {_format_float(vwap, 2)}")
+            if volume_ratio not in (None, ""):
+                parts.append(f"거래량 배수: {_format_float(volume_ratio, 2)}배")
+            return " ".join(parts)
+        if pattern == "pullback_rebound":
+            parts = ["분봉 눌림목 이후 재반등과 VWAP 회복이 확인되어 진입했습니다."]
+            if pullback_pct not in (None, ""):
+                parts.append(f"눌림 폭: {_format_percent(pullback_pct, 2)}")
+            if volume_ratio not in (None, ""):
+                parts.append(f"거래량 배수: {_format_float(volume_ratio, 2)}배")
+            return " ".join(parts)
+        mapping = {
+            "minute_candle_missing": "분봉 데이터가 없어 진입을 보류했습니다.",
+            "data_incomplete": "분봉 데이터가 충분하지 않아 진입을 보류했습니다.",
+            "no_breakout_signal": "최근 고점 돌파 또는 첫 눌림목 반등 신호가 확인되지 않아 진입을 보류했습니다.",
+            "vwap_not_confirmed": "VWAP 상회 유지 또는 재안착이 확인되지 않아 진입을 보류했습니다.",
+            "volume_insufficient": "거래량 확인이 부족해 진입을 보류했습니다.",
+            "too_extended_from_vwap": "VWAP 대비 과도하게 확장되어 추격 진입을 피했습니다.",
+            "post_exit_cooldown": "직전 청산 직후 재진입 쿨다운 구간이라 진입을 보류했습니다.",
+            "buy_blocked_open_position": "기존 보유 포지션이 있어 신규 진입을 차단했습니다.",
+            "no_position": "분봉 진입 근거가 저장되지 않아 보수적으로 해석했습니다. 이번 요약은 체결 이후 보유 관리 기록을 기준으로 정리했습니다.",
+            "peak_drawdown": "이번 저장값에는 진입 근거 대신 청산 관리 신호가 남아 있습니다. 진입 시점 분봉 근거는 별도로 확인되지 않았습니다.",
+            "hard_stop": "이번 저장값에는 진입 근거 대신 손절 관리 신호가 남아 있습니다. 진입 시점 분봉 근거는 별도로 확인되지 않았습니다.",
+        }
+        text = mapping.get(reason)
+        if text:
+            return text
+        if str(reason_code or "").strip():
+            return f"분봉 조건 점검 결과 {str(reason_code or '').strip()} 상태로 진입을 보류했습니다."
+        if vwap_distance not in (None, ""):
+            return f"분봉 조건은 있으나 VWAP 이격 {_format_percent(vwap_distance, 2)} 상태를 추가 확인 중입니다."
+        return "분봉 데이터 기준으로 보수적 판단을 유지하며 진입을 보류했습니다."
+
+    def _vwap_interpretation(value: Any) -> str:
+        raw = _safe_float(value, None)
+        if raw is None:
+            return "-"
+        if raw >= 0.02:
+            return f"{_format_percent(raw, 2)} (과도 확장, 추격 진입 주의)"
+        if raw >= 0.0:
+            return f"+{abs(raw) * 100:.2f}% (VWAP 상회 유지)"
+        if raw <= -0.01:
+            return f"{_format_percent(raw, 2)} (VWAP 하회 압력)"
+        return f"{_format_percent(raw, 2)} (중립 범위)"
+
+    def _append_list(lines: List[str], items: List[str], *, limit: int = 3) -> None:
+        appended = 0
+        for item in items:
+            text = _sanitize_operator_brief_text(item)
+            if not text:
+                continue
+            if _count_hangul_chars(text) <= 0:
+                continue
+            lines.append(f"- {text}")
+            appended += 1
+            if appended >= limit:
+                break
+
+    if str(brief.get("status") or "").strip().lower() not in {"", "ok", "partial", "salvaged", "repaired", "fallback"}:
         failure = brief.get("failure") if isinstance(brief.get("failure"), dict) else {}
         lines = [
-            "# Operator Brief",
+            "# 운영자 브리프",
             "",
-            f"- headline: **{str(brief.get('headline') or '-')}**",
-            f"- status: `{str(brief.get('status') or '-')}`",
-            f"- model: `{str(brief.get('model') or '-')}`",
+            "## 1. 최종 판단 요약",
             "",
-            "## Failure",
+            f"- {str(brief.get('headline') or '브리프 생성에 실패했습니다.')}",
             "",
-            f"- reason: {str(failure.get('reason') or brief.get('reason') or '-')}",
+            "## 2. 리포트 상태",
+            "",
+            f"- 상태: `{str(brief.get('status') or '-')}`",
+            f"- 사유: {str(failure.get('reason') or brief.get('reason') or '-')}",
             "",
         ]
         return "\n".join(lines)
 
     sections = brief.get("sections") if isinstance(brief.get("sections"), dict) else {}
-    ai_trade = sections.get("ai_trade_report") if isinstance(sections.get("ai_trade_report"), dict) else {}
+    status = str(brief.get("status") or "").strip().lower()
     executive = sections.get("executive_decision") if isinstance(sections.get("executive_decision"), dict) else {}
-    market = sections.get("market_context") if isinstance(sections.get("market_context"), dict) else {}
     selection = sections.get("why_symbol_chosen") if isinstance(sections.get("why_symbol_chosen"), dict) else {}
+    market = sections.get("market_context") if isinstance(sections.get("market_context"), dict) else {}
     monitor = sections.get("position_monitor_reasoning") if isinstance(sections.get("position_monitor_reasoning"), dict) else {}
-    reporter = sections.get("reporter_evaluation") if isinstance(sections.get("reporter_evaluation"), dict) else {}
-    takeaways = [str(x or "") for x in list(brief.get("operator_takeaways") or []) if str(x or "").strip()]
+    entry = sections.get("entry_timing") if isinstance(sections.get("entry_timing"), dict) else {}
+    exit_plan = sections.get("exit_plan") if isinstance(sections.get("exit_plan"), dict) else {}
+    operator_conclusion = sections.get("operator_conclusion") if isinstance(sections.get("operator_conclusion"), dict) else {}
+    risk_alerts = sections.get("risk_alerts") if isinstance(sections.get("risk_alerts"), dict) else {}
+
+    selected_symbol = str(executive.get("symbol") or "-")
+    final_action = str(executive.get("final_action") or operator_conclusion.get("current_action") or "").strip().upper()
+    posture_action = str(monitor.get("posture") or final_action).strip().upper()
+    headline = str(brief.get("headline") or "").strip()
+    executive_summary = "" if status == "fallback" else (str(brief.get("executive_summary") or "").strip() or headline)
+    scanner_reason = "" if status == "fallback" else str(brief.get("scanner_reason") or brief.get("scanner_summary") or "").strip()
+    holding_summary = "" if status == "fallback" else str(brief.get("holding_summary") or brief.get("monitor_summary") or "").strip()
+    exit_plan_summary = "" if status == "fallback" else str(brief.get("exit_plan_summary") or "").strip()
+    risk_summary = "" if status == "fallback" else str(brief.get("risk_summary") or "").strip()
+    next_checkpoints = [] if status == "fallback" else [str(x or "").strip() for x in list(brief.get("next_checkpoints") or []) if str(x or "").strip()]
+    takeaways = [str(x or "").strip() for x in list(brief.get("operator_takeaways") or []) if str(x or "").strip()]
+
+    universe_size_raw = _safe_int(selection.get("universe_size"), 0)
+    if universe_size_raw <= 0:
+        fallback_scanner_reason = "저장된 후보 풀이 충분하지 않아 스캐너 근거는 제한적입니다. 이번 문서는 남아 있는 실행·모니터 기록을 기준으로 정리했습니다."
+    else:
+        fallback_scanner_reason = (
+            f"{_safe_int(selection.get('selected_rank'), 0) or 1}위 후보로 선정되었고, "
+            f"전체 후보 {universe_size_raw}개 중 우선 감시 대상으로 유지되었습니다."
+        )
+    entry_summary = str(brief.get("entry_summary") or "").strip()
+    if not entry_summary:
+        entry_reason_text = str(entry.get("reason_text") or "").strip()
+        if _count_hangul_chars(entry_reason_text) > 0 and status != "fallback":
+            entry_summary = entry_reason_text
+        else:
+            entry_summary = _entry_reason_text(
+                str(entry.get("reason_code") or ""),
+                str(entry.get("pattern") or ""),
+                entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {},
+            )
+    if not holding_summary:
+        posture = _action_label(monitor.get("posture") or final_action)
+        holding_summary = (
+            f"{selected_symbol} 현재 상태는 {posture}입니다. "
+            f"현재가 {_metric_text(monitor.get('current_price'))}, 평균가 {_metric_text(monitor.get('average_price'))}, "
+            f"현재 손익 축은 {_sanitize_operator_brief_text(monitor.get('active_exit_axis') or '-')} 기준으로 관리 중입니다."
+        )
+    if not exit_plan_summary:
+        exit_plan_summary = (
+            f"유효 손절 {_metric_text(exit_plan.get('effective_stop') or monitor.get('effective_stop'))}"
+            f" ({_metric_text(exit_plan.get('effective_stop_reason') or monitor.get('effective_stop_reason'))})"
+            f" 기준을 우선 보고, {_metric_text(exit_plan.get('take_profit') or monitor.get('take_profit'))} "
+            f"익절 또는 {', '.join(list(exit_plan.get('watch_axes') or monitor.get('watch_axes') or [])[:2]) or '감시 축 변화'}가 나오면 재판단합니다."
+        )
+    if not risk_summary:
+        weak_factors = [str(x or "").strip() for x in list(risk_alerts.get("weak_factors") or []) if str(x or "").strip()]
+        if weak_factors and status != "fallback":
+            risk_summary = " / ".join(weak_factors[:3])
+        elif bool(risk_alerts.get("defensive_mode")):
+            risk_summary = "거시 스트레스 신호가 남아 있어 방어적으로 대응해야 합니다."
+        else:
+            risk_summary = "현재 저장된 기준상 중대한 추가 리스크는 제한적이지만, 분봉 구조 훼손 여부를 계속 확인해야 합니다."
+    if not next_checkpoints:
+        next_checkpoints = [str(x or "").strip() for x in list(operator_conclusion.get("watch_next") or []) if str(x or "").strip()]
+    if not next_checkpoints and takeaways:
+        next_checkpoints = takeaways[:3]
 
     lines = [
-        "# Operator Brief",
+        "# 운영자 브리프",
         "",
-        f"- headline: **{str(brief.get('headline') or '-')}**",
-        f"- status: `{str(brief.get('status') or '-')}`",
-        f"- model: `{str(brief.get('model') or '-')}`",
+        "## 1. 최종 판단 요약",
         "",
-        "## Executive Decision",
+        f"- {executive_summary or f'{selected_symbol} 현재 판단은 {_action_label(posture_action)}입니다.'}",
         "",
-        f"- action: **{str(executive.get('action') or '-')} {str(executive.get('symbol') or '-')}**",
-        f"- reason: {str(executive.get('reason') or brief.get('scanner_summary') or '-')}",
+        "## 2. 종목 선정 이유",
         "",
-        "## Market Context",
-        "",
-        f"- regime: {str(market.get('market_regime') or '-')}",
-        f"- global_sentiment: {str(market.get('global_sentiment') or '-')}",
-        f"- vix: {str(market.get('vix') or '-')}",
-        f"- news_summary: {str(market.get('news_summary') or '-')}",
+        f"- {scanner_reason or fallback_scanner_reason}",
     ]
-    news_targets = market.get("news_targets") if isinstance(market.get("news_targets"), list) else []
-    for target in news_targets[:4]:
-        lines.append(f"- news_target: {str(target)}")
-    lines.extend(
-        [
-            "",
-            "## Selection",
-            "",
-            f"- universe_scanned: {str(selection.get('universe_size') or '-')}",
-            f"- selected_rank: {str(selection.get('selected_rank') or '-')}",
-        ]
-    )
-
-    selection_reasons = selection.get("selection_reasons") if isinstance(selection.get("selection_reasons"), list) else []
-    for reason in selection_reasons[:4]:
-        lines.append(f"- why: {str(reason)}")
-    for row in list(selection.get("top_candidates") or [])[:3]:
-        if isinstance(row, dict):
-            lines.append(
-                f"- top_candidate: {str(row.get('symbol') or '-')} score {str(row.get('score') if row.get('score') is not None else row.get('score_total') or '-')}"
-            )
-    for reason in list(selection.get("comparison_reasons") or [])[:2]:
-        lines.append(f"- runner_up: {str(reason)}")
+    selection_reasons = [str(x or "").strip() for x in list(selection.get("selection_reasons") or []) if str(x or "").strip()]
+    _append_list(lines, selection_reasons, limit=3)
+    comparison_reasons = [str(x or "").strip() for x in list(selection.get("comparison_reasons") or []) if str(x or "").strip()]
+    _append_list(lines, comparison_reasons, limit=2)
 
     lines.extend(
         [
             "",
-            "## Monitor",
+            "## 3. 진입 근거",
             "",
-            f"- posture: {str(monitor.get('posture') or '-')}",
-            f"- active_exit_axis: {str(monitor.get('active_exit_axis') or '-')}",
-            f"- price(avg/current/peak): {str(monitor.get('average_price') or '-')} / {str(monitor.get('current_price') or '-')} / {str(monitor.get('peak_price') or '-')}",
-            f"- drawdown(current/peak): {str(monitor.get('current_drawdown') or '-')} / {str(monitor.get('peak_drawdown') or '-')}",
-            f"- effective_stop: {str(monitor.get('effective_stop') or '-')} ({str(monitor.get('effective_stop_reason') or '-')})",
-            f"- vwap_distance: {str(monitor.get('vwap_distance') or '-')}",
-            f"- price_source: {str(monitor.get('price_source') or '-')}",
-            f"- feature_source: {str(monitor.get('feature_source') or '-')}",
+            f"- {entry_summary}",
         ]
     )
-    if str(monitor.get("price_source_policy") or "").strip():
-        lines.append(f"- price_source_policy: {str(monitor.get('price_source_policy') or '-')}")
-    for axis in list(monitor.get("watch_axes") or [])[:4]:
-        lines.append(f"- watch_axis: {str(axis)}")
-    for reason in list(monitor.get("hold_reasons") or [])[:4]:
-        lines.append(f"- monitor_reason: {str(reason)}")
+    entry_metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
+    if entry_metrics.get("recent_high") not in (None, ""):
+        lines.append(f"- 최근 고점: {_format_float(entry_metrics.get('recent_high'), 2)}")
+    if entry_metrics.get("vwap") not in (None, ""):
+        lines.append(f"- VWAP: {_format_float(entry_metrics.get('vwap'), 2)}")
+    if entry_metrics.get("vwap_distance") not in (None, ""):
+        lines.append(f"- VWAP 이격: {_vwap_interpretation(entry_metrics.get('vwap_distance'))}")
+    if entry_metrics.get("volume_ratio") not in (None, ""):
+        lines.append(f"- 거래량 배수: {_format_float(entry_metrics.get('volume_ratio'), 2)}배")
+    if entry_metrics.get("pullback_pct") not in (None, ""):
+        lines.append(f"- 눌림 폭: {_format_percent(entry_metrics.get('pullback_pct'), 2)}")
 
     lines.extend(
         [
             "",
-            "## AI Report",
+            "## 4. 현재 상태",
             "",
-            f"- status: {str(ai_trade.get('status_label') or '-')}",
-            f"- reason: {str(ai_trade.get('reason') or '-')}",
-            f"- next_step: {str(ai_trade.get('next_step') or '-')}",
+            f"- {holding_summary}",
+            f"- 포지션 상태: {_action_label(monitor.get('posture') or final_action)}",
+            f"- 평균가 / 현재가 / 고점: {_metric_text(monitor.get('average_price'))} / {_metric_text(monitor.get('current_price'))} / {_metric_text(monitor.get('peak_price'))}",
+            f"- 현재 손익 / 고점 대비 되밀림: {_metric_text(monitor.get('current_drawdown'))} / {_metric_text(monitor.get('peak_drawdown'))}",
         ]
     )
-    if str(ai_trade.get("link") or "").strip():
-        lines.append(f"- report_link: `{str(ai_trade.get('link') or '')}`")
+    hold_reasons = [str(x or "").strip() for x in list(monitor.get("hold_reasons") or []) if str(x or "").strip()]
+    _append_list(lines, hold_reasons, limit=3)
 
     lines.extend(
         [
             "",
-            "## Reporter",
+            "## 5. 청산 계획",
             "",
-            f"- run_grade: {str(reporter.get('run_grade') or '-')}",
-            f"- key_finding: {str(reporter.get('key_finding') or '-')}",
+            f"- {exit_plan_summary}",
+            f"- 유효 손절: {_metric_text(exit_plan.get('effective_stop') or monitor.get('effective_stop'))} ({_metric_text(exit_plan.get('effective_stop_reason') or monitor.get('effective_stop_reason'))})",
+            f"- 익절 기준: {_metric_text(exit_plan.get('take_profit') or monitor.get('take_profit'))}",
+            f"- 핵심 감시 축: {', '.join(list(exit_plan.get('watch_axes') or monitor.get('watch_axes') or [])[:3]) or '-'}",
+        ]
+    )
+    exit_triggers = [str(x or "").strip() for x in list(exit_plan.get("exit_triggers") or monitor.get("exit_triggers") or []) if str(x or "").strip()]
+    _append_list(lines, exit_triggers, limit=3)
+
+    lines.extend(
+        [
             "",
-            "## Agent Summaries",
+            "## 6. 리스크 요인",
             "",
-            f"- commander: {str(brief.get('commander_summary') or '-')}",
-            f"- strategist: {str(brief.get('strategist_summary') or '-')}",
-            f"- scanner: {str(brief.get('scanner_summary') or '-')}",
-            f"- monitor: {str(brief.get('monitor_summary') or '-')}",
-            f"- supervisor: {str(brief.get('supervisor_summary') or '-')}",
-            f"- executor: {str(brief.get('executor_summary') or '-')}",
-            f"- reporter: {str(brief.get('reporter_summary') or '-')}",
+            f"- {risk_summary}",
+        ]
+    )
+    weak_factors = [str(x or "").strip() for x in list(risk_alerts.get("weak_factors") or []) if str(x or "").strip()]
+    _append_list(lines, weak_factors, limit=3)
+    if str(market.get("global_sentiment") or "-") != "-" or str(market.get("vix") or "-") != "-":
+        lines.append(
+            f"- 시장 맥락: 글로벌 감성 {_metric_text(market.get('global_sentiment'))}, VIX {_metric_text(market.get('vix'))}"
+        )
+
+    lines.extend(
+        [
             "",
-            "## Takeaways",
+            "## 7. 다음 체크포인트",
             "",
         ]
     )
-    if takeaways:
-        for item in takeaways[:5]:
-            lines.append(f"- {item}")
-    else:
-        lines.append("- none")
+    _append_list(lines, next_checkpoints or takeaways, limit=4)
     lines.append("")
     return "\n".join(lines)
 
