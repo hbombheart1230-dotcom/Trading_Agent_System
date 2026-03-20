@@ -255,6 +255,34 @@ class _MixedLanguageRepairRouter:
         )
 
 
+class _AlwaysMixedLanguageRouter:
+    def __init__(self) -> None:
+        self.client = object()
+
+    def chat(self, role: str, messages: list[dict], *, policy: dict | None = None) -> str:
+        return json.dumps(
+            {
+                "headline": "run-1 운영 요약",
+                "executive_summary": "中立 시장에서 005930 포지션을 유지합니다.",
+                "commander_summary": "지휘자는 integrated_chain 세션을 실행했습니다.",
+                "strategist_summary": "전략가는 뉴스와 글로벌 감성을 읽었습니다.",
+                "scanner_summary": "스캐너는 Kiwoom 후보 중 005930을 골랐습니다.",
+                "scanner_reason": "候補 5개 중 1위였습니다.",
+                "monitor_summary": "모니터는 보유 상태를 관리합니다.",
+                "entry_summary": "3分봉 돌파를 보고 진입했습니다.",
+                "holding_summary": "部分 보유 상태입니다.",
+                "exit_plan_summary": "VWAP 이탈 시 청산합니다.",
+                "risk_summary": "變動성 확대는 주의가 필요합니다.",
+                "supervisor_summary": "감독관은 주문을 허용했습니다.",
+                "executor_summary": "수행자는 BUY 005930 1주를 실행했습니다.",
+                "reporter_summary": "리포터는 정상 run으로 평가했습니다.",
+                "next_checkpoints": ["VWAP 유지 여부"],
+                "operator_takeaways": ["시장 심리는 아직 중립입니다."],
+            },
+            ensure_ascii=False,
+        )
+
+
 def _make_config(tmp_path: Path) -> OperatorUIConfig:
     reports = tmp_path / "reports"
     events = tmp_path / "data" / "logs" / "events.jsonl"
@@ -1146,6 +1174,51 @@ def test_operator_brief_sanitizes_internal_prompt_leakage_and_bad_monitor_summar
     assert normalized["monitor_summary"] == "현재는 보유/모니터링 상태입니다."
 
 
+def test_operator_brief_prompt_uses_valid_korean_guidance() -> None:
+    messages = data_access._build_operator_brief_messages({"symbol": "005930", "entry": {"decision": "WAIT"}})
+
+    assert "??" not in messages[0]["content"]
+    assert "??" not in messages[1]["content"]
+    assert "이번 거래는 분봉 데이터가 확보되지 않아 진입 근거를 확인할 수 없었습니다." in messages[1]["content"]
+    assert "자연스러운 한국어" in messages[0]["content"]
+
+
+def test_operator_brief_fallback_markdown_keeps_all_sections_and_natural_korean() -> None:
+    def _brief_for_reason(reason_code: str) -> dict:
+        return {
+            "status": "fallback",
+            "headline": "AI Brief Failed WAIT 005930",
+            "operator_takeaways": [],
+            "sections": {
+                "executive_decision": {"symbol": "005930", "final_action": "WAIT"},
+                "why_symbol_chosen": {"universe_size": 5, "selected_rank": 1, "selection_reasons": [], "comparison_reasons": []},
+                "entry_timing": {"reason_code": reason_code, "pattern": "", "metrics": {}},
+                "position_monitor_reasoning": {"posture": "WAIT"},
+                "exit_plan": {"watch_axes": []},
+                "risk_alerts": {},
+                "operator_conclusion": {"watch_next": ["다음 분봉 확인"]},
+            },
+        }
+
+    minute_markdown = data_access._render_operator_brief_markdown(_brief_for_reason("minute_candle_missing"))
+    incomplete_markdown = data_access._render_operator_brief_markdown(_brief_for_reason("data_incomplete"))
+    no_entry_markdown = data_access._render_operator_brief_markdown(_brief_for_reason("no_position"))
+
+    for heading in [
+        "## 1. 최종 판단 요약",
+        "## 2. 종목 선정 이유",
+        "## 3. 진입 근거",
+        "## 4. 현재 상태",
+        "## 5. 청산 계획",
+        "## 6. 리스크 요인",
+        "## 7. 다음 체크포인트",
+    ]:
+        assert heading in minute_markdown
+    assert "이번 거래는 분봉 데이터가 확보되지 않아 진입 근거를 확인할 수 없었습니다." in minute_markdown
+    assert "체결 이전 분봉 기록이 충분하지 않아 진입 시점을 확정하기 어렵습니다." in incomplete_markdown
+    assert "저장된 데이터 범위 안에서는 체결 직전 분봉 진입 근거가 충분히 남아 있지 않았습니다." in no_entry_markdown
+
+
 def test_operator_brief_prefers_richer_fallback_text_and_takeaways() -> None:
     normalized = data_access._sanitize_operator_brief_result(
         {"trade_report": {"lifecycle_status": "open", "action": "BUY"}, "executor": {"execution": {"action": "BUY"}}},
@@ -1205,9 +1278,25 @@ def test_operator_brief_timeout_retry_preserves_attempt_history(tmp_path: Path, 
     assert brief["status"] == "fallback"
     assert brief["failure"]["status"] in {"timeout", "empty_response"}
     assert artifact["retry_count"] >= 1
-    assert [row["step"] for row in artifact["attempts"][:2]] == ["primary", "retry_1"]
+    assert [row["step"] for row in artifact["attempts"][:2]] == ["first_attempt", "retry_1"]
     assert artifact["attempts"][0]["status"] == "timeout"
     assert artifact["parse_mode"] == "none"
+
+
+def test_operator_brief_language_policy_failed_still_falls_back(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _AlwaysMixedLanguageRouter()))
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "minimax/minimax-m2.5")
+    cfg = _make_config(tmp_path)
+
+    detail = data_access.load_run_detail(cfg, "run-1")
+    brief = detail["operator_brief"]
+    brief_json = Path(str(detail["trade_report"].get("operator_brief_json_path") or ""))
+    artifact = json.loads((brief_json.parent / "brief_llm_response.json").read_text(encoding="utf-8"))
+
+    assert brief["status"] == "fallback"
+    assert brief["failure"]["reason"] == "language_policy_failed"
+    assert artifact["attempts"][0]["error"] == "language_policy_failed"
+    assert brief.get("fallback_rendered") is True
 
 
 def test_operator_ui_reads_new_trade_artifact_layout(tmp_path: Path, monkeypatch) -> None:

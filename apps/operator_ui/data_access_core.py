@@ -4027,29 +4027,28 @@ def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[s
         "next_checkpoints": ["string"],
     }
     system_prompt = (
-        "You write operator briefs for a Korean trading operator. "
-        "Every value in the JSON must be natural Korean prose. "
-        "Do not write English, Chinese, or Japanese sentences. "
-        "Allowed English is limited to market terms like VWAP, RSI, ADX and symbol codes. "
-        "Return exactly one JSON object and nothing else."
+        "당신은 한국 주식 운영자를 위한 운영자 브리프 작성자입니다. "
+        "반드시 JSON 객체 하나만 반환하고, 모든 설명 문장은 자연스러운 한국어로 작성하십시오. "
+        "영어, 중국어, 일본어 문장은 사용하지 마십시오. "
+        "VWAP, RSI, ADX, 종목코드처럼 시장에서 통용되는 짧은 용어만 예외적으로 허용됩니다."
     )
     user_prompt = (
-        "Write a concise operator brief from the input.\n"
-        "Rules:\n"
-        "- Keep a single story flow: Scanner -> Entry -> Holding -> Exit.\n"
-        "- All prose values must be natural Korean.\n"
-        "- entry_summary must describe minute-candle entry timing.\n"
-        "- If minute candles are missing or conditions fail, explain it conservatively in Korean, for example: ?? ??? ???? ?? ??.\n"
-        "- If BUY already happened and lifecycle is open, do not say no_position. Explain the current holding state instead.\n"
-        "- If SELL already happened and lifecycle is closed, explain the exit trigger clearly.\n"
-        "- scanner_reason should explain rank, candidate pool size, and 2-3 key selection reasons.\n"
-        "- holding_summary should explain current PnL/posture/market interpretation.\n"
-        "- exit_plan_summary should explain when to sell using condition-based wording.\n"
-        "- risk_summary should explain 2-3 current risks.\n"
-        "- next_checkpoints should be short operator checkpoints.\n"
-        "- Never expose internal phrases such as canonical_trade.available, reports/trades, source of truth, run-level.\n"
-        f"Contract: {json.dumps(contract, ensure_ascii=False)}\n"
-        f"Input: {json.dumps(compact_input, ensure_ascii=False)}"
+        "입력 데이터를 바탕으로 운영자가 10초 안에 상황을 이해할 수 있는 간결한 브리프를 작성하십시오.\n"
+        "작성 규칙:\n"
+        "- 전체 흐름은 반드시 Scanner -> Entry -> Holding -> Exit 순서를 유지하십시오.\n"
+        "- 모든 설명 값은 자연스러운 한국어 문장으로 작성하십시오.\n"
+        "- entry_summary는 반드시 분봉 기준 진입 시점이나 진입 보류 이유를 설명해야 합니다.\n"
+        "- 분봉 데이터가 없거나 진입 조건이 충족되지 않으면, 예를 들어 \"이번 거래는 분봉 데이터가 확보되지 않아 진입 근거를 확인할 수 없었습니다. 따라서 신규 진입은 보류 대상으로 해석했습니다.\"처럼 보수적으로 설명하십시오.\n"
+        "- BUY가 이미 체결되었고 lifecycle이 열려 있으면 no_position이라고 쓰지 말고 현재 보유 상태를 설명하십시오.\n"
+        "- SELL이 이미 체결되었고 lifecycle이 닫혀 있으면 어떤 청산 신호로 종료되었는지 분명하게 설명하십시오.\n"
+        "- scanner_reason에는 후보 순위, 후보 수, 핵심 선정 이유 2~3개를 담으십시오.\n"
+        "- holding_summary에는 현재 손익, 포지션 상태, 시장 해석을 담으십시오.\n"
+        "- exit_plan_summary에는 어떤 조건에서 청산할지 조건형 문장으로 설명하십시오.\n"
+        "- risk_summary에는 현재 리스크 요인을 2~3개로 정리하십시오.\n"
+        "- next_checkpoints에는 운영자가 다음에 확인할 짧은 체크포인트를 넣으십시오.\n"
+        "- canonical_trade.available, reports/trades, source of truth, run-level 같은 내부 문구는 절대 노출하지 마십시오.\n"
+        f"계약: {json.dumps(contract, ensure_ascii=False)}\n"
+        f"입력: {json.dumps(compact_input, ensure_ascii=False)}"
     )
     return [
         {"role": "system", "content": system_prompt},
@@ -4079,16 +4078,15 @@ def _build_operator_brief_repair_messages(raw_text: str) -> List[Dict[str, str]]
         {
             "role": "system",
             "content": (
-                "Repair the operator brief into one JSON object. "
-                "All prose values must be natural Korean only. "
-                "Do not leave Chinese, Japanese, or English sentences in the result."
+                "운영자 브리프를 계약에 맞는 JSON 객체 하나로 복구하십시오. "
+                "모든 설명 값은 자연스러운 한국어로 작성하고, 중국어·일본어·영어 문장은 결과에 남기지 마십시오."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Contract: {json.dumps(contract, ensure_ascii=False)}\n"
-                f"Input: {raw_text}"
+                f"계약: {json.dumps(contract, ensure_ascii=False)}\n"
+                f"입력: {raw_text}"
             ),
         },
     ]
@@ -4098,14 +4096,14 @@ def _build_operator_brief_line_messages(compact_input: Dict[str, Any]) -> List[D
         {
             "role": "system",
             "content": (
-                "If JSON is difficult, answer with key:value lines only. "
-                "Every value must still be natural Korean prose."
+                "JSON 생성이 어렵다면 key:value 형식의 줄 단위 응답으로만 작성하십시오. "
+                "각 값은 여전히 자연스러운 한국어 문장이어야 합니다."
             ),
         },
         {
             "role": "user",
             "content": (
-                "Use only this format:\n"
+                "아래 형식만 사용하십시오:\n"
                 "headline: ...\n"
                 "commander_summary: ...\n"
                 "strategist_summary: ...\n"
@@ -4120,9 +4118,9 @@ def _build_operator_brief_line_messages(compact_input: Dict[str, Any]) -> List[D
                 "holding_summary: ...\n"
                 "exit_plan_summary: ...\n"
                 "risk_summary: ...\n"
-                "next_checkpoints: item1 | item2 | item3\n"
-                "operator_takeaways: item1 | item2 | item3\n"
-                f"Input: {json.dumps(compact_input, ensure_ascii=False)}"
+                "next_checkpoints: 항목1 | 항목2 | 항목3\n"
+                "operator_takeaways: 항목1 | 항목2 | 항목3\n"
+                f"입력: {json.dumps(compact_input, ensure_ascii=False)}"
             ),
         },
     ]
@@ -4275,7 +4273,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         "completeness_score": 0.0,
     }
     for attempt_index in range(retry_max + 1):
-        step = "primary" if attempt_index == 0 else f"retry_{attempt_index}"
+        step = "first_attempt" if attempt_index == 0 else f"retry_{attempt_index}"
         primary_t0 = time.perf_counter()
         try:
             raw = router.chat("operator_ui", messages, policy=primary_policy)
@@ -4318,6 +4316,10 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         parsed_candidate = dict(parsed_candidate) if isinstance(parsed_candidate, dict) else {}
         parse_meta = _operator_brief_parse_meta(raw, parsed_candidate)
         primary_parse_meta = dict(parse_meta)
+        # Mixed-language output is treated as a failure because this document is
+        # the operator-facing single source for fast review, and partial Korean
+        # mixed with Chinese/Japanese/English reads like a broken brief rather
+        # than a usable status update.
         language_ok = _operator_brief_language_ok(parsed_candidate)
         if bool(parsed_result.get("is_full")) and _operator_brief_is_complete(parsed_candidate) and language_ok:
             attempts.append(
@@ -4412,7 +4414,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     if bool(repair_result.get("is_full")) and _operator_brief_is_complete(repaired) and repair_language_ok:
         attempts.append(
             make_attempt(
-                step="repair",
+                step="repaired_attempt",
                 messages=repair_messages,
                 raw_response_text=repair_raw,
                 parsed_output=repaired,
@@ -4447,7 +4449,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         })
     attempts.append(
         make_attempt(
-            step="repair",
+            step="repaired_attempt",
             messages=repair_messages,
             raw_response_text=repair_raw,
             parsed_output=repaired,
@@ -4489,7 +4491,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         if line_parsed and not line_meta.get("required_keys_missing") and line_language_ok:
             attempts.append(
                 make_attempt(
-                    step="line_repair",
+                    step="line_repair_attempt",
                     messages=line_messages,
                     raw_response_text=line_raw,
                     parsed_output=line_parsed,
@@ -4531,7 +4533,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
             })
         attempts.append(
             make_attempt(
-                step="line_repair",
+                step="line_repair_attempt",
                 messages=line_messages,
                 raw_response_text=line_raw,
                 parsed_output=line_parsed,
@@ -4557,6 +4559,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     )
     fallback_brief.update(
         {
+            "fallback_rendered": True,
             "parse_mode": str(primary_parse_meta.get("parse_mode") or "none"),
             "required_keys_expected": list(primary_parse_meta.get("required_keys_expected") or OPERATOR_BRIEF_REQUIRED_KEYS),
             "required_keys_present": list(primary_parse_meta.get("required_keys_present") or []),
@@ -4719,17 +4722,17 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
                 parts.append(f"거래량 배수: {_format_float(volume_ratio, 2)}배")
             return " ".join(parts)
         mapping = {
-            "minute_candle_missing": "분봉 데이터가 없어 진입을 보류했습니다.",
-            "data_incomplete": "분봉 데이터가 충분하지 않아 진입을 보류했습니다.",
-            "no_breakout_signal": "최근 고점 돌파 또는 첫 눌림목 반등 신호가 확인되지 않아 진입을 보류했습니다.",
-            "vwap_not_confirmed": "VWAP 상회 유지 또는 재안착이 확인되지 않아 진입을 보류했습니다.",
-            "volume_insufficient": "거래량 확인이 부족해 진입을 보류했습니다.",
+            "minute_candle_missing": "이번 거래는 분봉 데이터가 확보되지 않아 진입 근거를 확인할 수 없었습니다. 따라서 신규 진입은 보류 대상으로 해석했습니다.",
+            "data_incomplete": "체결 이전 분봉 기록이 충분하지 않아 진입 시점을 확정하기 어렵습니다. 현재 문서는 보유 관리와 청산 기준 중심으로 정리했습니다.",
+            "no_breakout_signal": "저장된 분봉 범위에서는 최근 고점 돌파나 첫 눌림목 반등 신호가 확인되지 않았습니다. 따라서 진입은 보류 판단으로 정리했습니다.",
+            "vwap_not_confirmed": "분봉 흐름에서 VWAP 상회 유지나 재안착이 확인되지 않았습니다. 추격 진입 위험을 피하기 위해 진입 보류로 해석했습니다.",
+            "volume_insufficient": "분봉 거래량이 돌파 신호를 뒷받침할 만큼 충분하지 않았습니다. 따라서 이번 구간은 보수적으로 진입 보류로 판단했습니다.",
             "too_extended_from_vwap": "VWAP 대비 과도하게 확장되어 추격 진입을 피했습니다.",
             "post_exit_cooldown": "직전 청산 직후 재진입 쿨다운 구간이라 진입을 보류했습니다.",
             "buy_blocked_open_position": "기존 보유 포지션이 있어 신규 진입을 차단했습니다.",
-            "no_position": "분봉 진입 근거가 저장되지 않아 보수적으로 해석했습니다. 이번 요약은 체결 이후 보유 관리 기록을 기준으로 정리했습니다.",
-            "peak_drawdown": "이번 저장값에는 진입 근거 대신 청산 관리 신호가 남아 있습니다. 진입 시점 분봉 근거는 별도로 확인되지 않았습니다.",
-            "hard_stop": "이번 저장값에는 진입 근거 대신 손절 관리 신호가 남아 있습니다. 진입 시점 분봉 근거는 별도로 확인되지 않았습니다.",
+            "no_position": "저장된 데이터 범위 안에서는 체결 직전 분봉 진입 근거가 충분히 남아 있지 않았습니다. 이번 문서는 진입 해석보다 이후 보유 관리 기록을 중심으로 정리했습니다.",
+            "peak_drawdown": "이번 저장값에는 진입 근거보다 청산 관리 신호가 더 선명하게 남아 있습니다. 진입 시점의 분봉 근거는 별도로 확인되지 않아 보수적으로 정리했습니다.",
+            "hard_stop": "이번 저장값에는 진입 근거보다 손절 관리 신호가 더 분명하게 남아 있습니다. 진입 시점의 분봉 근거는 별도로 확인되지 않아 보수적으로 정리했습니다.",
         }
         text = mapping.get(reason)
         if text:
