@@ -21,8 +21,7 @@ def test_run_ai_trade_report_batch_syncs_salvaged_diagnostics_to_all_artifacts(t
     trade_paths = trade_artifact_paths(reports_root, "2026-03-19", "TRD_20260319_000660_01")
 
     for key in (
-        "trade_lifecycle_json",
-        "aggregated_execution_bundle_json",
+        "lifecycle_bundle_json",
         "ai_trade_report_input_json",
         "trade_health_json",
     ):
@@ -52,8 +51,7 @@ def test_run_ai_trade_report_batch_syncs_salvaged_diagnostics_to_all_artifacts(t
 
     for key in (
         "ai_trade_report_json",
-        "trade_lifecycle_json",
-        "aggregated_execution_bundle_json",
+        "lifecycle_bundle_json",
         "ai_trade_report_input_json",
         "trade_health_json",
     ):

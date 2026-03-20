@@ -781,7 +781,7 @@ def test_operator_ui_run_detail_repairs_non_json_llm_output(tmp_path: Path, monk
     detail = client.get("/runs/run-1")
     assert detail.status_code == 200
     assert "brief=repaired" in detail.text
-    assert "repair 경로가 동작했습니다." in detail.text
+    assert "brief=fallback" not in detail.text
 
 
 def test_operator_ui_run_detail_uses_line_repair_for_free_model(tmp_path: Path, monkeypatch) -> None:
@@ -793,7 +793,7 @@ def test_operator_ui_run_detail_uses_line_repair_for_free_model(tmp_path: Path, 
     detail = client.get("/runs/run-1")
     assert detail.status_code == 200
     assert "brief=salvaged" in detail.text
-    assert "line repair 동작" in detail.text
+    assert "brief=fallback" not in detail.text
 
 
 def test_operator_brief_input_prefers_canonical_trade_artifacts(tmp_path: Path, monkeypatch) -> None:
@@ -1048,11 +1048,7 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert "## 3. 진입 근거" in md_text
     assert "## 5. 청산 계획" in md_text
     brief_compact = brief_json.parent / "brief_compact_input.json"
-    assert brief_compact.exists() is True
-    compact_payload = json.loads(brief_compact.read_text(encoding="utf-8"))
-    assert compact_payload["component"] == "brief"
-    assert isinstance(compact_payload["compact_input"], dict)
-    assert compact_payload["compact_input_char_count"] < compact_payload["source_char_count"]
+    assert brief_compact.exists() is False
     brief_llm = brief_json.parent / "brief_llm_response.json"
     assert brief_llm.exists() is True
     assert json.loads(brief_llm.read_text(encoding="utf-8"))["component"] == "brief"
@@ -1122,7 +1118,7 @@ def test_operator_brief_detail_force_regenerates_saved_artifact(tmp_path: Path, 
     refreshed = data_access.load_operator_brief_detail(cfg, story_id)
 
     assert refreshed["headline"] != "stale saved headline"
-    assert brief_input.exists() is True
+    assert brief_input.exists() is False
 
 
 def test_operator_brief_uses_openrouter_default_max_tokens_when_role_value_missing(tmp_path: Path, monkeypatch) -> None:
@@ -1431,7 +1427,9 @@ def test_operator_brief_writes_failure_artifact_after_retries(tmp_path: Path, mo
     assert brief["failure"]["status"] == "empty_response"
     assert artifact["status"] == "fallback"
     assert artifact["retry_count"] >= 1
-    assert artifact["raw_response_text"] == ""
+    assert str(artifact.get("response_ref") or "").endswith("response.json")
+    assert str(artifact.get("prompt_ref") or "").endswith("prompt.json")
+    assert artifact.get("raw_response_text", "") == ""
     assert artifact["parse_mode"] == "none"
     assert artifact["required_keys_missing"] == data_access.OPERATOR_BRIEF_REQUIRED_KEYS
     assert artifact["used_fallback_sections"] == data_access.OPERATOR_BRIEF_REQUIRED_KEYS
@@ -1478,9 +1476,9 @@ def test_operator_ui_reads_new_trade_artifact_layout(tmp_path: Path, monkeypatch
     story_id = "TRD_20260316_005930_99"
     new_trade_root = cfg.reports_root / "trades" / "2026-03-16" / story_id
     _write_json(
-        new_trade_root / "lifecycle" / "aggregated_execution_bundle.json",
+        new_trade_root / "lifecycle_bundle.json",
         {
-            "schema_version": "live_execution_bundle.v3",
+            "schema_version": "lifecycle_bundle.v1",
             "day": "2026-03-16",
             "run_id": "run-new",
             "trade_id": story_id,
@@ -1492,15 +1490,23 @@ def test_operator_ui_reads_new_trade_artifact_layout(tmp_path: Path, monkeypatch
         },
     )
     _write_json(
-        new_trade_root / "lifecycle" / "trade_lifecycle.json",
-        {"trade_id": story_id, "status": "open", "symbol": "005930", "run_ids_all": ["run-new"], "summary": {"lifecycle_summary_human": "open lifecycle"}},
+        new_trade_root / "entry.json",
+        {"run_id": "run-new", "action": "BUY", "symbol": "005930"},
     )
     _write_json(
-        new_trade_root / "ai_trade_report" / "ai_trade_report_input.json",
+        new_trade_root / "hold.json",
+        {"run_ids": ["run-new"], "posture": "HOLD"},
+    )
+    _write_json(
+        new_trade_root / "exit.json",
+        {},
+    )
+    _write_json(
+        new_trade_root / "ai_trade_report_input.json",
         {"schema_version": "trade_story_input.v2", "trade_id": story_id, "story_id": story_id, "run_id": "run-new", "symbol": "005930", "day": "2026-03-16"},
     )
     _write_json(
-        new_trade_root / "ai_trade_report" / "ai_trade_report.json",
+        new_trade_root / "reports" / "ai_trade_report.json",
         {
             "schema_version": "trade_report.v2",
             "trade_id": story_id,

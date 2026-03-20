@@ -12,8 +12,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.core.settings import load_env_file
-from libs.reporting.llm_artifacts import build_compact_input_artifact, trade_artifact_paths, write_json
-from libs.reporting.trade_report_ai import build_ai_trade_report, build_ai_trade_report_compact_input, render_trade_report_markdown
+from libs.reporting.llm_artifacts import persist_llm_artifact_refs, trade_artifact_paths, write_json
+from libs.reporting.trade_report_ai import build_ai_trade_report, render_trade_report_markdown
 
 
 def _utc_now_iso() -> str:
@@ -62,9 +62,10 @@ def _normalize_trade_id_filters(values: Any) -> List[str]:
 
 
 def _load_story_input(trade_dir: Path) -> tuple[Dict[str, Any], str]:
-    canonical = trade_dir / "ai_trade_report" / "ai_trade_report_input.json"
+    canonical = trade_dir / "ai_trade_report_input.json"
+    normalized_legacy = trade_dir / "ai_trade_report" / "ai_trade_report_input.json"
     legacy = trade_dir / "trade_story_input.json"
-    for path in (canonical, legacy):
+    for path in (canonical, normalized_legacy, legacy):
         payload = _read_json(path)
         if payload:
             return payload, str(path)
@@ -115,8 +116,7 @@ def _sync_report_diagnostics(trade_paths: Dict[str, Path], report: Dict[str, Any
     report["ai_report_diagnostics"] = dict(diagnostics)
 
     for path in (
-        trade_paths["trade_lifecycle_json"],
-        trade_paths["aggregated_execution_bundle_json"],
+        trade_paths["lifecycle_bundle_json"],
         trade_paths["ai_trade_report_input_json"],
         trade_paths["trade_health_json"],
     ):
@@ -135,8 +135,7 @@ def _finalize_report_diagnostics(
 ) -> None:
     for path in (
         report_json_path,
-        trade_paths["trade_lifecycle_json"],
-        trade_paths["aggregated_execution_bundle_json"],
+        trade_paths["lifecycle_bundle_json"],
         trade_paths["ai_trade_report_input_json"],
         trade_paths["trade_health_json"],
     ):
@@ -182,21 +181,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue
 
         trade_paths = trade_artifact_paths(reports_root, day, trade_id)
-        compact_input = build_ai_trade_report_compact_input(story_input)
-        compact_input_path = trade_paths["ai_trade_report_compact_input_json"]
-        write_json(
-            compact_input_path,
-            build_compact_input_artifact(
-                component="ai_trade_report",
-                run_id=str(story_input.get("run_id") or ""),
-                trade_id=trade_id,
-                story_id=str(story_input.get("story_id") or trade_id),
-                day=day,
-                source_artifact_path=story_input_path,
-                source_input=story_input,
-                compact_input=compact_input,
-            ),
-        )
+        compact_input_path = Path()
         report = build_ai_trade_report(
             story_input,
             enabled=True,
@@ -215,7 +200,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         report_json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         report_md_path.write_text(render_trade_report_markdown(report), encoding="utf-8")
         if llm_artifact:
-            write_json(llm_path, llm_artifact)
+            llm_compact = persist_llm_artifact_refs(
+                artifact=llm_artifact,
+                reports_root=reports_root,
+                day=day,
+                run_id=str(story_input.get("run_id") or ""),
+                component="ai_trade_report",
+            )
+            write_json(llm_path, llm_compact)
         _finalize_report_diagnostics(trade_paths, report_json_path, diagnostics)
 
         rows.append(
@@ -226,7 +218,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "mode": str(generation.get("mode") or ""),
                 "model": str(generation.get("model") or llm_artifact.get("model") or ""),
                 "story_input_path": story_input_path,
-                "ai_trade_report_compact_input_path": str(compact_input_path),
+                "ai_trade_report_compact_input_path": "",
                 "ai_trade_report_json_path": str(report_json_path),
                 "ai_trade_report_md_path": str(report_md_path),
                 "ai_trade_report_llm_response_path": str(llm_path) if llm_artifact else "",

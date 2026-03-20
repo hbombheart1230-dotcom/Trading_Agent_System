@@ -1280,13 +1280,13 @@ def _operatorize_report_text(text: Any) -> str:
         return f"주문 실행 결과는 {_clip(m.group(1), max_len=180)}입니다."
     m = re.fullmatch(r"Quantity:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"수량은 {_clip(m.group(1), max_len=80)}입니다."
+        return f"수량: {_clip(m.group(1), max_len=80)}"
     m = re.fullmatch(r"수량:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"수량은 {_clip(m.group(1), max_len=80)}입니다."
+        return f"수량: {_clip(m.group(1), max_len=80)}"
     m = re.fullmatch(r"Execution mode:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"실행 모드는 {_clip(m.group(1), max_len=120)}입니다."
+        return f"실행 모드: {_clip(m.group(1), max_len=120)}"
     m = re.fullmatch(r"Broker environment:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         value = _clip(m.group(1), max_len=120)
@@ -2154,6 +2154,56 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
             ),
         },
     ]
+
+
+def _canonical_ai_report_status(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"ok", "partial", "salvaged", "error", "skipped"}:
+        return raw
+    if raw in {"repaired"}:
+        return "ok"
+    if raw in {"disabled", "fallback", "unavailable", "dry_run"}:
+        return "skipped"
+    return "error"
+
+
+def _attach_report_status_matrix(
+    report: Dict[str, Any],
+    story_input: Dict[str, Any],
+    *,
+    ai_trade_report_status: Any,
+    deterministic_report_status: Any = "ok",
+) -> Dict[str, Any]:
+    out = dict(report or {})
+    diagnostics = story_input.get("ai_report_diagnostics") if isinstance(story_input.get("ai_report_diagnostics"), dict) else {}
+    llm_brief_status = _canonical_ai_report_status(diagnostics.get("llm_brief_status") or "skipped")
+    out["deterministic_report_status"] = _canonical_ai_report_status(deterministic_report_status)
+    out["llm_brief_status"] = llm_brief_status
+    out["ai_trade_report_status"] = _canonical_ai_report_status(ai_trade_report_status)
+    generation = out.get("generation") if isinstance(out.get("generation"), dict) else {}
+    generation["deterministic_report_status"] = out["deterministic_report_status"]
+    generation["llm_brief_status"] = out["llm_brief_status"]
+    generation["ai_trade_report_status"] = out["ai_trade_report_status"]
+    out["generation"] = generation
+    return out
+
+
+def build_deterministic_trade_report(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    report = _fallback_report(
+        story_input,
+        status="ok",
+        mode="deterministic",
+        model="",
+        reason="deterministic_report_generated",
+    )
+    return _attach_report_status_matrix(
+        report,
+        story_input,
+        ai_trade_report_status="skipped",
+        deterministic_report_status="ok",
+    )
+
+
 def build_ai_trade_report(
     story_input: Dict[str, Any],
     *,
@@ -2200,7 +2250,7 @@ def build_ai_trade_report(
             model_info={"provider": "OpenRouter", "model": chosen_model or "openrouter/free"},
             meta={"reason": "TRADE_REPORT_AI_ENABLED is false", **empty_required_meta},
         )
-        return report
+        return _attach_report_status_matrix(report, story_input, ai_trade_report_status="skipped")
 
     router = LLMRouter.from_env()
     if router.client is None:
@@ -2223,7 +2273,7 @@ def build_ai_trade_report(
             model_info={"provider": "OpenRouter", "model": chosen_model or "openrouter/free"},
             meta={"reason": "OPENROUTER_API_KEY is not configured", "error": "llm_client_unavailable", **empty_required_meta},
         )
-        return report
+        return _attach_report_status_matrix(report, story_input, ai_trade_report_status="error")
 
     temp = float(
         temperature
@@ -2478,7 +2528,7 @@ def build_ai_trade_report(
                 "used_fallback_sections": list(out.get("used_fallback_sections") or []),
             },
         )
-        return out
+        return _attach_report_status_matrix(out, story_input, ai_trade_report_status=final_status)
 
     if not parsed:
         report = _failure_report(
@@ -2502,7 +2552,7 @@ def build_ai_trade_report(
             latency_ms=sum(int(row.get("latency_ms") or 0) for row in attempts),
             meta={"reason": final_reason, "error": final_error, **empty_required_meta},
         )
-        return report
+        return _attach_report_status_matrix(report, story_input, ai_trade_report_status=final_status)
 
     parse_meta = _trade_report_parse_meta(raw, parsed)
     out = _merge_trade_report_candidate(
@@ -2530,7 +2580,7 @@ def build_ai_trade_report(
             "used_fallback_sections": list(out.get("used_fallback_sections") or []),
         },
     )
-    return out
+    return _attach_report_status_matrix(out, story_input, ai_trade_report_status=final_status)
 
 
 def render_trade_report_markdown(report: Dict[str, Any]) -> str:

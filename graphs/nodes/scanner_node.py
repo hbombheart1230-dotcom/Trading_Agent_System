@@ -1977,6 +1977,19 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     }
     ranking_table = _ranking_table_rows(scan_results_sorted, max_rows=5)
     selected_snapshot = _compact_selected_snapshot(selected if isinstance(selected, dict) else None)
+    selected_symbol = str((selected or {}).get("symbol") or "") if isinstance(selected, dict) else ""
+    selected_rank = 0
+    if selected_symbol:
+        ranked_symbols = [str((row or {}).get("symbol") or "") for row in list(scan_results_sorted) if isinstance(row, dict)]
+        if selected_symbol in ranked_symbols:
+            selected_rank = int(ranked_symbols.index(selected_symbol) + 1)
+    selected_score_total = float(_to_float((selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0
+    second_score_total = float(_to_float((scan_results_sorted[1] or {}).get("score_total") or (scan_results_sorted[1] or {}).get("score"))) if len(scan_results_sorted) > 1 and isinstance(scan_results_sorted[1], dict) else 0.0
+    margin_vs_second = float(selected_score_total - second_score_total) if isinstance(selected, dict) else 0.0
+    selected_score_breakdown = dict((selected or {}).get("score_breakdown") or {}) if isinstance(selected, dict) else {}
+    critical_positive_factors = [f"{str(k)}:{float(_to_float(v)):.3f}" for k, v in selected_score_breakdown.items() if float(_to_float(v)) > 0][:4]
+    critical_negative_factors = [f"{str(k)}:{float(_to_float(v)):.3f}" for k, v in selected_score_breakdown.items() if float(_to_float(v)) < 0][:4]
+    selection_summary = str((selected or {}).get("why") or "").strip() if isinstance(selected, dict) else ""
     runner_up_reasons: List[Dict[str, Any]] = []
     if len(scan_results_sorted) > 1 and isinstance(selected, dict):
         selected_score = float(_to_float(selected.get("score_total") or selected.get("score")))
@@ -2003,6 +2016,25 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "why_lost": reasons,
                 }
             )
+    state["scanner_ranking_table"] = list(ranking_table)
+    state["scanner_runner_up_reasons"] = list(runner_up_reasons)
+    state["scanner_selection_reason"] = {
+        "selected_symbol": selected_symbol,
+        "selected_rank": int(selected_rank),
+        "selected_score_total": float(selected_score_total),
+        "margin_vs_second": float(margin_vs_second),
+        "critical_positive_factors": list(critical_positive_factors),
+        "critical_negative_factors": list(critical_negative_factors),
+        "selection_summary": selection_summary,
+    }
+    if isinstance(state.get("scanner_output"), dict):
+        state["scanner_output"]["selection_summary"] = selection_summary
+        state["scanner_output"]["selected_rank"] = int(selected_rank)
+        state["scanner_output"]["selected_score_total"] = float(selected_score_total)
+        state["scanner_output"]["margin_vs_second"] = float(margin_vs_second)
+        state["scanner_output"]["critical_positive_factors"] = list(critical_positive_factors)
+        state["scanner_output"]["critical_negative_factors"] = list(critical_negative_factors)
+    state["scanner_margin_vs_second"] = float(margin_vs_second)
     _emit_scanner_event(
         state,
         name="candidate_pool_snapshot",
@@ -2033,7 +2065,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state,
         name="candidate_selection_reason",
         payload={
-            "selected_symbol": str((selected or {}).get("symbol") or ""),
+            "selected_symbol": selected_symbol,
+            "selected_rank": int(selected_rank),
+            "selected_score_total": float(selected_score_total),
+            "margin_vs_second": float(margin_vs_second),
+            "critical_positive_factors": list(critical_positive_factors),
+            "critical_negative_factors": list(critical_negative_factors),
+            "selection_summary": selection_summary,
             "why_selected": [
                 f"highest total score ({float(_to_float((selected or {}).get('score_total') or (selected or {}).get('score'))):.3f})"
                 if isinstance(selected, dict)

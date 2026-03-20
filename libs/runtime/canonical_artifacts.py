@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import datetime, timezone
@@ -65,6 +66,28 @@ def canonical_run_artifact_paths(
     }
 
 
+def llm_run_artifact_paths(
+    run_id: str,
+    *,
+    day: str,
+    reports_root: Path,
+    artifact_name: str,
+) -> Dict[str, Path]:
+    base = (
+        Path(reports_root)
+        / "llm"
+        / str(day or "").strip()
+        / str(run_id or "").strip()
+        / str(artifact_name or "").strip()
+    )
+    return {
+        "base_dir": base,
+        "prompt": base / "prompt.json",
+        "response": base / "response.json",
+        "meta": base / "meta.json",
+    }
+
+
 def _with_validation(payload: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(payload or {}) if isinstance(payload, dict) else {}
     if not isinstance(out.get("validation"), dict):
@@ -87,13 +110,112 @@ def _record_path(state: Dict[str, Any], agent: str, path: str) -> None:
     state["canonical_artifacts"] = current
 
 
+def _write_artifact_once(state: Dict[str, Any], *, agent: str, path: Path, payload: Dict[str, Any]) -> str:
+    cache = state.get("_canonical_written_paths") if isinstance(state.get("_canonical_written_paths"), dict) else {}
+    cache = dict(cache)
+    existing = str(cache.get(str(agent or "").strip()) or "").strip()
+    if existing and existing == str(path) and path.exists():
+        _record_path(state, agent, str(path))
+        state["_canonical_written_paths"] = cache
+        return str(path)
+    out = _write_artifact(path, payload)
+    cache[str(agent or "").strip()] = str(path)
+    state["_canonical_written_paths"] = cache
+    _record_path(state, agent, out)
+    return out
+
+
+def _stable_json_text(payload: Any) -> str:
+    try:
+        if isinstance(payload, (dict, list)):
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        pass
+    return str(payload or "")
+
+
+def _sha256_text(text: Any) -> str:
+    value = str(text or "")
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def write_llm_artifact_bundle(
+    state: Dict[str, Any],
+    *,
+    artifact_name: str,
+    prompt_payload: Dict[str, Any] | None,
+    response_payload: Dict[str, Any] | None,
+    meta_payload: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    run_id = str(state.get("run_id") or "").strip()
+    if not run_id:
+        return {}
+    day = _resolve_day(state)
+    paths = llm_run_artifact_paths(
+        run_id,
+        day=day,
+        reports_root=_reports_root(state),
+        artifact_name=str(artifact_name or "").strip(),
+    )
+    prompt_obj = dict(prompt_payload or {})
+    response_obj = dict(response_payload or {})
+    meta_obj = dict(meta_payload or {})
+
+    prompt_obj.setdefault("schema_version", "llm_prompt_raw.v1")
+    prompt_obj.setdefault("run_id", run_id)
+    prompt_obj.setdefault("day", day)
+    prompt_obj.setdefault("artifact_name", str(artifact_name or "").strip())
+    prompt_obj.setdefault("saved_at", datetime.now(timezone.utc).isoformat())
+
+    response_obj.setdefault("schema_version", "llm_response_raw.v1")
+    response_obj.setdefault("run_id", run_id)
+    response_obj.setdefault("day", day)
+    response_obj.setdefault("artifact_name", str(artifact_name or "").strip())
+    response_obj.setdefault("saved_at", datetime.now(timezone.utc).isoformat())
+
+    prompt_text = _stable_json_text(prompt_obj)
+    response_text = _stable_json_text(response_obj)
+    prompt_hash = _sha256_text(prompt_text)
+    response_hash = _sha256_text(response_text)
+
+    meta_obj = dict(meta_obj)
+    meta_obj.setdefault("schema_version", "llm_artifact_meta.v1")
+    meta_obj.setdefault("run_id", run_id)
+    meta_obj.setdefault("day", day)
+    meta_obj.setdefault("artifact_name", str(artifact_name or "").strip())
+    meta_obj["prompt_ref"] = str(paths["prompt"])
+    meta_obj["response_ref"] = str(paths["response"])
+    meta_obj["prompt_hash"] = prompt_hash
+    meta_obj["response_hash"] = response_hash
+    meta_obj.setdefault("saved_at", datetime.now(timezone.utc).isoformat())
+
+    for key, payload in (("prompt", prompt_obj), ("response", response_obj), ("meta", meta_obj)):
+        path = paths[key]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    llm_map = state.get("llm_artifacts") if isinstance(state.get("llm_artifacts"), dict) else {}
+    llm_map = dict(llm_map)
+    llm_map[str(artifact_name or "").strip()] = str(paths["meta"])
+    state["llm_artifacts"] = llm_map
+
+    return {
+        "base_dir": str(paths["base_dir"]),
+        "prompt_ref": str(paths["prompt"]),
+        "response_ref": str(paths["response"]),
+        "meta_ref": str(paths["meta"]),
+        "prompt_hash": prompt_hash,
+        "response_hash": response_hash,
+        "llm_status": str(meta_obj.get("llm_status") or meta_obj.get("status") or "").strip(),
+    }
+
+
 def write_strategist_artifact(state: Dict[str, Any]) -> str:
     run_id = str(state.get("run_id") or "").strip()
     if not run_id:
         return ""
     paths = canonical_run_artifact_paths(run_id, day=_resolve_day(state), reports_root=_reports_root(state))
-    path = _write_artifact(paths["strategist"], build_strategist_output_artifact(state))
-    _record_path(state, "strategist", path)
+    path = _write_artifact_once(state, agent="strategist", path=paths["strategist"], payload=build_strategist_output_artifact(state))
     return path
 
 
@@ -102,8 +224,7 @@ def write_scanner_artifact(state: Dict[str, Any]) -> str:
     if not run_id:
         return ""
     paths = canonical_run_artifact_paths(run_id, day=_resolve_day(state), reports_root=_reports_root(state))
-    path = _write_artifact(paths["scanner"], build_scanner_output_artifact(state))
-    _record_path(state, "scanner", path)
+    path = _write_artifact_once(state, agent="scanner", path=paths["scanner"], payload=build_scanner_output_artifact(state))
     return path
 
 
@@ -112,8 +233,7 @@ def write_monitor_artifact(state: Dict[str, Any]) -> str:
     if not run_id:
         return ""
     paths = canonical_run_artifact_paths(run_id, day=_resolve_day(state), reports_root=_reports_root(state))
-    path = _write_artifact(paths["monitor"], build_monitor_output_artifact(state))
-    _record_path(state, "monitor", path)
+    path = _write_artifact_once(state, agent="monitor", path=paths["monitor"], payload=build_monitor_output_artifact(state))
     return path
 
 
@@ -138,8 +258,7 @@ def write_supervisor_artifact(
         details=dict(details or {}),
         strategy_policy_summary=dict(strategy_policy_summary or {}),
     )
-    path = _write_artifact(paths["supervisor"], payload)
-    _record_path(state, "supervisor", path)
+    path = _write_artifact_once(state, agent="supervisor", path=paths["supervisor"], payload=payload)
     return path
 
 
@@ -149,8 +268,7 @@ def write_executor_artifact(state: Dict[str, Any], *, execution: Dict[str, Any],
         return ""
     paths = canonical_run_artifact_paths(run_id, day=_resolve_day(state), reports_root=_reports_root(state))
     payload = build_executor_output_artifact(state, execution=dict(execution or {}), order=dict(order or {}))
-    path = _write_artifact(paths["executor"], payload)
-    _record_path(state, "executor", path)
+    path = _write_artifact_once(state, agent="executor", path=paths["executor"], payload=payload)
     return path
 
 
@@ -175,8 +293,7 @@ def write_commander_artifact(
         status=str(status or "ok"),
         reason=str(reason or ""),
     )
-    path_text = _write_artifact(paths["commander"], payload)
-    _record_path(state, "commander", path_text)
+    path_text = _write_artifact_once(state, agent="commander", path=paths["commander"], payload=payload)
     return path_text
 
 

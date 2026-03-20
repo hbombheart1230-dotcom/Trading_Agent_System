@@ -13,6 +13,7 @@ class AgentOutput(TypedDict, total=False):
     schema_version: str
     agent: str
     run_id: str
+    day: str
     ts: str
     phase: str
     symbol: str
@@ -79,11 +80,23 @@ def _run_ts(state: Dict[str, Any]) -> str:
     return _utc_now_iso()
 
 
+def _run_day(state: Dict[str, Any]) -> str:
+    for key in ("started_at", "ts", "tick_ts_iso", "now_iso"):
+        value = str(state.get(key) or "").strip()
+        if len(value) >= 10 and value[4:5] == "-" and value[7:8] == "-":
+            return value[:10]
+    tick_epoch = _safe_int(state.get("tick_ts"), 0)
+    if tick_epoch > 0:
+        return datetime.fromtimestamp(tick_epoch, tz=timezone.utc).strftime("%Y-%m-%d")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
 def _base_output(state: Dict[str, Any], *, agent: str, symbol: str = "", status: str = "ok") -> AgentOutput:
     return {
         "schema_version": AGENT_OUTPUT_SCHEMA_VERSION,
         "agent": str(agent or "").strip(),
         "run_id": str(state.get("run_id") or "").strip(),
+        "day": _run_day(state),
         "ts": _run_ts(state),
         "phase": _phase(state),
         "symbol": str(symbol or "").strip(),
@@ -102,7 +115,7 @@ def _is_present(value: Any) -> bool:
 
 
 def _required_keys_for_agent(agent: str) -> List[str]:
-    base = ["schema_version", "agent", "run_id", "ts", "phase", "status"]
+    base = ["schema_version", "agent", "run_id", "day", "ts", "phase", "status"]
     specific: Dict[str, List[str]] = {
         "strategist": [
             "market_regime",
@@ -112,21 +125,33 @@ def _required_keys_for_agent(agent: str) -> List[str]:
             "volatility_context",
             "strategy_thesis",
             "playbook",
+            "market_context",
+            "news_context",
+            "strategy_frame",
+            "policy_selected",
+            "llm_trace",
+            "decision_summary",
             "llm_metadata_summary",
             "source_refs",
         ],
         "scanner": [
+            "candidate_pool_snapshot",
+            "filter_funnel",
             "universe_size",
             "candidate_list_summary",
             "ranking_table",
             "selected_symbol",
             "selected_rank",
             "selection_reason",
+            "selection_reason_detail",
+            "rejection_summary",
             "filter_feature_summary",
             "evidence_refs",
         ],
         "monitor": [
             "position_snapshot",
+            "monitor_evaluation",
+            "monitor_action_decision",
             "thresholds_guards_used",
             "evaluation_summary",
             "decision",
@@ -155,6 +180,16 @@ def _required_keys_for_agent(agent: str) -> List[str]:
             "mode",
             "phase",
             "path",
+            "session_type",
+            "market_clock_phase",
+            "portfolio_state_summary",
+            "market_regime_summary",
+            "goal",
+            "agent_invocation_plan",
+            "decision_checkpoints",
+            "final_runtime_path",
+            "final_reason",
+            "handoff_instruction",
             "invoked_agents",
             "command",
             "decision",
@@ -211,6 +246,12 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     playbook = _clip(strategist_output.get("playbook"), max_len=80)
     market_regime = _clip(strategist_output.get("market_regime"), max_len=80)
     market_sentiment = _clip(strategist_output.get("market_sentiment"), max_len=80)
+    selected = _dict(state.get("selected"))
+    selected_score_total = _safe_float(selected.get("score_total") if selected.get("score_total") is not None else selected.get("score"), 0.0)
+    score_breakdown = _dict(selected.get("score_breakdown"))
+    positive_factors = [f"{k}:{_safe_float(v, 0.0):.3f}" for k, v in score_breakdown.items() if _safe_float(v, 0.0) > 0][:4]
+    negative_factors = [f"{k}:{_safe_float(v, 0.0):.3f}" for k, v in score_breakdown.items() if _safe_float(v, 0.0) < 0][:4]
+    decision_status = "blocked" if bool(state.get("strategist_blocked")) else "ready"
     summary = (
         f"Regime {market_regime or 'not_captured'} with playbook {playbook or 'not_captured'}; "
         f"themes {', '.join(themes) if themes else 'none'}."
@@ -245,6 +286,58 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "risk_tone": _clip(strategist_output.get("risk_tone"), max_len=40),
                 "trade_aggressiveness": _clip(strategist_output.get("trade_aggressiveness"), max_len=40),
             },
+            "market_context": {
+                "market_structure": _clip(strategist_output.get("market_structure"), max_len=80),
+                "market_context_inputs": _dict(strategist_output.get("market_context_inputs")),
+                "global_signal": _dict(state.get("global_signal")),
+                "macro_stress_overlay": macro_overlay,
+                "regime_score": strategist_output.get("regime_score"),
+                "sentiment_score": strategist_output.get("sentiment_score"),
+            },
+            "news_context": {
+                "summary": _clip(news_context.get("summary") or strategist_output.get("news_query_reasoning"), max_len=400),
+                "news_query_targets": list(strategist_output.get("news_query_targets") or [])[:12],
+                "market_news_context": market_news_context,
+                "candidate_news_context": candidate_news_context,
+                "key_events": list(strategist_output.get("key_events") or [])[:10],
+            },
+            "strategy_frame": {
+                "market_regime": market_regime,
+                "market_sentiment": market_sentiment,
+                "themes": themes,
+                "avoid_themes": avoid_themes,
+                "playbook": playbook,
+                "scanner_bias": _clip(strategist_output.get("scanner_bias"), max_len=80),
+                "scanner_priority": _listify(strategist_output.get("scanner_priority"), limit=8, max_len=80),
+                "monitor_guidance": _clip(strategist_output.get("monitor_guidance"), max_len=80),
+                "trade_aggressiveness": _clip(strategist_output.get("trade_aggressiveness"), max_len=40),
+                "risk_tone": _clip(strategist_output.get("risk_tone"), max_len=40),
+            },
+            "llm_trace": {
+                "llm_status": _clip(strategist_llm.get("status"), max_len=40),
+                "model": _clip(strategist_llm.get("model"), max_len=120),
+                "prompt_hash": _clip(strategist_llm.get("prompt_hash"), max_len=80),
+                "response_hash": _clip(strategist_llm.get("response_hash"), max_len=80),
+                "prompt_ref": _clip(strategist_llm.get("prompt_ref"), max_len=240),
+                "response_ref": _clip(strategist_llm.get("response_ref"), max_len=240),
+                "blocked": bool(strategist_llm.get("blocked")),
+                "blocked_reason": _clip(strategist_llm.get("blocked_reason"), max_len=180),
+            },
+            "decision_summary": {
+                "decision_status": decision_status,
+                "selected_symbol": _clip(selected.get("symbol"), max_len=24),
+                "selected_score_total": selected_score_total,
+                "margin_vs_second": state.get("scanner_margin_vs_second"),
+                "critical_positive_factors": positive_factors,
+                "critical_negative_factors": negative_factors,
+                "selection_summary": _clip(selected.get("why"), max_len=240),
+                "strategy_thesis": _clip(
+                    strategist_output.get("news_query_reasoning")
+                    or strategist_output.get("monitor_guidance")
+                    or summary,
+                    max_len=320,
+                ),
+            },
             "themes": themes,
             "avoid_themes": avoid_themes,
             "llm_metadata_summary": {
@@ -252,6 +345,9 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "model": _clip(strategist_llm.get("model"), max_len=120),
                 "blocked": bool(strategist_llm.get("blocked")),
                 "blocked_reason": _clip(strategist_llm.get("blocked_reason"), max_len=180),
+                "prompt_hash": _clip(strategist_llm.get("prompt_hash"), max_len=80),
+                "response_hash": _clip(strategist_llm.get("response_hash"), max_len=80),
+                "llm_status": _clip(strategist_llm.get("status"), max_len=40),
             },
             "source_refs": {
                 "event_names": [
@@ -295,22 +391,72 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     selected_features = _dict(selected.get("features"))
     ranked = [row for row in list(state.get("ranked_candidates") or []) if isinstance(row, dict)]
     top_ranked_symbols = [str(row.get("symbol") or "") for row in ranked[:5] if str(row.get("symbol") or "").strip()]
+    pool_meta = _dict(state.get("scanner_candidate_pool"))
     candidate_preview: List[Dict[str, Any]] = []
     for rank, row in enumerate(ranked[:5], start=1):
+        row_breakdown = _dict(row.get("score_breakdown"))
+        row_sources = _dict((row.get("candidate") or {}).get("source_scores")) if isinstance(row.get("candidate"), dict) else {}
+        compact_features = _dict((row.get("features") or row.get("feature_snapshot") or {}))
         candidate_preview.append(
             {
                 "rank": rank,
                 "symbol": str(row.get("symbol") or ""),
                 "score_total": _safe_float(row.get("score_total") or row.get("score")),
+                "score_breakdown": row_breakdown,
+                "source_scores": row_sources,
                 "risk_score": _safe_float(row.get("risk_score")),
                 "confidence": _safe_float(row.get("confidence")),
+                "theme_match": _safe_float(row.get("theme_match")),
+                "feature_coverage": _safe_float(row.get("feature_coverage")),
+                "status": _clip(row.get("status"), max_len=40) or "active",
+                "exclusion_reason": _clip(row.get("exclusion_reason"), max_len=160),
+                "compact_feature_snapshot": {
+                    "engine_trend_strength": compact_features.get("engine_trend_strength"),
+                    "engine_volume_spike20": compact_features.get("engine_volume_spike20"),
+                    "engine_volatility20": compact_features.get("engine_volatility20"),
+                    "engine_vwap_distance": compact_features.get("engine_vwap_distance"),
+                    "intraday_change_pct": compact_features.get("intraday_change_pct"),
+                },
                 "why": _clip(row.get("why"), max_len=180),
             }
         )
     symbol = str(selected.get("symbol") or scanner_output.get("top_stock") or "").strip()
+    selected_rank = int(top_ranked_symbols.index(symbol) + 1) if symbol in top_ranked_symbols else (1 if symbol else 0)
+    selected_score_total = _safe_float(selected.get("score_total") if selected.get("score_total") is not None else selected.get("score"))
+    second_score = _safe_float((ranked[1].get("score_total") if len(ranked) > 1 else None) if len(ranked) > 1 else None)
+    margin_vs_second = (selected_score_total - second_score) if len(ranked) > 1 else selected_score_total
+    selected_score_breakdown = _dict(selected.get("score_breakdown"))
+    critical_positive_factors = [f"{k}:{_safe_float(v, 0.0):.3f}" for k, v in selected_score_breakdown.items() if _safe_float(v, 0.0) > 0][:4]
+    critical_negative_factors = [f"{k}:{_safe_float(v, 0.0):.3f}" for k, v in selected_score_breakdown.items() if _safe_float(v, 0.0) < 0][:4]
+    selection_summary = _clip(selected.get("why"), max_len=240) or _clip(scanner_output.get("selection_summary"), max_len=240)
+    rejection_rows = [row for row in list(state.get("scanner_runner_up_reasons") or []) if isinstance(row, dict)]
+    selection_reason_detail = {
+        "selected_symbol": symbol,
+        "selected_rank": selected_rank,
+        "selected_score_total": selected_score_total,
+        "margin_vs_second": margin_vs_second,
+        "critical_positive_factors": critical_positive_factors,
+        "critical_negative_factors": critical_negative_factors,
+        "selection_summary": selection_summary,
+    }
     artifact = _base_output(state, agent="scanner", symbol=symbol)
     artifact.update(
         {
+            "candidate_pool_snapshot": {
+                "candidate_source": _clip(pool_meta.get("candidate_source"), max_len=80),
+                "candidate_pool_before_filter": _safe_int(pool_meta.get("candidate_pool_before_filter")),
+                "candidate_pool_after_filter": _safe_int(pool_meta.get("candidate_pool_after_filter") or len(ranked)),
+                "source_mix": _dict(pool_meta.get("pool_source_mix")),
+                "fallback_reason": _clip(pool_meta.get("fallback_reason"), max_len=160),
+            },
+            "filter_funnel": {
+                "before": _safe_int(pool_meta.get("candidate_pool_before_filter")),
+                "after": _safe_int(pool_meta.get("candidate_pool_after_filter") or len(ranked)),
+                "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
+                "avoid_filter_applied": bool(pool_meta.get("avoid_filter_applied")),
+                "blocked_static_fallback": bool(pool_meta.get("blocked_static_fallback")),
+                "strict_kiwoom_only": bool(pool_meta.get("strict_kiwoom_only")),
+            },
             "universe_size": _safe_int(scanner_output.get("candidate_pool_size") or scanner_output.get("candidate_count")),
             "candidate_list_summary": {
                 "candidate_source": _clip(scanner_output.get("candidate_source"), max_len=80),
@@ -320,8 +466,10 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "ranking_table": candidate_preview,
             "ranked_candidates": candidate_preview,
             "selected_symbol": symbol,
-            "selected_rank": int(top_ranked_symbols.index(symbol) + 1) if symbol in top_ranked_symbols else (1 if symbol else 0),
-            "selection_reason": _clip(selected.get("why"), max_len=240),
+            "selected_rank": selected_rank,
+            "selection_reason": selection_summary,
+            "selection_reason_detail": selection_reason_detail,
+            "rejection_summary": rejection_rows,
             "filter_feature_summary": {
                 "feature_source": _clip(state.get("scanner_feature", {}).get("source") if isinstance(state.get("scanner_feature"), dict) else "", max_len=80),
                 "feature_symbol_count": _safe_int(_dict(state.get("scanner_feature")).get("symbol_count")),
@@ -380,9 +528,30 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     monitor = _dict(state.get("monitor"))
     monitor_output = _dict(state.get("monitor_output"))
     exit_info = _dict(state.get("monitor_exit"))
+    entry_info = _dict(state.get("monitor_entry"))
+    transition = _dict(state.get("monitor_state_transition"))
     symbol = str(exit_info.get("symbol") or monitor_output.get("selected_symbol") or monitor.get("selected_symbol") or "").strip()
     thresholds = _dict(exit_info.get("thresholds"))
     watch_axes = list(exit_info.get("watch_axes") or [])
+    triggered_rules: List[str] = []
+    if bool(exit_info.get("triggered")) and str(exit_info.get("reason") or "").strip():
+        triggered_rules.append(str(exit_info.get("reason") or "").strip())
+    if bool(entry_info.get("triggered")) and str(entry_info.get("pattern") or "").strip():
+        triggered_rules.append(f"entry:{str(entry_info.get('pattern') or '').strip()}")
+    blocked_rules: List[str] = []
+    if bool(entry_info.get("guard_blocked")) and str(entry_info.get("guard_reason") or "").strip():
+        blocked_rules.append(str(entry_info.get("guard_reason") or "").strip())
+    if bool(exit_info.get("sell_guard_blocked")) and str(exit_info.get("sell_guard_reason") or "").strip():
+        blocked_rules.append(str(exit_info.get("sell_guard_reason") or "").strip())
+    blocked_rules.extend([str(x or "").strip() for x in list(entry_info.get("failed_checks") or []) if str(x or "").strip()])
+    posture = _clip(state.get("monitor_posture") or transition.get("current_posture"), max_len=60)
+    decision_reason_chain = [
+        _clip(exit_info.get("monitor_reason"), max_len=180),
+        _clip(exit_info.get("reason"), max_len=180),
+        _clip(entry_info.get("reason"), max_len=180),
+        _clip(monitor_output.get("entry_exit_reason"), max_len=180),
+    ]
+    decision_reason_chain = [x for x in decision_reason_chain if x]
     artifact = _base_output(state, agent="monitor", symbol=symbol)
     artifact.update(
         {
@@ -403,11 +572,26 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             },
             "evaluation_summary": _clip(exit_info.get("monitor_reason") or exit_info.get("reason") or monitor_output.get("entry_exit_reason"), max_len=220),
             "decision": str(monitor_output.get("intent_side") or "NOOP").strip().upper(),
-            "decision_reason_chain": [
-                _clip(exit_info.get("monitor_reason"), max_len=180),
-                _clip(exit_info.get("reason"), max_len=180),
-                _clip(monitor_output.get("entry_exit_reason"), max_len=180),
-            ],
+            "decision_reason_chain": decision_reason_chain,
+            "monitor_evaluation": {
+                "triggered_rules": triggered_rules,
+                "blocked_rules": blocked_rules[:8],
+                "posture": posture,
+                "active_exit_axis": _clip(exit_info.get("active_exit_axis"), max_len=120),
+                "entry_pattern": _clip(entry_info.get("pattern"), max_len=80),
+                "entry_passed_checks": list(entry_info.get("passed_checks") or []),
+                "entry_failed_checks": list(entry_info.get("failed_checks") or []),
+                "entry_threshold_margins": _dict(entry_info.get("threshold_margins")),
+            },
+            "monitor_action_decision": {
+                "decision": str(monitor_output.get("intent_side") or "NOOP").strip().upper(),
+                "action_reason_human": _clip(monitor_output.get("entry_exit_reason") or exit_info.get("monitor_reason") or exit_info.get("reason"), max_len=240),
+                "decision_reason_chain": decision_reason_chain,
+                "active_exit_axis": _clip(exit_info.get("active_exit_axis"), max_len=120),
+                "confidence": _safe_float(entry_info.get("confidence"), 0.0),
+                "triggered_rules": triggered_rules,
+                "blocked_rules": blocked_rules[:8],
+            },
             "trigger_details": {
                 "active_exit_axis": _clip(exit_info.get("active_exit_axis"), max_len=120),
                 "watch_axes": watch_axes[:8],
@@ -551,12 +735,51 @@ def build_commander_output_artifact(
     status: str,
     reason: str = "",
 ) -> Dict[str, Any]:
+    decision_frame = _dict(state.get("commander_decision_frame"))
+    runtime_plan = _dict(state.get("runtime_plan"))
+    strategist_output = _dict(state.get("strategist_output"))
+    portfolio_snapshot = _dict(state.get("portfolio_snapshot"))
+    positions = list(portfolio_snapshot.get("positions") or [])
+    status_text = str(status or "ok")
+    handoff_instruction = _clip(
+        decision_frame.get("handoff_instruction")
+        or ("Proceed with planned agent chain." if status_text in {"ok", "ready", "preopen_ready", "closeout_ready"} else "Stop downstream execution and inspect runtime status."),
+        max_len=220,
+    )
     artifact = _base_output(state, agent="commander", status=status or "ok")
     artifact.update(
         {
             "mode": str(mode or "").strip(),
             "phase": str(phase or "").strip(),
             "path": str(path or "").strip(),
+            "session_type": _clip(decision_frame.get("session_type") or runtime_plan.get("phase") or phase, max_len=40),
+            "market_clock_phase": _clip(decision_frame.get("market_clock_phase") or phase or runtime_plan.get("phase"), max_len=40),
+            "portfolio_state_summary": {
+                "position_count": _safe_int(len(positions)),
+                "cash": portfolio_snapshot.get("cash"),
+                "positions_source": _clip(_dict(state.get("portfolio_preflight")).get("positions_source"), max_len=80),
+                "preflight_status": _clip(_dict(state.get("portfolio_preflight")).get("status"), max_len=80),
+            },
+            "market_regime_summary": {
+                "market_regime": _clip(strategist_output.get("market_regime"), max_len=80),
+                "market_sentiment": _clip(strategist_output.get("market_sentiment"), max_len=80),
+                "playbook": _clip(strategist_output.get("playbook"), max_len=80),
+            },
+            "goal": _clip(
+                decision_frame.get("goal")
+                or ("Execute full session chain." if phase == "session" else f"Run {phase} phase safely."),
+                max_len=180,
+            ),
+            "agent_invocation_plan": list(runtime_plan.get("agents") or []),
+            "decision_checkpoints": {
+                "runtime_transition": _clip(state.get("runtime_transition"), max_len=60),
+                "runtime_status": _clip(state.get("runtime_status"), max_len=80),
+                "portfolio_preflight": _dict(state.get("portfolio_preflight")),
+                "runtime_fast_path": _dict(state.get("runtime_fast_path")),
+            },
+            "final_runtime_path": str(path or "").strip(),
+            "final_reason": _clip(reason or state.get("runtime_status") or "", max_len=220),
+            "handoff_instruction": handoff_instruction,
             "invoked_agents": list(_dict(state.get("runtime_plan")).get("agents") or []),
             "command": str(mode or "").strip(),
             "decision": str(path or "").strip(),

@@ -190,6 +190,8 @@ def test_ai_trade_report_retries_before_success(monkeypatch):
     assert artifact["retry_count"] == 1
     assert len(artifact["attempts"]) == 2
     assert artifact["model"] == "openrouter/free"
+    assert report["deterministic_report_status"] == "ok"
+    assert report["ai_trade_report_status"] == "ok"
 
 
 def test_ai_trade_report_writes_failure_state_after_retries(monkeypatch):
@@ -204,6 +206,16 @@ def test_ai_trade_report_writes_failure_state_after_retries(monkeypatch):
     assert artifact["status"] == "empty_response"
     assert artifact["retry_count"] == 2
     assert report["executive_summary"]["headline"].startswith("AI trade report failed")
+    assert report["deterministic_report_status"] == "ok"
+    assert report["ai_trade_report_status"] == "error"
+
+
+def test_build_deterministic_trade_report_is_always_available() -> None:
+    report = mod.build_deterministic_trade_report(_story_input())
+    generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
+    assert generation.get("mode") == "deterministic"
+    assert report["deterministic_report_status"] == "ok"
+    assert report["ai_trade_report_status"] == "skipped"
 
 
 def test_ai_trade_report_truncated_outer_json_is_not_treated_as_ok(monkeypatch):

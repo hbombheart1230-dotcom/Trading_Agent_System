@@ -2286,6 +2286,22 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),
         "entry_threshold_margins": dict(entry_info.get("threshold_margins") or {}),
     }
+    state["monitor_posture"] = current_posture
+    state["monitor_threshold_snapshot"] = dict(threshold_snapshot)
+    state["monitor_state_transition"] = {
+        "previous_posture": previous_posture,
+        "current_posture": current_posture,
+        "previous_reason": previous_reason,
+        "current_reason": current_reason,
+        "state_changed": bool(state_changed),
+        "trigger_delta": {
+            "previous_active_exit_axis": str(previous_monitor_state.get("active_exit_axis") or ""),
+            "current_active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
+            "exit_triggered": bool(exit_info.get("triggered")),
+            "entry_triggered": bool(entry_info.get("triggered")),
+            "entry_pattern": str(entry_info.get("pattern") or ""),
+        },
+    }
     _emit_monitor_event(
         state,
         name="threshold_snapshot",
@@ -2322,28 +2338,30 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         entry_event_metrics["vwap_distance"] = entry_event_metrics.get("extended_from_vwap_pct")
     if "pullback_pct" not in entry_event_metrics:
         entry_event_metrics["pullback_pct"] = entry_event_metrics.get("pullback_depth_pct")
+    entry_decision_detail = {
+        "decision": "BUY" if bool(buy_submitted) else "WAIT",
+        "reason": str(entry_info.get("guard_reason") or entry_info.get("reason") or "entry_wait"),
+        "entry_evaluated": bool(entry_info.get("evaluated")),
+        "entry_triggered": bool(entry_info.get("triggered")),
+        "entry_pattern": str(entry_info.get("pattern") or ""),
+        "entry_reason": str(entry_info.get("reason") or ""),
+        "signal_chain": list(entry_info.get("signal_chain") or []),
+        "guard_blocked": bool(entry_info.get("guard_blocked")),
+        "guard_reason": str(entry_info.get("guard_reason") or ""),
+        "buy_submitted": bool(buy_submitted),
+        "buy_skipped_reason": buy_skipped_reason,
+        "metrics": entry_event_metrics,
+        "thresholds": dict(entry_info.get("thresholds") or {}),
+        "passed_checks": list(entry_info.get("passed_checks") or []),
+        "failed_checks": list(entry_info.get("failed_checks") or []),
+        "primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),
+        "threshold_margins": dict(entry_info.get("threshold_margins") or {}),
+    }
+    state["monitor_entry_decision_detail"] = dict(entry_decision_detail)
     _emit_monitor_event(
         state,
         name="entry_decision_detail",
-        payload={
-            "decision": "BUY" if bool(buy_submitted) else "WAIT",
-            "reason": str(entry_info.get("guard_reason") or entry_info.get("reason") or "entry_wait"),
-            "entry_evaluated": bool(entry_info.get("evaluated")),
-            "entry_triggered": bool(entry_info.get("triggered")),
-            "entry_pattern": str(entry_info.get("pattern") or ""),
-            "entry_reason": str(entry_info.get("reason") or ""),
-            "signal_chain": list(entry_info.get("signal_chain") or []),
-            "guard_blocked": bool(entry_info.get("guard_blocked")),
-            "guard_reason": str(entry_info.get("guard_reason") or ""),
-            "buy_submitted": bool(buy_submitted),
-            "buy_skipped_reason": buy_skipped_reason,
-            "metrics": entry_event_metrics,
-            "thresholds": dict(entry_info.get("thresholds") or {}),
-            "passed_checks": list(entry_info.get("passed_checks") or []),
-            "failed_checks": list(entry_info.get("failed_checks") or []),
-            "primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),
-            "threshold_margins": dict(entry_info.get("threshold_margins") or {}),
-        },
+        payload=entry_decision_detail,
         level="info",
         symbol=monitor_symbol or entry_symbol,
     )
@@ -2351,23 +2369,62 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     sell_skipped_reason = ""
     if bool(exit_info.get("exit_signal_detected")) and not bool(sell_submitted):
         sell_skipped_reason = str(exit_info.get("sell_guard_reason") or exit_info.get("reason") or "sell_not_submitted").strip()
+    exit_decision_detail = {
+        "exit_triggered": bool(exit_info.get("triggered")),
+        "triggered_rule": str(exit_info.get("reason") or ""),
+        "confirm_count": int(exit_info.get("exit_confirm_count") or 0),
+        "confirm_required": int(exit_info.get("exit_confirm_ticks") or 0),
+        "guard_blocked": bool(exit_info.get("sell_guard_blocked")),
+        "guard_reason": str(exit_info.get("sell_guard_reason") or ""),
+        "sell_submitted": bool(sell_submitted),
+        "sell_skipped_reason": sell_skipped_reason,
+        "final_reason": current_reason,
+    }
+    state["monitor_exit_decision_detail"] = dict(exit_decision_detail)
     _emit_monitor_event(
         state,
         name="exit_decision_detail",
-        payload={
-            "exit_triggered": bool(exit_info.get("triggered")),
-            "triggered_rule": str(exit_info.get("reason") or ""),
-            "confirm_count": int(exit_info.get("exit_confirm_count") or 0),
-            "confirm_required": int(exit_info.get("exit_confirm_ticks") or 0),
-            "guard_blocked": bool(exit_info.get("sell_guard_blocked")),
-            "guard_reason": str(exit_info.get("sell_guard_reason") or ""),
-            "sell_submitted": bool(sell_submitted),
-            "sell_skipped_reason": sell_skipped_reason,
-            "final_reason": current_reason,
-        },
+        payload=exit_decision_detail,
         level="warning" if bool(exit_info.get("triggered")) else "info",
         symbol=monitor_symbol,
     )
+    triggered_rules = []
+    if bool(exit_info.get("triggered")) and str(exit_info.get("reason") or "").strip():
+        triggered_rules.append(str(exit_info.get("reason") or "").strip())
+    if bool(entry_info.get("triggered")) and str(entry_info.get("pattern") or "").strip():
+        triggered_rules.append(f"entry:{str(entry_info.get('pattern') or '').strip()}")
+    blocked_rules = []
+    if bool(entry_info.get("guard_blocked")) and str(entry_info.get("guard_reason") or "").strip():
+        blocked_rules.append(str(entry_info.get("guard_reason") or "").strip())
+    if bool(exit_info.get("sell_guard_blocked")) and str(exit_info.get("sell_guard_reason") or "").strip():
+        blocked_rules.append(str(exit_info.get("sell_guard_reason") or "").strip())
+    blocked_rules.extend([str(x or "").strip() for x in list(entry_info.get("failed_checks") or []) if str(x or "").strip()])
+    reason_chain = [
+        str(exit_info.get("monitor_reason") or "").strip(),
+        str(exit_info.get("reason") or "").strip(),
+        str(entry_info.get("reason") or "").strip(),
+        str((state.get("monitor_output") or {}).get("entry_exit_reason") or "").strip(),
+    ]
+    reason_chain = [x for x in reason_chain if x]
+    state["monitor_evaluation"] = {
+        "triggered_rules": list(triggered_rules),
+        "blocked_rules": list(dict.fromkeys(blocked_rules))[:8],
+        "posture": current_posture,
+        "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
+        "entry_pattern": str(entry_info.get("pattern") or ""),
+        "entry_passed_checks": list(entry_info.get("passed_checks") or []),
+        "entry_failed_checks": list(entry_info.get("failed_checks") or []),
+        "entry_threshold_margins": dict(entry_info.get("threshold_margins") or {}),
+    }
+    state["monitor_action_decision"] = {
+        "decision": str((state.get("monitor_output") or {}).get("intent_side") or "NOOP"),
+        "action_reason_human": str((state.get("monitor_output") or {}).get("entry_exit_reason") or current_reason),
+        "decision_reason_chain": list(reason_chain),
+        "confidence": float(_to_float(entry_info.get("confidence"))),
+        "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
+        "triggered_rules": list(triggered_rules),
+        "blocked_rules": list(dict.fromkeys(blocked_rules))[:8],
+    }
     _emit_monitor_event(
         state,
         name="cycle_summary",

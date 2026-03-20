@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -175,6 +176,14 @@ def build_llm_response_artifact(
         out["meta"] = dict(meta)
         if not out["error"] and meta.get("error") is not None:
             out["error"] = str(meta.get("error") or "")
+        if "token_usage" in meta and isinstance(meta.get("token_usage"), dict):
+            out["token_usage"] = dict(meta.get("token_usage") or {})
+        if "response_truncated" in meta:
+            out["response_truncated"] = bool(meta.get("response_truncated"))
+        if "repair_used" in meta:
+            out["repair_used"] = bool(meta.get("repair_used"))
+        if "llm_error_type" in meta:
+            out["llm_error_type"] = str(meta.get("llm_error_type") or "")
     metadata_sources = []
     if isinstance(meta, dict):
         metadata_sources.append(meta)
@@ -219,7 +228,140 @@ def build_llm_response_artifact(
         out["used_fallback_sections"] = []
     if "finish_reason" not in out:
         out["finish_reason"] = ""
+    if "token_usage" not in out:
+        out["token_usage"] = {}
+    if "response_truncated" not in out:
+        out["response_truncated"] = False
+    if "repair_used" not in out:
+        out["repair_used"] = any(bool(row.get("repair_used")) for row in out["attempts"])
+    if "llm_error_type" not in out:
+        out["llm_error_type"] = ""
     return out
+
+
+def llm_artifact_paths(reports_root: Path, day: str, run_id: str, component: str) -> Dict[str, Path]:
+    base = reports_root / "llm" / str(day or "").strip() / str(run_id or "").strip() / str(component or "").strip()
+    return {
+        "base_dir": base,
+        "prompt_json": base / "prompt.json",
+        "response_json": base / "response.json",
+        "meta_json": base / "meta.json",
+    }
+
+
+def _json_stable_text(payload: Any) -> str:
+    if isinstance(payload, (dict, list)):
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return str(payload or "")
+
+
+def _sha256_text(text: Any) -> str:
+    return hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()
+
+
+def persist_llm_artifact_refs(
+    *,
+    artifact: Dict[str, Any],
+    reports_root: Path,
+    day: str,
+    run_id: str,
+    component: str,
+) -> Dict[str, Any]:
+    src = dict(artifact or {})
+    if not src:
+        return {}
+    paths = llm_artifact_paths(Path(reports_root), str(day or "").strip(), str(run_id or "").strip(), str(component or "").strip())
+    prompt_payload = {
+        "schema_version": "llm_prompt_raw.v1",
+        "component": str(component or "").strip(),
+        "run_id": str(run_id or ""),
+        "day": str(day or ""),
+        "saved_at": utc_now_iso(),
+        "system_prompt": str(src.get("system_prompt") or ""),
+        "user_prompt": str(src.get("user_prompt") or ""),
+        "attempts": [
+            {
+                "step": str(row.get("step") or ""),
+                "system_prompt": str(row.get("system_prompt") or ""),
+                "user_prompt": str(row.get("user_prompt") or ""),
+            }
+            for row in list(src.get("attempts") or [])
+            if isinstance(row, dict)
+        ],
+    }
+    response_payload = {
+        "schema_version": "llm_response_raw.v1",
+        "component": str(component or "").strip(),
+        "run_id": str(run_id or ""),
+        "day": str(day or ""),
+        "saved_at": utc_now_iso(),
+        "raw_response_text": str(src.get("raw_response_text") or ""),
+        "parsed_output": src.get("parsed_output") if isinstance(src.get("parsed_output"), (dict, list)) else {},
+        "attempts": [
+            {
+                "step": str(row.get("step") or ""),
+                "raw_response_text": str(row.get("raw_response_text") or ""),
+                "status": str(row.get("status") or ""),
+                "error": str(row.get("error") or ""),
+            }
+            for row in list(src.get("attempts") or [])
+            if isinstance(row, dict)
+        ],
+    }
+    prompt_text = _json_stable_text(prompt_payload)
+    response_text = _json_stable_text(response_payload)
+    prompt_hash = _sha256_text(prompt_text)
+    response_hash = _sha256_text(response_text)
+    meta_payload = {
+        "schema_version": "llm_artifact_meta.v1",
+        "component": str(component or "").strip(),
+        "run_id": str(run_id or ""),
+        "day": str(day or ""),
+        "saved_at": utc_now_iso(),
+        "status": str(src.get("status") or ""),
+        "llm_status": str(src.get("llm_status") or ""),
+        "model": str(src.get("model") or ""),
+        "provider": str((src.get("model_info") or {}).get("provider") or src.get("provider") or ""),
+        "latency_ms": int(float(src.get("latency_ms") or 0)),
+        "token_usage": dict(src.get("token_usage") or {}) if isinstance(src.get("token_usage"), dict) else {},
+        "response_truncated": bool(src.get("response_truncated")),
+        "repair_used": bool(src.get("repair_used")),
+        "llm_error_type": str(src.get("llm_error_type") or ""),
+        "prompt_ref": str(paths["prompt_json"]),
+        "response_ref": str(paths["response_json"]),
+        "prompt_hash": prompt_hash,
+        "response_hash": response_hash,
+    }
+
+    write_json(paths["prompt_json"], prompt_payload)
+    write_json(paths["response_json"], response_payload)
+    write_json(paths["meta_json"], meta_payload)
+
+    compact = dict(src)
+    compact.pop("system_prompt", None)
+    compact.pop("user_prompt", None)
+    compact.pop("raw_response_text", None)
+    compact_attempts: List[Dict[str, Any]] = []
+    for row in list(compact.get("attempts") or []):
+        if not isinstance(row, dict):
+            continue
+        compact_attempts.append(
+            {
+                "step": str(row.get("step") or ""),
+                "status": str(row.get("status") or ""),
+                "latency_ms": int(float(row.get("latency_ms") or 0)),
+                "error": str(row.get("error") or ""),
+            }
+        )
+    compact["attempts"] = compact_attempts
+    compact["prompt_ref"] = str(paths["prompt_json"])
+    compact["response_ref"] = str(paths["response_json"])
+    compact["llm_meta_ref"] = str(paths["meta_json"])
+    compact["prompt_hash"] = prompt_hash
+    compact["response_hash"] = response_hash
+    compact["status"] = str(src.get("status") or "")
+    compact["llm_status"] = str(src.get("llm_status") or src.get("status") or "")
+    return compact
 
 
 def write_json(path: Path, payload: Dict[str, Any]) -> Path:
@@ -276,35 +418,83 @@ def trade_artifact_paths(reports_root: Path, day: str, trade_id: str) -> Dict[st
     normalized_day = str(day or "").strip()
     trade_root = reports_root / "trades" / normalized_day / str(trade_id or "").strip()
     legacy_root = reports_root / "trades" / normalized_day[:4] / normalized_day[5:7] / str(trade_id or "").strip()
+    # Phase 3 primary structure (operator-facing):
+    # reports/trades/<day>/<trade_id>/
+    #   lifecycle_bundle.json, entry.json, hold.json, exit.json
+    #   evidence/*.json
+    #   reports/*.json|md
+    reports_dir = trade_root / "reports"
+    evidence_dir = trade_root / "evidence"
+    lifecycle_bundle_json = trade_root / "lifecycle_bundle.json"
+    entry_json = trade_root / "entry.json"
+    hold_json = trade_root / "hold.json"
+    exit_json = trade_root / "exit.json"
+    commander_evidence_json = evidence_dir / "commander_evidence.json"
+    monitor_evidence_json = evidence_dir / "monitor_evidence.json"
+
+    # Legacy normalized layout (read fallback only).
+    legacy_normalized_strategist_dir = trade_root / "strategist"
+    legacy_normalized_ai_report_dir = trade_root / "ai_trade_report"
+    legacy_normalized_brief_dir = trade_root / "brief"
+    legacy_normalized_lifecycle_dir = trade_root / "lifecycle"
     return {
         "trade_root": trade_root,
         "legacy_trade_root": legacy_root,
-        "strategist_dir": trade_root / "strategist",
-        "ai_trade_report_dir": trade_root / "ai_trade_report",
-        "brief_dir": trade_root / "brief",
-        "lifecycle_dir": trade_root / "lifecycle",
-        "evidence_dir": trade_root / "evidence",
-        "strategist_input_json": trade_root / "strategist" / "strategist_input.json",
-        "strategist_compact_input_json": trade_root / "strategist" / "strategist_compact_input.json",
-        "strategist_llm_response_json": trade_root / "strategist" / "strategist_llm_response.json",
-        "ai_trade_report_input_json": trade_root / "ai_trade_report" / "ai_trade_report_input.json",
-        "ai_trade_report_compact_input_json": trade_root / "ai_trade_report" / "ai_trade_report_compact_input.json",
-        "ai_trade_report_json": trade_root / "ai_trade_report" / "ai_trade_report.json",
-        "ai_trade_report_md": trade_root / "ai_trade_report" / "ai_trade_report.md",
-        "ai_trade_report_llm_response_json": trade_root / "ai_trade_report" / "ai_trade_report_llm_response.json",
-        "brief_input_json": trade_root / "brief" / "brief_input.json",
-        "brief_compact_input_json": trade_root / "brief" / "brief_compact_input.json",
-        "brief_json": trade_root / "brief" / "operator_brief.json",
-        "brief_md": trade_root / "brief" / "operator_brief.md",
-        "brief_llm_response_json": trade_root / "brief" / "brief_llm_response.json",
-        "trade_lifecycle_json": trade_root / "lifecycle" / "trade_lifecycle.json",
-        "aggregated_execution_bundle_json": trade_root / "lifecycle" / "aggregated_execution_bundle.json",
-        "strategist_evidence_json": trade_root / "evidence" / "strategist_evidence.json",
-        "scanner_evidence_json": trade_root / "evidence" / "scanner_evidence.json",
-        "monitor_timeline_json": trade_root / "evidence" / "monitor_timeline.json",
+        "reports_dir": reports_dir,
+        "evidence_dir": evidence_dir,
+        "strategist_dir": reports_dir,
+        "ai_trade_report_dir": reports_dir,
+        "brief_dir": reports_dir,
+        "lifecycle_dir": trade_root,
+        "lifecycle_bundle_json": lifecycle_bundle_json,
+        "entry_json": entry_json,
+        "hold_json": hold_json,
+        "exit_json": exit_json,
+        # Compact trade-scoped LLM status artifacts (no raw body content).
+        "strategist_llm_response_json": reports_dir / "strategist_llm_response.json",
+        "ai_trade_report_llm_response_json": reports_dir / "ai_trade_report_llm_response.json",
+        "brief_llm_response_json": reports_dir / "brief_llm_response.json",
+        # Deprecated intermediate artifacts (no forward writes in Phase 3).
+        "strategist_input_json": trade_root / "strategist_input.json",
+        "strategist_compact_input_json": trade_root / "strategist_compact_input.json",
+        "ai_trade_report_input_json": trade_root / "ai_trade_report_input.json",
+        "ai_trade_report_compact_input_json": trade_root / "ai_trade_report_compact_input.json",
+        "brief_input_json": trade_root / "brief_input.json",
+        "brief_compact_input_json": trade_root / "brief_compact_input.json",
+        # Operator-facing summary reports.
+        "ai_trade_report_json": reports_dir / "ai_trade_report.json",
+        "ai_trade_report_md": reports_dir / "ai_trade_report.md",
+        "brief_json": reports_dir / "operator_brief.json",
+        "brief_md": reports_dir / "operator_brief.md",
+        # Deprecated compatibility files (read fallback only).
+        "trade_lifecycle_json": trade_root / "trade_lifecycle.json",
+        "aggregated_execution_bundle_json": trade_root / "aggregated_execution_bundle.json",
+        # Evidence set.
+        "strategist_evidence_json": evidence_dir / "strategist_evidence.json",
+        "scanner_evidence_json": evidence_dir / "scanner_evidence.json",
+        "monitor_evidence_json": monitor_evidence_json,
+        "monitor_timeline_json": monitor_evidence_json,
+        "commander_evidence_json": commander_evidence_json,
         "trade_provenance_json": trade_root / "_provenance.json",
         "trade_health_json": trade_root / "_health.json",
         "trade_artifact_links_json": trade_root / "_artifact_links.json",
+        # Legacy normalized read fallbacks.
+        "legacy_normalized_strategist_llm_response_json": legacy_normalized_strategist_dir / "strategist_llm_response.json",
+        "legacy_normalized_ai_trade_report_input_json": legacy_normalized_ai_report_dir / "ai_trade_report_input.json",
+        "legacy_normalized_ai_trade_report_compact_input_json": legacy_normalized_ai_report_dir / "ai_trade_report_compact_input.json",
+        "legacy_normalized_ai_trade_report_json": legacy_normalized_ai_report_dir / "ai_trade_report.json",
+        "legacy_normalized_ai_trade_report_md": legacy_normalized_ai_report_dir / "ai_trade_report.md",
+        "legacy_normalized_ai_trade_report_llm_response_json": legacy_normalized_ai_report_dir / "ai_trade_report_llm_response.json",
+        "legacy_normalized_brief_input_json": legacy_normalized_brief_dir / "brief_input.json",
+        "legacy_normalized_brief_compact_input_json": legacy_normalized_brief_dir / "brief_compact_input.json",
+        "legacy_normalized_brief_json": legacy_normalized_brief_dir / "operator_brief.json",
+        "legacy_normalized_brief_md": legacy_normalized_brief_dir / "operator_brief.md",
+        "legacy_normalized_brief_llm_response_json": legacy_normalized_brief_dir / "brief_llm_response.json",
+        "legacy_normalized_trade_lifecycle_json": legacy_normalized_lifecycle_dir / "trade_lifecycle.json",
+        "legacy_normalized_aggregated_execution_bundle_json": legacy_normalized_lifecycle_dir / "aggregated_execution_bundle.json",
+        "legacy_normalized_strategist_evidence_json": evidence_dir / "strategist_evidence.json",
+        "legacy_normalized_scanner_evidence_json": evidence_dir / "scanner_evidence.json",
+        "legacy_normalized_monitor_timeline_json": evidence_dir / "monitor_timeline.json",
         "legacy_trade_story_input_json": legacy_root / "trade_story_input.json",
         "legacy_trade_report_json": legacy_root / "trade_report.json",
         "legacy_trade_report_md": legacy_root / "trade_report.md",

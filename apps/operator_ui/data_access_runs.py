@@ -33,6 +33,7 @@ def prefer_canonical_agent_payload(
     fallback: Dict[str, Any],
     *,
     fallback_source: str = "event_log",
+    normalized_payload: Dict[str, Any] | None = None,
 ) -> Tuple[Dict[str, Any], str]:
     artifact = (
         (canonical_sources.get("artifacts") or {}).get(agent)
@@ -40,6 +41,9 @@ def prefer_canonical_agent_payload(
         else {}
     )
     merged = dict(fallback or {})
+    if _has_meaningful_payload(normalized_payload):
+        merged.update(dict(normalized_payload or {}))
+        return merged, "normalized_trade_artifact"
     if _has_meaningful_payload(artifact):
         merged.update(dict(artifact or {}))
         return merged, "canonical"

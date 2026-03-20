@@ -13,6 +13,7 @@ import json
 import ast
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -26,6 +27,7 @@ from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.market.global_sentiment import compute_global_sentiment_signal
 from libs.news.news_pipeline import collect_news_items, score_news_sentiment_signal
+from libs.performance.strategy_memory import load_strategy_memory_hint
 from libs.research.evidence_ledger import (
     record_decision_bridge,
     record_llm_prompt,
@@ -34,7 +36,7 @@ from libs.research.evidence_ledger import (
 )
 from libs.research.strategy_feedback_builder import build_recent_strategy_feedback
 from libs.runtime.decision_trace import append_decision_trace
-from libs.runtime.canonical_artifacts import write_strategist_artifact
+from libs.runtime.canonical_artifacts import write_llm_artifact_bundle, write_strategist_artifact
 from libs.runtime.regime import classify_regime_v2
 from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
 from libs.strategies.contracts import StrategistOutput, coerce_strategist_output
@@ -104,6 +106,105 @@ def _load_recent_strategy_feedback(policy: Dict[str, Any]) -> Dict[str, Any]:
     feedback["status"] = "ok" if int(feedback.get("feedback_window_size") or 0) > 0 else "empty"
     feedback["requested_window_size"] = int(last_n_runs)
     return feedback
+
+
+def _iso_day_from_value(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+        return text[:10]
+    try:
+        epoch = int(float(value))
+    except Exception:
+        epoch = 0
+    if epoch > 0:
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _resolve_state_day(state: Dict[str, Any]) -> str:
+    for key in ("started_at", "ts", "now_iso", "tick_ts"):
+        if state.get(key) not in (None, ""):
+            return _iso_day_from_value(state.get(key))
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _load_strategy_memory_advisory(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, Any]:
+    enabled_raw = (
+        policy.get("use_strategy_performance_memory")
+        if policy.get("use_strategy_performance_memory") is not None
+        else os.getenv("USE_STRATEGY_PERFORMANCE_MEMORY", "true")
+    )
+    enabled = _is_trueish(enabled_raw)
+    if not enabled:
+        return {
+            "schema_version": "strategy_memory.v1",
+            "status": "disabled",
+            "best_playbooks": [],
+            "worst_playbooks": [],
+            "market_condition_bias": {},
+            "recent_failures": [],
+            "recent_success_patterns": [],
+            "playbook_performance_snapshot": {},
+            "advisory_only": True,
+        }
+
+    auto_build_raw = (
+        policy.get("strategy_performance_auto_build")
+        if policy.get("strategy_performance_auto_build") is not None
+        else os.getenv("STRATEGY_PERFORMANCE_AUTO_BUILD", "false")
+    )
+    auto_build = _is_trueish(auto_build_raw)
+    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+    day = str(
+        policy.get("strategy_performance_day")
+        or state.get("day")
+        or _resolve_state_day(state)
+    ).strip()
+    try:
+        memory = load_strategy_memory_hint(
+            reports_root=reports_root,
+            day=day,
+            auto_build=bool(auto_build),
+        )
+    except Exception as exc:
+        return {
+            "schema_version": "strategy_memory.v1",
+            "status": "error",
+            "error": str(exc),
+            "day": str(day),
+            "best_playbooks": [],
+            "worst_playbooks": [],
+            "market_condition_bias": {},
+            "recent_failures": [],
+            "recent_success_patterns": [],
+            "playbook_performance_snapshot": {},
+            "advisory_only": True,
+        }
+    if not isinstance(memory, dict):
+        return {
+            "schema_version": "strategy_memory.v1",
+            "status": "empty",
+            "day": str(day),
+            "best_playbooks": [],
+            "worst_playbooks": [],
+            "market_condition_bias": {},
+            "recent_failures": [],
+            "recent_success_patterns": [],
+            "playbook_performance_snapshot": {},
+            "advisory_only": True,
+        }
+    out = dict(memory)
+    out.setdefault("schema_version", "strategy_memory.v1")
+    out.setdefault("day", str(day))
+    out.setdefault("status", "ok" if out.get("best_playbooks") or out.get("worst_playbooks") else "empty")
+    out.setdefault("best_playbooks", [])
+    out.setdefault("worst_playbooks", [])
+    out.setdefault("market_condition_bias", {})
+    out.setdefault("recent_failures", [])
+    out.setdefault("recent_success_patterns", [])
+    out.setdefault("playbook_performance_snapshot", {})
+    out.setdefault("advisory_only", True)
+    return out
 
 
 def _resolve_top_n_candidates(policy: Dict[str, Any]) -> int:
@@ -388,6 +489,7 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         "You are the Strategist agent for an automated trading system. "
         "You must output a strategic frame only. "
         "Do not select final stock and do not produce order instructions. "
+        "Use strategy_memory as advisory context only (it is not a hard override). "
         "Return exactly one minified JSON object only. "
         "Do not add analysis, markdown, bullet points, or any text before or after the JSON. "
         "The first character must be { and the last character must be }."
@@ -408,6 +510,8 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
     }
     user = (
         "Use the provided market context, news/global sentiment, and candidate hints. "
+        "Incorporate strategy memory hints such as best/worst playbooks, recent failures, and recent success patterns, "
+        "but keep them advisory and context-aware. "
         "Produce a realistic strategic frame for scanner/monitor guidance. "
         "Reply with JSON only. No prose.\n"
         "JSON contract:\n"
@@ -538,6 +642,53 @@ def _compact_recent_strategy_feedback_for_llm(feedback: Any) -> Dict[str, Any]:
     }
 
 
+def _compact_strategy_memory_for_llm(memory: Any) -> Dict[str, Any]:
+    src = memory if isinstance(memory, dict) else {}
+    market_bias = src.get("market_condition_bias") if isinstance(src.get("market_condition_bias"), dict) else {}
+    playbook_snapshot_src = (
+        src.get("playbook_performance_snapshot")
+        if isinstance(src.get("playbook_performance_snapshot"), dict)
+        else {}
+    )
+    playbook_snapshot: Dict[str, Any] = {}
+    for key, value in list(playbook_snapshot_src.items())[:4]:
+        item = value if isinstance(value, dict) else {}
+        playbook_snapshot[str(key)] = {
+            "usage_count": int(item.get("usage_count") or 0),
+            "win_rate": _round_optional(item.get("win_rate"), 4),
+            "avg_return": _round_optional(item.get("avg_return"), 4),
+            "stability_score": _round_optional(item.get("stability_score"), 4),
+        }
+    preferred_regimes = [
+        str(x or "")
+        for x in list(market_bias.get("preferred_regimes") or [])[:3]
+        if str(x or "").strip()
+    ]
+    avoid_regimes = [
+        str(x or "")
+        for x in list(market_bias.get("avoid_regimes") or [])[:3]
+        if str(x or "").strip()
+    ]
+    return {
+        "status": str(src.get("status") or ""),
+        "day": str(src.get("day") or ""),
+        "best_playbooks": [str(x or "") for x in list(src.get("best_playbooks") or [])[:3] if str(x or "").strip()],
+        "worst_playbooks": [str(x or "") for x in list(src.get("worst_playbooks") or [])[:3] if str(x or "").strip()],
+        "recent_failures": [str(x or "") for x in list(src.get("recent_failures") or [])[:4] if str(x or "").strip()],
+        "recent_success_patterns": [
+            str(x or "")
+            for x in list(src.get("recent_success_patterns") or [])[:4]
+            if str(x or "").strip()
+        ],
+        "market_condition_bias": {
+            "preferred_regimes": preferred_regimes,
+            "avoid_regimes": avoid_regimes,
+        },
+        "playbook_performance_snapshot": playbook_snapshot,
+        "advisory_only": bool(src.get("advisory_only", True)),
+    }
+
+
 def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     compact = dict(payload or {})
     compact["global_sentiment_signal"] = _compact_global_signal_for_llm(compact.get("global_sentiment_signal"))
@@ -557,6 +708,7 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
         "macro_risk": _round_optional(market_ctx.get("macro_risk"), 4),
     }
     compact["recent_strategy_feedback"] = _compact_recent_strategy_feedback_for_llm(compact.get("recent_strategy_feedback"))
+    compact["strategy_memory"] = _compact_strategy_memory_for_llm(compact.get("strategy_memory"))
     compact["macro_stress_overlay_hint"] = {
         "active": bool(((compact.get("macro_stress_overlay_hint") or {}).get("active"))),
         "stress_flags": [str(x or "") for x in list(((compact.get("macro_stress_overlay_hint") or {}).get("stress_flags") or [])[:4])],
@@ -663,6 +815,57 @@ def _run_strategist_frame_llm(
     compact_payload = _build_compact_strategist_llm_payload(payload)
     messages = _build_strategist_llm_messages(compact_payload)
     prompt_text = _messages_to_prompt_text(messages)
+    llm_model = str(route.model or "")
+
+    def _persist_llm_artifacts(
+        *,
+        stage: str,
+        prompt_value: Any,
+        response_value: Any,
+        status: str,
+        reason: str = "",
+        attempts_count: int = 1,
+        repair: bool = False,
+    ) -> Dict[str, Any]:
+        try:
+            return write_llm_artifact_bundle(
+                state,
+                artifact_name="strategist",
+                prompt_payload={
+                    "stage": str(stage or "theme_selection"),
+                    "provider": "strategist_router",
+                    "model": llm_model,
+                    "payload": dict(compact_payload),
+                    "messages": [dict(m) for m in list(messages or []) if isinstance(m, dict)],
+                    "prompt_text": str(prompt_value or ""),
+                    "temperature": float(temperature),
+                    "max_tokens": int(max_tokens),
+                    "timeout_sec": float(timeout_sec),
+                },
+                response_payload={
+                    "stage": str(stage or "theme_selection"),
+                    "provider": "strategist_router",
+                    "model": llm_model,
+                    "status": str(status or ""),
+                    "reason": str(reason or ""),
+                    "repair_used": bool(repair),
+                    "attempts": int(attempts_count),
+                    "response_text": str(response_value or ""),
+                },
+                meta_payload={
+                    "component": "strategist",
+                    "llm_status": str(status or ""),
+                    "status": str(status or ""),
+                    "reason": str(reason or ""),
+                    "model": llm_model,
+                    "attempts": int(attempts_count),
+                    "repair_used": bool(repair),
+                    "stage": str(stage or "theme_selection"),
+                },
+            )
+        except Exception:
+            return {}
+
     try:
         record_llm_prompt(
             run_id=run_id,
@@ -686,6 +889,15 @@ def _run_strategist_frame_llm(
         raw = router.chat("strategist", messages, policy=route_policy)
     except Exception as e:
         latency_ms = int((time.perf_counter() - t0) * 1000)
+        llm_artifacts = _persist_llm_artifacts(
+            stage="theme_selection",
+            prompt_value=prompt_text,
+            response_value=f"ERROR:{type(e).__name__}:{e}",
+            status="error",
+            reason=str(e),
+            attempts_count=1,
+            repair=False,
+        )
         try:
             record_llm_response(
                 run_id=run_id,
@@ -704,11 +916,16 @@ def _run_strategist_frame_llm(
             "error_type": type(e).__name__,
             "latency_ms": latency_ms,
             "model": route.model,
+            "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
+            "response_ref": str(llm_artifacts.get("response_ref") or ""),
+            "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
+            "response_hash": str(llm_artifacts.get("response_hash") or ""),
         }
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
     attempts = 1
     repair_used = False
+    repair_prompt_text = ""
     obj = _extract_json_object(raw)
     if not isinstance(obj, dict) or not obj:
         reason = _classify_llm_parse_failure(raw)
@@ -742,6 +959,15 @@ def _run_strategist_frame_llm(
                 if isinstance(obj, dict) and obj:
                     overrides = _normalize_llm_overrides(obj)
                     if overrides:
+                        llm_artifacts = _persist_llm_artifacts(
+                            stage="theme_selection_repair",
+                            prompt_value=repair_prompt_text,
+                            response_value=retry_raw,
+                            status="ok",
+                            reason="",
+                            attempts_count=attempts,
+                            repair=True,
+                        )
                         try:
                             record_llm_response(
                                 run_id=run_id,
@@ -765,6 +991,10 @@ def _run_strategist_frame_llm(
                             "model": route.model,
                             "attempts": int(attempts),
                             "repair_used": True,
+                            "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
+                            "response_ref": str(llm_artifacts.get("response_ref") or ""),
+                            "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
+                            "response_hash": str(llm_artifacts.get("response_hash") or ""),
                         }
                 try:
                     record_llm_response(
@@ -801,6 +1031,17 @@ def _run_strategist_frame_llm(
             )
         except Exception:
             pass
+        failed_prompt = repair_prompt_text if str(retry_raw or "").strip() else prompt_text
+        failed_response = retry_raw if str(retry_raw or "").strip() else raw
+        llm_artifacts = _persist_llm_artifacts(
+            stage="theme_selection_repair" if str(retry_raw or "").strip() else "theme_selection",
+            prompt_value=failed_prompt,
+            response_value=failed_response,
+            status="parse_error",
+            reason=reason,
+            attempts_count=attempts,
+            repair=repair_used,
+        )
         return {}, {
             "enabled": True,
             "status": "parse_error",
@@ -810,10 +1051,23 @@ def _run_strategist_frame_llm(
             "raw_preview": str(raw or "")[:220],
             "attempts": int(attempts),
             "repair_used": bool(repair_used),
+            "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
+            "response_ref": str(llm_artifacts.get("response_ref") or ""),
+            "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
+            "response_hash": str(llm_artifacts.get("response_hash") or ""),
         }
 
     overrides = _normalize_llm_overrides(obj)
     if not overrides:
+        llm_artifacts = _persist_llm_artifacts(
+            stage="theme_selection",
+            prompt_value=prompt_text,
+            response_value=raw,
+            status="parse_error",
+            reason="strategist_llm_response_missing_contract_fields",
+            attempts_count=attempts,
+            repair=repair_used,
+        )
         try:
             record_llm_response(
                 run_id=run_id,
@@ -834,6 +1088,10 @@ def _run_strategist_frame_llm(
             "raw_preview": str(raw or "")[:220],
             "attempts": int(attempts),
             "repair_used": bool(repair_used),
+            "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
+            "response_ref": str(llm_artifacts.get("response_ref") or ""),
+            "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
+            "response_hash": str(llm_artifacts.get("response_hash") or ""),
         }
 
     recovery_method = ""
@@ -858,6 +1116,15 @@ def _run_strategist_frame_llm(
     except Exception:
         pass
 
+    llm_artifacts = _persist_llm_artifacts(
+        stage="theme_selection",
+        prompt_value=prompt_text,
+        response_value=raw,
+        status="ok",
+        reason="",
+        attempts_count=attempts,
+        repair=repair_used,
+    )
     return overrides, {
         "enabled": True,
         "status": "ok",
@@ -866,6 +1133,10 @@ def _run_strategist_frame_llm(
         "attempts": int(attempts),
         "repair_used": bool(repair_used),
         "recovery_method": recovery_method,
+        "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
+        "response_ref": str(llm_artifacts.get("response_ref") or ""),
+        "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
+        "response_hash": str(llm_artifacts.get("response_hash") or ""),
     }
 
 
@@ -2360,6 +2631,7 @@ def _build_strategic_answers(
     monitor_guidance: str,
     report_focus: List[str],
     recent_strategy_feedback: Dict[str, Any],
+    strategy_memory: Dict[str, Any],
 ) -> Dict[str, Any]:
     return {
         "q1_market_mode": market_regime,
@@ -2379,6 +2651,14 @@ def _build_strategic_answers(
             "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
             "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
             "recent_reporter_summary": list(recent_strategy_feedback.get("recent_reporter_summary") or [])[:2],
+        },
+        "q14_strategy_memory_advisory": {
+            "status": str(strategy_memory.get("status") or ""),
+            "best_playbooks": list(strategy_memory.get("best_playbooks") or [])[:3],
+            "worst_playbooks": list(strategy_memory.get("worst_playbooks") or [])[:3],
+            "recent_failures": list(strategy_memory.get("recent_failures") or [])[:3],
+            "recent_success_patterns": list(strategy_memory.get("recent_success_patterns") or [])[:3],
+            "recent_playbook_performance": dict(strategy_memory.get("playbook_performance_snapshot") or {}),
         },
         "scanner_bias": scanner_bias,
     }
@@ -2923,18 +3203,21 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         theme_strength=theme_strength,
     )
     recent_strategy_feedback = _load_recent_strategy_feedback(policy)
+    strategy_memory_advisory = _load_strategy_memory_advisory(state, policy)
     report_focus = _merge_override_text_list(
         report_focus,
         recent_strategy_feedback.get("suggested_report_focus"),
         limit=8,
     )
     state["recent_strategy_feedback"] = dict(recent_strategy_feedback)
+    state["strategy_memory"] = dict(strategy_memory_advisory)
 
     llm_payload = {
         "global_sentiment_signal": dict(global_signal),
         "news_context": dict(news_ctx),
         "market_context_inputs": dict(market_context_inputs),
         "recent_strategy_feedback": dict(recent_strategy_feedback),
+        "strategy_memory": dict(strategy_memory_advisory),
         "macro_stress_overlay_hint": dict(macro_stress_overlay),
         "market_regime_hint": market_regime,
         "market_sentiment_hint": market_sentiment,
@@ -2979,6 +3262,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "candidate_symbols_hint": list(candidate_symbols)[:10],
                 },
                 "recent_strategy_feedback": dict(recent_strategy_feedback),
+                "strategy_memory": dict(strategy_memory_advisory),
                 "llm_payload": dict(llm_payload),
             },
             decision_link={"stage": "strategist_input_collection"},
@@ -3117,6 +3401,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         monitor_guidance=monitor_guidance,
         report_focus=report_focus,
         recent_strategy_feedback=recent_strategy_feedback,
+        strategy_memory=strategy_memory_advisory,
     )
     strategy_policy = _build_strategy_policy(
         market_regime=market_regime,
@@ -3207,6 +3492,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["market_context_inputs"] = dict(market_context_inputs)
     strategist_output["theme_strength"] = dict(theme_strength)
     strategist_output["recent_strategy_feedback"] = dict(recent_strategy_feedback)
+    strategist_output["strategy_memory"] = dict(strategy_memory_advisory)
     strategist_output["playbook"] = playbook
     strategist_output["llm_frame_status"] = str(llm_meta.get("status") or "disabled")
     strategist_output["llm_frame_applied"] = bool(llm_overrides)
@@ -3224,6 +3510,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["strategist_blocked_reason"] = str(strategist_llm_block_reason or "")
     state["strategist_llm"] = {
         "status": str(llm_meta.get("status") or "disabled"),
+        "llm_status": str(llm_meta.get("status") or "disabled"),
         "model": str(llm_meta.get("model") or ""),
         "applied": bool(llm_overrides),
         "latency_ms": int(llm_meta.get("latency_ms") or 0),
@@ -3235,6 +3522,10 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "recovery_method": str(llm_meta.get("recovery_method") or ""),
         "blocked": bool(strategist_llm_blocked),
         "blocked_reason": str(strategist_llm_block_reason or ""),
+        "prompt_ref": str(llm_meta.get("prompt_ref") or ""),
+        "response_ref": str(llm_meta.get("response_ref") or ""),
+        "prompt_hash": str(llm_meta.get("prompt_hash") or ""),
+        "response_hash": str(llm_meta.get("response_hash") or ""),
     }
     ranked_market_news = _rank_news_evidence_rows(
         market_news_items_by_target,
@@ -3322,6 +3613,14 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "risk_tone": risk_tone,
             "monitor_guidance": monitor_guidance,
             "report_focus": list(report_focus),
+            "strategy_memory": {
+                "status": str(strategy_memory_advisory.get("status") or ""),
+                "best_playbooks": list(strategy_memory_advisory.get("best_playbooks") or [])[:3],
+                "worst_playbooks": list(strategy_memory_advisory.get("worst_playbooks") or [])[:3],
+                "recent_failures": list(strategy_memory_advisory.get("recent_failures") or [])[:3],
+                "recent_success_patterns": list(strategy_memory_advisory.get("recent_success_patterns") or [])[:3],
+                "recent_playbook_performance": dict(strategy_memory_advisory.get("playbook_performance_snapshot") or {}),
+            },
             "reason_chain": reason_chain,
             "strategy_policy_summary": {
                 "market_policy": dict(strategy_policy.get("market_policy") or {}),
@@ -3349,6 +3648,10 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "evidence_log_path": str(Path(os.getenv("EVIDENCE_LEDGER_PATH", "data/evidence_ledger/events.jsonl"))),
                     "prompt_stage": "theme_selection",
                     "response_stage": "theme_selection_repair" if bool(llm_meta.get("repair_used")) else "theme_selection",
+                    "prompt_ref": str(llm_meta.get("prompt_ref") or ""),
+                    "response_ref": str(llm_meta.get("response_ref") or ""),
+                    "prompt_hash": str(llm_meta.get("prompt_hash") or ""),
+                    "response_hash": str(llm_meta.get("response_hash") or ""),
                 },
             },
             level="warning" if strategist_llm_blocked else "info",
@@ -3375,6 +3678,12 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
             "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
             "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
+            "strategy_memory_status": str(strategy_memory_advisory.get("status") or ""),
+            "best_playbooks": list(strategy_memory_advisory.get("best_playbooks") or [])[:3],
+            "worst_playbooks": list(strategy_memory_advisory.get("worst_playbooks") or [])[:3],
+            "recent_failures": list(strategy_memory_advisory.get("recent_failures") or [])[:3],
+            "recent_success_patterns": list(strategy_memory_advisory.get("recent_success_patterns") or [])[:3],
+            "recent_playbook_performance": dict(strategy_memory_advisory.get("playbook_performance_snapshot") or {}),
             "news_query_targets": list(news_query_targets)[:6],
             "news_query_reasoning": news_query_reasoning,
             "llm_frame_status": str(llm_meta.get("status") or "disabled"),
@@ -3408,6 +3717,12 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
             "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
             "recent_reporter_summary": list(recent_strategy_feedback.get("recent_reporter_summary") or [])[:2],
+            "strategy_memory_status": str(strategy_memory_advisory.get("status") or ""),
+            "best_playbooks": list(strategy_memory_advisory.get("best_playbooks") or [])[:3],
+            "worst_playbooks": list(strategy_memory_advisory.get("worst_playbooks") or [])[:3],
+            "recent_failures": list(strategy_memory_advisory.get("recent_failures") or [])[:3],
+            "recent_success_patterns": list(strategy_memory_advisory.get("recent_success_patterns") or [])[:3],
+            "recent_playbook_performance": dict(strategy_memory_advisory.get("playbook_performance_snapshot") or {}),
             "news_query_targets": list(news_query_targets)[:6],
             "news_query_reasoning": news_query_reasoning,
             "regime_score": float(regime_score),
@@ -3442,6 +3757,14 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
                     "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
                     "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
+                },
+                "strategy_memory": {
+                    "status": str(strategy_memory_advisory.get("status") or ""),
+                    "best_playbooks": list(strategy_memory_advisory.get("best_playbooks") or [])[:3],
+                    "worst_playbooks": list(strategy_memory_advisory.get("worst_playbooks") or [])[:3],
+                    "recent_failures": list(strategy_memory_advisory.get("recent_failures") or [])[:3],
+                    "recent_success_patterns": list(strategy_memory_advisory.get("recent_success_patterns") or [])[:3],
+                    "recent_playbook_performance": dict(strategy_memory_advisory.get("playbook_performance_snapshot") or {}),
                 },
                 "news_query_targets": list(news_query_targets),
                 "news_query_reasoning": news_query_reasoning,

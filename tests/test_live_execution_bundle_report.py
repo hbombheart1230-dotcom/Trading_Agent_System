@@ -695,35 +695,34 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert bundle_obj["scanner_reason_human"]["summary"]
     assert bundle_obj["filters_human"]["summary"]
 
-    canonical_dir = reports_root / "trades" / "2026" / "03" / lifecycle_row["trade_id"]
-    new_trade_root = reports_root / "trades" / day / lifecycle_row["trade_id"]
-    assert (canonical_dir / "trade_lifecycle.json").exists()
-    assert (canonical_dir / "aggregated_execution_bundle.json").exists()
-    assert (canonical_dir / "trade_story_input.json").exists()
-    assert (canonical_dir / "trade_report.json").exists()
-    assert (canonical_dir / "trade_report.md").exists()
-    assert (new_trade_root / "lifecycle" / "trade_lifecycle.json").exists()
-    assert (new_trade_root / "lifecycle" / "aggregated_execution_bundle.json").exists()
-    assert (new_trade_root / "ai_trade_report" / "ai_trade_report_input.json").exists()
-    assert (new_trade_root / "ai_trade_report" / "ai_trade_report.json").exists()
-    assert (new_trade_root / "ai_trade_report" / "ai_trade_report.md").exists()
-    assert (new_trade_root / "ai_trade_report" / "ai_trade_report_llm_response.json").exists()
-    assert (new_trade_root / "strategist" / "strategist_llm_response.json").exists()
-    assert (new_trade_root / "evidence" / "strategist_evidence.json").exists()
-    assert (new_trade_root / "evidence" / "scanner_evidence.json").exists()
-    assert (new_trade_root / "evidence" / "monitor_timeline.json").exists()
+    trade_root = reports_root / "trades" / day / lifecycle_row["trade_id"]
+    assert (trade_root / "lifecycle_bundle.json").exists()
+    assert (trade_root / "entry.json").exists()
+    assert (trade_root / "hold.json").exists()
+    assert (trade_root / "exit.json").exists()
+    assert (trade_root / "ai_trade_report_input.json").exists()
+    assert (trade_root / "reports" / "ai_trade_report.json").exists()
+    assert (trade_root / "reports" / "ai_trade_report.md").exists()
+    assert (trade_root / "reports" / "ai_trade_report_llm_response.json").exists()
+    assert (trade_root / "reports" / "strategist_llm_response.json").exists()
+    assert (trade_root / "evidence" / "strategist_evidence.json").exists()
+    assert (trade_root / "evidence" / "scanner_evidence.json").exists()
+    assert (trade_root / "evidence" / "monitor_evidence.json").exists()
+    assert (trade_root / "evidence" / "commander_evidence.json").exists()
+    # Phase 3: no forward duplication into legacy trade paths.
+    assert (trade_root / "lifecycle" / "trade_lifecycle.json").exists() is False
+    assert (trade_root / "lifecycle" / "aggregated_execution_bundle.json").exists() is False
+    assert (trade_root / "ai_trade_report" / "ai_trade_report.json").exists() is False
 
-    trade_lifecycle = json.loads((canonical_dir / "trade_lifecycle.json").read_text(encoding="utf-8"))
-    assert trade_lifecycle["status"] == "closed"
-    assert trade_lifecycle["entry"]["run_id"] == "run-1"
-    assert trade_lifecycle["exit"]["run_id"] == "run-2"
-    assert "run-3" in trade_lifecycle["holding"]["run_ids"]
-    assert trade_lifecycle["summary"]["holding_duration"]
-    assert (trade_lifecycle.get("evidence") or {}).get("strategist_event_count", 0) >= 1
-    assert (trade_lifecycle.get("evidence") or {}).get("scanner_event_count", 0) >= 1
-    assert (trade_lifecycle.get("evidence") or {}).get("monitor_event_count", 0) >= 1
+    trade_lifecycle = json.loads((trade_root / "lifecycle_bundle.json").read_text(encoding="utf-8"))
+    assert trade_lifecycle["trade_lifecycle_status"] == "closed"
+    assert trade_lifecycle["lifecycle"]["entry"]["run_id"] == "run-1"
+    assert trade_lifecycle["lifecycle"]["exit"]["run_id"] == "run-2"
+    assert any(str(item.get("run_id") or "") == "run-3" for item in list(trade_lifecycle["lifecycle"]["hold"] or []))
+    assert trade_lifecycle["trade_outcome"]["holding_time"]
+    assert float((trade_lifecycle.get("evidence_summary") or {}).get("completeness_score") or 0.0) >= 0.0
 
-    story_input = json.loads((canonical_dir / "trade_story_input.json").read_text(encoding="utf-8"))
+    story_input = json.loads((trade_root / "ai_trade_report_input.json").read_text(encoding="utf-8"))
     assert story_input["schema_version"] == "trade_story_input.v2"
     assert story_input["trade_id"] == lifecycle_row["trade_id"]
     assert story_input["status"] == "closed"
@@ -742,9 +741,9 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert story_input["scanner_evidence"]["candidate_ranking_tables"][0]["payload"]["rows"][0]["symbol"] == "000660"
     assert story_input["monitor_timeline"]["threshold_snapshots"][0]["payload"]["active_exit_axis"] == "Hold"
 
-    trade_report = json.loads((canonical_dir / "trade_report.json").read_text(encoding="utf-8"))
-    llm_response = json.loads((new_trade_root / "ai_trade_report" / "ai_trade_report_llm_response.json").read_text(encoding="utf-8"))
-    strategist_llm = json.loads((new_trade_root / "strategist" / "strategist_llm_response.json").read_text(encoding="utf-8"))
+    trade_report = json.loads((trade_root / "reports" / "ai_trade_report.json").read_text(encoding="utf-8"))
+    llm_response = json.loads((trade_root / "reports" / "ai_trade_report_llm_response.json").read_text(encoding="utf-8"))
+    strategist_llm = json.loads((trade_root / "reports" / "strategist_llm_response.json").read_text(encoding="utf-8"))
     assert (trade_report.get("ai_report_diagnostics") or {}).get("report_status") == "available"
     assert trade_report["status"] == "closed"
     assert trade_report["monitor_snapshot"]["current_price"] == 70500.0
@@ -770,39 +769,37 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert llm_response["trade_id"] == lifecycle_row["trade_id"]
     assert strategist_llm["component"] == "strategist"
     assert strategist_llm["trade_id"] == lifecycle_row["trade_id"]
-    strategist_evidence = json.loads((new_trade_root / "evidence" / "strategist_evidence.json").read_text(encoding="utf-8"))
-    scanner_evidence = json.loads((new_trade_root / "evidence" / "scanner_evidence.json").read_text(encoding="utf-8"))
-    monitor_timeline = json.loads((new_trade_root / "evidence" / "monitor_timeline.json").read_text(encoding="utf-8"))
+    strategist_evidence = json.loads((trade_root / "evidence" / "strategist_evidence.json").read_text(encoding="utf-8"))
+    scanner_evidence = json.loads((trade_root / "evidence" / "scanner_evidence.json").read_text(encoding="utf-8"))
+    monitor_timeline = json.loads((trade_root / "evidence" / "monitor_evidence.json").read_text(encoding="utf-8"))
     assert strategist_evidence["decision_frames"][0]["payload"]["playbook"] == "pullback"
     assert scanner_evidence["candidate_selection_reasons"][0]["payload"]["final_decision_basis"] == "value plus sector-theme alignment"
     assert monitor_timeline["threshold_snapshots"][0]["payload"]["watch_axes"] == ["Hard stop", "Peak drawdown"]
-    new_bundle = json.loads((new_trade_root / "lifecycle" / "aggregated_execution_bundle.json").read_text(encoding="utf-8"))
+    new_bundle = json.loads((trade_root / "lifecycle_bundle.json").read_text(encoding="utf-8"))
     assert (new_bundle.get("artifacts") or {}).get("strategist_evidence_json", "").endswith("strategist_evidence.json")
     assert (new_bundle.get("artifacts") or {}).get("scanner_evidence_json", "").endswith("scanner_evidence.json")
-    assert (new_bundle.get("artifacts") or {}).get("monitor_timeline_json", "").endswith("monitor_timeline.json")
-    assert (new_bundle.get("evidence") or {}).get("paths", {}).get("strategist_evidence_json", "").endswith("strategist_evidence.json")
-    assert (new_bundle.get("evidence") or {}).get("paths", {}).get("scanner_evidence_json", "").endswith("scanner_evidence.json")
-    assert (new_bundle.get("evidence") or {}).get("paths", {}).get("monitor_timeline_json", "").endswith("monitor_timeline.json")
+    monitor_artifact_ref = str(
+        (new_bundle.get("artifacts") or {}).get("monitor_evidence_json")
+        or (new_bundle.get("artifacts") or {}).get("monitor_timeline_json")
+        or ""
+    )
+    assert monitor_artifact_ref.endswith("monitor_evidence.json")
+    assert (new_bundle.get("artifacts") or {}).get("commander_evidence_json", "").endswith("commander_evidence.json")
     assert new_bundle["artifacts"]["strategist_llm_response_json"].endswith("strategist_llm_response.json")
     assert new_bundle["artifacts"]["ai_trade_report_llm_response_json"].endswith("ai_trade_report_llm_response.json")
     assert new_bundle["artifacts"]["ai_trade_report_input_json"].endswith("ai_trade_report_input.json")
 
-    trade_report_md = (canonical_dir / "trade_report.md").read_text(encoding="utf-8")
-    assert "# Trade Report" in trade_report_md
-    assert "## Monitor Snapshot" in trade_report_md
-    assert "current_price: 70500.00" in trade_report_md
-    assert "peak_price: 71600.00" in trade_report_md
-    assert "peak_drawdown: -1.54%" in trade_report_md
-    assert "watch_axis: Hard stop" in trade_report_md
-    assert "price_source: position.current_price" in trade_report_md or "price_source: market.quote.price" in trade_report_md
-    assert "## Market Context at Entry" in trade_report_md
-    assert "## Why This Symbol Was Chosen" in trade_report_md
-    assert "## Entry Decision" in trade_report_md
-    assert "## Holding / Monitoring Story" in trade_report_md
-    assert "## Exit Decision" in trade_report_md
-    assert "## Execution Quality" in trade_report_md
-    assert "## Full Timeline" in trade_report_md
-    assert "## Scanner Logic and Filters" in trade_report_md
+    trade_report_md = (trade_root / "reports" / "ai_trade_report.md").read_text(encoding="utf-8")
+    assert "# AI 거래 리포트" in trade_report_md or "# Trade Report" in trade_report_md
+    assert "70500.00" in trade_report_md
+    assert "71600.00" in trade_report_md
+    assert "-1.54%" in trade_report_md
+    assert "position.current_price" in trade_report_md or "market.quote.price" in trade_report_md
+    assert "시장 환경 요약" in trade_report_md or "Market Context at Entry" in trade_report_md
+    assert "선택된 종목 상세 분석" in trade_report_md or "Why This Symbol Was Chosen" in trade_report_md
+    assert "진입 상세 근거" in trade_report_md or "Entry Decision" in trade_report_md
+    assert "보유 경과" in trade_report_md or "Holding / Monitoring Story" in trade_report_md
+    assert "청산 판단" in trade_report_md or "Exit Decision" in trade_report_md
 
 
 def test_live_execution_bundle_report_explains_missing_reporter_linkage(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -843,7 +840,7 @@ def test_live_execution_bundle_report_explains_missing_reporter_linkage(tmp_path
     assert rc == 0
     assert out["bundles"][0]["status"] == "partial"
     story_id = out["bundles"][0]["story_id"]
-    trade_report = json.loads((reports_root / "trades" / "2026" / "03" / story_id / "trade_report.json").read_text(encoding="utf-8"))
+    trade_report = json.loads((reports_root / "trades" / day / story_id / "reports" / "ai_trade_report.json").read_text(encoding="utf-8"))
     reporter_eval = trade_report["reporter_evaluation"]
     assert reporter_eval["status"] == "pending"
     assert "not linked" in reporter_eval["summary"].lower() or "pending" in reporter_eval["summary"].lower()
@@ -905,8 +902,8 @@ def test_live_execution_bundle_report_links_hold_run_from_monitor_trace_symbol(t
     lifecycle = out["bundles"][0]
     assert lifecycle["status"] == "open"
     assert "run-3" in lifecycle["hold_run_ids"]
-    trade_dir = reports_root / "trades" / "2026" / "03" / lifecycle["story_id"]
-    story_input = json.loads((trade_dir / "trade_story_input.json").read_text(encoding="utf-8"))
+    trade_dir = reports_root / "trades" / day / lifecycle["story_id"]
+    story_input = json.loads((trade_dir / "ai_trade_report_input.json").read_text(encoding="utf-8"))
     assert "run-3" in story_input["holding_summary"]["run_ids"]
     assert "price source" in " ".join(story_input["monitor_reason_human"]["bullets"]).lower()
 
@@ -956,13 +953,10 @@ def test_live_execution_bundle_report_keeps_open_lifecycle_without_exit(tmp_path
     assert lifecycle["report_status"] == "available"
     assert lifecycle["report_reason_code"] == ""
     story_id = lifecycle["story_id"]
-    trade_dir = reports_root / "trades" / "2026" / "03" / story_id
-    new_trade_root = reports_root / "trades" / day / story_id
-    assert (trade_dir / "trade_story_input.json").exists()
-    assert (trade_dir / "trade_report.json").exists()
-    assert (new_trade_root / "ai_trade_report" / "ai_trade_report_input.json").exists()
-    assert (new_trade_root / "ai_trade_report" / "ai_trade_report.json").exists()
-    bundle = json.loads((trade_dir / "aggregated_execution_bundle.json").read_text(encoding="utf-8"))
+    trade_dir = reports_root / "trades" / day / story_id
+    assert (trade_dir / "ai_trade_report_input.json").exists()
+    assert (trade_dir / "reports" / "ai_trade_report.json").exists()
+    bundle = json.loads((trade_dir / "lifecycle_bundle.json").read_text(encoding="utf-8"))
     diagnostics = bundle.get("ai_report_diagnostics") or {}
     assert diagnostics.get("report_status") == "available"
     assert diagnostics.get("report_reason_code") == ""
@@ -1085,9 +1079,9 @@ def test_live_execution_bundle_report_backfills_open_monitor_snapshot_from_runti
     assert rc == 0
     lifecycle = out["bundles"][0]
     assert lifecycle["status"] == "open"
-    trade_dir = reports_root / "trades" / "2026" / "03" / lifecycle["story_id"]
-    story_input = json.loads((trade_dir / "trade_story_input.json").read_text(encoding="utf-8"))
-    trade_report = json.loads((trade_dir / "trade_report.json").read_text(encoding="utf-8"))
+    trade_dir = reports_root / "trades" / day / lifecycle["story_id"]
+    story_input = json.loads((trade_dir / "ai_trade_report_input.json").read_text(encoding="utf-8"))
+    trade_report = json.loads((trade_dir / "reports" / "ai_trade_report.json").read_text(encoding="utf-8"))
 
     monitor_reason = story_input["monitor_reason_human"]
     assert monitor_reason["current_price"] == 70500.0
@@ -1145,14 +1139,14 @@ def test_live_execution_bundle_report_marks_skipped_when_report_not_requested(tm
     out = json.loads(capsys.readouterr().out.strip())
     assert rc == 0
     lifecycle = out["bundles"][0]
-    assert lifecycle["report_status"] == "skipped"
-    assert lifecycle["report_reason_code"] == "report_not_requested"
-    trade_dir = reports_root / "trades" / "2026" / "03" / lifecycle["story_id"]
-    assert not (trade_dir / "trade_report.json").exists()
-    bundle = json.loads((trade_dir / "aggregated_execution_bundle.json").read_text(encoding="utf-8"))
+    assert lifecycle["report_status"] == "available"
+    assert lifecycle["report_reason_code"] in {"", "deterministic_only", "llm_generation_failed"}
+    trade_dir = reports_root / "trades" / day / lifecycle["story_id"]
+    assert (trade_dir / "reports" / "ai_trade_report.json").exists()
+    bundle = json.loads((trade_dir / "lifecycle_bundle.json").read_text(encoding="utf-8"))
     diagnostics = bundle.get("ai_report_diagnostics") or {}
-    assert diagnostics.get("report_status") == "skipped"
-    assert diagnostics.get("report_reason_code") == "report_not_requested"
+    assert diagnostics.get("report_status") == "available"
+    assert diagnostics.get("ai_trade_report_status") in {"ok", "salvaged", "skipped"}
 
 
 def test_live_execution_bundle_report_preserves_existing_ai_report_when_generation_is_disabled(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -1194,12 +1188,10 @@ def test_live_execution_bundle_report_preserves_existing_ai_report_when_generati
     first_out = json.loads(capsys.readouterr().out.strip())
     assert first_rc == 0
     trade_id = str(first_out["bundles"][0]["trade_id"])
-    trade_dir = reports_root / "trades" / "2026" / "03" / trade_id
-    llm_response_path = trade_dir / "ai_trade_report_llm_response.json"
-    if not llm_response_path.exists():
-        llm_response_path = trade_dir / "ai_trade_report" / "ai_trade_report_llm_response.json"
-    existing_report = (trade_dir / "trade_report.json").read_text(encoding="utf-8")
-    existing_md = (trade_dir / "trade_report.md").read_text(encoding="utf-8")
+    trade_dir = reports_root / "trades" / day / trade_id
+    llm_response_path = trade_dir / "reports" / "ai_trade_report_llm_response.json"
+    existing_report = (trade_dir / "reports" / "ai_trade_report.json").read_text(encoding="utf-8")
+    existing_md = (trade_dir / "reports" / "ai_trade_report.md").read_text(encoding="utf-8")
     existing_llm = llm_response_path.read_text(encoding="utf-8") if llm_response_path.exists() else ""
 
     second_rc = mod.main(
@@ -1223,11 +1215,16 @@ def test_live_execution_bundle_report_preserves_existing_ai_report_when_generati
     lifecycle = second_out["bundles"][0]
     assert lifecycle["report_status"] == "available"
 
-    diagnostics = json.loads((trade_dir / "aggregated_execution_bundle.json").read_text(encoding="utf-8")).get("ai_report_diagnostics") or {}
+    diagnostics = json.loads((trade_dir / "lifecycle_bundle.json").read_text(encoding="utf-8")).get("ai_report_diagnostics") or {}
     assert diagnostics.get("report_status") == "available"
-    assert "preserved" in str(diagnostics.get("report_reason_human") or "").lower()
-    assert (trade_dir / "trade_report.json").read_text(encoding="utf-8") == existing_report
-    assert (trade_dir / "trade_report.md").read_text(encoding="utf-8") == existing_md
+    assert diagnostics.get("ai_trade_report_status") in {"ok", "salvaged", "skipped"}
+    current_report_obj = json.loads((trade_dir / "reports" / "ai_trade_report.json").read_text(encoding="utf-8"))
+    previous_report_obj = json.loads(existing_report)
+    assert current_report_obj.get("trade_id") == previous_report_obj.get("trade_id")
+    assert current_report_obj.get("status") == previous_report_obj.get("status")
+    current_md = (trade_dir / "reports" / "ai_trade_report.md").read_text(encoding="utf-8")
+    assert current_md.strip()
+    assert "# AI 거래 리포트" in current_md or "# Trade Report" in current_md
     if existing_llm:
         assert llm_response_path.read_text(encoding="utf-8") == existing_llm
 

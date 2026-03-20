@@ -73,13 +73,162 @@ def _merge_missing_values(base: Dict[str, Any], fallback: Dict[str, Any]) -> Dic
 
 def _source_confidence_label(source: Any) -> str:
     raw = str(source or "").strip().lower()
-    if raw == "canonical":
+    if raw in {"canonical", "normalized_trade_artifact", "normalized_trade"}:
         return "high"
     if raw in {"direct_artifact", "direct"}:
         return "medium"
     if raw in {"event_log", "fallback", "inferred"}:
         return "low"
     return "low"
+
+
+def _is_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return True
+
+
+def compute_evidence_completeness(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    obj = dict(story_input or {})
+    required_sections = [
+        "market_context_human",
+        "scanner_reason_human",
+        "filters_human",
+        "monitor_reason_human",
+        "guard_reason_human",
+        "execution_outcome_human",
+        "operator_conclusion_human",
+    ]
+    present_sections: List[str] = []
+    missing_sections: List[str] = []
+    for key in required_sections:
+        value = obj.get(key)
+        if isinstance(value, dict) and (_is_present(value.get("summary")) or _is_present(value.get("bullets"))):
+            present_sections.append(key)
+        elif _is_present(value):
+            present_sections.append(key)
+        else:
+            missing_sections.append(key)
+    score = float(len(present_sections)) / float(len(required_sections)) if required_sections else 1.0
+    return {
+        "required_sections": required_sections,
+        "present_sections": present_sections,
+        "missing_sections": missing_sections,
+        "completeness_score": score,
+    }
+
+
+def _safe_path_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _safe_ref_map(values: Any) -> Dict[str, str]:
+    if not isinstance(values, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for key, value in values.items():
+        out[str(key)] = _safe_path_text(value)
+    return out
+
+
+def build_commander_evidence(commander_payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(commander_payload or {})
+    return {
+        "schema_version": "commander_evidence.v1",
+        "session_type": str(payload.get("session_type") or ""),
+        "market_regime_summary": str(payload.get("market_regime_summary") or ""),
+        "goal": str(payload.get("goal") or ""),
+        "decision_path": str(payload.get("final_runtime_path") or payload.get("path") or ""),
+        "invocation_plan": [str(x or "") for x in list(payload.get("agent_invocation_plan") or []) if str(x or "").strip()],
+        "final_reason": str(payload.get("final_reason") or payload.get("reason") or ""),
+    }
+
+
+def build_lifecycle_bundle(
+    *,
+    day: str,
+    trade_id: str,
+    run_id: str,
+    symbol: str,
+    lifecycle: Dict[str, Any],
+    strategist_summary: Dict[str, Any],
+    scanner_summary: Dict[str, Any],
+    monitor_summary: Dict[str, Any],
+    commander_summary: Dict[str, Any],
+    story_input: Dict[str, Any],
+    diagnostics: Dict[str, Any],
+    canonical_refs: Dict[str, Any],
+    llm_refs: Dict[str, Any],
+    artifact_links: Dict[str, Any],
+) -> Dict[str, Any]:
+    lifecycle_obj = dict(lifecycle or {})
+    entry_obj = dict(lifecycle_obj.get("entry") or {})
+    holding_obj = dict(lifecycle_obj.get("holding") or {})
+    exit_obj = dict(lifecycle_obj.get("exit") or {})
+    summary_obj = dict(lifecycle_obj.get("summary") or {})
+    hold_events = [
+        dict(row)
+        for row in list(holding_obj.get("holding_events") or [])
+        if isinstance(row, dict)
+    ]
+    if not hold_events and isinstance(holding_obj.get("posture_history"), list):
+        hold_events = [
+            dict(row)
+            for row in list(holding_obj.get("posture_history") or [])
+            if isinstance(row, dict)
+        ]
+    completeness = compute_evidence_completeness(story_input)
+    exit_reason = (
+        str(summary_obj.get("exit_reason_human") or "")
+        or str((exit_obj.get("monitor_context") or {}).get("exit_reason") or "")
+        or str(exit_obj.get("reason_human") or "")
+    )
+    monitor_snapshot = dict(story_input.get("monitor_reason_human") or {})
+    return {
+        "schema_version": "lifecycle_bundle.v1",
+        "day": str(day or ""),
+        "trade_id": str(trade_id or ""),
+        "symbol": str(symbol or ""),
+        "run_id": str(run_id or ""),
+        "lifecycle": {
+            "entry": entry_obj,
+            "hold": hold_events,
+            "exit": exit_obj,
+        },
+        "strategist_summary": dict(strategist_summary or {}),
+        "scanner_summary": dict(scanner_summary or {}),
+        "monitor_summary": dict(monitor_summary or {}),
+        "commander_summary": dict(commander_summary or {}),
+        "trade_outcome": {
+            "pnl": monitor_snapshot.get("pnl"),
+            "return_pct": monitor_snapshot.get("current_drawdown"),
+            "holding_time": str(summary_obj.get("holding_duration") or ""),
+            "exit_reason": str(exit_reason or ""),
+        },
+        "evidence_summary": {
+            "completeness_score": float(completeness.get("completeness_score") or 0.0),
+            "missing_sections": [str(x or "") for x in list(completeness.get("missing_sections") or []) if str(x or "").strip()],
+        },
+        "llm_summary": {
+            "strategist_llm_status": str(diagnostics.get("strategist_llm_status") or "skipped"),
+            "brief_llm_status": str(diagnostics.get("llm_brief_status") or "skipped"),
+            "ai_report_status": str(diagnostics.get("ai_trade_report_status") or "skipped"),
+        },
+        "refs": {
+            "canonical_refs": _safe_ref_map(canonical_refs),
+            "llm_refs": _safe_ref_map(llm_refs),
+            "artifact_links": _safe_ref_map(artifact_links),
+        },
+        "missing": {
+            "entry_missing": not bool(entry_obj),
+            "hold_missing": not bool(hold_events),
+            "exit_missing": not bool(exit_obj),
+        },
+    }
 
 
 def _section_source_entry(

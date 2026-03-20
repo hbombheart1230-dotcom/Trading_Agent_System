@@ -132,3 +132,7 @@ def test_commander_runtime_writes_commander_artifact(tmp_path: Path, monkeypatch
     assert commander["agent"] == "commander"
     assert commander["run_id"] == "run-5"
     assert commander["decision"] == "graph_spine"
+    assert "session_type" in commander
+    assert "agent_invocation_plan" in commander
+    assert "final_runtime_path" in commander
+    assert "handoff_instruction" in commander

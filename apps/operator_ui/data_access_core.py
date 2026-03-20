@@ -47,8 +47,10 @@ from libs.core.symbols import normalize_symbol
 from libs.reporting.llm_artifacts import (
     build_compact_input_artifact,
     build_llm_response_artifact,
+    canonical_llm_status,
     classify_llm_exception,
     make_attempt,
+    persist_llm_artifact_refs,
     trade_artifact_paths,
 )
 
@@ -680,7 +682,11 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
     by_run_id: Dict[str, Dict[str, Any]] = {}
     by_story_id: Dict[str, Dict[str, Any]] = {}
     seen_bundle_paths: set[str] = set()
-    bundle_candidates = sorted(root.glob("**/aggregated_execution_bundle.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    bundle_candidates = sorted(
+        list(root.glob("**/lifecycle_bundle.json")) + list(root.glob("**/aggregated_execution_bundle.json")),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     for bundle_path in bundle_candidates:
         key_path = str(bundle_path.resolve())
         if key_path in seen_bundle_paths:
@@ -694,7 +700,13 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
         lifecycle_status_hint = str(bundle.get("trade_lifecycle_status") or "").strip()
         trade_id_hint = str(bundle.get("trade_id") or bundle.get("story_id") or "").strip()
         paths = _trade_paths_from_bundle(bundle_path, day_hint=bundle_day, trade_id_hint=trade_id_hint)
-        lifecycle_path = _existing_trade_path(paths, "trade_lifecycle_json", "legacy_trade_lifecycle_json")
+        lifecycle_path = _existing_trade_path(
+            paths,
+            "lifecycle_bundle_json",
+            "trade_lifecycle_json",
+            "legacy_normalized_trade_lifecycle_json",
+            "legacy_trade_lifecycle_json",
+        )
         lifecycle = _read_json(lifecycle_path) if lifecycle_path.exists() else {}
         trade_id = str(
             lifecycle.get("trade_id")
@@ -772,7 +784,7 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
         ts_epoch = _to_epoch(bundle.get("ts"))
         if ts_epoch is None:
             ts_epoch = int(bundle_path.stat().st_mtime)
-        path_priority = 2 if bundle_path.parent.name == "lifecycle" else 1
+        path_priority = 2 if bundle_path.name == "lifecycle_bundle.json" else (2 if bundle_path.parent.name == "lifecycle" else 1)
         symbol = normalize_symbol(
             execution.get("symbol") or report.get("symbol") or "",
             allow_test_symbols=True,
@@ -4670,7 +4682,7 @@ def _save_cached_operator_brief(config: OperatorUIConfig, run_id: str, brief: Di
     path = config.operator_ui_cache_path / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(brief)
-    payload["version"] = 12
+    payload["version"] = 13
     payload["cached_at"] = datetime.now(tz=KST).isoformat()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -4679,7 +4691,7 @@ def _operator_brief_artifact_paths(detail: Dict[str, Any]) -> tuple[Path | None,
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
     trade_root_path = Path(str(trade_report.get("trade_root_path") or "")).resolve() if str(trade_report.get("trade_root_path") or "").strip() else None
     if trade_root_path is not None:
-        return trade_root_path / "brief" / "operator_brief.json", trade_root_path / "brief" / "operator_brief.md"
+        return trade_root_path / "reports" / "operator_brief.json", trade_root_path / "reports" / "operator_brief.md"
     candidate_paths = [
         str(trade_report.get("operator_brief_json_path") or ""),
         str(trade_report.get("trade_report_json_path") or ""),
@@ -4700,10 +4712,14 @@ def _operator_brief_artifact_paths(detail: Dict[str, Any]) -> tuple[Path | None,
                 parent = parent.parent
         else:
             parent = path
-        brief_json = parent / "brief" / "operator_brief.json"
-        brief_md = parent / "brief" / "operator_brief.md"
+        brief_json = parent / "reports" / "operator_brief.json"
+        brief_md = parent / "reports" / "operator_brief.md"
         if brief_json.exists() or brief_md.exists():
             return brief_json, brief_md
+        legacy_json = parent / "brief" / "operator_brief.json"
+        legacy_md = parent / "brief" / "operator_brief.md"
+        if legacy_json.exists() or legacy_md.exists():
+            return legacy_json, legacy_md
         return parent / "operator_brief.json", parent / "operator_brief.md"
     return None, None
 
@@ -4731,33 +4747,8 @@ def _operator_brief_compact_input_artifact_path(detail: Dict[str, Any]) -> Path 
 
 
 def _save_operator_brief_input_artifact(detail: Dict[str, Any], prepared_input: Dict[str, Any], llm_compact_input: Dict[str, Any] | None = None) -> None:
-    path = _operator_brief_input_artifact_path(detail)
-    compact_path = _operator_brief_compact_input_artifact_path(detail)
-    if path is None and compact_path is None:
-        return
-    try:
-        payload = dict(prepared_input or {})
-        payload["saved_at"] = datetime.now(tz=KST).isoformat()
-        compact_payload = dict(llm_compact_input or _compact_operator_brief_input_for_llm(payload))
-        if path is not None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        if compact_path is not None:
-            trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
-            compact_path.parent.mkdir(parents=True, exist_ok=True)
-            compact_artifact = build_compact_input_artifact(
-                component="brief",
-                run_id=str(detail.get("run_id") or ""),
-                trade_id=str(trade_report.get("trade_id") or trade_report.get("story_id") or ""),
-                story_id=str(trade_report.get("story_id") or trade_report.get("trade_id") or ""),
-                day=str((trade_report.get("day") or "")).strip(),
-                source_artifact_path=str(path) if path is not None else "",
-                source_input=payload,
-                compact_input=compact_payload,
-            )
-            compact_path.write_text(json.dumps(compact_artifact, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        return
+    # Phase 3: deprecated forward writes for brief input/compact input artifacts.
+    return
 
 
 def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
@@ -5297,25 +5288,33 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
     payload["report_status"] = str(trade_report.get("report_status") or "")
     payload["source_signature"] = _operator_brief_source_signature(detail)
     json_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(_render_operator_brief_markdown(payload), encoding="utf-8")
-    trade_root = json_path.parent.parent if json_path.parent.name == "brief" else json_path.parent
-    legacy_json_path = trade_root / "operator_brief.json"
-    legacy_md_path = trade_root / "operator_brief.md"
-    if legacy_json_path != json_path:
-        legacy_json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    if legacy_md_path != md_path:
-        legacy_md_path.write_text(_render_operator_brief_markdown(payload), encoding="utf-8")
+    trade_root = json_path.parent.parent if json_path.parent.name in {"brief", "reports"} else json_path.parent
     llm_response_artifact = payload.get("llm_response_artifact") if isinstance(payload.get("llm_response_artifact"), dict) else {}
+    llm_response_compact: Dict[str, Any] = {}
     if llm_response_artifact:
         brief_llm_path = json_path.parent / "brief_llm_response.json"
-        brief_llm_path.write_text(json.dumps(llm_response_artifact, ensure_ascii=False, indent=2), encoding="utf-8")
-        legacy_brief_llm_path = trade_root / "brief_llm_response.json"
-        if legacy_brief_llm_path != brief_llm_path:
-            legacy_brief_llm_path.write_text(json.dumps(llm_response_artifact, ensure_ascii=False, indent=2), encoding="utf-8")
+        reports_root = trade_root.parents[2] if len(trade_root.parents) >= 3 else Path("reports")
+        run_day = trade_root.parent.name if re.fullmatch(r"\d{4}-\d{2}-\d{2}", trade_root.parent.name) else str(payload.get("saved_at") or "")[:10]
+        llm_response_compact = persist_llm_artifact_refs(
+            artifact=llm_response_artifact,
+            reports_root=reports_root,
+            day=run_day,
+            run_id=str(detail.get("run_id") or ""),
+            component="brief",
+        )
+        llm_response_compact["llm_status"] = canonical_llm_status(
+            llm_response_compact.get("llm_status") or llm_response_compact.get("status") or "fallback",
+            default="fallback",
+        )
+        brief_llm_path.write_text(json.dumps(llm_response_compact, ensure_ascii=False, indent=2), encoding="utf-8")
+    if llm_response_compact:
+        payload["llm_response_artifact"] = dict(llm_response_compact)
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    md_path.write_text(_render_operator_brief_markdown(payload), encoding="utf-8")
     bundle_candidates = [
-        trade_root / "lifecycle" / "aggregated_execution_bundle.json",
+        trade_root / "lifecycle_bundle.json",
         trade_root / "aggregated_execution_bundle.json",
+        trade_root / "lifecycle" / "aggregated_execution_bundle.json",
     ]
     for bundle_path in bundle_candidates:
         if not bundle_path.exists():
@@ -5324,13 +5323,12 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         if not isinstance(bundle, dict) or not bundle:
             continue
         artifacts = bundle.get("artifacts") if isinstance(bundle.get("artifacts"), dict) else {}
-        brief_input_path = json_path.parent / "brief_input.json"
-        brief_compact_input_path = json_path.parent / "brief_compact_input.json"
         artifacts["brief_json"] = str(json_path)
         artifacts["brief_md"] = str(md_path)
-        artifacts["brief_input_json"] = str(brief_input_path) if brief_input_path.exists() else ""
-        artifacts["brief_compact_input_json"] = str(brief_compact_input_path) if brief_compact_input_path.exists() else ""
-        artifacts["brief_llm_response_json"] = str(json_path.parent / "brief_llm_response.json") if llm_response_artifact else ""
+        artifacts["operator_brief_json"] = str(json_path)
+        artifacts["brief_input_json"] = ""
+        artifacts["brief_compact_input_json"] = ""
+        artifacts["brief_llm_response_json"] = str(json_path.parent / "brief_llm_response.json") if llm_response_compact else ""
         bundle["artifacts"] = artifacts
         bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
         break
@@ -5515,6 +5513,8 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
         story_input_data = dict(report_payloads.get("story_input_data") or {})
         lifecycle_data = dict(report_payloads.get("lifecycle_data") or {})
         report_data = dict(report_payloads.get("report_data") or {})
+        payload_sources = dict(report_payloads.get("payload_sources") or {})
+        payload_paths = dict(report_payloads.get("paths") or {})
         ai_diag = (
             trade_report_meta.get("ai_report_diagnostics")
             if isinstance(trade_report_meta.get("ai_report_diagnostics"), dict)
@@ -5576,6 +5576,8 @@ def load_run_detail(config: OperatorUIConfig, run_id: str) -> Dict[str, Any]:
             "story_input_data": story_input_data if isinstance(story_input_data, dict) else {},
             "lifecycle_data": lifecycle_data if isinstance(lifecycle_data, dict) else {},
             "report_data": report_data if isinstance(report_data, dict) else {},
+            "report_payload_sources": payload_sources,
+            "report_payload_paths": payload_paths,
         }
     else:
         execution_action = str(normalized_execution.get("action") or "").upper()

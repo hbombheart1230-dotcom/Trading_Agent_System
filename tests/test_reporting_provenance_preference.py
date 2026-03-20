@@ -1,4 +1,4 @@
-from libs.reporting.trade_story_pipeline import build_trade_story_input
+from libs.reporting.trade_story_pipeline import build_trade_story_input, compute_evidence_completeness
 from scripts import run_live_execution_bundle_report as bundle_script
 
 
@@ -24,6 +24,32 @@ def test_prefer_canonical_payload_over_fallback() -> None:
     assert path.endswith("scanner.json")
     assert merged["selected_symbol"] == "000660"
     assert merged["selection_reason"] == "canonical_rank_1"
+
+
+def test_prefer_normalized_trade_payload_over_canonical() -> None:
+    canonical_sources = {
+        "artifacts": {
+            "scanner": {
+                "selected_symbol": "000660",
+                "selection_reason": "canonical_rank_1",
+            }
+        },
+        "paths": {"scanner": "/tmp/reports/canonical/2026-03-18/run-1/scanner.json"},
+    }
+    fallback = {"selected_symbol": "005930", "selection_reason": "event_log"}
+    normalized = {"selected_symbol": "035420", "selection_reason": "normalized_trade"}
+    merged, source, path = bundle_script._prefer_canonical_payload(  # type: ignore[attr-defined]
+        canonical_sources,
+        "scanner",
+        fallback,
+        fallback_source="event_log",
+        normalized_payload=normalized,
+        normalized_path="/tmp/reports/trades/2026-03-18/TRD_1/lifecycle/aggregated_execution_bundle.json",
+    )
+    assert source == "normalized_trade_artifact"
+    assert path.endswith("aggregated_execution_bundle.json")
+    assert merged["selected_symbol"] == "035420"
+    assert merged["selection_reason"] == "normalized_trade"
 
 
 def test_trade_story_input_contains_section_provenance() -> None:
@@ -70,3 +96,20 @@ def test_trade_story_input_contains_section_provenance() -> None:
     assert section_provenance["market_context_human"]["confidence"] == "high"
     assert section_provenance["monitor_reason_human"]["source"] == "direct_artifact"
     assert section_provenance["guard_reason_human"]["source"] == "event_log"
+
+
+def test_compute_evidence_completeness_reports_missing_sections() -> None:
+    completeness = compute_evidence_completeness(
+        {
+            "market_context_human": {"summary": "ok"},
+            "scanner_reason_human": {"summary": "ok"},
+            "filters_human": {"summary": "ok"},
+            "monitor_reason_human": {},
+            "guard_reason_human": {},
+            "execution_outcome_human": {"summary": "ok"},
+            "operator_conclusion_human": {"summary": "ok"},
+        }
+    )
+    assert "monitor_reason_human" in completeness["missing_sections"]
+    assert "guard_reason_human" in completeness["missing_sections"]
+    assert completeness["completeness_score"] < 1.0

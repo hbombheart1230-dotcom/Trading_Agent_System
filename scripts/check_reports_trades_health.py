@@ -100,10 +100,23 @@ def audit_reports_trades_health(reports_root: Path, *, day: str = "") -> Dict[st
 
     for trade_dir in trade_dirs:
         trade_id = trade_dir.name
-        lifecycle_path = _artifact_path(trade_dir, "lifecycle/trade_lifecycle.json", "trade_lifecycle.json")
-        ai_trade_report_llm_path = _artifact_path(trade_dir, "ai_trade_report/ai_trade_report_llm_response.json")
-        brief_llm_path = _artifact_path(trade_dir, "brief/brief_llm_response.json", "brief_llm_response.json")
-        strategist_llm_path = _artifact_path(trade_dir, "strategist/strategist_llm_response.json")
+        lifecycle_path = _artifact_path(trade_dir, "lifecycle_bundle.json", "lifecycle/trade_lifecycle.json", "trade_lifecycle.json")
+        ai_trade_report_llm_path = _artifact_path(
+            trade_dir,
+            "reports/ai_trade_report_llm_response.json",
+            "ai_trade_report/ai_trade_report_llm_response.json",
+        )
+        brief_llm_path = _artifact_path(
+            trade_dir,
+            "reports/brief_llm_response.json",
+            "brief/brief_llm_response.json",
+            "brief_llm_response.json",
+        )
+        strategist_llm_path = _artifact_path(
+            trade_dir,
+            "reports/strategist_llm_response.json",
+            "strategist/strategist_llm_response.json",
+        )
 
         for sidecar_name in ("_provenance.json", "_health.json", "_artifact_links.json"):
             if (trade_dir / sidecar_name).exists():
@@ -122,10 +135,16 @@ def audit_reports_trades_health(reports_root: Path, *, day: str = "") -> Dict[st
                 )
                 issue_counts["sidecar_missing"] += 1
 
-        legacy_brief_llm_path = trade_dir / "brief_llm_response.json"
-        canonical_brief_llm_path = trade_dir / "brief" / "brief_llm_response.json"
-        if legacy_brief_llm_path.exists() and canonical_brief_llm_path.exists():
-            if legacy_brief_llm_path.read_bytes() == canonical_brief_llm_path.read_bytes():
+        brief_llm_candidates = [
+            trade_dir / "reports" / "brief_llm_response.json",
+            trade_dir / "brief" / "brief_llm_response.json",
+            trade_dir / "brief_llm_response.json",
+        ]
+        existing_brief_llm = [path for path in brief_llm_candidates if path.exists()]
+        if len(existing_brief_llm) >= 2:
+            first = existing_brief_llm[0].read_bytes()
+            all_identical = all(path.read_bytes() == first for path in existing_brief_llm[1:])
+            if all_identical:
                 duplicate_counts["brief_llm_response:identical"] += 1
             else:
                 duplicate_counts["brief_llm_response:different"] += 1
@@ -135,8 +154,8 @@ def audit_reports_trades_health(reports_root: Path, *, day: str = "") -> Dict[st
                         trade_id=trade_id,
                         component="brief",
                         code="legacy_duplicate_mismatch",
-                        message="Legacy and canonical brief LLM artifacts differ.",
-                        path=canonical_brief_llm_path,
+                        message="Multiple brief LLM artifacts exist and payloads differ.",
+                        path=existing_brief_llm[0],
                     )
                 )
                 issue_counts["legacy_duplicate_mismatch"] += 1
