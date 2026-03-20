@@ -115,6 +115,8 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     assert obj["executive_summary"]["system_status"] == "RED"
     assert Path(obj["report_json_path"]).exists()
     assert Path(obj["report_md_path"]).exists()
+    assert Path(obj["report_json_path"]) == tmp_path / "daily" / day / "operator_summary.json"
+    assert Path(obj["report_md_path"]) == tmp_path / "daily" / day / "operator_summary.md"
     md_body = Path(obj["report_md_path"]).read_text(encoding="utf-8")
     assert "Executive Summary" in md_body
     assert "System Health Status" in md_body
@@ -439,6 +441,7 @@ def test_operator_daily_summary_supports_new_decision_trace_events(tmp_path: Pat
     assert obj["trading_activity_summary"]["run_total"] == 1
     assert obj["trading_activity_summary"]["decision_action_counts"]["BUY"] == 1
     assert obj["trading_activity_summary"]["strategy_counts"]["defensive"] == 1
+    assert Path(obj["report_json_path"]) == tmp_path / "daily" / day / "operator_summary.json"
 
 
 def test_m13_eod_report_auto_attaches_operator_visibility_bundle(tmp_path: Path, monkeypatch) -> None:

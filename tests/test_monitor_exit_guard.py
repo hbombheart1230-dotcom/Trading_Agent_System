@@ -230,6 +230,8 @@ def test_monitor_skips_buy_when_intraday_entry_signal_not_confirmed(monkeypatch)
     assert monitor.get("entry_evaluated") is True
     assert monitor.get("entry_triggered") is False
     assert monitor.get("entry_reason") == "too_extended_from_vwap"
+    assert monitor.get("entry_primary_failure_axis") == "overextension"
+    assert "extension_ok" in list(monitor.get("entry_failed_checks") or [])
     assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "too_extended_from_vwap"
 
 
@@ -257,6 +259,123 @@ def test_monitor_waits_when_minute_candles_missing(monkeypatch):
     assert monitor.get("entry_triggered") is False
     assert monitor.get("entry_reason") == "minute_candle_missing"
     assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "minute_candle_missing"
+
+
+def test_monitor_allows_pullback_entry_when_reclaim_structure_is_valid(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.1,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.2},
+        },
+        "ohlcv_by_symbol": {
+            "BBB": [
+                {"open": 100.0, "high": 100.5, "low": 99.9, "close": 100.4, "volume": 1000, "vwap": 100.1},
+                {"open": 100.4, "high": 101.1, "low": 100.3, "close": 101.0, "volume": 1050, "vwap": 100.5},
+                {"open": 101.0, "high": 101.8, "low": 100.9, "close": 101.6, "volume": 1100, "vwap": 100.9},
+                {"open": 101.6, "high": 101.7, "low": 100.4, "close": 100.8, "volume": 950, "vwap": 100.9},
+                {"open": 100.8, "high": 100.9, "low": 99.7, "close": 100.2, "volume": 980, "vwap": 100.6},
+                {"open": 100.2, "high": 101.3, "low": 100.1, "close": 101.1, "volume": 900, "vwap": 100.7},
+            ]
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "strategist_output": {"playbook": "pullback"},
+        "policy": {},
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
+    monitor = out.get("monitor") or {}
+    assert monitor.get("entry_triggered") is True
+    assert monitor.get("entry_pattern") == "pullback_vwap_reclaim"
+    thresholds = monitor.get("entry_thresholds") or {}
+    assert float(thresholds.get("max_extended_from_vwap_pct") or 0.0) >= 0.045
+
+
+def test_monitor_pullback_wait_records_failure_breakdown(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 106.0,
+            "features": {"engine_vwap_distance": 0.050, "engine_volume_spike20": 1.2},
+        },
+        "ohlcv_by_symbol": {
+            "BBB": [
+                {"open": 100.0, "high": 100.5, "low": 99.9, "close": 100.4, "volume": 1000, "vwap": 100.1},
+                {"open": 100.4, "high": 101.1, "low": 100.3, "close": 101.0, "volume": 1050, "vwap": 100.5},
+                {"open": 101.0, "high": 101.8, "low": 100.9, "close": 101.6, "volume": 1100, "vwap": 100.9},
+                {"open": 101.6, "high": 101.7, "low": 100.4, "close": 100.8, "volume": 950, "vwap": 100.9},
+                {"open": 100.8, "high": 100.9, "low": 99.7, "close": 100.2, "volume": 980, "vwap": 100.6},
+                {"open": 100.2, "high": 106.2, "low": 100.1, "close": 106.0, "volume": 1200, "vwap": 100.7},
+            ]
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "strategist_output": {"playbook": "pullback"},
+        "policy": {},
+    }
+
+    out = monitor_node(state)
+    assert out.get("intents") == []
+    monitor = out.get("monitor") or {}
+    assert monitor.get("entry_reason") == "still_overextended_after_pullback"
+    assert monitor.get("entry_primary_failure_axis") == "overextension"
+    assert "extension_ok" in list(monitor.get("entry_failed_checks") or [])
+    margins = monitor.get("entry_threshold_margins") or {}
+    ext = margins.get("extended_from_vwap_pct") or {}
+    assert float(ext.get("actual") or 0.0) > float(ext.get("max") or 0.0)
+
+
+def test_monitor_pullback_with_defensive_guidance_can_still_buy_on_clean_reclaim(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.1,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.25},
+        },
+        "ohlcv_by_symbol": {
+            "BBB": [
+                {"open": 100.0, "high": 100.5, "low": 99.9, "close": 100.4, "volume": 1000, "vwap": 100.1},
+                {"open": 100.4, "high": 101.1, "low": 100.3, "close": 101.0, "volume": 1050, "vwap": 100.5},
+                {"open": 101.0, "high": 101.8, "low": 100.9, "close": 101.6, "volume": 1100, "vwap": 100.9},
+                {"open": 101.6, "high": 101.7, "low": 100.4, "close": 100.8, "volume": 950, "vwap": 100.9},
+                {"open": 100.8, "high": 100.9, "low": 99.7, "close": 100.2, "volume": 980, "vwap": 100.6},
+                {"open": 100.2, "high": 101.3, "low": 100.1, "close": 101.1, "volume": 1200, "vwap": 100.7},
+            ]
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "strategist_output": {
+            "playbook": "pullback",
+            "monitor_guidance": "defensive_exit",
+            "risk_tone": "conservative",
+            "trade_aggressiveness": "low",
+        },
+        "policy": {},
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
+    thresholds = (out.get("monitor") or {}).get("entry_thresholds") or {}
+    assert float(thresholds.get("max_extended_from_vwap_pct") or 0.0) >= 0.0425
+    assert float(thresholds.get("volume_ratio_min") or 0.0) <= 1.1
 
 
 def test_monitor_blocks_reentry_during_post_exit_cooldown(monkeypatch):

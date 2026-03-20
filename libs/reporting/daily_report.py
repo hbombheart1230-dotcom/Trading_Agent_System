@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from libs.reporting.llm_artifacts import daily_artifact_paths
+from libs.reporting.symbol_trade_report import build_daily_trade_index
+from libs.reporting.symbol_trade_report import collect_symbols_for_day
+from libs.reporting.symbol_trade_report import generate_symbol_trade_report
 
 @dataclass
 class Event:
@@ -73,6 +76,7 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str) -> Tuple[P
     - denials: count of verdict events with allowed==False within the UTC day.
     - runs: number of distinct run_id observed in the day.
     """
+    out_dir = out_dir.parent if out_dir.name == "daily" else out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     start_ts, end_ts = _day_to_epoch_range_utc(day)
@@ -112,9 +116,20 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str) -> Tuple[P
     }
 
     paths = daily_artifact_paths(out_dir, day)
-    js_path = paths["root_daily_json"]
-    md_path = paths["root_daily_md"]
+    js_path = paths["daily_report_json"]
+    md_path = paths["daily_report_md"]
+    trade_index = build_daily_trade_index(out_dir, day)
+    symbols_for_day = collect_symbols_for_day(events_path, out_dir, day)
+    generated_symbol_reports = [
+        generate_symbol_trade_report(events_path=events_path, reports_root=out_dir, symbol=symbol)
+        for symbol in symbols_for_day
+    ]
+    data["trade_index"] = trade_index
+    data["symbols_observed"] = symbols_for_day
+    data["generated_symbol_report_count"] = len(generated_symbol_reports)
+    js_path.parent.mkdir(parents=True, exist_ok=True)
     js_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    paths["trade_index_json"].write_text(json.dumps(trade_index, ensure_ascii=False, indent=2), encoding="utf-8")
 
     md = [
         f"# Daily Report ({day})",
@@ -122,25 +137,13 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str) -> Tuple[P
         f"- approvals: **{approvals}**",
         f"- denials: **{denials}**",
         f"- runs: **{len(run_ids)}**",
+        f"- symbols observed: **{len(symbols_for_day)}**",
         "",
         "## Notes",
         "- This report is generated from `EVENT_LOG_PATH` (JSONL).",
+        "- Symbol aggregate reports are generated from events + trade lifecycle truth.",
     ]
     md_text = "\n".join(md) + "\n"
     md_path.write_text(md_text, encoding="utf-8")
-
-    # Canonical daily artifact layout for later UI/report linkage.
-    canonical_json_path = paths["daily_report_json"]
-    canonical_md_path = paths["daily_report_md"]
-    canonical_json_path.parent.mkdir(parents=True, exist_ok=True)
-    canonical_json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    canonical_md_path.write_text(md_text, encoding="utf-8")
-
-    # Compatibility copies for readers already using reports/daily/daily_<day>.*
-    legacy_daily_json = paths["legacy_daily_json"]
-    legacy_daily_md = paths["legacy_daily_md"]
-    legacy_daily_json.parent.mkdir(parents=True, exist_ok=True)
-    legacy_daily_json.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    legacy_daily_md.write_text(md_text, encoding="utf-8")
 
     return md_path, js_path

@@ -2071,8 +2071,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     execution_runs = _resolve_execution_runs(event_log_path, day)[: max(1, int(args.max_runs))]
     trade_md, trade_js, trade_obj = _load_or_generate_trade_explain(event_log_path, analysis_root, day)
     reporter_md, reporter_js, reporter_obj = _load_or_generate_reporter_analysis(event_log_path, analysis_root, reports_root, intents_path, day)
-    operator_summary_json = reports_root / "operator_summary" / f"operator_summary_{day}.json"
-    operator_summary_md = reports_root / "operator_summary" / f"operator_summary_{day}.md"
+    daily_paths = daily_artifact_paths(reports_root, day)
+    operator_summary_json = daily_paths["operator_summary_json"]
+    operator_summary_md = daily_paths["operator_summary_md"]
+    if not operator_summary_json.exists():
+        operator_summary_json = daily_paths["legacy_operator_summary_json"]
+    if not operator_summary_md.exists():
+        operator_summary_md = daily_paths["legacy_operator_summary_md"]
     canonical_trades_root = reports_root / "trades"
     year_part, month_part = (day.split("-") + ["01", "01"])[:2]
 

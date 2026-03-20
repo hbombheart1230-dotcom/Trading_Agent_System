@@ -455,9 +455,9 @@ def test_ai_trade_report_fallback_preserves_structured_market_context_fields() -
     assert report["market_context_at_entry"]["regime"] == "risk_off"
     assert report["market_context_at_entry"]["global_sentiment_score"] == -0.22
     assert report["market_context_at_entry"]["vix_level"] == 25.09
-    assert any(str(row).startswith("News input:") for row in report["market_context_at_entry"]["bullets"])
-    assert sum(1 for row in report["market_context_at_entry"]["bullets"] if str(row).startswith("News query targets:")) == 1
-    assert any(str(row).startswith("Key strategist inputs:") for row in report["market_context_at_entry"]["bullets"])
+    assert any(str(row).startswith("뉴스 입력 요약은") for row in report["market_context_at_entry"]["bullets"])
+    assert sum(1 for row in report["market_context_at_entry"]["bullets"] if str(row).startswith("뉴스 조회 대상은")) == 1
+    assert any(str(row).startswith("전략가 핵심 입력은") for row in report["market_context_at_entry"]["bullets"])
     assert report["why_this_symbol_was_chosen"]["selected_rank"] == 1
     assert report["why_this_symbol_was_chosen"]["universe_size"] == 5
 
@@ -498,11 +498,11 @@ def test_ai_trade_report_fallback_enriches_scanner_summary_and_basis() -> None:
 
     why_summary = report["why_this_symbol_was_chosen"]["summary"]
     entry_summary = report["entry_decision"]["summary"]
-    assert "Scanner selected 000660 as rank #1 out of 5 candidates with score 1.178" in why_summary
-    assert "source mix: top_value, sector_theme" in why_summary
-    assert "005930 trailed because lower total score and higher risk" in why_summary
+    assert "총 5개 후보 중 1순위" in why_summary
+    assert "선정에 반영된 소스는 top_value, sector_theme" in why_summary
+    assert "005930은 lower total score and higher risk 때문에 밀렸습니다" in why_summary
     assert report["why_this_symbol_was_chosen"]["basis"] == "trading value, theme and sector alignment"
-    assert "The entry decision proceeded as BUY." in entry_summary
+    assert "진입 판단은 매수로 이어졌습니다." in entry_summary
 
 
 def test_ai_trade_report_merge_keeps_priority_fallback_scanner_bullets() -> None:
@@ -551,9 +551,9 @@ def test_ai_trade_report_merge_keeps_priority_fallback_scanner_bullets() -> None
 
     bullets = report["why_this_symbol_was_chosen"]["bullets"]
     assert "selected for strength" in bullets
-    assert any(str(row).startswith("Top candidates:") for row in bullets)
-    assert any(str(row).startswith("Selection decision:") for row in bullets)
-    assert any(str(row).startswith("Tie-break rule:") for row in bullets)
+    assert any(str(row).startswith("상위 후보는") for row in bullets)
+    assert any(str(row).startswith("최종 선정 판단은") for row in bullets)
+    assert any(str(row).startswith("동점 해소 기준은") for row in bullets)
 
 
 def test_ai_trade_report_merge_prefers_detailed_monitor_fallback_when_ai_bullets_are_generic() -> None:
@@ -607,10 +607,10 @@ def test_ai_trade_report_merge_prefers_detailed_monitor_fallback_when_ai_bullets
     )
 
     bullets = report["holding_monitoring_story"]["bullets"]
-    assert any(str(row).startswith("Monitor runs:") for row in bullets)
-    assert any(str(row).startswith("Posture:") for row in bullets)
-    assert any(str(row).startswith("Effective stop:") for row in bullets)
-    assert any(str(row).startswith("Decision chain:") for row in bullets)
+    assert any(str(row).startswith("모니터는 총") for row in bullets)
+    assert any(str(row).startswith("현재 포지션 판단은") for row in bullets)
+    assert any(str(row).startswith("유효 손절 기준은") for row in bullets)
+    assert any(str(row).startswith("판단 흐름은") for row in bullets)
 
 
 def test_ai_trade_report_fallback_exit_decision_uses_exit_monitor_context_details() -> None:
@@ -651,13 +651,13 @@ def test_ai_trade_report_fallback_exit_decision_uses_exit_monitor_context_detail
 
     summary = report["exit_decision"]["summary"]
     bullets = report["exit_decision"]["bullets"]
-    assert "hard_stop" in summary
-    assert "confirmation 0/3" in summary
-    assert "current price 29300.00 versus average 29650.00" in summary
-    assert any(str(row).startswith("Trigger type: hard_stop") for row in bullets)
-    assert any(str(row).startswith("Effective stop at exit: 1.00%") for row in bullets)
-    assert any(str(row).startswith("Current price / avg / peak: 29300.00 / 29650.00 / 29650.00") for row in bullets)
-    assert any(str(row).startswith("Decision chain: confirmed_exit_signal -> hard_stop -> hard_stop") for row in bullets)
+    assert "청산 당시 상황은" in summary
+    assert "확인 조건은 0/3" in summary
+    assert "현재가는 29300.00, 평균가는 29650.00" in summary
+    assert any(str(row).startswith("감지된 핵심 신호는") for row in bullets)
+    assert any(str(row).startswith("청산 시점의 유효 손절 기준은 1.00%") for row in bullets)
+    assert any(str(row).startswith("현재가, 평균가, 고점 기준 값은 29300.00 / 29650.00 / 29650.00") for row in bullets)
+    assert any(str(row).startswith("판단 흐름은 confirmed_exit_signal -> hard_stop -> hard_stop") for row in bullets)
 
 
 def test_ai_trade_report_prefers_hangul_execution_bullets_without_english_duplicates() -> None:
@@ -690,6 +690,62 @@ def test_ai_trade_report_prefers_hangul_execution_bullets_without_english_duplic
 
     bullets = report["execution_quality"]["bullets"]
     assert bullets == ["실행 결과: 기록됨", "수량: 1", "실행 모드: 시뮬레이션 (모의 브로커)"]
+
+
+def test_ai_trade_report_normalizes_internal_english_labels_in_json_sections() -> None:
+    story_input = _story_input()
+    report = mod._merge_trade_report_candidate(
+        story_input,
+        {
+            "executive_summary": {"headline": "SELL 005930", "action": "SELL", "symbol": "005930", "confidence": "high", "summary": "ok"},
+            "market_context_at_entry": {
+                "summary": "context",
+                "bullets": ["Market regime: neutral", "Global sentiment score: -0.07", "News input: 60 headlines were considered."],
+            },
+            "why_this_symbol_was_chosen": {
+                "summary": "rank #1",
+                "bullets": ["Top candidates: #1 005930", "Selection decision: highest total score"],
+            },
+            "entry_decision": {"summary": "entry", "bullets": ["Entry action: BUY", "Entry reason: breakout confirmed"]},
+            "holding_monitoring_story": {
+                "summary": "hold",
+                "bullets": ["Monitor runs: 6", "Posture: HOLD", "Effective stop: 1.00% (hard_stop)"],
+            },
+            "exit_decision": {"summary": "open trade", "bullets": ["Exit action: SELL", "Exit reason: hard_stop"]},
+            "execution_quality": {"summary": "execution", "bullets": ["Execution outcome: recorded", "Execution mode: simulation (mock broker)"]},
+            "scanner_filters": {"summary": "filters", "bullets": ["liquidity filter: PASS - top value input supported the selection"]},
+            "guard_approval_result": {"summary": "guard", "bullets": ["Supervisor verdict: approve", "Guard reason: Allowed"]},
+            "reporter_evaluation": {"summary": "reporter", "status": "pending", "grade": "N/A", "bullets": []},
+            "errors_weaknesses_improvement_points": {"summary": "none", "bullets": []},
+            "full_timeline": [],
+            "final_operator_conclusion": {"summary": "hold", "current_action": "HOLD", "watch_next": ["watch"], "thesis_invalidation": []},
+        },
+        status="ok",
+        mode="ai",
+        model="openrouter/free",
+        reason="ok",
+    )
+
+    all_bullets = []
+    for key in (
+        "market_context_at_entry",
+        "why_this_symbol_was_chosen",
+        "entry_decision",
+        "holding_monitoring_story",
+        "exit_decision",
+        "execution_quality",
+        "scanner_filters",
+        "guard_approval_result",
+    ):
+        all_bullets.extend(list((report.get(key) or {}).get("bullets") or []))
+
+    joined = "\n".join(str(row) for row in all_bullets)
+    assert "Market regime:" not in joined
+    assert "Monitor runs:" not in joined
+    assert "Execution outcome:" not in joined
+    assert "시장 상태는" in joined
+    assert "현재 포지션 판단은 보유 유지입니다." in joined
+    assert "주문 실행 결과는 recorded입니다." in joined
 
 
 def test_render_trade_report_markdown_uses_korean_titles_and_narrative_labels() -> None:

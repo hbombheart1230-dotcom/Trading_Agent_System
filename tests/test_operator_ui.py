@@ -886,10 +886,10 @@ def test_fallback_operator_brief_uses_canonical_trade_artifacts(tmp_path: Path, 
     brief = data_access._fallback_operator_brief(detail)
 
     assert brief["headline"] == "BUY 005930"
-    assert "elevated volatility and defensive posture" in brief["strategist_summary"]
-    assert "value/volume blend" in brief["scanner_summary"]
-    assert "simulation mode" in brief["executor_summary"]
-    assert "A-" in brief["reporter_summary"]
+    assert "전략가는" in brief["strategist_summary"]
+    assert "스캐너는" in brief["scanner_summary"]
+    assert "실행 단계에서는" in brief["executor_summary"]
+    assert "리포터 평가는 등급" in brief["reporter_summary"]
 
 
 def test_operator_brief_sections_prefer_canonical_trade_artifacts(tmp_path: Path, monkeypatch) -> None:
@@ -1328,6 +1328,68 @@ def test_operator_brief_fallback_rendered_stays_readable_and_not_error_stub() ->
     assert "브리프 생성에 실패했습니다" not in markdown
     assert "## 1. 최종 판단 요약" in markdown
     assert "## 7. 다음 체크포인트" in markdown
+
+
+def test_operator_brief_closed_trade_fallback_uses_natural_korean_narrative() -> None:
+    brief = {
+        "status": "fallback",
+        "fallback_rendered": True,
+        "headline": "AI Brief Failed SELL 000660",
+        "operator_takeaways": [],
+        "sections": {
+            "executive_decision": {"symbol": "000660", "final_action": "SELL"},
+            "why_symbol_chosen": {"universe_size": 0, "selected_rank": 1, "selection_reasons": [], "comparison_reasons": []},
+            "entry_timing": {"reason_code": "peak_drawdown", "pattern": "", "metrics": {}},
+            "position_monitor_reasoning": {
+                "posture": "SELL",
+                "average_price": "1,011,000원",
+                "current_price": "1,012,000원",
+                "peak_drawdown": "-1.08%",
+                "effective_stop_reason": "Hard stop",
+                "effective_stop": "1.00%",
+                "take_profit": "1.23%",
+                "watch_axes": ["Hard stop", "Adaptive stop"],
+            },
+            "exit_plan": {
+                "effective_stop_reason": "Hard stop",
+                "effective_stop": "1.00%",
+                "take_profit": "1.23%",
+                "watch_axes": ["Hard stop", "Adaptive stop"],
+            },
+            "risk_alerts": {},
+            "operator_conclusion": {"watch_next": []},
+        },
+    }
+
+    markdown = data_access._render_operator_brief_markdown(brief)
+
+    assert "이미 매도로 종료되었습니다" in markdown
+    assert "후보 비교 데이터가 충분히 저장되지 않아" in markdown
+    assert "## 7." in markdown
+    assert "다음 거래에서는 분봉 진입 근거와 후보 비교 데이터가 충분히 남는지 먼저 확인합니다." in markdown
+
+
+def test_operator_brief_ignores_list_literal_risk_summary() -> None:
+    brief = {
+        "status": "fallback",
+        "headline": "AI Brief Failed SELL 000660",
+        "risk_summary": "['스캐너 후보가 부족했습니다', '진입 이유가 비어 있습니다']",
+        "operator_takeaways": [],
+        "sections": {
+            "executive_decision": {"symbol": "000660", "final_action": "SELL"},
+            "why_symbol_chosen": {"universe_size": 0, "selected_rank": 1, "selection_reasons": [], "comparison_reasons": []},
+            "entry_timing": {"reason_code": "peak_drawdown", "pattern": "", "metrics": {}},
+            "position_monitor_reasoning": {"posture": "SELL"},
+            "exit_plan": {"watch_axes": []},
+            "risk_alerts": {"weak_factors": ["스캐너 후보가 부족했습니다.", "진입 이유 기록이 충분하지 않았습니다."]},
+            "operator_conclusion": {"watch_next": []},
+        },
+    }
+
+    markdown = data_access._render_operator_brief_markdown(brief)
+
+    assert "['스캐너 후보가 부족했습니다'" not in markdown
+    assert "스캐너 후보가 부족했습니다." in markdown
 
 
 def test_operator_brief_prefers_richer_fallback_text_and_takeaways() -> None:

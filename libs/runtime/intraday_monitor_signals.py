@@ -138,9 +138,11 @@ def resolve_intraday_entry_policy(
         "timeframe_minutes": max(1, _to_int(cfg.get("entry_timeframe_minutes"), _env_int("MONITOR_ENTRY_TIMEFRAME_MINUTES", 1))),
         "breakout_lookback": max(3, _to_int(cfg.get("entry_breakout_lookback"), _env_int("MONITOR_ENTRY_BREAKOUT_LOOKBACK", 5))),
         "volume_lookback": max(3, _to_int(cfg.get("entry_volume_lookback"), _env_int("MONITOR_ENTRY_VOLUME_LOOKBACK", 5))),
-        "volume_ratio_min": max(0.1, _to_float(cfg.get("entry_volume_ratio_min"), _env_float("MONITOR_ENTRY_VOLUME_RATIO_MIN", 1.15))),
-        "max_extended_from_vwap_pct": max(0.0, _to_float(cfg.get("entry_max_extended_from_vwap_pct"), _env_float("MONITOR_ENTRY_MAX_EXTENDED_FROM_VWAP_PCT", 0.006))),
-        "pullback_max_pct": max(0.0, _to_float(cfg.get("entry_pullback_max_pct"), _env_float("MONITOR_ENTRY_PULLBACK_MAX_PCT", 0.008))),
+        "volume_ratio_min": max(0.1, _to_float(cfg.get("entry_volume_ratio_min"), _env_float("MONITOR_ENTRY_VOLUME_RATIO_MIN", 1.0))),
+        "min_extended_from_vwap_pct": _to_float(cfg.get("entry_min_extended_from_vwap_pct"), _env_float("MONITOR_ENTRY_MIN_EXTENDED_FROM_VWAP_PCT", -0.02)),
+        "max_extended_from_vwap_pct": max(0.0, _to_float(cfg.get("entry_max_extended_from_vwap_pct"), _env_float("MONITOR_ENTRY_MAX_EXTENDED_FROM_VWAP_PCT", 0.02))),
+        "pullback_min_pct": max(0.0, _to_float(cfg.get("entry_pullback_min_pct"), _env_float("MONITOR_ENTRY_PULLBACK_MIN_PCT", 0.012))),
+        "pullback_max_pct": max(0.0, _to_float(cfg.get("entry_pullback_max_pct"), _env_float("MONITOR_ENTRY_PULLBACK_MAX_PCT", 0.03))),
         "reclaim_tolerance_pct": max(0.0, _to_float(cfg.get("entry_reclaim_tolerance_pct"), _env_float("MONITOR_ENTRY_RECLAIM_TOLERANCE_PCT", 0.0015))),
         "breakout_buffer_pct": max(0.0, _to_float(cfg.get("entry_breakout_buffer_pct"), _env_float("MONITOR_ENTRY_BREAKOUT_BUFFER_PCT", 0.0))),
         "intent_cooldown_sec": max(0, _to_int(cfg.get("entry_intent_cooldown_sec"), _env_int("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", 60))),
@@ -152,38 +154,61 @@ def resolve_intraday_entry_policy(
     aggressiveness = str((frame or {}).get("trade_aggressiveness") or "").strip().lower()
 
     if playbook == "breakout":
-        out["volume_ratio_min"] = max(1.0, float(out["volume_ratio_min"]) - 0.05)
-        out["max_extended_from_vwap_pct"] = min(0.015, float(out["max_extended_from_vwap_pct"]) + 0.001)
+        out["volume_ratio_min"] = max(1.0, float(out["volume_ratio_min"]))
+        out["max_extended_from_vwap_pct"] = min(0.03, max(float(out["max_extended_from_vwap_pct"]), 0.02))
+        out["pullback_max_pct"] = min(0.04, max(float(out["pullback_max_pct"]), 0.03))
         adjustments.append("playbook:breakout")
     elif playbook in ("pullback", "reversal"):
         out["breakout_lookback"] = max(3, int(out["breakout_lookback"]) - 1)
-        out["pullback_max_pct"] = min(0.02, float(out["pullback_max_pct"]) + 0.002)
+        out["volume_ratio_min"] = max(0.8, min(float(out["volume_ratio_min"]), 0.95))
+        out["min_extended_from_vwap_pct"] = min(float(out["min_extended_from_vwap_pct"]), -0.005)
+        out["max_extended_from_vwap_pct"] = max(float(out["max_extended_from_vwap_pct"]), 0.05)
+        out["pullback_min_pct"] = max(float(out["pullback_min_pct"]), 0.015)
+        out["pullback_max_pct"] = max(float(out["pullback_max_pct"]), 0.06)
         adjustments.append(f"playbook:{playbook}")
     elif playbook == "defensive":
         out["volume_ratio_min"] = min(2.0, float(out["volume_ratio_min"]) + 0.10)
-        out["max_extended_from_vwap_pct"] = max(0.0025, float(out["max_extended_from_vwap_pct"]) - 0.001)
+        out["max_extended_from_vwap_pct"] = max(0.0125, min(float(out["max_extended_from_vwap_pct"]), 0.018))
+        out["pullback_max_pct"] = min(float(out["pullback_max_pct"]), 0.035)
         adjustments.append("playbook:defensive")
 
     if guidance == "hold_through_noise":
-        out["pullback_max_pct"] = min(0.02, float(out["pullback_max_pct"]) + 0.001)
+        out["pullback_max_pct"] = min(0.07, float(out["pullback_max_pct"]) + 0.005)
         adjustments.append("guidance:hold_through_noise")
     elif guidance == "defensive_exit":
-        out["volume_ratio_min"] = min(2.0, float(out["volume_ratio_min"]) + 0.05)
-        adjustments.append("guidance:defensive_exit")
+        if playbook in ("pullback", "reversal"):
+            out["volume_ratio_min"] = min(1.05, float(out["volume_ratio_min"]) + 0.02)
+            out["max_extended_from_vwap_pct"] = max(0.045, float(out["max_extended_from_vwap_pct"]) - 0.0025)
+            adjustments.append("guidance:defensive_exit_pullback")
+        else:
+            out["volume_ratio_min"] = min(2.0, float(out["volume_ratio_min"]) + 0.05)
+            out["max_extended_from_vwap_pct"] = max(0.0125, float(out["max_extended_from_vwap_pct"]) - 0.005)
+            adjustments.append("guidance:defensive_exit")
 
     if risk_tone == "conservative":
-        out["volume_ratio_min"] = min(2.0, float(out["volume_ratio_min"]) + 0.05)
-        out["max_extended_from_vwap_pct"] = max(0.0025, float(out["max_extended_from_vwap_pct"]) - 0.0005)
-        adjustments.append("risk_tone:conservative")
+        if playbook in ("pullback", "reversal"):
+            out["volume_ratio_min"] = min(1.1, float(out["volume_ratio_min"]) + 0.02)
+            out["max_extended_from_vwap_pct"] = max(0.0425, float(out["max_extended_from_vwap_pct"]) - 0.0025)
+            adjustments.append("risk_tone:conservative_pullback")
+        else:
+            out["volume_ratio_min"] = min(2.0, float(out["volume_ratio_min"]) + 0.05)
+            out["max_extended_from_vwap_pct"] = max(0.0125, float(out["max_extended_from_vwap_pct"]) - 0.005)
+            adjustments.append("risk_tone:conservative")
     elif risk_tone == "aggressive":
         out["volume_ratio_min"] = max(0.9, float(out["volume_ratio_min"]) - 0.05)
+        out["max_extended_from_vwap_pct"] = min(0.08, float(out["max_extended_from_vwap_pct"]) + 0.01)
         adjustments.append("risk_tone:aggressive")
 
     if aggressiveness == "low":
-        out["volume_ratio_min"] = min(2.0, float(out["volume_ratio_min"]) + 0.05)
-        adjustments.append("trade_aggressiveness:low")
+        if playbook in ("pullback", "reversal"):
+            out["volume_ratio_min"] = min(1.1, float(out["volume_ratio_min"]) + 0.02)
+            adjustments.append("trade_aggressiveness:low_pullback")
+        else:
+            out["volume_ratio_min"] = min(2.0, float(out["volume_ratio_min"]) + 0.05)
+            adjustments.append("trade_aggressiveness:low")
     elif aggressiveness == "high":
         out["volume_ratio_min"] = max(0.9, float(out["volume_ratio_min"]) - 0.05)
+        out["max_extended_from_vwap_pct"] = min(0.08, float(out["max_extended_from_vwap_pct"]) + 0.005)
         adjustments.append("trade_aggressiveness:high")
 
     out["adjustments"] = adjustments
@@ -295,8 +320,16 @@ def evaluate_intraday_entry_signal(
     pullback_depth_pct = ((recent_high - pullback_floor) / recent_high) if recent_high > 0.0 and pullback_floor > 0.0 else 0.0
     rebound_ok = current_close > prior_bar_high and current_close >= prior_close
     volume_ok = volume_ratio >= _to_float(resolved_policy.get("volume_ratio_min"))
-    extension_ok = extended_from_vwap_pct <= _to_float(resolved_policy.get("max_extended_from_vwap_pct"))
-    pullback_ok = pullback_depth_pct <= _to_float(resolved_policy.get("pullback_max_pct"))
+    min_extended_from_vwap_pct = _to_float(resolved_policy.get("min_extended_from_vwap_pct"))
+    max_extended_from_vwap_pct = _to_float(resolved_policy.get("max_extended_from_vwap_pct"))
+    extension_ok = min_extended_from_vwap_pct <= extended_from_vwap_pct <= max_extended_from_vwap_pct
+    pullback_min_pct = _to_float(resolved_policy.get("pullback_min_pct"))
+    pullback_max_pct = _to_float(resolved_policy.get("pullback_max_pct"))
+    pullback_mature = pullback_depth_pct >= pullback_min_pct
+    pullback_not_too_deep = pullback_depth_pct <= pullback_max_pct
+    pullback_ok = pullback_mature and pullback_not_too_deep
+    vwap_structure_ok = vwap_hold_ok or vwap_reclaim_ok
+    confirmation_ok = volume_ok or rebound_ok or vwap_reclaim_ok
 
     if current_close <= 0.0 or recent_high <= 0.0 or current_vwap <= 0.0:
         out["reason"] = "data_incomplete"
@@ -323,33 +356,143 @@ def evaluate_intraday_entry_signal(
         signal_chain.append("volume_confirmation")
     if rebound_ok:
         signal_chain.append("pullback_rebound")
+    if pullback_ok:
+        signal_chain.append("pullback_structure")
+    if confirmation_ok:
+        signal_chain.append("confirmation_ready")
     if extension_ok:
         signal_chain.append("not_extended")
+
+    playbook = str((frame or {}).get("playbook") or "").strip().lower()
+    checks = {
+        "breakout_ok": bool(breakout_ok),
+        "vwap_hold_ok": bool(vwap_hold_ok),
+        "vwap_reclaim_ok": bool(vwap_reclaim_ok),
+        "vwap_structure_ok": bool(vwap_structure_ok),
+        "volume_ok": bool(volume_ok),
+        "rebound_ok": bool(rebound_ok),
+        "confirmation_ok": bool(confirmation_ok),
+        "extension_ok": bool(extension_ok),
+        "pullback_mature": bool(pullback_mature),
+        "pullback_not_too_deep": bool(pullback_not_too_deep),
+        "pullback_structure_ok": bool(pullback_ok),
+    }
+    if playbook in ("pullback", "reversal"):
+        relevant_checks = [
+            "vwap_structure_ok",
+            "pullback_mature",
+            "pullback_not_too_deep",
+            "extension_ok",
+            "confirmation_ok",
+            "vwap_reclaim_ok",
+            "vwap_hold_ok",
+            "rebound_ok",
+            "volume_ok",
+        ]
+    else:
+        relevant_checks = [
+            "breakout_ok",
+            "vwap_hold_ok",
+            "volume_ok",
+            "extension_ok",
+            "rebound_ok",
+            "pullback_structure_ok",
+        ]
+    passed_checks = [name for name in relevant_checks if checks.get(name)]
+    failed_checks = [name for name in relevant_checks if not checks.get(name)]
+    threshold_margins = {
+        "volume_ratio": {
+            "actual": volume_ratio,
+            "min": _to_float(resolved_policy.get("volume_ratio_min")),
+            "distance_to_min": volume_ratio - _to_float(resolved_policy.get("volume_ratio_min")),
+        },
+        "extended_from_vwap_pct": {
+            "actual": extended_from_vwap_pct,
+            "min": min_extended_from_vwap_pct,
+            "max": max_extended_from_vwap_pct,
+            "distance_to_min": extended_from_vwap_pct - min_extended_from_vwap_pct,
+            "distance_to_max": max_extended_from_vwap_pct - extended_from_vwap_pct,
+        },
+        "pullback_depth_pct": {
+            "actual": pullback_depth_pct,
+            "min": pullback_min_pct,
+            "max": pullback_max_pct,
+            "distance_to_min": pullback_depth_pct - pullback_min_pct,
+            "distance_to_max": pullback_max_pct - pullback_depth_pct,
+        },
+        "breakout_gap_pct": {
+            "actual": ((current_close / recent_high) - 1.0) if recent_high > 0.0 and current_close > 0.0 else None,
+            "min": breakout_buffer_pct,
+            "distance_to_breakout": (current_close - breakout_level) if breakout_level > 0.0 else None,
+        },
+    }
 
     pattern = ""
     reason = ""
     triggered = False
-    if breakout_ok and vwap_hold_ok and volume_ok and extension_ok:
-        triggered = True
-        pattern = "breakout_vwap_hold"
-        reason = "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation"
-    elif rebound_ok and vwap_hold_ok and volume_ok and pullback_ok and extension_ok:
-        triggered = True
-        pattern = "pullback_rebound"
-        reason = "pullback_rebound_above_vwap_with_volume_confirmation"
+    primary_failure_axis = ""
+    if playbook in ("pullback", "reversal"):
+        if vwap_structure_ok and pullback_ok and extension_ok and confirmation_ok:
+            triggered = True
+            if vwap_reclaim_ok and rebound_ok:
+                pattern = "pullback_vwap_reclaim"
+                reason = "pullback_reclaim_above_vwap_with_rebound_confirmation"
+            elif rebound_ok:
+                pattern = "pullback_rebound"
+                reason = "pullback_rebound_above_vwap_with_confirmation"
+            else:
+                pattern = "pullback_vwap_hold"
+                reason = "pullback_structure_above_vwap_with_confirmation"
+        else:
+            if not extension_ok:
+                reason = "still_overextended_after_pullback"
+                primary_failure_axis = "overextension"
+            elif not pullback_mature:
+                reason = "pullback_not_mature"
+                primary_failure_axis = "pullback_structure"
+            elif not pullback_not_too_deep:
+                reason = "no_valid_pullback_structure"
+                primary_failure_axis = "pullback_structure"
+            elif not vwap_structure_ok:
+                reason = "reclaim_not_confirmed"
+                primary_failure_axis = "vwap_relationship"
+            elif not confirmation_ok:
+                reason = "volume_confirmation_missing"
+                primary_failure_axis = "volume_confirmation"
+            else:
+                reason = "entry_signal_not_confirmed"
+                primary_failure_axis = "entry_confirmation"
     else:
-        failed: List[str] = []
-        if not extension_ok:
-            failed.append("too_extended_from_vwap")
-        if not volume_ok:
-            failed.append("volume_insufficient")
-        if not breakout_ok and not rebound_ok:
-            failed.append("no_breakout_signal")
-        if not vwap_hold_ok:
-            failed.append("vwap_not_confirmed")
-        if not pullback_ok:
-            failed.append("pullback_too_deep")
-        reason = failed[0] if failed else "entry_signal_not_confirmed"
+        if breakout_ok and vwap_hold_ok and volume_ok and extension_ok:
+            triggered = True
+            pattern = "breakout_vwap_hold"
+            reason = "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation"
+        elif rebound_ok and vwap_hold_ok and volume_ok and pullback_ok and extension_ok:
+            triggered = True
+            pattern = "pullback_rebound"
+            reason = "pullback_rebound_above_vwap_with_volume_confirmation"
+        else:
+            if not extension_ok:
+                reason = "too_extended_from_vwap"
+                primary_failure_axis = "overextension"
+            elif not breakout_ok and not rebound_ok:
+                reason = "breakout_not_ready"
+                primary_failure_axis = "breakout_readiness"
+            elif not vwap_hold_ok:
+                reason = "vwap_not_confirmed"
+                primary_failure_axis = "vwap_relationship"
+            elif not volume_ok:
+                reason = "volume_insufficient"
+                primary_failure_axis = "volume_confirmation"
+            elif not pullback_ok:
+                reason = "pullback_too_deep"
+                primary_failure_axis = "pullback_structure"
+            else:
+                reason = "entry_signal_not_confirmed"
+                primary_failure_axis = "entry_confirmation"
+
+    if triggered and not primary_failure_axis:
+        primary_failure_axis = "confirmed_entry"
 
     metrics = {
         "timeframe_minutes": timeframe_minutes,
@@ -375,6 +518,10 @@ def evaluate_intraday_entry_signal(
         "volume_ok": bool(volume_ok),
         "extension_ok": bool(extension_ok),
         "pullback_ok": bool(pullback_ok),
+        "pullback_mature": bool(pullback_mature),
+        "pullback_not_too_deep": bool(pullback_not_too_deep),
+        "confirmation_ok": bool(confirmation_ok),
+        "vwap_structure_ok": bool(vwap_structure_ok),
         "engine_vwap_distance": (features or {}).get("engine_vwap_distance"),
         "engine_volume_spike20": (features or {}).get("engine_volume_spike20"),
         "engine_trend_strength": (features or {}).get("engine_trend_strength"),
@@ -387,6 +534,10 @@ def evaluate_intraday_entry_signal(
             "reason": reason,
             "signal_chain": signal_chain,
             "metrics": metrics,
+            "passed_checks": passed_checks,
+            "failed_checks": failed_checks,
+            "primary_failure_axis": primary_failure_axis,
+            "threshold_margins": threshold_margins,
         }
     )
     return out

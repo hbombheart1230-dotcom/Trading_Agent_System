@@ -20,7 +20,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--m30-post-golive-dir", default="reports/milestones/m30_post_golive")
     p.add_argument("--m30-golive-dir", default="reports/milestones/m30_golive")
     p.add_argument("--m31-slo-incident-dir", default="reports/milestones/m31_slo_incident")
-    p.add_argument("--report-dir", default="reports/operator_summary")
+    p.add_argument("--report-dir", default="reports")
     p.add_argument("--day", default=None)
     p.add_argument("--json", action="store_true")
     return p
@@ -70,4 +70,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

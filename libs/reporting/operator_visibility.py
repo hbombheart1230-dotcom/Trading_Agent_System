@@ -6,6 +6,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from libs.reporting.llm_artifacts import daily_artifact_paths
+
 
 _REASON_LABELS: Dict[str, str] = {
     "none": "none",
@@ -919,8 +921,14 @@ def generate_operator_daily_summary(
     ]
     md_lines.append("")
 
-    js_path = report_dir / f"operator_summary_{target_day}.json"
-    md_path = report_dir / f"operator_summary_{target_day}.md"
+    if report_dir.name in {"operator_summary", "daily"}:
+        canonical_report_root = report_dir.parent
+    else:
+        canonical_report_root = report_dir
+    paths = daily_artifact_paths(canonical_report_root, target_day)
+    js_path = paths["operator_summary_json"]
+    md_path = paths["operator_summary_md"]
+    js_path.parent.mkdir(parents=True, exist_ok=True)
     out["report_json_path"] = str(js_path)
     out["report_md_path"] = str(md_path)
     js_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")

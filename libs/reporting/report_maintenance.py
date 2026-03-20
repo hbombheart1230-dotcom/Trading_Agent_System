@@ -115,12 +115,12 @@ def _detect_archive_candidates(report_root: Path) -> List[ArchiveCandidate]:
                 continue
             day = m.group(1)
             ext = m.group(2)
-            canonical = report_root / "daily" / f"daily_{day}.{ext}"
+            canonical = report_root / "daily" / day / f"daily_report.{ext}"
             if canonical.exists():
                 out.append(
                     ArchiveCandidate(
                         rel_path=name,
-                        reason=f"legacy root-level daily report duplicated by canonical reports/daily/daily_{day}.{ext}",
+                        reason=f"legacy root-level daily report duplicated by canonical reports/daily/{day}/daily_report.{ext}",
                         category="legacy_root_daily",
                     )
                 )
@@ -130,8 +130,10 @@ def _detect_archive_candidates(report_root: Path) -> List[ArchiveCandidate]:
 def _detect_health_warnings(report_root: Path, event_log_path: Optional[Path]) -> List[Dict[str, Any]]:
     warnings: List[Dict[str, Any]] = []
 
-    operator_dir = report_root / "operator_summary"
-    for path in sorted(operator_dir.glob("operator_summary_*.json")):
+    operator_paths = sorted((report_root / "daily").glob("*/operator_summary.json"))
+    if not operator_paths:
+        operator_paths = sorted((report_root / "operator_summary").glob("operator_summary_*.json"))
+    for path in operator_paths:
         obj = _safe_read_json(path)
         if not obj:
             continue
@@ -223,7 +225,7 @@ def build_report_inventory(report_root: Path, *, event_log_path: Optional[Path] 
         for name in (
             "daily",
             "metrics",
-            "operator_summary",
+            "symbols",
             "decision_story",
             "run_cards",
             "reconciliation",

@@ -456,6 +456,20 @@ def _read_exact_day(path: Path, prefix: str, day: str) -> Dict[str, Any]:
     return _read_json(exact)
 
 
+def _read_daily_artifact_day(reports_root: Path, day: str, artifact_name: str) -> Dict[str, Any]:
+    if not day:
+        return {}
+    canonical = reports_root / "daily" / day / f"{artifact_name}.json"
+    obj = _read_json(canonical)
+    if obj:
+        return obj
+    if artifact_name == "daily_report":
+        return _read_exact_day(reports_root / "daily", "daily", day)
+    if artifact_name == "operator_summary":
+        return _read_exact_day(reports_root / "operator_summary", "operator_summary", day)
+    return {}
+
+
 def _trade_root_from_bundle_path(bundle_path: Path) -> Path:
     return _link_trade_root_from_bundle_path(bundle_path)
 
@@ -901,8 +915,8 @@ class OperatorUIConfig:
 
 def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
     latest_day = _latest_event_day(config.event_log_path)
-    daily = _read_exact_day(config.reports_root / "daily", "daily", latest_day)
-    operator_summary = _read_exact_day(config.reports_root / "operator_summary", "operator_summary", latest_day)
+    daily = _read_daily_artifact_day(config.reports_root, latest_day, "daily_report")
+    operator_summary = _read_daily_artifact_day(config.reports_root, latest_day, "operator_summary")
     reporter = _read_exact_day(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis", latest_day)
     reconciliation = _read_exact_day(config.reports_root / "reconciliation", "broker_trade_reconciliation", latest_day)
 
@@ -1112,7 +1126,11 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "decision_actions": dict(daily.get("decision_actions") or {}),
             "approvals": _safe_int(daily.get("approvals"), 0),
             "blocks": _safe_int(daily.get("blocks"), 0),
-            "path": str(config.reports_root / "daily" / f"daily_{latest_day}.json") if latest_day else "",
+            "path": (
+                str(config.reports_root / "daily" / latest_day / "daily_report.json")
+                if latest_day and (config.reports_root / "daily" / latest_day / "daily_report.json").exists()
+                else (str(config.reports_root / "daily" / f"daily_{latest_day}.json") if latest_day else "")
+            ),
         },
         "operator_summary": {
             "system_status": str(executive.get("system_status") or "UNKNOWN"),
@@ -1122,7 +1140,11 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "run_total": _safe_int(trading.get("run_total"), 0),
             "executions_total": _safe_int(trading.get("executions_total"), 0),
             "blocked_total": _safe_int(trading.get("blocked_total"), 0),
-            "path": str(config.reports_root / "operator_summary" / f"operator_summary_{latest_day}.json") if latest_day else "",
+            "path": (
+                str(config.reports_root / "daily" / latest_day / "operator_summary.json")
+                if latest_day and (config.reports_root / "daily" / latest_day / "operator_summary.json").exists()
+                else (str(config.reports_root / "operator_summary" / f"operator_summary_{latest_day}.json") if latest_day else "")
+            ),
         },
         "reporter": {
             "trade_count": _safe_int(trade_summary.get("trade_count"), 0),
@@ -3287,14 +3309,34 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
     prefer_runtime_reporter = _prefer_runtime_reporter_state(reporter)
 
+    def _prefer_korean_summary(primary: Any, fallback_text: str) -> str:
+        cleaned = _sanitize_operator_brief_text(primary)
+        mixed_english_tokens = [
+            "market ",
+            "scanner ",
+            "monitor ",
+            "supervisor",
+            "executor",
+            "reporter",
+            "playbook",
+            "global sentiment",
+            "rank #",
+            "status=",
+            "grade=",
+        ]
+        lowered = cleaned.lower()
+        if _count_hangul_chars(cleaned) >= 4 and not any(token in lowered for token in mixed_english_tokens):
+            return cleaned
+        return fallback_text
+
     global_bits: List[str] = []
     if global_inputs.get("score") is not None:
-        global_bits.append(f"global sentiment score={_safe_float(global_inputs.get('score'), 0.0):.2f}")
+        global_bits.append(f"\uae00\ub85c\ubc8c \uac10\uc131 \uc810\uc218 {_safe_float(global_inputs.get('score'), 0.0):.2f}")
     if fear_index.get("level") is not None:
-        global_bits.append(f"VIX={_safe_float(fear_index.get('level'), 0.0):.2f}")
+        global_bits.append(f"VIX {_safe_float(fear_index.get('level'), 0.0):.2f}")
     macro_moves = global_inputs.get("macro_moves") if isinstance(global_inputs.get("macro_moves"), dict) else {}
     if macro_moves.get("dxy_pct") is not None:
-        global_bits.append(f"dollar index={_safe_float(macro_moves.get('dxy_pct'), 0.0):.2f}")
+        global_bits.append(f"\ub2ec\ub7ec \uc9c0\uc218 \ubcc0\ub3d9 {_safe_float(macro_moves.get('dxy_pct'), 0.0):.2f}%")
 
     selected_feature_snapshot = selected.get("feature_snapshot") if isinstance(selected.get("feature_snapshot"), dict) else {}
     feature_coverage = _normalized_feature_coverage(
@@ -3302,7 +3344,6 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         selected_feature_snapshot,
     )
     _, fallback_chart_note = _chart_filter_status_and_note(feature_coverage)
-    quote_metrics = scanner.get("quote_metrics") if isinstance(scanner.get("quote_metrics"), dict) else {}
     canonical_market_summary = str(canonical_trade.get("market_context_summary") or "").strip()
     canonical_selection_summary = str(canonical_trade.get("selection_summary") or "").strip()
     canonical_monitor_summary = str(canonical_trade.get("monitor_summary") or "").strip()
@@ -3323,67 +3364,96 @@ def _fallback_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         or f"{detail.get('run_id') or '-'} Operator Summary"
     )
 
+    phase = str(((detail.get("commander") or {}).get("phase") or "session")).strip() or "session"
+    path_label = str(((detail.get("commander") or {}).get("path") or "-")).strip() or "-"
+    playbook = _clean_brief_text(strategist_summary.get("playbook") or "")
+    themes = _clean_brief_list(strategist_summary.get("themes"), limit=4)
+    news_targets = _clean_brief_list(strategist_summary.get("news_query_targets"), limit=6)
+    candidate_pool = int(scanner_summary.get("candidate_pool_after_filter") or 0)
+    top_stock = _clean_brief_text(scanner_summary.get("top_stock") or selected.get("symbol") or headline_symbol or "-")
+    selected_reason = _clean_brief_text(selected.get("why") or canonical_trade.get("selection_basis") or "")
+    monitor_reason = _clean_brief_text(monitor_summary.get("monitor_reason") or monitor_trace.get("monitor_reason") or canonical_trade.get("monitor_summary") or "")
+    exit_reason = _clean_brief_text(monitor_summary.get("exit_reason") or monitor_trace.get("exit_reason") or canonical_trade.get("exit_reason") or "")
+    supervisor_allowed = bool(supervisor.get("allowed"))
+    supervisor_reason = _clean_brief_text(supervisor.get("reason") or "")
+    executor_action = _clean_brief_text(executor.get("action") or canonical_trade.get("action") or "NOOP")
+    executor_symbol = _clean_brief_text(executor.get("symbol") or headline_symbol or "")
+    executor_status = _clean_brief_text(executor.get("fill_status_summary") or executor.get("status") or canonical_trade.get("execution_mode_label") or "\uae30\ub85d \ub300\uae30")
+    reporter_grade = _clean_brief_text(reporter.get("ai_run_grade") or "")
+    reporter_run_summary = _clean_brief_text(reporter.get("ai_summary") or "")
+
+    strategist_summary_text = _prefer_korean_summary(
+        canonical_market_summary,
+        (
+            f"\uc804\ub7b5\uac00\ub294 {', '.join(global_bits) if global_bits else '\uc2dc\uc7a5 \uc785\ub825\uac12'}\uc744 \uba3c\uc800 \ud655\uc778\ud588\uace0, "
+            f"\ub274\uc2a4 \uc810\uac80 \ubc94\uc704\ub294 {', '.join(news_targets) if news_targets else '\ud575\uc2ec \ud0c0\uae43 \uc911\uc2ec'}\uc774\uc5c8\uc2b5\ub2c8\ub2e4. "
+            f"{', '.join(themes) if themes else '\uc8fc\uc694 \ud14c\ub9c8 \uc815\ubcf4'}\ub97c \ucc38\uace0\ud574 {playbook or '\uae30\ubcf8'} \uc804\ub7b5 \uad00\uc810\uc73c\ub85c \uc2dc\uc7a5\uc744 \ud574\uc11d\ud588\uc2b5\ub2c8\ub2e4."
+        ),
+    )
+    scanner_summary_text = _prefer_korean_summary(
+        canonical_selection_summary,
+        (
+            f"\uc2a4\uce90\ub108\ub294 {candidate_pool}\uac1c \ud6c4\ubcf4\ub97c \ube44\uad50\ud55c \ub4a4 {top_stock}\uc744 \uc6b0\uc120 \uac10\uc2dc \ub300\uc0c1\uc73c\ub85c \uc62c\ub838\uc2b5\ub2c8\ub2e4. "
+            f"{selected_reason or '\uc800\uc7a5\ub41c \uc120\uc815 \uc0ac\uc720\ub294 \uc81c\ud55c\uc801\uc774\uc9c0\ub9cc \uc774\ud6c4 \uad00\ub9ac \uae30\ub85d\uc740 \ud655\uc778\ub429\ub2c8\ub2e4.'}"
+        ),
+    )
+    monitor_summary_text = _prefer_korean_summary(
+        canonical_monitor_summary,
+        (
+            f"\ubaa8\ub2c8\ud130\ub294 {monitor_reason or '\ubcf4\uc720 \uad00\ub9ac \uc2e0\ud638'}\ub97c \ud655\uc778\ud588\uace0, "
+            f"{exit_reason or '\ucd94\uac00 \uccad\uc0b0 \uc0ac\uc720 \ubbf8\uae30\ub85d'} \uae30\uc900\uc744 \uc911\uc2ec\uc73c\ub85c \ud310\ub2e8\ud588\uc2b5\ub2c8\ub2e4."
+        ),
+    )
+    supervisor_summary_text = _prefer_korean_summary(
+        canonical_guard_summary,
+        (
+            f"\uac10\ub3c5 \ub2e8\uacc4\uc5d0\uc11c\ub294 {'\uc8fc\ubb38\uc744 \ud5c8\uc6a9\ud588\uc2b5\ub2c8\ub2e4' if supervisor_allowed else '\uc8fc\ubb38\uc744 \ucc28\ub2e8\ud588\uc2b5\ub2c8\ub2e4'}."
+            + (f" \ud310\ub2e8 \uc0ac\uc720\ub294 {supervisor_reason}\uc785\ub2c8\ub2e4." if supervisor_reason else "")
+        ),
+    )
+    executor_summary_text = _prefer_korean_summary(
+        canonical_execution_summary,
+        (
+            f"\uc2e4\ud589 \ub2e8\uacc4\uc5d0\uc11c\ub294 {executor_symbol or '\ud574\ub2f9 \uc885\ubaa9'}\uc5d0 \ub300\ud574 {executor_action} \uc694\uccad\uc774 \uae30\ub85d\ub418\uc5c8\uace0, "
+            f"\ud604\uc7ac \uc0c1\ud0dc\ub294 {executor_status}\uc785\ub2c8\ub2e4."
+        ),
+    )
+    reporter_summary_text = _prefer_korean_summary(
+        "" if prefer_runtime_reporter else canonical_reporter_summary,
+        f"\ub9ac\ud3ec\ud130 \ud3c9\uac00\ub294 \ub4f1\uae09 {reporter_grade or '-'}\uc774\uba70, {reporter_run_summary or '\ub2f9\uc77c \uc885\ud569 \ud3c9\uac00\ub294 \uc544\uc9c1 \uc5f0\uacb0\ub418\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.'}",
+    )
+
+    takeaways: List[str] = []
+    if strategist_summary_text:
+        takeaways.append(strategist_summary_text)
+    if candidate_pool > 0:
+        takeaways.append(
+            f"\uc2a4\uce90\ub108\ub294 {candidate_pool}\uac1c \ud6c4\ubcf4 \uc911 {top_stock}\uc744 \uc6b0\uc120 \uac10\uc2dc \ub300\uc0c1\uc73c\ub85c \uc62c\ub838\uace0, \ucc28\ud2b8\u00b7\uc218\uae09 \uadfc\uac70\ub294 {fallback_chart_note} \uc218\uc900\uc73c\ub85c \ub0a8\uc544 \uc788\uc2b5\ub2c8\ub2e4."
+        )
+    elif canonical_trade.get("filters_summary"):
+        takeaways.append(_prefer_korean_summary(canonical_trade.get("filters_summary"), "\uc774\ubc88 \uc2e4\ud589\uc5d0\uc11c\ub294 \ud6c4\ubcf4 \ube44\uad50 \ub370\uc774\ud130\uac00 \ucda9\ubd84\ud788 \ub0a8\uc9c0 \uc54a\uc544 \uc2a4\uce90\ub108 \ube44\uad50 \uadfc\uac70\ub97c \ubcf4\uc218\uc801\uc73c\ub85c \ud574\uc11d\ud588\uc2b5\ub2c8\ub2e4."))
+    else:
+        takeaways.append("\uc774\ubc88 \uc2e4\ud589\uc5d0\uc11c\ub294 \ud6c4\ubcf4 \ube44\uad50 \ub370\uc774\ud130\uac00 \ucda9\ubd84\ud788 \ub0a8\uc9c0 \uc54a\uc544 \uc2a4\uce90\ub108 \ube44\uad50 \uadfc\uac70\ub97c \ubcf4\uc218\uc801\uc73c\ub85c \ud574\uc11d\ud588\uc2b5\ub2c8\ub2e4.")
+    if canonical_lifecycle_summary:
+        takeaways.append(_prefer_korean_summary(canonical_lifecycle_summary, "\uac70\ub798 \uacbd\uacfc\ub294 \uc77c\ubd80\ub9cc \ub0a8\uc544 \uc788\uc5b4 \ubcf4\uc720\u00b7\uccad\uc0b0 \uae30\ub85d \uc911\uc2ec\uc73c\ub85c \uc815\ub9ac\ud588\uc2b5\ub2c8\ub2e4."))
+    elif canonical_report_summary:
+        takeaways.append(_prefer_korean_summary(canonical_report_summary, "\uac70\ub798 \uacbd\uacfc\ub294 \uc77c\ubd80\ub9cc \ub0a8\uc544 \uc788\uc5b4 \ubcf4\uc720\u00b7\uccad\uc0b0 \uae30\ub85d \uc911\uc2ec\uc73c\ub85c \uc815\ub9ac\ud588\uc2b5\ub2c8\ub2e4."))
+    else:
+        takeaways.append(f"\uc2e4\ud589 \uacb0\uacfc\ub294 {executor_action} \uae30\uc900\uc73c\ub85c \uae30\ub85d\ub418\uc5c8\uace0, \uccb4\uacb0 \uc0c1\ud0dc\ub294 {executor_status}\ub85c \ud655\uc778\ub429\ub2c8\ub2e4.")
+
     return {
         "status": "fallback",
         "model": "",
         "headline": headline,
-        "commander_summary": (
-            f"Commander ran the {((detail.get('commander') or {}).get('phase') or '-')} phase "
-            f"through the {((detail.get('commander') or {}).get('path') or '-')} path."
-        ),
-        "strategist_summary": (
-            canonical_market_summary
-            or (
-                f"Strategist reviewed {', '.join(global_bits) or 'market inputs'}, checked news query targets "
-                f"{', '.join(_clean_brief_list(strategist_summary.get('news_query_targets'), limit=6)) or '-'}, and summarized the market into "
-                f"themes {', '.join(_clean_brief_list(strategist_summary.get('themes'), limit=4)) or '-'} with playbook {strategist_summary.get('playbook') or '-'}."
-            )
-        ),
-        "scanner_summary": (
-            canonical_selection_summary
-            or (
-                f"Scanner reviewed {int(scanner_summary.get('candidate_pool_after_filter') or 0)} Kiwoom candidates, ranked "
-                f"{_clean_brief_text(scanner_summary.get('top_stock') or selected.get('symbol') or '-')} first, and recorded the reason as "
-                f"{selected.get('why') or '-'}."
-            )
-        ),
-        "monitor_summary": (
-            canonical_monitor_summary
-            or (
-                f"Monitor evaluated {monitor_summary.get('monitor_reason') or monitor_trace.get('monitor_reason') or '-'} "
-                f"with exit={monitor_summary.get('exit_reason') or monitor_trace.get('exit_reason') or '-'}."
-            )
-        ),
-        "supervisor_summary": (
-            canonical_guard_summary
-            or f"Supervisor concluded allowed={supervisor.get('allowed')} / reason={supervisor.get('reason') or '-'}."
-        ),
-        "executor_summary": (
-            canonical_execution_summary
-            or (
-                f"Executor finished with {executor.get('action') or 'NOOP'} {executor.get('symbol') or ''} "
-                f"status={executor.get('fill_status_summary') or executor.get('status') or '-'}."
-            )
-        ),
-        "reporter_summary": (
-            ("" if prefer_runtime_reporter else canonical_reporter_summary)
-            or (
-                f"Reporter recorded grade={reporter.get('ai_run_grade') or '-'} / "
-                f"summary={reporter.get('ai_summary') or 'No same-day reporter summary is available yet.'}"
-            )
-        ),
-        "operator_takeaways": [
-            canonical_market_summary or f"News / macro inputs: {', '.join(global_bits) or 'no market inputs captured'}",
-            (
-                f"Chart / feature coverage: {fallback_chart_note}"
-                if _safe_int(feature_coverage.get("total"), 0) > 0
-                else str(canonical_trade.get("filters_summary") or "")
-            )
-            or f"Chart / feature coverage: {feature_coverage.get('quality') or '-'} ({feature_coverage.get('present') or 0}/{feature_coverage.get('total') or 0})",
-            canonical_lifecycle_summary or canonical_report_summary or f"Live quote: price {quote_metrics.get('skill_quote_price') or '-'} volume {quote_metrics.get('quote_volume') or '-'} trading_value {quote_metrics.get('quote_trading_value') or '-'}",
-        ],
+        "commander_summary": f"\uc9c0\ud718 \ud750\ub984\uc740 {phase} \ub2e8\uacc4\uc5d0\uc11c {path_label} \uacbd\ub85c\ub85c \uc2e4\ud589\ub418\uc5c8\uc2b5\ub2c8\ub2e4.",
+        "strategist_summary": strategist_summary_text,
+        "scanner_summary": scanner_summary_text,
+        "monitor_summary": monitor_summary_text,
+        "supervisor_summary": supervisor_summary_text,
+        "executor_summary": executor_summary_text,
+        "reporter_summary": reporter_summary_text,
+        "operator_takeaways": takeaways[:5],
     }
-
 
 def _failure_operator_brief(
     detail: Dict[str, Any],
@@ -4857,6 +4927,7 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
                 derived.append("VWAP 재이탈 여부와 거래량 감소 여부를 중심으로 모니터링합니다.")
             derived.append("현재 보유 상태에서는 고점 대비 하락폭과 거래량 둔화를 주요 확인 지표로 봅니다.")
         else:
+            derived.append("다음 거래에서는 분봉 진입 근거와 후보 비교 데이터가 충분히 남는지 먼저 확인합니다.")
             derived.append("청산 이후에는 동일 종목의 재돌파 여부와 거래대금 회복 여부를 다시 확인합니다.")
         return derived[:3]
 
@@ -4912,12 +4983,24 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
     final_action = str(executive.get("final_action") or operator_conclusion.get("current_action") or "").strip().upper()
     posture_action = str(monitor.get("posture") or final_action).strip().upper()
     headline = str(brief.get("headline") or "").strip()
-    executive_summary = _narrative_text("" if status == "fallback" else (str(brief.get("executive_summary") or "").strip() or headline))
-    scanner_reason = _narrative_text("" if status == "fallback" else str(brief.get("scanner_reason") or brief.get("scanner_summary") or "").strip())
-    holding_summary = _narrative_text("" if status == "fallback" else str(brief.get("holding_summary") or brief.get("monitor_summary") or "").strip())
-    exit_plan_summary = _narrative_text("" if status == "fallback" else str(brief.get("exit_plan_summary") or "").strip())
-    risk_summary = _narrative_text("" if status == "fallback" else str(brief.get("risk_summary") or "").strip())
-    next_checkpoints = [] if status == "fallback" else [_narrative_text(x) for x in list(brief.get("next_checkpoints") or []) if _narrative_text(x)]
+
+    def _usable_narrative_text(text: Any) -> str:
+        cleaned = _narrative_text(text)
+        return cleaned if _count_hangul_chars(cleaned) >= 4 else ""
+
+    display_symbol = selected_symbol if selected_symbol and selected_symbol != "-" else "\ud574\ub2f9 \uc885\ubaa9"
+    executive_summary = _usable_narrative_text(brief.get("executive_summary")) or _narrative_text("" if status == "fallback" else (str(brief.get("executive_summary") or "").strip() or headline))
+    scanner_reason = _usable_narrative_text(brief.get("scanner_reason")) or _usable_narrative_text(brief.get("scanner_summary")) or _narrative_text("" if status == "fallback" else str(brief.get("scanner_reason") or brief.get("scanner_summary") or "").strip())
+    holding_summary = _usable_narrative_text(brief.get("holding_summary"))
+    if not holding_summary and posture_action not in {"SELL", "WAIT"}:
+        holding_summary = _usable_narrative_text(brief.get("monitor_summary"))
+    if not holding_summary:
+        holding_summary = _narrative_text("" if status == "fallback" else str(brief.get("holding_summary") or brief.get("monitor_summary") or "").strip())
+    exit_plan_summary = _usable_narrative_text(brief.get("exit_plan_summary")) or _narrative_text("" if status == "fallback" else str(brief.get("exit_plan_summary") or "").strip())
+    risk_summary = _usable_narrative_text(brief.get("risk_summary")) or _narrative_text("" if status == "fallback" else str(brief.get("risk_summary") or "").strip())
+    if risk_summary.startswith("[") and risk_summary.endswith("]"):
+        risk_summary = ""
+    next_checkpoints = [_usable_narrative_text(x) for x in list(brief.get("next_checkpoints") or []) if _usable_narrative_text(x)]
     takeaways = [_narrative_text(x) for x in list(brief.get("operator_takeaways") or []) if _narrative_text(x)]
 
     universe_size_raw = _safe_int(selection.get("universe_size"), 0)
@@ -4926,23 +5009,23 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
     comparison_reasons = [str(x or "").strip() for x in list(selection.get("comparison_reasons") or []) if str(x or "").strip()]
     signal_source = " ".join([scanner_reason] + selection_reasons + comparison_reasons).lower()
     signal_phrases: List[str] = []
-    if any(token in signal_source for token in ["거래량", "volume", "trading value", "거래대금"]):
-        signal_phrases.append("거래량과 거래대금 흐름이 함께 확인되었습니다.")
-    if any(token in signal_source for token in ["돌파", "breakout"]):
-        signal_phrases.append("단기 돌파 시도 흐름이 포착되었습니다.")
-    if any(token in signal_source for token in ["변동성", "volatility"]):
-        signal_phrases.append("단기 변동성 확대가 함께 관찰되었습니다.")
-    if any(token in signal_source for token in ["눌림", "pullback", "반등", "rebound"]):
-        signal_phrases.append("눌림 이후 반등 가능성도 함께 점검됐습니다.")
-    if not scanner_reason or not any(token in scanner_reason for token in ["후보", "선정", "순위"]):
+    if any(token in signal_source for token in ["\uac70\ub798\ub7c9", "volume", "trading value", "\uac70\ub798\ub300\uae08"]):
+        signal_phrases.append("\uac70\ub798\ub7c9\uacfc \uac70\ub798\ub300\uae08 \ud750\ub984\uc774 \ud568\uaed8 \ud655\uc778\ub418\uc5c8\uc2b5\ub2c8\ub2e4.")
+    if any(token in signal_source for token in ["\ub3cc\ud30c", "breakout"]):
+        signal_phrases.append("\ub2e8\uae30 \ub3cc\ud30c \uc2dc\ub3c4 \ud750\ub984\uc774 \ud3ec\ucc29\ub418\uc5c8\uc2b5\ub2c8\ub2e4.")
+    if any(token in signal_source for token in ["\ubcc0\ub3d9\uc131", "volatility"]):
+        signal_phrases.append("\ub2e8\uae30 \ubcc0\ub3d9\uc131 \ud655\ub300\uac00 \ud568\uaed8 \uad00\ucc30\ub418\uc5c8\uc2b5\ub2c8\ub2e4.")
+    if any(token in signal_source for token in ["\ub20c\ub9bc", "pullback", "\ubc18\ub4f1", "rebound"]):
+        signal_phrases.append("\ub20c\ub9bc \uc774\ud6c4 \ubc18\ub4f1 \uac00\ub2a5\uc131\uc744 \ud568\uaed8 \uc810\uac80\ud588\uc2b5\ub2c8\ub2e4.")
+    if not scanner_reason or not any(token in scanner_reason for token in ["\ud6c4\ubcf4", "\uc120\uc815", "\uc21c\uc704", "\uac10\uc2dc"]):
         if universe_size_raw > 0:
-            scanner_reason = f"총 {universe_size_raw}개 후보 중 {selected_rank_raw}순위 감시 대상으로 선정되었습니다."
+            scanner_reason = f"\ucd1d {universe_size_raw}\uac1c \ud6c4\ubcf4 \uc911 {selected_rank_raw}\uc21c\uc704 \uac10\uc2dc \ub300\uc0c1\uc73c\ub85c \uc120\uc815\ub418\uc5c8\uc2b5\ub2c8\ub2e4."
         else:
-            scanner_reason = "저장된 후보 비교 정보는 제한적이지만, 이번 종목은 우선 감시 대상으로 선정되었습니다."
+            scanner_reason = "\uc774\ubc88 \uc2e4\ud589\uc5d0\uc11c\ub294 \ud6c4\ubcf4 \ube44\uad50 \ub370\uc774\ud130\uac00 \ucda9\ubd84\ud788 \uc800\uc7a5\ub418\uc9c0 \uc54a\uc544 \uc0c1\ub300 \uc21c\uc704\ub97c \uc790\uc138\ud788 \ubcf5\uc6d0\ud558\uae30 \uc5b4\ub835\uc2b5\ub2c8\ub2e4. \ub2e4\ub9cc \uc774\ud6c4 \ubcf4\uc720\u00b7\uccad\uc0b0 \ud750\ub984\uc740 \ud655\uc778\ub418\uc5b4 \ud574\ub2f9 \uc885\ubaa9 \uc911\uc2ec\uc73c\ub85c \uc815\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
     if signal_phrases and all(phrase not in scanner_reason for phrase in signal_phrases[:2]):
         scanner_reason = " ".join([scanner_reason] + signal_phrases[:2])
 
-    entry_summary = _narrative_text(str(brief.get("entry_summary") or "").strip())
+    entry_summary = _usable_narrative_text(brief.get("entry_summary"))
     if not entry_summary:
         entry_reason_text = _narrative_text(str(entry.get("reason_text") or "").strip())
         if _count_hangul_chars(entry_reason_text) > 0 and status != "fallback":
@@ -4955,34 +5038,61 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
             )
 
     if not executive_summary:
-        executive_summary = f"{selected_symbol}의 현재 최종 판단은 {_action_label(posture_action)}입니다."
+        if posture_action == "SELL":
+            executive_summary = f"{display_symbol} \uac70\ub798\ub294 \uccad\uc0b0\uae4c\uc9c0 \ub9c8\ubb34\ub9ac\ub418\uc5c8\uace0, \ud655\uc778\ub41c \uc190\uc775\uacfc \ud558\ub77d\ud3ed \uae30\uc900\uc73c\ub85c \ub9e4\ub3c4 \ud310\ub2e8\uc774 \uc2e4\ud589\ub418\uc5c8\uc2b5\ub2c8\ub2e4."
+        elif posture_action == "WAIT":
+            executive_summary = f"{display_symbol}\uc5d0 \ub300\ud574\uc11c\ub294 \uc2e0\uaddc \uc9c4\uc785\uc744 \ubcf4\ub958\ud558\uace0 \ucd94\uac00 \ud655\uc778\uc744 \uc774\uc5b4\uac00\ub294 \ud310\ub2e8\uc785\ub2c8\ub2e4."
+        else:
+            executive_summary = f"{display_symbol}\uc758 \ud604\uc7ac \ucd5c\uc885 \ud310\ub2e8\uc740 {_action_label(posture_action)}\uc785\ub2c8\ub2e4."
 
     if not holding_summary:
-        holding_summary = (
-            f"{selected_symbol}은 현재 {_action_label(monitor.get('posture') or final_action)} 상태입니다. "
-            f"현재가는 {_metric_text(monitor.get('current_price'))}, 평균 단가는 {_metric_text(monitor.get('average_price'))}이며, "
-            f"현재 관리는 {_axis_label(monitor.get('active_exit_axis') or '-')} 기준으로 이어가고 있습니다."
-        )
+        if posture_action == "SELL":
+            holding_summary = (
+                f"{display_symbol} \uac70\ub798\ub294 \uc774\ubbf8 \ub9e4\ub3c4\ub85c \uc885\ub8cc\ub418\uc5c8\uc2b5\ub2c8\ub2e4. \ud3c9\uade0 \ub9e4\uc218\uac00\ub294 {_metric_text(monitor.get('average_price'))}\uc600\uace0, "
+                f"\uccad\uc0b0 \ud310\ub2e8 \ub2f9\uc2dc \uac00\uaca9\uc740 {_metric_text(monitor.get('current_price'))}\uc600\uc2b5\ub2c8\ub2e4. "
+                f"\uace0\uc810 \ub300\ube44 \ud558\ub77d\ud3ed\uc740 {_metric_text(monitor.get('peak_drawdown'))} \uc218\uc900\uc73c\ub85c \ud655\uc778\ub429\ub2c8\ub2e4."
+            )
+        elif posture_action == "WAIT":
+            holding_summary = (
+                f"{display_symbol}\uc5d0 \ub300\ud574\uc11c\ub294 \uc544\uc9c1 \uc2e0\uaddc \uc9c4\uc785\uc744 \uc2e4\ud589\ud558\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4. "
+                f"\ud604\uc7ac \ubb38\uc11c\ub294 \ubcf4\uc720 \uad00\ub9ac \uae30\ub85d\ubcf4\ub2e4 \uc9c4\uc785 \ubcf4\ub958 \uc0ac\uc720\uc640 \ub2e4\uc74c \ud655\uc778 \ud56d\ubaa9\uc744 \uc911\uc2ec\uc73c\ub85c \uc815\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
+            )
+        else:
+            holding_summary = (
+                f"{display_symbol}\uc740 \ud604\uc7ac {_action_label(monitor.get('posture') or final_action)} \uc0c1\ud0dc\uc785\ub2c8\ub2e4. "
+                f"\ud604\uc7ac\uac00\ub294 {_metric_text(monitor.get('current_price'))}, \ud3c9\uade0 \ub2e8\uac00\ub294 {_metric_text(monitor.get('average_price'))}\uc774\uba70, "
+                f"\ud604\uc7ac \uad00\ub9ac\ub294 {_axis_label(monitor.get('active_exit_axis') or '-')} \uae30\uc900\uc73c\ub85c \uc774\uc5b4\uac00\uace0 \uc788\uc2b5\ub2c8\ub2e4."
+            )
 
     if not exit_plan_summary:
         effective_stop = _metric_text(exit_plan.get("effective_stop") or monitor.get("effective_stop"))
         effective_stop_reason = _axis_label(exit_plan.get("effective_stop_reason") or monitor.get("effective_stop_reason"))
         take_profit = _metric_text(exit_plan.get("take_profit") or monitor.get("take_profit"))
         watch_axes = [_axis_label(x) for x in list(exit_plan.get("watch_axes") or monitor.get("watch_axes") or [])[:2] if str(x or "").strip()]
-        axes_text = ", ".join(watch_axes) if watch_axes else "감시 조건 변화"
-        exit_plan_summary = (
-            f"우선 {effective_stop_reason}을 기준으로 대응하고, 기준값은 {effective_stop} 수준으로 보고 있습니다. "
-            f"목표 수익 실현 기준은 {take_profit} 수준이며, {axes_text}가 나타나면 다시 판단합니다."
-        )
+        axes_text = ", ".join(watch_axes) if watch_axes else "\uc8fc\uc694 \uac10\uc2dc \uc870\uac74 \ubcc0\ud654"
+        if posture_action == "SELL":
+            exit_plan_summary = (
+                f"\uc774\ubc88 \uac70\ub798\ub294 {effective_stop_reason} \uae30\uc900\uacfc \uace0\uc810 \ub300\ube44 \ud558\ub77d\ud3ed \uc870\uac74\uc744 \uc6b0\uc120 \ud655\uc778\ud55c \ub4a4 \uccad\uc0b0\uc744 \uc2e4\ud589\ud588\uc2b5\ub2c8\ub2e4. "
+                f"\ucc38\uace0 \uc190\uc808 \uae30\uc900\uc740 {effective_stop} \uc218\uc900\uc774\uc5c8\uace0, \ubaa9\ud45c \uc218\uc775 \uc2e4\ud604 \uae30\uc900\uc740 {take_profit} \uc218\uc900\uc774\uc5c8\uc2b5\ub2c8\ub2e4."
+            )
+        elif posture_action == "WAIT":
+            exit_plan_summary = (
+                f"\uc2e0\uaddc \uc9c4\uc785 \uc804\uae4c\uc9c0\ub294 {axes_text}\ub97c \uba3c\uc800 \uc810\uac80\ud558\uace0, \ubd84\ubd09 \uae30\uc900\uc774 \ub2e4\uc2dc \ub9de\uc544\ub5a8\uc5b4\uc9c8 \ub54c\uae4c\uc9c0 \ubcf4\uc218\uc801\uc73c\ub85c \ub300\uae30\ud569\ub2c8\ub2e4."
+            )
+        else:
+            exit_plan_summary = (
+                f"\uc6b0\uc120 {effective_stop_reason}\uc744 \uae30\uc900\uc73c\ub85c \ub300\uc751\ud558\uace0 \uae30\uc900\uac12\uc740 {effective_stop} \uc218\uc900\uc73c\ub85c \ubcf4\uace0 \uc788\uc2b5\ub2c8\ub2e4. "
+                f"\ubaa9\ud45c \uc218\uc775 \uc2e4\ud604 \uae30\uc900\uc740 {take_profit} \uc218\uc900\uc774\uba70, {axes_text}\uac00 \ud754\ub4e4\ub9ac\uba74 \ub2e4\uc2dc \ud310\ub2e8\ud569\ub2c8\ub2e4."
+            )
 
     if not risk_summary:
         weak_factors = [_narrative_text(x) for x in list(risk_alerts.get("weak_factors") or []) if _narrative_text(x)]
         if weak_factors and status != "fallback":
             risk_summary = " ".join(weak_factors[:3])
         elif bool(risk_alerts.get("defensive_mode")):
-            risk_summary = "거시 스트레스 신호가 남아 있어 방어적으로 대응할 필요가 있습니다."
+            risk_summary = "\uac70\uc2dc \uc2a4\ud2b8\ub808\uc2a4 \uc2e0\ud638\uac00 \ub192\uc544 \uc788\uc5b4 \ubc29\uc5b4\uc801\uc73c\ub85c \ub300\uc751\ud560 \ud544\uc694\uac00 \uc788\uc2b5\ub2c8\ub2e4."
         else:
-            risk_summary = "현재 확보된 데이터 기준으로 추가 리스크는 제한적이지만, 분봉 구조 변화와 거래량 둔화 여부를 계속 확인해야 합니다."
+            risk_summary = "\ud604\uc7ac \uc815\ubcf4 \ubc94\uc704\uc5d0\uc11c\ub294 \ucd94\uac00 \ub9ac\uc2a4\ud06c\uac00 \uc81c\ud55c\uc801\uc774\uc9c0\ub9cc \ubd84\ubd09 \uad6c\uc870 \ubcc0\ud654\uc640 \uac70\ub798\ub7c9 \ub454\ud654 \uc5ec\ubd80\ub97c \uacc4\uc18d \ud655\uc778\ud574\uc57c \ud569\ub2c8\ub2e4."
 
     if not next_checkpoints:
         next_checkpoints = [_narrative_text(x) for x in list(operator_conclusion.get("watch_next") or []) if _narrative_text(x)]
@@ -4990,6 +5100,19 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
         next_checkpoints = takeaways[:3]
     if not next_checkpoints:
         next_checkpoints = _default_next_checkpoints(entry, monitor, exit_plan, posture_action)
+    if not next_checkpoints:
+        if posture_action == "SELL":
+            next_checkpoints = [
+                "\ub2e4\uc74c \uac70\ub798\uc5d0\uc11c\ub294 \ubd84\ubd09 \uc9c4\uc785 \uadfc\uac70\uc640 \ud6c4\ubcf4 \ube44\uad50 \ub370\uc774\ud130\uac00 \ucda9\ubd84\ud788 \ub0a8\ub294\uc9c0 \uba3c\uc800 \ud655\uc778\ud569\ub2c8\ub2e4."
+            ]
+        elif posture_action == "WAIT":
+            next_checkpoints = [
+                "\ubd84\ubd09 \uae30\uc900\uc73c\ub85c \uc7ac\ub3cc\ud30c \uc5ec\ubd80\uc640 \uac70\ub798\ub7c9 \uc99d\uac00 \uc5ec\ubd80\ub97c \ub2e4\uc74c \uccb4\ud06c\ud3ec\uc778\ud2b8\ub85c \uc124\uc815\ud569\ub2c8\ub2e4."
+            ]
+        else:
+            next_checkpoints = [
+                "\ud604\uc7ac \ubcf4\uc720 \uc0c1\ud0dc\uc5d0\uc11c\ub294 \uace0\uc810 \ub300\ube44 \ud558\ub77d\ud3ed\uacfc \uac70\ub798\ub7c9 \ub454\ud654\ub97c \uc8fc\uc694 \ud655\uc778 \uc9c0\ud45c\ub85c \ubd05\ub2c8\ub2e4."
+            ]
 
     lines = [
         "# 운영자 브리프",
@@ -5063,7 +5186,7 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
         "## 7. 다음 체크포인트",
         "",
     ])
-    _append_list(lines, next_checkpoints or takeaways, limit=4)
+    _append_list(lines, next_checkpoints or takeaways or ["다음 분봉과 거래량 흐름을 다시 확인합니다."], limit=4)
     if lines[-1] != "":
         lines.append("")
     return "\n".join(lines)
@@ -5664,7 +5787,7 @@ def _count_stages(rows: List[Dict[str, Any]]) -> Dict[str, int]:
 
 def load_health(config: OperatorUIConfig) -> Dict[str, Any]:
     latest_day = _latest_event_day(config.event_log_path)
-    operator_summary = _read_exact_day(config.reports_root / "operator_summary", "operator_summary", latest_day)
+    operator_summary = _read_daily_artifact_day(config.reports_root, latest_day, "operator_summary")
     reporter = _read_exact_day(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis", latest_day)
     if operator_summary:
         executive = operator_summary.get("executive_summary") if isinstance(operator_summary.get("executive_summary"), dict) else {}

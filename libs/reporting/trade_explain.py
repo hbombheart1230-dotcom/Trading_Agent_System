@@ -371,10 +371,12 @@ def _build_sell_pairs_fifo(executions: List[Dict[str, Any]]) -> List[Dict[str, A
 
 def _report_inventory(day: str, reports_root: Path) -> List[str]:
     candidates = [
+        reports_root / "daily" / day / "operator_summary.md",
         reports_root / "operator_summary" / f"operator_summary_{day}.md",
         reports_root / "decision_story" / f"decision_story_{day}.md",
         reports_root / "run_cards" / f"run_cards_{day}.md",
         reports_root / "metrics" / f"metrics_{day}.md",
+        reports_root / "daily" / day / "daily_report.md",
         reports_root / "daily" / f"daily_{day}.md",
         reports_root / "live_watch" / "live_watch_latest.md",
     ]

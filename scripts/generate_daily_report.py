@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections import Counter
 from datetime import datetime, date, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from libs.reporting.llm_artifacts import daily_artifact_paths
+from libs.reporting.symbol_trade_report import build_daily_trade_index
+from libs.reporting.symbol_trade_report import collect_symbols_for_day
+from libs.reporting.symbol_trade_report import generate_symbol_trade_report
 
 def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
     if not path.exists():
@@ -56,6 +64,7 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
       - Day bucketing uses UTC for deterministic tests and consistent reporting.
       - If `day` is provided, only events matching that UTC day are included.
     """
+    out_dir = out_dir.parent if out_dir.name == "daily" else out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows: List[Dict[str, Any]] = []
@@ -65,18 +74,26 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     if not rows:
         day = day or date.today().isoformat()
         paths = daily_artifact_paths(out_dir, day)
-        md_path = paths["root_daily_md"]
-        js_path = paths["root_daily_json"]
-        payload = {"day": day, "events": 0}
+        md_path = paths["daily_report_md"]
+        js_path = paths["daily_report_json"]
+        trade_index = build_daily_trade_index(out_dir, day)
+        symbols_for_day = collect_symbols_for_day(events_path, out_dir, day)
+        generated_symbol_reports = [
+            generate_symbol_trade_report(events_path=events_path, reports_root=out_dir, symbol=symbol)
+            for symbol in symbols_for_day
+        ]
+        payload = {
+            "day": day,
+            "events": 0,
+            "trade_index": trade_index,
+            "symbols_observed": symbols_for_day,
+            "generated_symbol_report_count": len(generated_symbol_reports),
+        }
         md_text = f"# Daily Report ({day})\n\nNo events found.\n"
+        md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text(md_text, encoding="utf-8")
         js_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        paths["daily_report_json"].parent.mkdir(parents=True, exist_ok=True)
-        paths["daily_report_json"].write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        paths["daily_report_md"].write_text(md_text, encoding="utf-8")
-        paths["legacy_daily_json"].parent.mkdir(parents=True, exist_ok=True)
-        paths["legacy_daily_json"].write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        paths["legacy_daily_md"].write_text(md_text, encoding="utf-8")
+        paths["trade_index_json"].write_text(json.dumps(trade_index, ensure_ascii=False, indent=2), encoding="utf-8")
         return md_path, js_path
 
     day = day or sorted({r["_day"] for r in rows})[-1]
@@ -113,12 +130,22 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         "approvals": approvals,
         "blocks": blocks,
     }
+    trade_index = build_daily_trade_index(out_dir, day)
+    symbols_for_day = collect_symbols_for_day(events_path, out_dir, day)
+    generated_symbol_reports = [
+        generate_symbol_trade_report(events_path=events_path, reports_root=out_dir, symbol=symbol)
+        for symbol in symbols_for_day
+    ]
+    summary["trade_index"] = trade_index
+    summary["symbols_observed"] = symbols_for_day
+    summary["generated_symbol_report_count"] = len(generated_symbol_reports)
 
     md_lines = [
         f"# Daily Report ({day})",
         "",
         f"- events: **{summary['events']}**",
         f"- approvals: **{approvals}** / blocks: **{blocks}**",
+        f"- symbols observed: **{len(symbols_for_day)}**",
         "",
         "## Decision actions",
         "",
@@ -134,21 +161,17 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         md_lines.append(f"- {k}: {v}")
 
     paths = daily_artifact_paths(out_dir, day)
-    md_path = paths["root_daily_md"]
-    js_path = paths["root_daily_json"]
+    md_path = paths["daily_report_md"]
+    js_path = paths["daily_report_json"]
+    md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     js_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    paths["daily_report_json"].parent.mkdir(parents=True, exist_ok=True)
-    paths["daily_report_json"].write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    paths["daily_report_md"].write_text("\n".join(md_lines) + "\n", encoding="utf-8")
-    paths["legacy_daily_json"].parent.mkdir(parents=True, exist_ok=True)
-    paths["legacy_daily_json"].write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    paths["legacy_daily_md"].write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    paths["trade_index_json"].write_text(json.dumps(trade_index, ensure_ascii=False, indent=2), encoding="utf-8")
     return md_path, js_path
 
 def main() -> None:
     events_path = Path(os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl"))
-    out_dir = Path(os.getenv("REPORT_DIR", "./reports")) / "daily"
+    out_dir = Path(os.getenv("REPORT_DIR", "./reports"))
     day = os.getenv("REPORT_DAY")  # optional YYYY-MM-DD (UTC)
     md, js = generate_daily_report(events_path, out_dir, day=day)
     print(f"Wrote: {md}")

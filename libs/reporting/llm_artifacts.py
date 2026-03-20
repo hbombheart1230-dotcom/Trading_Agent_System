@@ -316,15 +316,36 @@ def trade_artifact_paths(reports_root: Path, day: str, trade_id: str) -> Dict[st
 
 
 def daily_artifact_paths(reports_root: Path, day: str) -> Dict[str, Path]:
+    """Canonical daily reporting paths under reports/daily/YYYY-MM-DD/."""
     normalized_day = str(day or "").strip()
     daily_root = reports_root / "daily" / normalized_day
     return {
+        "root_dir": daily_root,
         "daily_root": daily_root,
         "daily_report_json": daily_root / "daily_report.json",
         "daily_report_md": daily_root / "daily_report.md",
         "daily_report_llm_response_json": daily_root / "daily_report_llm_response.json",
+        "operator_summary_json": daily_root / "operator_summary.json",
+        "operator_summary_md": daily_root / "operator_summary.md",
+        "trade_index_json": daily_root / "trade_index.json",
         "legacy_daily_json": reports_root / "daily" / f"daily_{normalized_day}.json",
         "legacy_daily_md": reports_root / "daily" / f"daily_{normalized_day}.md",
         "root_daily_json": reports_root / f"daily_{normalized_day}.json",
         "root_daily_md": reports_root / f"daily_{normalized_day}.md",
+        "legacy_operator_summary_json": reports_root / "operator_summary" / f"operator_summary_{normalized_day}.json",
+        "legacy_operator_summary_md": reports_root / "operator_summary" / f"operator_summary_{normalized_day}.md",
+    }
+
+
+def symbol_artifact_paths(reports_root: Path, symbol: str) -> Dict[str, Path]:
+    """Canonical symbol-history reporting paths under reports/symbols/<SYMBOL>/."""
+    normalized_symbol = str(symbol or "").strip().upper()
+    symbol_root = reports_root / "symbols" / normalized_symbol
+    return {
+        "root_dir": symbol_root,
+        "symbol_trade_report_json": symbol_root / "symbol_trade_report.json",
+        "symbol_trade_report_md": symbol_root / "symbol_trade_report.md",
+        "trade_history_json": symbol_root / "trade_history.json",
+        "daily_index_json": symbol_root / "daily_index.json",
+        "latest_snapshot_json": symbol_root / "latest_snapshot.json",
     }

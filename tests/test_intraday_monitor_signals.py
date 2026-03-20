@@ -1,4 +1,7 @@
-from libs.runtime.intraday_monitor_signals import evaluate_intraday_entry_signal
+from libs.runtime.intraday_monitor_signals import (
+    evaluate_intraday_entry_signal,
+    resolve_intraday_entry_policy,
+)
 
 
 def _rows_breakout() -> list[dict]:
@@ -15,11 +18,11 @@ def _rows_breakout() -> list[dict]:
 def _rows_pullback_rebound() -> list[dict]:
     return [
         {"open": 100.0, "high": 100.5, "low": 99.9, "close": 100.4, "volume": 1000, "vwap": 100.1},
-        {"open": 100.4, "high": 101.0, "low": 100.3, "close": 100.8, "volume": 1050, "vwap": 100.4},
-        {"open": 100.8, "high": 101.5, "low": 100.7, "close": 101.3, "volume": 1100, "vwap": 100.8},
-        {"open": 101.3, "high": 101.4, "low": 100.9, "close": 101.0, "volume": 950, "vwap": 101.1},
-        {"open": 101.0, "high": 101.1, "low": 100.8, "close": 100.9, "volume": 980, "vwap": 101.0},
-        {"open": 100.9, "high": 101.3, "low": 100.9, "close": 101.2, "volume": 1600, "vwap": 101.0},
+        {"open": 100.4, "high": 101.1, "low": 100.3, "close": 101.0, "volume": 1050, "vwap": 100.5},
+        {"open": 101.0, "high": 101.8, "low": 100.9, "close": 101.6, "volume": 1100, "vwap": 100.9},
+        {"open": 101.6, "high": 101.7, "low": 100.4, "close": 100.8, "volume": 950, "vwap": 100.9},
+        {"open": 100.8, "high": 100.9, "low": 99.7, "close": 100.2, "volume": 980, "vwap": 100.6},
+        {"open": 100.2, "high": 101.3, "low": 100.1, "close": 101.1, "volume": 1500, "vwap": 100.7},
     ]
 
 
@@ -36,14 +39,19 @@ def test_intraday_entry_triggers_on_breakout_vwap_hold_and_volume_confirmation()
 def test_intraday_entry_triggers_on_pullback_rebound_setup() -> None:
     out = evaluate_intraday_entry_signal(
         _rows_pullback_rebound(),
-        policy={"entry_breakout_lookback": 4, "entry_volume_ratio_min": 1.10},
+        policy={"entry_breakout_lookback": 4, "entry_volume_ratio_min": 0.95},
         frame={"playbook": "pullback"},
     )
 
     assert out["evaluated"] is True
     assert out["triggered"] is True
-    assert out["pattern"] == "pullback_rebound"
+    assert out["pattern"] == "pullback_vwap_reclaim"
     assert "pullback_rebound" in list(out.get("signal_chain") or [])
+    assert "pullback_mature" in list(out.get("passed_checks") or [])
+    assert out.get("primary_failure_axis") == "confirmed_entry"
+    thresholds = out.get("thresholds") or {}
+    assert float(thresholds.get("max_extended_from_vwap_pct") or 0.0) >= 0.05
+    assert float(thresholds.get("pullback_max_pct") or 0.0) >= 0.06
 
 
 def test_intraday_entry_rejects_overextended_breakout() -> None:
@@ -56,6 +64,8 @@ def test_intraday_entry_rejects_overextended_breakout() -> None:
     assert out["evaluated"] is True
     assert out["triggered"] is False
     assert out["reason"] == "too_extended_from_vwap"
+    assert out.get("primary_failure_axis") == "overextension"
+    assert "extension_ok" in list(out.get("failed_checks") or [])
 
 
 def test_intraday_entry_rejects_weak_volume_breakout() -> None:
@@ -71,15 +81,83 @@ def test_intraday_entry_rejects_weak_volume_breakout() -> None:
 
 def test_intraday_entry_rejects_failed_reclaim() -> None:
     rows = _rows_pullback_rebound()
-    rows[-1]["close"] = 100.7
-    rows[-1]["high"] = 100.9
-    rows[-1]["vwap"] = 101.0
+    rows[-1]["close"] = 100.1
+    rows[-1]["high"] = 100.4
+    rows[-1]["vwap"] = 100.8
     out = evaluate_intraday_entry_signal(rows, frame={"playbook": "pullback"})
 
     assert out["evaluated"] is True
     assert out["triggered"] is False
     assert out["decision"] == "WAIT"
-    assert out["reason"] == "no_breakout_signal"
+    assert out["reason"] == "reclaim_not_confirmed"
+    assert out.get("primary_failure_axis") == "vwap_relationship"
+
+
+def test_intraday_entry_rejects_overextended_pullback_even_after_rebound() -> None:
+    rows = _rows_pullback_rebound()
+    rows[-1]["close"] = 106.0
+    rows[-1]["high"] = 106.2
+    rows[-1]["vwap"] = 100.7
+    out = evaluate_intraday_entry_signal(rows, frame={"playbook": "pullback"})
+
+    assert out["evaluated"] is True
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+    assert out["reason"] == "still_overextended_after_pullback"
+    assert out.get("primary_failure_axis") == "overextension"
+    margins = out.get("threshold_margins") or {}
+    ext = margins.get("extended_from_vwap_pct") or {}
+    assert float(ext.get("actual") or 0.0) > float(ext.get("max") or 0.0)
+
+
+def test_intraday_entry_rejects_deeply_broken_pullback_structure() -> None:
+    rows = _rows_pullback_rebound()
+    rows[4]["low"] = 94.8
+    rows[4]["close"] = 99.8
+    rows[-1]["close"] = 100.9
+    rows[-1]["high"] = 101.0
+    rows[-1]["vwap"] = 100.5
+    out = evaluate_intraday_entry_signal(rows, frame={"playbook": "pullback"})
+
+    assert out["evaluated"] is True
+    assert out["triggered"] is False
+    assert out["reason"] == "no_valid_pullback_structure"
+    assert out.get("primary_failure_axis") == "pullback_structure"
+    assert "pullback_not_too_deep" in list(out.get("failed_checks") or [])
+
+
+def test_intraday_entry_pullback_can_pass_without_strict_volume_spike_if_reclaim_is_clean() -> None:
+    rows = _rows_pullback_rebound()
+    rows[-1]["volume"] = 900
+    out = evaluate_intraday_entry_signal(rows, frame={"playbook": "pullback"})
+
+    assert out["evaluated"] is True
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+    assert out["pattern"] == "pullback_vwap_reclaim"
+
+
+def test_intraday_entry_pullback_policy_is_looser_than_breakout_policy() -> None:
+    breakout = resolve_intraday_entry_policy(frame={"playbook": "breakout"})
+    pullback = resolve_intraday_entry_policy(frame={"playbook": "pullback"})
+
+    assert float(pullback.get("max_extended_from_vwap_pct") or 0.0) > float(breakout.get("max_extended_from_vwap_pct") or 0.0)
+    assert float(pullback.get("pullback_max_pct") or 0.0) > float(breakout.get("pullback_max_pct") or 0.0)
+    assert float(pullback.get("volume_ratio_min") or 0.0) <= float(breakout.get("volume_ratio_min") or 0.0)
+
+
+def test_intraday_entry_pullback_defensive_guidance_stays_realistic() -> None:
+    pullback = resolve_intraday_entry_policy(
+        frame={
+            "playbook": "pullback",
+            "monitor_guidance": "defensive_exit",
+            "risk_tone": "conservative",
+            "trade_aggressiveness": "low",
+        }
+    )
+
+    assert float(pullback.get("max_extended_from_vwap_pct") or 0.0) >= 0.0425
+    assert float(pullback.get("volume_ratio_min") or 0.0) <= 1.1
 
 
 def test_intraday_entry_waits_when_minute_candles_missing() -> None:
