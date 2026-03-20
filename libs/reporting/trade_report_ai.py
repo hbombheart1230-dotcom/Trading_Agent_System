@@ -2127,24 +2127,183 @@ def build_ai_trade_report(
 
 
 def render_trade_report_markdown(report: Dict[str, Any]) -> str:
+    def _action_label(value: Any) -> str:
+        mapping = {
+            "BUY": "매수",
+            "SELL": "매도",
+            "HOLD": "보유 유지",
+            "WAIT": "진입 보류",
+        }
+        raw = _clip(value, max_len=64)
+        return mapping.get(str(raw or "").strip().upper(), raw or "-")
+
+    def _axis_label(value: Any) -> str:
+        raw = _clip(value, max_len=120)
+        lowered = str(raw or "").strip().lower()
+        mapping = {
+            "hard stop": "고정 손절 기준",
+            "adaptive stop": "상황 대응형 손절 기준",
+            "take profit": "목표 수익 실현 기준",
+            "vwap breakdown": "VWAP 이탈",
+            "vwap_breakdown": "VWAP 이탈",
+            "peak drawdown": "고점 대비 하락폭 확대",
+            "peak_drawdown": "고점 대비 하락폭 확대",
+            "prior low break": "직전 저점 이탈",
+            "prior_low_break": "직전 저점 이탈",
+            "intraday low break": "장중 저점 이탈",
+            "intraday_low_break": "장중 저점 이탈",
+            "confirmed_exit_signal": "청산 확인 신호",
+            "defensive exit": "방어형 청산 신호",
+            "defensive_exit": "방어형 청산 신호",
+            "no trigger yet": "아직 청산 신호가 확인되지 않음",
+        }
+        return mapping.get(lowered, raw or "-")
+
+    def _meta_label(value: Any) -> str:
+        raw = _clip(value, max_len=160)
+        lowered = str(raw or "").strip().lower()
+        mapping = {
+            "simulation trade report": "시뮬레이션 거래 리포트",
+            "live trade report": "실거래 거래 리포트",
+            "integrated_chain": "통합 체인",
+            "simulation (mock broker)": "시뮬레이션 (모의 브로커)",
+            "live": "실거래",
+            "open": "열림",
+            "closed": "종결",
+        }
+        return mapping.get(lowered, raw or "-")
+
+    def _render_text(text: Any) -> str:
+        cleaned = _clip(text, max_len=2000).strip()
+        if not cleaned:
+            return ""
+        lowered = cleaned.lower()
+        exact_mapping = {
+            "position is still open; no closing sell execution has been captured yet.": "아직 청산 체결이 확인되지 않아 포지션이 열린 상태로 남아 있습니다.",
+            "exit reasoning was not captured.": "청산 판단 근거가 충분히 저장되지 않았습니다.",
+            "reporter linkage was not available yet.": "Reporter 연계 결과는 아직 연결되지 않았습니다.",
+            "reporter linkage status was recorded separately.": "Reporter 연계 상태는 별도 메타에 기록되어 있습니다.",
+            "the decision path was recorded, but the operator-facing summary is limited.": "의사결정 경로는 기록되었지만 운영자용 요약은 제한적으로만 남아 있습니다.",
+            "no timeline entries were captured.": "타임라인 이벤트는 별도로 저장되지 않았습니다.",
+            "open trade": "아직 포지션이 열린 상태입니다.",
+            "hold": "현재 포지션은 계속 보유 중입니다.",
+        }
+        if lowered in exact_mapping:
+            return exact_mapping[lowered]
+
+        m = re.fullmatch(r"Monitor runs:\s*(\d+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"모니터 실행 횟수는 {m.group(1)}회였습니다."
+        m = re.fullmatch(r"Posture:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"현재 포지션 판단은 {_action_label(m.group(1))}입니다."
+        m = re.fullmatch(r"Trigger type:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"감지된 신호 유형은 {_axis_label(m.group(1))}입니다."
+        m = re.fullmatch(r"Position age:\s*(\d+)\s*seconds", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"포지션 유지 시간은 약 {m.group(1)}초입니다."
+        m = re.fullmatch(r"Effective stop:\s*([^(]+?)(?:\s*\((.+)\))?", cleaned, flags=re.IGNORECASE)
+        if m:
+            level = _clip(m.group(1), max_len=64)
+            reason = _axis_label(m.group(2))
+            if reason and reason != "-":
+                return f"유효 손절 기준은 {level} 수준이며, 기준 축은 {reason}입니다."
+            return f"유효 손절 기준은 {level} 수준입니다."
+        m = re.fullmatch(r"Take profit:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"목표 수익 실현 기준은 {_clip(m.group(1), max_len=80)} 수준입니다."
+        m = re.fullmatch(r"Active exit axis:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"현재 우선 감시 중인 청산 축은 {_axis_label(m.group(1))}입니다."
+        m = re.fullmatch(r"Exit confirmation:\s*(\d+)/(\d+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"청산 확인 조건은 {m.group(1)}/{m.group(2)} 수준으로 집계됐습니다."
+        m = re.fullmatch(r"Watch axes:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            axes = ", ".join(_axis_label(part.strip()) for part in m.group(1).split(","))
+            return f"주요 감시 축은 {axes}입니다."
+        m = re.fullmatch(r"Decision chain:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"판단 흐름은 {_clip(m.group(1), max_len=200)} 순서로 이어졌습니다."
+        m = re.fullmatch(r"Current price / avg / peak:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"현재가, 평균단가, 장중 고점은 {_clip(m.group(1), max_len=180)}입니다."
+        m = re.fullmatch(r"Current drawdown / peak drawdown:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"현재 손익 변동과 고점 대비 하락폭은 {_clip(m.group(1), max_len=180)}입니다."
+        m = re.fullmatch(r"Price source:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"가격 기준 소스는 {_clip(m.group(1), max_len=120)}입니다."
+        m = re.fullmatch(r"Feature source:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"피처 기준 소스는 {_clip(m.group(1), max_len=120)}입니다."
+        m = re.fullmatch(r"Recent monitor update:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"최근 모니터 업데이트는 다음과 같습니다: {_clip(m.group(1), max_len=240)}"
+        m = re.fullmatch(r"Exit run:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"청산 판단은 {_clip(m.group(1), max_len=120)} run에서 기록되었습니다."
+        m = re.fullmatch(r"Exit time:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"청산 판단 시각은 {_clip(m.group(1), max_len=120)}입니다."
+        m = re.fullmatch(r"Exit action:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"청산 액션은 {_action_label(m.group(1))}로 기록되었습니다."
+        m = re.fullmatch(r"Exit reason:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        if m:
+            return f"청산 사유는 {_clip(m.group(1), max_len=240)}입니다."
+        return cleaned
+
+    def _section_title(title: str) -> str:
+        mapping = {
+            "Executive Summary": "최종 판단 요약",
+            "Market Context at Entry": "시장 환경 요약",
+            "Why This Symbol Was Chosen": "선택된 종목 상세 분석",
+            "Entry Decision": "진입 상세 근거",
+            "Holding / Monitoring Story": "보유 경과",
+            "Exit Decision": "청산 판단 근거",
+            "Scanner Logic and Filters": "스캐너 후보 비교",
+            "Guard / Approval Result": "승인 및 가드 판단",
+            "Execution Quality": "실행 결과",
+            "Reporter Evaluation": "결과 평가",
+            "Errors / Weaknesses / Improvement Points": "보완 포인트",
+        }
+        return mapping.get(title, title)
+
+    def _timeline_label(value: Any) -> str:
+        mapping = {
+            "entry": "진입",
+            "holding": "보유 관리",
+            "hold": "보유 관리",
+            "monitor": "모니터링",
+            "exit": "청산",
+            "reporter": "평가",
+            "scanner": "스캐너",
+            "strategist": "전략가",
+            "executor": "실행",
+            "supervisor": "승인",
+        }
+        raw = _clip(value, max_len=64).strip().lower()
+        return mapping.get(raw, _clip(value, max_len=64) or "이벤트")
+
     generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
     generation_status = str(generation.get("status") or "").strip().lower()
     if generation_status not in {"", "ok", "repaired", "partial", "salvaged"}:
         failure = report.get("failure") if isinstance(report.get("failure"), dict) else {}
         lines = [
-            f"# AI Trade Report ({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})",
+            f"# AI 거래 리포트 ({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})",
             "",
-            f"- action: **{report.get('action') or '-'} {report.get('symbol') or '-'}**",
-            f"- lifecycle_status: **{report.get('status') or '-'}**",
-            f"- generation_status: `{generation.get('status') or '-'}`",
-            f"- model: `{generation.get('model') or '-'}`",
+            f"- 대상 거래는 {_action_label(report.get('action'))} {report.get('symbol') or '-'} 기준으로 정리했습니다.",
+            f"- 라이프사이클 상태는 {_meta_label(report.get('status'))}입니다.",
+            f"- 리포트 생성 상태는 {generation.get('status') or '-'}이며 사용 모델은 {generation.get('model') or '-'}입니다.",
             "",
-            "## Failure",
+            "## 생성 실패 안내",
             "",
-            f"- reason: {failure.get('reason') or generation.get('reason') or '-'}",
+            f"- 생성 실패 사유는 {failure.get('reason') or generation.get('reason') or '-'}입니다.",
         ]
         if str(failure.get("error") or "").strip():
-            lines.append(f"- error: {failure.get('error')}")
+            lines.append(f"- 내부 오류 정보는 {failure.get('error')}입니다.")
         lines.append("")
         return "\n".join(lines)
 
@@ -2197,30 +2356,25 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
     monitor_snapshot = report.get("monitor_snapshot") if isinstance(report.get("monitor_snapshot"), dict) else {}
 
     lines: List[str] = []
-    lines.append(f"# Trade Report ({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})")
+    lines.append(f"# AI 거래 리포트 ({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})")
     lines.append("")
-    lines.append(f"- action: **{report.get('action') or '-'} {report.get('symbol') or '-'}**")
-    lines.append(f"- lifecycle_status: **{report.get('status') or '-'}**")
-    lines.append(f"- story_type: **{report.get('story_type') or '-'}**")
-    lines.append(f"- execution_mode: **{report.get('execution_mode_label') or '-'}**")
+    lines.append(f"- 대상 거래는 {_action_label(report.get('action'))} {report.get('symbol') or '-'} 기준으로 정리했습니다.")
+    lines.append(f"- 라이프사이클 상태는 {_meta_label(report.get('status'))}입니다.")
+    lines.append(f"- 리포트 유형은 {_meta_label(report.get('story_type'))}입니다.")
+    lines.append(f"- 실행 모드는 {_meta_label(report.get('execution_mode_label'))}입니다.")
     lines.append(
-        f"- report_generation: status=`{generation.get('status') or '-'}` mode=`{generation.get('mode') or '-'}` "
-        f"model=`{generation.get('model') or '-'}`"
+        f"- 리포트 생성 상태는 {generation.get('status') or '-'}이며, 생성 모드는 {_meta_label(generation.get('mode'))}, 사용 모델은 {generation.get('model') or '-'}입니다."
     )
     lines.append("")
     if generation_status in {"repaired", "partial", "salvaged"}:
-        lines.append("## Generation Note")
+        lines.append("## 생성 참고")
         lines.append("")
-        lines.append(
-            f"- status: `{generation_status}`"
-        )
-        lines.append(
-            f"- reason: {generation.get('reason') or 'The report was reconstructed from a repaired or partial LLM response.'}"
-        )
+        lines.append(f"- 리포트는 {generation_status} 상태로 정리됐습니다.")
+        lines.append(f"- 사유는 {generation.get('reason') or '부분 응답을 복구해 최종 리포트를 구성한 경우입니다.'}입니다.")
         lines.append("")
     section_provenance = report.get("section_provenance") if isinstance(report.get("section_provenance"), dict) else {}
     if section_provenance:
-        lines.append("## Evidence Provenance")
+        lines.append("## 근거 출처")
         lines.append("")
         for section_key in (
             "market_context_at_entry",
@@ -2231,52 +2385,52 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         ):
             entry = section_provenance.get(section_key) if isinstance(section_provenance.get(section_key), dict) else {}
             lines.append(
-                f"- {section_key}: source={entry.get('source') or 'fallback'} "
-                f"confidence={entry.get('confidence') or 'low'} "
-                f"path={entry.get('artifact_path') or '-'}"
+                f"- {section_key} 섹션은 source={entry.get('source') or 'fallback'}, confidence={entry.get('confidence') or 'low'}, path={entry.get('artifact_path') or '-'} 기준으로 구성했습니다."
             )
         lines.append("")
     if monitor_snapshot:
-        lines.append("## Monitor Snapshot")
+        lines.append("## 모니터 스냅샷")
         lines.append("")
-        lines.append(f"- posture: **{monitor_snapshot.get('posture') or '-'}**")
-        lines.append(f"- trigger_type: **{monitor_snapshot.get('trigger_type') or '-'}**")
-        lines.append(f"- effective_stop: **{_fmt_pct(monitor_snapshot.get('effective_stop_loss_pct'))}**")
-        lines.append(f"- effective_stop_reason: {monitor_snapshot.get('effective_stop_reason') or '-'}")
-        lines.append(f"- take_profit: {_fmt_pct(monitor_snapshot.get('take_profit_pct'))}")
+        lines.append(f"- 현재 포지션 판단은 {_action_label(monitor_snapshot.get('posture'))}입니다.")
+        lines.append(f"- 감지된 신호 유형은 {_axis_label(monitor_snapshot.get('trigger_type'))}입니다.")
+        lines.append(f"- 유효 손절 기준은 {_fmt_pct(monitor_snapshot.get('effective_stop_loss_pct'))} 수준입니다.")
+        lines.append(f"- 손절 기준 축은 {_axis_label(monitor_snapshot.get('effective_stop_reason'))}입니다.")
+        lines.append(f"- 목표 수익 실현 기준은 {_fmt_pct(monitor_snapshot.get('take_profit_pct'))} 수준입니다.")
         if monitor_snapshot.get("current_price") not in (None, ""):
-            lines.append(f"- current_price: {_fmt_price(monitor_snapshot.get('current_price'))}")
+            lines.append(f"- 현재가는 {_fmt_price(monitor_snapshot.get('current_price'))}입니다.")
         if monitor_snapshot.get("average_price") not in (None, ""):
-            lines.append(f"- average_price: {_fmt_price(monitor_snapshot.get('average_price'))}")
+            lines.append(f"- 평균 단가는 {_fmt_price(monitor_snapshot.get('average_price'))}입니다.")
         if monitor_snapshot.get("peak_price") not in (None, ""):
-            lines.append(f"- peak_price: {_fmt_price(monitor_snapshot.get('peak_price'))}")
+            lines.append(f"- 장중 고점은 {_fmt_price(monitor_snapshot.get('peak_price'))}입니다.")
         if monitor_snapshot.get("current_drawdown") not in (None, ""):
-            lines.append(f"- current_drawdown: {_fmt_pct(monitor_snapshot.get('current_drawdown'))}")
+            lines.append(f"- 현재 손익 변동은 {_fmt_pct(monitor_snapshot.get('current_drawdown'))}입니다.")
         if monitor_snapshot.get("peak_drawdown") not in (None, ""):
-            lines.append(f"- peak_drawdown: {_fmt_pct(monitor_snapshot.get('peak_drawdown'))}")
+            lines.append(f"- 고점 대비 하락폭은 {_fmt_pct(monitor_snapshot.get('peak_drawdown'))}입니다.")
         if monitor_snapshot.get("vwap_distance") not in (None, ""):
-            lines.append(f"- vwap_distance: {_fmt_pct(monitor_snapshot.get('vwap_distance'))}")
+            lines.append(f"- VWAP 이격은 {_fmt_pct(monitor_snapshot.get('vwap_distance'))}입니다.")
         if str(monitor_snapshot.get("active_exit_axis") or "").strip():
-            lines.append(f"- active_exit_axis: {monitor_snapshot.get('active_exit_axis')}")
+            lines.append(f"- 현재 우선 감시 중인 청산 축은 {_axis_label(monitor_snapshot.get('active_exit_axis'))}입니다.")
         for axis in list(monitor_snapshot.get("watch_axes") or [])[:6]:
-            lines.append(f"- watch_axis: {axis}")
-        lines.append(f"- price_source: {monitor_snapshot.get('price_source') or '-'}")
-        lines.append(f"- feature_source: {monitor_snapshot.get('feature_source') or '-'}")
+            lines.append(f"- 주요 감시 축은 {_axis_label(axis)}입니다.")
+        lines.append(f"- 가격 기준 소스는 {monitor_snapshot.get('price_source') or '-'}입니다.")
+        lines.append(f"- 피처 기준 소스는 {monitor_snapshot.get('feature_source') or '-'}입니다.")
         if str(monitor_snapshot.get('price_source_policy') or '').strip():
-            lines.append(f"- price_source_policy: {monitor_snapshot.get('price_source_policy')}")
-        lines.append(f"- exit_triggered: {'yes' if monitor_snapshot.get('exit_triggered') else 'no'}")
+            lines.append(f"- 가격 소스 정책은 {monitor_snapshot.get('price_source_policy')}입니다.")
+        lines.append(f"- 청산 신호 발생 여부는 {'예' if monitor_snapshot.get('exit_triggered') else '아니오'}입니다.")
         lines.append("")
 
     def _section(title: str, section: Dict[str, Any], *, bullet_key: str = "bullets") -> None:
-        lines.append(f"## {title}")
+        lines.append(f"## {_section_title(title)}")
         lines.append("")
-        summary = _clip(section.get("summary"), max_len=2000)
+        summary = _render_text(section.get("summary"))
         if summary:
             lines.append(summary)
             lines.append("")
         bullets = _listify(section.get(bullet_key), max_items=12, max_len=400)
         for bullet in bullets:
-            lines.append(f"- {bullet}")
+            rendered = _render_text(bullet)
+            if rendered:
+                lines.append(f"- {rendered}")
         if bullets:
             lines.append("")
 
@@ -2292,33 +2446,34 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
     _section("Reporter Evaluation", reporter_eval)
     _section("Errors / Weaknesses / Improvement Points", weak_points)
 
-    lines.append("## Full Timeline")
+    lines.append("## 전체 타임라인")
     lines.append("")
     timeline = report.get("full_timeline") if isinstance(report.get("full_timeline"), list) else report.get("timeline") if isinstance(report.get("timeline"), list) else []
     if timeline:
         for row in timeline[:24]:
             if not isinstance(row, dict):
                 continue
+            label = _timeline_label(row.get('event') or row.get('step') or row.get('label') or 'step')
+            description = _render_text(row.get('description') or row.get('summary') or row.get('detail') or '-')
             lines.append(
-                f"- {row.get('event') or row.get('step') or row.get('label') or 'step'}: "
-                f"{row.get('description') or row.get('summary') or row.get('detail') or '-'}"
+                f"- {label}: {description or '-'}"
             )
     else:
-        lines.append("- No timeline entries were captured.")
+        lines.append("- 타임라인 이벤트는 별도로 저장되지 않았습니다.")
     lines.append("")
 
-    lines.append("## Final Operator Conclusion")
+    lines.append("## 최종 운영 판단")
     lines.append("")
-    final_summary = _clip(final_conclusion.get("summary"), max_len=2000)
+    final_summary = _render_text(final_conclusion.get("summary"))
     if final_summary:
         lines.append(final_summary)
         lines.append("")
     current_action = _clip(final_conclusion.get("current_action"), max_len=48)
     if current_action:
-        lines.append(f"- current_action: **{current_action}**")
+        lines.append(f"- 현재 판단 액션은 {_action_label(current_action)}입니다.")
     for item in _listify(final_conclusion.get("watch_next"), max_items=6, max_len=220):
-        lines.append(f"- watch_next: {item}")
+        lines.append(f"- 다음 확인 항목은 {_render_text(item)}입니다.")
     for item in _listify(final_conclusion.get("thesis_invalidation"), max_items=6, max_len=220):
-        lines.append(f"- thesis_invalidation: {item}")
+        lines.append(f"- 기존 판단이 무효화되는 조건은 {_render_text(item)}입니다.")
     lines.append("")
     return "\n".join(lines)

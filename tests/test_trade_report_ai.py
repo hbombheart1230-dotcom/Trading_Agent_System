@@ -690,3 +690,89 @@ def test_ai_trade_report_prefers_hangul_execution_bullets_without_english_duplic
 
     bullets = report["execution_quality"]["bullets"]
     assert bullets == ["실행 결과: 기록됨", "수량: 1", "실행 모드: 시뮬레이션 (모의 브로커)"]
+
+
+def test_render_trade_report_markdown_uses_korean_titles_and_narrative_labels() -> None:
+    report = {
+        "trade_id": "TRD_20260320_005930_01",
+        "action": "BUY",
+        "symbol": "005930",
+        "status": "open",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free"},
+        "executive_summary": {"summary": "삼성전자 단기 모멘텀 진입 이후 현재는 보유 유지 관점으로 관리 중입니다."},
+        "market_context_at_entry": {"summary": "시장 환경은 중립이지만 반도체 대형주로 수급이 집중됐습니다.", "bullets": ["global sentiment -0.20", "vix 25.09"]},
+        "why_this_symbol_was_chosen": {"summary": "전체 후보 중 1순위로 선정됐습니다.", "bullets": ["Top candidates: 005930, 000660, 047040"]},
+        "entry_decision": {"summary": "분봉 기준 돌파와 거래량 증가가 함께 확인됐습니다.", "bullets": ["VWAP hold", "volume ratio 1.8x"]},
+        "holding_monitoring_story": {
+            "summary": "hold",
+            "bullets": [
+                "Monitor runs: 6",
+                "Posture: HOLD",
+                "Effective stop: 1.00% (hard_stop)",
+                "Take profit: 1.80%",
+                "Watch axes: Hard stop, Adaptive stop, Take profit, VWAP breakdown",
+            ],
+        },
+        "exit_decision": {"summary": "open trade", "bullets": ["Exit trigger: no"]},
+        "scanner_filters": {"summary": "filters", "bullets": ["liquidity filter: pass"]},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "none", "bullets": []},
+        "full_timeline": [{"event": "entry", "description": "breakout confirmed"}],
+        "final_operator_conclusion": {"summary": "hold", "current_action": "HOLD", "watch_next": ["VWAP retest"], "thesis_invalidation": ["prior low break"]},
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "# AI 거래 리포트" in markdown
+    assert "## 시장 환경 요약" in markdown
+    assert "## 보유 경과" in markdown
+    assert "## 청산 판단 근거" in markdown
+    assert "## 최종 운영 판단" in markdown
+    assert "Executive Summary" not in markdown
+    assert "Holding / Monitoring Story" not in markdown
+    assert "Posture:" not in markdown
+    assert "Take profit" not in markdown
+    assert "Hard stop" not in markdown
+    assert "현재 포지션 판단은 보유 유지입니다." in markdown
+    assert "목표 수익 실현 기준은 1.80% 수준입니다." in markdown
+    assert "고정 손절 기준" in markdown
+
+
+def test_render_trade_report_markdown_translates_timeline_and_final_conclusion() -> None:
+    report = {
+        "trade_id": "TRD_20260320_000660_01",
+        "action": "SELL",
+        "symbol": "000660",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "salvaged", "mode": "ai", "model": "openrouter/free", "reason": "partial"},
+        "executive_summary": {"summary": "거래는 청산까지 완료됐습니다."},
+        "market_context_at_entry": {"summary": "시장 심리는 다소 약했지만 선택 종목 강도는 유지됐습니다.", "bullets": []},
+        "why_this_symbol_was_chosen": {"summary": "상대 강도와 거래대금이 우수했습니다.", "bullets": []},
+        "entry_decision": {"summary": "분봉 재돌파 확인 후 진입했습니다.", "bullets": []},
+        "holding_monitoring_story": {"summary": "hold", "bullets": ["Decision chain: hold -> hold -> hold"]},
+        "exit_decision": {"summary": "SELL was triggered because hard_stop.", "bullets": ["Exit action: SELL", "Exit reason: hard_stop"]},
+        "scanner_filters": {"summary": "filters", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "none", "bullets": []},
+        "full_timeline": [{"event": "entry", "description": "breakout confirmed"}, {"event": "exit", "description": "hard stop triggered"}],
+        "final_operator_conclusion": {"summary": "open trade", "current_action": "SELL", "watch_next": ["VWAP retest"], "thesis_invalidation": ["prior low break"]},
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "## 생성 참고" in markdown
+    assert "## 전체 타임라인" in markdown
+    assert "- 진입:" in markdown
+    assert "- 청산:" in markdown
+    assert "## 최종 운영 판단" in markdown
+    assert "- 현재 판단 액션은 매도입니다." in markdown
+    assert "- 다음 확인 항목은" in markdown
+    assert "- 기존 판단이 무효화되는 조건은" in markdown
