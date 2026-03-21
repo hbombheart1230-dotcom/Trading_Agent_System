@@ -24,6 +24,18 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _trade_brief_llm_path(trade_dir: Path) -> Path:
+    candidates = [
+        trade_dir / "reports" / "brief_llm_response.json",
+        trade_dir / "brief" / "brief_llm_response.json",
+        trade_dir / "brief_llm_response.json",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[0]
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate operator briefs under reports/trades for one day.")
     parser.add_argument("--env-path", default=".env")
@@ -77,7 +89,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     for trade_dir in trade_dirs:
         story_id = trade_dir.name
         brief = dac.load_operator_brief_detail(cfg, story_id)
-        llm_path = trade_dir / "brief" / "brief_llm_response.json"
+        llm_path = _trade_brief_llm_path(trade_dir)
         llm_artifact = _read_json(llm_path)
         rows.append(
             {

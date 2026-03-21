@@ -12,8 +12,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.core.settings import load_env_file
-from libs.reporting.llm_artifacts import persist_llm_artifact_refs, trade_artifact_paths, write_json
-from libs.reporting.trade_report_ai import build_ai_trade_report, render_trade_report_markdown
+from libs.reporting.llm_artifacts import (
+    build_compact_input_artifact,
+    persist_llm_artifact_refs,
+    trade_artifact_paths,
+    write_json,
+)
+from libs.reporting.trade_report_ai import (
+    build_ai_trade_report,
+    build_ai_trade_report_compact_input,
+    render_trade_report_markdown,
+)
 
 
 def _utc_now_iso() -> str:
@@ -181,7 +190,19 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue
 
         trade_paths = trade_artifact_paths(reports_root, day, trade_id)
-        compact_input_path = Path()
+        compact_input_path = trade_paths["ai_trade_report_compact_input_json"]
+        compact_input = build_ai_trade_report_compact_input(story_input)
+        compact_artifact = build_compact_input_artifact(
+            component="ai_trade_report",
+            run_id=str(story_input.get("run_id") or ""),
+            trade_id=trade_id,
+            story_id=str(story_input.get("story_id") or trade_id),
+            day=day,
+            source_artifact_path=story_input_path,
+            source_input=story_input,
+            compact_input=compact_input,
+        )
+        write_json(compact_input_path, compact_artifact)
         report = build_ai_trade_report(
             story_input,
             enabled=True,
@@ -218,7 +239,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "mode": str(generation.get("mode") or ""),
                 "model": str(generation.get("model") or llm_artifact.get("model") or ""),
                 "story_input_path": story_input_path,
-                "ai_trade_report_compact_input_path": "",
+                "ai_trade_report_compact_input_path": str(compact_input_path),
                 "ai_trade_report_json_path": str(report_json_path),
                 "ai_trade_report_md_path": str(report_md_path),
                 "ai_trade_report_llm_response_path": str(llm_path) if llm_artifact else "",

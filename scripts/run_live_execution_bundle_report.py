@@ -33,6 +33,7 @@ from libs.reporting.llm_artifacts import (
 from libs.reporting.trade_explain import generate_trade_explain_report
 from libs.reporting.trade_report_ai import (
     build_ai_trade_report,
+    build_ai_trade_report_compact_input,
     build_deterministic_trade_report,
     render_trade_report_markdown,
 )
@@ -77,6 +78,18 @@ def _sanitize_error_message(value: Any, *, max_len: int = 260) -> str:
     if len(text) <= max_len:
         return text
     return text[: max(0, max_len - 3)] + "..."
+
+
+def _is_placeholder_entry_reason(value: Any) -> bool:
+    raw = str(value or "").strip().lower()
+    return raw in {
+        "",
+        "no_position",
+        "entry reasoning was not captured.",
+        "entry reasoning was not captured",
+        "-",
+        "n/a",
+    }
 
 
 def _report_reason_human(code: str) -> str:
@@ -778,9 +791,18 @@ def _build_strategist_llm_response_artifact(
             bool(llm_error),
         )
     )
+    source_run_id = str(evidence_row.get("run_id") or "")
+    bundle_run_id = str(bundle_out.get("run_id") or "")
+    reconstructed_from_evidence = bool(evidence_row and not has_direct_strategist_llm_fields)
+    source_run_mismatch = bool(source_run_id and bundle_run_id and source_run_id != bundle_run_id)
+    source_run_suspect = "strategist-llm-test" in source_run_id.lower()
     original_status = "ok" if bool(llm_ok) else "fallback"
     if raw_response.startswith("ERROR:"):
         original_status = "error"
+    if reconstructed_from_evidence and source_run_suspect and original_status == "ok":
+        original_status = "salvaged"
+        if not llm_error:
+            llm_error = "reconstructed_source_mismatch"
     attempts = []
     if has_linked_llm_evidence:
         attempts.append(
@@ -808,9 +830,15 @@ def _build_strategist_llm_response_artifact(
             "evidence_available": False,
         }
     elif evidence_row:
-        meta["reconstructed_from_evidence_ledger"] = True
-        meta["source_run_id"] = str(evidence_row.get("run_id") or "")
+        meta["reconstructed_from_evidence_ledger"] = reconstructed_from_evidence
+        meta["source_run_id"] = source_run_id
         meta["source_stage"] = str(evidence_row.get("stage") or "")
+        if source_run_mismatch:
+            meta["source_run_mismatch"] = True
+            meta["expected_run_id"] = bundle_run_id
+        if source_run_suspect:
+            meta["source_run_suspect"] = True
+            meta["source_quality"] = "reconstructed_untrusted_source"
     return build_llm_response_artifact(
         component="strategist",
         run_id=str(bundle_out.get("run_id") or ""),
@@ -1750,25 +1778,85 @@ def _build_trade_lifecycles(
 
     def _entry_context(snapshot: Dict[str, Any], bundle: Dict[str, Any]) -> Dict[str, Any]:
         execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
+        strategist_payload = bundle.get("strategist") if isinstance(bundle.get("strategist"), dict) else {}
+        strategist_summary_payload = bundle.get("strategist_summary") if isinstance(bundle.get("strategist_summary"), dict) else {}
+        strategist_policy = (
+            strategist_payload.get("policy_selected")
+            if isinstance(strategist_payload.get("policy_selected"), dict)
+            else strategist_summary_payload.get("policy_selected")
+            if isinstance(strategist_summary_payload.get("policy_selected"), dict)
+            else {}
+        )
+        scanner_payload = bundle.get("scanner") if isinstance(bundle.get("scanner"), dict) else {}
+        scanner_source_refs = scanner_payload.get("source_refs") if isinstance(scanner_payload.get("source_refs"), dict) else {}
+        scanner_reason_human = bundle.get("scanner_reason_human") if isinstance(bundle.get("scanner_reason_human"), dict) else {}
+        monitor_reason_human = bundle.get("monitor_reason_human") if isinstance(bundle.get("monitor_reason_human"), dict) else {}
+        scanner_context = dict(scanner_reason_human)
+        if not scanner_context and scanner_payload:
+            scanner_context = {
+                "selected_symbol": str(scanner_payload.get("selected_symbol") or scanner_payload.get("top_stock") or ""),
+                "selected_rank": safe_int(scanner_payload.get("selected_rank"), 0),
+                "selected_score": scanner_payload.get("top_score"),
+                "summary": str(
+                    scanner_payload.get("selection_reason")
+                    or (scanner_payload.get("selected_candidate") or {}).get("why")
+                    or ""
+                ),
+            }
+        monitor_context = dict(monitor_reason_human)
+        if not monitor_context and isinstance(bundle.get("monitor"), dict):
+            monitor_payload = dict(bundle.get("monitor") or {})
+            monitor_context = {
+                "summary": str(monitor_payload.get("monitor_reason") or monitor_payload.get("entry_reason") or ""),
+                "active_exit_axis": str(monitor_payload.get("active_exit_axis") or ""),
+            }
+        entry_price = execution.get("price")
+        if entry_price is None or entry_price == "":
+            entry_price = execution.get("order_price") or execution.get("avg_price")
+        entry_reason = str(
+            scanner_context.get("summary")
+            or monitor_context.get("summary")
+            or snapshot.get("monitor_reason")
+            or ""
+        ).strip()
+        if _is_placeholder_entry_reason(entry_reason):
+            entry_reason = str(
+                (bundle.get("execution_outcome_human") or {}).get("summary")
+                or scanner_context.get("summary")
+                or monitor_context.get("summary")
+                or snapshot.get("execution_reason")
+                or snapshot.get("decision_reason")
+                or snapshot.get("monitor_reason")
+                or "Entry reasoning was not captured."
+            ).strip()
+        playbook = str(
+            strategist_payload.get("playbook")
+            or strategist_summary_payload.get("playbook")
+            or strategist_policy.get("playbook")
+            or scanner_source_refs.get("strategist_playbook")
+            or ""
+        )
+        themes_raw = (
+            strategist_payload.get("themes")
+            or strategist_summary_payload.get("themes")
+            or strategist_policy.get("themes")
+            or []
+        )
+        themes = [str(item or "").strip() for item in list(themes_raw or []) if str(item or "").strip()]
         return {
             "run_id": str(snapshot.get("run_id") or ""),
             "ts": str(snapshot.get("ts_start") or ""),
             "action": str(execution.get("action") or "BUY"),
-            "price": execution.get("price"),
+            "price": entry_price,
             "qty": safe_int(execution.get("qty"), 0),
-            "reason_human": str(
-                (bundle.get("scanner_reason_human") or {}).get("summary")
-                or (bundle.get("monitor_reason_human") or {}).get("summary")
-                or snapshot.get("monitor_reason")
-                or "Entry reasoning was not captured."
-            ),
+            "reason_human": entry_reason,
             "strategist_context": {
-                "playbook": str((bundle.get("strategist") or {}).get("playbook") or ""),
-                "themes": list((bundle.get("strategist") or {}).get("themes") or [])[:6],
+                "playbook": playbook,
+                "themes": themes[:6],
                 "market_context_summary": str((bundle.get("market_context_human") or {}).get("summary") or ""),
             },
-            "scanner_context": dict(bundle.get("scanner_reason_human") or {}),
-            "monitor_context": dict(bundle.get("monitor_reason_human") or {}),
+            "scanner_context": scanner_context,
+            "monitor_context": monitor_context,
             "guard_context": dict(bundle.get("guard_reason_human") or {}),
             "execution_context": dict(bundle.get("execution_outcome_human") or {}),
         }
@@ -2462,6 +2550,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         hold_artifact_path = trade_paths["hold_json"]
         exit_artifact_path = trade_paths["exit_json"]
         story_input_path = trade_paths["ai_trade_report_input_json"]
+        story_compact_input_path = trade_paths["ai_trade_report_compact_input_json"]
         trade_report_json_path = trade_paths["ai_trade_report_json"]
         trade_report_md_path = trade_paths["ai_trade_report_md"]
         strategist_input_path = trade_paths["strategist_input_json"]
@@ -2634,11 +2723,58 @@ def main(argv: Optional[List[str]] = None) -> int:
             strategist_llm_response_path=strategist_llm_response_path,
         )
         entry_ctx_live = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+        if not entry_ctx_live:
+            exit_seed = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+            exit_monitor_seed = exit_seed.get("monitor_context") if isinstance(exit_seed.get("monitor_context"), dict) else {}
+            inferred_entry_price = (
+                exit_monitor_seed.get("average_price")
+                or exit_monitor_seed.get("avg_price")
+                or exit_monitor_seed.get("current_price")
+                or exit_seed.get("price")
+            )
+            entry_ctx_live = {
+                "run_id": str(strategy_anchor_run_id or ""),
+                "ts": "",
+                "action": "BUY",
+                "price": inferred_entry_price,
+                "qty": safe_int(exit_seed.get("qty"), 0),
+                "reason_human": "Entry evidence was not captured for this day. Position context was inferred from downstream monitor/exit artifacts.",
+                "strategist_context": {},
+                "scanner_context": {},
+                "monitor_context": {},
+                "guard_context": {},
+                "execution_context": {},
+                "inferred_entry": True,
+            }
+            lifecycle["entry"] = entry_ctx_live
+            lifecycle.setdefault("warnings", []).append(
+                "Entry evidence was missing; lifecycle entry context was inferred from available artifacts."
+            )
         if entry_ctx_live:
             refreshed_strategist_context = dict(entry_ctx_live.get("strategist_context") or {}) if isinstance(entry_ctx_live.get("strategist_context"), dict) else {}
             refreshed_market_context = (
                 lifecycle_bundle.get("market_context_human")
                 if isinstance(lifecycle_bundle.get("market_context_human"), dict)
+                else {}
+            )
+            strategist_summary_payload = (
+                lifecycle_bundle.get("strategist_summary")
+                if isinstance(lifecycle_bundle.get("strategist_summary"), dict)
+                else {}
+            )
+            strategist_policy = (
+                strategist_summary_payload.get("policy_selected")
+                if isinstance(strategist_summary_payload.get("policy_selected"), dict)
+                else {}
+            )
+            scanner_summary_payload = (
+                lifecycle_bundle.get("scanner_summary")
+                if isinstance(lifecycle_bundle.get("scanner_summary"), dict)
+                else {}
+            )
+            scanner_source_refs = (
+                scanner_summary_payload.get("source_refs")
+                if isinstance(scanner_summary_payload.get("source_refs"), dict)
                 else {}
             )
             if refreshed_market_context:
@@ -2647,6 +2783,27 @@ def main(argv: Optional[List[str]] = None) -> int:
                     or refreshed_strategist_context.get("market_context_summary")
                     or ""
                 )
+            if not str(refreshed_strategist_context.get("playbook") or "").strip():
+                fallback_playbook = str(
+                    strategist_summary_payload.get("playbook")
+                    or strategist_policy.get("playbook")
+                    or scanner_source_refs.get("strategist_playbook")
+                    or ""
+                ).strip()
+                if fallback_playbook:
+                    refreshed_strategist_context["playbook"] = fallback_playbook
+            if not list(refreshed_strategist_context.get("themes") or []):
+                fallback_themes = [
+                    str(item or "").strip()
+                    for item in list(
+                        strategist_summary_payload.get("themes")
+                        or strategist_policy.get("themes")
+                        or []
+                    )
+                    if str(item or "").strip()
+                ]
+                if fallback_themes:
+                    refreshed_strategist_context["themes"] = fallback_themes[:6]
             entry_ctx_live["strategist_context"] = _attach_strategy_anchor(
                 refreshed_strategist_context,
                 strategy_anchor_run_id=strategy_anchor_run_id,
@@ -2661,6 +2818,49 @@ def main(argv: Optional[List[str]] = None) -> int:
                 if isinstance(entry_ctx_live.get("scanner_context"), dict)
                 else {}
             )
+            current_entry_reason = str(entry_ctx_live.get("reason_human") or "").strip()
+            if _is_placeholder_entry_reason(current_entry_reason):
+                fallback_entry_reason = str(
+                    refreshed_scanner_context.get("summary")
+                    or (
+                        lifecycle_bundle.get("monitor_reason_human").get("summary")
+                        if isinstance(lifecycle_bundle.get("monitor_reason_human"), dict)
+                        else ""
+                    )
+                    or (
+                        lifecycle_bundle.get("execution_outcome_human").get("summary")
+                        if isinstance(lifecycle_bundle.get("execution_outcome_human"), dict)
+                        else ""
+                    )
+                    or current_entry_reason
+                ).strip()
+                if fallback_entry_reason:
+                    entry_ctx_live["reason_human"] = fallback_entry_reason
+            if entry_ctx_live.get("price") is None or entry_ctx_live.get("price") == "":
+                execution_payload = (
+                    lifecycle_bundle.get("execution")
+                    if isinstance(lifecycle_bundle.get("execution"), dict)
+                    else {}
+                )
+                fallback_price = (
+                    execution_payload.get("price")
+                    or execution_payload.get("order_price")
+                    or execution_payload.get("avg_price")
+                )
+                if (fallback_price is None or fallback_price == "") and isinstance(refreshed_scanner_context.get("selected_candidate"), dict):
+                    selected_candidate = dict(refreshed_scanner_context.get("selected_candidate") or {})
+                    feature_snapshot = selected_candidate.get("feature_snapshot") if isinstance(selected_candidate.get("feature_snapshot"), dict) else {}
+                    fallback_price = feature_snapshot.get("skill_quote_price")
+                if fallback_price is None or fallback_price == "":
+                    holding_for_price = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+                    first_monitor_ctx = {}
+                    for row in list(holding_for_price.get("holding_events") or []):
+                        if isinstance(row, dict) and isinstance(row.get("monitor_context"), dict):
+                            first_monitor_ctx = dict(row.get("monitor_context") or {})
+                            break
+                    fallback_price = first_monitor_ctx.get("current_price") or first_monitor_ctx.get("price")
+                if fallback_price is not None and fallback_price != "":
+                    entry_ctx_live["price"] = fallback_price
             entry_ctx_live["scanner_context"] = _attach_strategy_anchor(
                 refreshed_scanner_context,
                 strategy_anchor_run_id=strategy_anchor_run_id,
@@ -2675,6 +2875,23 @@ def main(argv: Optional[List[str]] = None) -> int:
                 strategist_compact_input_path=strategist_compact_input_path,
                 strategist_llm_response_path=strategist_llm_response_path,
             )
+            entry_reason_final = str(entry_ctx_live.get("reason_human") or "").strip()
+            if entry_reason_final:
+                if isinstance(summary_obj, dict):
+                    summary_obj["entry_reason_human"] = entry_reason_final
+                current_lifecycle_summary = str(lifecycle_bundle.get("trade_lifecycle_summary") or "")
+                if "Entry reason was not captured" in current_lifecycle_summary:
+                    exit_ctx_summary = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+                    exit_reason_final = str(exit_ctx_summary.get("reason_human") or "Exit reason was not captured.").strip()
+                    refreshed_lifecycle_summary = (
+                        f"Trade {trade_id} for {symbol} is {status}. "
+                        f"Entry: {entry_reason_final} "
+                        f"Exit: {exit_reason_final}"
+                    )
+                    lifecycle_bundle["trade_lifecycle_summary"] = refreshed_lifecycle_summary
+                    if isinstance(summary_obj, dict):
+                        summary_obj["lifecycle_summary_human"] = refreshed_lifecycle_summary
+                        lifecycle["summary"] = summary_obj
             lifecycle["entry"] = entry_ctx_live
         exit_ctx_live = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
         if exit_ctx_live:
@@ -2899,7 +3116,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "exit_json": str(exit_artifact_path),
                 "ai_trade_report_input_json": str(story_input_path),
                 "trade_story_input_json": str(story_input_path),
-                "deprecated_ai_trade_report_compact_input_json": "",
+                "ai_trade_report_compact_input_json": str(story_compact_input_path),
+                "deprecated_ai_trade_report_compact_input_json": str(story_compact_input_path),
                 "deprecated_trade_report_json": "",
                 "deprecated_trade_report_md": "",
                 "ai_trade_report_json": trade_report_json_written,
@@ -2933,6 +3151,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "operator_brief_json",
             "ai_trade_report_json",
             "ai_trade_report_md",
+            "ai_trade_report_compact_input_json",
             "strategist_llm_response_json",
             "ai_trade_report_llm_response_json",
             "brief_llm_response_json",
@@ -2945,7 +3164,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "ai_trade_report_json": trade_report_json_written,
                 "ai_trade_report_md": trade_report_md_written,
                 "ai_trade_report_input_json": str(story_input_path),
-                "ai_trade_report_compact_input_json": "",
+                "ai_trade_report_compact_input_json": str(story_compact_input_path),
                 "ai_trade_report_llm_response_json": ai_trade_report_llm_response_written,
                 "strategist_input_json": "",
                 "strategist_compact_input_json": "",
@@ -2973,6 +3192,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "hold_json": hold_artifact_path.exists(),
             "exit_json": exit_artifact_path.exists(),
             "ai_trade_report_input_json": story_input_path.exists(),
+            "ai_trade_report_compact_input_json": story_compact_input_path.exists(),
             "ai_trade_report_json": bool(trade_report_json_written),
             "ai_trade_report_md": bool(trade_report_md_written),
             "strategist_evidence_json": strategist_evidence_path.exists(),
@@ -3102,7 +3322,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         trade_artifact_links_payload["links"]["ai_trade_report_llm_response_ref"] = str(ai_trade_report_llm_artifact.get("response_ref") or "")
 
         write_json(story_input_path, trade_story_input)
-        # Phase 3: no forward writes for large intermediate compact input artifacts in trades.
+        trade_story_compact_input = build_ai_trade_report_compact_input(trade_story_input)
+        trade_story_compact_artifact = build_compact_input_artifact(
+            component="ai_trade_report",
+            run_id=str(anchor_run_id or ""),
+            trade_id=trade_id,
+            story_id=trade_id,
+            day=day,
+            source_artifact_path=str(story_input_path),
+            source_input=trade_story_input,
+            compact_input=trade_story_compact_input,
+        )
+        write_json(story_compact_input_path, trade_story_compact_artifact)
         entry_payload = dict(lifecycle.get("entry") or {})
         holding_payload = dict(lifecycle.get("holding") or {})
         exit_payload = dict(lifecycle.get("exit") or {})
@@ -3188,7 +3419,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "trade_lifecycle_json_path": "",
                 "trade_story_input_path": str(story_input_path),
                 "ai_trade_report_input_path": str(story_input_path),
-                "ai_trade_report_compact_input_path": "",
+                "ai_trade_report_compact_input_path": str(story_compact_input_path),
                 "trade_report_json_path": trade_report_json_written,
                 "trade_report_md_path": trade_report_md_written,
                 "ai_trade_report_json_path": trade_report_json_written,
@@ -3229,7 +3460,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 row["trade_lifecycle_json_path"] = ""
                 row["trade_story_input_path"] = str(story_input_path)
                 row["ai_trade_report_input_path"] = str(story_input_path)
-                row["ai_trade_report_compact_input_path"] = ""
+                row["ai_trade_report_compact_input_path"] = str(story_compact_input_path)
                 row["trade_report_json_path"] = trade_report_json_written
                 row["trade_report_md_path"] = trade_report_md_written
                 row["ai_trade_report_json_path"] = trade_report_json_written
@@ -3272,7 +3503,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "exit_json": str(exit_artifact_path),
                         "trade_story_input_json": str(story_input_path),
                         "ai_trade_report_input_json": str(story_input_path),
-                        "ai_trade_report_compact_input_json": "",
+                        "ai_trade_report_compact_input_json": str(story_compact_input_path),
                         "trade_report_json": trade_report_json_written,
                         "trade_report_md": trade_report_md_written,
                         "ai_trade_report_json": trade_report_json_written,

@@ -3909,12 +3909,13 @@ def _sanitize_operator_brief_text(text: Any) -> str:
         return ""
     if _contains_internal_brief_marker(cleaned):
         return ""
+    cleaned = re.sub(r"[぀-ヿ一-鿿]", "", cleaned)
     replacements = [
         ("minute-candle", "분봉"),
         ("minute candle", "분봉"),
         ("defensive_exit", "방어형 청산"),
         ("no_position", "포지션 없음"),
-        ("No trigger yet", "아직 청산 신호는 확인되지 않았습니다."),
+        ("No trigger yet", "아직 청산 신호가 확인되지 않았습니다."),
         ("Peak drawdown", "고점 대비 하락폭"),
         ("Hard stop", "고정 손절 기준"),
         ("Adaptive stop", "상황 대응형 손절 기준"),
@@ -3936,15 +3937,14 @@ def _sanitize_operator_brief_text(text: Any) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
-
 def _count_hangul_chars(text: Any) -> int:
     raw = str(text or "")
-    return sum(1 for ch in raw if "\uac00" <= ch <= "\ud7a3")
+    return sum(1 for ch in raw if "가" <= ch <= "힣")
 
 
 def _contains_forbidden_brief_script(text: Any) -> bool:
     raw = str(text or "")
-    return bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", raw))
+    return bool(re.search(r"[぀-ヿ一-鿿]", raw))
 
 
 def _operator_brief_language_ok(candidate: Dict[str, Any]) -> bool:
@@ -3965,15 +3965,20 @@ def _operator_brief_language_ok(candidate: Dict[str, Any]) -> bool:
         "risk_summary",
     ]
     total_hangul = 0
+    total_forbidden = 0
     for key in text_fields:
         value = str(candidate.get(key) or "").strip()
         if not value:
             continue
-        if _contains_forbidden_brief_script(value):
+        forbidden_count = len(re.findall(r"[぀-ヿ一-鿿]", value))
+        total_forbidden += forbidden_count
+        compact_len = len(re.sub(r"\s+", "", value))
+        if forbidden_count >= 3 and compact_len > 0 and (forbidden_count / float(compact_len)) >= 0.12:
             return False
-        hangul_count = _count_hangul_chars(value)
+        cleaned_value = re.sub(r"[぀-ヿ一-鿿]", "", value)
+        hangul_count = _count_hangul_chars(cleaned_value)
         total_hangul += hangul_count
-        ascii_letters = len(re.findall(r"[A-Za-z]", value))
+        ascii_letters = len(re.findall(r"[A-Za-z]", cleaned_value))
         if hangul_count == 0 and ascii_letters >= 12:
             return False
     for key in ("operator_takeaways", "next_checkpoints"):
@@ -3981,8 +3986,13 @@ def _operator_brief_language_ok(candidate: Dict[str, Any]) -> bool:
             value = str(item or "").strip()
             if not value:
                 continue
-            if _contains_forbidden_brief_script(value):
+            forbidden_count = len(re.findall(r"[぀-ヿ一-鿿]", value))
+            total_forbidden += forbidden_count
+            compact_len = len(re.sub(r"\s+", "", value))
+            if forbidden_count >= 3 and compact_len > 0 and (forbidden_count / float(compact_len)) >= 0.12:
                 return False
+    if total_forbidden >= 8:
+        return False
     return total_hangul > 0
 
 
@@ -4116,26 +4126,27 @@ def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[s
         "next_checkpoints": ["string"],
     }
     system_prompt = (
-        "당신은 한국 주식 운영자를 위한 운영자 브리프 작성자입니다. "
-        "반드시 JSON 객체 하나만 반환하고, 모든 설명 문장은 자연스러운 한국어로 작성하십시오. "
-        "영어, 중국어, 일본어 문장은 사용하지 마십시오. "
-        "VWAP, RSI, ADX, 종목코드처럼 시장에서 통용되는 짧은 용어만 예외적으로 허용됩니다."
+        "당신은 한국 주식 운영자를 위한 운영 브리프 작성자입니다. "
+        "응답은 반드시 JSON 객체 하나로만 반환하고, 모든 문장은 자연스러운 한국어로 작성하십시오. "
+        "영어, 중국어, 일본어 문장을 섞지 마십시오. "
+        "단, VWAP·RSI·ADX·종목코드처럼 시장에서 통용되는 표기만 예외로 허용합니다."
     )
     user_prompt = (
         "입력 데이터를 바탕으로 운영자가 10초 안에 상황을 이해할 수 있는 간결한 브리프를 작성하십시오.\n"
         "작성 규칙:\n"
         "- 전체 흐름은 반드시 Scanner -> Entry -> Holding -> Exit 순서를 유지하십시오.\n"
-        "- 모든 설명 값은 자연스러운 한국어 문장으로 작성하십시오.\n"
-        "- entry_summary는 반드시 분봉 기준 진입 시점이나 진입 보류 이유를 설명해야 합니다.\n"
-        "- 분봉 데이터가 없거나 진입 조건이 충족되지 않으면, 예를 들어 \"이번 거래는 분봉 데이터가 확보되지 않아 진입 근거를 확인할 수 없었습니다. 따라서 신규 진입은 보류 대상으로 해석했습니다.\"처럼 보수적으로 설명하십시오.\n"
-        "- BUY가 이미 체결되었고 lifecycle이 열려 있으면 no_position이라고 쓰지 말고 현재 보유 상태를 설명하십시오.\n"
-        "- SELL이 이미 체결되었고 lifecycle이 닫혀 있으면 어떤 청산 신호로 종료되었는지 분명하게 설명하십시오.\n"
-        "- scanner_reason에는 후보 순위, 후보 수, 핵심 선정 이유 2~3개를 담으십시오.\n"
-        "- holding_summary에는 현재 손익, 포지션 상태, 시장 해석을 담으십시오.\n"
-        "- exit_plan_summary에는 어떤 조건에서 청산할지 조건형 문장으로 설명하십시오.\n"
-        "- risk_summary에는 현재 리스크 요인을 2~3개로 정리하십시오.\n"
-        "- next_checkpoints에는 운영자가 다음에 확인할 짧은 체크포인트를 넣으십시오.\n"
-        "- canonical_trade.available, reports/trades, source of truth, run-level 같은 내부 문구는 절대 노출하지 마십시오.\n"
+        "- 모든 설명값은 자연스러운 한국어 문장으로 작성하십시오.\n"
+        "- entry_summary에는 반드시 분봉 기준 진입 근거 또는 진입 보류 사유를 명시하십시오.\n"
+        "- 분봉 데이터가 없거나 진입 조건이 충분하지 않으면, 예시처럼 보수적으로 설명하십시오: "
+        "\"이번 거래는 분봉 데이터가 확보되지 않아 진입 근거를 확인할 수 없었습니다. 따라서 신규 진입은 보류 대상으로 해석했습니다.\"\n"
+        "- BUY가 이미 체결되고 lifecycle이 열려 있으면 no_position으로 단정하지 말고 현재 보유 상태를 설명하십시오.\n"
+        "- SELL이 체결되어 lifecycle이 닫혀 있으면 어떤 청산 신호로 종료됐는지 명확히 설명하십시오.\n"
+        "- scanner_reason에는 후보 순위 맥락과 선정 이유를 2~3줄로 작성하십시오.\n"
+        "- holding_summary에는 현재 수익률, 포지션 상태, 시장 해석을 포함하십시오.\n"
+        "- exit_plan_summary에는 구체적인 청산 조건을 문장으로 작성하십시오.\n"
+        "- risk_summary에는 현재 리스크 요인을 2~3줄로 정리하십시오.\n"
+        "- next_checkpoints에는 운영자가 다음에 확인할 핵심 체크포인트를 작성하십시오.\n"
+        "- canonical_trade.available, reports/trades, source of truth, run-level 같은 내부 용어를 출력하지 마십시오.\n"
         f"계약: {json.dumps(contract, ensure_ascii=False)}\n"
         f"입력: {json.dumps(compact_input, ensure_ascii=False)}"
     )
@@ -4167,8 +4178,8 @@ def _build_operator_brief_repair_messages(raw_text: str) -> List[Dict[str, str]]
         {
             "role": "system",
             "content": (
-                "운영자 브리프를 계약에 맞는 JSON 객체 하나로 복구하십시오. "
-                "모든 설명 값은 자연스러운 한국어로 작성하고, 중국어·일본어·영어 문장은 결과에 남기지 마십시오."
+                "운영 브리프를 계약에 맞는 JSON 객체 하나로 복구하십시오. "
+                "모든 설명값은 자연스러운 한국어 문장으로 작성하고, 영어·중국어·일본어 문장은 결과에 남기지 마십시오."
             ),
         },
         {
@@ -4185,8 +4196,8 @@ def _build_operator_brief_line_messages(compact_input: Dict[str, Any]) -> List[D
         {
             "role": "system",
             "content": (
-                "JSON 생성이 어렵다면 key:value 형식의 줄 단위 응답으로만 작성하십시오. "
-                "각 값은 여전히 자연스러운 한국어 문장이어야 합니다."
+                "JSON 생성이 실패하면 key:value 형식의 줄 단위 응답으로만 작성하십시오. "
+                "각 값은 자연스러운 한국어 문장이어야 합니다."
             ),
         },
         {
@@ -4747,8 +4758,63 @@ def _operator_brief_compact_input_artifact_path(detail: Dict[str, Any]) -> Path 
 
 
 def _save_operator_brief_input_artifact(detail: Dict[str, Any], prepared_input: Dict[str, Any], llm_compact_input: Dict[str, Any] | None = None) -> None:
-    # Phase 3: deprecated forward writes for brief input/compact input artifacts.
-    return
+    input_path = _operator_brief_input_artifact_path(detail)
+    compact_path = _operator_brief_compact_input_artifact_path(detail)
+    if input_path is None and compact_path is None:
+        return
+
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    run_id = str(detail.get("run_id") or trade_report.get("run_id") or "").strip()
+    trade_id = str(
+        trade_report.get("trade_id")
+        or trade_report.get("story_id")
+        or detail.get("trade_id")
+        or detail.get("story_id")
+        or ""
+    ).strip()
+    day = str(trade_report.get("day") or detail.get("day") or "").strip()
+    source_artifact_path = str(
+        trade_report.get("trade_story_input_path")
+        or trade_report.get("ai_trade_report_input_path")
+        or ""
+    ).strip()
+
+    if input_path is not None:
+        try:
+            input_payload = {
+                "schema_version": "operator_brief_input.v1",
+                "component": "brief",
+                "role": "brief",
+                "run_id": run_id,
+                "trade_id": trade_id,
+                "story_id": trade_id,
+                "day": day,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "input_variant": "full_input",
+                "source_artifact_path": source_artifact_path,
+                "input": dict(prepared_input or {}),
+            }
+            input_path.parent.mkdir(parents=True, exist_ok=True)
+            input_path.write_text(json.dumps(input_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    if compact_path is not None:
+        try:
+            compact_artifact = build_compact_input_artifact(
+                component="brief",
+                run_id=run_id,
+                trade_id=trade_id,
+                story_id=trade_id,
+                day=day,
+                source_artifact_path=str(input_path or ""),
+                source_input=prepared_input if isinstance(prepared_input, dict) else {},
+                compact_input=llm_compact_input if isinstance(llm_compact_input, dict) else {},
+            )
+            compact_path.parent.mkdir(parents=True, exist_ok=True)
+            compact_path.write_text(json.dumps(compact_artifact, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
 
 def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
@@ -5326,8 +5392,18 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         artifacts["brief_json"] = str(json_path)
         artifacts["brief_md"] = str(md_path)
         artifacts["operator_brief_json"] = str(json_path)
-        artifacts["brief_input_json"] = ""
-        artifacts["brief_compact_input_json"] = ""
+        brief_input_path = _operator_brief_input_artifact_path(detail)
+        brief_compact_path = _operator_brief_compact_input_artifact_path(detail)
+        artifacts["brief_input_json"] = (
+            str(brief_input_path)
+            if isinstance(brief_input_path, Path) and brief_input_path.exists()
+            else ""
+        )
+        artifacts["brief_compact_input_json"] = (
+            str(brief_compact_path)
+            if isinstance(brief_compact_path, Path) and brief_compact_path.exists()
+            else ""
+        )
         artifacts["brief_llm_response_json"] = str(json_path.parent / "brief_llm_response.json") if llm_response_compact else ""
         bundle["artifacts"] = artifacts
         bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")

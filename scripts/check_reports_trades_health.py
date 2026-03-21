@@ -147,18 +147,36 @@ def audit_reports_trades_health(reports_root: Path, *, day: str = "") -> Dict[st
             if all_identical:
                 duplicate_counts["brief_llm_response:identical"] += 1
             else:
-                duplicate_counts["brief_llm_response:different"] += 1
-                issues.append(
-                    _issue(
-                        severity="warn",
-                        trade_id=trade_id,
-                        component="brief",
-                        code="legacy_duplicate_mismatch",
-                        message="Multiple brief LLM artifacts exist and payloads differ.",
-                        path=existing_brief_llm[0],
+                primary_path = trade_dir / "reports" / "brief_llm_response.json"
+                if primary_path.exists():
+                    duplicate_counts["brief_llm_response:legacy_diverged"] += 1
+                    issues.append(
+                        _issue(
+                            severity="info",
+                            trade_id=trade_id,
+                            component="brief",
+                            code="legacy_duplicate_mismatch",
+                            message=(
+                                "Legacy brief LLM artifacts diverge from the normalized reports artifact. "
+                                "reports/brief_llm_response.json is authoritative."
+                            ),
+                            path=primary_path,
+                        )
                     )
-                )
-                issue_counts["legacy_duplicate_mismatch"] += 1
+                    issue_counts["legacy_duplicate_mismatch"] += 1
+                else:
+                    duplicate_counts["brief_llm_response:different"] += 1
+                    issues.append(
+                        _issue(
+                            severity="warn",
+                            trade_id=trade_id,
+                            component="brief",
+                            code="legacy_duplicate_mismatch",
+                            message="Multiple brief LLM artifacts exist and payloads differ.",
+                            path=existing_brief_llm[0],
+                        )
+                    )
+                    issue_counts["legacy_duplicate_mismatch"] += 1
 
         lifecycle = _read_json(lifecycle_path)
         lifecycle_diag = lifecycle.get("ai_report_diagnostics") if isinstance(lifecycle.get("ai_report_diagnostics"), dict) else {}

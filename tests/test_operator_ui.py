@@ -1032,6 +1032,7 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     trade_report = detail["trade_report"]
     brief_json = Path(str(trade_report.get("operator_brief_json_path") or ""))
     brief_md = Path(str(trade_report.get("operator_brief_md_path") or ""))
+    trade_root = Path(str(trade_report.get("trade_root_path") or ""))
 
     assert brief_json.exists() is True
     assert brief_md.exists() is True
@@ -1047,8 +1048,10 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert "# 운영자 브리프" in md_text
     assert "## 3. 진입 근거" in md_text
     assert "## 5. 청산 계획" in md_text
-    brief_compact = brief_json.parent / "brief_compact_input.json"
-    assert brief_compact.exists() is False
+    brief_compact = trade_root / "brief" / "brief_compact_input.json"
+    brief_input = trade_root / "brief" / "brief_input.json"
+    assert brief_input.exists() is True
+    assert brief_compact.exists() is True
     brief_llm = brief_json.parent / "brief_llm_response.json"
     assert brief_llm.exists() is True
     assert json.loads(brief_llm.read_text(encoding="utf-8"))["component"] == "brief"
@@ -1106,7 +1109,8 @@ def test_operator_brief_detail_force_regenerates_saved_artifact(tmp_path: Path, 
     trade_report = detail["trade_report"]
     story_id = str(trade_report.get("trade_id") or trade_report.get("story_id") or "")
     brief_json = Path(str(trade_report.get("operator_brief_json_path") or ""))
-    brief_input = brief_json.parent / "brief_input.json"
+    trade_root = Path(str(trade_report.get("trade_root_path") or ""))
+    brief_input = trade_root / "brief" / "brief_input.json"
 
     payload = json.loads(brief_json.read_text(encoding="utf-8"))
     payload["headline"] = "stale saved headline"
@@ -1118,7 +1122,7 @@ def test_operator_brief_detail_force_regenerates_saved_artifact(tmp_path: Path, 
     refreshed = data_access.load_operator_brief_detail(cfg, story_id)
 
     assert refreshed["headline"] != "stale saved headline"
-    assert brief_input.exists() is False
+    assert brief_input.exists() is True
 
 
 def test_operator_brief_uses_openrouter_default_max_tokens_when_role_value_missing(tmp_path: Path, monkeypatch) -> None:

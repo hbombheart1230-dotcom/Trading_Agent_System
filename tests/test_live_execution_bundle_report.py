@@ -701,6 +701,7 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert (trade_root / "hold.json").exists()
     assert (trade_root / "exit.json").exists()
     assert (trade_root / "ai_trade_report_input.json").exists()
+    assert (trade_root / "ai_trade_report_compact_input.json").exists()
     assert (trade_root / "reports" / "ai_trade_report.json").exists()
     assert (trade_root / "reports" / "ai_trade_report.md").exists()
     assert (trade_root / "reports" / "ai_trade_report_llm_response.json").exists()
@@ -788,6 +789,7 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     assert new_bundle["artifacts"]["strategist_llm_response_json"].endswith("strategist_llm_response.json")
     assert new_bundle["artifacts"]["ai_trade_report_llm_response_json"].endswith("ai_trade_report_llm_response.json")
     assert new_bundle["artifacts"]["ai_trade_report_input_json"].endswith("ai_trade_report_input.json")
+    assert new_bundle["artifacts"]["ai_trade_report_compact_input_json"].endswith("ai_trade_report_compact_input.json")
 
     trade_report_md = (trade_root / "reports" / "ai_trade_report.md").read_text(encoding="utf-8")
     assert "# AI 거래 리포트" in trade_report_md or "# Trade Report" in trade_report_md
