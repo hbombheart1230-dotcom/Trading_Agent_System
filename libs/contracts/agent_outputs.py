@@ -65,6 +65,20 @@ def _dict(value: Any) -> Dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _dedupe_text(values: List[str], *, limit: int = 10, max_len: int = 180) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _clip(value, max_len=max_len)
+        if not text or text in seen:
+            continue
+        out.append(text)
+        seen.add(text)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
 def _phase(state: Dict[str, Any]) -> str:
     return str(state.get("runtime_phase") or state.get("phase") or "").strip()
 
@@ -153,8 +167,21 @@ def _required_keys_for_agent(agent: str) -> List[str]:
             "monitor_evaluation",
             "monitor_action_decision",
             "thresholds_guards_used",
+            "threshold_snapshot",
+            "signal_snapshot",
+            "market_snapshot_refs",
             "evaluation_summary",
             "decision",
+            "decision_phase",
+            "decision_action",
+            "decision_status",
+            "primary_reason_code",
+            "primary_reason_text",
+            "secondary_reason_codes",
+            "intent_emitted",
+            "evidence_quality",
+            "missing_inputs",
+            "generated_at",
             "decision_reason_chain",
             "trigger_details",
             "evidence_refs",
@@ -180,6 +207,19 @@ def _required_keys_for_agent(agent: str) -> List[str]:
             "mode",
             "phase",
             "path",
+            "runtime_mode",
+            "runtime_phase",
+            "selected_route",
+            "route_reason_codes",
+            "route_reason_text",
+            "open_position_count",
+            "open_position_symbols",
+            "strategist_cache_used",
+            "strategist_blocked",
+            "cooldown_applied",
+            "incident_state",
+            "portfolio_preflight_result",
+            "generated_at",
             "session_type",
             "market_clock_phase",
             "portfolio_state_summary",
@@ -530,9 +570,16 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     exit_info = _dict(state.get("monitor_exit"))
     entry_info = _dict(state.get("monitor_entry"))
     transition = _dict(state.get("monitor_state_transition"))
+    entry_detail = _dict(state.get("monitor_entry_decision_detail"))
+    exit_detail = _dict(state.get("monitor_exit_decision_detail"))
+    selected = _dict(state.get("selected"))
     symbol = str(exit_info.get("symbol") or monitor_output.get("selected_symbol") or monitor.get("selected_symbol") or "").strip()
     thresholds = _dict(exit_info.get("thresholds"))
     watch_axes = list(exit_info.get("watch_axes") or [])
+    intents = [row for row in list(state.get("intents") or []) if isinstance(row, dict)]
+    first_intent = intents[0] if intents else {}
+    intent_side = str(monitor_output.get("intent_side") or first_intent.get("side") or "NOOP").strip().upper()
+    open_position_count = _safe_int(monitor.get("open_position_count"))
     triggered_rules: List[str] = []
     if bool(exit_info.get("triggered")) and str(exit_info.get("reason") or "").strip():
         triggered_rules.append(str(exit_info.get("reason") or "").strip())
@@ -552,11 +599,95 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         _clip(monitor_output.get("entry_exit_reason"), max_len=180),
     ]
     decision_reason_chain = [x for x in decision_reason_chain if x]
+    missing_inputs: List[str] = []
+    if not symbol:
+        missing_inputs.append("selected_symbol_missing")
+    entry_reason_code = _clip(
+        entry_detail.get("reason")
+        or entry_info.get("guard_reason")
+        or entry_info.get("reason"),
+        max_len=160,
+    )
+    if not bool(entry_info.get("evaluated")) and entry_reason_code in {"minute_candle_missing", "data_incomplete"}:
+        missing_inputs.append(entry_reason_code)
+    if exit_info.get("price") in (None, "") and not bool(entry_info.get("triggered")):
+        missing_inputs.append("price_unavailable")
+    if intent_side == "BUY":
+        decision_phase = "entry"
+        decision_action = "buy"
+    elif intent_side == "SELL":
+        decision_phase = "exit"
+        decision_action = "sell"
+    elif open_position_count > 0:
+        decision_phase = "hold"
+        decision_action = "hold"
+    else:
+        decision_phase = "no_intent"
+        decision_action = "none"
+    if intent_side in {"BUY", "SELL"}:
+        decision_status = "ok"
+    elif missing_inputs:
+        decision_status = "unavailable"
+    elif blocked_rules:
+        decision_status = "blocked"
+    else:
+        decision_status = "skipped"
+    primary_reason_code = _clip(
+        exit_detail.get("triggered_rule")
+        or exit_info.get("reason")
+        or entry_detail.get("reason")
+        or entry_info.get("guard_reason")
+        or entry_info.get("reason")
+        or monitor_output.get("entry_exit_reason")
+        or exit_info.get("monitor_reason"),
+        max_len=180,
+    )
+    secondary_reason_codes = _dedupe_text(
+        [text for text in blocked_rules + decision_reason_chain if text and text != primary_reason_code],
+        limit=12,
+        max_len=160,
+    )
+    price_source = _clip(exit_info.get("price_source"), max_len=120)
+    feature_source = _clip(exit_info.get("feature_source"), max_len=120)
+    evidence_quality = "unavailable"
+    if decision_status == "ok" and (bool(entry_info.get("evaluated")) or bool(exit_info.get("evaluated"))):
+        evidence_quality = "strong"
+    elif bool(entry_info.get("evaluated")) or bool(exit_info.get("evaluated")) or bool(secondary_reason_codes):
+        evidence_quality = "partial"
+    elif decision_reason_chain:
+        evidence_quality = "weak"
+    threshold_snapshot = {
+        "entry_thresholds": _dict(entry_info.get("thresholds")),
+        "entry_threshold_margins": _dict(entry_info.get("threshold_margins")),
+        "exit_thresholds": thresholds,
+        "exit_confirm_ticks": _safe_int(exit_info.get("exit_confirm_ticks")),
+        "exit_confirm_count": _safe_int(exit_info.get("exit_confirm_count")),
+    }
+    signal_snapshot = {
+        "entry_evaluated": bool(entry_info.get("evaluated")),
+        "entry_triggered": bool(entry_info.get("triggered")),
+        "entry_pattern": _clip(entry_info.get("pattern"), max_len=80),
+        "entry_signal_chain": _listify(entry_info.get("signal_chain"), limit=8, max_len=120),
+        "exit_signal_detected": bool(exit_info.get("exit_signal_detected")),
+        "exit_triggered": bool(exit_info.get("triggered")),
+        "exit_triggered_rule": _clip(exit_info.get("reason"), max_len=180),
+    }
+    market_snapshot_refs = {
+        "selected_symbol": symbol,
+        "selected_price": selected.get("price"),
+        "price_source": price_source,
+        "feature_source": feature_source,
+        "playbook": _clip(exit_info.get("playbook"), max_len=60),
+        "monitor_guidance": _clip(exit_info.get("monitor_guidance"), max_len=120),
+    }
     artifact = _base_output(state, agent="monitor", symbol=symbol)
     artifact.update(
         {
+            "cycle_id": _clip(state.get("cycle_id"), max_len=80),
+            "session_id": _clip(state.get("session_id"), max_len=80),
+            "trade_id": _clip(state.get("trade_id") or state.get("story_id"), max_len=120),
             "position_snapshot": {
-                "open_position_count": _safe_int(monitor.get("open_position_count")),
+                "open_position_count": open_position_count,
                 "symbol": symbol,
                 "qty": _safe_int(exit_info.get("qty")),
                 "avg_price": exit_info.get("avg_price"),
@@ -572,7 +703,21 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             },
             "evaluation_summary": _clip(exit_info.get("monitor_reason") or exit_info.get("reason") or monitor_output.get("entry_exit_reason"), max_len=220),
             "decision": str(monitor_output.get("intent_side") or "NOOP").strip().upper(),
+            "decision_phase": decision_phase,
+            "decision_action": decision_action,
+            "decision_status": decision_status,
+            "primary_reason_code": primary_reason_code,
+            "primary_reason_text": _clip(primary_reason_code.replace("_", " "), max_len=220),
+            "secondary_reason_codes": secondary_reason_codes,
+            "threshold_snapshot": threshold_snapshot,
+            "signal_snapshot": signal_snapshot,
+            "market_snapshot_refs": market_snapshot_refs,
             "decision_reason_chain": decision_reason_chain,
+            "intent_emitted": bool(intents),
+            "intent_id": _clip(first_intent.get("intent_id") or first_intent.get("id"), max_len=120),
+            "evidence_quality": evidence_quality,
+            "missing_inputs": missing_inputs,
+            "generated_at": _utc_now_iso(),
             "monitor_evaluation": {
                 "triggered_rules": triggered_rules,
                 "blocked_rules": blocked_rules[:8],
@@ -622,9 +767,9 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "peak_drawdown": exit_info.get("peak_drawdown"),
             "vwap_distance": exit_info.get("vwap_distance"),
             "position_age_seconds": exit_info.get("position_age_seconds"),
-            "price_source": _clip(exit_info.get("price_source"), max_len=120),
+            "price_source": price_source,
             "price_source_policy": _clip(exit_info.get("price_source_policy"), max_len=260),
-            "feature_source": _clip(exit_info.get("feature_source"), max_len=120),
+            "feature_source": feature_source,
             "active_exit_axis": _clip(exit_info.get("active_exit_axis"), max_len=120),
             "watch_axes": watch_axes[:8],
             "exit_triggered": bool(exit_info.get("triggered")),
@@ -737,10 +882,56 @@ def build_commander_output_artifact(
 ) -> Dict[str, Any]:
     decision_frame = _dict(state.get("commander_decision_frame"))
     runtime_plan = _dict(state.get("runtime_plan"))
+    runtime_fast_path = _dict(state.get("runtime_fast_path"))
+    resilience = _dict(state.get("runtime_resilience_state"))
+    if not resilience:
+        resilience = _dict(state.get("resilience"))
     strategist_output = _dict(state.get("strategist_output"))
     portfolio_snapshot = _dict(state.get("portfolio_snapshot"))
-    positions = list(portfolio_snapshot.get("positions") or [])
+    preflight = _dict(state.get("portfolio_preflight"))
+    positions = [row for row in list(portfolio_snapshot.get("positions") or []) if isinstance(row, dict)]
+    open_symbols = _dedupe_text([str(row.get("symbol") or "").strip() for row in positions], limit=12, max_len=32)
     status_text = str(status or "ok")
+    runtime_status = _clip(state.get("runtime_status"), max_len=80)
+    path_text = str(path or "").strip()
+    phase_text = str(phase or "").strip()
+    selected_route = "full_cycle"
+    if "monitor_only" in path_text:
+        selected_route = "monitor_only"
+    elif "cached" in path_text:
+        selected_route = "cached_strategist"
+    elif phase_text == "preopen" or "preopen" in path_text:
+        selected_route = "preopen"
+    elif phase_text == "closeout" or "closeout" in path_text:
+        selected_route = "closeout"
+    elif "blocked" in path_text or status_text in {"blocked", "preflight_blocked"}:
+        selected_route = "blocked"
+    elif runtime_status in {"error", "cooldown_wait", "degraded"}:
+        selected_route = "degraded"
+    route_reason_codes = _dedupe_text(
+        [
+            _clip(reason, max_len=120),
+            _clip(runtime_status, max_len=120),
+            _clip(state.get("runtime_transition"), max_len=120),
+            _clip(runtime_fast_path.get("reason"), max_len=120),
+            "portfolio_preflight_blocked" if bool(preflight.get("blocked")) else "",
+            "strategist_blocked" if bool(state.get("strategist_blocked")) else "",
+        ],
+        limit=8,
+        max_len=120,
+    )
+    cooldown_until_epoch = _safe_int(resilience.get("cooldown_until_epoch"), 0)
+    cooldown_applied = (
+        _clip(state.get("runtime_transition"), max_len=40) == "cooldown"
+        or runtime_status == "cooldown_wait"
+        or cooldown_until_epoch > 0
+    )
+    strategist_cache_used = selected_route == "cached_strategist" or bool(runtime_fast_path.get("cache_age_sec"))
+    strategist_blocked = (
+        bool(state.get("strategist_blocked"))
+        or bool(strategist_output.get("llm_frame_blocked"))
+        or ("strategist_blocked" in path_text)
+    )
     handoff_instruction = _clip(
         decision_frame.get("handoff_instruction")
         or ("Proceed with planned agent chain." if status_text in {"ok", "ready", "preopen_ready", "closeout_ready"} else "Stop downstream execution and inspect runtime status."),
@@ -752,13 +943,35 @@ def build_commander_output_artifact(
             "mode": str(mode or "").strip(),
             "phase": str(phase or "").strip(),
             "path": str(path or "").strip(),
+            "runtime_mode": str(mode or "").strip(),
+            "runtime_phase": phase_text,
+            "selected_route": selected_route,
+            "route_reason_codes": route_reason_codes,
+            "route_reason_text": _clip(
+                " / ".join(route_reason_codes) if route_reason_codes else (reason or state.get("runtime_status") or ""),
+                max_len=280,
+            ),
+            "open_position_count": _safe_int(len(positions)),
+            "open_position_symbols": open_symbols,
+            "strategist_cache_used": strategist_cache_used,
+            "strategist_blocked": strategist_blocked,
+            "cooldown_applied": cooldown_applied,
+            "incident_state": {
+                "incident_count": _safe_int(resilience.get("incident_count")),
+                "cooldown_until_epoch": cooldown_until_epoch,
+                "degrade_mode": _clip(resilience.get("degrade_mode"), max_len=80),
+                "last_error_type": _clip(resilience.get("last_error_type"), max_len=120),
+                "last_error_ts": _clip(resilience.get("last_error_ts"), max_len=80),
+            },
+            "portfolio_preflight_result": preflight,
+            "generated_at": _utc_now_iso(),
             "session_type": _clip(decision_frame.get("session_type") or runtime_plan.get("phase") or phase, max_len=40),
             "market_clock_phase": _clip(decision_frame.get("market_clock_phase") or phase or runtime_plan.get("phase"), max_len=40),
             "portfolio_state_summary": {
                 "position_count": _safe_int(len(positions)),
                 "cash": portfolio_snapshot.get("cash"),
-                "positions_source": _clip(_dict(state.get("portfolio_preflight")).get("positions_source"), max_len=80),
-                "preflight_status": _clip(_dict(state.get("portfolio_preflight")).get("status"), max_len=80),
+                "positions_source": _clip(preflight.get("positions_source"), max_len=80),
+                "preflight_status": _clip(preflight.get("status"), max_len=80),
             },
             "market_regime_summary": {
                 "market_regime": _clip(strategist_output.get("market_regime"), max_len=80),
@@ -774,8 +987,8 @@ def build_commander_output_artifact(
             "decision_checkpoints": {
                 "runtime_transition": _clip(state.get("runtime_transition"), max_len=60),
                 "runtime_status": _clip(state.get("runtime_status"), max_len=80),
-                "portfolio_preflight": _dict(state.get("portfolio_preflight")),
-                "runtime_fast_path": _dict(state.get("runtime_fast_path")),
+                "portfolio_preflight": preflight,
+                "runtime_fast_path": runtime_fast_path,
             },
             "final_runtime_path": str(path or "").strip(),
             "final_reason": _clip(reason or state.get("runtime_status") or "", max_len=220),

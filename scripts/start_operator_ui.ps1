@@ -11,6 +11,9 @@ $root = Split-Path -Parent $PSScriptRoot
 $python = Join-Path $root "venv\Scripts\python.exe"
 $script = Join-Path $root "scripts\run_operator_ui.py"
 
+Write-Warning "[DEPRECATED-SOFT] Operator UI launch is manual check only."
+Write-Warning "[DEPRECATED-SOFT] Current priority is report/trade artifact quality. UI is intentionally deferred."
+
 if (-not (Test-Path $python)) {
     throw "python not found: $python"
 }

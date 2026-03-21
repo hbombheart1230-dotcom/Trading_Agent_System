@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from libs.contracts.agent_outputs import (
+    build_commander_output_artifact,
     build_monitor_output_artifact,
     build_scanner_output_artifact,
     build_strategist_output_artifact,
@@ -145,3 +146,121 @@ def test_monitor_artifact_contains_evaluation_and_action_sections() -> None:
     assert "triggered_rules" in artifact["monitor_evaluation"]
     assert "blocked_rules" in artifact["monitor_evaluation"]
     assert "action_reason_human" in artifact["monitor_action_decision"]
+    assert artifact.get("decision_phase") == "hold"
+    assert artifact.get("decision_action") == "hold"
+    assert artifact.get("decision_status") in {"skipped", "blocked", "unavailable"}
+    assert isinstance(artifact.get("secondary_reason_codes"), list)
+    assert isinstance(artifact.get("threshold_snapshot"), dict)
+    assert isinstance(artifact.get("signal_snapshot"), dict)
+    assert isinstance(artifact.get("market_snapshot_refs"), dict)
+    assert artifact.get("intent_emitted") is False
+
+
+def test_monitor_artifact_marks_buy_intent_with_entry_phase() -> None:
+    state = {
+        "run_id": "run-mon-buy",
+        "started_at": "2026-03-18T10:00:00+00:00",
+        "runtime_phase": "session",
+        "monitor": {"open_position_count": 0},
+        "monitor_output": {"selected_symbol": "005930", "intent_side": "BUY", "entry_exit_reason": "pullback_reclaim_confirmed"},
+        "monitor_entry": {
+            "evaluated": True,
+            "triggered": True,
+            "pattern": "pullback_vwap_reclaim",
+            "reason": "pullback_reclaim_confirmed",
+            "signal_chain": ["reclaim", "volume_confirmation"],
+            "thresholds": {"volume_ratio_min": 0.8},
+            "metrics": {"volume_ratio": 1.1},
+        },
+        "monitor_exit": {"symbol": "005930", "price": 70500, "thresholds": {}, "watch_axes": []},
+        "intents": [{"intent_id": "intent-buy-1", "side": "BUY", "symbol": "005930"}],
+    }
+    artifact = build_monitor_output_artifact(state)
+    assert artifact.get("decision_phase") == "entry"
+    assert artifact.get("decision_action") == "buy"
+    assert artifact.get("decision_status") == "ok"
+    assert artifact.get("intent_emitted") is True
+    assert artifact.get("intent_id") == "intent-buy-1"
+    assert artifact.get("evidence_quality") in {"strong", "partial"}
+
+
+def test_monitor_artifact_marks_sell_intent_with_exit_phase() -> None:
+    state = {
+        "run_id": "run-mon-sell",
+        "started_at": "2026-03-18T10:00:00+00:00",
+        "runtime_phase": "session",
+        "monitor": {"open_position_count": 1},
+        "monitor_output": {"selected_symbol": "005930", "intent_side": "SELL", "entry_exit_reason": "confirmed_exit_signal"},
+        "monitor_entry": {"evaluated": False, "triggered": False},
+        "monitor_exit": {
+            "symbol": "005930",
+            "price": 70100,
+            "reason": "vwap_breakdown",
+            "monitor_reason": "confirmed_exit_signal",
+            "triggered": True,
+            "exit_signal_detected": True,
+            "watch_axes": ["vwap"],
+            "thresholds": {"vwap_breakdown_pct": 0.002},
+        },
+        "monitor_exit_decision_detail": {"triggered_rule": "vwap_breakdown"},
+        "intents": [{"intent_id": "intent-sell-1", "side": "SELL", "symbol": "005930"}],
+    }
+    artifact = build_monitor_output_artifact(state)
+    assert artifact.get("decision_phase") == "exit"
+    assert artifact.get("decision_action") == "sell"
+    assert artifact.get("decision_status") == "ok"
+    assert artifact.get("primary_reason_code") in {"vwap_breakdown", "confirmed_exit_signal"}
+    assert artifact.get("intent_emitted") is True
+
+
+def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
+    state = {
+        "run_id": "run-cmd-1",
+        "started_at": "2026-03-18T10:00:00+00:00",
+        "runtime_phase": "session",
+        "runtime_status": "ok",
+        "runtime_fast_path": {"reason": "holding_position_monitor_only"},
+        "portfolio_snapshot": {"positions": [{"symbol": "005930"}, {"symbol": "000660"}], "cash": 1000},
+        "portfolio_preflight": {"status": "ok", "blocked": False},
+    }
+    artifact = build_commander_output_artifact(
+        state,
+        mode="integrated_chain",
+        phase="session",
+        path="integrated_chain_monitor_only",
+        status="ok",
+        reason="holding_position_monitor_only",
+    )
+    assert artifact.get("selected_route") == "monitor_only"
+    assert artifact.get("open_position_count") == 2
+    assert artifact.get("open_position_symbols") == ["005930", "000660"]
+    assert artifact.get("runtime_mode") == "integrated_chain"
+    assert artifact.get("runtime_phase") == "session"
+    assert isinstance(artifact.get("route_reason_codes"), list)
+    assert artifact.get("cooldown_applied") is False
+
+
+def test_commander_artifact_routes_blocked_with_cooldown() -> None:
+    state = {
+        "run_id": "run-cmd-2",
+        "started_at": "2026-03-18T10:00:00+00:00",
+        "runtime_phase": "session",
+        "runtime_status": "cooldown_wait",
+        "runtime_transition": "cooldown",
+        "runtime_resilience_state": {"incident_count": 3, "cooldown_until_epoch": 1773000000},
+        "portfolio_snapshot": {"positions": [], "cash": 1000},
+        "portfolio_preflight": {"status": "ok", "blocked": False},
+    }
+    artifact = build_commander_output_artifact(
+        state,
+        mode="graph_spine",
+        phase="session",
+        path="session_strategist_blocked",
+        status="blocked",
+        reason="incident_threshold_cooldown",
+    )
+    assert artifact.get("selected_route") == "blocked"
+    assert artifact.get("cooldown_applied") is True
+    incident_state = artifact.get("incident_state") if isinstance(artifact.get("incident_state"), dict) else {}
+    assert incident_state.get("incident_count") == 3
+    assert artifact.get("strategist_blocked") is True

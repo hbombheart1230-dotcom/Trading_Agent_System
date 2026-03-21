@@ -187,8 +187,8 @@
   - closeout can auto-generate these bundles for BUY/SELL runs detected in the selected day
 - Read-only operator web UI:
   - launcher:
-    - `scripts/run_operator_ui.py`
-    - PowerShell helpers: `scripts/start_operator_ui.ps1`, `scripts/stop_operator_ui.ps1`
+    - `scripts/run_operator_ui.py` (soft-deprecated, manual check only)
+    - PowerShell helpers: `scripts/start_operator_ui.ps1`, `scripts/stop_operator_ui.ps1` (soft-deprecated)
   - default URL: `http://127.0.0.1:8010`
   - pages:
     - `/` latest same-day overview

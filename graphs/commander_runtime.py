@@ -1034,6 +1034,13 @@ def run_commander_runtime(
             "end",
             {"mode": selected, "status": state.get("runtime_status", "stopped"), "path": None},
         )
+        _persist_commander(
+            selected,
+            selected_phase,
+            status_value=str(state.get("runtime_status", "stopped") or "stopped"),
+            path_value=str(state.get("path") or ""),
+            reason=str(cooldown_payload.get("reason") or state.get("runtime_status") or ""),
+        )
         return state
 
     graph_runner = graph_runner or run_trading_graph

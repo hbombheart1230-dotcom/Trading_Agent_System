@@ -120,8 +120,8 @@ python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events
 python -m scripts.run_agent_pipeline_trace_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/dev/analysis/agent_pipeline_trace --day 2026-03-10 --json
 python -m scripts.run_offhours_full_trace_bundle --env-path .env --state-path data/state/offhours_full_trace.json --event-log-path data/logs/dev/analysis/offhours/offhours_full_trace.jsonl --evidence-log-path data/evidence_ledger/offhours_full_trace.jsonl --report-dir reports/dev/analysis/offhours_full_trace --json
 python -m scripts.run_report_maintenance --report-root reports --event-log-path data/logs/events.jsonl --json
-powershell -ExecutionPolicy Bypass -File scripts/start_operator_ui.ps1
-powershell -ExecutionPolicy Bypass -File scripts/stop_operator_ui.ps1
+powershell -ExecutionPolicy Bypass -File scripts/start_operator_ui.ps1  # soft-deprecated, manual check only
+powershell -ExecutionPolicy Bypass -File scripts/stop_operator_ui.ps1   # soft-deprecated, manual check only
 
 set EVENT_LOG_PATH=./data/logs/events.jsonl
 set REPORT_DAY=2026-03-06

@@ -444,9 +444,9 @@ Operator-facing report scripts:
   - `--no-ai-review` (force deterministic-only mode)
   - `--ai-review-model <model>` (override reporter model route)
 - Operator UI:
-  - `python -m scripts.run_operator_ui --env-path .env --host 127.0.0.1 --port 8010`
-  - `powershell -ExecutionPolicy Bypass -File scripts/start_operator_ui.ps1`
-  - `powershell -ExecutionPolicy Bypass -File scripts/stop_operator_ui.ps1`
+  - `python -m scripts.run_operator_ui --env-path .env --host 127.0.0.1 --port 8010` (soft-deprecated, manual check only)
+  - `powershell -ExecutionPolicy Bypass -File scripts/start_operator_ui.ps1` (soft-deprecated, manual check only)
+  - `powershell -ExecutionPolicy Bypass -File scripts/stop_operator_ui.ps1` (soft-deprecated, manual check only)
   - pages:
     - `/` same-day overview
       - `Today Trades`

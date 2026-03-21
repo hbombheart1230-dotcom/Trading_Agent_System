@@ -132,7 +132,35 @@ def test_commander_runtime_writes_commander_artifact(tmp_path: Path, monkeypatch
     assert commander["agent"] == "commander"
     assert commander["run_id"] == "run-5"
     assert commander["decision"] == "graph_spine"
+    assert commander["selected_route"] == "full_cycle"
+    assert commander["runtime_mode"] == "graph_spine"
+    assert commander["runtime_phase"] == "session"
+    assert isinstance(commander.get("route_reason_codes"), list)
+    assert isinstance(commander.get("open_position_symbols"), list)
+    assert isinstance(commander.get("incident_state"), dict)
+    assert isinstance(commander.get("portfolio_preflight_result"), dict)
     assert "session_type" in commander
     assert "agent_invocation_plan" in commander
     assert "final_runtime_path" in commander
     assert "handoff_instruction" in commander
+
+
+def test_commander_runtime_writes_artifact_when_cooldown_blocks_execution(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("REPORTS_ROOT", str(tmp_path / "reports"))
+    monkeypatch.setenv("COMMANDER_INCIDENT_THRESHOLD", "1")
+    monkeypatch.setenv("COMMANDER_COOLDOWN_SEC", "120")
+
+    state = {
+        "run_id": "run-6",
+        "started_at": "2026-03-18T00:00:00+00:00",
+        "resilience": {"incident_count": 1, "cooldown_until_epoch": 0},
+    }
+
+    out = run_commander_runtime(state)
+    assert str(out.get("runtime_status") or "") == "cooldown_wait"
+
+    paths = canonical_run_artifact_paths("run-6", day="2026-03-18", reports_root=tmp_path / "reports")
+    commander = json.loads(paths["commander"].read_text(encoding="utf-8"))
+    assert commander.get("selected_route") in {"blocked", "degraded"}
+    assert commander.get("cooldown_applied") is True
+    assert commander.get("runtime_phase") == "session"

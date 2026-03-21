@@ -4,6 +4,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+Write-Warning "[DEPRECATED-SOFT] Operator UI runtime is deferred in current workflow."
+Write-Warning "[DEPRECATED-SOFT] Keep using report/trades artifacts as the primary output surface."
+
 $matches = Get-CimInstance Win32_Process |
     Where-Object {
         $_.Name -like "python*" -and

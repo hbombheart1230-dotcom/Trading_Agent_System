@@ -179,6 +179,60 @@ def _story_input() -> Dict[str, Any]:
     }
 
 
+def test_trade_report_shared_facts_align_between_deterministic_and_ai(monkeypatch) -> None:
+    monkeypatch.setattr(mod, "LLMRouter", _RetrySuccessRouter)
+    story_input = _story_input()
+    story_input.update(
+        {
+            "action": "SELL",
+            "status": "closed",
+            "entry_summary": {"run_id": "run-entry-1", "action": "BUY"},
+            "exit_summary": {"run_id": "run-exit-1", "action": "SELL", "reason_human": "vwap_breakdown"},
+            "lifecycle_summary": {"holding_duration": "00:15:00", "exit_reason_human": "vwap_breakdown"},
+            "scanner_evidence": {},
+            "strategist_evidence": {},
+            "canonical_agent_artifacts": {
+                "monitor": {
+                    "decision_phase": "exit",
+                    "decision_action": "sell",
+                    "decision_status": "ok",
+                    "primary_reason_code": "vwap_breakdown",
+                },
+                "commander": {"selected_route": "full_cycle", "route_reason_text": "normal runtime route"},
+            },
+        }
+    )
+
+    deterministic = mod.build_deterministic_trade_report(story_input)
+    ai_report = mod.build_ai_trade_report(story_input, enabled=True, model="free")
+
+    assert deterministic["action"] == "SELL"
+    assert ai_report["action"] == "SELL"
+    assert deterministic["status"] == "closed"
+    assert ai_report["status"] == "closed"
+    det_facts = deterministic.get("shared_facts") if isinstance(deterministic.get("shared_facts"), dict) else {}
+    ai_facts = ai_report.get("shared_facts") if isinstance(ai_report.get("shared_facts"), dict) else {}
+    assert det_facts.get("holding_duration") == "00:15:00"
+    assert ai_facts.get("holding_duration") == "00:15:00"
+    assert det_facts.get("exit_reason") == "vwap_breakdown"
+    assert ai_facts.get("exit_reason") == "vwap_breakdown"
+    assert (ai_facts.get("monitor_decision") or {}).get("reason_code") == "vwap_breakdown"
+
+
+def test_trade_report_marks_scanner_evidence_unavailable_when_missing() -> None:
+    story_input = _story_input()
+    story_input["scanner_evidence"] = {}
+    story_input["scanner_reason_human"] = {}
+
+    report = mod.build_deterministic_trade_report(story_input)
+
+    scanner_section = report.get("why_this_symbol_was_chosen") if isinstance(report.get("why_this_symbol_was_chosen"), dict) else {}
+    summary = str(scanner_section.get("summary") or "").lower()
+    facts = report.get("shared_facts") if isinstance(report.get("shared_facts"), dict) else {}
+    assert "scanner evidence unavailable" in summary
+    assert facts.get("scanner_evidence_status") == "unavailable"
+
+
 def test_ai_trade_report_retries_before_success(monkeypatch):
     monkeypatch.setattr(mod, "LLMRouter", _RetrySuccessRouter)
 

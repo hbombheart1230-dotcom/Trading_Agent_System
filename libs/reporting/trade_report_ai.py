@@ -203,11 +203,117 @@ def _actual_lifecycle_action(story_input: Dict[str, Any]) -> str:
     return "WAIT"
 
 
+def _first_nonempty_text(*values: Any, max_len: int = 240) -> str:
+    for value in values:
+        text = _clip(value, max_len=max_len)
+        if text:
+            return text
+    return ""
+
+
+def _has_evidence_payload(value: Any) -> bool:
+    if isinstance(value, dict):
+        return bool(value)
+    if isinstance(value, list):
+        return bool(value)
+    return bool(str(value or "").strip())
+
+
+def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    entry_summary = story_input.get("entry_summary") if isinstance(story_input.get("entry_summary"), dict) else {}
+    exit_summary = story_input.get("exit_summary") if isinstance(story_input.get("exit_summary"), dict) else {}
+    lifecycle_summary = story_input.get("lifecycle_summary") if isinstance(story_input.get("lifecycle_summary"), dict) else {}
+    monitor_reason = story_input.get("monitor_reason_human") if isinstance(story_input.get("monitor_reason_human"), dict) else {}
+    scanner_reason = story_input.get("scanner_reason_human") if isinstance(story_input.get("scanner_reason_human"), dict) else {}
+    market_context = story_input.get("market_context_human") if isinstance(story_input.get("market_context_human"), dict) else {}
+    canonical = story_input.get("canonical_agent_artifacts") if isinstance(story_input.get("canonical_agent_artifacts"), dict) else {}
+    canonical_monitor = canonical.get("monitor") if isinstance(canonical.get("monitor"), dict) else {}
+    canonical_commander = canonical.get("commander") if isinstance(canonical.get("commander"), dict) else {}
+    status_text = _clip(story_input.get("status"), max_len=32) or "unknown"
+    lifecycle_action = _actual_lifecycle_action(story_input)
+    holding_duration = _first_nonempty_text(
+        lifecycle_summary.get("holding_duration"),
+        monitor_reason.get("position_age_human"),
+        max_len=80,
+    )
+    exit_reason = _first_nonempty_text(
+        lifecycle_summary.get("exit_reason_human"),
+        exit_summary.get("reason_human"),
+        monitor_reason.get("exit_reason"),
+        canonical_monitor.get("primary_reason_code"),
+        max_len=280,
+    )
+    monitor_decision = {
+        "phase": _first_nonempty_text(
+            canonical_monitor.get("decision_phase"),
+            "hold" if status_text.lower() == "open" else "no_intent",
+            max_len=32,
+        ),
+        "action": _first_nonempty_text(
+            canonical_monitor.get("decision_action"),
+            lifecycle_action.lower(),
+            max_len=32,
+        ),
+        "status": _first_nonempty_text(canonical_monitor.get("decision_status"), "unavailable", max_len=32),
+        "reason_code": _first_nonempty_text(
+            canonical_monitor.get("primary_reason_code"),
+            monitor_reason.get("trigger_type"),
+            monitor_reason.get("summary"),
+            max_len=200,
+        ),
+    }
+    scanner_evidence_status = (
+        "available"
+        if (
+            _has_evidence_payload(story_input.get("scanner_evidence"))
+            or bool(_first_nonempty_text(scanner_reason.get("selected_symbol"), scanner_reason.get("summary"), max_len=200))
+            or bool(_listify(scanner_reason.get("bullets"), max_items=1, max_len=120))
+        )
+        else "unavailable"
+    )
+    strategist_evidence_status = (
+        "available"
+        if (
+            _has_evidence_payload(story_input.get("strategist_evidence"))
+            or bool(_first_nonempty_text(market_context.get("summary"), market_context.get("regime"), max_len=200))
+            or bool(_listify(market_context.get("bullets"), max_items=1, max_len=120))
+        )
+        else "unavailable"
+    )
+    commander_route = {
+        "selected_route": _first_nonempty_text(
+            canonical_commander.get("selected_route"),
+            canonical_commander.get("final_runtime_path"),
+            max_len=120,
+        ),
+        "reason": _first_nonempty_text(
+            canonical_commander.get("route_reason_text"),
+            canonical_commander.get("final_reason"),
+            max_len=260,
+        ),
+    }
+    return {
+        "symbol": _clip(story_input.get("symbol"), max_len=32) or "unknown",
+        "trade_id": _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120),
+        "lifecycle_action": lifecycle_action,
+        "lifecycle_status": status_text,
+        "entry_exists": bool(_has_evidence_payload(entry_summary)),
+        "exit_exists": bool(_has_evidence_payload(exit_summary)),
+        "holding_duration": holding_duration,
+        "exit_reason": exit_reason,
+        "monitor_decision": monitor_decision,
+        "scanner_evidence_status": scanner_evidence_status,
+        "strategist_evidence_status": strategist_evidence_status,
+        "commander_route": commander_route,
+    }
+
+
 def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(report or {})
-    action = _actual_lifecycle_action(story_input)
-    symbol = _clip(story_input.get("symbol"), max_len=32) or _clip(out.get("symbol"), max_len=32) or "unknown"
-    status_text = _clip(story_input.get("status"), max_len=32) or _clip(out.get("status"), max_len=32) or "closed"
+    shared_seed = _build_shared_summary_seed(story_input)
+    action = _clip(shared_seed.get("lifecycle_action"), max_len=24) or _actual_lifecycle_action(story_input)
+    symbol = _clip(shared_seed.get("symbol"), max_len=32) or _clip(out.get("symbol"), max_len=32) or "unknown"
+    status_text = _clip(shared_seed.get("lifecycle_status"), max_len=32) or _clip(out.get("status"), max_len=32) or "closed"
     story_type = _clip(story_input.get("story_type"), max_len=40) or _clip(out.get("story_type"), max_len=40)
     execution_mode = _clip(story_input.get("execution_mode_label"), max_len=80) or _clip(out.get("execution_mode_label"), max_len=80)
 
@@ -271,6 +377,30 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
         out["monitor_trigger_reasoning"] = dict(out.get("holding_monitoring_story") or {})
     if isinstance(out.get("execution_result"), dict):
         out["execution_result"] = dict(out.get("execution_quality") or {})
+    if shared_seed.get("scanner_evidence_status") == "unavailable":
+        scanner_section = out.get("why_this_symbol_was_chosen") if isinstance(out.get("why_this_symbol_was_chosen"), dict) else {}
+        current_summary = _clip(scanner_section.get("summary"), max_len=600)
+        if not current_summary or _is_low_information_bullet(current_summary):
+            scanner_section["summary"] = "Scanner evidence unavailable for this trade. Selection confidence is constrained."
+        out["why_this_symbol_was_chosen"] = scanner_section
+    if shared_seed.get("strategist_evidence_status") == "unavailable":
+        market_section = out.get("market_context_at_entry") if isinstance(out.get("market_context_at_entry"), dict) else {}
+        current_summary = _clip(market_section.get("summary"), max_len=600)
+        if not current_summary or _is_low_information_bullet(current_summary):
+            market_section["summary"] = "Strategist evidence unavailable for this trade. Market-context detail is limited."
+        out["market_context_at_entry"] = market_section
+    out["shared_facts"] = {
+        "symbol": symbol,
+        "trade_id": _clip(shared_seed.get("trade_id"), max_len=120),
+        "lifecycle_action": action,
+        "lifecycle_status": status_text,
+        "holding_duration": _clip(shared_seed.get("holding_duration"), max_len=80),
+        "exit_reason": _clip(shared_seed.get("exit_reason"), max_len=280),
+        "monitor_decision": dict(shared_seed.get("monitor_decision") or {}),
+        "scanner_evidence_status": _clip(shared_seed.get("scanner_evidence_status"), max_len=24),
+        "strategist_evidence_status": _clip(shared_seed.get("strategist_evidence_status"), max_len=24),
+        "commander_route": dict(shared_seed.get("commander_route") or {}),
+    }
     return out
 
 
@@ -1660,6 +1790,7 @@ def _fallback_report(
     model: str,
     reason: str,
 ) -> Dict[str, Any]:
+    shared_seed = _build_shared_summary_seed(story_input)
     market_context = story_input.get("market_context_human") if isinstance(story_input.get("market_context_human"), dict) else {}
     scanner_reason = story_input.get("scanner_reason_human") if isinstance(story_input.get("scanner_reason_human"), dict) else {}
     filters_human = story_input.get("filters_human") if isinstance(story_input.get("filters_human"), dict) else {}
@@ -1670,7 +1801,7 @@ def _fallback_report(
     operator_conclusion = (
         story_input.get("operator_conclusion_human") if isinstance(story_input.get("operator_conclusion_human"), dict) else {}
     )
-    action = _clip(story_input.get("action"), max_len=24) or "WAIT"
+    action = _clip(shared_seed.get("lifecycle_action"), max_len=24) or _clip(story_input.get("action"), max_len=24) or "WAIT"
     monitor_snapshot = {
         "posture": _clip(monitor_reason.get("posture"), max_len=40) or action or "WAIT",
         "trigger_type": _clip(monitor_reason.get("trigger_type"), max_len=80) or "not_captured",
@@ -1699,9 +1830,9 @@ def _fallback_report(
     warnings = _listify(story_input.get("warnings"), max_items=10, max_len=260)
     improvement_points = _listify(story_input.get("improvement_points"), max_items=10, max_len=260)
 
-    symbol = _clip(story_input.get("symbol"), max_len=32) or "unknown"
-    trade_id = _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120)
-    status_text = _clip(story_input.get("status"), max_len=32) or "closed"
+    symbol = _clip(shared_seed.get("symbol"), max_len=32) or _clip(story_input.get("symbol"), max_len=32) or "unknown"
+    trade_id = _clip(shared_seed.get("trade_id"), max_len=120) or _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120)
+    status_text = _clip(shared_seed.get("lifecycle_status"), max_len=32) or _clip(story_input.get("status"), max_len=32) or "closed"
     executive_reason = (
         _clip(operator_conclusion.get("summary"), max_len=600)
         or _clip(lifecycle_summary.get("lifecycle_summary_human"), max_len=600)
@@ -1711,9 +1842,20 @@ def _fallback_report(
     )
     confidence = _clip(scanner_reason.get("confidence_label"), max_len=24) or _clip(scanner_reason.get("confidence"), max_len=24)
     scanner_choice_summary = _build_scanner_choice_summary(scanner_reason, market_context)
+    if str(shared_seed.get("scanner_evidence_status") or "").strip() == "unavailable":
+        scanner_choice_summary = "Scanner evidence unavailable for this trade. Selection rationale is reported conservatively."
+    market_context_summary = _clip(market_context.get("summary"), max_len=600)
+    if str(shared_seed.get("strategist_evidence_status") or "").strip() == "unavailable" and (
+        not market_context_summary or _is_low_information_bullet(market_context_summary)
+    ):
+        market_context_summary = "Strategist evidence unavailable for this trade. Market context is shown as limited."
 
     entry_decision = {
-        "summary": _build_entry_decision_summary(entry_summary, scanner_reason, market_context, action),
+        "summary": (
+            _build_entry_decision_summary(entry_summary, scanner_reason, market_context, action)
+            if bool(shared_seed.get("entry_exists"))
+            else "Entry evidence was insufficient, so entry timing is marked as unavailable."
+        ),
         "bullets": [
             f"Entry run: {_clip(entry_summary.get('run_id'), max_len=80) or 'not_captured'}",
             f"Entry time: {_clip(entry_summary.get('ts'), max_len=80) or 'not_captured'}",
@@ -1735,15 +1877,27 @@ def _fallback_report(
         "summary": _build_holding_story_summary(hold_count, monitor_reason, status_text),
         "bullets": _build_holding_story_bullets(holding_summary, monitor_reason),
     }
+    if _clip(shared_seed.get("holding_duration"), max_len=80):
+        holding_story["bullets"] = [f"Holding duration: {_clip(shared_seed.get('holding_duration'), max_len=80)}"] + list(
+            holding_story.get("bullets") or []
+        )
     exit_monitor_context = exit_summary.get("monitor_context") if isinstance(exit_summary.get("monitor_context"), dict) else {}
     if exit_monitor_context:
         exit_monitor_context = dict(exit_monitor_context)
     else:
         exit_monitor_context = dict(monitor_reason or {})
     exit_decision = {
-        "summary": _build_exit_decision_summary(exit_summary, exit_monitor_context, status_text=status_text),
+        "summary": (
+            _build_exit_decision_summary(exit_summary, exit_monitor_context, status_text=status_text)
+            if bool(shared_seed.get("exit_exists")) or status_text.lower() != "open"
+            else "Exit evidence is not captured yet because this lifecycle remains open."
+        ),
         "bullets": _build_exit_decision_bullets(exit_summary, exit_monitor_context, status_text=status_text),
     }
+    if _clip(shared_seed.get("exit_reason"), max_len=240):
+        exit_decision["bullets"] = [f"Canonical exit reason: {_clip(shared_seed.get('exit_reason'), max_len=240)}"] + list(
+            exit_decision.get("bullets") or []
+        )
     execution_quality = {
         "summary": (
             _clip(execution_outcome.get("summary"), max_len=600)
@@ -1790,7 +1944,7 @@ def _fallback_report(
             "summary": executive_reason,
         },
         "market_context_at_entry": {
-            "summary": _clip(market_context.get("summary"), max_len=600),
+            "summary": market_context_summary,
             "bullets": _build_market_context_bullets(market_context),
             "regime": _clip(market_context.get("regime"), max_len=40),
             "market_sentiment": _clip(market_context.get("market_sentiment"), max_len=40),
@@ -1838,6 +1992,18 @@ def _fallback_report(
             "watch_next": _listify(operator_conclusion.get("watch_next"), max_items=6, max_len=200),
             "thesis_invalidation": _listify(operator_conclusion.get("thesis_invalidation"), max_items=6, max_len=200),
         },
+        "shared_facts": {
+            "symbol": symbol,
+            "trade_id": trade_id,
+            "lifecycle_action": action,
+            "lifecycle_status": status_text,
+            "holding_duration": _clip(shared_seed.get("holding_duration"), max_len=80),
+            "exit_reason": _clip(shared_seed.get("exit_reason"), max_len=280),
+            "monitor_decision": dict(shared_seed.get("monitor_decision") or {}),
+            "scanner_evidence_status": _clip(shared_seed.get("scanner_evidence_status"), max_len=24),
+            "strategist_evidence_status": _clip(shared_seed.get("strategist_evidence_status"), max_len=24),
+            "commander_route": dict(shared_seed.get("commander_route") or {}),
+        },
     }
     # Backward-compatible aliases used by earlier UI/report consumers.
     out["market_context"] = dict(out.get("market_context_at_entry") or {})
@@ -1857,10 +2023,11 @@ def _failure_report(
     reason: str,
     error: str = "",
 ) -> Dict[str, Any]:
-    trade_id = _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120)
-    action = _actual_lifecycle_action(story_input)
-    symbol = _clip(story_input.get("symbol"), max_len=32) or "unknown"
-    status_text = _clip(story_input.get("status"), max_len=32) or "unknown"
+    shared_seed = _build_shared_summary_seed(story_input)
+    trade_id = _clip(shared_seed.get("trade_id"), max_len=120) or _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120)
+    action = _clip(shared_seed.get("lifecycle_action"), max_len=24) or _actual_lifecycle_action(story_input)
+    symbol = _clip(shared_seed.get("symbol"), max_len=32) or _clip(story_input.get("symbol"), max_len=32) or "unknown"
+    status_text = _clip(shared_seed.get("lifecycle_status"), max_len=32) or _clip(story_input.get("status"), max_len=32) or "unknown"
     reporter_status = story_input.get("reporter_status_human") if isinstance(story_input.get("reporter_status_human"), dict) else {}
     monitor_reason = story_input.get("monitor_reason_human") if isinstance(story_input.get("monitor_reason_human"), dict) else {}
     full_timeline = [
