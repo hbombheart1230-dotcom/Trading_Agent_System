@@ -79,6 +79,36 @@ def _dedupe_text(values: List[str], *, limit: int = 10, max_len: int = 180) -> L
     return out
 
 
+def _monitor_decision_summary(
+    *,
+    decision_phase: str,
+    primary_reason_text: str,
+    threshold_snapshot: Dict[str, Any],
+    signal_snapshot: Dict[str, Any],
+    missing_inputs: List[str],
+) -> str:
+    if missing_inputs:
+        missing = ",".join([_clip(item, max_len=24) for item in list(missing_inputs)[:3] if _clip(item, max_len=24)])
+        return _clip(f"Decision: insufficient data ({missing or 'unavailable'})", max_len=120)
+    phase = str(decision_phase or "").strip().lower()
+    reason = _clip(primary_reason_text, max_len=64) or "unavailable"
+    if phase == "entry":
+        entry_signal = _clip(_dict(signal_snapshot).get("entry_pattern"), max_len=42) or reason
+        entry_thresholds = _dict(_dict(threshold_snapshot).get("entry_thresholds"))
+        threshold_text = (
+            _clip(entry_thresholds.get("max_extended_from_vwap_pct"), max_len=24)
+            or _clip(entry_thresholds.get("volume_ratio_min"), max_len=24)
+            or "thresholds"
+        )
+        return _clip(f"Entry: {entry_signal} met with {threshold_text} -> BUY", max_len=120)
+    if phase == "exit":
+        trigger = _clip(_dict(signal_snapshot).get("exit_triggered_rule"), max_len=48) or reason
+        return _clip(f"Exit: {trigger}", max_len=120)
+    if phase == "hold":
+        return "Hold: conditions stable, no exit trigger"
+    return _clip(f"No action: {reason}", max_len=120)
+
+
 def _phase(state: Dict[str, Any]) -> str:
     return str(state.get("runtime_phase") or state.get("phase") or "").strip()
 
@@ -175,6 +205,7 @@ def _required_keys_for_agent(agent: str) -> List[str]:
             "decision_phase",
             "decision_action",
             "decision_status",
+            "decision_summary",
             "primary_reason_code",
             "primary_reason_text",
             "secondary_reason_codes",
@@ -672,6 +703,13 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_triggered": bool(exit_info.get("triggered")),
         "exit_triggered_rule": _clip(exit_info.get("reason"), max_len=180),
     }
+    decision_summary = _monitor_decision_summary(
+        decision_phase=decision_phase,
+        primary_reason_text=_clip(primary_reason_code.replace("_", " "), max_len=220),
+        threshold_snapshot=threshold_snapshot,
+        signal_snapshot=signal_snapshot,
+        missing_inputs=missing_inputs,
+    )
     market_snapshot_refs = {
         "selected_symbol": symbol,
         "selected_price": selected.get("price"),
@@ -706,6 +744,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "decision_phase": decision_phase,
             "decision_action": decision_action,
             "decision_status": decision_status,
+            "decision_summary": decision_summary,
             "primary_reason_code": primary_reason_code,
             "primary_reason_text": _clip(primary_reason_code.replace("_", " "), max_len=220),
             "secondary_reason_codes": secondary_reason_codes,

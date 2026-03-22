@@ -549,6 +549,22 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
                 "watch_next": ["Volatility expansion", "Theme drift"],
                 "thesis_invalidation": ["Macro regime breakdown"],
             },
+            "shared_facts": {
+                "action": "BUY",
+                "status": "closed",
+                "holding_duration": "10m",
+                "exit_reason": "simulated closeout",
+                "pnl": "unavailable",
+                "pnl_pct": "unavailable",
+                "data_source": {
+                    "action": "lifecycle",
+                    "status": "lifecycle",
+                    "holding_duration": "lifecycle",
+                    "exit_reason": "lifecycle",
+                    "pnl": "unavailable",
+                    "pnl_pct": "unavailable",
+                },
+            },
         },
     )
     (trade_root / "trade_report.md").write_text("# Trade report\n", encoding="utf-8")
@@ -819,6 +835,67 @@ def test_operator_brief_input_prefers_canonical_trade_artifacts(tmp_path: Path, 
     assert compact["scanner"]["selected_reason"] == "Selected as top ranked symbol due to value/volume blend."
     assert compact["monitor"]["monitor_reason"] == "Monitor allowed BUY because no position was open."
     assert compact["reporter"]["ai_summary"] == "Reporter linked and graded the run A-."
+
+
+def test_operator_brief_shared_facts_match_ai_trade_report_core_facts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    detail = data_access.load_run_detail(cfg, "run-1")
+
+    brief = detail.get("operator_brief") if isinstance(detail.get("operator_brief"), dict) else {}
+    brief_facts = brief.get("shared_facts") if isinstance(brief.get("shared_facts"), dict) else {}
+    report_data = (detail.get("trade_report") or {}).get("report_data") if isinstance(detail.get("trade_report"), dict) else {}
+    ai_facts = report_data.get("shared_facts") if isinstance(report_data, dict) and isinstance(report_data.get("shared_facts"), dict) else {}
+
+    assert brief_facts.get("action") == ai_facts.get("action")
+    assert brief_facts.get("holding_duration") == ai_facts.get("holding_duration")
+    assert brief_facts.get("exit_reason") == ai_facts.get("exit_reason")
+    assert isinstance(brief_facts.get("data_source"), dict)
+
+
+def test_operator_brief_shared_facts_use_lifecycle_precedence_when_report_shared_facts_missing() -> None:
+    trade_report = {
+        "story_input_data": {
+            "action": "BUY",
+            "status": "closed",
+            "entry_summary": {"action": "BUY"},
+            "exit_summary": {"action": "BUY", "reason_human": "entry_side_reason"},
+            "canonical_agent_artifacts": {
+                "monitor": {
+                    "decision_action": "sell",
+                    "decision_status": "ok",
+                    "primary_reason_text": "monitor_exit_reason",
+                }
+            },
+        },
+        "lifecycle_data": {
+            "status": "closed",
+            "action": "SELL",
+            "summary": {
+                "holding_duration": "00:31:00",
+                "exit_reason_human": "lifecycle_exit_reason",
+            },
+        },
+        "report_data": {},
+    }
+
+    canonical = data_access._build_canonical_trade_brief_input(trade_report)
+    facts = canonical.get("shared_facts") if isinstance(canonical.get("shared_facts"), dict) else {}
+
+    assert facts.get("action") == "SELL"
+    assert facts.get("holding_duration") == "00:31:00"
+    assert facts.get("exit_reason") == "lifecycle_exit_reason"
+    assert (facts.get("data_source") or {}).get("action") == "lifecycle"
+
+
+def test_operator_brief_shared_facts_mark_unavailable_when_inputs_missing() -> None:
+    canonical = data_access._build_canonical_trade_brief_input({})
+    facts = canonical.get("shared_facts") if isinstance(canonical.get("shared_facts"), dict) else {}
+
+    assert facts.get("action") == "unavailable"
+    assert facts.get("status") == "unavailable"
+    assert facts.get("holding_duration") == "unavailable"
+    assert facts.get("exit_reason") == "unavailable"
 
 
 def test_operator_brief_input_normalizes_stale_chart_coverage_from_canonical_trade(tmp_path: Path, monkeypatch) -> None:

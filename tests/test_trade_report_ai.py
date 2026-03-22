@@ -216,7 +216,101 @@ def test_trade_report_shared_facts_align_between_deterministic_and_ai(monkeypatc
     assert ai_facts.get("holding_duration") == "00:15:00"
     assert det_facts.get("exit_reason") == "vwap_breakdown"
     assert ai_facts.get("exit_reason") == "vwap_breakdown"
+    assert det_facts.get("action") == "SELL"
+    assert ai_facts.get("action") == "SELL"
     assert (ai_facts.get("monitor_decision") or {}).get("reason_code") == "vwap_breakdown"
+
+
+def test_trade_report_shared_fact_precedence_lifecycle_wins_over_monitor_and_entry() -> None:
+    story_input = _story_input()
+    story_input.update(
+        {
+            "status": "open",
+            "entry_summary": {"action": "BUY"},
+            "exit_summary": {"action": "BUY", "reason_human": "entry_side_reason"},
+            "trade_lifecycle": {
+                "action": "SELL",
+                "status": "closed",
+                "summary": {
+                    "holding_duration": "00:25:00",
+                    "exit_reason_human": "lifecycle_exit_reason",
+                    "pnl": 12000,
+                    "pnl_pct": 0.015,
+                },
+            },
+            "canonical_agent_artifacts": {
+                "monitor": {
+                    "decision_action": "buy",
+                    "decision_status": "ok",
+                    "primary_reason_text": "monitor_conflict_reason",
+                }
+            },
+        }
+    )
+
+    seed = mod._build_shared_summary_seed(story_input)
+    facts = seed.get("resolved_trade_facts") if isinstance(seed.get("resolved_trade_facts"), dict) else {}
+    data_source = facts.get("data_source") if isinstance(facts.get("data_source"), dict) else {}
+
+    assert facts.get("action") == "SELL"
+    assert facts.get("status") == "closed"
+    assert facts.get("holding_duration") == "00:25:00"
+    assert facts.get("exit_reason") == "lifecycle_exit_reason"
+    assert facts.get("pnl") == 12000
+    assert facts.get("pnl_pct") == 0.015
+    assert data_source.get("action") == "lifecycle"
+    assert data_source.get("holding_duration") == "lifecycle"
+    assert data_source.get("exit_reason") == "lifecycle"
+
+
+def test_trade_report_shared_fact_precedence_monitor_wins_over_entry_when_lifecycle_missing() -> None:
+    story_input = _story_input()
+    story_input.update(
+        {
+            "status": "closed",
+            "entry_summary": {"action": "BUY"},
+            "exit_summary": {"action": "BUY", "reason_human": "entry_conflict_reason"},
+            "canonical_agent_artifacts": {
+                "monitor": {
+                    "decision_action": "sell",
+                    "decision_status": "ok",
+                    "primary_reason_text": "monitor_exit_confirmed",
+                }
+            },
+        }
+    )
+
+    seed = mod._build_shared_summary_seed(story_input)
+    facts = seed.get("resolved_trade_facts") if isinstance(seed.get("resolved_trade_facts"), dict) else {}
+    data_source = facts.get("data_source") if isinstance(facts.get("data_source"), dict) else {}
+
+    assert facts.get("action") == "SELL"
+    assert facts.get("exit_reason") == "monitor_exit_confirmed"
+    assert data_source.get("action") == "monitor"
+    assert data_source.get("exit_reason") == "monitor"
+
+
+def test_trade_report_shared_fact_marks_unavailable_when_missing() -> None:
+    story_input = _story_input()
+    story_input.update(
+        {
+            "status": "",
+            "entry_summary": {},
+            "exit_summary": {},
+            "lifecycle_summary": {},
+            "trade_lifecycle": {},
+            "canonical_agent_artifacts": {},
+            "monitor_reason_human": {},
+        }
+    )
+
+    seed = mod._build_shared_summary_seed(story_input)
+    facts = seed.get("resolved_trade_facts") if isinstance(seed.get("resolved_trade_facts"), dict) else {}
+
+    assert facts.get("holding_duration") == "unavailable"
+    assert facts.get("exit_reason") == "unavailable"
+    assert facts.get("pnl") == "unavailable"
+    assert facts.get("pnl_pct") == "unavailable"
 
 
 def test_trade_report_marks_scanner_evidence_unavailable_when_missing() -> None:

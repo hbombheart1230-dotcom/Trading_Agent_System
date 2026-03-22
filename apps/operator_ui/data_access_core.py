@@ -53,6 +53,7 @@ from libs.reporting.llm_artifacts import (
     persist_llm_artifact_refs,
     trade_artifact_paths,
 )
+from libs.reporting.trade_report_ai import resolve_shared_trade_facts
 
 
 KST = timezone(timedelta(hours=9), name="KST")
@@ -2399,19 +2400,90 @@ def _normalize_canonical_monitor_snapshot(snapshot: Dict[str, Any], story_monito
 
 
 def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_shared_facts(raw: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(raw or {})
+        return {
+            "action": str(payload.get("action") or "unavailable").strip() or "unavailable",
+            "status": str(payload.get("status") or "unavailable").strip() or "unavailable",
+            "holding_duration": str(payload.get("holding_duration") or "unavailable").strip() or "unavailable",
+            "exit_reason": str(payload.get("exit_reason") or "unavailable").strip() or "unavailable",
+            "pnl": payload.get("pnl", "unavailable"),
+            "pnl_pct": payload.get("pnl_pct", "unavailable"),
+            "data_source": dict(payload.get("data_source") or {}),
+        }
+
+    def _build_story_for_shared_facts(
+        *,
+        story_input: Dict[str, Any],
+        lifecycle: Dict[str, Any],
+        report: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        out = dict(story_input or {})
+        if isinstance(lifecycle, dict) and lifecycle:
+            out.setdefault("trade_lifecycle", dict(lifecycle))
+            lifecycle_summary = lifecycle.get("summary") if isinstance(lifecycle.get("summary"), dict) else {}
+            out.setdefault("lifecycle_summary", dict(lifecycle_summary))
+            if isinstance(lifecycle.get("entry"), dict):
+                out.setdefault("entry_summary", dict(lifecycle.get("entry")))
+            if isinstance(lifecycle.get("exit"), dict):
+                out.setdefault("exit_summary", dict(lifecycle.get("exit")))
+            if not str(out.get("status") or "").strip():
+                out["status"] = str(lifecycle.get("status") or "")
+        shared = report.get("shared_facts") if isinstance(report.get("shared_facts"), dict) else {}
+        if shared:
+            if not str(out.get("action") or "").strip():
+                out["action"] = str(shared.get("action") or "")
+            if not str(out.get("status") or "").strip():
+                out["status"] = str(shared.get("status") or "")
+        return out
+
     story_input = _trade_report_artifact_payload(trade_report, "story_input_data")
     lifecycle = _trade_report_artifact_payload(trade_report, "lifecycle_data")
     report = _trade_report_artifact_payload(trade_report, "report_data")
+    shared_facts_from_report = report.get("shared_facts") if isinstance(report.get("shared_facts"), dict) else {}
+    if shared_facts_from_report:
+        shared_facts = _normalize_shared_facts(shared_facts_from_report)
+    else:
+        shared_story_input = _build_story_for_shared_facts(
+            story_input=story_input,
+            lifecycle=lifecycle,
+            report=report,
+        )
+        shared_facts = _normalize_shared_facts(resolve_shared_trade_facts(shared_story_input))
     if not (story_input or lifecycle or report):
+        unavailable_facts = {
+            "action": "unavailable",
+            "status": "unavailable",
+            "holding_duration": "unavailable",
+            "exit_reason": "unavailable",
+            "pnl": "unavailable",
+            "pnl_pct": "unavailable",
+            "data_source": {
+                "action": "unavailable",
+                "status": "unavailable",
+                "holding_duration": "unavailable",
+                "exit_reason": "unavailable",
+                "pnl": "unavailable",
+                "pnl_pct": "unavailable",
+            },
+        }
         return {
             "available": False,
             "trade_id": str(trade_report.get("trade_id") or ""),
             "story_type": str(trade_report.get("story_type_label") or trade_report.get("story_type") or ""),
             "execution_mode_label": str(trade_report.get("execution_mode_label") or ""),
-            "lifecycle_status": str(trade_report.get("lifecycle_status") or ""),
+            "lifecycle_status": "unavailable",
             "lifecycle_summary": str(trade_report.get("lifecycle_summary") or ""),
             "report_summary": str(trade_report.get("report_summary") or ""),
             "reporter_summary": str(trade_report.get("reporter_status_human") or ""),
+            "action": "unavailable",
+            "current_action": "unavailable",
+            "holding_duration": "unavailable",
+            "exit_reason": "unavailable",
+            "pnl": "unavailable",
+            "pnl_pct": "unavailable",
+            "data_source": dict(unavailable_facts.get("data_source") or {}),
+            "shared_facts": unavailable_facts,
         }
 
     market_context = _prefer_richer_trade_report_section(
@@ -2531,22 +2603,21 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
         "trade_id": str(trade_report.get("trade_id") or story_input.get("trade_id") or lifecycle.get("trade_id") or ""),
         "story_type": str(trade_report.get("story_type_label") or trade_report.get("story_type") or story_input.get("story_type") or ""),
         "execution_mode_label": str(trade_report.get("execution_mode_label") or story_input.get("execution_mode_label") or lifecycle.get("execution_mode_label") or ""),
-        "lifecycle_status": str(trade_report.get("lifecycle_status") or lifecycle.get("status") or ""),
+        "lifecycle_status": str(shared_facts.get("status") or "unavailable"),
         "lifecycle_summary": str(
             trade_report.get("lifecycle_summary")
             or lifecycle_summary.get("lifecycle_summary_human")
             or conclusion.get("summary")
             or ""
         ),
+        "action": str(shared_facts.get("action") or "unavailable"),
         "headline": str(executive.get("headline") or ""),
-        "current_action": str(
-            conclusion.get("current_action")
-            or monitor_snapshot.get("posture")
-            or report.get("action")
-            or story_input.get("action")
-            or trade_report.get("action")
-            or ""
-        ),
+        "current_action": str(shared_facts.get("action") or "unavailable"),
+        "holding_duration": str(shared_facts.get("holding_duration") or "unavailable"),
+        "pnl": shared_facts.get("pnl", "unavailable"),
+        "pnl_pct": shared_facts.get("pnl_pct", "unavailable"),
+        "data_source": dict(shared_facts.get("data_source") or {}),
+        "shared_facts": dict(shared_facts),
         "symbol": str(report.get("symbol") or story_input.get("symbol") or trade_report.get("symbol") or ""),
         "market_regime": market_regime,
         "market_sentiment": market_sentiment,
@@ -2588,7 +2659,7 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
         "reporter_grade": str(reporter_eval.get("grade") or lifecycle.get("reporter", {}).get("grade") or ""),
         "reporter_summary": _trade_report_section_summary(reporter_eval, str(trade_report.get("reporter_status_human") or "")),
         "entry_reason": str(entry_summary.get("reason_human") or lifecycle_summary.get("entry_reason_human") or ""),
-        "exit_reason": str(exit_summary.get("reason_human") or lifecycle_summary.get("exit_reason_human") or ""),
+        "exit_reason": str(shared_facts.get("exit_reason") or "unavailable"),
         "timeline": [dict(x) for x in list(story_input.get("timeline") or lifecycle.get("timeline") or report.get("timeline") or []) if isinstance(x, dict)][:10],
         "evidence": {
             "strategist": {
@@ -2674,27 +2745,13 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         _safe_int(scanner_summary.get("candidate_pool_after_filter"), _safe_int(scanner_trace.get("candidate_pool_size"), len(top_candidates))),
     )
 
+    shared_facts = canonical_trade.get("shared_facts") if isinstance(canonical_trade.get("shared_facts"), dict) else {}
     execution_action = str(execution.get("action") or "").upper()
-    report_lifecycle_status = str(trade_report.get("lifecycle_status") or canonical_trade.get("lifecycle_status") or "").strip().lower()
-    canonical_action = str(canonical_trade.get("current_action") or "").upper()
+    report_lifecycle_status = str(shared_facts.get("status") or canonical_trade.get("lifecycle_status") or "").strip().lower()
+    canonical_action = str(shared_facts.get("action") or canonical_trade.get("current_action") or "").upper()
     monitor_reason = str(canonical_trade.get("monitor_summary") or live_monitor_reason or "").strip()
-    exit_reason = str(canonical_trade.get("exit_reason") or live_exit_reason or "").strip()
-    if execution_action == "SELL":
-        final_action = "SELL"
-    elif execution_action == "BUY" and report_lifecycle_status != "closed":
-        final_action = "BUY"
-    elif canonical_action in {"BUY", "SELL", "HOLD", "WAIT"}:
-        final_action = canonical_action
-    elif execution_action in {"BUY", "SELL"}:
-        final_action = execution_action
-    elif not selected_symbol:
-        final_action = "WAIT"
-    elif "hold" in exit_reason.lower() or "hold" in monitor_reason.lower():
-        final_action = "HOLD"
-    elif monitor_reason.lower() == "no_position":
-        final_action = "WAIT"
-    else:
-        final_action = "HOLD"
+    exit_reason = str(shared_facts.get("exit_reason") or canonical_trade.get("exit_reason") or live_exit_reason or "").strip()
+    final_action = canonical_action if canonical_action in {"BUY", "SELL", "HOLD", "WAIT"} else "WAIT"
 
     confidence_raw = (
         selected_candidate.get("confidence")
@@ -2917,7 +2974,11 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     active_exit_axis = _friendly_exit_reason(live_exit_reason or effective_stop_reason or live_monitor_reason or exit_reason or monitor_reason or "hold")
     holding_time = _format_duration(monitor_summary.get("position_age_seconds") or monitor_trace.get("position_age_seconds"))
 
-    canonical_holding_time = str(canonical_monitor_snapshot.get("holding_time") or "").strip()
+    canonical_holding_time = str(
+        canonical_monitor_snapshot.get("holding_time")
+        or shared_facts.get("holding_duration")
+        or ""
+    ).strip()
     canonical_posture = str(canonical_monitor_snapshot.get("posture") or "").strip()
     canonical_current_price = str(canonical_monitor_snapshot.get("current_price") or "").strip()
     canonical_average_price = str(canonical_monitor_snapshot.get("average_price") or "").strip()
@@ -3294,6 +3355,10 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
 def _attach_operator_brief_sections(brief: Dict[str, Any], detail: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(brief or {})
     out["sections"] = _build_operator_brief_sections(detail)
+    trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    canonical_trade = _build_canonical_trade_brief_input(trade_report)
+    shared_facts = canonical_trade.get("shared_facts") if isinstance(canonical_trade.get("shared_facts"), dict) else {}
+    out["shared_facts"] = dict(shared_facts)
     return out
 
 
@@ -3476,13 +3541,17 @@ def _failure_operator_brief(
     failure_status: str = "",
 ) -> Dict[str, Any]:
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    canonical_trade = _build_canonical_trade_brief_input(trade_report)
+    shared_facts = canonical_trade.get("shared_facts") if isinstance(canonical_trade.get("shared_facts"), dict) else {}
     symbol = normalize_symbol(
         trade_report.get("symbol")
         or (((detail.get("scanner") or {}).get("summary") or {}).get("top_stock") if isinstance(detail.get("scanner"), dict) else "")
         or "",
         allow_test_symbols=True,
     )
-    action = str(trade_report.get("action") or "").strip().upper() or "WAIT"
+    action = str(shared_facts.get("action") or "unavailable").strip().upper()
+    if action not in {"BUY", "SELL", "HOLD", "WAIT"}:
+        action = "WAIT"
     return {
         "status": str(status or "fallback"),
         "model": str(model or ""),
@@ -3663,6 +3732,7 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "summary": trade_report.get("report_summary"),
             "reporter_status_human": trade_report.get("reporter_status_human"),
         },
+        "shared_facts": dict(canonical_trade.get("shared_facts") or {}),
         "canonical_trade": canonical_trade,
     }
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -11,6 +12,8 @@ from libs.llm.json_response import parse_llm_json_response, required_key_metadat
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.reporting.llm_artifacts import build_llm_response_artifact, classify_llm_exception, make_attempt
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -219,49 +222,279 @@ def _has_evidence_payload(value: Any) -> bool:
     return bool(str(value or "").strip())
 
 
-def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
-    entry_summary = story_input.get("entry_summary") if isinstance(story_input.get("entry_summary"), dict) else {}
-    exit_summary = story_input.get("exit_summary") if isinstance(story_input.get("exit_summary"), dict) else {}
-    lifecycle_summary = story_input.get("lifecycle_summary") if isinstance(story_input.get("lifecycle_summary"), dict) else {}
-    monitor_reason = story_input.get("monitor_reason_human") if isinstance(story_input.get("monitor_reason_human"), dict) else {}
-    scanner_reason = story_input.get("scanner_reason_human") if isinstance(story_input.get("scanner_reason_human"), dict) else {}
-    market_context = story_input.get("market_context_human") if isinstance(story_input.get("market_context_human"), dict) else {}
-    canonical = story_input.get("canonical_agent_artifacts") if isinstance(story_input.get("canonical_agent_artifacts"), dict) else {}
-    canonical_monitor = canonical.get("monitor") if isinstance(canonical.get("monitor"), dict) else {}
-    canonical_commander = canonical.get("commander") if isinstance(canonical.get("commander"), dict) else {}
-    status_text = _clip(story_input.get("status"), max_len=32) or "unknown"
-    lifecycle_action = _actual_lifecycle_action(story_input)
-    holding_duration = _first_nonempty_text(
-        lifecycle_summary.get("holding_duration"),
-        monitor_reason.get("position_age_human"),
-        max_len=80,
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _as_action(value: Any) -> str:
+    text = _clip(value, max_len=24).upper()
+    if text in {"NOOP", "NONE"}:
+        return "WAIT"
+    return text
+
+
+def _as_status(value: Any) -> str:
+    text = _clip(value, max_len=32).lower()
+    if text == "opened":
+        return "open"
+    if text == "closed_out":
+        return "closed"
+    return text
+
+
+def _present_fact(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        text = value.strip()
+        return bool(text) and text.lower() != "unavailable"
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return True
+
+
+def _set_fact_if_missing(
+    *,
+    resolved: Dict[str, Any],
+    data_source: Dict[str, str],
+    field: str,
+    value: Any,
+    source: str,
+) -> None:
+    if not _present_fact(value):
+        return
+    if _present_fact(resolved.get(field)):
+        if str(resolved.get(field)) != str(value):
+            logger.debug(
+                "trade_fact_conflict field=%s kept_source=%s kept_value=%r ignored_source=%s ignored_value=%r",
+                field,
+                data_source.get(field),
+                resolved.get(field),
+                source,
+                value,
+            )
+        return
+    resolved[field] = value
+    data_source[field] = source
+
+
+def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    lifecycle = _as_dict(story_input.get("trade_lifecycle"))
+    lifecycle_summary = _as_dict(story_input.get("lifecycle_summary"))
+    lifecycle_bundle = _as_dict(story_input.get("lifecycle_bundle"))
+    lifecycle_bundle_outcome = _as_dict(lifecycle_bundle.get("trade_outcome"))
+    lifecycle_summary_obj = _as_dict(lifecycle.get("summary"))
+    lifecycle_entry = _as_dict(lifecycle.get("entry"))
+    lifecycle_exit = _as_dict(lifecycle.get("exit"))
+
+    canonical = _as_dict(story_input.get("canonical_agent_artifacts"))
+    canonical_monitor = _as_dict(canonical.get("monitor"))
+    entry_summary = _as_dict(story_input.get("entry_summary"))
+    hold_summary = _as_dict(story_input.get("holding_summary"))
+    exit_summary = _as_dict(story_input.get("exit_summary"))
+    exit_monitor_context = _as_dict(exit_summary.get("monitor_context"))
+    execution_outcome = _as_dict(story_input.get("execution_outcome_human"))
+    monitor_reason = _as_dict(story_input.get("monitor_reason_human"))
+
+    fields = ["action", "status", "holding_duration", "exit_reason", "pnl", "pnl_pct"]
+    resolved: Dict[str, Any] = {key: "unavailable" for key in fields}
+    data_source: Dict[str, str] = {key: "unavailable" for key in fields}
+
+    # 1) lifecycle / trade_lifecycle.json
+    for candidate in (
+        _as_action(lifecycle.get("action")),
+        _as_action(lifecycle.get("final_action")),
+        _as_action(lifecycle_summary_obj.get("action")),
+        _as_action(lifecycle_summary_obj.get("final_action")),
+        _as_action(lifecycle_entry.get("action")),
+        _as_action(lifecycle_exit.get("action")),
+        _as_action(lifecycle_summary.get("action")),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="action", value=candidate, source="lifecycle")
+    for candidate in (
+        _as_status(lifecycle.get("status")),
+        _as_status(lifecycle.get("trade_status")),
+        _as_status(lifecycle.get("lifecycle_status")),
+        _as_status(lifecycle_summary_obj.get("status")),
+        _as_status(lifecycle_bundle.get("status")),
+        _as_status(story_input.get("trade_lifecycle_status")),
+        _as_status(lifecycle_summary.get("status")),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="status", value=candidate, source="lifecycle")
+    for candidate in (
+        _clip(lifecycle.get("holding_duration"), max_len=80),
+        _clip(lifecycle_summary_obj.get("holding_duration"), max_len=80),
+        _clip(lifecycle_bundle_outcome.get("holding_time"), max_len=80),
+        _clip(lifecycle_summary.get("holding_duration"), max_len=80),
+    ):
+        _set_fact_if_missing(
+            resolved=resolved,
+            data_source=data_source,
+            field="holding_duration",
+            value=candidate,
+            source="lifecycle",
+        )
+    for candidate in (
+        _clip(lifecycle.get("exit_reason"), max_len=280),
+        _clip(lifecycle_summary_obj.get("exit_reason_human"), max_len=280),
+        _clip(lifecycle_summary_obj.get("exit_reason"), max_len=280),
+        _clip(lifecycle_bundle_outcome.get("exit_reason"), max_len=280),
+        _clip(lifecycle_exit.get("reason_human"), max_len=280),
+        _clip(lifecycle_summary.get("exit_reason_human"), max_len=280),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="exit_reason", value=candidate, source="lifecycle")
+    for candidate in (
+        lifecycle.get("pnl"),
+        lifecycle_summary_obj.get("pnl"),
+        lifecycle_bundle_outcome.get("pnl"),
+        lifecycle_summary.get("pnl"),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl", value=candidate, source="lifecycle")
+    for candidate in (
+        lifecycle.get("pnl_pct"),
+        lifecycle.get("return_pct"),
+        lifecycle_summary_obj.get("pnl_pct"),
+        lifecycle_summary_obj.get("return_pct"),
+        lifecycle_bundle_outcome.get("return_pct"),
+        lifecycle_summary.get("pnl_pct"),
+        lifecycle_summary.get("return_pct"),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl_pct", value=candidate, source="lifecycle")
+
+    # 2) canonical monitor decision artifact
+    for candidate in (
+        _as_action(canonical_monitor.get("decision_action")),
+        _as_action(canonical_monitor.get("decision")),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="action", value=candidate, source="monitor")
+    for candidate in (
+        _clip(canonical_monitor.get("exit_reason"), max_len=280),
+        _clip(canonical_monitor.get("primary_reason_text"), max_len=280),
+        _clip(canonical_monitor.get("primary_reason_code"), max_len=280),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="exit_reason", value=candidate, source="monitor")
+    _set_fact_if_missing(
+        resolved=resolved,
+        data_source=data_source,
+        field="pnl",
+        value=canonical_monitor.get("pnl"),
+        source="monitor",
     )
-    exit_reason = _first_nonempty_text(
-        lifecycle_summary.get("exit_reason_human"),
-        exit_summary.get("reason_human"),
-        monitor_reason.get("exit_reason"),
-        canonical_monitor.get("primary_reason_code"),
-        max_len=280,
+    for candidate in (canonical_monitor.get("pnl_pct"), canonical_monitor.get("return_pct")):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl_pct", value=candidate, source="monitor")
+    _set_fact_if_missing(
+        resolved=resolved,
+        data_source=data_source,
+        field="holding_duration",
+        value=_clip(canonical_monitor.get("holding_duration"), max_len=80),
+        source="monitor",
     )
+
+    # 3) entry.json / hold.json / exit.json
+    for candidate in (
+        _as_action(exit_summary.get("action")),
+        _as_action(entry_summary.get("action")),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="action", value=candidate, source="trade_artifact")
+    _set_fact_if_missing(
+        resolved=resolved,
+        data_source=data_source,
+        field="status",
+        value=_as_status(story_input.get("status")),
+        source="trade_artifact",
+    )
+    for candidate in (
+        _clip(hold_summary.get("holding_duration"), max_len=80),
+        _clip(hold_summary.get("holding_time"), max_len=80),
+    ):
+        _set_fact_if_missing(
+            resolved=resolved,
+            data_source=data_source,
+            field="holding_duration",
+            value=candidate,
+            source="trade_artifact",
+        )
+    for candidate in (
+        _clip(exit_summary.get("reason_human"), max_len=280),
+        _clip(exit_monitor_context.get("exit_reason"), max_len=280),
+        _clip(exit_monitor_context.get("reason"), max_len=280),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="exit_reason", value=candidate, source="trade_artifact")
+    for candidate in (
+        execution_outcome.get("pnl"),
+        _as_dict(exit_summary.get("execution_context")).get("pnl"),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl", value=candidate, source="trade_artifact")
+    for candidate in (
+        execution_outcome.get("pnl_pct"),
+        execution_outcome.get("return_pct"),
+        _as_dict(exit_summary.get("execution_context")).get("pnl_pct"),
+        _as_dict(exit_summary.get("execution_context")).get("return_pct"),
+    ):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl_pct", value=candidate, source="trade_artifact")
+
+    # 4) evidence (strategist / scanner)
+    _set_fact_if_missing(
+        resolved=resolved,
+        data_source=data_source,
+        field="exit_reason",
+        value=_clip(_as_dict(story_input.get("monitor_timeline")).get("summary"), max_len=280),
+        source="evidence",
+    )
+
+    # 5) fallback / inference (last resort only)
+    _set_fact_if_missing(
+        resolved=resolved,
+        data_source=data_source,
+        field="action",
+        value=_as_action(_actual_lifecycle_action(story_input)),
+        source="fallback",
+    )
+    _set_fact_if_missing(
+        resolved=resolved,
+        data_source=data_source,
+        field="status",
+        value=_as_status(story_input.get("status")),
+        source="fallback",
+    )
+    _set_fact_if_missing(
+        resolved=resolved,
+        data_source=data_source,
+        field="pnl",
+        value=monitor_reason.get("pnl"),
+        source="fallback",
+    )
+    for candidate in (monitor_reason.get("pnl_pct"), monitor_reason.get("current_drawdown")):
+        _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl_pct", value=candidate, source="fallback")
+
     monitor_decision = {
-        "phase": _first_nonempty_text(
-            canonical_monitor.get("decision_phase"),
-            "hold" if status_text.lower() == "open" else "no_intent",
-            max_len=32,
-        ),
-        "action": _first_nonempty_text(
-            canonical_monitor.get("decision_action"),
-            lifecycle_action.lower(),
-            max_len=32,
-        ),
-        "status": _first_nonempty_text(canonical_monitor.get("decision_status"), "unavailable", max_len=32),
-        "reason_code": _first_nonempty_text(
-            canonical_monitor.get("primary_reason_code"),
-            monitor_reason.get("trigger_type"),
-            monitor_reason.get("summary"),
-            max_len=200,
-        ),
+        "phase": _clip(canonical_monitor.get("decision_phase"), max_len=32) or "unavailable",
+        "action": _clip(canonical_monitor.get("decision_action"), max_len=32) or "unavailable",
+        "status": _clip(canonical_monitor.get("decision_status"), max_len=32) or "unavailable",
+        "reason_code": _clip(
+            canonical_monitor.get("primary_reason_text") or canonical_monitor.get("primary_reason_code"),
+            max_len=220,
+        )
+        or "unavailable",
+        "thresholds": _as_dict(canonical_monitor.get("threshold_snapshot")),
     }
+    return {
+        **resolved,
+        "data_source": data_source,
+        "monitor_decision": monitor_decision,
+    }
+
+
+def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    entry_summary = _as_dict(story_input.get("entry_summary"))
+    exit_summary = _as_dict(story_input.get("exit_summary"))
+    scanner_reason = _as_dict(story_input.get("scanner_reason_human"))
+    market_context = _as_dict(story_input.get("market_context_human"))
+    canonical = _as_dict(story_input.get("canonical_agent_artifacts"))
+    canonical_commander = _as_dict(canonical.get("commander"))
+    resolved_facts = _resolve_trade_facts_with_precedence(story_input)
+    lifecycle_action = _as_action(resolved_facts.get("action")) or "WAIT"
+    status_text = _as_status(resolved_facts.get("status")) or "unavailable"
     scanner_evidence_status = (
         "available"
         if (
@@ -299,12 +532,39 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "lifecycle_status": status_text,
         "entry_exists": bool(_has_evidence_payload(entry_summary)),
         "exit_exists": bool(_has_evidence_payload(exit_summary)),
-        "holding_duration": holding_duration,
-        "exit_reason": exit_reason,
-        "monitor_decision": monitor_decision,
+        "holding_duration": _clip(resolved_facts.get("holding_duration"), max_len=80) or "unavailable",
+        "exit_reason": _clip(resolved_facts.get("exit_reason"), max_len=280) or "unavailable",
+        "pnl": resolved_facts.get("pnl"),
+        "pnl_pct": resolved_facts.get("pnl_pct"),
+        "monitor_decision": dict(resolved_facts.get("monitor_decision") or {}),
+        "resolved_trade_facts": {
+            "action": lifecycle_action,
+            "status": status_text,
+            "holding_duration": _clip(resolved_facts.get("holding_duration"), max_len=80) or "unavailable",
+            "exit_reason": _clip(resolved_facts.get("exit_reason"), max_len=280) or "unavailable",
+            "pnl": resolved_facts.get("pnl", "unavailable"),
+            "pnl_pct": resolved_facts.get("pnl_pct", "unavailable"),
+            "data_source": dict(resolved_facts.get("data_source") or {}),
+        },
         "scanner_evidence_status": scanner_evidence_status,
         "strategist_evidence_status": strategist_evidence_status,
         "commander_route": commander_route,
+    }
+
+
+def resolve_shared_trade_facts(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    shared_seed = _build_shared_summary_seed(story_input)
+    resolved = _as_dict(shared_seed.get("resolved_trade_facts"))
+    data_source = _as_dict(resolved.get("data_source"))
+    return {
+        "action": _as_action(resolved.get("action")) or "unavailable",
+        "status": _as_status(resolved.get("status")) or "unavailable",
+        "holding_duration": _clip(resolved.get("holding_duration"), max_len=80) or "unavailable",
+        "exit_reason": _clip(resolved.get("exit_reason"), max_len=280) or "unavailable",
+        "pnl": resolved.get("pnl", "unavailable"),
+        "pnl_pct": resolved.get("pnl_pct", "unavailable"),
+        "data_source": data_source,
+        "monitor_decision": _as_dict(shared_seed.get("monitor_decision")),
     }
 
 
@@ -392,10 +652,16 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
     out["shared_facts"] = {
         "symbol": symbol,
         "trade_id": _clip(shared_seed.get("trade_id"), max_len=120),
+        "action": action,
+        "status": status_text,
+        "holding_duration": _clip(shared_seed.get("holding_duration"), max_len=80) or "unavailable",
+        "exit_reason": _clip(shared_seed.get("exit_reason"), max_len=280) or "unavailable",
+        "pnl": shared_seed.get("pnl", "unavailable"),
+        "pnl_pct": shared_seed.get("pnl_pct", "unavailable"),
+        "data_source": dict((_as_dict(shared_seed.get("resolved_trade_facts")).get("data_source"))),
+        "resolved_trade_facts": dict(shared_seed.get("resolved_trade_facts") or {}),
         "lifecycle_action": action,
         "lifecycle_status": status_text,
-        "holding_duration": _clip(shared_seed.get("holding_duration"), max_len=80),
-        "exit_reason": _clip(shared_seed.get("exit_reason"), max_len=280),
         "monitor_decision": dict(shared_seed.get("monitor_decision") or {}),
         "scanner_evidence_status": _clip(shared_seed.get("scanner_evidence_status"), max_len=24),
         "strategist_evidence_status": _clip(shared_seed.get("strategist_evidence_status"), max_len=24),
@@ -1995,10 +2261,16 @@ def _fallback_report(
         "shared_facts": {
             "symbol": symbol,
             "trade_id": trade_id,
+            "action": action,
+            "status": status_text,
+            "holding_duration": _clip(shared_seed.get("holding_duration"), max_len=80) or "unavailable",
+            "exit_reason": _clip(shared_seed.get("exit_reason"), max_len=280) or "unavailable",
+            "pnl": shared_seed.get("pnl", "unavailable"),
+            "pnl_pct": shared_seed.get("pnl_pct", "unavailable"),
+            "data_source": dict((_as_dict(shared_seed.get("resolved_trade_facts")).get("data_source"))),
+            "resolved_trade_facts": dict(shared_seed.get("resolved_trade_facts") or {}),
             "lifecycle_action": action,
             "lifecycle_status": status_text,
-            "holding_duration": _clip(shared_seed.get("holding_duration"), max_len=80),
-            "exit_reason": _clip(shared_seed.get("exit_reason"), max_len=280),
             "monitor_decision": dict(shared_seed.get("monitor_decision") or {}),
             "scanner_evidence_status": _clip(shared_seed.get("scanner_evidence_status"), max_len=24),
             "strategist_evidence_status": _clip(shared_seed.get("strategist_evidence_status"), max_len=24),

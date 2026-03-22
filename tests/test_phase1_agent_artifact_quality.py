@@ -154,6 +154,9 @@ def test_monitor_artifact_contains_evaluation_and_action_sections() -> None:
     assert isinstance(artifact.get("signal_snapshot"), dict)
     assert isinstance(artifact.get("market_snapshot_refs"), dict)
     assert artifact.get("intent_emitted") is False
+    decision_summary = str(artifact.get("decision_summary") or "")
+    assert decision_summary.startswith("Hold:")
+    assert len(decision_summary) <= 120
 
 
 def test_monitor_artifact_marks_buy_intent_with_entry_phase() -> None:
@@ -182,6 +185,9 @@ def test_monitor_artifact_marks_buy_intent_with_entry_phase() -> None:
     assert artifact.get("intent_emitted") is True
     assert artifact.get("intent_id") == "intent-buy-1"
     assert artifact.get("evidence_quality") in {"strong", "partial"}
+    decision_summary = str(artifact.get("decision_summary") or "")
+    assert decision_summary.startswith("Entry:")
+    assert "BUY" in decision_summary
 
 
 def test_monitor_artifact_marks_sell_intent_with_exit_phase() -> None:
@@ -211,6 +217,31 @@ def test_monitor_artifact_marks_sell_intent_with_exit_phase() -> None:
     assert artifact.get("decision_status") == "ok"
     assert artifact.get("primary_reason_code") in {"vwap_breakdown", "confirmed_exit_signal"}
     assert artifact.get("intent_emitted") is True
+    decision_summary = str(artifact.get("decision_summary") or "")
+    assert decision_summary.startswith("Exit:")
+
+
+def test_monitor_artifact_no_intent_summary_is_human_readable() -> None:
+    state = {
+        "run_id": "run-mon-noop",
+        "started_at": "2026-03-18T10:00:00+00:00",
+        "runtime_phase": "session",
+        "monitor": {"open_position_count": 0},
+        "monitor_output": {"selected_symbol": "005930", "intent_side": "NOOP", "entry_exit_reason": "too_extended_from_vwap"},
+        "monitor_entry": {
+            "evaluated": True,
+            "triggered": False,
+            "reason": "too_extended_from_vwap",
+            "failed_checks": ["extension_ok"],
+        },
+        "monitor_exit": {"symbol": "005930", "price": 70500, "reason": "", "thresholds": {}, "watch_axes": []},
+        "intents": [],
+    }
+    artifact = build_monitor_output_artifact(state)
+    assert artifact.get("decision_phase") == "no_intent"
+    summary = str(artifact.get("decision_summary") or "")
+    assert summary.startswith("No action:")
+    assert len(summary) <= 120
 
 
 def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
