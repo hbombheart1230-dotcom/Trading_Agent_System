@@ -836,6 +836,13 @@ def test_operator_brief_input_prefers_canonical_trade_artifacts(tmp_path: Path, 
     assert compact["monitor"]["monitor_reason"] == "Monitor allowed BUY because no position was open."
     assert compact["reporter"]["ai_summary"] == "Reporter linked and graded the run A-."
 
+    llm_compact = data_access._compact_operator_brief_input_for_llm(compact)
+    assert llm_compact["strategist"]["canonical_summary"] == ""
+    assert llm_compact["scanner"]["canonical_bullets"] == []
+    assert llm_compact["compact_kr_facts"]["strategist"]
+    assert "Market regime was neutral" not in json.dumps(llm_compact["strategist"], ensure_ascii=False)
+    assert "Scanner selected the highest-ranked candidate" not in json.dumps(llm_compact["scanner"], ensure_ascii=False)
+
 
 def test_operator_brief_shared_facts_match_ai_trade_report_core_facts(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
@@ -1304,6 +1311,10 @@ def test_operator_brief_fallback_markdown_keeps_all_sections_and_natural_korean(
     assert "이번 거래는 분봉 데이터가 확보되지 않아 진입 근거를 확인할 수 없었습니다." in minute_markdown
     assert "체결 이전 분봉 기록이 충분하지 않아 진입 시점을 확정하기 어렵습니다." in incomplete_markdown
     assert "저장된 데이터 범위 안에서는 체결 직전 분봉 진입 근거가 충분히 남아 있지 않았습니다." in no_entry_markdown
+    for forbidden in ["not captured", "not available", "unknown"]:
+        assert forbidden not in minute_markdown.lower()
+        assert forbidden not in incomplete_markdown.lower()
+        assert forbidden not in no_entry_markdown.lower()
 
 
 def test_operator_brief_markdown_removes_internal_english_labels_and_fills_next_checkpoint() -> None:
@@ -1454,6 +1465,46 @@ def test_operator_brief_closed_trade_fallback_uses_natural_korean_narrative() ->
     assert "후보 비교 데이터가 충분히 저장되지 않아" in markdown
     assert "## 7." in markdown
     assert "다음 거래에서는 분봉 진입 근거와 후보 비교 데이터가 충분히 남는지 먼저 확인합니다." in markdown
+
+
+def test_operator_brief_closed_trade_fallback_replaces_placeholders_and_entry_wait_mismatch() -> None:
+    brief = {
+        "status": "fallback",
+        "fallback_rendered": True,
+        "headline": "AI Brief Failed SELL 000660",
+        "operator_takeaways": [],
+        "sections": {
+            "executive_decision": {"symbol": "000660", "final_action": "SELL"},
+            "why_symbol_chosen": {"universe_size": 5, "selected_rank": 1, "selection_reasons": [], "comparison_reasons": []},
+            "entry_timing": {
+                "reason_code": "pullback_structure_above_vwap_with_confirmation",
+                "pattern": "pullback_vwap_hold",
+                "metrics": {"vwap_distance": 0.1088, "volume_ratio": 0.74, "pullback_pct": 0.0575},
+            },
+            "position_monitor_reasoning": {
+                "posture": "SELL",
+                "effective_stop_reason": "not captured",
+                "effective_stop": "6.38%",
+                "take_profit": "3.22%",
+                "watch_axes": ["Hard stop", "Adaptive stop", "Take profit", "Trailing stop"],
+            },
+            "exit_plan": {
+                "effective_stop_reason": "not captured",
+                "effective_stop": "6.38%",
+                "take_profit": "3.22%",
+                "watch_axes": ["Hard stop", "Adaptive stop", "Take profit", "Trailing stop"],
+            },
+            "risk_alerts": {},
+            "operator_conclusion": {"watch_next": []},
+        },
+    }
+
+    markdown = data_access._render_operator_brief_markdown(brief)
+
+    assert "not captured" not in markdown.lower()
+    assert "진입을 보류" not in markdown
+    assert "눌림 이후 반등이 확인됐고" in markdown
+    assert "현재 저장된 손절 기준은 6.38% 수준으로 보고 있습니다." in markdown
 
 
 def test_operator_brief_ignores_list_literal_risk_summary() -> None:

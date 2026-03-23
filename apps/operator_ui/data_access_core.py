@@ -3934,22 +3934,32 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
     supervisor = prepared_input.get("supervisor") if isinstance(prepared_input.get("supervisor"), dict) else {}
     executor = prepared_input.get("executor") if isinstance(prepared_input.get("executor"), dict) else {}
     trade_report = prepared_input.get("trade_report") if isinstance(prepared_input.get("trade_report"), dict) else {}
+    compact_kr_facts = _build_operator_brief_kr_facts(strategist, scanner, monitor, trade_report)
+    scanner_selected_symbol = _trim_text(scanner.get("selected_symbol"), max_len=24)
+    scanner_candidate_pool = _safe_int(scanner.get("candidate_pool_after_filter"), 0)
+    scanner_selected_reason = _sanitize_operator_brief_text(scanner.get("selected_reason"))
+    if _count_hangul_chars(scanner_selected_reason) <= 0 and scanner_selected_symbol:
+        scanner_selected_reason = (
+            f"{scanner_selected_symbol}이 {scanner_candidate_pool}개 후보 비교 결과 우선 감시 대상으로 선정되었습니다."
+            if scanner_candidate_pool > 0
+            else f"{scanner_selected_symbol}이 우선 감시 대상으로 선정되었습니다."
+        )
     return {
         "run_id": _trim_text(prepared_input.get("run_id"), max_len=80),
         "commander": {
-            "mode": _trim_text(commander.get("mode"), max_len=24),
-            "phase": _trim_text(commander.get("phase"), max_len=24),
+            "mode": _operator_brief_label_ko(commander.get("mode")),
+            "phase": _operator_brief_label_ko(commander.get("phase")),
             "path": _trim_text(commander.get("path"), max_len=80),
             "status": _trim_text(commander.get("status"), max_len=24),
         },
         "strategist": {
-            "market_regime": _trim_text(strategist.get("market_regime"), max_len=24),
-            "market_sentiment": _trim_text(strategist.get("market_sentiment"), max_len=24),
-            "themes": _clean_str_list(strategist.get("themes"), limit=4, max_len=80),
-            "playbook": _trim_text(strategist.get("playbook"), max_len=32),
-            "scanner_bias": _trim_text(strategist.get("scanner_bias"), max_len=120),
-            "risk_tone": _trim_text(strategist.get("risk_tone"), max_len=120),
-            "monitor_guidance": _trim_text(strategist.get("monitor_guidance"), max_len=180),
+            "market_regime": _operator_brief_label_ko(strategist.get("market_regime")),
+            "market_sentiment": _operator_brief_label_ko(strategist.get("market_sentiment")),
+            "themes": [_sanitize_operator_brief_text(x) for x in _clean_str_list(strategist.get("themes"), limit=4, max_len=80)],
+            "playbook": _operator_brief_label_ko(strategist.get("playbook")),
+            "scanner_bias": _operator_brief_label_ko(strategist.get("scanner_bias")),
+            "risk_tone": _operator_brief_label_ko(strategist.get("risk_tone")),
+            "monitor_guidance": _operator_brief_label_ko(strategist.get("monitor_guidance")),
             "news_query_targets": _clean_str_list(strategist.get("news_query_targets"), limit=5, max_len=80),
             "news_query_reasoning": _trim_text(strategist.get("news_query_reasoning"), max_len=180),
             "global_sentiment_inputs": _compact_scalar_map(strategist.get("global_sentiment_inputs"), limit=8, max_len=80),
@@ -3957,25 +3967,26 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "candidate_news_titles": _clean_str_list(strategist.get("candidate_news_titles"), limit=3, max_len=120),
             "llm_status": _trim_text(strategist.get("llm_status"), max_len=24),
             "llm_low_confidence": strategist.get("llm_low_confidence"),
-            "canonical_summary": _trim_text(strategist.get("canonical_summary"), max_len=220),
-            "canonical_bullets": _clean_str_list(strategist.get("canonical_bullets"), limit=4, max_len=180),
+            "canonical_summary": "",
+            "canonical_bullets": [],
+            "compact_kr_facts": compact_kr_facts.get("strategist") or [],
         },
         "scanner": {
-            "candidate_source": _trim_text(scanner.get("candidate_source"), max_len=60),
+            "candidate_source": _operator_brief_label_ko(scanner.get("candidate_source")),
             "candidate_pool_before_filter": scanner.get("candidate_pool_before_filter"),
             "candidate_pool_after_filter": scanner.get("candidate_pool_after_filter"),
             "top_ranked_symbols": _compact_ranked_symbols(scanner.get("top_ranked_symbols"), limit=3),
             "source_mix": _compact_scalar_map(scanner.get("source_mix"), limit=6, max_len=60),
-            "selected_symbol": _trim_text(scanner.get("selected_symbol"), max_len=24),
-            "selected_reason": _trim_text(scanner.get("selected_reason"), max_len=220),
+            "selected_symbol": scanner_selected_symbol,
+            "selected_reason": scanner_selected_reason,
             "source_scores": _compact_scalar_map(scanner.get("source_scores"), limit=6, max_len=80),
             "score_total": scanner.get("score_total"),
             "confidence": scanner.get("confidence"),
             "feature_coverage": _compact_scalar_map(scanner.get("feature_coverage"), limit=6, max_len=80),
             "quote_metrics": _compact_scalar_map(scanner.get("quote_metrics"), limit=6, max_len=80),
             "score_breakdown": _compact_scalar_map(scanner.get("score_breakdown"), limit=8, max_len=80),
-            "why_selected": _clean_str_list(scanner.get("why_selected"), limit=4, max_len=160),
-            "tie_break_rule": _trim_text(scanner.get("tie_break_rule"), max_len=160),
+            "why_selected": compact_kr_facts.get("scanner") or [],
+            "tie_break_rule": "총점 우선 -> 신뢰도 우선 -> 리스크 점수 낮은 순",
             "runner_ups": _compact_ranked_symbols(scanner.get("runner_ups"), limit=3),
             "runner_ups_lost": [
                 {
@@ -3985,18 +3996,19 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
                 for item in list(scanner.get("runner_ups_lost") or [])[:3]
                 if isinstance(item, dict)
             ],
-            "canonical_bullets": _clean_str_list(scanner.get("canonical_bullets"), limit=4, max_len=180),
-            "canonical_filters_summary": _trim_text(scanner.get("canonical_filters_summary"), max_len=180),
-            "canonical_filter_bullets": _clean_str_list(scanner.get("canonical_filter_bullets"), limit=4, max_len=160),
+            "canonical_bullets": [],
+            "canonical_filters_summary": "",
+            "canonical_filter_bullets": [],
+            "compact_kr_facts": compact_kr_facts.get("scanner") or [],
         },
         "monitor": {
-            "monitor_reason": _trim_text(monitor.get("monitor_reason"), max_len=220),
+            "monitor_reason": _sanitize_operator_brief_text(monitor.get("monitor_reason")),
             "exit_reason": _trim_text(monitor.get("exit_reason"), max_len=120),
             "position_age_seconds": monitor.get("position_age_seconds"),
             "entry_evaluated": monitor.get("entry_evaluated"),
             "entry_triggered": monitor.get("entry_triggered"),
-            "entry_reason": _trim_text(monitor.get("entry_reason"), max_len=160),
-            "entry_pattern": _trim_text(monitor.get("entry_pattern"), max_len=80),
+            "entry_reason": _sanitize_operator_brief_text(monitor.get("entry_reason")),
+            "entry_pattern": _sanitize_operator_brief_text(monitor.get("entry_pattern")),
             "entry_guard_reason": _trim_text(monitor.get("entry_guard_reason"), max_len=120),
             "entry_intent_submitted": monitor.get("entry_intent_submitted"),
             "entry_metrics": _compact_scalar_map(monitor.get("entry_metrics"), limit=10, max_len=80),
@@ -4004,8 +4016,9 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "thresholds": _compact_monitor_thresholds(monitor.get("thresholds")),
             "strategy_frame_adjustments": _clean_str_list(monitor.get("strategy_frame_adjustments"), limit=4, max_len=120),
             "exit_policy_guard_adjustments": _clean_str_list(monitor.get("exit_policy_guard_adjustments"), limit=4, max_len=120),
-            "canonical_bullets": _clean_str_list(monitor.get("canonical_bullets"), limit=4, max_len=160),
+            "canonical_bullets": [],
             "canonical_snapshot": _compact_scalar_map(monitor.get("canonical_snapshot"), limit=10, max_len=120),
+            "compact_kr_facts": compact_kr_facts.get("monitor") or [],
         },
         "supervisor": _compact_scalar_map(supervisor, limit=8, max_len=120),
         "executor": {
@@ -4013,8 +4026,8 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "symbol": _trim_text(executor.get("symbol"), max_len=24),
             "qty": executor.get("qty"),
             "status": _trim_text(executor.get("status"), max_len=160),
-            "canonical_summary": _trim_text(executor.get("canonical_summary"), max_len=180),
-            "canonical_bullets": _clean_str_list(executor.get("canonical_bullets"), limit=4, max_len=160),
+            "canonical_summary": "",
+            "canonical_bullets": [],
         },
         "reporter": {
             "ai_summary": _trim_text(reporter.get("ai_summary"), max_len=180),
@@ -4027,12 +4040,13 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "report_available": trade_report.get("report_available"),
             "trade_id": _trim_text(trade_report.get("trade_id"), max_len=80),
             "lifecycle_status": _trim_text(trade_report.get("lifecycle_status"), max_len=24),
-            "lifecycle_summary": _trim_text(trade_report.get("lifecycle_summary"), max_len=180),
+            "lifecycle_summary": "",
             "story_type": _trim_text(trade_report.get("story_type"), max_len=32),
             "execution_mode_label": _trim_text(trade_report.get("execution_mode_label"), max_len=48),
             "summary": _trim_text(trade_report.get("summary"), max_len=180),
         },
         "canonical_trade": _compact_canonical_trade_for_brief(prepared_input.get("canonical_trade")),
+        "compact_kr_facts": compact_kr_facts,
     }
 
 
@@ -4079,12 +4093,129 @@ def _sanitize_operator_brief_text(text: Any) -> str:
     ]
     for src, dst in replacements:
         cleaned = cleaned.replace(src, dst)
+    normalized_replacements = (
+        (r"\bnot[_ ]captured\b", "기록되지 않음"),
+        (r"\bnot[_ ]available\b", "확인되지 않음"),
+        (r"\bunavailable\b", "확인되지 않음"),
+        (r"\bunknown\b", "판단 정보 없음"),
+        (r"\bno position\b", "포지션 없음"),
+        (r"\bstill open\b", "아직 보유 중"),
+        (r"\bstop[- ]loss trigger\b", "손절 트리거"),
+        (r"\btake[- ]profit trigger\b", "목표 수익 실현 트리거"),
+        (r"\brisk gate failure\b", "리스크 가드 실패"),
+        (r"\babnormal volatility expansion\b", "변동성 급확대"),
+        (r"\bsentiment\b", "시장 심리"),
+        (r"\bplaybook\b", "플레이북"),
+        (r"\baligned with\b", "정렬 기준은"),
+        (r"\btop_value\b", "거래대금 상위"),
+        (r"\btop_volume\b", "거래량 상위"),
+        (r"\bsector_theme\b", "섹터·테마 정렬"),
+        (r"\belevated_vix\b", "VIX 경계"),
+        (r"\byield_rise\b", "금리 상승"),
+        (r"\bpullback\b", "눌림목"),
+        (r"\bturnover\b", "회전율"),
+        (r"\bvolume\b", "거래량"),
+        (r"\bdrawdown\b", "하락폭"),
+        (r"\btake_profit\b", "목표 수익 실현 기준"),
+        (r"\bhard_stop\b", "고정 손절 기준"),
+        (r"\bor\b", "또는"),
+        (r"\bpullback_structure_above_vwap_with_confirmation\b", "VWAP 상단 풀백 재확인"),
+        (r"\bpullback_vwap_hold\b", "VWAP 상단 눌림 유지"),
+        (r"\bbreakout_vwap_hold\b", "VWAP 상회 돌파"),
+        (r"\bintraday_low_break\b", "장중 저점 이탈"),
+        (r"\btrailing stop\b", "추적 손절 기준"),
+    )
+    for pattern, replacement in normalized_replacements:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\bBUY\b", "매수", cleaned)
     cleaned = re.sub(r"\bSELL\b", "매도", cleaned)
     cleaned = re.sub(r"\bHOLD\b", "보유 유지", cleaned)
     cleaned = re.sub(r"\bWAIT\b", "진입 보류", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
+
+
+def _operator_brief_label_ko(value: Any) -> str:
+    raw = _trim_text(value, max_len=220)
+    if not raw:
+        return ""
+    lowered = raw.strip().lower()
+    mapping = {
+        "neutral": "중립",
+        "bullish": "강세",
+        "bearish": "약세",
+        "mixed": "혼조",
+        "pullback": "눌림목",
+        "breakout": "돌파",
+        "reversion": "되돌림",
+        "leader": "주도주 중심",
+        "conservative": "보수적",
+        "defensive_exit": "방어형 청산 중심",
+        "hold_through_noise": "노이즈 허용 보유",
+        "kiwoom_market_data": "키움 시장 데이터",
+        "integrated_chain": "통합 체인",
+        "session": "정규 세션",
+    }
+    if lowered in mapping:
+        return mapping[lowered]
+    return _sanitize_operator_brief_text(raw)
+
+
+def _build_operator_brief_kr_facts(
+    strategist: Dict[str, Any],
+    scanner: Dict[str, Any],
+    monitor: Dict[str, Any],
+    trade_report: Dict[str, Any],
+) -> Dict[str, Any]:
+    strategist_facts: List[str] = []
+    market_regime = _operator_brief_label_ko(strategist.get("market_regime"))
+    market_sentiment = _operator_brief_label_ko(strategist.get("market_sentiment"))
+    playbook = _operator_brief_label_ko(strategist.get("playbook"))
+    if market_regime or market_sentiment or playbook:
+        strategist_facts.append(
+            " / ".join(
+                part
+                for part in [
+                    f"시장 상태 {market_regime}" if market_regime else "",
+                    f"시장 심리 {market_sentiment}" if market_sentiment else "",
+                    f"플레이북 {playbook}" if playbook else "",
+                ]
+                if part
+            )
+        )
+    scanner_facts: List[str] = []
+    selected_symbol = _trim_text(scanner.get("selected_symbol"), max_len=24)
+    candidate_pool = _safe_int(scanner.get("candidate_pool_after_filter"), 0)
+    score_total = scanner.get("score_total")
+    confidence = scanner.get("confidence")
+    if selected_symbol:
+        parts = [selected_symbol]
+        if candidate_pool > 0:
+            parts.append(f"{candidate_pool}개 후보 중 선정")
+        if isinstance(score_total, (int, float)):
+            parts.append(f"총점 {_safe_float(score_total, 0.0):.3f}")
+        if isinstance(confidence, (int, float)):
+            parts.append(f"신뢰도 {_safe_float(confidence, 0.0):.2f}")
+        scanner_facts.append(", ".join(parts))
+    monitor_facts: List[str] = []
+    posture = _operator_brief_label_ko(monitor.get("entry_pattern") or monitor.get("monitor_reason"))
+    if posture:
+        monitor_facts.append(f"모니터 핵심 신호 {posture}")
+    lifecycle_status = _operator_brief_label_ko(trade_report.get("lifecycle_status"))
+    trade_facts = [
+        item
+        for item in [
+            f"거래 상태 {lifecycle_status}" if lifecycle_status else "",
+            f"손익률 {_sanitize_operator_brief_text(trade_report.get('pnl_pct'))}" if str(trade_report.get("pnl_pct") or "").strip() else "",
+        ]
+        if item
+    ]
+    return {
+        "strategist": strategist_facts[:3],
+        "scanner": scanner_facts[:3],
+        "monitor": monitor_facts[:3],
+        "trade": trade_facts[:3],
+    }
 
 def _count_hangul_chars(text: Any) -> int:
     raw = str(text or "")
@@ -4986,7 +5117,7 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
         return mapping.get(str(action or "").strip().upper(), str(action or "-").strip() or "-")
 
     def _metric_text(value: Any) -> str:
-        text = str(value or "").strip()
+        text = _sanitize_operator_brief_text(value)
         return text or "-"
 
     def _axis_label(value: Any) -> str:
@@ -5011,8 +5142,15 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
             "defensive exit": "방어형 청산 신호",
             "defensive_exit": "방어형 청산 신호",
             "방어형 청산": "방어형 청산 신호",
+            "기록되지 않음": "기록된 기준 축 없음",
+            "확인되지 않음": "기록된 기준 축 없음",
+            "판단 정보 없음": "기록된 기준 축 없음",
+            "포지션 없음": "포지션 없음",
         }
         return mapping.get(lowered, raw or "감시 조건 변화")
+
+    def _axis_is_explicit(value: str) -> bool:
+        return str(value or "").strip() not in {"", "-", "감시 조건 변화", "기록된 기준 축 없음", "포지션 없음", "판단 정보 없음"}
 
     def _narrative_text(text: Any) -> str:
         raw_source = _trim_text(text, max_len=1000)
@@ -5080,7 +5218,7 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
             return f"{_format_percent(raw, 2)} (VWAP 아래로 밀리며 약세 압력이 커진 구간입니다.)"
         return f"{_format_percent(raw, 2)} (중립 범위 안에서 움직이고 있습니다.)"
 
-    def _entry_reason_text(reason_code: str, pattern: str, metrics: Dict[str, Any]) -> str:
+    def _entry_reason_text(reason_code: str, pattern: str, metrics: Dict[str, Any], posture_action: str) -> str:
         reason = str(reason_code or "").strip().lower()
         metric_map = metrics if isinstance(metrics, dict) else {}
         recent_high = metric_map.get("recent_high")
@@ -5088,7 +5226,8 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
         volume_ratio = metric_map.get("volume_ratio")
         vwap_distance = metric_map.get("vwap_distance")
         pullback_pct = metric_map.get("pullback_pct")
-        if pattern == "breakout_vwap_hold":
+        executed_trade = posture_action in {"BUY", "HOLD", "SELL"}
+        if pattern in {"breakout_vwap_hold", "breakout"}:
             parts = ["분봉 기준으로 최근 고점 돌파와 VWAP 상회 유지, 거래량 확인이 함께 맞물려 진입했습니다."]
             if recent_high not in (None, ""):
                 parts.append(f"최근 고점 기준값은 {_format_float(recent_high, 2)}였습니다.")
@@ -5097,7 +5236,7 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
             if volume_ratio not in (None, ""):
                 parts.append(f"거래량은 평시 대비 {_format_float(volume_ratio, 2)}배 수준으로 확인됐습니다.")
             return " ".join(parts)
-        if pattern == "pullback_rebound":
+        if pattern in {"pullback_rebound", "pullback_vwap_hold"}:
             parts = ["분봉 기준으로 눌림 이후 반등이 확인됐고, VWAP 재안착 흐름까지 확인되어 진입했습니다."]
             if pullback_pct not in (None, ""):
                 parts.append(f"눌림 폭은 {_format_percent(pullback_pct, 2)} 수준이었습니다.")
@@ -5116,11 +5255,15 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
             "no_position": "저장된 데이터 범위 안에서는 체결 직전 분봉 진입 근거가 충분히 남아 있지 않았습니다. 이번 문서는 진입 해석보다 이후 보유 관리 기록을 중심으로 정리했습니다.",
             "peak_drawdown": "이번 저장값에는 진입 근거보다 청산 관리 신호가 더 선명하게 남아 있습니다. 진입 시점의 분봉 근거는 별도로 확인되지 않아 보수적으로 정리했습니다.",
             "hard_stop": "이번 저장값에는 진입 근거보다 손절 관리 신호가 더 분명하게 남아 있습니다. 진입 시점의 분봉 근거는 별도로 확인되지 않아 보수적으로 정리했습니다.",
+            "pullback_structure_above_vwap_with_confirmation": "분봉 기준으로 VWAP 상단 눌림 이후 재확인 신호가 확인되어 진입했습니다.",
         }
         if mapping.get(reason):
             return mapping[reason]
         if str(reason_code or "").strip():
-            return f"분봉 조건 점검 결과 {str(reason_code or '').strip()} 상태로 해석되어 진입을 보류했습니다."
+            reason_text = _sanitize_operator_brief_text(str(reason_code or "").strip())
+            if executed_trade:
+                return f"분봉 조건 점검 결과 {reason_text} 신호가 확인되어 진입했습니다."
+            return f"분봉 조건 점검 결과 {reason_text} 상태로 해석되어 진입을 보류했습니다."
         if vwap_distance not in (None, ""):
             return f"분봉 조건을 점검 중이며 현재 VWAP 이격은 {_format_percent(vwap_distance, 2)} 수준입니다. 추가 확인 전까지는 보수적으로 접근합니다."
         return "분봉 데이터와 체결 근거를 보수적으로 점검한 결과, 당장 진입을 확정하기보다 추가 확인이 필요한 상태로 해석했습니다."
@@ -5250,6 +5393,7 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
                 str(entry.get("reason_code") or ""),
                 str(entry.get("pattern") or ""),
                 entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {},
+                posture_action,
             )
 
     if not executive_summary:
@@ -5273,10 +5417,16 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
                 f"\ud604\uc7ac \ubb38\uc11c\ub294 \ubcf4\uc720 \uad00\ub9ac \uae30\ub85d\ubcf4\ub2e4 \uc9c4\uc785 \ubcf4\ub958 \uc0ac\uc720\uc640 \ub2e4\uc74c \ud655\uc778 \ud56d\ubaa9\uc744 \uc911\uc2ec\uc73c\ub85c \uc815\ub9ac\ud588\uc2b5\ub2c8\ub2e4."
             )
         else:
+            active_axis = _axis_label(monitor.get("active_exit_axis") or "-")
+            active_axis_text = (
+                f"현재 관리는 {active_axis} 기준으로 이어가고 있습니다."
+                if _axis_is_explicit(active_axis)
+                else "현재 관리는 저장된 손절·청산 기준을 중심으로 이어가고 있습니다."
+            )
             holding_summary = (
                 f"{display_symbol}\uc740 \ud604\uc7ac {_action_label(monitor.get('posture') or final_action)} \uc0c1\ud0dc\uc785\ub2c8\ub2e4. "
                 f"\ud604\uc7ac\uac00\ub294 {_metric_text(monitor.get('current_price'))}, \ud3c9\uade0 \ub2e8\uac00\ub294 {_metric_text(monitor.get('average_price'))}\uc774\uba70, "
-                f"\ud604\uc7ac \uad00\ub9ac\ub294 {_axis_label(monitor.get('active_exit_axis') or '-')} \uae30\uc900\uc73c\ub85c \uc774\uc5b4\uac00\uace0 \uc788\uc2b5\ub2c8\ub2e4."
+                f"{active_axis_text}"
             )
 
     if not exit_plan_summary:
@@ -5286,8 +5436,13 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
         watch_axes = [_axis_label(x) for x in list(exit_plan.get("watch_axes") or monitor.get("watch_axes") or [])[:2] if str(x or "").strip()]
         axes_text = ", ".join(watch_axes) if watch_axes else "\uc8fc\uc694 \uac10\uc2dc \uc870\uac74 \ubcc0\ud654"
         if posture_action == "SELL":
+            axis_prefix = (
+                f"{effective_stop_reason} 기준과"
+                if _axis_is_explicit(effective_stop_reason)
+                else "저장된 손절 기준과"
+            )
             exit_plan_summary = (
-                f"\uc774\ubc88 \uac70\ub798\ub294 {effective_stop_reason} \uae30\uc900\uacfc \uace0\uc810 \ub300\ube44 \ud558\ub77d\ud3ed \uc870\uac74\uc744 \uc6b0\uc120 \ud655\uc778\ud55c \ub4a4 \uccad\uc0b0\uc744 \uc2e4\ud589\ud588\uc2b5\ub2c8\ub2e4. "
+                f"\uc774\ubc88 \uac70\ub798\ub294 {axis_prefix} \uace0\uc810 \ub300\ube44 \ud558\ub77d\ud3ed \uc870\uac74\uc744 \uc6b0\uc120 \ud655\uc778\ud55c \ub4a4 \uccad\uc0b0\uc744 \uc2e4\ud589\ud588\uc2b5\ub2c8\ub2e4. "
                 f"\ucc38\uace0 \uc190\uc808 \uae30\uc900\uc740 {effective_stop} \uc218\uc900\uc774\uc5c8\uace0, \ubaa9\ud45c \uc218\uc775 \uc2e4\ud604 \uae30\uc900\uc740 {take_profit} \uc218\uc900\uc774\uc5c8\uc2b5\ub2c8\ub2e4."
             )
         elif posture_action == "WAIT":
@@ -5295,8 +5450,13 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
                 f"\uc2e0\uaddc \uc9c4\uc785 \uc804\uae4c\uc9c0\ub294 {axes_text}\ub97c \uba3c\uc800 \uc810\uac80\ud558\uace0, \ubd84\ubd09 \uae30\uc900\uc774 \ub2e4\uc2dc \ub9de\uc544\ub5a8\uc5b4\uc9c8 \ub54c\uae4c\uc9c0 \ubcf4\uc218\uc801\uc73c\ub85c \ub300\uae30\ud569\ub2c8\ub2e4."
             )
         else:
+            axis_prefix = (
+                f"\uc6b0\uc120 {effective_stop_reason}\uc744 \uae30\uc900\uc73c\ub85c \ub300\uc751\ud558\uace0"
+                if _axis_is_explicit(effective_stop_reason)
+                else "\uc6b0\uc120 \uc800\uc7a5\ub41c \uc190\uc808 \uae30\uc900\uc744 \uc911\uc2ec\uc73c\ub85c \ub300\uc751\ud558\uace0"
+            )
             exit_plan_summary = (
-                f"\uc6b0\uc120 {effective_stop_reason}\uc744 \uae30\uc900\uc73c\ub85c \ub300\uc751\ud558\uace0 \uae30\uc900\uac12\uc740 {effective_stop} \uc218\uc900\uc73c\ub85c \ubcf4\uace0 \uc788\uc2b5\ub2c8\ub2e4. "
+                f"{axis_prefix} \uae30\uc900\uac12\uc740 {effective_stop} \uc218\uc900\uc73c\ub85c \ubcf4\uace0 \uc788\uc2b5\ub2c8\ub2e4. "
                 f"\ubaa9\ud45c \uc218\uc775 \uc2e4\ud604 \uae30\uc900\uc740 {take_profit} \uc218\uc900\uc774\uba70, {axes_text}\uac00 \ud754\ub4e4\ub9ac\uba74 \ub2e4\uc2dc \ud310\ub2e8\ud569\ub2c8\ub2e4."
             )
 
@@ -5378,7 +5538,11 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
         "## 5. 청산 계획",
         "",
         f"- {exit_plan_summary}",
-        f"- 현재 {_axis_label(exit_plan.get('effective_stop_reason') or monitor.get('effective_stop_reason'))}은 {_metric_text(exit_plan.get('effective_stop') or monitor.get('effective_stop'))} 수준으로 보고 있습니다.",
+        (
+            f"- 현재 {_axis_label(exit_plan.get('effective_stop_reason') or monitor.get('effective_stop_reason'))}은 {_metric_text(exit_plan.get('effective_stop') or monitor.get('effective_stop'))} 수준으로 보고 있습니다."
+            if _axis_is_explicit(_axis_label(exit_plan.get('effective_stop_reason') or monitor.get('effective_stop_reason')))
+            else f"- 현재 저장된 손절 기준은 {_metric_text(exit_plan.get('effective_stop') or monitor.get('effective_stop'))} 수준으로 보고 있습니다."
+        ),
         f"- 목표 수익 실현 기준은 {_metric_text(exit_plan.get('take_profit') or monitor.get('take_profit'))} 수준입니다.",
         f"- 주요 감시 조건은 {', '.join([_axis_label(x) for x in list(exit_plan.get('watch_axes') or monitor.get('watch_axes') or [])[:3] if str(x or '').strip()]) or '감시 조건 변화'}입니다.",
     ])

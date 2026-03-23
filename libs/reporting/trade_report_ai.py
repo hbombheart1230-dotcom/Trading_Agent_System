@@ -920,7 +920,7 @@ def _build_holding_story_summary(hold_count: int, monitor_reason: Dict[str, Any]
 
 def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason: Dict[str, Any]) -> List[str]:
     hold_count = len(list(holding_summary.get("run_ids") or []))
-    watch_axes = ", ".join(_listify(monitor_reason.get("watch_axes"), max_items=6, max_len=80))
+    watch_axes = ", ".join(_operator_axis_label(item) for item in _listify(monitor_reason.get("watch_axes"), max_items=6, max_len=80))
     decision_chain = " -> ".join(_listify(monitor_reason.get("decision_reason_chain"), max_items=5, max_len=60))
     effective_stop = _fmt_pct(monitor_reason.get("effective_stop_loss_pct"))
     take_profit = _fmt_pct(monitor_reason.get("take_profit_pct"))
@@ -1499,8 +1499,115 @@ def _operator_filter_status(value: Any) -> str:
     return mapping.get(raw, _clip(value, max_len=40) or "-")
 
 
+def _normalize_trade_report_language(text: Any) -> str:
+    cleaned = _sanitize_forbidden_scripts_text(_clip(text, max_len=2000))
+    if not cleaned:
+        return ""
+
+    def _normalize_metadata_value(value: str) -> str:
+        raw = _clip(value, max_len=240).strip()
+        lowered = raw.lower()
+        if lowered in {"unknown", "not available", "not_available", "unavailable"}:
+            return "확인되지 않음"
+        if lowered in {"not captured", "not_captured"}:
+            return "기록되지 않음"
+        return raw
+
+    def _replace_scanner_selection(match: re.Match[str]) -> str:
+        symbol = _clip(match.group(1), max_len=24)
+        rank = _clip(match.group(2), max_len=8)
+        total = _clip(match.group(3), max_len=8)
+        score = _clip(match.group(4), max_len=32)
+        reason = _clip(match.group(5), max_len=220)
+        return (
+            f"스캐너는 {total}개 후보 중 {rank}위인 {symbol}을 총점 {score}로 선정했습니다. "
+            f"선정 이유는 {reason}입니다."
+        )
+
+    def _replace_headlines(match: re.Match[str]) -> str:
+        count = _clip(match.group(1), max_len=12)
+        targets = _clip(match.group(2), max_len=12)
+        detail = _clip(match.group(3), max_len=120)
+        if detail:
+            return f"관련 헤드라인 {count}건을 함께 반영했고 총 {targets}개 대상({detail})을 점검했습니다."
+        return f"관련 헤드라인 {count}건을 함께 반영했고 총 {targets}개 대상을 점검했습니다."
+
+    cleaned = re.sub(
+        r"Scanner selected ([0-9A-Z]+) as rank #?(\d+) out of (\d+) candidates with score ([0-9.\-]+) because (.+?)(?:\.)?$",
+        _replace_scanner_selection,
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"(\d+)\s+headlines were considered across (\d+)\s+targets(?:\s*\(([^)]*)\))?",
+        _replace_headlines,
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"Scanner selected the highest-ranked candidate after (.+?)(?:\.)?$",
+        lambda m: f"스캐너는 { _clip(m.group(1), max_len=220) }를 반영해 최상위 후보를 선정했습니다.",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    def _replace_metadata_token(match: re.Match[str]) -> str:
+        key = str(match.group(1) or "").strip().lower()
+        value = _normalize_metadata_value(str(match.group(2) or ""))
+        label_map = {
+            "source": "데이터 출처",
+            "path": "참조 경로",
+            "model": "사용 모델",
+            "status": "상태",
+            "generated_at": "생성 시각",
+        }
+        return f"{label_map.get(key, key)}: {value}"
+
+    cleaned = re.sub(
+        r"\b(source|path|model|status|generated_at)\s*=\s*([^\s;,)\]]+)",
+        _replace_metadata_token,
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    replacements = (
+        ("Trailing stop", "추적 손절"),
+        ("trailing stop", "추적 손절"),
+        ("Scanner selected", "스캐너는"),
+        ("Market Sentiment", "시장 심리"),
+        ("Market sentiment", "시장 심리"),
+        ("Stress Flags", "스트레스 신호"),
+        ("Stress flags", "스트레스 신호"),
+        ("Scanner Rank", "스캐너 순위"),
+        ("Scanner Ranking Basis", "스캐너 순위 산정 기준"),
+        ("Tie Break Rule", "동률 해소 기준"),
+        ("Tie-break rule", "동률 해소 기준"),
+        ("Tie Break", "동률 해소"),
+        ("Regime", "시장 상태"),
+        ("playbook", "플레이북"),
+        ("Playbook", "플레이북"),
+        ("headlines were considered", "관련 헤드라인을 함께 반영했습니다"),
+        ("Total Score", "총점"),
+        ("strategist-guided weighting, source scoring, and risk penalties", "전략가 가중치, 소스 점수, 리스크 패널티"),
+        ("it led on trading value, theme and sector alignment", "거래대금과 테마·섹터 정렬에서 앞섰기 때문"),
+        ("candidate signals", "후보 신호"),
+        ("market /", "시장 /"),
+        ("bearish", "약세"),
+        ("bullish", "강세"),
+        ("neutral", "중립"),
+        ("pullback", "눌림목"),
+        ("not captured", "기록되지 않음"),
+        ("not available", "확인되지 않음"),
+        ("unknown", "판단 정보 없음"),
+    )
+    for src, dst in replacements:
+        cleaned = cleaned.replace(src, dst)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return cleaned
+
+
 def _operatorize_report_text(text: Any) -> str:
-    cleaned = _clip(text, max_len=2000).strip()
+    cleaned = _normalize_trade_report_language(text)
     if not cleaned:
         return ""
     lowered = cleaned.lower()
@@ -1521,6 +1628,13 @@ def _operatorize_report_text(text: Any) -> str:
         "ai generation failed and no rendered improvement section is available.": "AI 생성이 중단되어 개선 포인트는 저장된 경고와 오류 기록 중심으로 정리했습니다.",
         "ai generation failed. review lifecycle artifacts and the saved llm response artifact before taking action.": "AI 생성이 중단되었습니다. 다음 조치를 하기 전에 lifecycle 아티팩트와 저장된 LLM 응답을 함께 확인해 주세요.",
         "link same-day reporter analysis to this lifecycle for a complete quality review.": "같은 날 생성된 reporter 분석을 이 lifecycle에 연결해 전체 품질 평가를 완성해 주세요.",
+        "selection": "선정 근거를 정리했습니다.",
+        "entry": "진입 판단을 정리했습니다.",
+        "filters": "스캐너 필터 점검 결과를 정리했습니다.",
+        "guard": "승인 및 가드 판단 결과를 정리했습니다.",
+        "execution": "실행 결과를 정리했습니다.",
+        "reporter": "리포터 평가를 정리했습니다.",
+        "none": "추가 보완 포인트는 제한적입니다.",
     }
     if lowered in exact_mapping:
         return exact_mapping[lowered]
@@ -1596,7 +1710,10 @@ def _operatorize_report_text(text: Any) -> str:
         return f"최종 결정 기준은 {_clip(m.group(1), max_len=220)}입니다."
     m = re.fullmatch(r"Tie-break rule:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"동점 해소 기준은 {_clip(m.group(1), max_len=220)}입니다."
+        return f"동률 해소 기준은 {_clip(m.group(1), max_len=220)}입니다."
+    m = re.fullmatch(r"동률 해소 기준[:：]?\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"동률 해소 기준은 {_clip(m.group(1), max_len=220)}입니다."
     m = re.fullmatch(r"Runner-ups lost because:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         return f"차순위 후보가 밀린 이유는 {_clip(m.group(1), max_len=240)}입니다."
@@ -1775,7 +1892,7 @@ def _operatorize_report_text(text: Any) -> str:
     cleaned = cleaned.replace("VWAP breakdown", "VWAP 이탈")
     cleaned = cleaned.replace("Intraday low break", "장중 저점 이탈")
     cleaned = cleaned.replace("Trend breakdown", "추세 훼손")
-    return cleaned
+    return _normalize_trade_report_language(cleaned)
 
 
 def _operatorize_report_section(section: Dict[str, Any]) -> Dict[str, Any]:
@@ -3088,6 +3205,8 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
             "adaptive_stop": "상황 대응형 손절 기준",
             "take profit": "목표 수익 실현 기준",
             "take_profit": "목표 수익 실현 기준",
+            "trailing stop": "추적 손절",
+            "trailing_stop": "추적 손절",
             "vwap breakdown": "VWAP 이탈",
             "vwap_breakdown": "VWAP 이탈",
             "peak drawdown": "고점 대비 하락폭 확대",
@@ -3108,6 +3227,7 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         lowered = str(raw or "").strip().lower()
         mapping = {
             "simulation trade report": "시뮬레이션 거래 리포트",
+            "simulation": "시뮬레이션",
             "live trade report": "실거래 거래 리포트",
             "integrated_chain": "통합 체인",
             "simulation (mock broker)": "시뮬레이션 (모의 브로커)",
@@ -3117,8 +3237,30 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         }
         return mapping.get(lowered, raw or "-")
 
+    def _metadata_value(value: Any) -> str:
+        raw = _clip(value, max_len=240).strip()
+        lowered = raw.lower()
+        if not raw:
+            return ""
+        if lowered in {"unknown", "not available", "not_available", "unavailable"}:
+            return "확인되지 않음"
+        if lowered in {"not captured", "not_captured"}:
+            return "기록되지 않음"
+        confidence_mapping = {
+            "high": "높음",
+            "medium": "보통",
+            "low": "낮음",
+        }
+        return confidence_mapping.get(lowered, raw)
+
+    def _metadata_line(label: str, value: Any) -> str:
+        rendered = _metadata_value(value)
+        if not rendered:
+            return ""
+        return f"- {label}: {rendered}"
+
     def _render_text(text: Any) -> str:
-        cleaned = _clip(text, max_len=2000).strip()
+        cleaned = _operatorize_report_text(text)
         if not cleaned:
             return ""
         lowered = cleaned.lower()
@@ -3197,7 +3339,7 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         m = re.fullmatch(r"Exit reason:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
             return f"청산 사유는 {_clip(m.group(1), max_len=240)}입니다."
-        return cleaned
+        return _normalize_trade_report_language(cleaned)
 
     def _section_title(title: str) -> str:
         mapping = {
@@ -3306,9 +3448,19 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
     lines.append(f"- 라이프사이클 상태는 {_meta_label(report.get('status'))}입니다.")
     lines.append(f"- 리포트 유형은 {_meta_label(report.get('story_type'))}입니다.")
     lines.append(f"- 실행 모드는 {_meta_label(report.get('execution_mode_label'))}입니다.")
-    lines.append(
-        f"- 리포트 생성 상태는 {generation.get('status') or '-'}이며, 생성 모드는 {_meta_label(generation.get('mode'))}, 사용 모델은 {generation.get('model') or '-'}입니다."
-    )
+    lines.append("")
+    lines.append("## 생성 정보")
+    lines.append("")
+    for meta_line in (
+        _metadata_line("생성 상태", generation.get("status") or "-"),
+        _metadata_line("생성 방식", _meta_label(generation.get("mode"))),
+        _metadata_line("사용 모델", generation.get("model") or "-"),
+        _metadata_line("생성 시각", report.get("generated_at")),
+    ):
+        if meta_line:
+            lines.append(meta_line)
+    if str(generation.get("reason") or "").strip():
+        lines.append(f"- 생성 사유: {_render_text(generation.get('reason'))}")
     lines.append("")
     if generation_status in {"repaired", "partial", "salvaged"}:
         lines.append("## 생성 참고")
@@ -3320,6 +3472,13 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
     if section_provenance:
         lines.append("## 근거 출처")
         lines.append("")
+        section_titles = {
+            "market_context_at_entry": "시장 환경 요약",
+            "why_this_symbol_was_chosen": "선택된 종목 상세 분석",
+            "holding_monitoring_story": "보유 경과",
+            "execution_quality": "실행 결과",
+            "reporter_evaluation": "결과 평가",
+        }
         for section_key in (
             "market_context_at_entry",
             "why_this_symbol_was_chosen",
@@ -3328,9 +3487,14 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
             "reporter_evaluation",
         ):
             entry = section_provenance.get(section_key) if isinstance(section_provenance.get(section_key), dict) else {}
-            lines.append(
-                f"- {section_key} 섹션은 source={entry.get('source') or 'fallback'}, confidence={entry.get('confidence') or 'low'}, path={entry.get('artifact_path') or '-'} 기준으로 구성했습니다."
-            )
+            fragments = [
+                f"데이터 출처: {_metadata_value(entry.get('source') or 'fallback')}",
+                f"신뢰도: {_metadata_value(entry.get('confidence') or 'low')}",
+            ]
+            artifact_path = _metadata_value(entry.get("artifact_path"))
+            if artifact_path:
+                fragments.append(f"참조 경로: {artifact_path}")
+            lines.append(f"- {section_titles.get(section_key, section_key)} | " + " | ".join(fragments))
         lines.append("")
     if monitor_snapshot:
         lines.append("## 모니터 스냅샷")

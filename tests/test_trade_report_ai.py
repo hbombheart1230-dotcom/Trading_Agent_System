@@ -713,7 +713,7 @@ def test_ai_trade_report_merge_keeps_priority_fallback_scanner_bullets() -> None
     assert "selected for strength" in bullets
     assert any(str(row).startswith("상위 후보는") for row in bullets)
     assert any(str(row).startswith("최종 선정 판단은") for row in bullets)
-    assert any(str(row).startswith("동점 해소 기준은") for row in bullets)
+    assert any(str(row).startswith("동률 해소 기준은") for row in bullets)
 
 
 def test_ai_trade_report_merge_prefers_detailed_monitor_fallback_when_ai_bullets_are_generic() -> None:
@@ -956,6 +956,125 @@ def test_render_trade_report_markdown_uses_korean_titles_and_narrative_labels() 
     assert "현재 포지션 판단은 보유 유지입니다." in markdown
     assert "목표 수익 실현 기준은 1.80% 수준입니다." in markdown
     assert "고정 손절 기준" in markdown
+
+
+def test_render_trade_report_markdown_translates_fixed_english_report_phrases() -> None:
+    report = {
+        "trade_id": "TRD_20260323_000660_01",
+        "action": "BUY",
+        "symbol": "000660",
+        "status": "open",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free"},
+        "executive_summary": {"summary": "중립 Regime, bearish Market Sentiment, pullback playbook 적용."},
+        "market_context_at_entry": {
+            "summary": "중립 Regime, bearish Market Sentiment, pullback playbook 적용.",
+            "bullets": [
+                "Stress Flags: elevated_vix, yield_rise",
+                "News input: 75 headlines were considered across 10 targets (10 market / 5 candidate signals).",
+            ],
+        },
+        "why_this_symbol_was_chosen": {
+            "summary": "selection",
+            "bullets": [
+                "Scanner Rank: 1위 / Total Score: 0.661",
+                "Final decision basis: Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties.",
+                "Tie Break Rule: score_total desc -> confidence desc -> risk_score asc",
+                "Entry reason: Scanner selected 000660 as rank #1 out of 5 candidates with score 0.661 because it led on trading value, theme and sector alignment.",
+            ],
+        },
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "hold", "bullets": ["Watch axes: Trailing stop, VWAP breakdown"]},
+        "exit_decision": {"summary": "open trade", "bullets": []},
+        "scanner_filters": {"summary": "filters", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "none", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "hold", "current_action": "HOLD", "watch_next": [], "thesis_invalidation": []},
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    for forbidden in [
+        "Trailing stop",
+        "Scanner selected",
+        "headlines were considered",
+        "Market Sentiment",
+        "Stress Flags",
+        "Scanner Rank",
+        "Tie Break Rule",
+    ]:
+        assert forbidden not in markdown
+    assert "추적 손절" in markdown
+    assert "시장 심리" in markdown
+    assert "스트레스 신호" in markdown
+    assert "스캐너 순위" in markdown
+    assert "동률 해소 기준" in markdown
+
+
+def test_render_trade_report_markdown_renders_provenance_metadata_with_korean_labels() -> None:
+    report = {
+        "trade_id": "TRD_20260323_005930_01",
+        "action": "SELL",
+        "symbol": "005930",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generated_at": "2026-03-23T09:12:30+09:00",
+        "generation": {
+            "status": "ok",
+            "mode": "ai",
+            "model": "openrouter/free",
+            "reason": "not available",
+        },
+        "executive_summary": {"summary": "매매 결과를 정리했습니다."},
+        "market_context_at_entry": {
+            "summary": "시장 상황을 정리했습니다.",
+            "bullets": ["global_sentiment score=-0.258 status=ok source=yfinance"],
+        },
+        "why_this_symbol_was_chosen": {"summary": "선정 이유를 정리했습니다.", "bullets": []},
+        "entry_decision": {"summary": "진입 근거를 정리했습니다.", "bullets": []},
+        "holding_monitoring_story": {"summary": "보유 경과를 정리했습니다.", "bullets": []},
+        "exit_decision": {"summary": "청산 근거를 정리했습니다.", "bullets": []},
+        "scanner_filters": {"summary": "필터 점검 결과를 정리했습니다.", "bullets": []},
+        "guard_approval_result": {"summary": "승인 결과를 정리했습니다.", "bullets": []},
+        "execution_quality": {"summary": "실행 결과를 정리했습니다.", "bullets": []},
+        "reporter_evaluation": {"summary": "평가 결과를 정리했습니다.", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "보완 포인트를 정리했습니다.", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "최종 판단을 정리했습니다.", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+        "section_provenance": {
+            "market_context_at_entry": {
+                "source": "canonical",
+                "confidence": "high",
+                "artifact_path": "reports/canonical/2026-03-23/run-1/strategist.json",
+            },
+            "why_this_symbol_was_chosen": {
+                "source": "direct_artifact",
+                "confidence": "medium",
+                "artifact_path": "reports/trades/2026-03-23/TRD_20260323_005930_01/evidence/scanner_evidence.json",
+            },
+        },
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "데이터 출처:" in markdown
+    assert "참조 경로:" in markdown
+    assert "생성 상태:" in markdown
+    assert "생성 시각:" in markdown
+    assert "source=" not in markdown
+    assert "path=" not in markdown
+    assert "generated_at=" not in markdown
+    assert "status=" not in markdown
+    assert "reports/canonical/2026-03-23/run-1/strategist.json" in markdown
+    assert "데이터 출처: yfinance" in markdown
+    assert "상태: ok" in markdown
+    assert "확인되지 않음" in markdown
+    assert report["section_provenance"]["market_context_at_entry"]["artifact_path"] == "reports/canonical/2026-03-23/run-1/strategist.json"
 
 
 def test_render_trade_report_markdown_translates_timeline_and_final_conclusion() -> None:
