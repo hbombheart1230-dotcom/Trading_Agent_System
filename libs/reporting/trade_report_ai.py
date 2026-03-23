@@ -114,6 +114,12 @@ def _count_latin(text: Any) -> int:
     return sum(1 for ch in raw if ("a" <= ch.lower() <= "z"))
 
 
+def _count_forbidden_cjk_or_japanese(text: Any) -> int:
+    raw = str(text or "")
+    # Korean-only policy for human-readable sentences.
+    return len(re.findall(r"[\u3040-\u30ff\u4e00-\u9fff]", raw))
+
+
 AI_TRADE_REPORT_REQUIRED_KEYS = [
     "executive_summary",
     "market_context_at_entry",
@@ -131,12 +137,34 @@ AI_TRADE_REPORT_REQUIRED_KEYS = [
 
 AI_TRADE_REPORT_KOREAN_RULES = (
     "사람이 읽는 모든 값은 반드시 한국어로 작성해야 합니다. "
-    "여기에는 executive_summary.headline, 모든 *.summary 필드, 모든 bullets 항목, "
-    "full_timeline.description, final_operator_conclusion.watch_next, final_operator_conclusion.thesis_invalidation이 포함됩니다. "
-    "영어로 남겨도 되는 항목은 JSON 키, 종목코드, ISO 타임스탬프, BUY/SELL/HOLD/WAIT 같은 액션 코드, "
-    "VIX, top_value/top_volume/sector_theme 같은 Kiwoom source id, not_captured 같은 명시적 placeholder뿐입니다. "
-    "최종 JSON에는 영어 문장이나 영어 bullet 줄을 남기지 마십시오."
+    "All human-readable sentences must be Korean. "
+    "Do not use Japanese or Chinese sentences. "
+    "Allowed unchanged tokens: symbol code, ISO timestamp, BUY/SELL/HOLD/WAIT, VIX, "
+    "top_value/top_volume/sector_theme, not_captured."
 )
+
+_FORBIDDEN_CJK_OR_JP_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+
+
+def _sanitize_forbidden_scripts_text(text: Any) -> str:
+    raw = _clip(text, max_len=2000).strip()
+    if not raw:
+        return ""
+    cleaned = _FORBIDDEN_CJK_OR_JP_RE.sub("", raw)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    if cleaned:
+        return cleaned
+    return "데이터 부족으로 보수적으로 정리했습니다."
+
+
+def _sanitize_report_language_fields(value: Any) -> Any:
+    if isinstance(value, str):
+        return _sanitize_forbidden_scripts_text(value)
+    if isinstance(value, list):
+        return [_sanitize_report_language_fields(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _sanitize_report_language_fields(item) for key, item in value.items()}
+    return value
 
 
 def _env_bool(name: str, default: bool = True) -> bool:
@@ -667,7 +695,8 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
         "strategist_evidence_status": _clip(shared_seed.get("strategist_evidence_status"), max_len=24),
         "commander_route": dict(shared_seed.get("commander_route") or {}),
     }
-    return out
+    sanitized = _sanitize_report_language_fields(out)
+    return dict(sanitized) if isinstance(sanitized, dict) else out
 
 
 def _tail_list(values: Any, *, max_items: int = 6, max_len: int = 220) -> List[str]:
@@ -2456,6 +2485,7 @@ def _trade_report_language_meta(candidate: Dict[str, Any]) -> Dict[str, Any]:
     _collect(candidate)
     hangul_total = sum(_count_hangul(item) for item in sample_fields)
     latin_total = sum(_count_latin(item) for item in sample_fields)
+    forbidden_cjk_total = sum(_count_forbidden_cjk_or_japanese(item) for item in sample_fields)
     english_like = [
         item
         for item in sample_fields
@@ -2466,11 +2496,14 @@ def _trade_report_language_meta(candidate: Dict[str, Any]) -> Dict[str, Any]:
         and len(english_like) >= 6
         and (hangul_total == 0 or hangul_total < max(20, latin_total * 0.2))
     )
+    if forbidden_cjk_total > 0:
+        requires_korean_repair = True
     return {
         "language_sample_count": len(sample_fields),
         "language_hangul_chars": hangul_total,
         "language_latin_chars": latin_total,
         "language_english_like_count": len(english_like),
+        "language_forbidden_cjk_chars": forbidden_cjk_total,
         "requires_korean_repair": requires_korean_repair,
     }
 

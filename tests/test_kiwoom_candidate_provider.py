@@ -220,6 +220,33 @@ def test_scanner_node_strict_kiwoom_only_blocks_strategist_fallback(monkeypatch)
     assert bool(scanner_output.get("strict_kiwoom_only")) is True
 
 
+def test_scanner_node_avoid_theme_overreach_keeps_empty_pool_under_strict_mode(monkeypatch):
+    monkeypatch.setenv("STRICT_KIWOOM_CANDIDATES_ONLY", "true")
+    state = {
+        "candidate_source": "kiwoom",
+        "themes": ["semiconductor"],
+        "theme_map": {
+            "semiconductor": ["005930", "000660"],
+            "defensive_large_cap": ["005930", "000660"],
+        },
+        "strategist_output": {"avoid_themes": ["defensive_large_cap"]},
+        "mock_top_value_symbols": ["005930", "000660"],
+        "mock_top_volume_symbols": ["005930", "000660"],
+        "mock_scan_results": {
+            "005930": {"score": 0.61, "risk_score": 0.2, "confidence": 0.8},
+            "000660": {"score": 0.59, "risk_score": 0.2, "confidence": 0.8},
+        },
+    }
+
+    out = scanner_node(state)
+    assert out.get("top_stock") in ("", None)
+    scanner_output = out.get("scanner_output") or {}
+    assert scanner_output.get("candidate_source") == "kiwoom"
+    assert scanner_output.get("fallback_reason") == "kiwoom_candidate_pool_empty_strict_mode"
+    assert bool(scanner_output.get("avoid_filter_applied")) is True
+    assert scanner_output.get("avoid_filter_reason") == "empty_after_filter"
+
+
 def test_scanner_candidate_limit_defaults_to_top_pool_when_top_n_unset(monkeypatch):
     monkeypatch.delenv("TOP_N_CANDIDATES", raising=False)
     monkeypatch.setenv("TOP_CANDIDATE_POOL", "8")

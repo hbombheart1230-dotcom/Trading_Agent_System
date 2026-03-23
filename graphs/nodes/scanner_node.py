@@ -832,6 +832,14 @@ def _apply_avoid_theme_filter(
         }
 
     filtered = [r for r in rows if _norm_symbol(r.get("symbol")) not in excluded_symbols]
+    if not filtered:
+        return filtered, {
+            "avoid_filter_applied": True,
+            "avoid_filter_reason": "empty_after_filter",
+            "avoid_theme_count": int(matched),
+            "avoid_matched_symbols": sorted(list(excluded_symbols)),
+            "avoid_filtered_out_count": int(len(rows)),
+        }
     return filtered, {
         "avoid_filter_applied": True,
         "avoid_filter_reason": "",
@@ -1325,6 +1333,8 @@ def _build_kiwoom_candidates(
         avoid_themes=avoid_themes,
         theme_symbol_index=theme_symbol_index,
     )
+    avoid_meta = dict(avoid_meta)
+    avoid_meta.setdefault("avoid_filter_fallback_used", False)
     rows = rows[:candidate_limit]
     backfill_count = 0
     backfill_skipped = ""
@@ -1927,6 +1937,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "blocked_static_fallback": bool(pool_meta.get("blocked_static_fallback")),
         "strict_kiwoom_only": bool(pool_meta.get("strict_kiwoom_only")),
         "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
+        "avoid_filter_applied": bool(pool_meta.get("avoid_filter_applied")),
+        "avoid_filter_reason": str(pool_meta.get("avoid_filter_reason") or ""),
+        "avoid_filter_fallback_used": bool(pool_meta.get("avoid_filter_fallback_used")),
         "backfill_used": bool(pool_meta.get("backfill_used")),
         "backfill_count": int(pool_meta.get("backfill_count") or 0),
         "backfill_skipped_reason": str(pool_meta.get("backfill_skipped_reason") or ""),
@@ -2044,6 +2057,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "candidate_pool_after_filter": int(pool_meta.get("candidate_pool_after_filter") or len(scan_results_sorted)),
             "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
             "avoid_filter_applied": bool(pool_meta.get("avoid_filter_applied")),
+            "avoid_filter_reason": str(pool_meta.get("avoid_filter_reason") or ""),
+            "avoid_filter_fallback_used": bool(pool_meta.get("avoid_filter_fallback_used")),
             "source_mix": dict(pool_meta.get("pool_source_mix") or {}),
             "scanner_source_policy": dict(pool_meta.get("scanner_source_policy") or {}),
             "candidate_symbols": [str((row or {}).get("symbol") or "") for row in list(scan_results_sorted or [])[:10] if isinstance(row, dict)],

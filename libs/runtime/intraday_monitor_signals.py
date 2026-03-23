@@ -160,16 +160,16 @@ def resolve_intraday_entry_policy(
         adjustments.append("playbook:breakout")
     elif playbook in ("pullback", "reversal"):
         out["breakout_lookback"] = max(3, int(out["breakout_lookback"]) - 1)
-        out["volume_ratio_min"] = max(0.8, min(float(out["volume_ratio_min"]), 0.95))
+        out["volume_ratio_min"] = max(0.7, min(float(out["volume_ratio_min"]), 0.9))
         out["min_extended_from_vwap_pct"] = min(float(out["min_extended_from_vwap_pct"]), -0.005)
         out["max_extended_from_vwap_pct"] = max(float(out["max_extended_from_vwap_pct"]), 0.05)
         out["pullback_min_pct"] = max(float(out["pullback_min_pct"]), 0.015)
         out["pullback_max_pct"] = max(float(out["pullback_max_pct"]), 0.06)
         adjustments.append(f"playbook:{playbook}")
     elif playbook == "defensive":
-        out["volume_ratio_min"] = min(2.0, float(out["volume_ratio_min"]) + 0.10)
-        out["max_extended_from_vwap_pct"] = max(0.0125, min(float(out["max_extended_from_vwap_pct"]), 0.018))
-        out["pullback_max_pct"] = min(float(out["pullback_max_pct"]), 0.035)
+        out["volume_ratio_min"] = min(1.1, float(out["volume_ratio_min"]) + 0.03)
+        out["max_extended_from_vwap_pct"] = max(0.03, min(float(out["max_extended_from_vwap_pct"]), 0.05))
+        out["pullback_max_pct"] = min(float(out["pullback_max_pct"]), 0.05)
         adjustments.append("playbook:defensive")
 
     if guidance == "hold_through_noise":
@@ -177,22 +177,24 @@ def resolve_intraday_entry_policy(
         adjustments.append("guidance:hold_through_noise")
     elif guidance == "defensive_exit":
         if playbook in ("pullback", "reversal"):
-            out["volume_ratio_min"] = min(1.05, float(out["volume_ratio_min"]) + 0.02)
-            out["max_extended_from_vwap_pct"] = max(0.045, float(out["max_extended_from_vwap_pct"]) - 0.0025)
+            out["volume_ratio_min"] = min(1.0, float(out["volume_ratio_min"]) + 0.01)
+            out["max_extended_from_vwap_pct"] = max(0.05, float(out["max_extended_from_vwap_pct"]))
             adjustments.append("guidance:defensive_exit_pullback")
         else:
-            out["volume_ratio_min"] = min(2.0, float(out["volume_ratio_min"]) + 0.05)
-            out["max_extended_from_vwap_pct"] = max(0.0125, float(out["max_extended_from_vwap_pct"]) - 0.005)
+            out["volume_ratio_min"] = min(1.1, float(out["volume_ratio_min"]) + 0.01)
+            if playbook != "defensive":
+                out["max_extended_from_vwap_pct"] = max(0.03, float(out["max_extended_from_vwap_pct"]) - 0.0025)
             adjustments.append("guidance:defensive_exit")
 
     if risk_tone == "conservative":
         if playbook in ("pullback", "reversal"):
-            out["volume_ratio_min"] = min(1.1, float(out["volume_ratio_min"]) + 0.02)
-            out["max_extended_from_vwap_pct"] = max(0.0425, float(out["max_extended_from_vwap_pct"]) - 0.0025)
+            out["volume_ratio_min"] = min(1.0, float(out["volume_ratio_min"]))
+            out["max_extended_from_vwap_pct"] = max(0.05, float(out["max_extended_from_vwap_pct"]))
             adjustments.append("risk_tone:conservative_pullback")
         else:
-            out["volume_ratio_min"] = min(2.0, float(out["volume_ratio_min"]) + 0.05)
-            out["max_extended_from_vwap_pct"] = max(0.0125, float(out["max_extended_from_vwap_pct"]) - 0.005)
+            out["volume_ratio_min"] = min(1.1, float(out["volume_ratio_min"]) + 0.01)
+            if playbook != "defensive":
+                out["max_extended_from_vwap_pct"] = max(0.03, float(out["max_extended_from_vwap_pct"]) - 0.0025)
             adjustments.append("risk_tone:conservative")
     elif risk_tone == "aggressive":
         out["volume_ratio_min"] = max(0.9, float(out["volume_ratio_min"]) - 0.05)
@@ -204,7 +206,7 @@ def resolve_intraday_entry_policy(
             out["volume_ratio_min"] = min(1.1, float(out["volume_ratio_min"]) + 0.02)
             adjustments.append("trade_aggressiveness:low_pullback")
         else:
-            out["volume_ratio_min"] = min(2.0, float(out["volume_ratio_min"]) + 0.05)
+            out["volume_ratio_min"] = min(1.2, float(out["volume_ratio_min"]) + 0.02)
             adjustments.append("trade_aggressiveness:low")
     elif aggressiveness == "high":
         out["volume_ratio_min"] = max(0.9, float(out["volume_ratio_min"]) - 0.05)
@@ -445,8 +447,13 @@ def evaluate_intraday_entry_signal(
                 reason = "pullback_structure_above_vwap_with_confirmation"
         else:
             if not extension_ok:
-                reason = "still_overextended_after_pullback"
-                primary_failure_axis = "overextension"
+                if extended_from_vwap_pct > max_extended_from_vwap_pct:
+                    reason = "still_overextended_after_pullback"
+                    primary_failure_axis = "overextension"
+                else:
+                    # Pullback setup is still too weak below VWAP band; wait for reclaim/structure.
+                    reason = "pullback_below_vwap_reclaim_not_ready"
+                    primary_failure_axis = "vwap_relationship"
             elif not pullback_mature:
                 reason = "pullback_not_mature"
                 primary_failure_axis = "pullback_structure"
@@ -473,8 +480,12 @@ def evaluate_intraday_entry_signal(
             reason = "pullback_rebound_above_vwap_with_volume_confirmation"
         else:
             if not extension_ok:
-                reason = "too_extended_from_vwap"
-                primary_failure_axis = "overextension"
+                if extended_from_vwap_pct > max_extended_from_vwap_pct:
+                    reason = "too_extended_from_vwap"
+                    primary_failure_axis = "overextension"
+                else:
+                    reason = "below_vwap_reclaim_not_ready"
+                    primary_failure_axis = "vwap_relationship"
             elif not breakout_ok and not rebound_ok:
                 reason = "breakout_not_ready"
                 primary_failure_axis = "breakout_readiness"

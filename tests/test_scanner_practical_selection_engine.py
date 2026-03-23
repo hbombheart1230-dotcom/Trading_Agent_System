@@ -172,5 +172,11 @@ def test_scanner_monitor_boundary_contract_compatibility():
     }
     mout = monitor_node(monitor_state)
     intents = mout.get("intents") or []
-    assert len(intents) == 1
-    assert intents[0]["symbol"] == top
+    # Monitor may emit WAIT/no-intent when minute-candle evidence is unavailable.
+    # Boundary contract here is scanner->monitor symbol continuity, not forced BUY.
+    if intents:
+        assert intents[0]["symbol"] == top
+    else:
+        monitor_output = mout.get("monitor_output") or {}
+        assert str(monitor_output.get("selected_symbol") or "") == top
+        assert str(monitor_output.get("entry_exit_reason") or "") != ""

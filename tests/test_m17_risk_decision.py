@@ -65,3 +65,31 @@ def test_m17_exit_intent_bypasses_entry_confidence_gate():
     assert out["decision"] == "approve"
     assert out.get("decision_reason") == "exit_within_policy"
     assert out.get("execution_pending") is True
+
+
+def test_m17_monitor_buy_intent_bypasses_default_risk_gate():
+    def monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        state["selected"] = {"symbol": "069500", "risk_score": 0.95, "confidence": 0.7}
+        state["monitor_output"] = {"intent_side": "BUY"}
+        state["intents"] = [
+            {
+                "symbol": "069500",
+                "side": "BUY",
+                "qty": 1,
+                "risk_score": 0.95,
+                "confidence": 0.7,
+                "meta": {"entry_signal_source": "monitor_intraday_entry"},
+            }
+        ]
+        return state
+
+    out = run_trading_graph(
+        {"policy": {"max_risk": 0.7, "min_confidence": 0.6, "max_scan_retries": 1}},
+        strategist=_noop,
+        scanner=_noop,
+        monitor=monitor,
+    )
+
+    assert out["decision"] == "approve"
+    assert out.get("decision_reason") == "monitor_entry_within_policy"
+    assert out.get("execution_pending") is True

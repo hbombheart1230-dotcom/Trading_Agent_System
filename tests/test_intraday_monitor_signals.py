@@ -156,8 +156,23 @@ def test_intraday_entry_pullback_defensive_guidance_stays_realistic() -> None:
         }
     )
 
-    assert float(pullback.get("max_extended_from_vwap_pct") or 0.0) >= 0.0425
-    assert float(pullback.get("volume_ratio_min") or 0.0) <= 1.1
+    assert float(pullback.get("max_extended_from_vwap_pct") or 0.0) >= 0.05
+    assert float(pullback.get("volume_ratio_min") or 0.0) <= 1.0
+
+
+def test_intraday_entry_defensive_stack_stays_usable_without_becoming_loose() -> None:
+    defensive = resolve_intraday_entry_policy(
+        frame={
+            "playbook": "defensive",
+            "monitor_guidance": "defensive_exit",
+            "risk_tone": "conservative",
+            "trade_aggressiveness": "medium",
+        }
+    )
+
+    assert float(defensive.get("max_extended_from_vwap_pct") or 0.0) >= 0.03
+    assert float(defensive.get("max_extended_from_vwap_pct") or 0.0) <= 0.05
+    assert float(defensive.get("volume_ratio_min") or 0.0) <= 1.1
 
 
 def test_intraday_entry_waits_when_minute_candles_missing() -> None:

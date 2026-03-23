@@ -4009,12 +4009,13 @@ def _sanitize_operator_brief_text(text: Any) -> str:
 
 def _count_hangul_chars(text: Any) -> int:
     raw = str(text or "")
-    return sum(1 for ch in raw if "가" <= ch <= "힣")
+    return sum(1 for ch in raw if "\uac00" <= ch <= "\ud7a3")
 
 
 def _contains_forbidden_brief_script(text: Any) -> bool:
     raw = str(text or "")
-    return bool(re.search(r"[぀-ヿ一-鿿]", raw))
+    # Disallow Japanese/Katakana/Hiragana and CJK ideographs for operator-facing Korean brief text.
+    return bool(re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", raw))
 
 
 def _operator_brief_language_ok(candidate: Dict[str, Any]) -> bool:
@@ -4036,32 +4037,35 @@ def _operator_brief_language_ok(candidate: Dict[str, Any]) -> bool:
     ]
     total_hangul = 0
     total_forbidden = 0
+
+    def _forbidden_count(value: str) -> int:
+        return len(re.findall(r"[\u3040-\u30ff\u4e00-\u9fff]", value))
+
     for key in text_fields:
         value = str(candidate.get(key) or "").strip()
         if not value:
             continue
-        forbidden_count = len(re.findall(r"[぀-ヿ一-鿿]", value))
+        forbidden_count = _forbidden_count(value)
         total_forbidden += forbidden_count
-        compact_len = len(re.sub(r"\s+", "", value))
-        if forbidden_count >= 3 and compact_len > 0 and (forbidden_count / float(compact_len)) >= 0.12:
+        if forbidden_count > 0:
             return False
-        cleaned_value = re.sub(r"[぀-ヿ一-鿿]", "", value)
-        hangul_count = _count_hangul_chars(cleaned_value)
+        hangul_count = _count_hangul_chars(value)
         total_hangul += hangul_count
-        ascii_letters = len(re.findall(r"[A-Za-z]", cleaned_value))
+        ascii_letters = len(re.findall(r"[A-Za-z]", value))
         if hangul_count == 0 and ascii_letters >= 12:
             return False
+
     for key in ("operator_takeaways", "next_checkpoints"):
         for item in list(candidate.get(key) or []):
             value = str(item or "").strip()
             if not value:
                 continue
-            forbidden_count = len(re.findall(r"[぀-ヿ一-鿿]", value))
+            forbidden_count = _forbidden_count(value)
             total_forbidden += forbidden_count
-            compact_len = len(re.sub(r"\s+", "", value))
-            if forbidden_count >= 3 and compact_len > 0 and (forbidden_count / float(compact_len)) >= 0.12:
+            if forbidden_count > 0:
                 return False
-    if total_forbidden >= 8:
+
+    if total_forbidden > 0:
         return False
     return total_hangul > 0
 

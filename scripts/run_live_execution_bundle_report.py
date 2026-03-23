@@ -3397,6 +3397,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         write_json(exit_artifact_path, exit_payload)
         write_json(lifecycle_bundle_path, lifecycle_bundle_v1)
         write_json(trade_provenance_path, trade_provenance_payload)
+        # Recompute artifact presence after writes to avoid false negatives in _health.json.
+        artifact_presence = {
+            "lifecycle_bundle_json": lifecycle_bundle_path.exists(),
+            "entry_json": entry_artifact_path.exists(),
+            "hold_json": hold_artifact_path.exists(),
+            "exit_json": exit_artifact_path.exists(),
+            "ai_trade_report_input_json": story_input_path.exists(),
+            "ai_trade_report_compact_input_json": story_compact_input_path.exists(),
+            "ai_trade_report_json": bool(trade_report_json_written),
+            "ai_trade_report_md": bool(trade_report_md_written),
+            "strategist_evidence_json": strategist_evidence_path.exists(),
+            "scanner_evidence_json": scanner_evidence_path.exists(),
+            "monitor_evidence_json": monitor_evidence_path.exists(),
+            "commander_evidence_json": commander_evidence_path.exists(),
+            "strategist_llm_response_json": strategist_llm_response_path.exists(),
+            "ai_trade_report_llm_response_json": bool(ai_trade_report_llm_response_written),
+            "brief_llm_response_json": trade_paths["brief_llm_response_json"].exists(),
+        }
+        trade_health_payload["artifact_presence"] = artifact_presence
         write_json(trade_health_path, trade_health_payload)
         write_json(trade_artifact_links_path, trade_artifact_links_payload)
 

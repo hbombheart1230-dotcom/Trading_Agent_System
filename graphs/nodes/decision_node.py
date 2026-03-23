@@ -68,9 +68,25 @@ def decision_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if has_any_intent:
         first_intent = intents[0] if isinstance(intents[0], dict) else {}
         raw_side = str(first_intent.get("side") or first_intent.get("action") or "").strip().upper()
+        meta = first_intent.get("meta") if isinstance(first_intent.get("meta"), dict) else {}
+        entry_signal_source = str(meta.get("entry_signal_source") or "").strip().lower()
+        monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
+        monitor_intent_side = str(monitor_output.get("intent_side") or "").strip().upper()
         if raw_side in ("SELL", "CLOSE", "EXIT"):
             state["decision"] = "approve"
             state["decision_reason"] = "exit_within_policy"
+            state["risk"] = {
+                "risk_score": float(first_intent.get("risk_score") or 0.0),
+                "confidence": float(first_intent.get("confidence") or 1.0),
+            }
+            return state
+        if raw_side == "BUY" and (
+            entry_signal_source == "monitor_intraday_entry" or monitor_intent_side == "BUY"
+        ):
+            # Monitor BUY intent already passed intraday entry gates.
+            # Decision node should not re-reject it with scanner-only risk defaults.
+            state["decision"] = "approve"
+            state["decision_reason"] = "monitor_entry_within_policy"
             state["risk"] = {
                 "risk_score": float(first_intent.get("risk_score") or 0.0),
                 "confidence": float(first_intent.get("confidence") or 1.0),
