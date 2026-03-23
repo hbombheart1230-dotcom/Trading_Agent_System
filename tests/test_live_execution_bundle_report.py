@@ -1515,6 +1515,71 @@ def test_attach_strategy_anchor_adds_linkage_metadata() -> None:
     assert enriched["strategy_anchor_run_id"] == "strategist-run-1"
     assert enriched["strategy_anchor"]["run_id"] == "strategist-run-1"
     assert enriched["strategy_anchor"]["artifacts"]["strategist_input_json"].endswith("strategist_input.json")
+    assert enriched["strategy_anchor"]["artifacts"]["strategist_compact_input_json"].endswith("strategist_compact_input.json")
+    assert enriched["strategy_anchor"]["artifacts"]["strategist_llm_response_json"].endswith("strategist_llm_response.json")
+
+
+def test_live_execution_bundle_report_populates_operator_brief_links_and_flat_compat_keys(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:10:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}}},
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    trade_id = out["bundles"][0]["story_id"]
+    trade_dir = reports_root / "trades" / day / trade_id
+    brief_json = trade_dir / "reports" / "operator_brief.json"
+    brief_md = trade_dir / "reports" / "operator_brief.md"
+    brief_llm = trade_dir / "reports" / "brief_llm_response.json"
+    lifecycle_path = trade_dir / "lifecycle_bundle.json"
+
+    artifact_links = json.loads((trade_dir / "_artifact_links.json").read_text(encoding="utf-8"))
+    assert artifact_links["operator_brief"] == str(brief_json)
+    assert artifact_links["links"]["brief_json"] == str(brief_json)
+    assert artifact_links["links"]["operator_brief_json"] == str(brief_json)
+    assert artifact_links["links"]["brief_md"] == str(brief_md)
+    assert artifact_links["links"]["brief_llm_response_json"] == str(brief_llm)
+
+    bundle = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+    assert bundle["operator_brief"] == str(brief_json)
+    assert bundle["lifecycle_bundle"] == str(lifecycle_path)
+    assert "strategist_llm_status" in bundle
+    assert "brief_llm_status" in bundle
+    assert "ai_trade_report_status" in bundle
 
 
 def test_enrich_strategist_from_input_summary_backfills_market_context_fields() -> None:

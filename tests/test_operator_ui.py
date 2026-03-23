@@ -1117,7 +1117,17 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert saved["run_id"] == "run-1"
     assert saved["trade_id"] == "20260316_005930_buy_run-1"
     assert saved["report_status"] == "available"
+    assert saved["schema_version"] == "operator_brief.v1"
     assert saved["version"] == 12
+    assert saved["llm_brief_status"] == "ok"
+    assert isinstance(saved.get("generation"), dict)
+    assert saved["generation"]["status"] == "ok"
+    assert saved["generation"]["mode"] == "llm"
+    assert "model" in saved["generation"]
+    assert "reason" in saved["generation"]
+    assert isinstance(saved.get("shared_facts"), dict)
+    assert saved["shared_facts"]["action"] == "BUY"
+    assert saved["shared_facts"]["holding_duration"] == "10m"
     assert str(saved.get("source_signature") or "").strip()
     assert saved["monitor_snapshot"]["price_source"] == "-"
     assert str(saved["monitor_snapshot"]["effective_stop_reason"] or "") in {"", "-", "Hard stop"}

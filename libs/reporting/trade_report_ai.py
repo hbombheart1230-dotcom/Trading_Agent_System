@@ -150,7 +150,19 @@ def _sanitize_forbidden_scripts_text(text: Any) -> str:
     raw = _clip(text, max_len=2000).strip()
     if not raw:
         return ""
-    cleaned = _FORBIDDEN_CJK_OR_JP_RE.sub("", raw)
+    replacement_pairs = (
+        ("生命周期", "생명주기"),
+        ("缺失", "누락"),
+        ("不足", "부족"),
+        ("薄薄", "부족"),
+        ("未完了", "미완료"),
+        ("还未", "아직"),
+        ("故事", "스토리"),
+    )
+    normalized = raw
+    for src, dst in replacement_pairs:
+        normalized = normalized.replace(src, dst)
+    cleaned = _FORBIDDEN_CJK_OR_JP_RE.sub("", normalized)
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
     if cleaned:
         return cleaned

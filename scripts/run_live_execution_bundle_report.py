@@ -641,8 +641,10 @@ def _attach_strategy_anchor(
     out["strategy_anchor"] = {
         "run_id": str(strategy_anchor_run_id or ""),
         "artifacts": {
-            "strategist_input_json": str(strategist_input_path) if strategist_input_path.exists() else "",
-            "strategist_compact_input_json": str(strategist_compact_input_path) if strategist_compact_input_path.exists() else "",
+            # Linkage stores the normalized expected artifact path even when the
+            # file is not present yet. Existence is tracked separately in health.
+            "strategist_input_json": str(strategist_input_path),
+            "strategist_compact_input_json": str(strategist_compact_input_path),
             "strategist_llm_response_json": str(strategist_llm_response_path),
         },
     }
@@ -2553,6 +2555,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         story_compact_input_path = trade_paths["ai_trade_report_compact_input_json"]
         trade_report_json_path = trade_paths["ai_trade_report_json"]
         trade_report_md_path = trade_paths["ai_trade_report_md"]
+        operator_brief_json_path = trade_paths["brief_json"]
+        operator_brief_md_path = trade_paths["brief_md"]
+        brief_llm_response_path = trade_paths["brief_llm_response_json"]
         strategist_input_path = trade_paths["strategist_input_json"]
         strategist_compact_input_path = trade_paths["strategist_compact_input_json"]
         strategist_llm_response_path = trade_paths["strategist_llm_response_json"]
@@ -3114,6 +3119,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "entry_json": str(entry_artifact_path),
                 "hold_json": str(hold_artifact_path),
                 "exit_json": str(exit_artifact_path),
+                "brief_json": str(operator_brief_json_path),
+                "brief_md": str(operator_brief_md_path),
                 "ai_trade_report_input_json": str(story_input_path),
                 "trade_story_input_json": str(story_input_path),
                 "ai_trade_report_compact_input_json": str(story_compact_input_path),
@@ -3122,10 +3129,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "deprecated_trade_report_md": "",
                 "ai_trade_report_json": trade_report_json_written,
                 "ai_trade_report_md": trade_report_md_written,
-                "operator_brief_json": "",
+                "operator_brief_json": str(operator_brief_json_path),
                 "strategist_llm_response_json": str(strategist_llm_response_path),
                 "ai_trade_report_llm_response_json": ai_trade_report_llm_response_written,
-                "brief_llm_response_json": "",
+                "brief_llm_response_json": str(brief_llm_response_path),
                 "strategist_evidence_json": str(strategist_evidence_path),
                 "scanner_evidence_json": str(scanner_evidence_path),
                 "monitor_evidence_json": str(monitor_evidence_path),
@@ -3175,6 +3182,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "entry_json": str(entry_artifact_path),
                 "hold_json": str(hold_artifact_path),
                 "exit_json": str(exit_artifact_path),
+                "operator_brief_json": str(operator_brief_json_path),
+                "operator_brief_md": str(operator_brief_md_path),
+                "brief_llm_response_json": str(brief_llm_response_path),
                 "trade_provenance_json": str(trade_provenance_path),
                 "trade_health_json": str(trade_health_path),
                 "trade_artifact_links_json": str(trade_artifact_links_path),
@@ -3286,6 +3296,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "monitor_events": int((lifecycle.get("evidence") or {}).get("monitor_event_count") or 0),
             },
         }
+        resolved_operator_brief_json = str(
+            (lifecycle_bundle.get("artifacts") or {}).get("operator_brief_json")
+            or operator_brief_json_path
+        )
+        resolved_operator_brief_md = str(
+            (lifecycle_bundle.get("artifacts") or {}).get("brief_md")
+            or operator_brief_md_path
+        )
+        resolved_brief_llm_response_json = str(
+            (lifecycle_bundle.get("artifacts") or {}).get("brief_llm_response_json")
+            or brief_llm_response_path
+        )
         trade_artifact_links_payload = {
             "schema_version": "trade_artifact_links.v2",
             "trade_id": trade_id,
@@ -3299,7 +3321,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "entry": str(entry_artifact_path),
             "hold": str(hold_artifact_path),
             "exit": str(exit_artifact_path),
-            "operator_brief": str((lifecycle_bundle.get("artifacts") or {}).get("operator_brief_json") or ""),
+            "operator_brief": resolved_operator_brief_json,
             "ai_trade_report": str(trade_report_json_written or ""),
             "llm_prompt_refs": {
                 "strategist": str(strategist_llm_artifact.get("prompt_ref") or ""),
@@ -3316,8 +3338,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                 for key, value in dict(lifecycle_bundle.get("artifacts") or {}).items()
             },
         }
+        trade_artifact_links_payload["links"]["brief_json"] = resolved_operator_brief_json
+        trade_artifact_links_payload["links"]["operator_brief_json"] = resolved_operator_brief_json
+        trade_artifact_links_payload["links"]["brief_md"] = resolved_operator_brief_md
+        trade_artifact_links_payload["links"]["brief_llm_response_json"] = resolved_brief_llm_response_json
         trade_artifact_links_payload["links"]["strategist_llm_prompt_ref"] = str(strategist_llm_artifact.get("prompt_ref") or "")
         trade_artifact_links_payload["links"]["strategist_llm_response_ref"] = str(strategist_llm_artifact.get("response_ref") or "")
+        trade_artifact_links_payload["links"]["brief_llm_prompt_ref"] = str((existing_brief_llm_artifact or {}).get("prompt_ref") if isinstance(existing_brief_llm_artifact, dict) else "")
+        trade_artifact_links_payload["links"]["brief_llm_response_ref"] = str((existing_brief_llm_artifact or {}).get("response_ref") if isinstance(existing_brief_llm_artifact, dict) else "")
         trade_artifact_links_payload["links"]["ai_trade_report_llm_prompt_ref"] = str(ai_trade_report_llm_artifact.get("prompt_ref") or "")
         trade_artifact_links_payload["links"]["ai_trade_report_llm_response_ref"] = str(ai_trade_report_llm_artifact.get("response_ref") or "")
 
@@ -3370,12 +3398,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "entry": str(entry_artifact_path),
                 "hold": str(hold_artifact_path),
                 "exit": str(exit_artifact_path),
-                "operator_brief": str((lifecycle_bundle.get("artifacts") or {}).get("operator_brief_json") or ""),
-                "ai_trade_report": str(trade_report_json_written or ""),
+                "operator_brief": resolved_operator_brief_json,
+                "ai_trade_report": str(trade_report_json_written or trade_report_json_path),
             },
         )
-        # Compatibility bridge: keep key fields older readers expect, while lifecycle_bundle.v1
-        # remains the primary trade-level operator entrypoint.
+        # Compatibility bridge: nested lifecycle_bundle fields remain the source of truth.
+        # These flat keys stay available for older readers that still expect top-level fields.
         lifecycle_bundle_v1.update(
             {
                 "ts": str(lifecycle_bundle.get("ts") or utc_now_iso()),
@@ -3390,6 +3418,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "section_provenance": dict(trade_story_input.get("section_provenance") or {}),
                 "ai_report_diagnostics": dict(diagnostics or {}),
                 "timeline": list(lifecycle.get("timeline") or []),
+                "strategist_llm_status": str(
+                    ((lifecycle_bundle_v1.get("llm_summary") or {}) if isinstance(lifecycle_bundle_v1.get("llm_summary"), dict) else {}).get("strategist_llm_status")
+                    or diagnostics.get("strategist_llm_status")
+                    or "skipped"
+                ),
+                "brief_llm_status": str(
+                    ((lifecycle_bundle_v1.get("llm_summary") or {}) if isinstance(lifecycle_bundle_v1.get("llm_summary"), dict) else {}).get("brief_llm_status")
+                    or diagnostics.get("llm_brief_status")
+                    or "skipped"
+                ),
+                "ai_trade_report_status": str(
+                    ((lifecycle_bundle_v1.get("llm_summary") or {}) if isinstance(lifecycle_bundle_v1.get("llm_summary"), dict) else {}).get("ai_report_status")
+                    or diagnostics.get("ai_trade_report_status")
+                    or "skipped"
+                ),
+                "operator_brief": resolved_operator_brief_json,
+                "ai_trade_report": str(trade_report_json_written or trade_report_json_path),
+                "lifecycle_bundle": str(lifecycle_bundle_path),
             }
         )
         write_json(entry_artifact_path, entry_payload)

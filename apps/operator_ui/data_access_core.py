@@ -3355,10 +3355,89 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
 def _attach_operator_brief_sections(brief: Dict[str, Any], detail: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(brief or {})
     out["sections"] = _build_operator_brief_sections(detail)
+    return _normalize_operator_brief_payload(out, detail)
+
+
+def _normalize_operator_brief_payload(
+    brief: Dict[str, Any],
+    detail: Dict[str, Any],
+    *,
+    llm_response_artifact: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    out = dict(brief or {})
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
     canonical_trade = _build_canonical_trade_brief_input(trade_report)
-    shared_facts = canonical_trade.get("shared_facts") if isinstance(canonical_trade.get("shared_facts"), dict) else {}
-    out["shared_facts"] = dict(shared_facts)
+    canonical_shared_facts = (
+        canonical_trade.get("shared_facts")
+        if isinstance(canonical_trade.get("shared_facts"), dict)
+        else {}
+    )
+    shared_facts = out.get("shared_facts") if isinstance(out.get("shared_facts"), dict) else {}
+    normalized_shared_facts = dict(canonical_shared_facts)
+    normalized_shared_facts.update(shared_facts)
+    normalized_shared_facts["data_source"] = {
+        **(canonical_shared_facts.get("data_source") if isinstance(canonical_shared_facts.get("data_source"), dict) else {}),
+        **(shared_facts.get("data_source") if isinstance(shared_facts.get("data_source"), dict) else {}),
+    }
+    out["shared_facts"] = normalized_shared_facts
+    out["schema_version"] = str(out.get("schema_version") or "operator_brief.v1")
+    out["trade_id"] = str(
+        out.get("trade_id")
+        or trade_report.get("trade_id")
+        or canonical_trade.get("trade_id")
+        or ""
+    )
+    out["run_id"] = str(out.get("run_id") or detail.get("run_id") or trade_report.get("run_id") or "")
+
+    normalized_artifact = (
+        llm_response_artifact if isinstance(llm_response_artifact, dict) else out.get("llm_response_artifact")
+    )
+    normalized_artifact = dict(normalized_artifact) if isinstance(normalized_artifact, dict) else {}
+    model_info = (
+        normalized_artifact.get("model_info")
+        if isinstance(normalized_artifact.get("model_info"), dict)
+        else {}
+    )
+    raw_llm_status = str(
+        out.get("llm_brief_status")
+        or normalized_artifact.get("llm_status")
+        or normalized_artifact.get("status")
+        or out.get("status")
+        or ""
+    ).strip()
+    llm_status_default = "skipped" if raw_llm_status == "skipped" else "fallback"
+    llm_brief_status = canonical_llm_status(raw_llm_status or llm_status_default, default=llm_status_default)
+    generation = out.get("generation") if isinstance(out.get("generation"), dict) else {}
+    generation_status = str(generation.get("status") or "").strip().lower()
+    if not generation_status:
+        if llm_brief_status in {"ok", "repaired", "salvaged"}:
+            generation_status = llm_brief_status
+        elif llm_brief_status == "skipped":
+            generation_status = "skipped"
+        else:
+            generation_status = "deterministic"
+    generation_mode = str(generation.get("mode") or "").strip()
+    if not generation_mode:
+        generation_mode = "llm" if generation_status in {"ok", "repaired", "salvaged"} else "deterministic"
+    generation_model = str(
+        generation.get("model")
+        or out.get("model")
+        or model_info.get("model")
+        or ""
+    ).strip()
+    generation_reason = str(
+        generation.get("reason")
+        or out.get("reason")
+        or ((out.get("failure") or {}).get("reason") if isinstance(out.get("failure"), dict) else "")
+        or ""
+    ).strip()
+    normalized_generation = dict(generation)
+    normalized_generation["status"] = generation_status
+    normalized_generation["mode"] = generation_mode
+    normalized_generation["model"] = generation_model
+    normalized_generation["reason"] = generation_reason
+    out["generation"] = normalized_generation
+    out["llm_brief_status"] = llm_brief_status
     return out
 
 
@@ -4203,7 +4282,9 @@ def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[s
         "당신은 한국 주식 운영자를 위한 운영 브리프 작성자입니다. "
         "응답은 반드시 JSON 객체 하나로만 반환하고, 모든 문장은 자연스러운 한국어로 작성하십시오. "
         "영어, 중국어, 일본어 문장을 섞지 마십시오. "
-        "단, VWAP·RSI·ADX·종목코드처럼 시장에서 통용되는 표기만 예외로 허용합니다."
+        "단, VWAP·RSI·ADX·종목코드처럼 시장에서 통용되는 표기만 예외로 허용합니다. "
+        "설명 문장, 사고 과정, 지시문 반복을 출력하지 마십시오. "
+        "출력은 반드시 '{'로 시작하고 '}'로 끝나는 단일 JSON 객체여야 합니다."
     )
     user_prompt = (
         "입력 데이터를 바탕으로 운영자가 10초 안에 상황을 이해할 수 있는 간결한 브리프를 작성하십시오.\n"
@@ -4253,7 +4334,8 @@ def _build_operator_brief_repair_messages(raw_text: str) -> List[Dict[str, str]]
             "role": "system",
             "content": (
                 "운영 브리프를 계약에 맞는 JSON 객체 하나로 복구하십시오. "
-                "모든 설명값은 자연스러운 한국어 문장으로 작성하고, 영어·중국어·일본어 문장은 결과에 남기지 마십시오."
+                "모든 설명값은 자연스러운 한국어 문장으로 작성하고, 영어·중국어·일본어 문장은 결과에 남기지 마십시오. "
+                "설명 문장이나 사고 과정은 출력하지 말고 JSON 객체만 반환하십시오."
             ),
         },
         {
@@ -4433,6 +4515,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         "max_tokens": brief_token_budget,
         "timeout_sec": timeout_sec,
         "response_format": {"type": "json_object"},
+        "plugins": [{"id": "response-healing"}],
         **({"model": model} if model else {}),
     }
     primary_status = "error"
@@ -4565,6 +4648,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
         "max_tokens": brief_repair_token_budget,
         "timeout_sec": timeout_sec,
         "response_format": {"type": "json_object"},
+        "plugins": [{"id": "response-healing"}],
         **({"model": model} if model else {}),
     }
     repair_t0 = time.perf_counter()
@@ -4638,7 +4722,7 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
             },
         )
     )
-    if _is_free_model(model):
+    if _is_free_model(model) or primary_reason in {"language_policy_failed", "parse_error", "brief_json_incomplete_or_partial"}:
         line_messages = _build_operator_brief_line_messages(compact_input)
         line_policy = {
             "temperature": 0.0,
@@ -5391,7 +5475,7 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
     if json_path is None or md_path is None:
         return
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
-    payload = dict(brief)
+    payload = _normalize_operator_brief_payload(brief, detail)
     sections = payload.get("sections") if isinstance(payload.get("sections"), dict) else {}
     monitor_section = (
         sections.get("position_monitor_reasoning")
@@ -5449,6 +5533,7 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         brief_llm_path.write_text(json.dumps(llm_response_compact, ensure_ascii=False, indent=2), encoding="utf-8")
     if llm_response_compact:
         payload["llm_response_artifact"] = dict(llm_response_compact)
+    payload = _normalize_operator_brief_payload(payload, detail, llm_response_artifact=llm_response_compact)
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(_render_operator_brief_markdown(payload), encoding="utf-8")
     bundle_candidates = [
@@ -5480,6 +5565,14 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         )
         artifacts["brief_llm_response_json"] = str(json_path.parent / "brief_llm_response.json") if llm_response_compact else ""
         bundle["artifacts"] = artifacts
+        llm_summary = bundle.get("llm_summary") if isinstance(bundle.get("llm_summary"), dict) else {}
+        llm_summary["brief_llm_status"] = str(payload.get("llm_brief_status") or "fallback")
+        bundle["llm_summary"] = llm_summary
+        # Compatibility bridge: nested llm_summary/artifacts remain authoritative.
+        # These flat fields stay in sync for older readers that still expect them.
+        bundle["brief_llm_status"] = str(payload.get("llm_brief_status") or "fallback")
+        bundle["operator_brief"] = str(json_path)
+        bundle["lifecycle_bundle"] = str(bundle_path)
         bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
         break
 
