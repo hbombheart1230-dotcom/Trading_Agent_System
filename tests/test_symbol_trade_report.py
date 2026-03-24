@@ -97,6 +97,13 @@ def test_generate_symbol_trade_report_uses_truth_artifacts_not_trade_markdown(tm
     assert payload["summary"]["wait_reason_distribution"] == {"volume_confirmation_missing": 1}
     assert payload["summary"]["recent_entry_reasons"] == ["pullback_reclaim_above_vwap_with_rebound_confirmation"]
     assert payload["history_index"][0]["trade_id"] == "TRD_20260320_005930_01"
+    assert payload["history_index"][0]["last_action"] == "SELL"
+    assert payload["history_index"][0]["last_status"] == "closed"
+    latest_snapshot = json.loads((reports_root / "symbols" / "005930" / "latest_snapshot.json").read_text(encoding="utf-8"))
+    assert latest_snapshot["last_trade_id"] == "TRD_20260320_005930_01"
+    assert latest_snapshot["last_action"] == "SELL"
+    assert latest_snapshot["last_status"] == "closed"
+    assert latest_snapshot["report_path"].endswith("reports\\ai_trade_report.json") or latest_snapshot["report_path"].endswith("reports/ai_trade_report.json")
 
 
 def test_symbol_trade_report_handles_no_history_symbol(tmp_path: Path) -> None:
@@ -108,3 +115,37 @@ def test_symbol_trade_report_handles_no_history_symbol(tmp_path: Path) -> None:
     assert payload["summary"]["trade_count"] == 0
     assert payload["history_index"] == []
     assert payload["pattern_insights"]["risk_notes"]
+
+
+def test_symbol_trade_report_marks_recovered_partial_trade_in_latest_snapshot(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    events_path = tmp_path / "data" / "logs" / "events.jsonl"
+    _write_jsonl(events_path, [])
+    bundle_path = reports_root / "trades" / "2026-03-24" / "TRD_20260324_005930_99" / "lifecycle_bundle.json"
+    _write_json(
+        bundle_path,
+        {
+            "schema_version": "lifecycle_bundle.v1",
+            "day": "2026-03-24",
+            "trade_id": "TRD_20260324_005930_99",
+            "symbol": "005930",
+            "trade_lifecycle_status": "partial",
+            "trade_origin": "recovered_partial",
+            "lifecycle_completeness": "partial",
+            "evidence_recovery_used": True,
+            "lifecycle": {
+                "entry": {},
+                "hold": [],
+                "exit": {"run_id": "run-exit", "ts": "2026-03-24T02:30:00+00:00", "price": 70100.0, "reason_human": "recovered exit"},
+            },
+            "trade_outcome": {"exit_reason": "recovered exit"},
+        },
+    )
+
+    out = generate_symbol_trade_report(events_path, reports_root, "005930")
+    latest_snapshot = json.loads(Path(str(out["latest_snapshot_path"])).read_text(encoding="utf-8"))
+    assert latest_snapshot["last_trade_id"] == "TRD_20260324_005930_99"
+    assert latest_snapshot["last_action"] == "SELL"
+    assert latest_snapshot["trade_origin"] == "recovered_partial"
+    assert latest_snapshot["lifecycle_completeness"] == "partial"
+    assert latest_snapshot["evidence_recovery_used"] is True

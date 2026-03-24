@@ -135,9 +135,19 @@ def _normalize_lifecycle_bundle(bundle: Dict[str, Any]) -> Dict[str, Any]:
         "symbol": str(bundle.get("symbol") or ""),
         "day": str(bundle.get("day") or ""),
         "status": str(bundle.get("trade_lifecycle_status") or bundle.get("status") or ""),
+        "trade_origin": str(
+            bundle.get("trade_origin")
+            or ("recovered_partial" if str(bundle.get("trade_lifecycle_status") or bundle.get("status") or "").strip().lower() == "partial" else "normal_lifecycle")
+        ),
+        "lifecycle_completeness": str(
+            bundle.get("lifecycle_completeness")
+            or ("partial" if str(bundle.get("trade_lifecycle_status") or bundle.get("status") or "").strip().lower() == "partial" else "complete")
+        ),
+        "evidence_recovery_used": bool(bundle.get("evidence_recovery_used")),
         "entry": entry,
         "exit": exit_row,
         "summary": summary,
+        "artifacts": dict(bundle.get("artifacts") or {}),
     }
     return normalized
 
@@ -165,12 +175,32 @@ def _hold_seconds_from_lifecycle(obj: Dict[str, Any]) -> Optional[float]:
 def _build_history_index(reports_root: Path, symbol: str) -> List[Dict[str, Any]]:
     history: List[Dict[str, Any]] = []
     normalized_symbol = str(symbol or "").strip().upper()
-    for _path, obj in _iter_trade_lifecycles(reports_root):
+    for path, obj in _iter_trade_lifecycles(reports_root):
         if str(obj.get("symbol") or "").strip().upper() != normalized_symbol:
             continue
         summary = obj.get("summary") if isinstance(obj.get("summary"), dict) else {}
         entry = obj.get("entry") if isinstance(obj.get("entry"), dict) else {}
         exit_row = obj.get("exit") if isinstance(obj.get("exit"), dict) else {}
+        artifacts = obj.get("artifacts") if isinstance(obj.get("artifacts"), dict) else {}
+        trade_id = str(obj.get("trade_id") or "")
+        trade_day = str(obj.get("day") or "")
+        trade_root = (
+            path.parent
+            if path.name == "lifecycle_bundle.json"
+            else path.parent.parent
+        )
+        expected_report_path = trade_root / "reports" / "ai_trade_report.json"
+        expected_operator_brief_path = trade_root / "reports" / "operator_brief.json"
+        lifecycle_bundle_path = trade_root / "lifecycle_bundle.json"
+        trade_status = str(obj.get("status") or "").strip()
+        if exit_row:
+            last_action = "SELL"
+        elif trade_status.lower() == "open":
+            last_action = "HOLD"
+        elif entry:
+            last_action = "BUY"
+        else:
+            last_action = ""
         run_id = (
             str(entry.get("run_id") or "").strip()
             or str(exit_row.get("run_id") or "").strip()
@@ -179,10 +209,12 @@ def _build_history_index(reports_root: Path, symbol: str) -> List[Dict[str, Any]
         result_pct = _result_pct_from_lifecycle(obj)
         history.append(
             {
-                "trade_id": str(obj.get("trade_id") or ""),
-                "date": str(obj.get("day") or ""),
+                "trade_id": trade_id,
+                "date": trade_day,
                 "run_id": run_id,
-                "status": str(obj.get("status") or ""),
+                "status": trade_status,
+                "last_status": trade_status,
+                "last_action": last_action,
                 "entry_reason": str(summary.get("entry_reason_human") or ""),
                 "exit_reason": str(summary.get("exit_reason_human") or ""),
                 "lifecycle_summary": str(summary.get("lifecycle_summary_human") or ""),
@@ -190,6 +222,13 @@ def _build_history_index(reports_root: Path, symbol: str) -> List[Dict[str, Any]
                 "playbook": str((((entry.get("strategist_context") or {}) if isinstance(entry.get("strategist_context"), dict) else {}).get("playbook")) or ""),
                 "hold_seconds": _hold_seconds_from_lifecycle(obj),
                 "result_pct": result_pct,
+                "trade_origin": str(obj.get("trade_origin") or ""),
+                "lifecycle_completeness": str(obj.get("lifecycle_completeness") or ""),
+                "evidence_recovery_used": bool(obj.get("evidence_recovery_used")),
+                "report_path": str(artifacts.get("ai_trade_report_json") or expected_report_path),
+                "operator_brief_path": str(artifacts.get("operator_brief_json") or expected_operator_brief_path),
+                "lifecycle_bundle_path": str(artifacts.get("lifecycle_bundle_json") or lifecycle_bundle_path),
+                "trade_root_path": str(trade_root),
             }
         )
     history.sort(key=lambda row: (str(row.get("date") or ""), str(row.get("trade_id") or "")))
@@ -433,10 +472,19 @@ def generate_symbol_trade_report(events_path: Path, reports_root: Path, symbol: 
     root_dir.mkdir(parents=True, exist_ok=True)
 
     history_index = payload.get("history_index") if isinstance(payload.get("history_index"), list) else []
+    latest_trade = dict(history_index[-1]) if history_index else {}
     latest_snapshot = {
+        "schema_version": "symbol_latest_snapshot.v1",
         "symbol": str(payload.get("symbol") or ""),
         "summary": dict(payload.get("summary") or {}),
-        "latest_trade": dict(history_index[-1]) if history_index else {},
+        "last_trade_id": str(latest_trade.get("trade_id") or ""),
+        "last_action": str(latest_trade.get("last_action") or ""),
+        "last_status": str(latest_trade.get("last_status") or latest_trade.get("status") or ""),
+        "report_path": str(latest_trade.get("report_path") or ""),
+        "trade_origin": str(latest_trade.get("trade_origin") or ""),
+        "lifecycle_completeness": str(latest_trade.get("lifecycle_completeness") or ""),
+        "evidence_recovery_used": bool(latest_trade.get("evidence_recovery_used")),
+        "latest_trade": latest_trade,
     }
     daily_index = sorted({str(row.get("date") or "") for row in history_index if str(row.get("date") or "").strip()})
 

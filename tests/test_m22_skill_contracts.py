@@ -105,3 +105,29 @@ def test_m22_contract_extract_minute_ohlcv_from_skill_ready_data():
     assert meta["used"] is True
     assert meta["source"] == "skill.minute_ohlcv"
     assert len(rows_by_symbol["005930"]) == 2
+
+
+def test_m22_contract_extract_minute_ohlcv_from_skill_result_symbol_map():
+    state = {
+        "skill_results": {
+            "market.minute_ohlcv_by_symbol": {
+                "005930": {
+                    "result": {
+                        "action": "ready",
+                        "data": {
+                            "symbol": "A005930",
+                            "rows": [
+                                {"ts": 1710000000, "open": 70000, "high": 70100, "low": 69900, "close": 70050, "volume": 1200},
+                                {"ts": 1710000060, "open": 70050, "high": 70200, "low": 70040, "close": 70180, "volume": 1800},
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+    }
+    rows_by_symbol, meta = extract_minute_ohlcv_by_symbol(state)
+    assert meta["present"] is True
+    assert meta["used"] is True
+    assert meta["source"] == "skill.minute_ohlcv_by_symbol"
+    assert len(rows_by_symbol["005930"]) == 2

@@ -779,6 +779,11 @@ def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exi
     new_bundle = json.loads((trade_root / "lifecycle_bundle.json").read_text(encoding="utf-8"))
     assert (new_bundle.get("artifacts") or {}).get("strategist_evidence_json", "").endswith("strategist_evidence.json")
     assert (new_bundle.get("artifacts") or {}).get("scanner_evidence_json", "").endswith("scanner_evidence.json")
+    assert isinstance(new_bundle.get("strategist_trace_summary"), dict)
+    assert isinstance(new_bundle.get("scanner_trace_summary"), dict)
+    assert new_bundle.get("selected_symbol") == "000660"
+    assert new_bundle.get("runner_up_symbol") == "005930"
+    assert new_bundle.get("candidate_count") == 5
     monitor_artifact_ref = str(
         (new_bundle.get("artifacts") or {}).get("monitor_evidence_json")
         or (new_bundle.get("artifacts") or {}).get("monitor_timeline_json")
@@ -1658,3 +1663,163 @@ def test_enrich_scanner_reason_from_evidence_surfaces_selection_basis_and_runner
     assert enriched["runner_ups_lost"][0]["symbol"] == "005930"
     assert "Selection decision:" in " ".join(enriched["bullets"])
     assert "Runner-ups lost because:" in " ".join(enriched["bullets"])
+
+
+def test_live_execution_bundle_report_propagates_canonical_monitor_freshness_into_trade_evidence(tmp_path: Path, capsys, monkeypatch) -> None:
+    day = "2026-03-24"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"order": {"action": "BUY", "symbol": "003280", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}},
+            },
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+    canonical_monitor = reports_root / "canonical" / day / "run-1" / "monitor.json"
+    canonical_monitor.parent.mkdir(parents=True, exist_ok=True)
+    canonical_monitor.write_text(
+        json.dumps(
+            {
+                "schema_version": "agent_output.v1",
+                "agent": "monitor",
+                "run_id": "run-1",
+                "symbol": "003280",
+                "phase": "session",
+                "threshold_snapshot": {
+                    "entry_minute_snapshot_age_minutes": 4.5,
+                    "entry_minute_snapshot_was_stale": True,
+                    "entry_minute_refetch_attempted": True,
+                    "entry_minute_refetch_succeeded": False,
+                    "entry_minute_refetch_reason": "stale_snapshot_age_exceeded",
+                    "entry_minute_refetch_trigger_reason": "stale_snapshot_age_exceeded",
+                    "entry_minute_refetch_failure_reason": "refetch_not_ready",
+                    "entry_latest_candle_ts": 1774324860,
+                    "entry_inferred_spacing_minutes": 1.0,
+                    "entry_series_class": "intraday",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--no-trade-report-ai",
+            "--json",
+        ]
+    )
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip())
+    trade_id = out["bundles"][0]["story_id"]
+    monitor_evidence = json.loads((reports_root / "trades" / day / trade_id / "evidence" / "monitor_evidence.json").read_text(encoding="utf-8"))
+    assert monitor_evidence["entry_minute_snapshot_age_minutes"] == 4.5
+    assert monitor_evidence["entry_minute_snapshot_was_stale"] is True
+    assert monitor_evidence["entry_minute_refetch_attempted"] is True
+    assert monitor_evidence["entry_minute_refetch_succeeded"] is False
+    assert monitor_evidence["entry_minute_refetch_reason"] == "stale_snapshot_age_exceeded"
+    assert monitor_evidence["entry_minute_refetch_trigger_reason"] == "stale_snapshot_age_exceeded"
+    assert monitor_evidence["entry_minute_refetch_failure_reason"] == "refetch_not_ready"
+    assert monitor_evidence["entry_latest_candle_ts"] == 1774324860
+    assert monitor_evidence["entry_inferred_spacing_minutes"] == 1.0
+    assert monitor_evidence["entry_series_class"] == "intraday"
+    assert monitor_evidence["threshold_snapshots"][0]["payload"]["entry_minute_refetch_failure_reason"] == "refetch_not_ready"
+
+
+def test_live_execution_bundle_report_marks_partial_recovery_trade_explicitly(tmp_path: Path, capsys, monkeypatch) -> None:
+    day = "2026-03-24"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {
+                "run_id": "run-sell-only",
+                "ts": f"{day}T00:05:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {"order": {"action": "SELL", "symbol": "005930", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}},
+            },
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--no-trade-report-ai",
+            "--json",
+        ]
+    )
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out.strip())
+    trade_id = out["bundles"][0]["story_id"]
+    bundle = json.loads((reports_root / "trades" / day / trade_id / "lifecycle_bundle.json").read_text(encoding="utf-8"))
+    provenance = json.loads((reports_root / "trades" / day / trade_id / "_provenance.json").read_text(encoding="utf-8"))
+    health = json.loads((reports_root / "trades" / day / trade_id / "_health.json").read_text(encoding="utf-8"))
+    assert bundle["trade_lifecycle_status"] == "partial"
+    assert bundle["trade_origin"] == "recovered_partial"
+    assert bundle["lifecycle_completeness"] == "partial"
+    assert bundle["evidence_recovery_used"] is True
+    assert isinstance(bundle["recovery_missing_sections"], list)
+    assert isinstance(bundle["recovery_sources"], list)
+    assert "entry" in bundle["recovery_missing_sections"] or "entry_evidence" in bundle["recovery_missing_sections"]
+    assert "partial_lifecycle" in bundle["recovery_sources"]
+    assert isinstance(bundle["strategist_trace_summary"], dict)
+    assert isinstance(bundle["scanner_trace_summary"], dict)
+    assert "selected_symbol" in bundle
+    assert "runner_up_symbol" in bundle
+    assert "candidate_count" in bundle
+    assert provenance["trade_origin"] == "recovered_partial"
+    assert provenance["lifecycle_completeness"] == "partial"
+    assert provenance["evidence_recovery_used"] is True
+    assert isinstance(provenance["recovery_missing_sections"], list)
+    assert isinstance(provenance["recovery_sources"], list)
+    assert "entry" in provenance["recovery_missing_sections"] or "entry_evidence" in provenance["recovery_missing_sections"]
+    assert health["trade_origin"] == "recovered_partial"
+    assert health["lifecycle_completeness"] == "partial"
+    assert health["evidence_recovery_used"] is True
+    assert isinstance(health["recovery_missing_sections"], list)
+    assert isinstance(health["recovery_sources"], list)
+    assert "partial_lifecycle" in health["recovery_sources"]

@@ -79,6 +79,324 @@ def _dedupe_text(values: List[str], *, limit: int = 10, max_len: int = 180) -> L
     return out
 
 
+def _format_trace_number(value: Any, *, digits: int = 3, missing: str = "not_captured") -> str:
+    if value in (None, ""):
+        return missing
+    try:
+        return f"{float(value):.{digits}f}"
+    except Exception:
+        return _clip(value, max_len=24) or missing
+
+
+def _build_strategist_trace_summary(
+    *,
+    strategist_output: Dict[str, Any],
+    global_signal: Dict[str, Any],
+    macro_overlay: Dict[str, Any],
+    news_context: Dict[str, Any],
+    themes: List[str],
+    avoid_themes: List[str],
+    market_regime: str,
+    market_sentiment: str,
+    playbook: str,
+) -> Dict[str, Any]:
+    fear_index = _dict(global_signal.get("fear_index"))
+    reason_chain = _listify(strategist_output.get("reason_chain"), limit=8, max_len=180)
+    if not reason_chain:
+        strategy_policy_summary = _dict(strategist_output.get("strategy_policy_summary"))
+        market_policy = _dict(strategy_policy_summary.get("market_policy"))
+        reason_chain = _listify(market_policy.get("reason_chain"), limit=8, max_len=180)
+    news_targets = _listify(strategist_output.get("news_query_targets"), limit=8, max_len=80)
+    stress_flags = _listify(macro_overlay.get("stress_flags"), limit=6, max_len=60)
+    headline_count = _safe_int(
+        news_context.get("headline_count")
+        or strategist_output.get("news_total_headlines")
+        or strategist_output.get("market_news_total_headlines")
+    )
+    query_count = _safe_int(
+        strategist_output.get("market_news_query_count")
+        or len(news_targets)
+    )
+    global_sentiment_score = strategist_output.get("global_sentiment_score")
+    vix_level = (
+        fear_index.get("level")
+        if fear_index.get("level") not in (None, "")
+        else global_signal.get("vix_level")
+        if global_signal.get("vix_level") not in (None, "")
+        else macro_overlay.get("vix_level")
+    )
+    missing_flags: List[str] = []
+    if global_sentiment_score in (None, ""):
+        missing_flags.append("global_sentiment_score_missing")
+    if vix_level in (None, ""):
+        missing_flags.append("vix_level_missing")
+    if headline_count <= 0:
+        missing_flags.append("news_headlines_missing")
+    if not reason_chain:
+        missing_flags.append("reason_chain_missing")
+    summary = (
+        f"Strategist used regime={market_regime or 'not_captured'}, sentiment={market_sentiment or 'not_captured'}, "
+        f"playbook={playbook or 'not_captured'}, global_sentiment={_format_trace_number(global_sentiment_score, digits=3)}, "
+        f"vix={_format_trace_number(vix_level, digits=2)}, headlines={headline_count}, targets={query_count}."
+    )
+    highlights = _dedupe_text(
+        [
+            f"Regime {market_regime or 'not_captured'} / playbook {playbook or 'not_captured'}",
+            (
+                "Themes: "
+                + (", ".join(themes[:4]) if themes else "none")
+                + (" | avoid: " + ", ".join(avoid_themes[:4]) if avoid_themes else "")
+            ),
+            (
+                f"Sentiment { _format_trace_number(global_sentiment_score, digits=3) } / "
+                f"VIX { _format_trace_number(vix_level, digits=2) } / "
+                f"stress {', '.join(stress_flags) if stress_flags else 'none'}"
+            ),
+            f"News evidence: {headline_count} headlines across {query_count} targets",
+        ],
+        limit=6,
+        max_len=220,
+    )
+    return {
+        "summary": _clip(summary, max_len=320),
+        "highlights": highlights,
+        "reason_chain": reason_chain,
+        "headline_count": headline_count,
+        "news_query_count": query_count,
+        "news_query_targets": news_targets,
+        "global_sentiment_score": global_sentiment_score,
+        "vix_level": vix_level,
+        "stress_flags": stress_flags,
+        "market_regime": market_regime,
+        "market_sentiment": market_sentiment,
+        "playbook": playbook,
+        "themes": list(themes),
+        "avoid_themes": list(avoid_themes),
+        "missing_flags": missing_flags,
+    }
+
+
+def _build_strategist_decision_frame(
+    *,
+    state: Dict[str, Any],
+    strategist_output: Dict[str, Any],
+    market_regime: str,
+    market_sentiment: str,
+    playbook: str,
+    themes: List[str],
+    avoid_themes: List[str],
+) -> Dict[str, Any]:
+    event_payload = _dict(state.get("strategist_decision_frame"))
+    if event_payload:
+        return dict(event_payload)
+    strategy_policy_summary = _dict(strategist_output.get("strategy_policy_summary"))
+    strategy_memory = _dict(strategist_output.get("strategy_memory"))
+    reason_chain = _listify(
+        strategist_output.get("reason_chain")
+        or _dict(strategy_policy_summary.get("market_policy")).get("reason_chain"),
+        limit=8,
+        max_len=180,
+    )
+    return {
+        "market_regime": market_regime,
+        "market_sentiment": market_sentiment,
+        "playbook": playbook,
+        "themes": list(themes),
+        "avoid_themes": list(avoid_themes),
+        "scanner_bias": _clip(strategist_output.get("scanner_bias"), max_len=80),
+        "scanner_priority": _listify(strategist_output.get("scanner_priority"), limit=8, max_len=80),
+        "trade_aggressiveness": _clip(strategist_output.get("trade_aggressiveness"), max_len=40),
+        "risk_tone": _clip(strategist_output.get("risk_tone"), max_len=40),
+        "monitor_guidance": _clip(strategist_output.get("monitor_guidance"), max_len=80),
+        "report_focus": _listify(strategist_output.get("report_focus"), limit=8, max_len=80),
+        "strategy_memory": strategy_memory,
+        "reason_chain": reason_chain,
+        "strategy_policy_summary": strategy_policy_summary,
+    }
+
+
+def _build_strategist_news_evidence_ranked(
+    *,
+    state: Dict[str, Any],
+    strategist_output: Dict[str, Any],
+    news_context: Dict[str, Any],
+    market_news_context: Dict[str, Any],
+    candidate_news_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    event_payload = _dict(state.get("strategist_news_evidence_ranked"))
+    if event_payload:
+        return dict(event_payload)
+    return {
+        "news_query_targets": _listify(strategist_output.get("news_query_targets"), limit=12, max_len=80),
+        "candidate_news_ranked": list(candidate_news_context.get("ranked_rows") or [])[:8],
+        "market_news_ranked": list(market_news_context.get("ranked_rows") or [])[:8],
+        "candidate_news_context": dict(candidate_news_context),
+        "market_news_context": dict(market_news_context),
+        "news_context": dict(news_context),
+    }
+
+
+def _build_global_sentiment_signal_payload(
+    *,
+    state: Dict[str, Any],
+    global_signal: Dict[str, Any],
+    macro_overlay: Dict[str, Any],
+) -> Dict[str, Any]:
+    event_payload = _dict(state.get("strategist_global_sentiment_breakdown"))
+    if event_payload:
+        return dict(event_payload)
+    fear_index = _dict(global_signal.get("fear_index"))
+    return {
+        "score": global_signal.get("score"),
+        "status": _clip(global_signal.get("status"), max_len=40),
+        "source": _clip(global_signal.get("source"), max_len=80),
+        "fear_index": {
+            "level": fear_index.get("level"),
+            "change_pct": fear_index.get("change_pct"),
+            "level_pressure": fear_index.get("level_pressure"),
+        },
+        "index_moves": _dict(global_signal.get("index_moves")),
+        "macro_moves": _dict(global_signal.get("macro_moves")),
+        "stress_flags": _listify(macro_overlay.get("stress_flags"), limit=8, max_len=80),
+    }
+
+
+def _build_scanner_trace_summary(
+    *,
+    symbol: str,
+    selected_rank: int,
+    universe_size: int,
+    selected_score_total: float,
+    margin_vs_second: float,
+    selected_score_breakdown: Dict[str, Any],
+    selected: Dict[str, Any],
+    candidate_preview: List[Dict[str, Any]],
+    selection_summary: str,
+) -> Dict[str, Any]:
+    selected_candidate = _dict(selected.get("candidate"))
+    selected_sources = _listify(selected_candidate.get("sources"), limit=6, max_len=60)
+    positive_factors = [f"{k}:{_safe_float(v, 0.0):.3f}" for k, v in selected_score_breakdown.items() if _safe_float(v, 0.0) > 0][:4]
+    negative_factors = [f"{k}:{_safe_float(v, 0.0):.3f}" for k, v in selected_score_breakdown.items() if _safe_float(v, 0.0) < 0][:4]
+    runner_ups = [
+        {
+            "symbol": str(row.get("symbol") or ""),
+            "rank": _safe_int(row.get("rank")),
+            "score_total": _safe_float(row.get("score_total")),
+            "why": _clip(row.get("why"), max_len=160),
+        }
+        for row in candidate_preview[1:3]
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+    ]
+    missing_flags: List[str] = []
+    if not symbol:
+        missing_flags.append("selected_symbol_missing")
+    if universe_size <= 0:
+        missing_flags.append("candidate_pool_missing")
+    if not positive_factors and not negative_factors:
+        missing_flags.append("score_breakdown_missing")
+    summary = (
+        f"Scanner selected {symbol or 'not_captured'} rank #{selected_rank or 0}/{universe_size or 0} "
+        f"with score={selected_score_total:.3f} and margin_vs_second={margin_vs_second:.3f}."
+    )
+    highlights = _dedupe_text(
+        [
+            f"Selected {symbol or 'not_captured'} rank #{selected_rank or 0} out of {universe_size or 0}",
+            f"Score {selected_score_total:.3f} with margin {margin_vs_second:.3f} vs runner-up",
+            f"Source mix: {', '.join(selected_sources) if selected_sources else 'not_captured'}",
+            (
+                "Positive factors: " + ", ".join(positive_factors)
+                if positive_factors
+                else "Positive factors were not captured"
+            ),
+            (
+                "Negative factors: " + ", ".join(negative_factors)
+                if negative_factors
+                else "Negative factors were not captured"
+            ),
+        ],
+        limit=6,
+        max_len=220,
+    )
+    return {
+        "summary": _clip(selection_summary or summary, max_len=320),
+        "highlights": highlights,
+        "selected_symbol": symbol,
+        "runner_up_symbol": str(runner_ups[0].get("symbol") or "") if runner_ups else "",
+        "selected_rank": selected_rank,
+        "universe_size": universe_size,
+        "candidate_count": universe_size,
+        "selected_score_total": selected_score_total,
+        "margin_vs_second": margin_vs_second,
+        "selected_sources": selected_sources,
+        "critical_positive_factors": positive_factors,
+        "critical_negative_factors": negative_factors,
+        "top_candidates": candidate_preview[:3],
+        "runner_ups": runner_ups,
+        "missing_flags": missing_flags,
+    }
+
+
+def _build_scanner_candidate_ranking_table(
+    *,
+    state: Dict[str, Any],
+    candidate_preview: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    event_payload = _dict(state.get("scanner_candidate_ranking_table"))
+    if event_payload:
+        rows = list(event_payload.get("rows") or [])
+        return {
+            "tie_break_rule": _clip(event_payload.get("tie_break_rule"), max_len=120),
+            "rows": [dict(row) for row in rows if isinstance(row, dict)],
+        }
+    return {
+        "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
+        "rows": [dict(row) for row in candidate_preview],
+    }
+
+
+def _build_scanner_candidate_selection_reason(
+    *,
+    state: Dict[str, Any],
+    selected_symbol: str,
+    selected_rank: int,
+    selected_score_total: float,
+    margin_vs_second: float,
+    critical_positive_factors: List[str],
+    critical_negative_factors: List[str],
+    selection_summary: str,
+    runner_ups: List[Dict[str, Any]],
+    selected: Dict[str, Any],
+) -> Dict[str, Any]:
+    event_payload = _dict(state.get("scanner_candidate_selection_reason"))
+    if event_payload:
+        return dict(event_payload)
+    selected_candidate = _dict(selected.get("candidate"))
+    why_selected = _listify(selected.get("top_reasons"), limit=6, max_len=180)
+    if not why_selected:
+        why_selected = _dedupe_text(
+            [
+                f"highest total score ({selected_score_total:.3f})" if selected_score_total else "",
+                f"confidence {_safe_float(selected.get('confidence')):.2f} and risk {_safe_float(selected.get('risk_score')):.2f}",
+                f"source mix: {', '.join(_listify(selected_candidate.get('sources'), limit=4, max_len=40))}",
+            ],
+            limit=4,
+            max_len=180,
+        )
+    return {
+        "selected_symbol": selected_symbol,
+        "selected_rank": selected_rank,
+        "selected_score_total": selected_score_total,
+        "margin_vs_second": margin_vs_second,
+        "critical_positive_factors": list(critical_positive_factors),
+        "critical_negative_factors": list(critical_negative_factors),
+        "selection_summary": selection_summary,
+        "why_selected": why_selected,
+        "runner_ups_lost": list(runner_ups),
+        "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
+        "final_decision_basis": "Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties.",
+    }
+
+
 def _monitor_decision_summary(
     *,
     decision_phase: str,
@@ -357,6 +675,58 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         f"themes {', '.join(themes) if themes else 'none'}."
     )
     artifact = _base_output(state, agent="strategist", status="blocked" if bool(state.get("strategist_blocked")) else "ok")
+    trace_summary = _build_strategist_trace_summary(
+        strategist_output=strategist_output,
+        global_signal=global_signal,
+        macro_overlay=macro_overlay,
+        news_context=news_context,
+        themes=themes,
+        avoid_themes=avoid_themes,
+        market_regime=market_regime,
+        market_sentiment=market_sentiment,
+        playbook=playbook,
+    )
+    decision_frame = _build_strategist_decision_frame(
+        state=state,
+        strategist_output=strategist_output,
+        market_regime=market_regime,
+        market_sentiment=market_sentiment,
+        playbook=playbook,
+        themes=themes,
+        avoid_themes=avoid_themes,
+    )
+    news_evidence_ranked = _build_strategist_news_evidence_ranked(
+        state=state,
+        strategist_output=strategist_output,
+        news_context=news_context,
+        market_news_context=market_news_context,
+        candidate_news_context=candidate_news_context,
+    )
+    global_sentiment_signal = _build_global_sentiment_signal_payload(
+        state=state,
+        global_signal=global_signal,
+        macro_overlay=macro_overlay,
+    )
+    candidate_symbols_hint = _listify(
+        state.get("strategist_candidate_symbols_hint")
+        if state.get("strategist_candidate_symbols_hint") is not None
+        else state.get("candidate_symbols"),
+        limit=10,
+        max_len=24,
+    )
+    news_evidence_missing = not bool(
+        list(news_evidence_ranked.get("candidate_news_ranked") or [])
+        or list(news_evidence_ranked.get("market_news_ranked") or [])
+        or _safe_int(news_context.get("headline_count") or news_context.get("total_headlines"))
+    )
+    llm_status = str(strategist_llm.get("status") or "").strip().lower()
+    fallback_used = bool(strategist_llm.get("blocked")) or llm_status in {"fallback", "error", "blocked"}
+    fallback_reason = _clip(
+        strategist_llm.get("blocked_reason")
+        or strategist_output.get("llm_frame_status")
+        or strategist_llm.get("status"),
+        max_len=180,
+    )
     artifact.update(
         {
             "market_regime": market_regime,
@@ -438,6 +808,17 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                     max_len=320,
                 ),
             },
+            "decision_frame": decision_frame,
+            "candidate_symbols_hint": candidate_symbols_hint,
+            "news_evidence_ranked": news_evidence_ranked,
+            "global_sentiment_signal": global_sentiment_signal,
+            "fear_index": fear_index,
+            "stress_flags": _listify(macro_overlay.get("stress_flags"), limit=8, max_len=80),
+            "news_evidence_missing": bool(news_evidence_missing),
+            "candidate_symbols_hint_missing": not bool(candidate_symbols_hint),
+            "fallback_used": bool(fallback_used),
+            "fallback_reason": fallback_reason,
+            "trace_summary": trace_summary,
             "themes": themes,
             "avoid_themes": avoid_themes,
             "llm_metadata_summary": {
@@ -539,6 +920,59 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         "critical_negative_factors": critical_negative_factors,
         "selection_summary": selection_summary,
     }
+    candidate_ranking_table = _build_scanner_candidate_ranking_table(
+        state=state,
+        candidate_preview=candidate_preview,
+    )
+    candidate_selection_reason = _build_scanner_candidate_selection_reason(
+        state=state,
+        selected_symbol=symbol,
+        selected_rank=selected_rank,
+        selected_score_total=selected_score_total,
+        margin_vs_second=margin_vs_second,
+        critical_positive_factors=critical_positive_factors,
+        critical_negative_factors=critical_negative_factors,
+        selection_summary=selection_summary,
+        runner_ups=rejection_rows,
+        selected=selected,
+    )
+    runner_up_symbol = ""
+    ranking_rows = [row for row in list(candidate_ranking_table.get("rows") or []) if isinstance(row, dict)]
+    if len(ranking_rows) > 1:
+        runner_up_symbol = str(ranking_rows[1].get("symbol") or "").strip()
+    score_breakdown_by_symbol = {
+        str(row.get("symbol") or "").strip(): _dict(row.get("score_breakdown"))
+        for row in ranking_rows
+        if str(row.get("symbol") or "").strip()
+    }
+    confidence_by_symbol = {
+        str(row.get("symbol") or "").strip(): row.get("confidence")
+        for row in ranking_rows
+        if str(row.get("symbol") or "").strip()
+    }
+    risk_score_by_symbol = {
+        str(row.get("symbol") or "").strip(): row.get("risk_score")
+        for row in ranking_rows
+        if str(row.get("symbol") or "").strip()
+    }
+    fallback_reason = _clip(
+        pool_meta.get("fallback_reason")
+        or scanner_output.get("fallback_reason")
+        or ("backfill_used" if bool(pool_meta.get("backfill_used")) else ""),
+        max_len=180,
+    )
+    fallback_used = bool(fallback_reason)
+    trace_summary = _build_scanner_trace_summary(
+        symbol=symbol,
+        selected_rank=selected_rank,
+        universe_size=_safe_int(scanner_output.get("candidate_pool_size") or scanner_output.get("candidate_count")) or _safe_int(pool_meta.get("candidate_pool_after_filter") or len(ranked)),
+        selected_score_total=selected_score_total,
+        margin_vs_second=margin_vs_second,
+        selected_score_breakdown=selected_score_breakdown,
+        selected=selected,
+        candidate_preview=candidate_preview,
+        selection_summary=selection_summary,
+    )
     artifact = _base_output(state, agent="scanner", symbol=symbol)
     artifact.update(
         {
@@ -563,12 +997,22 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "source_mix": _dict(scanner_output.get("source_mix")),
                 "candidate_count": _safe_int(scanner_output.get("candidate_count")),
             },
+            "candidate_ranking_table": candidate_ranking_table,
+            "candidate_selection_reason": candidate_selection_reason,
             "ranking_table": candidate_preview,
             "ranked_candidates": candidate_preview,
             "selected_symbol": symbol,
             "selected_rank": selected_rank,
+            "runner_up_symbol": runner_up_symbol,
             "selection_reason": selection_summary,
             "selection_reason_detail": selection_reason_detail,
+            "score_breakdown_by_symbol": score_breakdown_by_symbol,
+            "confidence_by_symbol": confidence_by_symbol,
+            "risk_score_by_symbol": risk_score_by_symbol,
+            "ranking_table_missing": not bool(ranking_rows),
+            "fallback_used": bool(fallback_used),
+            "fallback_reason": fallback_reason,
+            "trace_summary": trace_summary,
             "rejection_summary": rejection_rows,
             "filter_feature_summary": {
                 "feature_source": _clip(state.get("scanner_feature", {}).get("source") if isinstance(state.get("scanner_feature"), dict) else "", max_len=80),
@@ -722,6 +1166,17 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     threshold_snapshot = {
         "entry_thresholds": _dict(entry_info.get("thresholds")),
         "entry_threshold_margins": _dict(entry_info.get("threshold_margins")),
+        "entry_latest_candle_ts": entry_info.get("metrics", {}).get("latest_candle_ts") if isinstance(entry_info.get("metrics"), dict) else None,
+        "entry_minute_snapshot_age_minutes": entry_info.get("metrics", {}).get("minute_snapshot_age_minutes") if isinstance(entry_info.get("metrics"), dict) else None,
+        "entry_minute_snapshot_was_stale": entry_info.get("metrics", {}).get("minute_snapshot_was_stale") if isinstance(entry_info.get("metrics"), dict) else None,
+        "entry_minute_refetch_attempted": entry_info.get("metrics", {}).get("minute_refetch_attempted") if isinstance(entry_info.get("metrics"), dict) else None,
+        "entry_minute_refetch_succeeded": entry_info.get("metrics", {}).get("minute_refetch_succeeded") if isinstance(entry_info.get("metrics"), dict) else None,
+        "entry_minute_refetch_reason": entry_info.get("metrics", {}).get("minute_refetch_reason") if isinstance(entry_info.get("metrics"), dict) else None,
+        "entry_minute_refetch_trigger_reason": entry_info.get("metrics", {}).get("minute_refetch_trigger_reason") if isinstance(entry_info.get("metrics"), dict) else None,
+        "entry_minute_refetch_failure_reason": entry_info.get("metrics", {}).get("minute_refetch_failure_reason") if isinstance(entry_info.get("metrics"), dict) else None,
+        "entry_minute_refetch_produced_fresh_snapshot": entry_info.get("metrics", {}).get("minute_refetch_produced_fresh_snapshot") if isinstance(entry_info.get("metrics"), dict) else None,
+        "entry_inferred_spacing_minutes": entry_info.get("metrics", {}).get("inferred_spacing_minutes") if isinstance(entry_info.get("metrics"), dict) else None,
+        "entry_series_class": entry_info.get("metrics", {}).get("series_class") if isinstance(entry_info.get("metrics"), dict) else None,
         "exit_thresholds": thresholds,
         "exit_confirm_ticks": _safe_int(exit_info.get("exit_confirm_ticks")),
         "exit_confirm_count": _safe_int(exit_info.get("exit_confirm_count")),
@@ -1254,6 +1709,9 @@ def _commander_shadow_monitor_gate_details(state: Dict[str, Any]) -> Dict[str, A
         "minute_refetch_attempted": metrics.get("minute_refetch_attempted"),
         "minute_refetch_succeeded": metrics.get("minute_refetch_succeeded"),
         "minute_refetch_reason": metrics.get("minute_refetch_reason"),
+        "minute_refetch_trigger_reason": metrics.get("minute_refetch_trigger_reason"),
+        "minute_refetch_failure_reason": metrics.get("minute_refetch_failure_reason"),
+        "minute_refetch_produced_fresh_snapshot": metrics.get("minute_refetch_produced_fresh_snapshot"),
         "volume_ratio": metrics.get("volume_ratio"),
         "vwap_distance": metrics.get("vwap_distance") if metrics.get("vwap_distance") not in (None, "") else metrics.get("extended_from_vwap_pct"),
         "extended_from_vwap_pct": metrics.get("extended_from_vwap_pct"),

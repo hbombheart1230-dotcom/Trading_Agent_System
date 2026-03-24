@@ -2067,42 +2067,46 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "backfill_count": int(pool_meta.get("backfill_count") or 0),
         },
     )
+    candidate_ranking_table_payload = {
+        "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
+        "rows": ranking_table,
+    }
+    state["scanner_candidate_ranking_table"] = dict(candidate_ranking_table_payload)
     _emit_scanner_event(
         state,
         name="candidate_ranking_table",
-        payload={
-            "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
-            "rows": ranking_table,
-        },
+        payload=candidate_ranking_table_payload,
         symbol=str((selected or {}).get("symbol") or ""),
     )
+    candidate_selection_reason_payload = {
+        "selected_symbol": selected_symbol,
+        "selected_rank": int(selected_rank),
+        "selected_score_total": float(selected_score_total),
+        "margin_vs_second": float(margin_vs_second),
+        "critical_positive_factors": list(critical_positive_factors),
+        "critical_negative_factors": list(critical_negative_factors),
+        "selection_summary": selection_summary,
+        "why_selected": [
+            f"highest total score ({float(_to_float((selected or {}).get('score_total') or (selected or {}).get('score'))):.3f})"
+            if isinstance(selected, dict)
+            else "no candidate selected",
+            f"confidence {float(_to_float((selected or {}).get('confidence'))):.2f} and risk {float(_to_float((selected or {}).get('risk_score'))):.2f}"
+            if isinstance(selected, dict)
+            else "",
+            f"source mix: {', '.join(list(((selected or {}).get('candidate') or {}).get('sources') or [])[:4])}"
+            if isinstance(selected, dict)
+            else "",
+            f"playbook alignment: {playbook or 'not_captured'}",
+        ],
+        "runner_ups_lost": runner_up_reasons,
+        "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
+        "final_decision_basis": "Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties.",
+    }
+    state["scanner_candidate_selection_reason"] = dict(candidate_selection_reason_payload)
     _emit_scanner_event(
         state,
         name="candidate_selection_reason",
-        payload={
-            "selected_symbol": selected_symbol,
-            "selected_rank": int(selected_rank),
-            "selected_score_total": float(selected_score_total),
-            "margin_vs_second": float(margin_vs_second),
-            "critical_positive_factors": list(critical_positive_factors),
-            "critical_negative_factors": list(critical_negative_factors),
-            "selection_summary": selection_summary,
-            "why_selected": [
-                f"highest total score ({float(_to_float((selected or {}).get('score_total') or (selected or {}).get('score'))):.3f})"
-                if isinstance(selected, dict)
-                else "no candidate selected",
-                f"confidence {float(_to_float((selected or {}).get('confidence'))):.2f} and risk {float(_to_float((selected or {}).get('risk_score'))):.2f}"
-                if isinstance(selected, dict)
-                else "",
-                f"source mix: {', '.join(list(((selected or {}).get('candidate') or {}).get('sources') or [])[:4])}"
-                if isinstance(selected, dict)
-                else "",
-                f"playbook alignment: {playbook or 'not_captured'}",
-            ],
-            "runner_ups_lost": runner_up_reasons,
-            "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
-            "final_decision_basis": "Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties.",
-        },
+        payload=candidate_selection_reason_payload,
         symbol=str((selected or {}).get("symbol") or ""),
     )
     _emit_scanner_event(

@@ -175,6 +175,34 @@ def extract_minute_ohlcv_by_symbol(state: Dict[str, Any]) -> Tuple[Dict[str, Lis
                 "source": f"state.{state_key}",
             }
 
+    skill_results = state.get("skill_results") if isinstance(state.get("skill_results"), dict) else {}
+    per_symbol_results = (
+        skill_results.get("market.minute_ohlcv_by_symbol")
+        if isinstance(skill_results, dict) and isinstance(skill_results.get("market.minute_ohlcv_by_symbol"), dict)
+        else {}
+    )
+    if isinstance(per_symbol_results, dict) and per_symbol_results:
+        errors: List[str] = []
+        for symbol, raw_value in per_symbol_results.items():
+            unwrapped, raw_errors = _unwrap_skill_payload(raw_value, skill_name="market.minute_ohlcv")
+            errors.extend(list(raw_errors or []))
+            if isinstance(unwrapped, dict):
+                if isinstance(unwrapped.get("symbol"), (str, int)) and isinstance(unwrapped.get("rows"), list):
+                    _save_ohlcv_rows(out, unwrapped.get("symbol"), unwrapped.get("rows"))
+                else:
+                    for nested_symbol, rows in unwrapped.items():
+                        _save_ohlcv_rows(out, nested_symbol, rows)
+            elif isinstance(unwrapped, list):
+                _save_ohlcv_rows(out, symbol, unwrapped)
+        if out:
+            return out, {
+                "contract_version": CONTRACT_VERSION,
+                "present": True,
+                "used": True,
+                "errors": list(errors),
+                "source": "skill.minute_ohlcv_by_symbol",
+            }
+
     raw, present = _pick_skill_value(
         state,
         ("market.minute_ohlcv", "market.minute_candles", "market.candles"),

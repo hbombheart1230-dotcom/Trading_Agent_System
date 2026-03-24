@@ -221,11 +221,14 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
             "minute_refetch_attempted": False,
             "minute_refetch_succeeded": False,
             "minute_refetch_reason": "",
+            "minute_refetch_trigger_reason": "",
+            "minute_refetch_failure_reason": "",
+            "minute_refetch_produced_fresh_snapshot": False,
         }
         return state
 
     runner, runner_source = _resolve_monitor_skill_runner(state)
-    refetch_reason = "missing_snapshot" if not existing_rows else stale_reason
+    refetch_trigger_reason = "missing_snapshot" if not existing_rows else stale_reason
     if runner is None or not hasattr(runner, "run"):
         state["monitor_minute_ohlcv_fetch"] = {
             "source": "state.minute_ohlcv_by_symbol" if existing_rows else "none",
@@ -240,7 +243,10 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
             "minute_snapshot_was_stale": bool(stale_reason),
             "minute_refetch_attempted": True,
             "minute_refetch_succeeded": False,
-            "minute_refetch_reason": refetch_reason or "skill_runner_unavailable",
+            "minute_refetch_reason": refetch_trigger_reason or "missing_snapshot",
+            "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
+            "minute_refetch_failure_reason": "skill_runner_unavailable",
+            "minute_refetch_produced_fresh_snapshot": False,
         }
         return state
 
@@ -257,7 +263,28 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
     rec = _monitor_skill_output_to_record(raw)
     skill_results = dict(state.get("skill_results") or {}) if isinstance(state.get("skill_results"), dict) else {}
     skill_results["market.minute_ohlcv"] = rec
+    skill_results_by_symbol = (
+        dict(skill_results.get("market.minute_ohlcv_by_symbol") or {})
+        if isinstance(skill_results.get("market.minute_ohlcv_by_symbol"), dict)
+        else {}
+    )
+    skill_results_by_symbol[sym] = rec
+    skill_results["market.minute_ohlcv_by_symbol"] = skill_results_by_symbol
     state["skill_results"] = skill_results
+    skill_results_history = (
+        dict(state.get("skill_results_history") or {})
+        if isinstance(state.get("skill_results_history"), dict)
+        else {}
+    )
+    minute_history = list(skill_results_history.get("market.minute_ohlcv") or [])
+    minute_history.append(
+        {
+            "symbol": sym,
+            "record": rec,
+        }
+    )
+    skill_results_history["market.minute_ohlcv"] = minute_history[-20:]
+    state["skill_results_history"] = skill_results_history
 
     result = rec.get("result") if isinstance(rec.get("result"), dict) else {}
     if str(result.get("action") or "").strip().lower() != "ready":
@@ -274,7 +301,10 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
             "minute_snapshot_was_stale": bool(stale_reason),
             "minute_refetch_attempted": True,
             "minute_refetch_succeeded": False,
-            "minute_refetch_reason": refetch_reason or str(result.get("action") or "refetch_not_ready"),
+            "minute_refetch_reason": refetch_trigger_reason or "missing_snapshot",
+            "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
+            "minute_refetch_failure_reason": str(result.get("action") or "refetch_not_ready"),
+            "minute_refetch_produced_fresh_snapshot": False,
         }
         return state
 
@@ -295,7 +325,10 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
             "minute_snapshot_was_stale": bool(stale_reason),
             "minute_refetch_attempted": True,
             "minute_refetch_succeeded": False,
-            "minute_refetch_reason": refetch_reason or "refetch_empty_rows",
+            "minute_refetch_reason": refetch_trigger_reason or "missing_snapshot",
+            "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
+            "minute_refetch_failure_reason": "refetch_empty_rows",
+            "minute_refetch_produced_fresh_snapshot": False,
         }
         return state
 
@@ -321,7 +354,10 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
         "minute_snapshot_was_stale": bool(final_stale_reason),
         "minute_refetch_attempted": True,
         "minute_refetch_succeeded": True,
-        "minute_refetch_reason": refetch_reason,
+        "minute_refetch_reason": refetch_trigger_reason,
+        "minute_refetch_trigger_reason": refetch_trigger_reason,
+        "minute_refetch_failure_reason": "",
+        "minute_refetch_produced_fresh_snapshot": not bool(final_stale_reason),
         "previous_latest_candle_ts": existing_latest_candle_ts,
     }
     return state
@@ -2004,6 +2040,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         entry_metrics["minute_refetch_attempted"] = bool(minute_fetch_meta.get("minute_refetch_attempted"))
         entry_metrics["minute_refetch_succeeded"] = bool(minute_fetch_meta.get("minute_refetch_succeeded"))
         entry_metrics["minute_refetch_reason"] = str(minute_fetch_meta.get("minute_refetch_reason") or "")
+        entry_metrics["minute_refetch_trigger_reason"] = str(minute_fetch_meta.get("minute_refetch_trigger_reason") or "")
+        entry_metrics["minute_refetch_failure_reason"] = str(minute_fetch_meta.get("minute_refetch_failure_reason") or "")
+        entry_metrics["minute_refetch_produced_fresh_snapshot"] = bool(
+            minute_fetch_meta.get("minute_refetch_produced_fresh_snapshot")
+        )
         entry_info["metrics"] = entry_metrics
         entry_info["minute_source_meta"] = dict(minute_ohlcv_meta or {})
         entry_info["minute_fetch_meta"] = minute_fetch_meta
@@ -2569,6 +2610,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_minute_refetch_attempted": entry_metrics.get("minute_refetch_attempted"),
         "entry_minute_refetch_succeeded": entry_metrics.get("minute_refetch_succeeded"),
         "entry_minute_refetch_reason": entry_metrics.get("minute_refetch_reason"),
+        "entry_minute_refetch_trigger_reason": entry_metrics.get("minute_refetch_trigger_reason"),
+        "entry_minute_refetch_failure_reason": entry_metrics.get("minute_refetch_failure_reason"),
+        "entry_minute_refetch_produced_fresh_snapshot": entry_metrics.get("minute_refetch_produced_fresh_snapshot"),
         "entry_inferred_spacing_minutes": entry_metrics.get("inferred_spacing_minutes"),
         "entry_series_class": entry_metrics.get("series_class"),
         "entry_recent_high": entry_metrics.get("recent_high"),

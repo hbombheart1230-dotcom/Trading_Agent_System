@@ -3580,57 +3580,64 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "candidate_symbols_hint": list(state.get("candidate_symbols") or [])[:8],
         },
     )
+    global_sentiment_breakdown_payload = _global_sentiment_breakdown_payload(global_signal)
+    state["strategist_global_sentiment_breakdown"] = dict(global_sentiment_breakdown_payload)
     _emit_strategist_event(
         state,
         name="global_sentiment_breakdown",
-        payload=_global_sentiment_breakdown_payload(global_signal),
+        payload=global_sentiment_breakdown_payload,
     )
+    news_evidence_ranked_payload = {
+        "news_query_targets": list(news_query_targets),
+        "candidate_news_ranked": ranked_candidate_news,
+        "market_news_ranked": ranked_market_news,
+        "candidate_news_context": dict(candidate_news_ctx),
+        "market_news_context": dict(market_news_ctx),
+        "news_context": dict(news_ctx),
+    }
+    state["strategist_news_evidence_ranked"] = dict(news_evidence_ranked_payload)
+    state["strategist_candidate_symbols_hint"] = list(state.get("candidate_symbols") or [])[:10]
     _emit_strategist_event(
         state,
         name="news_evidence_ranked",
-        payload={
-            "news_query_targets": list(news_query_targets),
-            "candidate_news_ranked": ranked_candidate_news,
-            "market_news_ranked": ranked_market_news,
-            "candidate_news_context": dict(candidate_news_ctx),
-            "market_news_context": dict(market_news_ctx),
-            "news_context": dict(news_ctx),
-        },
+        payload=news_evidence_ranked_payload,
     )
+    decision_frame_payload = {
+        "market_regime": market_regime,
+        "market_sentiment": market_sentiment,
+        "playbook": playbook,
+        "themes": list(themes),
+        "avoid_themes": list(avoid_themes),
+        "scanner_bias": scanner_bias,
+        "scanner_priority": list(scanner_priority),
+        "scanner_source_policy": dict(scanner_source_policy),
+        "trade_aggressiveness": trade_aggressiveness,
+        "risk_tone": risk_tone,
+        "monitor_guidance": monitor_guidance,
+        "report_focus": list(report_focus),
+        "strategy_memory": {
+            "status": str(strategy_memory_advisory.get("status") or ""),
+            "best_playbooks": list(strategy_memory_advisory.get("best_playbooks") or [])[:3],
+            "worst_playbooks": list(strategy_memory_advisory.get("worst_playbooks") or [])[:3],
+            "recent_failures": list(strategy_memory_advisory.get("recent_failures") or [])[:3],
+            "recent_success_patterns": list(strategy_memory_advisory.get("recent_success_patterns") or [])[:3],
+            "recent_playbook_performance": dict(strategy_memory_advisory.get("playbook_performance_snapshot") or {}),
+        },
+        "reason_chain": reason_chain,
+        "strategy_policy_summary": {
+            "market_policy": dict(strategy_policy.get("market_policy") or {}),
+            "scanner_policy": {
+                "candidate_sources": dict((strategy_policy.get("scanner_policy") or {}).get("candidate_sources") or {}),
+                "filters": dict((strategy_policy.get("scanner_policy") or {}).get("filters") or {}),
+            },
+            "monitor_policy": dict(strategy_policy.get("monitor_policy") or {}),
+        },
+    }
+    state["strategist_decision_frame"] = dict(decision_frame_payload)
     _emit_strategist_event(
         state,
         name="decision_frame",
-        payload={
-            "market_regime": market_regime,
-            "market_sentiment": market_sentiment,
-            "playbook": playbook,
-            "themes": list(themes),
-            "avoid_themes": list(avoid_themes),
-            "scanner_bias": scanner_bias,
-            "scanner_priority": list(scanner_priority),
-            "scanner_source_policy": dict(scanner_source_policy),
-            "trade_aggressiveness": trade_aggressiveness,
-            "risk_tone": risk_tone,
-            "monitor_guidance": monitor_guidance,
-            "report_focus": list(report_focus),
-            "strategy_memory": {
-                "status": str(strategy_memory_advisory.get("status") or ""),
-                "best_playbooks": list(strategy_memory_advisory.get("best_playbooks") or [])[:3],
-                "worst_playbooks": list(strategy_memory_advisory.get("worst_playbooks") or [])[:3],
-                "recent_failures": list(strategy_memory_advisory.get("recent_failures") or [])[:3],
-                "recent_success_patterns": list(strategy_memory_advisory.get("recent_success_patterns") or [])[:3],
-                "recent_playbook_performance": dict(strategy_memory_advisory.get("playbook_performance_snapshot") or {}),
-            },
-            "reason_chain": reason_chain,
-            "strategy_policy_summary": {
-                "market_policy": dict(strategy_policy.get("market_policy") or {}),
-                "scanner_policy": {
-                    "candidate_sources": dict((strategy_policy.get("scanner_policy") or {}).get("candidate_sources") or {}),
-                    "filters": dict((strategy_policy.get("scanner_policy") or {}).get("filters") or {}),
-                },
-                "monitor_policy": dict(strategy_policy.get("monitor_policy") or {}),
-            },
-        },
+        payload=decision_frame_payload,
     )
     if llm_required:
         _emit_strategist_event(

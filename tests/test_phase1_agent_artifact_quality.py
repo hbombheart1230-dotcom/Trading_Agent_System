@@ -14,6 +14,31 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
         "run_id": "run-s1",
         "started_at": "2026-03-18T10:00:00+00:00",
         "runtime_phase": "session",
+        "candidate_symbols": ["005930", "000660", "003280"],
+        "strategist_decision_frame": {
+            "market_regime": "risk_on",
+            "market_sentiment": "bullish",
+            "playbook": "breakout",
+            "themes": ["semiconductor"],
+            "avoid_themes": ["high_gap_speculative"],
+            "reason_chain": ["fear eased", "breadth improved"],
+        },
+        "strategist_news_evidence_ranked": {
+            "news_query_targets": ["semiconductor", "memory"],
+            "candidate_news_ranked": [{"symbol": "005930", "title": "chip demand recovers"}],
+            "market_news_ranked": [{"title": "KOSPI breadth improves"}],
+            "news_context": {"headline_count": 2},
+        },
+        "strategist_global_sentiment_breakdown": {
+            "score": 0.24,
+            "status": "ok",
+            "fear_index": {"level": 19.5, "level_pressure": 0.12},
+            "stress_flags": ["breadth_recovery"],
+        },
+        "global_signal": {
+            "score": 0.24,
+            "fear_index": {"level": 19.5, "level_pressure": 0.12},
+        },
         "strategist_output": {
             "market_regime": "risk_on",
             "market_sentiment": "bullish",
@@ -45,6 +70,18 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
     assert isinstance(artifact.get("policy_selected"), dict)
     assert isinstance(artifact.get("llm_trace"), dict)
     assert isinstance(artifact.get("decision_summary"), dict)
+    assert isinstance(artifact.get("trace_summary"), dict)
+    assert "summary" in artifact["trace_summary"]
+    assert isinstance(artifact["trace_summary"].get("highlights"), list)
+    assert isinstance(artifact.get("decision_frame"), dict)
+    assert isinstance(artifact.get("news_evidence_ranked"), dict)
+    assert isinstance(artifact.get("global_sentiment_signal"), dict)
+    assert artifact.get("candidate_symbols_hint") == ["005930", "000660", "003280"]
+    assert artifact["decision_frame"]["playbook"] == "breakout"
+    assert artifact["news_evidence_ranked"]["candidate_news_ranked"][0]["symbol"] == "005930"
+    assert artifact["global_sentiment_signal"]["fear_index"]["level"] == 19.5
+    assert artifact["news_evidence_missing"] is False
+    assert artifact["candidate_symbols_hint_missing"] is False
     assert artifact["llm_trace"]["prompt_hash"] == "prompt-hash"
     assert artifact["llm_trace"]["response_hash"] == "response-hash"
 
@@ -94,6 +131,24 @@ def test_scanner_artifact_contains_filter_funnel_and_selection_reason_detail() -
             "candidate": {"source_scores": {"top_value": 2.1, "sector_theme": 1.7}},
         },
         "scanner_runner_up_reasons": [{"symbol": "000660", "why_lost": ["lower total score"]}],
+        "scanner_candidate_ranking_table": {
+            "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
+            "rows": [
+                {"rank": 1, "symbol": "005930", "score_total": 1.32, "score_breakdown": {"top_value": 0.8}, "risk_score": 0.21, "confidence": 0.82},
+                {"rank": 2, "symbol": "000660", "score_total": 1.01, "score_breakdown": {"top_value": 0.5}, "risk_score": 0.34, "confidence": 0.74},
+            ],
+        },
+        "scanner_candidate_selection_reason": {
+            "selected_symbol": "005930",
+            "selected_rank": 1,
+            "selected_score_total": 1.32,
+            "margin_vs_second": 0.31,
+            "critical_positive_factors": ["top_value:0.800"],
+            "critical_negative_factors": ["risk_penalty:-0.100"],
+            "selection_summary": "value and theme alignment",
+            "why_selected": ["highest total score (1.320)"],
+            "runner_ups_lost": [{"symbol": "000660", "why_lost": ["lower total score"]}],
+        },
     }
     artifact = build_scanner_output_artifact(state)
     assert isinstance(artifact.get("candidate_pool_snapshot"), dict)
@@ -105,6 +160,18 @@ def test_scanner_artifact_contains_filter_funnel_and_selection_reason_detail() -
     assert "margin_vs_second" in detail
     assert isinstance(detail.get("critical_positive_factors"), list)
     assert isinstance(detail.get("critical_negative_factors"), list)
+    assert isinstance(artifact.get("trace_summary"), dict)
+    assert artifact["trace_summary"]["selected_symbol"] == "005930"
+    assert artifact["trace_summary"]["runner_up_symbol"] == "000660"
+    assert artifact["trace_summary"]["candidate_count"] == 2
+    assert isinstance(artifact["trace_summary"].get("highlights"), list)
+    assert artifact["candidate_selection_reason"]["selected_symbol"] == "005930"
+    assert artifact["candidate_ranking_table"]["rows"][1]["symbol"] == "000660"
+    assert artifact["runner_up_symbol"] == "000660"
+    assert artifact["score_breakdown_by_symbol"]["005930"]["top_value"] == 0.8
+    assert artifact["confidence_by_symbol"]["000660"] == 0.74
+    assert artifact["risk_score_by_symbol"]["005930"] == 0.21
+    assert artifact["ranking_table_missing"] is False
     assert isinstance(artifact.get("rejection_summary"), list)
 
 
@@ -413,6 +480,7 @@ def test_commander_shadow_artifact_includes_monitor_gate_details_for_wait_cycle(
                 "minute_refetch_attempted": True,
                 "minute_refetch_succeeded": False,
                 "minute_refetch_reason": "stale_snapshot_age_exceeded",
+                "minute_refetch_produced_fresh_snapshot": False,
             },
         },
         "strategist_output": {
@@ -468,6 +536,7 @@ def test_commander_shadow_artifact_includes_monitor_gate_details_for_wait_cycle(
     assert gate["observed_features"]["minute_refetch_attempted"] is True
     assert gate["observed_features"]["minute_refetch_succeeded"] is False
     assert gate["observed_features"]["minute_refetch_reason"] == "stale_snapshot_age_exceeded"
+    assert gate["observed_features"]["minute_refetch_produced_fresh_snapshot"] is False
     assert gate["used_thresholds"]["volume_ratio_min"] == 0.8
     assert artifact["context_delta_summary"]["playbook_same_as_last"] is True
     assert artifact["actual_runtime"]["strategist_executed"] is True

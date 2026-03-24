@@ -457,6 +457,9 @@ def test_monitor_keeps_fresh_minute_snapshot_without_refetch(monkeypatch):
     assert metrics.get("minute_snapshot_was_stale") is False
     assert metrics.get("minute_refetch_attempted") is False
     assert metrics.get("minute_refetch_succeeded") is False
+    assert metrics.get("minute_refetch_trigger_reason") == ""
+    assert metrics.get("minute_refetch_failure_reason") == ""
+    assert metrics.get("minute_refetch_produced_fresh_snapshot") is False
     assert metrics.get("latest_candle_ts") == 1710000300
     assert float(metrics.get("minute_snapshot_age_minutes") or 0.0) == 1.0
 
@@ -504,10 +507,15 @@ def test_monitor_refetches_stale_minute_snapshot_and_uses_new_latest_candle(monk
     assert metrics.get("minute_refetch_attempted") is True
     assert metrics.get("minute_refetch_succeeded") is True
     assert metrics.get("minute_refetch_reason") == "stale_snapshot_age_exceeded"
+    assert metrics.get("minute_refetch_trigger_reason") == "stale_snapshot_age_exceeded"
+    assert metrics.get("minute_refetch_failure_reason") == ""
+    assert metrics.get("minute_refetch_produced_fresh_snapshot") is True
     assert metrics.get("latest_candle_ts") == 1710000600
     assert metrics.get("minute_snapshot_was_stale") is False
     assert float(metrics.get("minute_snapshot_age_minutes") or 0.0) == 0.0
     assert (out.get("minute_ohlcv_by_symbol") or {}).get("BBB", [])[-1]["ts"] == 1710000600
+    assert ((out.get("skill_results") or {}).get("market.minute_ohlcv_by_symbol") or {}).get("BBB")
+    assert len(list(((out.get("skill_results_history") or {}).get("market.minute_ohlcv") or []))) == 1
 
 
 def test_monitor_records_stale_snapshot_when_refetch_fails_without_changing_flow(monkeypatch):
@@ -546,8 +554,12 @@ def test_monitor_records_stale_snapshot_when_refetch_fails_without_changing_flow
     assert metrics.get("minute_refetch_attempted") is True
     assert metrics.get("minute_refetch_succeeded") is False
     assert metrics.get("minute_refetch_reason") == "stale_snapshot_age_exceeded"
+    assert metrics.get("minute_refetch_trigger_reason") == "stale_snapshot_age_exceeded"
+    assert metrics.get("minute_refetch_failure_reason") == "error"
+    assert metrics.get("minute_refetch_produced_fresh_snapshot") is False
     assert metrics.get("minute_snapshot_was_stale") is True
     assert metrics.get("latest_candle_ts") == 1710000300
+    assert ((out.get("skill_results") or {}).get("market.minute_ohlcv_by_symbol") or {}).get("BBB")
 
 
 def test_monitor_waits_when_ohlcv_series_is_daily_seed_not_minute_data(monkeypatch):
