@@ -45,6 +45,16 @@ def test_m22_monitor_reads_order_status_dto_without_changing_intent_shape():
     state = {
         "plan": {"thesis": "demo"},
         "selected": {"symbol": "AAA", "score": 0.9, "risk_score": 0.2, "confidence": 0.8},
+        "minute_ohlcv_by_symbol": {
+            "AAA": [
+                {"ts": 1774317000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+                {"ts": 1774317060, "open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+                {"ts": 1774317120, "open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+                {"ts": 1774317180, "open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+                {"ts": 1774317240, "open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+                {"ts": 1774317300, "open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 2500, "vwap": 101.2},
+            ]
+        },
         "skill_results": {
             "order.status": {
                 "ord_no": "ord-1",

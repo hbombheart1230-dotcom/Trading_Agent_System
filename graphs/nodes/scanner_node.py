@@ -968,14 +968,43 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(strategy_policy.get("scanner_policy"), dict)
         else {}
     )
+    commander_context = (
+        dict(strategy_policy.get("commander_context") or {})
+        if isinstance(strategy_policy.get("commander_context"), dict)
+        else {}
+    )
+    strategist_plan = (
+        dict(strategy_policy.get("strategist_plan") or {})
+        if isinstance(strategy_policy.get("strategist_plan"), dict)
+        else {}
+    )
+    policy_provenance = (
+        dict(strategy_policy.get("provenance") or {})
+        if isinstance(strategy_policy.get("provenance"), dict)
+        else {}
+    )
+    symbol_constraints = (
+        dict(strategist_plan.get("symbol_constraints") or {})
+        if isinstance(strategist_plan.get("symbol_constraints"), dict)
+        else {}
+    )
     raw_bias = strategist_output.get("scanner_bias")
     if isinstance(raw_bias, dict):
         raw_bias = str(raw_bias.get("style") or "")
     base = {
         "themes": list(strategist_output.get("themes") or []),
         "avoid_themes": list(strategist_output.get("avoid_themes") or []),
-        "playbook": str(strategist_output.get("playbook") or ""),
-        "scanner_priority": list(scanner_policy.get("priority_tilts") or strategist_output.get("scanner_priority") or []),
+        "playbook": str(
+            strategist_output.get("playbook")
+            or strategist_plan.get("selected_playbook")
+            or ""
+        ),
+        "scanner_priority": list(
+            scanner_policy.get("priority_tilts")
+            or strategist_output.get("scanner_priority")
+            or symbol_constraints.get("scanner_priority")
+            or []
+        ),
         "scanner_source_policy": dict(
             scanner_policy.get("candidate_sources")
             if isinstance(scanner_policy.get("candidate_sources"), dict)
@@ -988,6 +1017,9 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         "score_weights": dict(scanner_policy.get("score_weights") or {}),
         "filters": dict(scanner_policy.get("filters") or {}),
         "ranking_rules": dict(scanner_policy.get("ranking_rules") or {}),
+        "commander_context": commander_context,
+        "strategist_plan": strategist_plan,
+        "policy_provenance": policy_provenance,
     }
 
     # Backward-compatible override hook; canonical source remains strategist_output.
@@ -1006,6 +1038,9 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
             "score_weights",
             "filters",
             "ranking_rules",
+            "commander_context",
+            "strategist_plan",
+            "policy_provenance",
         ):
             if guidance.get(key) not in (None, ""):
                 out[key] = guidance.get(key)
@@ -1015,6 +1050,99 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         return out
 
     return base
+
+
+def _build_scanner_policy_trace(
+    *,
+    commander_context: Dict[str, Any],
+    strategist_plan: Dict[str, Any],
+    policy_provenance: Dict[str, Any],
+    playbook: str,
+    scanner_priority: List[str],
+    scanner_bias: str,
+) -> Dict[str, Any]:
+    consumed_fields: List[str] = []
+    for key in (
+        "scanner_mission",
+        "allowed_playbooks",
+        "banned_playbooks",
+        "risk_mode",
+        "command_intent",
+        "strategist_invocation",
+        "no_trade_reason_code",
+        "source_priority",
+    ):
+        value = commander_context.get(key)
+        if value not in (None, "", [], {}):
+            consumed_fields.append(key)
+    commander_context_consumed = bool(consumed_fields)
+
+    strategist_consumed_fields: List[str] = []
+    for key in ("selected_playbook", "candidate_hypotheses", "symbol_constraints", "strategy_summary"):
+        value = strategist_plan.get(key)
+        if value not in (None, "", [], {}):
+            strategist_consumed_fields.append(key)
+
+    commander_priority_ref = {
+        "scanner_mission": str(commander_context.get("scanner_mission") or ""),
+        "allowed_playbooks": list(commander_context.get("allowed_playbooks") or []),
+        "banned_playbooks": list(commander_context.get("banned_playbooks") or []),
+        "risk_mode": str(commander_context.get("risk_mode") or ""),
+        "command_intent": str(commander_context.get("command_intent") or ""),
+        "strategist_invocation": str(commander_context.get("strategist_invocation") or ""),
+        "no_trade_reason_code": str(commander_context.get("no_trade_reason_code") or ""),
+        "source_priority": list(commander_context.get("source_priority") or []),
+    }
+    strategist_constraints_ref = {
+        "selected_playbook": str(strategist_plan.get("selected_playbook") or ""),
+        "candidate_hypotheses": list(strategist_plan.get("candidate_hypotheses") or []),
+        "symbol_constraints": dict(strategist_plan.get("symbol_constraints") or {}),
+        "strategy_summary": str(strategist_plan.get("strategy_summary") or ""),
+    }
+    ranking_factors = list(dict.fromkeys([str(x).strip() for x in list(scanner_priority or []) if str(x).strip()]))[:8]
+    if scanner_bias:
+        ranking_factors.append(f"bias:{scanner_bias}")
+    if playbook:
+        ranking_factors.append(f"playbook:{playbook}")
+    if str(commander_context.get("scanner_mission") or "").strip():
+        ranking_factors.append("commander_mission")
+    if str(commander_context.get("risk_mode") or "").strip():
+        ranking_factors.append(f"risk_mode:{str(commander_context.get('risk_mode') or '').strip()}")
+    ranking_factors = list(dict.fromkeys(ranking_factors))[:10]
+
+    summary_parts: List[str] = []
+    if str(commander_context.get("scanner_mission") or "").strip():
+        summary_parts.append(f"commander_mission={str(commander_context.get('scanner_mission') or '').strip()}")
+    if str(strategist_plan.get("selected_playbook") or playbook).strip():
+        summary_parts.append(f"playbook={str(strategist_plan.get('selected_playbook') or playbook).strip()}")
+    if str(commander_context.get("risk_mode") or "").strip():
+        summary_parts.append(f"risk_mode={str(commander_context.get('risk_mode') or '').strip()}")
+    if str(commander_context.get("no_trade_reason_code") or "").strip():
+        summary_parts.append(f"no_trade_reason={str(commander_context.get('no_trade_reason_code') or '').strip()}")
+
+    return {
+        "commander_context_consumed": commander_context_consumed,
+        "consumed_fields": consumed_fields,
+        "commander_priority_ref": commander_priority_ref,
+        "strategist_constraints_ref": strategist_constraints_ref,
+        "selection_basis": {
+            "commander_context_consumed": commander_context_consumed,
+            "strategist_plan_consumed": bool(strategist_consumed_fields),
+            "consumed_fields": consumed_fields + strategist_consumed_fields,
+            "summary": " | ".join(summary_parts) if summary_parts else "base_quantitative_ranking",
+        },
+        "ranking_factors": ranking_factors,
+        "shadow_used": bool(
+            commander_context.get("shadow_used")
+            if commander_context.get("shadow_used") is not None
+            else policy_provenance.get("shadow_used")
+        ),
+        "strategist_fallback_used": bool(
+            commander_context.get("strategist_fallback_used")
+            if commander_context.get("strategist_fallback_used") is not None
+            else policy_provenance.get("strategist_fallback_used")
+        ),
+    }
 
 
 def _normalize_scanner_source_policy(value: Any) -> Dict[str, Any]:
@@ -1502,6 +1630,29 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     scanner_priority = _normalize_priority_list(scanner_guidance.get("scanner_priority"))
     trade_aggressiveness = str(scanner_guidance.get("trade_aggressiveness") or "").strip().lower()
     risk_tone = str(scanner_guidance.get("risk_tone") or "").strip().lower()
+    commander_context = (
+        dict(scanner_guidance.get("commander_context") or {})
+        if isinstance(scanner_guidance.get("commander_context"), dict)
+        else {}
+    )
+    strategist_plan = (
+        dict(scanner_guidance.get("strategist_plan") or {})
+        if isinstance(scanner_guidance.get("strategist_plan"), dict)
+        else {}
+    )
+    policy_provenance = (
+        dict(scanner_guidance.get("policy_provenance") or {})
+        if isinstance(scanner_guidance.get("policy_provenance"), dict)
+        else {}
+    )
+    scanner_policy_trace = _build_scanner_policy_trace(
+        commander_context=commander_context,
+        strategist_plan=strategist_plan,
+        policy_provenance=policy_provenance,
+        playbook=playbook,
+        scanner_priority=scanner_priority,
+        scanner_bias=scanner_bias,
+    )
     if isinstance(scanner_guidance.get("score_weights"), dict):
         for key, value in dict(scanner_guidance.get("score_weights") or {}).items():
             if key in practical_w and value not in (None, ""):
@@ -1561,6 +1712,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "trade_aggressiveness": trade_aggressiveness,
                     "risk_tone": risk_tone,
                 },
+                "commander_context": scanner_policy_trace.get("commander_priority_ref"),
+                "strategist_plan": scanner_policy_trace.get("strategist_constraints_ref"),
                 "global_sentiment_score": float(gs),
                 "feature_source": str(feature_source),
                 "feature_symbol_count": int(len(feature_map)),
@@ -1957,6 +2110,15 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_risk_tone": risk_tone or None,
         "repeat_guard": _resolve_scanner_repeat_guard_policy(policy),
         "recent_scanner_selected_count": int(len(_scanner_recent_selection_history(state))),
+        "commander_context_consumed": bool(scanner_policy_trace.get("commander_context_consumed")),
+        "consumed_fields": list(scanner_policy_trace.get("consumed_fields") or []),
+        "commander_priority_ref": dict(scanner_policy_trace.get("commander_priority_ref") or {}),
+        "strategist_constraints_ref": dict(scanner_policy_trace.get("strategist_constraints_ref") or {}),
+        "selection_basis": dict(scanner_policy_trace.get("selection_basis") or {}),
+        "ranking_factors": list(scanner_policy_trace.get("ranking_factors") or []),
+        "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
+        "strategist_fallback_used": bool(scanner_policy_trace.get("strategist_fallback_used")),
+        "policy_provenance": dict(policy_provenance),
     }
 
     # Provide a normalized risk snapshot for Decision Node.
@@ -2039,6 +2201,14 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "critical_positive_factors": list(critical_positive_factors),
         "critical_negative_factors": list(critical_negative_factors),
         "selection_summary": selection_summary,
+        "commander_context_consumed": bool(scanner_policy_trace.get("commander_context_consumed")),
+        "consumed_fields": list(scanner_policy_trace.get("consumed_fields") or []),
+        "commander_priority_ref": dict(scanner_policy_trace.get("commander_priority_ref") or {}),
+        "strategist_constraints_ref": dict(scanner_policy_trace.get("strategist_constraints_ref") or {}),
+        "selection_basis": dict(scanner_policy_trace.get("selection_basis") or {}),
+        "ranking_factors": list(scanner_policy_trace.get("ranking_factors") or []),
+        "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
+        "strategist_fallback_used": bool(scanner_policy_trace.get("strategist_fallback_used")),
     }
     if isinstance(state.get("scanner_output"), dict):
         state["scanner_output"]["selection_summary"] = selection_summary
@@ -2047,6 +2217,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["scanner_output"]["margin_vs_second"] = float(margin_vs_second)
         state["scanner_output"]["critical_positive_factors"] = list(critical_positive_factors)
         state["scanner_output"]["critical_negative_factors"] = list(critical_negative_factors)
+        state["scanner_output"]["rejected_candidates"] = list(runner_up_reasons)
     state["scanner_margin_vs_second"] = float(margin_vs_second)
     _emit_scanner_event(
         state,
@@ -2086,6 +2257,14 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "critical_positive_factors": list(critical_positive_factors),
         "critical_negative_factors": list(critical_negative_factors),
         "selection_summary": selection_summary,
+        "commander_context_consumed": bool(scanner_policy_trace.get("commander_context_consumed")),
+        "consumed_fields": list(scanner_policy_trace.get("consumed_fields") or []),
+        "commander_priority_ref": dict(scanner_policy_trace.get("commander_priority_ref") or {}),
+        "strategist_constraints_ref": dict(scanner_policy_trace.get("strategist_constraints_ref") or {}),
+        "selection_basis": dict(scanner_policy_trace.get("selection_basis") or {}),
+        "ranking_factors": list(scanner_policy_trace.get("ranking_factors") or []),
+        "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
+        "strategist_fallback_used": bool(scanner_policy_trace.get("strategist_fallback_used")),
         "why_selected": [
             f"highest total score ({float(_to_float((selected or {}).get('score_total') or (selected or {}).get('score'))):.3f})"
             if isinstance(selected, dict)

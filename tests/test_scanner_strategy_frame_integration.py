@@ -138,6 +138,105 @@ def test_scanner_extract_guidance_prefers_strategy_policy_when_present():
     assert float((out.get("score_weights") or {}).get("trend") or 0.0) == 0.30
 
 
+def test_scanner_extract_guidance_includes_commander_context_and_strategist_plan():
+    state = {
+        "strategist_output": {
+            "playbook": "breakout",
+            "strategy_policy": {
+                "scanner_policy": {
+                    "priority_tilts": ["trend_strength", "volume_surge"],
+                },
+                "commander_context": {
+                    "scanner_mission": "Prioritize liquid leaders.",
+                    "allowed_playbooks": ["breakout", "pullback"],
+                    "banned_playbooks": ["reversal"],
+                    "risk_mode": "balanced",
+                    "command_intent": "OBSERVE_ONLY",
+                    "strategist_invocation": "RUN",
+                    "no_trade_reason_code": "WAIT_FOR_CONFIRMATION",
+                    "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
+                    "shadow_used": True,
+                    "strategist_fallback_used": False,
+                },
+                "strategist_plan": {
+                    "selected_playbook": "breakout",
+                    "candidate_hypotheses": ["liquid_semiconductor_leaders"],
+                    "symbol_constraints": {"scanner_priority": ["liquidity", "momentum"]},
+                    "strategy_summary": "Prefer liquid leaders with momentum confirmation.",
+                },
+                "provenance": {
+                    "shadow_used": True,
+                    "strategist_fallback_used": False,
+                },
+            },
+        }
+    }
+
+    out = _extract_scanner_guidance(state)
+    assert out["commander_context"]["scanner_mission"] == "Prioritize liquid leaders."
+    assert out["commander_context"]["allowed_playbooks"] == ["breakout", "pullback"]
+    assert out["strategist_plan"]["selected_playbook"] == "breakout"
+    assert out["policy_provenance"]["shadow_used"] is True
+    assert out["scanner_priority"] == ["trend_strength", "volume_surge"]
+
+
+def test_scanner_output_records_commander_context_consumption():
+    state = {
+        "strategist_output": {
+            "themes": ["semiconductor"],
+            "playbook": "breakout",
+            "candidates": ["005930", "000660"],
+            "scanner_bias": "momentum",
+            "scanner_priority": ["momentum", "trend_strength", "liquidity"],
+            "trade_aggressiveness": "high",
+            "risk_tone": "aggressive",
+            "strategy_policy": {
+                "scanner_policy": {},
+                "commander_context": {
+                    "scanner_mission": "Prioritize liquid leaders.",
+                    "allowed_playbooks": ["breakout"],
+                    "risk_mode": "balanced",
+                    "command_intent": "OBSERVE_ONLY",
+                    "strategist_invocation": "RUN",
+                    "no_trade_reason_code": "WAIT_FOR_CONFIRMATION",
+                    "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
+                    "shadow_used": True,
+                    "strategist_fallback_used": False,
+                },
+                "strategist_plan": {
+                    "selected_playbook": "breakout",
+                    "candidate_hypotheses": ["liquid_semiconductor_leaders"],
+                    "symbol_constraints": {"max_gap_pct": 0.03},
+                    "strategy_summary": "Prefer liquid leaders with momentum confirmation.",
+                },
+                "provenance": {
+                    "shadow_used": True,
+                    "strategist_fallback_used": False,
+                },
+            },
+        },
+        "mock_scan_results": {
+            "005930": {"score": 0.91, "risk_score": 0.20, "confidence": 0.88},
+            "000660": {"score": 0.75, "risk_score": 0.21, "confidence": 0.84},
+        },
+    }
+
+    out = scanner_node(state)
+    scanner_output = out.get("scanner_output") or {}
+    selection_reason = out.get("scanner_candidate_selection_reason") or {}
+
+    assert (out.get("selected") or {}).get("symbol") == "005930"
+    assert scanner_output.get("commander_context_consumed") is True
+    assert "scanner_mission" in list(scanner_output.get("consumed_fields") or [])
+    assert scanner_output.get("commander_priority_ref", {}).get("risk_mode") == "balanced"
+    assert scanner_output.get("strategist_constraints_ref", {}).get("selected_playbook") == "breakout"
+    assert scanner_output.get("selection_basis", {}).get("commander_context_consumed") is True
+    assert scanner_output.get("shadow_used") is True
+    assert scanner_output.get("strategist_fallback_used") is False
+    assert selection_reason.get("selection_basis", {}).get("strategist_plan_consumed") is True
+    assert selection_reason.get("strategist_constraints_ref", {}).get("selected_playbook") == "breakout"
+
+
 def test_scanner_uses_chart_features_when_available():
     state = {
         "candidates": [

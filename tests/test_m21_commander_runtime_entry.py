@@ -152,6 +152,98 @@ def test_m31_runtime_entry_runs_integrated_chain_mode():
     assert called == {"graph": 0, "decide": 0, "execute": 0, "integrated": 1}
 
 
+def test_m31_runtime_entry_seeds_commander_decision_for_downstream_agents():
+    captured: Dict[str, Any] = {}
+
+    def integrated_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        captured.update(dict(state.get("commander_decision") or {}))
+        state["path"] = "integrated_chain"
+        state["runtime_status"] = "ok"
+        return state
+
+    out = run_commander_runtime(
+        {
+            "runtime_mode": "integrated_chain",
+            "runtime_phase": "session",
+            "global_signal": {"score": 0.18, "fear_index": {"level": 19.0}},
+        },
+        integrated_runner=integrated_runner,
+    )
+
+    assert out["path"] == "integrated_chain"
+    assert captured["market_regime"] == "risk_on"
+    assert captured["session_bias"] == "active_selection"
+    assert isinstance(captured.get("allowed_playbooks"), list)
+    assert isinstance(captured.get("banned_playbooks"), list)
+    assert str(captured.get("decision_summary") or "").strip()
+
+
+def test_m31_runtime_entry_integrates_shadow_commander_into_commander_decision():
+    captured: Dict[str, Any] = {}
+
+    def integrated_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        captured.update(dict(state.get("commander_decision") or {}))
+        state["path"] = "integrated_chain"
+        state["runtime_status"] = "ok"
+        return state
+
+    out = run_commander_runtime(
+        {
+            "runtime_mode": "integrated_chain",
+            "runtime_phase": "session",
+            "portfolio_snapshot": {"positions": [{"symbol": "005930"}], "cash": 1000},
+            "monitor": {"open_position_count": 1, "buy_blocked_open_position": True},
+            "monitor_output": {"selected_symbol": "005930", "intent_side": "NOOP", "entry_exit_reason": "buy_blocked_open_position"},
+            "selected": {"symbol": "005930", "score_total": 0.81},
+            "commander_shadow_runtime": {
+                "strategist_executed": False,
+                "llm_called_by_strategist": False,
+                "used_cached_strategist": False,
+                "market_changed": False,
+                "repeated_same_context": True,
+                "monitor_decision": "NOOP",
+                "executor_action": "",
+                "executor_status": "",
+                "prior_context": {"selected_symbol": "005930", "playbook": "pullback", "market_regime": "neutral"},
+            },
+        },
+        integrated_runner=integrated_runner,
+    )
+
+    assert out["path"] == "integrated_chain"
+    assert captured["command_intent"] == "OBSERVE_ONLY"
+    assert captured["strategist_invocation"] == "SKIP"
+    assert captured["llm_policy"] == "SKIP"
+    assert captured["no_trade_reason_code"] == "POSITION_ALREADY_OPEN"
+    assert captured["shadow_used"] is True
+    assert captured["source_priority"][0] == "shadow_commander"
+    assert captured["strategist_fallback_used"] is False
+    assert isinstance(captured.get("observations"), dict)
+
+
+def test_m31_runtime_entry_marks_strategist_fallback_when_shadow_and_runtime_lack_regime():
+    captured: Dict[str, Any] = {}
+
+    def integrated_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        captured.update(dict(state.get("commander_decision") or {}))
+        state["path"] = "integrated_chain"
+        state["runtime_status"] = "ok"
+        return state
+
+    run_commander_runtime(
+        {
+            "runtime_mode": "integrated_chain",
+            "runtime_phase": "session",
+            "strategist_output": {"market_regime": "risk_off"},
+        },
+        integrated_runner=integrated_runner,
+    )
+
+    assert captured["market_regime"] == "risk_off"
+    assert captured["strategist_fallback_used"] is True
+    assert "market_regime" in list(captured.get("source_refs", {}).get("strategist_fallback_fields") or [])
+
+
 def test_m21_runtime_mode_resolution_precedence(monkeypatch):
     monkeypatch.setenv("COMMANDER_RUNTIME_MODE", "decision_packet")
     monkeypatch.setenv("COMMANDER_RUNTIME_ALLOW_DECISION_PACKET", "true")
@@ -338,7 +430,8 @@ def test_m21_runtime_emits_route_and_end_events():
     out = run_commander_runtime({"event_logger": logger}, graph_runner=graph_runner)
 
     router_rows = [r for r in logger.rows if r.get("stage") == "commander_router"]
-    assert [r["event"] for r in router_rows] == ["route", "end"]
+    assert [r["event"] for r in router_rows][:2] == ["route", "end"]
+    assert router_rows[-1]["event"] == "shadow_assessment"
     assert router_rows[0]["payload"]["mode"] == "graph_spine"
     assert router_rows[0]["payload"]["phase"] == "session"
     assert router_rows[1]["payload"]["path"] == "graph_spine"
@@ -359,7 +452,8 @@ def test_m21_runtime_emits_transition_for_pause_control():
     )
 
     router_rows = [r for r in logger.rows if r.get("stage") == "commander_router"]
-    assert [r["event"] for r in router_rows] == ["route", "transition", "end"]
+    assert [r["event"] for r in router_rows][:3] == ["route", "transition", "end"]
+    assert router_rows[-1]["event"] == "shadow_assessment"
     assert router_rows[1]["payload"]["transition"] == "pause"
     assert router_rows[1]["payload"]["status"] == "paused"
     assert router_rows[2]["payload"]["path"] is None

@@ -94,6 +94,12 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                             "include_change_rate": True,
                             "include_condition_search": True,
                         },
+                        "runner_up_symbol": "000660",
+                        "selection_basis": {
+                            "summary": "Scanner selected 005930 after strategist-guided weighting.",
+                        },
+                        "ranking_factors": ["momentum", "volume_surge", "commander_mission"],
+                        "rejected_candidates": [{"symbol": "000660", "reason": "lower conviction"}],
                         "score_breakdown_summary": {"momentum": 0.24, "trend": 0.20},
                         "selected_candidate": {
                             "symbol": "005930",
@@ -121,6 +127,12 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                         "entry_reason": "breakout_confirmation",
                         "exit_reason": "",
                         "monitor_reason": "hold",
+                        "entry_check_summary": "Monitor held because breakout confirmation remains valid.",
+                        "entry_blockers": ["none"],
+                        "timing_assessment": {"latest_candle_ts": 1710249600},
+                        "exit_trigger_basis": {"trigger_type": ""},
+                        "shadow_used": True,
+                        "strategist_fallback_used": False,
                         "position_age_seconds": 120,
                         "thresholds": {"stop_loss_pct": 0.03},
                         "min_hold_sec": 600,
@@ -171,7 +183,20 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                 "ts": f"{day}T00:00:10+00:00",
                 "stage": "commander_router",
                 "event": "end",
-                "payload": {"status": "ok", "path": "integrated_chain"},
+                "payload": {
+                    "status": "ok",
+                    "path": "integrated_chain",
+                    "decision_summary": "Commander kept the day in measured risk mode.",
+                    "command_intent": "OBSERVE_ONLY",
+                    "strategist_invocation": "RUN",
+                    "llm_policy": "ALLOW",
+                    "no_trade_reason_code": "WAIT_FOR_CONFIRMATION",
+                    "shadow_assessment_summary": "Shadow commander wanted confirmation before new entry.",
+                    "shadow_used": True,
+                    "shadow_reason_code": "WAIT_FOR_CONFIRMATION",
+                    "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
+                    "strategist_fallback_used": False,
+                },
             },
         ],
     )
@@ -265,10 +290,21 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert out["strategist"]["scanner_source_policy"]["preferred_sources"][0] == "top_change_rate"
     assert out["scanner"]["top_stock"] == "005930"
     assert out["scanner"]["selected_candidate"]["symbol"] == "005930"
+    assert out["scanner"]["runner_up_symbol"] == "000660"
     assert out["scanner"]["scanner_source_policy"]["include_change_rate"] is True
     assert out["scanner"]["condition_search_status"] == "unavailable"
     assert out["monitor"]["selected_symbol"] == "005930"
     assert out["monitor"]["min_hold_sec"] == 600
+    assert out["reasoning_trace"]["commander_summary"]["summary"] == "Commander kept the day in measured risk mode."
+    assert out["reasoning_trace"]["strategist_summary"]["selected_playbook"] == "breakout"
+    assert out["reasoning_trace"]["scanner_summary"]["summary"] == "Scanner selected 005930 after strategist-guided weighting."
+    assert out["reasoning_trace"]["monitor_summary"]["summary"] == "Monitor held because breakout confirmation remains valid."
+    assert out["reasoning_provenance"]["commander_context_source"] == "event_payload"
+    assert out["reasoning_provenance"]["strategist_plan_source"] == "event_payload"
+    assert out["reasoning_provenance"]["scanner_reason_source"] == "event_payload"
+    assert out["reasoning_provenance"]["monitor_reason_source"] == "event_payload"
+    assert out["reasoning_provenance"]["shadow_used"] is True
+    assert out["reasoning_provenance"]["strategist_fallback_used"] is False
     assert out["supervisor"]["verdict"] == "APPROVE"
     assert out["executor"]["execution_attempted"] is True
     assert out["executor"]["execution_mode"] == "real"
@@ -294,6 +330,7 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert "## Scanner" in md_body
     assert "condition_search: status=unavailable" in md_body
     assert "## Monitor" in md_body
+    assert "## Reasoning Trace" in md_body
     assert "## Supervisor" in md_body
     assert "## Executor" in md_body
     assert "effective_mode=mock_broker_http" in md_body

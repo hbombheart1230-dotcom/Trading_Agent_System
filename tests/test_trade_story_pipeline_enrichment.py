@@ -1,5 +1,6 @@
 from libs.reporting.trade_story_pipeline import (
     build_trade_story_input,
+    build_lifecycle_bundle,
     build_market_context_human,
     build_monitor_reason_human,
     build_scanner_reason_human,
@@ -294,3 +295,141 @@ def test_build_trade_story_input_normalizes_filter_coverage_from_scanner_evidenc
         row.get("name") == "chart completeness filter" and row.get("status") == "PASS" and row.get("detail") == "10/12 captured chart features"
         for row in out["filters_human"]["checks"]
     )
+
+
+def test_trade_story_input_and_lifecycle_bundle_include_reasoning_trace_chain() -> None:
+    bundle_out = {
+        "day": "2026-03-24",
+        "run_id": "run-trace-1",
+        "trade_id": "TRD_TEST_1",
+        "story_id": "TRD_TEST_1",
+        "market_context_human": {"summary": "Commander saw a defensive regime."},
+        "scanner_reason_human": {"summary": "Scanner preferred 003280 over 000660."},
+        "monitor_reason_human": {"summary": "Monitor waited for confirmation."},
+        "operator_conclusion_human": {"summary": "No new action yet."},
+        "execution_outcome_human": {"summary": "Execution was not attempted."},
+        "guard_reason_human": {"summary": "No guard escalation."},
+        "reporter_status_human": {"summary": "Reporter ready."},
+        "warnings": [],
+        "timeline": [],
+        "strategist_summary": {
+            "selected_playbook": "defensive",
+            "strategy_summary": "Strategist kept a defensive playbook.",
+            "strategist_fallback_used": False,
+        },
+        "scanner_summary": {
+            "selected_symbol": "003280",
+            "runner_up_symbol": "000660",
+            "selection_summary": "003280 ranked first with better liquidity.",
+        },
+        "monitor_summary": {
+            "decision": "WAIT",
+            "entry_check_summary": "VWAP reclaim confirmation is still pending.",
+        },
+        "commander_summary": {
+            "command_intent": "OBSERVE_ONLY",
+            "decision_summary": "Commander kept the session in observe-only mode.",
+            "shadow_used": True,
+            "strategist_fallback_used": False,
+        },
+        "canonical_agent_artifacts": {
+            "canonical_commander_json": "/tmp/commander.json",
+            "canonical_strategist_json": "/tmp/strategist.json",
+            "canonical_scanner_json": "/tmp/scanner.json",
+            "canonical_monitor_json": "/tmp/monitor.json",
+        },
+        "evidence_provenance": {
+            "commander": "canonical",
+            "strategist": "canonical",
+            "scanner": "canonical",
+            "monitor": "canonical",
+        },
+    }
+
+    story_input = build_trade_story_input(bundle_out)
+
+    assert story_input["reasoning_trace"]["commander_summary"]["summary"] == "Commander kept the session in observe-only mode."
+    assert story_input["reasoning_trace"]["strategist_summary"]["summary"] == "Strategist kept a defensive playbook."
+    assert story_input["reasoning_trace"]["scanner_summary"]["summary"] == "003280 ranked first with better liquidity."
+    assert story_input["reasoning_trace"]["monitor_summary"]["summary"] == "VWAP reclaim confirmation is still pending."
+    assert story_input["reasoning_provenance"]["shadow_used"] is True
+    assert story_input["reasoning_provenance"]["commander_source_ref"] == "/tmp/commander.json"
+
+    lifecycle_bundle = build_lifecycle_bundle(
+        day="2026-03-24",
+        trade_id="TRD_TEST_1",
+        run_id="run-trace-1",
+        symbol="003280",
+        lifecycle={"entry": {}, "holding": {}, "exit": {}, "summary": {}},
+        strategist_summary=bundle_out["strategist_summary"],
+        scanner_summary=bundle_out["scanner_summary"],
+        monitor_summary=bundle_out["monitor_summary"],
+        commander_summary=bundle_out["commander_summary"],
+        story_input=story_input,
+        diagnostics={},
+        canonical_refs=bundle_out["canonical_agent_artifacts"],
+        llm_refs={},
+        artifact_links={},
+    )
+
+    assert lifecycle_bundle["reasoning_trace"]["scanner_summary"]["selected_symbol"] == "003280"
+    assert lifecycle_bundle["reasoning_provenance"]["strategist_plan_source"] == "canonical"
+
+
+def test_trade_story_input_prefers_latest_reasoning_trace_snapshot_when_present() -> None:
+    out = build_trade_story_input(
+        {
+            "day": "2026-03-24",
+            "run_id": "run-trace-2",
+            "trade_id": "TRD_TEST_2",
+            "latest_reasoning_trace": {
+                "commander_summary": {"summary": "snapshot commander"},
+                "strategist_summary": {"summary": "snapshot strategist"},
+                "scanner_summary": {"summary": "snapshot scanner", "selected_symbol": "005930"},
+                "monitor_summary": {"summary": "snapshot monitor"},
+            },
+            "latest_reasoning_trace_provenance": {
+                "commander_context_source": "state.commander_decision",
+                "strategist_plan_source": "state.strategy_policy.strategist_plan",
+                "scanner_reason_source": "state.scanner_output",
+                "monitor_reason_source": "state.monitor_output",
+                "shadow_used": True,
+                "strategist_fallback_used": False,
+            },
+            "market_context_human": {"summary": "derived market"},
+            "scanner_reason_human": {"summary": "derived scanner"},
+            "monitor_reason_human": {"summary": "derived monitor"},
+            "operator_conclusion_human": {"summary": "derived conclusion"},
+            "execution_outcome_human": {"summary": "Execution was not attempted."},
+            "guard_reason_human": {"summary": "No guard escalation."},
+            "reporter_status_human": {"summary": "Reporter ready."},
+        }
+    )
+
+    assert out["reasoning_trace"]["commander_summary"]["summary"] == "snapshot commander"
+    assert out["reasoning_trace"]["scanner_summary"]["selected_symbol"] == "005930"
+    assert out["reasoning_provenance"]["commander_context_source"] == "state.commander_decision"
+    assert out["reasoning_provenance"]["shadow_used"] is True
+
+
+def test_trade_story_input_falls_back_to_market_context_artifact_for_commander_source_ref() -> None:
+    out = build_trade_story_input(
+        {
+            "day": "2026-03-24",
+            "run_id": "run-trace-3",
+            "trade_id": "TRD_TEST_3",
+            "market_context_human": {"summary": "Commander regime summary"},
+            "scanner_reason_human": {"summary": "Scanner summary"},
+            "monitor_reason_human": {"summary": "Monitor summary"},
+            "operator_conclusion_human": {"summary": "Conclusion summary"},
+            "execution_outcome_human": {"summary": "Execution was not attempted."},
+            "guard_reason_human": {"summary": "No guard escalation."},
+            "reporter_status_human": {"summary": "Reporter ready."},
+            "canonical_agent_artifacts": {},
+            "artifacts": {"agent_pipeline_trace_json": "/tmp/agent_pipeline_trace.json"},
+            "evidence_provenance": {"commander": "canonical"},
+        }
+    )
+
+    assert out["reasoning_provenance"]["commander_context_source"] == "canonical"
+    assert out["reasoning_provenance"]["commander_source_ref"] == "/tmp/agent_pipeline_trace.json"

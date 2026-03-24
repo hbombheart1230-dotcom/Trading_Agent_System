@@ -2470,6 +2470,135 @@ def _build_strategy_policy(
     }
 
 
+def _build_commander_context_summary(
+    *,
+    commander_decision: Dict[str, Any],
+    runtime_phase: str,
+    market_regime: str,
+    playbook: str,
+) -> Dict[str, Any]:
+    raw = dict(commander_decision or {}) if isinstance(commander_decision, dict) else {}
+    source = "commander_decision" if raw else "strategist_node_fallback"
+    allowed_playbooks = [str(x) for x in list(raw.get("allowed_playbooks") or []) if str(x or "").strip()]
+    if not allowed_playbooks and str(playbook or "").strip():
+        allowed_playbooks = [str(playbook)]
+    banned_playbooks = [str(x) for x in list(raw.get("banned_playbooks") or []) if str(x or "").strip()]
+    return {
+        "source": source,
+        "market_regime": str(raw.get("market_regime") or market_regime or "neutral"),
+        "session_bias": str(raw.get("session_bias") or runtime_phase or "session"),
+        "risk_mode": str(raw.get("risk_mode") or "balanced"),
+        "allowed_playbooks": allowed_playbooks[:4],
+        "banned_playbooks": banned_playbooks[:4],
+        "scanner_mission": str(raw.get("scanner_mission") or ""),
+        "monitor_mission": str(raw.get("monitor_mission") or ""),
+        "llm_policy": str(raw.get("llm_policy") or raw.get("llm_invocation_policy") or ""),
+        "command_intent": str(raw.get("command_intent") or ""),
+        "strategist_invocation": str(raw.get("strategist_invocation") or ""),
+        "flow_instruction": str(raw.get("flow_instruction") or ""),
+        "no_trade_reason_code": str(raw.get("no_trade_reason_code") or ""),
+        "decision_summary": str(raw.get("decision_summary") or ""),
+        "observations": dict(raw.get("observations") or {}) if isinstance(raw.get("observations"), dict) else {},
+        "source_priority": [str(x) for x in list(raw.get("source_priority") or []) if str(x or "").strip()][:4],
+        "source_refs": dict(raw.get("source_refs") or {}) if isinstance(raw.get("source_refs"), dict) else {},
+        "shadow_used": bool(raw.get("shadow_used")),
+        "strategist_fallback_used": bool(raw.get("strategist_fallback_used")),
+    }
+
+
+def _build_strategist_plan(
+    *,
+    commander_context: Dict[str, Any],
+    playbook: str,
+    candidate_symbols: List[str],
+    themes: List[str],
+    avoid_themes: List[str],
+    scanner_priority: List[str],
+    monitor_guidance: str,
+    trade_aggressiveness: str,
+    risk_tone: str,
+    news_query_reasoning: str,
+    monitor_policy: Dict[str, Any],
+    exit_policy: Dict[str, Any],
+) -> Dict[str, Any]:
+    selected_playbook = str(playbook or "defensive")
+    candidate_hypotheses: List[Dict[str, Any]] = []
+    for symbol in list(candidate_symbols or [])[:5]:
+        rationale_parts: List[str] = []
+        if list(themes):
+            rationale_parts.append(f"theme={themes[0]}")
+        if list(scanner_priority):
+            rationale_parts.append(f"priority={scanner_priority[0]}")
+        if str(commander_context.get("scanner_mission") or "").strip():
+            rationale_parts.append(str(commander_context.get("scanner_mission") or ""))
+        candidate_hypotheses.append(
+            {
+                "symbol": str(symbol or ""),
+                "hypothesis": (
+                    f"{selected_playbook} setup candidate"
+                    + (f" with {', '.join(rationale_parts[:2])}" if rationale_parts else "")
+                ),
+                "source": "candidate_symbols_hint",
+            }
+        )
+    symbol_constraints = {
+        "candidate_symbols_hint": [str(x) for x in list(candidate_symbols or [])[:8]],
+        "preferred_themes": [str(x) for x in list(themes or [])[:5]],
+        "avoid_themes": [str(x) for x in list(avoid_themes or [])[:6]],
+        "scanner_priority": [str(x) for x in list(scanner_priority or [])[:6]],
+        "candidate_limit": int(min(len(list(candidate_symbols or [])), 8)),
+    }
+    entry_plan = {
+        "setup_family": selected_playbook,
+        "monitor_guidance": str(monitor_guidance or ""),
+        "risk_tone": str(risk_tone or ""),
+        "trade_aggressiveness": str(trade_aggressiveness or ""),
+        "scanner_priority": [str(x) for x in list(scanner_priority or [])[:4]],
+        "scanner_mission": str(commander_context.get("scanner_mission") or ""),
+        "confirmation_required": True,
+    }
+    exit_plan = {
+        "monitor_guidance": str(monitor_guidance or ""),
+        "monitor_mission": str(commander_context.get("monitor_mission") or ""),
+        "position_guards": dict(monitor_policy or {}),
+        "adaptive_exit": dict(exit_policy or {}),
+    }
+    strategy_summary = (
+        f"Strategist refined commander context into {selected_playbook} plan "
+        f"for {len(list(candidate_symbols or []))} candidate symbols."
+    )
+    if str(news_query_reasoning or "").strip():
+        strategy_summary += f" News focus: {str(news_query_reasoning).strip()[:180]}"
+    return {
+        "selected_playbook": selected_playbook,
+        "candidate_hypotheses": candidate_hypotheses,
+        "symbol_constraints": symbol_constraints,
+        "entry_plan": entry_plan,
+        "exit_plan": exit_plan,
+        "strategy_summary": strategy_summary,
+    }
+
+
+def _build_strategy_policy_provenance(*, commander_context: Dict[str, Any]) -> Dict[str, Any]:
+    source = str(commander_context.get("source") or "strategist_node_fallback")
+    merged_from = ["strategist_node"]
+    if source == "commander_decision":
+        merged_from.insert(0, "commander_decision")
+    else:
+        merged_from.insert(0, source)
+    return {
+        "market_policy_owner": "commander",
+        "scanner_policy_owner": "strategist",
+        "monitor_policy_owner": "strategist",
+        "decision_policy_owner": "strategist",
+        "merged_from": merged_from,
+        "commander_context_source": source,
+        "strategist_plan_source": "strategist_node",
+        "shadow_used": bool(commander_context.get("shadow_used")),
+        "strategist_fallback_used": bool(commander_context.get("strategist_fallback_used")),
+    }
+
+
 def _report_focus(*, playbook: str, themes: List[str]) -> List[str]:
     if playbook == "defensive":
         return ["theme_accuracy", "exit_quality", "overtrading", "guard_blocks"]
@@ -3403,6 +3532,28 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         recent_strategy_feedback=recent_strategy_feedback,
         strategy_memory=strategy_memory_advisory,
     )
+    commander_context = _build_commander_context_summary(
+        commander_decision=state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {},
+        runtime_phase=str(state.get("runtime_phase") or "session"),
+        market_regime=market_regime,
+        playbook=playbook,
+    )
+    strategist_plan = _build_strategist_plan(
+        commander_context=commander_context,
+        playbook=playbook,
+        candidate_symbols=[str(x.get("symbol") or "") for x in list(state.get("candidates") or []) if isinstance(x, dict)]
+        or [str(x) for x in list(state.get("candidate_symbols") or []) if str(x or "").strip()],
+        themes=list(themes),
+        avoid_themes=list(avoid_themes),
+        scanner_priority=list(scanner_priority),
+        monitor_guidance=monitor_guidance,
+        trade_aggressiveness=trade_aggressiveness,
+        risk_tone=risk_tone,
+        news_query_reasoning=news_query_reasoning,
+        monitor_policy=dict(monitor_policy),
+        exit_policy=dict(exit_policy),
+    )
+    policy_provenance = _build_strategy_policy_provenance(commander_context=commander_context)
     strategy_policy = _build_strategy_policy(
         market_regime=market_regime,
         market_sentiment=market_sentiment,
@@ -3422,6 +3573,9 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         macro_stress_overlay=dict(macro_stress_overlay),
         news_ctx=dict(news_ctx),
     )
+    strategy_policy["commander_context"] = dict(commander_context)
+    strategy_policy["strategist_plan"] = dict(strategist_plan)
+    strategy_policy["provenance"] = dict(policy_provenance)
 
     state["market_regime"] = market_regime
     state["market_sentiment"] = market_sentiment
@@ -3441,6 +3595,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["monitor_policy"] = dict(monitor_policy)
     state["strategist_exit_policy"] = dict(exit_policy)
     state["strategy_policy"] = dict(strategy_policy)
+    state["strategist_plan"] = dict(strategist_plan)
     state["report_focus"] = list(report_focus)
     state["scanner_guidance"] = {
         "themes": list(themes),
@@ -3494,6 +3649,31 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["recent_strategy_feedback"] = dict(recent_strategy_feedback)
     strategist_output["strategy_memory"] = dict(strategy_memory_advisory)
     strategist_output["playbook"] = playbook
+    strategist_output["selected_playbook"] = strategist_plan.get("selected_playbook")
+    strategist_output["candidate_hypotheses"] = list(strategist_plan.get("candidate_hypotheses") or [])
+    strategist_output["symbol_constraints"] = dict(strategist_plan.get("symbol_constraints") or {})
+    strategist_output["symbol_plan"] = dict(strategist_plan.get("symbol_constraints") or {})
+    strategist_output["entry_plan"] = dict(strategist_plan.get("entry_plan") or {})
+    strategist_output["exit_plan"] = dict(strategist_plan.get("exit_plan") or {})
+    strategist_output["strategy_summary"] = str(strategist_plan.get("strategy_summary") or "")
+    strategist_output["policy_provenance"] = dict(policy_provenance)
+    strategist_output["commander_context_ref"] = {
+        "source": str(commander_context.get("source") or ""),
+        "market_regime": str(commander_context.get("market_regime") or ""),
+        "session_bias": str(commander_context.get("session_bias") or ""),
+        "risk_mode": str(commander_context.get("risk_mode") or ""),
+        "command_intent": str(commander_context.get("command_intent") or ""),
+        "strategist_invocation": str(commander_context.get("strategist_invocation") or ""),
+        "llm_policy": str(commander_context.get("llm_policy") or ""),
+        "no_trade_reason_code": str(commander_context.get("no_trade_reason_code") or ""),
+        "decision_summary": str(commander_context.get("decision_summary") or ""),
+        "source_priority": list(commander_context.get("source_priority") or []),
+    }
+    strategist_output["commander_invocation_hint"] = str(commander_context.get("strategist_invocation") or "")
+    strategist_output["commander_llm_policy"] = str(commander_context.get("llm_policy") or "")
+    strategist_output["commander_no_trade_reason_code"] = str(commander_context.get("no_trade_reason_code") or "")
+    strategist_output["shadow_used"] = bool(commander_context.get("shadow_used"))
+    strategist_output["strategist_fallback_used"] = bool(commander_context.get("strategist_fallback_used"))
     strategist_output["llm_frame_status"] = str(llm_meta.get("status") or "disabled")
     strategist_output["llm_frame_applied"] = bool(llm_overrides)
     strategist_output["llm_frame_model"] = str(llm_meta.get("model") or "")

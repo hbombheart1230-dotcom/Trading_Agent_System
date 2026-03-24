@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, Literal, Optional, Tuple
 from graphs.trading_graph import run_trading_graph
 from graphs.nodes.decide_trade import decide_trade
 from graphs.nodes.execute_from_packet import execute_from_packet
+from libs.contracts.agent_outputs import build_commander_shadow_artifact
 from libs.runtime.canonical_artifacts import write_commander_artifact, write_commander_shadow_artifact
 from libs.runtime.resilience_state import ensure_runtime_resilience_state
 
@@ -75,6 +76,216 @@ def _coerce_int(value: Any, default: int = 0) -> int:
 
 def _runtime_now_epoch(state: Dict[str, Any]) -> int:
     return _coerce_int(state.get("now_epoch"), int(time.time()))
+
+
+def _runtime_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _derive_commander_market_regime(state: Dict[str, Any], *, shadow_assessment: Dict[str, Any]) -> tuple[str, bool]:
+    direct_regime = str(state.get("market_regime") or "").strip()
+    if direct_regime:
+        return direct_regime, False
+    shadow_regime = str(
+        (
+            (shadow_assessment.get("post_strategist_assessment") or {}).get("market_regime")
+            if isinstance(shadow_assessment.get("post_strategist_assessment"), dict)
+            else ""
+        )
+        or ""
+    ).strip()
+    if shadow_regime:
+        return shadow_regime, True
+    global_signal = state.get("global_signal") if isinstance(state.get("global_signal"), dict) else {}
+    fear_index = global_signal.get("fear_index") if isinstance(global_signal.get("fear_index"), dict) else {}
+    sentiment_score = _runtime_float(global_signal.get("score"), 0.0)
+    fear_level = _runtime_float(fear_index.get("level"), 0.0)
+    if fear_level >= 28.0 or sentiment_score <= -0.15:
+        return "risk_off", False
+    if fear_level <= 20.0 and sentiment_score >= 0.15:
+        return "risk_on", False
+    strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    fallback_regime = str(strategist_output.get("market_regime") or "").strip()
+    if fallback_regime:
+        return fallback_regime, True
+    return "neutral", False
+
+
+def _build_shadow_assessment_summary(
+    state: Dict[str, Any],
+    *,
+    mode_value: str,
+    phase_value: str,
+    status_value: str,
+    path_value: str,
+    reason_text: str = "",
+) -> Dict[str, Any]:
+    try:
+        return build_commander_shadow_artifact(
+            state,
+            mode=str(mode_value or ""),
+            phase=str(phase_value or ""),
+            path=str(path_value or ""),
+            status=str(status_value or "ok"),
+            reason=str(reason_text or ""),
+        )
+    except Exception:
+        return {}
+
+
+def _commander_decision_event_meta(state: Dict[str, Any]) -> Dict[str, Any]:
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    return {
+        "shadow_used": bool(commander_decision.get("shadow_used")),
+        "source_priority": list(commander_decision.get("source_priority") or []),
+        "strategist_fallback_used": bool(commander_decision.get("strategist_fallback_used")),
+    }
+
+
+def _build_commander_decision(
+    state: Dict[str, Any],
+    *,
+    mode_value: str,
+    phase_value: str,
+    status_value: str,
+    path_value: str,
+    reason_text: str = "",
+) -> Dict[str, Any]:
+    portfolio_snapshot = state.get("portfolio_snapshot") if isinstance(state.get("portfolio_snapshot"), dict) else {}
+    preflight = state.get("portfolio_preflight") if isinstance(state.get("portfolio_preflight"), dict) else {}
+    runtime_fast_path = state.get("runtime_fast_path") if isinstance(state.get("runtime_fast_path"), dict) else {}
+    strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    resilience = state.get("runtime_resilience_state") if isinstance(state.get("runtime_resilience_state"), dict) else {}
+    shadow_assessment = _build_shadow_assessment_summary(
+        state,
+        mode_value=mode_value,
+        phase_value=phase_value,
+        status_value=status_value,
+        path_value=path_value,
+        reason_text=reason_text,
+    )
+    positions = [row for row in list(portfolio_snapshot.get("positions") or []) if isinstance(row, dict)]
+    open_position_count = len(positions)
+    market_regime, strategist_fallback_used = _derive_commander_market_regime(state, shadow_assessment=shadow_assessment)
+    stress_flags = list(
+        (
+            (strategist_output.get("macro_stress_overlay") or {}).get("stress_flags")
+            if isinstance(strategist_output.get("macro_stress_overlay"), dict)
+            else []
+        )
+        or []
+    )
+    if str(phase_value or "").strip() == "preopen":
+        session_bias = "preopen_context"
+    elif str(phase_value or "").strip() == "closeout":
+        session_bias = "closeout_control"
+    elif open_position_count > 0:
+        session_bias = "position_management"
+    elif "cached" in str(path_value or ""):
+        session_bias = "context_reuse"
+    else:
+        session_bias = "active_selection"
+
+    if bool(preflight.get("blocked")) or str(status_value or "").strip().lower() in {"blocked", "preflight_blocked"}:
+        risk_mode = "blocked"
+    elif market_regime == "risk_off" or bool(stress_flags) or str(resilience.get("degrade_mode") or "").strip():
+        risk_mode = "defensive"
+    elif market_regime == "risk_on":
+        risk_mode = "offensive"
+    else:
+        risk_mode = "balanced"
+
+    allowed_playbooks: list[str]
+    if risk_mode == "blocked":
+        allowed_playbooks = []
+    elif risk_mode == "defensive":
+        allowed_playbooks = ["defensive", "pullback"]
+    elif risk_mode == "offensive":
+        allowed_playbooks = ["breakout", "pullback"]
+    else:
+        allowed_playbooks = ["pullback", "defensive", "breakout"]
+    all_playbooks = ["breakout", "pullback", "reversal", "defensive"]
+    banned_playbooks = [x for x in all_playbooks if x not in allowed_playbooks]
+
+    if risk_mode == "defensive":
+        scanner_mission = "Prioritize liquid leaders and defensive candidates with resilient participation."
+        monitor_mission = "Require cleaner confirmation and protect downside quickly."
+    elif risk_mode == "offensive":
+        scanner_mission = "Prioritize liquid momentum leaders with strong participation and clean continuation."
+        monitor_mission = "Confirm intraday continuation promptly while respecting risk rails."
+    elif session_bias == "position_management":
+        scanner_mission = "Keep candidate refresh narrow while existing exposure is being managed."
+        monitor_mission = "Focus on hold versus exit confirmation for open positions first."
+    else:
+        scanner_mission = "Prioritize balanced liquid leaders with clear scanner fit and manageable risk."
+        monitor_mission = "Wait for confirmation and avoid low-quality chase entries."
+
+    if "cached" in str(path_value or "") or str(runtime_fast_path.get("reason") or "").strip() == "flat_position_cached_strategist":
+        llm_policy = "prefer_cached_context"
+    elif session_bias == "position_management":
+        llm_policy = "allow_if_context_changed"
+    elif str(phase_value or "").strip() == "preopen":
+        llm_policy = "allow_context_refresh"
+    else:
+        llm_policy = "allow"
+
+    shadow_used = bool(shadow_assessment)
+    shadow_no_trade_reason_code = str(shadow_assessment.get("no_trade_reason_code") or "").strip()
+    shadow_reason_summary = str(shadow_assessment.get("reason_summary") or "").strip()
+    command_intent = str(shadow_assessment.get("decision") or "OBSERVE_ONLY").strip() if shadow_used else "OBSERVE_ONLY"
+    strategist_invocation = str(shadow_assessment.get("strategist_action_recommendation") or "").strip() if shadow_used else ""
+    llm_policy = str(shadow_assessment.get("llm_call_advice") or llm_policy).strip()
+    flow_instruction = str(shadow_assessment.get("suggested_action") or "").strip()
+    no_trade_reason_code = shadow_no_trade_reason_code
+    if not strategist_invocation:
+        strategist_invocation = "SKIP" if open_position_count > 0 else "RUN"
+    if not flow_instruction:
+        flow_instruction = "HOLD_OBSERVE" if open_position_count > 0 else "NO_ACTION"
+    if not no_trade_reason_code:
+        no_trade_reason_code = "POSITION_ALREADY_OPEN" if open_position_count > 0 else "NONE"
+    observations = dict(shadow_assessment.get("observations") or {}) if isinstance(shadow_assessment.get("observations"), dict) else {}
+    source_priority = ["shadow_commander", "runtime_observation", "strategist_fallback"]
+    source_refs = {
+        "shadow_event": "commander_router.shadow_assessment",
+        "runtime_fast_path_reason": str(runtime_fast_path.get("reason") or ""),
+        "runtime_path": str(path_value or ""),
+        "strategist_fallback_fields": ["market_regime"] if strategist_fallback_used else [],
+    }
+
+    decision_summary = (
+        f"Commander set regime={market_regime}, session_bias={session_bias}, risk_mode={risk_mode}; "
+        f"allowed_playbooks={', '.join(allowed_playbooks) if allowed_playbooks else 'none'}."
+    )
+    if shadow_reason_summary:
+        decision_summary = shadow_reason_summary
+    if reason_text:
+        decision_summary = f"{decision_summary} Runtime note: {str(reason_text).strip()[:180]}"
+
+    return {
+        "market_regime": market_regime,
+        "session_bias": session_bias,
+        "risk_mode": risk_mode,
+        "allowed_playbooks": list(allowed_playbooks),
+        "banned_playbooks": list(banned_playbooks),
+        "scanner_mission": scanner_mission,
+        "monitor_mission": monitor_mission,
+        "llm_policy": llm_policy,
+        "llm_invocation_policy": llm_policy,
+        "command_intent": command_intent,
+        "strategist_invocation": strategist_invocation,
+        "flow_instruction": flow_instruction,
+        "no_trade_reason_code": no_trade_reason_code,
+        "observations": observations,
+        "source_priority": source_priority,
+        "source_refs": source_refs,
+        "strategist_fallback_used": bool(strategist_fallback_used),
+        "shadow_used": shadow_used,
+        "shadow_assessment_summary": shadow_reason_summary,
+        "decision_summary": decision_summary,
+    }
 
 
 def _ensure_commander_shadow_runtime(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -870,6 +1081,14 @@ def _run_integrated_chain(
     if not should_continue:
         return state
     state = build_risk_context(state)
+    state["commander_decision"] = _build_commander_decision(
+        state,
+        mode_value="integrated_chain",
+        phase_value=str(state.get("runtime_phase") or "session"),
+        status_value=str(state.get("runtime_status") or "planning"),
+        path_value=str(state.get("path") or "integrated_chain_pending"),
+        reason_text=str((state.get("runtime_fast_path") or {}).get("reason") or ""),
+    )
 
     use_monitor_only, fast_path_payload = _should_use_monitor_only_fast_path(state)
     if use_monitor_only:
@@ -979,6 +1198,14 @@ def _run_preopen_phase(state: Dict[str, Any]) -> Dict[str, Any]:
     if not should_continue:
         return state
     state = build_risk_context(state)
+    state["commander_decision"] = _build_commander_decision(
+        state,
+        mode_value=str(state.get("runtime_mode") or "graph_spine"),
+        phase_value="preopen",
+        status_value=str(state.get("runtime_status") or "planning"),
+        path_value=str(state.get("path") or "preopen_pending"),
+        reason_text="",
+    )
     state = strategist_node(state)
     if _strategist_frame_blocked(state):
         return _apply_strategist_block(state, phase="preopen")
@@ -1105,6 +1332,14 @@ def run_commander_runtime(
         }
 
     def _persist_commander(mode_value: str, phase_value: str, *, status_value: str, path_value: str, reason: str = "") -> None:
+        state["commander_decision"] = _build_commander_decision(
+            state,
+            mode_value=mode_value,
+            phase_value=phase_value,
+            status_value=status_value,
+            path_value=path_value,
+            reason_text=reason,
+        )
         state["commander_decision_frame"] = _build_commander_decision_frame(
             mode_value,
             phase_value,
@@ -1144,6 +1379,7 @@ def run_commander_runtime(
                     "shadow_only": True,
                     "monitor_decision": str(shadow_payload.get("monitor_decision") or ""),
                     "executor_action": str(shadow_payload.get("executor_action") or ""),
+                    **_commander_decision_event_meta(state),
                 },
             )
         except Exception:
@@ -1152,6 +1388,14 @@ def run_commander_runtime(
     selected_phase = resolve_runtime_phase(state, phase=phase)
     state["runtime_phase"] = selected_phase
     state = _annotate_runtime_plan(state, selected, selected_phase)
+    state["commander_decision"] = _build_commander_decision(
+        state,
+        mode_value=selected,
+        phase_value=selected_phase,
+        status_value=str(state.get("runtime_status") or "planning"),
+        path_value=str(state.get("path") or "pending"),
+        reason_text=str(state.get("runtime_transition") or ""),
+    )
     _log_commander_event(
         state,
         "route",
@@ -1159,6 +1403,7 @@ def run_commander_runtime(
             "mode": selected,
             "phase": selected_phase,
             "agents": list(state.get("runtime_plan", {}).get("agents", [])),
+            **_commander_decision_event_meta(state),
         },
     )
 
@@ -1171,13 +1416,14 @@ def run_commander_runtime(
                 "transition": state.get("runtime_transition"),
                 "status": state.get("runtime_status"),
                 "retry_count": state.get("runtime_retry_count"),
+                **_commander_decision_event_meta(state),
             },
         )
     if not should_run:
         _log_commander_event(
             state,
             "end",
-            {"mode": selected, "status": state.get("runtime_status", "stopped"), "path": None},
+            {"mode": selected, "status": state.get("runtime_status", "stopped"), "path": None, **_commander_decision_event_meta(state)},
         )
         _persist_commander(selected, selected_phase, status_value=str(state.get("runtime_status", "stopped") or "stopped"), path_value="")
         return state
@@ -1198,13 +1444,14 @@ def run_commander_runtime(
                 "cooldown_until_epoch": cooldown_payload.get("cooldown_until_epoch"),
                 "incident_count": cooldown_payload.get("incident_count"),
                 "incident_threshold": cooldown_payload.get("incident_threshold"),
+                **_commander_decision_event_meta(state),
             },
         )
         _log_commander_event(state, "resilience", cooldown_payload)
         _log_commander_event(
             state,
             "end",
-            {"mode": selected, "status": state.get("runtime_status", "stopped"), "path": None},
+            {"mode": selected, "status": state.get("runtime_status", "stopped"), "path": None, **_commander_decision_event_meta(state)},
         )
         _persist_commander(
             selected,
@@ -1233,6 +1480,7 @@ def run_commander_runtime(
                     "phase": selected_phase,
                     "status": state.get("runtime_status", "preopen_ready"),
                     "path": state.get("path", "preopen_strategist"),
+                    **_commander_decision_event_meta(state),
                     **_portfolio_guard_event_summary(state),
                     **_portfolio_preflight_event_summary(state),
                 },
@@ -1250,6 +1498,7 @@ def run_commander_runtime(
                     "phase": selected_phase,
                     "status": state.get("runtime_status", "closeout_ready"),
                     "path": state.get("path", "closeout_idle"),
+                    **_commander_decision_event_meta(state),
                     **_portfolio_guard_event_summary(state),
                     **_portfolio_preflight_event_summary(state),
                 },
@@ -1268,6 +1517,7 @@ def run_commander_runtime(
                     "phase": selected_phase,
                     "status": state.get("runtime_status", "ok"),
                     "path": "decision_packet",
+                    **_commander_decision_event_meta(state),
                     **_portfolio_guard_event_summary(state),
                     **_portfolio_preflight_event_summary(state),
                 },
@@ -1285,6 +1535,7 @@ def run_commander_runtime(
                     "phase": selected_phase,
                     "status": state.get("runtime_status", "ok"),
                     "path": state.get("path", "integrated_chain"),
+                    **_commander_decision_event_meta(state),
                     **_portfolio_guard_event_summary(state),
                     **_portfolio_preflight_event_summary(state),
                 },
@@ -1304,6 +1555,7 @@ def run_commander_runtime(
                 "phase": selected_phase,
                 "status": state.get("runtime_status", "ok"),
                 "path": state.get("path", "graph_spine"),
+                **_commander_decision_event_meta(state),
                 **_portfolio_guard_event_summary(state),
                 **_portfolio_preflight_event_summary(state),
             },

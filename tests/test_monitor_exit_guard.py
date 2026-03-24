@@ -1784,3 +1784,110 @@ def test_monitor_extract_frame_reads_strategist_output():
     assert frame["monitor_guidance"] == "defensive_exit"
     assert frame["risk_tone"] == "conservative"
     assert frame["trade_aggressiveness"] == "low"
+
+
+def test_monitor_extract_frame_includes_commander_context_and_strategist_plan():
+    state = {
+        "strategist_output": {
+            "playbook": "defensive",
+            "monitor_guidance": "defensive_exit",
+            "risk_tone": "conservative",
+            "trade_aggressiveness": "low",
+            "strategy_policy": {
+                "commander_context": {
+                    "monitor_mission": "Wait for confirmation and protect downside.",
+                    "flow_instruction": "observe_only",
+                    "command_intent": "OBSERVE_ONLY",
+                    "risk_mode": "balanced",
+                    "no_trade_reason_code": "WAIT_FOR_CONFIRMATION",
+                    "llm_policy": "SKIP",
+                    "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
+                    "shadow_used": True,
+                    "strategist_fallback_used": False,
+                },
+                "strategist_plan": {
+                    "selected_playbook": "defensive",
+                    "entry_plan": {"pattern": "wait_for_vwap_reclaim"},
+                    "exit_plan": {"trigger": "vwap_breakdown"},
+                    "symbol_constraints": {"max_gap_pct": 0.03},
+                    "strategy_summary": "Prefer patience until confirmation arrives.",
+                },
+                "provenance": {
+                    "shadow_used": True,
+                    "strategist_fallback_used": False,
+                },
+            },
+        }
+    }
+
+    frame = _extract_monitor_strategy_frame(state)
+
+    assert frame["playbook"] == "defensive"
+    assert frame["commander_context"]["monitor_mission"] == "Wait for confirmation and protect downside."
+    assert frame["strategist_plan"]["selected_playbook"] == "defensive"
+    assert frame["policy_provenance"]["shadow_used"] is True
+
+
+def test_monitor_output_records_commander_context_consumption_without_overriding_wait(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "BBB"},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {},
+        "strategist_output": {
+            "playbook": "pullback",
+            "monitor_guidance": "quick_take_profit",
+            "risk_tone": "normal",
+            "trade_aggressiveness": "medium",
+            "strategy_policy": {
+                "market_policy": {},
+                "scanner_policy": {},
+                "monitor_policy": {},
+                "decision_policy": {},
+                "commander_context": {
+                    "monitor_mission": "Observe and wait for confirmation.",
+                    "flow_instruction": "observe_only",
+                    "command_intent": "OBSERVE_ONLY",
+                    "risk_mode": "balanced",
+                    "no_trade_reason_code": "WAIT_FOR_CONFIRMATION",
+                    "llm_policy": "SKIP",
+                    "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
+                    "shadow_used": True,
+                    "strategist_fallback_used": False,
+                },
+                "strategist_plan": {
+                    "selected_playbook": "pullback",
+                    "entry_plan": {"pattern": "wait_for_vwap_reclaim"},
+                    "exit_plan": {"trigger": "prior_low_break"},
+                    "symbol_constraints": {"max_gap_pct": 0.03},
+                    "strategy_summary": "Wait for reclaim before entry.",
+                },
+                "provenance": {
+                    "shadow_used": True,
+                    "strategist_fallback_used": False,
+                },
+            },
+        },
+    }
+
+    out = monitor_node(state)
+    monitor_output = out.get("monitor_output") or {}
+    entry_detail = out.get("monitor_entry_decision_detail") or {}
+    evaluation = out.get("monitor_evaluation") or {}
+    action = out.get("monitor_action_decision") or {}
+
+    assert out.get("intents") == []
+    assert str((out.get("monitor") or {}).get("entry_reason") or "") == "minute_candle_missing"
+    assert monitor_output.get("commander_context_consumed") is True
+    assert "monitor_mission" in list(monitor_output.get("consumed_fields") or [])
+    assert monitor_output.get("policy_ref", {}).get("flow_instruction") == "observe_only"
+    assert monitor_output.get("policy_ref", {}).get("selected_playbook") == "pullback"
+    assert entry_detail.get("flow_instruction_applied") is True
+    assert entry_detail.get("no_trade_reason_applied") is True
+    assert entry_detail.get("policy_ref", {}).get("monitor_mission") == "Observe and wait for confirmation."
+    assert evaluation.get("commander_context_consumed") is True
+    assert action.get("shadow_used") is True
+    assert action.get("strategist_fallback_used") is False

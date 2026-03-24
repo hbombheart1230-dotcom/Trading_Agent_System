@@ -314,3 +314,73 @@ def test_update_state_sanitizes_invalid_mock_positions_and_last_trade_symbol(mon
     assert [row["symbol"] for row in ps["mock_positions"]] == ["005930"]
     assert ps["open_positions"] == 1
     assert ps.get("last_trade_symbol") in ("", None)
+
+
+def test_update_state_adds_reasoning_trace_snapshot(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "commander_decision": {
+            "decision_summary": "Commander kept the session defensive.",
+            "command_intent": "OBSERVE_ONLY",
+            "strategist_invocation": "RUN",
+            "llm_policy": "ALLOW",
+            "no_trade_reason_code": "WAIT_FOR_CONFIRMATION",
+            "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
+            "source_refs": {"shadow_event": "commander_router.shadow_assessment"},
+            "shadow_used": True,
+            "strategist_fallback_used": False,
+        },
+        "strategist_output": {
+            "playbook": "defensive",
+            "strategy_policy": {
+                "market_policy": {},
+                "scanner_policy": {},
+                "monitor_policy": {},
+                "decision_policy": {},
+                "strategist_plan": {
+                    "selected_playbook": "defensive",
+                    "candidate_hypotheses": ["large_cap_defense"],
+                    "symbol_constraints": {"max_beta": 1.1},
+                    "strategy_summary": "Strategist stayed defensive.",
+                },
+                "provenance": {"shadow_used": True, "strategist_fallback_used": False},
+            },
+        },
+        "scanner_output": {
+            "selected_symbol": "003280",
+            "runner_up_symbol": "000660",
+            "ranking_factors": ["value", "trend"],
+            "rejected_candidates": [{"symbol": "000660", "why": "lower score"}],
+        },
+        "scanner_candidate_selection_reason": {
+            "selected_symbol": "003280",
+            "selection_summary": "003280 ranked first.",
+        },
+        "monitor_output": {
+            "decision": "WAIT",
+            "action": "NONE",
+            "entry_check_summary": "VWAP reclaim confirmation is pending.",
+            "entry_blockers": ["below_vwap_reclaim_not_ready"],
+            "timing_assessment": {"latest_candle_ts": 1774317480},
+            "exit_trigger_basis": {"trigger_type": ""},
+        },
+        "persisted_state": {},
+        "execution": {"ok": False, "blocked": True, "reason": "noop"},
+    }
+
+    out = update_state_after_execution(state)
+    reasoning_trace = out["reasoning_trace"]
+    provenance = out["reasoning_trace_provenance"]
+
+    assert reasoning_trace["commander_summary"]["summary"] == "Commander kept the session defensive."
+    assert reasoning_trace["strategist_summary"]["selected_playbook"] == "defensive"
+    assert reasoning_trace["scanner_summary"]["selected_symbol"] == "003280"
+    assert reasoning_trace["monitor_summary"]["summary"] == "VWAP reclaim confirmation is pending."
+    assert provenance["shadow_used"] is True
+    assert provenance["commander_source_ref"] == "commander_router.shadow_assessment"
+    assert provenance["strategist_plan_source"] == "state.strategy_policy.strategist_plan"
+    assert provenance["scanner_reason_source"] == "state.scanner_output"
+    assert provenance["monitor_reason_source"] == "state.monitor_output"
+    assert out["persisted_state"]["latest_reasoning_trace"] == reasoning_trace
+    assert out["persisted_state"]["latest_reasoning_trace_provenance"] == provenance
+    assert out["persisted_state"]["latest_reasoning_trace"]["scanner_summary"]["selected_symbol"] == "003280"

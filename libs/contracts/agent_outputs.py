@@ -65,6 +65,18 @@ def _dict(value: Any) -> Dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _dict_list(value: Any, *, limit: int = 8) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for row in value:
+        if isinstance(row, dict):
+            out.append(dict(row))
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
 def _dedupe_text(values: List[str], *, limit: int = 10, max_len: int = 180) -> List[str]:
     out: List[str] = []
     seen: set[str] = set()
@@ -652,6 +664,7 @@ def validate_artifact(artifact: Dict[str, Any]) -> Dict[str, Any]:
 def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output = _dict(state.get("strategist_output"))
     strategist_llm = _dict(state.get("strategist_llm"))
+    strategy_policy = _dict(strategist_output.get("strategy_policy"))
     macro_overlay = _dict(strategist_output.get("macro_stress_overlay"))
     news_context = _dict(strategist_output.get("news_context"))
     global_signal = _dict(state.get("global_signal"))
@@ -706,6 +719,46 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         state=state,
         global_signal=global_signal,
         macro_overlay=macro_overlay,
+    )
+    commander_context = _dict(strategy_policy.get("commander_context"))
+    if not commander_context:
+        commander_context = _dict(state.get("commander_decision"))
+    strategist_plan = _dict(strategy_policy.get("strategist_plan"))
+    policy_provenance = _dict(strategy_policy.get("provenance"))
+    selected_playbook = _clip(
+        strategist_output.get("selected_playbook")
+        or strategist_plan.get("selected_playbook")
+        or playbook,
+        max_len=80,
+    )
+    candidate_hypotheses = _dict_list(
+        strategist_output.get("candidate_hypotheses")
+        if strategist_output.get("candidate_hypotheses") is not None
+        else strategist_plan.get("candidate_hypotheses"),
+        limit=8,
+    )
+    symbol_plan = _dict(
+        strategist_output.get("symbol_plan")
+        if strategist_output.get("symbol_plan") is not None
+        else strategist_output.get("symbol_constraints")
+    )
+    if not symbol_plan:
+        symbol_plan = _dict(
+            strategist_plan.get("symbol_plan")
+            if strategist_plan.get("symbol_plan") is not None
+            else strategist_plan.get("symbol_constraints")
+        )
+    entry_plan = _dict(strategist_output.get("entry_plan"))
+    if not entry_plan:
+        entry_plan = _dict(strategist_plan.get("entry_plan"))
+    exit_plan = _dict(strategist_output.get("exit_plan"))
+    if not exit_plan:
+        exit_plan = _dict(strategist_plan.get("exit_plan"))
+    strategy_summary = _clip(
+        strategist_output.get("strategy_summary")
+        or strategist_plan.get("strategy_summary")
+        or summary,
+        max_len=320,
     )
     candidate_symbols_hint = _listify(
         state.get("strategist_candidate_symbols_hint")
@@ -818,6 +871,59 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "candidate_symbols_hint_missing": not bool(candidate_symbols_hint),
             "fallback_used": bool(fallback_used),
             "fallback_reason": fallback_reason,
+            "commander_context_ref": {
+                "source": _clip(
+                    (
+                        _dict(strategist_output.get("commander_context_ref")).get("source")
+                        if isinstance(strategist_output.get("commander_context_ref"), dict)
+                        else commander_context.get("source")
+                    ),
+                    max_len=80,
+                ),
+                "market_regime": _clip(commander_context.get("market_regime"), max_len=80),
+                "session_bias": _clip(commander_context.get("session_bias"), max_len=80),
+                "risk_mode": _clip(commander_context.get("risk_mode"), max_len=80),
+                "decision_summary": _clip(
+                    (
+                        _dict(strategist_output.get("commander_context_ref")).get("decision_summary")
+                        if isinstance(strategist_output.get("commander_context_ref"), dict)
+                        else commander_context.get("decision_summary")
+                    ),
+                    max_len=220,
+                ),
+            },
+            "commander_invocation_hint": _clip(
+                strategist_output.get("commander_invocation_hint")
+                or commander_context.get("strategist_invocation"),
+                max_len=80,
+            ),
+            "commander_llm_policy": _clip(
+                strategist_output.get("commander_llm_policy")
+                or commander_context.get("llm_policy"),
+                max_len=80,
+            ),
+            "commander_no_trade_reason_code": _clip(
+                strategist_output.get("commander_no_trade_reason_code")
+                or commander_context.get("no_trade_reason_code"),
+                max_len=80,
+            ),
+            "shadow_used": bool(
+                strategist_output.get("shadow_used")
+                if strategist_output.get("shadow_used") is not None
+                else commander_context.get("shadow_used")
+            ),
+            "strategist_fallback_used": bool(
+                strategist_output.get("strategist_fallback_used")
+                if strategist_output.get("strategist_fallback_used") is not None
+                else commander_context.get("strategist_fallback_used")
+            ),
+            "selected_playbook": selected_playbook,
+            "candidate_hypotheses": candidate_hypotheses,
+            "symbol_plan": symbol_plan,
+            "entry_plan": entry_plan,
+            "exit_plan": exit_plan,
+            "policy_provenance": policy_provenance,
+            "strategy_summary": strategy_summary,
             "trace_summary": trace_summary,
             "themes": themes,
             "avoid_themes": avoid_themes,
@@ -1397,6 +1503,28 @@ def build_executor_output_artifact(
     return artifact
 
 
+def _build_commander_shadow_artifact_summary(
+    state: Dict[str, Any],
+    *,
+    mode: str,
+    phase: str,
+    path: str,
+    status: str,
+    reason: str = "",
+) -> Dict[str, Any]:
+    try:
+        return build_commander_shadow_artifact(
+            state,
+            mode=str(mode or ""),
+            phase=str(phase or ""),
+            path=str(path or ""),
+            status=str(status or "ok"),
+            reason=str(reason or ""),
+        )
+    except Exception:
+        return {}
+
+
 def build_commander_output_artifact(
     state: Dict[str, Any],
     *,
@@ -1407,6 +1535,15 @@ def build_commander_output_artifact(
     reason: str = "",
 ) -> Dict[str, Any]:
     decision_frame = _dict(state.get("commander_decision_frame"))
+    commander_decision = _dict(state.get("commander_decision"))
+    shadow_assessment = _build_commander_shadow_artifact_summary(
+        state,
+        mode=mode,
+        phase=phase,
+        path=path,
+        status=status,
+        reason=reason,
+    )
     runtime_plan = _dict(state.get("runtime_plan"))
     runtime_fast_path = _dict(state.get("runtime_fast_path"))
     resilience = _dict(state.get("runtime_resilience_state"))
@@ -1463,6 +1600,50 @@ def build_commander_output_artifact(
         or ("Proceed with planned agent chain." if status_text in {"ok", "ready", "preopen_ready", "closeout_ready"} else "Stop downstream execution and inspect runtime status."),
         max_len=220,
     )
+    commander_market_regime = _clip(
+        commander_decision.get("market_regime")
+        or _dict(decision_frame.get("market_regime_summary")).get("market_regime")
+        or strategist_output.get("market_regime"),
+        max_len=80,
+    )
+    commander_session_bias = _clip(
+        commander_decision.get("session_bias")
+        or decision_frame.get("session_type")
+        or phase,
+        max_len=80,
+    )
+    commander_risk_mode = _clip(commander_decision.get("risk_mode"), max_len=80)
+    allowed_playbooks = _listify(commander_decision.get("allowed_playbooks"), limit=6, max_len=40)
+    banned_playbooks = _listify(commander_decision.get("banned_playbooks"), limit=6, max_len=40)
+    scanner_mission = _clip(commander_decision.get("scanner_mission"), max_len=220)
+    monitor_mission = _clip(commander_decision.get("monitor_mission"), max_len=220)
+    llm_invocation_policy = _clip(
+        commander_decision.get("llm_invocation_policy")
+        or commander_decision.get("llm_policy"),
+        max_len=120,
+    )
+    decision_summary = _clip(
+        commander_decision.get("decision_summary")
+        or decision_frame.get("final_reason")
+        or reason
+        or state.get("runtime_status"),
+        max_len=280,
+    )
+    shadow_reason_code = _clip(shadow_assessment.get("no_trade_reason_code"), max_len=80)
+    shadow_assessment_summary = _clip(
+        shadow_assessment.get("reason_summary")
+        or shadow_assessment.get("comparison_summary"),
+        max_len=280,
+    )
+    shadow_alignment = _clip(
+        (
+            _dict(shadow_assessment.get("post_strategist_assessment")).get("recommendation_gap")
+            or _dict(shadow_assessment.get("end_of_cycle_summary")).get("recommendation_gap")
+        ),
+        max_len=120,
+    )
+    source_priority = _listify(commander_decision.get("source_priority"), limit=4, max_len=40)
+    strategist_fallback_used = bool(commander_decision.get("strategist_fallback_used"))
     artifact = _base_output(state, agent="commander", status=status or "ok")
     artifact.update(
         {
@@ -1504,6 +1685,22 @@ def build_commander_output_artifact(
                 "market_sentiment": _clip(strategist_output.get("market_sentiment"), max_len=80),
                 "playbook": _clip(strategist_output.get("playbook"), max_len=80),
             },
+            "market_regime": commander_market_regime,
+            "session_bias": commander_session_bias,
+            "risk_mode": commander_risk_mode,
+            "allowed_playbooks": allowed_playbooks,
+            "banned_playbooks": banned_playbooks,
+            "scanner_mission": scanner_mission,
+            "monitor_mission": monitor_mission,
+            "llm_invocation_policy": llm_invocation_policy,
+            "decision_summary": decision_summary,
+            "commander_decision": commander_decision,
+            "shadow_assessment_summary": shadow_assessment_summary,
+            "shadow_used": bool(commander_decision.get("shadow_used") or shadow_assessment),
+            "shadow_reason_code": shadow_reason_code,
+            "shadow_alignment": shadow_alignment,
+            "source_priority": source_priority,
+            "strategist_fallback_used": strategist_fallback_used,
             "goal": _clip(
                 decision_frame.get("goal")
                 or ("Execute full session chain." if phase == "session" else f"Run {phase} phase safely."),
@@ -2214,6 +2411,9 @@ def build_commander_shadow_artifact(
                 f"observed_executor={actual_runtime.get('executor_action') or 'NONE'}, "
                 f"gap={recommendation_gap}"
             ),
+            "integrated_into_commander_decision": True,
+            "integration_version": "phase1_2",
+            "integration_role": "upstream_assessment",
             "reason": _clip(reason or state.get("runtime_status") or "", max_len=220),
             "shadow_only": True,
             "generated_at": _utc_now_iso(),

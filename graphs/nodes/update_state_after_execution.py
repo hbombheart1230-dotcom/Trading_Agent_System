@@ -5,6 +5,7 @@ import re
 import time
 
 from libs.core.symbols import normalize_symbol
+from libs.reporting.reasoning_trace import build_reasoning_provenance, build_reasoning_trace_from_summaries
 
 
 def _as_int(value, default: int = 0) -> int:  # type: ignore[no-untyped-def]
@@ -332,6 +333,152 @@ def _extract_strategist_output_snapshot(state: dict | None) -> dict:
     return dict(output) if output else {}
 
 
+def _extract_strategy_policy_snapshot(state: dict | None) -> dict:
+    strategist_output = _extract_strategist_output_snapshot(state)
+    strategy_policy = strategist_output.get("strategy_policy") if isinstance(strategist_output.get("strategy_policy"), dict) else {}
+    if strategy_policy:
+        return dict(strategy_policy)
+    if isinstance(state, dict):
+        if isinstance(state.get("strategy_policy"), dict):
+            return dict(state.get("strategy_policy") or {})
+        strategist_plan = state.get("strategist_plan") if isinstance(state.get("strategist_plan"), dict) else {}
+        if strategist_plan:
+            return {"strategist_plan": dict(strategist_plan)}
+    return {}
+
+
+def _build_reasoning_trace_snapshot(state: dict) -> dict:
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    strategy_policy = _extract_strategy_policy_snapshot(state)
+    strategist_plan = strategy_policy.get("strategist_plan") if isinstance(strategy_policy.get("strategist_plan"), dict) else {}
+    strategist_output = _extract_strategist_output_snapshot(state)
+    scanner_output = state.get("scanner_output") if isinstance(state.get("scanner_output"), dict) else {}
+    scanner_selection = (
+        state.get("scanner_candidate_selection_reason")
+        if isinstance(state.get("scanner_candidate_selection_reason"), dict)
+        else {}
+    )
+    monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
+    monitor_action = (
+        state.get("monitor_action_decision") if isinstance(state.get("monitor_action_decision"), dict) else {}
+    )
+
+    commander_summary = {
+        "summary": str(
+            commander_decision.get("decision_summary")
+            or commander_decision.get("shadow_assessment_summary")
+            or ""
+        ),
+        "command_intent": str(commander_decision.get("command_intent") or ""),
+        "strategist_invocation": str(commander_decision.get("strategist_invocation") or ""),
+        "llm_policy": str(commander_decision.get("llm_policy") or ""),
+        "no_trade_reason_code": str(commander_decision.get("no_trade_reason_code") or ""),
+        "source_priority": list(commander_decision.get("source_priority") or []),
+    }
+    strategist_summary = {
+        "summary": str(
+            strategist_plan.get("strategy_summary")
+            or strategist_output.get("strategy_summary")
+            or strategist_output.get("summary")
+            or ""
+        ),
+        "selected_playbook": str(
+            strategist_plan.get("selected_playbook")
+            or strategist_output.get("selected_playbook")
+            or strategist_output.get("playbook")
+            or ""
+        ),
+        "candidate_hypotheses": list(strategist_plan.get("candidate_hypotheses") or []),
+        "symbol_constraints": dict(strategist_plan.get("symbol_constraints") or {}),
+    }
+    scanner_summary = {
+        "summary": (
+            str(scanner_output.get("selection_basis", {}).get("strategy_summary"))
+            if isinstance(scanner_output.get("selection_basis"), dict)
+            else ""
+        )
+        or str(
+            scanner_selection.get("selection_summary")
+            or scanner_output.get("summary")
+            or ""
+        ),
+        "selected_symbol": str(
+            scanner_selection.get("selected_symbol")
+            or scanner_output.get("selected_symbol")
+            or scanner_output.get("top_stock")
+            or ""
+        ),
+        "runner_up_symbol": str(
+            scanner_selection.get("runner_up_symbol")
+            or scanner_output.get("runner_up_symbol")
+            or ""
+        ),
+        "ranking_factors": list(scanner_output.get("ranking_factors") or []),
+        "rejected_candidates": list(scanner_output.get("rejected_candidates") or []),
+    }
+    monitor_summary = {
+        "summary": str(
+            monitor_output.get("entry_check_summary")
+            or monitor_action.get("entry_check_summary")
+            or monitor_output.get("reason")
+            or ""
+        ),
+        "decision": str(monitor_output.get("decision") or monitor_action.get("decision") or ""),
+        "action": str(monitor_output.get("action") or monitor_action.get("action") or ""),
+        "entry_blockers": list(
+            monitor_output.get("entry_blockers") or monitor_action.get("entry_blockers") or []
+        ),
+        "timing_assessment": dict(
+            monitor_output.get("timing_assessment") or monitor_action.get("timing_assessment") or {}
+        ),
+        "exit_trigger_basis": dict(
+            monitor_output.get("exit_trigger_basis") or monitor_action.get("exit_trigger_basis") or {}
+        ),
+    }
+    return build_reasoning_trace_from_summaries(
+        commander_summary=commander_summary,
+        strategist_summary=strategist_summary,
+        scanner_summary=scanner_summary,
+        monitor_summary=monitor_summary,
+    )
+
+
+def _build_reasoning_trace_provenance(state: dict) -> dict:
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    strategy_policy = _extract_strategy_policy_snapshot(state)
+    provenance = strategy_policy.get("provenance") if isinstance(strategy_policy.get("provenance"), dict) else {}
+    commander_source_refs = commander_decision.get("source_refs") if isinstance(commander_decision.get("source_refs"), dict) else {}
+
+    return build_reasoning_provenance(
+        commander_context_source="state.commander_decision",
+        strategist_plan_source="state.strategy_policy.strategist_plan"
+        if isinstance(strategy_policy.get("strategist_plan"), dict)
+        else "state.strategist_output",
+        scanner_reason_source="state.scanner_output"
+        if isinstance(state.get("scanner_output"), dict)
+        else "state.scanner_candidate_selection_reason",
+        monitor_reason_source="state.monitor_output"
+        if isinstance(state.get("monitor_output"), dict)
+        else "state.monitor_action_decision",
+        commander_source_ref=str(commander_source_refs.get("shadow_event") or "state.commander_decision"),
+        strategist_source_ref="state.strategy_policy.strategist_plan"
+        if isinstance(strategy_policy.get("strategist_plan"), dict)
+        else "state.strategist_output",
+        scanner_source_ref="state.scanner_output"
+        if isinstance(state.get("scanner_output"), dict)
+        else "state.scanner_candidate_selection_reason",
+        monitor_source_ref="state.monitor_output"
+        if isinstance(state.get("monitor_output"), dict)
+        else "state.monitor_action_decision",
+        shadow_used=bool(commander_decision.get("shadow_used") or provenance.get("shadow_used")),
+        strategist_fallback_used=bool(
+            commander_decision.get("strategist_fallback_used")
+            or provenance.get("strategist_fallback_used")
+        ),
+        source_priority=list(commander_decision.get("source_priority") or []),
+    )
+
+
 def _broker_code_success(value) -> bool | None:  # type: ignore[no-untyped-def]
     if value is None:
         return None
@@ -454,6 +601,16 @@ def update_state_after_execution(state: dict) -> dict:
         _apply_mock_fill(ps, ex, state)
     elif not ok and _is_kiwoom_mock_mode():
         _reconcile_mock_sell_reject_no_position(ps, ex)
+
+    # Canonical reasoning snapshot for downstream reporting/trace consumers.
+    # `state["reasoning_trace"]` is the live-cycle source-of-truth and
+    # `persisted_state["latest_reasoning_trace"]` is the compatibility mirror.
+    reasoning_trace = _build_reasoning_trace_snapshot(state)
+    reasoning_trace_provenance = _build_reasoning_trace_provenance(state)
+    state["reasoning_trace"] = reasoning_trace
+    state["reasoning_trace_provenance"] = reasoning_trace_provenance
+    ps["latest_reasoning_trace"] = dict(reasoning_trace)
+    ps["latest_reasoning_trace_provenance"] = dict(reasoning_trace_provenance)
 
     state["persisted_state"] = ps
     return state

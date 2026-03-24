@@ -6,6 +6,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from libs.reporting.reasoning_trace import (
+    build_reasoning_provenance,
+    build_reasoning_trace_from_summaries,
+)
+
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
     if not path.exists():
@@ -200,6 +205,77 @@ def _reporter_analysis_has_run(report_obj: Dict[str, Any], run_id: str) -> bool:
     return False
 
 
+def _build_reasoning_trace(out: Dict[str, Any]) -> Dict[str, Any]:
+    commander = out.get("commander") if isinstance(out.get("commander"), dict) else {}
+    strategist = out.get("strategist") if isinstance(out.get("strategist"), dict) else {}
+    scanner = out.get("scanner") if isinstance(out.get("scanner"), dict) else {}
+    monitor = out.get("monitor") if isinstance(out.get("monitor"), dict) else {}
+    return build_reasoning_trace_from_summaries(
+        commander_summary={
+            "summary": str(commander.get("decision_summary") or commander.get("shadow_assessment_summary") or commander.get("path") or ""),
+            "command_intent": str(commander.get("command_intent") or ""),
+            "strategist_invocation": str(commander.get("strategist_invocation") or ""),
+            "llm_policy": str(commander.get("llm_policy") or ""),
+            "no_trade_reason_code": str(commander.get("shadow_reason_code") or commander.get("no_trade_reason_code") or ""),
+            "source_priority": list(commander.get("source_priority") or []),
+        },
+        strategist_summary={
+            "summary": str(strategist.get("strategy_summary") or strategist.get("news_query_reasoning") or strategist.get("playbook") or ""),
+            "selected_playbook": str(strategist.get("selected_playbook") or strategist.get("playbook") or ""),
+            "themes": list(strategist.get("themes") or []),
+            "monitor_guidance": str(strategist.get("monitor_guidance") or ""),
+        },
+        scanner_summary={
+            "summary": str(
+                ((scanner.get("selection_basis") or {}).get("summary") if isinstance(scanner.get("selection_basis"), dict) else "")
+                or ((scanner.get("selected_candidate") or {}).get("selection_summary") if isinstance(scanner.get("selected_candidate"), dict) else "")
+                or scanner.get("top_stock")
+                or ""
+            ),
+            "selected_symbol": str(scanner.get("top_stock") or ""),
+            "runner_up_symbol": str(scanner.get("runner_up_symbol") or ""),
+            "ranking_factors": list(scanner.get("ranking_factors") or []),
+            "rejected_candidates": list(scanner.get("rejected_candidates") or []),
+        },
+        monitor_summary={
+            "summary": str(
+                monitor.get("entry_check_summary")
+                or monitor.get("monitor_reason")
+                or monitor.get("entry_reason")
+                or monitor.get("exit_reason")
+                or ""
+            ),
+            "decision": str(monitor.get("decision") or ""),
+            "action": str(monitor.get("action") or ""),
+            "entry_blockers": list(monitor.get("entry_blockers") or []),
+            "timing_assessment": dict(monitor.get("timing_assessment") or {}),
+            "exit_trigger_basis": dict(monitor.get("exit_trigger_basis") or {}),
+        },
+    )
+
+
+def _build_reasoning_provenance(out: Dict[str, Any]) -> Dict[str, Any]:
+    commander = out.get("commander") if isinstance(out.get("commander"), dict) else {}
+    strategist = out.get("strategist") if isinstance(out.get("strategist"), dict) else {}
+    scanner = out.get("scanner") if isinstance(out.get("scanner"), dict) else {}
+    monitor = out.get("monitor") if isinstance(out.get("monitor"), dict) else {}
+    return build_reasoning_provenance(
+        commander_context_source="event_payload" if commander else "missing",
+        strategist_plan_source="event_payload" if strategist else "missing",
+        scanner_reason_source="event_payload" if scanner else "missing",
+        monitor_reason_source="event_payload" if monitor else "missing",
+        commander_source_ref="commander_router.route/end",
+        strategist_source_ref="strategist.summary",
+        scanner_source_ref="scanner.summary/decision_trace.candidate_selection",
+        monitor_source_ref="monitor.summary/decision_trace.entry_exit_decision",
+        shadow_used=bool(commander.get("shadow_used") or strategist.get("shadow_used")),
+        strategist_fallback_used=bool(
+            commander.get("strategist_fallback_used") or strategist.get("strategist_fallback_used")
+        ),
+        source_priority=list(commander.get("source_priority") or []),
+    )
+
+
 def _build_markdown(out: Dict[str, Any]) -> str:
     commander = out.get("commander") if isinstance(out.get("commander"), dict) else {}
     strategist = out.get("strategist") if isinstance(out.get("strategist"), dict) else {}
@@ -208,6 +284,8 @@ def _build_markdown(out: Dict[str, Any]) -> str:
     supervisor = out.get("supervisor") if isinstance(out.get("supervisor"), dict) else {}
     executor = out.get("executor") if isinstance(out.get("executor"), dict) else {}
     reporter = out.get("reporter") if isinstance(out.get("reporter"), dict) else {}
+    reasoning_trace = out.get("reasoning_trace") if isinstance(out.get("reasoning_trace"), dict) else {}
+    reasoning_provenance = out.get("reasoning_provenance") if isinstance(out.get("reasoning_provenance"), dict) else {}
 
     lines: List[str] = []
     lines.append(f"# Agent Pipeline Trace ({out.get('run_id')})")
@@ -319,6 +397,18 @@ def _build_markdown(out: Dict[str, Any]) -> str:
             f"- strategy_frame_adjustments: `{json.dumps(monitor.get('strategy_frame_adjustments') or [], ensure_ascii=False)}`"
         )
     lines.append("")
+    if reasoning_trace:
+        lines.append("## Reasoning Trace")
+        for key in ("commander_summary", "strategist_summary", "scanner_summary", "monitor_summary"):
+            row = reasoning_trace.get(key) if isinstance(reasoning_trace.get(key), dict) else {}
+            if row:
+                lines.append(f"- {key}: {row.get('summary') or '-'}")
+        if reasoning_provenance:
+            lines.append(
+                f"- provenance: shadow_used={reasoning_provenance.get('shadow_used')} "
+                f"strategist_fallback_used={reasoning_provenance.get('strategist_fallback_used')}"
+            )
+        lines.append("")
     lines.append("## Supervisor")
     lines.append(
         f"- verdict={supervisor.get('verdict')} allow={supervisor.get('supervisor_allow')} "
@@ -513,6 +603,16 @@ def generate_agent_pipeline_trace_report(
             "end_ts": str(route_end.get("ts") or ""),
             "end_status": str(route_end_payload.get("status") or ""),
             "path": str(route_end_payload.get("path") or ""),
+            "decision_summary": str(route_end_payload.get("decision_summary") or ""),
+            "command_intent": str(route_end_payload.get("command_intent") or ""),
+            "strategist_invocation": str(route_end_payload.get("strategist_invocation") or ""),
+            "llm_policy": str(route_end_payload.get("llm_policy") or ""),
+            "no_trade_reason_code": str(route_end_payload.get("no_trade_reason_code") or ""),
+            "shadow_assessment_summary": str(route_end_payload.get("shadow_assessment_summary") or ""),
+            "shadow_used": bool(route_end_payload.get("shadow_used")),
+            "shadow_reason_code": str(route_end_payload.get("shadow_reason_code") or ""),
+            "source_priority": list(route_end_payload.get("source_priority") or []),
+            "strategist_fallback_used": bool(route_end_payload.get("strategist_fallback_used")),
         },
         "strategist": {
             "news_source": news_source,
@@ -549,6 +649,10 @@ def generate_agent_pipeline_trace_report(
             "scanner_source_policy": dict(strategist_summary_payload.get("scanner_source_policy") or {}),
             "monitor_guidance": str(strategist_summary_payload.get("monitor_guidance") or ""),
             "risk_tone": str(strategist_summary_payload.get("risk_tone") or ""),
+            "selected_playbook": str(strategist_summary_payload.get("selected_playbook") or strategist_summary_payload.get("playbook") or ""),
+            "strategy_summary": str(strategist_summary_payload.get("strategy_summary") or ""),
+            "shadow_used": bool(strategist_summary_payload.get("shadow_used")),
+            "strategist_fallback_used": bool(strategist_summary_payload.get("strategist_fallback_used")),
         },
         "scanner": {
             "candidate_source": str(scanner_summary_payload.get("candidate_source") or scanner_raw.get("candidate_source") or ""),
@@ -585,6 +689,12 @@ def generate_agent_pipeline_trace_report(
             ),
             "scanner_source_policy": dict(scanner_source_policy or {}),
             "candidate_preview": [c for c in scanner_candidates[:10] if isinstance(c, dict)],
+            "runner_up_symbol": str(scanner_trace.get("runner_up_symbol") or scanner_summary_payload.get("runner_up_symbol") or ""),
+            "selection_basis": dict(scanner_trace.get("selection_basis") or {}),
+            "ranking_factors": list(scanner_trace.get("ranking_factors") or []),
+            "rejected_candidates": list(scanner_trace.get("rejected_candidates") or []),
+            "shadow_used": bool(scanner_trace.get("shadow_used")),
+            "strategist_fallback_used": bool(scanner_trace.get("strategist_fallback_used")),
         },
         "monitor": {
             "selected_symbol": str(monitor_summary_payload.get("selected_symbol") or ""),
@@ -600,6 +710,14 @@ def generate_agent_pipeline_trace_report(
             "sell_cooldown_blocked": bool(monitor_trace.get("sell_cooldown_blocked")),
             "exit_triggered": bool(monitor_summary_payload.get("exit_triggered")),
             "strategy_frame_adjustments": list(monitor_trace.get("strategy_frame_adjustments") or []),
+            "decision": str(monitor_summary_payload.get("decision") or ""),
+            "action": str(monitor_summary_payload.get("action") or ""),
+            "entry_check_summary": str(monitor_trace.get("entry_check_summary") or ""),
+            "entry_blockers": list(monitor_trace.get("entry_blockers") or []),
+            "timing_assessment": dict(monitor_trace.get("timing_assessment") or {}),
+            "exit_trigger_basis": dict(monitor_trace.get("exit_trigger_basis") or {}),
+            "shadow_used": bool(monitor_trace.get("shadow_used")),
+            "strategist_fallback_used": bool(monitor_trace.get("strategist_fallback_used")),
         },
         "supervisor": {
             "verdict": str(supervisor_trace.get("verdict") or ""),
@@ -641,6 +759,8 @@ def generate_agent_pipeline_trace_report(
             "reporter_analysis_path": reporter_analysis_path,
         },
     }
+    out["reasoning_trace"] = _build_reasoning_trace(out)
+    out["reasoning_provenance"] = _build_reasoning_provenance(out)
 
     report_dir.mkdir(parents=True, exist_ok=True)
     safe_run = re.sub(r"[^a-zA-Z0-9_-]+", "", rid)[:20] or "run"

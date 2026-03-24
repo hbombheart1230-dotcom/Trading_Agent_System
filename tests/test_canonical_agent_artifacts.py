@@ -140,6 +140,9 @@ def test_commander_runtime_writes_commander_artifact(tmp_path: Path, monkeypatch
     assert isinstance(commander.get("open_position_symbols"), list)
     assert isinstance(commander.get("incident_state"), dict)
     assert isinstance(commander.get("portfolio_preflight_result"), dict)
+    assert isinstance(commander.get("commander_decision"), dict)
+    assert commander.get("shadow_used") in {True, False}
+    assert isinstance(commander.get("source_priority"), list)
     assert "session_type" in commander
     assert "agent_invocation_plan" in commander
     assert "final_runtime_path" in commander
@@ -157,6 +160,9 @@ def test_commander_runtime_writes_commander_artifact(tmp_path: Path, monkeypatch
     assert isinstance(commander_shadow.get("post_monitor_assessment"), dict)
     assert isinstance(commander_shadow.get("end_of_cycle_summary"), dict)
     assert commander_shadow.get("shadow_only") is True
+    assert commander_shadow.get("integrated_into_commander_decision") is True
+    assert commander_shadow.get("integration_version") == "phase1_2"
+    assert commander_shadow.get("integration_role") == "upstream_assessment"
 
 
 def test_commander_runtime_writes_artifact_when_cooldown_blocks_execution(tmp_path: Path, monkeypatch) -> None:

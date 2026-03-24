@@ -514,7 +514,7 @@ def _resolve_exit_policy_config(policy: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, str]:
+def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output_raw = state.get("strategist_output")
     strategist_output = (
         coerce_strategist_output(strategist_output_raw)
@@ -531,10 +531,26 @@ def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, str]:
         if isinstance(strategy_policy.get("market_policy"), dict)
         else {}
     )
+    commander_context = (
+        dict(strategy_policy.get("commander_context") or {})
+        if isinstance(strategy_policy.get("commander_context"), dict)
+        else {}
+    )
+    strategist_plan = (
+        dict(strategy_policy.get("strategist_plan") or {})
+        if isinstance(strategy_policy.get("strategist_plan"), dict)
+        else {}
+    )
+    policy_provenance = (
+        dict(strategy_policy.get("provenance") or {})
+        if isinstance(strategy_policy.get("provenance"), dict)
+        else {}
+    )
     return {
         "playbook": str(
             state.get("playbook")
             or market_policy.get("playbook")
+            or strategist_plan.get("selected_playbook")
             or strategist_output.get("playbook")
             or ""
         ).strip().lower(),
@@ -556,6 +572,114 @@ def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, str]:
             or strategist_output.get("trade_aggressiveness")
             or ""
         ).strip().lower(),
+        "commander_context": commander_context,
+        "strategist_plan": strategist_plan,
+        "policy_provenance": policy_provenance,
+    }
+
+
+def _build_monitor_policy_trace(
+    *,
+    commander_context: Dict[str, Any],
+    strategist_plan: Dict[str, Any],
+    policy_provenance: Dict[str, Any],
+    entry_info: Dict[str, Any],
+    exit_info: Dict[str, Any],
+    current_reason: str,
+) -> Dict[str, Any]:
+    consumed_fields: List[str] = []
+    for key in (
+        "monitor_mission",
+        "flow_instruction",
+        "command_intent",
+        "risk_mode",
+        "no_trade_reason_code",
+        "llm_policy",
+        "source_priority",
+    ):
+        value = commander_context.get(key)
+        if value not in (None, "", [], {}):
+            consumed_fields.append(key)
+    commander_context_consumed = bool(consumed_fields)
+
+    strategy_fields: List[str] = []
+    for key in ("selected_playbook", "entry_plan", "exit_plan", "symbol_constraints", "strategy_summary"):
+        value = strategist_plan.get(key)
+        if value not in (None, "", [], {}):
+            strategy_fields.append(key)
+
+    flow_instruction = str(commander_context.get("flow_instruction") or "").strip()
+    no_trade_reason_code = str(commander_context.get("no_trade_reason_code") or "").strip()
+    monitor_mission = str(commander_context.get("monitor_mission") or "").strip()
+    entry_plan = dict(strategist_plan.get("entry_plan") or {})
+    exit_plan = dict(strategist_plan.get("exit_plan") or {})
+
+    entry_blockers = list(
+        dict.fromkeys(
+            [
+                no_trade_reason_code,
+                str(entry_info.get("guard_reason") or "").strip(),
+                str(entry_info.get("reason") or "").strip(),
+                *[str(x or "").strip() for x in list(entry_info.get("failed_checks") or []) if str(x or "").strip()],
+            ]
+        )
+    )
+    entry_blockers = [item for item in entry_blockers if item][:8]
+
+    summary_parts: List[str] = []
+    if monitor_mission:
+        summary_parts.append(f"mission={monitor_mission}")
+    if flow_instruction:
+        summary_parts.append(f"flow={flow_instruction}")
+    if str(strategist_plan.get("selected_playbook") or "").strip():
+        summary_parts.append(f"playbook={str(strategist_plan.get('selected_playbook') or '').strip()}")
+    if current_reason:
+        summary_parts.append(f"reason={current_reason}")
+
+    return {
+        "commander_context_consumed": commander_context_consumed,
+        "consumed_fields": consumed_fields + strategy_fields,
+        "flow_instruction_applied": bool(flow_instruction),
+        "no_trade_reason_applied": bool(no_trade_reason_code),
+        "shadow_used": bool(
+            commander_context.get("shadow_used")
+            if commander_context.get("shadow_used") is not None
+            else policy_provenance.get("shadow_used")
+        ),
+        "strategist_fallback_used": bool(
+            commander_context.get("strategist_fallback_used")
+            if commander_context.get("strategist_fallback_used") is not None
+            else policy_provenance.get("strategist_fallback_used")
+        ),
+        "policy_ref": {
+            "monitor_mission": monitor_mission,
+            "flow_instruction": flow_instruction,
+            "command_intent": str(commander_context.get("command_intent") or ""),
+            "risk_mode": str(commander_context.get("risk_mode") or ""),
+            "no_trade_reason_code": no_trade_reason_code,
+            "llm_policy": str(commander_context.get("llm_policy") or ""),
+            "source_priority": list(commander_context.get("source_priority") or []),
+            "selected_playbook": str(strategist_plan.get("selected_playbook") or ""),
+            "entry_plan": entry_plan,
+            "exit_plan": exit_plan,
+            "symbol_constraints": dict(strategist_plan.get("symbol_constraints") or {}),
+            "strategy_summary": str(strategist_plan.get("strategy_summary") or ""),
+        },
+        "entry_check_summary": " | ".join(summary_parts) if summary_parts else str(current_reason or entry_info.get("reason") or ""),
+        "entry_blockers": entry_blockers,
+        "timing_assessment": {
+            "entry_pattern": str(entry_info.get("pattern") or ""),
+            "entry_reason": str(entry_info.get("reason") or ""),
+            "entry_plan": entry_plan,
+            "monitor_mission": monitor_mission,
+            "strategy_summary": str(strategist_plan.get("strategy_summary") or ""),
+        },
+        "exit_trigger_basis": {
+            "exit_reason": str(exit_info.get("reason") or ""),
+            "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
+            "exit_plan": exit_plan,
+            "monitor_mission": monitor_mission,
+        },
     }
 
 
@@ -1874,6 +1998,21 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     block_buy_open_position = _resolve_block_buy_when_open_position(state, policy, monitor_policy)
     post_exit_cooldown_sec = _resolve_post_exit_cooldown_sec(state, policy, monitor_policy)
     strategy_frame = _extract_monitor_strategy_frame(state)
+    commander_context = (
+        dict(strategy_frame.get("commander_context") or {})
+        if isinstance(strategy_frame.get("commander_context"), dict)
+        else {}
+    )
+    strategist_plan = (
+        dict(strategy_frame.get("strategist_plan") or {})
+        if isinstance(strategy_frame.get("strategist_plan"), dict)
+        else {}
+    )
+    policy_provenance = (
+        dict(strategy_frame.get("policy_provenance") or {})
+        if isinstance(strategy_frame.get("policy_provenance"), dict)
+        else {}
+    )
     buy_blocked_open_position = False
     buy_blocked_post_exit_cooldown = False
     post_exit_cooldown_remaining_sec = 0
@@ -1935,6 +2074,22 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "monitor_guidance": str(strategist_output.get("monitor_guidance") or ""),
                     "risk_tone": str(strategist_output.get("risk_tone") or ""),
                     "trade_aggressiveness": str(strategist_output.get("trade_aggressiveness") or ""),
+                },
+                "commander_context": {
+                    "monitor_mission": str(commander_context.get("monitor_mission") or ""),
+                    "flow_instruction": str(commander_context.get("flow_instruction") or ""),
+                    "command_intent": str(commander_context.get("command_intent") or ""),
+                    "risk_mode": str(commander_context.get("risk_mode") or ""),
+                    "no_trade_reason_code": str(commander_context.get("no_trade_reason_code") or ""),
+                    "llm_policy": str(commander_context.get("llm_policy") or ""),
+                    "source_priority": list(commander_context.get("source_priority") or []),
+                },
+                "strategist_plan": {
+                    "selected_playbook": str(strategist_plan.get("selected_playbook") or ""),
+                    "entry_plan": dict(strategist_plan.get("entry_plan") or {}),
+                    "exit_plan": dict(strategist_plan.get("exit_plan") or {}),
+                    "symbol_constraints": dict(strategist_plan.get("symbol_constraints") or {}),
+                    "strategy_summary": str(strategist_plan.get("strategy_summary") or ""),
                 },
             },
             decision_link={"stage": "monitor_input_snapshot"},
@@ -2584,6 +2739,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     thresholds = dict(exit_info.get("thresholds") or {}) if isinstance(exit_info.get("thresholds"), dict) else {}
     entry_metrics = dict(entry_info.get("metrics") or {}) if isinstance(entry_info.get("metrics"), dict) else {}
     entry_thresholds = dict(entry_info.get("thresholds") or {}) if isinstance(entry_info.get("thresholds"), dict) else {}
+    monitor_policy_trace = _build_monitor_policy_trace(
+        commander_context=commander_context,
+        strategist_plan=strategist_plan,
+        policy_provenance=policy_provenance,
+        entry_info=entry_info,
+        exit_info=exit_info,
+        current_reason=current_reason,
+    )
     pnl_ratio = _to_float(exit_info.get("pnl_ratio")) if exit_info.get("pnl_ratio") not in (None, "") else None
     threshold_snapshot = {
         "current_price": exit_info.get("price"),
@@ -2701,6 +2864,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "failed_checks": list(entry_info.get("failed_checks") or []),
         "primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),
         "threshold_margins": dict(entry_info.get("threshold_margins") or {}),
+        "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
+        "entry_check_summary": str(monitor_policy_trace.get("entry_check_summary") or ""),
+        "entry_blockers": list(monitor_policy_trace.get("entry_blockers") or []),
+        "commander_context_consumed": bool(monitor_policy_trace.get("commander_context_consumed")),
+        "consumed_fields": list(monitor_policy_trace.get("consumed_fields") or []),
+        "flow_instruction_applied": bool(monitor_policy_trace.get("flow_instruction_applied")),
+        "no_trade_reason_applied": bool(monitor_policy_trace.get("no_trade_reason_applied")),
+        "shadow_used": bool(monitor_policy_trace.get("shadow_used")),
+        "strategist_fallback_used": bool(monitor_policy_trace.get("strategist_fallback_used")),
     }
     state["monitor_entry_decision_detail"] = dict(entry_decision_detail)
     _emit_monitor_event(
@@ -2724,6 +2896,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "sell_submitted": bool(sell_submitted),
         "sell_skipped_reason": sell_skipped_reason,
         "final_reason": current_reason,
+        "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
+        "exit_trigger_basis": dict(monitor_policy_trace.get("exit_trigger_basis") or {}),
+        "commander_context_consumed": bool(monitor_policy_trace.get("commander_context_consumed")),
+        "consumed_fields": list(monitor_policy_trace.get("consumed_fields") or []),
+        "shadow_used": bool(monitor_policy_trace.get("shadow_used")),
+        "strategist_fallback_used": bool(monitor_policy_trace.get("strategist_fallback_used")),
     }
     state["monitor_exit_decision_detail"] = dict(exit_decision_detail)
     _emit_monitor_event(
@@ -2751,6 +2929,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         str((state.get("monitor_output") or {}).get("entry_exit_reason") or "").strip(),
     ]
     reason_chain = [x for x in reason_chain if x]
+    if isinstance(state.get("monitor_output"), dict):
+        state["monitor_output"]["policy_ref"] = dict(monitor_policy_trace.get("policy_ref") or {})
+        state["monitor_output"]["entry_check_summary"] = str(monitor_policy_trace.get("entry_check_summary") or "")
+        state["monitor_output"]["entry_blockers"] = list(monitor_policy_trace.get("entry_blockers") or [])
+        state["monitor_output"]["timing_assessment"] = dict(monitor_policy_trace.get("timing_assessment") or {})
+        state["monitor_output"]["exit_trigger_basis"] = dict(monitor_policy_trace.get("exit_trigger_basis") or {})
+        state["monitor_output"]["commander_context_consumed"] = bool(monitor_policy_trace.get("commander_context_consumed"))
+        state["monitor_output"]["consumed_fields"] = list(monitor_policy_trace.get("consumed_fields") or [])
+        state["monitor_output"]["shadow_used"] = bool(monitor_policy_trace.get("shadow_used"))
+        state["monitor_output"]["strategist_fallback_used"] = bool(monitor_policy_trace.get("strategist_fallback_used"))
     state["monitor_evaluation"] = {
         "triggered_rules": list(triggered_rules),
         "blocked_rules": list(dict.fromkeys(blocked_rules))[:8],
@@ -2760,6 +2948,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_passed_checks": list(entry_info.get("passed_checks") or []),
         "entry_failed_checks": list(entry_info.get("failed_checks") or []),
         "entry_threshold_margins": dict(entry_info.get("threshold_margins") or {}),
+        "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
+        "entry_check_summary": str(monitor_policy_trace.get("entry_check_summary") or ""),
+        "entry_blockers": list(monitor_policy_trace.get("entry_blockers") or []),
+        "timing_assessment": dict(monitor_policy_trace.get("timing_assessment") or {}),
+        "commander_context_consumed": bool(monitor_policy_trace.get("commander_context_consumed")),
+        "consumed_fields": list(monitor_policy_trace.get("consumed_fields") or []),
+        "flow_instruction_applied": bool(monitor_policy_trace.get("flow_instruction_applied")),
+        "no_trade_reason_applied": bool(monitor_policy_trace.get("no_trade_reason_applied")),
+        "shadow_used": bool(monitor_policy_trace.get("shadow_used")),
+        "strategist_fallback_used": bool(monitor_policy_trace.get("strategist_fallback_used")),
     }
     state["monitor_action_decision"] = {
         "decision": str((state.get("monitor_output") or {}).get("intent_side") or "NOOP"),
@@ -2769,6 +2967,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
         "triggered_rules": list(triggered_rules),
         "blocked_rules": list(dict.fromkeys(blocked_rules))[:8],
+        "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
+        "entry_check_summary": str(monitor_policy_trace.get("entry_check_summary") or ""),
+        "entry_blockers": list(monitor_policy_trace.get("entry_blockers") or []),
+        "exit_trigger_basis": dict(monitor_policy_trace.get("exit_trigger_basis") or {}),
+        "commander_context_consumed": bool(monitor_policy_trace.get("commander_context_consumed")),
+        "consumed_fields": list(monitor_policy_trace.get("consumed_fields") or []),
+        "shadow_used": bool(monitor_policy_trace.get("shadow_used")),
+        "strategist_fallback_used": bool(monitor_policy_trace.get("strategist_fallback_used")),
     }
     _emit_monitor_event(
         state,

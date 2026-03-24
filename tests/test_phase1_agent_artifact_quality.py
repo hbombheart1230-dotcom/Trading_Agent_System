@@ -35,6 +35,24 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
             "fear_index": {"level": 19.5, "level_pressure": 0.12},
             "stress_flags": ["breadth_recovery"],
         },
+        "commander_decision": {
+            "command_intent": "OBSERVE_ONLY",
+            "strategist_invocation": "RUN",
+            "market_regime": "risk_on",
+            "session_bias": "active_selection",
+            "risk_mode": "offensive",
+            "allowed_playbooks": ["breakout", "pullback"],
+            "banned_playbooks": ["defensive"],
+            "scanner_mission": "Prioritize liquid momentum leaders.",
+            "monitor_mission": "Confirm continuation quickly.",
+            "llm_policy": "allow",
+            "no_trade_reason_code": "NONE",
+            "observations": {"market_changed": True, "last_llm_status": "ok"},
+            "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
+            "shadow_used": True,
+            "strategist_fallback_used": False,
+            "decision_summary": "Commander allows offensive momentum scanning.",
+        },
         "global_signal": {
             "score": 0.24,
             "fear_index": {"level": 19.5, "level_pressure": 0.12},
@@ -45,13 +63,63 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
             "playbook": "breakout",
             "themes": ["semiconductor"],
             "avoid_themes": ["high_gap_speculative"],
-            "strategy_policy": {"market_policy": {"playbook": "breakout"}},
+            "strategy_policy": {
+                "market_policy": {"playbook": "breakout"},
+                "commander_context": {
+                    "source": "commander_decision",
+                    "market_regime": "risk_on",
+                    "session_bias": "active_selection",
+                    "risk_mode": "offensive",
+                    "decision_summary": "Commander allows offensive momentum scanning.",
+                },
+                "strategist_plan": {
+                    "selected_playbook": "breakout",
+                    "candidate_hypotheses": [{"symbol": "005930", "hypothesis": "breakout setup candidate"}],
+                    "symbol_constraints": {"candidate_symbols_hint": ["005930", "000660", "003280"]},
+                    "entry_plan": {"setup_family": "breakout"},
+                    "exit_plan": {"adaptive_exit": {"take_profit_pct": 0.03}},
+                    "strategy_summary": "Strategist refined commander context into breakout plan.",
+                },
+                "provenance": {
+                    "market_policy_owner": "commander",
+                    "scanner_policy_owner": "strategist",
+                    "monitor_policy_owner": "strategist",
+                    "decision_policy_owner": "strategist",
+                    "merged_from": ["commander_decision", "strategist_node"],
+                },
+            },
             "monitor_guidance": "hold_through_noise",
             "risk_tone": "normal",
             "trade_aggressiveness": "medium",
             "market_context_inputs": {"index_trend": 0.3},
             "news_query_reasoning": "macro and sector alignment",
             "news_query_targets": ["semiconductor"],
+            "selected_playbook": "breakout",
+            "candidate_hypotheses": [{"symbol": "005930", "hypothesis": "breakout setup candidate"}],
+            "symbol_constraints": {"candidate_symbols_hint": ["005930", "000660", "003280"]},
+            "entry_plan": {"setup_family": "breakout"},
+            "exit_plan": {"adaptive_exit": {"take_profit_pct": 0.03}},
+            "strategy_summary": "Strategist refined commander context into breakout plan.",
+            "policy_provenance": {
+                "market_policy_owner": "commander",
+                "scanner_policy_owner": "strategist",
+            },
+            "commander_context_ref": {
+                "source": "commander_decision",
+                "market_regime": "risk_on",
+                "session_bias": "active_selection",
+                "risk_mode": "offensive",
+                "command_intent": "OBSERVE_ONLY",
+                "strategist_invocation": "RUN",
+                "llm_policy": "allow",
+                "no_trade_reason_code": "NONE",
+                "decision_summary": "Commander allows offensive momentum scanning.",
+            },
+            "commander_invocation_hint": "RUN",
+            "commander_llm_policy": "allow",
+            "commander_no_trade_reason_code": "NONE",
+            "shadow_used": True,
+            "strategist_fallback_used": False,
         },
         "strategist_llm": {
             "status": "ok",
@@ -84,6 +152,19 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
     assert artifact["candidate_symbols_hint_missing"] is False
     assert artifact["llm_trace"]["prompt_hash"] == "prompt-hash"
     assert artifact["llm_trace"]["response_hash"] == "response-hash"
+    assert artifact["commander_context_ref"]["market_regime"] == "risk_on"
+    assert artifact["selected_playbook"] == "breakout"
+    assert artifact["candidate_hypotheses"][0]["symbol"] == "005930"
+    assert artifact["symbol_plan"]["candidate_symbols_hint"] == ["005930", "000660", "003280"]
+    assert artifact["entry_plan"]["setup_family"] == "breakout"
+    assert artifact["exit_plan"]["adaptive_exit"]["take_profit_pct"] == 0.03
+    assert artifact["policy_provenance"]["market_policy_owner"] == "commander"
+    assert artifact["commander_invocation_hint"] == "RUN"
+    assert artifact["commander_llm_policy"] == "allow"
+    assert artifact["commander_no_trade_reason_code"] == "NONE"
+    assert artifact["shadow_used"] is True
+    assert artifact["strategist_fallback_used"] is False
+    assert "Strategist refined commander context" in artifact["strategy_summary"]
 
 
 def test_scanner_artifact_contains_filter_funnel_and_selection_reason_detail() -> None:
@@ -341,9 +422,40 @@ def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
         "started_at": "2026-03-18T10:00:00+00:00",
         "runtime_phase": "session",
         "runtime_status": "ok",
+        "commander_decision": {
+            "command_intent": "OBSERVE_ONLY",
+            "strategist_invocation": "SKIP",
+            "market_regime": "neutral",
+            "session_bias": "position_management",
+            "risk_mode": "balanced",
+            "allowed_playbooks": ["pullback", "defensive"],
+            "banned_playbooks": ["reversal"],
+            "scanner_mission": "Keep candidate refresh narrow while positions are open.",
+            "monitor_mission": "Focus on hold versus exit confirmation first.",
+            "llm_policy": "allow_if_context_changed",
+            "no_trade_reason_code": "POSITION_ALREADY_OPEN",
+            "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
+            "shadow_used": True,
+            "strategist_fallback_used": False,
+            "decision_summary": "Commander prioritizes managing open exposure before new entries.",
+        },
+        "commander_shadow_runtime": {
+            "strategist_executed": False,
+            "llm_called_by_strategist": False,
+            "used_cached_strategist": False,
+            "market_changed": False,
+            "repeated_same_context": True,
+            "monitor_decision": "NOOP",
+            "executor_action": "",
+            "executor_status": "",
+            "prior_context": {"selected_symbol": "005930", "playbook": "pullback", "market_regime": "neutral"},
+        },
         "runtime_fast_path": {"reason": "holding_position_monitor_only"},
         "portfolio_snapshot": {"positions": [{"symbol": "005930"}, {"symbol": "000660"}], "cash": 1000},
         "portfolio_preflight": {"status": "ok", "blocked": False},
+        "monitor": {"open_position_count": 2, "buy_blocked_open_position": True},
+        "monitor_output": {"selected_symbol": "005930", "intent_side": "NOOP", "entry_exit_reason": "buy_blocked_open_position"},
+        "selected": {"symbol": "005930", "score_total": 0.78},
     }
     artifact = build_commander_output_artifact(
         state,
@@ -360,6 +472,19 @@ def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
     assert artifact.get("runtime_phase") == "session"
     assert isinstance(artifact.get("route_reason_codes"), list)
     assert artifact.get("cooldown_applied") is False
+    assert artifact.get("market_regime") == "neutral"
+    assert artifact.get("session_bias") == "position_management"
+    assert artifact.get("risk_mode") == "balanced"
+    assert artifact.get("allowed_playbooks") == ["pullback", "defensive"]
+    assert artifact.get("scanner_mission") == "Keep candidate refresh narrow while positions are open."
+    assert artifact.get("llm_invocation_policy") == "allow_if_context_changed"
+    assert "open exposure" in str(artifact.get("decision_summary") or "")
+    assert artifact.get("shadow_used") is True
+    assert artifact.get("shadow_reason_code") == "POSITION_ALREADY_OPEN"
+    assert artifact.get("shadow_alignment") == "aligned"
+    assert artifact.get("source_priority")[0] == "shadow_commander"
+    assert artifact.get("strategist_fallback_used") is False
+    assert isinstance(artifact.get("commander_decision"), dict)
 
 
 def test_commander_artifact_routes_blocked_with_cooldown() -> None:
@@ -446,6 +571,9 @@ def test_commander_shadow_artifact_marks_position_already_open_without_override(
     assert artifact["pre_strategist_shadow_snapshot"]["strategist_action_recommendation"] == "SKIP"
     assert artifact["post_monitor_assessment"]["monitor_decision"] == "WAIT"
     assert artifact["end_of_cycle_summary"]["next_action_recommendation"] == "HOLD_OBSERVE"
+    assert artifact["integrated_into_commander_decision"] is True
+    assert artifact["integration_version"] == "phase1_2"
+    assert artifact["integration_role"] == "upstream_assessment"
 
 
 def test_commander_shadow_artifact_includes_monitor_gate_details_for_wait_cycle() -> None:

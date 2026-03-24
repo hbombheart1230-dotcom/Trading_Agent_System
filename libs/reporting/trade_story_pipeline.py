@@ -4,6 +4,13 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
+from libs.reporting.reasoning_trace import (
+    build_reasoning_provenance,
+    build_reasoning_trace_from_summaries,
+    normalize_reasoning_provenance_aliases,
+    normalize_reasoning_trace_aliases,
+)
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -135,6 +142,18 @@ def _safe_ref_map(values: Any) -> Dict[str, str]:
     return out
 
 
+def _resolve_commander_source_ref(refs: Dict[str, Any], section_provenance: Dict[str, Any]) -> str:
+    ref_map = _safe_ref_map(refs)
+    section_map = dict(section_provenance or {})
+    return str(
+        ref_map.get("canonical_commander_json")
+        or ref_map.get("canonical_commander")
+        or (section_map.get("market_context_human") or {}).get("artifact_path")
+        or (section_map.get("operator_conclusion_human") or {}).get("artifact_path")
+        or ""
+    )
+
+
 def build_commander_evidence(commander_payload: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(commander_payload or {})
     return {
@@ -188,6 +207,67 @@ def build_lifecycle_bundle(
         or str(exit_obj.get("reason_human") or "")
     )
     monitor_snapshot = dict(story_input.get("monitor_reason_human") or {})
+    derived_reasoning_trace = build_reasoning_trace_from_summaries(
+        commander_summary=dict(commander_summary or {}),
+        strategist_summary=dict(strategist_summary or {}),
+        scanner_summary=dict(scanner_summary or {}),
+        monitor_summary=dict(monitor_summary or {}),
+        market_context_human=dict(story_input.get("market_context_human") or {}),
+        scanner_reason_human=dict(story_input.get("scanner_reason_human") or {}),
+        monitor_reason_human=dict(story_input.get("monitor_reason_human") or {}),
+        operator_conclusion_human=dict(story_input.get("operator_conclusion_human") or {}),
+    )
+    reasoning_trace = normalize_reasoning_trace_aliases(story_input, fallback=derived_reasoning_trace)
+    section_provenance = dict(story_input.get("section_provenance") or {})
+    evidence_provenance = dict(story_input.get("evidence_provenance") or {})
+    refs = _safe_ref_map({**dict(canonical_refs or {}), **dict(artifact_links or {})})
+    derived_reasoning_provenance = build_reasoning_provenance(
+        commander_context_source="canonical" if refs.get("canonical_commander_json") or refs.get("canonical_commander") else str(evidence_provenance.get("commander") or ""),
+        strategist_plan_source=str(
+            (section_provenance.get("market_context_human") or {}).get("source")
+            or evidence_provenance.get("strategist")
+            or ("canonical" if refs.get("canonical_strategist_json") or refs.get("canonical_strategist") else "")
+        ),
+        scanner_reason_source=str(
+            (section_provenance.get("scanner_reason_human") or {}).get("source")
+            or evidence_provenance.get("scanner")
+            or ("canonical" if refs.get("canonical_scanner_json") or refs.get("canonical_scanner") else "")
+        ),
+        monitor_reason_source=str(
+            (section_provenance.get("monitor_reason_human") or {}).get("source")
+            or evidence_provenance.get("monitor")
+            or ("canonical" if refs.get("canonical_monitor_json") or refs.get("canonical_monitor") else "")
+        ),
+        commander_source_ref=_resolve_commander_source_ref(refs, section_provenance),
+        strategist_source_ref=str(
+            refs.get("canonical_strategist_json")
+            or refs.get("canonical_strategist")
+            or (section_provenance.get("market_context_human") or {}).get("artifact_path")
+            or ""
+        ),
+        scanner_source_ref=str(
+            refs.get("canonical_scanner_json")
+            or refs.get("canonical_scanner")
+            or (section_provenance.get("scanner_reason_human") or {}).get("artifact_path")
+            or ""
+        ),
+        monitor_source_ref=str(
+            refs.get("canonical_monitor_json")
+            or refs.get("canonical_monitor")
+            or (section_provenance.get("monitor_reason_human") or {}).get("artifact_path")
+            or ""
+        ),
+        shadow_used=bool((commander_summary or {}).get("shadow_used")),
+        strategist_fallback_used=bool(
+            (commander_summary or {}).get("strategist_fallback_used")
+            or (strategist_summary or {}).get("strategist_fallback_used")
+        ),
+        source_priority=list((commander_summary or {}).get("source_priority") or []),
+    )
+    reasoning_provenance = normalize_reasoning_provenance_aliases(
+        story_input,
+        fallback=derived_reasoning_provenance,
+    )
     return {
         "schema_version": "lifecycle_bundle.v1",
         "day": str(day or ""),
@@ -203,6 +283,8 @@ def build_lifecycle_bundle(
         "scanner_summary": dict(scanner_summary or {}),
         "monitor_summary": dict(monitor_summary or {}),
         "commander_summary": dict(commander_summary or {}),
+        "reasoning_trace": reasoning_trace,
+        "reasoning_provenance": reasoning_provenance,
         "trade_outcome": {
             "pnl": monitor_snapshot.get("pnl"),
             "return_pct": monitor_snapshot.get("current_drawdown"),
@@ -1479,6 +1561,14 @@ def build_trade_story_input(
 ) -> Dict[str, Any]:
     story_contract = bundle_out.get("story_contract") if isinstance(bundle_out.get("story_contract"), dict) else {}
     section_provenance = build_section_provenance(bundle_out)
+    canonical_agent_artifacts = dict(bundle_out.get("canonical_agent_artifacts") or {})
+    evidence_provenance = dict(bundle_out.get("evidence_provenance") or {})
+    # Reporting layers prefer the canonical reasoning snapshot when it is already
+    # mirrored into bundle inputs; otherwise they derive a compatible mirror.
+    bundle_reasoning_trace = bundle_out.get("reasoning_trace") if isinstance(bundle_out.get("reasoning_trace"), dict) else {}
+    bundle_reasoning_provenance = (
+        bundle_out.get("reasoning_provenance") if isinstance(bundle_out.get("reasoning_provenance"), dict) else {}
+    )
     lifecycle = (
         trade_lifecycle
         if isinstance(trade_lifecycle, dict)
@@ -1557,6 +1647,73 @@ def build_trade_story_input(
                 "watch_next": [f"Lifecycle status is {status}", "Monitor posture changes", "Macro/news regime changes"],
                 "thesis_invalidation": ["stop-loss breach", "monitor/scanner divergence", "negative macro shift"],
             }
+        derived_reasoning_trace = build_reasoning_trace_from_summaries(
+            commander_summary=dict(bundle_out.get("commander_summary") or {}),
+            strategist_summary=dict(bundle_out.get("strategist_summary") or {}),
+            scanner_summary=dict(bundle_out.get("scanner_summary") or {}),
+            monitor_summary=dict(bundle_out.get("monitor_summary") or {}),
+            market_context_human=market_context_human,
+            scanner_reason_human=scanner_reason_human,
+            monitor_reason_human=monitor_reason_human,
+            operator_conclusion_human=operator_conclusion_human,
+        )
+        reasoning_trace = normalize_reasoning_trace_aliases(
+            {
+                "reasoning_trace": bundle_reasoning_trace,
+                "latest_reasoning_trace": bundle_out.get("latest_reasoning_trace"),
+            },
+            fallback=derived_reasoning_trace,
+        )
+        derived_reasoning_provenance = build_reasoning_provenance(
+            commander_context_source="canonical" if canonical_agent_artifacts.get("canonical_commander_json") or canonical_agent_artifacts.get("canonical_commander") else str(evidence_provenance.get("commander") or ""),
+            strategist_plan_source=str(
+                (section_provenance.get("market_context_human") or {}).get("source")
+                or evidence_provenance.get("strategist")
+                or ("canonical" if canonical_agent_artifacts.get("canonical_strategist_json") or canonical_agent_artifacts.get("canonical_strategist") else "")
+            ),
+            scanner_reason_source=str(
+                (section_provenance.get("scanner_reason_human") or {}).get("source")
+                or evidence_provenance.get("scanner")
+                or ("canonical" if canonical_agent_artifacts.get("canonical_scanner_json") or canonical_agent_artifacts.get("canonical_scanner") else "")
+            ),
+            monitor_reason_source=str(
+                (section_provenance.get("monitor_reason_human") or {}).get("source")
+                or evidence_provenance.get("monitor")
+                or ("canonical" if canonical_agent_artifacts.get("canonical_monitor_json") or canonical_agent_artifacts.get("canonical_monitor") else "")
+            ),
+            commander_source_ref=_resolve_commander_source_ref(canonical_agent_artifacts, section_provenance),
+            strategist_source_ref=str(
+                canonical_agent_artifacts.get("canonical_strategist_json")
+                or canonical_agent_artifacts.get("canonical_strategist")
+                or (section_provenance.get("market_context_human") or {}).get("artifact_path")
+                or ""
+            ),
+            scanner_source_ref=str(
+                canonical_agent_artifacts.get("canonical_scanner_json")
+                or canonical_agent_artifacts.get("canonical_scanner")
+                or (section_provenance.get("scanner_reason_human") or {}).get("artifact_path")
+                or ""
+            ),
+            monitor_source_ref=str(
+                canonical_agent_artifacts.get("canonical_monitor_json")
+                or canonical_agent_artifacts.get("canonical_monitor")
+                or (section_provenance.get("monitor_reason_human") or {}).get("artifact_path")
+                or ""
+            ),
+            shadow_used=bool((bundle_out.get("commander_summary") or {}).get("shadow_used")),
+            strategist_fallback_used=bool(
+                (bundle_out.get("commander_summary") or {}).get("strategist_fallback_used")
+                or (bundle_out.get("strategist_summary") or {}).get("strategist_fallback_used")
+            ),
+            source_priority=list((bundle_out.get("commander_summary") or {}).get("source_priority") or []),
+        )
+        reasoning_provenance = normalize_reasoning_provenance_aliases(
+            {
+                "reasoning_provenance": bundle_reasoning_provenance,
+                "latest_reasoning_trace_provenance": bundle_out.get("latest_reasoning_trace_provenance"),
+            },
+            fallback=derived_reasoning_provenance,
+        )
         return {
             "schema_version": "trade_story_input.v2",
             "day": str(bundle_out.get("day") or ""),
@@ -1615,16 +1772,85 @@ def build_trade_story_input(
             "strategist_evidence": dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
             "scanner_evidence": scanner_evidence,
             "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
-            "canonical_agent_artifacts": dict(bundle_out.get("canonical_agent_artifacts") or {}),
-            "evidence_provenance": dict(bundle_out.get("evidence_provenance") or {}),
+            "canonical_agent_artifacts": canonical_agent_artifacts,
+            "evidence_provenance": evidence_provenance,
             "section_provenance": dict(section_provenance),
+            "reasoning_trace": dict(reasoning_trace),
+            "reasoning_provenance": dict(reasoning_provenance),
             "evidence_source": "canonical" if any(
                 str(source or "").strip().lower() == "canonical"
-                for source in dict(bundle_out.get("evidence_provenance") or {}).values()
+                for source in evidence_provenance.values()
             ) else "direct_artifact",
             "ai_report_diagnostics": dict(bundle_out.get("ai_report_diagnostics") or {}),
         }
 
+    derived_reasoning_trace = build_reasoning_trace_from_summaries(
+        commander_summary=dict(bundle_out.get("commander_summary") or {}),
+        strategist_summary=dict(bundle_out.get("strategist_summary") or {}),
+        scanner_summary=dict(bundle_out.get("scanner_summary") or {}),
+        monitor_summary=dict(bundle_out.get("monitor_summary") or {}),
+        market_context_human=dict(bundle_out.get("market_context_human") or {}),
+        scanner_reason_human=dict(bundle_out.get("scanner_reason_human") or {}),
+        monitor_reason_human=dict(bundle_out.get("monitor_reason_human") or {}),
+        operator_conclusion_human=dict(bundle_out.get("operator_conclusion_human") or {}),
+    )
+    reasoning_trace = normalize_reasoning_trace_aliases(
+        {
+            "reasoning_trace": bundle_reasoning_trace,
+            "latest_reasoning_trace": bundle_out.get("latest_reasoning_trace"),
+        },
+        fallback=derived_reasoning_trace,
+    )
+    derived_reasoning_provenance = build_reasoning_provenance(
+        commander_context_source="canonical" if canonical_agent_artifacts.get("canonical_commander_json") or canonical_agent_artifacts.get("canonical_commander") else str(evidence_provenance.get("commander") or ""),
+        strategist_plan_source=str(
+            (section_provenance.get("market_context_human") or {}).get("source")
+            or evidence_provenance.get("strategist")
+            or ("canonical" if canonical_agent_artifacts.get("canonical_strategist_json") or canonical_agent_artifacts.get("canonical_strategist") else "")
+        ),
+        scanner_reason_source=str(
+            (section_provenance.get("scanner_reason_human") or {}).get("source")
+            or evidence_provenance.get("scanner")
+            or ("canonical" if canonical_agent_artifacts.get("canonical_scanner_json") or canonical_agent_artifacts.get("canonical_scanner") else "")
+        ),
+        monitor_reason_source=str(
+            (section_provenance.get("monitor_reason_human") or {}).get("source")
+            or evidence_provenance.get("monitor")
+            or ("canonical" if canonical_agent_artifacts.get("canonical_monitor_json") or canonical_agent_artifacts.get("canonical_monitor") else "")
+        ),
+        commander_source_ref=_resolve_commander_source_ref(canonical_agent_artifacts, section_provenance),
+        strategist_source_ref=str(
+            canonical_agent_artifacts.get("canonical_strategist_json")
+            or canonical_agent_artifacts.get("canonical_strategist")
+            or (section_provenance.get("market_context_human") or {}).get("artifact_path")
+            or ""
+        ),
+        scanner_source_ref=str(
+            canonical_agent_artifacts.get("canonical_scanner_json")
+            or canonical_agent_artifacts.get("canonical_scanner")
+            or (section_provenance.get("scanner_reason_human") or {}).get("artifact_path")
+            or ""
+        ),
+        monitor_source_ref=str(
+            canonical_agent_artifacts.get("canonical_monitor_json")
+            or canonical_agent_artifacts.get("canonical_monitor")
+            or (section_provenance.get("monitor_reason_human") or {}).get("artifact_path")
+            or ""
+        ),
+        shadow_used=bool((bundle_out.get("commander_summary") or {}).get("shadow_used")),
+        strategist_fallback_used=bool(
+            (bundle_out.get("commander_summary") or {}).get("strategist_fallback_used")
+            or (bundle_out.get("strategist_summary") or {}).get("strategist_fallback_used")
+        ),
+        source_priority=list((bundle_out.get("commander_summary") or {}).get("source_priority") or []),
+    )
+    reasoning_provenance = normalize_reasoning_provenance_aliases(
+        {
+            "reasoning_provenance": bundle_reasoning_provenance,
+            "latest_reasoning_trace_provenance": bundle_out.get("latest_reasoning_trace_provenance"),
+        },
+        fallback=derived_reasoning_provenance,
+    )
     return {
         "schema_version": "trade_story_input.v1",
         "day": str(bundle_out.get("day") or ""),
@@ -1656,12 +1882,14 @@ def build_trade_story_input(
         "strategist_evidence": dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
         "scanner_evidence": dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
         "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
-        "canonical_agent_artifacts": dict(bundle_out.get("canonical_agent_artifacts") or {}),
-        "evidence_provenance": dict(bundle_out.get("evidence_provenance") or {}),
+        "canonical_agent_artifacts": canonical_agent_artifacts,
+        "evidence_provenance": evidence_provenance,
         "section_provenance": dict(section_provenance),
+        "reasoning_trace": dict(reasoning_trace),
+        "reasoning_provenance": dict(reasoning_provenance),
         "evidence_source": "canonical" if any(
             str(source or "").strip().lower() == "canonical"
-            for source in dict(bundle_out.get("evidence_provenance") or {}).values()
+            for source in evidence_provenance.values()
         ) else "direct_artifact",
         "ai_report_diagnostics": dict(bundle_out.get("ai_report_diagnostics") or {}),
     }
