@@ -274,10 +274,39 @@ def _required_keys_for_agent(agent: str) -> List[str]:
     return out
 
 
+def _required_keys_for_artifact(obj: Dict[str, Any]) -> List[str]:
+    artifact = dict(obj or {}) if isinstance(obj, dict) else {}
+    agent = str(artifact.get("agent") or "").strip().lower()
+    mode = str(artifact.get("mode") or "").strip().lower()
+    if agent == "commander" and (mode == "shadow" or bool(artifact.get("shadow_only"))):
+        base = ["schema_version", "agent", "run_id", "day", "ts", "phase", "status"]
+        specific = [
+            "mode",
+            "decision",
+            "strategist_action_recommendation",
+            "llm_call_advice",
+            "suggested_action",
+            "next_action_recommendation",
+            "no_trade_reason_code",
+            "reason_summary",
+            "observations",
+            "actual_runtime",
+            "monitor_gate_details",
+            "context_delta_summary",
+            "pre_strategist_shadow_snapshot",
+            "post_strategist_assessment",
+            "post_monitor_assessment",
+            "end_of_cycle_summary",
+            "shadow_only",
+            "generated_at",
+        ]
+        return base + specific
+    return _required_keys_for_agent(agent)
+
+
 def validate_artifact(artifact: Dict[str, Any]) -> Dict[str, Any]:
     obj = dict(artifact or {}) if isinstance(artifact, dict) else {}
-    agent = str(obj.get("agent") or "").strip().lower()
-    expected = _required_keys_for_agent(agent)
+    expected = _required_keys_for_artifact(obj)
     present: List[str] = []
     missing: List[str] = []
     for key in expected:
@@ -663,16 +692,19 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         decision_status = "blocked"
     else:
         decision_status = "skipped"
-    primary_reason_code = _clip(
-        exit_detail.get("triggered_rule")
-        or exit_info.get("reason")
-        or entry_detail.get("reason")
-        or entry_info.get("guard_reason")
-        or entry_info.get("reason")
-        or monitor_output.get("entry_exit_reason")
-        or exit_info.get("monitor_reason"),
-        max_len=180,
-    )
+    if decision_phase == "no_intent" and open_position_count <= 0 and entry_reason_code:
+        primary_reason_raw = entry_reason_code
+    else:
+        primary_reason_raw = (
+            exit_detail.get("triggered_rule")
+            or exit_info.get("reason")
+            or entry_detail.get("reason")
+            or entry_info.get("guard_reason")
+            or entry_info.get("reason")
+            or monitor_output.get("entry_exit_reason")
+            or exit_info.get("monitor_reason")
+        )
+    primary_reason_code = _clip(primary_reason_raw, max_len=180)
     secondary_reason_codes = _dedupe_text(
         [text for text in blocked_rules + decision_reason_chain if text and text != primary_reason_code],
         limit=12,
@@ -1044,6 +1076,689 @@ def build_commander_output_artifact(
                 "portfolio_preflight": _dict(state.get("portfolio_preflight")),
                 "runtime_transition": _clip(state.get("runtime_transition"), max_len=80),
             },
+        }
+    )
+    artifact["validation"] = validate_artifact(artifact)
+    return artifact
+
+
+def _commander_shadow_has_open_order(state: Dict[str, Any]) -> Any:
+    monitor = _dict(state.get("monitor"))
+    order_lifecycle = _dict(monitor.get("order_lifecycle"))
+    if not order_lifecycle:
+        return None
+    stage = _clip(order_lifecycle.get("stage"), max_len=40).lower()
+    terminal = order_lifecycle.get("terminal")
+    if stage:
+        return stage not in {"filled", "cancelled", "canceled", "rejected"} and terminal is not True
+    if terminal in (True, False):
+        return not bool(terminal)
+    return None
+
+
+def _commander_shadow_actual_runtime(state: Dict[str, Any], *, path: str) -> Dict[str, Any]:
+    shadow_runtime = _dict(state.get("commander_shadow_runtime"))
+    strategist_llm = _dict(state.get("strategist_llm"))
+    monitor_output = _dict(state.get("monitor_output"))
+    monitor_action = _dict(state.get("monitor_action_decision"))
+    execution = _dict(state.get("execution"))
+    packet = _dict(state.get("decision_packet"))
+    packet_intent = _dict(packet.get("intent"))
+
+    strategist_executed_raw = shadow_runtime.get("strategist_executed")
+    strategist_executed = strategist_executed_raw if isinstance(strategist_executed_raw, bool) else None
+    llm_called_raw = shadow_runtime.get("llm_called_by_strategist")
+    if isinstance(llm_called_raw, bool):
+        llm_called = llm_called_raw
+    else:
+        llm_called = None
+        llm_status = _clip(strategist_llm.get("status") or strategist_llm.get("llm_status"), max_len=40).lower()
+        if strategist_executed is True:
+            llm_called = bool(
+                llm_status not in {"", "disabled"}
+                or _clip(strategist_llm.get("prompt_ref"), max_len=40)
+                or _clip(strategist_llm.get("response_ref"), max_len=40)
+            )
+
+    monitor_decision = _clip(
+        shadow_runtime.get("monitor_decision")
+        or monitor_action.get("decision")
+        or monitor_output.get("intent_side"),
+        max_len=24,
+    ).upper()
+    if monitor_decision == "NOOP":
+        monitor_decision = "WAIT"
+
+    executor_action = _clip(
+        shadow_runtime.get("executor_action")
+        or _dict(execution.get("order")).get("action")
+        or packet_intent.get("action"),
+        max_len=24,
+    ).upper()
+    executor_status = _clip(
+        shadow_runtime.get("executor_status")
+        or execution.get("reason")
+        or _dict(execution.get("payload")).get("broker_message")
+        or execution.get("ok_source"),
+        max_len=80,
+    )
+
+    return {
+        "strategist_executed": strategist_executed,
+        "llm_called_by_strategist": llm_called,
+        "used_cached_strategist": bool(shadow_runtime.get("used_cached_strategist")),
+        "monitor_decision": monitor_decision or "",
+        "executor_action": executor_action or "",
+        "executor_status": executor_status,
+        "runtime_path": _clip(path, max_len=80),
+    }
+
+
+def _commander_shadow_observations(state: Dict[str, Any], *, path: str) -> Dict[str, Any]:
+    shadow_runtime = _dict(state.get("commander_shadow_runtime"))
+    strategist_llm = _dict(state.get("strategist_llm"))
+    strategist_output = _dict(state.get("strategist_output"))
+    selected = _dict(state.get("selected"))
+    portfolio_snapshot = _dict(state.get("portfolio_snapshot"))
+    positions = [row for row in list(portfolio_snapshot.get("positions") or []) if isinstance(row, dict)]
+    risk_context = _dict(state.get("risk_context"))
+    monitor = _dict(state.get("monitor"))
+    runtime_fast_path = _dict(state.get("runtime_fast_path"))
+    stress_flags = _listify(_dict(strategist_output.get("macro_stress_overlay")).get("stress_flags"), limit=6, max_len=60)
+
+    score_total = selected.get("score_total")
+    if score_total in (None, ""):
+        score_total = selected.get("score")
+    signal_strength = score_total
+    if signal_strength in (None, ""):
+        signal_strength = selected.get("confidence")
+
+    retry_count_estimate = _safe_int(shadow_runtime.get("retry_count_estimate"), -1)
+    if retry_count_estimate < 0:
+        retry_count_estimate = max(0, _safe_int(strategist_llm.get("attempts"), 1) - 1)
+
+    position_state = "open_position" if len(positions) > 0 else "flat"
+    if "monitor_only" in str(path or ""):
+        position_state = "open_position_monitor_only" if len(positions) > 0 else position_state
+
+    return {
+        "market_changed": shadow_runtime.get("market_changed"),
+        "signal_strength": signal_strength,
+        "risk_score": selected.get("risk_score") if selected.get("risk_score") not in (None, "") else risk_context.get("score"),
+        "macro_stress": float(len(stress_flags)) if stress_flags else (1.0 if bool(_dict(strategist_output.get("macro_stress_overlay")).get("active")) else 0.0),
+        "last_llm_status": _clip(strategist_llm.get("status") or strategist_output.get("llm_frame_status"), max_len=40),
+        "retry_count_estimate": int(max(0, retry_count_estimate)),
+        "position_state": position_state,
+        "has_open_order": _commander_shadow_has_open_order(state),
+        "runtime_fast_path_reason": _clip(runtime_fast_path.get("reason"), max_len=80),
+        "repeated_same_context": shadow_runtime.get("repeated_same_context"),
+    }
+
+
+def _gate_pass(metrics: Dict[str, Any], passed_checks: List[str], failed_checks: List[str], key: str) -> Any:
+    if key in metrics:
+        value = metrics.get(key)
+        if isinstance(value, bool):
+            return value
+    if key in passed_checks:
+        return True
+    if key in failed_checks:
+        return False
+    return None
+
+
+def _score_from_checks(*, passed_checks: List[str], failed_checks: List[str], fallback: Any) -> Any:
+    try:
+        if fallback not in (None, ""):
+            return round(float(fallback), 4)
+    except Exception:
+        pass
+    total = len(passed_checks) + len(failed_checks)
+    if total <= 0:
+        return None
+    return round(float(len(passed_checks)) / float(total), 4)
+
+
+def _commander_shadow_monitor_gate_details(state: Dict[str, Any]) -> Dict[str, Any]:
+    monitor_entry = _dict(state.get("monitor_entry"))
+    monitor_output = _dict(state.get("monitor_output"))
+    metrics = _dict(monitor_entry.get("metrics"))
+    thresholds = _dict(monitor_entry.get("thresholds"))
+    passed_checks = [str(x or "").strip() for x in list(monitor_entry.get("passed_checks") or []) if str(x or "").strip()]
+    failed_checks = [str(x or "").strip() for x in list(monitor_entry.get("failed_checks") or []) if str(x or "").strip()]
+    pullback_flags = [key for key in ("pullback_ok", "pullback_mature", "pullback_not_too_deep") if key in metrics]
+    pullback_values = [bool(metrics.get(key)) for key in pullback_flags if isinstance(metrics.get(key), bool)]
+
+    pullback_passed: Any = None
+    if pullback_values:
+        pullback_passed = all(pullback_values)
+    elif "pullback_ok" in passed_checks:
+        pullback_passed = True
+    elif "pullback_ok" in failed_checks:
+        pullback_passed = False
+
+    entry_block_reason = _clip(
+        monitor_entry.get("guard_reason")
+        or monitor_entry.get("reason")
+        or monitor_output.get("entry_exit_reason"),
+        max_len=180,
+    )
+    observed_features = {
+        "price": metrics.get("price") if metrics.get("price") not in (None, "") else metrics.get("current_price"),
+        "current_price": metrics.get("current_price"),
+        "minute_source_present": metrics.get("minute_source_present"),
+        "minute_source_used": metrics.get("minute_source_used"),
+        "latest_candle_ts": metrics.get("latest_candle_ts"),
+        "minute_snapshot_age_minutes": metrics.get("minute_snapshot_age_minutes"),
+        "minute_snapshot_was_stale": metrics.get("minute_snapshot_was_stale"),
+        "minute_refetch_attempted": metrics.get("minute_refetch_attempted"),
+        "minute_refetch_succeeded": metrics.get("minute_refetch_succeeded"),
+        "minute_refetch_reason": metrics.get("minute_refetch_reason"),
+        "volume_ratio": metrics.get("volume_ratio"),
+        "vwap_distance": metrics.get("vwap_distance") if metrics.get("vwap_distance") not in (None, "") else metrics.get("extended_from_vwap_pct"),
+        "extended_from_vwap_pct": metrics.get("extended_from_vwap_pct"),
+        "pullback_depth_pct": metrics.get("pullback_depth_pct") if metrics.get("pullback_depth_pct") not in (None, "") else metrics.get("pullback_pct"),
+        "pullback_pct": metrics.get("pullback_pct"),
+        "recent_high": metrics.get("recent_high"),
+        "breakout_level": metrics.get("breakout_level"),
+        "bar_count": metrics.get("bar_count"),
+        "timeframe_minutes": metrics.get("timeframe_minutes"),
+        "inferred_spacing_minutes": metrics.get("inferred_spacing_minutes"),
+        "series_class": metrics.get("series_class"),
+    }
+    return {
+        "breakout_passed": _gate_pass(metrics, passed_checks, failed_checks, "breakout_ok"),
+        "volume_passed": _gate_pass(metrics, passed_checks, failed_checks, "volume_ok"),
+        "vwap_extension_passed": _gate_pass(metrics, passed_checks, failed_checks, "extension_ok"),
+        "pullback_passed": pullback_passed,
+        "entry_score": _score_from_checks(
+            passed_checks=passed_checks,
+            failed_checks=failed_checks,
+            fallback=monitor_entry.get("confidence"),
+        ),
+        "entry_block_reason": entry_block_reason or "",
+        "used_thresholds": thresholds,
+        "observed_features": {k: v for k, v in observed_features.items() if v not in (None, "")},
+        "passed_gates": passed_checks[:8],
+        "failed_gates": failed_checks[:8],
+        "primary_failure_axis": _clip(monitor_entry.get("primary_failure_axis"), max_len=80),
+    }
+
+
+def _commander_shadow_context_delta_summary(state: Dict[str, Any], *, observations: Dict[str, Any]) -> Dict[str, Any]:
+    shadow_runtime = _dict(state.get("commander_shadow_runtime"))
+    prior = _dict(shadow_runtime.get("prior_context"))
+    strategist_output = _dict(state.get("strategist_output"))
+    selected = _dict(state.get("selected"))
+    monitor_output = _dict(state.get("monitor_output"))
+    global_signal = _dict(state.get("global_signal"))
+    fear_index = _dict(global_signal.get("fear_index"))
+    overlay = _dict(strategist_output.get("macro_stress_overlay"))
+
+    current_symbol = _clip(selected.get("symbol") or monitor_output.get("selected_symbol"), max_len=24)
+    last_symbol = _clip(prior.get("selected_symbol"), max_len=24)
+    current_score = selected.get("score_total")
+    if current_score in (None, ""):
+        current_score = selected.get("score")
+    if current_score in (None, ""):
+        current_score = selected.get("confidence")
+    last_score = prior.get("selected_score_total")
+
+    current_playbook = _clip(strategist_output.get("playbook"), max_len=40)
+    last_playbook = _clip(prior.get("playbook"), max_len=40)
+    current_regime = _clip(strategist_output.get("market_regime"), max_len=40)
+    last_regime = _clip(prior.get("market_regime"), max_len=40)
+    current_sentiment = _clip(strategist_output.get("market_sentiment"), max_len=40)
+    last_sentiment = _clip(prior.get("market_sentiment"), max_len=40)
+    current_sentiment_score = strategist_output.get("global_sentiment_score")
+    last_sentiment_score = prior.get("global_sentiment_score")
+    current_vix = fear_index.get("level") if fear_index.get("level") not in (None, "") else overlay.get("vix_level")
+    last_vix = prior.get("vix_level")
+    current_stress_flags = [str(x or "").strip() for x in list(overlay.get("stress_flags") or []) if str(x or "").strip()]
+    last_stress_flags = [str(x or "").strip() for x in list(prior.get("stress_flags") or []) if str(x or "").strip()]
+
+    symbol_same_as_last = None if not current_symbol or not last_symbol else (current_symbol == last_symbol)
+    playbook_same_as_last = None if not current_playbook or not last_playbook else (current_playbook == last_playbook)
+    market_regime_changed = None if not current_regime or not last_regime else (current_regime != last_regime)
+
+    sentiment_changed: Any = None
+    if current_sentiment and last_sentiment:
+        sentiment_changed = current_sentiment != last_sentiment
+    try:
+        if current_sentiment_score not in (None, "") and last_sentiment_score not in (None, ""):
+            sentiment_changed = abs(float(current_sentiment_score) - float(last_sentiment_score)) >= 0.03
+    except Exception:
+        pass
+
+    volatility_changed: Any = None
+    try:
+        if current_vix not in (None, "") and last_vix not in (None, ""):
+            volatility_changed = abs(float(current_vix) - float(last_vix)) >= 1.0
+    except Exception:
+        pass
+    if volatility_changed is None and current_stress_flags and last_stress_flags:
+        volatility_changed = sorted(current_stress_flags) != sorted(last_stress_flags)
+
+    signal_changed: Any = None
+    try:
+        if current_score not in (None, "") and last_score not in (None, ""):
+            signal_changed = abs(float(current_score) - float(last_score)) >= 0.05
+    except Exception:
+        signal_changed = None
+    if signal_changed is None and symbol_same_as_last is not None:
+        signal_changed = not symbol_same_as_last
+
+    return {
+        "symbol_same_as_last": symbol_same_as_last,
+        "playbook_same_as_last": playbook_same_as_last,
+        "market_regime_changed": market_regime_changed,
+        "sentiment_changed": sentiment_changed,
+        "volatility_changed": volatility_changed,
+        "signal_changed": signal_changed,
+        "last_llm_status": _clip(prior.get("llm_status") or observations.get("last_llm_status"), max_len=40),
+        "repeated_same_context": observations.get("repeated_same_context"),
+        "market_changed": observations.get("market_changed"),
+    }
+
+
+def _commander_shadow_no_trade_reason_code(
+    state: Dict[str, Any],
+    *,
+    observations: Dict[str, Any],
+    actual_runtime: Dict[str, Any],
+    path: str,
+) -> str:
+    monitor = _dict(state.get("monitor"))
+    monitor_entry = _dict(state.get("monitor_entry"))
+    monitor_output = _dict(state.get("monitor_output"))
+    execution = _dict(state.get("execution"))
+    portfolio_preflight = _dict(state.get("portfolio_preflight"))
+    runtime_fast_path = _dict(state.get("runtime_fast_path"))
+    strategist_llm = _dict(state.get("strategist_llm"))
+    selected = _dict(state.get("selected"))
+    symbol = _clip(selected.get("symbol") or monitor_output.get("selected_symbol"), max_len=24)
+
+    monitor_decision = _clip(actual_runtime.get("monitor_decision"), max_len=24).upper()
+    executor_action = _clip(actual_runtime.get("executor_action"), max_len=24).upper()
+    if monitor_decision in {"BUY", "SELL"} or executor_action in {"BUY", "SELL"}:
+        return "NONE"
+
+    if _safe_int(monitor.get("open_position_count"), 0) > 0 and (
+        bool(monitor.get("buy_blocked_open_position"))
+        or "monitor_only" in str(path or "")
+    ):
+        return "POSITION_ALREADY_OPEN"
+
+    if bool(portfolio_preflight.get("blocked")) or _clip(state.get("decision_reason"), max_len=80) in {"risk_too_high", "portfolio_preflight_blocked"}:
+        return "RISK_BLOCKED"
+
+    if execution and execution.get("allowed") is False:
+        reason = _clip(execution.get("reason"), max_len=120).lower()
+        if reason not in {"", "noop_intent_skipped"}:
+            return "EXECUTION_BLOCKED"
+
+    failed_checks = [str(x or "").strip().lower() for x in list(monitor_entry.get("failed_checks") or []) if str(x or "").strip()]
+    combined_reason = " ".join(
+        [
+            _clip(monitor_entry.get("guard_reason"), max_len=120),
+            _clip(monitor_entry.get("reason"), max_len=120),
+            _clip(monitor_output.get("entry_exit_reason"), max_len=120),
+        ]
+    ).strip().lower()
+    if any(token in combined_reason for token in ("minute_candle_missing", "data_incomplete", "insufficient_data", "missing_data")):
+        return "DATA_INSUFFICIENT"
+    if any(token in failed_checks for token in ("data_incomplete", "minute_candle_missing", "vwap_missing", "volume_missing")):
+        return "DATA_INSUFFICIENT"
+    if not symbol and not combined_reason and not failed_checks and not execution and not strategist_llm:
+        return "DATA_INSUFFICIENT"
+
+    llm_status = _clip(strategist_llm.get("status") or strategist_llm.get("llm_status"), max_len=40).lower()
+    if bool(strategist_llm.get("blocked")) or llm_status in {"error", "fallback"}:
+        return "LLM_UNSTABLE"
+
+    if observations.get("repeated_same_context") is True:
+        return "REPEATED_SAME_CONTEXT"
+    if observations.get("market_changed") is False or _clip(runtime_fast_path.get("reason"), max_len=80) == "flat_position_cached_strategist":
+        return "NO_MARKET_CHANGE"
+
+    confidence = selected.get("confidence")
+    try:
+        confidence_value = float(confidence)
+    except Exception:
+        confidence_value = None
+    if confidence_value is not None and confidence_value < 0.55:
+        return "LOW_CONFIDENCE"
+
+    if failed_checks or any(token in combined_reason for token in ("confirmation", "too_extended", "breakout", "pullback", "reclaim", "entry_wait", "wait")):
+        return "WAIT_FOR_CONFIRMATION"
+
+    if combined_reason:
+        return "LOW_SIGNAL_QUALITY"
+    return "NONE"
+
+
+def _commander_shadow_strategist_recommendation(
+    *,
+    no_trade_reason_code: str,
+    observations: Dict[str, Any],
+) -> str:
+    llm_status = str(observations.get("last_llm_status") or "").strip().lower()
+    if no_trade_reason_code in {
+        "POSITION_ALREADY_OPEN",
+        "NO_MARKET_CHANGE",
+        "REPEATED_SAME_CONTEXT",
+        "DATA_INSUFFICIENT",
+        "WAIT_FOR_CONFIRMATION",
+        "LOW_SIGNAL_QUALITY",
+        "LOW_CONFIDENCE",
+        "RISK_BLOCKED",
+        "EXECUTION_BLOCKED",
+    }:
+        return "SKIP"
+    if no_trade_reason_code == "LLM_UNSTABLE":
+        if llm_status in {"partial", "salvaged", "repaired"}:
+            return "RETRY_COMPACT"
+        if llm_status == "fallback":
+            return "USE_FALLBACK"
+        if llm_status == "error":
+            return "RETRY_MINIMAL"
+    return "RUN"
+
+
+def _commander_shadow_llm_call_advice(
+    *,
+    strategist_action_recommendation: str,
+    observations: Dict[str, Any],
+    state: Dict[str, Any],
+) -> str:
+    strategist_llm = _dict(state.get("strategist_llm"))
+    llm_status = str(observations.get("last_llm_status") or strategist_llm.get("status") or "").strip().lower()
+    if strategist_action_recommendation == "SKIP" and observations.get("market_changed") is False:
+        return "SKIP"
+    if strategist_action_recommendation == "SKIP" and observations.get("repeated_same_context") is True:
+        return "SKIP"
+    if bool(strategist_llm.get("blocked")) or llm_status in {"error", "fallback"}:
+        return "RETRY_MINIMAL"
+    if llm_status in {"partial", "salvaged", "repaired"}:
+        return "RETRY_COMPACT"
+    if strategist_action_recommendation == "SKIP":
+        return "SKIP"
+    return "ALLOW"
+
+
+def _commander_shadow_suggested_action(
+    *,
+    strategist_action_recommendation: str,
+    llm_call_advice: str,
+    no_trade_reason_code: str,
+) -> str:
+    if strategist_action_recommendation == "SKIP" and no_trade_reason_code == "POSITION_ALREADY_OPEN":
+        return "monitor_only_observe"
+    if strategist_action_recommendation == "SKIP" and no_trade_reason_code in {"NO_MARKET_CHANGE", "REPEATED_SAME_CONTEXT"}:
+        return "skip_strategist_reuse_context"
+    if llm_call_advice == "RETRY_COMPACT":
+        return "compact_strategist_retry"
+    if llm_call_advice == "RETRY_MINIMAL":
+        return "minimal_strategist_retry"
+    return "allow_current_flow"
+
+
+def _commander_shadow_next_action_recommendation(
+    *,
+    strategist_action_recommendation: str,
+    llm_call_advice: str,
+    no_trade_reason_code: str,
+    actual_runtime: Dict[str, Any],
+) -> str:
+    if no_trade_reason_code == "POSITION_ALREADY_OPEN":
+        return "HOLD_OBSERVE"
+    if strategist_action_recommendation in {"RETRY_COMPACT", "RETRY_MINIMAL", "USE_FALLBACK"} or llm_call_advice in {
+        "RETRY_COMPACT",
+        "RETRY_MINIMAL",
+    }:
+        return "RETRY_COMPACT_NEXT"
+    if no_trade_reason_code in {"WAIT_FOR_CONFIRMATION", "LOW_SIGNAL_QUALITY", "LOW_CONFIDENCE", "DATA_INSUFFICIENT"}:
+        return "WAIT_NEXT_BAR"
+    monitor_decision = _clip(actual_runtime.get("monitor_decision"), max_len=24).upper()
+    if monitor_decision in {"BUY", "SELL", "HOLD"}:
+        return "HOLD_OBSERVE"
+    return "NO_ACTION"
+
+
+def _commander_shadow_reason_summary(
+    *,
+    no_trade_reason_code: str,
+    observations: Dict[str, Any],
+    actual_runtime: Dict[str, Any],
+) -> str:
+    llm_status = _clip(observations.get("last_llm_status"), max_len=40) or "unknown"
+    monitor_decision = _clip(actual_runtime.get("monitor_decision"), max_len=24) or "WAIT"
+    executor_action = _clip(actual_runtime.get("executor_action"), max_len=24) or "NONE"
+    mapping = {
+        "NONE": f"Observed runtime ended with monitor={monitor_decision} and executor={executor_action} without a stronger commander block signal.",
+        "POSITION_ALREADY_OPEN": "Open position state already existed, so monitor-only observation was more appropriate than a fresh strategist cycle.",
+        "RISK_BLOCKED": "Risk or portfolio guard signals were stronger than any need to refresh strategist context in this cycle.",
+        "EXECUTION_BLOCKED": "Execution or approval constraints were the main reason to stand down, independent of strategist quality.",
+        "DATA_INSUFFICIENT": "Available minute, feature, or symbol data was too thin to justify a fresh strategist-driven trade attempt.",
+        "NO_MARKET_CHANGE": "The cycle looked materially similar to the prior context, so a new strategist run likely added little value.",
+        "LLM_UNSTABLE": f"Recent strategist LLM status was {llm_status}, so a compact or minimal retry would have been safer than a full refresh.",
+        "LOW_CONFIDENCE": "Signal confidence was weak enough that waiting for stronger confirmation looked safer than acting now.",
+        "LOW_SIGNAL_QUALITY": "Monitor signal quality was too weak to justify a trade, even if strategist context was available.",
+        "REPEATED_SAME_CONTEXT": "The cycle repeated nearly the same strategist context, suggesting reuse or skip would have been reasonable.",
+        "WAIT_FOR_CONFIRMATION": "Monitor gates were not fully aligned yet, so waiting for another bar or clearer confirmation looked appropriate.",
+    }
+    return mapping.get(no_trade_reason_code, "Shadow commander observed the cycle, but the evidence was limited and should be treated as advisory only.")
+
+
+def _commander_shadow_recommendation_gap(
+    *,
+    strategist_action_recommendation: str,
+    llm_call_advice: str,
+    actual_runtime: Dict[str, Any],
+) -> str:
+    strategist_executed = actual_runtime.get("strategist_executed")
+    llm_called = actual_runtime.get("llm_called_by_strategist")
+    if strategist_action_recommendation == "SKIP" and strategist_executed is True:
+        return "strategist_ran_despite_skip_recommendation"
+    if strategist_action_recommendation in {"RUN", "RETRY_COMPACT", "RETRY_MINIMAL", "USE_FALLBACK"} and strategist_executed is False:
+        return "strategist_not_run_despite_refresh_recommendation"
+    if llm_call_advice == "SKIP" and llm_called is True:
+        return "llm_called_despite_skip_advice"
+    if llm_call_advice in {"ALLOW", "RETRY_COMPACT", "RETRY_MINIMAL"} and llm_called is False and strategist_executed is True:
+        return "llm_not_called_despite_refresh_advice"
+    return "aligned"
+
+
+def _commander_shadow_pre_strategist_snapshot(
+    *,
+    state: Dict[str, Any],
+    observations: Dict[str, Any],
+    context_delta_summary: Dict[str, Any],
+    strategist_action_recommendation: str,
+    llm_call_advice: str,
+) -> Dict[str, Any]:
+    prior = _dict(_dict(state.get("commander_shadow_runtime")).get("prior_context"))
+    return {
+        "market_changed": observations.get("market_changed"),
+        "repeated_same_context": observations.get("repeated_same_context"),
+        "last_llm_status": observations.get("last_llm_status"),
+        "prior_symbol": _clip(prior.get("selected_symbol"), max_len=24),
+        "prior_playbook": _clip(prior.get("playbook"), max_len=40),
+        "strategist_action_recommendation": strategist_action_recommendation,
+        "llm_call_advice": llm_call_advice,
+        "reason": _clip(
+            f"context_delta={context_delta_summary.get('signal_changed')} market_changed={observations.get('market_changed')} repeated={observations.get('repeated_same_context')}",
+            max_len=180,
+        ),
+    }
+
+
+def _commander_shadow_post_strategist_assessment(
+    *,
+    state: Dict[str, Any],
+    actual_runtime: Dict[str, Any],
+    context_delta_summary: Dict[str, Any],
+    recommendation_gap: str,
+) -> Dict[str, Any]:
+    strategist_output = _dict(state.get("strategist_output"))
+    strategist_llm = _dict(state.get("strategist_llm"))
+    return {
+        "strategist_executed": actual_runtime.get("strategist_executed"),
+        "llm_called_by_strategist": actual_runtime.get("llm_called_by_strategist"),
+        "used_cached_strategist": actual_runtime.get("used_cached_strategist"),
+        "llm_status": _clip(strategist_llm.get("status") or strategist_output.get("llm_frame_status"), max_len=40),
+        "playbook": _clip(strategist_output.get("playbook"), max_len=40),
+        "market_regime": _clip(strategist_output.get("market_regime"), max_len=40),
+        "market_sentiment": _clip(strategist_output.get("market_sentiment"), max_len=40),
+        "recommendation_gap": recommendation_gap,
+        "context_delta_summary": context_delta_summary,
+    }
+
+
+def _commander_shadow_post_monitor_assessment(
+    *,
+    actual_runtime: Dict[str, Any],
+    monitor_gate_details: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "monitor_decision": _clip(actual_runtime.get("monitor_decision"), max_len=24),
+        "entry_block_reason": _clip(monitor_gate_details.get("entry_block_reason"), max_len=180),
+        "failed_gates": list(monitor_gate_details.get("failed_gates") or [])[:8],
+        "passed_gates": list(monitor_gate_details.get("passed_gates") or [])[:8],
+        "primary_failure_axis": _clip(monitor_gate_details.get("primary_failure_axis"), max_len=80),
+        "monitor_gate_details": monitor_gate_details,
+    }
+
+
+def _commander_shadow_end_of_cycle_summary(
+    *,
+    no_trade_reason_code: str,
+    reason_summary: str,
+    actual_runtime: Dict[str, Any],
+    next_action_recommendation: str,
+    recommendation_gap: str,
+) -> Dict[str, Any]:
+    return {
+        "no_trade_reason_code": no_trade_reason_code,
+        "reason_summary": reason_summary,
+        "actual_runtime": actual_runtime,
+        "next_action_recommendation": next_action_recommendation,
+        "recommendation_gap": recommendation_gap,
+    }
+
+
+def build_commander_shadow_artifact(
+    state: Dict[str, Any],
+    *,
+    mode: str,
+    phase: str,
+    path: str,
+    status: str,
+    reason: str = "",
+) -> Dict[str, Any]:
+    observations = _commander_shadow_observations(state, path=path)
+    actual_runtime = _commander_shadow_actual_runtime(state, path=path)
+    monitor_gate_details = _commander_shadow_monitor_gate_details(state)
+    context_delta_summary = _commander_shadow_context_delta_summary(state, observations=observations)
+    no_trade_reason_code = _commander_shadow_no_trade_reason_code(
+        state,
+        observations=observations,
+        actual_runtime=actual_runtime,
+        path=path,
+    )
+    strategist_action_recommendation = _commander_shadow_strategist_recommendation(
+        no_trade_reason_code=no_trade_reason_code,
+        observations=observations,
+    )
+    llm_call_advice = _commander_shadow_llm_call_advice(
+        strategist_action_recommendation=strategist_action_recommendation,
+        observations=observations,
+        state=state,
+    )
+    suggested_action = _commander_shadow_suggested_action(
+        strategist_action_recommendation=strategist_action_recommendation,
+        llm_call_advice=llm_call_advice,
+        no_trade_reason_code=no_trade_reason_code,
+    )
+    next_action_recommendation = _commander_shadow_next_action_recommendation(
+        strategist_action_recommendation=strategist_action_recommendation,
+        llm_call_advice=llm_call_advice,
+        no_trade_reason_code=no_trade_reason_code,
+        actual_runtime=actual_runtime,
+    )
+    reason_summary = _commander_shadow_reason_summary(
+        no_trade_reason_code=no_trade_reason_code,
+        observations=observations,
+        actual_runtime=actual_runtime,
+    )
+    recommendation_gap = _commander_shadow_recommendation_gap(
+        strategist_action_recommendation=strategist_action_recommendation,
+        llm_call_advice=llm_call_advice,
+        actual_runtime=actual_runtime,
+    )
+    pre_strategist_shadow_snapshot = _commander_shadow_pre_strategist_snapshot(
+        state=state,
+        observations=observations,
+        context_delta_summary=context_delta_summary,
+        strategist_action_recommendation=strategist_action_recommendation,
+        llm_call_advice=llm_call_advice,
+    )
+    post_strategist_assessment = _commander_shadow_post_strategist_assessment(
+        state=state,
+        actual_runtime=actual_runtime,
+        context_delta_summary=context_delta_summary,
+        recommendation_gap=recommendation_gap,
+    )
+    post_monitor_assessment = _commander_shadow_post_monitor_assessment(
+        actual_runtime=actual_runtime,
+        monitor_gate_details=monitor_gate_details,
+    )
+    end_of_cycle_summary = _commander_shadow_end_of_cycle_summary(
+        no_trade_reason_code=no_trade_reason_code,
+        reason_summary=reason_summary,
+        actual_runtime=actual_runtime,
+        next_action_recommendation=next_action_recommendation,
+        recommendation_gap=recommendation_gap,
+    )
+    symbol = _clip(
+        _dict(state.get("selected")).get("symbol")
+        or _dict(state.get("monitor_output")).get("selected_symbol")
+        or _dict(state.get("monitor_exit")).get("symbol"),
+        max_len=24,
+    )
+    artifact = _base_output(state, agent="commander", symbol=symbol, status=status or "ok")
+    artifact.update(
+        {
+            "schema_version": "commander_shadow.v1",
+            "mode": "shadow",
+            "cycle_id": _clip(state.get("cycle_id"), max_len=80),
+            "observed_runtime_mode": _clip(mode, max_len=40),
+            "observed_runtime_path": _clip(path, max_len=80),
+            "decision": "OBSERVE_ONLY",
+            "strategist_action_recommendation": strategist_action_recommendation,
+            "llm_call_advice": llm_call_advice,
+            "suggested_action": suggested_action,
+            "next_action_recommendation": next_action_recommendation,
+            "no_trade_reason_code": no_trade_reason_code,
+            "reason_summary": reason_summary,
+            "observations": observations,
+            "actual_runtime": actual_runtime,
+            "monitor_gate_details": monitor_gate_details,
+            "context_delta_summary": context_delta_summary,
+            "pre_strategist_shadow_snapshot": pre_strategist_shadow_snapshot,
+            "post_strategist_assessment": post_strategist_assessment,
+            "post_monitor_assessment": post_monitor_assessment,
+            "end_of_cycle_summary": end_of_cycle_summary,
+            "comparison_summary": (
+                f"recommended={strategist_action_recommendation}/{llm_call_advice}, "
+                f"next={next_action_recommendation}, "
+                f"observed_monitor={actual_runtime.get('monitor_decision') or 'WAIT'}, "
+                f"observed_executor={actual_runtime.get('executor_action') or 'NONE'}, "
+                f"gap={recommendation_gap}"
+            ),
+            "reason": _clip(reason or state.get("runtime_status") or "", max_len=220),
+            "shadow_only": True,
+            "generated_at": _utc_now_iso(),
         }
     )
     artifact["validation"] = validate_artifact(artifact)

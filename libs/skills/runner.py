@@ -172,6 +172,12 @@ class CompositeSkillRunner:
         outputs = (outputs or "").strip()
         if outputs == "QuoteDTO":
             return ex.extract_quote(str(args.get("symbol") or ""), payloads[0] if payloads else {})
+        if outputs == "MinuteOHLCVDTO":
+            return ex.extract_minute_ohlcv(
+                str(args.get("symbol") or ""),
+                int(args.get("timeframe_minutes") or 1),
+                payloads[0] if payloads else {},
+            )
         if outputs == "OrderPlaceDTO":
             return ex.extract_order_place(str(args.get("side") or "buy"), str(args.get("symbol") or ""), payloads[0] if payloads else {})
         if outputs == "OrderStatusDTO":

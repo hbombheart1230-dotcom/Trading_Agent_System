@@ -1,6 +1,94 @@
 from __future__ import annotations
 
+from libs.skills.dto import MinuteOHLCVDTO
+from libs.skills.runner import SkillRunResult
+
 from graphs.nodes.monitor_node import _extract_monitor_strategy_frame, monitor_node
+
+
+class _FakeMinuteSkillRunner:
+    def __init__(self, rows_by_symbol: dict[str, list[dict]] | None = None) -> None:
+        self.rows_by_symbol = dict(rows_by_symbol or {})
+        self.call_count = 0
+
+    def run(self, *, run_id: str, skill: str, args: dict) -> dict:
+        self.call_count += 1
+        if skill != "market.minute_ohlcv":
+            return {"result": {"action": "error", "meta": {"error_type": "unsupported_skill"}}}
+        symbol = str(args.get("symbol") or "").strip().upper()
+        rows = list(self.rows_by_symbol.get(symbol) or [])
+        if not rows:
+            return {"result": {"action": "error", "meta": {"error_type": "empty_response"}}}
+        return {
+            "result": {
+                "action": "ready",
+                "data": {
+                    "symbol": symbol,
+                    "timeframe_minutes": int(args.get("timeframe_minutes") or 1),
+                    "rows": rows,
+                },
+            }
+        }
+
+
+class _FakeMinuteSkillRunnerDataclass:
+    def __init__(self, rows_by_symbol: dict[str, list[dict]] | None = None) -> None:
+        self.rows_by_symbol = dict(rows_by_symbol or {})
+        self.call_count = 0
+
+    def run(self, *, run_id: str, skill: str, args: dict) -> SkillRunResult:
+        self.call_count += 1
+        symbol = str(args.get("symbol") or "").strip().upper()
+        rows = list(self.rows_by_symbol.get(symbol) or [])
+        if not rows:
+            return SkillRunResult(
+                action="error",
+                skill=skill,
+                outputs="MinuteOHLCVDTO",
+                data=None,
+                missing=[],
+                question="",
+                meta={"error_type": "empty_response"},
+            )
+        return SkillRunResult(
+            action="ready",
+            skill=skill,
+            outputs="MinuteOHLCVDTO",
+            data=MinuteOHLCVDTO(
+                symbol=symbol,
+                timeframe_minutes=int(args.get("timeframe_minutes") or 1),
+                rows=rows,
+                raw={},
+            ),
+            missing=[],
+            question="",
+            meta={},
+        )
+
+
+class _FakeMinuteSkillRunnerSequence:
+    def __init__(self, responses: list[list[dict]] | None = None) -> None:
+        self.responses = list(responses or [])
+        self.call_count = 0
+
+    def run(self, *, run_id: str, skill: str, args: dict) -> dict:
+        self.call_count += 1
+        if skill != "market.minute_ohlcv":
+            return {"result": {"action": "error", "meta": {"error_type": "unsupported_skill"}}}
+        rows = list(self.responses.pop(0) if self.responses else [])
+        if not rows:
+            return {"result": {"action": "error", "meta": {"error_type": "empty_response"}}}
+        symbol = str(args.get("symbol") or "").strip().upper()
+        return {
+            "result": {
+                "action": "ready",
+                "data": {
+                    "symbol": symbol,
+                    "timeframe_minutes": int(args.get("timeframe_minutes") or 1),
+                    "rows": rows,
+                },
+            }
+        }
 
 
 def _base_state() -> dict:
@@ -174,7 +262,7 @@ def test_monitor_requires_intraday_entry_confirmation_when_ohlcv_available(monke
             "price": 101.8,
             "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
         },
-        "ohlcv_by_symbol": {
+        "minute_ohlcv_by_symbol": {
             "BBB": [
                 {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
                 {"open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
@@ -210,7 +298,7 @@ def test_monitor_skips_buy_when_intraday_entry_signal_not_confirmed(monkeypatch)
             "price": 103.2,
             "features": {"engine_vwap_distance": 0.020, "engine_volume_spike20": 1.6},
         },
-        "ohlcv_by_symbol": {
+        "minute_ohlcv_by_symbol": {
             "BBB": [
                 {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
                 {"open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
@@ -247,7 +335,7 @@ def test_monitor_waits_when_minute_candles_missing(monkeypatch):
             "price": 101.2,
             "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.3},
         },
-        "ohlcv_by_symbol": {},
+        "minute_ohlcv_by_symbol": {},
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
         "policy": {},
     }
@@ -258,6 +346,261 @@ def test_monitor_waits_when_minute_candles_missing(monkeypatch):
     assert monitor.get("entry_evaluated") is False
     assert monitor.get("entry_triggered") is False
     assert monitor.get("entry_reason") == "minute_candle_missing"
+    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "minute_candle_missing"
+
+
+def test_monitor_hydrates_selected_symbol_minute_ohlcv_from_skill_runner(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    rows = [
+        {"ts": 1710000000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+        {"ts": 1710000060, "open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+        {"ts": 1710000120, "open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+        {"ts": 1710000180, "open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+        {"ts": 1710000240, "open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000300, "open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 2500, "vwap": 101.2},
+    ]
+    state = {
+        "run_id": "run-monitor-minute-hydrate",
+        "skill_runner": _FakeMinuteSkillRunner({"BBB": rows}),
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {},
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
+    assert "BBB" in (out.get("minute_ohlcv_by_symbol") or {})
+    monitor = out.get("monitor") or {}
+    metrics = monitor.get("entry_metrics") or {}
+    assert metrics.get("minute_source_present") is True
+    assert metrics.get("minute_source_used") == "state.minute_ohlcv_by_symbol"
+    assert float(metrics.get("inferred_spacing_minutes") or 0.0) <= 1.1
+
+
+def test_monitor_hydrates_selected_symbol_minute_ohlcv_from_dataclass_skill_result(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    rows = [
+        {"ts": 1710000000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+        {"ts": 1710000060, "open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+        {"ts": 1710000120, "open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+        {"ts": 1710000180, "open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+        {"ts": 1710000240, "open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000300, "open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 2500, "vwap": 101.2},
+    ]
+    state = {
+        "run_id": "run-monitor-minute-dataclass",
+        "skill_runner": _FakeMinuteSkillRunnerDataclass({"BBB": rows}),
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {},
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
+    metrics = (out.get("monitor") or {}).get("entry_metrics") or {}
+    assert metrics.get("minute_source_present") is True
+    assert metrics.get("latest_candle_ts") == 1710000300
+
+
+def test_monitor_keeps_fresh_minute_snapshot_without_refetch(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    rows = [
+        {"ts": 1710000000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+        {"ts": 1710000060, "open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+        {"ts": 1710000120, "open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+        {"ts": 1710000180, "open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+        {"ts": 1710000240, "open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000300, "open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 2500, "vwap": 101.2},
+    ]
+    runner = _FakeMinuteSkillRunner({"BBB": rows})
+    state = {
+        "run_id": "run-monitor-minute-fresh",
+        "tick_ts": 1710000360,
+        "skill_runner": runner,
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": list(rows)},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {},
+    }
+
+    out = monitor_node(state)
+    metrics = (out.get("monitor") or {}).get("entry_metrics") or {}
+    assert runner.call_count == 0
+    assert metrics.get("minute_snapshot_was_stale") is False
+    assert metrics.get("minute_refetch_attempted") is False
+    assert metrics.get("minute_refetch_succeeded") is False
+    assert metrics.get("latest_candle_ts") == 1710000300
+    assert float(metrics.get("minute_snapshot_age_minutes") or 0.0) == 1.0
+
+
+def test_monitor_refetches_stale_minute_snapshot_and_uses_new_latest_candle(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    stale_rows = [
+        {"ts": 1710000000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+        {"ts": 1710000060, "open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+        {"ts": 1710000120, "open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+        {"ts": 1710000180, "open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+        {"ts": 1710000240, "open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000300, "open": 101.2, "high": 101.8, "low": 101.0, "close": 101.4, "volume": 1200, "vwap": 101.0},
+    ]
+    fresh_rows = [
+        {"ts": 1710000300, "open": 101.2, "high": 101.4, "low": 101.0, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000360, "open": 101.2, "high": 101.4, "low": 100.9, "close": 101.1, "volume": 1100, "vwap": 101.0},
+        {"ts": 1710000420, "open": 101.1, "high": 101.5, "low": 101.0, "close": 101.3, "volume": 1120, "vwap": 101.1},
+        {"ts": 1710000480, "open": 101.3, "high": 101.6, "low": 101.1, "close": 101.4, "volume": 1150, "vwap": 101.2},
+        {"ts": 1710000540, "open": 101.4, "high": 101.7, "low": 101.2, "close": 101.5, "volume": 1180, "vwap": 101.25},
+        {"ts": 1710000600, "open": 101.5, "high": 102.0, "low": 101.3, "close": 101.8, "volume": 2500, "vwap": 101.4},
+    ]
+    runner = _FakeMinuteSkillRunnerSequence([fresh_rows])
+    state = {
+        "run_id": "run-monitor-minute-stale-refresh",
+        "tick_ts": 1710000600,
+        "skill_runner": runner,
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": list(stale_rows)},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {},
+    }
+
+    out = monitor_node(state)
+    metrics = (out.get("monitor") or {}).get("entry_metrics") or {}
+    assert runner.call_count == 1
+    assert metrics.get("minute_refetch_attempted") is True
+    assert metrics.get("minute_refetch_succeeded") is True
+    assert metrics.get("minute_refetch_reason") == "stale_snapshot_age_exceeded"
+    assert metrics.get("latest_candle_ts") == 1710000600
+    assert metrics.get("minute_snapshot_was_stale") is False
+    assert float(metrics.get("minute_snapshot_age_minutes") or 0.0) == 0.0
+    assert (out.get("minute_ohlcv_by_symbol") or {}).get("BBB", [])[-1]["ts"] == 1710000600
+
+
+def test_monitor_records_stale_snapshot_when_refetch_fails_without_changing_flow(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    stale_rows = [
+        {"ts": 1710000000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+        {"ts": 1710000060, "open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+        {"ts": 1710000120, "open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+        {"ts": 1710000180, "open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+        {"ts": 1710000240, "open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000300, "open": 101.2, "high": 103.4, "low": 101.0, "close": 103.2, "volume": 2500, "vwap": 101.1},
+    ]
+    runner = _FakeMinuteSkillRunnerSequence([[]])
+    state = {
+        "run_id": "run-monitor-minute-stale-fail",
+        "tick_ts": 1710000600,
+        "skill_runner": runner,
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 103.2,
+            "features": {"engine_vwap_distance": 0.020, "engine_volume_spike20": 1.6},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": list(stale_rows)},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {},
+    }
+
+    out = monitor_node(state)
+    metrics = (out.get("monitor") or {}).get("entry_metrics") or {}
+    assert runner.call_count == 1
+    assert out.get("intents") == []
+    assert metrics.get("minute_refetch_attempted") is True
+    assert metrics.get("minute_refetch_succeeded") is False
+    assert metrics.get("minute_refetch_reason") == "stale_snapshot_age_exceeded"
+    assert metrics.get("minute_snapshot_was_stale") is True
+    assert metrics.get("latest_candle_ts") == 1710000300
+
+
+def test_monitor_waits_when_ohlcv_series_is_daily_seed_not_minute_data(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
+
+    start_ts = 1_710_000_000
+    rows = []
+    closes = [100.0, 101.5, 102.0, 103.0, 102.8, 104.0]
+    for idx, close in enumerate(closes[:-1]):
+        rows.append(
+            {
+                "ts": start_ts + idx * 86400,
+                "open": close - 0.5,
+                "high": close + 1.0,
+                "low": close - 1.0,
+                "close": close,
+                "volume": 1_000_000 + idx * 20_000,
+                "vwap": close - 0.2,
+            }
+        )
+    rows.append(
+        {
+            "ts": start_ts + len(closes[:-1]) * 86400,
+            "open": 104.0,
+            "high": 104.0,
+            "low": 104.0,
+            "close": 104.0,
+            "volume": 1.0,
+            "vwap": 103.4,
+        }
+    )
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 104.0,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.3},
+        },
+        "ohlcv_by_symbol": {"BBB": rows},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {},
+    }
+
+    out = monitor_node(state)
+    assert out.get("intents") == []
+    monitor = out.get("monitor") or {}
+    assert monitor.get("entry_evaluated") is False
+    assert monitor.get("entry_triggered") is False
+    assert monitor.get("entry_reason") == "minute_candle_missing"
+    assert bool((monitor.get("entry_metrics") or {}).get("minute_source_present")) is False
     assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "minute_candle_missing"
 
 
@@ -273,7 +616,7 @@ def test_monitor_allows_pullback_entry_when_reclaim_structure_is_valid(monkeypat
             "price": 101.1,
             "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.2},
         },
-        "ohlcv_by_symbol": {
+        "minute_ohlcv_by_symbol": {
             "BBB": [
                 {"open": 100.0, "high": 100.5, "low": 99.9, "close": 100.4, "volume": 1000, "vwap": 100.1},
                 {"open": 100.4, "high": 101.1, "low": 100.3, "close": 101.0, "volume": 1050, "vwap": 100.5},
@@ -311,7 +654,7 @@ def test_monitor_pullback_wait_records_failure_breakdown(monkeypatch):
             "price": 106.0,
             "features": {"engine_vwap_distance": 0.050, "engine_volume_spike20": 1.2},
         },
-        "ohlcv_by_symbol": {
+        "minute_ohlcv_by_symbol": {
             "BBB": [
                 {"open": 100.0, "high": 100.5, "low": 99.9, "close": 100.4, "volume": 1000, "vwap": 100.1},
                 {"open": 100.4, "high": 101.1, "low": 100.3, "close": 101.0, "volume": 1050, "vwap": 100.5},
@@ -349,7 +692,7 @@ def test_monitor_pullback_with_defensive_guidance_can_still_buy_on_clean_reclaim
             "price": 101.1,
             "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.25},
         },
-        "ohlcv_by_symbol": {
+        "minute_ohlcv_by_symbol": {
             "BBB": [
                 {"open": 100.0, "high": 100.5, "low": 99.9, "close": 100.4, "volume": 1000, "vwap": 100.1},
                 {"open": 100.4, "high": 101.1, "low": 100.3, "close": 101.0, "volume": 1050, "vwap": 100.5},
@@ -411,7 +754,7 @@ def test_monitor_entry_intent_cooldown_suppresses_duplicate_buy_intents(monkeypa
             "price": 101.8,
             "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
         },
-        "ohlcv_by_symbol": {
+        "minute_ohlcv_by_symbol": {
             "BBB": [
                 {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
                 {"open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
@@ -908,11 +1251,10 @@ def test_monitor_ignores_invalid_live_like_positions(monkeypatch):
     }
     out = monitor_node(state)
     intents = out.get("intents") or []
-    assert len(intents) == 1
-    assert intents[0]["side"] == "BUY"
-    assert intents[0]["symbol"] == "005930"
+    assert intents == []
     mon = out.get("monitor") or {}
     assert mon.get("open_position_count") == 0
+    assert mon.get("entry_reason") == "minute_candle_missing"
     exit_info = out.get("monitor_exit") or {}
     assert bool(exit_info.get("exit_symbol_fallback")) is False
     assert int(exit_info.get("qty") or 0) == 0

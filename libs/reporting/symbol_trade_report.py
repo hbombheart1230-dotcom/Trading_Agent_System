@@ -89,12 +89,57 @@ def _iter_trade_lifecycles(reports_root: Path) -> Iterable[Tuple[Path, Dict[str,
         return []
 
     def _gen() -> Iterable[Tuple[Path, Dict[str, Any]]]:
+        seen_trade_ids: set[str] = set()
         for path in sorted(trades_root.glob("*/*/lifecycle/trade_lifecycle.json")):
             obj = _read_json(path)
             if obj:
+                trade_id = str(obj.get("trade_id") or "").strip()
+                if trade_id:
+                    seen_trade_ids.add(trade_id)
                 yield path, obj
 
+        for path in sorted(trades_root.glob("*/*/lifecycle_bundle.json")):
+            bundle = _read_json(path)
+            if not bundle:
+                continue
+            trade_id = str(bundle.get("trade_id") or "").strip()
+            if trade_id and trade_id in seen_trade_ids:
+                continue
+            normalized = _normalize_lifecycle_bundle(bundle)
+            if normalized:
+                if trade_id:
+                    seen_trade_ids.add(trade_id)
+                yield path, normalized
+
     return _gen()
+
+
+def _normalize_lifecycle_bundle(bundle: Dict[str, Any]) -> Dict[str, Any]:
+    lifecycle = bundle.get("lifecycle") if isinstance(bundle.get("lifecycle"), dict) else {}
+    entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+    exit_row = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+    trade_outcome = bundle.get("trade_outcome") if isinstance(bundle.get("trade_outcome"), dict) else {}
+
+    if not entry and not exit_row:
+        return {}
+
+    summary = {
+        "entry_reason_human": str(entry.get("reason_human") or ""),
+        "exit_reason_human": str(exit_row.get("reason_human") or trade_outcome.get("exit_reason") or ""),
+        "lifecycle_summary_human": str(bundle.get("summary") or trade_outcome.get("summary") or ""),
+        "operator_conclusion_human": str(((bundle.get("reporter_status_human") or {}) if isinstance(bundle.get("reporter_status_human"), dict) else {}).get("operator_conclusion_human") or ""),
+    }
+
+    normalized = {
+        "trade_id": str(bundle.get("trade_id") or ""),
+        "symbol": str(bundle.get("symbol") or ""),
+        "day": str(bundle.get("day") or ""),
+        "status": str(bundle.get("trade_lifecycle_status") or bundle.get("status") or ""),
+        "entry": entry,
+        "exit": exit_row,
+        "summary": summary,
+    }
+    return normalized
 
 
 def _result_pct_from_lifecycle(obj: Dict[str, Any]) -> Optional[float]:

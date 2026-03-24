@@ -29,7 +29,7 @@ from typing import Any, Callable, Dict, Literal, Optional, Tuple
 from graphs.trading_graph import run_trading_graph
 from graphs.nodes.decide_trade import decide_trade
 from graphs.nodes.execute_from_packet import execute_from_packet
-from libs.runtime.canonical_artifacts import write_commander_artifact
+from libs.runtime.canonical_artifacts import write_commander_artifact, write_commander_shadow_artifact
 from libs.runtime.resilience_state import ensure_runtime_resilience_state
 
 
@@ -75,6 +75,117 @@ def _coerce_int(value: Any, default: int = 0) -> int:
 
 def _runtime_now_epoch(state: Dict[str, Any]) -> int:
     return _coerce_int(state.get("now_epoch"), int(time.time()))
+
+
+def _ensure_commander_shadow_runtime(state: Dict[str, Any]) -> Dict[str, Any]:
+    runtime = state.get("commander_shadow_runtime") if isinstance(state.get("commander_shadow_runtime"), dict) else {}
+    runtime = dict(runtime)
+    runtime.setdefault("strategist_executed", None)
+    runtime.setdefault("llm_called_by_strategist", None)
+    runtime.setdefault("used_cached_strategist", False)
+    runtime.setdefault("market_changed", None)
+    runtime.setdefault("repeated_same_context", None)
+    runtime.setdefault("retry_count_estimate", None)
+    runtime.setdefault("monitor_decision", "")
+    runtime.setdefault("executor_action", "")
+    runtime.setdefault("executor_status", "")
+    runtime.setdefault("prior_context", {})
+    state["commander_shadow_runtime"] = runtime
+    return runtime
+
+
+def _reset_commander_shadow_runtime(state: Dict[str, Any]) -> None:
+    state["commander_shadow_runtime"] = {
+        "strategist_executed": None,
+        "llm_called_by_strategist": None,
+        "used_cached_strategist": False,
+        "market_changed": None,
+        "repeated_same_context": None,
+        "retry_count_estimate": None,
+        "monitor_decision": "",
+        "executor_action": "",
+        "executor_status": "",
+        "prior_context": {},
+    }
+
+
+def _strategist_shadow_fingerprint(output: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(output or {}) if isinstance(output, dict) else {}
+    return {
+        "market_regime": str(row.get("market_regime") or "").strip().lower(),
+        "market_sentiment": str(row.get("market_sentiment") or "").strip().lower(),
+        "playbook": str(row.get("playbook") or "").strip().lower(),
+        "monitor_guidance": str(row.get("monitor_guidance") or "").strip().lower(),
+        "risk_tone": str(row.get("risk_tone") or "").strip().lower(),
+        "trade_aggressiveness": str(row.get("trade_aggressiveness") or "").strip().lower(),
+        "themes": tuple(sorted(str(x or "").strip().lower() for x in list(row.get("themes") or []) if str(x or "").strip())),
+        "avoid_themes": tuple(sorted(str(x or "").strip().lower() for x in list(row.get("avoid_themes") or []) if str(x or "").strip())),
+        "global_sentiment_score": round(float(row.get("global_sentiment_score") or 0.0), 4) if row.get("global_sentiment_score") not in (None, "") else None,
+    }
+
+
+def _shadow_market_changed(previous_output: Dict[str, Any], current_output: Dict[str, Any]) -> Optional[bool]:
+    previous = _strategist_shadow_fingerprint(previous_output)
+    current = _strategist_shadow_fingerprint(current_output)
+    if not any(v not in (None, "", (), []) for v in previous.values()):
+        return None
+    return previous != current
+
+
+def _shadow_text(value: Any, *, max_len: int = 120) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max(0, max_len - 3)] + "..."
+
+
+def _shadow_float(value: Any) -> Optional[float]:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _shadow_selected_symbol(state: Dict[str, Any]) -> str:
+    selected = state.get("selected") if isinstance(state.get("selected"), dict) else {}
+    monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
+    return _shadow_text(selected.get("symbol") or monitor_output.get("selected_symbol"), max_len=24)
+
+
+def _shadow_selected_score(state: Dict[str, Any]) -> Optional[float]:
+    selected = state.get("selected") if isinstance(state.get("selected"), dict) else {}
+    for key in ("score_total", "score", "confidence"):
+        value = _shadow_float(selected.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _seed_commander_shadow_prior_context(state: Dict[str, Any], *, prior_cached_output: Dict[str, Any]) -> None:
+    shadow_runtime = _ensure_commander_shadow_runtime(state)
+    strategist_llm = state.get("strategist_llm") if isinstance(state.get("strategist_llm"), dict) else {}
+    baseline_output = (
+        dict(prior_cached_output)
+        if isinstance(prior_cached_output, dict) and prior_cached_output
+        else dict(state.get("strategist_output") or {}) if isinstance(state.get("strategist_output"), dict) else {}
+    )
+    baseline_global_signal = baseline_output.get("global_signal") if isinstance(baseline_output.get("global_signal"), dict) else {}
+    baseline_fear_index = baseline_global_signal.get("fear_index") if isinstance(baseline_global_signal.get("fear_index"), dict) else {}
+    baseline_overlay = baseline_output.get("macro_stress_overlay") if isinstance(baseline_output.get("macro_stress_overlay"), dict) else {}
+    shadow_runtime["prior_context"] = {
+        "selected_symbol": _shadow_selected_symbol(state),
+        "selected_score_total": _shadow_selected_score(state),
+        "playbook": _shadow_text(baseline_output.get("playbook"), max_len=40),
+        "market_regime": _shadow_text(baseline_output.get("market_regime"), max_len=40),
+        "market_sentiment": _shadow_text(baseline_output.get("market_sentiment"), max_len=40),
+        "global_sentiment_score": baseline_output.get("global_sentiment_score"),
+        "vix_level": baseline_fear_index.get("level") if baseline_fear_index.get("level") not in (None, "") else baseline_overlay.get("vix_level"),
+        "stress_flags": [str(x or "").strip() for x in list(baseline_overlay.get("stress_flags") or []) if str(x or "").strip()][:8],
+        "llm_status": _shadow_text(strategist_llm.get("status") or strategist_llm.get("llm_status"), max_len=40),
+    }
+    state["commander_shadow_runtime"] = shadow_runtime
 
 
 def _resolve_commander_cooldown_policy(state: Dict[str, Any]) -> Tuple[int, int]:
@@ -743,6 +854,14 @@ def _run_integrated_chain(
     from graphs.nodes.update_state_after_execution import update_state_after_execution
     from libs.reporting.intraday_trade_reports import generate_intraday_trade_artifacts
 
+    shadow_runtime = _ensure_commander_shadow_runtime(state)
+    prior_cache_payload = _strategist_cache_payload(state)
+    prior_cached_output = prior_cache_payload.get("output") if isinstance(prior_cache_payload.get("output"), dict) else {}
+    _seed_commander_shadow_prior_context(
+        state,
+        prior_cached_output=prior_cached_output if isinstance(prior_cached_output, dict) else {},
+    )
+
     # Keep integrated chain position/risk context aligned with live state.
     state = build_portfolio_snapshot(state)
     snaps = state.get("snapshots") if isinstance(state.get("snapshots"), dict) else {}
@@ -754,6 +873,9 @@ def _run_integrated_chain(
 
     use_monitor_only, fast_path_payload = _should_use_monitor_only_fast_path(state)
     if use_monitor_only:
+        shadow_runtime["strategist_executed"] = False
+        shadow_runtime["llm_called_by_strategist"] = False
+        shadow_runtime["used_cached_strategist"] = False
         state = _hydrate_strategist_output_cache(state)
         held_symbols = _portfolio_open_position_symbols(state)
         if held_symbols:
@@ -768,12 +890,15 @@ def _run_integrated_chain(
         _log_commander_event(state, "fast_path", {"path": "integrated_chain_monitor_only", **fast_path_payload})
         state = _hydrate_monitor_symbol_features(state)
         state = monitor_node(state)
+        shadow_runtime["monitor_decision"] = str(((state.get("monitor_output") or {}).get("intent_side") or "NOOP"))
         state = decision_node(state)
         decision = str(state.get("decision") or "").strip().lower()
         if decision == "approve":
             intent = _intent_from_monitor_state(state)
             state["decision_packet"] = _build_packet_from_state(state, intent=intent)
             state = execute_fn(state)
+            shadow_runtime["executor_action"] = str((((state.get("execution") or {}).get("order") or {}).get("action") or ((state.get("decision_packet") or {}).get("intent") or {}).get("action") or ""))
+            shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
             state = update_state_after_execution(state)
             try:
                 state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
@@ -788,17 +913,36 @@ def _run_integrated_chain(
 
     reused_strategist_cache, cache_payload = _should_use_cached_strategist_when_flat(state)
     if reused_strategist_cache:
+        shadow_runtime["strategist_executed"] = False
+        shadow_runtime["llm_called_by_strategist"] = False
+        shadow_runtime["used_cached_strategist"] = True
+        shadow_runtime["market_changed"] = False
+        shadow_runtime["repeated_same_context"] = True
         state = _hydrate_strategist_output_cache(state)
         state["runtime_fast_path"] = dict(cache_payload)
         _log_commander_event(state, "fast_path", {"path": "integrated_chain_cached_frame", **cache_payload})
     else:
         state = strategist_node(state)
+        shadow_runtime["strategist_executed"] = True
+        shadow_runtime["used_cached_strategist"] = False
+        strategist_llm = state.get("strategist_llm") if isinstance(state.get("strategist_llm"), dict) else {}
+        llm_status = str(strategist_llm.get("status") or strategist_llm.get("llm_status") or "").strip().lower()
+        shadow_runtime["llm_called_by_strategist"] = bool(
+            llm_status not in {"", "disabled"}
+            or str(strategist_llm.get("prompt_ref") or "").strip()
+            or str(strategist_llm.get("response_ref") or "").strip()
+        )
+        shadow_runtime["retry_count_estimate"] = max(0, _coerce_int(strategist_llm.get("attempts"), 1) - 1)
+        market_changed = _shadow_market_changed(prior_cached_output if isinstance(prior_cached_output, dict) else {}, state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {})
+        shadow_runtime["market_changed"] = market_changed
+        shadow_runtime["repeated_same_context"] = (market_changed is False)
         if _strategist_frame_blocked(state):
             return _apply_strategist_block(state, phase="integrated_chain")
         state = _persist_strategist_output_cache(state)
     state = scanner_node(state)
     state = _hydrate_monitor_symbol_features(state)
     state = monitor_node(state)
+    shadow_runtime["monitor_decision"] = str(((state.get("monitor_output") or {}).get("intent_side") or "NOOP"))
     state = decision_node(state)
 
     decision = str(state.get("decision") or "").strip().lower()
@@ -806,6 +950,8 @@ def _run_integrated_chain(
         intent = _intent_from_monitor_state(state)
         state["decision_packet"] = _build_packet_from_state(state, intent=intent)
         state = execute_fn(state)
+        shadow_runtime["executor_action"] = str((((state.get("execution") or {}).get("order") or {}).get("action") or ((state.get("decision_packet") or {}).get("intent") or {}).get("action") or ""))
+        shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
         state = update_state_after_execution(state)
         try:
             state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
@@ -909,6 +1055,7 @@ def run_commander_runtime(
     Mode selection uses `resolve_runtime_mode(...)`.
     """
     state = ensure_runtime_resilience_state(state)
+    _reset_commander_shadow_runtime(state)
 
     def _build_commander_decision_frame(
         mode_value: str,
@@ -958,14 +1105,14 @@ def run_commander_runtime(
         }
 
     def _persist_commander(mode_value: str, phase_value: str, *, status_value: str, path_value: str, reason: str = "") -> None:
+        state["commander_decision_frame"] = _build_commander_decision_frame(
+            mode_value,
+            phase_value,
+            status_value=status_value,
+            path_value=path_value,
+            reason_text=reason,
+        )
         try:
-            state["commander_decision_frame"] = _build_commander_decision_frame(
-                mode_value,
-                phase_value,
-                status_value=status_value,
-                path_value=path_value,
-                reason_text=reason,
-            )
             write_commander_artifact(
                 state,
                 mode=str(mode_value or ""),
@@ -973,6 +1120,31 @@ def run_commander_runtime(
                 path=str(path_value or ""),
                 status=str(status_value or "ok"),
                 reason=str(reason or ""),
+            )
+        except Exception:
+            pass
+        try:
+            # Shadow commander is observation-only: it records recommendations and
+            # explanations beside the live flow, but never overrides runtime behavior.
+            shadow_path = write_commander_shadow_artifact(
+                state,
+                mode=str(mode_value or ""),
+                phase=str(phase_value or ""),
+                path=str(path_value or ""),
+                status=str(status_value or "ok"),
+                reason=str(reason or ""),
+            )
+            shadow_payload = state.get("commander_shadow_runtime") if isinstance(state.get("commander_shadow_runtime"), dict) else {}
+            _log_commander_event(
+                state,
+                "shadow_assessment",
+                {
+                    "path": str(path_value or ""),
+                    "artifact_path": str(shadow_path or ""),
+                    "shadow_only": True,
+                    "monitor_decision": str(shadow_payload.get("monitor_decision") or ""),
+                    "executor_action": str(shadow_payload.get("executor_action") or ""),
+                },
             )
         except Exception:
             pass

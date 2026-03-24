@@ -29,7 +29,7 @@ def run_m13_eod_report(
       - Runs at most once per KST day (tracked via state['last_daily_report_day']).
 
     Uses env by default:
-      - EVENT_LOG_PATH (default ./data/events.jsonl)
+      - EVENT_LOG_PATH (default ./data/logs/events.jsonl)
       - REPORT_DIR (default ./reports)
 
     Output:
@@ -63,7 +63,7 @@ def run_m13_eod_report(
         from libs.reporting.daily_report import generate_daily_report as generate  # lazy import
         used_default_generate = True
 
-    events_path = Path(os.getenv("EVENT_LOG_PATH", "./data/events.jsonl"))
+    events_path = Path(os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl"))
     report_dir = Path(os.getenv("REPORT_DIR", "./reports"))
 
     md, js = generate(events_path, report_dir, day=day)  # type: ignore[misc]

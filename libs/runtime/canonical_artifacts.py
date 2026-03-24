@@ -9,6 +9,7 @@ from typing import Any, Dict
 
 from libs.contracts.agent_outputs import (
     build_commander_output_artifact,
+    build_commander_shadow_artifact,
     build_executor_output_artifact,
     build_monitor_output_artifact,
     build_scanner_output_artifact,
@@ -58,6 +59,7 @@ def canonical_run_artifact_paths(
     return {
         "base_dir": base,
         "commander": base / "commander.json",
+        "commander_shadow": base / "commander_shadow.json",
         "strategist": base / "strategist.json",
         "scanner": base / "scanner.json",
         "monitor": base / "monitor.json",
@@ -294,6 +296,31 @@ def write_commander_artifact(
         reason=str(reason or ""),
     )
     path_text = _write_artifact_once(state, agent="commander", path=paths["commander"], payload=payload)
+    return path_text
+
+
+def write_commander_shadow_artifact(
+    state: Dict[str, Any],
+    *,
+    mode: str,
+    phase: str,
+    path: str,
+    status: str,
+    reason: str = "",
+) -> str:
+    run_id = str(state.get("run_id") or "").strip()
+    if not run_id:
+        return ""
+    paths = canonical_run_artifact_paths(run_id, day=_resolve_day(state), reports_root=_reports_root(state))
+    payload = build_commander_shadow_artifact(
+        state,
+        mode=str(mode or ""),
+        phase=str(phase or ""),
+        path=str(path or ""),
+        status=str(status or "ok"),
+        reason=str(reason or ""),
+    )
+    path_text = _write_artifact_once(state, agent="commander_shadow", path=paths["commander_shadow"], payload=payload)
     return path_text
 
 

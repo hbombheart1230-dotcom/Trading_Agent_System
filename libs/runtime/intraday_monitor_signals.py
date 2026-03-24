@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import statistics
 from typing import Any, Dict, List, Mapping, Sequence
 
 
@@ -125,6 +126,63 @@ def _session_vwap(candles: Sequence[Mapping[str, Any]]) -> float | None:
     if weighted_den <= 0.0:
         return None
     return weighted_num / weighted_den
+
+
+def _infer_spacing_seconds(candles: Sequence[Mapping[str, Any]]) -> float | None:
+    ts_values: List[int] = []
+    for row in candles:
+        ts = _to_int(row.get("ts"), 0)
+        if ts > 0:
+            ts_values.append(ts)
+    if len(ts_values) < 4:
+        return None
+    diffs: List[int] = []
+    for prev_ts, cur_ts in zip(ts_values, ts_values[1:]):
+        diff = int(cur_ts) - int(prev_ts)
+        if diff > 0:
+            diffs.append(diff)
+    if len(diffs) < 3:
+        return None
+    try:
+        return float(statistics.median(diffs))
+    except Exception:
+        return None
+
+
+def _classify_series_quality(
+    candles: Sequence[Mapping[str, Any]],
+    *,
+    timeframe_minutes: int,
+) -> Dict[str, Any]:
+    spacing_seconds = _infer_spacing_seconds(candles)
+    if spacing_seconds is None:
+        return {
+            "intraday_compatible": True,
+            "inferred_spacing_seconds": None,
+            "inferred_spacing_minutes": None,
+            "series_class": "unknown",
+            "compatibility_reason": "timestamp_missing",
+        }
+
+    spacing_minutes = spacing_seconds / 60.0
+    max_intraday_spacing_seconds = max(1800.0, float(max(1, timeframe_minutes)) * 60.0 * 6.0)
+    intraday_compatible = spacing_seconds <= max_intraday_spacing_seconds
+    if intraday_compatible:
+        series_class = "intraday"
+        compatibility_reason = "intraday_spacing_detected"
+    elif spacing_seconds >= 12 * 3600:
+        series_class = "daily_or_higher"
+        compatibility_reason = "non_intraday_spacing_detected"
+    else:
+        series_class = "higher_timeframe"
+        compatibility_reason = "non_intraday_spacing_detected"
+    return {
+        "intraday_compatible": intraday_compatible,
+        "inferred_spacing_seconds": round(spacing_seconds, 3),
+        "inferred_spacing_minutes": round(spacing_minutes, 3),
+        "series_class": series_class,
+        "compatibility_reason": compatibility_reason,
+    }
 
 
 def resolve_intraday_entry_policy(
@@ -261,6 +319,25 @@ def evaluate_intraday_entry_signal(
         int(resolved_policy.get("volume_lookback") or 5) + 1,
         4,
     )
+    series_quality = _classify_series_quality(candles, timeframe_minutes=timeframe_minutes)
+    out["series_quality"] = dict(series_quality)
+    if not bool(series_quality.get("intraday_compatible")):
+        out["reason"] = "minute_candle_missing"
+        out["metrics"] = {
+            "bar_count": len(candles),
+            "min_required_bars": min_required_bars,
+            "timeframe_minutes": timeframe_minutes,
+            "price": _to_float(current_price) if _to_float(current_price) > 0.0 else None,
+            "vwap": _to_float(_session_vwap(candles), 0.0) or None,
+            "vwap_distance": None,
+            "volume_ratio": None,
+            "recent_high": None,
+            "pullback_pct": None,
+            "inferred_spacing_minutes": series_quality.get("inferred_spacing_minutes"),
+            "series_class": series_quality.get("series_class"),
+            "compatibility_reason": series_quality.get("compatibility_reason"),
+        }
+        return out
     if len(candles) < min_required_bars:
         out["reason"] = "data_incomplete"
         out["metrics"] = {
@@ -273,6 +350,8 @@ def evaluate_intraday_entry_signal(
             "volume_ratio": None,
             "recent_high": None,
             "pullback_pct": None,
+            "inferred_spacing_minutes": series_quality.get("inferred_spacing_minutes"),
+            "series_class": series_quality.get("series_class"),
         }
         return out
 
@@ -344,6 +423,8 @@ def evaluate_intraday_entry_signal(
             "volume_ratio": volume_ratio if volume_ratio > 0.0 else None,
             "recent_high": recent_high if recent_high > 0.0 else None,
             "pullback_pct": pullback_depth_pct,
+            "inferred_spacing_minutes": series_quality.get("inferred_spacing_minutes"),
+            "series_class": series_quality.get("series_class"),
         }
         return out
 
@@ -536,6 +617,8 @@ def evaluate_intraday_entry_signal(
         "engine_vwap_distance": (features or {}).get("engine_vwap_distance"),
         "engine_volume_spike20": (features or {}).get("engine_volume_spike20"),
         "engine_trend_strength": (features or {}).get("engine_trend_strength"),
+        "inferred_spacing_minutes": series_quality.get("inferred_spacing_minutes"),
+        "series_class": series_quality.get("series_class"),
     }
     out.update(
         {

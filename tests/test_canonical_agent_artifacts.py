@@ -125,10 +125,11 @@ def test_commander_runtime_writes_commander_artifact(tmp_path: Path, monkeypatch
         "runtime_plan": {"agents": ["strategist", "scanner", "monitor"]},
     }
 
-    run_commander_runtime(state, mode="graph_spine", graph_runner=fake_graph_runner)
+    out = run_commander_runtime(state, mode="graph_spine", graph_runner=fake_graph_runner)
 
     paths = canonical_run_artifact_paths("run-5", day="2026-03-18", reports_root=tmp_path / "reports")
     commander = json.loads(paths["commander"].read_text(encoding="utf-8"))
+    commander_shadow = json.loads(paths["commander_shadow"].read_text(encoding="utf-8"))
     assert commander["agent"] == "commander"
     assert commander["run_id"] == "run-5"
     assert commander["decision"] == "graph_spine"
@@ -143,6 +144,19 @@ def test_commander_runtime_writes_commander_artifact(tmp_path: Path, monkeypatch
     assert "agent_invocation_plan" in commander
     assert "final_runtime_path" in commander
     assert "handoff_instruction" in commander
+    assert out["path"] == "graph_spine"
+    assert commander_shadow["agent"] == "commander"
+    assert commander_shadow["mode"] == "shadow"
+    assert commander_shadow["shadow_only"] is True
+    assert commander_shadow["decision"] == "OBSERVE_ONLY"
+    assert commander_shadow["actual_runtime"]["runtime_path"] == "graph_spine"
+    assert isinstance(commander_shadow.get("monitor_gate_details"), dict)
+    assert isinstance(commander_shadow.get("context_delta_summary"), dict)
+    assert isinstance(commander_shadow.get("pre_strategist_shadow_snapshot"), dict)
+    assert isinstance(commander_shadow.get("post_strategist_assessment"), dict)
+    assert isinstance(commander_shadow.get("post_monitor_assessment"), dict)
+    assert isinstance(commander_shadow.get("end_of_cycle_summary"), dict)
+    assert commander_shadow.get("shadow_only") is True
 
 
 def test_commander_runtime_writes_artifact_when_cooldown_blocks_execution(tmp_path: Path, monkeypatch) -> None:
@@ -164,3 +178,30 @@ def test_commander_runtime_writes_artifact_when_cooldown_blocks_execution(tmp_pa
     assert commander.get("selected_route") in {"blocked", "degraded"}
     assert commander.get("cooldown_applied") is True
     assert commander.get("runtime_phase") == "session"
+
+
+def test_commander_shadow_write_failure_does_not_break_runtime(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("REPORTS_ROOT", str(tmp_path / "reports"))
+
+    def fake_graph_runner(state):  # type: ignore[no-untyped-def]
+        state["runtime_status"] = "ok"
+        state["path"] = "graph_spine"
+        return state
+
+    def fail_shadow(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("shadow write failed")
+
+    monkeypatch.setattr("graphs.commander_runtime.write_commander_shadow_artifact", fail_shadow)
+
+    state = {
+        "run_id": "run-7",
+        "started_at": "2026-03-18T00:00:00+00:00",
+        "runtime_plan": {"agents": ["strategist", "scanner", "monitor"]},
+    }
+
+    out = run_commander_runtime(state, mode="graph_spine", graph_runner=fake_graph_runner)
+
+    paths = canonical_run_artifact_paths("run-7", day="2026-03-18", reports_root=tmp_path / "reports")
+    assert out["path"] == "graph_spine"
+    assert paths["commander"].exists()
+    assert not paths["commander_shadow"].exists()

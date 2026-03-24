@@ -21,6 +21,14 @@ class QuoteDTO:
 
 
 @dataclass(frozen=True)
+class MinuteOHLCVDTO:
+    symbol: str
+    timeframe_minutes: int
+    rows: List[Dict[str, Any]]
+    raw: Dict[str, Any]
+
+
+@dataclass(frozen=True)
 class OrderPlaceDTO:
     side: str
     symbol: str

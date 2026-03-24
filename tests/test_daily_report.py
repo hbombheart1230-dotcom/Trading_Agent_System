@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 from libs.reporting.llm_artifacts import daily_artifact_paths
+from libs.reporting.daily_report import generate_daily_report as compat_generate_daily_report
 from scripts.generate_daily_report import generate_daily_report
 
 
@@ -54,3 +55,57 @@ def test_generate_daily_report(tmp_path: Path):
     assert not (out_dir / "daily_2023-11-14.md").exists()
     assert not (out_dir / "daily" / "daily_2023-11-14.json").exists()
     assert not (out_dir / "daily" / "daily_2023-11-14.md").exists()
+
+
+def test_compat_daily_report_delegates_to_canonical_generator(tmp_path: Path):
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        "\n".join([
+            json.dumps({"ts": "2026-03-23T06:24:32+00:00", "run_id": "r1", "stage": "strategist", "event": "summary", "payload": {}}),
+            json.dumps({"ts": "2026-03-23T06:25:32+00:00", "run_id": "r1", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": True}}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "reports"
+    md, js = compat_generate_daily_report(events, out_dir, day="2026-03-23")
+    data = json.loads(js.read_text(encoding="utf-8"))
+    assert md == out_dir / "daily" / "2026-03-23" / "daily_report.md"
+    assert data["events"] == 2
+    assert data["approvals"] == 1
+    assert "stage_counts" in data
+
+
+def test_generate_daily_report_uses_lifecycle_bundle_for_trade_index(tmp_path: Path):
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps({"ts": "2026-03-23T06:24:32+00:00", "run_id": "r1", "stage": "monitor", "event": "summary", "payload": {"symbol": "005930"}}) + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "reports"
+    bundle = out_dir / "trades" / "2026-03-23" / "TRD_20260323_005930_01" / "lifecycle_bundle.json"
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    bundle.write_text(
+        json.dumps(
+            {
+                "schema_version": "lifecycle_bundle.v1",
+                "day": "2026-03-23",
+                "trade_id": "TRD_20260323_005930_01",
+                "symbol": "005930",
+                "trade_lifecycle_status": "closed",
+                "lifecycle": {
+                    "entry": {"run_id": "r1", "ts": "2026-03-23T06:20:00+00:00", "price": 100.0, "reason_human": "entry reason"},
+                    "exit": {"run_id": "r2", "ts": "2026-03-23T06:30:00+00:00", "price": 103.0, "reason_human": "exit reason"},
+                },
+                "trade_outcome": {"exit_reason": "exit reason"},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    _md, js = generate_daily_report(events, out_dir, day="2026-03-23")
+    data = json.loads(js.read_text(encoding="utf-8"))
+    assert data["trade_index"]
+    assert data["trade_index"][0]["trade_id"] == "TRD_20260323_005930_01"
+    assert data["symbols_observed"] == ["005930"]

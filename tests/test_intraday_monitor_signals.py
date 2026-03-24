@@ -26,6 +26,36 @@ def _rows_pullback_rebound() -> list[dict]:
     ]
 
 
+def _rows_daily_seed_like() -> list[dict]:
+    start_ts = 1_710_000_000
+    rows: list[dict] = []
+    closes = [100.0, 101.5, 102.0, 103.0, 102.8, 104.0]
+    for idx, close in enumerate(closes[:-1]):
+        rows.append(
+            {
+                "ts": start_ts + idx * 86400,
+                "open": close - 0.5,
+                "high": close + 1.0,
+                "low": close - 1.0,
+                "close": close,
+                "volume": 1_000_000 + idx * 20_000,
+                "vwap": close - 0.2,
+            }
+        )
+    rows.append(
+        {
+            "ts": start_ts + len(closes[:-1]) * 86400,
+            "open": 104.0,
+            "high": 104.0,
+            "low": 104.0,
+            "close": 104.0,
+            "volume": 1.0,
+            "vwap": 103.4,
+        }
+    )
+    return rows
+
+
 def test_intraday_entry_triggers_on_breakout_vwap_hold_and_volume_confirmation() -> None:
     out = evaluate_intraday_entry_signal(_rows_breakout())
 
@@ -195,3 +225,15 @@ def test_intraday_entry_waits_when_candle_data_incomplete() -> None:
     assert out["reason"] == "data_incomplete"
     metrics = out.get("metrics") or {}
     assert int(metrics.get("bar_count") or 0) == 3
+
+
+def test_intraday_entry_rejects_non_intraday_seed_series_as_minute_data() -> None:
+    out = evaluate_intraday_entry_signal(_rows_daily_seed_like(), current_price=104.0)
+
+    assert out["evaluated"] is False
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+    assert out["reason"] == "minute_candle_missing"
+    metrics = out.get("metrics") or {}
+    assert float(metrics.get("inferred_spacing_minutes") or 0.0) >= 1000.0
+    assert metrics.get("series_class") == "daily_or_higher"

@@ -4,6 +4,7 @@ from graphs.nodes.skill_contracts import (
     CONTRACT_VERSION,
     extract_account_orders_rows,
     extract_market_quotes,
+    extract_minute_ohlcv_by_symbol,
     extract_order_status,
 )
 
@@ -61,3 +62,46 @@ def test_m22_contract_extract_order_status_reports_contract_violation():
     assert meta["present"] is True
     assert meta["used"] is False
     assert "order.status:contract_violation" in meta["errors"]
+
+
+def test_m22_contract_extract_minute_ohlcv_from_state_minute_root():
+    state = {
+        "minute_ohlcv_by_symbol": {
+            "A005930": [
+                {"ts": 1710000000, "open": 70000, "high": 70100, "low": 69900, "close": 70050, "volume": 1200},
+                {"ts": 1710000060, "open": 70050, "high": 70200, "low": 70040, "close": 70180, "volume": 1800},
+            ]
+        }
+    }
+    rows_by_symbol, meta = extract_minute_ohlcv_by_symbol(state)
+    assert meta["contract_version"] == CONTRACT_VERSION
+    assert meta["present"] is True
+    assert meta["used"] is True
+    assert meta["errors"] == []
+    assert meta["source"] == "state.minute_ohlcv_by_symbol"
+    assert "005930" in rows_by_symbol
+    assert len(rows_by_symbol["005930"]) == 2
+
+
+def test_m22_contract_extract_minute_ohlcv_from_skill_ready_data():
+    state = {
+        "skill_results": {
+            "market.minute_ohlcv": {
+                "result": {
+                    "action": "ready",
+                    "data": {
+                        "symbol": "A005930",
+                        "rows": [
+                            {"ts": 1710000000, "open": 70000, "high": 70100, "low": 69900, "close": 70050, "volume": 1200},
+                            {"ts": 1710000060, "open": 70050, "high": 70200, "low": 70040, "close": 70180, "volume": 1800},
+                        ],
+                    },
+                }
+            }
+        }
+    }
+    rows_by_symbol, meta = extract_minute_ohlcv_by_symbol(state)
+    assert meta["present"] is True
+    assert meta["used"] is True
+    assert meta["source"] == "skill.minute_ohlcv"
+    assert len(rows_by_symbol["005930"]) == 2

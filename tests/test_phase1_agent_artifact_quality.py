@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from libs.contracts.agent_outputs import (
+    build_commander_shadow_artifact,
     build_commander_output_artifact,
     build_monitor_output_artifact,
     build_scanner_output_artifact,
@@ -244,6 +245,29 @@ def test_monitor_artifact_no_intent_summary_is_human_readable() -> None:
     assert len(summary) <= 120
 
 
+def test_monitor_artifact_prefers_entry_reason_when_flat_and_minute_data_missing() -> None:
+    state = {
+        "run_id": "run-mon-minute-missing",
+        "started_at": "2026-03-18T10:00:00+00:00",
+        "runtime_phase": "session",
+        "monitor": {"open_position_count": 0},
+        "monitor_output": {"selected_symbol": "005930", "intent_side": "NOOP", "entry_exit_reason": "minute_candle_missing"},
+        "monitor_entry": {
+            "evaluated": False,
+            "triggered": False,
+            "reason": "minute_candle_missing",
+            "metrics": {"bar_count": 59, "inferred_spacing_minutes": 1440.0, "series_class": "daily_or_higher"},
+        },
+        "monitor_exit": {"symbol": "005930", "price": 70500, "reason": "no_position", "thresholds": {}, "watch_axes": []},
+        "intents": [],
+    }
+
+    artifact = build_monitor_output_artifact(state)
+    assert artifact.get("decision_phase") == "no_intent"
+    assert artifact.get("primary_reason_code") == "minute_candle_missing"
+    assert "insufficient data" in str(artifact.get("decision_summary") or "").lower()
+
+
 def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
     state = {
         "run_id": "run-cmd-1",
@@ -295,3 +319,155 @@ def test_commander_artifact_routes_blocked_with_cooldown() -> None:
     incident_state = artifact.get("incident_state") if isinstance(artifact.get("incident_state"), dict) else {}
     assert incident_state.get("incident_count") == 3
     assert artifact.get("strategist_blocked") is True
+
+
+def test_commander_shadow_artifact_marks_position_already_open_without_override() -> None:
+    state = {
+        "run_id": "run-cmd-shadow-1",
+        "started_at": "2026-03-18T10:00:00+00:00",
+        "runtime_phase": "session",
+        "runtime_status": "ok",
+        "runtime_fast_path": {"reason": "holding_position_monitor_only"},
+        "portfolio_snapshot": {"positions": [{"symbol": "005930", "qty": 1}], "cash": 1000},
+        "monitor": {"open_position_count": 1, "buy_blocked_open_position": True},
+        "monitor_output": {"selected_symbol": "005930", "intent_side": "NOOP", "entry_exit_reason": "buy_blocked_open_position"},
+        "selected": {"symbol": "005930", "score_total": 0.78},
+        "commander_shadow_runtime": {
+            "strategist_executed": False,
+            "llm_called_by_strategist": False,
+            "used_cached_strategist": False,
+            "market_changed": False,
+            "repeated_same_context": True,
+            "monitor_decision": "NOOP",
+            "executor_action": "",
+            "executor_status": "",
+            "prior_context": {
+                "selected_symbol": "005930",
+                "selected_score_total": 0.79,
+                "playbook": "pullback",
+                "market_regime": "neutral",
+                "market_sentiment": "mixed",
+                "llm_status": "ok",
+            },
+        },
+    }
+
+    artifact = build_commander_shadow_artifact(
+        state,
+        mode="integrated_chain",
+        phase="session",
+        path="integrated_chain_monitor_only",
+        status="ok",
+        reason="holding_position_monitor_only",
+    )
+
+    assert artifact.get("mode") == "shadow"
+    assert artifact.get("shadow_only") is True
+    assert artifact.get("decision") == "OBSERVE_ONLY"
+    assert artifact.get("no_trade_reason_code") == "POSITION_ALREADY_OPEN"
+    assert artifact.get("strategist_action_recommendation") == "SKIP"
+    assert artifact.get("llm_call_advice") == "SKIP"
+    assert artifact.get("next_action_recommendation") == "HOLD_OBSERVE"
+    assert isinstance(artifact.get("monitor_gate_details"), dict)
+    assert isinstance(artifact.get("context_delta_summary"), dict)
+    assert isinstance(artifact.get("pre_strategist_shadow_snapshot"), dict)
+    assert isinstance(artifact.get("post_strategist_assessment"), dict)
+    assert isinstance(artifact.get("post_monitor_assessment"), dict)
+    assert isinstance(artifact.get("end_of_cycle_summary"), dict)
+    assert artifact["monitor_gate_details"]["entry_block_reason"] == "buy_blocked_open_position"
+    assert artifact["context_delta_summary"]["symbol_same_as_last"] is True
+    assert artifact["pre_strategist_shadow_snapshot"]["strategist_action_recommendation"] == "SKIP"
+    assert artifact["post_monitor_assessment"]["monitor_decision"] == "WAIT"
+    assert artifact["end_of_cycle_summary"]["next_action_recommendation"] == "HOLD_OBSERVE"
+
+
+def test_commander_shadow_artifact_includes_monitor_gate_details_for_wait_cycle() -> None:
+    state = {
+        "run_id": "run-cmd-shadow-2",
+        "started_at": "2026-03-18T10:03:00+00:00",
+        "runtime_phase": "session",
+        "runtime_status": "ok",
+        "portfolio_snapshot": {"positions": [], "cash": 1000},
+        "selected": {"symbol": "000660", "score_total": 0.91, "confidence": 0.62},
+        "monitor": {"open_position_count": 0},
+        "monitor_output": {"selected_symbol": "000660", "intent_side": "NOOP", "entry_exit_reason": "wait_for_confirmation"},
+        "monitor_entry": {
+            "reason": "wait_for_confirmation",
+            "guard_reason": "breakout_not_ready",
+            "failed_checks": ["breakout_ok", "volume_ok"],
+            "passed_checks": ["extension_ok"],
+            "primary_failure_axis": "breakout",
+            "thresholds": {"volume_ratio_min": 0.8, "max_extended_from_vwap_pct": 0.05},
+            "metrics": {
+                "volume_ratio": 0.62,
+                "extended_from_vwap_pct": 0.018,
+                "pullback_depth_pct": 0.021,
+                "recent_high": 125000,
+                "breakout_level": 125500,
+                "current_price": 124800,
+                "timeframe_minutes": 3,
+                "minute_source_present": True,
+                "latest_candle_ts": 1773021780,
+                "minute_snapshot_age_minutes": 7.5,
+                "minute_snapshot_was_stale": True,
+                "minute_refetch_attempted": True,
+                "minute_refetch_succeeded": False,
+                "minute_refetch_reason": "stale_snapshot_age_exceeded",
+            },
+        },
+        "strategist_output": {
+            "playbook": "pullback",
+            "market_regime": "neutral",
+            "market_sentiment": "mixed",
+            "global_sentiment_score": 0.01,
+            "macro_stress_overlay": {"stress_flags": ["vix_watch"]},
+        },
+        "strategist_llm": {"status": "repaired"},
+        "commander_shadow_runtime": {
+            "strategist_executed": True,
+            "llm_called_by_strategist": True,
+            "used_cached_strategist": False,
+            "market_changed": False,
+            "repeated_same_context": False,
+            "monitor_decision": "NOOP",
+            "executor_action": "",
+            "executor_status": "",
+            "prior_context": {
+                "selected_symbol": "000660",
+                "selected_score_total": 0.88,
+                "playbook": "pullback",
+                "market_regime": "neutral",
+                "market_sentiment": "mixed",
+                "global_sentiment_score": 0.0,
+                "vix_level": 21.0,
+                "stress_flags": ["vix_watch"],
+                "llm_status": "repaired",
+            },
+        },
+    }
+
+    artifact = build_commander_shadow_artifact(
+        state,
+        mode="integrated_chain",
+        phase="session",
+        path="integrated_chain",
+        status="ok",
+        reason="cycle_complete",
+    )
+
+    assert artifact.get("shadow_only") is True
+    assert artifact.get("no_trade_reason_code") == "NO_MARKET_CHANGE"
+    gate = artifact["monitor_gate_details"]
+    assert gate["breakout_passed"] is False
+    assert gate["volume_passed"] is False
+    assert gate["vwap_extension_passed"] is True
+    assert gate["entry_block_reason"] == "breakout_not_ready"
+    assert gate["observed_features"]["volume_ratio"] == 0.62
+    assert gate["observed_features"]["minute_snapshot_age_minutes"] == 7.5
+    assert gate["observed_features"]["minute_snapshot_was_stale"] is True
+    assert gate["observed_features"]["minute_refetch_attempted"] is True
+    assert gate["observed_features"]["minute_refetch_succeeded"] is False
+    assert gate["observed_features"]["minute_refetch_reason"] == "stale_snapshot_age_exceeded"
+    assert gate["used_thresholds"]["volume_ratio_min"] == 0.8
+    assert artifact["context_delta_summary"]["playbook_same_as_last"] is True
+    assert artifact["actual_runtime"]["strategist_executed"] is True

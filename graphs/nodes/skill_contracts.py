@@ -129,6 +129,88 @@ def extract_market_quotes(state: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, An
     return out, _meta(present=present, used=bool(out), errors=errors)
 
 
+def _normalize_ohlcv_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(row)
+    if "symbol" in out:
+        out.pop("symbol", None)
+    return out
+
+
+def _save_ohlcv_rows(out: Dict[str, List[Dict[str, Any]]], symbol: Any, rows: Any) -> bool:
+    key = norm_symbol(symbol)
+    if not key or not isinstance(rows, list):
+        return False
+    normalized: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        normalized.append(_normalize_ohlcv_row(row))
+    if not normalized:
+        return False
+    out[key] = normalized
+    return True
+
+
+def extract_minute_ohlcv_by_symbol(state: Dict[str, Any]) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Any]]:
+    """Resolve monitor-only minute OHLCV contract.
+
+    This intentionally does not read `ohlcv_by_symbol`, which remains the
+    scanner/feature seed store and may contain daily candles.
+    """
+    direct_present = False
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for state_key in ("minute_ohlcv_by_symbol", "monitor_minute_ohlcv_by_symbol", "intraday_ohlcv_by_symbol"):
+        raw = state.get(state_key)
+        if not isinstance(raw, dict):
+            continue
+        direct_present = True
+        for symbol, rows in raw.items():
+            _save_ohlcv_rows(out, symbol, rows)
+        if out:
+            return out, {
+                "contract_version": CONTRACT_VERSION,
+                "present": True,
+                "used": True,
+                "errors": [],
+                "source": f"state.{state_key}",
+            }
+
+    raw, present = _pick_skill_value(
+        state,
+        ("market.minute_ohlcv", "market.minute_candles", "market.candles"),
+        state_key="minute_ohlcv",
+    )
+    unwrapped, errors = _unwrap_skill_payload(raw, skill_name="market.minute_ohlcv")
+
+    if isinstance(unwrapped, dict):
+        if isinstance(unwrapped.get("symbol"), (str, int)) and isinstance(unwrapped.get("rows"), list):
+            _save_ohlcv_rows(out, unwrapped.get("symbol"), unwrapped.get("rows"))
+        else:
+            for symbol, rows in unwrapped.items():
+                _save_ohlcv_rows(out, symbol, rows)
+    elif isinstance(unwrapped, list):
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for row in unwrapped:
+            if not isinstance(row, dict):
+                continue
+            symbol = norm_symbol(row.get("symbol"))
+            if not symbol:
+                continue
+            grouped.setdefault(symbol, []).append(_normalize_ohlcv_row(row))
+        out.update(grouped)
+
+    present_flag = bool(direct_present or present)
+    if present_flag and not out and not errors:
+        errors.append("market.minute_ohlcv:contract_violation")
+    return out, {
+        "contract_version": CONTRACT_VERSION,
+        "present": present_flag,
+        "used": bool(out),
+        "errors": list(errors),
+        "source": "skill.minute_ohlcv" if bool(out) and not direct_present else ("none" if not present_flag else "state"),
+    }
+
+
 def extract_account_orders_rows(state: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     raw, present = _pick_skill_value(state, ("account.orders", "account_orders"), state_key="account_orders")
     unwrapped, errors = _unwrap_skill_payload(raw, skill_name="account.orders")

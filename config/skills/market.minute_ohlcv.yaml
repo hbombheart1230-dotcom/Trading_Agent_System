@@ -1,0 +1,10 @@
+skill: market.minute_ohlcv
+description: 종목 분봉 OHLCV 조회 (monitor entry 전용)
+outputs: MinuteOHLCVDTO
+steps:
+  - api_id: ka10080
+    defaults:
+      upd_stkpc_tp: "{adjusted_price}"
+      tic_scope: "{timeframe_minutes}"
+    map:
+      stk_cd: "{symbol}"
