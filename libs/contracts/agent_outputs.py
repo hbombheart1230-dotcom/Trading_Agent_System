@@ -1177,12 +1177,63 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
 def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     monitor = _dict(state.get("monitor"))
     monitor_output = _dict(state.get("monitor_output"))
+    monitor_evaluation = _dict(state.get("monitor_evaluation"))
+    monitor_action = _dict(state.get("monitor_action_decision"))
     exit_info = _dict(state.get("monitor_exit"))
     entry_info = _dict(state.get("monitor_entry"))
     transition = _dict(state.get("monitor_state_transition"))
     entry_detail = _dict(state.get("monitor_entry_decision_detail"))
     exit_detail = _dict(state.get("monitor_exit_decision_detail"))
     selected = _dict(state.get("selected"))
+    trace_sources = [
+        monitor_output,
+        monitor_action,
+        monitor_evaluation,
+        entry_detail,
+        exit_detail,
+    ]
+
+    def _first_trace_dict(key: str) -> Dict[str, Any]:
+        for source in trace_sources:
+            value = source.get(key)
+            if isinstance(value, dict) and value:
+                return dict(value)
+        return {}
+
+    def _first_trace_list(key: str) -> List[Any]:
+        for source in trace_sources:
+            value = source.get(key)
+            if isinstance(value, list) and value:
+                return list(value)
+        return []
+
+    def _first_trace_text(key: str) -> str:
+        for source in trace_sources:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    def _first_trace_bool(key: str) -> Any:
+        for source in trace_sources:
+            value = source.get(key)
+            if isinstance(value, bool):
+                return value
+        return None
+
+    policy_trace = {
+        "policy_ref": _first_trace_dict("policy_ref"),
+        "entry_check_summary": _first_trace_text("entry_check_summary"),
+        "entry_blockers": _first_trace_list("entry_blockers"),
+        "timing_assessment": _first_trace_dict("timing_assessment"),
+        "exit_trigger_basis": _first_trace_dict("exit_trigger_basis"),
+        "commander_context_consumed": _first_trace_bool("commander_context_consumed"),
+        "consumed_fields": _first_trace_list("consumed_fields"),
+        "flow_instruction_applied": _first_trace_bool("flow_instruction_applied"),
+        "no_trade_reason_applied": _first_trace_bool("no_trade_reason_applied"),
+        "shadow_used": _first_trace_bool("shadow_used"),
+        "strategist_fallback_used": _first_trace_bool("strategist_fallback_used"),
+    }
     symbol = str(exit_info.get("symbol") or monitor_output.get("selected_symbol") or monitor.get("selected_symbol") or "").strip()
     thresholds = _dict(exit_info.get("thresholds"))
     watch_axes = list(exit_info.get("watch_axes") or [])
@@ -1344,6 +1395,30 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "threshold_snapshot": threshold_snapshot,
             "signal_snapshot": signal_snapshot,
             "market_snapshot_refs": market_snapshot_refs,
+            "policy_ref": dict(policy_trace.get("policy_ref") or {}),
+            "entry_check_summary": str(policy_trace.get("entry_check_summary") or ""),
+            "entry_blockers": list(policy_trace.get("entry_blockers") or []),
+            "timing_assessment": dict(policy_trace.get("timing_assessment") or {}),
+            "exit_trigger_basis": dict(policy_trace.get("exit_trigger_basis") or {}),
+            "commander_context_consumed": policy_trace.get("commander_context_consumed"),
+            "consumed_fields": list(policy_trace.get("consumed_fields") or []),
+            "flow_instruction_applied": policy_trace.get("flow_instruction_applied"),
+            "no_trade_reason_applied": policy_trace.get("no_trade_reason_applied"),
+            "shadow_used": policy_trace.get("shadow_used"),
+            "strategist_fallback_used": policy_trace.get("strategist_fallback_used"),
+            "decision_trace": {
+                "policy_ref": dict(policy_trace.get("policy_ref") or {}),
+                "entry_check_summary": str(policy_trace.get("entry_check_summary") or ""),
+                "entry_blockers": list(policy_trace.get("entry_blockers") or []),
+                "timing_assessment": dict(policy_trace.get("timing_assessment") or {}),
+                "exit_trigger_basis": dict(policy_trace.get("exit_trigger_basis") or {}),
+                "commander_context_consumed": policy_trace.get("commander_context_consumed"),
+                "consumed_fields": list(policy_trace.get("consumed_fields") or []),
+                "flow_instruction_applied": policy_trace.get("flow_instruction_applied"),
+                "no_trade_reason_applied": policy_trace.get("no_trade_reason_applied"),
+                "shadow_used": policy_trace.get("shadow_used"),
+                "strategist_fallback_used": policy_trace.get("strategist_fallback_used"),
+            },
             "decision_reason_chain": decision_reason_chain,
             "intent_emitted": bool(intents),
             "intent_id": _clip(first_intent.get("intent_id") or first_intent.get("id"), max_len=120),
@@ -1359,6 +1434,16 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "entry_passed_checks": list(entry_info.get("passed_checks") or []),
                 "entry_failed_checks": list(entry_info.get("failed_checks") or []),
                 "entry_threshold_margins": _dict(entry_info.get("threshold_margins")),
+                "policy_ref": dict(policy_trace.get("policy_ref") or {}),
+                "entry_check_summary": str(policy_trace.get("entry_check_summary") or ""),
+                "entry_blockers": list(policy_trace.get("entry_blockers") or []),
+                "timing_assessment": dict(policy_trace.get("timing_assessment") or {}),
+                "commander_context_consumed": policy_trace.get("commander_context_consumed"),
+                "consumed_fields": list(policy_trace.get("consumed_fields") or []),
+                "flow_instruction_applied": policy_trace.get("flow_instruction_applied"),
+                "no_trade_reason_applied": policy_trace.get("no_trade_reason_applied"),
+                "shadow_used": policy_trace.get("shadow_used"),
+                "strategist_fallback_used": policy_trace.get("strategist_fallback_used"),
             },
             "monitor_action_decision": {
                 "decision": str(monitor_output.get("intent_side") or "NOOP").strip().upper(),
@@ -1368,6 +1453,14 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "confidence": _safe_float(entry_info.get("confidence"), 0.0),
                 "triggered_rules": triggered_rules,
                 "blocked_rules": blocked_rules[:8],
+                "policy_ref": dict(policy_trace.get("policy_ref") or {}),
+                "entry_check_summary": str(policy_trace.get("entry_check_summary") or ""),
+                "entry_blockers": list(policy_trace.get("entry_blockers") or []),
+                "exit_trigger_basis": dict(policy_trace.get("exit_trigger_basis") or {}),
+                "commander_context_consumed": policy_trace.get("commander_context_consumed"),
+                "consumed_fields": list(policy_trace.get("consumed_fields") or []),
+                "shadow_used": policy_trace.get("shadow_used"),
+                "strategist_fallback_used": policy_trace.get("strategist_fallback_used"),
             },
             "trigger_details": {
                 "active_exit_axis": _clip(exit_info.get("active_exit_axis"), max_len=120),

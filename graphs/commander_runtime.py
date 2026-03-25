@@ -1050,6 +1050,49 @@ def _should_use_cached_strategist_when_flat(state: Dict[str, Any]) -> Tuple[bool
     return True, payload
 
 
+def _should_use_cached_strategist_from_commander_skip(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    strategist_invocation = str(commander_decision.get("strategist_invocation") or "").strip().upper()
+    llm_policy = str(commander_decision.get("llm_policy") or "").strip().upper()
+    open_position_count = _portfolio_open_position_count(state)
+    cache_payload = _strategist_cache_payload(state)
+    output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
+    now_epoch = _runtime_now_epoch(state)
+    generated_epoch = max(0, _coerce_int(cache_payload.get("generated_epoch"), 0))
+    reuse_sec = max(0, _coerce_int(os.getenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "180"), 180))
+    age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
+    payload = {
+        "enabled": True,
+        "source": "commander_decision",
+        "strategist_invocation": strategist_invocation,
+        "llm_policy": llm_policy,
+        "open_position_count": int(open_position_count),
+        "reuse_sec": int(reuse_sec),
+        "cache_age_sec": int(age_sec) if age_sec < 10**9 else None,
+        "reason": "",
+    }
+    if open_position_count > 0:
+        payload["reason"] = "open_positions_present"
+        return False, payload
+    if strategist_invocation != "SKIP":
+        payload["reason"] = "commander_hint_not_skip"
+        return False, payload
+    if _is_trueish(state.get("force_refresh_strategist")):
+        payload["reason"] = "force_refresh_requested"
+        return False, payload
+    if not output:
+        payload["reason"] = "no_cached_strategist_output"
+        return False, payload
+    if generated_epoch <= 0:
+        payload["reason"] = "cache_timestamp_missing"
+        return False, payload
+    if age_sec > reuse_sec:
+        payload["reason"] = "cache_stale"
+        return False, payload
+    payload["reason"] = "commander_skip_cached_strategist"
+    return True, payload
+
+
 def _run_integrated_chain(
     state: Dict[str, Any],
     *,
@@ -1130,7 +1173,9 @@ def _run_integrated_chain(
         state["path"] = "integrated_chain_monitor_only"
         return state
 
-    reused_strategist_cache, cache_payload = _should_use_cached_strategist_when_flat(state)
+    reused_strategist_cache, cache_payload = _should_use_cached_strategist_from_commander_skip(state)
+    if not reused_strategist_cache:
+        reused_strategist_cache, cache_payload = _should_use_cached_strategist_when_flat(state)
     if reused_strategist_cache:
         shadow_runtime["strategist_executed"] = False
         shadow_runtime["llm_called_by_strategist"] = False

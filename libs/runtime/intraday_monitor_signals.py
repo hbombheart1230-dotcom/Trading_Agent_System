@@ -221,7 +221,8 @@ def resolve_intraday_entry_policy(
         out["volume_ratio_min"] = max(0.7, min(float(out["volume_ratio_min"]), 0.9))
         out["min_extended_from_vwap_pct"] = min(float(out["min_extended_from_vwap_pct"]), -0.005)
         out["max_extended_from_vwap_pct"] = max(float(out["max_extended_from_vwap_pct"]), 0.05)
-        out["pullback_min_pct"] = max(float(out["pullback_min_pct"]), 0.015)
+        # Respect the live base calibration instead of silently hardening pullback entry above env.
+        out["pullback_min_pct"] = max(float(out["pullback_min_pct"]), 0.012)
         out["pullback_max_pct"] = max(float(out["pullback_max_pct"]), 0.06)
         adjustments.append(f"playbook:{playbook}")
     elif playbook == "defensive":

@@ -176,6 +176,13 @@ def test_intraday_entry_pullback_policy_is_looser_than_breakout_policy() -> None
     assert float(pullback.get("volume_ratio_min") or 0.0) <= float(breakout.get("volume_ratio_min") or 0.0)
 
 
+def test_intraday_entry_pullback_respects_env_floor_without_forcing_015(monkeypatch) -> None:
+    monkeypatch.setenv("MONITOR_ENTRY_PULLBACK_MIN_PCT", "0.012")
+    pullback = resolve_intraday_entry_policy(frame={"playbook": "pullback"})
+
+    assert float(pullback.get("pullback_min_pct") or 0.0) == 0.012
+
+
 def test_intraday_entry_pullback_defensive_guidance_stays_realistic() -> None:
     pullback = resolve_intraday_entry_policy(
         frame={

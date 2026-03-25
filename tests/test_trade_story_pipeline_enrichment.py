@@ -412,6 +412,51 @@ def test_trade_story_input_prefers_latest_reasoning_trace_snapshot_when_present(
     assert out["reasoning_provenance"]["shadow_used"] is True
 
 
+def test_trade_story_input_prefers_latest_reasoning_provenance_over_stale_legacy_copy() -> None:
+    out = build_trade_story_input(
+        {
+            "day": "2026-03-24",
+            "run_id": "run-trace-2b",
+            "trade_id": "TRD_TEST_2B",
+            "reasoning_provenance": {
+                "commander_context_source": "canonical",
+                "strategist_plan_source": "canonical",
+                "scanner_reason_source": "canonical",
+                "monitor_reason_source": "canonical",
+                "shadow_used": False,
+                "strategist_fallback_used": False,
+                "source_priority": [],
+            },
+            "latest_reasoning_trace_provenance": {
+                "commander_context_source": "state.commander_decision",
+                "strategist_plan_source": "state.strategy_policy.strategist_plan",
+                "scanner_reason_source": "state.scanner_output",
+                "monitor_reason_source": "state.monitor_output",
+                "commander_source_ref": "commander_router.shadow_assessment",
+                "shadow_used": True,
+                "strategist_fallback_used": False,
+                "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
+            },
+            "market_context_human": {"summary": "derived market"},
+            "scanner_reason_human": {"summary": "derived scanner"},
+            "monitor_reason_human": {"summary": "derived monitor"},
+            "operator_conclusion_human": {"summary": "derived conclusion"},
+            "execution_outcome_human": {"summary": "Execution was not attempted."},
+            "guard_reason_human": {"summary": "No guard escalation."},
+            "reporter_status_human": {"summary": "Reporter ready."},
+        }
+    )
+
+    assert out["reasoning_provenance"]["commander_context_source"] == "state.commander_decision"
+    assert out["reasoning_provenance"]["commander_source_ref"] == "commander_router.shadow_assessment"
+    assert out["reasoning_provenance"]["shadow_used"] is True
+    assert out["reasoning_provenance"]["source_priority"] == [
+        "shadow_commander",
+        "runtime_observation",
+        "strategist_fallback",
+    ]
+
+
 def test_trade_story_input_falls_back_to_market_context_artifact_for_commander_source_ref() -> None:
     out = build_trade_story_input(
         {
@@ -433,3 +478,49 @@ def test_trade_story_input_falls_back_to_market_context_artifact_for_commander_s
 
     assert out["reasoning_provenance"]["commander_context_source"] == "canonical"
     assert out["reasoning_provenance"]["commander_source_ref"] == "/tmp/agent_pipeline_trace.json"
+
+
+def test_trade_story_input_uses_commander_bundle_fallback_for_shadow_flags() -> None:
+    out = build_trade_story_input(
+        {
+            "day": "2026-03-24",
+            "run_id": "run-trace-4",
+            "trade_id": "TRD_TEST_4",
+            "execution": {"symbol": "003280", "action": "BUY"},
+            "reasoning_provenance": {
+                "commander_context_source": "canonical",
+                "strategist_plan_source": "canonical",
+                "scanner_reason_source": "canonical",
+                "monitor_reason_source": "canonical",
+                "shadow_used": False,
+                "strategist_fallback_used": False,
+                "source_priority": [],
+            },
+            "commander": {
+                "shadow_used": True,
+                "strategist_fallback_used": False,
+                "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
+            },
+            "strategist_summary": {"summary": "Strategist summary."},
+            "scanner_summary": {"summary": "Scanner summary."},
+            "monitor_summary": {"summary": "Monitor summary."},
+            "market_context_human": {"summary": "Market context"},
+            "scanner_reason_human": {"summary": "Scanner reason"},
+            "monitor_reason_human": {"summary": "Monitor reason"},
+            "operator_conclusion_human": {"summary": "Operator conclusion"},
+            "execution_outcome_human": {"summary": "Execution was not attempted."},
+            "guard_reason_human": {"summary": "No guard escalation."},
+            "reporter_status_human": {"summary": "Reporter ready."},
+            "canonical_agent_artifacts": {},
+            "evidence_provenance": {"commander": "canonical"},
+            "artifacts": {"agent_pipeline_trace_json": "/tmp/agent_pipeline_trace.json"},
+        }
+    )
+
+    assert out["reasoning_provenance"]["shadow_used"] is True
+    assert out["reasoning_provenance"]["strategist_fallback_used"] is False
+    assert out["reasoning_provenance"]["source_priority"] == [
+        "shadow_commander",
+        "runtime_observation",
+        "strategist_fallback",
+    ]

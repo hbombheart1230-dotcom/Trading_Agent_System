@@ -370,6 +370,56 @@ def test_monitor_artifact_marks_sell_intent_with_exit_phase() -> None:
     assert decision_summary.startswith("Exit:")
 
 
+def test_monitor_artifact_mirrors_policy_trace_from_state_outputs() -> None:
+    state = {
+        "run_id": "run-mon-trace",
+        "started_at": "2026-03-18T10:00:00+00:00",
+        "runtime_phase": "session",
+        "monitor": {"open_position_count": 0},
+        "monitor_output": {
+            "selected_symbol": "005930",
+            "intent_side": "NOOP",
+            "entry_exit_reason": "pullback_not_mature",
+            "policy_ref": {"monitor_mission": "Require cleaner confirmation."},
+            "entry_check_summary": "mission=Require cleaner confirmation. | reason=pullback_not_mature",
+            "entry_blockers": ["WAIT_FOR_CONFIRMATION", "pullback_not_mature"],
+            "timing_assessment": {"entry_pattern": "", "entry_reason": "pullback_not_mature"},
+            "exit_trigger_basis": {"exit_reason": "no_position"},
+            "commander_context_consumed": True,
+            "consumed_fields": ["monitor_mission", "flow_instruction", "no_trade_reason_code"],
+            "shadow_used": True,
+            "strategist_fallback_used": False,
+        },
+        "monitor_entry": {
+            "evaluated": True,
+            "triggered": False,
+            "reason": "pullback_not_mature",
+            "failed_checks": ["pullback_mature", "volume_ok"],
+        },
+        "monitor_exit": {"symbol": "005930", "price": 70500, "reason": "no_position", "thresholds": {}, "watch_axes": []},
+        "monitor_action_decision": {
+            "policy_ref": {"monitor_mission": "Require cleaner confirmation."},
+            "entry_check_summary": "mission=Require cleaner confirmation. | reason=pullback_not_mature",
+            "entry_blockers": ["WAIT_FOR_CONFIRMATION", "pullback_not_mature"],
+            "exit_trigger_basis": {"exit_reason": "no_position"},
+            "commander_context_consumed": True,
+            "consumed_fields": ["monitor_mission", "flow_instruction", "no_trade_reason_code"],
+            "shadow_used": True,
+            "strategist_fallback_used": False,
+        },
+    }
+
+    artifact = build_monitor_output_artifact(state)
+    assert artifact.get("commander_context_consumed") is True
+    assert artifact.get("policy_ref", {}).get("monitor_mission") == "Require cleaner confirmation."
+    assert artifact.get("entry_check_summary") == "mission=Require cleaner confirmation. | reason=pullback_not_mature"
+    assert artifact.get("entry_blockers") == ["WAIT_FOR_CONFIRMATION", "pullback_not_mature"]
+    assert artifact.get("exit_trigger_basis", {}).get("exit_reason") == "no_position"
+    assert artifact.get("shadow_used") is True
+    assert artifact.get("strategist_fallback_used") is False
+    assert artifact.get("decision_trace", {}).get("commander_context_consumed") is True
+
+
 def test_monitor_artifact_no_intent_summary_is_human_readable() -> None:
     state = {
         "run_id": "run-mon-noop",

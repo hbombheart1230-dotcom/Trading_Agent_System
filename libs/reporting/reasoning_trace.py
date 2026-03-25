@@ -103,13 +103,18 @@ def normalize_reasoning_trace_aliases(
 ) -> Dict[str, Any]:
     source_obj = dict(source or {})
     fallback_obj = dict(fallback or {})
-    raw = source_obj.get("reasoning_trace") if isinstance(source_obj.get("reasoning_trace"), dict) else {}
-    if not raw and isinstance(source_obj.get("latest_reasoning_trace"), dict):
-        raw = dict(source_obj.get("latest_reasoning_trace") or {})
+    latest_raw = source_obj.get("latest_reasoning_trace") if isinstance(source_obj.get("latest_reasoning_trace"), dict) else {}
+    legacy_raw = source_obj.get("reasoning_trace") if isinstance(source_obj.get("reasoning_trace"), dict) else {}
     out: Dict[str, Any] = {}
     for key in REASONING_TRACE_KEYS:
         fallback_summary_obj = fallback_obj.get(key) if isinstance(fallback_obj.get(key), dict) else {}
-        summary_obj = raw.get(key) if isinstance(raw.get(key), dict) else {}
+        summary_obj = (
+            latest_raw.get(key)
+            if isinstance(latest_raw.get(key), dict) and latest_raw.get(key)
+            else legacy_raw.get(key)
+            if isinstance(legacy_raw.get(key), dict)
+            else {}
+        )
         out[key] = _normalize_summary(summary_obj, fallback_summary=str(fallback_summary_obj.get("summary") or ""))
         for extra_key, extra_value in fallback_summary_obj.items():
             if extra_key not in out[key] or out[key].get(extra_key) in (None, "", [], {}):
@@ -153,14 +158,39 @@ def normalize_reasoning_provenance_aliases(
 ) -> Dict[str, Any]:
     source_obj = dict(source or {})
     fallback_obj = dict(fallback or {})
-    raw = source_obj.get("reasoning_provenance") if isinstance(source_obj.get("reasoning_provenance"), dict) else {}
-    if not raw and isinstance(source_obj.get("latest_reasoning_trace_provenance"), dict):
-        raw = dict(source_obj.get("latest_reasoning_trace_provenance") or {})
+    latest_raw = (
+        source_obj.get("latest_reasoning_trace_provenance")
+        if isinstance(source_obj.get("latest_reasoning_trace_provenance"), dict)
+        else {}
+    )
+    legacy_raw = source_obj.get("reasoning_provenance") if isinstance(source_obj.get("reasoning_provenance"), dict) else {}
     out = build_reasoning_provenance()
     for key in REASONING_PROVENANCE_KEYS:
-        value = raw.get(key)
-        if value in (None, "", [], {}):
-            value = fallback_obj.get(key)
+        latest_has_value = key in latest_raw and latest_raw.get(key) not in (None, "", [], {})
+        legacy_has_value = key in legacy_raw and legacy_raw.get(key) not in (None, "", [], {})
+        if key in {"shadow_used", "strategist_fallback_used"}:
+            if key in latest_raw:
+                value = latest_raw.get(key)
+            elif key in legacy_raw:
+                value = legacy_raw.get(key)
+            else:
+                value = fallback_obj.get(key)
+        elif key == "source_priority":
+            latest_list = list(latest_raw.get(key) or []) if key in latest_raw else []
+            legacy_list = list(legacy_raw.get(key) or []) if key in legacy_raw else []
+            if latest_list:
+                value = latest_list
+            elif legacy_list:
+                value = legacy_list
+            else:
+                value = fallback_obj.get(key)
+        else:
+            if latest_has_value:
+                value = latest_raw.get(key)
+            elif legacy_has_value:
+                value = legacy_raw.get(key)
+            else:
+                value = fallback_obj.get(key)
         if key in {"shadow_used", "strategist_fallback_used"}:
             out[key] = bool(value)
         elif key == "source_priority":

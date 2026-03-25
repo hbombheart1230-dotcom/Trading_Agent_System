@@ -154,6 +154,30 @@ def _resolve_commander_source_ref(refs: Dict[str, Any], section_provenance: Dict
     )
 
 
+def _commander_reasoning_flag(source: Dict[str, Any], commander_summary: Dict[str, Any], key: str) -> bool:
+    summary_obj = dict(commander_summary or {})
+    if key in summary_obj and isinstance(summary_obj.get(key), bool):
+        return bool(summary_obj.get(key))
+    latest_provenance = source.get("latest_reasoning_trace_provenance")
+    if isinstance(latest_provenance, dict) and key in latest_provenance and isinstance(latest_provenance.get(key), bool):
+        return bool(latest_provenance.get(key))
+    commander_obj = source.get("commander")
+    if isinstance(commander_obj, dict) and key in commander_obj and isinstance(commander_obj.get(key), bool):
+        return bool(commander_obj.get(key))
+    return False
+
+
+def _commander_reasoning_source_priority(source: Dict[str, Any], commander_summary: Dict[str, Any]) -> List[str]:
+    summary_obj = dict(commander_summary or {})
+    latest_provenance = source.get("latest_reasoning_trace_provenance") if isinstance(source.get("latest_reasoning_trace_provenance"), dict) else {}
+    commander_obj = source.get("commander") if isinstance(source.get("commander"), dict) else {}
+    for candidate in (latest_provenance, commander_obj, summary_obj):
+        values = [str(x or "").strip() for x in list(candidate.get("source_priority") or []) if str(x or "").strip()]
+        if values:
+            return values
+    return []
+
+
 def build_commander_evidence(commander_payload: Dict[str, Any]) -> Dict[str, Any]:
     payload = dict(commander_payload or {})
     return {
@@ -221,6 +245,7 @@ def build_lifecycle_bundle(
     section_provenance = dict(story_input.get("section_provenance") or {})
     evidence_provenance = dict(story_input.get("evidence_provenance") or {})
     refs = _safe_ref_map({**dict(canonical_refs or {}), **dict(artifact_links or {})})
+    commander_source_priority = _commander_reasoning_source_priority(story_input, dict(commander_summary or {}))
     derived_reasoning_provenance = build_reasoning_provenance(
         commander_context_source="canonical" if refs.get("canonical_commander_json") or refs.get("canonical_commander") else str(evidence_provenance.get("commander") or ""),
         strategist_plan_source=str(
@@ -257,12 +282,12 @@ def build_lifecycle_bundle(
             or (section_provenance.get("monitor_reason_human") or {}).get("artifact_path")
             or ""
         ),
-        shadow_used=bool((commander_summary or {}).get("shadow_used")),
-        strategist_fallback_used=bool(
-            (commander_summary or {}).get("strategist_fallback_used")
-            or (strategist_summary or {}).get("strategist_fallback_used")
+        shadow_used=_commander_reasoning_flag(story_input, dict(commander_summary or {}), "shadow_used"),
+        strategist_fallback_used=(
+            _commander_reasoning_flag(story_input, dict(commander_summary or {}), "strategist_fallback_used")
+            or bool((strategist_summary or {}).get("strategist_fallback_used"))
         ),
-        source_priority=list((commander_summary or {}).get("source_priority") or []),
+        source_priority=commander_source_priority,
     )
     reasoning_provenance = normalize_reasoning_provenance_aliases(
         story_input,
@@ -1664,6 +1689,7 @@ def build_trade_story_input(
             },
             fallback=derived_reasoning_trace,
         )
+        commander_source_priority = _commander_reasoning_source_priority(bundle_out, dict(bundle_out.get("commander_summary") or {}))
         derived_reasoning_provenance = build_reasoning_provenance(
             commander_context_source="canonical" if canonical_agent_artifacts.get("canonical_commander_json") or canonical_agent_artifacts.get("canonical_commander") else str(evidence_provenance.get("commander") or ""),
             strategist_plan_source=str(
@@ -1700,12 +1726,12 @@ def build_trade_story_input(
                 or (section_provenance.get("monitor_reason_human") or {}).get("artifact_path")
                 or ""
             ),
-            shadow_used=bool((bundle_out.get("commander_summary") or {}).get("shadow_used")),
-            strategist_fallback_used=bool(
-                (bundle_out.get("commander_summary") or {}).get("strategist_fallback_used")
-                or (bundle_out.get("strategist_summary") or {}).get("strategist_fallback_used")
+            shadow_used=_commander_reasoning_flag(bundle_out, dict(bundle_out.get("commander_summary") or {}), "shadow_used"),
+            strategist_fallback_used=(
+                _commander_reasoning_flag(bundle_out, dict(bundle_out.get("commander_summary") or {}), "strategist_fallback_used")
+                or bool((bundle_out.get("strategist_summary") or {}).get("strategist_fallback_used"))
             ),
-            source_priority=list((bundle_out.get("commander_summary") or {}).get("source_priority") or []),
+            source_priority=commander_source_priority,
         )
         reasoning_provenance = normalize_reasoning_provenance_aliases(
             {
@@ -1714,6 +1740,22 @@ def build_trade_story_input(
             },
             fallback=derived_reasoning_provenance,
         )
+        if isinstance(bundle_out.get("commander"), dict) or isinstance(bundle_out.get("latest_reasoning_trace_provenance"), dict):
+            reasoning_provenance["shadow_used"] = _commander_reasoning_flag(
+                bundle_out,
+                dict(bundle_out.get("commander_summary") or {}),
+                "shadow_used",
+            )
+            reasoning_provenance["strategist_fallback_used"] = (
+                _commander_reasoning_flag(
+                    bundle_out,
+                    dict(bundle_out.get("commander_summary") or {}),
+                    "strategist_fallback_used",
+                )
+                or bool((bundle_out.get("strategist_summary") or {}).get("strategist_fallback_used"))
+            )
+            if commander_source_priority:
+                reasoning_provenance["source_priority"] = list(commander_source_priority)
         return {
             "schema_version": "trade_story_input.v2",
             "day": str(bundle_out.get("day") or ""),
@@ -1801,6 +1843,7 @@ def build_trade_story_input(
         },
         fallback=derived_reasoning_trace,
     )
+    commander_source_priority = _commander_reasoning_source_priority(bundle_out, dict(bundle_out.get("commander_summary") or {}))
     derived_reasoning_provenance = build_reasoning_provenance(
         commander_context_source="canonical" if canonical_agent_artifacts.get("canonical_commander_json") or canonical_agent_artifacts.get("canonical_commander") else str(evidence_provenance.get("commander") or ""),
         strategist_plan_source=str(
@@ -1837,12 +1880,12 @@ def build_trade_story_input(
             or (section_provenance.get("monitor_reason_human") or {}).get("artifact_path")
             or ""
         ),
-        shadow_used=bool((bundle_out.get("commander_summary") or {}).get("shadow_used")),
-        strategist_fallback_used=bool(
-            (bundle_out.get("commander_summary") or {}).get("strategist_fallback_used")
-            or (bundle_out.get("strategist_summary") or {}).get("strategist_fallback_used")
+        shadow_used=_commander_reasoning_flag(bundle_out, dict(bundle_out.get("commander_summary") or {}), "shadow_used"),
+        strategist_fallback_used=(
+            _commander_reasoning_flag(bundle_out, dict(bundle_out.get("commander_summary") or {}), "strategist_fallback_used")
+            or bool((bundle_out.get("strategist_summary") or {}).get("strategist_fallback_used"))
         ),
-        source_priority=list((bundle_out.get("commander_summary") or {}).get("source_priority") or []),
+        source_priority=commander_source_priority,
     )
     reasoning_provenance = normalize_reasoning_provenance_aliases(
         {
@@ -1851,6 +1894,22 @@ def build_trade_story_input(
         },
         fallback=derived_reasoning_provenance,
     )
+    if isinstance(bundle_out.get("commander"), dict) or isinstance(bundle_out.get("latest_reasoning_trace_provenance"), dict):
+        reasoning_provenance["shadow_used"] = _commander_reasoning_flag(
+            bundle_out,
+            dict(bundle_out.get("commander_summary") or {}),
+            "shadow_used",
+        )
+        reasoning_provenance["strategist_fallback_used"] = (
+            _commander_reasoning_flag(
+                bundle_out,
+                dict(bundle_out.get("commander_summary") or {}),
+                "strategist_fallback_used",
+            )
+            or bool((bundle_out.get("strategist_summary") or {}).get("strategist_fallback_used"))
+        )
+        if commander_source_priority:
+            reasoning_provenance["source_priority"] = list(commander_source_priority)
     return {
         "schema_version": "trade_story_input.v1",
         "day": str(bundle_out.get("day") or ""),
