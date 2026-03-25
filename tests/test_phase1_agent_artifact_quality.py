@@ -718,3 +718,37 @@ def test_commander_shadow_artifact_includes_monitor_gate_details_for_wait_cycle(
     assert gate["used_thresholds"]["volume_ratio_min"] == 0.8
     assert artifact["context_delta_summary"]["playbook_same_as_last"] is True
     assert artifact["actual_runtime"]["strategist_executed"] is True
+
+
+def test_commander_shadow_actual_runtime_marks_cached_strategist_usage() -> None:
+    state = {
+        "run_id": "run-cmd-shadow-cache-1",
+        "started_at": "2026-03-25T03:00:00+00:00",
+        "runtime_phase": "session",
+        "runtime_status": "ok",
+        "monitor_output": {"selected_symbol": "000660", "intent_side": "NOOP", "entry_exit_reason": "wait_for_confirmation"},
+        "commander_shadow_runtime": {
+            "strategist_executed": False,
+            "strategist_called": False,
+            "llm_called_by_strategist": False,
+            "used_cached_strategist": False,
+            "monitor_decision": "NOOP",
+            "executor_action": "",
+            "executor_status": "",
+        },
+    }
+
+    artifact = build_commander_shadow_artifact(
+        state,
+        mode="integrated_chain",
+        phase="session",
+        path="integrated_chain_cached_frame",
+        status="ok",
+        reason="commander_skip_cached_strategist",
+    )
+
+    actual_runtime = artifact.get("actual_runtime") if isinstance(artifact.get("actual_runtime"), dict) else {}
+    assert actual_runtime.get("strategist_executed") is False
+    assert actual_runtime.get("strategist_called") is False
+    assert actual_runtime.get("llm_called_by_strategist") is False
+    assert actual_runtime.get("used_cached_strategist") is True

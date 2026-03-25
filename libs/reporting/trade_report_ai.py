@@ -77,6 +77,22 @@ def _compact_named_rows(values: Any, *, max_items: int = 3) -> List[Dict[str, An
     return out
 
 
+def _compact_scalar_dict(values: Any, *, max_items: int = 8, max_len: int = 160) -> Dict[str, Any]:
+    if not isinstance(values, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key, value in values.items():
+        if len(out) >= max(1, int(max_items)):
+            break
+        if isinstance(value, (int, float, bool)) or value is None:
+            out[str(key)] = value
+            continue
+        text = _clip(value, max_len=max_len)
+        if text:
+            out[str(key)] = text
+    return out
+
+
 def _fmt_pct(value: Any) -> str:
     try:
         number = float(value)
@@ -530,8 +546,10 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
     exit_summary = _as_dict(story_input.get("exit_summary"))
     scanner_reason = _as_dict(story_input.get("scanner_reason_human"))
     market_context = _as_dict(story_input.get("market_context_human"))
+    monitor_reason = _as_dict(story_input.get("monitor_reason_human"))
     canonical = _as_dict(story_input.get("canonical_agent_artifacts"))
     canonical_commander = _as_dict(canonical.get("commander"))
+    canonical_commander_decision = _as_dict(canonical_commander.get("commander_decision"))
     resolved_facts = _resolve_trade_facts_with_precedence(story_input)
     lifecycle_action = _as_action(resolved_facts.get("action")) or "WAIT"
     status_text = _as_status(resolved_facts.get("status")) or "unavailable"
@@ -564,6 +582,30 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             canonical_commander.get("final_reason"),
             max_len=260,
         ),
+        "command_intent": _first_nonempty_text(
+            canonical_commander_decision.get("command_intent"),
+            canonical_commander.get("command_intent"),
+            max_len=40,
+        ),
+        "strategist_invocation": _first_nonempty_text(
+            canonical_commander_decision.get("strategist_invocation"),
+            canonical_commander.get("strategist_invocation"),
+            max_len=40,
+        ),
+        "llm_policy": _first_nonempty_text(
+            canonical_commander_decision.get("llm_policy"),
+            canonical_commander.get("llm_invocation_policy"),
+            max_len=40,
+        ),
+        "strategist_cache_used": canonical_commander.get("strategist_cache_used"),
+        "strategist_called": canonical_commander.get("strategist_called"),
+        "cooldown_applied": canonical_commander.get("cooldown_applied"),
+    }
+    monitor_reasoning = {
+        "entry_check_summary": _first_nonempty_text(monitor_reason.get("entry_check_summary"), max_len=240),
+        "entry_blockers": _listify(monitor_reason.get("entry_blockers"), max_items=6, max_len=120),
+        "policy_ref": _compact_scalar_dict(monitor_reason.get("policy_ref"), max_items=8, max_len=120),
+        "thresholds_guards_used": _compact_scalar_dict(monitor_reason.get("thresholds_guards_used"), max_items=8, max_len=120),
     }
     return {
         "symbol": _clip(story_input.get("symbol"), max_len=32) or "unknown",
@@ -589,6 +631,7 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_evidence_status": scanner_evidence_status,
         "strategist_evidence_status": strategist_evidence_status,
         "commander_route": commander_route,
+        "monitor_reasoning": monitor_reasoning,
     }
 
 
@@ -788,6 +831,13 @@ def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
         "guard_blocked": data.get("guard_blocked"),
         "guard_reason": _clip(data.get("guard_reason"), max_len=120),
         "decision_reason_chain": _listify(data.get("decision_reason_chain"), max_items=5, max_len=120),
+        "entry_check_summary": _clip(data.get("entry_check_summary"), max_len=240),
+        "entry_blockers": _listify(data.get("entry_blockers"), max_items=6, max_len=120),
+        "entry_metrics": _compact_scalar_dict(data.get("entry_metrics"), max_items=10, max_len=120),
+        "entry_thresholds": _compact_scalar_dict(data.get("entry_thresholds"), max_items=8, max_len=120),
+        "policy_ref": _compact_scalar_dict(data.get("policy_ref"), max_items=8, max_len=120),
+        "timing_assessment": _compact_scalar_dict(data.get("timing_assessment"), max_items=8, max_len=120),
+        "thresholds_guards_used": _compact_scalar_dict(data.get("thresholds_guards_used"), max_items=8, max_len=120),
         "price_source": _clip(data.get("price_source"), max_len=80),
         "feature_source": _clip(data.get("feature_source"), max_len=80),
     }
@@ -1129,6 +1179,8 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     operator_conclusion = story_input.get("operator_conclusion_human") if isinstance(story_input.get("operator_conclusion_human"), dict) else {}
     lifecycle_summary = story_input.get("lifecycle_summary") if isinstance(story_input.get("lifecycle_summary"), dict) else {}
     diagnostics = story_input.get("ai_report_diagnostics") if isinstance(story_input.get("ai_report_diagnostics"), dict) else {}
+    shared_seed = _build_shared_summary_seed(story_input)
+    commander_route = shared_seed.get("commander_route") if isinstance(shared_seed.get("commander_route"), dict) else {}
     return {
         "trade_id": story_input.get("trade_id") or story_input.get("story_id"),
         "story_id": story_input.get("story_id"),
@@ -1166,6 +1218,16 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "news_input_summary": _clip(market_context.get("news_input_summary"), max_len=220),
             "summary": _clip(market_context.get("summary"), max_len=320),
             "bullets": _listify(market_context.get("bullets"), max_items=6, max_len=220),
+        },
+        "commander": {
+            "command_intent": _clip(commander_route.get("command_intent"), max_len=40),
+            "strategist_invocation": _clip(commander_route.get("strategist_invocation"), max_len=40),
+            "llm_policy": _clip(commander_route.get("llm_policy"), max_len=40),
+            "selected_route": _clip(commander_route.get("selected_route"), max_len=60),
+            "route_reason_text": _clip(commander_route.get("reason"), max_len=220),
+            "strategist_cache_used": commander_route.get("strategist_cache_used"),
+            "strategist_called": commander_route.get("strategist_called"),
+            "cooldown_applied": commander_route.get("cooldown_applied"),
         },
         "scanner_reason_human": {
             "selected_symbol": _clip(scanner_reason.get("selected_symbol"), max_len=24),
@@ -1255,6 +1317,7 @@ def build_ai_trade_report_compact_input(story_input: Dict[str, Any]) -> Dict[str
 
 def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     compact = _compact_story_input_for_llm(story_input)
+    commander = compact.get("commander") if isinstance(compact.get("commander"), dict) else {}
     entry = compact.get("entry_summary") if isinstance(compact.get("entry_summary"), dict) else {}
     exit_summary = compact.get("exit_summary") if isinstance(compact.get("exit_summary"), dict) else {}
     market = compact.get("market_context_human") if isinstance(compact.get("market_context_human"), dict) else {}
@@ -1292,6 +1355,16 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "vix_level": market.get("vix_level"),
             "stress_flags": _listify(market.get("stress_flags"), max_items=3, max_len=60),
             "news_input_summary": market.get("news_input_summary"),
+        },
+        "commander": {
+            "command_intent": commander.get("command_intent"),
+            "strategist_invocation": commander.get("strategist_invocation"),
+            "llm_policy": commander.get("llm_policy"),
+            "selected_route": commander.get("selected_route"),
+            "route_reason_text": commander.get("route_reason_text"),
+            "strategist_cache_used": commander.get("strategist_cache_used"),
+            "strategist_called": commander.get("strategist_called"),
+            "cooldown_applied": commander.get("cooldown_applied"),
         },
         "entry": {
             "ts": entry.get("ts"),
@@ -1333,6 +1406,13 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "posture": monitor.get("posture"),
             "trigger_type": monitor.get("trigger_type"),
             "summary": monitor.get("summary"),
+            "entry_check_summary": monitor.get("entry_check_summary"),
+            "entry_blockers": _listify(monitor.get("entry_blockers"), max_items=6, max_len=120),
+            "policy_ref": _compact_scalar_dict(monitor.get("policy_ref"), max_items=8, max_len=120),
+            "timing_assessment": _compact_scalar_dict(monitor.get("timing_assessment"), max_items=8, max_len=120),
+            "thresholds_guards_used": _compact_scalar_dict(monitor.get("thresholds_guards_used"), max_items=8, max_len=120),
+            "entry_metrics": _compact_scalar_dict(monitor.get("entry_metrics"), max_items=10, max_len=120),
+            "entry_thresholds": _compact_scalar_dict(monitor.get("entry_thresholds"), max_items=8, max_len=120),
             "position_age_seconds": monitor.get("position_age_seconds"),
             "stop_loss_pct": monitor.get("stop_loss_pct"),
             "effective_stop_loss_pct": monitor.get("effective_stop_loss_pct"),

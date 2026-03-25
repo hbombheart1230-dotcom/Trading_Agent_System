@@ -1852,6 +1852,8 @@ def _commander_shadow_actual_runtime(state: Dict[str, Any], *, path: str) -> Dic
 
     strategist_executed_raw = shadow_runtime.get("strategist_executed")
     strategist_executed = strategist_executed_raw if isinstance(strategist_executed_raw, bool) else None
+    strategist_called_raw = shadow_runtime.get("strategist_called")
+    strategist_called = strategist_called_raw if isinstance(strategist_called_raw, bool) else strategist_executed
     llm_called_raw = shadow_runtime.get("llm_called_by_strategist")
     if isinstance(llm_called_raw, bool):
         llm_called = llm_called_raw
@@ -1864,6 +1866,21 @@ def _commander_shadow_actual_runtime(state: Dict[str, Any], *, path: str) -> Dic
                 or _clip(strategist_llm.get("prompt_ref"), max_len=40)
                 or _clip(strategist_llm.get("response_ref"), max_len=40)
             )
+    runtime_path = _clip(path, max_len=80)
+    selected_route = "cached_strategist" if "cached" in str(runtime_path or "") else ""
+    used_cached_strategist = bool(shadow_runtime.get("used_cached_strategist"))
+    if selected_route == "cached_strategist":
+        if strategist_executed is None:
+            strategist_executed = False
+        if strategist_called is None:
+            strategist_called = False
+        if llm_called is None:
+            llm_called = False
+    if selected_route == "cached_strategist" and strategist_executed is False and llm_called is False:
+        used_cached_strategist = True
+        strategist_called = False
+    elif strategist_called is None and llm_called is True:
+        strategist_called = True
 
     monitor_decision = _clip(
         shadow_runtime.get("monitor_decision")
@@ -1890,12 +1907,13 @@ def _commander_shadow_actual_runtime(state: Dict[str, Any], *, path: str) -> Dic
 
     return {
         "strategist_executed": strategist_executed,
+        "strategist_called": strategist_called,
         "llm_called_by_strategist": llm_called,
-        "used_cached_strategist": bool(shadow_runtime.get("used_cached_strategist")),
+        "used_cached_strategist": used_cached_strategist,
         "monitor_decision": monitor_decision or "",
         "executor_action": executor_action or "",
         "executor_status": executor_status,
-        "runtime_path": _clip(path, max_len=80),
+        "runtime_path": runtime_path,
     }
 
 

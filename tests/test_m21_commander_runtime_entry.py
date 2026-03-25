@@ -1111,7 +1111,8 @@ def test_m31_integrated_chain_reuses_cached_strategist_when_flat(monkeypatch):
     )
 
     assert out["path"] == "integrated_chain_cached_frame"
-    assert out["runtime_fast_path"]["reason"] == "flat_position_cached_strategist"
+    assert out["runtime_fast_path"]["reason"] == "commander_skip_cached_strategist"
+    assert out["runtime_fast_path"]["source"] == "commander_decision"
     assert calls == [
         "build_portfolio_snapshot",
         "build_risk_context",
@@ -1137,6 +1138,17 @@ def test_m31_integrated_chain_runs_fresh_strategist_when_flat_cache_exists_but_d
         calls.append("build_risk_context")
         return state
 
+    def fake_build_commander_decision(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        return {
+            "command_intent": "OBSERVE_ONLY",
+            "strategist_invocation": "RUN",
+            "llm_policy": "ALLOW",
+            "decision_summary": "fresh strategist allowed",
+            "source_priority": ["runtime_observation", "strategist_fallback"],
+            "shadow_used": False,
+            "strategist_fallback_used": False,
+        }
+
     def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
         calls.append("strategist")
         state["strategist_output"] = {"playbook": "fresh_entry_frame"}
@@ -1161,6 +1173,7 @@ def test_m31_integrated_chain_runs_fresh_strategist_when_flat_cache_exists_but_d
     monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "180")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.commander_runtime._build_commander_decision", fake_build_commander_decision)
     monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
     monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
     monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)

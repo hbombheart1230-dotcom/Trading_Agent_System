@@ -1142,10 +1142,20 @@ def build_filters_human(scanner: Dict[str, Any], strategist: Dict[str, Any], sup
 
 def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any]) -> Dict[str, Any]:
     action = str(execution.get("action") or "").upper()
+    decision_trace = monitor.get("decision_trace") if isinstance(monitor.get("decision_trace"), dict) else {}
     thresholds = monitor.get("thresholds") if isinstance(monitor.get("thresholds"), dict) else {}
     thresholds_guards_used = (
-        monitor.get("thresholds_guards_used")
-        if isinstance(monitor.get("thresholds_guards_used"), dict)
+        decision_trace.get("thresholds_guards_used")
+        if isinstance(decision_trace.get("thresholds_guards_used"), dict)
+        else (
+            monitor.get("thresholds_guards_used")
+            if isinstance(monitor.get("thresholds_guards_used"), dict)
+            else {}
+        )
+    )
+    threshold_snapshot = (
+        monitor.get("threshold_snapshot")
+        if isinstance(monitor.get("threshold_snapshot"), dict)
         else {}
     )
     thresholds = _merge_missing_values(
@@ -1167,11 +1177,29 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
             thresholds[key] = monitor.get(key)
     trigger_details = monitor.get("trigger_details") if isinstance(monitor.get("trigger_details"), dict) else {}
     decision_reason_chain = [str(x or "") for x in list(monitor.get("decision_reason_chain") or []) if str(x or "").strip()]
-    entry_reason = str(monitor.get("entry_reason") or "").strip()
-    entry_pattern = str(monitor.get("entry_pattern") or "").strip()
+    timing_assessment = decision_trace.get("timing_assessment") if isinstance(decision_trace.get("timing_assessment"), dict) else {}
+    policy_ref = decision_trace.get("policy_ref") if isinstance(decision_trace.get("policy_ref"), dict) else {}
+    entry_check_summary = str(decision_trace.get("entry_check_summary") or "").strip()
+    entry_blockers = [str(x or "") for x in list(decision_trace.get("entry_blockers") or []) if str(x or "").strip()]
+    entry_reason = str(
+        timing_assessment.get("entry_reason")
+        or monitor.get("entry_reason")
+        or ""
+    ).strip()
+    entry_pattern = str(
+        timing_assessment.get("entry_pattern")
+        or monitor.get("entry_pattern")
+        or ""
+    ).strip()
     entry_signal_chain = [str(x or "") for x in list(monitor.get("entry_signal_chain") or []) if str(x or "").strip()]
     entry_metrics = monitor.get("entry_metrics") if isinstance(monitor.get("entry_metrics"), dict) else {}
-    entry_thresholds = monitor.get("entry_thresholds") if isinstance(monitor.get("entry_thresholds"), dict) else {}
+    entry_thresholds = (
+        monitor.get("entry_thresholds")
+        if isinstance(monitor.get("entry_thresholds"), dict)
+        else {}
+    )
+    if not entry_thresholds and isinstance(threshold_snapshot.get("entry_thresholds"), dict):
+        entry_thresholds = dict(threshold_snapshot.get("entry_thresholds") or {})
     entry_guard_blocked = bool(monitor.get("entry_guard_blocked"))
     entry_guard_reason = str(monitor.get("entry_guard_reason") or "").strip()
     entry_evaluated = bool(monitor.get("entry_evaluated"))
@@ -1241,6 +1269,26 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
     eod_carry_positive_signals = _list_text(monitor.get("eod_carry_positive_signals"), limit=6, max_len=120)
     eod_carry_blockers = _list_text(monitor.get("eod_carry_blockers"), limit=6, max_len=120)
     minutes_to_close = monitor.get("minutes_to_close")
+    entry_threshold_gaps: List[str] = []
+    if entry_metrics.get("volume_ratio") not in (None, "") and entry_thresholds.get("volume_ratio_min") not in (None, ""):
+        volume_ratio = safe_float(entry_metrics.get("volume_ratio"), 0.0)
+        volume_ratio_min = safe_float(entry_thresholds.get("volume_ratio_min"), 0.0)
+        if volume_ratio < volume_ratio_min:
+            entry_threshold_gaps.append(f"volume ratio {volume_ratio:.2f} below min {volume_ratio_min:.2f}")
+    if entry_metrics.get("extended_from_vwap_pct") not in (None, "") and entry_thresholds.get("max_extended_from_vwap_pct") not in (None, ""):
+        extended = safe_float(entry_metrics.get("extended_from_vwap_pct"), 0.0)
+        extended_max = safe_float(entry_thresholds.get("max_extended_from_vwap_pct"), 0.0)
+        if extended > extended_max:
+            entry_threshold_gaps.append(
+                f"VWAP extension {format_ratio_pct(extended)}% above max {format_ratio_pct(extended_max)}%"
+            )
+    if entry_metrics.get("pullback_depth_pct") not in (None, "") and entry_thresholds.get("pullback_min_pct") not in (None, ""):
+        pullback_depth = safe_float(entry_metrics.get("pullback_depth_pct"), 0.0)
+        pullback_min = safe_float(entry_thresholds.get("pullback_min_pct"), 0.0)
+        if pullback_depth < pullback_min:
+            entry_threshold_gaps.append(
+                f"pullback depth {format_ratio_pct(pullback_depth)}% below min {format_ratio_pct(pullback_min)}%"
+            )
     if eod_carry_approved and action not in ("BUY", "SELL"):
         summary = (
             f"Monitor kept the position into the close because overnight carry was approved "
@@ -1259,7 +1307,9 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         else:
             summary = f"SELL was triggered because {trigger_type or monitor_reason or 'the exit condition passed'}."
     elif entry_evaluated and not entry_triggered:
-        summary = f"Monitor stayed on WAIT because {entry_reason or monitor_reason or 'the intraday entry signal was not confirmed'}."
+        summary = f"Monitor stayed on WAIT because {entry_check_summary or entry_reason or monitor_reason or 'the intraday entry signal was not confirmed'}."
+        if entry_threshold_gaps:
+            summary += " Threshold gaps: " + "; ".join(entry_threshold_gaps[:3]) + "."
     else:
         summary = f"Monitor posture was {action or 'WAIT'} with trigger {trigger_type or 'not_captured'}."
     bullets = [
@@ -1306,10 +1356,26 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
                 f"(max {format_ratio_pct(entry_thresholds.get('max_extended_from_vwap_pct'))}%)"
             )
         if entry_metrics.get("pullback_depth_pct") not in (None, ""):
-            bullets.append(
-                f"Pullback depth: {format_ratio_pct(entry_metrics.get('pullback_depth_pct'))}% "
-                f"(max {format_ratio_pct(entry_thresholds.get('pullback_max_pct'))}%)"
-            )
+            pullback_bullet = f"Pullback depth: {format_ratio_pct(entry_metrics.get('pullback_depth_pct'))}%"
+            if entry_thresholds.get("pullback_min_pct") not in (None, ""):
+                pullback_bullet += f" (min {format_ratio_pct(entry_thresholds.get('pullback_min_pct'))}%)"
+            if entry_thresholds.get("pullback_max_pct") not in (None, ""):
+                pullback_bullet += f" (max {format_ratio_pct(entry_thresholds.get('pullback_max_pct'))}%)"
+            bullets.append(pullback_bullet)
+        if entry_check_summary:
+            bullets.append(f"Entry check summary: {entry_check_summary}")
+        if entry_blockers:
+            bullets.append("Entry blockers: " + "; ".join(entry_blockers[:6]))
+        if entry_threshold_gaps:
+            bullets.append("Threshold gaps: " + "; ".join(entry_threshold_gaps[:3]))
+        if policy_ref:
+            policy_bits: List[str] = []
+            for key in ("monitor_mission", "flow_instruction", "risk_mode", "command_intent"):
+                value = str(policy_ref.get(key) or "").strip()
+                if value:
+                    policy_bits.append(f"{key}={value}")
+            if policy_bits:
+                bullets.append("Policy reference: " + ", ".join(policy_bits[:4]))
     if eod_carry_evaluated:
         bullets.append(
             f"EOD carry decision: {'approved' if eod_carry_approved else 'flatten before close'} "
@@ -1363,6 +1429,11 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "entry_signal_chain": entry_signal_chain[:8],
         "entry_metrics": dict(entry_metrics),
         "entry_thresholds": dict(entry_thresholds),
+        "entry_check_summary": entry_check_summary,
+        "entry_blockers": entry_blockers[:8],
+        "policy_ref": dict(policy_ref),
+        "timing_assessment": dict(timing_assessment),
+        "thresholds_guards_used": dict(thresholds_guards_used),
         "entry_guard_blocked": entry_guard_blocked,
         "entry_guard_reason": entry_guard_reason,
         "current_price": current_price,

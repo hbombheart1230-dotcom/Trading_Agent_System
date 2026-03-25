@@ -157,6 +157,58 @@ def test_monitor_reason_human_surfaces_intraday_entry_metrics() -> None:
     assert "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation" in out["summary"]
 
 
+def test_monitor_reason_human_prefers_decision_trace_and_surfaces_threshold_gaps() -> None:
+    out = build_monitor_reason_human(
+        {
+            "entry_evaluated": True,
+            "entry_triggered": False,
+            "entry_reason": "stale_top_level_reason",
+            "monitor_reason": "reclaim_not_confirmed",
+            "entry_metrics": {
+                "volume_ratio": 0.10,
+                "extended_from_vwap_pct": 0.19,
+                "pullback_depth_pct": 0.00,
+            },
+            "entry_thresholds": {
+                "volume_ratio_min": 0.75,
+                "max_extended_from_vwap_pct": 0.05,
+                "pullback_min_pct": 0.012,
+                "pullback_max_pct": 0.07,
+            },
+            "decision_trace": {
+                "entry_check_summary": "mission=wait_for_confirmation | reason=reclaim_not_confirmed",
+                "entry_blockers": ["volume_ok", "vwap_reclaim_ok"],
+                "policy_ref": {
+                    "monitor_mission": "Wait for cleaner reclaim confirmation.",
+                    "flow_instruction": "observe_only",
+                },
+                "timing_assessment": {
+                    "entry_reason": "reclaim_not_confirmed",
+                    "entry_pattern": "pullback_reclaim",
+                },
+                "thresholds_guards_used": {
+                    "thresholds": {
+                        "volume_ratio_min": 0.75,
+                        "max_extended_from_vwap_pct": 0.05,
+                        "pullback_min_pct": 0.012,
+                    }
+                },
+            },
+        },
+        {"action": "NOOP"},
+    )
+
+    assert "mission=wait_for_confirmation" in out["summary"]
+    assert "volume ratio 0.10 below min 0.75" in out["summary"]
+    assert out["entry_reason"] == "reclaim_not_confirmed"
+    assert out["entry_pattern"] == "pullback_reclaim"
+    assert out["entry_check_summary"] == "mission=wait_for_confirmation | reason=reclaim_not_confirmed"
+    assert out["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
+    assert out["policy_ref"]["flow_instruction"] == "observe_only"
+    assert any("Entry blockers:" in row for row in out["bullets"])
+    assert any("Threshold gaps:" in row for row in out["bullets"])
+
+
 def test_enrich_scanner_reason_from_evidence_promotes_selection_reason_details() -> None:
     out = enrich_scanner_reason_from_evidence(
         {

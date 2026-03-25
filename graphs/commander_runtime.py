@@ -292,6 +292,7 @@ def _ensure_commander_shadow_runtime(state: Dict[str, Any]) -> Dict[str, Any]:
     runtime = state.get("commander_shadow_runtime") if isinstance(state.get("commander_shadow_runtime"), dict) else {}
     runtime = dict(runtime)
     runtime.setdefault("strategist_executed", None)
+    runtime.setdefault("strategist_called", None)
     runtime.setdefault("llm_called_by_strategist", None)
     runtime.setdefault("used_cached_strategist", False)
     runtime.setdefault("market_changed", None)
@@ -308,6 +309,7 @@ def _ensure_commander_shadow_runtime(state: Dict[str, Any]) -> Dict[str, Any]:
 def _reset_commander_shadow_runtime(state: Dict[str, Any]) -> None:
     state["commander_shadow_runtime"] = {
         "strategist_executed": None,
+        "strategist_called": None,
         "llm_called_by_strategist": None,
         "used_cached_strategist": False,
         "market_changed": None,
@@ -1136,6 +1138,7 @@ def _run_integrated_chain(
     use_monitor_only, fast_path_payload = _should_use_monitor_only_fast_path(state)
     if use_monitor_only:
         shadow_runtime["strategist_executed"] = False
+        shadow_runtime["strategist_called"] = False
         shadow_runtime["llm_called_by_strategist"] = False
         shadow_runtime["used_cached_strategist"] = False
         state = _hydrate_strategist_output_cache(state)
@@ -1178,6 +1181,7 @@ def _run_integrated_chain(
         reused_strategist_cache, cache_payload = _should_use_cached_strategist_when_flat(state)
     if reused_strategist_cache:
         shadow_runtime["strategist_executed"] = False
+        shadow_runtime["strategist_called"] = False
         shadow_runtime["llm_called_by_strategist"] = False
         shadow_runtime["used_cached_strategist"] = True
         shadow_runtime["market_changed"] = False
@@ -1188,6 +1192,7 @@ def _run_integrated_chain(
     else:
         state = strategist_node(state)
         shadow_runtime["strategist_executed"] = True
+        shadow_runtime["strategist_called"] = True
         shadow_runtime["used_cached_strategist"] = False
         strategist_llm = state.get("strategist_llm") if isinstance(state.get("strategist_llm"), dict) else {}
         llm_status = str(strategist_llm.get("status") or strategist_llm.get("llm_status") or "").strip().lower()

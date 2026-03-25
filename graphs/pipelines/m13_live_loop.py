@@ -6,6 +6,49 @@ from typing import Any, Callable, Dict, Optional
 # Type aliases for dependency injection (keeps this pipeline unit-testable).
 NodeFn = Callable[[Dict[str, Any]], Dict[str, Any]]
 
+_PER_RUN_TRANSIENT_KEYS = (
+    # Core decision/execution outputs should be rebuilt every cycle.
+    "run_id",
+    "decision_packet",
+    "decision_trace",
+    "execution",
+    # Route/runtime hints are cycle-scoped and should not bleed forward.
+    "runtime_fast_path",
+    "commander_decision",
+    "commander_decision_frame",
+    "commander_shadow_runtime",
+    "path",
+    # Strategist/scanner/monitor artifacts are recomputed or rehydrated per cycle.
+    "strategist_output",
+    "strategist_llm",
+    "strategist_blocked",
+    "strategist_output_cache_meta",
+    "strategy_policy",
+    "selected",
+    "selected_symbol",
+    "top_stock",
+    "scan_results",
+    "ranked_candidates",
+    "scanner_output",
+    "risk",
+    "intents",
+    "monitor",
+    "monitor_output",
+    "monitor_exit",
+    "monitor_entry_decision_detail",
+    "monitor_exit_decision_detail",
+    "monitor_action_decision",
+    # Reporting/debug mirrors should reflect the current cycle only.
+    "intraday_trade_report",
+    "reasoning_trace",
+    "reasoning_trace_provenance",
+)
+
+
+def _clear_per_run_transient_state(state: Dict[str, Any]) -> None:
+    for key in _PER_RUN_TRANSIENT_KEYS:
+        state.pop(key, None)
+
 def run_m13_once(
     state: Dict[str, Any],
     *,
@@ -36,10 +79,9 @@ def run_m13_once(
 
     # Load persisted state first (state_store_path is read from env by node)
     state = load_state_fn(state)
-    # Each tick should produce a fresh decision/execution trace.
-    # Keep persisted risk/account fields, but clear per-run artifacts.
-    for k in ("run_id", "decision_packet", "decision_trace", "execution"):
-        state.pop(k, None)
+    # Each tick should produce a fresh runtime/decision/report trace.
+    # Keep durable config + persisted_state, but drop cycle-scoped artifacts.
+    _clear_per_run_transient_state(state)
     # One tick (runs M10 only if market open)
     state = tick_fn(state, dt=dt)  # type: ignore[arg-type]
     # End-of-day report trigger (runs only after close, once per day)

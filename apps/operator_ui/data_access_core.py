@@ -3655,6 +3655,8 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
     scanner = detail.get("scanner") if isinstance(detail.get("scanner"), dict) else {}
     monitor = detail.get("monitor") if isinstance(detail.get("monitor"), dict) else {}
     commander = detail.get("commander") if isinstance(detail.get("commander"), dict) else {}
+    commander_artifact = commander.get("artifact") if isinstance(commander.get("artifact"), dict) else {}
+    commander_decision = commander_artifact.get("commander_decision") if isinstance(commander_artifact.get("commander_decision"), dict) else {}
     reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
     canonical_trade = _build_canonical_trade_brief_input(trade_report)
@@ -3710,6 +3712,11 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
         canonical_filters_summary = canonical_trade.get("filters_summary")
     monitor_summary = monitor.get("summary") if isinstance(monitor.get("summary"), dict) else {}
     monitor_trace = monitor.get("decision_trace") if isinstance(monitor.get("decision_trace"), dict) else {}
+    monitor_policy_ref = monitor_trace.get("policy_ref") if isinstance(monitor_trace.get("policy_ref"), dict) else {}
+    monitor_timing_assessment = monitor_trace.get("timing_assessment") if isinstance(monitor_trace.get("timing_assessment"), dict) else {}
+    monitor_thresholds_used = monitor_trace.get("thresholds_guards_used") if isinstance(monitor_trace.get("thresholds_guards_used"), dict) else {}
+    monitor_entry_metrics = monitor_summary.get("entry_metrics") if isinstance(monitor_summary.get("entry_metrics"), dict) else {}
+    monitor_entry_thresholds = monitor_summary.get("entry_thresholds") if isinstance(monitor_summary.get("entry_thresholds"), dict) else {}
     return {
         "run_id": detail.get("run_id"),
         "commander": {
@@ -3717,6 +3724,14 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "phase": commander.get("phase"),
             "path": commander.get("path"),
             "status": commander.get("status"),
+            "command_intent": commander_decision.get("command_intent"),
+            "strategist_invocation": commander_decision.get("strategist_invocation"),
+            "llm_policy": commander_decision.get("llm_policy") or commander_decision.get("llm_invocation_policy"),
+            "selected_route": commander_artifact.get("selected_route"),
+            "route_reason_text": commander_artifact.get("route_reason_text"),
+            "strategist_cache_used": commander_artifact.get("strategist_cache_used"),
+            "strategist_called": commander_artifact.get("strategist_called"),
+            "cooldown_applied": commander_artifact.get("cooldown_applied"),
         },
         "strategist": {
             "market_regime": strategist_summary.get("market_regime") or canonical_trade.get("market_regime"),
@@ -3780,6 +3795,12 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "entry_metrics": monitor_summary.get("entry_metrics") if isinstance(monitor_summary.get("entry_metrics"), dict) else {},
             "entry_thresholds": monitor_summary.get("entry_thresholds") if isinstance(monitor_summary.get("entry_thresholds"), dict) else {},
             "thresholds": monitor_trace.get("thresholds") if isinstance(monitor_trace.get("thresholds"), dict) else {},
+            "entry_check_summary": monitor_trace.get("entry_check_summary"),
+            "entry_blockers": list(monitor_trace.get("entry_blockers") or [])[:8],
+            "policy_ref": monitor_policy_ref,
+            "timing_assessment": monitor_timing_assessment,
+            "thresholds_guards_used": monitor_thresholds_used,
+            "threshold_shortfalls": _monitor_threshold_shortfall_notes(monitor_entry_metrics, monitor_entry_thresholds),
             "strategy_frame_adjustments": list(monitor_trace.get("strategy_frame_adjustments") or [])[:6],
             "exit_policy_guard_adjustments": list(monitor_trace.get("exit_policy_guard_adjustments") or [])[:6],
             "canonical_bullets": list(canonical_trade.get("monitor_bullets") or [])[:6],
@@ -3830,6 +3851,38 @@ def _compact_scalar_map(data: Any, *, limit: int = 8, max_len: int = 120) -> Dic
         if text:
             out[str(key)] = text
     return out
+
+
+def _monitor_threshold_shortfall_notes(entry_metrics: Any, entry_thresholds: Any) -> List[str]:
+    metrics = entry_metrics if isinstance(entry_metrics, dict) else {}
+    thresholds = entry_thresholds if isinstance(entry_thresholds, dict) else {}
+    notes: List[str] = []
+
+    volume_ratio = metrics.get("volume_ratio")
+    volume_ratio_min = thresholds.get("volume_ratio_min")
+    if volume_ratio not in (None, "") and volume_ratio_min not in (None, ""):
+        actual = _safe_float(volume_ratio)
+        limit = _safe_float(volume_ratio_min)
+        if actual < limit:
+            notes.append(f"volume_ratio {actual:.3f} < min {limit:.3f}")
+
+    extended_from_vwap_pct = metrics.get("extended_from_vwap_pct")
+    max_extended_from_vwap_pct = thresholds.get("max_extended_from_vwap_pct")
+    if extended_from_vwap_pct not in (None, "") and max_extended_from_vwap_pct not in (None, ""):
+        actual = _safe_float(extended_from_vwap_pct)
+        limit = _safe_float(max_extended_from_vwap_pct)
+        if actual > limit:
+            notes.append(f"extended_from_vwap_pct {actual:.3f} > max {limit:.3f}")
+
+    pullback_depth_pct = metrics.get("pullback_depth_pct")
+    pullback_min_pct = thresholds.get("pullback_min_pct")
+    if pullback_depth_pct not in (None, "") and pullback_min_pct not in (None, ""):
+        actual = _safe_float(pullback_depth_pct)
+        limit = _safe_float(pullback_min_pct)
+        if actual < limit:
+            notes.append(f"pullback_depth_pct {actual:.3f} < min {limit:.3f}")
+
+    return notes[:6]
 
 
 def _compact_ranked_symbols(rows: Any, *, limit: int = 3) -> List[Dict[str, Any]]:
@@ -3951,6 +4004,14 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "phase": _operator_brief_label_ko(commander.get("phase")),
             "path": _trim_text(commander.get("path"), max_len=80),
             "status": _trim_text(commander.get("status"), max_len=24),
+            "command_intent": _trim_text(commander.get("command_intent"), max_len=40),
+            "strategist_invocation": _trim_text(commander.get("strategist_invocation"), max_len=40),
+            "llm_policy": _trim_text(commander.get("llm_policy"), max_len=40),
+            "selected_route": _trim_text(commander.get("selected_route"), max_len=40),
+            "route_reason_text": _sanitize_operator_brief_text(commander.get("route_reason_text")),
+            "strategist_cache_used": commander.get("strategist_cache_used"),
+            "strategist_called": commander.get("strategist_called"),
+            "cooldown_applied": commander.get("cooldown_applied"),
         },
         "strategist": {
             "market_regime": _operator_brief_label_ko(strategist.get("market_regime")),
@@ -4014,6 +4075,12 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "entry_metrics": _compact_scalar_map(monitor.get("entry_metrics"), limit=10, max_len=80),
             "entry_thresholds": _compact_scalar_map(monitor.get("entry_thresholds"), limit=8, max_len=80),
             "thresholds": _compact_monitor_thresholds(monitor.get("thresholds")),
+            "entry_check_summary": _sanitize_operator_brief_text(monitor.get("entry_check_summary")),
+            "entry_blockers": _clean_str_list(monitor.get("entry_blockers"), limit=8, max_len=120),
+            "policy_ref": _compact_scalar_map(monitor.get("policy_ref"), limit=8, max_len=80),
+            "timing_assessment": _compact_scalar_map(monitor.get("timing_assessment"), limit=8, max_len=80),
+            "thresholds_guards_used": _compact_scalar_map(monitor.get("thresholds_guards_used"), limit=8, max_len=80),
+            "threshold_shortfalls": _clean_str_list(monitor.get("threshold_shortfalls"), limit=6, max_len=120),
             "strategy_frame_adjustments": _clean_str_list(monitor.get("strategy_frame_adjustments"), limit=4, max_len=120),
             "exit_policy_guard_adjustments": _clean_str_list(monitor.get("exit_policy_guard_adjustments"), limit=4, max_len=120),
             "canonical_bullets": [],

@@ -905,6 +905,69 @@ def test_operator_brief_shared_facts_mark_unavailable_when_inputs_missing() -> N
     assert facts.get("exit_reason") == "unavailable"
 
 
+def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    detail = data_access.load_run_detail(cfg, "run-1")
+    detail["commander"]["artifact"] = {
+        "commander_decision": {
+            "command_intent": "OBSERVE_ONLY",
+            "strategist_invocation": "SKIP",
+            "llm_policy": "SKIP",
+        },
+        "selected_route": "cached_strategist",
+        "route_reason_text": "commander_skip_cached_strategist",
+        "strategist_cache_used": True,
+        "strategist_called": False,
+        "cooldown_applied": False,
+    }
+    detail["monitor"]["summary"] = {
+        "monitor_reason": "reclaim_not_confirmed",
+        "entry_metrics": {
+            "volume_ratio": 0.10,
+            "extended_from_vwap_pct": 0.19,
+            "pullback_depth_pct": 0.00,
+        },
+        "entry_thresholds": {
+            "volume_ratio_min": 0.75,
+            "max_extended_from_vwap_pct": 0.05,
+            "pullback_min_pct": 0.012,
+        },
+    }
+    detail["monitor"]["decision_trace"] = {
+        "entry_check_summary": "mission=wait_for_confirmation | reason=reclaim_not_confirmed",
+        "entry_blockers": ["volume_ok", "vwap_reclaim_ok"],
+        "policy_ref": {
+            "monitor_mission": "Wait for cleaner reclaim confirmation.",
+            "flow_instruction": "observe_only",
+        },
+        "timing_assessment": {
+            "entry_reason": "reclaim_not_confirmed",
+            "entry_pattern": "pullback_reclaim",
+        },
+        "thresholds_guards_used": {
+            "thresholds": {
+                "volume_ratio_min": 0.75,
+                "max_extended_from_vwap_pct": 0.05,
+                "pullback_min_pct": 0.012,
+            }
+        },
+    }
+
+    prepared = data_access._build_operator_brief_input(detail)
+    compact = data_access._compact_operator_brief_input_for_llm(prepared)
+
+    assert prepared["commander"]["selected_route"] == "cached_strategist"
+    assert prepared["commander"]["strategist_called"] is False
+    assert prepared["monitor"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
+    assert prepared["monitor"]["threshold_shortfalls"]
+    assert compact["commander"]["selected_route"] == "cached_strategist"
+    assert compact["commander"]["route_reason_text"] == "commander_skip_cached_strategist"
+    assert compact["monitor"]["entry_check_summary"] == "mission=wait_for_confirmation | reason=reclaim_not_confirmed"
+    assert compact["monitor"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
+    assert any("volume_ratio" in row for row in compact["monitor"]["threshold_shortfalls"])
+
+
 def test_operator_brief_input_normalizes_stale_chart_coverage_from_canonical_trade(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
     cfg = _make_config(tmp_path)

@@ -313,6 +313,69 @@ def test_trade_report_shared_fact_marks_unavailable_when_missing() -> None:
     assert facts.get("pnl_pct") == "unavailable"
 
 
+def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_monitor_blockers() -> None:
+    story_input = _story_input()
+    story_input.update(
+        {
+            "monitor_reason_human": {
+                "summary": "Monitor stayed on WAIT because reclaim confirmation is still pending.",
+                "entry_check_summary": "mission=wait_for_confirmation | reason=reclaim_not_confirmed",
+                "entry_blockers": ["volume_ok", "vwap_reclaim_ok"],
+                "policy_ref": {
+                    "monitor_mission": "Wait for cleaner reclaim confirmation.",
+                    "flow_instruction": "observe_only",
+                },
+                "thresholds_guards_used": {
+                    "thresholds": {
+                        "volume_ratio_min": 0.75,
+                        "max_extended_from_vwap_pct": 0.05,
+                    }
+                },
+                "entry_metrics": {
+                    "volume_ratio": 0.10,
+                    "extended_from_vwap_pct": 0.19,
+                },
+                "entry_thresholds": {
+                    "volume_ratio_min": 0.75,
+                    "max_extended_from_vwap_pct": 0.05,
+                },
+            },
+            "canonical_agent_artifacts": {
+                "commander": {
+                    "selected_route": "cached_strategist",
+                    "route_reason_text": "commander_skip_cached_strategist",
+                    "strategist_cache_used": True,
+                    "strategist_called": False,
+                    "cooldown_applied": False,
+                    "commander_decision": {
+                        "command_intent": "OBSERVE_ONLY",
+                        "strategist_invocation": "SKIP",
+                        "llm_policy": "SKIP",
+                    },
+                }
+            },
+        }
+    )
+
+    seed = mod._build_shared_summary_seed(story_input)
+    commander_route = seed.get("commander_route") if isinstance(seed.get("commander_route"), dict) else {}
+    monitor_reasoning = seed.get("monitor_reasoning") if isinstance(seed.get("monitor_reasoning"), dict) else {}
+    compact_input = mod.build_ai_trade_report_compact_input(story_input)
+
+    assert commander_route.get("selected_route") == "cached_strategist"
+    assert commander_route.get("command_intent") == "OBSERVE_ONLY"
+    assert commander_route.get("strategist_invocation") == "SKIP"
+    assert commander_route.get("llm_policy") == "SKIP"
+    assert commander_route.get("strategist_cache_used") is True
+    assert commander_route.get("strategist_called") is False
+    assert monitor_reasoning.get("entry_blockers") == ["volume_ok", "vwap_reclaim_ok"]
+    assert compact_input["commander"]["selected_route"] == "cached_strategist"
+    assert compact_input["commander"]["route_reason_text"] == "commander_skip_cached_strategist"
+    assert compact_input["monitor"]["entry_check_summary"] == "mission=wait_for_confirmation | reason=reclaim_not_confirmed"
+    assert compact_input["monitor"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
+    assert compact_input["monitor"]["entry_metrics"]["volume_ratio"] == 0.1
+
+
 def test_trade_report_marks_scanner_evidence_unavailable_when_missing() -> None:
     story_input = _story_input()
     story_input["scanner_evidence"] = {}
