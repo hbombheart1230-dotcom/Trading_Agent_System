@@ -3717,6 +3717,24 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
     monitor_thresholds_used = monitor_trace.get("thresholds_guards_used") if isinstance(monitor_trace.get("thresholds_guards_used"), dict) else {}
     monitor_entry_metrics = monitor_summary.get("entry_metrics") if isinstance(monitor_summary.get("entry_metrics"), dict) else {}
     monitor_entry_thresholds = monitor_summary.get("entry_thresholds") if isinstance(monitor_summary.get("entry_thresholds"), dict) else {}
+    commander_applied_policy = (
+        commander_artifact.get("applied_policy")
+        if isinstance(commander_artifact.get("applied_policy"), dict)
+        else (
+            commander_decision.get("applied_policy")
+            if isinstance(commander_decision.get("applied_policy"), dict)
+            else {}
+        )
+    )
+    monitor_applied_policy = (
+        monitor_trace.get("applied_policy")
+        if isinstance(monitor_trace.get("applied_policy"), dict)
+        else (
+            monitor_policy_ref.get("applied_policy")
+            if isinstance(monitor_policy_ref.get("applied_policy"), dict)
+            else {}
+        )
+    )
     return {
         "run_id": detail.get("run_id"),
         "commander": {
@@ -3732,6 +3750,21 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "strategist_cache_used": commander_artifact.get("strategist_cache_used"),
             "strategist_called": commander_artifact.get("strategist_called"),
             "cooldown_applied": commander_artifact.get("cooldown_applied"),
+            "applied_policy": commander_applied_policy,
+            "policy_source": commander_artifact.get("policy_source") or commander_decision.get("policy_source"),
+            "policy_validation_status": commander_artifact.get("policy_validation_status")
+            or commander_decision.get("policy_validation_status"),
+            "policy_fallback_used": commander_artifact.get("policy_fallback_used")
+            if commander_artifact.get("policy_fallback_used") is not None
+            else commander_decision.get("policy_fallback_used"),
+            "policy_fallback_reason": commander_artifact.get("policy_fallback_reason")
+            or commander_decision.get("policy_fallback_reason"),
+            "override_reason": commander_artifact.get("override_reason") or commander_decision.get("override_reason"),
+            "applied_policy_source_chain": list(
+                commander_artifact.get("applied_policy_source_chain")
+                or commander_decision.get("applied_policy_source_chain")
+                or []
+            )[:6],
         },
         "strategist": {
             "market_regime": strategist_summary.get("market_regime") or canonical_trade.get("market_regime"),
@@ -3778,6 +3811,26 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "tie_break_rule": canonical_trade.get("tie_break_rule"),
             "runner_ups": list(canonical_trade.get("runner_ups") or [])[:3],
             "runner_ups_lost": list(canonical_trade.get("runner_ups_lost") or [])[:3],
+            "playbook": scanner_trace.get("playbook") or canonical_trade.get("playbook"),
+            "policy_source": scanner_trace.get("policy_source") or canonical_trade.get("policy_source"),
+            "applied_policy_present": (
+                scanner_trace.get("applied_policy_present")
+                if scanner_trace.get("applied_policy_present") is not None
+                else canonical_trade.get("applied_policy_present")
+            ),
+            "monitor_entry_policy_summary": (
+                scanner_trace.get("monitor_entry_policy_summary")
+                if isinstance(scanner_trace.get("monitor_entry_policy_summary"), dict)
+                else (
+                    canonical_trade.get("monitor_entry_policy_summary")
+                    if isinstance(canonical_trade.get("monitor_entry_policy_summary"), dict)
+                    else {}
+                )
+            ),
+            "scanner_bias_applied": scanner_trace.get("scanner_bias_applied"),
+            "scanner_bias_summary": scanner_trace.get("scanner_bias_summary") if isinstance(scanner_trace.get("scanner_bias_summary"), dict) else {},
+            "candidate_bias_adjustments": list(scanner_trace.get("candidate_bias_adjustments") or [])[:5],
+            "selection_reason_with_bias": scanner_trace.get("selection_reason_with_bias") or selected.get("why"),
             "canonical_bullets": canonical_selection_bullets,
             "canonical_filters_summary": canonical_filters_summary,
             "canonical_filter_bullets": canonical_filter_bullets,
@@ -3801,6 +3854,21 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "timing_assessment": monitor_timing_assessment,
             "thresholds_guards_used": monitor_thresholds_used,
             "threshold_shortfalls": _monitor_threshold_shortfall_notes(monitor_entry_metrics, monitor_entry_thresholds),
+            "applied_policy": monitor_applied_policy,
+            "policy_source": monitor_trace.get("policy_source") or monitor_policy_ref.get("policy_source"),
+            "policy_validation_status": monitor_trace.get("policy_validation_status")
+            or monitor_policy_ref.get("policy_validation_status"),
+            "policy_fallback_used": monitor_trace.get("policy_fallback_used")
+            if monitor_trace.get("policy_fallback_used") is not None
+            else monitor_policy_ref.get("policy_fallback_used"),
+            "policy_fallback_reason": monitor_trace.get("policy_fallback_reason")
+            or monitor_policy_ref.get("policy_fallback_reason"),
+            "override_reason": monitor_trace.get("override_reason") or monitor_policy_ref.get("override_reason"),
+            "applied_policy_source_chain": list(
+                monitor_trace.get("applied_policy_source_chain")
+                or monitor_policy_ref.get("applied_policy_source_chain")
+                or []
+            )[:6],
             "strategy_frame_adjustments": list(monitor_trace.get("strategy_frame_adjustments") or [])[:6],
             "exit_policy_guard_adjustments": list(monitor_trace.get("exit_policy_guard_adjustments") or [])[:6],
             "canonical_bullets": list(canonical_trade.get("monitor_bullets") or [])[:6],
@@ -4012,6 +4080,15 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "strategist_cache_used": commander.get("strategist_cache_used"),
             "strategist_called": commander.get("strategist_called"),
             "cooldown_applied": commander.get("cooldown_applied"),
+            "policy_source": _trim_text(commander.get("policy_source"), max_len=40),
+            "policy_validation_status": _trim_text(commander.get("policy_validation_status"), max_len=40),
+            "policy_fallback_used": commander.get("policy_fallback_used"),
+            "policy_fallback_reason": _sanitize_operator_brief_text(commander.get("policy_fallback_reason")),
+            "override_reason": _sanitize_operator_brief_text(commander.get("override_reason")),
+            "applied_policy_source_chain": _clean_str_list(
+                commander.get("applied_policy_source_chain"), limit=5, max_len=80
+            ),
+            "applied_policy": _compact_scalar_map(commander.get("applied_policy"), limit=12, max_len=80),
         },
         "strategist": {
             "market_regime": _operator_brief_label_ko(strategist.get("market_regime")),
@@ -4043,6 +4120,10 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "source_scores": _compact_scalar_map(scanner.get("source_scores"), limit=6, max_len=80),
             "score_total": scanner.get("score_total"),
             "confidence": scanner.get("confidence"),
+            "playbook": _operator_brief_label_ko(scanner.get("playbook")),
+            "policy_source": _trim_text(scanner.get("policy_source"), max_len=80),
+            "applied_policy_present": scanner.get("applied_policy_present"),
+            "monitor_entry_policy_summary": _compact_scalar_map(scanner.get("monitor_entry_policy_summary"), limit=8, max_len=80),
             "feature_coverage": _compact_scalar_map(scanner.get("feature_coverage"), limit=6, max_len=80),
             "quote_metrics": _compact_scalar_map(scanner.get("quote_metrics"), limit=6, max_len=80),
             "score_breakdown": _compact_scalar_map(scanner.get("score_breakdown"), limit=8, max_len=80),
@@ -4057,6 +4138,22 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
                 for item in list(scanner.get("runner_ups_lost") or [])[:3]
                 if isinstance(item, dict)
             ],
+            "scanner_bias_applied": scanner.get("scanner_bias_applied"),
+            "scanner_bias_summary": _compact_scalar_map(scanner.get("scanner_bias_summary"), limit=8, max_len=80),
+            "candidate_bias_adjustments": [
+                {
+                    "symbol": _trim_text((row or {}).get("symbol"), max_len=24),
+                    "bias_adjustment": (row or {}).get("bias_adjustment"),
+                    "bias_adjustments": _clean_str_list(
+                        [str((item or {}).get("reason") or "") for item in list((row or {}).get("bias_adjustments") or []) if isinstance(item, dict)],
+                        limit=3,
+                        max_len=120,
+                    ),
+                }
+                for row in list(scanner.get("candidate_bias_adjustments") or [])[:3]
+                if isinstance(row, dict)
+            ],
+            "selection_reason_with_bias": _sanitize_operator_brief_text(scanner.get("selection_reason_with_bias")),
             "canonical_bullets": [],
             "canonical_filters_summary": "",
             "canonical_filter_bullets": [],
@@ -4081,6 +4178,15 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "timing_assessment": _compact_scalar_map(monitor.get("timing_assessment"), limit=8, max_len=80),
             "thresholds_guards_used": _compact_scalar_map(monitor.get("thresholds_guards_used"), limit=8, max_len=80),
             "threshold_shortfalls": _clean_str_list(monitor.get("threshold_shortfalls"), limit=6, max_len=120),
+            "applied_policy": _compact_scalar_map(monitor.get("applied_policy"), limit=12, max_len=80),
+            "policy_source": _trim_text(monitor.get("policy_source"), max_len=40),
+            "policy_validation_status": _trim_text(monitor.get("policy_validation_status"), max_len=40),
+            "policy_fallback_used": monitor.get("policy_fallback_used"),
+            "policy_fallback_reason": _sanitize_operator_brief_text(monitor.get("policy_fallback_reason")),
+            "override_reason": _sanitize_operator_brief_text(monitor.get("override_reason")),
+            "applied_policy_source_chain": _clean_str_list(
+                monitor.get("applied_policy_source_chain"), limit=5, max_len=80
+            ),
             "strategy_frame_adjustments": _clean_str_list(monitor.get("strategy_frame_adjustments"), limit=4, max_len=120),
             "exit_policy_guard_adjustments": _clean_str_list(monitor.get("exit_policy_guard_adjustments"), limit=4, max_len=120),
             "canonical_bullets": [],

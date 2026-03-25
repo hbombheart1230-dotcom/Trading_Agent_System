@@ -209,6 +209,36 @@ def test_monitor_reason_human_prefers_decision_trace_and_surfaces_threshold_gaps
     assert any("Threshold gaps:" in row for row in out["bullets"])
 
 
+def test_monitor_reason_human_uses_applied_policy_when_entry_thresholds_missing() -> None:
+    out = build_monitor_reason_human(
+        {
+            "entry_evaluated": True,
+            "entry_triggered": False,
+            "monitor_reason": "pullback_not_mature",
+            "entry_metrics": {
+                "timeframe_minutes": 1,
+                "volume_ratio": 0.61,
+                "extended_from_vwap_pct": 0.03,
+                "pullback_depth_pct": 0.004,
+            },
+            "applied_policy": {
+                "timeframe_minutes": 1,
+                "breakout_lookback": 5,
+                "volume_lookback": 5,
+                "volume_ratio_min": 0.68,
+                "max_extended_from_vwap_pct": 0.13,
+                "pullback_min_pct": 0.008,
+                "pullback_max_pct": 0.07,
+            },
+        },
+        {"action": "NOOP"},
+    )
+
+    assert "volume ratio 0.61 below min 0.68" in out["summary"]
+    assert "pullback depth 0.40% below min 0.80%" in out["summary"]
+    assert any("Entry timeframe: 1m" in row for row in out["bullets"])
+
+
 def test_enrich_scanner_reason_from_evidence_promotes_selection_reason_details() -> None:
     out = enrich_scanner_reason_from_evidence(
         {

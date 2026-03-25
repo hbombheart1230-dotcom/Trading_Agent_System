@@ -5,6 +5,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal
 
+from libs.runtime.monitor_policy import normalize_monitor_entry_policy
+from libs.runtime.scanner_bias import normalize_scanner_bias_context
+
 
 StrategyAction = Literal["BUY", "SELL", "NOOP"]
 StrategistMarketRegime = Literal["risk_on", "neutral", "risk_off"]
@@ -121,12 +124,24 @@ class StrategistOutput:
     avoid_themes: List[str] = field(default_factory=list)
     playbook: StrategistPlaybook = "defensive"
     scanner_bias: StrategistScannerBias = "leader"
+    scanner_bias_context: Dict[str, Any] = field(default_factory=dict)
     scanner_priority: List[str] = field(default_factory=list)
     scanner_source_policy: Dict[str, Any] = field(default_factory=dict)
     trade_aggressiveness: StrategistAggressiveness = "medium"
     risk_tone: StrategistRiskTone = "normal"
     monitor_guidance: StrategistMonitorGuidance = "defensive_exit"
     strategy_policy: Dict[str, Any] = field(default_factory=dict)
+    market_regime_summary: str = ""
+    monitor_entry_policy: Dict[str, Any] = field(default_factory=dict)
+    policy_rationale: str = ""
+    policy_source: str = "strategist"
+    policy_validation_status: str = "ok"
+    policy_fallback_used: bool = False
+    policy_fallback_reason: str = ""
+    policy_validation_issues: List[str] = field(default_factory=list)
+    policy_validation_missing_fields: List[str] = field(default_factory=list)
+    policy_validation_invalid_fields: List[str] = field(default_factory=list)
+    confidence: float | None = None
     report_focus: List[str] = field(default_factory=list)
     recent_strategy_feedback: Dict[str, Any] = field(default_factory=dict)
     candidates: List[str] = field(default_factory=list)
@@ -140,6 +155,12 @@ class StrategistOutput:
             s = str(value or "").strip().lower()
             return s if s in allowed else default
 
+        normalized_monitor_entry_policy = (
+            normalize_monitor_entry_policy(self.monitor_entry_policy)[0].to_dict()
+            if self.monitor_entry_policy
+            else {}
+        )
+
         return {
             "market_regime": _norm_enum(self.market_regime, ["risk_on", "neutral", "risk_off"], "neutral"),
             "market_sentiment": _norm_enum(self.market_sentiment, ["bullish", "neutral", "bearish"], "neutral"),
@@ -148,6 +169,11 @@ class StrategistOutput:
             "avoid_themes": [str(x) for x in list(self.avoid_themes or [])][:8],
             "playbook": _norm_enum(self.playbook, ["breakout", "pullback", "reversal", "defensive"], "defensive"),
             "scanner_bias": _norm_enum(self.scanner_bias, ["large_cap", "leader", "momentum", "value"], "leader"),
+            "scanner_bias_context": (
+                normalize_scanner_bias_context(self.scanner_bias_context)[0].to_dict()
+                if self.scanner_bias_context
+                else {}
+            ),
             "scanner_priority": [str(x) for x in list(self.scanner_priority or [])][:8],
             "scanner_source_policy": dict(self.scanner_source_policy or {}),
             "trade_aggressiveness": _norm_enum(self.trade_aggressiveness, ["low", "medium", "high"], "medium"),
@@ -158,6 +184,17 @@ class StrategistOutput:
                 "defensive_exit",
             ),
             "strategy_policy": _coerce_strategy_policy(self.strategy_policy),
+            "market_regime_summary": str(self.market_regime_summary or ""),
+            "monitor_entry_policy": normalized_monitor_entry_policy,
+            "policy_rationale": str(self.policy_rationale or ""),
+            "policy_source": str(self.policy_source or "strategist"),
+            "policy_validation_status": str(self.policy_validation_status or "ok"),
+            "policy_fallback_used": bool(self.policy_fallback_used),
+            "policy_fallback_reason": str(self.policy_fallback_reason or ""),
+            "policy_validation_issues": [str(x) for x in list(self.policy_validation_issues or [])][:12],
+            "policy_validation_missing_fields": [str(x) for x in list(self.policy_validation_missing_fields or [])][:12],
+            "policy_validation_invalid_fields": [str(x) for x in list(self.policy_validation_invalid_fields or [])][:12],
+            "confidence": None if self.confidence in (None, "") else float(self.confidence),
             "report_focus": [str(x) for x in list(self.report_focus or [])][:8],
             "recent_strategy_feedback": dict(self.recent_strategy_feedback or {}),
             "candidates": [str(x) for x in list(self.candidates or [])][:32],
@@ -213,6 +250,15 @@ def _coerce_text_list(raw: Any) -> List[str]:
     return out
 
 
+def _coerce_optional_unit_float(raw: Any) -> float | None:
+    if raw in (None, ""):
+        return None
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except Exception:
+        return None
+
+
 def _coerce_nested_output(raw: Dict[str, Any]) -> Dict[str, Any]:
     contract_keys = {
         "market_regime",
@@ -222,12 +268,16 @@ def _coerce_nested_output(raw: Dict[str, Any]) -> Dict[str, Any]:
         "avoid_themes",
         "playbook",
         "scanner_bias",
+        "scanner_bias_context",
         "scanner_priority",
         "scanner_source_policy",
         "trade_aggressiveness",
         "risk_tone",
         "monitor_guidance",
         "strategy_policy",
+        "monitor_entry_policy",
+        "policy_rationale",
+        "market_regime_summary",
         "report_focus",
         "recent_strategy_feedback",
         "candidates",
@@ -259,6 +309,12 @@ def coerce_strategist_output(raw: Any) -> Dict[str, Any]:
         return StrategistOutput().to_dict()
     raw = _coerce_nested_output(raw)
 
+    strategy_policy = _coerce_strategy_policy(raw.get("strategy_policy"))
+    strategy_monitor_policy = dict(strategy_policy.get("monitor_policy") or {}) if isinstance(strategy_policy.get("monitor_policy"), dict) else {}
+    raw_monitor_entry_policy = raw.get("monitor_entry_policy")
+    if raw_monitor_entry_policy in (None, "") and isinstance(strategy_monitor_policy.get("entry_policy"), dict):
+        raw_monitor_entry_policy = dict(strategy_monitor_policy.get("entry_policy") or {})
+
     dto = StrategistOutput(
         market_regime=raw.get("market_regime", "neutral"),  # type: ignore[arg-type]
         market_sentiment=raw.get("market_sentiment", "neutral"),  # type: ignore[arg-type]
@@ -267,12 +323,32 @@ def coerce_strategist_output(raw: Any) -> Dict[str, Any]:
         avoid_themes=_coerce_text_list(raw.get("avoid_themes")),
         playbook=raw.get("playbook", "defensive"),  # type: ignore[arg-type]
         scanner_bias=raw.get("scanner_bias", "leader"),  # type: ignore[arg-type]
+        scanner_bias_context=(
+            normalize_scanner_bias_context(raw.get("scanner_bias_context"))[0].to_dict()
+            if isinstance(raw.get("scanner_bias_context"), dict)
+            else {}
+        ),
         scanner_priority=_coerce_text_list(raw.get("scanner_priority")),
         scanner_source_policy=dict(raw.get("scanner_source_policy") or {}),
         trade_aggressiveness=raw.get("trade_aggressiveness", "medium"),  # type: ignore[arg-type]
         risk_tone=raw.get("risk_tone", "normal"),  # type: ignore[arg-type]
         monitor_guidance=raw.get("monitor_guidance", "defensive_exit"),  # type: ignore[arg-type]
-        strategy_policy=_coerce_strategy_policy(raw.get("strategy_policy")),
+        strategy_policy=strategy_policy,
+        market_regime_summary=str(raw.get("market_regime_summary") or ""),
+        monitor_entry_policy=(
+            normalize_monitor_entry_policy(raw_monitor_entry_policy)[0].to_dict()
+            if raw_monitor_entry_policy not in (None, "")
+            else {}
+        ),
+        policy_rationale=str(raw.get("policy_rationale") or ""),
+        policy_source=str(raw.get("policy_source") or "strategist"),
+        policy_validation_status=str(raw.get("policy_validation_status") or "ok"),
+        policy_fallback_used=bool(raw.get("policy_fallback_used")),
+        policy_fallback_reason=str(raw.get("policy_fallback_reason") or ""),
+        policy_validation_issues=_coerce_text_list(raw.get("policy_validation_issues")),
+        policy_validation_missing_fields=_coerce_text_list(raw.get("policy_validation_missing_fields")),
+        policy_validation_invalid_fields=_coerce_text_list(raw.get("policy_validation_invalid_fields")),
+        confidence=_coerce_optional_unit_float(raw.get("confidence")),
         report_focus=_coerce_text_list(raw.get("report_focus")),
         recent_strategy_feedback=(
             dict(raw.get("recent_strategy_feedback") or {})

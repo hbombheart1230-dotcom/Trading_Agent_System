@@ -600,12 +600,118 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_cache_used": canonical_commander.get("strategist_cache_used"),
         "strategist_called": canonical_commander.get("strategist_called"),
         "cooldown_applied": canonical_commander.get("cooldown_applied"),
+        "applied_policy": _as_dict(canonical_commander.get("applied_policy")),
+        "policy_source": _first_nonempty_text(
+            canonical_commander.get("policy_source"),
+            canonical_commander_decision.get("policy_source"),
+            max_len=80,
+        ),
+        "policy_validation_status": _first_nonempty_text(
+            canonical_commander.get("policy_validation_status"),
+            canonical_commander_decision.get("policy_validation_status"),
+            max_len=80,
+        ),
+        "policy_fallback_used": canonical_commander.get("policy_fallback_used")
+        if canonical_commander.get("policy_fallback_used") is not None
+        else canonical_commander_decision.get("policy_fallback_used"),
+        "policy_fallback_reason": _first_nonempty_text(
+            canonical_commander.get("policy_fallback_reason"),
+            canonical_commander_decision.get("policy_fallback_reason"),
+            max_len=220,
+        ),
+        "override_reason": _first_nonempty_text(
+            canonical_commander.get("override_reason"),
+            canonical_commander_decision.get("override_reason"),
+            max_len=160,
+        ),
+        "applied_policy_source_chain": _listify(
+            canonical_commander.get("applied_policy_source_chain")
+            or canonical_commander_decision.get("applied_policy_source_chain"),
+            max_items=6,
+            max_len=80,
+        ),
     }
+    scanner_reasoning = {
+        "playbook": _first_nonempty_text(scanner_reason.get("playbook"), max_len=80),
+        "policy_source": _first_nonempty_text(scanner_reason.get("policy_source"), max_len=80),
+        "applied_policy_present": bool(scanner_reason.get("applied_policy_present")),
+        "monitor_entry_policy_summary": _compact_scalar_dict(
+            scanner_reason.get("monitor_entry_policy_summary"),
+            max_items=8,
+            max_len=120,
+        ),
+        "scanner_bias_applied": bool(scanner_reason.get("scanner_bias_applied")),
+        "scanner_bias_summary": _compact_scalar_dict(
+            scanner_reason.get("scanner_bias_summary"),
+            max_items=8,
+            max_len=120,
+        ),
+        "candidate_bias_adjustments": [
+            {
+                "symbol": _clip((row or {}).get("symbol"), max_len=24),
+                "bias_adjustment": (row or {}).get("bias_adjustment"),
+                "bias_adjustments": _listify(
+                    [
+                        str((item or {}).get("reason") or "")
+                        for item in list((row or {}).get("bias_adjustments") or [])
+                        if isinstance(item, dict)
+                    ],
+                    max_items=4,
+                    max_len=120,
+                ),
+            }
+            for row in list(scanner_reason.get("candidate_bias_adjustments") or [])[:5]
+            if isinstance(row, dict)
+        ],
+        "selection_reason_with_bias": _first_nonempty_text(
+            scanner_reason.get("selection_reason_with_bias"),
+            scanner_reason.get("selection_basis"),
+            scanner_reason.get("summary"),
+            max_len=320,
+        ),
+    }
+    monitor_policy_ref = _as_dict(monitor_reason.get("policy_ref"))
     monitor_reasoning = {
         "entry_check_summary": _first_nonempty_text(monitor_reason.get("entry_check_summary"), max_len=240),
         "entry_blockers": _listify(monitor_reason.get("entry_blockers"), max_items=6, max_len=120),
-        "policy_ref": _compact_scalar_dict(monitor_reason.get("policy_ref"), max_items=8, max_len=120),
+        "policy_ref": _compact_scalar_dict(monitor_policy_ref, max_items=8, max_len=120),
         "thresholds_guards_used": _compact_scalar_dict(monitor_reason.get("thresholds_guards_used"), max_items=8, max_len=120),
+        "applied_policy": _compact_scalar_dict(
+            monitor_reason.get("applied_policy")
+            if isinstance(monitor_reason.get("applied_policy"), dict)
+            else monitor_policy_ref.get("applied_policy"),
+            max_items=12,
+            max_len=120,
+        ),
+        "policy_source": _first_nonempty_text(
+            monitor_reason.get("policy_source"),
+            monitor_policy_ref.get("policy_source"),
+            max_len=80,
+        ),
+        "policy_validation_status": _first_nonempty_text(
+            monitor_reason.get("policy_validation_status"),
+            monitor_policy_ref.get("policy_validation_status"),
+            max_len=80,
+        ),
+        "policy_fallback_used": monitor_reason.get("policy_fallback_used")
+        if monitor_reason.get("policy_fallback_used") is not None
+        else monitor_policy_ref.get("policy_fallback_used"),
+        "policy_fallback_reason": _first_nonempty_text(
+            monitor_reason.get("policy_fallback_reason"),
+            monitor_policy_ref.get("policy_fallback_reason"),
+            max_len=220,
+        ),
+        "override_reason": _first_nonempty_text(
+            monitor_reason.get("override_reason"),
+            monitor_policy_ref.get("override_reason"),
+            max_len=160,
+        ),
+        "applied_policy_source_chain": _listify(
+            monitor_reason.get("applied_policy_source_chain")
+            or monitor_policy_ref.get("applied_policy_source_chain"),
+            max_items=6,
+            max_len=80,
+        ),
     }
     return {
         "symbol": _clip(story_input.get("symbol"), max_len=32) or "unknown",
@@ -631,6 +737,7 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_evidence_status": scanner_evidence_status,
         "strategist_evidence_status": strategist_evidence_status,
         "commander_route": commander_route,
+        "scanner_reasoning": scanner_reasoning,
         "monitor_reasoning": monitor_reasoning,
     }
 
@@ -807,6 +914,7 @@ def _compact_timeline_rows(values: Any, *, head: int = 3, tail: int = 9) -> List
 
 def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
     data = section if isinstance(section, dict) else {}
+    policy_ref = data.get("policy_ref") if isinstance(data.get("policy_ref"), dict) else {}
     out: Dict[str, Any] = {
         "posture": _clip(data.get("posture"), max_len=32),
         "trigger_type": _clip(data.get("trigger_type"), max_len=48),
@@ -835,9 +943,34 @@ def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
         "entry_blockers": _listify(data.get("entry_blockers"), max_items=6, max_len=120),
         "entry_metrics": _compact_scalar_dict(data.get("entry_metrics"), max_items=10, max_len=120),
         "entry_thresholds": _compact_scalar_dict(data.get("entry_thresholds"), max_items=8, max_len=120),
-        "policy_ref": _compact_scalar_dict(data.get("policy_ref"), max_items=8, max_len=120),
+        "policy_ref": _compact_scalar_dict(policy_ref, max_items=8, max_len=120),
         "timing_assessment": _compact_scalar_dict(data.get("timing_assessment"), max_items=8, max_len=120),
         "thresholds_guards_used": _compact_scalar_dict(data.get("thresholds_guards_used"), max_items=8, max_len=120),
+        "applied_policy": _compact_scalar_dict(
+            data.get("applied_policy") if isinstance(data.get("applied_policy"), dict) else policy_ref.get("applied_policy"),
+            max_items=12,
+            max_len=120,
+        ),
+        "policy_source": _clip(data.get("policy_source") or policy_ref.get("policy_source"), max_len=80),
+        "policy_validation_status": _clip(
+            data.get("policy_validation_status") or policy_ref.get("policy_validation_status"),
+            max_len=80,
+        ),
+        "policy_fallback_used": (
+            data.get("policy_fallback_used")
+            if data.get("policy_fallback_used") is not None
+            else policy_ref.get("policy_fallback_used")
+        ),
+        "policy_fallback_reason": _clip(
+            data.get("policy_fallback_reason") or policy_ref.get("policy_fallback_reason"),
+            max_len=220,
+        ),
+        "override_reason": _clip(data.get("override_reason") or policy_ref.get("override_reason"), max_len=160),
+        "applied_policy_source_chain": _listify(
+            data.get("applied_policy_source_chain") or policy_ref.get("applied_policy_source_chain"),
+            max_items=6,
+            max_len=80,
+        ),
         "price_source": _clip(data.get("price_source"), max_len=80),
         "feature_source": _clip(data.get("feature_source"), max_len=80),
     }
@@ -1181,6 +1314,7 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     diagnostics = story_input.get("ai_report_diagnostics") if isinstance(story_input.get("ai_report_diagnostics"), dict) else {}
     shared_seed = _build_shared_summary_seed(story_input)
     commander_route = shared_seed.get("commander_route") if isinstance(shared_seed.get("commander_route"), dict) else {}
+    scanner_reasoning = shared_seed.get("scanner_reasoning") if isinstance(shared_seed.get("scanner_reasoning"), dict) else {}
     return {
         "trade_id": story_input.get("trade_id") or story_input.get("story_id"),
         "story_id": story_input.get("story_id"),
@@ -1228,18 +1362,44 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "strategist_cache_used": commander_route.get("strategist_cache_used"),
             "strategist_called": commander_route.get("strategist_called"),
             "cooldown_applied": commander_route.get("cooldown_applied"),
+            "applied_policy": _compact_scalar_dict(commander_route.get("applied_policy"), max_items=12, max_len=120),
+            "policy_source": _clip(commander_route.get("policy_source"), max_len=80),
+            "policy_validation_status": _clip(commander_route.get("policy_validation_status"), max_len=80),
+            "policy_fallback_used": commander_route.get("policy_fallback_used"),
+            "policy_fallback_reason": _clip(commander_route.get("policy_fallback_reason"), max_len=220),
+            "override_reason": _clip(commander_route.get("override_reason"), max_len=160),
+            "applied_policy_source_chain": _listify(
+                commander_route.get("applied_policy_source_chain"), max_items=6, max_len=80
+            ),
         },
         "scanner_reason_human": {
             "selected_symbol": _clip(scanner_reason.get("selected_symbol"), max_len=24),
             "selected_rank": scanner_reason.get("selected_rank"),
             "universe_size": scanner_reason.get("universe_size"),
             "ranking_basis": _clip(scanner_reason.get("ranking_basis"), max_len=180),
+            "playbook": _clip(scanner_reason.get("playbook") or scanner_reasoning.get("playbook"), max_len=80),
+            "policy_source": _clip(scanner_reason.get("policy_source") or scanner_reasoning.get("policy_source"), max_len=80),
+            "applied_policy_present": (
+                scanner_reason.get("applied_policy_present")
+                if scanner_reason.get("applied_policy_present") is not None
+                else scanner_reasoning.get("applied_policy_present")
+            ),
+            "monitor_entry_policy_summary": _compact_scalar_dict(
+                scanner_reason.get("monitor_entry_policy_summary")
+                or scanner_reasoning.get("monitor_entry_policy_summary"),
+                max_items=8,
+                max_len=120,
+            ),
             "selected_score": scanner_reason.get("selected_score"),
             "selected_sources": _listify(scanner_reason.get("selected_sources"), max_items=5, max_len=80),
             "source_scores": scanner_reason.get("source_scores") if isinstance(scanner_reason.get("source_scores"), dict) else {},
             "score_breakdown": scanner_reason.get("score_breakdown") if isinstance(scanner_reason.get("score_breakdown"), dict) else {},
             "why_selected": _listify(scanner_reason.get("why_selected"), max_items=4, max_len=160),
             "selection_basis": _clip(scanner_reason.get("selection_basis"), max_len=240),
+            "selection_reason_with_bias": _clip(
+                scanner_reason.get("selection_reason_with_bias") or scanner_reasoning.get("selection_reason_with_bias"),
+                max_len=320,
+            ),
             "tie_break_rule": _clip(scanner_reason.get("tie_break_rule"), max_len=180),
             "top_candidates": _compact_named_rows(scanner_reason.get("top_candidates"), max_items=3),
             "confidence": scanner_reason.get("confidence"),
@@ -1252,6 +1412,41 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
                     "summary": _clip((row or {}).get("summary"), max_len=180),
                 }
                 for row in list(scanner_reason.get("runner_ups_lost") or [])[:3]
+                if isinstance(row, dict)
+            ],
+            "scanner_bias_applied": (
+                scanner_reason.get("scanner_bias_applied")
+                if scanner_reason.get("scanner_bias_applied") is not None
+                else scanner_reasoning.get("scanner_bias_applied")
+            ),
+            "scanner_bias_summary": _compact_scalar_dict(
+                scanner_reason.get("scanner_bias_summary") or scanner_reasoning.get("scanner_bias_summary"),
+                max_items=8,
+                max_len=120,
+            ),
+            "candidate_bias_adjustments": [
+                {
+                    "symbol": _clip((row or {}).get("symbol"), max_len=24),
+                    "bias_adjustment": (row or {}).get("bias_adjustment"),
+                    "bias_adjustments": _listify(
+                        [
+                            (
+                                str((item or {}).get("reason") or "")
+                                if isinstance(item, dict)
+                                else str(item or "")
+                            )
+                            for item in list((row or {}).get("bias_adjustments") or [])
+                            if str((item or {}).get("reason") if isinstance(item, dict) else item or "").strip()
+                        ],
+                        max_items=4,
+                        max_len=120,
+                    ),
+                }
+                for row in list(
+                    scanner_reason.get("candidate_bias_adjustments")
+                    or scanner_reasoning.get("candidate_bias_adjustments")
+                    or []
+                )[:5]
                 if isinstance(row, dict)
             ],
             "summary": _clip(scanner_reason.get("summary"), max_len=320),
@@ -1365,6 +1560,15 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "strategist_cache_used": commander.get("strategist_cache_used"),
             "strategist_called": commander.get("strategist_called"),
             "cooldown_applied": commander.get("cooldown_applied"),
+            "applied_policy": _compact_scalar_dict(commander.get("applied_policy"), max_items=12, max_len=120),
+            "policy_source": commander.get("policy_source"),
+            "policy_validation_status": commander.get("policy_validation_status"),
+            "policy_fallback_used": commander.get("policy_fallback_used"),
+            "policy_fallback_reason": commander.get("policy_fallback_reason"),
+            "override_reason": commander.get("override_reason"),
+            "applied_policy_source_chain": _listify(
+                commander.get("applied_policy_source_chain"), max_items=6, max_len=80
+            ),
         },
         "entry": {
             "ts": entry.get("ts"),
@@ -1376,11 +1580,18 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "selected_rank": scanner.get("selected_rank"),
             "universe_size": scanner.get("universe_size"),
             "ranking_basis": scanner.get("ranking_basis"),
+            "playbook": scanner.get("playbook"),
+            "policy_source": scanner.get("policy_source"),
+            "applied_policy_present": scanner.get("applied_policy_present"),
+            "monitor_entry_policy_summary": _compact_scalar_dict(
+                scanner.get("monitor_entry_policy_summary"), max_items=8, max_len=120
+            ),
             "confidence": scanner.get("confidence"),
             "confidence_label": scanner.get("confidence_label"),
             "top_reasons": _listify(scanner.get("top_reasons"), max_items=3, max_len=140),
             "why_selected": _listify(scanner.get("why_selected"), max_items=4, max_len=140),
             "selection_basis": scanner.get("selection_basis"),
+            "selection_reason_with_bias": scanner.get("selection_reason_with_bias"),
             "tie_break_rule": scanner.get("tie_break_rule"),
             "runner_ups": _listify(scanner.get("runner_ups"), max_items=2, max_len=140),
             "runner_ups_lost": [
@@ -1389,6 +1600,29 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
                     "summary": _clip((row or {}).get("summary"), max_len=180),
                 }
                 for row in list(scanner.get("runner_ups_lost") or [])[:3]
+                if isinstance(row, dict)
+            ],
+            "scanner_bias_applied": scanner.get("scanner_bias_applied"),
+            "scanner_bias_summary": _compact_scalar_dict(scanner.get("scanner_bias_summary"), max_items=8, max_len=120),
+            "candidate_bias_adjustments": [
+                {
+                    "symbol": _clip((row or {}).get("symbol"), max_len=24),
+                    "bias_adjustment": (row or {}).get("bias_adjustment"),
+                    "bias_adjustments": _listify(
+                        [
+                            (
+                                str((item or {}).get("reason") or "")
+                                if isinstance(item, dict)
+                                else str(item or "")
+                            )
+                            for item in list((row or {}).get("bias_adjustments") or [])
+                            if str((item or {}).get("reason") if isinstance(item, dict) else item or "").strip()
+                        ],
+                        max_items=4,
+                        max_len=120,
+                    ),
+                }
+                for row in list(scanner.get("candidate_bias_adjustments") or [])[:5]
                 if isinstance(row, dict)
             ],
             "summary": scanner.get("summary"),
@@ -1413,6 +1647,15 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "thresholds_guards_used": _compact_scalar_dict(monitor.get("thresholds_guards_used"), max_items=8, max_len=120),
             "entry_metrics": _compact_scalar_dict(monitor.get("entry_metrics"), max_items=10, max_len=120),
             "entry_thresholds": _compact_scalar_dict(monitor.get("entry_thresholds"), max_items=8, max_len=120),
+            "applied_policy": _compact_scalar_dict(monitor.get("applied_policy"), max_items=12, max_len=120),
+            "policy_source": monitor.get("policy_source"),
+            "policy_validation_status": monitor.get("policy_validation_status"),
+            "policy_fallback_used": monitor.get("policy_fallback_used"),
+            "policy_fallback_reason": monitor.get("policy_fallback_reason"),
+            "override_reason": monitor.get("override_reason"),
+            "applied_policy_source_chain": _listify(
+                monitor.get("applied_policy_source_chain"), max_items=6, max_len=80
+            ),
             "position_age_seconds": monitor.get("position_age_seconds"),
             "stop_loss_pct": monitor.get("stop_loss_pct"),
             "effective_stop_loss_pct": monitor.get("effective_stop_loss_pct"),

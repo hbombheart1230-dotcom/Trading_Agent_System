@@ -659,6 +659,15 @@ def _build_monitor_policy_trace(
             "no_trade_reason_code": no_trade_reason_code,
             "llm_policy": str(commander_context.get("llm_policy") or ""),
             "source_priority": list(commander_context.get("source_priority") or []),
+            "applied_policy": dict(commander_context.get("applied_policy") or {})
+            if isinstance(commander_context.get("applied_policy"), dict)
+            else {},
+            "policy_source": str(commander_context.get("policy_source") or ""),
+            "policy_validation_status": str(commander_context.get("policy_validation_status") or ""),
+            "policy_fallback_used": bool(commander_context.get("policy_fallback_used")),
+            "policy_fallback_reason": str(commander_context.get("policy_fallback_reason") or ""),
+            "override_reason": str(commander_context.get("override_reason") or ""),
+            "applied_policy_source_chain": list(commander_context.get("applied_policy_source_chain") or []),
             "selected_playbook": str(strategist_plan.get("selected_playbook") or ""),
             "entry_plan": entry_plan,
             "exit_plan": exit_plan,
@@ -1991,7 +2000,6 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         monitor_policy.update(dict(strategist_output.get("monitor_policy") or {}))
     if isinstance(state.get("monitor_policy"), dict):
         monitor_policy.update(dict(state.get("monitor_policy") or {}))
-
     all_pos_map = _position_by_symbol(state)
     _ensure_position_peak_price_map(state, all_pos_map)
     open_position_count = sum(1 for row in all_pos_map.values() if max(0, _to_int((row or {}).get("qty"))) > 0)
@@ -2013,6 +2021,25 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(strategy_frame.get("policy_provenance"), dict)
         else {}
     )
+    commander_applied_policy = {}
+    if isinstance(strategy_monitor_policy.get("applied_policy"), dict) and strategy_monitor_policy.get("applied_policy"):
+        commander_applied_policy = dict(strategy_monitor_policy.get("applied_policy") or {})
+    elif isinstance(commander_context.get("applied_policy"), dict) and commander_context.get("applied_policy"):
+        commander_applied_policy = dict(commander_context.get("applied_policy") or {})
+    elif isinstance(state.get("commander_applied_policy"), dict) and state.get("commander_applied_policy"):
+        commander_applied_policy = dict(state.get("commander_applied_policy") or {})
+    elif isinstance((state.get("commander_decision") or {}).get("applied_policy"), dict):
+        commander_applied_policy = dict((state.get("commander_decision") or {}).get("applied_policy") or {})
+
+    entry_policy_input: Dict[str, Any] = {}
+    if commander_applied_policy:
+        entry_policy_input.update(dict(commander_applied_policy))
+    elif isinstance(strategist_output.get("monitor_entry_policy"), dict):
+        entry_policy_input.update(dict(strategist_output.get("monitor_entry_policy") or {}))
+    elif isinstance(state.get("monitor_entry_policy"), dict):
+        entry_policy_input.update(dict(state.get("monitor_entry_policy") or {}))
+    elif isinstance(strategy_monitor_policy.get("entry_policy"), dict):
+        entry_policy_input.update(dict(strategy_monitor_policy.get("entry_policy") or {}))
     buy_blocked_open_position = False
     buy_blocked_post_exit_cooldown = False
     post_exit_cooldown_remaining_sec = 0
@@ -2035,6 +2062,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     entry_signal_detected = False
     entry_guard_blocked = False
     entry_guard_reason = ""
+    entry_applied_policy: Dict[str, Any] = {}
     entry_symbol = _norm_symbol(selected.get("symbol")) if isinstance(selected, dict) and selected.get("symbol") else ""
     entry_cooldown_map = state.get("_monitor_entry_cooldown_until")
     if not isinstance(entry_cooldown_map, dict):
@@ -2157,11 +2185,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 buy_blocked_post_exit_cooldown = True
                 post_exit_cooldown_remaining_sec = remaining
 
-        entry_policy = resolve_intraday_entry_policy(monitor_policy, frame=strategy_frame)
+        entry_policy = resolve_intraday_entry_policy(entry_policy_input or monitor_policy, frame=strategy_frame)
         state = _ensure_monitor_minute_ohlcv_for_symbol(
             state,
             symbol=symbol,
-            timeframe_minutes=int(entry_policy.get("timeframe_minutes") or 1),
+            timeframe_minutes=int(entry_policy.timeframe_minutes or 1),
             now_epoch=now_epoch_for_entry,
         )
         entry_rows = []
@@ -2178,11 +2206,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             entry_rows,
             current_price=selected.get("price") if isinstance(selected, dict) else None,
             features=selected.get("features") if isinstance(selected, dict) and isinstance(selected.get("features"), dict) else {},
-            policy=monitor_policy,
+            policy=entry_policy,
             frame=strategy_frame,
         )
         entry_info["symbol"] = symbol
         entry_info["selected_symbol"] = symbol
+        entry_info["applied_policy"] = dict(entry_info.get("applied_policy") or entry_info.get("thresholds") or entry_policy.to_dict())
+        entry_applied_policy = dict(entry_info.get("applied_policy") or {})
         entry_metrics = entry_info.get("metrics") if isinstance(entry_info.get("metrics"), dict) else {}
         entry_metrics["minute_source_present"] = bool(entry_rows)
         entry_metrics["minute_source_used"] = entry_row_source or ""
@@ -2675,6 +2705,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_pattern": str(entry_info.get("pattern") or ""),
         "entry_signal_chain": list(entry_info.get("signal_chain") or []),
         "entry_metrics": dict(entry_info.get("metrics") or {}),
+        "entry_applied_policy": dict(entry_applied_policy),
         "entry_thresholds": dict(entry_info.get("thresholds") or {}),
         "entry_passed_checks": list(entry_info.get("passed_checks") or []),
         "entry_failed_checks": list(entry_info.get("failed_checks") or []),
@@ -2739,6 +2770,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     thresholds = dict(exit_info.get("thresholds") or {}) if isinstance(exit_info.get("thresholds"), dict) else {}
     entry_metrics = dict(entry_info.get("metrics") or {}) if isinstance(entry_info.get("metrics"), dict) else {}
     entry_thresholds = dict(entry_info.get("thresholds") or {}) if isinstance(entry_info.get("thresholds"), dict) else {}
+    entry_applied_policy = (
+        dict(entry_info.get("applied_policy") or {})
+        if isinstance(entry_info.get("applied_policy"), dict)
+        else dict(entry_applied_policy or entry_thresholds)
+    )
     monitor_policy_trace = _build_monitor_policy_trace(
         commander_context=commander_context,
         strategist_plan=strategist_plan,
@@ -2784,6 +2820,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_volume_ratio": entry_metrics.get("volume_ratio"),
         "entry_extended_from_vwap_pct": entry_metrics.get("extended_from_vwap_pct"),
         "entry_pullback_depth_pct": entry_metrics.get("pullback_depth_pct"),
+        "applied_policy": dict(entry_applied_policy),
         "entry_volume_ratio_min": entry_thresholds.get("volume_ratio_min"),
         "entry_max_extended_from_vwap_pct": entry_thresholds.get("max_extended_from_vwap_pct"),
         "entry_min_extended_from_vwap_pct": entry_thresholds.get("min_extended_from_vwap_pct"),
@@ -2859,6 +2896,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "buy_submitted": bool(buy_submitted),
         "buy_skipped_reason": buy_skipped_reason,
         "metrics": entry_event_metrics,
+        "applied_policy": dict(entry_applied_policy),
         "thresholds": dict(entry_info.get("thresholds") or {}),
         "passed_checks": list(entry_info.get("passed_checks") or []),
         "failed_checks": list(entry_info.get("failed_checks") or []),
@@ -2935,6 +2973,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["entry_blockers"] = list(monitor_policy_trace.get("entry_blockers") or [])
         state["monitor_output"]["timing_assessment"] = dict(monitor_policy_trace.get("timing_assessment") or {})
         state["monitor_output"]["exit_trigger_basis"] = dict(monitor_policy_trace.get("exit_trigger_basis") or {})
+        state["monitor_output"]["applied_policy"] = dict(entry_applied_policy)
+        state["monitor_output"]["policy_source"] = str((monitor_policy_trace.get("policy_ref") or {}).get("policy_source") or "")
+        state["monitor_output"]["policy_validation_status"] = str((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_status") or "")
+        state["monitor_output"]["policy_fallback_used"] = bool((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_used"))
+        state["monitor_output"]["policy_fallback_reason"] = str((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_reason") or "")
+        state["monitor_output"]["override_reason"] = str((monitor_policy_trace.get("policy_ref") or {}).get("override_reason") or "")
+        state["monitor_output"]["applied_policy_source_chain"] = list((monitor_policy_trace.get("policy_ref") or {}).get("applied_policy_source_chain") or [])
         state["monitor_output"]["commander_context_consumed"] = bool(monitor_policy_trace.get("commander_context_consumed"))
         state["monitor_output"]["consumed_fields"] = list(monitor_policy_trace.get("consumed_fields") or [])
         state["monitor_output"]["shadow_used"] = bool(monitor_policy_trace.get("shadow_used"))
@@ -2967,6 +3012,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
         "triggered_rules": list(triggered_rules),
         "blocked_rules": list(dict.fromkeys(blocked_rules))[:8],
+        "applied_policy": dict(entry_applied_policy),
+        "policy_source": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_source") or ""),
+        "policy_validation_status": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_status") or ""),
+        "policy_fallback_used": bool((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_used")),
+        "policy_fallback_reason": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_reason") or ""),
+        "override_reason": str((monitor_policy_trace.get("policy_ref") or {}).get("override_reason") or ""),
+        "applied_policy_source_chain": list((monitor_policy_trace.get("policy_ref") or {}).get("applied_policy_source_chain") or []),
         "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
         "entry_check_summary": str(monitor_policy_trace.get("entry_check_summary") or ""),
         "entry_blockers": list(monitor_policy_trace.get("entry_blockers") or []),
@@ -3084,6 +3136,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "entry_signal_chain": list(entry_info.get("signal_chain") or []),
             "entry_metrics": dict(entry_info.get("metrics") or {}),
             "entry_thresholds": dict(entry_info.get("thresholds") or {}),
+            "applied_policy": dict(entry_applied_policy),
+            "policy_source": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_source") or ""),
+            "policy_validation_status": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_status") or ""),
+            "policy_fallback_used": bool((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_used")),
+            "policy_fallback_reason": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_reason") or ""),
+            "override_reason": str((monitor_policy_trace.get("policy_ref") or {}).get("override_reason") or ""),
+            "applied_policy_source_chain": list((monitor_policy_trace.get("policy_ref") or {}).get("applied_policy_source_chain") or []),
             "entry_passed_checks": list(entry_info.get("passed_checks") or []),
             "entry_failed_checks": list(entry_info.get("failed_checks") or []),
             "entry_primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),

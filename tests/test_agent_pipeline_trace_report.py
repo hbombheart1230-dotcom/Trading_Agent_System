@@ -100,6 +100,27 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                         },
                         "ranking_factors": ["momentum", "volume_surge", "commander_mission"],
                         "rejected_candidates": [{"symbol": "000660", "reason": "lower conviction"}],
+                        "playbook": "breakout",
+                        "policy_source": "strategist",
+                        "applied_policy_present": True,
+                        "monitor_entry_policy_summary": {
+                            "timeframe_minutes": 1,
+                            "volume_ratio_min": 0.68,
+                            "pullback_min_pct": 0.008,
+                        },
+                        "scanner_bias_applied": True,
+                        "scanner_bias_summary": {
+                            "summary": "prefer_shallow_pullback_candidates, penalize_overextended (low)",
+                            "bias_strength": "low",
+                        },
+                        "candidate_bias_adjustments": [
+                            {
+                                "symbol": "005930",
+                                "bias_adjustment": 0.003,
+                                "bias_adjustments": [{"reason": "shallow pullback preference applied"}],
+                            }
+                        ],
+                        "selection_reason_with_bias": "Scanner selected 005930 after strategist-guided weighting and shallow pullback preference.",
                         "score_breakdown_summary": {"momentum": 0.24, "trend": 0.20},
                         "selected_candidate": {
                             "symbol": "005930",
@@ -129,8 +150,21 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                         "monitor_reason": "hold",
                         "entry_check_summary": "Monitor held because breakout confirmation remains valid.",
                         "entry_blockers": ["none"],
+                        "policy_ref": {
+                            "policy_source": "strategist",
+                            "policy_validation_status": "ok",
+                            "policy_fallback_used": False,
+                            "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
+                        },
                         "timing_assessment": {"latest_candle_ts": 1710249600},
                         "exit_trigger_basis": {"trigger_type": ""},
+                        "applied_policy": {"timeframe_minutes": 1, "volume_ratio_min": 0.68, "pullback_min_pct": 0.008},
+                        "policy_source": "strategist",
+                        "policy_validation_status": "ok",
+                        "policy_fallback_used": False,
+                        "policy_fallback_reason": "",
+                        "override_reason": "",
+                        "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
                         "shadow_used": True,
                         "strategist_fallback_used": False,
                         "position_age_seconds": 120,
@@ -196,6 +230,13 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                     "shadow_reason_code": "WAIT_FOR_CONFIRMATION",
                     "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
                     "strategist_fallback_used": False,
+                    "applied_policy": {"timeframe_minutes": 1, "volume_ratio_min": 0.68, "pullback_min_pct": 0.008},
+                    "policy_source": "strategist",
+                    "policy_validation_status": "ok",
+                    "policy_fallback_used": False,
+                    "policy_fallback_reason": "",
+                    "override_reason": "",
+                    "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
                 },
             },
         ],
@@ -293,12 +334,28 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert out["scanner"]["runner_up_symbol"] == "000660"
     assert out["scanner"]["scanner_source_policy"]["include_change_rate"] is True
     assert out["scanner"]["condition_search_status"] == "unavailable"
+    assert out["scanner"]["playbook"] == "breakout"
+    assert out["scanner"]["policy_source"] == "strategist"
+    assert out["scanner"]["applied_policy_present"] is True
+    assert out["scanner"]["scanner_bias_applied"] is True
+    assert out["scanner"]["scanner_bias_summary"]["summary"]
+    assert out["scanner"]["candidate_bias_adjustments"][0]["symbol"] == "005930"
+    assert "shallow pullback" in out["scanner"]["selection_reason_with_bias"]
     assert out["monitor"]["selected_symbol"] == "005930"
     assert out["monitor"]["min_hold_sec"] == 600
+    assert out["monitor"]["policy_source"] == "strategist"
+    assert out["monitor"]["applied_policy"]["volume_ratio_min"] == 0.68
+    assert out["commander"]["policy_source"] == "strategist"
+    assert out["commander"]["applied_policy"]["pullback_min_pct"] == 0.008
     assert out["reasoning_trace"]["commander_summary"]["summary"] == "Commander kept the day in measured risk mode."
+    assert out["reasoning_trace"]["commander_summary"]["policy_source"] == "strategist"
     assert out["reasoning_trace"]["strategist_summary"]["selected_playbook"] == "breakout"
     assert out["reasoning_trace"]["scanner_summary"]["summary"] == "Scanner selected 005930 after strategist-guided weighting."
+    assert out["reasoning_trace"]["scanner_summary"]["policy_source"] == "strategist"
+    assert out["reasoning_trace"]["scanner_summary"]["scanner_bias_applied"] is True
+    assert out["reasoning_trace"]["scanner_summary"]["scanner_bias_summary"]["summary"]
     assert out["reasoning_trace"]["monitor_summary"]["summary"] == "Monitor held because breakout confirmation remains valid."
+    assert out["reasoning_trace"]["monitor_summary"]["policy_source"] == "strategist"
     assert out["reasoning_provenance"]["commander_context_source"] == "event_payload"
     assert out["reasoning_provenance"]["strategist_plan_source"] == "event_payload"
     assert out["reasoning_provenance"]["scanner_reason_source"] == "event_payload"

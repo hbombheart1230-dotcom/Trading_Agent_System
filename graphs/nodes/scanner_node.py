@@ -22,6 +22,7 @@ from graphs.nodes.skill_contracts import (
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 from libs.runtime.canonical_artifacts import write_scanner_artifact
 from libs.runtime.decision_trace import append_decision_trace
+from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 from libs.strategies.candidates.fallback_pool import is_static_fallback_pool
 from libs.runtime.feature_engine import build_feature_map
@@ -348,6 +349,9 @@ def _ranking_table_rows(rows: List[Dict[str, Any]], *, max_rows: int = 5) -> Lis
                 "source_scores": dict(candidate.get("source_scores") or {}),
                 "risk_score": float(_to_float(row.get("risk_score"))),
                 "confidence": float(_to_float(row.get("confidence"))),
+                "bias_adjustment": float(_to_float(row.get("bias_adjustment"))),
+                "bias_adjustments": list(row.get("bias_adjustments") or []),
+                "bias_summary": dict(row.get("bias_summary") or {}),
                 "theme_match": _candidate_theme_match(row),
                 "feature_coverage": _feature_coverage_summary(row),
                 "status": "selected" if idx == 1 else "runner_up",
@@ -983,6 +987,13 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(strategy_policy.get("provenance"), dict)
         else {}
     )
+    scanner_bias_context = {}
+    if isinstance(commander_context.get("scanner_bias"), dict):
+        scanner_bias_context = dict(commander_context.get("scanner_bias") or {})
+    elif isinstance(scanner_policy.get("scanner_bias"), dict):
+        scanner_bias_context = dict(scanner_policy.get("scanner_bias") or {})
+    elif isinstance(strategist_output.get("scanner_bias_context"), dict):
+        scanner_bias_context = dict(strategist_output.get("scanner_bias_context") or {})
     symbol_constraints = (
         dict(strategist_plan.get("symbol_constraints") or {})
         if isinstance(strategist_plan.get("symbol_constraints"), dict)
@@ -1012,6 +1023,7 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
             or {}
         ),
         "scanner_bias": str(raw_bias or "").strip().lower(),
+        "scanner_bias_context": dict(scanner_bias_context),
         "trade_aggressiveness": strategist_output.get("trade_aggressiveness"),
         "risk_tone": strategist_output.get("risk_tone"),
         "score_weights": dict(scanner_policy.get("score_weights") or {}),
@@ -1033,6 +1045,7 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_priority",
             "scanner_source_policy",
             "scanner_bias",
+            "scanner_bias_context",
             "trade_aggressiveness",
             "risk_tone",
             "score_weights",
@@ -1060,6 +1073,7 @@ def _build_scanner_policy_trace(
     playbook: str,
     scanner_priority: List[str],
     scanner_bias: str,
+    scanner_bias_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     consumed_fields: List[str] = []
     for key in (
@@ -1099,9 +1113,40 @@ def _build_scanner_policy_trace(
         "symbol_constraints": dict(strategist_plan.get("symbol_constraints") or {}),
         "strategy_summary": str(strategist_plan.get("strategy_summary") or ""),
     }
+    applied_policy = (
+        dict(commander_context.get("applied_policy") or {})
+        if isinstance(commander_context.get("applied_policy"), dict)
+        else {}
+    )
+    normalized_scanner_bias_context, _scanner_bias_meta = normalize_scanner_bias_context(
+        scanner_bias_context or None,
+        bias_source=str(commander_context.get("policy_source") or "strategist"),
+    )
+    scanner_bias_summary = summarize_scanner_bias_context(normalized_scanner_bias_context)
+    policy_source = str(
+        commander_context.get("policy_source")
+        or policy_provenance.get("applied_policy_source")
+        or policy_provenance.get("monitor_entry_policy_source")
+        or ""
+    )
+    monitor_entry_policy_summary = {
+        key: applied_policy.get(key)
+        for key in (
+            "timeframe_minutes",
+            "breakout_lookback",
+            "volume_lookback",
+            "volume_ratio_min",
+            "pullback_min_pct",
+            "pullback_max_pct",
+            "max_extended_from_vwap_pct",
+        )
+        if key in applied_policy
+    }
     ranking_factors = list(dict.fromkeys([str(x).strip() for x in list(scanner_priority or []) if str(x).strip()]))[:8]
     if scanner_bias:
         ranking_factors.append(f"bias:{scanner_bias}")
+    if bool(scanner_bias_summary.get("enabled")):
+        ranking_factors.append(f"scanner_bias:{scanner_bias_summary.get('summary')}")
     if playbook:
         ranking_factors.append(f"playbook:{playbook}")
     if str(commander_context.get("scanner_mission") or "").strip():
@@ -1119,6 +1164,10 @@ def _build_scanner_policy_trace(
         summary_parts.append(f"risk_mode={str(commander_context.get('risk_mode') or '').strip()}")
     if str(commander_context.get("no_trade_reason_code") or "").strip():
         summary_parts.append(f"no_trade_reason={str(commander_context.get('no_trade_reason_code') or '').strip()}")
+    if policy_source:
+        summary_parts.append(f"policy_source={policy_source}")
+    if bool(scanner_bias_summary.get("enabled")):
+        summary_parts.append(f"scanner_bias={str(scanner_bias_summary.get('summary') or '')}")
 
     return {
         "commander_context_consumed": commander_context_consumed,
@@ -1129,9 +1178,17 @@ def _build_scanner_policy_trace(
             "commander_context_consumed": commander_context_consumed,
             "strategist_plan_consumed": bool(strategist_consumed_fields),
             "consumed_fields": consumed_fields + strategist_consumed_fields,
+            "scanner_bias_context": normalized_scanner_bias_context.to_dict(),
+            "scanner_bias_summary": dict(scanner_bias_summary),
             "summary": " | ".join(summary_parts) if summary_parts else "base_quantitative_ranking",
         },
         "ranking_factors": ranking_factors,
+        "playbook": str(strategist_plan.get("selected_playbook") or playbook or ""),
+        "policy_source": policy_source,
+        "applied_policy_present": bool(applied_policy),
+        "monitor_entry_policy_summary": monitor_entry_policy_summary,
+        "scanner_bias_context": normalized_scanner_bias_context.to_dict(),
+        "scanner_bias_summary": dict(scanner_bias_summary),
         "shadow_used": bool(
             commander_context.get("shadow_used")
             if commander_context.get("shadow_used") is not None
@@ -1142,6 +1199,12 @@ def _build_scanner_policy_trace(
             if commander_context.get("strategist_fallback_used") is not None
             else policy_provenance.get("strategist_fallback_used")
         ),
+        "policy_provenance_ref": {
+            "policy_source": policy_source,
+            "applied_policy_present": bool(applied_policy),
+            "monitor_entry_policy_summary": monitor_entry_policy_summary,
+            "scanner_bias_summary": dict(scanner_bias_summary),
+        },
     }
 
 
@@ -1263,6 +1326,72 @@ def _apply_scanner_guidance_weights(
         out["momentum"] = float(out.get("momentum", 0.0) * 0.95)
 
     return out
+
+
+def _scanner_bias_total_cap(bias_strength: str) -> float:
+    return 0.04 if str(bias_strength or "").strip().lower() == "medium" else 0.02
+
+
+def _compute_structured_scanner_bias(
+    *,
+    symbol: str,
+    feature_row: Dict[str, Any],
+    metrics: Dict[str, Any],
+    bias_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    normalized_context, _meta = normalize_scanner_bias_context(bias_context or None)
+    context = normalized_context.to_dict()
+    summary = summarize_scanner_bias_context(context)
+    if not bool(summary.get("enabled")):
+        return {
+            "bias_adjustment": 0.0,
+            "bias_adjustments": [],
+            "bias_summary": dict(summary),
+            "bias_signals": {},
+        }
+
+    vwap_distance = _to_float(feature_row.get("vwap_distance"))
+    volume_spike20 = _to_float(feature_row.get("volume_spike20"))
+    intraday_change_pct = _to_float(metrics.get("change_pct"))
+    signals = {
+        "vwap_distance": float(vwap_distance),
+        "volume_spike20": float(volume_spike20),
+        "intraday_change_pct": float(intraday_change_pct),
+    }
+    adjustments: List[Dict[str, Any]] = []
+    bias_delta = 0.0
+    strength = str(context.get("bias_strength") or "low").strip().lower()
+    cap = _scanner_bias_total_cap(strength)
+    step = 0.005 if strength == "medium" else 0.003
+
+    if bool(context.get("prefer_shallow_pullback_candidates")) and -0.015 <= vwap_distance <= 0.03:
+        bias_delta += step
+        adjustments.append({"rule": "prefer_shallow_pullback_candidates", "delta": float(step), "reason": "shallow pullback preference applied"})
+
+    if bool(context.get("penalize_overextended")) and vwap_distance >= 0.08:
+        delta = -(step * 1.5)
+        bias_delta += delta
+        adjustments.append({"rule": "penalize_overextended", "delta": float(delta), "reason": "overextended penalty applied"})
+
+    if bool(context.get("prefer_reclaim_candidates")) and -0.01 <= vwap_distance <= 0.02:
+        bias_delta += step
+        adjustments.append({"rule": "prefer_reclaim_candidates", "delta": float(step), "reason": "reclaim preference applied"})
+
+    if bool(context.get("prefer_volume_confirmation")) and volume_spike20 >= 1.2:
+        bias_delta += step
+        adjustments.append({"rule": "prefer_volume_confirmation", "delta": float(step), "reason": "volume confirmation bias applied"})
+
+    bias_delta = _clamp(bias_delta, -cap, cap)
+    if adjustments and abs(bias_delta) < 1e-9:
+        adjustments = []
+
+    return {
+        "bias_adjustment": float(bias_delta),
+        "bias_adjustments": adjustments[:4],
+        "bias_summary": dict(summary),
+        "bias_signals": signals,
+        "symbol": str(symbol or ""),
+    }
 
 
 def _candidate_quote_metrics(
@@ -1627,6 +1756,11 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     scanner_guidance = _extract_scanner_guidance(state)
     playbook = str(scanner_guidance.get("playbook") or "").strip().lower()
     scanner_bias = str(scanner_guidance.get("scanner_bias") or "").strip().lower()
+    scanner_bias_context = (
+        dict(scanner_guidance.get("scanner_bias_context") or {})
+        if isinstance(scanner_guidance.get("scanner_bias_context"), dict)
+        else {}
+    )
     scanner_priority = _normalize_priority_list(scanner_guidance.get("scanner_priority"))
     trade_aggressiveness = str(scanner_guidance.get("trade_aggressiveness") or "").strip().lower()
     risk_tone = str(scanner_guidance.get("risk_tone") or "").strip().lower()
@@ -1652,6 +1786,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         playbook=playbook,
         scanner_priority=scanner_priority,
         scanner_bias=scanner_bias,
+        scanner_bias_context=scanner_bias_context,
     )
     if isinstance(scanner_guidance.get("score_weights"), dict):
         for key, value in dict(scanner_guidance.get("score_weights") or {}).items():
@@ -1707,6 +1842,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "avoid_themes": list(scanner_guidance.get("avoid_themes") or []),
                     "playbook": playbook,
                     "scanner_bias": scanner_bias,
+                    "scanner_bias_context": dict(scanner_policy_trace.get("scanner_bias_context") or {}),
                     "scanner_priority": list(scanner_priority),
                     "scanner_source_policy": dict(scanner_guidance.get("scanner_source_policy") or {}),
                     "trade_aggressiveness": trade_aggressiveness,
@@ -1884,7 +2020,22 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             - (0.03 * open_order_penalty)
         )
         rank_bonus = 0.01 * max(0.0, candidate_rank_score)
-        score_total = base_score + positive_score + legacy_adjust - risk_penalty_score + rank_bonus - repeat_symbol_penalty
+        bias_result = _compute_structured_scanner_bias(
+            symbol=symbol,
+            feature_row=feature_row,
+            metrics=metrics,
+            bias_context=scanner_bias_context,
+        )
+        scanner_bias_adjustment = float(bias_result.get("bias_adjustment") or 0.0)
+        score_total = (
+            base_score
+            + positive_score
+            + legacy_adjust
+            - risk_penalty_score
+            + rank_bonus
+            - repeat_symbol_penalty
+            + scanner_bias_adjustment
+        )
 
         neg_news = max(-news_s, 0.0)
         neg_global = max(-gs, 0.0)
@@ -1926,6 +2077,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "cross_section_rank": float(0.05 * cross_section_rank_component * practical_scale),
             "avoid_theme_penalty": float(-0.20 * avoid_theme_penalty * practical_scale),
             "repeat_symbol_penalty": float(-repeat_symbol_penalty),
+            "scanner_bias": float(scanner_bias_adjustment),
             "risk_penalty": float(-risk_penalty_score),
             "rank_bonus": float(rank_bonus),
         }
@@ -1933,6 +2085,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["score"] = float(score_total)
         row["score_total"] = float(score_total)
         row["score_breakdown"] = dict(score_breakdown)
+        row["bias_adjustment"] = float(scanner_bias_adjustment)
+        row["bias_adjustments"] = list(bias_result.get("bias_adjustments") or [])
+        row["bias_summary"] = dict(bias_result.get("bias_summary") or {})
         row["risk_score"] = float(_clamp(adj_risk, 0.0, 1.0))
         row["confidence"] = float(adj_conf)
         row["why"] = str(candidate_meta.get("why") or row.get("why") or "")
@@ -2010,6 +2165,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "open_order_penalty_component": open_order_penalty,
                     "avoid_theme_penalty_component": avoid_theme_penalty,
                     "repeat_symbol_penalty_component": repeat_symbol_penalty,
+                    "scanner_bias_adjustment": float(scanner_bias_adjustment),
+                    "scanner_bias_signals": dict(bias_result.get("bias_signals") or {}),
                     "recent_selection_repeat_count": int(repeat_penalty_meta.get("repeat_count") or 0),
                     "recent_selection_streak_count": int(repeat_penalty_meta.get("streak_count") or 0),
                     "recent_trade_same_symbol": bool(repeat_penalty_meta.get("recent_trade_same_symbol")),
@@ -2047,6 +2204,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "score_breakdown": dict(r.get("score_breakdown") or {}),
             "risk_score": float(_to_float(r.get("risk_score"))),
             "confidence": float(_to_float(r.get("confidence"))),
+            "bias_adjustment": float(_to_float(r.get("bias_adjustment"))),
+            "bias_adjustments": list(r.get("bias_adjustments") or []),
+            "bias_summary": dict(r.get("bias_summary") or {}),
         }
         for r in scan_results_sorted
         if isinstance(r, dict)
@@ -2116,9 +2276,18 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_constraints_ref": dict(scanner_policy_trace.get("strategist_constraints_ref") or {}),
         "selection_basis": dict(scanner_policy_trace.get("selection_basis") or {}),
         "ranking_factors": list(scanner_policy_trace.get("ranking_factors") or []),
+        "playbook": str(scanner_policy_trace.get("playbook") or playbook or ""),
+        "policy_source": str(scanner_policy_trace.get("policy_source") or ""),
+        "applied_policy_present": bool(scanner_policy_trace.get("applied_policy_present")),
+        "monitor_entry_policy_summary": dict(scanner_policy_trace.get("monitor_entry_policy_summary") or {}),
+        "scanner_bias_applied": False,
+        "scanner_bias_summary": dict(scanner_policy_trace.get("scanner_bias_summary") or {}),
+        "candidate_bias_adjustments": [],
+        "selection_reason_with_bias": "",
         "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
         "strategist_fallback_used": bool(scanner_policy_trace.get("strategist_fallback_used")),
         "policy_provenance": dict(policy_provenance),
+        "policy_provenance_ref": dict(scanner_policy_trace.get("policy_provenance_ref") or {}),
     }
 
     # Provide a normalized risk snapshot for Decision Node.
@@ -2165,6 +2334,23 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     critical_positive_factors = [f"{str(k)}:{float(_to_float(v)):.3f}" for k, v in selected_score_breakdown.items() if float(_to_float(v)) > 0][:4]
     critical_negative_factors = [f"{str(k)}:{float(_to_float(v)):.3f}" for k, v in selected_score_breakdown.items() if float(_to_float(v)) < 0][:4]
     selection_summary = str((selected or {}).get("why") or "").strip() if isinstance(selected, dict) else ""
+    scanner_bias_summary = dict(scanner_policy_trace.get("scanner_bias_summary") or {})
+    candidate_bias_adjustments = [
+        {
+            "symbol": str(row.get("symbol") or ""),
+            "bias_adjustment": float(_to_float(row.get("bias_adjustment"))),
+            "bias_adjustments": list(row.get("bias_adjustments") or []),
+        }
+        for row in list(scan_results_sorted)[:5]
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+    ]
+    scanner_bias_applied = any(abs(float(_to_float(row.get("bias_adjustment")))) > 1e-9 for row in list(scan_results_sorted))
+    selection_reason_with_bias = selection_summary
+    if scanner_bias_applied:
+        bias_text = str(scanner_bias_summary.get("summary") or "scanner_bias").strip() or "scanner_bias"
+        selection_reason_with_bias = (
+            f"{selection_summary} | bias: {bias_text}" if selection_summary else f"bias applied: {bias_text}"
+        )
     runner_up_reasons: List[Dict[str, Any]] = []
     if len(scan_results_sorted) > 1 and isinstance(selected, dict):
         selected_score = float(_to_float(selected.get("score_total") or selected.get("score")))
@@ -2207,8 +2393,17 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_constraints_ref": dict(scanner_policy_trace.get("strategist_constraints_ref") or {}),
         "selection_basis": dict(scanner_policy_trace.get("selection_basis") or {}),
         "ranking_factors": list(scanner_policy_trace.get("ranking_factors") or []),
+        "playbook": str(scanner_policy_trace.get("playbook") or playbook or ""),
+        "policy_source": str(scanner_policy_trace.get("policy_source") or ""),
+        "applied_policy_present": bool(scanner_policy_trace.get("applied_policy_present")),
+        "monitor_entry_policy_summary": dict(scanner_policy_trace.get("monitor_entry_policy_summary") or {}),
+        "scanner_bias_applied": bool(scanner_bias_applied),
+        "scanner_bias_summary": dict(scanner_bias_summary),
+        "candidate_bias_adjustments": list(candidate_bias_adjustments),
+        "selection_reason_with_bias": selection_reason_with_bias,
         "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
         "strategist_fallback_used": bool(scanner_policy_trace.get("strategist_fallback_used")),
+        "policy_provenance_ref": dict(scanner_policy_trace.get("policy_provenance_ref") or {}),
     }
     if isinstance(state.get("scanner_output"), dict):
         state["scanner_output"]["selection_summary"] = selection_summary
@@ -2218,6 +2413,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["scanner_output"]["critical_positive_factors"] = list(critical_positive_factors)
         state["scanner_output"]["critical_negative_factors"] = list(critical_negative_factors)
         state["scanner_output"]["rejected_candidates"] = list(runner_up_reasons)
+        state["scanner_output"]["scanner_bias_applied"] = bool(scanner_bias_applied)
+        state["scanner_output"]["scanner_bias_summary"] = dict(scanner_bias_summary)
+        state["scanner_output"]["candidate_bias_adjustments"] = list(candidate_bias_adjustments)
+        state["scanner_output"]["selection_reason_with_bias"] = selection_reason_with_bias
     state["scanner_margin_vs_second"] = float(margin_vs_second)
     _emit_scanner_event(
         state,
@@ -2263,6 +2462,15 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_constraints_ref": dict(scanner_policy_trace.get("strategist_constraints_ref") or {}),
         "selection_basis": dict(scanner_policy_trace.get("selection_basis") or {}),
         "ranking_factors": list(scanner_policy_trace.get("ranking_factors") or []),
+        "playbook": str(scanner_policy_trace.get("playbook") or playbook or ""),
+        "policy_source": str(scanner_policy_trace.get("policy_source") or ""),
+        "applied_policy_present": bool(scanner_policy_trace.get("applied_policy_present")),
+        "monitor_entry_policy_summary": dict(scanner_policy_trace.get("monitor_entry_policy_summary") or {}),
+        "scanner_bias_context": dict(scanner_policy_trace.get("scanner_bias_context") or {}),
+        "scanner_bias_applied": bool(scanner_bias_applied),
+        "scanner_bias_summary": dict(scanner_policy_trace.get("scanner_bias_summary") or {}),
+        "candidate_bias_adjustments": list(candidate_bias_adjustments),
+        "selection_reason_with_bias": selection_reason_with_bias,
         "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
         "strategist_fallback_used": bool(scanner_policy_trace.get("strategist_fallback_used")),
         "why_selected": [
@@ -2279,7 +2487,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         ],
         "runner_ups_lost": runner_up_reasons,
         "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
-        "final_decision_basis": "Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties.",
+        "final_decision_basis": (
+            "Scanner selected the highest-ranked candidate after strategist-guided weighting, "
+            "source scoring, risk penalties, and a capped scanner bias adjustment."
+            if scanner_bias_applied
+            else "Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties."
+        ),
+        "policy_provenance_ref": dict(scanner_policy_trace.get("policy_provenance_ref") or {}),
     }
     state["scanner_candidate_selection_reason"] = dict(candidate_selection_reason_payload)
     _emit_scanner_event(
@@ -2326,6 +2540,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "strategist_trade_aggressiveness": trade_aggressiveness or "",
             "strategist_risk_tone": risk_tone or "",
             "recent_scanner_selected_count": int(len(_scanner_recent_selection_history(state))),
+            "scanner_bias_applied": bool(scanner_bias_applied),
+            "scanner_bias_summary": dict(scanner_bias_summary),
         },
     )
 
@@ -2347,6 +2563,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         payload={
             "playbook": playbook or "",
             "scanner_priority": list(scanner_priority),
+            "scanner_bias_applied": bool(scanner_bias_applied),
+            "scanner_bias_summary": dict(scanner_bias_summary),
+            "candidate_bias_adjustments": list(candidate_bias_adjustments),
+            "selection_reason_with_bias": selection_reason_with_bias,
             "candidate_source": str(pool_meta.get("candidate_source") or ""),
             "kiwoom_pool_source_mix": dict(pool_meta.get("pool_source_mix") or {}),
             "condition_search_status": str(pool_meta.get("condition_search_status") or ""),

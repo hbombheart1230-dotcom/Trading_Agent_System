@@ -920,6 +920,17 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
         "strategist_cache_used": True,
         "strategist_called": False,
         "cooldown_applied": False,
+        "applied_policy": {
+            "timeframe_minutes": 1,
+            "volume_ratio_min": 0.68,
+            "pullback_min_pct": 0.008,
+        },
+        "policy_source": "strategist",
+        "policy_validation_status": "ok",
+        "policy_fallback_used": False,
+        "policy_fallback_reason": "",
+        "override_reason": "",
+        "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
     }
     detail["monitor"]["summary"] = {
         "monitor_reason": "reclaim_not_confirmed",
@@ -940,6 +951,9 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
         "policy_ref": {
             "monitor_mission": "Wait for cleaner reclaim confirmation.",
             "flow_instruction": "observe_only",
+            "policy_source": "strategist",
+            "policy_validation_status": "ok",
+            "policy_fallback_used": False,
         },
         "timing_assessment": {
             "entry_reason": "reclaim_not_confirmed",
@@ -952,6 +966,40 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
                 "pullback_min_pct": 0.012,
             }
         },
+        "applied_policy": {
+            "timeframe_minutes": 1,
+            "volume_ratio_min": 0.68,
+            "pullback_min_pct": 0.008,
+        },
+        "policy_source": "strategist",
+        "policy_validation_status": "ok",
+        "policy_fallback_used": False,
+        "policy_fallback_reason": "",
+        "override_reason": "",
+        "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
+    }
+    detail["scanner"]["decision_trace"] = {
+        "selected_symbol": "000660",
+        "playbook": "pullback",
+        "policy_source": "strategist",
+        "applied_policy_present": True,
+        "monitor_entry_policy_summary": {
+            "volume_ratio_min": 0.68,
+            "pullback_min_pct": 0.008,
+        },
+        "scanner_bias_applied": True,
+        "scanner_bias_summary": {
+            "summary": "prefer_shallow_pullback_candidates, penalize_overextended (low)",
+            "bias_strength": "low",
+        },
+        "candidate_bias_adjustments": [
+            {
+                "symbol": "000660",
+                "bias_adjustment": 0.003,
+                "bias_adjustments": [{"reason": "shallow pullback preference applied"}],
+            }
+        ],
+        "selection_reason_with_bias": "selected with shallow pullback preference applied",
     }
 
     prepared = data_access._build_operator_brief_input(detail)
@@ -959,12 +1007,30 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
 
     assert prepared["commander"]["selected_route"] == "cached_strategist"
     assert prepared["commander"]["strategist_called"] is False
+    assert prepared["commander"]["policy_source"] == "strategist"
+    assert prepared["commander"]["applied_policy"]["volume_ratio_min"] == 0.68
+    assert prepared["scanner"]["playbook"] == "pullback"
+    assert prepared["scanner"]["policy_source"] == "strategist"
+    assert prepared["scanner"]["scanner_bias_applied"] is True
+    assert prepared["scanner"]["candidate_bias_adjustments"][0]["symbol"] == "000660"
     assert prepared["monitor"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
     assert prepared["monitor"]["threshold_shortfalls"]
+    assert prepared["monitor"]["policy_source"] == "strategist"
+    assert prepared["monitor"]["applied_policy"]["pullback_min_pct"] == 0.008
     assert compact["commander"]["selected_route"] == "cached_strategist"
     assert compact["commander"]["route_reason_text"] == "commander_skip_cached_strategist"
+    assert compact["commander"]["policy_source"] == "strategist"
+    assert compact["commander"]["applied_policy"]["volume_ratio_min"] == 0.68
+    assert compact["scanner"]["playbook"] in {"pullback", "눌림목"}
+    assert compact["scanner"]["policy_source"] == "strategist"
+    assert compact["scanner"]["scanner_bias_applied"] is True
+    assert compact["scanner"]["candidate_bias_adjustments"][0]["symbol"] == "000660"
+    assert compact["scanner"]["selection_reason_with_bias"]
+    assert "preference" in compact["scanner"]["selection_reason_with_bias"]
     assert compact["monitor"]["entry_check_summary"] == "mission=wait_for_confirmation | reason=reclaim_not_confirmed"
     assert compact["monitor"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
+    assert compact["monitor"]["policy_source"] == "strategist"
+    assert compact["monitor"]["applied_policy"]["pullback_min_pct"] == 0.008
     assert any("volume_ratio" in row for row in compact["monitor"]["threshold_shortfalls"])
 
 

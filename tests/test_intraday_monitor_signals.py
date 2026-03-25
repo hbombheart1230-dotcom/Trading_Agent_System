@@ -2,6 +2,8 @@ from libs.runtime.intraday_monitor_signals import (
     evaluate_intraday_entry_signal,
     resolve_intraday_entry_policy,
 )
+from libs.runtime.monitor_policy import MonitorEntryPolicy
+from pathlib import Path
 
 
 def _rows_breakout() -> list[dict]:
@@ -89,7 +91,7 @@ def test_intraday_entry_rejects_overextended_breakout() -> None:
     rows[-1]["close"] = 103.2
     rows[-1]["high"] = 103.4
     rows[-1]["vwap"] = 101.1
-    out = evaluate_intraday_entry_signal(rows)
+    out = evaluate_intraday_entry_signal(rows, policy={"entry_max_extended_from_vwap_pct": 0.02})
 
     assert out["evaluated"] is True
     assert out["triggered"] is False
@@ -101,7 +103,7 @@ def test_intraday_entry_rejects_overextended_breakout() -> None:
 def test_intraday_entry_rejects_weak_volume_breakout() -> None:
     rows = _rows_breakout()
     rows[-1]["volume"] = 900
-    out = evaluate_intraday_entry_signal(rows)
+    out = evaluate_intraday_entry_signal(rows, policy={"entry_volume_ratio_min": 1.0})
 
     assert out["evaluated"] is True
     assert out["triggered"] is False
@@ -128,7 +130,11 @@ def test_intraday_entry_rejects_overextended_pullback_even_after_rebound() -> No
     rows[-1]["close"] = 106.0
     rows[-1]["high"] = 106.2
     rows[-1]["vwap"] = 100.7
-    out = evaluate_intraday_entry_signal(rows, frame={"playbook": "pullback"})
+    out = evaluate_intraday_entry_signal(
+        rows,
+        policy={"entry_max_extended_from_vwap_pct": 0.02},
+        frame={"playbook": "pullback"},
+    )
 
     assert out["evaluated"] is True
     assert out["triggered"] is False
@@ -147,7 +153,11 @@ def test_intraday_entry_rejects_deeply_broken_pullback_structure() -> None:
     rows[-1]["close"] = 100.9
     rows[-1]["high"] = 101.0
     rows[-1]["vwap"] = 100.5
-    out = evaluate_intraday_entry_signal(rows, frame={"playbook": "pullback"})
+    out = evaluate_intraday_entry_signal(
+        rows,
+        policy={"entry_pullback_max_pct": 0.03},
+        frame={"playbook": "pullback"},
+    )
 
     assert out["evaluated"] is True
     assert out["triggered"] is False
@@ -176,11 +186,13 @@ def test_intraday_entry_pullback_policy_is_looser_than_breakout_policy() -> None
     assert float(pullback.get("volume_ratio_min") or 0.0) <= float(breakout.get("volume_ratio_min") or 0.0)
 
 
-def test_intraday_entry_pullback_respects_env_floor_without_forcing_015(monkeypatch) -> None:
-    monkeypatch.setenv("MONITOR_ENTRY_PULLBACK_MIN_PCT", "0.012")
-    pullback = resolve_intraday_entry_policy(frame={"playbook": "pullback"})
+def test_intraday_entry_pullback_uses_live_shallow_pullback_floor() -> None:
+    pullback = resolve_intraday_entry_policy(
+        policy={"entry_pullback_min_pct": 0.012},
+        frame={"playbook": "pullback"},
+    )
 
-    assert float(pullback.get("pullback_min_pct") or 0.0) == 0.012
+    assert float(pullback.get("pullback_min_pct") or 0.0) == 0.008
 
 
 def test_intraday_entry_pullback_defensive_guidance_stays_realistic() -> None:
@@ -195,6 +207,42 @@ def test_intraday_entry_pullback_defensive_guidance_stays_realistic() -> None:
 
     assert float(pullback.get("max_extended_from_vwap_pct") or 0.0) >= 0.05
     assert float(pullback.get("volume_ratio_min") or 0.0) <= 1.0
+
+
+def test_intraday_entry_pullback_defensive_guidance_matches_live_relaxed_thresholds() -> None:
+    pullback = resolve_intraday_entry_policy(
+        policy={
+            "entry_volume_ratio_min": 0.72,
+            "entry_pullback_min_pct": 0.012,
+        },
+        frame={
+            "playbook": "pullback",
+            "monitor_guidance": "defensive_exit",
+            "risk_tone": "conservative",
+        }
+    )
+
+    assert float(pullback.get("volume_ratio_min") or 0.0) == 0.68
+    assert float(pullback.get("pullback_min_pct") or 0.0) == 0.008
+
+
+def test_intraday_entry_policy_is_official_object_with_live_defaults() -> None:
+    resolved = resolve_intraday_entry_policy()
+
+    assert isinstance(resolved, MonitorEntryPolicy)
+    assert resolved.timeframe_minutes == 1
+    assert resolved.breakout_lookback == 5
+    assert resolved.volume_lookback == 5
+    assert float(resolved.volume_ratio_min) == 0.68
+    assert float(resolved.max_extended_from_vwap_pct) == 0.13
+    assert float(resolved.pullback_min_pct) == 0.008
+    assert float(resolved.pullback_max_pct) == 0.07
+
+
+def test_intraday_entry_runtime_no_longer_uses_monitor_entry_env_lookup() -> None:
+    source = Path("libs/runtime/intraday_monitor_signals.py").read_text(encoding="utf-8")
+
+    assert "MONITOR_ENTRY_" not in source
 
 
 def test_intraday_entry_defensive_stack_stays_usable_without_becoming_loose() -> None:

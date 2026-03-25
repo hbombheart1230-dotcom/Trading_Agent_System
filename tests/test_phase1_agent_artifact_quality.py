@@ -104,6 +104,51 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
                 "market_policy_owner": "commander",
                 "scanner_policy_owner": "strategist",
             },
+            "market_regime_summary": "risk_on regime / bullish sentiment / trend structure with playbook breakout.",
+            "monitor_entry_policy": {
+                "timeframe_minutes": 1,
+                "breakout_lookback": 5,
+                "volume_lookback": 5,
+                "volume_ratio_min": 0.68,
+                "min_extended_from_vwap_pct": -0.02,
+                "max_extended_from_vwap_pct": 0.13,
+                "pullback_min_pct": 0.008,
+                "pullback_max_pct": 0.07,
+                "reclaim_tolerance_pct": 0.0015,
+                "breakout_buffer_pct": 0.0,
+                "intent_cooldown_sec": 60,
+                "require_vwap_reclaim": True,
+                "require_rebound": True,
+                "policy_source": "strategist",
+            },
+            "policy_rationale": "Breakout remains valid, but keep the live baseline because conviction is only moderate.",
+            "policy_source": "strategist",
+            "policy_validation_status": "ok",
+            "policy_fallback_used": False,
+            "policy_fallback_reason": "",
+            "policy_validation_issues": [],
+            "confidence": 0.62,
+            "scanner_bias_context": {
+                "prefer_shallow_pullback_candidates": True,
+                "penalize_overextended": True,
+                "prefer_reclaim_candidates": True,
+                "prefer_volume_confirmation": False,
+                "bias_strength": "low",
+                "bias_source": "strategist",
+            },
+            "scanner_bias_summary": {
+                "enabled": True,
+                "active_biases": [
+                    "prefer_shallow_pullback_candidates",
+                    "penalize_overextended",
+                    "prefer_reclaim_candidates",
+                ],
+                "bias_strength": "low",
+                "bias_source": "strategist",
+                "summary": "prefer_shallow_pullback_candidates, penalize_overextended, prefer_reclaim_candidates (low)",
+            },
+            "scanner_bias_validation_status": "ok",
+            "scanner_bias_validation_issues": [],
             "commander_context_ref": {
                 "source": "commander_decision",
                 "market_regime": "risk_on",
@@ -164,6 +209,15 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
     assert artifact["commander_no_trade_reason_code"] == "NONE"
     assert artifact["shadow_used"] is True
     assert artifact["strategist_fallback_used"] is False
+    assert artifact["monitor_entry_policy"]["volume_ratio_min"] == 0.68
+    assert artifact["policy_rationale"].startswith("Breakout remains valid")
+    assert artifact["policy_source"] == "strategist"
+    assert artifact["policy_validation_status"] == "ok"
+    assert artifact["policy_fallback_used"] is False
+    assert artifact["confidence"] == 0.62
+    assert artifact["scanner_bias_context"]["penalize_overextended"] is True
+    assert artifact["scanner_bias_summary"]["enabled"] is True
+    assert artifact["scanner_bias_validation_status"] == "ok"
     assert "Strategist refined commander context" in artifact["strategy_summary"]
 
 
@@ -176,6 +230,34 @@ def test_scanner_artifact_contains_filter_funnel_and_selection_reason_detail() -
             "candidate_pool_size": 2,
             "candidate_count": 2,
             "candidate_source": "kiwoom_market_data",
+            "playbook": "breakout",
+            "policy_source": "strategist",
+            "applied_policy_present": True,
+            "monitor_entry_policy_summary": {
+                "timeframe_minutes": 1,
+                "volume_ratio_min": 0.68,
+                "pullback_min_pct": 0.008,
+            },
+            "scanner_bias_context": {
+                "prefer_shallow_pullback_candidates": True,
+                "penalize_overextended": True,
+                "bias_strength": "low",
+            },
+            "scanner_bias_applied": True,
+            "scanner_bias_summary": {
+                "enabled": True,
+                "active_biases": ["prefer_shallow_pullback_candidates", "penalize_overextended"],
+                "bias_strength": "low",
+                "summary": "prefer_shallow_pullback_candidates, penalize_overextended (low)",
+            },
+            "candidate_bias_adjustments": [
+                {
+                    "symbol": "005930",
+                    "bias_adjustment": 0.003,
+                    "bias_adjustments": [{"rule": "prefer_shallow_pullback_candidates", "reason": "shallow pullback preference applied"}],
+                }
+            ],
+            "selection_reason_with_bias": "value and theme alignment | bias: prefer_shallow_pullback_candidates, penalize_overextended (low)",
         },
         "scanner_candidate_pool": {
             "candidate_source": "kiwoom_market_data",
@@ -229,6 +311,29 @@ def test_scanner_artifact_contains_filter_funnel_and_selection_reason_detail() -
             "selection_summary": "value and theme alignment",
             "why_selected": ["highest total score (1.320)"],
             "runner_ups_lost": [{"symbol": "000660", "why_lost": ["lower total score"]}],
+            "playbook": "breakout",
+            "policy_source": "strategist",
+            "applied_policy_present": True,
+            "monitor_entry_policy_summary": {
+                "timeframe_minutes": 1,
+                "volume_ratio_min": 0.68,
+                "pullback_min_pct": 0.008,
+            },
+            "scanner_bias_applied": True,
+            "scanner_bias_summary": {
+                "enabled": True,
+                "active_biases": ["prefer_shallow_pullback_candidates", "penalize_overextended"],
+                "bias_strength": "low",
+                "summary": "prefer_shallow_pullback_candidates, penalize_overextended (low)",
+            },
+            "candidate_bias_adjustments": [
+                {
+                    "symbol": "005930",
+                    "bias_adjustment": 0.003,
+                    "bias_adjustments": [{"rule": "prefer_shallow_pullback_candidates", "reason": "shallow pullback preference applied"}],
+                }
+            ],
+            "selection_reason_with_bias": "value and theme alignment | bias: prefer_shallow_pullback_candidates, penalize_overextended (low)",
         },
     }
     artifact = build_scanner_output_artifact(state)
@@ -254,6 +359,51 @@ def test_scanner_artifact_contains_filter_funnel_and_selection_reason_detail() -
     assert artifact["risk_score_by_symbol"]["005930"] == 0.21
     assert artifact["ranking_table_missing"] is False
     assert isinstance(artifact.get("rejection_summary"), list)
+    assert artifact["playbook"] == "breakout"
+    assert artifact["policy_source"] == "strategist"
+    assert artifact["applied_policy_present"] is True
+    assert artifact["monitor_entry_policy_summary"]["volume_ratio_min"] == 0.68
+    assert artifact["scanner_bias_applied"] is True
+    assert artifact["scanner_bias_summary"]["enabled"] is True
+    assert artifact["candidate_bias_adjustments"][0]["symbol"] == "005930"
+    assert "bias:" in artifact["selection_reason_with_bias"]
+
+
+def test_strategist_artifact_records_policy_fallback_metadata() -> None:
+    state = {
+        "run_id": "run-s1-fallback",
+        "started_at": "2026-03-18T10:00:00+00:00",
+        "runtime_phase": "session",
+        "strategist_output": {
+            "market_regime": "neutral",
+            "market_sentiment": "neutral",
+            "playbook": "pullback",
+            "themes": ["semiconductor"],
+            "avoid_themes": [],
+            "strategy_policy": {
+                "market_policy": {"playbook": "pullback"},
+                "monitor_policy": {"entry_policy": {"volume_ratio_min": 0.68}},
+            },
+            "monitor_entry_policy": {
+                "timeframe_minutes": 1,
+                "volume_ratio_min": 0.68,
+                "pullback_min_pct": 0.008,
+                "pullback_max_pct": 0.07,
+            },
+            "policy_rationale": "Invalid draft was replaced by the conservative live baseline.",
+            "policy_validation_status": "fallback_invalid",
+            "policy_fallback_used": True,
+            "policy_fallback_reason": "invalid_fields=timeframe_minutes,volume_ratio_min",
+            "policy_validation_issues": ["timeframe_minutes:out_of_bounds:30.0"],
+        },
+        "strategist_llm": {"status": "ok"},
+    }
+
+    artifact = build_strategist_output_artifact(state)
+    assert artifact["policy_validation_status"] == "fallback_invalid"
+    assert artifact["policy_fallback_used"] is True
+    assert "invalid_fields=" in artifact["policy_fallback_reason"]
+    assert artifact["policy_validation_issues"] == ["timeframe_minutes:out_of_bounds:30.0"]
 
 
 def test_monitor_artifact_contains_evaluation_and_action_sections() -> None:
@@ -270,6 +420,24 @@ def test_monitor_artifact_contains_evaluation_and_action_sections() -> None:
             "reason": "no_breakout_signal",
             "failed_checks": ["breakout_ok"],
             "passed_checks": ["vwap_hold_ok"],
+            "thresholds": {
+                "timeframe_minutes": 1,
+                "breakout_lookback": 5,
+                "volume_lookback": 5,
+                "volume_ratio_min": 0.68,
+                "max_extended_from_vwap_pct": 0.13,
+                "pullback_min_pct": 0.008,
+                "pullback_max_pct": 0.07,
+            },
+            "applied_policy": {
+                "timeframe_minutes": 1,
+                "breakout_lookback": 5,
+                "volume_lookback": 5,
+                "volume_ratio_min": 0.68,
+                "max_extended_from_vwap_pct": 0.13,
+                "pullback_min_pct": 0.008,
+                "pullback_max_pct": 0.07,
+            },
             "threshold_margins": {"volume_ratio": {"actual": 0.7, "limit": 0.8}},
             "guard_blocked": False,
             "confidence": 0.65,
@@ -302,6 +470,10 @@ def test_monitor_artifact_contains_evaluation_and_action_sections() -> None:
     assert isinstance(artifact.get("threshold_snapshot"), dict)
     assert isinstance(artifact.get("signal_snapshot"), dict)
     assert isinstance(artifact.get("market_snapshot_refs"), dict)
+    assert isinstance(artifact.get("applied_policy"), dict)
+    assert isinstance((artifact.get("threshold_snapshot") or {}).get("applied_policy"), dict)
+    assert artifact.get("applied_policy", {}).get("volume_ratio_min") == 0.68
+    assert artifact.get("threshold_snapshot", {}).get("applied_policy", {}).get("pullback_min_pct") == 0.008
     assert artifact.get("intent_emitted") is False
     decision_summary = str(artifact.get("decision_summary") or "")
     assert decision_summary.startswith("Hold:")
@@ -488,6 +660,17 @@ def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
             "shadow_used": True,
             "strategist_fallback_used": False,
             "decision_summary": "Commander prioritizes managing open exposure before new entries.",
+            "applied_policy": {
+                "timeframe_minutes": 1,
+                "volume_ratio_min": 0.68,
+                "pullback_min_pct": 0.008,
+            },
+            "policy_source": "strategist",
+            "policy_validation_status": "ok",
+            "policy_fallback_used": False,
+            "policy_fallback_reason": "",
+            "override_reason": "",
+            "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
         },
         "commander_shadow_runtime": {
             "strategist_executed": False,
@@ -535,6 +718,11 @@ def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
     assert artifact.get("source_priority")[0] == "shadow_commander"
     assert artifact.get("strategist_fallback_used") is False
     assert isinstance(artifact.get("commander_decision"), dict)
+    assert artifact.get("policy_source") == "strategist"
+    assert artifact.get("policy_validation_status") == "ok"
+    assert artifact.get("policy_fallback_used") is False
+    assert artifact.get("applied_policy", {}).get("volume_ratio_min") == 0.68
+    assert artifact.get("applied_policy_source_chain") == ["strategist", "validation", "commander_confirmed"]
 
 
 def test_commander_artifact_routes_blocked_with_cooldown() -> None:

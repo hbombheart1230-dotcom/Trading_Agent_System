@@ -62,3 +62,64 @@ def test_m18_strategist_embeds_commander_context_and_plan_without_breaking_strat
     assert strategy_policy["provenance"]["shadow_used"] is True
     assert strategy_policy["provenance"]["strategist_fallback_used"] is False
     assert strategy_policy["strategist_plan"]["selected_playbook"] == (out.get("strategist_output") or {}).get("playbook")
+
+
+def test_m18_strategist_generates_monitor_entry_policy_baseline(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    out = strategist_node(
+        {
+            "runtime_phase": "session",
+            "candidate_symbols": ["111111", "222222", "333333"],
+        }
+    )
+
+    strategist_output = out.get("strategist_output") or {}
+    strategy_policy = strategist_output.get("strategy_policy") or {}
+    monitor_policy = strategy_policy.get("monitor_policy") or {}
+
+    assert strategist_output.get("policy_source") == "strategist"
+    assert strategist_output.get("policy_validation_status") == "ok"
+    assert strategist_output.get("policy_fallback_used") is False
+    assert isinstance(strategist_output.get("monitor_entry_policy"), dict)
+    assert strategist_output["monitor_entry_policy"]["volume_ratio_min"] == 0.68
+    assert strategist_output["monitor_entry_policy"]["pullback_min_pct"] == 0.008
+    assert isinstance(strategist_output.get("policy_rationale"), str)
+    assert isinstance(strategist_output.get("market_regime_summary"), str)
+    assert isinstance(monitor_policy.get("entry_policy"), dict)
+    assert monitor_policy["entry_policy"]["volume_ratio_min"] == 0.68
+    assert isinstance(strategist_output.get("scanner_bias_context"), dict)
+    assert isinstance((strategy_policy.get("scanner_policy") or {}).get("scanner_bias"), dict)
+    assert strategist_output.get("scanner_bias_summary", {}).get("summary")
+
+
+def test_m18_strategist_invalid_monitor_entry_policy_falls_back_with_trace(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    out = strategist_node(
+        {
+            "runtime_phase": "session",
+            "candidate_symbols": ["111111", "222222", "333333"],
+            "ai_strategist_output": {
+                "playbook": "pullback",
+                "monitor_entry_policy": {
+                    "timeframe_minutes": 30,
+                    "volume_ratio_min": 9.0,
+                    "pullback_min_pct": -1.0,
+                    "pullback_max_pct": 0.001,
+                },
+                "policy_rationale": "Try an invalid draft to verify fallback behavior.",
+                "policy_source": "strategist",
+            },
+        }
+    )
+
+    strategist_output = out.get("strategist_output") or {}
+    policy = strategist_output.get("monitor_entry_policy") or {}
+
+    assert strategist_output.get("policy_validation_status") == "fallback_invalid"
+    assert strategist_output.get("policy_fallback_used") is True
+    assert "invalid_fields=" in str(strategist_output.get("policy_fallback_reason") or "")
+    assert isinstance(strategist_output.get("policy_validation_issues"), list)
+    assert policy["timeframe_minutes"] == 1
+    assert policy["volume_ratio_min"] == 0.68
+    assert policy["pullback_min_pct"] == 0.008
+    assert policy["pullback_max_pct"] == 0.07

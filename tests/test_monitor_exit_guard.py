@@ -110,6 +110,14 @@ def _base_state() -> dict:
     }
 
 
+def _policy_with_entry_cooldown(seconds: int, base: dict | None = None) -> dict:
+    out = dict(base or {})
+    monitor_policy = dict(out.get("monitor_policy") or {}) if isinstance(out.get("monitor_policy"), dict) else {}
+    monitor_policy["entry_intent_cooldown_sec"] = int(seconds)
+    out["monitor_policy"] = monitor_policy
+    return out
+
+
 def test_monitor_exit_policy_respects_min_hold_guard(monkeypatch):
     monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
@@ -253,7 +261,6 @@ def test_monitor_waits_when_open_position_guard_disabled_but_minute_candles_miss
 def test_monitor_requires_intraday_entry_confirmation_when_ohlcv_available(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     state = {
         "plan": {"thesis": "test"},
@@ -273,7 +280,7 @@ def test_monitor_requires_intraday_entry_confirmation_when_ohlcv_available(monke
             ]
         },
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(0),
     }
 
     out = monitor_node(state)
@@ -289,7 +296,6 @@ def test_monitor_requires_intraday_entry_confirmation_when_ohlcv_available(monke
 def test_monitor_skips_buy_when_intraday_entry_signal_not_confirmed(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     state = {
         "plan": {"thesis": "test"},
@@ -309,7 +315,10 @@ def test_monitor_skips_buy_when_intraday_entry_signal_not_confirmed(monkeypatch)
             ]
         },
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(
+            0,
+            base={"monitor_policy": {"entry_max_extended_from_vwap_pct": 0.02}},
+        ),
     }
 
     out = monitor_node(state)
@@ -326,7 +335,6 @@ def test_monitor_skips_buy_when_intraday_entry_signal_not_confirmed(monkeypatch)
 def test_monitor_waits_when_minute_candles_missing(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     state = {
         "plan": {"thesis": "test"},
@@ -337,7 +345,7 @@ def test_monitor_waits_when_minute_candles_missing(monkeypatch):
         },
         "minute_ohlcv_by_symbol": {},
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(0),
     }
 
     out = monitor_node(state)
@@ -352,7 +360,6 @@ def test_monitor_waits_when_minute_candles_missing(monkeypatch):
 def test_monitor_hydrates_selected_symbol_minute_ohlcv_from_skill_runner(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     rows = [
         {"ts": 1710000000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
@@ -372,7 +379,7 @@ def test_monitor_hydrates_selected_symbol_minute_ohlcv_from_skill_runner(monkeyp
             "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
         },
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(0),
     }
 
     out = monitor_node(state)
@@ -390,7 +397,6 @@ def test_monitor_hydrates_selected_symbol_minute_ohlcv_from_skill_runner(monkeyp
 def test_monitor_hydrates_selected_symbol_minute_ohlcv_from_dataclass_skill_result(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     rows = [
         {"ts": 1710000000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
@@ -410,7 +416,7 @@ def test_monitor_hydrates_selected_symbol_minute_ohlcv_from_dataclass_skill_resu
             "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
         },
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(0),
     }
 
     out = monitor_node(state)
@@ -425,7 +431,6 @@ def test_monitor_hydrates_selected_symbol_minute_ohlcv_from_dataclass_skill_resu
 def test_monitor_keeps_fresh_minute_snapshot_without_refetch(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     rows = [
         {"ts": 1710000000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
@@ -448,7 +453,7 @@ def test_monitor_keeps_fresh_minute_snapshot_without_refetch(monkeypatch):
         },
         "minute_ohlcv_by_symbol": {"BBB": list(rows)},
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(0),
     }
 
     out = monitor_node(state)
@@ -467,7 +472,6 @@ def test_monitor_keeps_fresh_minute_snapshot_without_refetch(monkeypatch):
 def test_monitor_refetches_stale_minute_snapshot_and_uses_new_latest_candle(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     stale_rows = [
         {"ts": 1710000000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
@@ -498,7 +502,7 @@ def test_monitor_refetches_stale_minute_snapshot_and_uses_new_latest_candle(monk
         },
         "minute_ohlcv_by_symbol": {"BBB": list(stale_rows)},
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(0),
     }
 
     out = monitor_node(state)
@@ -521,7 +525,6 @@ def test_monitor_refetches_stale_minute_snapshot_and_uses_new_latest_candle(monk
 def test_monitor_records_stale_snapshot_when_refetch_fails_without_changing_flow(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     stale_rows = [
         {"ts": 1710000000, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
@@ -544,7 +547,10 @@ def test_monitor_records_stale_snapshot_when_refetch_fails_without_changing_flow
         },
         "minute_ohlcv_by_symbol": {"BBB": list(stale_rows)},
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(
+            0,
+            base={"monitor_policy": {"entry_max_extended_from_vwap_pct": 0.02}},
+        ),
     }
 
     out = monitor_node(state)
@@ -565,7 +571,6 @@ def test_monitor_records_stale_snapshot_when_refetch_fails_without_changing_flow
 def test_monitor_waits_when_ohlcv_series_is_daily_seed_not_minute_data(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     start_ts = 1_710_000_000
     rows = []
@@ -603,7 +608,7 @@ def test_monitor_waits_when_ohlcv_series_is_daily_seed_not_minute_data(monkeypat
         },
         "ohlcv_by_symbol": {"BBB": rows},
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(0),
     }
 
     out = monitor_node(state)
@@ -619,7 +624,6 @@ def test_monitor_waits_when_ohlcv_series_is_daily_seed_not_minute_data(monkeypat
 def test_monitor_allows_pullback_entry_when_reclaim_structure_is_valid(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     state = {
         "plan": {"thesis": "test"},
@@ -640,7 +644,7 @@ def test_monitor_allows_pullback_entry_when_reclaim_structure_is_valid(monkeypat
         },
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
         "strategist_output": {"playbook": "pullback"},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(0),
     }
 
     out = monitor_node(state)
@@ -657,7 +661,6 @@ def test_monitor_allows_pullback_entry_when_reclaim_structure_is_valid(monkeypat
 def test_monitor_pullback_wait_records_failure_breakdown(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     state = {
         "plan": {"thesis": "test"},
@@ -678,7 +681,10 @@ def test_monitor_pullback_wait_records_failure_breakdown(monkeypatch):
         },
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
         "strategist_output": {"playbook": "pullback"},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(
+            0,
+            base={"monitor_policy": {"entry_max_extended_from_vwap_pct": 0.02}},
+        ),
     }
 
     out = monitor_node(state)
@@ -695,7 +701,6 @@ def test_monitor_pullback_wait_records_failure_breakdown(monkeypatch):
 def test_monitor_pullback_with_defensive_guidance_can_still_buy_on_clean_reclaim(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "0")
 
     state = {
         "plan": {"thesis": "test"},
@@ -721,7 +726,7 @@ def test_monitor_pullback_with_defensive_guidance_can_still_buy_on_clean_reclaim
             "risk_tone": "conservative",
             "trade_aggressiveness": "low",
         },
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(0),
     }
 
     out = monitor_node(state)
@@ -756,7 +761,6 @@ def test_monitor_blocks_reentry_during_post_exit_cooldown(monkeypatch):
 def test_monitor_entry_intent_cooldown_suppresses_duplicate_buy_intents(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", "60")
 
     state = {
         "tick_ts": 1772850000,
@@ -777,7 +781,7 @@ def test_monitor_entry_intent_cooldown_suppresses_duplicate_buy_intents(monkeypa
             ]
         },
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "policy": {},
+        "policy": _policy_with_entry_cooldown(60),
     }
 
     out1 = monitor_node(state)
@@ -1500,6 +1504,156 @@ def test_monitor_uses_strategist_monitor_policy_over_env(monkeypatch):
     # Effective values come from strategist monitor_policy first, then strategy-frame adjustments.
     assert int(exit_info.get("min_hold_sec") or 0) <= 1
     assert int(exit_info.get("exit_confirm_ticks") or 0) == 1
+
+
+def test_monitor_prefers_strategist_monitor_entry_policy_for_entry_thresholds(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.006, "engine_volume_spike20": 1.4},
+        },
+        "minute_ohlcv_by_symbol": {
+            "BBB": [
+                {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+                {"open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+                {"open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+                {"open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+                {"open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+                {"open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 900, "vwap": 101.2},
+            ]
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": _policy_with_entry_cooldown(0),
+        "strategist_output": {
+            "monitor_entry_policy": {
+                "timeframe_minutes": 1,
+                "breakout_lookback": 5,
+                "volume_lookback": 5,
+                "volume_ratio_min": 1.2,
+                "max_extended_from_vwap_pct": 0.13,
+                "pullback_min_pct": 0.008,
+                "pullback_max_pct": 0.07,
+                "reclaim_tolerance_pct": 0.0015,
+                "breakout_buffer_pct": 0.0,
+                "intent_cooldown_sec": 0,
+                "require_vwap_reclaim": True,
+                "require_rebound": True,
+                "policy_source": "strategist",
+            }
+        },
+    }
+
+    out = monitor_node(state)
+    assert out.get("intents") == []
+    monitor = out.get("monitor") or {}
+    assert monitor.get("entry_reason") == "volume_insufficient"
+    applied_policy = monitor.get("entry_applied_policy") or {}
+    assert float(applied_policy.get("volume_ratio_min") or 0.0) > 0.68
+    assert str(applied_policy.get("policy_source") or "") == "strategist"
+
+
+def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_policy(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.006, "engine_volume_spike20": 1.4},
+        },
+        "minute_ohlcv_by_symbol": {
+            "BBB": [
+                {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+                {"open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+                {"open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+                {"open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+                {"open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+                {"open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 900, "vwap": 101.2},
+            ]
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": _policy_with_entry_cooldown(0),
+        "commander_applied_policy": {
+            "timeframe_minutes": 1,
+            "breakout_lookback": 5,
+            "volume_lookback": 5,
+            "volume_ratio_min": 1.25,
+            "max_extended_from_vwap_pct": 0.13,
+            "pullback_min_pct": 0.008,
+            "pullback_max_pct": 0.07,
+            "reclaim_tolerance_pct": 0.0015,
+            "breakout_buffer_pct": 0.0,
+            "intent_cooldown_sec": 0,
+            "require_vwap_reclaim": True,
+            "require_rebound": True,
+            "policy_source": "strategist",
+        },
+        "commander_applied_policy_meta": {
+            "policy_source": "strategist",
+            "policy_validation_status": "ok",
+            "policy_fallback_used": False,
+            "policy_fallback_reason": "",
+            "override_reason": "",
+            "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
+        },
+        "strategy_policy": {
+            "market_policy": {},
+            "scanner_policy": {},
+            "monitor_policy": {
+                "applied_policy": {
+                    "timeframe_minutes": 1,
+                    "volume_ratio_min": 1.25,
+                    "pullback_min_pct": 0.008,
+                    "policy_source": "strategist",
+                },
+                "policy_source": "strategist",
+                "policy_validation_status": "ok",
+                "policy_fallback_used": False,
+            },
+            "decision_policy": {},
+            "commander_context": {
+                "applied_policy": {
+                    "timeframe_minutes": 1,
+                    "volume_ratio_min": 1.25,
+                    "pullback_min_pct": 0.008,
+                    "policy_source": "strategist",
+                },
+                "policy_source": "strategist",
+            },
+        },
+        "strategist_output": {
+            "monitor_entry_policy": {
+                "timeframe_minutes": 1,
+                "breakout_lookback": 5,
+                "volume_lookback": 5,
+                "volume_ratio_min": 0.70,
+                "max_extended_from_vwap_pct": 0.13,
+                "pullback_min_pct": 0.008,
+                "pullback_max_pct": 0.07,
+                "reclaim_tolerance_pct": 0.0015,
+                "breakout_buffer_pct": 0.0,
+                "intent_cooldown_sec": 0,
+                "require_vwap_reclaim": True,
+                "require_rebound": True,
+                "policy_source": "strategist",
+            }
+        },
+    }
+
+    out = monitor_node(state)
+    assert out.get("intents") == []
+    monitor = out.get("monitor") or {}
+    applied_policy = monitor.get("entry_applied_policy") or {}
+    assert float(applied_policy.get("volume_ratio_min") or 0.0) > 0.70
+    assert str(applied_policy.get("policy_source") or "") == "strategist"
+    assert monitor.get("entry_reason") == "volume_insufficient"
 
 
 def test_monitor_applies_strategist_exit_policy_over_env(monkeypatch):

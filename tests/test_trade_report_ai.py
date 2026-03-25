@@ -317,6 +317,31 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
     story_input = _story_input()
     story_input.update(
         {
+            "scanner_reason_human": {
+                "selected_symbol": "000660",
+                "playbook": "pullback",
+                "policy_source": "strategist",
+                "applied_policy_present": True,
+                "monitor_entry_policy_summary": {
+                    "volume_ratio_min": 0.68,
+                    "pullback_min_pct": 0.008,
+                },
+                "scanner_bias_applied": True,
+                "scanner_bias_summary": {
+                    "summary": "prefer_shallow_pullback_candidates, penalize_overextended (low)",
+                    "bias_strength": "low",
+                },
+                "candidate_bias_adjustments": [
+                    {
+                        "symbol": "000660",
+                        "bias_adjustment": 0.003,
+                        "bias_adjustments": [
+                            {"rule": "prefer_shallow_pullback_candidates", "reason": "shallow pullback preference applied"}
+                        ],
+                    }
+                ],
+                "selection_reason_with_bias": "selected on near-tie after shallow pullback preference applied",
+            },
             "monitor_reason_human": {
                 "summary": "Monitor stayed on WAIT because reclaim confirmation is still pending.",
                 "entry_check_summary": "mission=wait_for_confirmation | reason=reclaim_not_confirmed",
@@ -324,6 +349,9 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
                 "policy_ref": {
                     "monitor_mission": "Wait for cleaner reclaim confirmation.",
                     "flow_instruction": "observe_only",
+                    "policy_source": "strategist",
+                    "policy_validation_status": "ok",
+                    "policy_fallback_used": False,
                 },
                 "thresholds_guards_used": {
                     "thresholds": {
@@ -339,6 +367,17 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
                     "volume_ratio_min": 0.75,
                     "max_extended_from_vwap_pct": 0.05,
                 },
+                "applied_policy": {
+                    "timeframe_minutes": 1,
+                    "volume_ratio_min": 0.68,
+                    "pullback_min_pct": 0.008,
+                },
+                "policy_source": "strategist",
+                "policy_validation_status": "ok",
+                "policy_fallback_used": False,
+                "policy_fallback_reason": "",
+                "override_reason": "",
+                "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
             },
             "canonical_agent_artifacts": {
                 "commander": {
@@ -347,6 +386,17 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
                     "strategist_cache_used": True,
                     "strategist_called": False,
                     "cooldown_applied": False,
+                    "applied_policy": {
+                        "timeframe_minutes": 1,
+                        "volume_ratio_min": 0.68,
+                        "pullback_min_pct": 0.008,
+                    },
+                    "policy_source": "strategist",
+                    "policy_validation_status": "ok",
+                    "policy_fallback_used": False,
+                    "policy_fallback_reason": "",
+                    "override_reason": "",
+                    "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
                     "commander_decision": {
                         "command_intent": "OBSERVE_ONLY",
                         "strategist_invocation": "SKIP",
@@ -359,6 +409,7 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
 
     seed = mod._build_shared_summary_seed(story_input)
     commander_route = seed.get("commander_route") if isinstance(seed.get("commander_route"), dict) else {}
+    scanner_reasoning = seed.get("scanner_reasoning") if isinstance(seed.get("scanner_reasoning"), dict) else {}
     monitor_reasoning = seed.get("monitor_reasoning") if isinstance(seed.get("monitor_reasoning"), dict) else {}
     compact_input = mod.build_ai_trade_report_compact_input(story_input)
 
@@ -368,11 +419,29 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
     assert commander_route.get("llm_policy") == "SKIP"
     assert commander_route.get("strategist_cache_used") is True
     assert commander_route.get("strategist_called") is False
+    assert commander_route.get("policy_source") == "strategist"
+    assert commander_route.get("applied_policy", {}).get("volume_ratio_min") == 0.68
+    assert scanner_reasoning.get("playbook") == "pullback"
+    assert scanner_reasoning.get("policy_source") == "strategist"
+    assert scanner_reasoning.get("scanner_bias_applied") is True
+    assert scanner_reasoning.get("scanner_bias_summary", {}).get("summary")
     assert monitor_reasoning.get("entry_blockers") == ["volume_ok", "vwap_reclaim_ok"]
+    assert monitor_reasoning.get("policy_source") == "strategist"
+    assert monitor_reasoning.get("applied_policy", {}).get("pullback_min_pct") == 0.008
     assert compact_input["commander"]["selected_route"] == "cached_strategist"
     assert compact_input["commander"]["route_reason_text"] == "commander_skip_cached_strategist"
+    assert compact_input["commander"]["policy_source"] == "strategist"
+    assert compact_input["commander"]["applied_policy"]["volume_ratio_min"] == 0.68
+    assert compact_input["scanner"]["playbook"] == "pullback"
+    assert compact_input["scanner"]["policy_source"] == "strategist"
+    assert compact_input["scanner"]["scanner_bias_applied"] is True
+    assert compact_input["scanner"]["scanner_bias_summary"]["summary"]
+    assert compact_input["scanner"]["candidate_bias_adjustments"][0]["symbol"] == "000660"
+    assert "shallow pullback" in compact_input["scanner"]["selection_reason_with_bias"]
     assert compact_input["monitor"]["entry_check_summary"] == "mission=wait_for_confirmation | reason=reclaim_not_confirmed"
     assert compact_input["monitor"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
+    assert compact_input["monitor"]["policy_source"] == "strategist"
+    assert compact_input["monitor"]["applied_policy"]["pullback_min_pct"] == 0.008
     assert compact_input["monitor"]["entry_metrics"]["volume_ratio"] == 0.1
 
 

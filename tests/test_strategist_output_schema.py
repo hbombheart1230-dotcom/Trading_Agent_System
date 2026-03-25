@@ -80,10 +80,17 @@ def test_coerce_strategist_output_normalizes_required_fields_and_keeps_additive_
         },
         "strategy_policy": {
             "market_policy": {"playbook": "breakout"},
-            "monitor_policy": {"position_guards": {"min_hold_seconds": 60}},
+            "monitor_policy": {
+                "position_guards": {"min_hold_seconds": 60},
+                "entry_policy": {"volume_ratio_min": 0.72},
+            },
         },
         "report_focus": ["theme_accuracy"],
         "monitor_policy": {"min_hold_seconds": 600},
+        "policy_rationale": "Use a measured breakout policy.",
+        "policy_validation_status": "ok",
+        "policy_fallback_used": False,
+        "confidence": 0.71,
         "regime_score": 0.42,
     }
     out = coerce_strategist_output(raw)
@@ -100,6 +107,11 @@ def test_coerce_strategist_output_normalizes_required_fields_and_keeps_additive_
     assert out["strategy_policy"]["schema_version"] == "strategy_policy.v1"
     assert out["strategy_policy"]["monitor_policy"]["position_guards"]["min_hold_seconds"] == 60
     assert out["monitor_policy"] == {"min_hold_seconds": 600}
+    assert out["monitor_entry_policy"]["volume_ratio_min"] == 0.72
+    assert out["policy_rationale"] == "Use a measured breakout policy."
+    assert out["policy_validation_status"] == "ok"
+    assert out["policy_fallback_used"] is False
+    assert out["confidence"] == 0.71
     assert out["regime_score"] == 0.42
 
 
@@ -140,3 +152,34 @@ def test_coerce_strategist_output_unwraps_nested_output_contract() -> None:
     assert out["themes"] == ["semiconductor"]
     assert out["avoid_themes"] == ["high_gap_speculative"]
     assert out["trace_id"] == "abc"
+
+
+def test_strategist_output_schema_normalizes_scanner_bias_context() -> None:
+    dto = StrategistOutput(
+        scanner_bias_context={
+            "prefer_shallow_pullback_candidates": "yes",
+            "penalize_overextended": True,
+            "prefer_reclaim_candidates": False,
+            "prefer_volume_confirmation": "1",
+            "bias_strength": "MEDIUM",
+        }
+    ).to_dict()
+
+    assert dto["scanner_bias_context"]["prefer_shallow_pullback_candidates"] is True
+    assert dto["scanner_bias_context"]["penalize_overextended"] is True
+    assert dto["scanner_bias_context"]["prefer_volume_confirmation"] is True
+    assert dto["scanner_bias_context"]["bias_strength"] == "medium"
+
+
+def test_coerce_strategist_output_invalid_scanner_bias_context_falls_back_safely() -> None:
+    out = coerce_strategist_output(
+        {
+            "scanner_bias_context": {
+                "prefer_shallow_pullback_candidates": True,
+                "bias_strength": "extreme",
+            }
+        }
+    )
+
+    assert out["scanner_bias_context"]["prefer_shallow_pullback_candidates"] is True
+    assert out["scanner_bias_context"]["bias_strength"] == "low"

@@ -374,6 +374,13 @@ def _build_reasoning_trace_snapshot(state: dict) -> dict:
         "llm_policy": str(commander_decision.get("llm_policy") or ""),
         "no_trade_reason_code": str(commander_decision.get("no_trade_reason_code") or ""),
         "source_priority": list(commander_decision.get("source_priority") or []),
+        "applied_policy": dict(commander_decision.get("applied_policy") or {}),
+        "policy_source": str(commander_decision.get("policy_source") or ""),
+        "policy_validation_status": str(commander_decision.get("policy_validation_status") or ""),
+        "policy_fallback_used": bool(commander_decision.get("policy_fallback_used")),
+        "policy_fallback_reason": str(commander_decision.get("policy_fallback_reason") or ""),
+        "override_reason": str(commander_decision.get("override_reason") or ""),
+        "applied_policy_source_chain": list(commander_decision.get("applied_policy_source_chain") or []),
     }
     strategist_summary = {
         "summary": str(
@@ -415,6 +422,10 @@ def _build_reasoning_trace_snapshot(state: dict) -> dict:
         ),
         "ranking_factors": list(scanner_output.get("ranking_factors") or []),
         "rejected_candidates": list(scanner_output.get("rejected_candidates") or []),
+        "playbook": str(scanner_output.get("playbook") or scanner_output.get("strategist_playbook") or ""),
+        "policy_source": str(scanner_output.get("policy_source") or ""),
+        "applied_policy_present": bool(scanner_output.get("applied_policy_present")),
+        "monitor_entry_policy_summary": dict(scanner_output.get("monitor_entry_policy_summary") or {}),
     }
     monitor_summary = {
         "summary": str(
@@ -433,6 +444,27 @@ def _build_reasoning_trace_snapshot(state: dict) -> dict:
         ),
         "exit_trigger_basis": dict(
             monitor_output.get("exit_trigger_basis") or monitor_action.get("exit_trigger_basis") or {}
+        ),
+        "applied_policy": dict(monitor_output.get("applied_policy") or {}),
+        "policy_source": str(
+            monitor_output.get("policy_source")
+            or ((monitor_output.get("policy_ref") or {}).get("policy_source") if isinstance(monitor_output.get("policy_ref"), dict) else "")
+            or ""
+        ),
+        "policy_validation_status": str(
+            ((monitor_output.get("policy_ref") or {}).get("policy_validation_status") if isinstance(monitor_output.get("policy_ref"), dict) else "")
+            or ""
+        ),
+        "policy_fallback_used": bool(
+            ((monitor_output.get("policy_ref") or {}).get("policy_fallback_used") if isinstance(monitor_output.get("policy_ref"), dict) else False)
+        ),
+        "policy_fallback_reason": str(
+            ((monitor_output.get("policy_ref") or {}).get("policy_fallback_reason") if isinstance(monitor_output.get("policy_ref"), dict) else "")
+            or ""
+        ),
+        "override_reason": str(
+            ((monitor_output.get("policy_ref") or {}).get("override_reason") if isinstance(monitor_output.get("policy_ref"), dict) else "")
+            or ""
         ),
     }
     return build_reasoning_trace_from_summaries(

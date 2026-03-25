@@ -30,6 +30,8 @@ from graphs.trading_graph import run_trading_graph
 from graphs.nodes.decide_trade import decide_trade
 from graphs.nodes.execute_from_packet import execute_from_packet
 from libs.contracts.agent_outputs import build_commander_shadow_artifact
+from libs.runtime.monitor_policy import build_default_monitor_entry_policy, normalize_monitor_entry_policy
+from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
 from libs.runtime.canonical_artifacts import write_commander_artifact, write_commander_shadow_artifact
 from libs.runtime.resilience_state import ensure_runtime_resilience_state
 
@@ -142,7 +144,252 @@ def _commander_decision_event_meta(state: Dict[str, Any]) -> Dict[str, Any]:
         "shadow_used": bool(commander_decision.get("shadow_used")),
         "source_priority": list(commander_decision.get("source_priority") or []),
         "strategist_fallback_used": bool(commander_decision.get("strategist_fallback_used")),
+        "applied_policy": dict(commander_decision.get("applied_policy") or {}),
+        "policy_source": str(commander_decision.get("policy_source") or ""),
+        "policy_validation_status": str(commander_decision.get("policy_validation_status") or ""),
+        "policy_fallback_used": bool(commander_decision.get("policy_fallback_used")),
+        "policy_fallback_reason": str(commander_decision.get("policy_fallback_reason") or ""),
+        "override_reason": str(commander_decision.get("override_reason") or ""),
+        "applied_policy_source_chain": list(commander_decision.get("applied_policy_source_chain") or []),
     }
+
+
+def _summarize_monitor_entry_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(policy or {}) if isinstance(policy, dict) else {}
+    keys = (
+        "timeframe_minutes",
+        "breakout_lookback",
+        "volume_lookback",
+        "volume_ratio_min",
+        "min_extended_from_vwap_pct",
+        "max_extended_from_vwap_pct",
+        "pullback_min_pct",
+        "pullback_max_pct",
+        "reclaim_tolerance_pct",
+        "breakout_buffer_pct",
+        "intent_cooldown_sec",
+        "require_vwap_reclaim",
+        "require_rebound",
+        "policy_source",
+    )
+    return {key: row.get(key) for key in keys if key in row}
+
+
+def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
+    strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    strategy_policy = (
+        dict(strategist_output.get("strategy_policy") or {})
+        if isinstance(strategist_output.get("strategy_policy"), dict)
+        else {}
+    )
+    strategy_monitor_policy = (
+        dict(strategy_policy.get("monitor_policy") or {})
+        if isinstance(strategy_policy.get("monitor_policy"), dict)
+        else {}
+    )
+    default_policy = build_default_monitor_entry_policy()
+
+    candidate_policy: Dict[str, Any] = {}
+    candidate_source = "default"
+    if isinstance(strategist_output.get("monitor_entry_policy"), dict) and strategist_output.get("monitor_entry_policy"):
+        candidate_policy = dict(strategist_output.get("monitor_entry_policy") or {})
+        candidate_source = "strategist"
+    elif isinstance(strategy_monitor_policy.get("entry_policy"), dict) and strategy_monitor_policy.get("entry_policy"):
+        candidate_policy = dict(strategy_monitor_policy.get("entry_policy") or {})
+        candidate_source = "strategy_policy.monitor_policy.entry_policy"
+    elif isinstance(state.get("monitor_entry_policy"), dict) and state.get("monitor_entry_policy"):
+        candidate_policy = dict(state.get("monitor_entry_policy") or {})
+        candidate_source = "state.monitor_entry_policy"
+
+    policy_source_hint = str(candidate_policy.get("policy_source") or "").strip()
+    normalized_policy, normalized_meta = normalize_monitor_entry_policy(
+        candidate_policy or None,
+        fallback_policy=default_policy,
+        policy_source=policy_source_hint or ("strategist" if candidate_source == "strategist" else default_policy.policy_source),
+    )
+
+    validation_status = str(normalized_meta.get("status") or "ok")
+    fallback_used = bool(normalized_meta.get("fallback_used"))
+    fallback_reason = str(normalized_meta.get("fallback_reason") or "")
+    if candidate_source == "strategist":
+        validation_status = str(strategist_output.get("policy_validation_status") or validation_status or "ok")
+        fallback_used = bool(
+            strategist_output.get("policy_fallback_used")
+            if strategist_output.get("policy_fallback_used") is not None
+            else fallback_used
+        )
+        fallback_reason = str(strategist_output.get("policy_fallback_reason") or fallback_reason or "")
+
+    applied_policy = normalized_policy.to_dict()
+    policy_source = str(applied_policy.get("policy_source") or policy_source_hint or candidate_source or default_policy.policy_source)
+    if not candidate_policy:
+        policy_source = "default"
+        validation_status = str(normalized_meta.get("status") or "ok")
+        fallback_used = bool(normalized_meta.get("fallback_used") or True)
+        fallback_reason = str(normalized_meta.get("fallback_reason") or "no_strategist_policy_available")
+
+    source_chain = [candidate_source or "default", "validation"]
+    if fallback_used:
+        source_chain.append("default_fallback")
+    source_chain.append("commander_confirmed")
+    source_chain = [str(x) for x in source_chain if str(x or "").strip()]
+
+    return {
+        "applied_policy": dict(applied_policy),
+        "policy_source": policy_source,
+        "policy_validation_status": validation_status,
+        "policy_fallback_used": bool(fallback_used),
+        "policy_fallback_reason": fallback_reason,
+        "override_reason": "",
+        "applied_policy_source_chain": source_chain,
+        "monitor_entry_policy_summary": _summarize_monitor_entry_policy(applied_policy),
+    }
+
+
+def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
+    policy_meta = _resolve_commander_applied_policy(state)
+    applied_policy = dict(policy_meta.get("applied_policy") or {})
+    state["commander_applied_policy"] = dict(applied_policy)
+    state["commander_applied_policy_meta"] = dict(policy_meta)
+    state["monitor_entry_policy"] = dict(applied_policy)
+
+    strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
+    if not strategist_output:
+        return state
+
+    strategist_output = dict(strategist_output)
+    strategy_policy = (
+        dict(strategist_output.get("strategy_policy") or {})
+        if isinstance(strategist_output.get("strategy_policy"), dict)
+        else {}
+    )
+    scanner_policy = (
+        dict(strategy_policy.get("scanner_policy") or {})
+        if isinstance(strategy_policy.get("scanner_policy"), dict)
+        else {}
+    )
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    commander_context = (
+        dict(strategy_policy.get("commander_context") or {})
+        if isinstance(strategy_policy.get("commander_context"), dict)
+        else {}
+    )
+    raw_scanner_bias_context = {}
+    if isinstance(commander_context.get("scanner_bias"), dict):
+        raw_scanner_bias_context = dict(commander_context.get("scanner_bias") or {})
+    elif isinstance(scanner_policy.get("scanner_bias"), dict):
+        raw_scanner_bias_context = dict(scanner_policy.get("scanner_bias") or {})
+    elif isinstance(strategist_output.get("scanner_bias_context"), dict):
+        raw_scanner_bias_context = dict(strategist_output.get("scanner_bias_context") or {})
+    scanner_bias_context, scanner_bias_meta = normalize_scanner_bias_context(
+        raw_scanner_bias_context or None,
+        bias_source="commander_confirmed",
+    )
+    scanner_bias_summary = summarize_scanner_bias_context(scanner_bias_context)
+    commander_context.update(
+        {
+            "source": str(commander_context.get("source") or "commander_decision"),
+            "market_regime": str(commander_decision.get("market_regime") or commander_context.get("market_regime") or ""),
+            "session_bias": str(commander_decision.get("session_bias") or commander_context.get("session_bias") or ""),
+            "risk_mode": str(commander_decision.get("risk_mode") or commander_context.get("risk_mode") or ""),
+            "allowed_playbooks": list(commander_decision.get("allowed_playbooks") or commander_context.get("allowed_playbooks") or []),
+            "banned_playbooks": list(commander_decision.get("banned_playbooks") or commander_context.get("banned_playbooks") or []),
+            "scanner_mission": str(commander_decision.get("scanner_mission") or commander_context.get("scanner_mission") or ""),
+            "monitor_mission": str(commander_decision.get("monitor_mission") or commander_context.get("monitor_mission") or ""),
+            "llm_policy": str(commander_decision.get("llm_policy") or commander_context.get("llm_policy") or ""),
+            "command_intent": str(commander_decision.get("command_intent") or commander_context.get("command_intent") or ""),
+            "strategist_invocation": str(commander_decision.get("strategist_invocation") or commander_context.get("strategist_invocation") or ""),
+            "flow_instruction": str(commander_decision.get("flow_instruction") or commander_context.get("flow_instruction") or ""),
+            "no_trade_reason_code": str(commander_decision.get("no_trade_reason_code") or commander_context.get("no_trade_reason_code") or ""),
+            "decision_summary": str(commander_decision.get("decision_summary") or commander_context.get("decision_summary") or ""),
+            "observations": dict(commander_decision.get("observations") or commander_context.get("observations") or {}),
+            "source_priority": list(commander_decision.get("source_priority") or commander_context.get("source_priority") or []),
+            "source_refs": dict(commander_decision.get("source_refs") or commander_context.get("source_refs") or {}),
+            "shadow_used": bool(
+                commander_decision.get("shadow_used")
+                if commander_decision.get("shadow_used") is not None
+                else commander_context.get("shadow_used")
+            ),
+            "strategist_fallback_used": bool(
+                commander_decision.get("strategist_fallback_used")
+                if commander_decision.get("strategist_fallback_used") is not None
+                else commander_context.get("strategist_fallback_used")
+            ),
+            "applied_policy": dict(applied_policy),
+            "policy_source": str(policy_meta.get("policy_source") or ""),
+            "policy_validation_status": str(policy_meta.get("policy_validation_status") or ""),
+            "policy_fallback_used": bool(policy_meta.get("policy_fallback_used")),
+            "policy_fallback_reason": str(policy_meta.get("policy_fallback_reason") or ""),
+            "override_reason": str(policy_meta.get("override_reason") or ""),
+            "applied_policy_source_chain": list(policy_meta.get("applied_policy_source_chain") or []),
+            "monitor_entry_policy_summary": dict(policy_meta.get("monitor_entry_policy_summary") or {}),
+            "scanner_bias": scanner_bias_context.to_dict(),
+            "scanner_bias_summary": dict(scanner_bias_summary),
+        }
+    )
+    strategy_policy["commander_context"] = commander_context
+
+    monitor_policy = (
+        dict(strategy_policy.get("monitor_policy") or {})
+        if isinstance(strategy_policy.get("monitor_policy"), dict)
+        else {}
+    )
+    monitor_policy["applied_policy"] = dict(applied_policy)
+    monitor_policy["policy_source"] = str(policy_meta.get("policy_source") or "")
+    monitor_policy["policy_validation_status"] = str(policy_meta.get("policy_validation_status") or "")
+    monitor_policy["policy_fallback_used"] = bool(policy_meta.get("policy_fallback_used"))
+    monitor_policy["policy_fallback_reason"] = str(policy_meta.get("policy_fallback_reason") or "")
+    monitor_policy["override_reason"] = str(policy_meta.get("override_reason") or "")
+    monitor_policy["applied_policy_source_chain"] = list(policy_meta.get("applied_policy_source_chain") or [])
+    strategy_policy["monitor_policy"] = monitor_policy
+    scanner_policy["scanner_bias"] = scanner_bias_context.to_dict()
+    scanner_policy["scanner_bias_summary"] = dict(scanner_bias_summary)
+    strategy_policy["scanner_policy"] = scanner_policy
+
+    provenance = (
+        dict(strategy_policy.get("provenance") or {})
+        if isinstance(strategy_policy.get("provenance"), dict)
+        else {}
+    )
+    provenance["applied_policy_source"] = str(policy_meta.get("policy_source") or "")
+    provenance["policy_validation_status"] = str(policy_meta.get("policy_validation_status") or "")
+    provenance["policy_fallback_used"] = bool(policy_meta.get("policy_fallback_used"))
+    provenance["policy_fallback_reason"] = str(policy_meta.get("policy_fallback_reason") or "")
+    provenance["override_reason"] = str(policy_meta.get("override_reason") or "")
+    provenance["applied_policy_source_chain"] = list(policy_meta.get("applied_policy_source_chain") or [])
+    provenance["scanner_bias_source"] = str(scanner_bias_meta.get("bias_source") or "")
+    strategy_policy["provenance"] = provenance
+
+    strategist_output["strategy_policy"] = strategy_policy
+    strategist_output["commander_context_ref"] = {
+        **(
+            dict(strategist_output.get("commander_context_ref") or {})
+            if isinstance(strategist_output.get("commander_context_ref"), dict)
+            else {}
+        ),
+        "source": str(commander_context.get("source") or ""),
+        "market_regime": str(commander_context.get("market_regime") or ""),
+        "session_bias": str(commander_context.get("session_bias") or ""),
+        "risk_mode": str(commander_context.get("risk_mode") or ""),
+        "command_intent": str(commander_context.get("command_intent") or ""),
+        "strategist_invocation": str(commander_context.get("strategist_invocation") or ""),
+        "llm_policy": str(commander_context.get("llm_policy") or ""),
+        "no_trade_reason_code": str(commander_context.get("no_trade_reason_code") or ""),
+        "decision_summary": str(commander_context.get("decision_summary") or ""),
+        "source_priority": list(commander_context.get("source_priority") or []),
+        "policy_source": str(policy_meta.get("policy_source") or ""),
+        "policy_validation_status": str(policy_meta.get("policy_validation_status") or ""),
+        "policy_fallback_used": bool(policy_meta.get("policy_fallback_used")),
+        "override_reason": str(policy_meta.get("override_reason") or ""),
+        "applied_policy_present": bool(applied_policy),
+    }
+    strategist_output["policy_provenance"] = dict(provenance)
+    strategist_output["scanner_bias_context"] = scanner_bias_context.to_dict()
+    strategist_output["scanner_bias_summary"] = dict(scanner_bias_summary)
+    state["strategist_output"] = _normalize_strategist_output_contract(strategist_output)
+    state["strategy_policy"] = dict(strategy_policy)
+    state["scanner_bias_context"] = scanner_bias_context.to_dict()
+    return state
 
 
 def _build_commander_decision(
@@ -254,6 +501,23 @@ def _build_commander_decision(
         "runtime_path": str(path_value or ""),
         "strategist_fallback_fields": ["market_regime"] if strategist_fallback_used else [],
     }
+    applied_policy_meta = (
+        dict(state.get("commander_applied_policy_meta") or {})
+        if isinstance(state.get("commander_applied_policy_meta"), dict)
+        else {}
+    )
+    if not applied_policy_meta:
+        strategist_policy_present = bool(
+            (isinstance(strategist_output.get("monitor_entry_policy"), dict) and strategist_output.get("monitor_entry_policy"))
+            or (isinstance(state.get("monitor_entry_policy"), dict) and state.get("monitor_entry_policy"))
+            or (
+                isinstance((strategist_output.get("strategy_policy") or {}).get("monitor_policy"), dict)
+                and ((strategist_output.get("strategy_policy") or {}).get("monitor_policy") or {}).get("entry_policy")
+            )
+        )
+        if strategist_policy_present:
+            applied_policy_meta = _resolve_commander_applied_policy(state)
+    applied_policy = dict(applied_policy_meta.get("applied_policy") or {})
 
     decision_summary = (
         f"Commander set regime={market_regime}, session_bias={session_bias}, risk_mode={risk_mode}; "
@@ -285,6 +549,13 @@ def _build_commander_decision(
         "shadow_used": shadow_used,
         "shadow_assessment_summary": shadow_reason_summary,
         "decision_summary": decision_summary,
+        "applied_policy": applied_policy,
+        "policy_source": str(applied_policy_meta.get("policy_source") or ""),
+        "policy_validation_status": str(applied_policy_meta.get("policy_validation_status") or ""),
+        "policy_fallback_used": bool(applied_policy_meta.get("policy_fallback_used")),
+        "policy_fallback_reason": str(applied_policy_meta.get("policy_fallback_reason") or ""),
+        "override_reason": str(applied_policy_meta.get("override_reason") or ""),
+        "applied_policy_source_chain": list(applied_policy_meta.get("applied_policy_source_chain") or []),
     }
 
 
@@ -1021,7 +1292,7 @@ def _should_use_cached_strategist_when_flat(state: Dict[str, Any]) -> Tuple[bool
     output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
     now_epoch = _runtime_now_epoch(state)
     generated_epoch = max(0, _coerce_int(cache_payload.get("generated_epoch"), 0))
-    reuse_sec = max(0, _coerce_int(os.getenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "180"), 180))
+    reuse_sec = max(0, _coerce_int(os.getenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600"), 600))
     age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
     payload = {
         "enabled": bool(enabled),
@@ -1061,7 +1332,7 @@ def _should_use_cached_strategist_from_commander_skip(state: Dict[str, Any]) -> 
     output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
     now_epoch = _runtime_now_epoch(state)
     generated_epoch = max(0, _coerce_int(cache_payload.get("generated_epoch"), 0))
-    reuse_sec = max(0, _coerce_int(os.getenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "180"), 180))
+    reuse_sec = max(0, _coerce_int(os.getenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600"), 600))
     age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
     payload = {
         "enabled": True,
@@ -1142,6 +1413,15 @@ def _run_integrated_chain(
         shadow_runtime["llm_called_by_strategist"] = False
         shadow_runtime["used_cached_strategist"] = False
         state = _hydrate_strategist_output_cache(state)
+        state = _attach_commander_applied_policy(state)
+        state["commander_decision"] = _build_commander_decision(
+            state,
+            mode_value="integrated_chain",
+            phase_value=str(state.get("runtime_phase") or "session"),
+            status_value=str(state.get("runtime_status") or "planning"),
+            path_value="integrated_chain_monitor_only",
+            reason_text=str((state.get("runtime_fast_path") or {}).get("reason") or ""),
+        )
         held_symbols = _portfolio_open_position_symbols(state)
         if held_symbols:
             state["selected"] = {
@@ -1208,6 +1488,15 @@ def _run_integrated_chain(
         if _strategist_frame_blocked(state):
             return _apply_strategist_block(state, phase="integrated_chain")
         state = _persist_strategist_output_cache(state)
+    state = _attach_commander_applied_policy(state)
+    state["commander_decision"] = _build_commander_decision(
+        state,
+        mode_value="integrated_chain",
+        phase_value=str(state.get("runtime_phase") or "session"),
+        status_value=str(state.get("runtime_status") or "planning"),
+        path_value="integrated_chain_cached_frame" if reused_strategist_cache else "integrated_chain",
+        reason_text=str((state.get("runtime_fast_path") or {}).get("reason") or ""),
+    )
     state = scanner_node(state)
     state = _hydrate_monitor_symbol_features(state)
     state = monitor_node(state)
@@ -1259,6 +1548,15 @@ def _run_preopen_phase(state: Dict[str, Any]) -> Dict[str, Any]:
     state = strategist_node(state)
     if _strategist_frame_blocked(state):
         return _apply_strategist_block(state, phase="preopen")
+    state = _attach_commander_applied_policy(state)
+    state["commander_decision"] = _build_commander_decision(
+        state,
+        mode_value=str(state.get("runtime_mode") or "graph_spine"),
+        phase_value="preopen",
+        status_value=str(state.get("runtime_status") or "planning"),
+        path_value="preopen_strategist",
+        reason_text="",
+    )
     state = _persist_strategist_output_cache(state)
     state["path"] = "preopen_strategist"
     state["runtime_status"] = str(state.get("runtime_status") or "preopen_ready")

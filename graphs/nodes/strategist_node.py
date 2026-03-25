@@ -36,6 +36,12 @@ from libs.research.evidence_ledger import (
 )
 from libs.research.strategy_feedback_builder import build_recent_strategy_feedback
 from libs.runtime.decision_trace import append_decision_trace
+from libs.runtime.monitor_policy import (
+    MonitorEntryPolicy,
+    build_default_monitor_entry_policy,
+    normalize_monitor_entry_policy,
+)
+from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
 from libs.runtime.canonical_artifacts import write_llm_artifact_bundle, write_strategist_artifact
 from libs.runtime.regime import classify_regime_v2
 from libs.strategies.candidates.fallback_pool import resolve_fallback_symbols
@@ -392,6 +398,11 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
         "trade_aggressiveness",
         "risk_tone",
         "monitor_guidance",
+        "market_regime_summary",
+        "policy_rationale",
+        "confidence",
+        "policy_source",
+        "monitor_entry_policy",
         "report_focus",
         "scanner_source_policy",
     }
@@ -474,6 +485,10 @@ def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
         "risk_tone",
         "monitor_guidance",
         "report_focus",
+        "market_regime_summary",
+        "policy_rationale",
+        "confidence",
+        "policy_source",
     }
     out: Dict[str, Any] = {}
     for key in allowed:
@@ -481,6 +496,8 @@ def _normalize_llm_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
             out[key] = normalized.get(key)
     if isinstance(raw.get("monitor_policy"), dict):
         out["monitor_policy"] = dict(raw.get("monitor_policy") or {})
+    if isinstance(raw.get("monitor_entry_policy"), dict):
+        out["monitor_entry_policy"] = dict(raw.get("monitor_entry_policy") or {})
     return out
 
 
@@ -506,6 +523,25 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         "trade_aggressiveness": "low|medium|high",
         "risk_tone": "conservative|normal|aggressive",
         "monitor_guidance": "hold_through_noise|defensive_exit|quick_take_profit",
+        "market_regime_summary": "string",
+        "policy_rationale": "string",
+        "confidence": 0.0,
+        "policy_source": "strategist",
+        "monitor_entry_policy": {
+            "timeframe_minutes": 1,
+            "breakout_lookback": 5,
+            "volume_lookback": 5,
+            "volume_ratio_min": 0.68,
+            "min_extended_from_vwap_pct": -0.02,
+            "max_extended_from_vwap_pct": 0.13,
+            "pullback_min_pct": 0.008,
+            "pullback_max_pct": 0.07,
+            "reclaim_tolerance_pct": 0.0015,
+            "breakout_buffer_pct": 0.0,
+            "intent_cooldown_sec": 60,
+            "require_vwap_reclaim": True,
+            "require_rebound": True,
+        },
         "report_focus": ["theme_accuracy", "exit_quality", "overtrading"],
     }
     user = (
@@ -513,6 +549,8 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         "Incorporate strategy memory hints such as best/worst playbooks, recent failures, and recent success patterns, "
         "but keep them advisory and context-aware. "
         "Produce a realistic strategic frame for scanner/monitor guidance. "
+        "You must choose a playbook, give a short rationale, and draft a monitor_entry_policy that stays realistic and bounded. "
+        "Do not make the policy aggressively loose. If confidence is low, keep the conservative baseline. "
         "Reply with JSON only. No prose.\n"
         "JSON contract:\n"
         f"{json.dumps(contract, ensure_ascii=False)}\n\n"
@@ -743,6 +781,25 @@ def _build_strategist_llm_repair_messages(payload: Dict[str, Any], raw_response:
         "trade_aggressiveness": "low|medium|high",
         "risk_tone": "conservative|normal|aggressive",
         "monitor_guidance": "hold_through_noise|defensive_exit|quick_take_profit",
+        "market_regime_summary": "string",
+        "policy_rationale": "string",
+        "confidence": 0.0,
+        "policy_source": "strategist",
+        "monitor_entry_policy": {
+            "timeframe_minutes": 1,
+            "breakout_lookback": 5,
+            "volume_lookback": 5,
+            "volume_ratio_min": 0.68,
+            "min_extended_from_vwap_pct": -0.02,
+            "max_extended_from_vwap_pct": 0.13,
+            "pullback_min_pct": 0.008,
+            "pullback_max_pct": 0.07,
+            "reclaim_tolerance_pct": 0.0015,
+            "breakout_buffer_pct": 0.0,
+            "intent_cooldown_sec": 60,
+            "require_vwap_reclaim": True,
+            "require_rebound": True,
+        },
         "report_focus": ["theme_accuracy", "exit_quality", "overtrading"],
     }
     raw = str(raw_response or "").strip()
@@ -1776,6 +1833,31 @@ def _scanner_bias(*, playbook: str, market_regime: str) -> str:
     return "leader"
 
 
+def _build_scanner_bias_context_seed(
+    *,
+    playbook: str,
+    scanner_bias: str,
+    monitor_entry_policy: Dict[str, Any],
+) -> Dict[str, Any]:
+    policy = dict(monitor_entry_policy or {})
+    seed = {
+        "prefer_shallow_pullback_candidates": playbook in {"pullback", "reversal"},
+        "penalize_overextended": True,
+        "prefer_reclaim_candidates": bool(policy.get("require_vwap_reclaim", True)),
+        "prefer_volume_confirmation": bool(policy.get("volume_ratio_min", 0.68) >= 0.68),
+        "bias_strength": "low",
+        "bias_source": "strategist",
+    }
+    style = str(scanner_bias or "").strip().lower()
+    if style == "momentum":
+        seed["prefer_volume_confirmation"] = True
+    elif style == "value":
+        seed["prefer_shallow_pullback_candidates"] = True
+    elif style == "leader":
+        seed["prefer_reclaim_candidates"] = True
+    return normalize_scanner_bias_context(seed, bias_source="strategist")[0].to_dict()
+
+
 def _avoid_themes(*, market_sentiment: str, playbook: str) -> List[str]:
     if market_sentiment == "bearish" or playbook == "defensive":
         return ["illiquid_microcap", "headline_only_momentum", "high_gap_speculative"]
@@ -2384,6 +2466,8 @@ def _build_strategy_policy(
     theme_strength: Dict[str, Any],
     scanner_priority: List[str],
     scanner_source_policy: Dict[str, Any],
+    scanner_bias_context: Dict[str, Any],
+    monitor_entry_policy: Dict[str, Any],
     monitor_policy: Dict[str, Any],
     exit_policy: Dict[str, Any],
     macro_stress_overlay: Dict[str, Any],
@@ -2428,6 +2512,7 @@ def _build_strategy_policy(
         },
         "scanner_policy": {
             "candidate_sources": dict(scanner_source_policy or {}),
+            "scanner_bias": dict(scanner_bias_context or {}),
             "priority_tilts": [str(x) for x in list(scanner_priority or [])],
             "score_weights": _strategy_policy_score_weights(),
             "filters": {
@@ -2442,6 +2527,7 @@ def _build_strategy_policy(
         },
         "entry_policy": dict(entry_policy),
         "monitor_policy": {
+            "entry_policy": dict(monitor_entry_policy or {}),
             "position_guards": dict(monitor_policy or {}),
             "adaptive_exit": dict(exit_policy or {}),
             "hard_risk_rails": {
@@ -2579,6 +2665,65 @@ def _build_strategist_plan(
     }
 
 
+def _build_market_regime_summary(
+    *,
+    market_regime: str,
+    market_sentiment: str,
+    market_structure: str,
+    playbook: str,
+    global_signal: Dict[str, Any],
+) -> str:
+    fear_index = dict(global_signal.get("fear_index") or {}) if isinstance(global_signal.get("fear_index"), dict) else {}
+    vix_level = _to_float(fear_index.get("level"), 0.0)
+    return (
+        f"{str(market_regime or 'neutral')} regime / {str(market_sentiment or 'neutral')} sentiment / "
+        f"{str(market_structure or 'mixed')} structure with playbook {str(playbook or 'defensive')}. "
+        f"VIX={vix_level:.2f}."
+    )
+
+
+def _build_strategist_monitor_entry_policy_seed(
+    *,
+    playbook: str,
+    market_regime: str,
+    monitor_guidance: str,
+    risk_tone: str,
+    trade_aggressiveness: str,
+) -> Dict[str, Any]:
+    policy = build_default_monitor_entry_policy().to_dict()
+    policy["policy_source"] = "strategist"
+    policy["adjustments"] = [
+        f"seed_playbook:{str(playbook or 'defensive')}",
+        f"seed_regime:{str(market_regime or 'neutral')}",
+        f"seed_guidance:{str(monitor_guidance or 'defensive_exit')}",
+        f"seed_risk_tone:{str(risk_tone or 'normal')}",
+        f"seed_trade_aggressiveness:{str(trade_aggressiveness or 'medium')}",
+    ]
+    return policy
+
+
+def _build_monitor_entry_policy_rationale(
+    *,
+    playbook: str,
+    market_regime: str,
+    market_sentiment: str,
+    monitor_guidance: str,
+    risk_tone: str,
+    trade_aggressiveness: str,
+    validation_meta: Dict[str, Any],
+) -> str:
+    summary = (
+        f"Strategist drafted {str(playbook or 'defensive')} entry policy for "
+        f"{str(market_regime or 'neutral')} / {str(market_sentiment or 'neutral')} conditions "
+        f"with guidance {str(monitor_guidance or 'defensive_exit')}, "
+        f"risk tone {str(risk_tone or 'normal')}, and aggressiveness {str(trade_aggressiveness or 'medium')}."
+    )
+    if bool(validation_meta.get("fallback_used")):
+        reason = str(validation_meta.get("fallback_reason") or "validation_fallback")
+        return f"{summary} Policy fallback used: {reason}."
+    return summary
+
+
 def _build_strategy_policy_provenance(*, commander_context: Dict[str, Any]) -> Dict[str, Any]:
     source = str(commander_context.get("source") or "strategist_node_fallback")
     merged_from = ["strategist_node"]
@@ -2594,6 +2739,8 @@ def _build_strategy_policy_provenance(*, commander_context: Dict[str, Any]) -> D
         "merged_from": merged_from,
         "commander_context_source": source,
         "strategist_plan_source": "strategist_node",
+        "monitor_entry_policy_source": "strategist",
+        "scanner_bias_source": "strategist",
         "shadow_used": bool(commander_context.get("shadow_used")),
         "strategist_fallback_used": bool(commander_context.get("strategist_fallback_used")),
     }
@@ -3352,6 +3499,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "market_sentiment_hint": market_sentiment,
         "market_structure_hint": market_structure,
         "playbook_hint": playbook,
+        "monitor_entry_policy_baseline": build_default_monitor_entry_policy().to_dict(),
         "theme_strength": dict(theme_strength),
         "themes_hint": list(themes),
         "news_query_targets": list(news_query_targets),
@@ -3367,6 +3515,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "candidate_symbols_hint": list(candidate_symbols)[:10],
         "key_events_hint": list(key_events),
+        "recent_monitor_blockers_hint": list(recent_strategy_feedback.get("recent_monitor_issues") or [])[:5],
     }
     candidate_news_sample = _sample_news_for_evidence(news_items_by_symbol)
     market_news_sample = _sample_news_for_evidence(market_news_items_by_target)
@@ -3459,6 +3608,23 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     report_focus = _merge_override_text_list(report_focus, ai_overrides.get("report_focus"), limit=6)
     scanner_bias = str(ai_overrides.get("scanner_bias") or scanner_bias).strip().lower() or scanner_bias
     monitor_guidance = str(ai_overrides.get("monitor_guidance") or monitor_guidance).strip().lower() or monitor_guidance
+    market_regime_summary = str(
+        ai_overrides.get("market_regime_summary")
+        or _build_market_regime_summary(
+            market_regime=market_regime,
+            market_sentiment=market_sentiment,
+            market_structure=market_structure,
+            playbook=playbook,
+            global_signal=global_signal,
+        )
+    ).strip()
+    policy_confidence = None
+    try:
+        if ai_overrides.get("confidence") not in (None, ""):
+            policy_confidence = min(max(float(ai_overrides.get("confidence")), 0.0), 1.0)
+    except Exception:
+        policy_confidence = None
+    policy_source = str(ai_overrides.get("policy_source") or "strategist").strip() or "strategist"
     monitor_policy_override = ai_overrides.get("monitor_policy")
     if isinstance(monitor_policy_override, dict):
         monitor_policy = {**monitor_policy, **dict(monitor_policy_override)}
@@ -3468,6 +3634,39 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             trade_aggressiveness=trade_aggressiveness,
             risk_tone=risk_tone,
         )
+    monitor_entry_policy_seed = _build_strategist_monitor_entry_policy_seed(
+        playbook=playbook,
+        market_regime=market_regime,
+        monitor_guidance=monitor_guidance,
+        risk_tone=risk_tone,
+        trade_aggressiveness=trade_aggressiveness,
+    )
+    monitor_entry_policy_input = (
+        dict(ai_overrides.get("monitor_entry_policy") or {})
+        if isinstance(ai_overrides.get("monitor_entry_policy"), dict)
+        else dict(monitor_entry_policy_seed)
+    )
+    monitor_entry_policy_obj, monitor_entry_policy_validation = normalize_monitor_entry_policy(
+        monitor_entry_policy_input,
+        fallback_policy=MonitorEntryPolicy.from_mapping(monitor_entry_policy_seed),
+        policy_source=policy_source,
+    )
+    monitor_entry_policy = monitor_entry_policy_obj.to_dict()
+    scanner_bias_context_input = {}
+    if isinstance(ai_overrides.get("scanner_bias_context"), dict):
+        scanner_bias_context_input = dict(ai_overrides.get("scanner_bias_context") or {})
+    elif isinstance(ai_overrides.get("scanner_bias"), dict):
+        scanner_bias_context_input = dict(ai_overrides.get("scanner_bias") or {})
+    scanner_bias_context_seed = _build_scanner_bias_context_seed(
+        playbook=playbook,
+        scanner_bias=scanner_bias,
+        monitor_entry_policy=monitor_entry_policy,
+    )
+    scanner_bias_context_obj, scanner_bias_context_validation = normalize_scanner_bias_context(
+        scanner_bias_context_input or scanner_bias_context_seed,
+        bias_source="strategist",
+    )
+    scanner_bias_context = scanner_bias_context_obj.to_dict()
     exit_policy_override = ai_overrides.get("exit_policy")
     if isinstance(exit_policy_override, dict):
         exit_policy = {**exit_policy, **dict(exit_policy_override)}
@@ -3553,6 +3752,18 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         monitor_policy=dict(monitor_policy),
         exit_policy=dict(exit_policy),
     )
+    policy_rationale = str(
+        ai_overrides.get("policy_rationale")
+        or _build_monitor_entry_policy_rationale(
+            playbook=playbook,
+            market_regime=market_regime,
+            market_sentiment=market_sentiment,
+            monitor_guidance=monitor_guidance,
+            risk_tone=risk_tone,
+            trade_aggressiveness=trade_aggressiveness,
+            validation_meta=monitor_entry_policy_validation,
+        )
+    ).strip()
     policy_provenance = _build_strategy_policy_provenance(commander_context=commander_context)
     strategy_policy = _build_strategy_policy(
         market_regime=market_regime,
@@ -3568,6 +3779,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         theme_strength=dict(theme_strength),
         scanner_priority=list(scanner_priority),
         scanner_source_policy=dict(scanner_source_policy),
+        scanner_bias_context=dict(scanner_bias_context),
+        monitor_entry_policy=dict(monitor_entry_policy),
         monitor_policy=dict(monitor_policy),
         exit_policy=dict(exit_policy),
         macro_stress_overlay=dict(macro_stress_overlay),
@@ -3587,11 +3800,13 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["avoid_themes"] = list(avoid_themes)
     state["playbook"] = playbook
     state["scanner_bias"] = scanner_bias
+    state["scanner_bias_context"] = dict(scanner_bias_context)
     state["scanner_priority"] = list(scanner_priority)
     state["trade_aggressiveness"] = trade_aggressiveness
     state["risk_tone"] = risk_tone
     state["monitor_guidance"] = monitor_guidance
     state["macro_stress_overlay"] = dict(macro_stress_overlay)
+    state["monitor_entry_policy"] = dict(monitor_entry_policy)
     state["monitor_policy"] = dict(monitor_policy)
     state["strategist_exit_policy"] = dict(exit_policy)
     state["strategy_policy"] = dict(strategy_policy)
@@ -3602,6 +3817,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "avoid_themes": list(avoid_themes),
         "playbook": playbook,
         "scanner_bias": scanner_bias,
+        "scanner_bias_context": dict(scanner_bias_context),
         "scanner_priority": list(scanner_priority),
         "scanner_source_policy": dict(scanner_source_policy),
         "trade_aggressiveness": trade_aggressiveness,
@@ -3615,6 +3831,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         avoid_themes=list(avoid_themes),
         playbook=playbook,
         scanner_bias=scanner_bias if scanner_bias in ("large_cap", "leader", "momentum", "value") else "leader",
+        scanner_bias_context=dict(scanner_bias_context),
         scanner_priority=list(scanner_priority),
         scanner_source_policy=dict(scanner_source_policy),
         trade_aggressiveness=trade_aggressiveness,
@@ -3657,6 +3874,21 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["exit_plan"] = dict(strategist_plan.get("exit_plan") or {})
     strategist_output["strategy_summary"] = str(strategist_plan.get("strategy_summary") or "")
     strategist_output["policy_provenance"] = dict(policy_provenance)
+    strategist_output["market_regime_summary"] = market_regime_summary
+    strategist_output["monitor_entry_policy"] = dict(monitor_entry_policy)
+    strategist_output["scanner_bias_context"] = dict(scanner_bias_context)
+    strategist_output["scanner_bias_summary"] = dict(summarize_scanner_bias_context(scanner_bias_context))
+    strategist_output["scanner_bias_validation_status"] = str(scanner_bias_context_validation.get("status") or "ok")
+    strategist_output["scanner_bias_validation_issues"] = list(scanner_bias_context_validation.get("issues") or [])
+    strategist_output["policy_rationale"] = policy_rationale
+    strategist_output["policy_source"] = policy_source
+    strategist_output["policy_validation_status"] = str(monitor_entry_policy_validation.get("status") or "ok")
+    strategist_output["policy_fallback_used"] = bool(monitor_entry_policy_validation.get("fallback_used"))
+    strategist_output["policy_fallback_reason"] = str(monitor_entry_policy_validation.get("fallback_reason") or "")
+    strategist_output["policy_validation_issues"] = list(monitor_entry_policy_validation.get("issues") or [])
+    strategist_output["policy_validation_missing_fields"] = list(monitor_entry_policy_validation.get("missing_fields") or [])
+    strategist_output["policy_validation_invalid_fields"] = list(monitor_entry_policy_validation.get("invalid_fields") or [])
+    strategist_output["confidence"] = policy_confidence
     strategist_output["commander_context_ref"] = {
         "source": str(commander_context.get("source") or ""),
         "market_regime": str(commander_context.get("market_regime") or ""),

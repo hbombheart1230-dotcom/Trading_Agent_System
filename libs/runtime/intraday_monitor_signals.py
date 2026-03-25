@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import os
 import statistics
+from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Sequence
+
+from libs.runtime.monitor_policy import MonitorEntryPolicy
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -17,16 +19,6 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(float(value))
     except Exception:
         return int(default)
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = str(os.getenv(name, "") or "").strip()
-    return _to_float(raw, default) if raw else float(default)
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = str(os.getenv(name, "") or "").strip()
-    return _to_int(raw, default) if raw else int(default)
 
 
 def _candles_from_rows(rows: Sequence[Mapping[str, Any]] | None) -> List[Dict[str, Any]]:
@@ -186,25 +178,11 @@ def _classify_series_quality(
 
 
 def resolve_intraday_entry_policy(
-    policy: Mapping[str, Any] | None = None,
+    policy: Mapping[str, Any] | MonitorEntryPolicy | None = None,
     *,
     frame: Mapping[str, Any] | None = None,
-) -> Dict[str, Any]:
-    cfg = dict(policy or {})
-    out = {
-        "enabled": bool(cfg.get("intraday_entry_enabled", True)),
-        "timeframe_minutes": max(1, _to_int(cfg.get("entry_timeframe_minutes"), _env_int("MONITOR_ENTRY_TIMEFRAME_MINUTES", 1))),
-        "breakout_lookback": max(3, _to_int(cfg.get("entry_breakout_lookback"), _env_int("MONITOR_ENTRY_BREAKOUT_LOOKBACK", 5))),
-        "volume_lookback": max(3, _to_int(cfg.get("entry_volume_lookback"), _env_int("MONITOR_ENTRY_VOLUME_LOOKBACK", 5))),
-        "volume_ratio_min": max(0.1, _to_float(cfg.get("entry_volume_ratio_min"), _env_float("MONITOR_ENTRY_VOLUME_RATIO_MIN", 1.0))),
-        "min_extended_from_vwap_pct": _to_float(cfg.get("entry_min_extended_from_vwap_pct"), _env_float("MONITOR_ENTRY_MIN_EXTENDED_FROM_VWAP_PCT", -0.02)),
-        "max_extended_from_vwap_pct": max(0.0, _to_float(cfg.get("entry_max_extended_from_vwap_pct"), _env_float("MONITOR_ENTRY_MAX_EXTENDED_FROM_VWAP_PCT", 0.02))),
-        "pullback_min_pct": max(0.0, _to_float(cfg.get("entry_pullback_min_pct"), _env_float("MONITOR_ENTRY_PULLBACK_MIN_PCT", 0.012))),
-        "pullback_max_pct": max(0.0, _to_float(cfg.get("entry_pullback_max_pct"), _env_float("MONITOR_ENTRY_PULLBACK_MAX_PCT", 0.03))),
-        "reclaim_tolerance_pct": max(0.0, _to_float(cfg.get("entry_reclaim_tolerance_pct"), _env_float("MONITOR_ENTRY_RECLAIM_TOLERANCE_PCT", 0.0015))),
-        "breakout_buffer_pct": max(0.0, _to_float(cfg.get("entry_breakout_buffer_pct"), _env_float("MONITOR_ENTRY_BREAKOUT_BUFFER_PCT", 0.0))),
-        "intent_cooldown_sec": max(0, _to_int(cfg.get("entry_intent_cooldown_sec"), _env_int("MONITOR_ENTRY_INTENT_COOLDOWN_SEC", 60))),
-    }
+) -> MonitorEntryPolicy:
+    resolved = policy if isinstance(policy, MonitorEntryPolicy) else MonitorEntryPolicy.from_mapping(policy)
     adjustments: List[str] = []
     playbook = str((frame or {}).get("playbook") or "").strip().lower()
     guidance = str((frame or {}).get("monitor_guidance") or "").strip().lower()
@@ -212,68 +190,107 @@ def resolve_intraday_entry_policy(
     aggressiveness = str((frame or {}).get("trade_aggressiveness") or "").strip().lower()
 
     if playbook == "breakout":
-        out["volume_ratio_min"] = max(1.0, float(out["volume_ratio_min"]))
-        out["max_extended_from_vwap_pct"] = min(0.03, max(float(out["max_extended_from_vwap_pct"]), 0.02))
-        out["pullback_max_pct"] = min(0.04, max(float(out["pullback_max_pct"]), 0.03))
+        resolved = replace(
+            resolved,
+            volume_ratio_min=max(1.0, float(resolved.volume_ratio_min)),
+            max_extended_from_vwap_pct=min(0.03, max(float(resolved.max_extended_from_vwap_pct), 0.02)),
+            pullback_max_pct=min(0.04, max(float(resolved.pullback_max_pct), 0.03)),
+        )
         adjustments.append("playbook:breakout")
     elif playbook in ("pullback", "reversal"):
-        out["breakout_lookback"] = max(3, int(out["breakout_lookback"]) - 1)
-        out["volume_ratio_min"] = max(0.7, min(float(out["volume_ratio_min"]), 0.9))
-        out["min_extended_from_vwap_pct"] = min(float(out["min_extended_from_vwap_pct"]), -0.005)
-        out["max_extended_from_vwap_pct"] = max(float(out["max_extended_from_vwap_pct"]), 0.05)
-        # Respect the live base calibration instead of silently hardening pullback entry above env.
-        out["pullback_min_pct"] = max(float(out["pullback_min_pct"]), 0.012)
-        out["pullback_max_pct"] = max(float(out["pullback_max_pct"]), 0.06)
+        resolved = replace(
+            resolved,
+            breakout_lookback=max(3, int(resolved.breakout_lookback) - 1),
+            volume_ratio_min=max(0.68, min(float(resolved.volume_ratio_min), 0.9)),
+            min_extended_from_vwap_pct=min(float(resolved.min_extended_from_vwap_pct), -0.005),
+            max_extended_from_vwap_pct=max(float(resolved.max_extended_from_vwap_pct), 0.05),
+            pullback_min_pct=max(0.008, float(resolved.pullback_min_pct) - 0.004),
+            pullback_max_pct=max(float(resolved.pullback_max_pct), 0.06),
+        )
+        # Keep shallow pullback entries available during live pullback monitoring.
         adjustments.append(f"playbook:{playbook}")
     elif playbook == "defensive":
-        out["volume_ratio_min"] = min(1.1, float(out["volume_ratio_min"]) + 0.03)
-        out["max_extended_from_vwap_pct"] = max(0.03, min(float(out["max_extended_from_vwap_pct"]), 0.05))
-        out["pullback_max_pct"] = min(float(out["pullback_max_pct"]), 0.05)
+        resolved = replace(
+            resolved,
+            volume_ratio_min=min(1.1, float(resolved.volume_ratio_min) + 0.03),
+            max_extended_from_vwap_pct=max(0.03, min(float(resolved.max_extended_from_vwap_pct), 0.05)),
+            pullback_max_pct=min(float(resolved.pullback_max_pct), 0.05),
+        )
         adjustments.append("playbook:defensive")
 
     if guidance == "hold_through_noise":
-        out["pullback_max_pct"] = min(0.07, float(out["pullback_max_pct"]) + 0.005)
+        resolved = replace(
+            resolved,
+            pullback_max_pct=min(0.07, float(resolved.pullback_max_pct) + 0.005),
+        )
         adjustments.append("guidance:hold_through_noise")
     elif guidance == "defensive_exit":
         if playbook in ("pullback", "reversal"):
-            out["volume_ratio_min"] = min(1.0, float(out["volume_ratio_min"]) + 0.01)
-            out["max_extended_from_vwap_pct"] = max(0.05, float(out["max_extended_from_vwap_pct"]))
+            resolved = replace(
+                resolved,
+                volume_ratio_min=max(0.68, min(1.0, float(resolved.volume_ratio_min) - 0.04)),
+                max_extended_from_vwap_pct=max(0.05, float(resolved.max_extended_from_vwap_pct)),
+            )
             adjustments.append("guidance:defensive_exit_pullback")
         else:
-            out["volume_ratio_min"] = min(1.1, float(out["volume_ratio_min"]) + 0.01)
+            next_max_extended = float(resolved.max_extended_from_vwap_pct)
             if playbook != "defensive":
-                out["max_extended_from_vwap_pct"] = max(0.03, float(out["max_extended_from_vwap_pct"]) - 0.0025)
+                next_max_extended = max(0.03, float(resolved.max_extended_from_vwap_pct) - 0.0025)
+            resolved = replace(
+                resolved,
+                volume_ratio_min=min(1.1, float(resolved.volume_ratio_min) + 0.01),
+                max_extended_from_vwap_pct=next_max_extended,
+            )
             adjustments.append("guidance:defensive_exit")
 
     if risk_tone == "conservative":
         if playbook in ("pullback", "reversal"):
-            out["volume_ratio_min"] = min(1.0, float(out["volume_ratio_min"]))
-            out["max_extended_from_vwap_pct"] = max(0.05, float(out["max_extended_from_vwap_pct"]))
+            resolved = replace(
+                resolved,
+                volume_ratio_min=min(1.0, float(resolved.volume_ratio_min)),
+                max_extended_from_vwap_pct=max(0.05, float(resolved.max_extended_from_vwap_pct)),
+            )
             adjustments.append("risk_tone:conservative_pullback")
         else:
-            out["volume_ratio_min"] = min(1.1, float(out["volume_ratio_min"]) + 0.01)
+            next_max_extended = float(resolved.max_extended_from_vwap_pct)
             if playbook != "defensive":
-                out["max_extended_from_vwap_pct"] = max(0.03, float(out["max_extended_from_vwap_pct"]) - 0.0025)
+                next_max_extended = max(0.03, float(resolved.max_extended_from_vwap_pct) - 0.0025)
+            resolved = replace(
+                resolved,
+                volume_ratio_min=min(1.1, float(resolved.volume_ratio_min) + 0.01),
+                max_extended_from_vwap_pct=next_max_extended,
+            )
             adjustments.append("risk_tone:conservative")
     elif risk_tone == "aggressive":
-        out["volume_ratio_min"] = max(0.9, float(out["volume_ratio_min"]) - 0.05)
-        out["max_extended_from_vwap_pct"] = min(0.08, float(out["max_extended_from_vwap_pct"]) + 0.01)
+        resolved = replace(
+            resolved,
+            volume_ratio_min=max(0.9, float(resolved.volume_ratio_min) - 0.05),
+            max_extended_from_vwap_pct=min(0.08, float(resolved.max_extended_from_vwap_pct) + 0.01),
+        )
         adjustments.append("risk_tone:aggressive")
 
     if aggressiveness == "low":
         if playbook in ("pullback", "reversal"):
-            out["volume_ratio_min"] = min(1.1, float(out["volume_ratio_min"]) + 0.02)
+            resolved = replace(
+                resolved,
+                volume_ratio_min=min(1.1, float(resolved.volume_ratio_min) + 0.02),
+            )
             adjustments.append("trade_aggressiveness:low_pullback")
         else:
-            out["volume_ratio_min"] = min(1.2, float(out["volume_ratio_min"]) + 0.02)
+            resolved = replace(
+                resolved,
+                volume_ratio_min=min(1.2, float(resolved.volume_ratio_min) + 0.02),
+            )
             adjustments.append("trade_aggressiveness:low")
     elif aggressiveness == "high":
-        out["volume_ratio_min"] = max(0.9, float(out["volume_ratio_min"]) - 0.05)
-        out["max_extended_from_vwap_pct"] = min(0.08, float(out["max_extended_from_vwap_pct"]) + 0.005)
+        resolved = replace(
+            resolved,
+            volume_ratio_min=max(0.9, float(resolved.volume_ratio_min) - 0.05),
+            max_extended_from_vwap_pct=min(0.08, float(resolved.max_extended_from_vwap_pct) + 0.005),
+        )
         adjustments.append("trade_aggressiveness:high")
 
-    out["adjustments"] = adjustments
-    return out
+    return replace(resolved, adjustments=tuple(adjustments))
 
 
 def evaluate_intraday_entry_signal(
@@ -281,14 +298,15 @@ def evaluate_intraday_entry_signal(
     *,
     current_price: Any = None,
     features: Mapping[str, Any] | None = None,
-    policy: Mapping[str, Any] | None = None,
+    policy: Mapping[str, Any] | MonitorEntryPolicy | None = None,
     frame: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     resolved_policy = resolve_intraday_entry_policy(policy, frame=frame)
-    timeframe_minutes = int(resolved_policy.get("timeframe_minutes") or 1)
+    applied_policy = resolved_policy.to_dict()
+    timeframe_minutes = int(resolved_policy.timeframe_minutes or 1)
     candles = _compress_candles(rows or [], timeframe_minutes)
     out: Dict[str, Any] = {
-        "enabled": bool(resolved_policy.get("enabled")),
+        "enabled": bool(resolved_policy.enabled),
         "evaluated": False,
         "triggered": False,
         "decision": "WAIT",
@@ -296,7 +314,8 @@ def evaluate_intraday_entry_signal(
         "pattern": "",
         "signal_chain": [],
         "metrics": {},
-        "thresholds": dict(resolved_policy),
+        "thresholds": dict(applied_policy),
+        "applied_policy": dict(applied_policy),
     }
     if not out["enabled"]:
         out["reason"] = "intraday_entry_disabled"
@@ -316,8 +335,8 @@ def evaluate_intraday_entry_signal(
         }
         return out
     min_required_bars = max(
-        int(resolved_policy.get("breakout_lookback") or 5) + 1,
-        int(resolved_policy.get("volume_lookback") or 5) + 1,
+        int(resolved_policy.breakout_lookback or 5) + 1,
+        int(resolved_policy.volume_lookback or 5) + 1,
         4,
     )
     series_quality = _classify_series_quality(candles, timeframe_minutes=timeframe_minutes)
@@ -359,8 +378,8 @@ def evaluate_intraday_entry_signal(
     out["evaluated"] = True
     last = candles[-1]
     prior = candles[-2]
-    lookback = int(resolved_policy.get("breakout_lookback") or 5)
-    volume_lookback = int(resolved_policy.get("volume_lookback") or 5)
+    lookback = int(resolved_policy.breakout_lookback or 5)
+    volume_lookback = int(resolved_policy.volume_lookback or 5)
     breakout_window = candles[-(lookback + 1):-1]
     volume_window = candles[-(volume_lookback + 1):-1]
     recent_high = max(_to_float(row.get("high")) for row in breakout_window)
@@ -387,8 +406,8 @@ def evaluate_intraday_entry_signal(
         extended_from_vwap_pct = (current_close / current_vwap) - 1.0
 
     prior_close = _to_float(prior.get("close"))
-    reclaim_tolerance_pct = _to_float(resolved_policy.get("reclaim_tolerance_pct"))
-    breakout_buffer_pct = _to_float(resolved_policy.get("breakout_buffer_pct"))
+    reclaim_tolerance_pct = _to_float(resolved_policy.reclaim_tolerance_pct)
+    breakout_buffer_pct = _to_float(resolved_policy.breakout_buffer_pct)
     breakout_level = recent_high * (1.0 + breakout_buffer_pct) if recent_high > 0.0 else 0.0
     breakout_ok = breakout_level > 0.0 and current_close >= breakout_level and current_high >= recent_high
     vwap_hold_ok = current_vwap > 0.0 and current_close >= current_vwap * (1.0 - reclaim_tolerance_pct)
@@ -401,12 +420,12 @@ def evaluate_intraday_entry_signal(
     pullback_floor = min([px for px in pullback_lows if px > 0.0], default=0.0)
     pullback_depth_pct = ((recent_high - pullback_floor) / recent_high) if recent_high > 0.0 and pullback_floor > 0.0 else 0.0
     rebound_ok = current_close > prior_bar_high and current_close >= prior_close
-    volume_ok = volume_ratio >= _to_float(resolved_policy.get("volume_ratio_min"))
-    min_extended_from_vwap_pct = _to_float(resolved_policy.get("min_extended_from_vwap_pct"))
-    max_extended_from_vwap_pct = _to_float(resolved_policy.get("max_extended_from_vwap_pct"))
+    volume_ok = volume_ratio >= _to_float(resolved_policy.volume_ratio_min)
+    min_extended_from_vwap_pct = _to_float(resolved_policy.min_extended_from_vwap_pct)
+    max_extended_from_vwap_pct = _to_float(resolved_policy.max_extended_from_vwap_pct)
     extension_ok = min_extended_from_vwap_pct <= extended_from_vwap_pct <= max_extended_from_vwap_pct
-    pullback_min_pct = _to_float(resolved_policy.get("pullback_min_pct"))
-    pullback_max_pct = _to_float(resolved_policy.get("pullback_max_pct"))
+    pullback_min_pct = _to_float(resolved_policy.pullback_min_pct)
+    pullback_max_pct = _to_float(resolved_policy.pullback_max_pct)
     pullback_mature = pullback_depth_pct >= pullback_min_pct
     pullback_not_too_deep = pullback_depth_pct <= pullback_max_pct
     pullback_ok = pullback_mature and pullback_not_too_deep
@@ -487,8 +506,8 @@ def evaluate_intraday_entry_signal(
     threshold_margins = {
         "volume_ratio": {
             "actual": volume_ratio,
-            "min": _to_float(resolved_policy.get("volume_ratio_min")),
-            "distance_to_min": volume_ratio - _to_float(resolved_policy.get("volume_ratio_min")),
+            "min": _to_float(resolved_policy.volume_ratio_min),
+            "distance_to_min": volume_ratio - _to_float(resolved_policy.volume_ratio_min),
         },
         "extended_from_vwap_pct": {
             "actual": extended_from_vwap_pct,

@@ -1198,8 +1198,12 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         if isinstance(monitor.get("entry_thresholds"), dict)
         else {}
     )
+    if not entry_thresholds and isinstance(monitor.get("applied_policy"), dict):
+        entry_thresholds = dict(monitor.get("applied_policy") or {})
     if not entry_thresholds and isinstance(threshold_snapshot.get("entry_thresholds"), dict):
         entry_thresholds = dict(threshold_snapshot.get("entry_thresholds") or {})
+    if not entry_thresholds and isinstance(threshold_snapshot.get("applied_policy"), dict):
+        entry_thresholds = dict(threshold_snapshot.get("applied_policy") or {})
     entry_guard_blocked = bool(monitor.get("entry_guard_blocked"))
     entry_guard_reason = str(monitor.get("entry_guard_reason") or "").strip()
     entry_evaluated = bool(monitor.get("entry_evaluated"))

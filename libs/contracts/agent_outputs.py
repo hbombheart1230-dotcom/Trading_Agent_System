@@ -284,6 +284,8 @@ def _build_scanner_trace_summary(
     selected: Dict[str, Any],
     candidate_preview: List[Dict[str, Any]],
     selection_summary: str,
+    scanner_bias_applied: bool = False,
+    scanner_bias_summary: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     selected_candidate = _dict(selected.get("candidate"))
     selected_sources = _listify(selected_candidate.get("sources"), limit=6, max_len=60)
@@ -306,6 +308,7 @@ def _build_scanner_trace_summary(
         missing_flags.append("candidate_pool_missing")
     if not positive_factors and not negative_factors:
         missing_flags.append("score_breakdown_missing")
+    bias_summary_dict = _dict(scanner_bias_summary)
     summary = (
         f"Scanner selected {symbol or 'not_captured'} rank #{selected_rank or 0}/{universe_size or 0} "
         f"with score={selected_score_total:.3f} and margin_vs_second={margin_vs_second:.3f}."
@@ -324,6 +327,11 @@ def _build_scanner_trace_summary(
                 "Negative factors: " + ", ".join(negative_factors)
                 if negative_factors
                 else "Negative factors were not captured"
+            ),
+            (
+                "Bias: " + str(bias_summary_dict.get("summary") or "")
+                if scanner_bias_applied and str(bias_summary_dict.get("summary") or "").strip()
+                else ""
             ),
         ],
         limit=6,
@@ -344,6 +352,8 @@ def _build_scanner_trace_summary(
         "critical_negative_factors": negative_factors,
         "top_candidates": candidate_preview[:3],
         "runner_ups": runner_ups,
+        "scanner_bias_applied": bool(scanner_bias_applied),
+        "scanner_bias_summary": bias_summary_dict,
         "missing_flags": missing_flags,
     }
 
@@ -725,6 +735,14 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         commander_context = _dict(state.get("commander_decision"))
     strategist_plan = _dict(strategy_policy.get("strategist_plan"))
     policy_provenance = _dict(strategy_policy.get("provenance"))
+    monitor_entry_policy = _dict(strategist_output.get("monitor_entry_policy"))
+    policy_rationale = _clip(strategist_output.get("policy_rationale"), max_len=320)
+    policy_validation_status = _clip(strategist_output.get("policy_validation_status"), max_len=80)
+    policy_source = _clip(strategist_output.get("policy_source"), max_len=80)
+    policy_fallback_reason = _clip(strategist_output.get("policy_fallback_reason"), max_len=220)
+    policy_validation_issues = _listify(strategist_output.get("policy_validation_issues"), limit=8, max_len=120)
+    market_regime_summary = _clip(strategist_output.get("market_regime_summary"), max_len=220)
+    confidence = strategist_output.get("confidence")
     selected_playbook = _clip(
         strategist_output.get("selected_playbook")
         or strategist_plan.get("selected_playbook")
@@ -924,6 +942,27 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "exit_plan": exit_plan,
             "policy_provenance": policy_provenance,
             "strategy_summary": strategy_summary,
+            "market_regime_summary": market_regime_summary,
+            "monitor_entry_policy": monitor_entry_policy,
+            "policy_rationale": policy_rationale,
+            "policy_source": policy_source,
+            "policy_validation_status": policy_validation_status,
+            "policy_fallback_used": bool(strategist_output.get("policy_fallback_used")),
+            "policy_fallback_reason": policy_fallback_reason,
+            "policy_validation_issues": policy_validation_issues,
+            "confidence": confidence,
+            "scanner_bias": _clip(strategist_output.get("scanner_bias"), max_len=80),
+            "scanner_bias_context": _dict(strategist_output.get("scanner_bias_context")),
+            "scanner_bias_summary": _dict(strategist_output.get("scanner_bias_summary")),
+            "scanner_bias_validation_status": _clip(
+                strategist_output.get("scanner_bias_validation_status"),
+                max_len=80,
+            ),
+            "scanner_bias_validation_issues": _listify(
+                strategist_output.get("scanner_bias_validation_issues"),
+                limit=8,
+                max_len=180,
+            ),
             "trace_summary": trace_summary,
             "themes": themes,
             "avoid_themes": avoid_themes,
@@ -1016,6 +1055,29 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     critical_positive_factors = [f"{k}:{_safe_float(v, 0.0):.3f}" for k, v in selected_score_breakdown.items() if _safe_float(v, 0.0) > 0][:4]
     critical_negative_factors = [f"{k}:{_safe_float(v, 0.0):.3f}" for k, v in selected_score_breakdown.items() if _safe_float(v, 0.0) < 0][:4]
     selection_summary = _clip(selected.get("why"), max_len=240) or _clip(scanner_output.get("selection_summary"), max_len=240)
+    playbook = _clip(
+        scanner_output.get("playbook")
+        or scanner_output.get("strategist_playbook")
+        or _dict(state.get("strategist_output")).get("playbook"),
+        max_len=80,
+    )
+    policy_provenance_ref = _dict(scanner_output.get("policy_provenance_ref"))
+    policy_source = _clip(
+        scanner_output.get("policy_source")
+        or policy_provenance_ref.get("policy_source")
+        or _dict(scanner_output.get("policy_provenance")).get("applied_policy_source")
+        or _dict(scanner_output.get("policy_provenance")).get("monitor_entry_policy_source"),
+        max_len=120,
+    )
+    applied_policy_present = bool(
+        scanner_output.get("applied_policy_present")
+        if scanner_output.get("applied_policy_present") is not None
+        else policy_provenance_ref.get("applied_policy_present")
+    )
+    monitor_entry_policy_summary = _dict(
+        scanner_output.get("monitor_entry_policy_summary")
+        or policy_provenance_ref.get("monitor_entry_policy_summary")
+    )
     rejection_rows = [row for row in list(state.get("scanner_runner_up_reasons") or []) if isinstance(row, dict)]
     selection_reason_detail = {
         "selected_symbol": symbol,
@@ -1041,6 +1103,27 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         selection_summary=selection_summary,
         runner_ups=rejection_rows,
         selected=selected,
+    )
+    scanner_bias_summary = _dict(
+        scanner_output.get("scanner_bias_summary")
+        or policy_provenance_ref.get("scanner_bias_summary")
+        or candidate_selection_reason.get("scanner_bias_summary")
+    )
+    scanner_bias_applied = bool(
+        scanner_output.get("scanner_bias_applied")
+        if scanner_output.get("scanner_bias_applied") is not None
+        else candidate_selection_reason.get("scanner_bias_applied")
+    )
+    candidate_bias_adjustments = _dict_list(
+        scanner_output.get("candidate_bias_adjustments")
+        or candidate_selection_reason.get("candidate_bias_adjustments"),
+        limit=5,
+    )
+    selection_reason_with_bias = _clip(
+        scanner_output.get("selection_reason_with_bias")
+        or candidate_selection_reason.get("selection_reason_with_bias")
+        or selection_summary,
+        max_len=320,
     )
     runner_up_symbol = ""
     ranking_rows = [row for row in list(candidate_ranking_table.get("rows") or []) if isinstance(row, dict)]
@@ -1078,6 +1161,8 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         selected=selected,
         candidate_preview=candidate_preview,
         selection_summary=selection_summary,
+        scanner_bias_applied=scanner_bias_applied,
+        scanner_bias_summary=scanner_bias_summary,
     )
     artifact = _base_output(state, agent="scanner", symbol=symbol)
     artifact.update(
@@ -1110,6 +1195,15 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "selected_symbol": symbol,
             "selected_rank": selected_rank,
             "runner_up_symbol": runner_up_symbol,
+            "playbook": playbook,
+            "policy_source": policy_source,
+            "applied_policy_present": applied_policy_present,
+            "monitor_entry_policy_summary": monitor_entry_policy_summary,
+            "scanner_bias_context": _dict(scanner_output.get("scanner_bias_context")),
+            "scanner_bias_applied": scanner_bias_applied,
+            "scanner_bias_summary": scanner_bias_summary,
+            "candidate_bias_adjustments": candidate_bias_adjustments,
+            "selection_reason_with_bias": selection_reason_with_bias,
             "selection_reason": selection_summary,
             "selection_reason_detail": selection_reason_detail,
             "score_breakdown_by_symbol": score_breakdown_by_symbol,
@@ -1321,6 +1415,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     elif decision_reason_chain:
         evidence_quality = "weak"
     threshold_snapshot = {
+        "applied_policy": _dict(entry_info.get("applied_policy")) or _dict(entry_info.get("thresholds")),
         "entry_thresholds": _dict(entry_info.get("thresholds")),
         "entry_threshold_margins": _dict(entry_info.get("threshold_margins")),
         "entry_latest_candle_ts": entry_info.get("metrics", {}).get("latest_candle_ts") if isinstance(entry_info.get("metrics"), dict) else None,
@@ -1393,6 +1488,13 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "primary_reason_text": _clip(primary_reason_code.replace("_", " "), max_len=220),
             "secondary_reason_codes": secondary_reason_codes,
             "threshold_snapshot": threshold_snapshot,
+            "applied_policy": _dict(entry_info.get("applied_policy")) or _dict(entry_info.get("thresholds")),
+            "policy_source": _clip(_dict(policy_trace.get("policy_ref")).get("policy_source"), max_len=120),
+            "policy_validation_status": _clip(_dict(policy_trace.get("policy_ref")).get("policy_validation_status"), max_len=80),
+            "policy_fallback_used": _dict(policy_trace.get("policy_ref")).get("policy_fallback_used"),
+            "policy_fallback_reason": _clip(_dict(policy_trace.get("policy_ref")).get("policy_fallback_reason"), max_len=220),
+            "override_reason": _clip(_dict(policy_trace.get("policy_ref")).get("override_reason"), max_len=180),
+            "applied_policy_source_chain": _listify(_dict(policy_trace.get("policy_ref")).get("applied_policy_source_chain"), limit=6, max_len=80),
             "signal_snapshot": signal_snapshot,
             "market_snapshot_refs": market_snapshot_refs,
             "policy_ref": dict(policy_trace.get("policy_ref") or {}),
@@ -1737,6 +1839,13 @@ def build_commander_output_artifact(
     )
     source_priority = _listify(commander_decision.get("source_priority"), limit=4, max_len=40)
     strategist_fallback_used = bool(commander_decision.get("strategist_fallback_used"))
+    applied_policy = _dict(commander_decision.get("applied_policy"))
+    policy_source = _clip(commander_decision.get("policy_source"), max_len=120)
+    policy_validation_status = _clip(commander_decision.get("policy_validation_status"), max_len=80)
+    policy_fallback_used = bool(commander_decision.get("policy_fallback_used"))
+    policy_fallback_reason = _clip(commander_decision.get("policy_fallback_reason"), max_len=220)
+    override_reason = _clip(commander_decision.get("override_reason"), max_len=180)
+    applied_policy_source_chain = _listify(commander_decision.get("applied_policy_source_chain"), limit=6, max_len=80)
     artifact = _base_output(state, agent="commander", status=status or "ok")
     artifact.update(
         {
@@ -1794,6 +1903,13 @@ def build_commander_output_artifact(
             "shadow_alignment": shadow_alignment,
             "source_priority": source_priority,
             "strategist_fallback_used": strategist_fallback_used,
+            "applied_policy": applied_policy,
+            "policy_source": policy_source,
+            "policy_validation_status": policy_validation_status,
+            "policy_fallback_used": policy_fallback_used,
+            "policy_fallback_reason": policy_fallback_reason,
+            "override_reason": override_reason,
+            "applied_policy_source_chain": applied_policy_source_chain,
             "goal": _clip(
                 decision_frame.get("goal")
                 or ("Execute full session chain." if phase == "session" else f"Run {phase} phase safely."),

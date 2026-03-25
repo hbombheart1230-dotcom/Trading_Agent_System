@@ -218,6 +218,13 @@ def _build_reasoning_trace(out: Dict[str, Any]) -> Dict[str, Any]:
             "llm_policy": str(commander.get("llm_policy") or ""),
             "no_trade_reason_code": str(commander.get("shadow_reason_code") or commander.get("no_trade_reason_code") or ""),
             "source_priority": list(commander.get("source_priority") or []),
+            "applied_policy": dict(commander.get("applied_policy") or {}),
+            "policy_source": str(commander.get("policy_source") or ""),
+            "policy_validation_status": str(commander.get("policy_validation_status") or ""),
+            "policy_fallback_used": bool(commander.get("policy_fallback_used")),
+            "policy_fallback_reason": str(commander.get("policy_fallback_reason") or ""),
+            "override_reason": str(commander.get("override_reason") or ""),
+            "applied_policy_source_chain": list(commander.get("applied_policy_source_chain") or []),
         },
         strategist_summary={
             "summary": str(strategist.get("strategy_summary") or strategist.get("news_query_reasoning") or strategist.get("playbook") or ""),
@@ -236,6 +243,18 @@ def _build_reasoning_trace(out: Dict[str, Any]) -> Dict[str, Any]:
             "runner_up_symbol": str(scanner.get("runner_up_symbol") or ""),
             "ranking_factors": list(scanner.get("ranking_factors") or []),
             "rejected_candidates": list(scanner.get("rejected_candidates") or []),
+            "playbook": str(scanner.get("playbook") or ""),
+            "policy_source": str(scanner.get("policy_source") or ""),
+            "applied_policy_present": bool(scanner.get("applied_policy_present")),
+            "monitor_entry_policy_summary": dict(scanner.get("monitor_entry_policy_summary") or {}),
+            "scanner_bias_applied": bool(scanner.get("scanner_bias_applied")),
+            "scanner_bias_summary": dict(scanner.get("scanner_bias_summary") or {}),
+            "candidate_bias_adjustments": list(scanner.get("candidate_bias_adjustments") or []),
+            "selection_reason_with_bias": str(
+                scanner.get("selection_reason_with_bias")
+                or ((scanner.get("selection_basis") or {}).get("summary") if isinstance(scanner.get("selection_basis"), dict) else "")
+                or ""
+            ),
         },
         monitor_summary={
             "summary": str(
@@ -250,6 +269,11 @@ def _build_reasoning_trace(out: Dict[str, Any]) -> Dict[str, Any]:
             "entry_blockers": list(monitor.get("entry_blockers") or []),
             "timing_assessment": dict(monitor.get("timing_assessment") or {}),
             "exit_trigger_basis": dict(monitor.get("exit_trigger_basis") or {}),
+            "policy_source": str(monitor.get("policy_source") or ""),
+            "policy_validation_status": str(monitor.get("policy_validation_status") or ""),
+            "policy_fallback_used": bool(monitor.get("policy_fallback_used")),
+            "override_reason": str(monitor.get("override_reason") or ""),
+            "applied_policy": dict(monitor.get("applied_policy") or {}),
         },
     )
 
@@ -480,6 +504,8 @@ def generate_agent_pipeline_trace_report(
     monitor_summary = _latest_row(run_rows, stage="monitor", event="summary")
     monitor_summary_payload = monitor_summary.get("payload") if isinstance(monitor_summary.get("payload"), dict) else {}
     monitor_trace = _latest_decision_trace_payload(run_rows, event="entry_exit_decision", agent="monitor")
+    scanner_policy_ref = scanner_trace.get("policy_provenance_ref") if isinstance(scanner_trace.get("policy_provenance_ref"), dict) else {}
+    monitor_policy_ref = monitor_trace.get("policy_ref") if isinstance(monitor_trace.get("policy_ref"), dict) else {}
 
     supervisor_trace = _latest_decision_trace_payload(run_rows, event="verdict", agent="supervisor")
     executor_trace = _latest_decision_trace_payload(run_rows, event="result", agent="executor")
@@ -613,6 +639,13 @@ def generate_agent_pipeline_trace_report(
             "shadow_reason_code": str(route_end_payload.get("shadow_reason_code") or ""),
             "source_priority": list(route_end_payload.get("source_priority") or []),
             "strategist_fallback_used": bool(route_end_payload.get("strategist_fallback_used")),
+            "applied_policy": dict(route_end_payload.get("applied_policy") or {}),
+            "policy_source": str(route_end_payload.get("policy_source") or ""),
+            "policy_validation_status": str(route_end_payload.get("policy_validation_status") or ""),
+            "policy_fallback_used": bool(route_end_payload.get("policy_fallback_used")),
+            "policy_fallback_reason": str(route_end_payload.get("policy_fallback_reason") or ""),
+            "override_reason": str(route_end_payload.get("override_reason") or ""),
+            "applied_policy_source_chain": list(route_end_payload.get("applied_policy_source_chain") or []),
         },
         "strategist": {
             "news_source": news_source,
@@ -693,6 +726,26 @@ def generate_agent_pipeline_trace_report(
             "selection_basis": dict(scanner_trace.get("selection_basis") or {}),
             "ranking_factors": list(scanner_trace.get("ranking_factors") or []),
             "rejected_candidates": list(scanner_trace.get("rejected_candidates") or []),
+            "playbook": str(scanner_trace.get("playbook") or scanner_policy_ref.get("playbook") or ""),
+            "policy_source": str(scanner_trace.get("policy_source") or scanner_policy_ref.get("policy_source") or ""),
+            "applied_policy_present": bool(
+                scanner_trace.get("applied_policy_present")
+                if scanner_trace.get("applied_policy_present") is not None
+                else scanner_policy_ref.get("applied_policy_present")
+            ),
+            "monitor_entry_policy_summary": dict(
+                scanner_trace.get("monitor_entry_policy_summary")
+                or scanner_policy_ref.get("monitor_entry_policy_summary")
+                or {}
+            ),
+            "scanner_bias_applied": bool(scanner_trace.get("scanner_bias_applied")),
+            "scanner_bias_summary": dict(scanner_trace.get("scanner_bias_summary") or {}),
+            "candidate_bias_adjustments": list(scanner_trace.get("candidate_bias_adjustments") or [])[:5],
+            "selection_reason_with_bias": str(
+                scanner_trace.get("selection_reason_with_bias")
+                or ((scanner_trace.get("selection_basis") or {}).get("summary") if isinstance(scanner_trace.get("selection_basis"), dict) else "")
+                or ""
+            ),
             "shadow_used": bool(scanner_trace.get("shadow_used")),
             "strategist_fallback_used": bool(scanner_trace.get("strategist_fallback_used")),
         },
@@ -716,6 +769,25 @@ def generate_agent_pipeline_trace_report(
             "entry_blockers": list(monitor_trace.get("entry_blockers") or []),
             "timing_assessment": dict(monitor_trace.get("timing_assessment") or {}),
             "exit_trigger_basis": dict(monitor_trace.get("exit_trigger_basis") or {}),
+            "applied_policy": dict(monitor_trace.get("applied_policy") or monitor_policy_ref.get("applied_policy") or {}),
+            "policy_source": str(monitor_trace.get("policy_source") or monitor_policy_ref.get("policy_source") or ""),
+            "policy_validation_status": str(
+                monitor_trace.get("policy_validation_status") or monitor_policy_ref.get("policy_validation_status") or ""
+            ),
+            "policy_fallback_used": bool(
+                monitor_trace.get("policy_fallback_used")
+                if monitor_trace.get("policy_fallback_used") is not None
+                else monitor_policy_ref.get("policy_fallback_used")
+            ),
+            "policy_fallback_reason": str(
+                monitor_trace.get("policy_fallback_reason") or monitor_policy_ref.get("policy_fallback_reason") or ""
+            ),
+            "override_reason": str(monitor_trace.get("override_reason") or monitor_policy_ref.get("override_reason") or ""),
+            "applied_policy_source_chain": list(
+                monitor_trace.get("applied_policy_source_chain")
+                or monitor_policy_ref.get("applied_policy_source_chain")
+                or []
+            ),
             "shadow_used": bool(monitor_trace.get("shadow_used")),
             "strategist_fallback_used": bool(monitor_trace.get("strategist_fallback_used")),
         },
