@@ -547,6 +547,10 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
     scanner_reason = _as_dict(story_input.get("scanner_reason_human"))
     market_context = _as_dict(story_input.get("market_context_human"))
     monitor_reason = _as_dict(story_input.get("monitor_reason_human"))
+    strategist_evidence_trace = _as_dict(story_input.get("strategist_evidence_trace"))
+    scanner_selection_trace = _as_dict(story_input.get("scanner_selection_trace"))
+    monitor_stop_policy_trace = _as_dict(story_input.get("monitor_stop_policy_trace"))
+    monitor_blocker_trace = _as_dict(story_input.get("monitor_blocker_trace"))
     canonical = _as_dict(story_input.get("canonical_agent_artifacts"))
     canonical_commander = _as_dict(canonical.get("commander"))
     canonical_commander_decision = _as_dict(canonical_commander.get("commander_decision"))
@@ -690,11 +694,47 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             scanner_reason.get("summary"),
             max_len=320,
         ),
+        "selection_trace": {
+            "ranked_candidates": [
+                {
+                    "rank": (row or {}).get("rank"),
+                    "symbol": _clip((row or {}).get("symbol"), max_len=24),
+                    "score_total": (row or {}).get("score_total"),
+                    "risk_score": (row or {}).get("risk_score"),
+                    "confidence": (row or {}).get("confidence"),
+                }
+                for row in list(scanner_selection_trace.get("ranked_candidates") or [])[:5]
+                if isinstance(row, dict)
+            ],
+            "selected_symbol": _first_nonempty_text(
+                scanner_selection_trace.get("selected_symbol"),
+                scanner_reason.get("selected_symbol"),
+                max_len=24,
+            ),
+            "selected_rank": scanner_selection_trace.get("selected_rank") or scanner_reason.get("selected_rank"),
+            "selection_reason": _first_nonempty_text(
+                scanner_selection_trace.get("selection_reason"),
+                scanner_reason.get("selection_reason"),
+                scanner_reason.get("selection_basis"),
+                max_len=280,
+            ),
+            "selected_symbol_score_drivers": _compact_scalar_dict(
+                scanner_selection_trace.get("selected_symbol_score_drivers")
+                or scanner_reason.get("selected_symbol_score_drivers"),
+                max_items=6,
+                max_len=120,
+            ),
+        },
     }
     monitor_policy_ref = _as_dict(monitor_reason.get("policy_ref"))
     monitor_reasoning = {
         "entry_check_summary": _first_nonempty_text(monitor_reason.get("entry_check_summary"), max_len=240),
         "entry_blockers": _listify(monitor_reason.get("entry_blockers"), max_items=6, max_len=120),
+        "threshold_shortfalls": _listify(
+            monitor_blocker_trace.get("threshold_shortfalls") or monitor_reason.get("threshold_shortfalls"),
+            max_items=4,
+            max_len=160,
+        ),
         "policy_ref": _compact_scalar_dict(monitor_policy_ref, max_items=8, max_len=120),
         "thresholds_guards_used": _compact_scalar_dict(monitor_reason.get("thresholds_guards_used"), max_items=8, max_len=120),
         "received_policy": _compact_scalar_dict(monitor_reason.get("received_policy"), max_items=12, max_len=120),
@@ -808,6 +848,85 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             max_items=6,
             max_len=80,
         ),
+        "hard_stop_pct": monitor_reason.get("hard_stop_pct") or monitor_stop_policy_trace.get("hard_stop_pct"),
+        "adaptive_stop_loss_pct": monitor_reason.get("adaptive_stop_loss_pct")
+        or monitor_stop_policy_trace.get("adaptive_stop_loss_pct"),
+        "effective_stop_loss_pct": monitor_reason.get("effective_stop_loss_pct")
+        or monitor_stop_policy_trace.get("effective_stop_loss_pct"),
+        "trailing_stop_pct": monitor_reason.get("trailing_stop_pct") or monitor_stop_policy_trace.get("trailing_stop_pct"),
+        "take_profit_pct": monitor_reason.get("take_profit_pct") or monitor_stop_policy_trace.get("take_profit_pct"),
+        "monitor_stop_policy_trace": {
+            "hard_stop_pct": monitor_stop_policy_trace.get("hard_stop_pct") or monitor_reason.get("hard_stop_pct"),
+            "adaptive_stop_loss_pct": monitor_stop_policy_trace.get("adaptive_stop_loss_pct")
+            or monitor_reason.get("adaptive_stop_loss_pct"),
+            "effective_stop_loss_pct": monitor_stop_policy_trace.get("effective_stop_loss_pct")
+            or monitor_reason.get("effective_stop_loss_pct"),
+            "trailing_stop_pct": monitor_stop_policy_trace.get("trailing_stop_pct") or monitor_reason.get("trailing_stop_pct"),
+            "take_profit_pct": monitor_stop_policy_trace.get("take_profit_pct") or monitor_reason.get("take_profit_pct"),
+        },
+        "monitor_blocker_trace": {
+            "entry_check_summary": _first_nonempty_text(
+                monitor_blocker_trace.get("entry_check_summary"),
+                monitor_reason.get("entry_check_summary"),
+                max_len=240,
+            ),
+            "entry_blockers": _listify(
+                monitor_blocker_trace.get("entry_blockers") or monitor_reason.get("entry_blockers"),
+                max_items=6,
+                max_len=120,
+            ),
+            "threshold_shortfalls": _listify(
+                monitor_blocker_trace.get("threshold_shortfalls") or monitor_reason.get("threshold_shortfalls"),
+                max_items=4,
+                max_len=160,
+            ),
+        },
+    }
+    strategist_evidence = {
+        "candidate_hints": _listify(
+            strategist_evidence_trace.get("candidate_hints")
+            or market_context.get("candidate_hints")
+            or story_input.get("strategist_candidate_hints"),
+            max_items=8,
+            max_len=24,
+        ),
+        "news_query_targets": _listify(
+            strategist_evidence_trace.get("news_query_targets")
+            or market_context.get("news_query_targets"),
+            max_items=8,
+            max_len=80,
+        ),
+        "market_headlines": _listify(
+            strategist_evidence_trace.get("market_headlines")
+            or market_context.get("market_headlines")
+            or story_input.get("strategist_market_headlines"),
+            max_items=3,
+            max_len=180,
+        ),
+        "symbol_headlines": _listify(
+            strategist_evidence_trace.get("symbol_headlines")
+            or market_context.get("symbol_headlines")
+            or story_input.get("strategist_symbol_headlines"),
+            max_items=3,
+            max_len=180,
+        ),
+        "global_sentiment_signal": _compact_scalar_dict(
+            strategist_evidence_trace.get("global_sentiment_signal") or market_context.get("global_sentiment_signal"),
+            max_items=8,
+            max_len=120,
+        ),
+        "fear_index": _compact_scalar_dict(
+            strategist_evidence_trace.get("fear_index") or market_context.get("fear_index"),
+            max_items=8,
+            max_len=120,
+        ),
+        "key_events": _listify(
+            strategist_evidence_trace.get("key_events")
+            or market_context.get("key_events")
+            or market_context.get("key_events_hint"),
+            max_items=6,
+            max_len=180,
+        ),
     }
     return {
         "symbol": _clip(story_input.get("symbol"), max_len=32) or "unknown",
@@ -833,6 +952,7 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_evidence_status": scanner_evidence_status,
         "strategist_evidence_status": strategist_evidence_status,
         "commander_route": commander_route,
+        "strategist_evidence": strategist_evidence,
         "scanner_reasoning": scanner_reasoning,
         "monitor_reasoning": monitor_reasoning,
     }
@@ -1017,9 +1137,12 @@ def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
         "summary": _clip(data.get("summary"), max_len=320),
         "bullets": _listify(data.get("bullets"), max_items=6, max_len=220),
         "position_age_seconds": data.get("position_age_seconds"),
+        "hard_stop_pct": data.get("hard_stop_pct"),
+        "adaptive_stop_loss_pct": data.get("adaptive_stop_loss_pct"),
         "stop_loss_pct": data.get("stop_loss_pct"),
         "effective_stop_loss_pct": data.get("effective_stop_loss_pct"),
         "effective_stop_reason": _clip(data.get("effective_stop_reason"), max_len=80),
+        "trailing_stop_pct": data.get("trailing_stop_pct"),
         "take_profit_pct": data.get("take_profit_pct"),
         "exit_triggered": data.get("exit_triggered"),
         "current_price": data.get("current_price"),
@@ -1037,6 +1160,7 @@ def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
         "decision_reason_chain": _listify(data.get("decision_reason_chain"), max_items=5, max_len=120),
         "entry_check_summary": _clip(data.get("entry_check_summary"), max_len=240),
         "entry_blockers": _listify(data.get("entry_blockers"), max_items=6, max_len=120),
+        "threshold_shortfalls": _listify(data.get("threshold_shortfalls"), max_items=4, max_len=160),
         "entry_metrics": _compact_scalar_dict(data.get("entry_metrics"), max_items=10, max_len=120),
         "entry_thresholds": _compact_scalar_dict(data.get("entry_thresholds"), max_items=8, max_len=120),
         "policy_ref": _compact_scalar_dict(policy_ref, max_items=8, max_len=120),
@@ -1107,6 +1231,7 @@ def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
         ),
         "price_source": _clip(data.get("price_source"), max_len=80),
         "feature_source": _clip(data.get("feature_source"), max_len=80),
+        "monitor_stop_policy_trace": _compact_scalar_dict(data.get("monitor_stop_policy_trace"), max_items=8, max_len=120),
     }
     return {key: value for key, value in out.items() if value not in ("", None, [])}
 
@@ -1121,6 +1246,9 @@ def _build_market_context_bullets(section: Any) -> List[str]:
             "News input:",
             "News query targets:",
             "Key strategist inputs:",
+            "Strategist candidate hints:",
+            "Strategist market headlines:",
+            "Strategist symbol headlines:",
             "Market news titles:",
             "Candidate news titles:",
         )
@@ -1129,6 +1257,9 @@ def _build_market_context_bullets(section: Any) -> List[str]:
     news_input = _clip(data.get("news_input_summary"), max_len=220)
     news_targets = ", ".join(_listify(data.get("news_query_targets"), max_items=6, max_len=80))
     key_events = "; ".join(_listify(data.get("key_events_hint"), max_items=4, max_len=160))
+    candidate_hints = ", ".join(_listify(data.get("candidate_hints"), max_items=6, max_len=24))
+    strategist_market_headlines = "; ".join(_listify(data.get("market_headlines"), max_items=3, max_len=120))
+    strategist_symbol_headlines = "; ".join(_listify(data.get("symbol_headlines"), max_items=3, max_len=120))
     market_titles = "; ".join(_listify(data.get("market_news_titles"), max_items=3, max_len=120))
     candidate_titles = "; ".join(_listify(data.get("candidate_news_titles"), max_items=3, max_len=120))
     if news_input and "News input:" not in existing_prefixes:
@@ -1141,6 +1272,12 @@ def _build_market_context_bullets(section: Any) -> List[str]:
         extras.append(f"주요 시장 뉴스는 {market_titles}입니다.")
     if candidate_titles and "Candidate news titles:" not in existing_prefixes:
         extras.append(f"후보 종목 관련 뉴스는 {candidate_titles}입니다.")
+    if candidate_hints and "Strategist candidate hints:" not in existing_prefixes:
+        extras.append(f"Strategist candidate hints: {candidate_hints}")
+    if strategist_market_headlines and "Strategist market headlines:" not in existing_prefixes:
+        extras.append(f"Strategist market headlines: {strategist_market_headlines}")
+    if strategist_symbol_headlines and "Strategist symbol headlines:" not in existing_prefixes:
+        extras.append(f"Strategist symbol headlines: {strategist_symbol_headlines}")
     return _dedupe_list(bullets + extras, max_items=12, max_len=260)
 
 
@@ -1239,7 +1376,10 @@ def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason
     hold_count = len(list(holding_summary.get("run_ids") or []))
     watch_axes = ", ".join(_operator_axis_label(item) for item in _listify(monitor_reason.get("watch_axes"), max_items=6, max_len=80))
     decision_chain = " -> ".join(_listify(monitor_reason.get("decision_reason_chain"), max_items=5, max_len=60))
+    hard_stop = _fmt_pct(monitor_reason.get("hard_stop_pct"))
+    adaptive_stop = _fmt_pct(monitor_reason.get("adaptive_stop_loss_pct"))
     effective_stop = _fmt_pct(monitor_reason.get("effective_stop_loss_pct"))
+    trailing_stop = _fmt_pct(monitor_reason.get("trailing_stop_pct"))
     take_profit = _fmt_pct(monitor_reason.get("take_profit_pct"))
     current_price = _fmt_price(monitor_reason.get("current_price"))
     average_price = _fmt_price(monitor_reason.get("average_price"))
@@ -1448,7 +1588,9 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     diagnostics = story_input.get("ai_report_diagnostics") if isinstance(story_input.get("ai_report_diagnostics"), dict) else {}
     shared_seed = _build_shared_summary_seed(story_input)
     commander_route = shared_seed.get("commander_route") if isinstance(shared_seed.get("commander_route"), dict) else {}
+    strategist_evidence = shared_seed.get("strategist_evidence") if isinstance(shared_seed.get("strategist_evidence"), dict) else {}
     scanner_reasoning = shared_seed.get("scanner_reasoning") if isinstance(shared_seed.get("scanner_reasoning"), dict) else {}
+    monitor_reasoning = shared_seed.get("monitor_reasoning") if isinstance(shared_seed.get("monitor_reasoning"), dict) else {}
     return {
         "trade_id": story_input.get("trade_id") or story_input.get("story_id"),
         "story_id": story_input.get("story_id"),
@@ -1474,12 +1616,41 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "themes": _listify(market_context.get("themes"), max_items=4, max_len=80),
             "global_sentiment_score": market_context.get("global_sentiment_score"),
             "vix_level": market_context.get("vix_level"),
+            "candidate_hints": _listify(
+                market_context.get("candidate_hints") or strategist_evidence.get("candidate_hints"),
+                max_items=8,
+                max_len=24,
+            ),
+            "market_headlines": _listify(
+                market_context.get("market_headlines") or strategist_evidence.get("market_headlines"),
+                max_items=3,
+                max_len=180,
+            ),
+            "symbol_headlines": _listify(
+                market_context.get("symbol_headlines") or strategist_evidence.get("symbol_headlines"),
+                max_items=3,
+                max_len=180,
+            ),
+            "global_sentiment_signal": _compact_scalar_dict(
+                market_context.get("global_sentiment_signal") or strategist_evidence.get("global_sentiment_signal"),
+                max_items=8,
+                max_len=120,
+            ),
+            "fear_index": _compact_scalar_dict(
+                market_context.get("fear_index") or strategist_evidence.get("fear_index"),
+                max_items=8,
+                max_len=120,
+            ),
             "headline_count": market_context.get("headline_count"),
             "news_query_count": market_context.get("news_query_count"),
             "market_signal_total": market_context.get("market_signal_total"),
             "candidate_signal_total": market_context.get("candidate_signal_total"),
             "news_query_targets": _listify(market_context.get("news_query_targets"), max_items=6, max_len=80),
-            "key_events_hint": _listify(market_context.get("key_events_hint"), max_items=4, max_len=180),
+            "key_events_hint": _listify(
+                market_context.get("key_events_hint") or strategist_evidence.get("key_events"),
+                max_items=4,
+                max_len=180,
+            ),
             "market_news_titles": _listify(market_context.get("market_news_titles"), max_items=3, max_len=140),
             "candidate_news_titles": _listify(market_context.get("candidate_news_titles"), max_items=3, max_len=140),
             "stress_flags": _listify(market_context.get("stress_flags"), max_items=4, max_len=80),
@@ -1587,6 +1758,31 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
                 )[:5]
                 if isinstance(row, dict)
             ],
+            "selection_trace": {
+                "ranked_candidates": _compact_named_rows(
+                    (scanner_reason.get("scanner_selection_trace") or {}).get("ranked_candidates")
+                    or (scanner_reasoning.get("selection_trace") or {}).get("ranked_candidates"),
+                    max_items=5,
+                ),
+                "selected_symbol": _clip(
+                    (scanner_reason.get("scanner_selection_trace") or {}).get("selected_symbol")
+                    or (scanner_reasoning.get("selection_trace") or {}).get("selected_symbol"),
+                    max_len=24,
+                ),
+                "selected_rank": (scanner_reason.get("scanner_selection_trace") or {}).get("selected_rank")
+                or (scanner_reasoning.get("selection_trace") or {}).get("selected_rank"),
+                "selection_reason": _clip(
+                    (scanner_reason.get("scanner_selection_trace") or {}).get("selection_reason")
+                    or (scanner_reasoning.get("selection_trace") or {}).get("selection_reason"),
+                    max_len=280,
+                ),
+                "selected_symbol_score_drivers": _compact_scalar_dict(
+                    (scanner_reason.get("scanner_selection_trace") or {}).get("selected_symbol_score_drivers")
+                    or (scanner_reasoning.get("selection_trace") or {}).get("selected_symbol_score_drivers"),
+                    max_items=6,
+                    max_len=120,
+                ),
+            },
             "summary": _clip(scanner_reason.get("summary"), max_len=320),
             "comparison": _clip(scanner_reason.get("comparison"), max_len=240),
             "bullets": _listify(scanner_reason.get("bullets"), max_items=6, max_len=220),
@@ -1595,7 +1791,21 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "summary": _clip(filters_human.get("summary"), max_len=280),
             "bullets": _listify(filters_human.get("bullets"), max_items=6, max_len=220),
         },
-        "monitor_reason_human": _compact_monitor_snapshot(monitor_reason),
+        "monitor_reason_human": {
+            **_compact_monitor_snapshot(monitor_reason),
+            "threshold_shortfalls": _listify(
+                monitor_reason.get("threshold_shortfalls")
+                or (monitor_reasoning.get("monitor_blocker_trace") or {}).get("threshold_shortfalls"),
+                max_items=4,
+                max_len=160,
+            ),
+            "monitor_stop_policy_trace": _compact_scalar_dict(
+                monitor_reason.get("monitor_stop_policy_trace")
+                or monitor_reasoning.get("monitor_stop_policy_trace"),
+                max_items=8,
+                max_len=120,
+            ),
+        },
         "guard_reason_human": {
             "summary": _clip(guard_reason.get("summary"), max_len=280),
             "status": _clip(guard_reason.get("status"), max_len=32),
@@ -1621,6 +1831,10 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "timeline": _compact_timeline_rows(story_input.get("timeline")),
         "warnings": _listify(story_input.get("warnings"), max_items=8, max_len=180),
         "improvement_points": _listify(story_input.get("improvement_points"), max_items=6, max_len=180),
+        "strategist_evidence": strategist_evidence,
+        "scanner_selection_trace": _as_dict(story_input.get("scanner_selection_trace")),
+        "monitor_stop_policy_trace": _as_dict(story_input.get("monitor_stop_policy_trace")),
+        "monitor_blocker_trace": _as_dict(story_input.get("monitor_blocker_trace")),
         "evidence_digest": {
             "strategist": _evidence_digest(
                 story_input.get("strategist_evidence"),
@@ -1687,6 +1901,14 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "global_sentiment_score": market.get("global_sentiment_score"),
             "vix_level": market.get("vix_level"),
             "stress_flags": _listify(market.get("stress_flags"), max_items=3, max_len=60),
+            "candidate_hints": _listify(market.get("candidate_hints"), max_items=6, max_len=24),
+            "market_headlines": _listify(market.get("market_headlines"), max_items=3, max_len=160),
+            "symbol_headlines": _listify(market.get("symbol_headlines"), max_items=3, max_len=160),
+            "global_sentiment_signal": _compact_scalar_dict(
+                market.get("global_sentiment_signal"), max_items=8, max_len=120
+            ),
+            "fear_index": _compact_scalar_dict(market.get("fear_index"), max_items=8, max_len=120),
+            "key_events": _listify(market.get("key_events_hint"), max_items=4, max_len=160),
             "news_input_summary": market.get("news_input_summary"),
         },
         "commander": {
@@ -1767,6 +1989,20 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
                 for row in list(scanner.get("candidate_bias_adjustments") or [])[:5]
                 if isinstance(row, dict)
             ],
+            "selection_trace": {
+                "ranked_candidates": _compact_named_rows(
+                    (scanner.get("selection_trace") or {}).get("ranked_candidates"),
+                    max_items=5,
+                ),
+                "selected_symbol": _clip((scanner.get("selection_trace") or {}).get("selected_symbol"), max_len=24),
+                "selected_rank": (scanner.get("selection_trace") or {}).get("selected_rank"),
+                "selection_reason": _clip((scanner.get("selection_trace") or {}).get("selection_reason"), max_len=280),
+                "selected_symbol_score_drivers": _compact_scalar_dict(
+                    (scanner.get("selection_trace") or {}).get("selected_symbol_score_drivers"),
+                    max_items=6,
+                    max_len=120,
+                ),
+            },
             "summary": scanner.get("summary"),
         },
         "filters": {
@@ -1784,6 +2020,7 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "summary": monitor.get("summary"),
             "entry_check_summary": monitor.get("entry_check_summary"),
             "entry_blockers": _listify(monitor.get("entry_blockers"), max_items=6, max_len=120),
+            "threshold_shortfalls": _listify(monitor.get("threshold_shortfalls"), max_items=4, max_len=160),
             "policy_ref": _compact_scalar_dict(monitor.get("policy_ref"), max_items=8, max_len=120),
             "timing_assessment": _compact_scalar_dict(monitor.get("timing_assessment"), max_items=8, max_len=120),
             "thresholds_guards_used": _compact_scalar_dict(monitor.get("thresholds_guards_used"), max_items=8, max_len=120),
@@ -1828,9 +2065,15 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
                 monitor.get("applied_policy_source_chain"), max_items=6, max_len=80
             ),
             "position_age_seconds": monitor.get("position_age_seconds"),
+            "hard_stop_pct": monitor.get("hard_stop_pct"),
+            "adaptive_stop_loss_pct": monitor.get("adaptive_stop_loss_pct"),
             "stop_loss_pct": monitor.get("stop_loss_pct"),
             "effective_stop_loss_pct": monitor.get("effective_stop_loss_pct"),
+            "trailing_stop_pct": monitor.get("trailing_stop_pct"),
             "take_profit_pct": monitor.get("take_profit_pct"),
+            "monitor_stop_policy_trace": _compact_scalar_dict(
+                monitor.get("monitor_stop_policy_trace"), max_items=8, max_len=120
+            ),
             "current_price": monitor.get("current_price"),
             "average_price": monitor.get("average_price"),
             "peak_price": monitor.get("peak_price"),
@@ -1869,6 +2112,10 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
         },
         "timeline": _compact_timeline_rows(story_input.get("timeline"), head=1, tail=5),
         "improvement_points": _listify(compact.get("improvement_points"), max_items=4, max_len=140),
+        "strategist_evidence": _as_dict(compact.get("strategist_evidence")),
+        "scanner_selection_trace": _as_dict(compact.get("scanner_selection_trace")),
+        "monitor_stop_policy_trace": _as_dict(compact.get("monitor_stop_policy_trace")),
+        "monitor_blocker_trace": _as_dict(compact.get("monitor_blocker_trace")),
         "ai_report_diagnostics": {
             "report_status": diagnostics.get("report_status"),
             "report_reason_code": diagnostics.get("report_reason_code"),
@@ -2710,6 +2957,7 @@ def _fallback_report(
 ) -> Dict[str, Any]:
     shared_seed = _build_shared_summary_seed(story_input)
     market_context = story_input.get("market_context_human") if isinstance(story_input.get("market_context_human"), dict) else {}
+    strategist_evidence = shared_seed.get("strategist_evidence") if isinstance(shared_seed.get("strategist_evidence"), dict) else {}
     scanner_reason = story_input.get("scanner_reason_human") if isinstance(story_input.get("scanner_reason_human"), dict) else {}
     filters_human = story_input.get("filters_human") if isinstance(story_input.get("filters_human"), dict) else {}
     monitor_reason = story_input.get("monitor_reason_human") if isinstance(story_input.get("monitor_reason_human"), dict) else {}
@@ -2871,6 +3119,26 @@ def _fallback_report(
             "global_sentiment_score": market_context.get("global_sentiment_score"),
             "vix_level": market_context.get("vix_level"),
             "stress_flags": _listify(market_context.get("stress_flags"), max_items=6, max_len=80),
+            "strategist_candidate_hints": _listify(
+                market_context.get("candidate_hints") or strategist_evidence.get("candidate_hints"), max_items=8, max_len=24
+            ),
+            "strategist_market_headlines": _listify(
+                market_context.get("market_headlines") or strategist_evidence.get("market_headlines"), max_items=3, max_len=180
+            ),
+            "strategist_symbol_headlines": _listify(
+                market_context.get("symbol_headlines") or strategist_evidence.get("symbol_headlines"), max_items=3, max_len=180
+            ),
+            "global_sentiment_signal": _compact_scalar_dict(
+                market_context.get("global_sentiment_signal") or strategist_evidence.get("global_sentiment_signal"), max_items=8, max_len=120
+            ),
+            "fear_index": _compact_scalar_dict(
+                market_context.get("fear_index") or strategist_evidence.get("fear_index"), max_items=8, max_len=120
+            ),
+            "key_events": _listify(
+                market_context.get("key_events") or market_context.get("key_events_hint") or strategist_evidence.get("key_events"),
+                max_items=6,
+                max_len=180,
+            ),
         },
         "why_this_symbol_was_chosen": {
             "summary": _clip(scanner_choice_summary or scanner_reason.get("summary"), max_len=600),
@@ -2879,12 +3147,23 @@ def _fallback_report(
             "universe_size": scanner_reason.get("universe_size"),
             "symbol": _clip(scanner_reason.get("selected_symbol") or story_input.get("symbol"), max_len=32),
             "basis": _scanner_basis_text(scanner_reason),
+            "strategist_candidate_hints": _listify(
+                market_context.get("candidate_hints") or strategist_evidence.get("candidate_hints"), max_items=8, max_len=24
+            ),
+            "scanner_selection_trace": _as_dict(story_input.get("scanner_selection_trace")),
         },
         "entry_decision": entry_decision,
-        "holding_monitoring_story": holding_story,
+        "holding_monitoring_story": {
+            **holding_story,
+            "monitor_stop_policy_trace": _as_dict(story_input.get("monitor_stop_policy_trace")),
+            "monitor_blocker_trace": _as_dict(story_input.get("monitor_blocker_trace")),
+        },
         "exit_decision": exit_decision,
         "execution_quality": execution_quality,
-        "monitor_snapshot": monitor_snapshot,
+        "monitor_snapshot": {
+            **monitor_snapshot,
+            "monitor_stop_policy_trace": _as_dict(story_input.get("monitor_stop_policy_trace")),
+        },
         "scanner_filters": {
             "summary": _clip(filters_human.get("summary"), max_len=600),
             "bullets": _listify(filters_human.get("bullets"), max_items=12, max_len=260),
@@ -3210,7 +3489,8 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
         {
             "role": "system",
             "content": (
-                "당신은 트레이딩 시스템의 operator-facing AI 거래 리포트를 작성합니다. "
+                "당신은 트레이딩 시스템의 사후 거래 복기용 AI 거래 리포트를 작성합니다. "
+                "이 문서는 operator_brief 같은 즉시 상황 스냅샷이 아니라 trade lifecycle retrospective입니다. "
                 "반드시 제공된 입력만 사용하고, 숫자, 이벤트, 이유, evidence를 지어내지 마십시오. "
                 "반드시 JSON 객체 하나만 반환하십시오. markdown, JSON 앞 설명문, 분석 문장, code fence는 금지합니다. "
                 "'먼저', '우선', 'First, I need' 같은 계획 문장은 절대 쓰지 마십시오. JSON 앞의 모든 텍스트는 실패입니다. "
@@ -3222,8 +3502,10 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
         {
             "role": "user",
             "content": (
-                "아래 trade story input을 바탕으로 operator-facing AI 거래 리포트를 작성하십시오.\n"
+                "아래 trade story input을 바탕으로 trade lifecycle retrospective AI 거래 리포트를 작성하십시오.\n"
                 "파이프라인 순서는 strategist -> scanner -> monitor -> supervisor -> executor -> reporter를 정확히 따라야 합니다.\n"
+                "이 리포트는 즉시 대응용 snapshot이 아니라 사후 복기 문서입니다.\n"
+                "반드시 다음 질문에 답할 수 있게 작성하십시오: 왜 진입했는가, 왜 보유했는가, 왜 청산했는가, 실행 품질은 어땠는가, 다음에는 무엇을 개선할 것인가.\n"
                 "작성 요구사항:\n"
                 "- global sentiment score, VIX, headline count, query-target count가 있으면 구체적인 숫자를 그대로 반영하십시오.\n"
                 "- 시장 환경 요약에는 headline_count, news_query_count, news_query_targets, key_events_hint를 우선 반영하십시오.\n"
@@ -3238,6 +3520,10 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
                 "- 종목코드, JSON 키, BUY/SELL/HOLD/WAIT 액션 코드, VIX, Kiwoom source id, 타임스탬프는 그대로 유지하십시오.\n"
                 "- deterministic report skeleton은 이미 존재하므로 메타데이터를 다시 만들지 말고 section narrative content만 채우십시오.\n"
                 "- section summary, ranked comparison, monitor reasoning, operator-facing bullets에 집중하십시오.\n"
+                "- strategist evidence fields(candidate hints, market headlines, symbol headlines)가 있으면 시장/전략가 evidence를 별도 문장으로 명확히 설명하십시오.\n"
+                "- scanner_selection_trace가 있으면 strategist hints -> ranked candidates -> selected symbol -> selection reason -> score drivers 순서를 유지하십시오.\n"
+                "- monitor_stop_policy_trace가 있으면 hard fail-safe stop, adaptive stop, effective stop, trailing stop, take profit을 서로 다른 층위로 구분해 설명하십시오.\n"
+                "- adaptive stop이 있으면 stop을 단일 3% 규칙처럼 뭉뚱그리지 말고 실제 active stop을 명시하십시오.\n"
                 f"{partial_note}"
                 "아래 JSON 템플릿에 값만 채워 반환하십시오:\n"
                 f"{json.dumps(contract, ensure_ascii=False)}\n"

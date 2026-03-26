@@ -1861,6 +1861,13 @@ def load_trade_report_detail(config: OperatorUIConfig, story_id: str) -> Dict[st
     )
     reporter_status = _trim_text(reporter_eval.get("status"), max_len=48) or _trim_text(reporter_status_human.get("status"), max_len=48) or "-"
     reporter_grade = _trim_text(reporter_eval.get("grade"), max_len=24) or _trim_text(reporter_status_human.get("grade"), max_len=24) or "-"
+    review_focus = {
+        "why_entered": _trim_text(entry_decision.get("summary"), max_len=320),
+        "why_held": _trim_text(holding_story.get("summary"), max_len=320),
+        "why_exited": _trim_text(exit_decision.get("summary"), max_len=320),
+        "execution_quality": _trim_text(execution_quality.get("summary"), max_len=320),
+        "improvement_focus": _trim_text(weak_points.get("summary"), max_len=320),
+    }
 
     return {
         "found": True,
@@ -1891,6 +1898,7 @@ def load_trade_report_detail(config: OperatorUIConfig, story_id: str) -> Dict[st
         "guard_approval_result": guard_result,
         "execution_result": execution_quality,
         "execution_quality": execution_quality,
+        "review_focus": review_focus,
         "reporter_evaluation": {
             **reporter_eval,
             "status": reporter_status,
@@ -2399,6 +2407,127 @@ def _normalize_canonical_monitor_snapshot(snapshot: Dict[str, Any], story_monito
     }
 
 
+def _brief_headline_text(row: Any) -> str:
+    item = row if isinstance(row, dict) else {}
+    for key in ("title", "headline", "summary", "description", "text", "news_title"):
+        text = _trim_text(item.get(key), max_len=180)
+        if text:
+            return text
+    return ""
+
+
+def _brief_norm_symbol_text(value: Any) -> str:
+    return normalize_symbol(value, allow_test_symbols=True).strip().upper()
+
+
+def _brief_headline_matches_symbol(row: Any, symbol: str) -> bool:
+    item = row if isinstance(row, dict) else {}
+    target = _brief_norm_symbol_text(symbol)
+    if not target:
+        return False
+    for candidate in (
+        item.get("symbol"),
+        item.get("code"),
+        item.get("ticker"),
+        item.get("query_target"),
+        item.get("query"),
+        item.get("news_query_target"),
+    ):
+        if _brief_norm_symbol_text(candidate) == target:
+            return True
+    for key in ("symbols", "tickers", "related_symbols"):
+        values = item.get(key)
+        if not isinstance(values, list):
+            continue
+        for candidate in values:
+            if _brief_norm_symbol_text(candidate) == target:
+                return True
+    joined = " ".join(
+        [
+            str(item.get("title") or ""),
+            str(item.get("headline") or ""),
+            str(item.get("summary") or ""),
+            str(item.get("description") or ""),
+            str(item.get("query_target") or ""),
+        ]
+    ).upper()
+    return bool(target and target in joined)
+
+
+def _brief_collect_top_headlines(rows: Any, *, limit: int = 3, symbol: str = "") -> List[str]:
+    if not isinstance(rows, list):
+        return []
+    filtered: List[str] = []
+    fallback: List[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        text = _brief_headline_text(row)
+        if not text:
+            continue
+        if text not in fallback:
+            fallback.append(text)
+        if symbol and _brief_headline_matches_symbol(row, symbol) and text not in filtered:
+            filtered.append(text)
+    picked = filtered or fallback
+    return picked[: max(1, int(limit))]
+
+
+def _brief_top_numeric_drivers(values: Any, *, limit: int = 4) -> Dict[str, float]:
+    if not isinstance(values, dict):
+        return {}
+    scored: List[tuple[float, str, float]] = []
+    for key, value in values.items():
+        try:
+            numeric = float(value)
+        except Exception:
+            continue
+        if numeric == 0.0:
+            continue
+        scored.append((abs(numeric), str(key), numeric))
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    out: Dict[str, float] = {}
+    for _, key, numeric in scored[: max(1, int(limit))]:
+        out[key] = numeric
+    return out
+
+
+def _brief_build_stop_policy_trace(monitor: Dict[str, Any]) -> Dict[str, Any]:
+    data = monitor if isinstance(monitor, dict) else {}
+    policy_trace = data.get("monitor_stop_policy_trace") if isinstance(data.get("monitor_stop_policy_trace"), dict) else {}
+    adaptive_exit = data.get("adaptive_exit") if isinstance(data.get("adaptive_exit"), dict) else {}
+    hard_stop_pct = data.get("hard_stop_pct")
+    if hard_stop_pct in (None, ""):
+        hard_stop_pct = policy_trace.get("hard_stop_pct")
+    adaptive_stop_loss_pct = data.get("adaptive_stop_loss_pct")
+    if adaptive_stop_loss_pct in (None, ""):
+        adaptive_stop_loss_pct = adaptive_exit.get("stop_loss_pct")
+    if adaptive_stop_loss_pct in (None, ""):
+        adaptive_stop_loss_pct = policy_trace.get("adaptive_stop_loss_pct")
+    effective_stop_loss_pct = data.get("effective_stop_loss_pct")
+    if effective_stop_loss_pct in (None, ""):
+        effective_stop_loss_pct = (
+            policy_trace.get("effective_stop_loss_pct")
+            if policy_trace.get("effective_stop_loss_pct") not in (None, "")
+            else adaptive_stop_loss_pct
+            if adaptive_stop_loss_pct not in (None, "")
+            else hard_stop_pct
+        )
+    trailing_stop_pct = data.get("trailing_stop_pct")
+    if trailing_stop_pct in (None, ""):
+        trailing_stop_pct = policy_trace.get("trailing_stop_pct")
+    take_profit_pct = data.get("take_profit_pct")
+    if take_profit_pct in (None, ""):
+        take_profit_pct = policy_trace.get("take_profit_pct")
+    return {
+        "hard_stop_pct": hard_stop_pct,
+        "adaptive_stop_loss_pct": adaptive_stop_loss_pct,
+        "effective_stop_loss_pct": effective_stop_loss_pct,
+        "trailing_stop_pct": trailing_stop_pct,
+        "take_profit_pct": take_profit_pct,
+    }
+
+
 def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str, Any]:
     def _normalize_shared_facts(raw: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(raw or {})
@@ -2597,6 +2726,20 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
             break
     selection_basis = str(selection.get("selection_basis") or selection_reason_payload.get("final_decision_basis") or "").strip()
     tie_break_rule = str(selection.get("tie_break_rule") or selection_reason_payload.get("tie_break_rule") or "").strip()
+    scanner_selection_trace = (
+        story_input.get("scanner_selection_trace")
+        if isinstance(story_input.get("scanner_selection_trace"), dict)
+        else selection.get("scanner_selection_trace")
+        if isinstance(selection.get("scanner_selection_trace"), dict)
+        else {}
+    )
+    monitor_stop_policy_trace = (
+        story_input.get("monitor_stop_policy_trace")
+        if isinstance(story_input.get("monitor_stop_policy_trace"), dict)
+        else monitor.get("monitor_stop_policy_trace")
+        if isinstance(monitor.get("monitor_stop_policy_trace"), dict)
+        else {}
+    )
 
     return {
         "available": True,
@@ -2630,6 +2773,9 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
         "news_query_targets": [str(x or "") for x in list(market_context.get("news_query_targets") or [])[:6] if str(x or "").strip()],
         "market_news_titles": [str(x or "") for x in list(market_context.get("market_news_titles") or [])[:3] if str(x or "").strip()],
         "candidate_news_titles": [str(x or "") for x in list(market_context.get("candidate_news_titles") or [])[:3] if str(x or "").strip()],
+        "strategist_candidate_hints": [str(x or "") for x in list(story_input.get("strategist_candidate_hints") or market_context.get("candidate_hints") or [])[:8] if str(x or "").strip()],
+        "strategist_market_headlines": [str(x or "") for x in list(story_input.get("strategist_market_headlines") or market_context.get("market_headlines") or [])[:3] if str(x or "").strip()],
+        "strategist_symbol_headlines": [str(x or "") for x in list(story_input.get("strategist_symbol_headlines") or market_context.get("symbol_headlines") or [])[:3] if str(x or "").strip()],
         "market_context_summary": _trade_report_section_summary(market_context),
         "market_context_bullets": market_bullets,
         "selection_summary": _trade_report_section_summary(selection),
@@ -2644,12 +2790,14 @@ def _build_canonical_trade_brief_input(trade_report: Dict[str, Any]) -> Dict[str
         "top_candidates": top_candidates,
         "runner_ups": runner_ups,
         "runner_ups_lost": runner_ups_lost,
+        "scanner_selection_trace": dict(scanner_selection_trace or {}),
         "filters_summary": _trade_report_section_summary(filters),
         "filter_bullets": filter_bullets,
         "filter_rows": canonical_filter_rows,
         "monitor_summary": _trade_report_section_summary(monitor),
         "monitor_bullets": monitor_bullets,
         "monitor_snapshot": monitor_snapshot if isinstance(monitor_snapshot, dict) else {},
+        "monitor_stop_policy_trace": dict(monitor_stop_policy_trace or {}),
         "monitor_decision_chain": [str(x or "") for x in list(monitor.get("decision_reason_chain") or [])[:6] if str(x or "").strip()],
         "guard_summary": _trade_report_section_summary(guard),
         "execution_summary": _trade_report_section_summary(execution),
@@ -2693,6 +2841,8 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     executor = detail.get("executor") if isinstance(detail.get("executor"), dict) else {}
     reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    trade_report_data = trade_report.get("report_data") if isinstance(trade_report.get("report_data"), dict) else {}
+    trade_story_input = trade_report_data.get("trade_story_input") if isinstance(trade_report_data.get("trade_story_input"), dict) else {}
     canonical_trade = _build_canonical_trade_brief_input(trade_report)
     canonical_monitor_snapshot = (
         canonical_trade.get("monitor_snapshot")
@@ -2725,6 +2875,9 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
 
     verdict = supervisor.get("verdict") if isinstance(supervisor.get("verdict"), dict) else {}
     execution = _normalize_execution_payload(executor.get("execution") if isinstance(executor.get("execution"), dict) else {})
+    phase = str(((detail.get("commander") or {}).get("phase") or "session")).strip() or "session"
+    path_label = str(((detail.get("commander") or {}).get("path") or "-")).strip() or "-"
+    supervisor_reason = _clean_brief_text(verdict.get("reason") or supervisor.get("reason") or "")
 
     selected_symbol = normalize_symbol(
         canonical_trade.get("symbol")
@@ -2813,6 +2966,31 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     vix_level = canonical_trade.get("vix") or fear_index.get("level")
     market_news_titles = [str((x or {}).get("title") or "") for x in list(strategist_raw_input.get("collected_market_news") or []) if isinstance(x, dict)]
     news_targets = list(strategist_summary.get("news_query_targets") or strategist_raw_input.get("news_query_targets") or [])
+    news_ranked = (
+        strategist.get("artifact", {}).get("news_evidence_ranked")
+        if isinstance(strategist.get("artifact"), dict) and isinstance(strategist.get("artifact", {}).get("news_evidence_ranked"), dict)
+        else {}
+    )
+    market_headlines = (
+        _brief_collect_top_headlines(news_ranked.get("market_news_ranked") or [], limit=3)
+        or list(canonical_trade.get("strategist_market_headlines") or canonical_trade.get("market_news_titles") or [])[:3]
+        or market_news_titles[:3]
+    )
+    symbol_headlines = (
+        _brief_collect_top_headlines(news_ranked.get("candidate_news_ranked") or [], limit=3, symbol=selected_symbol)
+        or list(canonical_trade.get("strategist_symbol_headlines") or canonical_trade.get("candidate_news_titles") or [])[:3]
+        or [str((x or {}).get("title") or "") for x in list(strategist_raw_input.get("collected_candidate_news") or []) if isinstance(x, dict)][:3]
+    )
+    candidate_hints = list(
+        (
+            strategist.get("artifact", {}).get("candidate_symbols_hint")
+            if isinstance(strategist.get("artifact"), dict)
+            else None
+        )
+        or strategist_summary.get("candidate_hints")
+        or canonical_trade.get("strategist_candidate_hints")
+        or []
+    )[:8]
     macro_stress_overlay = strategist_trace.get("macro_stress_overlay") if isinstance(strategist_trace.get("macro_stress_overlay"), dict) else {}
     defensive_mode = bool(macro_stress_overlay.get("active")) or str(strategist_summary.get("playbook") or "").lower() == "defensive" or (_safe_float(vix_level, 0.0) >= 25.0 if vix_level is not None else False)
     if canonical_trade.get("market_context_summary"):
@@ -2825,6 +3003,7 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         news_summary = "no meaningful news input was captured"
 
     detected_themes = _clean_brief_list(canonical_trade.get("themes") or strategist_summary.get("themes"), limit=6)
+    playbook = _clean_brief_text(strategist_summary.get("playbook") or canonical_trade.get("playbook") or "")
     theme_match = _clean_brief_text(
         selected_candidate.get("theme_match")
         or selected_candidate.get("sector_theme")
@@ -2909,6 +3088,13 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     if not component_scores:
         for key, value in list(source_scores.items())[:6]:
             component_scores.append(f"{str(key).replace('_', ' ')}: {_format_float(value, 3)}")
+    scanner_selection_trace = (
+        trade_story_input.get("scanner_selection_trace")
+        if isinstance(trade_story_input.get("scanner_selection_trace"), dict)
+        else canonical_trade.get("scanner_selection_trace")
+        if isinstance(canonical_trade.get("scanner_selection_trace"), dict)
+        else {}
+    )
 
     positive_factors: List[str] = []
     if selected_why:
@@ -3181,6 +3367,80 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     report_mode = str(trade_report.get("execution_mode_label") or "-")
     report_summary = str(trade_report.get("report_summary") or "")
     report_link = str(trade_report.get("report_link") or "")
+    focus_symbol = selected_symbol or _clean_brief_text(scanner_summary.get("top_stock") or "") or "-"
+    supervisor_allowed = bool(verdict.get("allowed"))
+    execution_status_label = str(
+        execution.get("fill_status_summary")
+        or execution.get("status")
+        or canonical_trade.get("execution_mode_label")
+        or "not captured"
+    ).strip()
+    stop_policy_trace = dict(canonical_trade.get("monitor_stop_policy_trace") or {}) if isinstance(canonical_trade.get("monitor_stop_policy_trace"), dict) else {}
+    hard_stop_source = stop_policy_trace.get("hard_stop_pct")
+    if hard_stop_source in (None, ""):
+        hard_stop_source = thresholds.get("hard_stop_pct")
+    if hard_stop_source in (None, ""):
+        hard_stop_source = stop_loss
+    hard_stop_brief = canonical_monitor_snapshot.get("stop_loss") or (_format_percent(hard_stop_source, 2) if hard_stop_source not in (None, "") else stop_loss_text)
+    effective_stop_brief = canonical_monitor_snapshot.get("effective_stop") or effective_stop_text
+    take_profit_source = stop_policy_trace.get("take_profit_pct")
+    if take_profit_source in (None, ""):
+        take_profit_source = take_profit
+    take_profit_brief = canonical_monitor_snapshot.get("take_profit") or (_format_percent(take_profit_source, 2) if take_profit_source not in (None, "") else take_profit_text)
+    effective_stop_reason_brief = (
+        canonical_effective_stop_reason
+        or (_friendly_exit_reason(effective_stop_reason or "stop_loss") if effective_stop_brief != "-" else "")
+    )
+    stop_policy_summary: List[str] = []
+    if hard_stop_brief and str(hard_stop_brief).strip() not in {"", "-"}:
+        stop_policy_summary.append(f"Hard fail-safe stop {hard_stop_brief}")
+    if effective_stop_brief and str(effective_stop_brief).strip() not in {"", "-"}:
+        stop_policy_summary.append(f"Effective stop {effective_stop_brief} ({effective_stop_reason_brief or 'active stop'})")
+    if take_profit_brief and str(take_profit_brief).strip() not in {"", "-"}:
+        stop_policy_summary.append(f"Take profit {take_profit_brief}")
+    trailing_stop_brief = stop_policy_trace.get("trailing_stop_pct")
+    if trailing_stop_brief in (None, ""):
+        trailing_stop_brief = thresholds.get("trailing_stop_pct")
+    if trailing_stop_brief not in (None, ""):
+        stop_policy_summary.append(f"Trailing stop {_format_percent(trailing_stop_brief, 2)}")
+
+    next_expected_step = ""
+    if watch_next:
+        next_expected_step = str(watch_next[0] or "").strip()
+    elif final_action == "WAIT":
+        next_expected_step = f"Wait for clearer entry confirmation on {selected_symbol or 'the current focus symbol'}."
+    elif final_action in {"BUY", "HOLD"}:
+        next_expected_step = f"Keep monitoring {selected_symbol or 'the position'} against {active_exit_axis or 'the active exit axis'}."
+    elif final_action == "SELL":
+        next_expected_step = "Review the closed trade and wait for the next qualified setup."
+
+    strategist_evidence_summary_bits = [
+        f"{playbook} playbook" if playbook else "",
+        f"regime {strategist_summary.get('market_regime')}" if strategist_summary.get("market_regime") else "",
+        f"global sentiment {_format_float(global_score, 2)}" if global_score is not None else "",
+        f"VIX {_format_float(vix_level, 2)}" if vix_level is not None else "",
+    ]
+    strategist_evidence_summary = ", ".join([bit for bit in strategist_evidence_summary_bits if bit]) or "Strategist evidence was captured for this run."
+    selection_reason_text = (
+        selection_reasons[0]
+        if selection_reasons
+        else str(canonical_trade.get("selection_summary") or selected_why or "Selection rationale was not explicitly persisted.")
+    )
+    score_driver_preview = list(component_scores[:4]) or [
+        f"{key}={value}"
+        for key, value in list((scanner_selection_trace.get("selected_symbol_score_drivers") or {}).items())[:4]
+    ]
+    top_monitor_blocker = (
+        entry_guard_reason
+        or monitor_reason
+        or live_monitor_reason
+        or live_exit_reason
+        or "No explicit blocker or trigger was persisted."
+    )
+    monitor_guard_summary = top_monitor_blocker if final_action == "WAIT" else (live_exit_reason or monitor_reason or top_monitor_blocker)
+    guard_status = "approved" if supervisor_allowed else "blocked"
+    execution_status_summary = execution_status_label or str(canonical_trade.get("execution_summary") or "not captured")
+    operator_takeaway_items = watch_next[:3] or weak_factors[:3] or thesis_invalidation[:3]
 
     macro_summary: List[str] = []
     if macro_moves.get("dxy_pct") is not None:
@@ -3225,6 +3485,55 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
             "confidence": confidence,
             "selected_rank": selected_rank or None,
             "universe_size": universe_size or None,
+        },
+        "current_snapshot": {
+            "summary": decision_reason,
+            "phase": phase,
+            "path": path_label,
+            "final_action": final_action,
+            "selected_symbol": focus_symbol,
+            "current_focus": focus_symbol,
+            "posture": canonical_posture or final_action or "-",
+            "monitor_reason": monitor_reason or live_monitor_reason or "-",
+            "guard_status": guard_status,
+            "execution_status": execution_status_summary,
+            "next_expected_step": next_expected_step or "-",
+        },
+        "strategist_evidence": {
+            "summary": strategist_evidence_summary,
+            "market_regime": str(canonical_trade.get("market_regime") or strategist_summary.get("market_regime") or "-"),
+            "playbook": playbook or "-",
+            "global_sentiment": _format_float(global_score, 2) if global_score is not None else "-",
+            "vix": _format_float(vix_level, 2) if vix_level is not None else "-",
+            "candidate_hints": _clean_brief_list(candidate_hints, limit=6),
+            "news_targets": _clean_brief_list(news_targets, limit=6),
+            "market_headlines": _clean_str_list(market_headlines, limit=3, max_len=160),
+            "symbol_headlines": _clean_str_list(symbol_headlines, limit=3, max_len=160),
+        },
+        "scanner_focus": {
+            "summary": selection_reason_text,
+            "selected_symbol": focus_symbol,
+            "selected_rank": selected_rank or None,
+            "universe_size": universe_size or None,
+            "top_candidates": list(canonical_trade.get("top_candidates") or top_candidates[:3])[:3],
+            "selection_reason": selection_reason_text,
+            "score_drivers": score_driver_preview[:4],
+        },
+        "monitor_guard_snapshot": {
+            "summary": monitor_guard_summary,
+            "monitor_reason": monitor_reason or live_monitor_reason or "-",
+            "entry_reason": entry_reason_code or "-",
+            "entry_guard_reason": entry_guard_reason or "-",
+            "active_exit_axis": active_exit_axis or "-",
+            "stop_policy_summary": stop_policy_summary[:4],
+            "guard_status": guard_status,
+            "guard_reason": supervisor_reason or "-",
+            "execution_status": execution_status_summary,
+        },
+        "next_step": {
+            "summary": next_expected_step or "-",
+            "watch_next": watch_next[:4],
+            "operator_takeaways": operator_takeaway_items[:4],
         },
         "why_symbol_chosen": {
             "selected": bool(selected_symbol),
@@ -3659,12 +3968,16 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
     commander_decision = commander_artifact.get("commander_decision") if isinstance(commander_artifact.get("commander_decision"), dict) else {}
     reporter = detail.get("reporter") if isinstance(detail.get("reporter"), dict) else {}
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
+    trade_report_data = trade_report.get("report_data") if isinstance(trade_report.get("report_data"), dict) else {}
+    trade_story_input = trade_report_data.get("trade_story_input") if isinstance(trade_report_data.get("trade_story_input"), dict) else {}
     canonical_trade = _build_canonical_trade_brief_input(trade_report)
     prefer_runtime_reporter = _prefer_runtime_reporter_state(reporter)
     strategist_summary = strategist.get("summary") if isinstance(strategist.get("summary"), dict) else {}
+    strategist_artifact = strategist.get("artifact") if isinstance(strategist.get("artifact"), dict) else {}
     strategist_evidence = strategist.get("evidence") if isinstance(strategist.get("evidence"), dict) else {}
     raw_input = strategist_evidence.get("raw_input") if isinstance(strategist_evidence.get("raw_input"), dict) else {}
     scanner_trace = scanner.get("decision_trace") if isinstance(scanner.get("decision_trace"), dict) else {}
+    scanner_artifact = scanner.get("artifact") if isinstance(scanner.get("artifact"), dict) else {}
     selected = scanner_trace.get("selected_candidate") if isinstance(scanner_trace.get("selected_candidate"), dict) else {}
     score_breakdown = selected.get("score_breakdown") if isinstance(selected.get("score_breakdown"), dict) else {}
     component_snapshot = selected.get("component_snapshot") if isinstance(selected.get("component_snapshot"), dict) else {}
@@ -3712,11 +4025,81 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
         canonical_filters_summary = canonical_trade.get("filters_summary")
     monitor_summary = monitor.get("summary") if isinstance(monitor.get("summary"), dict) else {}
     monitor_trace = monitor.get("decision_trace") if isinstance(monitor.get("decision_trace"), dict) else {}
+    monitor_artifact = monitor.get("artifact") if isinstance(monitor.get("artifact"), dict) else {}
     monitor_policy_ref = monitor_trace.get("policy_ref") if isinstance(monitor_trace.get("policy_ref"), dict) else {}
     monitor_timing_assessment = monitor_trace.get("timing_assessment") if isinstance(monitor_trace.get("timing_assessment"), dict) else {}
     monitor_thresholds_used = monitor_trace.get("thresholds_guards_used") if isinstance(monitor_trace.get("thresholds_guards_used"), dict) else {}
     monitor_entry_metrics = monitor_summary.get("entry_metrics") if isinstance(monitor_summary.get("entry_metrics"), dict) else {}
     monitor_entry_thresholds = monitor_summary.get("entry_thresholds") if isinstance(monitor_summary.get("entry_thresholds"), dict) else {}
+    selected_symbol = str(
+        scanner_trace.get("selected_symbol")
+        or selected.get("symbol")
+        or canonical_trade.get("symbol")
+        or ""
+    ).strip()
+    news_ranked = (
+        strategist_artifact.get("news_evidence_ranked")
+        if isinstance(strategist_artifact.get("news_evidence_ranked"), dict)
+        else {}
+    )
+    market_headlines = (
+        _brief_collect_top_headlines(news_ranked.get("market_news_ranked") or [], limit=3)
+        or [str((x or {}).get("title") or "") for x in list(raw_input.get("collected_market_news") or []) if isinstance(x, dict)][:3]
+        or list(canonical_trade.get("strategist_market_headlines") or canonical_trade.get("market_news_titles") or [])[:3]
+    )
+    symbol_headlines = (
+        _brief_collect_top_headlines(news_ranked.get("candidate_news_ranked") or [], limit=3, symbol=selected_symbol)
+        or [str((x or {}).get("title") or "") for x in list(raw_input.get("collected_candidate_news") or []) if isinstance(x, dict)][:3]
+        or list(canonical_trade.get("strategist_symbol_headlines") or canonical_trade.get("candidate_news_titles") or [])[:3]
+    )
+    candidate_hints = list(
+        strategist_artifact.get("candidate_symbols_hint")
+        or strategist_summary.get("candidate_hints")
+        or canonical_trade.get("strategist_candidate_hints")
+        or []
+    )[:8]
+    scanner_selection_trace = (
+        trade_story_input.get("scanner_selection_trace")
+        if isinstance(trade_story_input.get("scanner_selection_trace"), dict)
+        else canonical_trade.get("scanner_selection_trace")
+        if isinstance(canonical_trade.get("scanner_selection_trace"), dict)
+        else {}
+    )
+    if not scanner_selection_trace:
+        score_breakdown_by_symbol = (
+            scanner_artifact.get("score_breakdown_by_symbol")
+            if isinstance(scanner_artifact.get("score_breakdown_by_symbol"), dict)
+            else {}
+        )
+        scanner_selection_trace = {
+            "ranked_candidates": list(canonical_trade.get("top_candidates") or [])[:5],
+            "selected_symbol": selected_symbol,
+            "selected_rank": scanner_trace.get("selected_rank") or selected.get("rank"),
+            "selection_reason": canonical_trade.get("selection_basis")
+            or canonical_trade.get("selection_summary")
+            or scanner_trace.get("selection_reason_with_bias")
+            or selected.get("why"),
+            "selected_symbol_score_drivers": _brief_top_numeric_drivers(
+                score_breakdown_by_symbol.get(selected_symbol)
+                if isinstance(score_breakdown_by_symbol.get(selected_symbol), dict)
+                else score_breakdown,
+                limit=4,
+            ),
+        }
+    merged_monitor_stop_source: Dict[str, Any] = {}
+    if isinstance(monitor_artifact, dict):
+        merged_monitor_stop_source.update(monitor_artifact)
+    if isinstance(monitor_summary, dict):
+        merged_monitor_stop_source.update(monitor_summary)
+    if isinstance(monitor_trace, dict):
+        merged_monitor_stop_source.update(monitor_trace)
+    monitor_stop_policy_trace = _brief_build_stop_policy_trace(merged_monitor_stop_source)
+    if not any(value not in (None, "", []) for value in monitor_stop_policy_trace.values()):
+        monitor_stop_policy_trace = (
+            canonical_trade.get("monitor_stop_policy_trace")
+            if isinstance(canonical_trade.get("monitor_stop_policy_trace"), dict)
+            else {}
+        )
     commander_applied_policy = (
         commander_artifact.get("applied_policy")
         if isinstance(commander_artifact.get("applied_policy"), dict)
@@ -3813,6 +4196,9 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "news_query_targets": list(strategist_summary.get("news_query_targets") or canonical_trade.get("news_query_targets") or [])[:8],
             "news_query_reasoning": strategist_summary.get("news_query_reasoning"),
             "global_sentiment_inputs": raw_input.get("global_sentiment_inputs") if isinstance(raw_input.get("global_sentiment_inputs"), dict) else {},
+            "candidate_hints": [str(x or "") for x in candidate_hints if str(x or "").strip()],
+            "market_headlines": [str(x or "") for x in market_headlines if str(x or "").strip()][:3],
+            "symbol_headlines": [str(x or "") for x in symbol_headlines if str(x or "").strip()][:3],
             "market_news_titles": [str((x or {}).get("title") or "") for x in list(raw_input.get("collected_market_news") or [])[:4] if isinstance(x, dict)] or list(canonical_trade.get("market_news_titles") or [])[:4],
             "candidate_news_titles": [str((x or {}).get("title") or "") for x in list(raw_input.get("collected_candidate_news") or [])[:4] if isinstance(x, dict)] or list(canonical_trade.get("candidate_news_titles") or [])[:4],
             "llm_status": strategist_summary.get("llm_frame_status"),
@@ -3844,6 +4230,8 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "component_snapshot": component_snapshot,
             "feature_snapshot": feature_snapshot,
             "why_selected": list(canonical_trade.get("why_selected") or [])[:4],
+            "selection_trace": dict(scanner_selection_trace or {}),
+            "selected_symbol_score_drivers": dict(scanner_selection_trace.get("selected_symbol_score_drivers") or {}),
             "tie_break_rule": canonical_trade.get("tie_break_rule"),
             "runner_ups": list(canonical_trade.get("runner_ups") or [])[:3],
             "runner_ups_lost": list(canonical_trade.get("runner_ups_lost") or [])[:3],
@@ -3890,6 +4278,7 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "timing_assessment": monitor_timing_assessment,
             "thresholds_guards_used": monitor_thresholds_used,
             "threshold_shortfalls": _monitor_threshold_shortfall_notes(monitor_entry_metrics, monitor_entry_thresholds),
+            "stop_policy_trace": dict(monitor_stop_policy_trace or {}),
             "received_policy": monitor_received_policy,
             "received_policy_source": monitor_trace.get("received_policy_source") or monitor_policy_ref.get("received_policy_source"),
             "effective_policy": monitor_effective_policy,
@@ -4178,6 +4567,9 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "news_query_targets": _clean_str_list(strategist.get("news_query_targets"), limit=5, max_len=80),
             "news_query_reasoning": _trim_text(strategist.get("news_query_reasoning"), max_len=180),
             "global_sentiment_inputs": _compact_scalar_map(strategist.get("global_sentiment_inputs"), limit=8, max_len=80),
+            "candidate_hints": _clean_str_list(strategist.get("candidate_hints"), limit=6, max_len=24),
+            "market_headlines": _clean_str_list(strategist.get("market_headlines"), limit=3, max_len=120),
+            "symbol_headlines": _clean_str_list(strategist.get("symbol_headlines"), limit=3, max_len=120),
             "market_news_titles": _clean_str_list(strategist.get("market_news_titles"), limit=3, max_len=120),
             "candidate_news_titles": _clean_str_list(strategist.get("candidate_news_titles"), limit=3, max_len=120),
             "llm_status": _trim_text(strategist.get("llm_status"), max_len=24),
@@ -4201,6 +4593,25 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "policy_source": _trim_text(scanner.get("policy_source"), max_len=80),
             "applied_policy_present": scanner.get("applied_policy_present"),
             "monitor_entry_policy_summary": _compact_scalar_map(scanner.get("monitor_entry_policy_summary"), limit=8, max_len=80),
+            "selection_trace": {
+                "ranked_candidates": _compact_ranked_symbols(
+                    (scanner.get("selection_trace") or {}).get("ranked_candidates"),
+                    limit=5,
+                ),
+                "selected_symbol": _trim_text((scanner.get("selection_trace") or {}).get("selected_symbol"), max_len=24),
+                "selected_rank": (scanner.get("selection_trace") or {}).get("selected_rank"),
+                "selection_reason": _sanitize_operator_brief_text((scanner.get("selection_trace") or {}).get("selection_reason")),
+                "selected_symbol_score_drivers": _compact_scalar_map(
+                    (scanner.get("selection_trace") or {}).get("selected_symbol_score_drivers"),
+                    limit=6,
+                    max_len=80,
+                ),
+            },
+            "selected_symbol_score_drivers": _compact_scalar_map(
+                scanner.get("selected_symbol_score_drivers"),
+                limit=6,
+                max_len=80,
+            ),
             "feature_coverage": _compact_scalar_map(scanner.get("feature_coverage"), limit=6, max_len=80),
             "quote_metrics": _compact_scalar_map(scanner.get("quote_metrics"), limit=6, max_len=80),
             "score_breakdown": _compact_scalar_map(scanner.get("score_breakdown"), limit=8, max_len=80),
@@ -4255,6 +4666,7 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "timing_assessment": _compact_scalar_map(monitor.get("timing_assessment"), limit=8, max_len=80),
             "thresholds_guards_used": _compact_scalar_map(monitor.get("thresholds_guards_used"), limit=8, max_len=80),
             "threshold_shortfalls": _clean_str_list(monitor.get("threshold_shortfalls"), limit=6, max_len=120),
+            "stop_policy_trace": _compact_scalar_map(monitor.get("stop_policy_trace"), limit=8, max_len=80),
             "received_policy": _compact_scalar_map(monitor.get("received_policy"), limit=12, max_len=80),
             "received_policy_source": _trim_text(monitor.get("received_policy_source"), max_len=40),
             "effective_policy": _compact_scalar_map(monitor.get("effective_policy"), limit=12, max_len=80),
@@ -4692,19 +5104,26 @@ def _build_operator_brief_messages(compact_input: Dict[str, Any]) -> List[Dict[s
     user_prompt = (
         "입력 데이터를 바탕으로 운영자가 10초 안에 상황을 이해할 수 있는 간결한 브리프를 작성하십시오.\n"
         "작성 규칙:\n"
-        "- 전체 흐름은 반드시 Scanner -> Entry -> Holding -> Exit 순서를 유지하십시오.\n"
+        "- 운영 브리프는 현재 run/cycle의 즉시 상황 파악용 snapshot이어야 합니다.\n"
+        "- 현재 상태, 현재 집중 종목, 전략가 근거, 스캐너 선정 이유, 모니터 blocker/이유, active stop 요약, guard/execution 상태, 다음 확인 항목을 우선 정리하십시오.\n"
+        "- 긴 lifecycle 회고, execution 품질 회고, 긴 개선 포인트 섹션은 과하게 늘리지 마십시오.\n"
         "- 모든 설명값은 자연스러운 한국어 문장으로 작성하십시오.\n"
         "- entry_summary에는 반드시 분봉 기준 진입 근거 또는 진입 보류 사유를 명시하십시오.\n"
         "- 분봉 데이터가 없거나 진입 조건이 충분하지 않으면, 예시처럼 보수적으로 설명하십시오: "
         "\"이번 거래는 분봉 데이터가 확보되지 않아 진입 근거를 확인할 수 없었습니다. 따라서 신규 진입은 보류 대상으로 해석했습니다.\"\n"
         "- BUY가 이미 체결되고 lifecycle이 열려 있으면 no_position으로 단정하지 말고 현재 보유 상태를 설명하십시오.\n"
         "- SELL이 체결되어 lifecycle이 닫혀 있으면 어떤 청산 신호로 종료됐는지 명확히 설명하십시오.\n"
-        "- scanner_reason에는 후보 순위 맥락과 선정 이유를 2~3줄로 작성하십시오.\n"
-        "- holding_summary에는 현재 수익률, 포지션 상태, 시장 해석을 포함하십시오.\n"
-        "- exit_plan_summary에는 구체적인 청산 조건을 문장으로 작성하십시오.\n"
+        "- scanner_reason에는 후보 순위 맥락과 최종 선정 이유를 2~3줄로만 간결하게 작성하십시오.\n"
+        "- holding_summary에는 현재 포지션 상태와 지금 운영자가 알아야 할 핵심 감시 포인트만 담으십시오.\n"
+        "- exit_plan_summary에는 현재 active stop/exit 축을 짧게 요약하십시오.\n"
         "- risk_summary에는 현재 리스크 요인을 2~3줄로 정리하십시오.\n"
         "- next_checkpoints에는 운영자가 다음에 확인할 핵심 체크포인트를 작성하십시오.\n"
+        "- 점수 breakdown은 핵심 driver 1~3개만 언급하고 장황하게 나열하지 마십시오.\n"
         "- canonical_trade.available, reports/trades, source of truth, run-level 같은 내부 용어를 출력하지 마십시오.\n"
+        "- If strategist evidence is present, mention candidate hints, market headlines, and selected-symbol headlines explicitly.\n"
+        "- Explain the chain as strategist candidate hints -> scanner top ranks -> final symbol -> selection reason.\n"
+        "- When stop policy layers are present, distinguish hard fail-safe stop, adaptive stop, effective stop, trailing stop, and take profit.\n"
+        "- For no-trade states, use entry blockers and threshold shortfalls to explain what was missing.\n"
         f"계약: {json.dumps(contract, ensure_ascii=False)}\n"
         f"입력: {json.dumps(compact_input, ensure_ascii=False)}"
     )
@@ -5608,6 +6027,11 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
     exit_plan = sections.get("exit_plan") if isinstance(exit_plan := sections.get("exit_plan"), dict) else {}
     operator_conclusion = sections.get("operator_conclusion") if isinstance(sections.get("operator_conclusion"), dict) else {}
     risk_alerts = sections.get("risk_alerts") if isinstance(sections.get("risk_alerts"), dict) else {}
+    current_snapshot = sections.get("current_snapshot") if isinstance(sections.get("current_snapshot"), dict) else {}
+    strategist_evidence = sections.get("strategist_evidence") if isinstance(sections.get("strategist_evidence"), dict) else {}
+    scanner_focus = sections.get("scanner_focus") if isinstance(sections.get("scanner_focus"), dict) else {}
+    monitor_guard_snapshot = sections.get("monitor_guard_snapshot") if isinstance(sections.get("monitor_guard_snapshot"), dict) else {}
+    next_step_section = sections.get("next_step") if isinstance(sections.get("next_step"), dict) else {}
 
     selected_symbol = str(executive.get("symbol") or "-")
     final_action = str(executive.get("final_action") or operator_conclusion.get("current_action") or "").strip().upper()
@@ -5617,6 +6041,190 @@ def _render_operator_brief_markdown(brief: Dict[str, Any]) -> str:
     def _usable_narrative_text(text: Any) -> str:
         cleaned = _narrative_text(text)
         return cleaned if _count_hangul_chars(cleaned) >= 4 else ""
+
+    def _summary_text(section: Dict[str, Any], *extra: Any) -> str:
+        candidates: List[Any] = [section.get("summary")] if isinstance(section, dict) else []
+        candidates.extend(extra)
+        for candidate in candidates:
+            text = _usable_narrative_text(candidate) or _narrative_text(candidate)
+            if text:
+                return text
+        return ""
+
+    def _compact_items(values: Any, *, limit: int = 3, max_len: int = 180) -> List[str]:
+        items = _clean_str_list(values, limit=limit, max_len=max_len)
+        out: List[str] = []
+        for item in items:
+            text = _sanitize_operator_brief_text(item)
+            if text:
+                out.append(text)
+        return out
+
+    if any(
+        isinstance(section, dict) and section
+        for section in (
+            current_snapshot,
+            strategist_evidence,
+            scanner_focus,
+            monitor_guard_snapshot,
+            next_step_section,
+        )
+    ):
+        snapshot_summary = _summary_text(
+            current_snapshot,
+            brief.get("executive_summary"),
+            brief.get("headline"),
+        ) or "현재 run 기준 핵심 상태를 요약했습니다."
+        strategist_summary = _summary_text(
+            strategist_evidence,
+            brief.get("strategist_summary"),
+        ) or "전략가 근거는 제한된 범위에서만 확인되었습니다."
+        scanner_summary = _summary_text(
+            scanner_focus,
+            brief.get("scanner_summary"),
+        ) or "스캐너 선정 근거는 제한된 범위에서만 확인되었습니다."
+        monitor_summary = _summary_text(
+            monitor_guard_snapshot,
+            brief.get("monitor_summary"),
+        ) or "모니터와 가드 상태를 중심으로 현재 상황을 정리했습니다."
+        next_step_summary = _summary_text(
+            next_step_section,
+            operator_conclusion.get("watch_next"),
+            brief.get("operator_takeaways"),
+        ) or "다음 체크포인트를 계속 확인합니다."
+
+        snapshot_focus = _sanitize_operator_brief_text(
+            current_snapshot.get("current_focus")
+            or current_snapshot.get("selected_symbol")
+            or executive.get("symbol")
+        )
+        snapshot_action = _sanitize_operator_brief_text(
+            current_snapshot.get("final_action")
+            or executive.get("final_action")
+            or operator_conclusion.get("current_action")
+        )
+        guard_status = _sanitize_operator_brief_text(
+            monitor_guard_snapshot.get("guard_status") or current_snapshot.get("guard_status")
+        )
+        execution_status = _sanitize_operator_brief_text(
+            monitor_guard_snapshot.get("execution_status") or current_snapshot.get("execution_status")
+        )
+
+        candidate_hints = _compact_items(strategist_evidence.get("candidate_hints"), limit=8, max_len=40)
+        market_headlines = _compact_items(strategist_evidence.get("market_headlines"), limit=3, max_len=180)
+        symbol_headlines = _compact_items(strategist_evidence.get("symbol_headlines"), limit=3, max_len=180)
+
+        top_candidates = [row for row in list(scanner_focus.get("top_candidates") or []) if isinstance(row, dict)][:5]
+        top_candidates_summary = ", ".join(
+            f"#{idx} {(_sanitize_operator_brief_text(row.get('symbol')) or '-')}"
+            for idx, row in enumerate(top_candidates, start=1)
+            if _sanitize_operator_brief_text(row.get("symbol"))
+        )
+        selection_reason = _sanitize_operator_brief_text(scanner_focus.get("selection_reason"))
+        score_drivers_map = scanner_focus.get("score_drivers") if isinstance(scanner_focus.get("score_drivers"), dict) else {}
+        score_driver_items = [
+            f"{_sanitize_operator_brief_text(key)}={_format_float(value, 3)}"
+            for key, value in list(score_drivers_map.items())[:4]
+            if _sanitize_operator_brief_text(key)
+        ]
+
+        stop_policy_summary = _compact_items(monitor_guard_snapshot.get("stop_policy_summary"), limit=5, max_len=140)
+        monitor_reason = _sanitize_operator_brief_text(
+            monitor_guard_snapshot.get("monitor_reason") or monitor_guard_snapshot.get("entry_reason")
+        )
+        next_watch = _compact_items(next_step_section.get("watch_next"), limit=4, max_len=180)
+        takeaways = _compact_items(
+            next_step_section.get("operator_takeaways") or brief.get("operator_takeaways"),
+            limit=4,
+            max_len=180,
+        )
+
+        lines = [
+            "# 운영자 브리프",
+            "",
+            "## 1. 현재 스냅샷",
+            "",
+            f"- {snapshot_summary}",
+        ]
+        if snapshot_focus:
+            lines.append(f"- 현재 포커스 종목: {snapshot_focus}")
+        if snapshot_action:
+            lines.append(f"- 현재 판단: {snapshot_action}")
+        if guard_status:
+            lines.append(f"- 가드 상태: {guard_status}")
+        if execution_status:
+            lines.append(f"- 실행 상태: {execution_status}")
+
+        lines.extend([
+            "",
+            "## 2. 전략가 근거",
+            "",
+            f"- {strategist_summary}",
+        ])
+        if candidate_hints:
+            lines.append(f"- 전략가 후보 힌트: {', '.join(candidate_hints)}")
+        if market_headlines:
+            lines.append("- 시장 헤드라인:")
+            for item in market_headlines:
+                lines.append(f"  - {item}")
+        if symbol_headlines:
+            lines.append("- 선택 종목 관련 헤드라인:")
+            for item in symbol_headlines:
+                lines.append(f"  - {item}")
+
+        lines.extend([
+            "",
+            "## 3. 스캐너 포커스",
+            "",
+            f"- {scanner_summary}",
+        ])
+        if scanner_focus.get("selected_symbol"):
+            lines.append(
+                f"- 최종 선택: {scanner_focus.get('selected_symbol')} (rank {scanner_focus.get('selected_rank') or '-'})"
+            )
+        if top_candidates_summary:
+            lines.append(f"- 상위 후보: {top_candidates_summary}")
+        if selection_reason:
+            lines.append(f"- 선정 이유: {selection_reason}")
+        if score_driver_items:
+            lines.append(f"- 주요 점수 요인: {', '.join(score_driver_items)}")
+
+        lines.extend([
+            "",
+            "## 4. 모니터 / 가드",
+            "",
+            f"- {monitor_summary}",
+        ])
+        if monitor_reason:
+            lines.append(f"- 핵심 모니터 이유: {monitor_reason}")
+        if stop_policy_summary:
+            lines.append("- 활성 스톱 정책:")
+            for item in stop_policy_summary:
+                lines.append(f"  - {item}")
+
+        lines.extend([
+            "",
+            "## 5. 다음 예상 단계",
+            "",
+            f"- {next_step_summary}",
+        ])
+        for item in next_watch:
+            lines.append(f"- {item}")
+
+        lines.extend([
+            "",
+            "## 6. 운영자 포인트",
+            "",
+        ])
+        if takeaways:
+            for item in takeaways:
+                lines.append(f"- {item}")
+        else:
+            lines.append("- 현재 snapshot 기준 핵심 판단과 다음 체크포인트를 우선 확인합니다.")
+
+        if lines[-1] != "":
+            lines.append("")
+        return "\n".join(lines)
 
     display_symbol = selected_symbol if selected_symbol and selected_symbol != "-" else "\ud574\ub2f9 \uc885\ubaa9"
     executive_summary = _usable_narrative_text(brief.get("executive_summary")) or _narrative_text("" if status == "fallback" else (str(brief.get("executive_summary") or "").strip() or headline))

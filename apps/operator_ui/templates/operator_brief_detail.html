@@ -21,7 +21,7 @@
 {% set sec = brief.sections or {} %}
 <section class="grid grid-2">
   <article class="card card--attention">
-    <h2>Brief Summary</h2>
+    <h2>Current Snapshot</h2>
     <div class="chip-list">
       <span class="status-badge status-badge--ok">{{ brief.executive_action or "-" }} {{ brief.executive_symbol or "-" }}</span>
       {% if brief.story_type_label %}
@@ -33,16 +33,15 @@
       {% if brief.lifecycle_status %}
       <span class="chip">Lifecycle {{ brief.lifecycle_status | upper }}</span>
       {% endif %}
-      <span class="{{ brief.ai_trade_status_badge_class or 'status-badge' }}">{{ brief.ai_trade_status_label or "-" }}</span>
+      <span class="chip chip--soft">{{ brief.ai_trade_status_label or "-" }}</span>
     </div>
-    <p class="operator-sentence">{{ (sec.executive_decision or {}).get("reason") or "-" }}</p>
+    <p class="operator-sentence">{{ (sec.current_snapshot or {}).get("summary") or (sec.executive_decision or {}).get("reason") or "-" }}</p>
     <ul class="summary-list summary-list--tight">
-      <li>Status: {{ brief.status or "-" }}</li>
-      <li>Model: {{ brief.model or "-" }}</li>
-      <li>Saved at: {{ brief.saved_at or "-" }}</li>
-      {% if brief.trade_summary %}
-      <li>Trade summary: {{ brief.trade_summary }}</li>
-      {% endif %}
+      <li>Current phase: {{ (sec.current_snapshot or {}).get("phase") or "-" }}</li>
+      <li>Current focus: {{ (sec.current_snapshot or {}).get("current_focus") or "-" }}</li>
+      <li>Monitor reason: {{ (sec.current_snapshot or {}).get("monitor_reason") or "-" }}</li>
+      <li>Guard / execution: {{ (sec.current_snapshot or {}).get("guard_status") or "-" }} / {{ (sec.current_snapshot or {}).get("execution_status") or "-" }}</li>
+      <li>Next expected step: {{ (sec.current_snapshot or {}).get("next_expected_step") or "-" }}</li>
     </ul>
     <p class="chip-list">
       {% if brief.run_link %}
@@ -55,29 +54,39 @@
   </article>
 
   <article class="card">
-    <h2>Market and Selection</h2>
+    <h2>Strategist Evidence</h2>
     <ul class="summary-list summary-list--tight">
-      <li>Market regime: {{ (sec.market_context or {}).get("market_regime") or "-" }}</li>
-      <li>Global sentiment: {{ (sec.market_context or {}).get("global_sentiment") or "-" }}</li>
-      <li>News summary: {{ (sec.market_context or {}).get("news_summary") or "-" }}</li>
-      <li>Universe scanned: {{ (sec.why_symbol_chosen or {}).get("universe_size") or "-" }}</li>
-      <li>Selected rank: {% if (sec.why_symbol_chosen or {}).get("selected_rank") %}#{{ (sec.why_symbol_chosen or {}).get("selected_rank") }}{% else %}-{% endif %}</li>
-      <li>Selection note: {{ ((sec.why_symbol_chosen or {}).get("selection_reasons") or ["-"])[0] }}</li>
+      <li>Regime / playbook: {{ (sec.strategist_evidence or {}).get("market_regime") or "-" }} / {{ (sec.strategist_evidence or {}).get("playbook") or "-" }}</li>
+      <li>Global sentiment / VIX: {{ (sec.strategist_evidence or {}).get("global_sentiment") or "-" }} / {{ (sec.strategist_evidence or {}).get("vix") or "-" }}</li>
+      <li>Candidate hints: {{ ((sec.strategist_evidence or {}).get("candidate_hints") or []) | join(", ") or "-" }}</li>
+      <li>News targets: {{ ((sec.strategist_evidence or {}).get("news_targets") or []) | join(", ") or "-" }}</li>
+      <li>Market headlines: {{ ((sec.strategist_evidence or {}).get("market_headlines") or []) | join(" / ") or "-" }}</li>
+      <li>Selected-symbol headlines: {{ ((sec.strategist_evidence or {}).get("symbol_headlines") or []) | join(" / ") or "-" }}</li>
     </ul>
   </article>
 
   <article class="card">
-    <h2>Monitor and Guard</h2>
+    <h2>Scanner Focus</h2>
     <ul class="summary-list summary-list--tight">
-      <li>Posture: {{ (sec.position_monitor_reasoning or {}).get("posture") or "-" }}</li>
-      <li>Monitor note: {{ ((sec.position_monitor_reasoning or {}).get("hold_reasons") or ["-"])[0] }}</li>
-      <li>Active exit axis: {{ (sec.position_monitor_reasoning or {}).get("active_exit_axis") or "-" }}</li>
-      <li>Current / avg / peak: {{ (sec.position_monitor_reasoning or {}).get("current_price") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("average_price") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("peak_price") or "-" }}</li>
-      <li>Current / peak drawdown: {{ (sec.position_monitor_reasoning or {}).get("current_drawdown") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("peak_drawdown") or "-" }}</li>
-      <li>Effective stop / take profit: {{ (sec.position_monitor_reasoning or {}).get("effective_stop") or "-" }} / {{ (sec.position_monitor_reasoning or {}).get("take_profit") or "-" }}</li>
-      <li>VWAP distance: {{ (sec.position_monitor_reasoning or {}).get("vwap_distance") or "-" }}</li>
-      <li>Guard reason: {{ (sec.guard_approval or {}).get("reason") or "-" }}</li>
-      <li>Execution summary: {{ (sec.execution_result or {}).get("summary") or "-" }}</li>
+      <li>Selected symbol: {{ (sec.scanner_focus or {}).get("selected_symbol") or "-" }}</li>
+      <li>Selected rank: {% if (sec.scanner_focus or {}).get("selected_rank") %}#{{ (sec.scanner_focus or {}).get("selected_rank") }}{% else %}-{% endif %}</li>
+      <li>Universe scanned: {{ (sec.scanner_focus or {}).get("universe_size") or "-" }}</li>
+      <li>Selection reason: {{ (sec.scanner_focus or {}).get("selection_reason") or "-" }}</li>
+      <li>Top candidates: {{ (((sec.scanner_focus or {}).get("top_candidates") or []) | map(attribute="symbol") | list) | join(", ") or "-" }}</li>
+      <li>Score drivers: {{ ((sec.scanner_focus or {}).get("score_drivers") or []) | join(" / ") or "-" }}</li>
+    </ul>
+  </article>
+
+  <article class="card">
+    <h2>Monitor / Guard</h2>
+    <ul class="summary-list summary-list--tight">
+      <li>Top blocker / reason: {{ (sec.monitor_guard_snapshot or {}).get("summary") or "-" }}</li>
+      <li>Entry reason code: {{ (sec.monitor_guard_snapshot or {}).get("entry_reason") or "-" }}</li>
+      <li>Active exit axis: {{ (sec.monitor_guard_snapshot or {}).get("active_exit_axis") or "-" }}</li>
+      <li>Stop policy: {{ ((sec.monitor_guard_snapshot or {}).get("stop_policy_summary") or []) | join(" / ") or "-" }}</li>
+      <li>Guard status: {{ (sec.monitor_guard_snapshot or {}).get("guard_status") or "-" }}</li>
+      <li>Guard reason: {{ (sec.monitor_guard_snapshot or {}).get("guard_reason") or "-" }}</li>
+      <li>Execution status: {{ (sec.monitor_guard_snapshot or {}).get("execution_status") or "-" }}</li>
     </ul>
     {% if (sec.position_monitor_reasoning or {}).get("watch_axes") %}
     <p class="chip-list">
@@ -89,8 +98,9 @@
   </article>
 
   <article class="card">
-    <h2>Next Watch</h2>
+    <h2>Next Expected Step</h2>
     <ul class="summary-list summary-list--tight">
+      <li>Next step: {{ (sec.next_step or {}).get("summary") or "-" }}</li>
       {% for line in brief.watch_next or [] %}
       <li>Watch next: {{ line }}</li>
       {% endfor %}
@@ -105,24 +115,30 @@
 </section>
 
 <section class="card">
-  <h2>Agent Summaries</h2>
+  <h2>Operator Takeaways</h2>
   <ul class="summary-list summary-list--tight">
-    <li><strong>Commander</strong>: {{ brief.raw_brief.commander_summary or "-" }}</li>
-    <li><strong>Strategist</strong>: {{ brief.raw_brief.strategist_summary or "-" }}</li>
-    <li><strong>Scanner</strong>: {{ brief.raw_brief.scanner_summary or "-" }}</li>
-    <li><strong>Monitor</strong>: {{ brief.raw_brief.monitor_summary or "-" }}</li>
-    <li><strong>Supervisor</strong>: {{ brief.raw_brief.supervisor_summary or "-" }}</li>
-    <li><strong>Executor</strong>: {{ brief.raw_brief.executor_summary or "-" }}</li>
-    <li><strong>Reporter</strong>: {{ brief.raw_brief.reporter_summary or "-" }}</li>
-  </ul>
-  {% if brief.operator_takeaways %}
-  <h3>Operator Takeaways</h3>
-  <ul class="summary-list summary-list--tight">
-    {% for line in brief.operator_takeaways %}
+    {% for line in brief.operator_takeaways or (sec.next_step or {}).get("operator_takeaways") or [] %}
     <li>{{ line }}</li>
     {% endfor %}
+    {% if not (brief.operator_takeaways or (sec.next_step or {}).get("operator_takeaways")) %}
+    <li>No additional takeaways were saved.</li>
+    {% endif %}
   </ul>
-  {% endif %}
+</section>
+
+<section class="card card--muted">
+  <details class="details-block">
+    <summary>Supporting Agent Summaries</summary>
+    <ul class="summary-list summary-list--tight">
+      <li><strong>Commander</strong>: {{ brief.raw_brief.commander_summary or "-" }}</li>
+      <li><strong>Strategist</strong>: {{ brief.raw_brief.strategist_summary or "-" }}</li>
+      <li><strong>Scanner</strong>: {{ brief.raw_brief.scanner_summary or "-" }}</li>
+      <li><strong>Monitor</strong>: {{ brief.raw_brief.monitor_summary or "-" }}</li>
+      <li><strong>Supervisor</strong>: {{ brief.raw_brief.supervisor_summary or "-" }}</li>
+      <li><strong>Executor</strong>: {{ brief.raw_brief.executor_summary or "-" }}</li>
+      <li><strong>Reporter</strong>: {{ brief.raw_brief.reporter_summary or "-" }}</li>
+    </ul>
+  </details>
 </section>
 
 <section class="card card--muted">

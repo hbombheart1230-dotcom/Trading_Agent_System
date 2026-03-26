@@ -10,6 +10,7 @@ from libs.reporting.reasoning_trace import (
     normalize_reasoning_provenance_aliases,
     normalize_reasoning_trace_aliases,
 )
+from libs.core.symbols import normalize_symbol
 
 
 def utc_now_iso() -> str:
@@ -76,6 +77,248 @@ def _merge_missing_values(base: Dict[str, Any], fallback: Dict[str, Any]) -> Dic
         if key not in out or out.get(key) in (None, "", [], {}):
             out[key] = value
     return out
+
+
+def _headline_text(row: Any) -> str:
+    item = row if isinstance(row, dict) else {}
+    for key in ("title", "headline", "summary", "description", "text", "news_title"):
+        text = clip(item.get(key), max_len=180)
+        if text:
+            return text
+    return ""
+
+
+def _norm_symbol_text(value: Any) -> str:
+    return normalize_symbol(value, allow_test_symbols=True).strip().upper()
+
+
+def _headline_matches_symbol(row: Any, symbol: str) -> bool:
+    item = row if isinstance(row, dict) else {}
+    target = _norm_symbol_text(symbol)
+    if not target:
+        return False
+    scalar_candidates = [
+        item.get("symbol"),
+        item.get("code"),
+        item.get("ticker"),
+        item.get("query_target"),
+        item.get("query"),
+        item.get("news_query_target"),
+    ]
+    for candidate in scalar_candidates:
+        if _norm_symbol_text(candidate) == target:
+            return True
+    for key in ("symbols", "tickers", "related_symbols"):
+        values = item.get(key)
+        if not isinstance(values, list):
+            continue
+        for candidate in values:
+            if _norm_symbol_text(candidate) == target:
+                return True
+    joined = " ".join(
+        [
+            str(item.get("title") or ""),
+            str(item.get("headline") or ""),
+            str(item.get("summary") or ""),
+            str(item.get("description") or ""),
+            str(item.get("query_target") or ""),
+        ]
+    ).upper()
+    return bool(target and target in joined)
+
+
+def _collect_top_headlines(rows: Any, *, limit: int = 3, symbol: str = "") -> List[str]:
+    if not isinstance(rows, list):
+        return []
+    filtered: List[str] = []
+    fallback: List[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        text = _headline_text(row)
+        if not text:
+            continue
+        if text not in fallback:
+            fallback.append(text)
+        if symbol and _headline_matches_symbol(row, symbol) and text not in filtered:
+            filtered.append(text)
+    picked = filtered or fallback
+    return picked[: max(1, int(limit))]
+
+
+def _top_numeric_drivers(values: Any, *, limit: int = 4) -> Dict[str, float]:
+    if not isinstance(values, dict):
+        return {}
+    scored: List[tuple[float, str, float]] = []
+    for key, value in values.items():
+        try:
+            numeric = float(value)
+        except Exception:
+            continue
+        if numeric == 0.0:
+            continue
+        scored.append((abs(numeric), str(key), numeric))
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    out: Dict[str, float] = {}
+    for _, key, numeric in scored[: max(1, int(limit))]:
+        out[key] = numeric
+    return out
+
+
+def _build_strategist_evidence_trace(
+    strategist: Dict[str, Any],
+    *,
+    selected_symbol: str = "",
+    fallback_market_titles: Any = None,
+    fallback_candidate_titles: Any = None,
+) -> Dict[str, Any]:
+    data = strategist if isinstance(strategist, dict) else {}
+    news_ranked = data.get("news_evidence_ranked") if isinstance(data.get("news_evidence_ranked"), dict) else {}
+    global_signal = data.get("global_sentiment_signal") if isinstance(data.get("global_sentiment_signal"), dict) else {}
+    fear_index = data.get("fear_index") if isinstance(data.get("fear_index"), dict) else {}
+    if not fear_index and isinstance(global_signal.get("fear_index"), dict):
+        fear_index = dict(global_signal.get("fear_index") or {})
+    market_rows = list(news_ranked.get("market_news_ranked") or [])
+    candidate_rows = list(news_ranked.get("candidate_news_ranked") or [])
+    market_headlines = _collect_top_headlines(market_rows, limit=3)
+    symbol_headlines = _collect_top_headlines(candidate_rows, limit=3, symbol=selected_symbol)
+    if not market_headlines:
+        market_headlines = _list_text(fallback_market_titles, limit=3, max_len=180)
+    if not symbol_headlines:
+        symbol_headlines = _list_text(fallback_candidate_titles, limit=3, max_len=180)
+    candidate_hints = _list_text(
+        data.get("candidate_symbols_hint"),
+        limit=8,
+        max_len=24,
+    )
+    key_events = _list_text(
+        data.get("key_events") if data.get("key_events") is not None else data.get("key_events_hint"),
+        limit=6,
+        max_len=180,
+    )
+    return {
+        "candidate_hints": candidate_hints,
+        "news_query_targets": _list_text(
+            data.get("news_query_targets")
+            if data.get("news_query_targets") is not None
+            else news_ranked.get("news_query_targets"),
+            limit=8,
+            max_len=80,
+        ),
+        "market_headlines": market_headlines,
+        "symbol_headlines": symbol_headlines,
+        "global_sentiment_signal": dict(global_signal or {}),
+        "fear_index": dict(fear_index or {}),
+        "key_events": key_events,
+    }
+
+
+def _build_scanner_selection_trace(scanner_reason: Dict[str, Any], scanner_artifact: Dict[str, Any]) -> Dict[str, Any]:
+    reason = scanner_reason if isinstance(scanner_reason, dict) else {}
+    artifact = scanner_artifact if isinstance(scanner_artifact, dict) else {}
+    selected_symbol = str(
+        reason.get("selected_symbol")
+        or artifact.get("selected_symbol")
+        or ""
+    ).strip()
+    selected_rank = safe_int(reason.get("selected_rank"), safe_int(artifact.get("selected_rank"), 0))
+    ranked_candidates = [dict(row) for row in list(reason.get("top_candidates") or []) if isinstance(row, dict)]
+    if not ranked_candidates:
+        ranked_candidates = [dict(row) for row in list(artifact.get("ranked_candidates") or []) if isinstance(row, dict)]
+    if not ranked_candidates:
+        ranking_table = artifact.get("candidate_ranking_table") if isinstance(artifact.get("candidate_ranking_table"), dict) else {}
+        ranked_candidates = [dict(row) for row in list(ranking_table.get("rows") or []) if isinstance(row, dict)]
+    score_drivers = {}
+    if isinstance(reason.get("score_breakdown"), dict):
+        score_drivers = _top_numeric_drivers(reason.get("score_breakdown"), limit=4)
+    if not score_drivers:
+        score_breakdown_by_symbol = artifact.get("score_breakdown_by_symbol") if isinstance(artifact.get("score_breakdown_by_symbol"), dict) else {}
+        score_drivers = _top_numeric_drivers(score_breakdown_by_symbol.get(selected_symbol), limit=4)
+    selection_reason = (
+        clip(reason.get("selection_basis"), max_len=260)
+        or clip(reason.get("selection_reason_with_bias"), max_len=260)
+        or clip(artifact.get("selection_reason_with_bias"), max_len=260)
+        or clip(artifact.get("selection_reason"), max_len=260)
+        or clip((artifact.get("candidate_selection_reason") or {}).get("selection_summary"), max_len=260)
+        or clip(reason.get("summary"), max_len=260)
+    )
+    return {
+        "ranked_candidates": ranked_candidates[:5],
+        "selected_symbol": selected_symbol,
+        "selected_rank": selected_rank,
+        "selection_reason": selection_reason,
+        "selected_symbol_score_drivers": score_drivers,
+    }
+
+
+def _resolve_adaptive_stop_loss_pct(monitor: Dict[str, Any], thresholds: Dict[str, Any]) -> Any:
+    adaptive_exit = monitor.get("adaptive_exit") if isinstance(monitor.get("adaptive_exit"), dict) else {}
+    if adaptive_exit.get("stop_loss_pct") not in (None, ""):
+        return adaptive_exit.get("stop_loss_pct")
+    if thresholds.get("adaptive_stop_loss_pct") not in (None, ""):
+        return thresholds.get("adaptive_stop_loss_pct")
+    threshold_snapshot = monitor.get("threshold_snapshot") if isinstance(monitor.get("threshold_snapshot"), dict) else {}
+    if threshold_snapshot.get("adaptive_stop_loss_pct") not in (None, ""):
+        return threshold_snapshot.get("adaptive_stop_loss_pct")
+    return None
+
+
+def _build_monitor_stop_policy_trace(monitor: Dict[str, Any], thresholds: Dict[str, Any]) -> Dict[str, Any]:
+    adaptive_stop_loss_pct = _resolve_adaptive_stop_loss_pct(monitor, thresholds)
+    hard_stop_pct = (
+        thresholds.get("hard_stop_pct")
+        if thresholds.get("hard_stop_pct") not in (None, "")
+        else monitor.get("hard_stop_pct")
+    )
+    effective_stop_loss_pct = (
+        thresholds.get("effective_stop_loss_pct")
+        if thresholds.get("effective_stop_loss_pct") not in (None, "")
+        else adaptive_stop_loss_pct
+        if adaptive_stop_loss_pct not in (None, "")
+        else hard_stop_pct
+    )
+    return {
+        "hard_stop_pct": hard_stop_pct,
+        "adaptive_stop_loss_pct": adaptive_stop_loss_pct,
+        "effective_stop_loss_pct": effective_stop_loss_pct,
+        "trailing_stop_pct": thresholds.get("trailing_stop_pct"),
+        "take_profit_pct": thresholds.get("take_profit_pct"),
+    }
+
+
+def _build_monitor_blocker_trace(monitor: Dict[str, Any]) -> Dict[str, Any]:
+    data = monitor if isinstance(monitor, dict) else {}
+    entry_metrics = data.get("entry_metrics") if isinstance(data.get("entry_metrics"), dict) else {}
+    entry_thresholds = data.get("entry_thresholds") if isinstance(data.get("entry_thresholds"), dict) else {}
+    timing_assessment = data.get("timing_assessment") if isinstance(data.get("timing_assessment"), dict) else {}
+    policy_ref = data.get("policy_ref") if isinstance(data.get("policy_ref"), dict) else {}
+    threshold_shortfalls: List[str] = []
+    if entry_metrics.get("volume_ratio") not in (None, "") and entry_thresholds.get("volume_ratio_min") not in (None, ""):
+        volume_ratio = safe_float(entry_metrics.get("volume_ratio"), 0.0)
+        volume_ratio_min = safe_float(entry_thresholds.get("volume_ratio_min"), 0.0)
+        if volume_ratio < volume_ratio_min:
+            threshold_shortfalls.append(f"volume ratio {volume_ratio:.2f} below min {volume_ratio_min:.2f}")
+    if entry_metrics.get("extended_from_vwap_pct") not in (None, "") and entry_thresholds.get("max_extended_from_vwap_pct") not in (None, ""):
+        extended = safe_float(entry_metrics.get("extended_from_vwap_pct"), 0.0)
+        extended_max = safe_float(entry_thresholds.get("max_extended_from_vwap_pct"), 0.0)
+        if extended > extended_max:
+            threshold_shortfalls.append(
+                f"VWAP extension {format_ratio_pct(extended)}% above max {format_ratio_pct(extended_max)}%"
+            )
+    if entry_metrics.get("pullback_depth_pct") not in (None, "") and entry_thresholds.get("pullback_min_pct") not in (None, ""):
+        pullback_depth = safe_float(entry_metrics.get("pullback_depth_pct"), 0.0)
+        pullback_min = safe_float(entry_thresholds.get("pullback_min_pct"), 0.0)
+        if pullback_depth < pullback_min:
+            threshold_shortfalls.append(
+                f"pullback depth {format_ratio_pct(pullback_depth)}% below min {format_ratio_pct(pullback_min)}%"
+            )
+    return {
+        "entry_check_summary": clip(data.get("entry_check_summary"), max_len=260),
+        "entry_blockers": _list_text(data.get("entry_blockers"), limit=8, max_len=120),
+        "threshold_shortfalls": threshold_shortfalls[:4],
+        "timing_assessment": dict(timing_assessment or {}),
+        "policy_ref": dict(policy_ref or {}),
+    }
 
 
 def _source_confidence_label(source: Any) -> str:
@@ -616,6 +859,37 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
     market_news_titles = _list_text(input_summary.get("market_news_titles"), limit=3, max_len=140)
     candidate_news_titles = _list_text(input_summary.get("candidate_news_titles"), limit=3, max_len=140)
     key_events_hint = _list_text(input_summary.get("key_events_hint"), limit=5, max_len=180)
+    strategist_evidence_trace = _build_strategist_evidence_trace(
+        strategist,
+        fallback_market_titles=market_news_titles,
+        fallback_candidate_titles=candidate_news_titles,
+    )
+    candidate_hints = _list_text(
+        strategist_evidence_trace.get("candidate_hints"),
+        limit=8,
+        max_len=24,
+    )
+    market_headlines = _list_text(
+        strategist_evidence_trace.get("market_headlines"),
+        limit=3,
+        max_len=180,
+    ) or market_news_titles
+    symbol_headlines = _list_text(
+        strategist_evidence_trace.get("symbol_headlines"),
+        limit=3,
+        max_len=180,
+    ) or candidate_news_titles
+    global_sentiment_signal = (
+        dict(strategist_evidence_trace.get("global_sentiment_signal") or {})
+        if isinstance(strategist_evidence_trace.get("global_sentiment_signal"), dict)
+        else {}
+    )
+    fear_index_trace = (
+        dict(strategist_evidence_trace.get("fear_index") or {})
+        if isinstance(strategist_evidence_trace.get("fear_index"), dict)
+        else dict(fear_index or {})
+    )
+    key_events = _list_text(strategist_evidence_trace.get("key_events"), limit=6, max_len=180) or key_events_hint
     news_summary = (
         f"{news_total} headlines were considered across {query_count} targets "
         f"({market_signal_total} market / {candidate_signal_total} candidate signals)."
@@ -647,13 +921,21 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
         bullets.append(f"News query targets: {', '.join(query_targets)}")
     if key_events_hint:
         bullets.append("Key strategist inputs: " + "; ".join(key_events_hint[:3]))
+    if candidate_hints:
+        bullets.append("Strategist candidate hints: " + ", ".join(candidate_hints[:5]))
+    if market_headlines:
+        bullets.append("Strategist market headlines: " + "; ".join(market_headlines[:3]))
+    if symbol_headlines:
+        bullets.append("Strategist symbol headlines: " + "; ".join(symbol_headlines[:3]))
     return {
         "regime": regime,
         "market_sentiment": sentiment_state,
         "playbook": playbook,
         "themes": themes,
         "global_sentiment_score": global_sentiment_score,
+        "global_sentiment_signal": global_sentiment_signal,
         "vix_level": vix_level,
+        "fear_index": fear_index_trace,
         "stress_flags": stress_flags,
         "defensive_mode": defensive_mode,
         "headline_count": news_total,
@@ -662,8 +944,13 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
         "candidate_signal_total": candidate_signal_total,
         "news_query_targets": query_targets,
         "key_events_hint": key_events_hint,
-        "market_news_titles": market_news_titles,
-        "candidate_news_titles": candidate_news_titles,
+        "key_events": key_events,
+        "candidate_hints": candidate_hints,
+        "market_headlines": market_headlines,
+        "symbol_headlines": symbol_headlines,
+        "market_news_titles": market_headlines or market_news_titles,
+        "candidate_news_titles": symbol_headlines or candidate_news_titles,
+        "strategist_evidence_trace": strategist_evidence_trace,
         "news_input_summary": news_summary,
         "summary": summary,
         "bullets": bullets,
@@ -799,6 +1086,19 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
         )
     if runner_ups:
         bullets.append("Why not others: " + "; ".join(f"{row['symbol']} was weaker because {row['why']}" for row in runner_ups))
+    scanner_selection_trace = _build_scanner_selection_trace(
+        {
+            "selected_symbol": selected_symbol,
+            "selected_rank": selected_rank,
+            "top_candidates": top_candidates,
+            "score_breakdown": score_breakdown,
+            "selection_basis": "; ".join(top_reasons[:3]) if top_reasons else "",
+            "summary": (
+                f"Scanner selected {selected_symbol or '-'} as rank #{selected_rank or 1} out of {universe_size or 0} candidates."
+            ),
+        },
+        scanner,
+    )
     return {
         "selected_symbol": selected_symbol,
         "selected_rank": selected_rank,
@@ -813,6 +1113,10 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
         "top_reasons": top_reasons,
         "top_candidates": top_candidates,
         "runner_ups": runner_ups,
+        "ranked_candidates": list(scanner_selection_trace.get("ranked_candidates") or [])[:5],
+        "selection_reason": clip(scanner_selection_trace.get("selection_reason"), max_len=260),
+        "selected_symbol_score_drivers": dict(scanner_selection_trace.get("selected_symbol_score_drivers") or {}),
+        "scanner_selection_trace": dict(scanner_selection_trace or {}),
         "summary": (
             f"Scanner selected {selected_symbol or '-'} as rank #{selected_rank or 1} out of {universe_size or 0} candidates "
             f"with score {safe_float(selected_score, 0.0):.3f} because it led on {', '.join(basis[:3])}."
@@ -1337,6 +1641,17 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
             entry_threshold_gaps.append(
                 f"pullback depth {format_ratio_pct(pullback_depth)}% below min {format_ratio_pct(pullback_min)}%"
             )
+    monitor_stop_policy_trace = _build_monitor_stop_policy_trace(monitor, thresholds)
+    monitor_blocker_trace = _build_monitor_blocker_trace(
+        {
+            "entry_check_summary": entry_check_summary,
+            "entry_blockers": entry_blockers,
+            "entry_metrics": entry_metrics,
+            "entry_thresholds": entry_thresholds,
+            "timing_assessment": timing_assessment,
+            "policy_ref": policy_ref,
+        }
+    )
     if eod_carry_approved and action not in ("BUY", "SELL"):
         summary = (
             f"Monitor kept the position into the close because overnight carry was approved "
@@ -1375,6 +1690,26 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         f"Sell cooldown blocked: {'yes' if monitor.get('sell_cooldown_blocked') else 'no'}",
         f"Exit triggered: {'yes' if monitor.get('exit_triggered') else 'no'}",
     ]
+    if monitor_stop_policy_trace.get("hard_stop_pct") not in (None, ""):
+        bullets.append(
+            f"Hard fail-safe stop: {format_ratio_pct(monitor_stop_policy_trace.get('hard_stop_pct'))}%"
+        )
+    if monitor_stop_policy_trace.get("adaptive_stop_loss_pct") not in (None, ""):
+        bullets.append(
+            f"Active adaptive stop: {format_ratio_pct(monitor_stop_policy_trace.get('adaptive_stop_loss_pct'))}%"
+        )
+    if monitor_stop_policy_trace.get("effective_stop_loss_pct") not in (None, ""):
+        bullets.append(
+            f"Effective stop in this run: {format_ratio_pct(monitor_stop_policy_trace.get('effective_stop_loss_pct'))}%"
+        )
+    if monitor_stop_policy_trace.get("trailing_stop_pct") not in (None, ""):
+        bullets.append(
+            f"Trailing stop: {format_ratio_pct(monitor_stop_policy_trace.get('trailing_stop_pct'))}%"
+        )
+    if monitor_stop_policy_trace.get("take_profit_pct") not in (None, ""):
+        bullets.append(
+            f"Take profit target: {format_ratio_pct(monitor_stop_policy_trace.get('take_profit_pct'))}%"
+        )
     if entry_evaluated:
         bullets.append(f"Entry triggered: {'yes' if entry_triggered else 'no'}")
         bullets.append(f"Entry pattern: {entry_pattern or 'not_captured'}")
@@ -1479,9 +1814,12 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "bullets": bullets,
         "position_age_seconds": safe_int(monitor.get("position_age_seconds"), 0),
         "stop_loss_pct": thresholds.get("stop_loss_pct"),
-        "effective_stop_loss_pct": thresholds.get("effective_stop_loss_pct"),
+        "hard_stop_pct": monitor_stop_policy_trace.get("hard_stop_pct"),
+        "adaptive_stop_loss_pct": monitor_stop_policy_trace.get("adaptive_stop_loss_pct"),
+        "effective_stop_loss_pct": monitor_stop_policy_trace.get("effective_stop_loss_pct"),
         "effective_stop_reason": str(thresholds.get("effective_stop_reason") or "").strip(),
-        "take_profit_pct": thresholds.get("take_profit_pct"),
+        "take_profit_pct": monitor_stop_policy_trace.get("take_profit_pct"),
+        "trailing_stop_pct": monitor_stop_policy_trace.get("trailing_stop_pct"),
         "exit_triggered": bool(monitor.get("exit_triggered")),
         "entry_evaluated": entry_evaluated,
         "entry_triggered": entry_triggered,
@@ -1492,11 +1830,14 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "entry_thresholds": dict(entry_thresholds),
         "entry_check_summary": entry_check_summary,
         "entry_blockers": entry_blockers[:8],
+        "threshold_shortfalls": entry_threshold_gaps[:4],
         "policy_ref": dict(policy_ref),
         "received_policy": dict(received_policy),
         "effective_policy": dict(effective_policy),
         "policy_adjustment_summary": policy_adjustment_summary,
         "effective_policy_deltas": effective_policy_deltas,
+        "monitor_stop_policy_trace": monitor_stop_policy_trace,
+        "monitor_blocker_trace": monitor_blocker_trace,
         "timing_assessment": dict(timing_assessment),
         "thresholds_guards_used": dict(thresholds_guards_used),
         "entry_guard_blocked": entry_guard_blocked,
@@ -1808,6 +2149,65 @@ def build_trade_story_input(
                 "watch_next": [f"Lifecycle status is {status}", "Monitor posture changes", "Macro/news regime changes"],
                 "thesis_invalidation": ["stop-loss breach", "monitor/scanner divergence", "negative macro shift"],
             }
+        canonical_strategist = (
+            canonical_agent_artifacts.get("strategist")
+            if isinstance(canonical_agent_artifacts.get("strategist"), dict)
+            else bundle_out.get("strategist")
+            if isinstance(bundle_out.get("strategist"), dict)
+            else {}
+        )
+        canonical_scanner = (
+            canonical_agent_artifacts.get("scanner")
+            if isinstance(canonical_agent_artifacts.get("scanner"), dict)
+            else bundle_out.get("scanner")
+            if isinstance(bundle_out.get("scanner"), dict)
+            else {}
+        )
+        canonical_monitor = (
+            canonical_agent_artifacts.get("monitor")
+            if isinstance(canonical_agent_artifacts.get("monitor"), dict)
+            else bundle_out.get("monitor")
+            if isinstance(bundle_out.get("monitor"), dict)
+            else {}
+        )
+        selected_symbol = str(
+            scanner_reason_human.get("selected_symbol")
+            or (entry.get("scanner_context") or {}).get("selected_symbol")
+            or symbol
+            or ""
+        ).strip()
+        strategist_evidence_trace = _build_strategist_evidence_trace(
+            canonical_strategist,
+            selected_symbol=selected_symbol,
+            fallback_market_titles=market_context_human.get("market_news_titles"),
+            fallback_candidate_titles=market_context_human.get("candidate_news_titles"),
+        )
+        scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
+        monitor_stop_thresholds = (
+            canonical_monitor.get("threshold_snapshot")
+            if isinstance(canonical_monitor.get("threshold_snapshot"), dict)
+            else canonical_monitor.get("thresholds")
+            if isinstance(canonical_monitor.get("thresholds"), dict)
+            else {}
+        )
+        monitor_stop_policy_trace = _build_monitor_stop_policy_trace(
+            canonical_monitor,
+            monitor_stop_thresholds,
+        )
+        monitor_blocker_trace = _build_monitor_blocker_trace(monitor_reason_human)
+        market_context_human.setdefault("candidate_hints", strategist_evidence_trace.get("candidate_hints") or [])
+        market_context_human.setdefault("market_headlines", strategist_evidence_trace.get("market_headlines") or [])
+        market_context_human.setdefault("symbol_headlines", strategist_evidence_trace.get("symbol_headlines") or [])
+        market_context_human.setdefault("strategist_evidence_trace", dict(strategist_evidence_trace))
+        scanner_reason_human.setdefault("scanner_selection_trace", dict(scanner_selection_trace))
+        scanner_reason_human.setdefault("ranked_candidates", list(scanner_selection_trace.get("ranked_candidates") or []))
+        scanner_reason_human.setdefault("selection_reason", scanner_selection_trace.get("selection_reason"))
+        scanner_reason_human.setdefault(
+            "selected_symbol_score_drivers",
+            dict(scanner_selection_trace.get("selected_symbol_score_drivers") or {}),
+        )
+        monitor_reason_human.setdefault("monitor_stop_policy_trace", dict(monitor_stop_policy_trace))
+        monitor_reason_human.setdefault("monitor_blocker_trace", dict(monitor_blocker_trace))
         derived_reasoning_trace = build_reasoning_trace_from_summaries(
             commander_summary=dict(bundle_out.get("commander_summary") or {}),
             strategist_summary=dict(bundle_out.get("strategist_summary") or {}),
@@ -1948,8 +2348,15 @@ def build_trade_story_input(
             "warnings": [str(x or "") for x in list(bundle_out.get("warnings") or lifecycle.get("warnings") or []) if str(x or "").strip()][:20],
             "improvement_points": [str(x or "") for x in list(reporter.get("improvement_points") or []) if str(x or "").strip()][:12],
             "strategist_evidence": dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
+            "strategist_candidate_hints": list(strategist_evidence_trace.get("candidate_hints") or [])[:8],
+            "strategist_market_headlines": list(strategist_evidence_trace.get("market_headlines") or [])[:3],
+            "strategist_symbol_headlines": list(strategist_evidence_trace.get("symbol_headlines") or [])[:3],
+            "strategist_evidence_trace": dict(strategist_evidence_trace),
             "scanner_evidence": scanner_evidence,
+            "scanner_selection_trace": dict(scanner_selection_trace),
             "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
+            "monitor_stop_policy_trace": dict(monitor_stop_policy_trace),
+            "monitor_blocker_trace": dict(monitor_blocker_trace),
             "canonical_agent_artifacts": canonical_agent_artifacts,
             "evidence_provenance": evidence_provenance,
             "section_provenance": dict(section_provenance),
@@ -2046,6 +2453,70 @@ def build_trade_story_input(
         )
         if commander_source_priority:
             reasoning_provenance["source_priority"] = list(commander_source_priority)
+    market_context_human = dict(bundle_out.get("market_context_human") or {})
+    scanner_reason_human = enrich_scanner_reason_from_evidence(
+        dict(bundle_out.get("scanner_reason_human") or {}),
+        dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
+    )
+    monitor_reason_human = dict(bundle_out.get("monitor_reason_human") or {})
+    canonical_strategist = (
+        canonical_agent_artifacts.get("strategist")
+        if isinstance(canonical_agent_artifacts.get("strategist"), dict)
+        else bundle_out.get("strategist")
+        if isinstance(bundle_out.get("strategist"), dict)
+        else {}
+    )
+    canonical_scanner = (
+        canonical_agent_artifacts.get("scanner")
+        if isinstance(canonical_agent_artifacts.get("scanner"), dict)
+        else bundle_out.get("scanner")
+        if isinstance(bundle_out.get("scanner"), dict)
+        else {}
+    )
+    canonical_monitor = (
+        canonical_agent_artifacts.get("monitor")
+        if isinstance(canonical_agent_artifacts.get("monitor"), dict)
+        else bundle_out.get("monitor")
+        if isinstance(bundle_out.get("monitor"), dict)
+        else {}
+    )
+    selected_symbol = str(
+        scanner_reason_human.get("selected_symbol")
+        or ((bundle_out.get("execution") or {}).get("symbol"))
+        or ""
+    ).strip()
+    strategist_evidence_trace = _build_strategist_evidence_trace(
+        canonical_strategist,
+        selected_symbol=selected_symbol,
+        fallback_market_titles=market_context_human.get("market_news_titles"),
+        fallback_candidate_titles=market_context_human.get("candidate_news_titles"),
+    )
+    scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
+    monitor_stop_thresholds = (
+        canonical_monitor.get("threshold_snapshot")
+        if isinstance(canonical_monitor.get("threshold_snapshot"), dict)
+        else canonical_monitor.get("thresholds")
+        if isinstance(canonical_monitor.get("thresholds"), dict)
+        else {}
+    )
+    monitor_stop_policy_trace = _build_monitor_stop_policy_trace(
+        canonical_monitor,
+        monitor_stop_thresholds,
+    )
+    monitor_blocker_trace = _build_monitor_blocker_trace(monitor_reason_human)
+    market_context_human.setdefault("candidate_hints", strategist_evidence_trace.get("candidate_hints") or [])
+    market_context_human.setdefault("market_headlines", strategist_evidence_trace.get("market_headlines") or [])
+    market_context_human.setdefault("symbol_headlines", strategist_evidence_trace.get("symbol_headlines") or [])
+    market_context_human.setdefault("strategist_evidence_trace", dict(strategist_evidence_trace))
+    scanner_reason_human.setdefault("scanner_selection_trace", dict(scanner_selection_trace))
+    scanner_reason_human.setdefault("ranked_candidates", list(scanner_selection_trace.get("ranked_candidates") or []))
+    scanner_reason_human.setdefault("selection_reason", scanner_selection_trace.get("selection_reason"))
+    scanner_reason_human.setdefault(
+        "selected_symbol_score_drivers",
+        dict(scanner_selection_trace.get("selected_symbol_score_drivers") or {}),
+    )
+    monitor_reason_human.setdefault("monitor_stop_policy_trace", dict(monitor_stop_policy_trace))
+    monitor_reason_human.setdefault("monitor_blocker_trace", dict(monitor_blocker_trace))
     return {
         "schema_version": "trade_story_input.v1",
         "day": str(bundle_out.get("day") or ""),
@@ -2057,17 +2528,14 @@ def build_trade_story_input(
         "status": str(bundle_out.get("trade_lifecycle_status") or "closed"),
         "story_type": str(story_contract.get("story_type") or ""),
         "execution_mode_label": str(story_contract.get("execution_mode_label") or ""),
-        "market_context_human": dict(bundle_out.get("market_context_human") or {}),
-        "scanner_reason_human": enrich_scanner_reason_from_evidence(
-            dict(bundle_out.get("scanner_reason_human") or {}),
-            dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
-        ),
+        "market_context_human": market_context_human,
+        "scanner_reason_human": scanner_reason_human,
         "filters_human": enrich_filters_from_evidence(
             dict(bundle_out.get("filters_human") or {}),
             dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
             selected_symbol=str(((bundle_out.get("scanner_reason_human") or {}).get("selected_symbol")) or ((bundle_out.get("execution") or {}).get("symbol")) or ""),
         ),
-        "monitor_reason_human": dict(bundle_out.get("monitor_reason_human") or {}),
+        "monitor_reason_human": monitor_reason_human,
         "guard_reason_human": dict(bundle_out.get("guard_reason_human") or {}),
         "execution_outcome_human": dict(bundle_out.get("execution_outcome_human") or {}),
         "reporter_status_human": dict(bundle_out.get("reporter_status_human") or {}),
@@ -2075,8 +2543,15 @@ def build_trade_story_input(
         "timeline": list(bundle_out.get("timeline") or []),
         "warnings": list(bundle_out.get("warnings") or []),
         "strategist_evidence": dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
+        "strategist_candidate_hints": list(strategist_evidence_trace.get("candidate_hints") or [])[:8],
+        "strategist_market_headlines": list(strategist_evidence_trace.get("market_headlines") or [])[:3],
+        "strategist_symbol_headlines": list(strategist_evidence_trace.get("symbol_headlines") or [])[:3],
+        "strategist_evidence_trace": dict(strategist_evidence_trace),
         "scanner_evidence": dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
+        "scanner_selection_trace": dict(scanner_selection_trace),
         "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
+        "monitor_stop_policy_trace": dict(monitor_stop_policy_trace),
+        "monitor_blocker_trace": dict(monitor_blocker_trace),
         "canonical_agent_artifacts": canonical_agent_artifacts,
         "evidence_provenance": evidence_provenance,
         "section_provenance": dict(section_provenance),

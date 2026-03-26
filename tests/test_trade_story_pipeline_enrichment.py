@@ -239,6 +239,91 @@ def test_monitor_reason_human_uses_applied_policy_when_entry_thresholds_missing(
     assert any("Entry timeframe: 1m" in row for row in out["bullets"])
 
 
+def test_trade_story_human_sections_surface_strategist_evidence_selection_trace_and_stop_layers() -> None:
+    market = build_market_context_human(
+        {
+            "market_regime": "neutral",
+            "market_sentiment": "neutral",
+            "playbook": "defensive",
+            "news_query_targets": ["KOSPI", "semiconductor"],
+            "global_sentiment_signal": {"score": 0.12, "status": "ok"},
+            "fear_index": {"vix_level": 18.4},
+            "candidate_symbols_hint": ["122630", "233740", "005930"],
+            "news_evidence_ranked": {
+                "market_news_ranked": [
+                    {"title": "KOSPI opens firmer on chip optimism."},
+                    {"title": "US futures steady ahead of macro prints."},
+                ],
+                "candidate_news_ranked": [
+                    {"symbol": "005930", "title": "005930 benefits from foreign inflows."},
+                    {"symbol": "005930", "title": "Memory leaders extend gains."},
+                ],
+            },
+            "key_events": ["AI demand re-rating"],
+        }
+    )
+
+    scanner = build_scanner_reason_human(
+        {
+            "universe_size": 5,
+            "selected_symbol": "005930",
+            "ranking_table": [
+                {"rank": 1, "symbol": "005930", "score_total": 1.15, "risk_score": 0.62, "confidence": 0.81},
+                {"rank": 2, "symbol": "000660", "score_total": 1.14, "risk_score": 0.65, "confidence": 0.79},
+            ],
+            "selected_candidate": {
+                "symbol": "005930",
+                "sources": ["top_value", "sector_theme"],
+                "score_total": 1.15,
+                "risk_score": 0.62,
+                "confidence": 0.81,
+                "score_breakdown": {"trading_value": 0.22, "momentum": 0.19, "trend": 0.17},
+            },
+        },
+        {"playbook": "defensive"},
+    )
+
+    monitor = build_monitor_reason_human(
+        {
+            "entry_evaluated": True,
+            "entry_triggered": False,
+            "monitor_reason": "reclaim_not_confirmed",
+            "hard_stop_pct": 0.03,
+            "adaptive_exit": {"stop_loss_pct": 0.0092},
+            "trailing_stop_pct": 0.012,
+            "take_profit_pct": 0.025,
+            "entry_metrics": {
+                "volume_ratio": 0.61,
+                "extended_from_vwap_pct": 0.03,
+                "pullback_depth_pct": 0.004,
+            },
+            "entry_thresholds": {
+                "volume_ratio_min": 0.68,
+                "max_extended_from_vwap_pct": 0.13,
+                "pullback_min_pct": 0.008,
+            },
+            "decision_trace": {
+                "entry_check_summary": "mission=wait_for_confirmation | reason=reclaim_not_confirmed",
+                "entry_blockers": ["volume_ok", "vwap_reclaim_ok"],
+            },
+        },
+        {"action": "NOOP"},
+    )
+
+    assert market["candidate_hints"] == ["122630", "233740", "005930"]
+    assert market["market_headlines"][0] == "KOSPI opens firmer on chip optimism."
+    assert market["symbol_headlines"][0] == "005930 benefits from foreign inflows."
+    assert market["strategist_evidence_trace"]["global_sentiment_signal"]["score"] == 0.12
+    assert scanner["scanner_selection_trace"]["selected_symbol"] == "005930"
+    assert scanner["scanner_selection_trace"]["selection_reason"]
+    assert scanner["selected_symbol_score_drivers"]["trading_value"] == 0.22
+    assert monitor["monitor_stop_policy_trace"]["hard_stop_pct"] == 0.03
+    assert monitor["monitor_stop_policy_trace"]["adaptive_stop_loss_pct"] == 0.0092
+    assert monitor["monitor_stop_policy_trace"]["effective_stop_loss_pct"] == 0.0092
+    assert "volume ratio 0.61 below min 0.68" in monitor["threshold_shortfalls"][0]
+    assert monitor["monitor_blocker_trace"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
+
+
 def test_enrich_scanner_reason_from_evidence_promotes_selection_reason_details() -> None:
     out = enrich_scanner_reason_from_evidence(
         {

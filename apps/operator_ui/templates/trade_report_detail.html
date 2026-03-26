@@ -21,7 +21,7 @@
 {% set diag = report.ai_report_diagnostics or {} %}
 <section class="grid grid-2">
   <article class="card card--attention">
-    <h2>Executive Summary</h2>
+    <h2>Lifecycle Review</h2>
     <div class="chip-list">
       <span class="{{ diag.report_status_badge_class or 'status-badge' }}">{{ diag.report_status_label or "AI Report" }}</span>
       <span class="{{ report.story_type_badge_class or 'status-badge' }}">{{ report.story_type_label or "-" }}</span>
@@ -33,32 +33,28 @@
       <span class="chip chip--soft">Openable full report</span>
       {% endif %}
     </div>
-    <p class="operator-sentence">{{ diag.report_reason_human or (report.executive_summary or {}).get("summary") or "-" }}</p>
-    {% if diag.next_expected_step %}
-    <p class="subtle-meta">{{ diag.next_expected_step }}</p>
-    {% endif %}
+    <p class="operator-sentence">{{ (report.executive_summary or {}).get("summary") or diag.report_reason_human or "-" }}</p>
     <ul class="summary-list summary-list--tight">
-      <li>Action: {{ report.action or "-" }}</li>
-      <li>Symbol: {{ report.symbol or "-" }}</li>
-      <li>Reporter status: {{ (report.reporter_evaluation or {}).get("status") or "-" }}</li>
-      <li>Reporter grade: {{ (report.reporter_evaluation or {}).get("grade") or "-" }}</li>
+      <li>Why entered: {{ (report.review_focus or {}).get("why_entered") or "-" }}</li>
+      <li>Why held: {{ (report.review_focus or {}).get("why_held") or "-" }}</li>
+      <li>Why exited: {{ (report.review_focus or {}).get("why_exited") or "-" }}</li>
+      <li>Execution quality: {{ (report.review_focus or {}).get("execution_quality") or "-" }}</li>
+      <li>Improve next time: {{ (report.review_focus or {}).get("improvement_focus") or "-" }}</li>
     </ul>
     {% if report.run_link %}
     <p><a class="link-action" href="{{ report.run_link }}">Open linked run detail</a></p>
     {% endif %}
   </article>
 
-  <article class="card card--muted">
-    <h2>Report Generation</h2>
+  <article class="card">
+    <h2>Executive Summary</h2>
+    <p>{{ diag.report_reason_human or (report.executive_summary or {}).get("summary") or "-" }}</p>
     <ul class="summary-list summary-list--tight">
-      <li>Status: {{ (diag.report_status_label or "-") }}</li>
-      <li>Reason: {{ (diag.report_reason_human or "-") }}</li>
-      <li>Next step: {{ (diag.next_expected_step or "-") }}</li>
-      <li>Attempted: {{ (diag.generation_attempted if diag.generation_attempted is not none else "-") }}</li>
-      <li>Provider / model: {{ (diag.llm_provider or "OpenRouter") }} / {{ (diag.llm_model_used or "-") }}</li>
-      {% if diag.last_error_message %}
-      <li>Last error: {{ diag.last_error_message }}</li>
-      {% endif %}
+      <li>Action: {{ report.action or "-" }}</li>
+      <li>Symbol: {{ report.symbol or "-" }}</li>
+      <li>Reporter status: {{ (report.reporter_evaluation or {}).get("status") or "-" }}</li>
+      <li>Reporter grade: {{ (report.reporter_evaluation or {}).get("grade") or "-" }}</li>
+      <li>Lifecycle status: {{ report.status or "-" }}</li>
     </ul>
   </article>
 </section>
@@ -163,6 +159,20 @@
       {% for line in (report.errors_weaknesses_improvement_points or {}).get("bullets") or [] %}
       <li>{{ line }}</li>
       {% endfor %}
+    </ul>
+  </article>
+
+  <article class="card card--muted">
+    <h2>Report Generation</h2>
+    <ul class="summary-list summary-list--tight">
+      <li>Status: {{ (diag.report_status_label or "-") }}</li>
+      <li>Reason: {{ (diag.report_reason_human or "-") }}</li>
+      <li>Next step: {{ (diag.next_expected_step or "-") }}</li>
+      <li>Attempted: {{ (diag.generation_attempted if diag.generation_attempted is not none else "-") }}</li>
+      <li>Provider / model: {{ (diag.llm_provider or "OpenRouter") }} / {{ (diag.llm_model_used or "-") }}</li>
+      {% if diag.last_error_message %}
+      <li>Last error: {{ diag.last_error_message }}</li>
+      {% endif %}
     </ul>
   </article>
 </section>

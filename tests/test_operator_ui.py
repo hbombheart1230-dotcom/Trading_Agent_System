@@ -909,6 +909,19 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
     monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
     cfg = _make_config(tmp_path)
     detail = data_access.load_run_detail(cfg, "run-1")
+    detail["strategist"]["artifact"] = {
+        "candidate_symbols_hint": ["122630", "233740", "005930"],
+        "news_evidence_ranked": {
+            "market_news_ranked": [
+                {"title": "KOSPI opens firmer on chip optimism."},
+                {"title": "US futures steady ahead of macro prints."},
+            ],
+            "candidate_news_ranked": [
+                {"symbol": "000660", "title": "000660 extends gains on AI memory demand."},
+                {"symbol": "000660", "title": "Foreign flows return to semiconductor leaders."},
+            ],
+        },
+    }
     detail["commander"]["artifact"] = {
         "commander_decision": {
             "command_intent": "OBSERVE_ONLY",
@@ -935,6 +948,15 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
         "policy_validation_invalid_fields": [],
         "override_reason": "",
         "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
+    }
+    detail["scanner"]["artifact"] = {
+        "score_breakdown_by_symbol": {
+            "000660": {
+                "trading_value": 0.22,
+                "momentum": 0.19,
+                "trend": 0.17,
+            }
+        }
     }
     detail["monitor"]["summary"] = {
         "monitor_reason": "reclaim_not_confirmed",
@@ -1016,6 +1038,12 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
         "override_reason": "",
         "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
     }
+    detail["monitor"]["artifact"] = {
+        "hard_stop_pct": 0.03,
+        "adaptive_exit": {"stop_loss_pct": 0.0092},
+        "trailing_stop_pct": 0.012,
+        "take_profit_pct": 0.025,
+    }
     detail["scanner"]["decision_trace"] = {
         "selected_symbol": "000660",
         "playbook": "pullback",
@@ -1039,6 +1067,38 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
         ],
         "selection_reason_with_bias": "selected with shallow pullback preference applied",
     }
+    detail["trade_report"]["report_data"]["trade_story_input"] = {
+        "strategist_candidate_hints": ["122630", "233740", "005930"],
+        "strategist_market_headlines": [
+            "KOSPI opens firmer on chip optimism.",
+            "US futures steady ahead of macro prints.",
+        ],
+        "strategist_symbol_headlines": [
+            "000660 extends gains on AI memory demand.",
+            "Foreign flows return to semiconductor leaders.",
+        ],
+        "scanner_selection_trace": {
+            "ranked_candidates": [
+                {"rank": 1, "symbol": "000660", "score_total": 1.1776},
+                {"rank": 2, "symbol": "005930", "score_total": 1.1519},
+            ],
+            "selected_symbol": "000660",
+            "selected_rank": 1,
+            "selection_reason": "top_value + sector_theme",
+            "selected_symbol_score_drivers": {
+                "trading_value": 0.22,
+                "momentum": 0.19,
+                "trend": 0.17,
+            },
+        },
+        "monitor_stop_policy_trace": {
+            "hard_stop_pct": 0.03,
+            "adaptive_stop_loss_pct": 0.0092,
+            "effective_stop_loss_pct": 0.0092,
+            "trailing_stop_pct": 0.012,
+            "take_profit_pct": 0.025,
+        },
+    }
 
     prepared = data_access._build_operator_brief_input(detail)
     compact = data_access._compact_operator_brief_input_for_llm(prepared)
@@ -1048,12 +1108,19 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
     assert prepared["commander"]["policy_source"] == "strategist"
     assert prepared["commander"]["applied_policy"]["volume_ratio_min"] == 0.68
     assert prepared["commander"]["policy_partial_normalized"] is True
+    assert prepared["strategist"]["candidate_hints"] == ["122630", "233740", "005930"]
+    assert prepared["strategist"]["market_headlines"][0] == "KOSPI opens firmer on chip optimism."
+    assert prepared["strategist"]["symbol_headlines"][0] == "000660 extends gains on AI memory demand."
     assert prepared["scanner"]["playbook"] == "pullback"
     assert prepared["scanner"]["policy_source"] == "strategist"
+    assert prepared["scanner"]["selection_trace"]["selected_symbol"] == "000660"
+    assert prepared["scanner"]["selected_symbol_score_drivers"]["trading_value"] == 0.22
     assert prepared["scanner"]["scanner_bias_applied"] is True
     assert prepared["scanner"]["candidate_bias_adjustments"][0]["symbol"] == "000660"
     assert prepared["monitor"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
     assert prepared["monitor"]["threshold_shortfalls"]
+    assert prepared["monitor"]["stop_policy_trace"]["hard_stop_pct"] == 0.03
+    assert prepared["monitor"]["stop_policy_trace"]["effective_stop_loss_pct"] == 0.0092
     assert prepared["monitor"]["policy_source"] == "strategist"
     assert prepared["monitor"]["applied_policy"]["pullback_min_pct"] == 0.008
     assert prepared["monitor"]["received_policy"]["volume_ratio_min"] == 0.68
@@ -1064,10 +1131,17 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
     assert compact["commander"]["policy_source"] == "strategist"
     assert compact["commander"]["applied_policy"]["volume_ratio_min"] == 0.68
     assert compact["commander"]["policy_partial_normalized"] is True
+    assert compact["strategist"]["candidate_hints"] == ["122630", "233740", "005930"]
+    assert compact["strategist"]["market_headlines"][0] == "KOSPI opens firmer on chip optimism."
     assert compact["scanner"]["playbook"] in {"pullback", "눌림목"}
     assert compact["scanner"]["policy_source"] == "strategist"
     assert compact["scanner"]["scanner_bias_applied"] is True
     assert compact["scanner"]["candidate_bias_adjustments"][0]["symbol"] == "000660"
+    assert compact["scanner"]["selection_trace"]["selection_reason"] in {
+        "top_value + sector_theme",
+        "거래대금 상위 + 섹터·테마 정렬",
+    }
+    assert compact["scanner"]["selection_trace"]["selected_symbol_score_drivers"]["trading_value"] == 0.22
     assert compact["scanner"]["selection_reason_with_bias"]
     assert "preference" in compact["scanner"]["selection_reason_with_bias"]
     assert compact["monitor"]["entry_check_summary"] == "mission=wait_for_confirmation | reason=reclaim_not_confirmed"
@@ -1078,6 +1152,7 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
     assert compact["monitor"]["effective_policy"]["volume_ratio_min"] == 0.75
     assert compact["monitor"]["effective_policy_deltas"]
     assert any("volume_ratio" in row for row in compact["monitor"]["threshold_shortfalls"])
+    assert compact["monitor"]["stop_policy_trace"]["adaptive_stop_loss_pct"] == 0.0092
 
 
 def test_operator_brief_input_normalizes_stale_chart_coverage_from_canonical_trade(tmp_path: Path, monkeypatch) -> None:
@@ -1171,6 +1246,12 @@ def test_operator_brief_sections_prefer_canonical_trade_artifacts(tmp_path: Path
     assert sections["why_symbol_chosen"]["selected_rank"] == 1
     assert sections["why_symbol_chosen"]["universe_size"] == 5
     assert "Selected as top ranked symbol due to value/volume blend." in sections["why_symbol_chosen"]["selection_reasons"]
+    assert sections["current_snapshot"]["current_focus"] == "005930"
+    assert sections["strategist_evidence"]["market_regime"] == "neutral"
+    assert sections["scanner_focus"]["selected_symbol"] == "005930"
+    assert sections["scanner_focus"]["selected_rank"] == 1
+    assert sections["monitor_guard_snapshot"]["guard_status"] == "blocked"
+    assert sections["next_step"]["summary"]
     assert sections["filters_and_gates"][0]["status"] == "PASS"
     assert sections["position_monitor_reasoning"]["hold_reasons"][0] == "Posture: BUY"
     assert sections["reporter_evaluation"]["run_grade"] == "A-"
@@ -1248,6 +1329,9 @@ def test_operator_brief_sections_surface_monitor_exit_metrics(tmp_path: Path, mo
     assert monitor_sec["active_exit_axis"] == "Peak drawdown"
     assert "Peak drawdown" in monitor_sec["watch_axes"]
     assert "VWAP breakdown" in monitor_sec["watch_axes"]
+    snapshot_sec = sections["monitor_guard_snapshot"]
+    assert any("Hard fail-safe stop" in line for line in snapshot_sec["stop_policy_summary"])
+    assert any("Take profit" in line for line in snapshot_sec["stop_policy_summary"])
 
 
 def test_operator_brief_sections_normalize_raw_trade_report_monitor_snapshot(tmp_path: Path, monkeypatch) -> None:
@@ -1315,8 +1399,11 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert str(saved["monitor_snapshot"]["effective_stop_reason"] or "") in {"", "-", "Hard stop"}
     md_text = brief_md.read_text(encoding="utf-8")
     assert "# 운영자 브리프" in md_text
-    assert "## 3. 진입 근거" in md_text
-    assert "## 5. 청산 계획" in md_text
+    assert "## 1. 현재 스냅샷" in md_text
+    assert "## 2. 전략가 근거" in md_text
+    assert "## 3. 스캐너 포커스" in md_text
+    assert "## 4. 모니터 / 가드" in md_text
+    assert "## 5. 다음 예상 단계" in md_text
     brief_compact = trade_root / "brief" / "brief_compact_input.json"
     brief_input = trade_root / "brief" / "brief_input.json"
     assert brief_input.exists() is True
@@ -1450,6 +1537,8 @@ def test_operator_brief_prompt_uses_valid_korean_guidance() -> None:
     assert "??" not in messages[1]["content"]
     assert "이번 거래는 분봉 데이터가 확보되지 않아 진입 근거를 확인할 수 없었습니다." in messages[1]["content"]
     assert "자연스러운 한국어" in messages[0]["content"]
+    assert "즉시 상황 파악용 snapshot" in messages[1]["content"]
+    assert "긴 lifecycle 회고" in messages[1]["content"]
 
 
 def test_operator_brief_fallback_markdown_keeps_all_sections_and_natural_korean() -> None:
@@ -1490,6 +1579,61 @@ def test_operator_brief_fallback_markdown_keeps_all_sections_and_natural_korean(
         assert forbidden not in minute_markdown.lower()
         assert forbidden not in incomplete_markdown.lower()
         assert forbidden not in no_entry_markdown.lower()
+
+
+def test_operator_brief_markdown_prefers_snapshot_sections_when_present() -> None:
+    brief = {
+        "status": "fallback",
+        "headline": "AI Brief Failed SELL 100790",
+        "operator_takeaways": ["다음 분봉에서 거래량 회복 여부를 먼저 본다."],
+        "sections": {
+            "executive_decision": {"symbol": "100790", "final_action": "SELL"},
+            "current_snapshot": {
+                "summary": "100790은 피크 드로우다운 트리거로 청산된 상태입니다.",
+                "current_focus": "100790",
+                "guard_status": "approved",
+                "execution_status": "filled",
+            },
+            "strategist_evidence": {
+                "summary": "defensive playbook, global sentiment -0.05, VIX 25.33",
+                "candidate_hints": ["100790", "005930"],
+                "market_headlines": ["반도체 업종이 장중 강세를 유지했습니다."],
+                "symbol_headlines": ["100790 관련 수급 유입이 확인됐습니다."],
+            },
+            "scanner_focus": {
+                "summary": "Scanner selected 100790 as rank #1 out of 5 candidates.",
+                "selected_symbol": "100790",
+                "selected_rank": 1,
+                "selection_reason": "top_value + top_volume",
+                "top_candidates": [{"symbol": "100790"}, {"symbol": "005930"}],
+                "score_drivers": {"trading_value": 0.831, "momentum": 0.622},
+            },
+            "monitor_guard_snapshot": {
+                "summary": "peak_drawdown trigger confirmed.",
+                "monitor_reason": "peak_drawdown",
+                "stop_policy_summary": ["Hard fail-safe stop 8.00%", "Effective stop 3.00% (Hard stop)"],
+                "guard_status": "approved",
+            },
+            "next_step": {
+                "summary": "다음 거래에서는 분봉 확인과 거래량 회복을 우선 확인합니다.",
+                "watch_next": ["거래량 회복 여부", "재진입 신호 여부"],
+                "operator_takeaways": ["청산 후 재진입 전 cooldown을 확인합니다."],
+            },
+        },
+    }
+
+    markdown = data_access._render_operator_brief_markdown(brief)
+
+    assert "## 1. 현재 스냅샷" in markdown
+    assert "## 2. 전략가 근거" in markdown
+    assert "## 3. 스캐너 포커스" in markdown
+    assert "## 4. 모니터 / 가드" in markdown
+    assert "## 5. 다음 예상 단계" in markdown
+    assert "## 6. 운영자 포인트" in markdown
+    assert "## 3. 진입 근거" not in markdown
+    assert "전략가 후보 힌트: 100790, 005930" in markdown
+    assert "최종 선택: 100790 (rank 1)" in markdown
+    assert "활성 스톱 정책:" in markdown
 
 
 def test_operator_brief_markdown_removes_internal_english_labels_and_fills_next_checkpoint() -> None:
@@ -1889,6 +2033,7 @@ def test_operator_ui_trade_report_detail_page(tmp_path: Path, monkeypatch) -> No
     page = client.get("/reports/trade/20260316_005930_buy_run-1")
     assert page.status_code == 200
     assert "Per-trade report" in page.text
+    assert "Lifecycle Review" in page.text
     assert "Executive Summary" in page.text
     assert "Market Context" in page.text
     assert "Why This Symbol" in page.text
@@ -1915,11 +2060,15 @@ def test_operator_ui_operator_brief_detail_page(tmp_path: Path, monkeypatch) -> 
     page = client.get("/reports/trade/20260316_005930_buy_run-1/brief")
     assert page.status_code == 200
     assert "Operator brief" in page.text
-    assert "Brief Summary" in page.text
-    assert "Market and Selection" in page.text
-    assert "Monitor and Guard" in page.text
+    assert "Current Snapshot" in page.text
+    assert "Strategist Evidence" in page.text
+    assert "Scanner Focus" in page.text
+    assert "Monitor / Guard" in page.text
+    assert "Next Expected Step" in page.text
+    assert "Operator Takeaways" in page.text
     assert "Open run detail" in page.text
     assert "Open full AI report" in page.text
+    assert "Supporting Agent Summaries" in page.text
     assert "Saved brief JSON" in page.text
 
 

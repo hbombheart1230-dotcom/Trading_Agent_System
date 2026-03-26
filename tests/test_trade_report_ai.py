@@ -317,6 +317,56 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
     story_input = _story_input()
     story_input.update(
         {
+            "strategist_candidate_hints": ["122630", "233740", "005930"],
+            "strategist_market_headlines": [
+                "KOSPI opens higher as chip demand expectations improve.",
+                "US futures steady ahead of inflation print.",
+            ],
+            "strategist_symbol_headlines": [
+                "000660 rises on renewed AI memory optimism.",
+                "Foreign flows return to semiconductor leaders.",
+            ],
+            "strategist_evidence_trace": {
+                "candidate_hints": ["122630", "233740", "005930"],
+                "news_query_targets": ["KOSPI", "US futures", "semiconductor"],
+                "market_headlines": [
+                    "KOSPI opens higher as chip demand expectations improve.",
+                    "US futures steady ahead of inflation print.",
+                ],
+                "symbol_headlines": [
+                    "000660 rises on renewed AI memory optimism.",
+                    "Foreign flows return to semiconductor leaders.",
+                ],
+                "global_sentiment_signal": {"score": 0.12, "status": "ok"},
+                "fear_index": {"vix_level": 18.4},
+                "key_events": ["AI demand re-rating", "foreign inflow stabilization"],
+            },
+            "scanner_selection_trace": {
+                "ranked_candidates": [
+                    {"rank": 1, "symbol": "000660", "score_total": 1.1776},
+                    {"rank": 2, "symbol": "005930", "score_total": 1.1519},
+                ],
+                "selected_symbol": "000660",
+                "selected_rank": 1,
+                "selection_reason": "top_value + sector_theme",
+                "selected_symbol_score_drivers": {
+                    "trading_value": 0.22,
+                    "momentum": 0.19,
+                    "trend": 0.17,
+                },
+            },
+            "monitor_stop_policy_trace": {
+                "hard_stop_pct": 0.03,
+                "adaptive_stop_loss_pct": 0.0092,
+                "effective_stop_loss_pct": 0.0092,
+                "trailing_stop_pct": 0.012,
+                "take_profit_pct": 0.025,
+            },
+            "monitor_blocker_trace": {
+                "entry_check_summary": "mission=wait_for_confirmation | reason=reclaim_not_confirmed",
+                "entry_blockers": ["volume_ok", "vwap_reclaim_ok"],
+                "threshold_shortfalls": ["volume ratio 0.10 below min 0.75"],
+            },
             "scanner_reason_human": {
                 "selected_symbol": "000660",
                 "playbook": "pullback",
@@ -451,9 +501,11 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
 
     seed = mod._build_shared_summary_seed(story_input)
     commander_route = seed.get("commander_route") if isinstance(seed.get("commander_route"), dict) else {}
+    strategist_evidence = seed.get("strategist_evidence") if isinstance(seed.get("strategist_evidence"), dict) else {}
     scanner_reasoning = seed.get("scanner_reasoning") if isinstance(seed.get("scanner_reasoning"), dict) else {}
     monitor_reasoning = seed.get("monitor_reasoning") if isinstance(seed.get("monitor_reasoning"), dict) else {}
     compact_input = mod.build_ai_trade_report_compact_input(story_input)
+    deterministic = mod.build_deterministic_trade_report(story_input)
 
     assert commander_route.get("selected_route") == "cached_strategist"
     assert commander_route.get("command_intent") == "OBSERVE_ONLY"
@@ -464,27 +516,40 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
     assert commander_route.get("policy_source") == "strategist"
     assert commander_route.get("applied_policy", {}).get("volume_ratio_min") == 0.68
     assert commander_route.get("policy_partial_normalized") is True
+    assert strategist_evidence.get("candidate_hints") == ["122630", "233740", "005930"]
+    assert strategist_evidence.get("market_headlines")[0] == "KOSPI opens higher as chip demand expectations improve."
+    assert strategist_evidence.get("symbol_headlines")[0] == "000660 rises on renewed AI memory optimism."
     assert scanner_reasoning.get("playbook") == "pullback"
     assert scanner_reasoning.get("policy_source") == "strategist"
     assert scanner_reasoning.get("scanner_bias_applied") is True
     assert scanner_reasoning.get("scanner_bias_summary", {}).get("summary")
+    assert scanner_reasoning.get("selection_trace", {}).get("selected_symbol") == "000660"
+    assert scanner_reasoning.get("selection_trace", {}).get("selected_symbol_score_drivers", {}).get("trading_value") == 0.22
     assert monitor_reasoning.get("entry_blockers") == ["volume_ok", "vwap_reclaim_ok"]
     assert monitor_reasoning.get("policy_source") == "strategist"
     assert monitor_reasoning.get("applied_policy", {}).get("pullback_min_pct") == 0.008
     assert monitor_reasoning.get("received_policy", {}).get("volume_ratio_min") == 0.68
     assert monitor_reasoning.get("effective_policy", {}).get("volume_ratio_min") == 0.75
     assert monitor_reasoning.get("policy_adjustment_summary")
+    assert monitor_reasoning.get("monitor_stop_policy_trace", {}).get("hard_stop_pct") == 0.03
+    assert monitor_reasoning.get("monitor_stop_policy_trace", {}).get("adaptive_stop_loss_pct") == 0.0092
+    assert monitor_reasoning.get("threshold_shortfalls") == ["volume ratio 0.10 below min 0.75"]
     assert compact_input["commander"]["selected_route"] == "cached_strategist"
     assert compact_input["commander"]["route_reason_text"] == "commander_skip_cached_strategist"
     assert compact_input["commander"]["policy_source"] == "strategist"
     assert compact_input["commander"]["applied_policy"]["volume_ratio_min"] == 0.68
     assert compact_input["commander"]["policy_partial_normalized"] is True
+    assert compact_input["market_context"]["candidate_hints"] == ["122630", "233740", "005930"]
+    assert compact_input["market_context"]["market_headlines"][0] == "KOSPI opens higher as chip demand expectations improve."
+    assert compact_input["market_context"]["symbol_headlines"][0] == "000660 rises on renewed AI memory optimism."
     assert compact_input["scanner"]["playbook"] == "pullback"
     assert compact_input["scanner"]["policy_source"] == "strategist"
     assert compact_input["scanner"]["scanner_bias_applied"] is True
     assert compact_input["scanner"]["scanner_bias_summary"]["summary"]
     assert compact_input["scanner"]["candidate_bias_adjustments"][0]["symbol"] == "000660"
     assert "shallow pullback" in compact_input["scanner"]["selection_reason_with_bias"]
+    assert compact_input["scanner"]["selection_trace"]["selected_symbol"] == "000660"
+    assert compact_input["scanner"]["selection_trace"]["selection_reason"] == "top_value + sector_theme"
     assert compact_input["monitor"]["entry_check_summary"] == "mission=wait_for_confirmation | reason=reclaim_not_confirmed"
     assert compact_input["monitor"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
     assert compact_input["monitor"]["policy_source"] == "strategist"
@@ -493,6 +558,11 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
     assert compact_input["monitor"]["effective_policy"]["volume_ratio_min"] == 0.75
     assert compact_input["monitor"]["effective_policy_deltas"]
     assert compact_input["monitor"]["entry_metrics"]["volume_ratio"] == 0.1
+    assert compact_input["monitor"]["monitor_stop_policy_trace"]["hard_stop_pct"] == 0.03
+    assert compact_input["monitor"]["monitor_stop_policy_trace"]["adaptive_stop_loss_pct"] == 0.0092
+    assert deterministic["market_context_at_entry"]["strategist_candidate_hints"] == ["122630", "233740", "005930"]
+    assert deterministic["why_this_symbol_was_chosen"]["scanner_selection_trace"]["selected_symbol"] == "000660"
+    assert deterministic["holding_monitoring_story"]["monitor_stop_policy_trace"]["effective_stop_loss_pct"] == 0.0092
 
 
 def test_trade_report_marks_scanner_evidence_unavailable_when_missing() -> None:
@@ -642,9 +712,11 @@ def test_ai_trade_report_messages_use_clean_json_only_instructions() -> None:
     user_prompt = str(messages[1]["content"])
 
     assert "반드시 JSON 객체 하나만 반환하십시오." in system_prompt
+    assert "trade lifecycle retrospective" in system_prompt
     assert "숫자, 이벤트, 이유, evidence를 지어내지 마십시오." in system_prompt
     assert "사람이 읽는 모든 값은 반드시 한국어로 작성해야 합니다." in system_prompt
     assert "strategist -> scanner -> monitor -> supervisor -> executor -> reporter" in user_prompt
+    assert "왜 진입했는가, 왜 보유했는가, 왜 청산했는가" in user_prompt
     assert "아래 JSON 템플릿에 값만 채워 반환하십시오" in user_prompt
     assert "영어 source 문장을 그대로 복사하지 마십시오." in user_prompt
     assert "selection_basis" in user_prompt
