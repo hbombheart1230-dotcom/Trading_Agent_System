@@ -379,6 +379,10 @@ def _build_reasoning_trace_snapshot(state: dict) -> dict:
         "policy_validation_status": str(commander_decision.get("policy_validation_status") or ""),
         "policy_fallback_used": bool(commander_decision.get("policy_fallback_used")),
         "policy_fallback_reason": str(commander_decision.get("policy_fallback_reason") or ""),
+        "policy_partial_normalized": bool(commander_decision.get("policy_partial_normalized")),
+        "policy_default_filled_fields": list(commander_decision.get("policy_default_filled_fields") or []),
+        "policy_validation_missing_fields": list(commander_decision.get("policy_validation_missing_fields") or []),
+        "policy_validation_invalid_fields": list(commander_decision.get("policy_validation_invalid_fields") or []),
         "override_reason": str(commander_decision.get("override_reason") or ""),
         "applied_policy_source_chain": list(commander_decision.get("applied_policy_source_chain") or []),
     }
@@ -445,6 +449,15 @@ def _build_reasoning_trace_snapshot(state: dict) -> dict:
         "exit_trigger_basis": dict(
             monitor_output.get("exit_trigger_basis") or monitor_action.get("exit_trigger_basis") or {}
         ),
+        "received_policy": dict(monitor_output.get("received_policy") or {}),
+        "received_policy_source": str(monitor_output.get("received_policy_source") or ""),
+        "effective_policy": dict(monitor_output.get("effective_policy") or monitor_output.get("applied_policy") or {}),
+        "effective_policy_source": str(monitor_output.get("effective_policy_source") or ""),
+        "effective_policy_source_chain": list(monitor_output.get("effective_policy_source_chain") or []),
+        "policy_adjustments": dict(monitor_output.get("policy_adjustments") or {}),
+        "policy_adjustment_summary": str(monitor_output.get("policy_adjustment_summary") or ""),
+        "policy_adjustment_reasoning": str(monitor_output.get("policy_adjustment_reasoning") or ""),
+        "effective_policy_deltas": list(monitor_output.get("effective_policy_deltas") or []),
         "applied_policy": dict(monitor_output.get("applied_policy") or {}),
         "policy_source": str(
             monitor_output.get("policy_source")
@@ -461,6 +474,21 @@ def _build_reasoning_trace_snapshot(state: dict) -> dict:
         "policy_fallback_reason": str(
             ((monitor_output.get("policy_ref") or {}).get("policy_fallback_reason") if isinstance(monitor_output.get("policy_ref"), dict) else "")
             or ""
+        ),
+        "policy_partial_normalized": bool(
+            ((monitor_output.get("policy_ref") or {}).get("policy_partial_normalized") if isinstance(monitor_output.get("policy_ref"), dict) else False)
+        ),
+        "policy_default_filled_fields": list(
+            ((monitor_output.get("policy_ref") or {}).get("policy_default_filled_fields") if isinstance(monitor_output.get("policy_ref"), dict) else [])
+            or []
+        ),
+        "policy_validation_missing_fields": list(
+            ((monitor_output.get("policy_ref") or {}).get("policy_validation_missing_fields") if isinstance(monitor_output.get("policy_ref"), dict) else [])
+            or []
+        ),
+        "policy_validation_invalid_fields": list(
+            ((monitor_output.get("policy_ref") or {}).get("policy_validation_invalid_fields") if isinstance(monitor_output.get("policy_ref"), dict) else [])
+            or []
         ),
         "override_reason": str(
             ((monitor_output.get("policy_ref") or {}).get("override_reason") if isinstance(monitor_output.get("policy_ref"), dict) else "")

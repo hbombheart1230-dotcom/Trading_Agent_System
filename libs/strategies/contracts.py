@@ -138,6 +138,8 @@ class StrategistOutput:
     policy_validation_status: str = "ok"
     policy_fallback_used: bool = False
     policy_fallback_reason: str = ""
+    policy_partial_normalized: bool = False
+    policy_default_filled_fields: List[str] = field(default_factory=list)
     policy_validation_issues: List[str] = field(default_factory=list)
     policy_validation_missing_fields: List[str] = field(default_factory=list)
     policy_validation_invalid_fields: List[str] = field(default_factory=list)
@@ -191,6 +193,8 @@ class StrategistOutput:
             "policy_validation_status": str(self.policy_validation_status or "ok"),
             "policy_fallback_used": bool(self.policy_fallback_used),
             "policy_fallback_reason": str(self.policy_fallback_reason or ""),
+            "policy_partial_normalized": bool(self.policy_partial_normalized),
+            "policy_default_filled_fields": [str(x) for x in list(self.policy_default_filled_fields or [])][:12],
             "policy_validation_issues": [str(x) for x in list(self.policy_validation_issues or [])][:12],
             "policy_validation_missing_fields": [str(x) for x in list(self.policy_validation_missing_fields or [])][:12],
             "policy_validation_invalid_fields": [str(x) for x in list(self.policy_validation_invalid_fields or [])][:12],
@@ -345,6 +349,8 @@ def coerce_strategist_output(raw: Any) -> Dict[str, Any]:
         policy_validation_status=str(raw.get("policy_validation_status") or "ok"),
         policy_fallback_used=bool(raw.get("policy_fallback_used")),
         policy_fallback_reason=str(raw.get("policy_fallback_reason") or ""),
+        policy_partial_normalized=bool(raw.get("policy_partial_normalized")),
+        policy_default_filled_fields=_coerce_text_list(raw.get("policy_default_filled_fields")),
         policy_validation_issues=_coerce_text_list(raw.get("policy_validation_issues")),
         policy_validation_missing_fields=_coerce_text_list(raw.get("policy_validation_missing_fields")),
         policy_validation_invalid_fields=_coerce_text_list(raw.get("policy_validation_invalid_fields")),

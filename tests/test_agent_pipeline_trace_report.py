@@ -154,15 +154,53 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                             "policy_source": "strategist",
                             "policy_validation_status": "ok",
                             "policy_fallback_used": False,
+                            "policy_partial_normalized": True,
+                            "policy_default_filled_fields": ["enabled"],
+                            "policy_validation_missing_fields": ["enabled"],
+                            "policy_validation_invalid_fields": [],
                             "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
                         },
                         "timing_assessment": {"latest_candle_ts": 1710249600},
                         "exit_trigger_basis": {"trigger_type": ""},
+                        "received_policy": {
+                            "timeframe_minutes": 1,
+                            "volume_ratio_min": 0.68,
+                            "pullback_min_pct": 0.008,
+                            "max_extended_from_vwap_pct": 0.13,
+                        },
+                        "received_policy_source": "commander_applied_policy",
+                        "effective_policy": {
+                            "timeframe_minutes": 1,
+                            "volume_ratio_min": 0.75,
+                            "pullback_min_pct": 0.008,
+                            "max_extended_from_vwap_pct": 0.05,
+                        },
+                        "effective_policy_source": "monitor_frame_adjusted",
+                        "effective_policy_source_chain": ["commander_applied_policy", "strategy_frame_adjustment", "monitor_effective_policy"],
+                        "policy_adjustments": {
+                            "inputs": {
+                                "playbook": "defensive",
+                                "monitor_guidance": "defensive_exit",
+                                "risk_tone": "conservative",
+                                "trade_aggressiveness": "low",
+                            },
+                            "applied_rules": ["playbook:defensive"],
+                            "changed_fields": ["volume_ratio_min", "max_extended_from_vwap_pct"],
+                        },
+                        "policy_adjustment_summary": "defensive + conservative adjusted volume_ratio_min, max_extended_from_vwap_pct",
+                        "effective_policy_deltas": [
+                            {"field": "volume_ratio_min", "from": 0.68, "to": 0.75},
+                            {"field": "max_extended_from_vwap_pct", "from": 0.13, "to": 0.05},
+                        ],
                         "applied_policy": {"timeframe_minutes": 1, "volume_ratio_min": 0.68, "pullback_min_pct": 0.008},
                         "policy_source": "strategist",
                         "policy_validation_status": "ok",
                         "policy_fallback_used": False,
                         "policy_fallback_reason": "",
+                        "policy_partial_normalized": True,
+                        "policy_default_filled_fields": ["enabled"],
+                        "policy_validation_missing_fields": ["enabled"],
+                        "policy_validation_invalid_fields": [],
                         "override_reason": "",
                         "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
                         "shadow_used": True,
@@ -345,8 +383,12 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert out["monitor"]["min_hold_sec"] == 600
     assert out["monitor"]["policy_source"] == "strategist"
     assert out["monitor"]["applied_policy"]["volume_ratio_min"] == 0.68
+    assert out["monitor"]["received_policy"]["volume_ratio_min"] == 0.68
+    assert out["monitor"]["effective_policy"]["volume_ratio_min"] == 0.75
+    assert out["monitor"]["policy_adjustment_summary"]
     assert out["commander"]["policy_source"] == "strategist"
     assert out["commander"]["applied_policy"]["pullback_min_pct"] == 0.008
+    assert isinstance(out["commander"].get("policy_partial_normalized"), bool)
     assert out["reasoning_trace"]["commander_summary"]["summary"] == "Commander kept the day in measured risk mode."
     assert out["reasoning_trace"]["commander_summary"]["policy_source"] == "strategist"
     assert out["reasoning_trace"]["strategist_summary"]["selected_playbook"] == "breakout"
@@ -356,6 +398,7 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert out["reasoning_trace"]["scanner_summary"]["scanner_bias_summary"]["summary"]
     assert out["reasoning_trace"]["monitor_summary"]["summary"] == "Monitor held because breakout confirmation remains valid."
     assert out["reasoning_trace"]["monitor_summary"]["policy_source"] == "strategist"
+    assert out["reasoning_trace"]["monitor_summary"]["effective_policy"]["volume_ratio_min"] == 0.75
     assert out["reasoning_provenance"]["commander_context_source"] == "event_payload"
     assert out["reasoning_provenance"]["strategist_plan_source"] == "event_payload"
     assert out["reasoning_provenance"]["scanner_reason_source"] == "event_payload"

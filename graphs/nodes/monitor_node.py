@@ -30,6 +30,7 @@ from libs.runtime.intraday_monitor_signals import (
     evaluate_intraday_entry_signal,
     resolve_intraday_entry_policy,
 )
+from libs.runtime.monitor_policy import MonitorEntryPolicy, summarize_monitor_policy_deltas
 from libs.runtime.position_sizing import evaluate_position_size
 from libs.strategies.contracts import coerce_strategist_output
 
@@ -178,6 +179,73 @@ def _minute_snapshot_stale_reason(*, latest_candle_ts: Any, now_epoch: int, time
     if age_sec > max_age_sec:
         return "stale_snapshot_age_exceeded"
     return ""
+
+
+def _monitor_policy_adjustment_inputs(frame: Dict[str, Any]) -> Dict[str, str]:
+    return {
+        "playbook": str(frame.get("playbook") or "").strip(),
+        "monitor_guidance": str(frame.get("monitor_guidance") or "").strip(),
+        "risk_tone": str(frame.get("risk_tone") or "").strip(),
+        "trade_aggressiveness": str(frame.get("trade_aggressiveness") or "").strip(),
+    }
+
+
+def _build_monitor_effective_policy_trace(
+    *,
+    received_policy: Dict[str, Any],
+    effective_policy: Dict[str, Any],
+    frame: Dict[str, Any],
+    received_policy_source: str,
+) -> Dict[str, Any]:
+    adjustment_inputs = _monitor_policy_adjustment_inputs(frame)
+    deltas = summarize_monitor_policy_deltas(received_policy, effective_policy)
+    changed_fields = [str((row or {}).get("field") or "") for row in deltas if str((row or {}).get("field") or "").strip()]
+    applied_rules = [str(x or "").strip() for x in list(effective_policy.get("adjustments") or []) if str(x or "").strip()]
+    frame_labels = [
+        str(adjustment_inputs.get("playbook") or "").strip(),
+        str(adjustment_inputs.get("monitor_guidance") or "").strip(),
+        str(adjustment_inputs.get("risk_tone") or "").strip(),
+        str(adjustment_inputs.get("trade_aggressiveness") or "").strip(),
+    ]
+    frame_labels = [x for x in frame_labels if x]
+    if deltas:
+        if frame_labels:
+            summary = f"{' + '.join(frame_labels)} adjusted {', '.join(changed_fields[:4])}"
+        else:
+            summary = f"strategy frame adjusted {', '.join(changed_fields[:4])}"
+        reasoning = (
+            f"Monitor used an effective policy derived from the commander-confirmed baseline after "
+            f"strategy-frame adjustment. Changed fields: {', '.join(changed_fields[:6])}."
+        )
+        effective_policy_source = "monitor_frame_adjusted"
+        effective_policy_source_chain = [
+            str(received_policy_source or "monitor_received_policy"),
+            "strategy_frame_adjustment",
+            "monitor_effective_policy",
+        ]
+    else:
+        summary = "Monitor used the received policy without strategy-frame threshold changes."
+        reasoning = "Monitor used the received baseline policy directly because strategy-frame adjustments did not change threshold fields."
+        effective_policy_source = "monitor_received_policy"
+        effective_policy_source_chain = [
+            str(received_policy_source or "monitor_received_policy"),
+            "monitor_effective_policy",
+        ]
+    return {
+        "received_policy": dict(received_policy),
+        "effective_policy": dict(effective_policy),
+        "received_policy_source": str(received_policy_source or ""),
+        "effective_policy_source": effective_policy_source,
+        "effective_policy_source_chain": [str(x) for x in effective_policy_source_chain if str(x or "").strip()],
+        "policy_adjustments": {
+            "inputs": adjustment_inputs,
+            "applied_rules": applied_rules,
+            "changed_fields": changed_fields,
+        },
+        "policy_adjustment_summary": summary,
+        "policy_adjustment_reasoning": reasoning,
+        "effective_policy_deltas": deltas,
+    }
 
 
 def _ensure_monitor_minute_ohlcv_for_symbol(
@@ -526,6 +594,8 @@ def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(strategist_output.get("strategy_policy"), dict)
         else {}
     )
+    if not _has_strategy_policy_content(strategy_policy) and isinstance(state.get("strategy_policy"), dict):
+        strategy_policy = dict(state.get("strategy_policy") or {})
     market_policy = (
         dict(strategy_policy.get("market_policy") or {})
         if isinstance(strategy_policy.get("market_policy"), dict)
@@ -581,6 +651,7 @@ def _extract_monitor_strategy_frame(state: Dict[str, Any]) -> Dict[str, Any]:
 def _build_monitor_policy_trace(
     *,
     commander_context: Dict[str, Any],
+    monitor_policy: Dict[str, Any],
     strategist_plan: Dict[str, Any],
     policy_provenance: Dict[str, Any],
     entry_info: Dict[str, Any],
@@ -613,6 +684,15 @@ def _build_monitor_policy_trace(
     monitor_mission = str(commander_context.get("monitor_mission") or "").strip()
     entry_plan = dict(strategist_plan.get("entry_plan") or {})
     exit_plan = dict(strategist_plan.get("exit_plan") or {})
+
+    def _policy_meta_value(key: str, default: Any = "") -> Any:
+        commander_value = commander_context.get(key)
+        if commander_value not in (None, "", [], {}):
+            return commander_value
+        monitor_value = monitor_policy.get(key)
+        if monitor_value not in (None, "", [], {}):
+            return monitor_value
+        return default
 
     entry_blockers = list(
         dict.fromkeys(
@@ -661,13 +741,19 @@ def _build_monitor_policy_trace(
             "source_priority": list(commander_context.get("source_priority") or []),
             "applied_policy": dict(commander_context.get("applied_policy") or {})
             if isinstance(commander_context.get("applied_policy"), dict)
+            else dict(monitor_policy.get("applied_policy") or {})
+            if isinstance(monitor_policy.get("applied_policy"), dict)
             else {},
-            "policy_source": str(commander_context.get("policy_source") or ""),
-            "policy_validation_status": str(commander_context.get("policy_validation_status") or ""),
-            "policy_fallback_used": bool(commander_context.get("policy_fallback_used")),
-            "policy_fallback_reason": str(commander_context.get("policy_fallback_reason") or ""),
-            "override_reason": str(commander_context.get("override_reason") or ""),
-            "applied_policy_source_chain": list(commander_context.get("applied_policy_source_chain") or []),
+            "policy_source": str(_policy_meta_value("policy_source", "")),
+            "policy_validation_status": str(_policy_meta_value("policy_validation_status", "")),
+            "policy_fallback_used": bool(_policy_meta_value("policy_fallback_used", False)),
+            "policy_fallback_reason": str(_policy_meta_value("policy_fallback_reason", "")),
+            "policy_partial_normalized": bool(_policy_meta_value("policy_partial_normalized", False)),
+            "policy_default_filled_fields": list(_policy_meta_value("policy_default_filled_fields", [])),
+            "policy_validation_missing_fields": list(_policy_meta_value("policy_validation_missing_fields", [])),
+            "policy_validation_invalid_fields": list(_policy_meta_value("policy_validation_invalid_fields", [])),
+            "override_reason": str(_policy_meta_value("override_reason", "")),
+            "applied_policy_source_chain": list(_policy_meta_value("applied_policy_source_chain", [])),
             "selected_playbook": str(strategist_plan.get("selected_playbook") or ""),
             "entry_plan": entry_plan,
             "exit_plan": exit_plan,
@@ -690,6 +776,24 @@ def _build_monitor_policy_trace(
             "monitor_mission": monitor_mission,
         },
     }
+
+
+def _has_strategy_policy_content(strategy_policy: Any) -> bool:
+    if not isinstance(strategy_policy, dict):
+        return False
+    for key in (
+        "market_policy",
+        "scanner_policy",
+        "monitor_policy",
+        "decision_policy",
+        "commander_context",
+        "strategist_plan",
+        "provenance",
+    ):
+        value = strategy_policy.get(key)
+        if isinstance(value, dict) and value:
+            return True
+    return False
 
 
 def _apply_monitor_strategy_frame(
@@ -1225,6 +1329,8 @@ def _build_sizing_risk_context(state: Dict[str, Any], selected: Dict[str, Any], 
         if isinstance(strategist_output.get("strategy_policy"), dict)
         else {}
     )
+    if not _has_strategy_policy_content(strategy_policy) and isinstance(state.get("strategy_policy"), dict):
+        strategy_policy = dict(state.get("strategy_policy") or {})
     strategy_monitor_policy = (
         dict(strategy_policy.get("monitor_policy") or {})
         if isinstance(strategy_policy.get("monitor_policy"), dict)
@@ -2032,14 +2138,19 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         commander_applied_policy = dict((state.get("commander_decision") or {}).get("applied_policy") or {})
 
     entry_policy_input: Dict[str, Any] = {}
+    entry_policy_origin = "monitor_policy"
     if commander_applied_policy:
         entry_policy_input.update(dict(commander_applied_policy))
+        entry_policy_origin = "commander_applied_policy"
     elif isinstance(strategist_output.get("monitor_entry_policy"), dict):
         entry_policy_input.update(dict(strategist_output.get("monitor_entry_policy") or {}))
+        entry_policy_origin = "strategist_output.monitor_entry_policy"
     elif isinstance(state.get("monitor_entry_policy"), dict):
         entry_policy_input.update(dict(state.get("monitor_entry_policy") or {}))
+        entry_policy_origin = "state.monitor_entry_policy"
     elif isinstance(strategy_monitor_policy.get("entry_policy"), dict):
         entry_policy_input.update(dict(strategy_monitor_policy.get("entry_policy") or {}))
+        entry_policy_origin = "strategy_policy.monitor_policy.entry_policy"
     buy_blocked_open_position = False
     buy_blocked_post_exit_cooldown = False
     post_exit_cooldown_remaining_sec = 0
@@ -2063,6 +2174,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     entry_guard_blocked = False
     entry_guard_reason = ""
     entry_applied_policy: Dict[str, Any] = {}
+    entry_received_policy: Dict[str, Any] = {}
+    effective_policy_trace: Dict[str, Any] = {}
     entry_symbol = _norm_symbol(selected.get("symbol")) if isinstance(selected, dict) and selected.get("symbol") else ""
     entry_cooldown_map = state.get("_monitor_entry_cooldown_until")
     if not isinstance(entry_cooldown_map, dict):
@@ -2186,6 +2299,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 post_exit_cooldown_remaining_sec = remaining
 
         entry_policy = resolve_intraday_entry_policy(entry_policy_input or monitor_policy, frame=strategy_frame)
+        entry_received_policy = MonitorEntryPolicy.from_mapping(entry_policy_input or monitor_policy).to_dict()
         state = _ensure_monitor_minute_ohlcv_for_symbol(
             state,
             symbol=symbol,
@@ -2213,6 +2327,21 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         entry_info["selected_symbol"] = symbol
         entry_info["applied_policy"] = dict(entry_info.get("applied_policy") or entry_info.get("thresholds") or entry_policy.to_dict())
         entry_applied_policy = dict(entry_info.get("applied_policy") or {})
+        effective_policy_trace = _build_monitor_effective_policy_trace(
+            received_policy=entry_received_policy,
+            effective_policy=entry_applied_policy,
+            frame=strategy_frame,
+            received_policy_source=entry_policy_origin,
+        )
+        entry_info["received_policy"] = dict(effective_policy_trace.get("received_policy") or {})
+        entry_info["received_policy_source"] = str(effective_policy_trace.get("received_policy_source") or "")
+        entry_info["effective_policy"] = dict(effective_policy_trace.get("effective_policy") or {})
+        entry_info["effective_policy_source"] = str(effective_policy_trace.get("effective_policy_source") or "")
+        entry_info["effective_policy_source_chain"] = list(effective_policy_trace.get("effective_policy_source_chain") or [])
+        entry_info["policy_adjustments"] = dict(effective_policy_trace.get("policy_adjustments") or {})
+        entry_info["policy_adjustment_summary"] = str(effective_policy_trace.get("policy_adjustment_summary") or "")
+        entry_info["policy_adjustment_reasoning"] = str(effective_policy_trace.get("policy_adjustment_reasoning") or "")
+        entry_info["effective_policy_deltas"] = list(effective_policy_trace.get("effective_policy_deltas") or [])
         entry_metrics = entry_info.get("metrics") if isinstance(entry_info.get("metrics"), dict) else {}
         entry_metrics["minute_source_present"] = bool(entry_rows)
         entry_metrics["minute_source_used"] = entry_row_source or ""
@@ -2705,7 +2834,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_pattern": str(entry_info.get("pattern") or ""),
         "entry_signal_chain": list(entry_info.get("signal_chain") or []),
         "entry_metrics": dict(entry_info.get("metrics") or {}),
+        "entry_received_policy": dict(entry_info.get("received_policy") or entry_received_policy or {}),
+        "entry_received_policy_source": str(entry_info.get("received_policy_source") or entry_policy_origin or ""),
         "entry_applied_policy": dict(entry_applied_policy),
+        "entry_effective_policy": dict(entry_info.get("effective_policy") or entry_applied_policy),
+        "entry_effective_policy_source": str(entry_info.get("effective_policy_source") or ""),
+        "entry_effective_policy_source_chain": list(entry_info.get("effective_policy_source_chain") or []),
+        "entry_policy_adjustments": dict(entry_info.get("policy_adjustments") or {}),
+        "entry_policy_adjustment_summary": str(entry_info.get("policy_adjustment_summary") or ""),
+        "entry_effective_policy_deltas": list(entry_info.get("effective_policy_deltas") or []),
         "entry_thresholds": dict(entry_info.get("thresholds") or {}),
         "entry_passed_checks": list(entry_info.get("passed_checks") or []),
         "entry_failed_checks": list(entry_info.get("failed_checks") or []),
@@ -2777,12 +2914,24 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     )
     monitor_policy_trace = _build_monitor_policy_trace(
         commander_context=commander_context,
+        monitor_policy=strategy_monitor_policy,
         strategist_plan=strategist_plan,
         policy_provenance=policy_provenance,
         entry_info=entry_info,
         exit_info=exit_info,
         current_reason=current_reason,
     )
+    policy_ref = dict(monitor_policy_trace.get("policy_ref") or {})
+    policy_ref["received_policy"] = dict(entry_info.get("received_policy") or entry_received_policy or {})
+    policy_ref["received_policy_source"] = str(entry_info.get("received_policy_source") or entry_policy_origin or "")
+    policy_ref["effective_policy"] = dict(entry_info.get("effective_policy") or entry_applied_policy or {})
+    policy_ref["effective_policy_source"] = str(entry_info.get("effective_policy_source") or "")
+    policy_ref["effective_policy_source_chain"] = list(entry_info.get("effective_policy_source_chain") or [])
+    policy_ref["policy_adjustments"] = dict(entry_info.get("policy_adjustments") or {})
+    policy_ref["policy_adjustment_summary"] = str(entry_info.get("policy_adjustment_summary") or "")
+    policy_ref["policy_adjustment_reasoning"] = str(entry_info.get("policy_adjustment_reasoning") or "")
+    policy_ref["effective_policy_deltas"] = list(entry_info.get("effective_policy_deltas") or [])
+    monitor_policy_trace["policy_ref"] = policy_ref
     pnl_ratio = _to_float(exit_info.get("pnl_ratio")) if exit_info.get("pnl_ratio") not in (None, "") else None
     threshold_snapshot = {
         "current_price": exit_info.get("price"),
@@ -2820,6 +2969,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_volume_ratio": entry_metrics.get("volume_ratio"),
         "entry_extended_from_vwap_pct": entry_metrics.get("extended_from_vwap_pct"),
         "entry_pullback_depth_pct": entry_metrics.get("pullback_depth_pct"),
+        "received_policy": dict(entry_info.get("received_policy") or entry_received_policy or {}),
+        "received_policy_source": str(entry_info.get("received_policy_source") or entry_policy_origin or ""),
+        "effective_policy": dict(entry_info.get("effective_policy") or entry_applied_policy),
+        "effective_policy_source": str(entry_info.get("effective_policy_source") or ""),
+        "effective_policy_source_chain": list(entry_info.get("effective_policy_source_chain") or []),
+        "policy_adjustments": dict(entry_info.get("policy_adjustments") or {}),
+        "policy_adjustment_summary": str(entry_info.get("policy_adjustment_summary") or ""),
+        "policy_adjustment_reasoning": str(entry_info.get("policy_adjustment_reasoning") or ""),
+        "effective_policy_deltas": list(entry_info.get("effective_policy_deltas") or []),
         "applied_policy": dict(entry_applied_policy),
         "entry_volume_ratio_min": entry_thresholds.get("volume_ratio_min"),
         "entry_max_extended_from_vwap_pct": entry_thresholds.get("max_extended_from_vwap_pct"),
@@ -2973,11 +3131,24 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["entry_blockers"] = list(monitor_policy_trace.get("entry_blockers") or [])
         state["monitor_output"]["timing_assessment"] = dict(monitor_policy_trace.get("timing_assessment") or {})
         state["monitor_output"]["exit_trigger_basis"] = dict(monitor_policy_trace.get("exit_trigger_basis") or {})
+        state["monitor_output"]["received_policy"] = dict(entry_info.get("received_policy") or entry_received_policy or {})
+        state["monitor_output"]["received_policy_source"] = str(entry_info.get("received_policy_source") or entry_policy_origin or "")
+        state["monitor_output"]["effective_policy"] = dict(entry_info.get("effective_policy") or entry_applied_policy)
+        state["monitor_output"]["effective_policy_source"] = str(entry_info.get("effective_policy_source") or "")
+        state["monitor_output"]["effective_policy_source_chain"] = list(entry_info.get("effective_policy_source_chain") or [])
+        state["monitor_output"]["policy_adjustments"] = dict(entry_info.get("policy_adjustments") or {})
+        state["monitor_output"]["policy_adjustment_summary"] = str(entry_info.get("policy_adjustment_summary") or "")
+        state["monitor_output"]["policy_adjustment_reasoning"] = str(entry_info.get("policy_adjustment_reasoning") or "")
+        state["monitor_output"]["effective_policy_deltas"] = list(entry_info.get("effective_policy_deltas") or [])
         state["monitor_output"]["applied_policy"] = dict(entry_applied_policy)
         state["monitor_output"]["policy_source"] = str((monitor_policy_trace.get("policy_ref") or {}).get("policy_source") or "")
         state["monitor_output"]["policy_validation_status"] = str((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_status") or "")
         state["monitor_output"]["policy_fallback_used"] = bool((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_used"))
         state["monitor_output"]["policy_fallback_reason"] = str((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_reason") or "")
+        state["monitor_output"]["policy_partial_normalized"] = bool((monitor_policy_trace.get("policy_ref") or {}).get("policy_partial_normalized"))
+        state["monitor_output"]["policy_default_filled_fields"] = list((monitor_policy_trace.get("policy_ref") or {}).get("policy_default_filled_fields") or [])
+        state["monitor_output"]["policy_validation_missing_fields"] = list((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_missing_fields") or [])
+        state["monitor_output"]["policy_validation_invalid_fields"] = list((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_invalid_fields") or [])
         state["monitor_output"]["override_reason"] = str((monitor_policy_trace.get("policy_ref") or {}).get("override_reason") or "")
         state["monitor_output"]["applied_policy_source_chain"] = list((monitor_policy_trace.get("policy_ref") or {}).get("applied_policy_source_chain") or [])
         state["monitor_output"]["commander_context_consumed"] = bool(monitor_policy_trace.get("commander_context_consumed"))
@@ -2997,6 +3168,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_check_summary": str(monitor_policy_trace.get("entry_check_summary") or ""),
         "entry_blockers": list(monitor_policy_trace.get("entry_blockers") or []),
         "timing_assessment": dict(monitor_policy_trace.get("timing_assessment") or {}),
+        "received_policy": dict(entry_info.get("received_policy") or entry_received_policy or {}),
+        "effective_policy": dict(entry_info.get("effective_policy") or entry_applied_policy),
+        "effective_policy_source": str(entry_info.get("effective_policy_source") or ""),
+        "effective_policy_source_chain": list(entry_info.get("effective_policy_source_chain") or []),
+        "policy_adjustments": dict(entry_info.get("policy_adjustments") or {}),
+        "policy_adjustment_summary": str(entry_info.get("policy_adjustment_summary") or ""),
+        "effective_policy_deltas": list(entry_info.get("effective_policy_deltas") or []),
         "commander_context_consumed": bool(monitor_policy_trace.get("commander_context_consumed")),
         "consumed_fields": list(monitor_policy_trace.get("consumed_fields") or []),
         "flow_instruction_applied": bool(monitor_policy_trace.get("flow_instruction_applied")),
@@ -3012,11 +3190,23 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
         "triggered_rules": list(triggered_rules),
         "blocked_rules": list(dict.fromkeys(blocked_rules))[:8],
+        "received_policy": dict(entry_info.get("received_policy") or entry_received_policy or {}),
+        "effective_policy": dict(entry_info.get("effective_policy") or entry_applied_policy),
+        "effective_policy_source": str(entry_info.get("effective_policy_source") or ""),
+        "effective_policy_source_chain": list(entry_info.get("effective_policy_source_chain") or []),
+        "policy_adjustments": dict(entry_info.get("policy_adjustments") or {}),
+        "policy_adjustment_summary": str(entry_info.get("policy_adjustment_summary") or ""),
+        "policy_adjustment_reasoning": str(entry_info.get("policy_adjustment_reasoning") or ""),
+        "effective_policy_deltas": list(entry_info.get("effective_policy_deltas") or []),
         "applied_policy": dict(entry_applied_policy),
         "policy_source": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_source") or ""),
         "policy_validation_status": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_status") or ""),
         "policy_fallback_used": bool((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_used")),
         "policy_fallback_reason": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_reason") or ""),
+        "policy_partial_normalized": bool((monitor_policy_trace.get("policy_ref") or {}).get("policy_partial_normalized")),
+        "policy_default_filled_fields": list((monitor_policy_trace.get("policy_ref") or {}).get("policy_default_filled_fields") or []),
+        "policy_validation_missing_fields": list((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_missing_fields") or []),
+        "policy_validation_invalid_fields": list((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_invalid_fields") or []),
         "override_reason": str((monitor_policy_trace.get("policy_ref") or {}).get("override_reason") or ""),
         "applied_policy_source_chain": list((monitor_policy_trace.get("policy_ref") or {}).get("applied_policy_source_chain") or []),
         "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
@@ -3136,11 +3326,24 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "entry_signal_chain": list(entry_info.get("signal_chain") or []),
             "entry_metrics": dict(entry_info.get("metrics") or {}),
             "entry_thresholds": dict(entry_info.get("thresholds") or {}),
+            "received_policy": dict(entry_info.get("received_policy") or entry_received_policy or {}),
+            "received_policy_source": str(entry_info.get("received_policy_source") or entry_policy_origin or ""),
+            "effective_policy": dict(entry_info.get("effective_policy") or entry_applied_policy),
+            "effective_policy_source": str(entry_info.get("effective_policy_source") or ""),
+            "effective_policy_source_chain": list(entry_info.get("effective_policy_source_chain") or []),
+            "policy_adjustments": dict(entry_info.get("policy_adjustments") or {}),
+            "policy_adjustment_summary": str(entry_info.get("policy_adjustment_summary") or ""),
+            "policy_adjustment_reasoning": str(entry_info.get("policy_adjustment_reasoning") or ""),
+            "effective_policy_deltas": list(entry_info.get("effective_policy_deltas") or []),
             "applied_policy": dict(entry_applied_policy),
             "policy_source": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_source") or ""),
             "policy_validation_status": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_status") or ""),
             "policy_fallback_used": bool((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_used")),
             "policy_fallback_reason": str((monitor_policy_trace.get("policy_ref") or {}).get("policy_fallback_reason") or ""),
+            "policy_partial_normalized": bool((monitor_policy_trace.get("policy_ref") or {}).get("policy_partial_normalized")),
+            "policy_default_filled_fields": list((monitor_policy_trace.get("policy_ref") or {}).get("policy_default_filled_fields") or []),
+            "policy_validation_missing_fields": list((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_missing_fields") or []),
+            "policy_validation_invalid_fields": list((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_invalid_fields") or []),
             "override_reason": str((monitor_policy_trace.get("policy_ref") or {}).get("override_reason") or ""),
             "applied_policy_source_chain": list((monitor_policy_trace.get("policy_ref") or {}).get("applied_policy_source_chain") or []),
             "entry_passed_checks": list(entry_info.get("passed_checks") or []),

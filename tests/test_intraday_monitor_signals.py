@@ -260,6 +260,33 @@ def test_intraday_entry_defensive_stack_stays_usable_without_becoming_loose() ->
     assert float(defensive.get("volume_ratio_min") or 0.0) <= 1.1
 
 
+def test_intraday_entry_does_not_reapply_strategy_frame_when_policy_is_already_resolved() -> None:
+    resolved = resolve_intraday_entry_policy(
+        policy={"entry_volume_ratio_min": 0.68, "entry_max_extended_from_vwap_pct": 0.13},
+        frame={
+            "playbook": "defensive",
+            "monitor_guidance": "defensive_exit",
+            "risk_tone": "conservative",
+            "trade_aggressiveness": "low",
+        },
+    )
+
+    out = evaluate_intraday_entry_signal(
+        _rows_breakout(),
+        policy=resolved,
+        frame={
+            "playbook": "defensive",
+            "monitor_guidance": "defensive_exit",
+            "risk_tone": "conservative",
+            "trade_aggressiveness": "low",
+        },
+    )
+
+    applied = out.get("applied_policy") or {}
+    assert round(float(applied.get("volume_ratio_min") or 0.0), 2) == 0.75
+    assert float(applied.get("max_extended_from_vwap_pct") or 0.0) == 0.05
+
+
 def test_intraday_entry_waits_when_minute_candles_missing() -> None:
     out = evaluate_intraday_entry_signal([])
 

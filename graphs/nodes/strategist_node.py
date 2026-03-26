@@ -3885,9 +3885,19 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["policy_validation_status"] = str(monitor_entry_policy_validation.get("status") or "ok")
     strategist_output["policy_fallback_used"] = bool(monitor_entry_policy_validation.get("fallback_used"))
     strategist_output["policy_fallback_reason"] = str(monitor_entry_policy_validation.get("fallback_reason") or "")
+    strategist_output["policy_partial_normalized"] = bool(monitor_entry_policy_validation.get("partial_normalized"))
+    strategist_output["policy_default_filled_fields"] = list(monitor_entry_policy_validation.get("default_filled_fields") or [])
     strategist_output["policy_validation_issues"] = list(monitor_entry_policy_validation.get("issues") or [])
-    strategist_output["policy_validation_missing_fields"] = list(monitor_entry_policy_validation.get("missing_fields") or [])
-    strategist_output["policy_validation_invalid_fields"] = list(monitor_entry_policy_validation.get("invalid_fields") or [])
+    strategist_output["policy_validation_missing_fields"] = list(
+        monitor_entry_policy_validation.get("policy_validation_missing_fields")
+        or monitor_entry_policy_validation.get("missing_fields")
+        or []
+    )
+    strategist_output["policy_validation_invalid_fields"] = list(
+        monitor_entry_policy_validation.get("policy_validation_invalid_fields")
+        or monitor_entry_policy_validation.get("invalid_fields")
+        or []
+    )
     strategist_output["confidence"] = policy_confidence
     strategist_output["commander_context_ref"] = {
         "source": str(commander_context.get("source") or ""),

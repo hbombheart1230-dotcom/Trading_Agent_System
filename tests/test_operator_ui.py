@@ -929,6 +929,10 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
         "policy_validation_status": "ok",
         "policy_fallback_used": False,
         "policy_fallback_reason": "",
+        "policy_partial_normalized": True,
+        "policy_default_filled_fields": ["enabled"],
+        "policy_validation_missing_fields": ["enabled"],
+        "policy_validation_invalid_fields": [],
         "override_reason": "",
         "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
     }
@@ -971,10 +975,44 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
             "volume_ratio_min": 0.68,
             "pullback_min_pct": 0.008,
         },
+        "received_policy": {
+            "timeframe_minutes": 1,
+            "volume_ratio_min": 0.68,
+            "pullback_min_pct": 0.008,
+            "max_extended_from_vwap_pct": 0.13,
+        },
+        "received_policy_source": "commander_applied_policy",
+        "effective_policy": {
+            "timeframe_minutes": 1,
+            "volume_ratio_min": 0.75,
+            "pullback_min_pct": 0.008,
+            "max_extended_from_vwap_pct": 0.05,
+        },
+        "effective_policy_source": "monitor_frame_adjusted",
+        "effective_policy_source_chain": ["commander_applied_policy", "strategy_frame_adjustment", "monitor_effective_policy"],
+        "policy_adjustments": {
+            "inputs": {
+                "playbook": "defensive",
+                "monitor_guidance": "defensive_exit",
+                "risk_tone": "conservative",
+                "trade_aggressiveness": "low",
+            },
+            "applied_rules": ["playbook:defensive"],
+            "changed_fields": ["volume_ratio_min", "max_extended_from_vwap_pct"],
+        },
+        "policy_adjustment_summary": "defensive + conservative adjusted volume_ratio_min, max_extended_from_vwap_pct",
+        "effective_policy_deltas": [
+            {"field": "volume_ratio_min", "from": 0.68, "to": 0.75},
+            {"field": "max_extended_from_vwap_pct", "from": 0.13, "to": 0.05},
+        ],
         "policy_source": "strategist",
         "policy_validation_status": "ok",
         "policy_fallback_used": False,
         "policy_fallback_reason": "",
+        "policy_partial_normalized": True,
+        "policy_default_filled_fields": ["enabled"],
+        "policy_validation_missing_fields": ["enabled"],
+        "policy_validation_invalid_fields": [],
         "override_reason": "",
         "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
     }
@@ -1009,6 +1047,7 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
     assert prepared["commander"]["strategist_called"] is False
     assert prepared["commander"]["policy_source"] == "strategist"
     assert prepared["commander"]["applied_policy"]["volume_ratio_min"] == 0.68
+    assert prepared["commander"]["policy_partial_normalized"] is True
     assert prepared["scanner"]["playbook"] == "pullback"
     assert prepared["scanner"]["policy_source"] == "strategist"
     assert prepared["scanner"]["scanner_bias_applied"] is True
@@ -1017,10 +1056,14 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
     assert prepared["monitor"]["threshold_shortfalls"]
     assert prepared["monitor"]["policy_source"] == "strategist"
     assert prepared["monitor"]["applied_policy"]["pullback_min_pct"] == 0.008
+    assert prepared["monitor"]["received_policy"]["volume_ratio_min"] == 0.68
+    assert prepared["monitor"]["effective_policy"]["volume_ratio_min"] == 0.75
+    assert prepared["monitor"]["policy_adjustment_summary"]
     assert compact["commander"]["selected_route"] == "cached_strategist"
     assert compact["commander"]["route_reason_text"] == "commander_skip_cached_strategist"
     assert compact["commander"]["policy_source"] == "strategist"
     assert compact["commander"]["applied_policy"]["volume_ratio_min"] == 0.68
+    assert compact["commander"]["policy_partial_normalized"] is True
     assert compact["scanner"]["playbook"] in {"pullback", "눌림목"}
     assert compact["scanner"]["policy_source"] == "strategist"
     assert compact["scanner"]["scanner_bias_applied"] is True
@@ -1031,6 +1074,9 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
     assert compact["monitor"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
     assert compact["monitor"]["policy_source"] == "strategist"
     assert compact["monitor"]["applied_policy"]["pullback_min_pct"] == 0.008
+    assert compact["monitor"]["received_policy"]["volume_ratio_min"] == 0.68
+    assert compact["monitor"]["effective_policy"]["volume_ratio_min"] == 0.75
+    assert compact["monitor"]["effective_policy_deltas"]
     assert any("volume_ratio" in row for row in compact["monitor"]["threshold_shortfalls"])
 
 

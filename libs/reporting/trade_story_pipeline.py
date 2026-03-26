@@ -1179,6 +1179,48 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
     decision_reason_chain = [str(x or "") for x in list(monitor.get("decision_reason_chain") or []) if str(x or "").strip()]
     timing_assessment = decision_trace.get("timing_assessment") if isinstance(decision_trace.get("timing_assessment"), dict) else {}
     policy_ref = decision_trace.get("policy_ref") if isinstance(decision_trace.get("policy_ref"), dict) else {}
+    received_policy = (
+        monitor.get("received_policy")
+        if isinstance(monitor.get("received_policy"), dict)
+        else (
+            threshold_snapshot.get("received_policy")
+            if isinstance(threshold_snapshot.get("received_policy"), dict)
+            else (
+                policy_ref.get("received_policy")
+                if isinstance(policy_ref.get("received_policy"), dict)
+                else {}
+            )
+        )
+    )
+    effective_policy = (
+        monitor.get("effective_policy")
+        if isinstance(monitor.get("effective_policy"), dict)
+        else (
+            threshold_snapshot.get("effective_policy")
+            if isinstance(threshold_snapshot.get("effective_policy"), dict)
+            else (
+                policy_ref.get("effective_policy")
+                if isinstance(policy_ref.get("effective_policy"), dict)
+                else {}
+            )
+        )
+    )
+    policy_adjustment_summary = str(
+        monitor.get("policy_adjustment_summary")
+        or threshold_snapshot.get("policy_adjustment_summary")
+        or policy_ref.get("policy_adjustment_summary")
+        or ""
+    ).strip()
+    effective_policy_deltas = [
+        dict(row)
+        for row in list(
+            monitor.get("effective_policy_deltas")
+            or threshold_snapshot.get("effective_policy_deltas")
+            or policy_ref.get("effective_policy_deltas")
+            or []
+        )[:8]
+        if isinstance(row, dict)
+    ]
     entry_check_summary = str(decision_trace.get("entry_check_summary") or "").strip()
     entry_blockers = [str(x or "") for x in list(decision_trace.get("entry_blockers") or []) if str(x or "").strip()]
     entry_reason = str(
@@ -1198,6 +1240,8 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         if isinstance(monitor.get("entry_thresholds"), dict)
         else {}
     )
+    if not entry_thresholds and isinstance(effective_policy, dict):
+        entry_thresholds = dict(effective_policy or {})
     if not entry_thresholds and isinstance(monitor.get("applied_policy"), dict):
         entry_thresholds = dict(monitor.get("applied_policy") or {})
     if not entry_thresholds and isinstance(threshold_snapshot.get("entry_thresholds"), dict):
@@ -1372,6 +1416,19 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
             bullets.append("Entry blockers: " + "; ".join(entry_blockers[:6]))
         if entry_threshold_gaps:
             bullets.append("Threshold gaps: " + "; ".join(entry_threshold_gaps[:3]))
+        if policy_adjustment_summary:
+            bullets.append(f"Policy adjustment summary: {policy_adjustment_summary}")
+        if effective_policy_deltas:
+            bullets.append(
+                "Effective policy deltas: "
+                + "; ".join(
+                    [
+                        f"{str((row or {}).get('field') or '')}: {(row or {}).get('from')} -> {(row or {}).get('to')}"
+                        for row in effective_policy_deltas[:4]
+                        if str((row or {}).get("field") or "").strip()
+                    ]
+                )
+            )
         if policy_ref:
             policy_bits: List[str] = []
             for key in ("monitor_mission", "flow_instruction", "risk_mode", "command_intent"):
@@ -1436,6 +1493,10 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "entry_check_summary": entry_check_summary,
         "entry_blockers": entry_blockers[:8],
         "policy_ref": dict(policy_ref),
+        "received_policy": dict(received_policy),
+        "effective_policy": dict(effective_policy),
+        "policy_adjustment_summary": policy_adjustment_summary,
+        "effective_policy_deltas": effective_policy_deltas,
         "timing_assessment": dict(timing_assessment),
         "thresholds_guards_used": dict(thresholds_guards_used),
         "entry_guard_blocked": entry_guard_blocked,

@@ -619,6 +619,27 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             canonical_commander_decision.get("policy_fallback_reason"),
             max_len=220,
         ),
+        "policy_partial_normalized": canonical_commander.get("policy_partial_normalized")
+        if canonical_commander.get("policy_partial_normalized") is not None
+        else canonical_commander_decision.get("policy_partial_normalized"),
+        "policy_default_filled_fields": _listify(
+            canonical_commander.get("policy_default_filled_fields")
+            or canonical_commander_decision.get("policy_default_filled_fields"),
+            max_items=12,
+            max_len=80,
+        ),
+        "policy_validation_missing_fields": _listify(
+            canonical_commander.get("policy_validation_missing_fields")
+            or canonical_commander_decision.get("policy_validation_missing_fields"),
+            max_items=12,
+            max_len=80,
+        ),
+        "policy_validation_invalid_fields": _listify(
+            canonical_commander.get("policy_validation_invalid_fields")
+            or canonical_commander_decision.get("policy_validation_invalid_fields"),
+            max_items=12,
+            max_len=80,
+        ),
         "override_reason": _first_nonempty_text(
             canonical_commander.get("override_reason"),
             canonical_commander_decision.get("override_reason"),
@@ -676,6 +697,60 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "entry_blockers": _listify(monitor_reason.get("entry_blockers"), max_items=6, max_len=120),
         "policy_ref": _compact_scalar_dict(monitor_policy_ref, max_items=8, max_len=120),
         "thresholds_guards_used": _compact_scalar_dict(monitor_reason.get("thresholds_guards_used"), max_items=8, max_len=120),
+        "received_policy": _compact_scalar_dict(monitor_reason.get("received_policy"), max_items=12, max_len=120),
+        "received_policy_source": _first_nonempty_text(monitor_reason.get("received_policy_source"), max_len=80),
+        "effective_policy": _compact_scalar_dict(
+            monitor_reason.get("effective_policy")
+            if isinstance(monitor_reason.get("effective_policy"), dict)
+            else (
+                monitor_reason.get("applied_policy")
+                if isinstance(monitor_reason.get("applied_policy"), dict)
+                else monitor_policy_ref.get("effective_policy")
+            ),
+            max_items=12,
+            max_len=120,
+        ),
+        "effective_policy_source": _first_nonempty_text(
+            monitor_reason.get("effective_policy_source"),
+            monitor_policy_ref.get("effective_policy_source"),
+            max_len=80,
+        ),
+        "effective_policy_source_chain": _listify(
+            monitor_reason.get("effective_policy_source_chain")
+            or monitor_policy_ref.get("effective_policy_source_chain"),
+            max_items=6,
+            max_len=80,
+        ),
+        "policy_adjustments": _compact_scalar_dict(
+            monitor_reason.get("policy_adjustments")
+            if isinstance(monitor_reason.get("policy_adjustments"), dict)
+            else monitor_policy_ref.get("policy_adjustments"),
+            max_items=8,
+            max_len=120,
+        ),
+        "policy_adjustment_summary": _first_nonempty_text(
+            monitor_reason.get("policy_adjustment_summary"),
+            monitor_policy_ref.get("policy_adjustment_summary"),
+            max_len=220,
+        ),
+        "policy_adjustment_reasoning": _first_nonempty_text(
+            monitor_reason.get("policy_adjustment_reasoning"),
+            monitor_policy_ref.get("policy_adjustment_reasoning"),
+            max_len=260,
+        ),
+        "effective_policy_deltas": [
+            {
+                "field": _clip((row or {}).get("field"), max_len=80),
+                "from": (row or {}).get("from"),
+                "to": (row or {}).get("to"),
+            }
+            for row in list(
+                monitor_reason.get("effective_policy_deltas")
+                or monitor_policy_ref.get("effective_policy_deltas")
+                or []
+            )[:8]
+            if isinstance(row, dict)
+        ],
         "applied_policy": _compact_scalar_dict(
             monitor_reason.get("applied_policy")
             if isinstance(monitor_reason.get("applied_policy"), dict)
@@ -700,6 +775,27 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             monitor_reason.get("policy_fallback_reason"),
             monitor_policy_ref.get("policy_fallback_reason"),
             max_len=220,
+        ),
+        "policy_partial_normalized": monitor_reason.get("policy_partial_normalized")
+        if monitor_reason.get("policy_partial_normalized") is not None
+        else monitor_policy_ref.get("policy_partial_normalized"),
+        "policy_default_filled_fields": _listify(
+            monitor_reason.get("policy_default_filled_fields")
+            or monitor_policy_ref.get("policy_default_filled_fields"),
+            max_items=12,
+            max_len=80,
+        ),
+        "policy_validation_missing_fields": _listify(
+            monitor_reason.get("policy_validation_missing_fields")
+            or monitor_policy_ref.get("policy_validation_missing_fields"),
+            max_items=12,
+            max_len=80,
+        ),
+        "policy_validation_invalid_fields": _listify(
+            monitor_reason.get("policy_validation_invalid_fields")
+            or monitor_policy_ref.get("policy_validation_invalid_fields"),
+            max_items=12,
+            max_len=80,
         ),
         "override_reason": _first_nonempty_text(
             monitor_reason.get("override_reason"),
@@ -946,6 +1042,24 @@ def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
         "policy_ref": _compact_scalar_dict(policy_ref, max_items=8, max_len=120),
         "timing_assessment": _compact_scalar_dict(data.get("timing_assessment"), max_items=8, max_len=120),
         "thresholds_guards_used": _compact_scalar_dict(data.get("thresholds_guards_used"), max_items=8, max_len=120),
+        "received_policy": _compact_scalar_dict(data.get("received_policy"), max_items=12, max_len=120),
+        "received_policy_source": _clip(data.get("received_policy_source"), max_len=80),
+        "effective_policy": _compact_scalar_dict(data.get("effective_policy"), max_items=12, max_len=120),
+        "effective_policy_source": _clip(data.get("effective_policy_source"), max_len=80),
+        "effective_policy_source_chain": _listify(
+            data.get("effective_policy_source_chain"), max_items=6, max_len=80
+        ),
+        "policy_adjustments": _compact_scalar_dict(data.get("policy_adjustments"), max_items=8, max_len=120),
+        "policy_adjustment_summary": _clip(data.get("policy_adjustment_summary"), max_len=220),
+        "policy_adjustment_reasoning": _clip(data.get("policy_adjustment_reasoning"), max_len=220),
+        "effective_policy_deltas": [
+            _clip(
+                f"{(row or {}).get('field')}: {(row or {}).get('from')} -> {(row or {}).get('to')}",
+                max_len=120,
+            )
+            for row in list(data.get("effective_policy_deltas") or [])[:8]
+            if isinstance(row, dict)
+        ],
         "applied_policy": _compact_scalar_dict(
             data.get("applied_policy") if isinstance(data.get("applied_policy"), dict) else policy_ref.get("applied_policy"),
             max_items=12,
@@ -964,6 +1078,26 @@ def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
         "policy_fallback_reason": _clip(
             data.get("policy_fallback_reason") or policy_ref.get("policy_fallback_reason"),
             max_len=220,
+        ),
+        "policy_partial_normalized": (
+            data.get("policy_partial_normalized")
+            if data.get("policy_partial_normalized") is not None
+            else policy_ref.get("policy_partial_normalized")
+        ),
+        "policy_default_filled_fields": _listify(
+            data.get("policy_default_filled_fields") or policy_ref.get("policy_default_filled_fields"),
+            max_items=12,
+            max_len=80,
+        ),
+        "policy_validation_missing_fields": _listify(
+            data.get("policy_validation_missing_fields") or policy_ref.get("policy_validation_missing_fields"),
+            max_items=12,
+            max_len=80,
+        ),
+        "policy_validation_invalid_fields": _listify(
+            data.get("policy_validation_invalid_fields") or policy_ref.get("policy_validation_invalid_fields"),
+            max_items=12,
+            max_len=80,
         ),
         "override_reason": _clip(data.get("override_reason") or policy_ref.get("override_reason"), max_len=160),
         "applied_policy_source_chain": _listify(
@@ -1367,6 +1501,10 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "policy_validation_status": _clip(commander_route.get("policy_validation_status"), max_len=80),
             "policy_fallback_used": commander_route.get("policy_fallback_used"),
             "policy_fallback_reason": _clip(commander_route.get("policy_fallback_reason"), max_len=220),
+            "policy_partial_normalized": commander_route.get("policy_partial_normalized"),
+            "policy_default_filled_fields": _listify(commander_route.get("policy_default_filled_fields"), max_items=12, max_len=80),
+            "policy_validation_missing_fields": _listify(commander_route.get("policy_validation_missing_fields"), max_items=12, max_len=80),
+            "policy_validation_invalid_fields": _listify(commander_route.get("policy_validation_invalid_fields"), max_items=12, max_len=80),
             "override_reason": _clip(commander_route.get("override_reason"), max_len=160),
             "applied_policy_source_chain": _listify(
                 commander_route.get("applied_policy_source_chain"), max_items=6, max_len=80
@@ -1565,6 +1703,10 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "policy_validation_status": commander.get("policy_validation_status"),
             "policy_fallback_used": commander.get("policy_fallback_used"),
             "policy_fallback_reason": commander.get("policy_fallback_reason"),
+            "policy_partial_normalized": commander.get("policy_partial_normalized"),
+            "policy_default_filled_fields": _listify(commander.get("policy_default_filled_fields"), max_items=12, max_len=80),
+            "policy_validation_missing_fields": _listify(commander.get("policy_validation_missing_fields"), max_items=12, max_len=80),
+            "policy_validation_invalid_fields": _listify(commander.get("policy_validation_invalid_fields"), max_items=12, max_len=80),
             "override_reason": commander.get("override_reason"),
             "applied_policy_source_chain": _listify(
                 commander.get("applied_policy_source_chain"), max_items=6, max_len=80
@@ -1647,11 +1789,40 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "thresholds_guards_used": _compact_scalar_dict(monitor.get("thresholds_guards_used"), max_items=8, max_len=120),
             "entry_metrics": _compact_scalar_dict(monitor.get("entry_metrics"), max_items=10, max_len=120),
             "entry_thresholds": _compact_scalar_dict(monitor.get("entry_thresholds"), max_items=8, max_len=120),
+            "received_policy": _compact_scalar_dict(monitor.get("received_policy"), max_items=12, max_len=120),
+            "received_policy_source": monitor.get("received_policy_source"),
+            "effective_policy": _compact_scalar_dict(monitor.get("effective_policy"), max_items=12, max_len=120),
+            "effective_policy_source": monitor.get("effective_policy_source"),
+            "effective_policy_source_chain": _listify(
+                monitor.get("effective_policy_source_chain"), max_items=6, max_len=80
+            ),
+            "policy_adjustments": _compact_scalar_dict(monitor.get("policy_adjustments"), max_items=8, max_len=120),
+            "policy_adjustment_summary": monitor.get("policy_adjustment_summary"),
+            "policy_adjustment_reasoning": monitor.get("policy_adjustment_reasoning"),
+            "effective_policy_deltas": [
+                (
+                    _clip(
+                        f"{(row or {}).get('field')}: {(row or {}).get('from')} -> {(row or {}).get('to')}",
+                        max_len=120,
+                    )
+                    if isinstance(row, dict)
+                    else _clip(row, max_len=120)
+                )
+                for row in list(monitor.get("effective_policy_deltas") or [])[:8]
+                if (
+                    isinstance(row, dict)
+                    or str(row or "").strip()
+                )
+            ],
             "applied_policy": _compact_scalar_dict(monitor.get("applied_policy"), max_items=12, max_len=120),
             "policy_source": monitor.get("policy_source"),
             "policy_validation_status": monitor.get("policy_validation_status"),
             "policy_fallback_used": monitor.get("policy_fallback_used"),
             "policy_fallback_reason": monitor.get("policy_fallback_reason"),
+            "policy_partial_normalized": monitor.get("policy_partial_normalized"),
+            "policy_default_filled_fields": _listify(monitor.get("policy_default_filled_fields"), max_items=12, max_len=80),
+            "policy_validation_missing_fields": _listify(monitor.get("policy_validation_missing_fields"), max_items=12, max_len=80),
+            "policy_validation_invalid_fields": _listify(monitor.get("policy_validation_invalid_fields"), max_items=12, max_len=80),
             "override_reason": monitor.get("override_reason"),
             "applied_policy_source_chain": _listify(
                 monitor.get("applied_policy_source_chain"), max_items=6, max_len=80

@@ -211,6 +211,18 @@ def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     validation_status = str(normalized_meta.get("status") or "ok")
     fallback_used = bool(normalized_meta.get("fallback_used"))
     fallback_reason = str(normalized_meta.get("fallback_reason") or "")
+    partial_normalized = bool(normalized_meta.get("partial_normalized"))
+    default_filled_fields = list(normalized_meta.get("default_filled_fields") or [])
+    validation_missing_fields = list(
+        normalized_meta.get("policy_validation_missing_fields")
+        or normalized_meta.get("missing_fields")
+        or []
+    )
+    validation_invalid_fields = list(
+        normalized_meta.get("policy_validation_invalid_fields")
+        or normalized_meta.get("invalid_fields")
+        or []
+    )
     if candidate_source == "strategist":
         validation_status = str(strategist_output.get("policy_validation_status") or validation_status or "ok")
         fallback_used = bool(
@@ -219,6 +231,26 @@ def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
             else fallback_used
         )
         fallback_reason = str(strategist_output.get("policy_fallback_reason") or fallback_reason or "")
+        partial_normalized = bool(
+            strategist_output.get("policy_partial_normalized")
+            if strategist_output.get("policy_partial_normalized") is not None
+            else partial_normalized
+        )
+        default_filled_fields = list(
+            strategist_output.get("policy_default_filled_fields")
+            or default_filled_fields
+            or []
+        )
+        validation_missing_fields = list(
+            strategist_output.get("policy_validation_missing_fields")
+            or validation_missing_fields
+            or []
+        )
+        validation_invalid_fields = list(
+            strategist_output.get("policy_validation_invalid_fields")
+            or validation_invalid_fields
+            or []
+        )
 
     applied_policy = normalized_policy.to_dict()
     policy_source = str(applied_policy.get("policy_source") or policy_source_hint or candidate_source or default_policy.policy_source)
@@ -227,6 +259,18 @@ def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         validation_status = str(normalized_meta.get("status") or "ok")
         fallback_used = bool(normalized_meta.get("fallback_used") or True)
         fallback_reason = str(normalized_meta.get("fallback_reason") or "no_strategist_policy_available")
+        partial_normalized = bool(normalized_meta.get("partial_normalized"))
+        default_filled_fields = list(normalized_meta.get("default_filled_fields") or [])
+        validation_missing_fields = list(
+            normalized_meta.get("policy_validation_missing_fields")
+            or normalized_meta.get("missing_fields")
+            or []
+        )
+        validation_invalid_fields = list(
+            normalized_meta.get("policy_validation_invalid_fields")
+            or normalized_meta.get("invalid_fields")
+            or []
+        )
 
     source_chain = [candidate_source or "default", "validation"]
     if fallback_used:
@@ -240,6 +284,10 @@ def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_validation_status": validation_status,
         "policy_fallback_used": bool(fallback_used),
         "policy_fallback_reason": fallback_reason,
+        "policy_partial_normalized": bool(partial_normalized),
+        "policy_default_filled_fields": list(default_filled_fields),
+        "policy_validation_missing_fields": list(validation_missing_fields),
+        "policy_validation_invalid_fields": list(validation_invalid_fields),
         "override_reason": "",
         "applied_policy_source_chain": source_chain,
         "monitor_entry_policy_summary": _summarize_monitor_entry_policy(applied_policy),
@@ -320,6 +368,10 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
             "policy_validation_status": str(policy_meta.get("policy_validation_status") or ""),
             "policy_fallback_used": bool(policy_meta.get("policy_fallback_used")),
             "policy_fallback_reason": str(policy_meta.get("policy_fallback_reason") or ""),
+            "policy_partial_normalized": bool(policy_meta.get("policy_partial_normalized")),
+            "policy_default_filled_fields": list(policy_meta.get("policy_default_filled_fields") or []),
+            "policy_validation_missing_fields": list(policy_meta.get("policy_validation_missing_fields") or []),
+            "policy_validation_invalid_fields": list(policy_meta.get("policy_validation_invalid_fields") or []),
             "override_reason": str(policy_meta.get("override_reason") or ""),
             "applied_policy_source_chain": list(policy_meta.get("applied_policy_source_chain") or []),
             "monitor_entry_policy_summary": dict(policy_meta.get("monitor_entry_policy_summary") or {}),
@@ -339,6 +391,10 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     monitor_policy["policy_validation_status"] = str(policy_meta.get("policy_validation_status") or "")
     monitor_policy["policy_fallback_used"] = bool(policy_meta.get("policy_fallback_used"))
     monitor_policy["policy_fallback_reason"] = str(policy_meta.get("policy_fallback_reason") or "")
+    monitor_policy["policy_partial_normalized"] = bool(policy_meta.get("policy_partial_normalized"))
+    monitor_policy["policy_default_filled_fields"] = list(policy_meta.get("policy_default_filled_fields") or [])
+    monitor_policy["policy_validation_missing_fields"] = list(policy_meta.get("policy_validation_missing_fields") or [])
+    monitor_policy["policy_validation_invalid_fields"] = list(policy_meta.get("policy_validation_invalid_fields") or [])
     monitor_policy["override_reason"] = str(policy_meta.get("override_reason") or "")
     monitor_policy["applied_policy_source_chain"] = list(policy_meta.get("applied_policy_source_chain") or [])
     strategy_policy["monitor_policy"] = monitor_policy
@@ -355,6 +411,10 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     provenance["policy_validation_status"] = str(policy_meta.get("policy_validation_status") or "")
     provenance["policy_fallback_used"] = bool(policy_meta.get("policy_fallback_used"))
     provenance["policy_fallback_reason"] = str(policy_meta.get("policy_fallback_reason") or "")
+    provenance["policy_partial_normalized"] = bool(policy_meta.get("policy_partial_normalized"))
+    provenance["policy_default_filled_fields"] = list(policy_meta.get("policy_default_filled_fields") or [])
+    provenance["policy_validation_missing_fields"] = list(policy_meta.get("policy_validation_missing_fields") or [])
+    provenance["policy_validation_invalid_fields"] = list(policy_meta.get("policy_validation_invalid_fields") or [])
     provenance["override_reason"] = str(policy_meta.get("override_reason") or "")
     provenance["applied_policy_source_chain"] = list(policy_meta.get("applied_policy_source_chain") or [])
     provenance["scanner_bias_source"] = str(scanner_bias_meta.get("bias_source") or "")
@@ -554,6 +614,10 @@ def _build_commander_decision(
         "policy_validation_status": str(applied_policy_meta.get("policy_validation_status") or ""),
         "policy_fallback_used": bool(applied_policy_meta.get("policy_fallback_used")),
         "policy_fallback_reason": str(applied_policy_meta.get("policy_fallback_reason") or ""),
+        "policy_partial_normalized": bool(applied_policy_meta.get("policy_partial_normalized")),
+        "policy_default_filled_fields": list(applied_policy_meta.get("policy_default_filled_fields") or []),
+        "policy_validation_missing_fields": list(applied_policy_meta.get("policy_validation_missing_fields") or []),
+        "policy_validation_invalid_fields": list(applied_policy_meta.get("policy_validation_invalid_fields") or []),
         "override_reason": str(applied_policy_meta.get("override_reason") or ""),
         "applied_policy_source_chain": list(applied_policy_meta.get("applied_policy_source_chain") or []),
     }

@@ -1416,6 +1416,23 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         evidence_quality = "weak"
     threshold_snapshot = {
         "applied_policy": _dict(entry_info.get("applied_policy")) or _dict(entry_info.get("thresholds")),
+        "received_policy": _dict(entry_info.get("received_policy")),
+        "received_policy_source": _clip(entry_info.get("received_policy_source"), max_len=120),
+        "effective_policy": _dict(entry_info.get("effective_policy")) or _dict(entry_info.get("applied_policy")) or _dict(entry_info.get("thresholds")),
+        "effective_policy_source": _clip(entry_info.get("effective_policy_source"), max_len=120),
+        "effective_policy_source_chain": _listify(entry_info.get("effective_policy_source_chain"), limit=6, max_len=80),
+        "policy_adjustments": _dict(entry_info.get("policy_adjustments")),
+        "policy_adjustment_summary": _clip(entry_info.get("policy_adjustment_summary"), max_len=220),
+        "policy_adjustment_reasoning": _clip(entry_info.get("policy_adjustment_reasoning"), max_len=260),
+        "effective_policy_deltas": [
+            {
+                "field": _clip((row or {}).get("field"), max_len=80),
+                "from": (row or {}).get("from"),
+                "to": (row or {}).get("to"),
+            }
+            for row in list(entry_info.get("effective_policy_deltas") or [])[:8]
+            if isinstance(row, dict)
+        ],
         "entry_thresholds": _dict(entry_info.get("thresholds")),
         "entry_threshold_margins": _dict(entry_info.get("threshold_margins")),
         "entry_latest_candle_ts": entry_info.get("metrics", {}).get("latest_candle_ts") if isinstance(entry_info.get("metrics"), dict) else None,
@@ -1489,10 +1506,31 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "secondary_reason_codes": secondary_reason_codes,
             "threshold_snapshot": threshold_snapshot,
             "applied_policy": _dict(entry_info.get("applied_policy")) or _dict(entry_info.get("thresholds")),
+            "received_policy": _dict(entry_info.get("received_policy")),
+            "received_policy_source": _clip(entry_info.get("received_policy_source"), max_len=120),
+            "effective_policy": _dict(entry_info.get("effective_policy")) or _dict(entry_info.get("applied_policy")) or _dict(entry_info.get("thresholds")),
+            "effective_policy_source": _clip(entry_info.get("effective_policy_source"), max_len=120),
+            "effective_policy_source_chain": _listify(entry_info.get("effective_policy_source_chain"), limit=6, max_len=80),
+            "policy_adjustments": _dict(entry_info.get("policy_adjustments")),
+            "policy_adjustment_summary": _clip(entry_info.get("policy_adjustment_summary"), max_len=220),
+            "policy_adjustment_reasoning": _clip(entry_info.get("policy_adjustment_reasoning"), max_len=260),
+            "effective_policy_deltas": [
+                {
+                    "field": _clip((row or {}).get("field"), max_len=80),
+                    "from": (row or {}).get("from"),
+                    "to": (row or {}).get("to"),
+                }
+                for row in list(entry_info.get("effective_policy_deltas") or [])[:8]
+                if isinstance(row, dict)
+            ],
             "policy_source": _clip(_dict(policy_trace.get("policy_ref")).get("policy_source"), max_len=120),
             "policy_validation_status": _clip(_dict(policy_trace.get("policy_ref")).get("policy_validation_status"), max_len=80),
             "policy_fallback_used": _dict(policy_trace.get("policy_ref")).get("policy_fallback_used"),
             "policy_fallback_reason": _clip(_dict(policy_trace.get("policy_ref")).get("policy_fallback_reason"), max_len=220),
+            "policy_partial_normalized": _dict(policy_trace.get("policy_ref")).get("policy_partial_normalized"),
+            "policy_default_filled_fields": _listify(_dict(policy_trace.get("policy_ref")).get("policy_default_filled_fields"), limit=12, max_len=80),
+            "policy_validation_missing_fields": _listify(_dict(policy_trace.get("policy_ref")).get("policy_validation_missing_fields"), limit=12, max_len=80),
+            "policy_validation_invalid_fields": _listify(_dict(policy_trace.get("policy_ref")).get("policy_validation_invalid_fields"), limit=12, max_len=80),
             "override_reason": _clip(_dict(policy_trace.get("policy_ref")).get("override_reason"), max_len=180),
             "applied_policy_source_chain": _listify(_dict(policy_trace.get("policy_ref")).get("applied_policy_source_chain"), limit=6, max_len=80),
             "signal_snapshot": signal_snapshot,
@@ -1520,6 +1558,23 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "no_trade_reason_applied": policy_trace.get("no_trade_reason_applied"),
                 "shadow_used": policy_trace.get("shadow_used"),
                 "strategist_fallback_used": policy_trace.get("strategist_fallback_used"),
+                "received_policy": _dict(entry_info.get("received_policy")),
+                "received_policy_source": _clip(entry_info.get("received_policy_source"), max_len=120),
+                "effective_policy": _dict(entry_info.get("effective_policy")) or _dict(entry_info.get("applied_policy")) or _dict(entry_info.get("thresholds")),
+                "effective_policy_source": _clip(entry_info.get("effective_policy_source"), max_len=120),
+                "effective_policy_source_chain": _listify(entry_info.get("effective_policy_source_chain"), limit=6, max_len=80),
+                "policy_adjustments": _dict(entry_info.get("policy_adjustments")),
+                "policy_adjustment_summary": _clip(entry_info.get("policy_adjustment_summary"), max_len=220),
+                "policy_adjustment_reasoning": _clip(entry_info.get("policy_adjustment_reasoning"), max_len=260),
+                "effective_policy_deltas": [
+                    {
+                        "field": _clip((row or {}).get("field"), max_len=80),
+                        "from": (row or {}).get("from"),
+                        "to": (row or {}).get("to"),
+                    }
+                    for row in list(entry_info.get("effective_policy_deltas") or [])[:8]
+                    if isinstance(row, dict)
+                ],
             },
             "decision_reason_chain": decision_reason_chain,
             "intent_emitted": bool(intents),
@@ -1844,6 +1899,10 @@ def build_commander_output_artifact(
     policy_validation_status = _clip(commander_decision.get("policy_validation_status"), max_len=80)
     policy_fallback_used = bool(commander_decision.get("policy_fallback_used"))
     policy_fallback_reason = _clip(commander_decision.get("policy_fallback_reason"), max_len=220)
+    policy_partial_normalized = bool(commander_decision.get("policy_partial_normalized"))
+    policy_default_filled_fields = _listify(commander_decision.get("policy_default_filled_fields"), limit=12, max_len=80)
+    policy_validation_missing_fields = _listify(commander_decision.get("policy_validation_missing_fields"), limit=12, max_len=80)
+    policy_validation_invalid_fields = _listify(commander_decision.get("policy_validation_invalid_fields"), limit=12, max_len=80)
     override_reason = _clip(commander_decision.get("override_reason"), max_len=180)
     applied_policy_source_chain = _listify(commander_decision.get("applied_policy_source_chain"), limit=6, max_len=80)
     artifact = _base_output(state, agent="commander", status=status or "ok")
@@ -1908,6 +1967,10 @@ def build_commander_output_artifact(
             "policy_validation_status": policy_validation_status,
             "policy_fallback_used": policy_fallback_used,
             "policy_fallback_reason": policy_fallback_reason,
+            "policy_partial_normalized": policy_partial_normalized,
+            "policy_default_filled_fields": policy_default_filled_fields,
+            "policy_validation_missing_fields": policy_validation_missing_fields,
+            "policy_validation_invalid_fields": policy_validation_invalid_fields,
             "override_reason": override_reason,
             "applied_policy_source_chain": applied_policy_source_chain,
             "goal": _clip(

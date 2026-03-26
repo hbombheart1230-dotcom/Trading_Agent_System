@@ -438,6 +438,48 @@ def test_monitor_artifact_contains_evaluation_and_action_sections() -> None:
                 "pullback_min_pct": 0.008,
                 "pullback_max_pct": 0.07,
             },
+            "received_policy": {
+                "timeframe_minutes": 1,
+                "breakout_lookback": 5,
+                "volume_lookback": 5,
+                "volume_ratio_min": 0.68,
+                "max_extended_from_vwap_pct": 0.13,
+                "pullback_min_pct": 0.008,
+                "pullback_max_pct": 0.07,
+            },
+            "received_policy_source": "commander_applied_policy",
+            "effective_policy": {
+                "timeframe_minutes": 1,
+                "breakout_lookback": 5,
+                "volume_lookback": 5,
+                "volume_ratio_min": 0.82,
+                "max_extended_from_vwap_pct": 0.05,
+                "pullback_min_pct": 0.008,
+                "pullback_max_pct": 0.05,
+                "adjustments": ["playbook:defensive", "risk_tone:conservative"],
+            },
+            "effective_policy_source": "monitor_frame_adjusted",
+            "effective_policy_source_chain": [
+                "commander_applied_policy",
+                "strategy_frame_adjustment",
+                "monitor_effective_policy",
+            ],
+            "policy_adjustments": {
+                "inputs": {
+                    "playbook": "defensive",
+                    "monitor_guidance": "defensive_exit",
+                    "risk_tone": "conservative",
+                    "trade_aggressiveness": "low",
+                },
+                "applied_rules": ["playbook:defensive", "risk_tone:conservative"],
+                "changed_fields": ["volume_ratio_min", "max_extended_from_vwap_pct", "pullback_max_pct"],
+            },
+            "policy_adjustment_summary": "defensive + conservative adjusted volume_ratio_min, max_extended_from_vwap_pct, pullback_max_pct",
+            "effective_policy_deltas": [
+                {"field": "volume_ratio_min", "from": 0.68, "to": 0.82},
+                {"field": "max_extended_from_vwap_pct", "from": 0.13, "to": 0.05},
+                {"field": "pullback_max_pct", "from": 0.07, "to": 0.05},
+            ],
             "threshold_margins": {"volume_ratio": {"actual": 0.7, "limit": 0.8}},
             "guard_blocked": False,
             "confidence": 0.65,
@@ -474,6 +516,12 @@ def test_monitor_artifact_contains_evaluation_and_action_sections() -> None:
     assert isinstance((artifact.get("threshold_snapshot") or {}).get("applied_policy"), dict)
     assert artifact.get("applied_policy", {}).get("volume_ratio_min") == 0.68
     assert artifact.get("threshold_snapshot", {}).get("applied_policy", {}).get("pullback_min_pct") == 0.008
+    assert artifact.get("received_policy", {}).get("volume_ratio_min") == 0.68
+    assert artifact.get("effective_policy", {}).get("volume_ratio_min") == 0.82
+    assert artifact.get("effective_policy_source") == "monitor_frame_adjusted"
+    assert artifact.get("threshold_snapshot", {}).get("effective_policy", {}).get("max_extended_from_vwap_pct") == 0.05
+    assert artifact.get("policy_adjustment_summary")
+    assert artifact.get("effective_policy_deltas")[0]["field"] == "volume_ratio_min"
     assert artifact.get("intent_emitted") is False
     decision_summary = str(artifact.get("decision_summary") or "")
     assert decision_summary.startswith("Hold:")
@@ -669,6 +717,10 @@ def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
             "policy_validation_status": "ok",
             "policy_fallback_used": False,
             "policy_fallback_reason": "",
+            "policy_partial_normalized": True,
+            "policy_default_filled_fields": ["enabled"],
+            "policy_validation_missing_fields": ["enabled"],
+            "policy_validation_invalid_fields": [],
             "override_reason": "",
             "applied_policy_source_chain": ["strategist", "validation", "commander_confirmed"],
         },
@@ -721,6 +773,10 @@ def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
     assert artifact.get("policy_source") == "strategist"
     assert artifact.get("policy_validation_status") == "ok"
     assert artifact.get("policy_fallback_used") is False
+    assert artifact.get("policy_partial_normalized") is True
+    assert artifact.get("policy_default_filled_fields") == ["enabled"]
+    assert artifact.get("policy_validation_missing_fields") == ["enabled"]
+    assert artifact.get("policy_validation_invalid_fields") == []
     assert artifact.get("applied_policy", {}).get("volume_ratio_min") == 0.68
     assert artifact.get("applied_policy_source_chain") == ["strategist", "validation", "commander_confirmed"]
 

@@ -1651,9 +1651,113 @@ def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_
     assert out.get("intents") == []
     monitor = out.get("monitor") or {}
     applied_policy = monitor.get("entry_applied_policy") or {}
+    received_policy = monitor.get("entry_received_policy") or {}
+    effective_policy = monitor.get("entry_effective_policy") or {}
     assert float(applied_policy.get("volume_ratio_min") or 0.0) > 0.70
     assert str(applied_policy.get("policy_source") or "") == "strategist"
+    assert float(received_policy.get("volume_ratio_min") or 0.0) == 1.25
+    assert str(monitor.get("entry_received_policy_source") or "") == "commander_applied_policy"
+    assert float(effective_policy.get("volume_ratio_min") or 0.0) == float(applied_policy.get("volume_ratio_min") or 0.0)
+    assert str(monitor.get("entry_effective_policy_source") or "") == "monitor_frame_adjusted"
+    assert list(monitor.get("entry_effective_policy_deltas") or [])
     assert monitor.get("entry_reason") == "volume_insufficient"
+
+
+def test_monitor_records_received_vs_effective_policy_when_strategy_frame_tightens(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.006, "engine_volume_spike20": 1.4},
+        },
+        "minute_ohlcv_by_symbol": {
+            "BBB": [
+                {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+                {"open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+                {"open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+                {"open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+                {"open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+                {"open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 900, "vwap": 101.2},
+            ]
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": _policy_with_entry_cooldown(0),
+        "commander_applied_policy": {
+            "timeframe_minutes": 1,
+            "breakout_lookback": 5,
+            "volume_lookback": 5,
+            "volume_ratio_min": 0.68,
+            "max_extended_from_vwap_pct": 0.13,
+            "pullback_min_pct": 0.008,
+            "pullback_max_pct": 0.07,
+            "reclaim_tolerance_pct": 0.0015,
+            "breakout_buffer_pct": 0.0,
+            "intent_cooldown_sec": 0,
+            "require_vwap_reclaim": True,
+            "require_rebound": True,
+            "policy_source": "strategist",
+        },
+        "strategy_policy": {
+            "market_policy": {},
+            "scanner_policy": {},
+            "monitor_policy": {
+                "applied_policy": {
+                    "timeframe_minutes": 1,
+                    "volume_ratio_min": 0.68,
+                    "pullback_min_pct": 0.008,
+                    "max_extended_from_vwap_pct": 0.13,
+                    "policy_source": "strategist",
+                },
+                "policy_source": "strategist",
+                "policy_validation_status": "partial_normalized",
+                "policy_fallback_used": False,
+                "policy_partial_normalized": True,
+                "policy_default_filled_fields": ["enabled"],
+                "policy_validation_missing_fields": ["enabled"],
+                "policy_validation_invalid_fields": [],
+            },
+            "decision_policy": {},
+            "commander_context": {
+                "applied_policy": {
+                    "timeframe_minutes": 1,
+                    "volume_ratio_min": 0.68,
+                    "pullback_min_pct": 0.008,
+                    "max_extended_from_vwap_pct": 0.13,
+                    "policy_source": "strategist",
+                },
+                "policy_source": "strategist",
+                "policy_validation_status": "partial_normalized",
+                "policy_fallback_used": False,
+                "policy_partial_normalized": True,
+                "policy_default_filled_fields": ["enabled"],
+                "policy_validation_missing_fields": ["enabled"],
+                "policy_validation_invalid_fields": [],
+            },
+        },
+        "strategist_output": {
+            "playbook": "defensive",
+            "monitor_guidance": "defensive_exit",
+            "risk_tone": "conservative",
+            "trade_aggressiveness": "low",
+        },
+    }
+
+    out = monitor_node(state)
+    monitor = out.get("monitor") or {}
+    output = out.get("monitor_output") or {}
+
+    assert monitor.get("entry_received_policy", {}).get("volume_ratio_min") == 0.68
+    assert round(float(monitor.get("entry_effective_policy", {}).get("volume_ratio_min") or 0.0), 2) == 0.75
+    assert monitor.get("entry_effective_policy", {}).get("max_extended_from_vwap_pct") == 0.05
+    assert output.get("policy_partial_normalized") is True
+    assert output.get("policy_fallback_used") is False
+    assert "enabled" in list(output.get("policy_default_filled_fields") or [])
+    assert output.get("effective_policy_source") == "monitor_frame_adjusted"
+    assert any((row or {}).get("field") == "volume_ratio_min" for row in list(output.get("effective_policy_deltas") or []))
 
 
 def test_monitor_applies_strategist_exit_policy_over_env(monkeypatch):

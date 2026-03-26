@@ -223,6 +223,10 @@ def _build_reasoning_trace(out: Dict[str, Any]) -> Dict[str, Any]:
             "policy_validation_status": str(commander.get("policy_validation_status") or ""),
             "policy_fallback_used": bool(commander.get("policy_fallback_used")),
             "policy_fallback_reason": str(commander.get("policy_fallback_reason") or ""),
+            "policy_partial_normalized": bool(commander.get("policy_partial_normalized")),
+            "policy_default_filled_fields": list(commander.get("policy_default_filled_fields") or []),
+            "policy_validation_missing_fields": list(commander.get("policy_validation_missing_fields") or []),
+            "policy_validation_invalid_fields": list(commander.get("policy_validation_invalid_fields") or []),
             "override_reason": str(commander.get("override_reason") or ""),
             "applied_policy_source_chain": list(commander.get("applied_policy_source_chain") or []),
         },
@@ -269,9 +273,22 @@ def _build_reasoning_trace(out: Dict[str, Any]) -> Dict[str, Any]:
             "entry_blockers": list(monitor.get("entry_blockers") or []),
             "timing_assessment": dict(monitor.get("timing_assessment") or {}),
             "exit_trigger_basis": dict(monitor.get("exit_trigger_basis") or {}),
+            "received_policy": dict(monitor.get("received_policy") or {}),
+            "received_policy_source": str(monitor.get("received_policy_source") or ""),
+            "effective_policy": dict(monitor.get("effective_policy") or monitor.get("applied_policy") or {}),
+            "effective_policy_source": str(monitor.get("effective_policy_source") or ""),
+            "effective_policy_source_chain": list(monitor.get("effective_policy_source_chain") or []),
+            "policy_adjustments": dict(monitor.get("policy_adjustments") or {}),
+            "policy_adjustment_summary": str(monitor.get("policy_adjustment_summary") or ""),
+            "policy_adjustment_reasoning": str(monitor.get("policy_adjustment_reasoning") or ""),
+            "effective_policy_deltas": list(monitor.get("effective_policy_deltas") or []),
             "policy_source": str(monitor.get("policy_source") or ""),
             "policy_validation_status": str(monitor.get("policy_validation_status") or ""),
             "policy_fallback_used": bool(monitor.get("policy_fallback_used")),
+            "policy_partial_normalized": bool(monitor.get("policy_partial_normalized")),
+            "policy_default_filled_fields": list(monitor.get("policy_default_filled_fields") or []),
+            "policy_validation_missing_fields": list(monitor.get("policy_validation_missing_fields") or []),
+            "policy_validation_invalid_fields": list(monitor.get("policy_validation_invalid_fields") or []),
             "override_reason": str(monitor.get("override_reason") or ""),
             "applied_policy": dict(monitor.get("applied_policy") or {}),
         },
@@ -644,6 +661,10 @@ def generate_agent_pipeline_trace_report(
             "policy_validation_status": str(route_end_payload.get("policy_validation_status") or ""),
             "policy_fallback_used": bool(route_end_payload.get("policy_fallback_used")),
             "policy_fallback_reason": str(route_end_payload.get("policy_fallback_reason") or ""),
+            "policy_partial_normalized": bool(route_end_payload.get("policy_partial_normalized")),
+            "policy_default_filled_fields": list(route_end_payload.get("policy_default_filled_fields") or []),
+            "policy_validation_missing_fields": list(route_end_payload.get("policy_validation_missing_fields") or []),
+            "policy_validation_invalid_fields": list(route_end_payload.get("policy_validation_invalid_fields") or []),
             "override_reason": str(route_end_payload.get("override_reason") or ""),
             "applied_policy_source_chain": list(route_end_payload.get("applied_policy_source_chain") or []),
         },
@@ -769,6 +790,31 @@ def generate_agent_pipeline_trace_report(
             "entry_blockers": list(monitor_trace.get("entry_blockers") or []),
             "timing_assessment": dict(monitor_trace.get("timing_assessment") or {}),
             "exit_trigger_basis": dict(monitor_trace.get("exit_trigger_basis") or {}),
+            "received_policy": dict(monitor_trace.get("received_policy") or monitor_policy_ref.get("received_policy") or {}),
+            "received_policy_source": str(monitor_trace.get("received_policy_source") or monitor_policy_ref.get("received_policy_source") or ""),
+            "effective_policy": dict(monitor_trace.get("effective_policy") or monitor_policy_ref.get("effective_policy") or monitor_trace.get("applied_policy") or monitor_policy_ref.get("applied_policy") or {}),
+            "effective_policy_source": str(monitor_trace.get("effective_policy_source") or monitor_policy_ref.get("effective_policy_source") or ""),
+            "effective_policy_source_chain": list(
+                monitor_trace.get("effective_policy_source_chain")
+                or monitor_policy_ref.get("effective_policy_source_chain")
+                or []
+            ),
+            "policy_adjustments": dict(monitor_trace.get("policy_adjustments") or monitor_policy_ref.get("policy_adjustments") or {}),
+            "policy_adjustment_summary": str(
+                monitor_trace.get("policy_adjustment_summary")
+                or monitor_policy_ref.get("policy_adjustment_summary")
+                or ""
+            ),
+            "policy_adjustment_reasoning": str(
+                monitor_trace.get("policy_adjustment_reasoning")
+                or monitor_policy_ref.get("policy_adjustment_reasoning")
+                or ""
+            ),
+            "effective_policy_deltas": list(
+                monitor_trace.get("effective_policy_deltas")
+                or monitor_policy_ref.get("effective_policy_deltas")
+                or []
+            ),
             "applied_policy": dict(monitor_trace.get("applied_policy") or monitor_policy_ref.get("applied_policy") or {}),
             "policy_source": str(monitor_trace.get("policy_source") or monitor_policy_ref.get("policy_source") or ""),
             "policy_validation_status": str(
@@ -781,6 +827,26 @@ def generate_agent_pipeline_trace_report(
             ),
             "policy_fallback_reason": str(
                 monitor_trace.get("policy_fallback_reason") or monitor_policy_ref.get("policy_fallback_reason") or ""
+            ),
+            "policy_partial_normalized": bool(
+                monitor_trace.get("policy_partial_normalized")
+                if monitor_trace.get("policy_partial_normalized") is not None
+                else monitor_policy_ref.get("policy_partial_normalized")
+            ),
+            "policy_default_filled_fields": list(
+                monitor_trace.get("policy_default_filled_fields")
+                or monitor_policy_ref.get("policy_default_filled_fields")
+                or []
+            ),
+            "policy_validation_missing_fields": list(
+                monitor_trace.get("policy_validation_missing_fields")
+                or monitor_policy_ref.get("policy_validation_missing_fields")
+                or []
+            ),
+            "policy_validation_invalid_fields": list(
+                monitor_trace.get("policy_validation_invalid_fields")
+                or monitor_policy_ref.get("policy_validation_invalid_fields")
+                or []
             ),
             "override_reason": str(monitor_trace.get("override_reason") or monitor_policy_ref.get("override_reason") or ""),
             "applied_policy_source_chain": list(

@@ -123,3 +123,35 @@ def test_m18_strategist_invalid_monitor_entry_policy_falls_back_with_trace(monke
     assert policy["volume_ratio_min"] == 0.68
     assert policy["pullback_min_pct"] == 0.008
     assert policy["pullback_max_pct"] == 0.07
+
+
+def test_m18_strategist_partial_monitor_entry_policy_marks_partial_normalized(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    out = strategist_node(
+        {
+            "runtime_phase": "session",
+            "candidate_symbols": ["111111", "222222", "333333"],
+            "ai_strategist_output": {
+                "playbook": "pullback",
+                "monitor_entry_policy": {
+                    "volume_ratio_min": 0.72,
+                    "pullback_min_pct": 0.01,
+                },
+                "policy_rationale": "Keep the draft sparse and let defaults fill safe gaps.",
+                "policy_source": "strategist",
+            },
+        }
+    )
+
+    strategist_output = out.get("strategist_output") or {}
+    policy = strategist_output.get("monitor_entry_policy") or {}
+
+    assert strategist_output.get("policy_validation_status") == "partial_normalized"
+    assert strategist_output.get("policy_fallback_used") is False
+    assert strategist_output.get("policy_partial_normalized") is True
+    assert "enabled" in list(strategist_output.get("policy_default_filled_fields") or [])
+    assert "enabled" in list(strategist_output.get("policy_validation_missing_fields") or [])
+    assert list(strategist_output.get("policy_validation_invalid_fields") or []) == []
+    assert policy["volume_ratio_min"] == 0.72
+    assert policy["pullback_min_pct"] == 0.01
+    assert policy["timeframe_minutes"] == 1

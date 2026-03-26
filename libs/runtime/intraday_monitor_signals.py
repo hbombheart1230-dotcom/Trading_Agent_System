@@ -301,7 +301,14 @@ def evaluate_intraday_entry_signal(
     policy: Mapping[str, Any] | MonitorEntryPolicy | None = None,
     frame: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    resolved_policy = resolve_intraday_entry_policy(policy, frame=frame)
+    # When monitor passes a MonitorEntryPolicy instance, it has already resolved
+    # the strategy frame for this cycle. Re-applying the frame here would tighten
+    # thresholds a second time and drift away from the commander-confirmed baseline.
+    resolved_policy = (
+        policy
+        if isinstance(policy, MonitorEntryPolicy)
+        else resolve_intraday_entry_policy(policy, frame=frame)
+    )
     applied_policy = resolved_policy.to_dict()
     timeframe_minutes = int(resolved_policy.timeframe_minutes or 1)
     candles = _compress_candles(rows or [], timeframe_minutes)

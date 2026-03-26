@@ -107,6 +107,54 @@ def build_default_monitor_entry_policy() -> MonitorEntryPolicy:
     return MonitorEntryPolicy()
 
 
+_POLICY_DELTA_FIELDS: Tuple[str, ...] = (
+    "enabled",
+    "timeframe_minutes",
+    "breakout_lookback",
+    "volume_lookback",
+    "volume_ratio_min",
+    "min_extended_from_vwap_pct",
+    "max_extended_from_vwap_pct",
+    "pullback_min_pct",
+    "pullback_max_pct",
+    "reclaim_tolerance_pct",
+    "breakout_buffer_pct",
+    "intent_cooldown_sec",
+    "require_vwap_reclaim",
+    "require_rebound",
+)
+
+
+def summarize_monitor_policy_deltas(
+    received_policy: Mapping[str, Any] | MonitorEntryPolicy | None,
+    effective_policy: Mapping[str, Any] | MonitorEntryPolicy | None,
+) -> list[Dict[str, Any]]:
+    received = (
+        received_policy.to_dict()
+        if isinstance(received_policy, MonitorEntryPolicy)
+        else MonitorEntryPolicy.from_mapping(received_policy).to_dict()
+    )
+    effective = (
+        effective_policy.to_dict()
+        if isinstance(effective_policy, MonitorEntryPolicy)
+        else MonitorEntryPolicy.from_mapping(effective_policy).to_dict()
+    )
+    deltas: list[Dict[str, Any]] = []
+    for field_name in _POLICY_DELTA_FIELDS:
+        before = received.get(field_name)
+        after = effective.get(field_name)
+        if before == after:
+            continue
+        deltas.append(
+            {
+                "field": str(field_name),
+                "from": before,
+                "to": after,
+            }
+        )
+    return deltas
+
+
 def extract_monitor_entry_policy_mapping(policy: Mapping[str, Any] | None) -> Dict[str, Any]:
     raw = dict(policy or {})
     for key in ("monitor_entry_policy", "entry_policy"):
@@ -132,9 +180,13 @@ def normalize_monitor_entry_policy(
         return normalized, {
             "status": "ok",
             "fallback_used": False,
+            "partial_normalized": False,
             "fallback_reason": "",
+            "default_filled_fields": [],
             "missing_fields": [],
             "invalid_fields": [],
+            "policy_validation_missing_fields": [],
+            "policy_validation_invalid_fields": [],
             "issues": [],
             "policy_source": str(normalized.policy_source or policy_source),
         }
@@ -200,13 +252,19 @@ def normalize_monitor_entry_policy(
         invalid_fields.append("max_extended_from_vwap_pct")
         issues.append("max_extended_from_vwap_pct:below_minimum_viable_extension")
 
-    fallback_used = bool(missing_fields or invalid_fields)
+    default_filled_fields = list(dict.fromkeys([str(x) for x in [*missing_fields, *invalid_fields] if str(x or "").strip()]))
+    fallback_used = not bool(source_mapping) or bool(invalid_fields)
+    partial_normalized = bool(source_mapping) and bool(default_filled_fields) and not bool(invalid_fields)
     status = "ok"
-    if invalid_fields:
+    if not source_mapping:
+        status = "fallback_default"
+    elif invalid_fields:
         status = "fallback_invalid"
     elif missing_fields:
         status = "partial_normalized"
     reason_parts = []
+    if not source_mapping:
+        reason_parts.append("no_policy_provided")
     if missing_fields:
         reason_parts.append(f"missing_fields={','.join(missing_fields)}")
     if invalid_fields:
@@ -216,9 +274,13 @@ def normalize_monitor_entry_policy(
     return policy_obj, {
         "status": status,
         "fallback_used": fallback_used,
+        "partial_normalized": partial_normalized,
         "fallback_reason": "; ".join(reason_parts),
+        "default_filled_fields": default_filled_fields,
         "missing_fields": missing_fields,
         "invalid_fields": invalid_fields,
+        "policy_validation_missing_fields": list(missing_fields),
+        "policy_validation_invalid_fields": list(invalid_fields),
         "issues": issues,
         "policy_source": str(policy_obj.policy_source or policy_source),
     }

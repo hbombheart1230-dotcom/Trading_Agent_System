@@ -3735,6 +3735,24 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             else {}
         )
     )
+    monitor_received_policy = (
+        monitor_trace.get("received_policy")
+        if isinstance(monitor_trace.get("received_policy"), dict)
+        else (
+            monitor_policy_ref.get("received_policy")
+            if isinstance(monitor_policy_ref.get("received_policy"), dict)
+            else {}
+        )
+    )
+    monitor_effective_policy = (
+        monitor_trace.get("effective_policy")
+        if isinstance(monitor_trace.get("effective_policy"), dict)
+        else (
+            monitor_policy_ref.get("effective_policy")
+            if isinstance(monitor_policy_ref.get("effective_policy"), dict)
+            else monitor_applied_policy
+        )
+    )
     return {
         "run_id": detail.get("run_id"),
         "commander": {
@@ -3759,6 +3777,24 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             else commander_decision.get("policy_fallback_used"),
             "policy_fallback_reason": commander_artifact.get("policy_fallback_reason")
             or commander_decision.get("policy_fallback_reason"),
+            "policy_partial_normalized": commander_artifact.get("policy_partial_normalized")
+            if commander_artifact.get("policy_partial_normalized") is not None
+            else commander_decision.get("policy_partial_normalized"),
+            "policy_default_filled_fields": list(
+                commander_artifact.get("policy_default_filled_fields")
+                or commander_decision.get("policy_default_filled_fields")
+                or []
+            )[:12],
+            "policy_validation_missing_fields": list(
+                commander_artifact.get("policy_validation_missing_fields")
+                or commander_decision.get("policy_validation_missing_fields")
+                or []
+            )[:12],
+            "policy_validation_invalid_fields": list(
+                commander_artifact.get("policy_validation_invalid_fields")
+                or commander_decision.get("policy_validation_invalid_fields")
+                or []
+            )[:12],
             "override_reason": commander_artifact.get("override_reason") or commander_decision.get("override_reason"),
             "applied_policy_source_chain": list(
                 commander_artifact.get("applied_policy_source_chain")
@@ -3854,6 +3890,25 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             "timing_assessment": monitor_timing_assessment,
             "thresholds_guards_used": monitor_thresholds_used,
             "threshold_shortfalls": _monitor_threshold_shortfall_notes(monitor_entry_metrics, monitor_entry_thresholds),
+            "received_policy": monitor_received_policy,
+            "received_policy_source": monitor_trace.get("received_policy_source") or monitor_policy_ref.get("received_policy_source"),
+            "effective_policy": monitor_effective_policy,
+            "effective_policy_source": monitor_trace.get("effective_policy_source") or monitor_policy_ref.get("effective_policy_source"),
+            "effective_policy_source_chain": list(
+                monitor_trace.get("effective_policy_source_chain")
+                or monitor_policy_ref.get("effective_policy_source_chain")
+                or []
+            )[:6],
+            "policy_adjustments": monitor_trace.get("policy_adjustments")
+            if isinstance(monitor_trace.get("policy_adjustments"), dict)
+            else (monitor_policy_ref.get("policy_adjustments") if isinstance(monitor_policy_ref.get("policy_adjustments"), dict) else {}),
+            "policy_adjustment_summary": monitor_trace.get("policy_adjustment_summary") or monitor_policy_ref.get("policy_adjustment_summary"),
+            "policy_adjustment_reasoning": monitor_trace.get("policy_adjustment_reasoning") or monitor_policy_ref.get("policy_adjustment_reasoning"),
+            "effective_policy_deltas": list(
+                monitor_trace.get("effective_policy_deltas")
+                or monitor_policy_ref.get("effective_policy_deltas")
+                or []
+            )[:8],
             "applied_policy": monitor_applied_policy,
             "policy_source": monitor_trace.get("policy_source") or monitor_policy_ref.get("policy_source"),
             "policy_validation_status": monitor_trace.get("policy_validation_status")
@@ -3863,6 +3918,24 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
             else monitor_policy_ref.get("policy_fallback_used"),
             "policy_fallback_reason": monitor_trace.get("policy_fallback_reason")
             or monitor_policy_ref.get("policy_fallback_reason"),
+            "policy_partial_normalized": monitor_trace.get("policy_partial_normalized")
+            if monitor_trace.get("policy_partial_normalized") is not None
+            else monitor_policy_ref.get("policy_partial_normalized"),
+            "policy_default_filled_fields": list(
+                monitor_trace.get("policy_default_filled_fields")
+                or monitor_policy_ref.get("policy_default_filled_fields")
+                or []
+            )[:12],
+            "policy_validation_missing_fields": list(
+                monitor_trace.get("policy_validation_missing_fields")
+                or monitor_policy_ref.get("policy_validation_missing_fields")
+                or []
+            )[:12],
+            "policy_validation_invalid_fields": list(
+                monitor_trace.get("policy_validation_invalid_fields")
+                or monitor_policy_ref.get("policy_validation_invalid_fields")
+                or []
+            )[:12],
             "override_reason": monitor_trace.get("override_reason") or monitor_policy_ref.get("override_reason"),
             "applied_policy_source_chain": list(
                 monitor_trace.get("applied_policy_source_chain")
@@ -4084,6 +4157,10 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "policy_validation_status": _trim_text(commander.get("policy_validation_status"), max_len=40),
             "policy_fallback_used": commander.get("policy_fallback_used"),
             "policy_fallback_reason": _sanitize_operator_brief_text(commander.get("policy_fallback_reason")),
+            "policy_partial_normalized": commander.get("policy_partial_normalized"),
+            "policy_default_filled_fields": _clean_str_list(commander.get("policy_default_filled_fields"), limit=6, max_len=80),
+            "policy_validation_missing_fields": _clean_str_list(commander.get("policy_validation_missing_fields"), limit=6, max_len=80),
+            "policy_validation_invalid_fields": _clean_str_list(commander.get("policy_validation_invalid_fields"), limit=6, max_len=80),
             "override_reason": _sanitize_operator_brief_text(commander.get("override_reason")),
             "applied_policy_source_chain": _clean_str_list(
                 commander.get("applied_policy_source_chain"), limit=5, max_len=80
@@ -4178,11 +4255,33 @@ def _compact_operator_brief_input_for_llm(prepared_input: Dict[str, Any]) -> Dic
             "timing_assessment": _compact_scalar_map(monitor.get("timing_assessment"), limit=8, max_len=80),
             "thresholds_guards_used": _compact_scalar_map(monitor.get("thresholds_guards_used"), limit=8, max_len=80),
             "threshold_shortfalls": _clean_str_list(monitor.get("threshold_shortfalls"), limit=6, max_len=120),
+            "received_policy": _compact_scalar_map(monitor.get("received_policy"), limit=12, max_len=80),
+            "received_policy_source": _trim_text(monitor.get("received_policy_source"), max_len=40),
+            "effective_policy": _compact_scalar_map(monitor.get("effective_policy"), limit=12, max_len=80),
+            "effective_policy_source": _trim_text(monitor.get("effective_policy_source"), max_len=40),
+            "effective_policy_source_chain": _clean_str_list(
+                monitor.get("effective_policy_source_chain"), limit=5, max_len=80
+            ),
+            "policy_adjustments": _compact_scalar_map(monitor.get("policy_adjustments"), limit=8, max_len=80),
+            "policy_adjustment_summary": _sanitize_operator_brief_text(monitor.get("policy_adjustment_summary")),
+            "policy_adjustment_reasoning": _sanitize_operator_brief_text(monitor.get("policy_adjustment_reasoning")),
+            "effective_policy_deltas": [
+                _trim_text(
+                    f"{(row or {}).get('field')}: {(row or {}).get('from')} -> {(row or {}).get('to')}",
+                    max_len=120,
+                )
+                for row in list(monitor.get("effective_policy_deltas") or [])[:6]
+                if isinstance(row, dict)
+            ],
             "applied_policy": _compact_scalar_map(monitor.get("applied_policy"), limit=12, max_len=80),
             "policy_source": _trim_text(monitor.get("policy_source"), max_len=40),
             "policy_validation_status": _trim_text(monitor.get("policy_validation_status"), max_len=40),
             "policy_fallback_used": monitor.get("policy_fallback_used"),
             "policy_fallback_reason": _sanitize_operator_brief_text(monitor.get("policy_fallback_reason")),
+            "policy_partial_normalized": monitor.get("policy_partial_normalized"),
+            "policy_default_filled_fields": _clean_str_list(monitor.get("policy_default_filled_fields"), limit=6, max_len=80),
+            "policy_validation_missing_fields": _clean_str_list(monitor.get("policy_validation_missing_fields"), limit=6, max_len=80),
+            "policy_validation_invalid_fields": _clean_str_list(monitor.get("policy_validation_invalid_fields"), limit=6, max_len=80),
             "override_reason": _sanitize_operator_brief_text(monitor.get("override_reason")),
             "applied_policy_source_chain": _clean_str_list(
                 monitor.get("applied_policy_source_chain"), limit=5, max_len=80
