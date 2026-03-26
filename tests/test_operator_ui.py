@@ -1384,7 +1384,7 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert saved["trade_id"] == "20260316_005930_buy_run-1"
     assert saved["report_status"] == "available"
     assert saved["schema_version"] == "operator_brief.v1"
-    assert saved["version"] == 12
+    assert saved["version"] == 13
     assert saved["llm_brief_status"] == "ok"
     assert isinstance(saved.get("generation"), dict)
     assert saved["generation"]["status"] == "ok"

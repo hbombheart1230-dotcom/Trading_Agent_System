@@ -64,8 +64,12 @@ def test_intraday_entry_triggers_on_breakout_vwap_hold_and_volume_confirmation()
     assert out["evaluated"] is True
     assert out["triggered"] is True
     assert out["pattern"] == "breakout_vwap_hold"
+    assert out["entry_condition_path"] == "breakout_path"
+    assert "breakout_path" in list(out.get("entry_condition_paths_passed") or [])
     assert "volume_confirmation" in list(out.get("signal_chain") or [])
     assert float((out.get("metrics") or {}).get("volume_ratio") or 0.0) >= 1.15
+    scores = out.get("condition_scores") or {}
+    assert float(scores.get("confidence_score") or 0.0) >= float(scores.get("confidence_threshold") or 0.0)
 
 
 def test_intraday_entry_triggers_on_pullback_rebound_setup() -> None:
@@ -78,6 +82,7 @@ def test_intraday_entry_triggers_on_pullback_rebound_setup() -> None:
     assert out["evaluated"] is True
     assert out["triggered"] is True
     assert out["pattern"] == "pullback_vwap_reclaim"
+    assert out["entry_condition_path"] == "pullback_volume_path"
     assert "pullback_rebound" in list(out.get("signal_chain") or [])
     assert "pullback_mature" in list(out.get("passed_checks") or [])
     assert out.get("primary_failure_axis") == "confirmed_entry"
@@ -100,15 +105,21 @@ def test_intraday_entry_rejects_overextended_breakout() -> None:
     assert "extension_ok" in list(out.get("failed_checks") or [])
 
 
-def test_intraday_entry_rejects_weak_volume_breakout() -> None:
+def test_intraday_entry_allows_breakout_path_without_strict_volume_confirmation() -> None:
     rows = _rows_breakout()
     rows[-1]["volume"] = 900
     out = evaluate_intraday_entry_signal(rows, policy={"entry_volume_ratio_min": 1.0})
 
     assert out["evaluated"] is True
-    assert out["triggered"] is False
-    assert out["decision"] == "WAIT"
-    assert out["reason"] == "volume_insufficient"
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+    assert out["entry_condition_path"] == "breakout_path"
+    assert (out.get("metrics") or {}).get("volume_ok") is False
+    assert out["reason"] in {
+        "breakout_above_recent_high_with_vwap_structure_confirmation",
+        "breakout_above_recent_high_with_vwap_reclaim_confirmation",
+        "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation",
+    }
 
 
 def test_intraday_entry_rejects_failed_reclaim() -> None:
@@ -121,8 +132,23 @@ def test_intraday_entry_rejects_failed_reclaim() -> None:
     assert out["evaluated"] is True
     assert out["triggered"] is False
     assert out["decision"] == "WAIT"
-    assert out["reason"] == "reclaim_not_confirmed"
+    assert out["reason"] == "below_vwap_reclaim_not_ready"
     assert out.get("primary_failure_axis") == "vwap_relationship"
+
+
+def test_intraday_entry_breakout_path_still_blocks_when_reclaim_gate_is_not_ready() -> None:
+    rows = _rows_breakout()
+    rows[-1]["close"] = 101.8
+    rows[-1]["high"] = 101.9
+    rows[-1]["vwap"] = 102.2
+
+    out = evaluate_intraday_entry_signal(rows, policy={"entry_volume_ratio_min": 1.2})
+
+    assert out["evaluated"] is True
+    assert out["triggered"] is False
+    assert out["entry_condition_path"] == ""
+    assert out["reason"] == "below_vwap_reclaim_not_ready"
+    assert "reclaim_gate_ok" in list(out.get("failed_checks") or [])
 
 
 def test_intraday_entry_rejects_overextended_pullback_even_after_rebound() -> None:

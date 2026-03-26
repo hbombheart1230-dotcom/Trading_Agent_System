@@ -1549,9 +1549,12 @@ def test_monitor_prefers_strategist_monitor_entry_policy_for_entry_thresholds(mo
     }
 
     out = monitor_node(state)
-    assert out.get("intents") == []
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
     monitor = out.get("monitor") or {}
-    assert monitor.get("entry_reason") == "volume_insufficient"
+    assert monitor.get("entry_triggered") is True
+    assert monitor.get("entry_condition_path") == "breakout_path"
     applied_policy = monitor.get("entry_applied_policy") or {}
     assert float(applied_policy.get("volume_ratio_min") or 0.0) > 0.68
     assert str(applied_policy.get("policy_source") or "") == "strategist"
@@ -1648,7 +1651,9 @@ def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_
     }
 
     out = monitor_node(state)
-    assert out.get("intents") == []
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
     monitor = out.get("monitor") or {}
     applied_policy = monitor.get("entry_applied_policy") or {}
     received_policy = monitor.get("entry_received_policy") or {}
@@ -1660,7 +1665,8 @@ def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_
     assert float(effective_policy.get("volume_ratio_min") or 0.0) == float(applied_policy.get("volume_ratio_min") or 0.0)
     assert str(monitor.get("entry_effective_policy_source") or "") == "monitor_frame_adjusted"
     assert list(monitor.get("entry_effective_policy_deltas") or [])
-    assert monitor.get("entry_reason") == "volume_insufficient"
+    assert monitor.get("entry_triggered") is True
+    assert monitor.get("entry_condition_path") == "breakout_path"
 
 
 def test_monitor_records_received_vs_effective_policy_when_strategy_frame_tightens(monkeypatch):

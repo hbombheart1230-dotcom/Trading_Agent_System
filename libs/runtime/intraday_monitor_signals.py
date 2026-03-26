@@ -21,6 +21,34 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _clamp_score(value: float) -> float:
+    try:
+        return float(max(0.0, min(1.0, float(value))))
+    except Exception:
+        return 0.0
+
+
+def _min_threshold_score(actual: float, threshold: float) -> float:
+    actual_value = float(actual)
+    threshold_value = float(threshold)
+    if threshold_value <= 0.0:
+        return 1.0 if actual_value > 0.0 else 0.0
+    return _clamp_score(actual_value / threshold_value)
+
+
+def _range_threshold_score(actual: float, minimum: float, maximum: float) -> float:
+    actual_value = float(actual)
+    minimum_value = float(minimum)
+    maximum_value = float(maximum)
+    if minimum_value <= actual_value <= maximum_value:
+        return 1.0
+    if actual_value < minimum_value:
+        return _min_threshold_score(actual_value, minimum_value)
+    if actual_value <= 0.0:
+        return 0.0
+    return _clamp_score(maximum_value / actual_value if maximum_value > 0.0 else 0.0)
+
+
 def _candles_from_rows(rows: Sequence[Mapping[str, Any]] | None) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for raw in list(rows or []):
@@ -438,6 +466,20 @@ def evaluate_intraday_entry_signal(
     pullback_ok = pullback_mature and pullback_not_too_deep
     vwap_structure_ok = vwap_hold_ok or vwap_reclaim_ok
     confirmation_ok = volume_ok or rebound_ok or vwap_reclaim_ok
+    reclaim_gate_ok = bool(vwap_structure_ok) if bool(resolved_policy.require_vwap_reclaim) else True
+    breakout_path_ok = bool(breakout_ok)
+    pullback_volume_path_ok = bool(pullback_ok and volume_ok)
+    breakout_score = 1.0 if breakout_ok else _clamp_score((current_close / breakout_level) if breakout_level > 0.0 and current_close > 0.0 else 0.0)
+    volume_score = _min_threshold_score(volume_ratio, _to_float(resolved_policy.volume_ratio_min))
+    pullback_score = min(
+        _min_threshold_score(pullback_depth_pct, pullback_min_pct if pullback_min_pct > 0.0 else 1e-9),
+        _range_threshold_score(pullback_depth_pct, 0.0, pullback_max_pct if pullback_max_pct > 0.0 else max(pullback_depth_pct, 1e-9)),
+    )
+    breakout_path_score = round(0.55 * breakout_score, 4)
+    pullback_volume_path_score = round((0.30 * pullback_score) + (0.25 * volume_score), 4)
+    confidence_threshold = 0.55
+    confidence_score = round(max(breakout_path_score, pullback_volume_path_score), 4)
+    confidence_gate_ok = confidence_score >= confidence_threshold
 
     if current_close <= 0.0 or recent_high <= 0.0 or current_vwap <= 0.0:
         out["reason"] = "data_incomplete"
@@ -472,6 +514,12 @@ def evaluate_intraday_entry_signal(
         signal_chain.append("confirmation_ready")
     if extension_ok:
         signal_chain.append("not_extended")
+    if reclaim_gate_ok:
+        signal_chain.append("reclaim_gate_ready")
+    if breakout_path_ok:
+        signal_chain.append("breakout_path_ready")
+    if pullback_volume_path_ok:
+        signal_chain.append("pullback_volume_path_ready")
 
     playbook = str((frame or {}).get("playbook") or "").strip().lower()
     checks = {
@@ -479,6 +527,7 @@ def evaluate_intraday_entry_signal(
         "vwap_hold_ok": bool(vwap_hold_ok),
         "vwap_reclaim_ok": bool(vwap_reclaim_ok),
         "vwap_structure_ok": bool(vwap_structure_ok),
+        "reclaim_gate_ok": bool(reclaim_gate_ok),
         "volume_ok": bool(volume_ok),
         "rebound_ok": bool(rebound_ok),
         "confirmation_ok": bool(confirmation_ok),
@@ -486,27 +535,38 @@ def evaluate_intraday_entry_signal(
         "pullback_mature": bool(pullback_mature),
         "pullback_not_too_deep": bool(pullback_not_too_deep),
         "pullback_structure_ok": bool(pullback_ok),
+        "breakout_path_ok": bool(breakout_path_ok),
+        "pullback_volume_path_ok": bool(pullback_volume_path_ok),
+        "confidence_gate_ok": bool(confidence_gate_ok),
     }
     if playbook in ("pullback", "reversal"):
         relevant_checks = [
+            "reclaim_gate_ok",
             "vwap_structure_ok",
             "pullback_mature",
             "pullback_not_too_deep",
+            "volume_ok",
+            "pullback_volume_path_ok",
+            "breakout_ok",
+            "breakout_path_ok",
             "extension_ok",
-            "confirmation_ok",
+            "confidence_gate_ok",
             "vwap_reclaim_ok",
             "vwap_hold_ok",
             "rebound_ok",
-            "volume_ok",
         ]
     else:
         relevant_checks = [
+            "reclaim_gate_ok",
             "breakout_ok",
+            "breakout_path_ok",
             "vwap_hold_ok",
             "volume_ok",
+            "pullback_structure_ok",
+            "pullback_volume_path_ok",
             "extension_ok",
             "rebound_ok",
-            "pullback_structure_ok",
+            "confidence_gate_ok",
         ]
     passed_checks = [name for name in relevant_checks if checks.get(name)]
     failed_checks = [name for name in relevant_checks if not checks.get(name)]
@@ -541,18 +601,48 @@ def evaluate_intraday_entry_signal(
     reason = ""
     triggered = False
     primary_failure_axis = ""
+    entry_condition_path = ""
+    entry_condition_paths_passed: List[str] = []
+    if breakout_path_ok:
+        entry_condition_paths_passed.append("breakout_path")
+    if pullback_volume_path_ok:
+        entry_condition_paths_passed.append("pullback_volume_path")
+    grouped_logic_trace = {
+        "logic_mode": "reclaim_and_grouped_paths_v1",
+        "reclaim_gate_required": bool(resolved_policy.require_vwap_reclaim),
+        "reclaim_gate_ok": bool(reclaim_gate_ok),
+        "extension_required": True,
+        "extension_ok": bool(extension_ok),
+        "breakout_path_ok": bool(breakout_path_ok),
+        "pullback_volume_path_ok": bool(pullback_volume_path_ok),
+        "paths_passed": list(entry_condition_paths_passed),
+        "confidence_gate_ok": bool(confidence_gate_ok),
+        "triggered_path": "",
+    }
     if playbook in ("pullback", "reversal"):
-        if vwap_structure_ok and pullback_ok and extension_ok and confirmation_ok:
+        if reclaim_gate_ok and extension_ok and confidence_gate_ok and (breakout_path_ok or pullback_volume_path_ok):
             triggered = True
-            if vwap_reclaim_ok and rebound_ok:
+            if breakout_path_ok:
+                entry_condition_path = "breakout_path"
+                pattern = "breakout_vwap_hold"
+                if vwap_reclaim_ok and not vwap_hold_ok:
+                    reason = "breakout_above_recent_high_with_vwap_reclaim_confirmation"
+                elif volume_ok and vwap_hold_ok:
+                    reason = "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation"
+                else:
+                    reason = "breakout_above_recent_high_with_vwap_structure_confirmation"
+            elif vwap_reclaim_ok and rebound_ok:
+                entry_condition_path = "pullback_volume_path"
                 pattern = "pullback_vwap_reclaim"
                 reason = "pullback_reclaim_above_vwap_with_rebound_confirmation"
             elif rebound_ok:
+                entry_condition_path = "pullback_volume_path"
                 pattern = "pullback_rebound"
                 reason = "pullback_rebound_above_vwap_with_confirmation"
             else:
+                entry_condition_path = "pullback_volume_path"
                 pattern = "pullback_vwap_hold"
-                reason = "pullback_structure_above_vwap_with_confirmation"
+                reason = "pullback_structure_above_vwap_with_volume_confirmation"
         else:
             if not extension_ok:
                 if extended_from_vwap_pct > max_extended_from_vwap_pct:
@@ -562,30 +652,44 @@ def evaluate_intraday_entry_signal(
                     # Pullback setup is still too weak below VWAP band; wait for reclaim/structure.
                     reason = "pullback_below_vwap_reclaim_not_ready"
                     primary_failure_axis = "vwap_relationship"
+            elif not reclaim_gate_ok:
+                reason = "below_vwap_reclaim_not_ready"
+                primary_failure_axis = "vwap_relationship"
             elif not pullback_mature:
                 reason = "pullback_not_mature"
                 primary_failure_axis = "pullback_structure"
             elif not pullback_not_too_deep:
                 reason = "no_valid_pullback_structure"
                 primary_failure_axis = "pullback_structure"
-            elif not vwap_structure_ok:
-                reason = "reclaim_not_confirmed"
-                primary_failure_axis = "vwap_relationship"
-            elif not confirmation_ok:
+            elif pullback_ok and not volume_ok:
                 reason = "volume_confirmation_missing"
                 primary_failure_axis = "volume_confirmation"
+            elif not breakout_ok:
+                reason = "breakout_not_ready"
+                primary_failure_axis = "breakout_readiness"
             else:
                 reason = "entry_signal_not_confirmed"
                 primary_failure_axis = "entry_confirmation"
     else:
-        if breakout_ok and vwap_hold_ok and volume_ok and extension_ok:
+        if reclaim_gate_ok and extension_ok and confidence_gate_ok and (breakout_path_ok or pullback_volume_path_ok):
             triggered = True
-            pattern = "breakout_vwap_hold"
-            reason = "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation"
-        elif rebound_ok and vwap_hold_ok and volume_ok and pullback_ok and extension_ok:
-            triggered = True
-            pattern = "pullback_rebound"
-            reason = "pullback_rebound_above_vwap_with_volume_confirmation"
+            if breakout_path_ok:
+                entry_condition_path = "breakout_path"
+                pattern = "breakout_vwap_hold"
+                if volume_ok and vwap_hold_ok:
+                    reason = "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation"
+                elif vwap_reclaim_ok and not vwap_hold_ok:
+                    reason = "breakout_above_recent_high_with_vwap_reclaim_confirmation"
+                else:
+                    reason = "breakout_above_recent_high_with_vwap_structure_confirmation"
+            else:
+                entry_condition_path = "pullback_volume_path"
+                pattern = "pullback_rebound" if rebound_ok else "pullback_vwap_hold"
+                reason = (
+                    "pullback_rebound_above_vwap_with_volume_confirmation"
+                    if rebound_ok
+                    else "pullback_structure_above_vwap_with_volume_confirmation"
+                )
         else:
             if not extension_ok:
                 if extended_from_vwap_pct > max_extended_from_vwap_pct:
@@ -594,24 +698,28 @@ def evaluate_intraday_entry_signal(
                 else:
                     reason = "below_vwap_reclaim_not_ready"
                     primary_failure_axis = "vwap_relationship"
-            elif not breakout_ok and not rebound_ok:
-                reason = "breakout_not_ready"
-                primary_failure_axis = "breakout_readiness"
-            elif not vwap_hold_ok:
-                reason = "vwap_not_confirmed"
+            elif not reclaim_gate_ok:
+                reason = "below_vwap_reclaim_not_ready"
                 primary_failure_axis = "vwap_relationship"
-            elif not volume_ok:
+            elif pullback_ok and not volume_ok:
                 reason = "volume_insufficient"
                 primary_failure_axis = "volume_confirmation"
+            elif not breakout_ok and not pullback_ok:
+                reason = "breakout_not_ready"
+                primary_failure_axis = "breakout_readiness"
             elif not pullback_ok:
                 reason = "pullback_too_deep"
                 primary_failure_axis = "pullback_structure"
+            elif not breakout_ok:
+                reason = "breakout_not_ready"
+                primary_failure_axis = "breakout_readiness"
             else:
                 reason = "entry_signal_not_confirmed"
                 primary_failure_axis = "entry_confirmation"
 
     if triggered and not primary_failure_axis:
         primary_failure_axis = "confirmed_entry"
+    grouped_logic_trace["triggered_path"] = entry_condition_path
 
     metrics = {
         "timeframe_minutes": timeframe_minutes,
@@ -641,6 +749,17 @@ def evaluate_intraday_entry_signal(
         "pullback_not_too_deep": bool(pullback_not_too_deep),
         "confirmation_ok": bool(confirmation_ok),
         "vwap_structure_ok": bool(vwap_structure_ok),
+        "reclaim_gate_ok": bool(reclaim_gate_ok),
+        "breakout_path_ok": bool(breakout_path_ok),
+        "pullback_volume_path_ok": bool(pullback_volume_path_ok),
+        "breakout_score": breakout_score,
+        "volume_score": volume_score,
+        "pullback_score": pullback_score,
+        "breakout_path_score": breakout_path_score,
+        "pullback_volume_path_score": pullback_volume_path_score,
+        "confidence_score": confidence_score,
+        "confidence_threshold": confidence_threshold,
+        "confidence_gate_ok": bool(confidence_gate_ok),
         "engine_vwap_distance": (features or {}).get("engine_vwap_distance"),
         "engine_volume_spike20": (features or {}).get("engine_volume_spike20"),
         "engine_trend_strength": (features or {}).get("engine_trend_strength"),
@@ -659,6 +778,19 @@ def evaluate_intraday_entry_signal(
             "failed_checks": failed_checks,
             "primary_failure_axis": primary_failure_axis,
             "threshold_margins": threshold_margins,
+            "entry_condition_path": entry_condition_path,
+            "entry_condition_paths_passed": entry_condition_paths_passed,
+            "condition_scores": {
+                "breakout_score": breakout_score,
+                "volume_score": volume_score,
+                "pullback_score": pullback_score,
+                "breakout_path_score": breakout_path_score,
+                "pullback_volume_path_score": pullback_volume_path_score,
+                "confidence_score": confidence_score,
+                "confidence_threshold": confidence_threshold,
+                "confidence_gate_ok": bool(confidence_gate_ok),
+            },
+            "grouped_logic_trace": grouped_logic_trace,
         }
     )
     return out

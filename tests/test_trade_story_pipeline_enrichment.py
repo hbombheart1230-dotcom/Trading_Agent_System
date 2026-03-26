@@ -128,6 +128,15 @@ def test_monitor_reason_human_surfaces_intraday_entry_metrics() -> None:
             "entry_triggered": True,
             "entry_reason": "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation",
             "entry_pattern": "breakout_vwap_hold",
+            "entry_condition_path": "breakout_path",
+            "entry_condition_paths_passed": ["breakout_path"],
+            "entry_condition_scores": {
+                "breakout_score": 1.0,
+                "volume_score": 0.72,
+                "pullback_score": 0.51,
+                "confidence_score": 0.55,
+                "confidence_threshold": 0.55,
+            },
             "entry_signal_chain": ["recent_high_breakout", "vwap_hold", "volume_confirmation", "not_extended"],
             "entry_metrics": {
                 "timeframe_minutes": 1,
@@ -151,10 +160,13 @@ def test_monitor_reason_human_surfaces_intraday_entry_metrics() -> None:
     assert out["posture"] == "BUY"
     assert out["entry_triggered"] is True
     assert out["entry_pattern"] == "breakout_vwap_hold"
+    assert out["entry_condition_path"] == "breakout_path"
     assert any("Entry timeframe: 1m" in row for row in out["bullets"])
+    assert any("Grouped entry path: breakout_path" in row for row in out["bullets"])
     assert any("Volume ratio: 2.31" in row for row in out["bullets"])
     assert any("Extended from VWAP:" in row for row in out["bullets"])
     assert "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation" in out["summary"]
+    assert "Path: breakout path." in out["summary"]
 
 
 def test_monitor_reason_human_prefers_decision_trace_and_surfaces_threshold_gaps() -> None:

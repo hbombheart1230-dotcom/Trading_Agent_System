@@ -318,6 +318,10 @@ def _build_monitor_blocker_trace(monitor: Dict[str, Any]) -> Dict[str, Any]:
         "threshold_shortfalls": threshold_shortfalls[:4],
         "timing_assessment": dict(timing_assessment or {}),
         "policy_ref": dict(policy_ref or {}),
+        "entry_condition_path": clip(data.get("entry_condition_path"), max_len=80),
+        "entry_condition_paths_passed": _list_text(data.get("entry_condition_paths_passed"), limit=4, max_len=80),
+        "condition_scores": dict(data.get("condition_scores") or {}),
+        "grouped_logic_trace": dict(data.get("grouped_logic_trace") or {}),
     }
 
 
@@ -1538,6 +1542,10 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         or ""
     ).strip()
     entry_signal_chain = [str(x or "") for x in list(monitor.get("entry_signal_chain") or []) if str(x or "").strip()]
+    entry_condition_path = str(monitor.get("entry_condition_path") or "").strip()
+    entry_condition_paths_passed = [str(x or "") for x in list(monitor.get("entry_condition_paths_passed") or []) if str(x or "").strip()]
+    entry_condition_scores = monitor.get("entry_condition_scores") if isinstance(monitor.get("entry_condition_scores"), dict) else {}
+    entry_grouped_logic_trace = monitor.get("entry_grouped_logic_trace") if isinstance(monitor.get("entry_grouped_logic_trace"), dict) else {}
     entry_metrics = monitor.get("entry_metrics") if isinstance(monitor.get("entry_metrics"), dict) else {}
     entry_thresholds = (
         monitor.get("entry_thresholds")
@@ -1650,6 +1658,10 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
             "entry_thresholds": entry_thresholds,
             "timing_assessment": timing_assessment,
             "policy_ref": policy_ref,
+            "entry_condition_path": entry_condition_path,
+            "entry_condition_paths_passed": entry_condition_paths_passed,
+            "condition_scores": entry_condition_scores,
+            "grouped_logic_trace": entry_grouped_logic_trace,
         }
     )
     if eod_carry_approved and action not in ("BUY", "SELL"):
@@ -1661,6 +1673,8 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         summary = f"BUY was triggered because {entry_reason or monitor_reason or 'the intraday entry condition passed'}."
         if entry_pattern:
             summary += f" Pattern: {entry_pattern}."
+        if entry_condition_path:
+            summary += f" Path: {entry_condition_path.replace('_', ' ')}."
     elif action == "SELL":
         if eod_carry_evaluated and not eod_carry_approved and str(trigger_type or "").strip().lower() in ("eod_flat", "carry_overnight_approved"):
             summary = (
@@ -1715,6 +1729,21 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         bullets.append(f"Entry pattern: {entry_pattern or 'not_captured'}")
         if entry_signal_chain:
             bullets.append("Entry signal chain: " + " -> ".join(entry_signal_chain[:6]))
+        if entry_condition_path:
+            bullets.append(f"Grouped entry path: {entry_condition_path}")
+        if entry_condition_paths_passed:
+            bullets.append("Grouped paths passed: " + ", ".join(entry_condition_paths_passed[:3]))
+        if entry_condition_scores:
+            bullets.append(
+                "Condition scores: "
+                + "; ".join(
+                    [
+                        f"{key}={safe_float(value, 0.0):.2f}"
+                        for key, value in list(entry_condition_scores.items())[:6]
+                        if value not in (None, "")
+                    ]
+                )
+            )
         if entry_guard_blocked or entry_guard_reason:
             bullets.append(
                 f"Entry guard blocked: {'yes' if entry_guard_blocked else 'no'} "
@@ -1826,6 +1855,10 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "entry_reason": entry_reason,
         "entry_pattern": entry_pattern,
         "entry_signal_chain": entry_signal_chain[:8],
+        "entry_condition_path": entry_condition_path,
+        "entry_condition_paths_passed": entry_condition_paths_passed[:4],
+        "entry_condition_scores": dict(entry_condition_scores),
+        "entry_grouped_logic_trace": dict(entry_grouped_logic_trace),
         "entry_metrics": dict(entry_metrics),
         "entry_thresholds": dict(entry_thresholds),
         "entry_check_summary": entry_check_summary,

@@ -5662,7 +5662,7 @@ def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[s
     cached = _read_json(path)
     if not isinstance(cached, dict):
         return {}
-    if int(cached.get("version") or 0) < 12:
+    if int(cached.get("version") or 0) < 13:
         return {}
     return cached
 
@@ -6505,7 +6505,7 @@ def _load_saved_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     payload = _read_json(json_path)
     if not isinstance(payload, dict):
         return {}
-    if int(payload.get("version") or 0) < 12:
+    if int(payload.get("version") or 0) < 13:
         return {}
     if not _saved_operator_brief_matches_detail(payload, detail):
         return {}
@@ -6547,7 +6547,7 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         "hold_reasons": [str(x or "") for x in list(monitor_section.get("hold_reasons") or []) if str(x or "").strip()][:6],
         "exit_triggers": [str(x or "") for x in list(monitor_section.get("exit_triggers") or []) if str(x or "").strip()][:6],
     }
-    payload["version"] = 12
+    payload["version"] = 13
     payload["saved_at"] = datetime.now(tz=KST).isoformat()
     payload["run_id"] = str(detail.get("run_id") or "")
     payload["trade_id"] = str(trade_report.get("trade_id") or "")
