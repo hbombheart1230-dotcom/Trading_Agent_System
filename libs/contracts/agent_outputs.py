@@ -414,6 +414,10 @@ def _build_scanner_candidate_selection_reason(
         "selection_summary": selection_summary,
         "why_selected": why_selected,
         "runner_ups_lost": list(runner_ups),
+        "entry_compatibility_score": _safe_float(selected.get("entry_compatibility_score"), 0.0),
+        "compatibility_bias": _safe_float(selected.get("compatibility_bias"), 0.0),
+        "expected_monitor_block_reason": _clip(selected.get("expected_monitor_block_reason"), max_len=120),
+        "compatibility_trace": _dict(selected.get("compatibility_trace")),
         "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
         "final_decision_basis": "Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties.",
     }
@@ -1125,6 +1129,45 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         or selection_summary,
         max_len=320,
     )
+    entry_compatibility_score = _safe_float(
+        scanner_output.get("entry_compatibility_score")
+        if scanner_output.get("entry_compatibility_score") not in (None, "")
+        else candidate_selection_reason.get("entry_compatibility_score"),
+        0.0,
+    )
+    compatibility_bias = _safe_float(
+        scanner_output.get("compatibility_bias")
+        if scanner_output.get("compatibility_bias") not in (None, "")
+        else candidate_selection_reason.get("compatibility_bias"),
+        0.0,
+    )
+    expected_monitor_block_reason = _clip(
+        scanner_output.get("expected_monitor_block_reason")
+        or candidate_selection_reason.get("expected_monitor_block_reason"),
+        max_len=120,
+    )
+    compatibility_trace = _dict(
+        scanner_output.get("compatibility_trace")
+        or candidate_selection_reason.get("compatibility_trace")
+    )
+    compatibility_components = _dict(
+        scanner_output.get("compatibility_components")
+        or candidate_selection_reason.get("compatibility_components")
+        or compatibility_trace.get("compatibility_components")
+    )
+    pre_adjust_score_total = _safe_float(
+        scanner_output.get("pre_adjust_score_total")
+        if scanner_output.get("pre_adjust_score_total") not in (None, "")
+        else candidate_selection_reason.get("pre_adjust_score_total"),
+        selected_score_total,
+    )
+    post_adjust_score_total = _safe_float(
+        scanner_output.get("post_adjust_score_total")
+        if scanner_output.get("post_adjust_score_total") not in (None, "")
+        else candidate_selection_reason.get("post_adjust_score_total"),
+        selected_score_total,
+    )
+    quote_data_diagnostic = _dict(scanner_output.get("quote_data_diagnostic") or state.get("scanner_quote_diagnostic"))
     runner_up_symbol = ""
     ranking_rows = [row for row in list(candidate_ranking_table.get("rows") or []) if isinstance(row, dict)]
     if len(ranking_rows) > 1:
@@ -1199,6 +1242,13 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "policy_source": policy_source,
             "applied_policy_present": applied_policy_present,
             "monitor_entry_policy_summary": monitor_entry_policy_summary,
+            "entry_compatibility_score": entry_compatibility_score,
+            "compatibility_bias": compatibility_bias,
+            "compatibility_components": compatibility_components,
+            "expected_monitor_block_reason": expected_monitor_block_reason,
+            "compatibility_trace": compatibility_trace,
+            "pre_adjust_score_total": pre_adjust_score_total,
+            "post_adjust_score_total": post_adjust_score_total,
             "scanner_bias_context": _dict(scanner_output.get("scanner_bias_context")),
             "scanner_bias_applied": scanner_bias_applied,
             "scanner_bias_summary": scanner_bias_summary,
@@ -1220,6 +1270,7 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "condition_search_status": _clip(scanner_output.get("condition_search_status"), max_len=80),
                 "condition_search_reason": _clip(scanner_output.get("condition_search_reason"), max_len=160),
             },
+            "quote_data_diagnostic": quote_data_diagnostic,
             "evidence_refs": {
                 "event_names": [
                     "scanner.candidate_pool_snapshot",

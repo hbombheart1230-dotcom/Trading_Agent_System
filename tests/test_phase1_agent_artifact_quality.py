@@ -258,6 +258,27 @@ def test_scanner_artifact_contains_filter_funnel_and_selection_reason_detail() -
                 }
             ],
             "selection_reason_with_bias": "value and theme alignment | bias: prefer_shallow_pullback_candidates, penalize_overextended (low)",
+            "entry_compatibility_score": 0.86,
+            "compatibility_bias": 0.018,
+            "compatibility_components": {
+                "vwap_proximity_score": 0.9,
+                "volume_readiness_score": 0.84,
+                "breakout_readiness_score": 0.72,
+                "reclaim_proximity": 0.9,
+            },
+            "expected_monitor_block_reason": "",
+            "compatibility_trace": {
+                "compatibility_source": "minute_eval",
+                "triggered_path": "pullback_volume_path",
+            },
+            "pre_adjust_score_total": 1.302,
+            "post_adjust_score_total": 1.32,
+            "quote_data_diagnostic": {
+                "live_equity_candidates": 2,
+                "quote_rows_with_activity": 0,
+                "feature_refresh_forced": True,
+                "feature_refresh_reason": "quote_metrics_missing_rebuild_feature_engine",
+            },
         },
         "scanner_candidate_pool": {
             "candidate_source": "kiwoom_market_data",
@@ -334,6 +355,21 @@ def test_scanner_artifact_contains_filter_funnel_and_selection_reason_detail() -
                 }
             ],
             "selection_reason_with_bias": "value and theme alignment | bias: prefer_shallow_pullback_candidates, penalize_overextended (low)",
+            "entry_compatibility_score": 0.86,
+            "compatibility_bias": 0.018,
+            "compatibility_components": {
+                "vwap_proximity_score": 0.9,
+                "volume_readiness_score": 0.84,
+                "breakout_readiness_score": 0.72,
+                "reclaim_proximity": 0.9,
+            },
+            "expected_monitor_block_reason": "",
+            "compatibility_trace": {
+                "compatibility_source": "minute_eval",
+                "triggered_path": "pullback_volume_path",
+            },
+            "pre_adjust_score_total": 1.302,
+            "post_adjust_score_total": 1.32,
         },
     }
     artifact = build_scanner_output_artifact(state)
@@ -363,6 +399,13 @@ def test_scanner_artifact_contains_filter_funnel_and_selection_reason_detail() -
     assert artifact["policy_source"] == "strategist"
     assert artifact["applied_policy_present"] is True
     assert artifact["monitor_entry_policy_summary"]["volume_ratio_min"] == 0.68
+    assert artifact["entry_compatibility_score"] == 0.86
+    assert artifact["compatibility_bias"] == 0.018
+    assert artifact["compatibility_components"]["vwap_proximity_score"] == 0.9
+    assert artifact["compatibility_trace"]["compatibility_source"] == "minute_eval"
+    assert artifact["pre_adjust_score_total"] == 1.302
+    assert artifact["post_adjust_score_total"] == 1.32
+    assert artifact["quote_data_diagnostic"]["feature_refresh_forced"] is True
     assert artifact["scanner_bias_applied"] is True
     assert artifact["scanner_bias_summary"]["enabled"] is True
     assert artifact["candidate_bias_adjustments"][0]["symbol"] == "005930"

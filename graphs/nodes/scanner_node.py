@@ -17,12 +17,14 @@ from graphs.nodes.skill_contracts import (
     CONTRACT_VERSION as SKILL_CONTRACT_VERSION,
     extract_account_orders_rows,
     extract_market_quotes,
+    extract_minute_ohlcv_by_symbol,
     norm_symbol,
 )
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 from libs.runtime.canonical_artifacts import write_scanner_artifact
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
+from libs.runtime.intraday_monitor_signals import evaluate_intraday_entry_signal, resolve_intraday_entry_policy
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 from libs.strategies.candidates.fallback_pool import is_static_fallback_pool
 from libs.runtime.feature_engine import build_feature_map
@@ -252,6 +254,14 @@ def _compact_selected_snapshot(selected: Dict[str, Any] | None) -> Dict[str, Any
             "quote_volume": features.get("quote_volume"),
             "intraday_change_pct": features.get("intraday_change_pct"),
             "skill_quote_price": features.get("skill_quote_price"),
+            "entry_compatibility_score": features.get("entry_compatibility_score"),
+            "compatibility_bias": features.get("compatibility_bias"),
+            "compatibility_source": features.get("compatibility_source"),
+            "compat_vwap_distance_abs": features.get("compat_vwap_distance_abs"),
+            "compat_is_below_vwap": features.get("compat_is_below_vwap"),
+            "compat_reclaim_proximity": features.get("compat_reclaim_proximity"),
+            "compat_volume_ratio": features.get("compat_volume_ratio"),
+            "compat_breakout_gap_pct": features.get("compat_breakout_gap_pct"),
             "engine_ma20_gap": features.get("engine_ma20_gap"),
             "engine_ma60": features.get("engine_ma60"),
             "engine_ma120": features.get("engine_ma120"),
@@ -314,6 +324,14 @@ def _compact_feature_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
         "quote_trading_value": features.get("quote_trading_value"),
         "quote_volume": features.get("quote_volume"),
         "intraday_change_pct": features.get("intraday_change_pct"),
+        "entry_compatibility_score": features.get("entry_compatibility_score"),
+        "compatibility_bias": features.get("compatibility_bias"),
+        "compatibility_source": features.get("compatibility_source"),
+        "compat_vwap_distance_abs": features.get("compat_vwap_distance_abs"),
+        "compat_is_below_vwap": features.get("compat_is_below_vwap"),
+        "compat_reclaim_proximity": features.get("compat_reclaim_proximity"),
+        "compat_volume_ratio": features.get("compat_volume_ratio"),
+        "compat_breakout_gap_pct": features.get("compat_breakout_gap_pct"),
         "engine_ma20_gap": features.get("engine_ma20_gap"),
         "engine_adx14": features.get("engine_adx14"),
         "engine_trend_strength": features.get("engine_trend_strength"),
@@ -352,6 +370,12 @@ def _ranking_table_rows(rows: List[Dict[str, Any]], *, max_rows: int = 5) -> Lis
                 "bias_adjustment": float(_to_float(row.get("bias_adjustment"))),
                 "bias_adjustments": list(row.get("bias_adjustments") or []),
                 "bias_summary": dict(row.get("bias_summary") or {}),
+                "entry_compatibility_score": float(_to_float(row.get("entry_compatibility_score"))),
+                "compatibility_bias": float(_to_float(row.get("compatibility_bias"))),
+                "compatibility_components": dict(row.get("compatibility_components") or {}),
+                "expected_monitor_block_reason": str(row.get("expected_monitor_block_reason") or ""),
+                "pre_adjust_score_total": float(_to_float(row.get("pre_adjust_score_total"))),
+                "post_adjust_score_total": float(_to_float(row.get("post_adjust_score_total") or row.get("score_total") or row.get("score"))),
                 "theme_match": _candidate_theme_match(row),
                 "feature_coverage": _feature_coverage_summary(row),
                 "status": "selected" if idx == 1 else "runner_up",
@@ -972,6 +996,11 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(strategy_policy.get("scanner_policy"), dict)
         else {}
     )
+    monitor_policy = (
+        dict(strategy_policy.get("monitor_policy") or {})
+        if isinstance(strategy_policy.get("monitor_policy"), dict)
+        else {}
+    )
     commander_context = (
         dict(strategy_policy.get("commander_context") or {})
         if isinstance(strategy_policy.get("commander_context"), dict)
@@ -1026,9 +1055,11 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_bias_context": dict(scanner_bias_context),
         "trade_aggressiveness": strategist_output.get("trade_aggressiveness"),
         "risk_tone": strategist_output.get("risk_tone"),
+        "monitor_guidance": strategist_output.get("monitor_guidance"),
         "score_weights": dict(scanner_policy.get("score_weights") or {}),
         "filters": dict(scanner_policy.get("filters") or {}),
         "ranking_rules": dict(scanner_policy.get("ranking_rules") or {}),
+        "monitor_policy": dict(monitor_policy),
         "commander_context": commander_context,
         "strategist_plan": strategist_plan,
         "policy_provenance": policy_provenance,
@@ -1048,9 +1079,11 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_bias_context",
             "trade_aggressiveness",
             "risk_tone",
+            "monitor_guidance",
             "score_weights",
             "filters",
             "ranking_rules",
+            "monitor_policy",
             "commander_context",
             "strategist_plan",
             "policy_provenance",
@@ -1391,6 +1424,253 @@ def _compute_structured_scanner_bias(
         "bias_summary": dict(summary),
         "bias_signals": signals,
         "symbol": str(symbol or ""),
+    }
+
+
+def _summarize_quote_metric_coverage(
+    candidates: List[Any],
+    *,
+    skill_quotes: Dict[str, Dict[str, Any]],
+    state: Dict[str, Any],
+) -> Dict[str, Any]:
+    live_equity_candidates = 0
+    quote_rows_present = 0
+    quote_rows_with_price = 0
+    quote_rows_with_activity = 0
+    zero_quote_metric_symbols: List[str] = []
+
+    for item in list(candidates or []):
+        symbol = _norm_symbol(item.get("symbol") if isinstance(item, dict) else item)
+        if not _is_live_equity_symbol(symbol):
+            continue
+        live_equity_candidates += 1
+        quote = skill_quotes.get(symbol) if isinstance(skill_quotes.get(symbol), dict) else {}
+        if quote:
+            quote_rows_present += 1
+            if _to_float(quote.get("price") or quote.get("cur")) > 0.0:
+                quote_rows_with_price += 1
+        metrics = _candidate_quote_metrics(symbol, skill_quotes=skill_quotes, state=state)
+        if (
+            _to_float(metrics.get("volume")) > 0.0
+            or _to_float(metrics.get("trading_value")) > 0.0
+            or abs(_to_float(metrics.get("change_pct"))) > 1e-9
+        ):
+            quote_rows_with_activity += 1
+        else:
+            zero_quote_metric_symbols.append(symbol)
+
+    return {
+        "live_equity_candidates": int(live_equity_candidates),
+        "quote_rows_present": int(quote_rows_present),
+        "quote_rows_with_price": int(quote_rows_with_price),
+        "quote_rows_with_activity": int(quote_rows_with_activity),
+        "zero_quote_metric_symbols": list(zero_quote_metric_symbols)[:10],
+    }
+
+
+def _should_refresh_scanner_features(
+    *,
+    state: Dict[str, Any],
+    candidates: List[Any],
+    quote_metric_coverage: Dict[str, Any],
+) -> Tuple[bool, str]:
+    live_equity_candidates = _to_int(quote_metric_coverage.get("live_equity_candidates"), 0)
+    if live_equity_candidates <= 0:
+        return False, ""
+    if _to_int(quote_metric_coverage.get("quote_rows_with_activity"), 0) > 0:
+        return False, ""
+
+    fe_root = state.get("feature_engine") if isinstance(state.get("feature_engine"), dict) else {}
+    fe_by_symbol = fe_root.get("by_symbol") if isinstance(fe_root.get("by_symbol"), dict) else {}
+    if not isinstance(fe_by_symbol, dict) or not fe_by_symbol:
+        return False, ""
+
+    stale_symbols: List[str] = []
+    for item in list(candidates or []):
+        symbol = _norm_symbol(item.get("symbol") if isinstance(item, dict) else item)
+        if not _is_live_equity_symbol(symbol):
+            continue
+        value = fe_by_symbol.get(symbol)
+        if isinstance(value, dict) and value:
+            stale_symbols.append(symbol)
+    if not stale_symbols:
+        return False, ""
+    return True, "quote_metrics_missing_rebuild_feature_engine"
+
+
+def _build_scanner_monitor_policy_input(
+    *,
+    state: Dict[str, Any],
+    commander_context: Dict[str, Any],
+    monitor_policy: Dict[str, Any],
+) -> Dict[str, Any]:
+    if isinstance(commander_context.get("applied_policy"), dict):
+        return dict(commander_context.get("applied_policy") or {})
+    if isinstance(state.get("commander_applied_policy"), dict):
+        return dict(state.get("commander_applied_policy") or {})
+    if isinstance(monitor_policy.get("entry_policy"), dict):
+        return dict(monitor_policy.get("entry_policy") or {})
+    if isinstance(state.get("monitor_entry_policy"), dict):
+        return dict(state.get("monitor_entry_policy") or {})
+    return {}
+
+
+def _build_scanner_monitor_frame(
+    *,
+    playbook: str,
+    monitor_guidance: str,
+    risk_tone: str,
+    trade_aggressiveness: str,
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    if str(playbook or "").strip():
+        out["playbook"] = str(playbook).strip().lower()
+    if str(monitor_guidance or "").strip():
+        out["monitor_guidance"] = str(monitor_guidance).strip().lower()
+    if str(risk_tone or "").strip():
+        out["risk_tone"] = str(risk_tone).strip().lower()
+    if str(trade_aggressiveness or "").strip():
+        out["trade_aggressiveness"] = str(trade_aggressiveness).strip().lower()
+    return out
+
+
+def _calc_reclaim_proximity(*, actual: float | None, minimum: float | None) -> float:
+    if actual is None:
+        return 0.5
+    actual_num = float(actual)
+    minimum_num = float(minimum if minimum is not None else -0.02)
+    if actual_num >= minimum_num:
+        return 1.0
+    band = max(0.05, abs(minimum_num) * 3.0)
+    return _clamp(1.0 - abs(actual_num - minimum_num) / band, 0.0, 1.0)
+
+
+def _calc_breakout_proximity(*, actual: float | None, minimum: float | None) -> float:
+    if actual is None:
+        return 0.5
+    actual_num = float(actual)
+    minimum_num = float(minimum if minimum is not None else 0.0)
+    if actual_num >= minimum_num:
+        return 1.0
+    band = 0.02
+    return _clamp(1.0 - abs(actual_num - minimum_num) / band, 0.0, 1.0)
+
+
+def _compute_entry_compatibility_signal(
+    *,
+    symbol: str,
+    feature_row: Dict[str, Any],
+    metrics: Dict[str, Any],
+    candidate_rows: List[Dict[str, Any]],
+    current_price: Any,
+    policy: Any,
+) -> Dict[str, Any]:
+    if policy in (None, {}, ""):
+        return {
+            "entry_compatibility_score": 0.5,
+            "compatibility_bias": 0.0,
+            "compatibility_components": {
+                "vwap_proximity_score": 0.5,
+                "volume_readiness_score": 0.5,
+                "breakout_readiness_score": 0.5,
+                "reclaim_proximity": 0.5,
+            },
+            "expected_monitor_block_reason": "",
+            "compatibility_source": "disabled",
+            "triggered_path": "",
+            "paths_passed": [],
+            "vwap_distance_abs": None,
+            "is_below_vwap": False,
+            "reclaim_proximity": 0.5,
+            "volume_ratio": None,
+            "breakout_gap_pct": None,
+        }
+    result = evaluate_intraday_entry_signal(
+        candidate_rows,
+        current_price=current_price,
+        features=feature_row,
+        policy=policy,
+        frame=None,
+    )
+    thresholds = dict(result.get("threshold_margins") or {})
+    condition_scores = dict(result.get("condition_scores") or {})
+    metrics_map = dict(result.get("metrics") or {})
+
+    vwap_distance = metrics_map.get("extended_from_vwap_pct")
+    if vwap_distance in (None, ""):
+        vwap_distance = metrics_map.get("vwap_distance")
+    volume_ratio = metrics_map.get("volume_ratio")
+    breakout_gap_threshold = thresholds.get("breakout_gap_pct") if isinstance(thresholds.get("breakout_gap_pct"), dict) else {}
+    extended_threshold = thresholds.get("extended_from_vwap_pct") if isinstance(thresholds.get("extended_from_vwap_pct"), dict) else {}
+    volume_threshold = thresholds.get("volume_ratio") if isinstance(thresholds.get("volume_ratio"), dict) else {}
+    breakout_gap_pct = breakout_gap_threshold.get("actual")
+    min_extended = extended_threshold.get("min")
+    volume_min = volume_threshold.get("min")
+    below_vwap = bool(vwap_distance is not None and _to_float(vwap_distance) < 0.0)
+
+    source = "minute_eval"
+    if not bool(result.get("evaluated")):
+        source = "feature_heuristic"
+        vwap_distance = feature_row.get("vwap_distance")
+        volume_ratio = feature_row.get("volume_ratio")
+        if volume_ratio in (None, ""):
+            volume_ratio = feature_row.get("volume_spike20")
+        breakout_gap_pct = None
+        min_extended = policy.get("min_extended_from_vwap_pct") if hasattr(policy, "get") else None
+        volume_min = policy.get("volume_ratio_min") if hasattr(policy, "get") else None
+        below_vwap = bool(vwap_distance is not None and _to_float(vwap_distance) < 0.0)
+
+    vwap_distance_num = float(_to_float(vwap_distance)) if vwap_distance not in (None, "") else None
+    vwap_distance_abs = abs(vwap_distance_num) if vwap_distance_num is not None else None
+    reclaim_proximity = _calc_reclaim_proximity(
+        actual=vwap_distance_num,
+        minimum=float(min_extended) if min_extended not in (None, "") else None,
+    )
+    vwap_proximity_score = (
+        _clamp(1.0 - abs(min(0.0, float(vwap_distance_num))) / 0.10, 0.0, 1.0)
+        if vwap_distance_num is not None
+        else 0.5
+    )
+    volume_readiness_score = 0.5
+    if volume_ratio not in (None, ""):
+        volume_floor = max(_to_float(volume_min), 1e-6)
+        volume_readiness_score = _clamp(_to_float(volume_ratio) / volume_floor, 0.0, 1.0)
+    breakout_readiness_score = 0.5
+    if breakout_gap_pct not in (None, ""):
+        breakout_readiness_score = _clamp(1.0 - abs(min(0.0, _to_float(breakout_gap_pct))) / 0.03, 0.0, 1.0)
+
+    entry_compatibility_score = _clamp(
+        (0.45 * vwap_proximity_score)
+        + (0.35 * volume_readiness_score)
+        + (0.20 * breakout_readiness_score),
+        0.0,
+        1.0,
+    )
+    compatibility_bias = 0.08 * (entry_compatibility_score - 0.5)
+    expected_monitor_block_reason = ""
+    if not bool(result.get("triggered")):
+        expected_monitor_block_reason = str(result.get("reason") or "").strip()
+    elif below_vwap:
+        expected_monitor_block_reason = "below_vwap_reclaim_not_ready"
+
+    return {
+        "entry_compatibility_score": float(entry_compatibility_score),
+        "compatibility_bias": float(compatibility_bias),
+        "compatibility_components": {
+            "vwap_proximity_score": float(vwap_proximity_score),
+            "volume_readiness_score": float(volume_readiness_score),
+            "breakout_readiness_score": float(breakout_readiness_score),
+            "reclaim_proximity": float(reclaim_proximity),
+        },
+        "expected_monitor_block_reason": expected_monitor_block_reason,
+        "compatibility_source": source,
+        "triggered_path": str(result.get("entry_condition_path") or ""),
+        "paths_passed": list(result.get("entry_condition_paths_passed") or []),
+        "vwap_distance_abs": float(vwap_distance_abs) if vwap_distance_abs is not None else None,
+        "is_below_vwap": bool(below_vwap),
+        "reclaim_proximity": float(reclaim_proximity),
+        "volume_ratio": float(_to_float(volume_ratio)) if volume_ratio not in (None, "") else None,
+        "breakout_gap_pct": float(_to_float(breakout_gap_pct)) if breakout_gap_pct not in (None, "") else None,
     }
 
 
@@ -1764,6 +2044,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     scanner_priority = _normalize_priority_list(scanner_guidance.get("scanner_priority"))
     trade_aggressiveness = str(scanner_guidance.get("trade_aggressiveness") or "").strip().lower()
     risk_tone = str(scanner_guidance.get("risk_tone") or "").strip().lower()
+    monitor_guidance = str(scanner_guidance.get("monitor_guidance") or "").strip().lower()
+    strategy_monitor_policy = (
+        dict(scanner_guidance.get("monitor_policy") or {})
+        if isinstance(scanner_guidance.get("monitor_policy"), dict)
+        else {}
+    )
     commander_context = (
         dict(scanner_guidance.get("commander_context") or {})
         if isinstance(scanner_guidance.get("commander_context"), dict)
@@ -1803,14 +2089,46 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state = _maybe_hydrate_scanner_skill_results(state, list(candidates))
     skill_quotes, quote_meta = _extract_skill_quotes(state)
     skill_order_counts, skill_order_rows, order_meta = _extract_account_open_order_counts(state)
+    quote_metric_coverage = _summarize_quote_metric_coverage(list(candidates), skill_quotes=skill_quotes, state=state)
+    refresh_existing_features, feature_refresh_reason = _should_refresh_scanner_features(
+        state=state,
+        candidates=list(candidates),
+        quote_metric_coverage=quote_metric_coverage,
+    )
     feature_map, feature_source, feature_errors = hydrate_scanner_feature_map(
         state=state,
         candidates=list(candidates),
         skill_quotes=skill_quotes,
         policy=policy,
+        refresh_existing=refresh_existing_features,
     )
     if not feature_map:
         feature_map, feature_source, feature_errors = _extract_feature_engine_map(state)
+    minute_rows_by_symbol, minute_rows_meta = extract_minute_ohlcv_by_symbol(state)
+    ohlcv_by_symbol = state.get("ohlcv_by_symbol") if isinstance(state.get("ohlcv_by_symbol"), dict) else {}
+    compatibility_policy_input = _build_scanner_monitor_policy_input(
+        state=state,
+        commander_context=commander_context,
+        monitor_policy=strategy_monitor_policy,
+    )
+    compatibility_frame = _build_scanner_monitor_frame(
+        playbook=playbook,
+        monitor_guidance=monitor_guidance,
+        risk_tone=risk_tone,
+        trade_aggressiveness=trade_aggressiveness,
+    )
+    compatibility_policy = (
+        resolve_intraday_entry_policy(compatibility_policy_input or None, frame=compatibility_frame or None)
+        if compatibility_policy_input
+        else None
+    )
+    state["scanner_quote_diagnostic"] = {
+        **dict(quote_metric_coverage),
+        "feature_refresh_forced": bool(refresh_existing_features),
+        "feature_refresh_reason": str(feature_refresh_reason or ""),
+        "feature_source": str(feature_source or ""),
+        "minute_rows_source": str(minute_rows_meta.get("source") or "") if isinstance(minute_rows_meta, dict) else "",
+    }
     gs = _get_global_sentiment_score(state)
     gs_signal = _get_global_sentiment_signal(state)
     news_by_sym = _get_news_sentiment_map(state)
@@ -1854,6 +2172,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "feature_source": str(feature_source),
                 "feature_symbol_count": int(len(feature_map)),
                 "feature_errors": list(feature_errors),
+                "quote_metric_coverage": dict(quote_metric_coverage),
+                "feature_refresh_forced": bool(refresh_existing_features),
+                "feature_refresh_reason": str(feature_refresh_reason or ""),
             },
             decision_link={"stage": "scanner_candidate_retrieval"},
         )
@@ -2027,7 +2348,24 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             bias_context=scanner_bias_context,
         )
         scanner_bias_adjustment = float(bias_result.get("bias_adjustment") or 0.0)
-        score_total = (
+        candidate_rows = []
+        raw_minute_rows = minute_rows_by_symbol.get(_norm_symbol(symbol)) if isinstance(minute_rows_by_symbol, dict) else None
+        if isinstance(raw_minute_rows, list) and raw_minute_rows:
+            candidate_rows = list(raw_minute_rows)
+        else:
+            raw_ohlcv_rows = ohlcv_by_symbol.get(_norm_symbol(symbol)) if isinstance(ohlcv_by_symbol.get(_norm_symbol(symbol)), list) else []
+            if raw_ohlcv_rows:
+                candidate_rows = list(raw_ohlcv_rows)
+        compatibility_result = _compute_entry_compatibility_signal(
+            symbol=symbol,
+            feature_row=feature_row,
+            metrics=metrics,
+            candidate_rows=candidate_rows,
+            current_price=quote_price_num or feature_row.get("close_last"),
+            policy=compatibility_policy,
+        )
+        compatibility_bias = float(compatibility_result.get("compatibility_bias") or 0.0)
+        pre_adjust_score_total = (
             base_score
             + positive_score
             + legacy_adjust
@@ -2036,6 +2374,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             - repeat_symbol_penalty
             + scanner_bias_adjustment
         )
+        score_total = pre_adjust_score_total + compatibility_bias
 
         neg_news = max(-news_s, 0.0)
         neg_global = max(-gs, 0.0)
@@ -2078,6 +2417,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "avoid_theme_penalty": float(-0.20 * avoid_theme_penalty * practical_scale),
             "repeat_symbol_penalty": float(-repeat_symbol_penalty),
             "scanner_bias": float(scanner_bias_adjustment),
+            "entry_compatibility_bias": float(compatibility_bias),
             "risk_penalty": float(-risk_penalty_score),
             "rank_bonus": float(rank_bonus),
         }
@@ -2088,6 +2428,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["bias_adjustment"] = float(scanner_bias_adjustment)
         row["bias_adjustments"] = list(bias_result.get("bias_adjustments") or [])
         row["bias_summary"] = dict(bias_result.get("bias_summary") or {})
+        row["entry_compatibility_score"] = float(compatibility_result.get("entry_compatibility_score") or 0.0)
+        row["compatibility_bias"] = float(compatibility_bias)
+        row["compatibility_components"] = dict(compatibility_result.get("compatibility_components") or {})
+        row["expected_monitor_block_reason"] = str(compatibility_result.get("expected_monitor_block_reason") or "")
+        row["compatibility_trace"] = dict(compatibility_result)
+        row["pre_adjust_score_total"] = float(pre_adjust_score_total)
+        row["post_adjust_score_total"] = float(score_total)
         row["risk_score"] = float(_clamp(adj_risk, 0.0, 1.0))
         row["confidence"] = float(adj_conf)
         row["why"] = str(candidate_meta.get("why") or row.get("why") or "")
@@ -2124,6 +2471,15 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "intraday_change_pct": _to_float(metrics.get("change_pct")),
                     "quote_trading_value": _to_float(metrics.get("trading_value")),
                     "quote_volume": _to_float(metrics.get("volume")),
+                    "entry_compatibility_score": compatibility_result.get("entry_compatibility_score"),
+                    "compatibility_bias": compatibility_result.get("compatibility_bias"),
+                    "compatibility_components": dict(compatibility_result.get("compatibility_components") or {}),
+                    "compatibility_source": compatibility_result.get("compatibility_source"),
+                    "compat_vwap_distance_abs": compatibility_result.get("vwap_distance_abs"),
+                    "compat_is_below_vwap": compatibility_result.get("is_below_vwap"),
+                    "compat_reclaim_proximity": compatibility_result.get("reclaim_proximity"),
+                    "compat_volume_ratio": compatibility_result.get("volume_ratio"),
+                    "compat_breakout_gap_pct": compatibility_result.get("breakout_gap_pct"),
                 }
             )
         row.setdefault("components", {})
@@ -2166,6 +2522,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "avoid_theme_penalty_component": avoid_theme_penalty,
                     "repeat_symbol_penalty_component": repeat_symbol_penalty,
                     "scanner_bias_adjustment": float(scanner_bias_adjustment),
+                    "entry_compatibility_score": compatibility_result.get("entry_compatibility_score"),
+                    "entry_compatibility_bias": compatibility_result.get("compatibility_bias"),
+                    "compatibility_components": dict(compatibility_result.get("compatibility_components") or {}),
+                    "expected_monitor_block_reason": compatibility_result.get("expected_monitor_block_reason"),
+                    "compatibility_source": compatibility_result.get("compatibility_source"),
+                    "pre_adjust_score_total": float(pre_adjust_score_total),
+                    "post_adjust_score_total": float(score_total),
                     "scanner_bias_signals": dict(bias_result.get("bias_signals") or {}),
                     "recent_selection_repeat_count": int(repeat_penalty_meta.get("repeat_count") or 0),
                     "recent_selection_streak_count": int(repeat_penalty_meta.get("streak_count") or 0),
@@ -2207,6 +2570,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "bias_adjustment": float(_to_float(r.get("bias_adjustment"))),
             "bias_adjustments": list(r.get("bias_adjustments") or []),
             "bias_summary": dict(r.get("bias_summary") or {}),
+            "entry_compatibility_score": float(_to_float(r.get("entry_compatibility_score"))),
+            "compatibility_bias": float(_to_float(r.get("compatibility_bias"))),
+            "compatibility_components": dict(r.get("compatibility_components") or {}),
+            "expected_monitor_block_reason": str(r.get("expected_monitor_block_reason") or ""),
+            "compatibility_trace": dict(r.get("compatibility_trace") or {}),
+            "pre_adjust_score_total": float(_to_float(r.get("pre_adjust_score_total"))),
+            "post_adjust_score_total": float(_to_float(r.get("post_adjust_score_total") or r.get("score_total") or r.get("score"))),
         }
         for r in scan_results_sorted
         if isinstance(r, dict)
@@ -2280,6 +2650,14 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_source": str(scanner_policy_trace.get("policy_source") or ""),
         "applied_policy_present": bool(scanner_policy_trace.get("applied_policy_present")),
         "monitor_entry_policy_summary": dict(scanner_policy_trace.get("monitor_entry_policy_summary") or {}),
+        "entry_compatibility_score": float(_to_float((selected or {}).get("entry_compatibility_score"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_bias": float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_components": dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {},
+        "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
+        "compatibility_trace": dict((selected or {}).get("compatibility_trace") or {}) if isinstance(selected, dict) else {},
+        "pre_adjust_score_total": float(_to_float((selected or {}).get("pre_adjust_score_total"))) if isinstance(selected, dict) else 0.0,
+        "post_adjust_score_total": float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0,
+        "quote_data_diagnostic": dict(state.get("scanner_quote_diagnostic") or {}),
         "scanner_bias_applied": False,
         "scanner_bias_summary": dict(scanner_policy_trace.get("scanner_bias_summary") or {}),
         "candidate_bias_adjustments": [],
@@ -2315,6 +2693,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "used": bool(feature_map),
         "source": feature_source,
         "symbol_count": len(feature_map),
+        "refresh_existing": bool(refresh_existing_features),
+        "refresh_reason": str(feature_refresh_reason or ""),
         "fallback": bool(feature_errors),
         "fallback_reasons": list(feature_errors),
         "error_count": len(feature_errors),
@@ -2350,6 +2730,18 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         bias_text = str(scanner_bias_summary.get("summary") or "scanner_bias").strip() or "scanner_bias"
         selection_reason_with_bias = (
             f"{selection_summary} | bias: {bias_text}" if selection_summary else f"bias applied: {bias_text}"
+        )
+    selected_compatibility_bias = float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0
+    selected_expected_block = str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else ""
+    if abs(selected_compatibility_bias) > 1e-9:
+        compatibility_text = (
+            f"compatibility_bias={selected_compatibility_bias:+.3f}"
+            + (f", monitor_risk={selected_expected_block}" if selected_expected_block else "")
+        )
+        selection_reason_with_bias = (
+            f"{selection_reason_with_bias} | {compatibility_text}"
+            if selection_reason_with_bias
+            else compatibility_text
         )
     runner_up_reasons: List[Dict[str, Any]] = []
     if len(scan_results_sorted) > 1 and isinstance(selected, dict):
@@ -2397,6 +2789,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_source": str(scanner_policy_trace.get("policy_source") or ""),
         "applied_policy_present": bool(scanner_policy_trace.get("applied_policy_present")),
         "monitor_entry_policy_summary": dict(scanner_policy_trace.get("monitor_entry_policy_summary") or {}),
+        "entry_compatibility_score": float(_to_float((selected or {}).get("entry_compatibility_score"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_bias": float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_components": dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {},
+        "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
+        "compatibility_trace": dict((selected or {}).get("compatibility_trace") or {}) if isinstance(selected, dict) else {},
+        "pre_adjust_score_total": float(_to_float((selected or {}).get("pre_adjust_score_total"))) if isinstance(selected, dict) else 0.0,
+        "post_adjust_score_total": float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0,
         "scanner_bias_applied": bool(scanner_bias_applied),
         "scanner_bias_summary": dict(scanner_bias_summary),
         "candidate_bias_adjustments": list(candidate_bias_adjustments),
@@ -2417,6 +2816,14 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["scanner_output"]["scanner_bias_summary"] = dict(scanner_bias_summary)
         state["scanner_output"]["candidate_bias_adjustments"] = list(candidate_bias_adjustments)
         state["scanner_output"]["selection_reason_with_bias"] = selection_reason_with_bias
+        state["scanner_output"]["entry_compatibility_score"] = float(_to_float((selected or {}).get("entry_compatibility_score"))) if isinstance(selected, dict) else 0.0
+        state["scanner_output"]["compatibility_bias"] = float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0
+        state["scanner_output"]["compatibility_components"] = dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {}
+        state["scanner_output"]["expected_monitor_block_reason"] = str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else ""
+        state["scanner_output"]["compatibility_trace"] = dict((selected or {}).get("compatibility_trace") or {}) if isinstance(selected, dict) else {}
+        state["scanner_output"]["pre_adjust_score_total"] = float(_to_float((selected or {}).get("pre_adjust_score_total"))) if isinstance(selected, dict) else 0.0
+        state["scanner_output"]["post_adjust_score_total"] = float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0
+        state["scanner_output"]["quote_data_diagnostic"] = dict(state.get("scanner_quote_diagnostic") or {})
     state["scanner_margin_vs_second"] = float(margin_vs_second)
     _emit_scanner_event(
         state,
@@ -2467,6 +2874,13 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "applied_policy_present": bool(scanner_policy_trace.get("applied_policy_present")),
         "monitor_entry_policy_summary": dict(scanner_policy_trace.get("monitor_entry_policy_summary") or {}),
         "scanner_bias_context": dict(scanner_policy_trace.get("scanner_bias_context") or {}),
+        "entry_compatibility_score": float(_to_float((selected or {}).get("entry_compatibility_score"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_bias": float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_components": dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {},
+        "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
+        "compatibility_trace": dict((selected or {}).get("compatibility_trace") or {}) if isinstance(selected, dict) else {},
+        "pre_adjust_score_total": float(_to_float((selected or {}).get("pre_adjust_score_total"))) if isinstance(selected, dict) else 0.0,
+        "post_adjust_score_total": float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0,
         "scanner_bias_applied": bool(scanner_bias_applied),
         "scanner_bias_summary": dict(scanner_policy_trace.get("scanner_bias_summary") or {}),
         "candidate_bias_adjustments": list(candidate_bias_adjustments),
