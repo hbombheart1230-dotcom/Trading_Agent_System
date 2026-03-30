@@ -3574,6 +3574,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             "deterministic_report_status": str(diagnostics.get("deterministic_report_status") or "skipped"),
             "llm_brief_status": str(diagnostics.get("llm_brief_status") or "skipped"),
             "ai_trade_report_status": str(diagnostics.get("ai_trade_report_status") or "skipped"),
+            "llm_trade_report_status": str(diagnostics.get("ai_trade_report_status") or "skipped"),
+            "report_generation_status": str(diagnostics.get("report_status") or "skipped"),
+            "operator_brief_status": (
+                str(diagnostics.get("llm_brief_status") or "skipped")
+                if operator_brief_json_path.exists()
+                else "missing"
+            ),
             "report_generation_reason": str(diagnostics.get("report_generation_reason") or diagnostics.get("report_reason_human") or ""),
             "missing_sections": phase3_missing_sections
             + [str(x or "") for x in list(evidence_completeness.get("missing_sections") or []) if str(x or "").strip()],
@@ -3754,17 +3761,40 @@ def main(argv: Optional[List[str]] = None) -> int:
             "exit_json": exit_artifact_path.exists(),
             "ai_trade_report_input_json": story_input_path.exists(),
             "ai_trade_report_compact_input_json": story_compact_input_path.exists(),
-            "ai_trade_report_json": bool(trade_report_json_written),
-            "ai_trade_report_md": bool(trade_report_md_written),
+            "ai_trade_report_json": trade_report_json_path.exists(),
+            "ai_trade_report_md": trade_report_md_path.exists(),
             "strategist_evidence_json": strategist_evidence_path.exists(),
             "scanner_evidence_json": scanner_evidence_path.exists(),
             "monitor_evidence_json": monitor_evidence_path.exists(),
             "commander_evidence_json": commander_evidence_path.exists(),
             "strategist_llm_response_json": strategist_llm_response_path.exists(),
-            "ai_trade_report_llm_response_json": bool(ai_trade_report_llm_response_written),
+            "ai_trade_report_llm_response_json": ai_trade_report_llm_response_path.exists(),
             "brief_llm_response_json": trade_paths["brief_llm_response_json"].exists(),
+            "operator_brief_json": operator_brief_json_path.exists(),
+            "operator_brief_md": operator_brief_md_path.exists(),
         }
         trade_health_payload["artifact_presence"] = artifact_presence
+        trade_health_payload["llm_trade_report_status"] = str(
+            diagnostics.get("ai_trade_report_status")
+            or trade_health_payload.get("ai_trade_report_status")
+            or "skipped"
+        )
+        trade_health_payload["report_generation_status"] = (
+            "available"
+            if artifact_presence["ai_trade_report_json"] or artifact_presence["ai_trade_report_md"]
+            else str(diagnostics.get("report_status") or "skipped")
+        )
+        trade_health_payload["operator_brief_status"] = (
+            str(diagnostics.get("llm_brief_status") or "skipped")
+            if artifact_presence["operator_brief_json"]
+            else "missing"
+        )
+        trade_health_payload["llm_brief_status"] = str(
+            trade_health_payload.get("operator_brief_status") or diagnostics.get("llm_brief_status") or "skipped"
+        )
+        trade_health_payload["ai_trade_report_status"] = str(
+            trade_health_payload.get("llm_trade_report_status") or diagnostics.get("ai_trade_report_status") or "skipped"
+        )
         write_json(trade_health_path, trade_health_payload)
         write_json(trade_artifact_links_path, trade_artifact_links_payload)
 

@@ -10,6 +10,7 @@ from libs.reporting.reasoning_trace import (
     normalize_reasoning_provenance_aliases,
     normalize_reasoning_trace_aliases,
 )
+from libs.reporting.trade_report_ai import resolve_shared_trade_facts
 from libs.core.symbols import normalize_symbol
 
 
@@ -472,10 +473,16 @@ def build_lifecycle_bundle(
             if isinstance(row, dict)
         ]
     completeness = compute_evidence_completeness(story_input)
+    shared_facts = resolve_shared_trade_facts(story_input)
     exit_reason = (
         str(summary_obj.get("exit_reason_human") or "")
         or str((exit_obj.get("monitor_context") or {}).get("exit_reason") or "")
         or str(exit_obj.get("reason_human") or "")
+    )
+    entry_reason = (
+        str(summary_obj.get("entry_reason_human") or "")
+        or str(entry_obj.get("reason_human") or "")
+        or str((story_input.get("entry_reason_human") or {}).get("summary") or "")
     )
     monitor_snapshot = dict(story_input.get("monitor_reason_human") or {})
     derived_reasoning_trace = build_reasoning_trace_from_summaries(
@@ -540,12 +547,32 @@ def build_lifecycle_bundle(
         story_input,
         fallback=derived_reasoning_provenance,
     )
+    top_level_entry = dict(entry_obj)
+    if not top_level_entry:
+        top_level_entry = {"available": False}
+    top_level_entry.setdefault("available", bool(entry_obj))
+    if entry_reason:
+        top_level_entry.setdefault("summary", str(entry_reason))
+    if symbol:
+        top_level_entry.setdefault("symbol", str(symbol))
+
+    top_level_exit = dict(exit_obj)
+    if not top_level_exit:
+        top_level_exit = {"available": False}
+    top_level_exit.setdefault("available", bool(exit_obj))
+    if exit_reason:
+        top_level_exit.setdefault("summary", str(exit_reason))
+    if symbol:
+        top_level_exit.setdefault("symbol", str(symbol))
     return {
         "schema_version": "lifecycle_bundle.v1",
         "day": str(day or ""),
         "trade_id": str(trade_id or ""),
         "symbol": str(symbol or ""),
         "run_id": str(run_id or ""),
+        "entry": top_level_entry,
+        "exit": top_level_exit,
+        "shared_facts": dict(shared_facts or {}),
         "lifecycle": {
             "entry": entry_obj,
             "hold": hold_events,

@@ -267,6 +267,12 @@ def test_scanner_artifact_contains_filter_funnel_and_selection_reason_detail() -
                 "reclaim_proximity": 0.9,
             },
             "expected_monitor_block_reason": "",
+            "dominant_block_reason": "volume_confirmation_missing",
+            "dominant_block_reason_ratio": 0.55,
+            "bias_scale": 0.15,
+            "soft_penalty": 0.05,
+            "compatibility_score_pre_penalty": 0.91,
+            "compatibility_score_post_penalty": 0.86,
             "compatibility_trace": {
                 "compatibility_source": "minute_eval",
                 "triggered_path": "pullback_volume_path",
@@ -402,6 +408,12 @@ def test_scanner_artifact_contains_filter_funnel_and_selection_reason_detail() -
     assert artifact["entry_compatibility_score"] == 0.86
     assert artifact["compatibility_bias"] == 0.018
     assert artifact["compatibility_components"]["vwap_proximity_score"] == 0.9
+    assert artifact["dominant_block_reason"] == "volume_confirmation_missing"
+    assert artifact["dominant_block_reason_ratio"] == 0.55
+    assert artifact["bias_scale"] == 0.15
+    assert artifact["soft_penalty"] == 0.05
+    assert artifact["compatibility_score_pre_penalty"] == 0.91
+    assert artifact["compatibility_score_post_penalty"] == 0.86
     assert artifact["compatibility_trace"]["compatibility_source"] == "minute_eval"
     assert artifact["pre_adjust_score_total"] == 1.302
     assert artifact["post_adjust_score_total"] == 1.32

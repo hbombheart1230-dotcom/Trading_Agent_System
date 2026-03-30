@@ -1146,6 +1146,41 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         or candidate_selection_reason.get("expected_monitor_block_reason"),
         max_len=120,
     )
+    dominant_block_reason = _clip(
+        scanner_output.get("dominant_block_reason")
+        or candidate_selection_reason.get("dominant_block_reason"),
+        max_len=120,
+    )
+    dominant_block_reason_ratio = _safe_float(
+        scanner_output.get("dominant_block_reason_ratio")
+        if scanner_output.get("dominant_block_reason_ratio") not in (None, "")
+        else candidate_selection_reason.get("dominant_block_reason_ratio"),
+        0.0,
+    )
+    bias_scale = _safe_float(
+        scanner_output.get("bias_scale")
+        if scanner_output.get("bias_scale") not in (None, "")
+        else candidate_selection_reason.get("bias_scale"),
+        0.0,
+    )
+    soft_penalty = _safe_float(
+        scanner_output.get("soft_penalty")
+        if scanner_output.get("soft_penalty") not in (None, "")
+        else candidate_selection_reason.get("soft_penalty"),
+        0.0,
+    )
+    compatibility_score_pre_penalty = _safe_float(
+        scanner_output.get("compatibility_score_pre_penalty")
+        if scanner_output.get("compatibility_score_pre_penalty") not in (None, "")
+        else candidate_selection_reason.get("compatibility_score_pre_penalty"),
+        entry_compatibility_score,
+    )
+    compatibility_score_post_penalty = _safe_float(
+        scanner_output.get("compatibility_score_post_penalty")
+        if scanner_output.get("compatibility_score_post_penalty") not in (None, "")
+        else candidate_selection_reason.get("compatibility_score_post_penalty"),
+        entry_compatibility_score,
+    )
     compatibility_trace = _dict(
         scanner_output.get("compatibility_trace")
         or candidate_selection_reason.get("compatibility_trace")
@@ -1246,6 +1281,12 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "compatibility_bias": compatibility_bias,
             "compatibility_components": compatibility_components,
             "expected_monitor_block_reason": expected_monitor_block_reason,
+            "dominant_block_reason": dominant_block_reason,
+            "dominant_block_reason_ratio": dominant_block_reason_ratio,
+            "bias_scale": bias_scale,
+            "soft_penalty": soft_penalty,
+            "compatibility_score_pre_penalty": compatibility_score_pre_penalty,
+            "compatibility_score_post_penalty": compatibility_score_post_penalty,
             "compatibility_trace": compatibility_trace,
             "pre_adjust_score_total": pre_adjust_score_total,
             "post_adjust_score_total": post_adjust_score_total,

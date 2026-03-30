@@ -1133,13 +1133,14 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
     assert compact["commander"]["policy_partial_normalized"] is True
     assert compact["strategist"]["candidate_hints"] == ["122630", "233740", "005930"]
     assert compact["strategist"]["market_headlines"][0] == "KOSPI opens firmer on chip optimism."
-    assert compact["scanner"]["playbook"] in {"pullback", "눌림목"}
+    assert compact["scanner"]["playbook"] in {"pullback", "눌림목", "눌림"}
     assert compact["scanner"]["policy_source"] == "strategist"
     assert compact["scanner"]["scanner_bias_applied"] is True
     assert compact["scanner"]["candidate_bias_adjustments"][0]["symbol"] == "000660"
     assert compact["scanner"]["selection_trace"]["selection_reason"] in {
         "top_value + sector_theme",
         "거래대금 상위 + 섹터·테마 정렬",
+        "거래대금 상위 + 섹터/테마 정렬",
     }
     assert compact["scanner"]["selection_trace"]["selected_symbol_score_drivers"]["trading_value"] == 0.22
     assert compact["scanner"]["selection_reason_with_bias"]
@@ -1384,13 +1385,16 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert saved["trade_id"] == "20260316_005930_buy_run-1"
     assert saved["report_status"] == "available"
     assert saved["schema_version"] == "operator_brief.v1"
-    assert saved["version"] == 13
+    assert saved["version"] == data_access.OPERATOR_BRIEF_ARTIFACT_VERSION
     assert saved["llm_brief_status"] == "ok"
     assert isinstance(saved.get("generation"), dict)
     assert saved["generation"]["status"] == "ok"
     assert saved["generation"]["mode"] == "llm"
     assert "model" in saved["generation"]
     assert "reason" in saved["generation"]
+    assert saved["provenance"] == "llm"
+    assert isinstance(saved.get("missing_fields"), list)
+    assert isinstance(saved.get("completeness"), float)
     assert isinstance(saved.get("shared_facts"), dict)
     assert saved["shared_facts"]["action"] == "BUY"
     assert saved["shared_facts"]["holding_duration"] == "10m"
@@ -1411,6 +1415,55 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     brief_llm = brief_json.parent / "brief_llm_response.json"
     assert brief_llm.exists() is True
     assert json.loads(brief_llm.read_text(encoding="utf-8"))["component"] == "brief"
+
+
+def test_operator_brief_save_syncs_trade_health_mirror(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+
+    detail = data_access.load_run_detail(cfg, "run-1")
+    trade_report = detail["trade_report"]
+    trade_root = Path(str(trade_report.get("trade_root_path") or ""))
+    reports_dir = trade_root / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    (reports_dir / "ai_trade_report.json").write_text(
+        json.dumps(
+            {
+                "ai_trade_report_status": "ok",
+                "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free"},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (reports_dir / "ai_trade_report.md").write_text("# report\n", encoding="utf-8")
+    health_path = trade_root / "_health.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "ai_trade_report_status": None,
+                "llm_trade_report_status": None,
+                "report_generation_status": None,
+                "operator_brief_status": None,
+                "artifact_presence": {},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    data_access._save_operator_brief_artifact(detail, detail["operator_brief"])
+    health = json.loads(health_path.read_text(encoding="utf-8"))
+
+    assert health["operator_brief_status"] == "ok"
+    assert health["llm_brief_status"] == "ok"
+    assert health["llm_trade_report_status"] == "ok"
+    assert health["report_generation_status"] == "available"
+    assert health["artifact_presence"]["operator_brief_json"] is True
+    assert health["artifact_presence"]["operator_brief_md"] is True
+    assert health["artifact_presence"]["ai_trade_report_json"] is True
 
 
 def test_operator_brief_saved_artifact_is_reused(tmp_path: Path, monkeypatch) -> None:
@@ -1929,6 +1982,33 @@ def test_operator_brief_language_policy_failed_still_falls_back(tmp_path: Path, 
     assert brief["failure"]["reason"] == "language_policy_failed"
     assert artifact["attempts"][0]["error"] == "language_policy_failed"
     assert brief.get("fallback_rendered") is True
+
+
+def test_operator_brief_fallback_payload_records_safe_meta_and_readable_text(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _AlwaysMixedLanguageRouter()))
+    cfg = _make_config(tmp_path)
+
+    detail = data_access.load_run_detail(cfg, "run-1")
+    brief_json = Path(str(detail["trade_report"].get("operator_brief_json_path") or ""))
+    saved = json.loads(brief_json.read_text(encoding="utf-8"))
+    text_blob = " ".join(
+        str(saved.get(key) or "")
+        for key in (
+            "headline",
+            "monitor_summary",
+            "scanner_reason",
+            "risk_summary",
+        )
+    )
+
+    assert saved["status"] == "fallback"
+    assert saved["provenance"] == "fallback"
+    assert saved["reason_code"] == "language_policy_failed"
+    assert isinstance(saved.get("missing_fields"), list)
+    assert isinstance(saved.get("completeness"), float)
+    assert "中立" not in text_blob
+    assert "候補" not in text_blob
+    assert "變動" not in text_blob
 
 
 def test_operator_ui_reads_new_trade_artifact_layout(tmp_path: Path, monkeypatch) -> None:

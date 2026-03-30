@@ -10,6 +10,8 @@ Role boundary:
 
 import os
 import time
+from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -374,6 +376,12 @@ def _ranking_table_rows(rows: List[Dict[str, Any]], *, max_rows: int = 5) -> Lis
                 "compatibility_bias": float(_to_float(row.get("compatibility_bias"))),
                 "compatibility_components": dict(row.get("compatibility_components") or {}),
                 "expected_monitor_block_reason": str(row.get("expected_monitor_block_reason") or ""),
+                "dominant_block_reason": str(row.get("dominant_block_reason") or ""),
+                "dominant_block_reason_ratio": float(_to_float(row.get("dominant_block_reason_ratio"))),
+                "bias_scale": float(_to_float(row.get("bias_scale"))),
+                "soft_penalty": float(_to_float(row.get("soft_penalty"))),
+                "compatibility_score_pre_penalty": float(_to_float(row.get("compatibility_score_pre_penalty"))),
+                "compatibility_score_post_penalty": float(_to_float(row.get("compatibility_score_post_penalty"))),
                 "pre_adjust_score_total": float(_to_float(row.get("pre_adjust_score_total"))),
                 "post_adjust_score_total": float(_to_float(row.get("post_adjust_score_total") or row.get("score_total") or row.get("score"))),
                 "theme_match": _candidate_theme_match(row),
@@ -1564,11 +1572,18 @@ def _compute_entry_compatibility_signal(
     candidate_rows: List[Dict[str, Any]],
     current_price: Any,
     policy: Any,
+    bias_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if policy in (None, {}, ""):
         return {
             "entry_compatibility_score": 0.5,
             "compatibility_bias": 0.0,
+            "dominant_block_reason": "mixed",
+            "dominant_block_reason_ratio": 0.0,
+            "bias_scale": 0.10,
+            "soft_penalty": 0.0,
+            "compatibility_score_pre_penalty": 0.5,
+            "compatibility_score_post_penalty": 0.5,
             "compatibility_components": {
                 "vwap_proximity_score": 0.5,
                 "volume_readiness_score": 0.5,
@@ -1646,7 +1661,22 @@ def _compute_entry_compatibility_signal(
         0.0,
         1.0,
     )
-    compatibility_bias = 0.08 * (entry_compatibility_score - 0.5)
+    compatibility_score_pre_penalty = float(entry_compatibility_score)
+    soft_penalty = 0.0
+    volume_ratio_num = _to_float(volume_ratio) if volume_ratio not in (None, "") else None
+    volume_min_num = max(_to_float(volume_min), 1e-6) if volume_min not in (None, "") else None
+    if volume_ratio_num is not None:
+        if volume_ratio_num <= 0.0:
+            soft_penalty += 0.08
+        if volume_min_num is not None and volume_ratio_num < (0.33 * volume_min_num):
+            soft_penalty += 0.05
+    if vwap_distance_num is not None and vwap_distance_num < -0.07:
+        soft_penalty += 0.03
+    compatibility_score_post_penalty = max(0.0, compatibility_score_pre_penalty - soft_penalty)
+    dominant_block_reason = str((bias_context or {}).get("dominant_block_reason") or "mixed")
+    dominant_block_reason_ratio = float(_to_float((bias_context or {}).get("dominant_block_reason_ratio")))
+    bias_scale = float(_to_float((bias_context or {}).get("bias_scale") or 0.10))
+    compatibility_bias = bias_scale * (compatibility_score_post_penalty - 0.5)
     expected_monitor_block_reason = ""
     if not bool(result.get("triggered")):
         expected_monitor_block_reason = str(result.get("reason") or "").strip()
@@ -1654,8 +1684,14 @@ def _compute_entry_compatibility_signal(
         expected_monitor_block_reason = "below_vwap_reclaim_not_ready"
 
     return {
-        "entry_compatibility_score": float(entry_compatibility_score),
+        "entry_compatibility_score": float(compatibility_score_post_penalty),
         "compatibility_bias": float(compatibility_bias),
+        "dominant_block_reason": dominant_block_reason,
+        "dominant_block_reason_ratio": float(dominant_block_reason_ratio),
+        "bias_scale": float(bias_scale),
+        "soft_penalty": float(soft_penalty),
+        "compatibility_score_pre_penalty": float(compatibility_score_pre_penalty),
+        "compatibility_score_post_penalty": float(compatibility_score_post_penalty),
         "compatibility_components": {
             "vwap_proximity_score": float(vwap_proximity_score),
             "volume_readiness_score": float(volume_readiness_score),
@@ -1671,6 +1707,68 @@ def _compute_entry_compatibility_signal(
         "reclaim_proximity": float(reclaim_proximity),
         "volume_ratio": float(_to_float(volume_ratio)) if volume_ratio not in (None, "") else None,
         "breakout_gap_pct": float(_to_float(breakout_gap_pct)) if breakout_gap_pct not in (None, "") else None,
+    }
+
+
+def _resolve_canonical_day(state: Dict[str, Any]) -> str:
+    for key in ("day", "trade_day", "session_day"):
+        value = str(state.get(key) or "").strip()
+        if value:
+            return value
+    now_epoch = _resolve_now_epoch(state)
+    return datetime.fromtimestamp(now_epoch).strftime("%Y-%m-%d")
+
+
+def _resolve_compatibility_bias_context(state: Dict[str, Any], *, limit: int = 20) -> Dict[str, Any]:
+    root = Path.cwd() / "reports" / "canonical" / _resolve_canonical_day(state)
+    if not root.exists():
+        return {
+            "dominant_block_reason": "mixed",
+            "dominant_block_reason_ratio": 0.0,
+            "bias_scale": 0.10,
+            "sample_size": 0,
+        }
+
+    monitor_paths = sorted(
+        [p / "monitor.json" for p in root.iterdir() if p.is_dir() and (p / "monitor.json").exists()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )[: max(1, int(limit))]
+    reasons: List[str] = []
+    for path in monitor_paths:
+        try:
+            import json
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        reason = str(payload.get("primary_reason_code") or "").strip()
+        if reason:
+            reasons.append(reason)
+
+    if not reasons:
+        return {
+            "dominant_block_reason": "mixed",
+            "dominant_block_reason_ratio": 0.0,
+            "bias_scale": 0.10,
+            "sample_size": 0,
+        }
+
+    counter = Counter(reasons)
+    top_reason, top_count = counter.most_common(1)[0]
+    top_ratio = float(top_count) / float(len(reasons))
+    dominant_block_reason = top_reason if top_ratio >= 0.40 else "mixed"
+    if dominant_block_reason in {"volume_confirmation_missing", "volume_insufficient"}:
+        bias_scale = 0.15
+    elif dominant_block_reason in {"below_vwap_reclaim_not_ready", "pullback_below_vwap_reclaim_not_ready"}:
+        bias_scale = 0.12
+    else:
+        bias_scale = 0.10
+    return {
+        "dominant_block_reason": str(dominant_block_reason),
+        "dominant_block_reason_ratio": float(top_ratio if dominant_block_reason != "mixed" else 0.0),
+        "bias_scale": float(bias_scale),
+        "sample_size": int(len(reasons)),
     }
 
 
@@ -2106,6 +2204,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         feature_map, feature_source, feature_errors = _extract_feature_engine_map(state)
     minute_rows_by_symbol, minute_rows_meta = extract_minute_ohlcv_by_symbol(state)
     ohlcv_by_symbol = state.get("ohlcv_by_symbol") if isinstance(state.get("ohlcv_by_symbol"), dict) else {}
+    compatibility_bias_context = _resolve_compatibility_bias_context(state)
     compatibility_policy_input = _build_scanner_monitor_policy_input(
         state=state,
         commander_context=commander_context,
@@ -2363,6 +2462,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             candidate_rows=candidate_rows,
             current_price=quote_price_num or feature_row.get("close_last"),
             policy=compatibility_policy,
+            bias_context=compatibility_bias_context,
         )
         compatibility_bias = float(compatibility_result.get("compatibility_bias") or 0.0)
         pre_adjust_score_total = (
@@ -2432,6 +2532,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["compatibility_bias"] = float(compatibility_bias)
         row["compatibility_components"] = dict(compatibility_result.get("compatibility_components") or {})
         row["expected_monitor_block_reason"] = str(compatibility_result.get("expected_monitor_block_reason") or "")
+        row["dominant_block_reason"] = str(compatibility_result.get("dominant_block_reason") or "")
+        row["dominant_block_reason_ratio"] = float(_to_float(compatibility_result.get("dominant_block_reason_ratio")))
+        row["bias_scale"] = float(_to_float(compatibility_result.get("bias_scale")))
+        row["soft_penalty"] = float(_to_float(compatibility_result.get("soft_penalty")))
+        row["compatibility_score_pre_penalty"] = float(_to_float(compatibility_result.get("compatibility_score_pre_penalty")))
+        row["compatibility_score_post_penalty"] = float(_to_float(compatibility_result.get("compatibility_score_post_penalty")))
         row["compatibility_trace"] = dict(compatibility_result)
         row["pre_adjust_score_total"] = float(pre_adjust_score_total)
         row["post_adjust_score_total"] = float(score_total)
@@ -2526,6 +2632,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "entry_compatibility_bias": compatibility_result.get("compatibility_bias"),
                     "compatibility_components": dict(compatibility_result.get("compatibility_components") or {}),
                     "expected_monitor_block_reason": compatibility_result.get("expected_monitor_block_reason"),
+                    "dominant_block_reason": compatibility_result.get("dominant_block_reason"),
+                    "dominant_block_reason_ratio": compatibility_result.get("dominant_block_reason_ratio"),
+                    "bias_scale": compatibility_result.get("bias_scale"),
+                    "soft_penalty": compatibility_result.get("soft_penalty"),
+                    "compatibility_score_pre_penalty": compatibility_result.get("compatibility_score_pre_penalty"),
+                    "compatibility_score_post_penalty": compatibility_result.get("compatibility_score_post_penalty"),
                     "compatibility_source": compatibility_result.get("compatibility_source"),
                     "pre_adjust_score_total": float(pre_adjust_score_total),
                     "post_adjust_score_total": float(score_total),
@@ -2574,6 +2686,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "compatibility_bias": float(_to_float(r.get("compatibility_bias"))),
             "compatibility_components": dict(r.get("compatibility_components") or {}),
             "expected_monitor_block_reason": str(r.get("expected_monitor_block_reason") or ""),
+            "dominant_block_reason": str(r.get("dominant_block_reason") or ""),
+            "dominant_block_reason_ratio": float(_to_float(r.get("dominant_block_reason_ratio"))),
+            "bias_scale": float(_to_float(r.get("bias_scale"))),
+            "soft_penalty": float(_to_float(r.get("soft_penalty"))),
+            "compatibility_score_pre_penalty": float(_to_float(r.get("compatibility_score_pre_penalty"))),
+            "compatibility_score_post_penalty": float(_to_float(r.get("compatibility_score_post_penalty"))),
             "compatibility_trace": dict(r.get("compatibility_trace") or {}),
             "pre_adjust_score_total": float(_to_float(r.get("pre_adjust_score_total"))),
             "post_adjust_score_total": float(_to_float(r.get("post_adjust_score_total") or r.get("score_total") or r.get("score"))),
@@ -2654,6 +2772,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "compatibility_bias": float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0,
         "compatibility_components": dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {},
         "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
+        "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
+        "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),
+        "bias_scale": float(_to_float((selected or {}).get("bias_scale") or compatibility_bias_context.get("bias_scale"))),
+        "soft_penalty": float(_to_float((selected or {}).get("soft_penalty"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_score_pre_penalty": float(_to_float((selected or {}).get("compatibility_score_pre_penalty"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_score_post_penalty": float(_to_float((selected or {}).get("compatibility_score_post_penalty"))) if isinstance(selected, dict) else 0.0,
         "compatibility_trace": dict((selected or {}).get("compatibility_trace") or {}) if isinstance(selected, dict) else {},
         "pre_adjust_score_total": float(_to_float((selected or {}).get("pre_adjust_score_total"))) if isinstance(selected, dict) else 0.0,
         "post_adjust_score_total": float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0,
@@ -2793,6 +2917,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "compatibility_bias": float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0,
         "compatibility_components": dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {},
         "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
+        "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
+        "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),
+        "bias_scale": float(_to_float((selected or {}).get("bias_scale") or compatibility_bias_context.get("bias_scale"))),
+        "soft_penalty": float(_to_float((selected or {}).get("soft_penalty"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_score_pre_penalty": float(_to_float((selected or {}).get("compatibility_score_pre_penalty"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_score_post_penalty": float(_to_float((selected or {}).get("compatibility_score_post_penalty"))) if isinstance(selected, dict) else 0.0,
         "compatibility_trace": dict((selected or {}).get("compatibility_trace") or {}) if isinstance(selected, dict) else {},
         "pre_adjust_score_total": float(_to_float((selected or {}).get("pre_adjust_score_total"))) if isinstance(selected, dict) else 0.0,
         "post_adjust_score_total": float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0,
@@ -2820,6 +2950,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["scanner_output"]["compatibility_bias"] = float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0
         state["scanner_output"]["compatibility_components"] = dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {}
         state["scanner_output"]["expected_monitor_block_reason"] = str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else ""
+        state["scanner_output"]["dominant_block_reason"] = str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "")
+        state["scanner_output"]["dominant_block_reason_ratio"] = float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio")))
+        state["scanner_output"]["bias_scale"] = float(_to_float((selected or {}).get("bias_scale") or compatibility_bias_context.get("bias_scale")))
+        state["scanner_output"]["soft_penalty"] = float(_to_float((selected or {}).get("soft_penalty")))
+        state["scanner_output"]["compatibility_score_pre_penalty"] = float(_to_float((selected or {}).get("compatibility_score_pre_penalty")))
+        state["scanner_output"]["compatibility_score_post_penalty"] = float(_to_float((selected or {}).get("compatibility_score_post_penalty")))
         state["scanner_output"]["compatibility_trace"] = dict((selected or {}).get("compatibility_trace") or {}) if isinstance(selected, dict) else {}
         state["scanner_output"]["pre_adjust_score_total"] = float(_to_float((selected or {}).get("pre_adjust_score_total"))) if isinstance(selected, dict) else 0.0
         state["scanner_output"]["post_adjust_score_total"] = float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0
@@ -2878,6 +3014,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "compatibility_bias": float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0,
         "compatibility_components": dict((selected or {}).get("compatibility_components") or {}) if isinstance(selected, dict) else {},
         "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
+        "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
+        "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),
+        "bias_scale": float(_to_float((selected or {}).get("bias_scale") or compatibility_bias_context.get("bias_scale"))),
+        "soft_penalty": float(_to_float((selected or {}).get("soft_penalty"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_score_pre_penalty": float(_to_float((selected or {}).get("compatibility_score_pre_penalty"))) if isinstance(selected, dict) else 0.0,
+        "compatibility_score_post_penalty": float(_to_float((selected or {}).get("compatibility_score_post_penalty"))) if isinstance(selected, dict) else 0.0,
         "compatibility_trace": dict((selected or {}).get("compatibility_trace") or {}) if isinstance(selected, dict) else {},
         "pre_adjust_score_total": float(_to_float((selected or {}).get("pre_adjust_score_total"))) if isinstance(selected, dict) else 0.0,
         "post_adjust_score_total": float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import graphs.nodes.scanner_node as scanner_mod
 from graphs.nodes.scanner_node import scanner_node
 
@@ -126,7 +128,7 @@ def test_scanner_entry_compatibility_bias_can_flip_near_tie(monkeypatch) -> None
         if symbol == "005930":
             return {
                 "entry_compatibility_score": 0.95,
-                "compatibility_bias": 0.024,
+                "compatibility_bias": 0.054,
                 "compatibility_components": {
                     "vwap_proximity_score": 0.96,
                     "volume_readiness_score": 1.0,
@@ -145,7 +147,7 @@ def test_scanner_entry_compatibility_bias_can_flip_near_tie(monkeypatch) -> None
             }
         return {
             "entry_compatibility_score": 0.10,
-            "compatibility_bias": -0.024,
+            "compatibility_bias": -0.048,
             "compatibility_components": {
                 "vwap_proximity_score": 0.17,
                 "volume_readiness_score": 0.34,
@@ -201,7 +203,7 @@ def test_scanner_compatibility_bias_shrinks_032820_margin_vs_396500(monkeypatch)
         if symbol == "032820":
             return {
                 "entry_compatibility_score": 0.22,
-                "compatibility_bias": -0.0224,
+                "compatibility_bias": -0.0336,
                 "compatibility_components": {
                     "vwap_proximity_score": 0.18,
                     "volume_readiness_score": 0.31,
@@ -220,7 +222,7 @@ def test_scanner_compatibility_bias_shrinks_032820_margin_vs_396500(monkeypatch)
             }
         return {
             "entry_compatibility_score": 0.60,
-            "compatibility_bias": 0.008,
+            "compatibility_bias": 0.012,
             "compatibility_components": {
                 "vwap_proximity_score": 0.72,
                 "volume_readiness_score": 0.58,
@@ -273,7 +275,13 @@ def test_scanner_output_records_entry_compatibility_trace(monkeypatch) -> None:
         "_compute_entry_compatibility_signal",
         lambda **kwargs: {
             "entry_compatibility_score": 0.88,
-            "compatibility_bias": 0.018,
+            "compatibility_bias": 0.0456,
+            "dominant_block_reason": "volume_confirmation_missing",
+            "dominant_block_reason_ratio": 0.55,
+            "bias_scale": 0.15,
+            "soft_penalty": 0.02,
+            "compatibility_score_pre_penalty": 0.90,
+            "compatibility_score_post_penalty": 0.88,
             "compatibility_components": {
                 "vwap_proximity_score": 0.90,
                 "volume_readiness_score": 0.84,
@@ -310,11 +318,113 @@ def test_scanner_output_records_entry_compatibility_trace(monkeypatch) -> None:
     selection_reason = out.get("scanner_candidate_selection_reason") or {}
 
     assert scanner_output.get("entry_compatibility_score") == 0.88
-    assert scanner_output.get("compatibility_bias") == 0.018
+    assert scanner_output.get("compatibility_bias") == 0.0456
     assert scanner_output.get("compatibility_components", {}).get("vwap_proximity_score") == 0.90
     assert scanner_output.get("expected_monitor_block_reason") == ""
+    assert scanner_output.get("dominant_block_reason") == "volume_confirmation_missing"
+    assert scanner_output.get("dominant_block_reason_ratio") == 0.55
+    assert scanner_output.get("bias_scale") == 0.15
+    assert scanner_output.get("soft_penalty") == 0.02
+    assert scanner_output.get("compatibility_score_pre_penalty") == 0.90
+    assert scanner_output.get("compatibility_score_post_penalty") == 0.88
     assert scanner_output.get("compatibility_trace", {}).get("triggered_path") == "pullback_volume_path"
     assert scanner_output.get("pre_adjust_score_total") == 0.55
-    assert scanner_output.get("post_adjust_score_total") == 0.5680000000000001
+    assert scanner_output.get("post_adjust_score_total") == 0.5956
     assert selection_reason.get("entry_compatibility_score") == 0.88
     assert selection_reason.get("compatibility_trace", {}).get("paths_passed") == ["pullback_volume_path"]
+
+
+def test_resolve_compatibility_bias_context_uses_volume_dominant_scale(tmp_path, monkeypatch) -> None:
+    day = "2026-03-30"
+    base = tmp_path / "reports" / "canonical" / day
+    reasons = [
+        "volume_confirmation_missing",
+        "volume_confirmation_missing",
+        "volume_confirmation_missing",
+        "volume_confirmation_missing",
+        "volume_confirmation_missing",
+        "volume_insufficient",
+        "below_vwap_reclaim_not_ready",
+        "entry_wait",
+        "entry_wait",
+        "too_extended_from_vwap",
+    ]
+    for idx, reason in enumerate(reasons, start=1):
+        run_dir = base / f"run-{idx:02d}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "monitor.json").write_text(
+            json.dumps({"primary_reason_code": reason}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(scanner_mod.Path, "cwd", lambda: tmp_path)
+
+    out = scanner_mod._resolve_compatibility_bias_context({"day": day}, limit=20)
+
+    assert out["dominant_block_reason"] == "volume_confirmation_missing"
+    assert abs(float(out["dominant_block_reason_ratio"]) - 0.5) < 1e-12
+    assert abs(float(out["bias_scale"]) - 0.15) < 1e-12
+
+
+def test_soft_penalty_penalizes_volume_missing_more_than_reclaimish_case(monkeypatch) -> None:
+    def _fake_eval(candidate_rows, **kwargs):
+        case = (candidate_rows or [{}])[0].get("case")
+        if case == "volume_missing":
+            return {
+                "evaluated": True,
+                "triggered": False,
+                "reason": "volume_confirmation_missing",
+                "threshold_margins": {
+                    "extended_from_vwap_pct": {"actual": -0.08, "min": -0.02},
+                    "volume_ratio": {"actual": 0.0, "min": 0.68},
+                    "breakout_gap_pct": {"actual": 0.0, "min": 0.0},
+                },
+                "condition_scores": {},
+                "metrics": {
+                    "extended_from_vwap_pct": -0.08,
+                    "volume_ratio": 0.0,
+                    "breakout_gap_pct": 0.0,
+                },
+            }
+        return {
+            "evaluated": True,
+            "triggered": False,
+            "reason": "below_vwap_reclaim_not_ready",
+            "threshold_margins": {
+                "extended_from_vwap_pct": {"actual": -0.05, "min": -0.02},
+                "volume_ratio": {"actual": 0.62, "min": 0.68},
+                "breakout_gap_pct": {"actual": 0.0, "min": 0.0},
+            },
+            "condition_scores": {},
+            "metrics": {
+                "extended_from_vwap_pct": -0.05,
+                "volume_ratio": 0.62,
+                "breakout_gap_pct": 0.0,
+            },
+        }
+
+    monkeypatch.setattr(scanner_mod, "evaluate_intraday_entry_signal", _fake_eval)
+    bias_context = {"dominant_block_reason": "mixed", "dominant_block_reason_ratio": 0.0, "bias_scale": 0.10}
+
+    volume_missing = scanner_mod._compute_entry_compatibility_signal(
+        symbol="AAA",
+        feature_row={},
+        metrics={},
+        candidate_rows=[{"case": "volume_missing"}],
+        current_price=100,
+        policy={"volume_ratio_min": 0.68, "min_extended_from_vwap_pct": -0.02},
+        bias_context=bias_context,
+    )
+    reclaimish = scanner_mod._compute_entry_compatibility_signal(
+        symbol="BBB",
+        feature_row={},
+        metrics={},
+        candidate_rows=[{"case": "reclaimish"}],
+        current_price=100,
+        policy={"volume_ratio_min": 0.68, "min_extended_from_vwap_pct": -0.02},
+        bias_context=bias_context,
+    )
+
+    assert float(volume_missing["soft_penalty"]) > float(reclaimish["soft_penalty"])
+    assert float(volume_missing["compatibility_score_post_penalty"]) < float(reclaimish["compatibility_score_post_penalty"])
+    assert float(volume_missing["compatibility_bias"]) < float(reclaimish["compatibility_bias"])

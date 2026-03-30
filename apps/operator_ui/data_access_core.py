@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 import re
 import time
+import unicodedata
 
 from apps.operator_ui.data_access_reports import load_trade_report_payloads
 from apps.operator_ui.data_access_runs import load_run_canonical_sources, prefer_canonical_agent_payload
@@ -1689,6 +1690,8 @@ OPERATOR_BRIEF_OPTIONAL_KEYS = [
     "risk_summary",
     "next_checkpoints",
 ]
+
+OPERATOR_BRIEF_ARTIFACT_VERSION = 14
 
 
 def _operator_brief_parse_meta(raw: Any, parsed: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -3747,6 +3750,21 @@ def _normalize_operator_brief_payload(
     normalized_generation["reason"] = generation_reason
     out["generation"] = normalized_generation
     out["llm_brief_status"] = llm_brief_status
+    failure = out.get("failure") if isinstance(out.get("failure"), dict) else {}
+    missing_fields = [str(x or "") for x in list(out.get("required_keys_missing") or []) if str(x or "").strip()]
+    completeness_score = float(out.get("completeness_score") or 0.0)
+    out["reason_code"] = str(
+        out.get("reason_code")
+        or out.get("reason")
+        or failure.get("status")
+        or ""
+    ).strip()
+    out["provenance"] = str(
+        out.get("provenance")
+        or ("llm" if llm_brief_status in {"ok", "repaired", "salvaged"} else "fallback")
+    ).strip()
+    out["completeness"] = completeness_score
+    out["missing_fields"] = missing_fields
     return out
 
 
@@ -4754,21 +4772,21 @@ def _sanitize_operator_brief_text(text: Any) -> str:
     cleaned = _trim_text(text, max_len=1000)
     if not cleaned:
         return ""
+    cleaned = unicodedata.normalize("NFKC", cleaned).replace("\ufeff", "").replace("\x00", " ")
     if _contains_internal_brief_marker(cleaned):
         return ""
-    cleaned = re.sub(r"[぀-ヿ一-鿿]", "", cleaned)
+    cleaned = re.sub(r"[\u0000-\u001f\u007f]", " ", cleaned)
     replacements = [
         ("minute-candle", "분봉"),
         ("minute candle", "분봉"),
-        ("defensive_exit", "방어형 청산"),
+        ("defensive_exit", "방어적 청산"),
         ("no_position", "포지션 없음"),
         ("No trigger yet", "아직 청산 신호가 확인되지 않았습니다."),
-        ("Peak drawdown", "고점 대비 하락폭"),
+        ("Peak drawdown", "고점 대비 하락"),
         ("Hard stop", "고정 손절 기준"),
         ("Adaptive stop", "상황 대응형 손절 기준"),
         ("Take profit", "목표 수익 실현 기준"),
         ("Regime", "시장 상태"),
-        ("regime", "시장 상태"),
         ("Universe scanned", "비교 후보 수"),
         ("Selected rank", "선정 순위"),
         ("Posture", "현재 포지션 판단"),
@@ -4776,46 +4794,48 @@ def _sanitize_operator_brief_text(text: Any) -> str:
         ("Exit trigger", "청산 신호"),
     ]
     for src, dst in replacements:
-        cleaned = cleaned.replace(src, dst)
+        cleaned = re.sub(re.escape(src), dst, cleaned, flags=re.IGNORECASE)
     normalized_replacements = (
         (r"\bnot[_ ]captured\b", "기록되지 않음"),
         (r"\bnot[_ ]available\b", "확인되지 않음"),
         (r"\bunavailable\b", "확인되지 않음"),
-        (r"\bunknown\b", "판단 정보 없음"),
+        (r"\bunknown\b", "확인되지 않음"),
         (r"\bno position\b", "포지션 없음"),
         (r"\bstill open\b", "아직 보유 중"),
         (r"\bstop[- ]loss trigger\b", "손절 트리거"),
         (r"\btake[- ]profit trigger\b", "목표 수익 실현 트리거"),
-        (r"\brisk gate failure\b", "리스크 가드 실패"),
+        (r"\brisk gate failure\b", "리스크 게이트 실패"),
         (r"\babnormal volatility expansion\b", "변동성 급확대"),
         (r"\bsentiment\b", "시장 심리"),
         (r"\bplaybook\b", "플레이북"),
-        (r"\baligned with\b", "정렬 기준은"),
+        (r"\baligned with\b", "정렬 기준"),
         (r"\btop_value\b", "거래대금 상위"),
         (r"\btop_volume\b", "거래량 상위"),
-        (r"\bsector_theme\b", "섹터·테마 정렬"),
+        (r"\bsector_theme\b", "섹터/테마 정렬"),
         (r"\belevated_vix\b", "VIX 경계"),
         (r"\byield_rise\b", "금리 상승"),
-        (r"\bpullback\b", "눌림목"),
+        (r"\bpullback\b", "눌림"),
         (r"\bturnover\b", "회전율"),
         (r"\bvolume\b", "거래량"),
         (r"\bdrawdown\b", "하락폭"),
         (r"\btake_profit\b", "목표 수익 실현 기준"),
         (r"\bhard_stop\b", "고정 손절 기준"),
         (r"\bor\b", "또는"),
-        (r"\bpullback_structure_above_vwap_with_confirmation\b", "VWAP 상단 풀백 재확인"),
+        (r"\bpullback_structure_above_vwap_with_confirmation\b", "VWAP 상단 눌림 확인"),
         (r"\bpullback_vwap_hold\b", "VWAP 상단 눌림 유지"),
-        (r"\bbreakout_vwap_hold\b", "VWAP 상회 돌파"),
+        (r"\bbreakout_vwap_hold\b", "VWAP 상향 돌파 유지"),
         (r"\bintraday_low_break\b", "장중 저점 이탈"),
         (r"\btrailing stop\b", "추적 손절 기준"),
     )
-    for pattern, replacement in normalized_replacements:
-        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+    for regex_pattern, replacement_text in normalized_replacements:
+        cleaned = re.sub(regex_pattern, replacement_text, cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\bBUY\b", "매수", cleaned)
     cleaned = re.sub(r"\bSELL\b", "매도", cleaned)
     cleaned = re.sub(r"\bHOLD\b", "보유 유지", cleaned)
     cleaned = re.sub(r"\bWAIT\b", "진입 보류", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if _contains_forbidden_brief_script(cleaned):
+        return ""
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:|")
     return cleaned
 
 
@@ -4829,16 +4849,16 @@ def _operator_brief_label_ko(value: Any) -> str:
         "bullish": "강세",
         "bearish": "약세",
         "mixed": "혼조",
-        "pullback": "눌림목",
+        "pullback": "눌림",
         "breakout": "돌파",
         "reversion": "되돌림",
-        "leader": "주도주 중심",
+        "leader": "주도주 집중",
         "conservative": "보수적",
-        "defensive_exit": "방어형 청산 중심",
+        "defensive_exit": "방어적 청산 중심",
         "hold_through_noise": "노이즈 허용 보유",
-        "kiwoom_market_data": "키움 시장 데이터",
+        "kiwoom_market_data": "실시간 시장 데이터",
         "integrated_chain": "통합 체인",
-        "session": "정규 세션",
+        "session": "장중 세션",
     }
     if lowered in mapping:
         return mapping[lowered]
@@ -4884,7 +4904,7 @@ def _build_operator_brief_kr_facts(
     monitor_facts: List[str] = []
     posture = _operator_brief_label_ko(monitor.get("entry_pattern") or monitor.get("monitor_reason"))
     if posture:
-        monitor_facts.append(f"모니터 핵심 신호 {posture}")
+        monitor_facts.append(f"모니터 관찰 신호 {posture}")
     lifecycle_status = _operator_brief_label_ko(trade_report.get("lifecycle_status"))
     trade_facts = [
         item
@@ -4900,6 +4920,7 @@ def _build_operator_brief_kr_facts(
         "monitor": monitor_facts[:3],
         "trade": trade_facts[:3],
     }
+
 
 def _count_hangul_chars(text: Any) -> int:
     raw = str(text or "")
@@ -5662,7 +5683,7 @@ def _load_cached_operator_brief(config: OperatorUIConfig, run_id: str) -> Dict[s
     cached = _read_json(path)
     if not isinstance(cached, dict):
         return {}
-    if int(cached.get("version") or 0) < 13:
+    if int(cached.get("version") or 0) < OPERATOR_BRIEF_ARTIFACT_VERSION:
         return {}
     return cached
 
@@ -5673,7 +5694,7 @@ def _save_cached_operator_brief(config: OperatorUIConfig, run_id: str, brief: Di
     path = config.operator_ui_cache_path / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(brief)
-    payload["version"] = 13
+    payload["version"] = OPERATOR_BRIEF_ARTIFACT_VERSION
     payload["cached_at"] = datetime.now(tz=KST).isoformat()
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -6505,11 +6526,80 @@ def _load_saved_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     payload = _read_json(json_path)
     if not isinstance(payload, dict):
         return {}
-    if int(payload.get("version") or 0) < 13:
+    if int(payload.get("version") or 0) < OPERATOR_BRIEF_ARTIFACT_VERSION:
         return {}
     if not _saved_operator_brief_matches_detail(payload, detail):
         return {}
     return payload
+
+
+def _sync_trade_health_after_operator_brief_save(
+    trade_root: Path,
+    *,
+    reports_dir: Path,
+    brief_payload: Dict[str, Any],
+    brief_json_path: Path,
+    brief_md_path: Path,
+    brief_llm_path: Path,
+) -> None:
+    health_path = trade_root / "_health.json"
+    if not health_path.exists():
+        return
+    health = _read_json(health_path)
+    if not isinstance(health, dict) or not health:
+        return
+
+    ai_report_json_path = reports_dir / "ai_trade_report.json"
+    ai_report_md_path = reports_dir / "ai_trade_report.md"
+    ai_report_payload = _read_json(ai_report_json_path) if ai_report_json_path.exists() else {}
+    ai_generation = ai_report_payload.get("generation") if isinstance(ai_report_payload.get("generation"), dict) else {}
+
+    operator_brief_status = canonical_llm_status(
+        brief_payload.get("llm_brief_status")
+        or (brief_payload.get("generation") or {}).get("status")
+        or "fallback",
+        default="fallback",
+    )
+    if ai_report_json_path.exists() or ai_report_md_path.exists():
+        llm_trade_report_status = canonical_llm_status(
+            ai_report_payload.get("ai_trade_report_status")
+            or ai_generation.get("ai_trade_report_status")
+            or health.get("llm_trade_report_status")
+            or health.get("ai_trade_report_status")
+            or "skipped",
+            default="skipped",
+        )
+        report_generation_status = "available"
+    else:
+        llm_trade_report_status = canonical_llm_status(
+            health.get("llm_trade_report_status")
+            or health.get("ai_trade_report_status")
+            or "skipped",
+            default="skipped",
+        )
+        report_generation_status = str(health.get("report_generation_status") or health.get("report_status") or "missing")
+
+    artifact_presence = dict(health.get("artifact_presence") or {})
+    artifact_presence.update(
+        {
+            "operator_brief_json": brief_json_path.exists(),
+            "operator_brief_md": brief_md_path.exists(),
+            "brief_llm_response_json": brief_llm_path.exists(),
+            "ai_trade_report_json": ai_report_json_path.exists(),
+            "ai_trade_report_md": ai_report_md_path.exists(),
+        }
+    )
+
+    health["artifact_presence"] = artifact_presence
+    health["llm_brief_status"] = operator_brief_status
+    health["operator_brief_status"] = operator_brief_status
+    health["ai_trade_report_status"] = llm_trade_report_status
+    health["llm_trade_report_status"] = llm_trade_report_status
+    health["report_generation_status"] = report_generation_status
+    report_generation = health.get("report_generation") if isinstance(health.get("report_generation"), dict) else {}
+    report_generation["status"] = report_generation_status
+    health["report_generation"] = report_generation
+    health_path.write_text(json.dumps(health, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any]) -> None:
@@ -6547,7 +6637,7 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
         "hold_reasons": [str(x or "") for x in list(monitor_section.get("hold_reasons") or []) if str(x or "").strip()][:6],
         "exit_triggers": [str(x or "") for x in list(monitor_section.get("exit_triggers") or []) if str(x or "").strip()][:6],
     }
-    payload["version"] = 13
+    payload["version"] = OPERATOR_BRIEF_ARTIFACT_VERSION
     payload["saved_at"] = datetime.now(tz=KST).isoformat()
     payload["run_id"] = str(detail.get("run_id") or "")
     payload["trade_id"] = str(trade_report.get("trade_id") or "")
@@ -6557,10 +6647,10 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
     payload["source_signature"] = _operator_brief_source_signature(detail)
     json_path.parent.mkdir(parents=True, exist_ok=True)
     trade_root = json_path.parent.parent if json_path.parent.name in {"brief", "reports"} else json_path.parent
+    brief_llm_path = json_path.parent / "brief_llm_response.json"
     llm_response_artifact = payload.get("llm_response_artifact") if isinstance(payload.get("llm_response_artifact"), dict) else {}
     llm_response_compact: Dict[str, Any] = {}
     if llm_response_artifact:
-        brief_llm_path = json_path.parent / "brief_llm_response.json"
         reports_root = trade_root.parents[2] if len(trade_root.parents) >= 3 else Path("reports")
         run_day = trade_root.parent.name if re.fullmatch(r"\d{4}-\d{2}-\d{2}", trade_root.parent.name) else str(payload.get("saved_at") or "")[:10]
         llm_response_compact = persist_llm_artifact_refs(
@@ -6580,6 +6670,14 @@ def _save_operator_brief_artifact(detail: Dict[str, Any], brief: Dict[str, Any])
     payload = _normalize_operator_brief_payload(payload, detail, llm_response_artifact=llm_response_compact)
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(_render_operator_brief_markdown(payload), encoding="utf-8")
+    _sync_trade_health_after_operator_brief_save(
+        trade_root,
+        reports_dir=json_path.parent,
+        brief_payload=payload,
+        brief_json_path=json_path,
+        brief_md_path=md_path,
+        brief_llm_path=brief_llm_path,
+    )
     bundle_candidates = [
         trade_root / "lifecycle_bundle.json",
         trade_root / "aggregated_execution_bundle.json",

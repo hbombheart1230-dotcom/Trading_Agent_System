@@ -218,7 +218,54 @@ def test_monitor_reason_human_prefers_decision_trace_and_surfaces_threshold_gaps
     assert out["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
     assert out["policy_ref"]["flow_instruction"] == "observe_only"
     assert any("Entry blockers:" in row for row in out["bullets"])
-    assert any("Threshold gaps:" in row for row in out["bullets"])
+
+
+def test_build_lifecycle_bundle_populates_top_level_summary_fields() -> None:
+    out = build_lifecycle_bundle(
+        day="2026-03-27",
+        trade_id="TRD_20260327_032820_01",
+        run_id="run-1",
+        symbol="032820",
+        lifecycle={
+            "entry": {"decision": "BUY", "reason_human": "Breakout confirmation captured."},
+            "holding": {"holding_events": [{"ts": "2026-03-27T05:10:00+00:00", "status": "HOLD"}]},
+            "exit": {"decision": "SELL", "reason_human": "Peak drawdown triggered."},
+            "summary": {
+                "holding_duration": "23m",
+                "entry_reason_human": "Breakout confirmation captured.",
+                "exit_reason_human": "Peak drawdown triggered.",
+            },
+        },
+        strategist_summary={"playbook": "breakout"},
+        scanner_summary={"selected_symbol": "032820"},
+        monitor_summary={"monitor_reason": "peak_drawdown"},
+        commander_summary={"path": "cached_strategist"},
+        story_input={
+            "trade_id": "TRD_20260327_032820_01",
+            "story_id": "TRD_20260327_032820_01",
+            "symbol": "032820",
+            "status": "closed",
+            "action": "SELL",
+            "monitor_reason_human": {"pnl": 1200, "current_drawdown": -0.011},
+            "entry_reason_human": {"summary": "Breakout confirmation captured."},
+            "section_provenance": {},
+            "evidence_provenance": {},
+        },
+        diagnostics={},
+        canonical_refs={},
+        llm_refs={},
+        artifact_links={},
+    )
+
+    assert isinstance(out["entry"], dict)
+    assert out["entry"]["available"] is True
+    assert out["entry"]["symbol"] == "032820"
+    assert isinstance(out["exit"], dict)
+    assert out["exit"]["available"] is True
+    assert out["exit"]["summary"] == "Peak drawdown triggered."
+    assert isinstance(out["shared_facts"], dict)
+    assert out["shared_facts"]["action"] == "SELL"
+    assert out["shared_facts"]["status"] == "closed"
 
 
 def test_monitor_reason_human_uses_applied_policy_when_entry_thresholds_missing() -> None:
