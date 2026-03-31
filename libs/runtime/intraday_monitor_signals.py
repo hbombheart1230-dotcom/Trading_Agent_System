@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import statistics
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Sequence
@@ -47,6 +48,96 @@ def _range_threshold_score(actual: float, minimum: float, maximum: float) -> flo
     if actual_value <= 0.0:
         return 0.0
     return _clamp_score(maximum_value / actual_value if maximum_value > 0.0 else 0.0)
+
+
+def _empty_entry_transition_trace() -> Dict[str, Any]:
+    return {
+        "reclaim_distance_to_ready": None,
+        "vwap_reclaim_progress": None,
+        "rebound_progress": None,
+        "volume_distance_to_ready": None,
+        "breakout_distance_to_ready": None,
+        "transition_readiness_score": None,
+        "last_blocking_axis": "",
+        "became_ready_this_cycle": False,
+        "extended_from_vwap_improvement": None,
+        "volume_ratio_improvement": None,
+        "breakout_gap_improvement": None,
+        "transition_happening_now": False,
+        "volume_recovery_slope": None,
+        "volume_recovery_recent": False,
+    }
+
+
+def _env_trueish(value: Any, default: bool = False) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return bool(default)
+    return text in ("1", "true", "yes", "y", "on")
+
+
+def _resolve_monitor_scoring_settings(scoring: Mapping[str, Any] | None = None) -> Dict[str, Any]:
+    raw = dict(scoring or {}) if isinstance(scoring, Mapping) else {}
+    enabled = _env_trueish(raw.get("enabled"), _env_trueish(os.getenv("MONITOR_SCORING_ENABLED"), False))
+    shadow_mode = _env_trueish(raw.get("shadow_mode"), _env_trueish(os.getenv("MONITOR_SCORING_SHADOW_MODE"), False))
+    threshold = _to_float(raw.get("entry_threshold"), _to_float(os.getenv("MONITOR_ENTRY_SCORE_THRESHOLD"), 3.0))
+    threshold = float(threshold if threshold > 0.0 else 3.0)
+    if enabled:
+        mode = "enabled"
+    elif shadow_mode:
+        mode = "shadow"
+    else:
+        mode = "disabled"
+    return {
+        "enabled": bool(enabled),
+        "shadow_mode": bool(shadow_mode),
+        "entry_threshold": threshold,
+        "scoring_mode": mode,
+    }
+
+
+def _build_monitor_score_breakdown(
+    *,
+    vwap_reclaim_ok: bool,
+    breakout_ok: bool,
+    pullback_mature: bool,
+    volume_ok: bool,
+    confidence_gate_ok: bool,
+) -> Dict[str, float]:
+    return {
+        "vwap_reclaim_ok": 2.0 if bool(vwap_reclaim_ok) else 0.0,
+        "breakout_ok": 2.0 if bool(breakout_ok) else 0.0,
+        "pullback_mature": 1.0 if bool(pullback_mature) else 0.0,
+        "volume_ok": 1.0 if bool(volume_ok) else 0.0,
+        "confidence_gate_ok": 1.0 if bool(confidence_gate_ok) else 0.0,
+    }
+
+
+def _apply_monitor_scoring_fields(
+    out: Dict[str, Any],
+    *,
+    scoring_settings: Dict[str, Any],
+    hard_filter_passed: bool,
+    hard_filter_fail_reasons: Sequence[str] | None,
+    score_breakdown: Mapping[str, Any] | None = None,
+    legacy_entry_decision: str = "WAIT",
+    scoring_entry_decision: str = "WAIT",
+) -> Dict[str, Any]:
+    breakdown = dict(score_breakdown or {})
+    total_score = round(sum(_to_float(v) for v in breakdown.values()), 4) if breakdown else 0.0
+    threshold = float(scoring_settings.get("entry_threshold") or 3.0)
+    score_passed = bool(hard_filter_passed) and total_score >= threshold
+    fail_reasons = [str(x or "").strip() for x in list(hard_filter_fail_reasons or []) if str(x or "").strip()]
+    out["hard_filter_passed"] = bool(hard_filter_passed)
+    out["hard_filter_fail_reasons"] = fail_reasons
+    out["total_score"] = total_score
+    out["score_breakdown"] = breakdown
+    out["entry_threshold"] = threshold
+    out["score_passed"] = bool(score_passed)
+    out["scoring_mode"] = str(scoring_settings.get("scoring_mode") or "disabled")
+    out["legacy_entry_decision"] = str(legacy_entry_decision or "WAIT")
+    out["scoring_entry_decision"] = str(scoring_entry_decision or ("BUY" if score_passed else "WAIT"))
+    return out
 
 
 def _candles_from_rows(rows: Sequence[Mapping[str, Any]] | None) -> List[Dict[str, Any]]:
@@ -328,6 +419,7 @@ def evaluate_intraday_entry_signal(
     features: Mapping[str, Any] | None = None,
     policy: Mapping[str, Any] | MonitorEntryPolicy | None = None,
     frame: Mapping[str, Any] | None = None,
+    scoring: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     # When monitor passes a MonitorEntryPolicy instance, it has already resolved
     # the strategy frame for this cycle. Re-applying the frame here would tighten
@@ -338,6 +430,7 @@ def evaluate_intraday_entry_signal(
         else resolve_intraday_entry_policy(policy, frame=frame)
     )
     applied_policy = resolved_policy.to_dict()
+    scoring_settings = _resolve_monitor_scoring_settings(scoring)
     timeframe_minutes = int(resolved_policy.timeframe_minutes or 1)
     candles = _compress_candles(rows or [], timeframe_minutes)
     out: Dict[str, Any] = {
@@ -352,6 +445,17 @@ def evaluate_intraday_entry_signal(
         "thresholds": dict(applied_policy),
         "applied_policy": dict(applied_policy),
     }
+    out.update(_empty_entry_transition_trace())
+    out["entry_transition_trace"] = _empty_entry_transition_trace()
+    _apply_monitor_scoring_fields(
+        out,
+        scoring_settings=scoring_settings,
+        hard_filter_passed=False,
+        hard_filter_fail_reasons=[],
+        score_breakdown={},
+        legacy_entry_decision="WAIT",
+        scoring_entry_decision="WAIT",
+    )
     if not out["enabled"]:
         out["reason"] = "intraday_entry_disabled"
         return out
@@ -368,6 +472,15 @@ def evaluate_intraday_entry_signal(
             "recent_high": None,
             "pullback_pct": None,
         }
+        _apply_monitor_scoring_fields(
+            out,
+            scoring_settings=scoring_settings,
+            hard_filter_passed=False,
+            hard_filter_fail_reasons=["minute_candle_missing"],
+            score_breakdown={},
+            legacy_entry_decision="WAIT",
+            scoring_entry_decision="WAIT",
+        )
         return out
     min_required_bars = max(
         int(resolved_policy.breakout_lookback or 5) + 1,
@@ -392,6 +505,15 @@ def evaluate_intraday_entry_signal(
             "series_class": series_quality.get("series_class"),
             "compatibility_reason": series_quality.get("compatibility_reason"),
         }
+        _apply_monitor_scoring_fields(
+            out,
+            scoring_settings=scoring_settings,
+            hard_filter_passed=False,
+            hard_filter_fail_reasons=["minute_candle_missing"],
+            score_breakdown={},
+            legacy_entry_decision="WAIT",
+            scoring_entry_decision="WAIT",
+        )
         return out
     if len(candles) < min_required_bars:
         out["reason"] = "data_incomplete"
@@ -408,6 +530,15 @@ def evaluate_intraday_entry_signal(
             "inferred_spacing_minutes": series_quality.get("inferred_spacing_minutes"),
             "series_class": series_quality.get("series_class"),
         }
+        _apply_monitor_scoring_fields(
+            out,
+            scoring_settings=scoring_settings,
+            hard_filter_passed=False,
+            hard_filter_fail_reasons=["data_incomplete"],
+            score_breakdown={},
+            legacy_entry_decision="WAIT",
+            scoring_entry_decision="WAIT",
+        )
         return out
 
     out["evaluated"] = True
@@ -480,6 +611,35 @@ def evaluate_intraday_entry_signal(
     confidence_threshold = 0.55
     confidence_score = round(max(breakout_path_score, pullback_volume_path_score), 4)
     confidence_gate_ok = confidence_score >= confidence_threshold
+    breakout_gap_pct = ((current_close / recent_high) - 1.0) if recent_high > 0.0 and current_close > 0.0 else None
+    reclaim_ready_level_pct = -reclaim_tolerance_pct
+    reclaim_distance_to_ready = (
+        extended_from_vwap_pct - reclaim_ready_level_pct
+        if current_vwap > 0.0 and current_close > 0.0
+        else None
+    )
+    reclaim_progress_band = max(1e-6, abs(reclaim_ready_level_pct - min_extended_from_vwap_pct))
+    vwap_reclaim_progress = _clamp_score(
+        (extended_from_vwap_pct - min_extended_from_vwap_pct) / reclaim_progress_band
+    )
+    rebound_high_progress = _clamp_score((current_close / prior_bar_high) if prior_bar_high > 0.0 and current_close > 0.0 else 0.0)
+    rebound_close_progress = _clamp_score((current_close / prior_close) if prior_close > 0.0 and current_close > 0.0 else 0.0)
+    rebound_progress = round(min(rebound_high_progress, rebound_close_progress), 4)
+    volume_distance_to_ready = volume_ratio - _to_float(resolved_policy.volume_ratio_min)
+    breakout_distance_to_ready = (
+        breakout_gap_pct - breakout_buffer_pct
+        if breakout_gap_pct is not None
+        else None
+    )
+    transition_readiness_score = round(
+        _clamp_score(
+            (0.35 * vwap_reclaim_progress)
+            + (0.25 * volume_score)
+            + (0.20 * breakout_score)
+            + (0.20 * rebound_progress)
+        ),
+        4,
+    )
 
     if current_close <= 0.0 or recent_high <= 0.0 or current_vwap <= 0.0:
         out["reason"] = "data_incomplete"
@@ -495,6 +655,15 @@ def evaluate_intraday_entry_signal(
             "inferred_spacing_minutes": series_quality.get("inferred_spacing_minutes"),
             "series_class": series_quality.get("series_class"),
         }
+        _apply_monitor_scoring_fields(
+            out,
+            scoring_settings=scoring_settings,
+            hard_filter_passed=False,
+            hard_filter_fail_reasons=["data_incomplete"],
+            score_breakdown={},
+            legacy_entry_decision="WAIT",
+            scoring_entry_decision="WAIT",
+        )
         return out
 
     signal_chain: List[str] = []
@@ -591,7 +760,7 @@ def evaluate_intraday_entry_signal(
             "distance_to_max": pullback_max_pct - pullback_depth_pct,
         },
         "breakout_gap_pct": {
-            "actual": ((current_close / recent_high) - 1.0) if recent_high > 0.0 and current_close > 0.0 else None,
+            "actual": breakout_gap_pct,
             "min": breakout_buffer_pct,
             "distance_to_breakout": (current_close - breakout_level) if breakout_level > 0.0 else None,
         },
@@ -720,6 +889,45 @@ def evaluate_intraday_entry_signal(
     if triggered and not primary_failure_axis:
         primary_failure_axis = "confirmed_entry"
     grouped_logic_trace["triggered_path"] = entry_condition_path
+    legacy_triggered = bool(triggered)
+    legacy_decision = "BUY" if legacy_triggered else "WAIT"
+    legacy_reason = str(reason or "")
+    legacy_pattern = str(pattern or "")
+    legacy_entry_condition_path = str(entry_condition_path or "")
+    score_breakdown = _build_monitor_score_breakdown(
+        vwap_reclaim_ok=bool(vwap_reclaim_ok),
+        breakout_ok=bool(breakout_ok),
+        pullback_mature=bool(pullback_mature),
+        volume_ok=bool(volume_ok),
+        confidence_gate_ok=bool(confidence_gate_ok),
+    )
+    scoring_entry_decision = "BUY" if sum(_to_float(v) for v in score_breakdown.values()) >= float(scoring_settings.get("entry_threshold") or 3.0) else "WAIT"
+    scoring_entry_reason = "monitor_score_threshold_met" if scoring_entry_decision == "BUY" else "monitor_score_threshold_not_met"
+    if str(scoring_settings.get("scoring_mode") or "") == "enabled":
+        triggered = bool(scoring_entry_decision == "BUY")
+        if triggered:
+            if not legacy_triggered:
+                reason = scoring_entry_reason
+            if not pattern:
+                pattern = (
+                    "breakout_score_entry"
+                    if breakout_ok
+                    else ("pullback_score_entry" if pullback_mature else "score_entry")
+                )
+            if not entry_condition_path:
+                entry_condition_path = (
+                    "score_breakout_path"
+                    if breakout_ok
+                    else ("score_pullback_volume_path" if pullback_mature and volume_ok else "score_threshold_path")
+                )
+            if "score_threshold_met" not in signal_chain:
+                signal_chain.append("score_threshold_met")
+            primary_failure_axis = "confirmed_entry"
+        elif legacy_triggered:
+            reason = scoring_entry_reason
+            pattern = legacy_pattern or pattern
+            entry_condition_path = legacy_entry_condition_path or entry_condition_path
+            primary_failure_axis = "score_gate"
 
     metrics = {
         "timeframe_minutes": timeframe_minutes,
@@ -738,6 +946,13 @@ def evaluate_intraday_entry_signal(
         "pullback_pct": pullback_depth_pct,
         "pullback_depth_pct": pullback_depth_pct,
         "extended_from_vwap_pct": extended_from_vwap_pct,
+        "reclaim_distance_to_ready": reclaim_distance_to_ready,
+        "vwap_reclaim_progress": vwap_reclaim_progress,
+        "rebound_progress": rebound_progress,
+        "volume_distance_to_ready": volume_distance_to_ready,
+        "breakout_gap_pct": breakout_gap_pct,
+        "breakout_distance_to_ready": breakout_distance_to_ready,
+        "transition_readiness_score": transition_readiness_score,
         "breakout_ok": bool(breakout_ok),
         "vwap_hold_ok": bool(vwap_hold_ok),
         "vwap_reclaim_ok": bool(vwap_reclaim_ok),
@@ -766,6 +981,30 @@ def evaluate_intraday_entry_signal(
         "inferred_spacing_minutes": series_quality.get("inferred_spacing_minutes"),
         "series_class": series_quality.get("series_class"),
     }
+    transition_trace = _empty_entry_transition_trace()
+    transition_trace.update(
+        {
+            "reclaim_distance_to_ready": reclaim_distance_to_ready,
+            "vwap_reclaim_progress": round(vwap_reclaim_progress, 4),
+            "rebound_progress": rebound_progress,
+            "volume_distance_to_ready": volume_distance_to_ready,
+            "breakout_distance_to_ready": breakout_distance_to_ready,
+            "transition_readiness_score": transition_readiness_score,
+            "last_blocking_axis": primary_failure_axis if not triggered else "",
+        }
+    )
+    grouped_logic_trace["triggered_path"] = entry_condition_path
+    grouped_logic_trace["scoring_mode"] = str(scoring_settings.get("scoring_mode") or "disabled")
+    grouped_logic_trace["score_passed"] = bool(sum(_to_float(v) for v in score_breakdown.values()) >= float(scoring_settings.get("entry_threshold") or 3.0))
+    _apply_monitor_scoring_fields(
+        out,
+        scoring_settings=scoring_settings,
+        hard_filter_passed=True,
+        hard_filter_fail_reasons=[],
+        score_breakdown=score_breakdown,
+        legacy_entry_decision=legacy_decision,
+        scoring_entry_decision="BUY" if sum(_to_float(v) for v in score_breakdown.values()) >= float(scoring_settings.get("entry_threshold") or 3.0) else "WAIT",
+    )
     out.update(
         {
             "triggered": bool(triggered),
@@ -789,8 +1028,21 @@ def evaluate_intraday_entry_signal(
                 "confidence_score": confidence_score,
                 "confidence_threshold": confidence_threshold,
                 "confidence_gate_ok": bool(confidence_gate_ok),
+                "transition_readiness_score": transition_readiness_score,
             },
             "grouped_logic_trace": grouped_logic_trace,
+            "legacy_entry_reason": legacy_reason,
+            "legacy_entry_pattern": legacy_pattern,
+            "legacy_entry_condition_path": legacy_entry_condition_path,
+            "reclaim_distance_to_ready": reclaim_distance_to_ready,
+            "vwap_reclaim_progress": round(vwap_reclaim_progress, 4),
+            "rebound_progress": rebound_progress,
+            "volume_distance_to_ready": volume_distance_to_ready,
+            "breakout_distance_to_ready": breakout_distance_to_ready,
+            "transition_readiness_score": transition_readiness_score,
+            "last_blocking_axis": str(primary_failure_axis or "") if not triggered else "",
+            "became_ready_this_cycle": False,
+            "entry_transition_trace": transition_trace,
         }
     )
     return out

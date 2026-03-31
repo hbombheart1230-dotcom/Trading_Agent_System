@@ -134,6 +134,12 @@ def test_intraday_entry_rejects_failed_reclaim() -> None:
     assert out["decision"] == "WAIT"
     assert out["reason"] == "below_vwap_reclaim_not_ready"
     assert out.get("primary_failure_axis") == "vwap_relationship"
+    assert float(out.get("reclaim_distance_to_ready") or 0.0) < 0.0
+    assert 0.0 <= float(out.get("vwap_reclaim_progress") or 0.0) <= 1.0
+    assert float(out.get("transition_readiness_score") or 0.0) < 1.0
+    transition_trace = out.get("entry_transition_trace") or {}
+    assert transition_trace.get("last_blocking_axis") == "vwap_relationship"
+    assert transition_trace.get("became_ready_this_cycle") is False
 
 
 def test_intraday_entry_breakout_path_still_blocks_when_reclaim_gate_is_not_ready() -> None:
@@ -201,6 +207,13 @@ def test_intraday_entry_pullback_can_pass_without_strict_volume_spike_if_reclaim
     assert out["triggered"] is True
     assert out["decision"] == "BUY"
     assert out["pattern"] == "pullback_vwap_reclaim"
+    assert (out.get("metrics") or {}).get("reclaim_gate_ok") is True
+    assert (out.get("metrics") or {}).get("volume_ok") is True
+    scores = out.get("condition_scores") or {}
+    assert bool(scores.get("confidence_gate_ok")) is True
+    assert float(out.get("transition_readiness_score") or 0.0) >= 0.55
+    transition_trace = out.get("entry_transition_trace") or {}
+    assert transition_trace.get("became_ready_this_cycle") is False
 
 
 def test_intraday_entry_pullback_policy_is_looser_than_breakout_policy() -> None:
@@ -268,7 +281,22 @@ def test_intraday_entry_policy_is_official_object_with_live_defaults() -> None:
 def test_intraday_entry_runtime_no_longer_uses_monitor_entry_env_lookup() -> None:
     source = Path("libs/runtime/intraday_monitor_signals.py").read_text(encoding="utf-8")
 
-    assert "MONITOR_ENTRY_" not in source
+    legacy_env_keys = [
+        "MONITOR_ENTRY_TIMEFRAME_MINUTES",
+        "MONITOR_ENTRY_BREAKOUT_LOOKBACK",
+        "MONITOR_ENTRY_VOLUME_LOOKBACK",
+        "MONITOR_ENTRY_VOLUME_RATIO_MIN",
+        "MONITOR_ENTRY_MIN_EXTENDED_FROM_VWAP_PCT",
+        "MONITOR_ENTRY_MAX_EXTENDED_FROM_VWAP_PCT",
+        "MONITOR_ENTRY_PULLBACK_MIN_PCT",
+        "MONITOR_ENTRY_PULLBACK_MAX_PCT",
+        "MONITOR_ENTRY_RECLAIM_TOLERANCE_PCT",
+        "MONITOR_ENTRY_BREAKOUT_BUFFER_PCT",
+        "MONITOR_ENTRY_INTENT_COOLDOWN_SEC",
+    ]
+
+    for key in legacy_env_keys:
+        assert key not in source
 
 
 def test_intraday_entry_defensive_stack_stays_usable_without_becoming_loose() -> None:
@@ -345,3 +373,79 @@ def test_intraday_entry_rejects_non_intraday_seed_series_as_minute_data() -> Non
     metrics = out.get("metrics") or {}
     assert float(metrics.get("inferred_spacing_minutes") or 0.0) >= 1000.0
     assert metrics.get("series_class") == "daily_or_higher"
+
+
+def test_intraday_entry_scoring_disabled_keeps_legacy_decision(monkeypatch) -> None:
+    monkeypatch.delenv("MONITOR_SCORING_ENABLED", raising=False)
+    monkeypatch.delenv("MONITOR_SCORING_SHADOW_MODE", raising=False)
+    monkeypatch.delenv("MONITOR_ENTRY_SCORE_THRESHOLD", raising=False)
+
+    out = evaluate_intraday_entry_signal(_rows_breakout())
+
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+    assert out["scoring_mode"] == "disabled"
+    assert out["legacy_entry_decision"] == "BUY"
+    assert out["scoring_entry_decision"] == "BUY"
+    assert out["hard_filter_passed"] is True
+    assert float(out.get("total_score") or 0.0) >= 3.0
+
+
+def test_intraday_entry_scoring_shadow_mode_records_score_but_preserves_decision(monkeypatch) -> None:
+    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "false")
+    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "true")
+    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "8")
+
+    out = evaluate_intraday_entry_signal(_rows_breakout())
+
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+    assert out["scoring_mode"] == "shadow"
+    assert out["legacy_entry_decision"] == "BUY"
+    assert out["scoring_entry_decision"] == "WAIT"
+    assert out["score_passed"] is False
+    assert isinstance(out.get("score_breakdown"), dict)
+
+
+def test_intraday_entry_scoring_enabled_allows_entry_when_threshold_met(monkeypatch) -> None:
+    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
+    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "3")
+
+    out = evaluate_intraday_entry_signal(_rows_breakout())
+
+    assert out["scoring_mode"] == "enabled"
+    assert out["hard_filter_passed"] is True
+    assert out["score_passed"] is True
+    assert out["scoring_entry_decision"] == "BUY"
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+
+
+def test_intraday_entry_scoring_enabled_blocks_when_threshold_not_met(monkeypatch) -> None:
+    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
+    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "8")
+
+    out = evaluate_intraday_entry_signal(_rows_breakout())
+
+    assert out["legacy_entry_decision"] == "BUY"
+    assert out["scoring_entry_decision"] == "WAIT"
+    assert out["score_passed"] is False
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+    assert out["reason"] == "monitor_score_threshold_not_met"
+
+
+def test_intraday_entry_scoring_hard_filter_blocks_without_data(monkeypatch) -> None:
+    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
+    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "3")
+
+    out = evaluate_intraday_entry_signal([])
+
+    assert out["hard_filter_passed"] is False
+    assert "minute_candle_missing" in list(out.get("hard_filter_fail_reasons") or [])
+    assert out["score_passed"] is False
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"

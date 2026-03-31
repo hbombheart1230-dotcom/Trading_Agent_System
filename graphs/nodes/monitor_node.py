@@ -1269,15 +1269,124 @@ def _load_previous_monitor_state(state: Dict[str, Any], symbol: str) -> Dict[str
     return dict(row) if isinstance(row, dict) else {}
 
 
-def _save_current_monitor_state(state: Dict[str, Any], symbol: str, *, posture: str, reason: str, active_exit_axis: str) -> None:
+def _build_monitor_entry_state_snapshot(entry_info: Dict[str, Any]) -> Dict[str, Any]:
+    metrics = dict(entry_info.get("metrics") or {}) if isinstance(entry_info.get("metrics"), dict) else {}
+    scores = dict(entry_info.get("condition_scores") or {}) if isinstance(entry_info.get("condition_scores"), dict) else {}
+    margins = dict(entry_info.get("threshold_margins") or {}) if isinstance(entry_info.get("threshold_margins"), dict) else {}
+    breakout_margins = dict(margins.get("breakout_gap_pct") or {}) if isinstance(margins.get("breakout_gap_pct"), dict) else {}
+    return {
+        "extended_from_vwap_pct": _optional_float(metrics.get("extended_from_vwap_pct")),
+        "volume_ratio": _optional_float(metrics.get("volume_ratio")),
+        "breakout_gap_pct": _optional_float(breakout_margins.get("actual")),
+        "reclaim_gate_ok": bool(metrics.get("reclaim_gate_ok")),
+        "volume_ok": bool(metrics.get("volume_ok")),
+        "breakout_ok": bool(metrics.get("breakout_ok")),
+        "extension_ok": bool(metrics.get("extension_ok")),
+        "breakout_path_ok": bool(metrics.get("breakout_path_ok")),
+        "pullback_volume_path_ok": bool(metrics.get("pullback_volume_path_ok")),
+        "confidence_gate_ok": bool(scores.get("confidence_gate_ok")),
+        "triggered": bool(entry_info.get("triggered")),
+        "current_blocking_axis": str(entry_info.get("primary_failure_axis") or ""),
+        "transition_readiness_score": _optional_float(entry_info.get("transition_readiness_score")),
+    }
+
+
+def _build_monitor_entry_transition_trace(previous_monitor_state: Dict[str, Any], entry_info: Dict[str, Any]) -> Dict[str, Any]:
+    previous_entry = (
+        dict(previous_monitor_state.get("entry_state") or {})
+        if isinstance(previous_monitor_state.get("entry_state"), dict)
+        else {}
+    )
+    thresholds = dict(entry_info.get("thresholds") or {}) if isinstance(entry_info.get("thresholds"), dict) else {}
+    current_volume_ratio = _optional_float((entry_info.get("metrics") or {}).get("volume_ratio"))
+    current_extended_from_vwap = _optional_float((entry_info.get("metrics") or {}).get("extended_from_vwap_pct"))
+    current_breakout_gap = _optional_float((((entry_info.get("threshold_margins") or {}).get("breakout_gap_pct") or {}).get("actual")))
+    previous_volume_ratio = _optional_float(previous_entry.get("volume_ratio"))
+    previous_extended_from_vwap = _optional_float(previous_entry.get("extended_from_vwap_pct"))
+    previous_breakout_gap = _optional_float(previous_entry.get("breakout_gap_pct"))
+    volume_ratio_improvement = (
+        current_volume_ratio - previous_volume_ratio
+        if current_volume_ratio is not None and previous_volume_ratio is not None
+        else None
+    )
+    extended_from_vwap_improvement = (
+        current_extended_from_vwap - previous_extended_from_vwap
+        if current_extended_from_vwap is not None and previous_extended_from_vwap is not None
+        else None
+    )
+    breakout_gap_improvement = (
+        current_breakout_gap - previous_breakout_gap
+        if current_breakout_gap is not None and previous_breakout_gap is not None
+        else None
+    )
+    current_ready = bool(entry_info.get("triggered"))
+    previous_ready = bool(previous_entry.get("triggered"))
+    volume_ratio_min = _optional_float(thresholds.get("volume_ratio_min"))
+    volume_recovery_recent = False
+    if (
+        current_volume_ratio is not None
+        and previous_volume_ratio is not None
+        and volume_ratio_min is not None
+        and volume_ratio_min > 0.0
+    ):
+        volume_recovery_recent = bool(
+            current_volume_ratio > previous_volume_ratio
+            and max(current_volume_ratio, previous_volume_ratio) >= (0.75 * volume_ratio_min)
+        )
+    improving_axes = []
+    if extended_from_vwap_improvement is not None and extended_from_vwap_improvement > 0.0:
+        improving_axes.append("reclaim")
+    if volume_ratio_improvement is not None and volume_ratio_improvement > 0.0:
+        improving_axes.append("volume")
+    if breakout_gap_improvement is not None and breakout_gap_improvement > 0.0:
+        improving_axes.append("breakout")
+    last_blocking_axis = str(entry_info.get("primary_failure_axis") or "").strip()
+    previous_blocking_axis = str(previous_entry.get("current_blocking_axis") or "").strip()
+    if current_ready and not previous_ready and previous_blocking_axis:
+        last_blocking_axis = previous_blocking_axis
+    elif not last_blocking_axis:
+        last_blocking_axis = previous_blocking_axis
+    transition_trace = {
+        "reclaim_distance_to_ready": entry_info.get("reclaim_distance_to_ready"),
+        "vwap_reclaim_progress": entry_info.get("vwap_reclaim_progress"),
+        "rebound_progress": entry_info.get("rebound_progress"),
+        "volume_distance_to_ready": entry_info.get("volume_distance_to_ready"),
+        "breakout_distance_to_ready": entry_info.get("breakout_distance_to_ready"),
+        "transition_readiness_score": entry_info.get("transition_readiness_score"),
+        "last_blocking_axis": last_blocking_axis,
+        "became_ready_this_cycle": bool(current_ready and not previous_ready),
+        "extended_from_vwap_improvement": extended_from_vwap_improvement,
+        "volume_ratio_improvement": volume_ratio_improvement,
+        "breakout_gap_improvement": breakout_gap_improvement,
+        "transition_happening_now": bool(
+            improving_axes and (current_ready or len(improving_axes) >= 2 or volume_recovery_recent)
+        ),
+        "volume_recovery_slope": volume_ratio_improvement,
+        "volume_recovery_recent": volume_recovery_recent,
+    }
+    return transition_trace
+
+
+def _save_current_monitor_state(
+    state: Dict[str, Any],
+    symbol: str,
+    *,
+    posture: str,
+    reason: str,
+    active_exit_axis: str,
+    entry_state: Dict[str, Any] | None = None,
+) -> None:
     persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
     rows = persisted.get("monitor_last_state_by_symbol") if isinstance(persisted.get("monitor_last_state_by_symbol"), dict) else {}
-    rows[_norm_symbol(symbol)] = {
+    row = {
         "posture": str(posture or ""),
         "reason": str(reason or ""),
         "active_exit_axis": str(active_exit_axis or ""),
         "updated_at_epoch": int(_resolve_now_epoch(state)),
     }
+    if isinstance(entry_state, dict) and entry_state:
+        row["entry_state"] = dict(entry_state)
+    rows[_norm_symbol(symbol)] = row
     persisted["monitor_last_state_by_symbol"] = rows
     state["persisted_state"] = persisted
 
@@ -2362,6 +2471,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         entry_info["metrics"] = entry_metrics
         entry_info["minute_source_meta"] = dict(minute_ohlcv_meta or {})
         entry_info["minute_fetch_meta"] = minute_fetch_meta
+        entry_info["scoring_mode"] = str(entry_info.get("scoring_mode") or "disabled")
         entry_signal_detected = bool(entry_info.get("triggered"))
         entry_intent_cooldown_sec = max(0, _to_int((entry_info.get("thresholds") or {}).get("intent_cooldown_sec")))
         cooldown_until = max(0, _to_int(entry_cooldown_map.get(symbol)))
@@ -2416,6 +2526,17 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "entry_condition_scores": dict(entry_info.get("condition_scores") or {}),
                     "entry_grouped_logic_trace": dict(entry_info.get("grouped_logic_trace") or {}),
                     "entry_metrics": dict(entry_info.get("metrics") or {}),
+                    "entry_scoring": {
+                        "hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
+                        "hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
+                        "total_score": entry_info.get("total_score"),
+                        "score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+                        "entry_threshold": entry_info.get("entry_threshold"),
+                        "score_passed": bool(entry_info.get("score_passed")),
+                        "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
+                        "legacy_entry_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
+                        "scoring_entry_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
+                    },
                 },
             }
             if bool(sizing_info.get("enabled")):
@@ -2749,6 +2870,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "entry_failed_checks": list(entry_info.get("failed_checks") or []),
             "entry_primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),
             "entry_threshold_margins": dict(entry_info.get("threshold_margins") or {}),
+            "entry_hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
+            "entry_hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
+            "entry_total_score": entry_info.get("total_score"),
+            "entry_score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+            "entry_score_threshold": entry_info.get("entry_threshold"),
+            "entry_score_passed": bool(entry_info.get("score_passed")),
+            "entry_scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
+            "entry_legacy_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
+            "entry_scoring_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
             "entry_guard_blocked": bool(entry_info.get("guard_blocked")),
             "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
             "entry_intent_submitted": bool(entry_info.get("intent_submitted")),
@@ -2861,6 +2991,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_failed_checks": list(entry_info.get("failed_checks") or []),
         "entry_primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),
         "entry_threshold_margins": dict(entry_info.get("threshold_margins") or {}),
+        "entry_hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
+        "entry_hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
+        "entry_total_score": entry_info.get("total_score"),
+        "entry_score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+        "entry_score_threshold": entry_info.get("entry_threshold"),
+        "entry_score_passed": bool(entry_info.get("score_passed")),
+        "entry_scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
+        "entry_legacy_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
+        "entry_scoring_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
         "entry_guard_blocked": bool(entry_info.get("guard_blocked")),
         "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
         "entry_intent_submitted": bool(entry_info.get("intent_submitted")),
@@ -2907,6 +3046,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     previous_monitor_state = _load_previous_monitor_state(state, monitor_symbol) if monitor_symbol else {}
     previous_posture = str(previous_monitor_state.get("posture") or "").strip()
     previous_reason = str(previous_monitor_state.get("reason") or "").strip()
+    entry_transition_trace = _build_monitor_entry_transition_trace(previous_monitor_state, entry_info)
+    entry_info.update(dict(entry_transition_trace))
+    entry_info["entry_transition_trace"] = dict(entry_transition_trace)
     state_changed = bool(previous_posture != current_posture or previous_reason != current_reason)
     if monitor_symbol:
         _save_current_monitor_state(
@@ -2915,7 +3057,18 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             posture=current_posture,
             reason=current_reason,
             active_exit_axis=str(exit_info.get("active_exit_axis") or ""),
+            entry_state=_build_monitor_entry_state_snapshot(entry_info),
         )
+    if isinstance(state.get("monitor"), dict):
+        state["monitor"]["entry_transition_trace"] = dict(entry_transition_trace)
+        state["monitor"]["entry_became_ready_this_cycle"] = bool(entry_transition_trace.get("became_ready_this_cycle"))
+        state["monitor"]["entry_last_blocking_axis"] = str(entry_transition_trace.get("last_blocking_axis") or "")
+        state["monitor"]["entry_transition_readiness_score"] = entry_transition_trace.get("transition_readiness_score")
+    if isinstance(state.get("monitor_output"), dict):
+        state["monitor_output"]["entry_transition_trace"] = dict(entry_transition_trace)
+        state["monitor_output"]["entry_became_ready_this_cycle"] = bool(entry_transition_trace.get("became_ready_this_cycle"))
+        state["monitor_output"]["entry_last_blocking_axis"] = str(entry_transition_trace.get("last_blocking_axis") or "")
+        state["monitor_output"]["entry_transition_readiness_score"] = entry_transition_trace.get("transition_readiness_score")
 
     thresholds = dict(exit_info.get("thresholds") or {}) if isinstance(exit_info.get("thresholds"), dict) else {}
     entry_metrics = dict(entry_info.get("metrics") or {}) if isinstance(entry_info.get("metrics"), dict) else {}
@@ -3005,6 +3158,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_failed_checks": list(entry_info.get("failed_checks") or []),
         "entry_primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),
         "entry_threshold_margins": dict(entry_info.get("threshold_margins") or {}),
+        "entry_hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
+        "entry_hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
+        "entry_total_score": entry_info.get("total_score"),
+        "entry_score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+        "entry_score_threshold": entry_info.get("entry_threshold"),
+        "entry_score_passed": bool(entry_info.get("score_passed")),
+        "entry_scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
+        "entry_legacy_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
+        "entry_scoring_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
+        "entry_transition_trace": dict(entry_info.get("entry_transition_trace") or {}),
     }
     state["monitor_posture"] = current_posture
     state["monitor_threshold_snapshot"] = dict(threshold_snapshot)
@@ -3021,6 +3184,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "entry_triggered": bool(entry_info.get("triggered")),
             "entry_pattern": str(entry_info.get("pattern") or ""),
             "entry_condition_path": str(entry_info.get("entry_condition_path") or ""),
+            "became_ready_this_cycle": bool(entry_transition_trace.get("became_ready_this_cycle")),
+            "last_blocking_axis": str(entry_transition_trace.get("last_blocking_axis") or ""),
+            "transition_readiness_score": entry_transition_trace.get("transition_readiness_score"),
         },
     }
     _emit_monitor_event(
@@ -3044,6 +3210,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "exit_triggered": bool(exit_info.get("triggered")),
                 "entry_triggered": bool(entry_info.get("triggered")),
                 "entry_pattern": str(entry_info.get("pattern") or ""),
+                "became_ready_this_cycle": bool(entry_transition_trace.get("became_ready_this_cycle")),
+                "last_blocking_axis": str(entry_transition_trace.get("last_blocking_axis") or ""),
+                "transition_readiness_score": entry_transition_trace.get("transition_readiness_score"),
             },
         },
         symbol=monitor_symbol,
@@ -3082,6 +3251,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "failed_checks": list(entry_info.get("failed_checks") or []),
         "primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),
         "threshold_margins": dict(entry_info.get("threshold_margins") or {}),
+        "transition_trace": dict(entry_info.get("entry_transition_trace") or {}),
+        "hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
+        "hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
+        "total_score": entry_info.get("total_score"),
+        "score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+        "entry_threshold": entry_info.get("entry_threshold"),
+        "score_passed": bool(entry_info.get("score_passed")),
+        "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
+        "legacy_entry_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
+        "scoring_entry_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
         "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
         "entry_check_summary": str(monitor_policy_trace.get("entry_check_summary") or ""),
         "entry_blockers": list(monitor_policy_trace.get("entry_blockers") or []),
@@ -3097,6 +3276,43 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state,
         name="entry_decision_detail",
         payload=entry_decision_detail,
+        level="info",
+        symbol=monitor_symbol or entry_symbol,
+    )
+    scoring_event_payload = {
+        "run_id": str(state.get("run_id") or ""),
+        "symbol": str(monitor_symbol or entry_symbol or ""),
+        "hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
+        "hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
+        "score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+        "total_score": entry_info.get("total_score"),
+        "entry_threshold": entry_info.get("entry_threshold"),
+        "score_passed": bool(entry_info.get("score_passed")),
+        "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
+        "legacy_entry_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
+        "scoring_entry_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
+        "final_decision": "BUY" if bool(buy_submitted) else "WAIT",
+        "primary_reason_code": str(entry_info.get("reason") or ""),
+    }
+    if not bool(entry_info.get("hard_filter_passed")):
+        _emit_monitor_event(
+            state,
+            name="hard_filter_failed",
+            payload=dict(scoring_event_payload),
+            level="info",
+            symbol=monitor_symbol or entry_symbol,
+        )
+    _emit_monitor_event(
+        state,
+        name="score_computed",
+        payload=dict(scoring_event_payload),
+        level="info",
+        symbol=monitor_symbol or entry_symbol,
+    )
+    _emit_monitor_event(
+        state,
+        name="entry_decision",
+        payload=dict(scoring_event_payload),
         level="info",
         symbol=monitor_symbol or entry_symbol,
     )
@@ -3177,6 +3393,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["consumed_fields"] = list(monitor_policy_trace.get("consumed_fields") or [])
         state["monitor_output"]["shadow_used"] = bool(monitor_policy_trace.get("shadow_used"))
         state["monitor_output"]["strategist_fallback_used"] = bool(monitor_policy_trace.get("strategist_fallback_used"))
+        state["monitor_output"]["hard_filter_passed"] = bool(entry_info.get("hard_filter_passed"))
+        state["monitor_output"]["hard_filter_fail_reasons"] = list(entry_info.get("hard_filter_fail_reasons") or [])
+        state["monitor_output"]["total_score"] = entry_info.get("total_score")
+        state["monitor_output"]["score_breakdown"] = dict(entry_info.get("score_breakdown") or {})
+        state["monitor_output"]["entry_threshold"] = entry_info.get("entry_threshold")
+        state["monitor_output"]["score_passed"] = bool(entry_info.get("score_passed"))
+        state["monitor_output"]["scoring_mode"] = str(entry_info.get("scoring_mode") or "disabled")
+        state["monitor_output"]["legacy_entry_decision"] = str(entry_info.get("legacy_entry_decision") or "WAIT")
+        state["monitor_output"]["scoring_entry_decision"] = str(entry_info.get("scoring_entry_decision") or "WAIT")
     state["monitor_evaluation"] = {
         "triggered_rules": list(triggered_rules),
         "blocked_rules": list(dict.fromkeys(blocked_rules))[:8],
@@ -3186,6 +3411,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_passed_checks": list(entry_info.get("passed_checks") or []),
         "entry_failed_checks": list(entry_info.get("failed_checks") or []),
         "entry_threshold_margins": dict(entry_info.get("threshold_margins") or {}),
+        "entry_transition_trace": dict(entry_info.get("entry_transition_trace") or {}),
+        "hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
+        "hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
+        "total_score": entry_info.get("total_score"),
+        "score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+        "entry_threshold": entry_info.get("entry_threshold"),
+        "score_passed": bool(entry_info.get("score_passed")),
+        "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
+        "legacy_entry_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
+        "scoring_entry_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
         "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
         "entry_check_summary": str(monitor_policy_trace.get("entry_check_summary") or ""),
         "entry_blockers": list(monitor_policy_trace.get("entry_blockers") or []),
@@ -3235,6 +3470,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_check_summary": str(monitor_policy_trace.get("entry_check_summary") or ""),
         "entry_blockers": list(monitor_policy_trace.get("entry_blockers") or []),
         "exit_trigger_basis": dict(monitor_policy_trace.get("exit_trigger_basis") or {}),
+        "entry_transition_trace": dict(entry_info.get("entry_transition_trace") or {}),
+        "hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
+        "hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
+        "total_score": entry_info.get("total_score"),
+        "score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+        "entry_threshold": entry_info.get("entry_threshold"),
+        "score_passed": bool(entry_info.get("score_passed")),
+        "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
+        "legacy_entry_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
+        "scoring_entry_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
         "commander_context_consumed": bool(monitor_policy_trace.get("commander_context_consumed")),
         "consumed_fields": list(monitor_policy_trace.get("consumed_fields") or []),
         "shadow_used": bool(monitor_policy_trace.get("shadow_used")),
@@ -3376,6 +3621,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "entry_failed_checks": list(entry_info.get("failed_checks") or []),
             "entry_primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),
             "entry_threshold_margins": dict(entry_info.get("threshold_margins") or {}),
+            "entry_transition_trace": dict(entry_info.get("entry_transition_trace") or {}),
             "entry_guard_blocked": bool(entry_info.get("guard_blocked")),
             "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
         },
@@ -3435,6 +3681,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "entry_failed_checks": list(entry_info.get("failed_checks") or []),
                 "entry_primary_failure_axis": str(entry_info.get("primary_failure_axis") or ""),
                 "entry_threshold_margins": dict(entry_info.get("threshold_margins") or {}),
+                "entry_transition_trace": dict(entry_info.get("entry_transition_trace") or {}),
                 "entry_guard_blocked": bool(entry_info.get("guard_blocked")),
                 "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
             },

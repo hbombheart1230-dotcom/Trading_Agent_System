@@ -118,6 +118,39 @@ def _policy_with_entry_cooldown(seconds: int, base: dict | None = None) -> dict:
     return out
 
 
+def _entry_wait_rows_reclaim() -> list[dict]:
+    return [
+        {"open": 100.0, "high": 100.5, "low": 99.9, "close": 100.4, "volume": 1000, "vwap": 100.1},
+        {"open": 100.4, "high": 101.1, "low": 100.3, "close": 101.0, "volume": 1050, "vwap": 100.5},
+        {"open": 101.0, "high": 101.8, "low": 100.9, "close": 101.6, "volume": 1100, "vwap": 100.9},
+        {"open": 101.6, "high": 101.7, "low": 100.4, "close": 100.8, "volume": 950, "vwap": 100.9},
+        {"open": 100.8, "high": 100.9, "low": 99.7, "close": 100.2, "volume": 980, "vwap": 100.6},
+        {"open": 100.2, "high": 100.4, "low": 100.0, "close": 100.1, "volume": 600, "vwap": 100.8},
+    ]
+
+
+def _entry_ready_rows_reclaim() -> list[dict]:
+    return [
+        {"open": 100.0, "high": 100.5, "low": 99.9, "close": 100.4, "volume": 1000, "vwap": 100.1},
+        {"open": 100.4, "high": 101.1, "low": 100.3, "close": 101.0, "volume": 1050, "vwap": 100.5},
+        {"open": 101.0, "high": 101.8, "low": 100.9, "close": 101.6, "volume": 1100, "vwap": 100.9},
+        {"open": 101.6, "high": 101.7, "low": 100.4, "close": 100.8, "volume": 950, "vwap": 100.9},
+        {"open": 100.8, "high": 100.9, "low": 99.7, "close": 100.2, "volume": 980, "vwap": 100.6},
+        {"open": 100.2, "high": 101.3, "low": 100.1, "close": 101.1, "volume": 1500, "vwap": 100.7},
+    ]
+
+
+def _entry_breakout_rows() -> list[dict]:
+    return [
+        {"open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+        {"open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+        {"open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+        {"open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+        {"open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"open": 101.2, "high": 101.9, "low": 101.0, "close": 101.8, "volume": 2500, "vwap": 101.2},
+    ]
+
+
 def test_monitor_exit_policy_respects_min_hold_guard(monkeypatch):
     monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
@@ -1718,6 +1751,129 @@ def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_
     assert list(monitor.get("entry_effective_policy_deltas") or [])
     assert monitor.get("entry_triggered") is True
     assert monitor.get("entry_condition_path") == "breakout_path"
+
+
+def test_monitor_records_wait_to_buy_transition_trace_for_reclaim_recovery(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    wait_state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 100.1,
+            "features": {"engine_vwap_distance": -0.006, "engine_volume_spike20": 0.7},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": _entry_wait_rows_reclaim()},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": _policy_with_entry_cooldown(0),
+        "strategist_output": {"playbook": "pullback"},
+        "persisted_state": {},
+    }
+
+    wait_out = monitor_node(wait_state)
+    wait_monitor = wait_out.get("monitor") or {}
+    wait_trace = wait_monitor.get("entry_transition_trace") or {}
+
+    assert wait_out.get("intents") == []
+    assert wait_monitor.get("entry_triggered") is False
+    assert wait_monitor.get("entry_reason") == "below_vwap_reclaim_not_ready"
+    assert wait_trace.get("became_ready_this_cycle") is False
+    assert wait_trace.get("last_blocking_axis") == "vwap_relationship"
+
+    ready_state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.1,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.3},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": _entry_ready_rows_reclaim()},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": _policy_with_entry_cooldown(0),
+        "strategist_output": {"playbook": "pullback"},
+        "persisted_state": dict(wait_out.get("persisted_state") or {}),
+    }
+
+    ready_out = monitor_node(ready_state)
+    intents = ready_out.get("intents") or []
+    ready_monitor = ready_out.get("monitor") or {}
+    ready_trace = ready_monitor.get("entry_transition_trace") or {}
+
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
+    assert ready_monitor.get("entry_triggered") is True
+    assert ready_monitor.get("entry_condition_path") == "pullback_volume_path"
+    assert ready_trace.get("became_ready_this_cycle") is True
+    assert ready_trace.get("last_blocking_axis") == "vwap_relationship"
+    assert float(ready_trace.get("extended_from_vwap_improvement") or 0.0) > 0.0
+    assert float(ready_trace.get("volume_ratio_improvement") or 0.0) > 0.0
+    assert float(ready_trace.get("breakout_gap_improvement") or 0.0) > 0.0
+    assert ready_trace.get("volume_recovery_recent") is True
+    assert ready_trace.get("transition_happening_now") is True
+
+
+def test_monitor_scoring_shadow_mode_preserves_legacy_buy_and_records_score(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "false")
+    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "true")
+    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "8")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.006, "engine_volume_spike20": 1.4},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": _entry_breakout_rows()},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": _policy_with_entry_cooldown(0),
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    monitor = out.get("monitor") or {}
+
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
+    assert monitor.get("entry_scoring_mode") == "shadow"
+    assert monitor.get("entry_legacy_decision") == "BUY"
+    assert monitor.get("entry_scoring_decision") == "WAIT"
+    assert monitor.get("entry_score_passed") is False
+    assert isinstance(monitor.get("entry_score_breakdown"), dict)
+
+
+def test_monitor_scoring_enabled_can_block_legacy_buy_when_score_below_threshold(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
+    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "8")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.006, "engine_volume_spike20": 1.4},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": _entry_breakout_rows()},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": _policy_with_entry_cooldown(0),
+    }
+
+    out = monitor_node(state)
+    monitor = out.get("monitor") or {}
+
+    assert out.get("intents") == []
+    assert monitor.get("entry_scoring_mode") == "enabled"
+    assert monitor.get("entry_legacy_decision") == "BUY"
+    assert monitor.get("entry_scoring_decision") == "WAIT"
+    assert monitor.get("entry_score_passed") is False
+    assert monitor.get("entry_triggered") is False
+    assert monitor.get("entry_reason") == "monitor_score_threshold_not_met"
 
 
 def test_monitor_records_received_vs_effective_policy_when_strategy_frame_tightens(monkeypatch):
