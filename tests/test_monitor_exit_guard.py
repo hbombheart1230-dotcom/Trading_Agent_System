@@ -1119,6 +1119,57 @@ def test_monitor_flattens_near_close_when_overnight_carry_is_not_approved(monkey
     assert str(exit_info.get("reason") or "") == "eod_flat"
 
 
+def test_monitor_evaluates_overnight_carry_when_selected_missing_but_position_open(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    monkeypatch.setenv("EXIT_POLICY_USE_EOD_FLAT", "true")
+    monkeypatch.setenv("EXIT_POLICY_EOD_FLAT_CUTOFF_MIN", "10")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": None,
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [
+                {
+                    "symbol": "005930",
+                    "qty": 2,
+                    "avg_price": 100.0,
+                    "hold_sec": 3600,
+                    "current_price": 100.6,
+                }
+            ],
+        },
+        "feature_engine": {
+            "by_symbol": {
+                "005930": {
+                    "engine_trend_strength": 0.22,
+                    "engine_vwap_distance": 0.002,
+                }
+            }
+        },
+        "policy": {"use_exit_policy": True, "exit_policy": {"use_eod_flat": True, "eod_flat_cutoff_min": 10}},
+        "market_context": {"minutes_to_close": 8},
+        "playbook": "breakout",
+        "monitor_guidance": "hold_through_noise",
+        "risk_tone": "balanced",
+        "persisted_state": {},
+    }
+
+    out = monitor_node(state)
+    assert out.get("intents") == []
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("symbol") == "005930"
+    assert exit_info.get("eod_carry_evaluated") is True
+    assert exit_info.get("eod_carry_approved") is True
+    assert exit_info.get("monitor_reason") == "eod_carry_approved"
+    persisted = out.get("persisted_state") or {}
+    overnight = persisted.get("overnight_decision_by_symbol") or {}
+    assert overnight.get("005930", {}).get("approved") is True
+
+
 def test_monitor_does_not_use_other_symbol_selected_price_for_held_position(monkeypatch):
     monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")

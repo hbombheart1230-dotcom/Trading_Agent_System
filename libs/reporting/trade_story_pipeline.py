@@ -252,7 +252,26 @@ def _build_scanner_selection_trace(scanner_reason: Dict[str, Any], scanner_artif
     }
 
 
+def _normalize_stop_thresholds(thresholds: Dict[str, Any]) -> Dict[str, Any]:
+    data = thresholds if isinstance(thresholds, dict) else {}
+    nested = data.get("thresholds") if isinstance(data.get("thresholds"), dict) else {}
+    return nested or data
+
+
+def _resolve_strategist_adaptive_exit(monitor: Dict[str, Any]) -> Dict[str, Any]:
+    data = monitor if isinstance(monitor, dict) else {}
+    for candidate in (
+        ((data.get("policy_ref") or {}).get("exit_plan") or {}).get("adaptive_exit"),
+        (((data.get("decision_trace") or {}).get("policy_ref") or {}).get("exit_plan") or {}).get("adaptive_exit"),
+        (((data.get("timing_assessment") or {}).get("entry_plan") or {}).get("adaptive_exit")),
+    ):
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+    return {}
+
+
 def _resolve_adaptive_stop_loss_pct(monitor: Dict[str, Any], thresholds: Dict[str, Any]) -> Any:
+    thresholds = _normalize_stop_thresholds(thresholds)
     adaptive_exit = monitor.get("adaptive_exit") if isinstance(monitor.get("adaptive_exit"), dict) else {}
     if adaptive_exit.get("stop_loss_pct") not in (None, ""):
         return adaptive_exit.get("stop_loss_pct")
@@ -265,6 +284,8 @@ def _resolve_adaptive_stop_loss_pct(monitor: Dict[str, Any], thresholds: Dict[st
 
 
 def _build_monitor_stop_policy_trace(monitor: Dict[str, Any], thresholds: Dict[str, Any]) -> Dict[str, Any]:
+    thresholds = _normalize_stop_thresholds(thresholds)
+    strategist_adaptive_exit = _resolve_strategist_adaptive_exit(monitor)
     adaptive_stop_loss_pct = _resolve_adaptive_stop_loss_pct(monitor, thresholds)
     hard_stop_pct = (
         thresholds.get("hard_stop_pct")
@@ -284,6 +305,9 @@ def _build_monitor_stop_policy_trace(monitor: Dict[str, Any], thresholds: Dict[s
         "effective_stop_loss_pct": effective_stop_loss_pct,
         "trailing_stop_pct": thresholds.get("trailing_stop_pct"),
         "take_profit_pct": thresholds.get("take_profit_pct"),
+        "strategist_baseline_stop_loss_pct": strategist_adaptive_exit.get("stop_loss_pct"),
+        "strategist_baseline_take_profit_pct": strategist_adaptive_exit.get("take_profit_pct"),
+        "strategist_baseline_trailing_stop_pct": strategist_adaptive_exit.get("trailing_stop_pct"),
     }
 
 
@@ -1739,6 +1763,10 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         bullets.append(
             f"Active adaptive stop: {format_ratio_pct(monitor_stop_policy_trace.get('adaptive_stop_loss_pct'))}%"
         )
+    if monitor_stop_policy_trace.get("strategist_baseline_stop_loss_pct") not in (None, ""):
+        bullets.append(
+            f"Strategist baseline adaptive stop: {format_ratio_pct(monitor_stop_policy_trace.get('strategist_baseline_stop_loss_pct'))}%"
+        )
     if monitor_stop_policy_trace.get("effective_stop_loss_pct") not in (None, ""):
         bullets.append(
             f"Effective stop in this run: {format_ratio_pct(monitor_stop_policy_trace.get('effective_stop_loss_pct'))}%"
@@ -1747,9 +1775,17 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         bullets.append(
             f"Trailing stop: {format_ratio_pct(monitor_stop_policy_trace.get('trailing_stop_pct'))}%"
         )
+    if monitor_stop_policy_trace.get("strategist_baseline_trailing_stop_pct") not in (None, ""):
+        bullets.append(
+            f"Strategist baseline trailing stop: {format_ratio_pct(monitor_stop_policy_trace.get('strategist_baseline_trailing_stop_pct'))}%"
+        )
     if monitor_stop_policy_trace.get("take_profit_pct") not in (None, ""):
         bullets.append(
             f"Take profit target: {format_ratio_pct(monitor_stop_policy_trace.get('take_profit_pct'))}%"
+        )
+    if monitor_stop_policy_trace.get("strategist_baseline_take_profit_pct") not in (None, ""):
+        bullets.append(
+            f"Strategist baseline take profit: {format_ratio_pct(monitor_stop_policy_trace.get('strategist_baseline_take_profit_pct'))}%"
         )
     if entry_evaluated:
         bullets.append(f"Entry triggered: {'yes' if entry_triggered else 'no'}")
@@ -2244,10 +2280,12 @@ def build_trade_story_input(
         )
         scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
         monitor_stop_thresholds = (
-            canonical_monitor.get("threshold_snapshot")
-            if isinstance(canonical_monitor.get("threshold_snapshot"), dict)
+            ((canonical_monitor.get("thresholds_guards_used") or {}).get("thresholds"))
+            if isinstance((canonical_monitor.get("thresholds_guards_used") or {}).get("thresholds"), dict)
             else canonical_monitor.get("thresholds")
             if isinstance(canonical_monitor.get("thresholds"), dict)
+            else canonical_monitor.get("threshold_snapshot")
+            if isinstance(canonical_monitor.get("threshold_snapshot"), dict)
             else {}
         )
         monitor_stop_policy_trace = _build_monitor_stop_policy_trace(
@@ -2553,10 +2591,12 @@ def build_trade_story_input(
     )
     scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
     monitor_stop_thresholds = (
-        canonical_monitor.get("threshold_snapshot")
-        if isinstance(canonical_monitor.get("threshold_snapshot"), dict)
+        ((canonical_monitor.get("thresholds_guards_used") or {}).get("thresholds"))
+        if isinstance((canonical_monitor.get("thresholds_guards_used") or {}).get("thresholds"), dict)
         else canonical_monitor.get("thresholds")
         if isinstance(canonical_monitor.get("thresholds"), dict)
+        else canonical_monitor.get("threshold_snapshot")
+        if isinstance(canonical_monitor.get("threshold_snapshot"), dict)
         else {}
     )
     monitor_stop_policy_trace = _build_monitor_stop_policy_trace(

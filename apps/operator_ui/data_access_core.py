@@ -2499,6 +2499,20 @@ def _brief_build_stop_policy_trace(monitor: Dict[str, Any]) -> Dict[str, Any]:
     data = monitor if isinstance(monitor, dict) else {}
     policy_trace = data.get("monitor_stop_policy_trace") if isinstance(data.get("monitor_stop_policy_trace"), dict) else {}
     adaptive_exit = data.get("adaptive_exit") if isinstance(data.get("adaptive_exit"), dict) else {}
+    policy_ref = data.get("policy_ref") if isinstance(data.get("policy_ref"), dict) else {}
+    decision_trace = data.get("decision_trace") if isinstance(data.get("decision_trace"), dict) else {}
+    decision_policy_ref = decision_trace.get("policy_ref") if isinstance(decision_trace.get("policy_ref"), dict) else {}
+    strategist_adaptive_exit = (
+        (policy_ref.get("exit_plan") or {}).get("adaptive_exit")
+        if isinstance((policy_ref.get("exit_plan") or {}).get("adaptive_exit"), dict)
+        else {}
+    )
+    if not strategist_adaptive_exit:
+        strategist_adaptive_exit = (
+            (decision_policy_ref.get("exit_plan") or {}).get("adaptive_exit")
+            if isinstance((decision_policy_ref.get("exit_plan") or {}).get("adaptive_exit"), dict)
+            else {}
+        )
     hard_stop_pct = data.get("hard_stop_pct")
     if hard_stop_pct in (None, ""):
         hard_stop_pct = policy_trace.get("hard_stop_pct")
@@ -2528,6 +2542,15 @@ def _brief_build_stop_policy_trace(monitor: Dict[str, Any]) -> Dict[str, Any]:
         "effective_stop_loss_pct": effective_stop_loss_pct,
         "trailing_stop_pct": trailing_stop_pct,
         "take_profit_pct": take_profit_pct,
+        "strategist_baseline_stop_loss_pct": strategist_adaptive_exit.get("stop_loss_pct")
+        if strategist_adaptive_exit.get("stop_loss_pct") not in (None, "")
+        else policy_trace.get("strategist_baseline_stop_loss_pct"),
+        "strategist_baseline_take_profit_pct": strategist_adaptive_exit.get("take_profit_pct")
+        if strategist_adaptive_exit.get("take_profit_pct") not in (None, "")
+        else policy_trace.get("strategist_baseline_take_profit_pct"),
+        "strategist_baseline_trailing_stop_pct": strategist_adaptive_exit.get("trailing_stop_pct")
+        if strategist_adaptive_exit.get("trailing_stop_pct") not in (None, "")
+        else policy_trace.get("strategist_baseline_trailing_stop_pct"),
     }
 
 
@@ -3384,7 +3407,12 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
         hard_stop_source = thresholds.get("hard_stop_pct")
     if hard_stop_source in (None, ""):
         hard_stop_source = stop_loss
-    hard_stop_brief = canonical_monitor_snapshot.get("stop_loss") or (_format_percent(hard_stop_source, 2) if hard_stop_source not in (None, "") else stop_loss_text)
+    hard_stop_brief = (
+        _format_percent(hard_stop_source, 2)
+        if hard_stop_source not in (None, "")
+        else canonical_monitor_snapshot.get("stop_loss")
+        or stop_loss_text
+    )
     effective_stop_brief = canonical_monitor_snapshot.get("effective_stop") or effective_stop_text
     take_profit_source = stop_policy_trace.get("take_profit_pct")
     if take_profit_source in (None, ""):
@@ -3397,15 +3425,30 @@ def _build_operator_brief_sections(detail: Dict[str, Any]) -> Dict[str, Any]:
     stop_policy_summary: List[str] = []
     if hard_stop_brief and str(hard_stop_brief).strip() not in {"", "-"}:
         stop_policy_summary.append(f"Hard fail-safe stop {hard_stop_brief}")
+    strategist_baseline_stop = stop_policy_trace.get("strategist_baseline_stop_loss_pct")
+    if strategist_baseline_stop not in (None, ""):
+        stop_policy_summary.append(
+            f"Strategist baseline adaptive stop {_format_percent(strategist_baseline_stop, 2)}"
+        )
     if effective_stop_brief and str(effective_stop_brief).strip() not in {"", "-"}:
         stop_policy_summary.append(f"Effective stop {effective_stop_brief} ({effective_stop_reason_brief or 'active stop'})")
     if take_profit_brief and str(take_profit_brief).strip() not in {"", "-"}:
         stop_policy_summary.append(f"Take profit {take_profit_brief}")
+    strategist_baseline_take_profit = stop_policy_trace.get("strategist_baseline_take_profit_pct")
+    if strategist_baseline_take_profit not in (None, ""):
+        stop_policy_summary.append(
+            f"Strategist baseline take profit {_format_percent(strategist_baseline_take_profit, 2)}"
+        )
     trailing_stop_brief = stop_policy_trace.get("trailing_stop_pct")
     if trailing_stop_brief in (None, ""):
         trailing_stop_brief = thresholds.get("trailing_stop_pct")
     if trailing_stop_brief not in (None, ""):
         stop_policy_summary.append(f"Trailing stop {_format_percent(trailing_stop_brief, 2)}")
+    strategist_baseline_trailing = stop_policy_trace.get("strategist_baseline_trailing_stop_pct")
+    if strategist_baseline_trailing not in (None, ""):
+        stop_policy_summary.append(
+            f"Strategist baseline trailing stop {_format_percent(strategist_baseline_trailing, 2)}"
+        )
 
     next_expected_step = ""
     if watch_next:
@@ -4112,12 +4155,26 @@ def _build_operator_brief_input(detail: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(monitor_trace, dict):
         merged_monitor_stop_source.update(monitor_trace)
     monitor_stop_policy_trace = _brief_build_stop_policy_trace(merged_monitor_stop_source)
+    canonical_monitor_stop_policy_trace = (
+        canonical_trade.get("monitor_stop_policy_trace")
+        if isinstance(canonical_trade.get("monitor_stop_policy_trace"), dict)
+        else {}
+    )
+    canonical_monitor_snapshot_stop_policy_trace = (
+        (canonical_trade.get("monitor_snapshot") or {}).get("monitor_stop_policy_trace")
+        if isinstance((canonical_trade.get("monitor_snapshot") or {}).get("monitor_stop_policy_trace"), dict)
+        else {}
+    )
     if not any(value not in (None, "", []) for value in monitor_stop_policy_trace.values()):
-        monitor_stop_policy_trace = (
-            canonical_trade.get("monitor_stop_policy_trace")
-            if isinstance(canonical_trade.get("monitor_stop_policy_trace"), dict)
-            else {}
-        )
+        monitor_stop_policy_trace = dict(canonical_monitor_stop_policy_trace or {})
+    elif canonical_monitor_stop_policy_trace:
+        for key, value in canonical_monitor_stop_policy_trace.items():
+            if monitor_stop_policy_trace.get(key) in (None, "", []):
+                monitor_stop_policy_trace[key] = value
+    if canonical_monitor_snapshot_stop_policy_trace:
+        for key, value in canonical_monitor_snapshot_stop_policy_trace.items():
+            if monitor_stop_policy_trace.get(key) in (None, "", []):
+                monitor_stop_policy_trace[key] = value
     commander_applied_policy = (
         commander_artifact.get("applied_policy")
         if isinstance(commander_artifact.get("applied_policy"), dict)

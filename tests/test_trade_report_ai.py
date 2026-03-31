@@ -361,6 +361,9 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
                 "effective_stop_loss_pct": 0.0092,
                 "trailing_stop_pct": 0.012,
                 "take_profit_pct": 0.025,
+                "strategist_baseline_stop_loss_pct": 0.0081,
+                "strategist_baseline_take_profit_pct": 0.0175,
+                "strategist_baseline_trailing_stop_pct": 0.011,
             },
             "monitor_blocker_trace": {
                 "entry_check_summary": "mission=wait_for_confirmation | reason=reclaim_not_confirmed",
@@ -533,6 +536,7 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
     assert monitor_reasoning.get("policy_adjustment_summary")
     assert monitor_reasoning.get("monitor_stop_policy_trace", {}).get("hard_stop_pct") == 0.03
     assert monitor_reasoning.get("monitor_stop_policy_trace", {}).get("adaptive_stop_loss_pct") == 0.0092
+    assert monitor_reasoning.get("monitor_stop_policy_trace", {}).get("strategist_baseline_stop_loss_pct") == 0.0081
     assert monitor_reasoning.get("threshold_shortfalls") == ["volume ratio 0.10 below min 0.75"]
     assert compact_input["commander"]["selected_route"] == "cached_strategist"
     assert compact_input["commander"]["route_reason_text"] == "commander_skip_cached_strategist"
@@ -560,9 +564,11 @@ def test_trade_report_shared_seed_and_compact_input_include_runtime_route_and_mo
     assert compact_input["monitor"]["entry_metrics"]["volume_ratio"] == 0.1
     assert compact_input["monitor"]["monitor_stop_policy_trace"]["hard_stop_pct"] == 0.03
     assert compact_input["monitor"]["monitor_stop_policy_trace"]["adaptive_stop_loss_pct"] == 0.0092
+    assert compact_input["monitor"]["monitor_stop_policy_trace"]["strategist_baseline_stop_loss_pct"] == 0.0081
     assert deterministic["market_context_at_entry"]["strategist_candidate_hints"] == ["122630", "233740", "005930"]
     assert deterministic["why_this_symbol_was_chosen"]["scanner_selection_trace"]["selected_symbol"] == "000660"
     assert deterministic["holding_monitoring_story"]["monitor_stop_policy_trace"]["effective_stop_loss_pct"] == 0.0092
+    assert deterministic["holding_monitoring_story"]["monitor_stop_policy_trace"]["strategist_baseline_stop_loss_pct"] == 0.0081
 
 
 def test_trade_report_marks_scanner_evidence_unavailable_when_missing() -> None:

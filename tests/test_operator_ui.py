@@ -974,13 +974,20 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
     detail["monitor"]["decision_trace"] = {
         "entry_check_summary": "mission=wait_for_confirmation | reason=reclaim_not_confirmed",
         "entry_blockers": ["volume_ok", "vwap_reclaim_ok"],
-        "policy_ref": {
-            "monitor_mission": "Wait for cleaner reclaim confirmation.",
-            "flow_instruction": "observe_only",
-            "policy_source": "strategist",
-            "policy_validation_status": "ok",
-            "policy_fallback_used": False,
-        },
+            "policy_ref": {
+                "monitor_mission": "Wait for cleaner reclaim confirmation.",
+                "flow_instruction": "observe_only",
+                "policy_source": "strategist",
+                "policy_validation_status": "ok",
+                "policy_fallback_used": False,
+                "exit_plan": {
+                    "adaptive_exit": {
+                        "stop_loss_pct": 0.0081,
+                        "take_profit_pct": 0.0175,
+                        "trailing_stop_pct": 0.011,
+                    }
+                },
+            },
         "timing_assessment": {
             "entry_reason": "reclaim_not_confirmed",
             "entry_pattern": "pullback_reclaim",
@@ -1097,6 +1104,9 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
             "effective_stop_loss_pct": 0.0092,
             "trailing_stop_pct": 0.012,
             "take_profit_pct": 0.025,
+            "strategist_baseline_stop_loss_pct": 0.0081,
+            "strategist_baseline_take_profit_pct": 0.0175,
+            "strategist_baseline_trailing_stop_pct": 0.011,
         },
     }
 
@@ -1121,6 +1131,7 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
     assert prepared["monitor"]["threshold_shortfalls"]
     assert prepared["monitor"]["stop_policy_trace"]["hard_stop_pct"] == 0.03
     assert prepared["monitor"]["stop_policy_trace"]["effective_stop_loss_pct"] == 0.0092
+    assert prepared["monitor"]["stop_policy_trace"]["strategist_baseline_stop_loss_pct"] == 0.0081
     assert prepared["monitor"]["policy_source"] == "strategist"
     assert prepared["monitor"]["applied_policy"]["pullback_min_pct"] == 0.008
     assert prepared["monitor"]["received_policy"]["volume_ratio_min"] == 0.68
@@ -1144,6 +1155,7 @@ def test_operator_brief_input_surfaces_route_and_monitor_blockers(tmp_path: Path
     }
     assert compact["scanner"]["selection_trace"]["selected_symbol_score_drivers"]["trading_value"] == 0.22
     assert compact["scanner"]["selection_reason_with_bias"]
+    assert compact["monitor"]["stop_policy_trace"]["strategist_baseline_take_profit_pct"] == 0.0175
     assert "preference" in compact["scanner"]["selection_reason_with_bias"]
     assert compact["monitor"]["entry_check_summary"] == "mission=wait_for_confirmation | reason=reclaim_not_confirmed"
     assert compact["monitor"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
@@ -1332,6 +1344,7 @@ def test_operator_brief_sections_surface_monitor_exit_metrics(tmp_path: Path, mo
     assert "VWAP breakdown" in monitor_sec["watch_axes"]
     snapshot_sec = sections["monitor_guard_snapshot"]
     assert any("Hard fail-safe stop" in line for line in snapshot_sec["stop_policy_summary"])
+    assert not any("Hard fail-safe stop 8.00%" in line for line in snapshot_sec["stop_policy_summary"])
     assert any("Take profit" in line for line in snapshot_sec["stop_policy_summary"])
 
 

@@ -364,6 +364,15 @@ def test_trade_story_human_sections_surface_strategist_evidence_selection_trace_
             "decision_trace": {
                 "entry_check_summary": "mission=wait_for_confirmation | reason=reclaim_not_confirmed",
                 "entry_blockers": ["volume_ok", "vwap_reclaim_ok"],
+                "policy_ref": {
+                    "exit_plan": {
+                        "adaptive_exit": {
+                            "stop_loss_pct": 0.0081,
+                            "take_profit_pct": 0.0175,
+                            "trailing_stop_pct": 0.011,
+                        }
+                    }
+                },
             },
         },
         {"action": "NOOP"},
@@ -379,6 +388,8 @@ def test_trade_story_human_sections_surface_strategist_evidence_selection_trace_
     assert monitor["monitor_stop_policy_trace"]["hard_stop_pct"] == 0.03
     assert monitor["monitor_stop_policy_trace"]["adaptive_stop_loss_pct"] == 0.0092
     assert monitor["monitor_stop_policy_trace"]["effective_stop_loss_pct"] == 0.0092
+    assert monitor["monitor_stop_policy_trace"]["strategist_baseline_stop_loss_pct"] == 0.0081
+    assert monitor["monitor_stop_policy_trace"]["strategist_baseline_take_profit_pct"] == 0.0175
     assert "volume ratio 0.61 below min 0.68" in monitor["threshold_shortfalls"][0]
     assert monitor["monitor_blocker_trace"]["entry_blockers"] == ["volume_ok", "vwap_reclaim_ok"]
 

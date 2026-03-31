@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import logging
@@ -863,6 +863,12 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             or monitor_reason.get("effective_stop_loss_pct"),
             "trailing_stop_pct": monitor_stop_policy_trace.get("trailing_stop_pct") or monitor_reason.get("trailing_stop_pct"),
             "take_profit_pct": monitor_stop_policy_trace.get("take_profit_pct") or monitor_reason.get("take_profit_pct"),
+            "strategist_baseline_stop_loss_pct": monitor_stop_policy_trace.get("strategist_baseline_stop_loss_pct")
+            or monitor_reason.get("strategist_baseline_stop_loss_pct"),
+            "strategist_baseline_take_profit_pct": monitor_stop_policy_trace.get("strategist_baseline_take_profit_pct")
+            or monitor_reason.get("strategist_baseline_take_profit_pct"),
+            "strategist_baseline_trailing_stop_pct": monitor_stop_policy_trace.get("strategist_baseline_trailing_stop_pct")
+            or monitor_reason.get("strategist_baseline_trailing_stop_pct"),
         },
         "monitor_blocker_trace": {
             "entry_check_summary": _first_nonempty_text(
@@ -1131,19 +1137,26 @@ def _compact_timeline_rows(values: Any, *, head: int = 3, tail: int = 9) -> List
 def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
     data = section if isinstance(section, dict) else {}
     policy_ref = data.get("policy_ref") if isinstance(data.get("policy_ref"), dict) else {}
+    stop_trace = data.get("monitor_stop_policy_trace") if isinstance(data.get("monitor_stop_policy_trace"), dict) else {}
     out: Dict[str, Any] = {
         "posture": _clip(data.get("posture"), max_len=32),
         "trigger_type": _clip(data.get("trigger_type"), max_len=48),
         "summary": _clip(data.get("summary"), max_len=320),
         "bullets": _listify(data.get("bullets"), max_items=6, max_len=220),
         "position_age_seconds": data.get("position_age_seconds"),
-        "hard_stop_pct": data.get("hard_stop_pct"),
-        "adaptive_stop_loss_pct": data.get("adaptive_stop_loss_pct"),
-        "stop_loss_pct": data.get("stop_loss_pct"),
-        "effective_stop_loss_pct": data.get("effective_stop_loss_pct"),
+        "hard_stop_pct": data.get("hard_stop_pct") or stop_trace.get("hard_stop_pct"),
+        "adaptive_stop_loss_pct": data.get("adaptive_stop_loss_pct") or stop_trace.get("adaptive_stop_loss_pct"),
+        "stop_loss_pct": data.get("stop_loss_pct") or stop_trace.get("stop_loss_pct"),
+        "effective_stop_loss_pct": data.get("effective_stop_loss_pct") or stop_trace.get("effective_stop_loss_pct"),
         "effective_stop_reason": _clip(data.get("effective_stop_reason"), max_len=80),
-        "trailing_stop_pct": data.get("trailing_stop_pct"),
-        "take_profit_pct": data.get("take_profit_pct"),
+        "trailing_stop_pct": data.get("trailing_stop_pct") or stop_trace.get("trailing_stop_pct"),
+        "take_profit_pct": data.get("take_profit_pct") or stop_trace.get("take_profit_pct"),
+        "strategist_baseline_stop_loss_pct": data.get("strategist_baseline_stop_loss_pct")
+        or stop_trace.get("strategist_baseline_stop_loss_pct"),
+        "strategist_baseline_take_profit_pct": data.get("strategist_baseline_take_profit_pct")
+        or stop_trace.get("strategist_baseline_take_profit_pct"),
+        "strategist_baseline_trailing_stop_pct": data.get("strategist_baseline_trailing_stop_pct")
+        or stop_trace.get("strategist_baseline_trailing_stop_pct"),
         "exit_triggered": data.get("exit_triggered"),
         "current_price": data.get("current_price"),
         "average_price": data.get("average_price"),
@@ -2968,14 +2981,27 @@ def _fallback_report(
         story_input.get("operator_conclusion_human") if isinstance(story_input.get("operator_conclusion_human"), dict) else {}
     )
     action = _clip(shared_seed.get("lifecycle_action"), max_len=24) or _clip(story_input.get("action"), max_len=24) or "WAIT"
+    monitor_stop_trace = _as_dict(
+        monitor_reason.get("monitor_stop_policy_trace")
+        or story_input.get("monitor_stop_policy_trace")
+    )
     monitor_snapshot = {
         "posture": _clip(monitor_reason.get("posture"), max_len=40) or action or "WAIT",
         "trigger_type": _clip(monitor_reason.get("trigger_type"), max_len=80) or "not_captured",
         "position_age_seconds": int(monitor_reason.get("position_age_seconds") or 0),
+        "hard_stop_pct": monitor_reason.get("hard_stop_pct") or monitor_stop_trace.get("hard_stop_pct"),
+        "adaptive_stop_loss_pct": monitor_reason.get("adaptive_stop_loss_pct") or monitor_stop_trace.get("adaptive_stop_loss_pct"),
         "stop_loss_pct": monitor_reason.get("stop_loss_pct"),
-        "effective_stop_loss_pct": monitor_reason.get("effective_stop_loss_pct"),
+        "effective_stop_loss_pct": monitor_reason.get("effective_stop_loss_pct") or monitor_stop_trace.get("effective_stop_loss_pct"),
         "effective_stop_reason": _clip(monitor_reason.get("effective_stop_reason"), max_len=80) or "not_captured",
-        "take_profit_pct": monitor_reason.get("take_profit_pct"),
+        "strategist_baseline_stop_loss_pct": monitor_reason.get("strategist_baseline_stop_loss_pct")
+        or monitor_stop_trace.get("strategist_baseline_stop_loss_pct"),
+        "strategist_baseline_take_profit_pct": monitor_reason.get("strategist_baseline_take_profit_pct")
+        or monitor_stop_trace.get("strategist_baseline_take_profit_pct"),
+        "strategist_baseline_trailing_stop_pct": monitor_reason.get("strategist_baseline_trailing_stop_pct")
+        or monitor_stop_trace.get("strategist_baseline_trailing_stop_pct"),
+        "take_profit_pct": monitor_reason.get("take_profit_pct") or monitor_stop_trace.get("take_profit_pct"),
+        "trailing_stop_pct": monitor_reason.get("trailing_stop_pct") or monitor_stop_trace.get("trailing_stop_pct"),
         "exit_triggered": bool(monitor_reason.get("exit_triggered")),
         "current_price": monitor_reason.get("current_price"),
         "average_price": monitor_reason.get("average_price"),
@@ -3233,6 +3259,10 @@ def _failure_report(
     status_text = _clip(shared_seed.get("lifecycle_status"), max_len=32) or _clip(story_input.get("status"), max_len=32) or "unknown"
     reporter_status = story_input.get("reporter_status_human") if isinstance(story_input.get("reporter_status_human"), dict) else {}
     monitor_reason = story_input.get("monitor_reason_human") if isinstance(story_input.get("monitor_reason_human"), dict) else {}
+    monitor_stop_trace = _as_dict(
+        monitor_reason.get("monitor_stop_policy_trace")
+        or story_input.get("monitor_stop_policy_trace")
+    )
     full_timeline = [
         row
         for row in list(story_input.get("timeline") or [])
@@ -3295,10 +3325,19 @@ def _failure_report(
             "posture": _clip(monitor_reason.get("posture"), max_len=40) or action or "WAIT",
             "trigger_type": _clip(monitor_reason.get("trigger_type"), max_len=80) or "not_captured",
             "position_age_seconds": int(monitor_reason.get("position_age_seconds") or 0),
+            "hard_stop_pct": monitor_reason.get("hard_stop_pct") or monitor_stop_trace.get("hard_stop_pct"),
+            "adaptive_stop_loss_pct": monitor_reason.get("adaptive_stop_loss_pct") or monitor_stop_trace.get("adaptive_stop_loss_pct"),
             "stop_loss_pct": monitor_reason.get("stop_loss_pct"),
-            "effective_stop_loss_pct": monitor_reason.get("effective_stop_loss_pct"),
+            "effective_stop_loss_pct": monitor_reason.get("effective_stop_loss_pct") or monitor_stop_trace.get("effective_stop_loss_pct"),
             "effective_stop_reason": _clip(monitor_reason.get("effective_stop_reason"), max_len=80) or "not_captured",
-            "take_profit_pct": monitor_reason.get("take_profit_pct"),
+            "strategist_baseline_stop_loss_pct": monitor_reason.get("strategist_baseline_stop_loss_pct")
+            or monitor_stop_trace.get("strategist_baseline_stop_loss_pct"),
+            "strategist_baseline_take_profit_pct": monitor_reason.get("strategist_baseline_take_profit_pct")
+            or monitor_stop_trace.get("strategist_baseline_take_profit_pct"),
+            "strategist_baseline_trailing_stop_pct": monitor_reason.get("strategist_baseline_trailing_stop_pct")
+            or monitor_stop_trace.get("strategist_baseline_trailing_stop_pct"),
+            "take_profit_pct": monitor_reason.get("take_profit_pct") or monitor_stop_trace.get("take_profit_pct"),
+            "trailing_stop_pct": monitor_reason.get("trailing_stop_pct") or monitor_stop_trace.get("trailing_stop_pct"),
             "exit_triggered": bool(monitor_reason.get("exit_triggered")),
             "current_price": monitor_reason.get("current_price"),
             "average_price": monitor_reason.get("average_price"),
@@ -4281,9 +4320,27 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"- 현재 포지션 판단은 {_action_label(monitor_snapshot.get('posture'))}입니다.")
         lines.append(f"- 감지된 신호 유형은 {_axis_label(monitor_snapshot.get('trigger_type'))}입니다.")
+        if monitor_snapshot.get("hard_stop_pct") not in (None, ""):
+            lines.append(f"- Hard fail-safe 손절 기준은 {_fmt_pct(monitor_snapshot.get('hard_stop_pct'))} 수준입니다.")
+        if monitor_snapshot.get("strategist_baseline_stop_loss_pct") not in (None, ""):
+            lines.append(
+                f"- 전략가 baseline 적응형 손절 기준은 {_fmt_pct(monitor_snapshot.get('strategist_baseline_stop_loss_pct'))} 수준입니다."
+            )
+        if monitor_snapshot.get("adaptive_stop_loss_pct") not in (None, ""):
+            lines.append(
+                f"- 모니터 active adaptive 손절 기준은 {_fmt_pct(monitor_snapshot.get('adaptive_stop_loss_pct'))} 수준입니다."
+            )
         lines.append(f"- 유효 손절 기준은 {_fmt_pct(monitor_snapshot.get('effective_stop_loss_pct'))} 수준입니다.")
         lines.append(f"- 손절 기준 축은 {_axis_label(monitor_snapshot.get('effective_stop_reason'))}입니다.")
+        if monitor_snapshot.get("strategist_baseline_take_profit_pct") not in (None, ""):
+            lines.append(
+                f"- 전략가 baseline 익절 기준은 {_fmt_pct(monitor_snapshot.get('strategist_baseline_take_profit_pct'))} 수준입니다."
+            )
         lines.append(f"- 목표 수익 실현 기준은 {_fmt_pct(monitor_snapshot.get('take_profit_pct'))} 수준입니다.")
+        if monitor_snapshot.get("strategist_baseline_trailing_stop_pct") not in (None, ""):
+            lines.append(
+                f"- 전략가 baseline trailing stop 기준은 {_fmt_pct(monitor_snapshot.get('strategist_baseline_trailing_stop_pct'))} 수준입니다."
+            )
         if monitor_snapshot.get("current_price") not in (None, ""):
             lines.append(f"- 현재가는 {_fmt_price(monitor_snapshot.get('current_price'))}입니다.")
         if monitor_snapshot.get("average_price") not in (None, ""):

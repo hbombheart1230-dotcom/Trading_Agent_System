@@ -2467,8 +2467,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "monitor_reason": "hold",
         "emergency_exit": False,
     }
-    if use_exit_policy and isinstance(selected, dict) and selected.get("symbol"):
-        selected_symbol = _norm_symbol(selected.get("symbol"))
+    selected_snapshot = dict(selected) if isinstance(selected, dict) else {}
+    selected_symbol = _norm_symbol(selected_snapshot.get("symbol"))
+    has_open_position_for_exit = any(
+        max(0, _to_int((row or {}).get("qty"))) > 0
+        for row in list(all_pos_map.values())
+    )
+    if use_exit_policy and (selected_symbol or has_open_position_for_exit):
         pos_map = all_pos_map
         min_hold_sec = _resolve_min_hold_sec(state, monitor_policy)
         sell_cooldown_sec = _resolve_sell_cooldown_sec(state, monitor_policy)
@@ -2491,8 +2496,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         exit_policy_strategy = _apply_exit_policy_strategy_frame(
             state=state,
             exit_policy_base=effective_exit_policy_base,
-            selected=selected,
-            position=pos_map.get(selected_symbol, {}),
+            selected=selected_snapshot,
+            position=pos_map.get(selected_symbol, {}) if selected_symbol else {},
             frame=frame_applied,
         )
         effective_exit_policy_base = dict(exit_policy_strategy.get("policy") or effective_exit_policy_base)
@@ -2501,11 +2506,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             selected_symbol,
             pos_map,
             state=state,
-            selected=selected,
+            selected=selected_snapshot,
             policy=policy,
             exit_policy_base=effective_exit_policy_base,
         )
-        selected_for_exit: Dict[str, Any] = selected
+        selected_for_exit: Dict[str, Any] = dict(selected_snapshot)
         if symbol and symbol != selected_symbol:
             selected_for_exit = {"symbol": symbol}
         features = selected_for_exit.get("features") if isinstance(selected_for_exit.get("features"), dict) else {}
