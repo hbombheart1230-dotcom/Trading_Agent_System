@@ -1,6 +1,7 @@
 from libs.risk.intent import TradeIntent, RiskContext, ExecutionContext, TradeDecisionPacket
 from libs.core.api_response import ApiResponse
 from graphs.nodes.execute_from_packet import execute_from_packet
+import graphs.nodes.execute_from_packet as execute_from_packet_module
 
 
 def test_execute_from_packet_mock(tmp_path, monkeypatch):
@@ -271,6 +272,141 @@ def test_execute_from_packet_blocks_buy_when_mock_cash_insufficient(tmp_path, mo
     out = execute_from_packet(state)
     assert out["execution"]["allowed"] is False
     assert out["execution"]["reason"] == "insufficient_mock_cash"
+
+
+def test_execute_from_packet_blocks_buy_at_upper_limit_from_skill_quote(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "skill_results": {
+            "market.quote": {
+                "result": {
+                    "action": "ready",
+                    "data": {
+                        "symbol": "005930",
+                        "cur": 100000,
+                        "best_ask": 0,
+                        "best_bid": 100000,
+                        "raw": {
+                            "cntr_infr": [
+                                {
+                                    "cur_prc": "+100000",
+                                    "upl_pric": "+100000",
+                                    "pri_sel_bid_unit": "0",
+                                    "pri_buy_bid_unit": "+100000",
+                                    "pre_rt": "+30.00",
+                                }
+                            ]
+                        },
+                    },
+                }
+            }
+        },
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "order_api_id": "ORDER_SUBMIT", "order_type": "market"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "upper_limit_buy_blocked"
+    guard = out["execution"]["upper_limit_guard"]
+    assert guard["at_upper_limit"] is True
+    assert guard["limit_locked"] is True
+
+
+def test_execute_from_packet_attempts_upper_limit_cancel_after_accept_when_requested(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("PORTFOLIO_SNAPSHOT_HEALTH_GUARD_ENABLED", "true")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n'
+        '{"api_id":"kt10003","title":"cancel","method":"POST","path":"/api/dostk/ordr","params":{"body":[{"name":"orig_ord_no","required":true},{"name":"stk_cd","required":true},{"name":"cncl_qty","required":true}]},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class AllowSupervisor:
+        def allow(self, intent, context):  # type: ignore[no-untyped-def]
+            class R:
+                allow = True
+                reason = "allowed"
+            return R()
+
+    calls = {"guard": 0, "execute": 0}
+
+    def fake_upper_limit_guard(state, order):  # type: ignore[no-untyped-def]
+        calls["guard"] += 1
+        if calls["guard"] == 1:
+            return True, "", {"guard_applied": True, "symbol": "005930"}
+        return False, "upper_limit_buy_blocked", {"guard_applied": True, "symbol": "005930", "at_upper_limit": True}
+
+    monkeypatch.setattr(execute_from_packet_module, "_evaluate_upper_limit_buy_guard", fake_upper_limit_guard)
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            calls["execute"] += 1
+            if calls["execute"] == 1:
+                class Result:
+                    response = ApiResponse.from_http(200, '{"ord_no":"A000123","msg_cd":"0000","msg1":"accepted"}')
+                    meta = {"executor": "real"}
+                return Result()
+            class Result:
+                response = ApiResponse.from_http(200, '{"ord_no":"A000124","msg_cd":"0000","msg1":"cancel accepted"}')
+                meta = {"executor": "real"}
+            return Result()
+
+    state = {
+        "catalog_path": str(cat),
+        "supervisor": AllowSupervisor(),
+        "executor": CaptureExecutor(),
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [],
+            "_health": {
+                "reader_ok": True,
+                "source": "reader",
+                "positions_source": "reader_positions_authoritative_empty",
+                "reconciliation_status": "reader_aligned",
+                "reader_positions_authoritative": True,
+                "positions_mismatch_detected": False,
+                "reconciliation_applied": False,
+                "reader_positions_count": 0,
+                "persisted_positions_count": 0,
+            },
+        },
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "005930",
+                "qty": 1,
+                "price": 70000,
+                "order_type": "market",
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is True
+    assert out["execution"]["ok"] is True
+    assert calls["execute"] == 2
+    cancel_info = out["execution"]["upper_limit_cancel"]
+    assert cancel_info["attempted"] is True
+    assert cancel_info["cancel_ok"] is True
+    assert cancel_info["cancel"]["order"]["api_id"] == "kt10003"
 
 
 def test_execute_from_packet_allows_buy_when_mock_cash_sufficient(tmp_path, monkeypatch):

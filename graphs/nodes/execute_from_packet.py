@@ -231,6 +231,181 @@ def _evaluate_order_limit_guard(state: Dict[str, Any], order: Dict[str, Any]) ->
     return True, "", details
 
 
+def _extract_upper_limit_quote_snapshot(state: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "symbol": normalize_symbol(symbol),
+        "quote_present": False,
+        "source": "",
+        "current_price": 0.0,
+        "upper_limit_price": 0.0,
+        "best_ask": 0.0,
+        "best_bid": 0.0,
+        "change_pct": 0.0,
+        "raw_row_present": False,
+    }
+    if not out["symbol"]:
+        return out
+
+    quote: Dict[str, Any] = {}
+    try:
+        from graphs.nodes.skill_contracts import extract_market_quotes  # type: ignore
+
+        quotes, _meta = extract_market_quotes(state)
+        q = quotes.get(out["symbol"])
+        if isinstance(q, dict):
+            quote = dict(q)
+    except Exception:
+        quote = {}
+
+    if not quote:
+        return out
+
+    out["quote_present"] = True
+    out["source"] = "skill.market.quote"
+    out["current_price"] = _coerce_float(quote.get("price") or quote.get("cur"), 0.0)
+    out["best_ask"] = _coerce_float(quote.get("best_ask") or quote.get("ask"), 0.0)
+    out["best_bid"] = _coerce_float(quote.get("best_bid") or quote.get("bid"), 0.0)
+    out["change_pct"] = _coerce_float(quote.get("change_pct"), 0.0)
+
+    raw_quote = quote.get("raw") if isinstance(quote.get("raw"), dict) else {}
+    raw_rows = raw_quote.get("cntr_infr") if isinstance(raw_quote.get("cntr_infr"), list) else []
+    raw_row = raw_rows[0] if raw_rows and isinstance(raw_rows[0], dict) else {}
+    if raw_row:
+        out["raw_row_present"] = True
+        if out["current_price"] <= 0.0:
+            out["current_price"] = _coerce_float(raw_row.get("cur_prc"), 0.0)
+        if out["best_ask"] <= 0.0:
+            out["best_ask"] = _coerce_float(raw_row.get("pri_sel_bid_unit") or raw_row.get("sel_1bid"), 0.0)
+        if out["best_bid"] <= 0.0:
+            out["best_bid"] = _coerce_float(raw_row.get("pri_buy_bid_unit") or raw_row.get("buy_1bid"), 0.0)
+        if abs(out["change_pct"]) <= 1e-9:
+            out["change_pct"] = _coerce_float(raw_row.get("pre_rt") or raw_row.get("flu_rt"), 0.0)
+        out["upper_limit_price"] = _coerce_float(
+            raw_row.get("upl_pric") or raw_quote.get("upl_pric") or quote.get("upl_pric"),
+            0.0,
+        )
+
+    for key in ("current_price", "upper_limit_price", "best_ask", "best_bid"):
+        out[key] = abs(_coerce_float(out.get(key), 0.0))
+
+    return out
+
+
+def _evaluate_upper_limit_buy_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    if action != "BUY":
+        return True, "", {"guard_applied": False, "action": action}
+
+    symbol = _extract_order_symbol(order)
+    details = {
+        "guard_applied": True,
+        "action": action,
+        "symbol": symbol,
+        "enabled": True,
+    }
+    if not symbol:
+        details["symbol_evaluable"] = False
+        return True, "", details
+
+    quote = _extract_upper_limit_quote_snapshot(state, symbol)
+    details["quote"] = quote
+    if not bool(quote.get("quote_present")):
+        details["quote_evaluable"] = False
+        return True, "", details
+
+    current_price = _coerce_float(quote.get("current_price"), 0.0)
+    upper_limit_price = _coerce_float(quote.get("upper_limit_price"), 0.0)
+    best_ask = _coerce_float(quote.get("best_ask"), 0.0)
+    change_pct = _coerce_float(quote.get("change_pct"), 0.0)
+
+    at_upper_limit = upper_limit_price > 0.0 and current_price >= max(0.0, upper_limit_price - 1e-6)
+    no_visible_ask = best_ask <= 0.0
+    suspicious_limit_up = change_pct >= 29.5 and no_visible_ask
+    limit_locked = bool(at_upper_limit and (no_visible_ask or best_ask >= upper_limit_price > 0.0))
+
+    details.update(
+        {
+            "current_price": float(current_price),
+            "upper_limit_price": float(upper_limit_price),
+            "best_ask": float(best_ask),
+            "change_pct": float(change_pct),
+            "at_upper_limit": bool(at_upper_limit),
+            "limit_locked": bool(limit_locked),
+            "suspicious_limit_up": bool(suspicious_limit_up),
+        }
+    )
+
+    if at_upper_limit or suspicious_limit_up:
+        details["block_reason"] = "price_at_or_near_upper_limit"
+        return False, "upper_limit_buy_blocked", details
+    return True, "", details
+
+
+def _should_attempt_upper_limit_cancel(state: Dict[str, Any], execution: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    details: Dict[str, Any] = {"guard_applied": True, "action": action}
+    if action != "BUY":
+        return False, details
+    if _resolve_execution_mode() != "real":
+        details["reason"] = "execution_mode_not_real"
+        return False, details
+    if not bool(execution.get("allowed")) or not bool(execution.get("ok")):
+        details["reason"] = "execution_not_accepted"
+        return False, details
+
+    order_id = str((((execution.get("payload") or {}) if isinstance(execution.get("payload"), dict) else {}).get("order_id")) or "").strip()
+    if not order_id:
+        details["reason"] = "missing_order_id"
+        return False, details
+
+    allowed, reason, guard_details = _evaluate_upper_limit_buy_guard(state, order)
+    details["order_id"] = order_id
+    details["upper_limit_guard"] = guard_details
+    if allowed:
+        details["reason"] = "upper_limit_not_detected"
+        return False, details
+    details["reason"] = reason or "upper_limit_buy_blocked"
+    return True, details
+
+
+def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor: Any, order: Dict[str, Any], execution: Dict[str, Any]) -> Dict[str, Any]:
+    attempt, details = _should_attempt_upper_limit_cancel(state, execution, order)
+    result: Dict[str, Any] = {"attempted": bool(attempt), **details}
+    if not attempt:
+        return result
+
+    order_id = str(details.get("order_id") or "").strip()
+    symbol = _extract_order_symbol(order)
+    cancel_order: Dict[str, Any] = {
+        "api_id": "kt10003",
+        "action": "CANCEL",
+        "symbol": symbol,
+        "stk_cd": symbol,
+        "orig_ord_no": order_id,
+        "cncl_qty": "0",
+        "dmst_stex_tp": str(order.get("dmst_stex_tp") or "KRX"),
+        "rationale": "upper_limit_buy_auto_cancel",
+    }
+    try:
+        cancel_req = _prepare_request(cancel_order, catalog)
+        cancel_execution_result = executor.execute(cancel_req)
+        cancel_payload = _normalize_execution(
+            allowed=True,
+            execution_result=cancel_execution_result,
+            allow_result=None,
+            order=cancel_order,
+            reason="upper_limit_buy_auto_cancel",
+            strategy_policy_summary=None,
+        )
+        result["cancel"] = cancel_payload
+        result["cancel_ok"] = bool(cancel_payload.get("ok"))
+        return result
+    except Exception as exc:
+        result["cancel_ok"] = False
+        result["cancel_error"] = str(exc)
+        return result
+
+
 def _extract_order_symbol(order: Dict[str, Any]) -> str:
     sym = order.get("symbol") or order.get("stk_cd")
     return normalize_symbol(sym)
@@ -1123,6 +1298,34 @@ def execute_from_packet(state: dict) -> dict:
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state
 
+        upper_limit_allowed, upper_limit_reason, upper_limit_details = _evaluate_upper_limit_buy_guard(state, order)
+        if not upper_limit_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=upper_limit_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["upper_limit_guard"] = upper_limit_details
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="upper_limit_guard_block",
+                payload={"allowed": False, "reason": upper_limit_reason, **upper_limit_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=upper_limit_reason,
+                supervisor_details=upper_limit_details,
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
         limits_allowed, limits_reason, limits_details = _evaluate_order_limit_guard(state, order)
         if not limits_allowed:
             state["execution"] = _normalize_execution(
@@ -1334,6 +1537,21 @@ def execute_from_packet(state: dict) -> dict:
             event="verdict",
             payload={"allowed": True, "portfolio_guard": portfolio_details, "strategy_policy_summary": strategy_policy_summary},
         )
+        upper_limit_cancel = _attempt_upper_limit_cancel(
+            state=state,
+            catalog=catalog,
+            executor=executor,
+            order=order,
+            execution=state["execution"],
+        )
+        if upper_limit_cancel:
+            state["execution"]["upper_limit_cancel"] = upper_limit_cancel
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="upper_limit_cancel_attempt",
+                payload=upper_limit_cancel,
+            )
         logger.log(run_id=run_id, stage="execute_from_packet", event="execution", payload=state["execution"])
         _persist_execution_artifacts(
             supervisor_allowed=True,
