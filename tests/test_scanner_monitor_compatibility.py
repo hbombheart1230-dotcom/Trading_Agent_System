@@ -124,7 +124,7 @@ def test_scanner_compatibility_bias_stays_neutral_without_applied_policy() -> No
 
 
 def test_scanner_entry_compatibility_bias_can_flip_near_tie(monkeypatch) -> None:
-    def _fake_compatibility(*, symbol, feature_row, metrics, candidate_rows, current_price, policy):
+    def _fake_compatibility(*, symbol, feature_row, metrics, candidate_rows, current_price, policy, bias_context=None):
         if symbol == "005930":
             return {
                 "entry_compatibility_score": 0.95,
@@ -199,7 +199,7 @@ def test_scanner_entry_compatibility_bias_can_flip_near_tie(monkeypatch) -> None
 
 
 def test_scanner_compatibility_bias_shrinks_032820_margin_vs_396500(monkeypatch) -> None:
-    def _fake_compatibility(*, symbol, feature_row, metrics, candidate_rows, current_price, policy):
+    def _fake_compatibility(*, symbol, feature_row, metrics, candidate_rows, current_price, policy, bias_context=None):
         if symbol == "032820":
             return {
                 "entry_compatibility_score": 0.22,
