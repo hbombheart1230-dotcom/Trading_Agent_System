@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Tuple
@@ -409,6 +410,60 @@ def _attempt_upper_limit_cancel(*, state: Dict[str, Any], catalog: Any, executor
 def _extract_order_symbol(order: Dict[str, Any]) -> str:
     sym = order.get("symbol") or order.get("stk_cd")
     return normalize_symbol(sym)
+
+
+def _extract_active_mock_broker_restricted_symbol_record(state: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    sym = normalize_symbol(symbol)
+    if not sym:
+        return {}
+    persisted = state.get("persisted_state")
+    if not isinstance(persisted, dict):
+        return {}
+    records = persisted.get("mock_broker_restricted_symbols")
+    if not isinstance(records, dict):
+        return {}
+    raw = records.get(sym)
+    if not isinstance(raw, dict):
+        return {}
+    today = str(time.strftime("%Y-%m-%d") or "").strip()
+    detected_date = str(raw.get("detected_date") or "").strip()
+    if detected_date and today and detected_date != today:
+        return {}
+    row = dict(raw)
+    row["symbol"] = sym
+    return row
+
+
+def _evaluate_mock_broker_restricted_symbol_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    details: Dict[str, Any] = {
+        "guard_applied": True,
+        "action": action,
+        "enabled": True,
+        "mock_mode": bool(_is_kiwoom_mock_mode()),
+    }
+    if action != "BUY":
+        return True, "", details
+    if not _is_kiwoom_mock_mode():
+        return True, "", details
+
+    symbol = _extract_order_symbol(order)
+    details["symbol"] = symbol
+    if not symbol:
+        details["symbol_evaluable"] = False
+        return True, "", details
+
+    restriction_record = _extract_active_mock_broker_restricted_symbol_record(state, symbol)
+    if not restriction_record:
+        details["blocked"] = False
+        return True, "", details
+
+    details["blocked"] = True
+    details["restriction_record"] = restriction_record
+    details["broker_code"] = str(restriction_record.get("broker_code") or "")
+    details["broker_message"] = str(restriction_record.get("broker_message") or "")
+    details["detected_date"] = str(restriction_record.get("detected_date") or "")
+    return False, "mock_broker_restricted_symbol_blocked", details
 
 
 def _extract_open_symbols_from_state(state: Dict[str, Any]) -> set[str]:
@@ -1294,6 +1349,34 @@ def execute_from_packet(state: dict) -> dict:
                 supervisor_allowed=False,
                 supervisor_reason=symbol_reason,
                 supervisor_details=symbol_details,
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        restricted_allowed, restricted_reason, restricted_details = _evaluate_mock_broker_restricted_symbol_guard(state, order)
+        if not restricted_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=restricted_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["mock_broker_restricted_symbol_guard"] = restricted_details
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="mock_broker_restricted_symbol_block",
+                payload={"allowed": False, "reason": restricted_reason, **restricted_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=restricted_reason,
+                supervisor_details=restricted_details,
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state

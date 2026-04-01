@@ -112,6 +112,33 @@ def _ensure_mock_cash(ps: dict) -> float:
     return float(base)
 
 
+def _current_session_date() -> str:
+    return str(time.strftime("%Y-%m-%d") or "").strip()
+
+
+def _normalize_mock_broker_restricted_symbols(raw, active_date: str | None = None):  # type: ignore[no-untyped-def]
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        row = dict(value) if isinstance(value, dict) else {}
+        symbol = normalize_symbol(row.get("symbol") or key)
+        if not symbol:
+            continue
+        detected_date = str(row.get("detected_date") or "").strip()
+        if active_date and detected_date and detected_date != active_date:
+            continue
+        out[symbol] = {
+            "symbol": symbol,
+            "broker_code": str(row.get("broker_code") or "").strip(),
+            "broker_message": str(row.get("broker_message") or "").strip(),
+            "reason": str(row.get("reason") or "").strip(),
+            "detected_epoch": _as_int(row.get("detected_epoch"), 0),
+            "detected_date": detected_date,
+        }
+    return out
+
+
 def _resolve_mock_fill_price(state: dict, ex: dict, symbol: str) -> float:
     order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
     payload = ex.get("payload") if isinstance(ex.get("payload"), dict) else {}
@@ -266,6 +293,60 @@ def _extract_broker_code(ex: dict) -> str:
     if m:
         return str(m.group(1)).strip()
     return ""
+
+
+def _extract_broker_message(ex: dict) -> str:
+    payload = ex.get("payload") if isinstance(ex.get("payload"), dict) else {}
+    response_payload = payload.get("response_payload") if isinstance(payload.get("response_payload"), dict) else {}
+    candidates = [
+        payload.get("broker_message"),
+        payload.get("return_msg"),
+        response_payload.get("return_msg"),
+        response_payload.get("msg"),
+        response_payload.get("msg1"),
+    ]
+    for value in candidates:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _is_mock_broker_restricted_symbol_rejection(ex: dict) -> bool:
+    if not _is_kiwoom_mock_mode():
+        return False
+    if _extract_trade_side(ex) != "BUY":
+        return False
+    code = _extract_broker_code(ex)
+    if code != "20":
+        return False
+    message = _extract_broker_message(ex)
+    lowered = message.lower()
+    return ("rc4007" in lowered) or ("모의투자 매매제한 종목" in message)
+
+
+def _update_mock_broker_restricted_symbols(ps: dict, ex: dict) -> None:
+    today = _current_session_date()
+    records = _normalize_mock_broker_restricted_symbols(ps.get("mock_broker_restricted_symbols"), active_date=today)
+    order = ex.get("order") if isinstance(ex.get("order"), dict) else {}
+    symbol = normalize_symbol(order.get("symbol") or order.get("stk_cd"))
+
+    if symbol and _is_mock_broker_restricted_symbol_rejection(ex):
+        records[symbol] = {
+            "symbol": symbol,
+            "broker_code": _extract_broker_code(ex),
+            "broker_message": _extract_broker_message(ex),
+            "reason": str(ex.get("reason") or "").strip(),
+            "detected_epoch": _as_int(time.time(), 0),
+            "detected_date": today,
+        }
+    elif symbol and _resolve_execution_ok(ex) and _extract_trade_side(ex) == "BUY":
+        records.pop(symbol, None)
+
+    if records:
+        ps["mock_broker_restricted_symbols"] = records
+    else:
+        ps.pop("mock_broker_restricted_symbols", None)
 
 
 def _reconcile_mock_sell_reject_no_position(ps: dict, ex: dict) -> bool:
@@ -629,6 +710,7 @@ def update_state_after_execution(state: dict) -> dict:
     # update audit info always
     ps["last_execution_ok"] = ok
     ps["last_execution_reason"] = ex.get("reason") or ex.get("error") or ("blocked" if blocked else "")
+    _update_mock_broker_restricted_symbols(ps, ex)
 
     # Only set last_order_epoch when an order was actually sent.
     # Convention:

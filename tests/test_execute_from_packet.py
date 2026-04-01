@@ -574,6 +574,73 @@ def test_execute_from_packet_marks_ok_false_when_broker_code_nonzero(tmp_path, m
     assert out["execution"]["reason"] == "broker_rejected:20"
 
 
+def test_execute_from_packet_blocks_buy_for_mock_broker_restricted_symbol_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    monkeypatch.setenv("EXECUTION_MODE", "real")
+    monkeypatch.setattr(execute_from_packet_module.time, "strftime", lambda _fmt: "2026-03-31")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class AllowSupervisor:
+        def allow(self, intent, context):  # type: ignore[no-untyped-def]
+            class R:
+                allow = True
+                reason = "Allowed"
+            return R()
+
+    called = {"execute": 0}
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            called["execute"] += 1
+
+            class Result:
+                response = ApiResponse.from_http(200, '{"return_code":0,"return_msg":"ok"}')
+                meta = {"executor": "real"}
+
+            return Result()
+
+    state = {
+        "catalog_path": str(cat),
+        "executor": CaptureExecutor(),
+        "supervisor": AllowSupervisor(),
+        "persisted_state": {
+            "mock_broker_restricted_symbols": {
+                "252670": {
+                    "symbol": "252670",
+                    "broker_code": "20",
+                    "broker_message": "[2000](RC4007:모의투자 매매제한 종목입니다.)",
+                    "reason": "broker_rejected:20",
+                    "detected_epoch": 1774930000,
+                    "detected_date": "2026-03-31",
+                }
+            }
+        },
+        "decision_packet": {
+            "intent": {
+                "action": "BUY",
+                "symbol": "252670",
+                "qty": 1,
+                "price": 10000,
+                "order_type": "limit",
+                "order_api_id": "ORDER_SUBMIT",
+            },
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "mock_broker_restricted_symbol_blocked"
+    assert out["execution"]["mock_broker_restricted_symbol_guard"]["symbol"] == "252670"
+    assert called["execute"] == 0
+
+
 def test_execute_from_packet_forces_market_order_in_mock_broker_http_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("KIWOOM_MODE", "mock")
     monkeypatch.setenv("EXECUTION_MODE", "real")

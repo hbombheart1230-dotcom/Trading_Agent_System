@@ -193,6 +193,33 @@ def test_update_state_does_not_apply_fill_when_broker_rejected(monkeypatch):
     assert ps.get("mock_cash") == 2000000.0
 
 
+def test_update_state_tracks_mock_broker_restricted_symbol_on_rc4007_buy_reject(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    monkeypatch.setattr(time, "strftime", lambda _fmt: "2026-03-31")
+    monkeypatch.setenv("KIWOOM_MODE", "mock")
+    state = {
+        "persisted_state": {"last_order_epoch": 10, "mock_positions": [], "mock_cash": 2000000.0},
+        "execution": {
+            "allowed": True,
+            "payload": {
+                "mode": "real",
+                "api_ok": True,
+                "broker_code": "20",
+                "broker_message": "[2000](RC4007:모의투자 매매제한 종목입니다.)",
+            },
+            "reason": "broker_rejected:20",
+            "order": {"action": "BUY", "symbol": "252670", "qty": 1, "price": 10000},
+        },
+    }
+    out = update_state_after_execution(state)
+    ps = out["persisted_state"]
+    assert ps["last_execution_ok"] is False
+    assert (ps.get("mock_broker_restricted_symbols") or {}).get("252670", {}).get("broker_code") == "20"
+    assert "모의투자 매매제한 종목" in (
+        (ps.get("mock_broker_restricted_symbols") or {}).get("252670", {}).get("broker_message") or ""
+    )
+
+
 def test_update_state_reconciles_stale_mock_position_on_sell_reject_code20(monkeypatch):
     monkeypatch.setattr(time, "time", lambda: 1234.0)
     monkeypatch.setenv("KIWOOM_MODE", "mock")

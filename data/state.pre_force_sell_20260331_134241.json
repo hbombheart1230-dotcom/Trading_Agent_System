@@ -1,0 +1,1859 @@
+{
+  "last_order_epoch": 1774915480,
+  "open_positions": 1,
+  "daily_pnl_ratio": 0.0,
+  "mock_cash": 832460.0,
+  "mock_positions": [
+    {
+      "symbol": "018470",
+      "qty": 1,
+      "avg_price": 1609.0,
+      "unrealized_pnl": -2.0,
+      "current_price": 1609.0
+    }
+  ],
+  "mock_realized_pnl": 0.0,
+  "last_trade_side": "SELL",
+  "last_trade_epoch": 1774915480,
+  "recent_scanner_selected": [
+    {
+      "symbol": "000250",
+      "epoch": 1774926319
+    },
+    {
+      "symbol": "000250",
+      "epoch": 1774926383
+    },
+    {
+      "symbol": "322000",
+      "epoch": 1774926505
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1774926885
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774926949
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1774927013
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774927077
+    },
+    {
+      "symbol": "252670",
+      "epoch": 1774927141
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1774927206
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774927269
+    },
+    {
+      "symbol": "252670",
+      "epoch": 1774927333
+    },
+    {
+      "symbol": "069500",
+      "epoch": 1774927397
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1774927461
+    },
+    {
+      "symbol": "252670",
+      "epoch": 1774927565
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774927629
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774927693
+    },
+    {
+      "symbol": "069500",
+      "epoch": 1774927757
+    },
+    {
+      "symbol": "252670",
+      "epoch": 1774927821
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774927886
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774927950
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774928015
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1774928079
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1774928144
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774928250
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774928315
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774928379
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774928443
+    },
+    {
+      "symbol": "069500",
+      "epoch": 1774928508
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1774928572
+    },
+    {
+      "symbol": "252670",
+      "epoch": 1774928636
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1774928701
+    },
+    {
+      "symbol": "000250",
+      "epoch": 1774928777
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774928830
+    },
+    {
+      "symbol": "322000",
+      "epoch": 1774928842
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774928949
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774929002
+    },
+    {
+      "symbol": "005930",
+      "epoch": 1774929014
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774929067
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774929078
+    },
+    {
+      "symbol": "000660",
+      "epoch": 1774929130
+    }
+  ],
+  "last_execution_ok": false,
+  "last_execution_reason": "noop_intent_skipped",
+  "last_trade_symbol": "005930",
+  "strategist_output_cache": {
+    "output": {
+      "market_regime": "neutral",
+      "market_sentiment": "neutral",
+      "key_events": [
+        "global_sentiment score=-0.217 status=ok source=yfinance",
+        "us_indices sp500=-0.39% nasdaq=-0.73% dow=0.11%",
+        "fear_index vix=30.61 change=-1.42% pressure=0.531",
+        "market_context index_trend=0.000 breadth=0.000 realized_vol=0.000 macro_risk=0.000",
+        "news_signal_health ok=15 unavailable=0 fallback=0 avg_score=-0.012"
+      ],
+      "themes": [
+        "broad_market_leaders"
+      ],
+      "avoid_themes": [
+        "defensive_assets",
+        "counter_trend_low_liquidity"
+      ],
+      "playbook": "pullback",
+      "scanner_bias": "large_cap",
+      "scanner_bias_context": {
+        "prefer_shallow_pullback_candidates": true,
+        "penalize_overextended": true,
+        "prefer_reclaim_candidates": true,
+        "prefer_volume_confirmation": true,
+        "bias_strength": "low",
+        "bias_source": "strategist",
+        "validation_issues": []
+      },
+      "scanner_priority": [
+        "leader_quality",
+        "trend_strength",
+        "trading_value",
+        "volume_surge",
+        "pullback_quality",
+        "relative_strength"
+      ],
+      "scanner_source_policy": {
+        "preferred_sources": [
+          "top_value",
+          "sector_theme",
+          "top_volume",
+          "operator_watchlist"
+        ],
+        "include_top_value": true,
+        "include_top_volume": true,
+        "include_change_rate": false,
+        "include_condition_search": false,
+        "include_sector_candidates": true,
+        "include_watchlist": true,
+        "top_candidate_pool": 18,
+        "condition_limit": 0,
+        "source_weights": {
+          "top_value": 2.3,
+          "top_volume": 1.9,
+          "condition_search": 0.0,
+          "sector_theme": 1.9,
+          "operator_watchlist": 1.1,
+          "top_change_rate": 0.0
+        },
+        "reason": "defensive frame prioritizes liquid leaders and suppresses fast-mover sources; elevated fear index (vix=30.61, pressure=0.531) shifted source policy toward liquid defensive candidates"
+      },
+      "trade_aggressiveness": "medium",
+      "risk_tone": "conservative",
+      "monitor_guidance": "defensive_exit",
+      "strategy_policy": {
+        "schema_version": "strategy_policy.v1",
+        "market_policy": {
+          "market_regime": "neutral",
+          "market_sentiment": "neutral",
+          "playbook": "pullback",
+          "trade_aggressiveness": "medium",
+          "risk_tone": "conservative",
+          "monitor_guidance": "defensive_exit",
+          "defensive_mode": true,
+          "global_sentiment_score": -0.2166703163336615,
+          "fear_index": {
+            "vix_level": 30.610000610351562,
+            "vix_pressure": 0.5305000305175781,
+            "elevated": true
+          },
+          "macro_stress_score": 0.0,
+          "macro_stress_flags": [],
+          "market_context_inputs": {
+            "index_trend": 0.0,
+            "realized_volatility": 0.0,
+            "market_breadth": 0.0,
+            "macro_risk": 0.0
+          },
+          "theme_policy": {
+            "preferred_themes": [
+              "broad_market_leaders"
+            ],
+            "avoid_themes": [
+              "defensive_assets",
+              "counter_trend_low_liquidity"
+            ],
+            "theme_strength": {}
+          },
+          "news_policy": {
+            "market_news_count": 75,
+            "candidate_news_count": 5,
+            "average_news_score": -0.012269161924669385
+          }
+        },
+        "scanner_policy": {
+          "candidate_sources": {
+            "preferred_sources": [
+              "top_value",
+              "sector_theme",
+              "top_volume",
+              "operator_watchlist"
+            ],
+            "include_top_value": true,
+            "include_top_volume": true,
+            "include_change_rate": false,
+            "include_condition_search": false,
+            "include_sector_candidates": true,
+            "include_watchlist": true,
+            "top_candidate_pool": 18,
+            "condition_limit": 0,
+            "source_weights": {
+              "top_value": 2.3,
+              "top_volume": 1.9,
+              "condition_search": 0.0,
+              "sector_theme": 1.9,
+              "operator_watchlist": 1.1,
+              "top_change_rate": 0.0
+            },
+            "reason": "defensive frame prioritizes liquid leaders and suppresses fast-mover sources; elevated fear index (vix=30.61, pressure=0.531) shifted source policy toward liquid defensive candidates"
+          },
+          "scanner_bias": {
+            "prefer_shallow_pullback_candidates": true,
+            "penalize_overextended": true,
+            "prefer_reclaim_candidates": true,
+            "prefer_volume_confirmation": true,
+            "bias_strength": "low",
+            "bias_source": "strategist",
+            "validation_issues": []
+          },
+          "priority_tilts": [
+            "leader_quality",
+            "trend_strength",
+            "trading_value",
+            "volume_surge",
+            "pullback_quality",
+            "relative_strength"
+          ],
+          "score_weights": {
+            "trading_value": 0.2,
+            "momentum": 0.22,
+            "trend": 0.2,
+            "volume_surge": 0.14,
+            "intraday_strength": 0.12,
+            "theme_boost": 0.06,
+            "sentiment": 0.06,
+            "volatility_penalty": 0.1,
+            "gap_penalty": 0.07,
+            "open_order_penalty": 0.04
+          },
+          "filters": {
+            "max_volatility_for_entry": 0.12,
+            "min_feature_coverage": 0,
+            "min_confidence_for_entry": 0.35
+          },
+          "ranking_rules": {
+            "allow_repeat_symbol": true,
+            "repeat_symbol_penalty": 0.0
+          }
+        },
+        "entry_policy": {
+          "buy_score_threshold": 0.2,
+          "sell_score_threshold": -0.12,
+          "min_signal_for_entry": 0.15,
+          "min_news_for_entry": 0.0,
+          "max_volatility_for_entry": 0.12,
+          "invalidation_signal_floor": -0.08,
+          "base_risk_per_trade_ratio": 0.01,
+          "base_position_notional_ratio": 0.1,
+          "min_confidence_for_entry": 0.35,
+          "max_position_qty": 10,
+          "min_position_qty": 1,
+          "lot_size": 1
+        },
+        "monitor_policy": {
+          "entry_policy": {
+            "enabled": true,
+            "timeframe_minutes": 1,
+            "breakout_lookback": 5,
+            "volume_lookback": 5,
+            "volume_ratio_min": 0.75,
+            "min_extended_from_vwap_pct": -0.02,
+            "max_extended_from_vwap_pct": 0.1,
+            "pullback_min_pct": 0.01,
+            "pullback_max_pct": 0.05,
+            "reclaim_tolerance_pct": 0.002,
+            "breakout_buffer_pct": 0.0,
+            "intent_cooldown_sec": 90,
+            "require_vwap_reclaim": true,
+            "require_rebound": true,
+            "adjustments": [],
+            "policy_source": "strategist"
+          },
+          "position_guards": {
+            "min_hold_seconds": 600,
+            "sell_cooldown_seconds": 300,
+            "exit_confirm_ticks": 2,
+            "adjustments": [
+              "mode:defensive_exit",
+              "risk_tone:conservative"
+            ],
+            "note": "monitor_manages_entry_exit_only"
+          },
+          "adaptive_exit": {
+            "stop_loss_pct": 0.01817046,
+            "take_profit_pct": 0.03371682239999999,
+            "trailing_stop_pct": 0.017325,
+            "vol_expansion_ratio": 2.0,
+            "news_shock_threshold": 0.0,
+            "peak_drawdown_exit_pct": 0.01147608,
+            "vwap_breakdown_pct": 0.007,
+            "intraday_low_break_pct": 0.0025,
+            "trend_strength_floor": -0.1,
+            "adjustments": [
+              "baseline:pullback",
+              "playbook:pullback",
+              "monitor_guidance:defensive_exit",
+              "risk_tone:conservative",
+              "trade_aggressiveness:low",
+              "peak_drawdown_exit_pct:auto",
+              "vwap_breakdown_pct:auto",
+              "intraday_low_break_pct:auto",
+              "trend_strength_floor:auto"
+            ],
+            "note": "strategist_exit_policy_baseline"
+          },
+          "hard_risk_rails": {
+            "hard_stop_pct": 0.03,
+            "max_stop_pct_cap": 0.1,
+            "use_eod_flat": true
+          }
+        },
+        "decision_policy": {
+          "use_strategy_v1_engine": false,
+          "allow_score_override": false,
+          "score_override_scope": "disabled",
+          "strategy_v1_name": "",
+          "strategy_variant_hint": "unified_ai_strategist"
+        },
+        "operator_explain": {
+          "why_this_playbook": "playbook=pullback regime=neutral sentiment=neutral",
+          "why_this_risk_tone": "risk_tone=conservative guidance=defensive_exit",
+          "what_changes_next": "vix=30.61 pressure=0.531 dxy_pct=0.28 tnx_delta=-0.0098"
+        },
+        "commander_context": {
+          "source": "commander_decision",
+          "market_regime": "neutral",
+          "session_bias": "active_selection",
+          "risk_mode": "balanced",
+          "allowed_playbooks": [
+            "pullback",
+            "defensive",
+            "breakout"
+          ],
+          "banned_playbooks": [
+            "reversal"
+          ],
+          "scanner_mission": "Prioritize balanced liquid leaders with clear scanner fit and manageable risk.",
+          "monitor_mission": "Wait for confirmation and avoid low-quality chase entries.",
+          "llm_policy": "SKIP",
+          "command_intent": "OBSERVE_ONLY",
+          "strategist_invocation": "SKIP",
+          "flow_instruction": "allow_current_flow",
+          "no_trade_reason_code": "WAIT_FOR_CONFIRMATION",
+          "decision_summary": "Monitor gates were not fully aligned yet, so waiting for another bar or clearer confirmation looked appropriate.",
+          "observations": {
+            "market_changed": null,
+            "signal_strength": null,
+            "risk_score": null,
+            "macro_stress": 0.0,
+            "last_llm_status": "",
+            "retry_count_estimate": 0,
+            "position_state": "flat",
+            "has_open_order": null,
+            "runtime_fast_path_reason": "",
+            "repeated_same_context": null
+          },
+          "source_priority": [
+            "shadow_commander",
+            "runtime_observation",
+            "strategist_fallback"
+          ],
+          "source_refs": {
+            "shadow_event": "commander_router.shadow_assessment",
+            "runtime_fast_path_reason": "",
+            "runtime_path": "integrated_chain_pending",
+            "strategist_fallback_fields": []
+          },
+          "shadow_used": true,
+          "strategist_fallback_used": false
+        },
+        "strategist_plan": {
+          "selected_playbook": "pullback",
+          "candidate_hypotheses": [
+            {
+              "symbol": "122630",
+              "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+              "source": "candidate_symbols_hint"
+            },
+            {
+              "symbol": "069500",
+              "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+              "source": "candidate_symbols_hint"
+            },
+            {
+              "symbol": "252670",
+              "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+              "source": "candidate_symbols_hint"
+            },
+            {
+              "symbol": "005930",
+              "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+              "source": "candidate_symbols_hint"
+            },
+            {
+              "symbol": "000660",
+              "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+              "source": "candidate_symbols_hint"
+            }
+          ],
+          "symbol_constraints": {
+            "candidate_symbols_hint": [
+              "122630",
+              "069500",
+              "252670",
+              "005930",
+              "000660"
+            ],
+            "preferred_themes": [
+              "broad_market_leaders"
+            ],
+            "avoid_themes": [
+              "defensive_assets",
+              "counter_trend_low_liquidity"
+            ],
+            "scanner_priority": [
+              "leader_quality",
+              "trend_strength",
+              "trading_value",
+              "volume_surge",
+              "pullback_quality",
+              "relative_strength"
+            ],
+            "candidate_limit": 5
+          },
+          "entry_plan": {
+            "setup_family": "pullback",
+            "monitor_guidance": "defensive_exit",
+            "risk_tone": "conservative",
+            "trade_aggressiveness": "medium",
+            "scanner_priority": [
+              "leader_quality",
+              "trend_strength",
+              "trading_value",
+              "volume_surge"
+            ],
+            "scanner_mission": "Prioritize balanced liquid leaders with clear scanner fit and manageable risk.",
+            "confirmation_required": true
+          },
+          "exit_plan": {
+            "monitor_guidance": "defensive_exit",
+            "monitor_mission": "Wait for confirmation and avoid low-quality chase entries.",
+            "position_guards": {
+              "min_hold_seconds": 600,
+              "sell_cooldown_seconds": 300,
+              "exit_confirm_ticks": 2,
+              "adjustments": [
+                "mode:defensive_exit",
+                "risk_tone:conservative"
+              ],
+              "note": "monitor_manages_entry_exit_only"
+            },
+            "adaptive_exit": {
+              "stop_loss_pct": 0.01817046,
+              "take_profit_pct": 0.03371682239999999,
+              "trailing_stop_pct": 0.017325,
+              "vol_expansion_ratio": 2.0,
+              "news_shock_threshold": 0.0,
+              "peak_drawdown_exit_pct": 0.01147608,
+              "vwap_breakdown_pct": 0.007,
+              "intraday_low_break_pct": 0.0025,
+              "trend_strength_floor": -0.1,
+              "adjustments": [
+                "baseline:pullback",
+                "playbook:pullback",
+                "monitor_guidance:defensive_exit",
+                "risk_tone:conservative",
+                "trade_aggressiveness:low",
+                "peak_drawdown_exit_pct:auto",
+                "vwap_breakdown_pct:auto",
+                "intraday_low_break_pct:auto",
+                "trend_strength_floor:auto"
+              ],
+              "note": "strategist_exit_policy_baseline"
+            }
+          },
+          "strategy_summary": "Strategist refined commander context into pullback plan for 5 candidate symbols. News focus: global_score=-0.22 macro_risk=0.00 index_trend=0.00 vix=30.61 vix_pressure=0.531; elevated fear index added defensive macro and hedge queries; weak breadth added 하락 종목 수/약세 업종 quer"
+        },
+        "provenance": {
+          "market_policy_owner": "commander",
+          "scanner_policy_owner": "strategist",
+          "monitor_policy_owner": "strategist",
+          "decision_policy_owner": "strategist",
+          "merged_from": [
+            "commander_decision",
+            "strategist_node"
+          ],
+          "commander_context_source": "commander_decision",
+          "strategist_plan_source": "strategist_node",
+          "monitor_entry_policy_source": "strategist",
+          "scanner_bias_source": "strategist",
+          "shadow_used": true,
+          "strategist_fallback_used": false
+        }
+      },
+      "market_regime_summary": "Neutral regime with mixed global signals (negative sentiment score, elevated VIX, but VIX declining). US indices mixed (Nasdaq down, Dow up). Recent feedback highlights overtrading risk and poor pullback win rates, demanding a conservative, selective approach.",
+      "monitor_entry_policy": {
+        "enabled": true,
+        "timeframe_minutes": 1,
+        "breakout_lookback": 5,
+        "volume_lookback": 5,
+        "volume_ratio_min": 0.75,
+        "min_extended_from_vwap_pct": -0.02,
+        "max_extended_from_vwap_pct": 0.1,
+        "pullback_min_pct": 0.01,
+        "pullback_max_pct": 0.05,
+        "reclaim_tolerance_pct": 0.002,
+        "breakout_buffer_pct": 0.0,
+        "intent_cooldown_sec": 90,
+        "require_vwap_reclaim": true,
+        "require_rebound": true,
+        "adjustments": [],
+        "policy_source": "strategist"
+      },
+      "policy_rationale": "Recent feedback shows overtrading risk and a very low win rate for pullback playbook (0.15%). Market signals are mixed with elevated VIX pressure. Adopting a conservative, low-aggression pullback strategy focused on large-cap leaders to improve entry quality and reduce overtrading, as hinted. Scanner priority emphasizes leader quality first.",
+      "policy_source": "strategist",
+      "policy_validation_status": "partial_normalized",
+      "policy_fallback_used": false,
+      "policy_fallback_reason": "missing_fields=enabled",
+      "policy_partial_normalized": true,
+      "policy_default_filled_fields": [
+        "enabled"
+      ],
+      "policy_validation_issues": [],
+      "policy_validation_missing_fields": [
+        "enabled"
+      ],
+      "policy_validation_invalid_fields": [],
+      "confidence": 0.35,
+      "report_focus": [
+        "exit_quality",
+        "overtrading",
+        "scanner_fit",
+        "guard_blocks",
+        "theme_accuracy",
+        "macro_stress"
+      ],
+      "recent_strategy_feedback": {
+        "feedback_window_size": 12,
+        "recent_theme_performance": {
+          "broad_market_leaders": {
+            "appearance_count": 8,
+            "win_rate": 0.125,
+            "avg_return": 34550.0,
+            "alignment_rate": 0.875,
+            "trade_count_total": 66
+          },
+          "defensive_large_cap": {
+            "appearance_count": 6,
+            "win_rate": 0.1667,
+            "avg_return": 46066.666667,
+            "alignment_rate": 1.0,
+            "trade_count_total": 66
+          },
+          "defensive_assets": {
+            "appearance_count": 5,
+            "win_rate": 0.2,
+            "avg_return": 55280.0,
+            "alignment_rate": 1.0,
+            "trade_count_total": 66
+          },
+          "defensive_etfs": {
+            "appearance_count": 1,
+            "win_rate": 1.0,
+            "avg_return": 276400.0,
+            "alignment_rate": 1.0,
+            "trade_count_total": 63
+          },
+          "defensive_positioning": {
+            "appearance_count": 1,
+            "win_rate": 1.0,
+            "avg_return": 276400.0,
+            "alignment_rate": 1.0,
+            "trade_count_total": 63
+          },
+          "defensive_sectors": {
+            "appearance_count": 1,
+            "win_rate": 1.0,
+            "avg_return": 276400.0,
+            "alignment_rate": 1.0,
+            "trade_count_total": 63
+          },
+          "large_cap_quality": {
+            "appearance_count": 1,
+            "win_rate": 1.0,
+            "avg_return": 276400.0,
+            "alignment_rate": 1.0,
+            "trade_count_total": 63
+          },
+          "large_cap_stability": {
+            "appearance_count": 1,
+            "win_rate": 1.0,
+            "avg_return": 276400.0,
+            "alignment_rate": 1.0,
+            "trade_count_total": 63
+          }
+        },
+        "recent_playbook_performance": {
+          "pullback": {
+            "appearance_count": 684,
+            "win_rate": 0.0015,
+            "avg_return": 404.093567
+          },
+          "defensive": {
+            "appearance_count": 414,
+            "win_rate": 0.0024,
+            "avg_return": 667.63285
+          },
+          "breakout": {
+            "appearance_count": 9,
+            "win_rate": 0.1111,
+            "avg_return": 30711.111111
+          },
+          "reversal": {
+            "appearance_count": 2,
+            "win_rate": 0.5,
+            "avg_return": 138200.0
+          }
+        },
+        "recent_monitor_issues": [
+          "overtrading risk persisted in recent monitor runs",
+          "rapid buy/sell cycles were observed in recent runs",
+          "Monitor shows overtrading risk; tighten exit confirmation or thresholds.",
+          "Monitor flow is stable under current guards."
+        ],
+        "recent_scanner_issues": [
+          "scanner produced no-candidate outcomes in recent runs",
+          "Scanner selected symbols consistently with sufficient candidate pool.",
+          "scanner candidate sourcing remained concentrated in a single Kiwoom source family",
+          "Insufficient scanner summary events."
+        ],
+        "recent_guard_patterns": [
+          "noop_intent_skipped",
+          "denied_by_test",
+          "duplicate_buy_position_exists",
+          "insufficient_mock_cash",
+          "symbol_not_allowlisted",
+          "order_qty_limit_exceeded",
+          "order_notional_limit_exceeded",
+          "portfolio_snapshot_reader_error"
+        ],
+        "recent_overtrading_patterns": [
+          "unexpected_rapid_exit",
+          "execution_anomaly",
+          "The monitor's exit confirmation or thresholds may be too lenient, leading to rapid trading cycles.",
+          "Potential issues in the execution logic or market data feed causing anomalies and rapid exits.",
+          "Monitor exit confirmation thresholds too permissive; confirmed_exit_signal allowed rapid-cycle exit on take_profit without sufficient hold-duration validation",
+          "Monitor exit logic permitted rapid cycle exit despite multiple hold signals (3 hold vs 1 exit)",
+          "Permissive monitor exit thresholds enabling rapid position cycling",
+          "Exit thresholds too permissive allowing rapid flip without confirmation"
+        ],
+        "recent_reporter_summary": [
+          "2026-03-13: health=YELLOW",
+          "trade_count=63 symbols=6",
+          "monitor_status=overtrading_risk scanner_status=appropriate supervisor_blocked_rate=44.78%",
+          "incident_total=2",
+          "2026-03-16: health=GREEN",
+          "trade_count=0 symbols=0",
+          "monitor_status=stable scanner_status=appropriate supervisor_blocked_rate=0.00%",
+          "next_action=No critical gaps detected; keep current baseline and continue daily report-driven calibration."
+        ],
+        "top_recent_strengths": [
+          "strategist theme alignment was recently validated",
+          "supervisor block rate stayed low in recent runs",
+          "monitor flow remained stable under recent guard settings"
+        ],
+        "top_recent_weaknesses": [
+          "overtrading risk persisted in recent monitor runs",
+          "rapid buy/sell cycles were observed in recent runs",
+          "Monitor shows overtrading risk; tighten exit confirmation or thresholds.",
+          "scanner produced no-candidate outcomes in recent runs",
+          "Scanner selected symbols consistently with sufficient candidate pool.",
+          "scanner candidate sourcing remained concentrated in a single Kiwoom source family",
+          "noop_intent_skipped",
+          "denied_by_test"
+        ],
+        "suggested_report_focus": [
+          "exit_quality",
+          "scanner_fit",
+          "guard_blocks",
+          "overtrading"
+        ],
+        "advisory_only": true,
+        "status": "ok",
+        "requested_window_size": 12
+      },
+      "candidates": [
+        "122630",
+        "069500",
+        "252670",
+        "005930",
+        "000660"
+      ],
+      "candidate_count": 5,
+      "candidate_hints": [
+        "122630",
+        "069500",
+        "252670",
+        "005930",
+        "000660"
+      ],
+      "strategic_answers": {
+        "q1_market_mode": "neutral",
+        "q2_global_macro_events": [
+          "global_sentiment score=-0.217 status=ok source=yfinance",
+          "us_indices sp500=-0.39% nasdaq=-0.73% dow=0.11%",
+          "fear_index vix=30.61 change=-1.42% pressure=0.531",
+          "market_context index_trend=0.000 breadth=0.000 realized_vol=0.000 macro_risk=0.000",
+          "news_signal_health ok=15 unavailable=0 fallback=0 avg_score=-0.012"
+        ],
+        "q3_leading_themes": [
+          "broad_market_leaders"
+        ],
+        "q4_theme_strength_check": "use_scanner_score_breakdown_and_theme_boost",
+        "q5_preferred_playbook": "pullback",
+        "q6_scanner_priority_stocks": [
+          "leader_quality",
+          "trend_strength",
+          "trading_value",
+          "volume_surge",
+          "pullback_quality",
+          "relative_strength"
+        ],
+        "q7_avoid_conditions": [
+          "defensive_assets",
+          "counter_trend_low_liquidity"
+        ],
+        "q8_trade_aggressiveness": "medium",
+        "q9_risk_tone": "conservative",
+        "q10_scanner_ranking_priority": [
+          "leader_quality",
+          "trend_strength",
+          "trading_value",
+          "volume_surge",
+          "pullback_quality",
+          "relative_strength"
+        ],
+        "q11_monitor_exit_guidance": "defensive_exit",
+        "q12_reporter_focus": [
+          "exit_quality",
+          "overtrading",
+          "scanner_fit",
+          "guard_blocks",
+          "theme_accuracy",
+          "macro_stress"
+        ],
+        "q13_recent_strategy_feedback": {
+          "feedback_window_size": 12,
+          "top_recent_strengths": [
+            "strategist theme alignment was recently validated",
+            "supervisor block rate stayed low in recent runs",
+            "monitor flow remained stable under recent guard settings"
+          ],
+          "top_recent_weaknesses": [
+            "overtrading risk persisted in recent monitor runs",
+            "rapid buy/sell cycles were observed in recent runs",
+            "Monitor shows overtrading risk; tighten exit confirmation or thresholds."
+          ],
+          "recent_reporter_summary": [
+            "2026-03-13: health=YELLOW",
+            "trade_count=63 symbols=6"
+          ]
+        },
+        "q14_strategy_memory_advisory": {
+          "status": "empty",
+          "best_playbooks": [],
+          "worst_playbooks": [],
+          "recent_failures": [],
+          "recent_success_patterns": [],
+          "recent_playbook_performance": {}
+        },
+        "scanner_bias": "large_cap"
+      },
+      "source": "strategist_node",
+      "monitor_policy": {
+        "min_hold_seconds": 600,
+        "sell_cooldown_seconds": 300,
+        "exit_confirm_ticks": 2,
+        "adjustments": [
+          "mode:defensive_exit",
+          "risk_tone:conservative"
+        ],
+        "note": "monitor_manages_entry_exit_only"
+      },
+      "exit_policy": {
+        "stop_loss_pct": 0.01817046,
+        "take_profit_pct": 0.03371682239999999,
+        "trailing_stop_pct": 0.017325,
+        "vol_expansion_ratio": 2.0,
+        "news_shock_threshold": 0.0,
+        "peak_drawdown_exit_pct": 0.01147608,
+        "vwap_breakdown_pct": 0.007,
+        "intraday_low_break_pct": 0.0025,
+        "trend_strength_floor": -0.1,
+        "adjustments": [
+          "baseline:pullback",
+          "playbook:pullback",
+          "monitor_guidance:defensive_exit",
+          "risk_tone:conservative",
+          "trade_aggressiveness:low",
+          "peak_drawdown_exit_pct:auto",
+          "vwap_breakdown_pct:auto",
+          "intraday_low_break_pct:auto",
+          "trend_strength_floor:auto"
+        ],
+        "note": "strategist_exit_policy_baseline"
+      },
+      "macro_stress_overlay": {
+        "stress_flags": [
+          "elevated_vix",
+          "dollar_strength"
+        ],
+        "stress_count": 2,
+        "vix_level": 30.610000610351562,
+        "vix_pressure": 0.5305000305175781,
+        "dxy_pct": 0.2815753133974752,
+        "tnx_delta": -0.009800004959106445,
+        "active": true,
+        "intensity": "moderate",
+        "adjustments": [
+          "macro_stress:trade_aggressiveness=medium",
+          "macro_stress:tightened_exit_policy"
+        ],
+        "reason": "vix=30.61 pressure=0.531 dxy_pct=0.28 tnx_delta=-0.0098"
+      },
+      "market_structure": "trend",
+      "regime_score": -0.09995547473508155,
+      "sentiment_score": -0.1336829383775977,
+      "news_context": {
+        "signal_total": 15,
+        "ok": 15,
+        "fallback": 0,
+        "unavailable": 0,
+        "avg_score": -0.012269161924669385,
+        "headline_count": 75,
+        "candidate_signal_total": 5,
+        "candidate_headline_count": 25,
+        "market_signal_total": 10,
+        "market_headline_count": 50
+      },
+      "candidate_news_context": {
+        "signal_total": 5,
+        "ok": 5,
+        "fallback": 0,
+        "unavailable": 0,
+        "avg_score": 0.03087989714217586,
+        "headline_count": 25
+      },
+      "market_news_context": {
+        "signal_total": 10,
+        "ok": 10,
+        "fallback": 0,
+        "unavailable": 0,
+        "avg_score": -0.033843691458092004,
+        "headline_count": 50
+      },
+      "news_query_targets": [
+        "코스피",
+        "미국 증시",
+        "국제유가",
+        "환율",
+        "중동",
+        "하락 종목 수",
+        "약세 업종",
+        "달러",
+        "방산",
+        "금"
+      ],
+      "news_query_reasoning": "global_score=-0.22 macro_risk=0.00 index_trend=0.00 vix=30.61 vix_pressure=0.531; elevated fear index added defensive macro and hedge queries; weak breadth added 하락 종목 수/약세 업종 queries",
+      "market_context_inputs": {
+        "index_trend": 0.0,
+        "realized_volatility": 0.0,
+        "market_breadth": 0.0,
+        "macro_risk": 0.0
+      },
+      "theme_strength": {},
+      "strategy_memory": {
+        "schema_version": "strategy_memory.v1",
+        "day": "2026-03-31",
+        "best_playbooks": [],
+        "worst_playbooks": [],
+        "market_condition_bias": {},
+        "recent_failures": [],
+        "recent_success_patterns": [],
+        "playbook_performance_snapshot": {},
+        "advisory_only": true,
+        "status": "empty"
+      },
+      "selected_playbook": "pullback",
+      "candidate_hypotheses": [
+        {
+          "symbol": "122630",
+          "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+          "source": "candidate_symbols_hint"
+        },
+        {
+          "symbol": "069500",
+          "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+          "source": "candidate_symbols_hint"
+        },
+        {
+          "symbol": "252670",
+          "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+          "source": "candidate_symbols_hint"
+        },
+        {
+          "symbol": "005930",
+          "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+          "source": "candidate_symbols_hint"
+        },
+        {
+          "symbol": "000660",
+          "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+          "source": "candidate_symbols_hint"
+        }
+      ],
+      "symbol_constraints": {
+        "candidate_symbols_hint": [
+          "122630",
+          "069500",
+          "252670",
+          "005930",
+          "000660"
+        ],
+        "preferred_themes": [
+          "broad_market_leaders"
+        ],
+        "avoid_themes": [
+          "defensive_assets",
+          "counter_trend_low_liquidity"
+        ],
+        "scanner_priority": [
+          "leader_quality",
+          "trend_strength",
+          "trading_value",
+          "volume_surge",
+          "pullback_quality",
+          "relative_strength"
+        ],
+        "candidate_limit": 5
+      },
+      "symbol_plan": {
+        "candidate_symbols_hint": [
+          "122630",
+          "069500",
+          "252670",
+          "005930",
+          "000660"
+        ],
+        "preferred_themes": [
+          "broad_market_leaders"
+        ],
+        "avoid_themes": [
+          "defensive_assets",
+          "counter_trend_low_liquidity"
+        ],
+        "scanner_priority": [
+          "leader_quality",
+          "trend_strength",
+          "trading_value",
+          "volume_surge",
+          "pullback_quality",
+          "relative_strength"
+        ],
+        "candidate_limit": 5
+      },
+      "entry_plan": {
+        "setup_family": "pullback",
+        "monitor_guidance": "defensive_exit",
+        "risk_tone": "conservative",
+        "trade_aggressiveness": "medium",
+        "scanner_priority": [
+          "leader_quality",
+          "trend_strength",
+          "trading_value",
+          "volume_surge"
+        ],
+        "scanner_mission": "Prioritize balanced liquid leaders with clear scanner fit and manageable risk.",
+        "confirmation_required": true
+      },
+      "exit_plan": {
+        "monitor_guidance": "defensive_exit",
+        "monitor_mission": "Wait for confirmation and avoid low-quality chase entries.",
+        "position_guards": {
+          "min_hold_seconds": 600,
+          "sell_cooldown_seconds": 300,
+          "exit_confirm_ticks": 2,
+          "adjustments": [
+            "mode:defensive_exit",
+            "risk_tone:conservative"
+          ],
+          "note": "monitor_manages_entry_exit_only"
+        },
+        "adaptive_exit": {
+          "stop_loss_pct": 0.01817046,
+          "take_profit_pct": 0.03371682239999999,
+          "trailing_stop_pct": 0.017325,
+          "vol_expansion_ratio": 2.0,
+          "news_shock_threshold": 0.0,
+          "peak_drawdown_exit_pct": 0.01147608,
+          "vwap_breakdown_pct": 0.007,
+          "intraday_low_break_pct": 0.0025,
+          "trend_strength_floor": -0.1,
+          "adjustments": [
+            "baseline:pullback",
+            "playbook:pullback",
+            "monitor_guidance:defensive_exit",
+            "risk_tone:conservative",
+            "trade_aggressiveness:low",
+            "peak_drawdown_exit_pct:auto",
+            "vwap_breakdown_pct:auto",
+            "intraday_low_break_pct:auto",
+            "trend_strength_floor:auto"
+          ],
+          "note": "strategist_exit_policy_baseline"
+        }
+      },
+      "strategy_summary": "Strategist refined commander context into pullback plan for 5 candidate symbols. News focus: global_score=-0.22 macro_risk=0.00 index_trend=0.00 vix=30.61 vix_pressure=0.531; elevated fear index added defensive macro and hedge queries; weak breadth added 하락 종목 수/약세 업종 quer",
+      "policy_provenance": {
+        "market_policy_owner": "commander",
+        "scanner_policy_owner": "strategist",
+        "monitor_policy_owner": "strategist",
+        "decision_policy_owner": "strategist",
+        "merged_from": [
+          "commander_decision",
+          "strategist_node"
+        ],
+        "commander_context_source": "commander_decision",
+        "strategist_plan_source": "strategist_node",
+        "monitor_entry_policy_source": "strategist",
+        "scanner_bias_source": "strategist",
+        "shadow_used": true,
+        "strategist_fallback_used": false
+      },
+      "scanner_bias_summary": {
+        "enabled": true,
+        "active_biases": [
+          "prefer_shallow_pullback_candidates",
+          "penalize_overextended",
+          "prefer_reclaim_candidates",
+          "prefer_volume_confirmation"
+        ],
+        "bias_strength": "low",
+        "bias_source": "strategist",
+        "summary": "prefer_shallow_pullback_candidates, penalize_overextended, prefer_reclaim_candidates, prefer_volume_confirmation (low)",
+        "validation_issues": []
+      },
+      "scanner_bias_validation_status": "ok",
+      "scanner_bias_validation_issues": [],
+      "commander_context_ref": {
+        "source": "commander_decision",
+        "market_regime": "neutral",
+        "session_bias": "active_selection",
+        "risk_mode": "balanced",
+        "command_intent": "OBSERVE_ONLY",
+        "strategist_invocation": "SKIP",
+        "llm_policy": "SKIP",
+        "no_trade_reason_code": "WAIT_FOR_CONFIRMATION",
+        "decision_summary": "Monitor gates were not fully aligned yet, so waiting for another bar or clearer confirmation looked appropriate.",
+        "source_priority": [
+          "shadow_commander",
+          "runtime_observation",
+          "strategist_fallback"
+        ]
+      },
+      "commander_invocation_hint": "SKIP",
+      "commander_llm_policy": "SKIP",
+      "commander_no_trade_reason_code": "WAIT_FOR_CONFIRMATION",
+      "shadow_used": true,
+      "strategist_fallback_used": false,
+      "llm_frame_status": "ok",
+      "llm_frame_applied": true,
+      "llm_frame_model": "deepseek/deepseek-v3.2",
+      "llm_frame_recovery_method": "",
+      "llm_frame_low_confidence": false,
+      "llm_frame_required": true,
+      "llm_frame_strict": true,
+      "llm_frame_blocked": false,
+      "llm_frame_blocked_reason": "",
+      "runtime_theme_map_keys": [
+        "broad_market_leaders"
+      ],
+      "runtime_sector_map_keys": [
+        "broad_market_leaders"
+      ]
+    },
+    "generated_epoch": 1774928947,
+    "source": "strategist_node"
+  },
+  "mock_position_desync_reconciled": true,
+  "portfolio_reconcile_reason": "reader_positions_authoritative",
+  "monitor_last_state_by_symbol": {
+    "000660": {
+      "posture": "WAIT",
+      "reason": "pullback_below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774929127,
+      "entry_state": {
+        "extended_from_vwap_pct": -0.048712241678617096,
+        "volume_ratio": 0.5330174140853753,
+        "breakout_gap_pct": -0.0036275695284159193,
+        "reclaim_gate_ok": false,
+        "volume_ok": false,
+        "breakout_ok": false,
+        "extension_ok": false,
+        "breakout_path_ok": false,
+        "pullback_volume_path_ok": false,
+        "confidence_gate_ok": false,
+        "triggered": false,
+        "current_blocking_axis": "vwap_relationship",
+        "transition_readiness_score": 0.587
+      }
+    },
+    "032820": {
+      "posture": "WAIT",
+      "reason": "below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774844858
+    },
+    "005930": {
+      "posture": "WAIT",
+      "reason": "pullback_below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774929011,
+      "entry_state": {
+        "extended_from_vwap_pct": -0.025192769349595245,
+        "volume_ratio": 0.31000589551623803,
+        "breakout_gap_pct": -0.002062463170300566,
+        "reclaim_gate_ok": false,
+        "volume_ok": false,
+        "breakout_ok": false,
+        "extension_ok": false,
+        "breakout_path_ok": false,
+        "pullback_volume_path_ok": false,
+        "confidence_gate_ok": false,
+        "triggered": false,
+        "current_blocking_axis": "vwap_relationship",
+        "transition_readiness_score": 0.5086
+      }
+    },
+    "047040": {
+      "posture": "WAIT",
+      "reason": "too_extended_from_vwap",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774315004
+    },
+    "001510": {
+      "posture": "WAIT",
+      "reason": "below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774493422
+    },
+    "046970": {
+      "posture": "WAIT",
+      "reason": "below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774843793
+    },
+    "069500": {
+      "posture": "WAIT",
+      "reason": "pullback_below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774928505,
+      "entry_state": {
+        "extended_from_vwap_pct": -0.02352643088495221,
+        "volume_ratio": 0.6445179313834039,
+        "breakout_gap_pct": -0.002747432458952037,
+        "reclaim_gate_ok": false,
+        "volume_ok": false,
+        "breakout_ok": false,
+        "extension_ok": false,
+        "breakout_path_ok": false,
+        "pullback_volume_path_ok": false,
+        "confidence_gate_ok": false,
+        "triggered": false,
+        "current_blocking_axis": "vwap_relationship",
+        "transition_readiness_score": 0.6259
+      }
+    },
+    "252670": {
+      "posture": "BUY",
+      "reason": "breakout_above_recent_high_with_vwap_structure_confirmation",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774928633,
+      "entry_state": {
+        "extended_from_vwap_pct": 0.050616948666036166,
+        "volume_ratio": 0.1644656139047077,
+        "breakout_gap_pct": 0.0,
+        "reclaim_gate_ok": true,
+        "volume_ok": false,
+        "breakout_ok": true,
+        "extension_ok": true,
+        "breakout_path_ok": true,
+        "pullback_volume_path_ok": false,
+        "confidence_gate_ok": true,
+        "triggered": true,
+        "current_blocking_axis": "confirmed_entry",
+        "transition_readiness_score": 0.8079
+      }
+    },
+    "122630": {
+      "posture": "WAIT",
+      "reason": "too_extended_from_vwap",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774234052
+    },
+    "003280": {
+      "posture": "WAIT",
+      "reason": "volume_insufficient",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774829719
+    },
+    "396500": {
+      "posture": "WAIT",
+      "reason": "pullback_below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774916456
+    },
+    "408470": {
+      "posture": "WAIT",
+      "reason": "below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774419357
+    },
+    "233740": {
+      "posture": "WAIT",
+      "reason": "below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774829445
+    },
+    "066970": {
+      "posture": "WAIT",
+      "reason": "pullback_not_mature",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774415859
+    },
+    "006200": {
+      "posture": "WAIT",
+      "reason": "too_extended_from_vwap",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774407395
+    },
+    "003000": {
+      "posture": "WAIT",
+      "reason": "too_extended_from_vwap",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774484136
+    },
+    "049080": {
+      "posture": "WAIT",
+      "reason": "still_overextended_after_pullback",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774916327
+    },
+    "034020": {
+      "posture": "WAIT",
+      "reason": "pullback_not_mature",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774415989
+    },
+    "375500": {
+      "posture": "WAIT",
+      "reason": "pullback_not_mature",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774413276
+    },
+    "005935": {
+      "posture": "WAIT",
+      "reason": "below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774483893
+    },
+    "100790": {
+      "posture": "WAIT",
+      "reason": "breakout_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774506371
+    },
+    "011280": {
+      "posture": "WAIT",
+      "reason": "too_extended_from_vwap",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774493544
+    },
+    "102110": {
+      "posture": "WAIT",
+      "reason": "below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774841351
+    },
+    "217730": {
+      "posture": "WAIT",
+      "reason": "below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774841661
+    },
+    "000250": {
+      "posture": "WAIT",
+      "reason": "pullback_below_vwap_reclaim_not_ready",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774928758,
+      "entry_state": {
+        "extended_from_vwap_pct": -0.14763996958269532,
+        "volume_ratio": 0.2716724837279502,
+        "breakout_gap_pct": -0.004801920768307322,
+        "reclaim_gate_ok": false,
+        "volume_ok": false,
+        "breakout_ok": false,
+        "extension_ok": false,
+        "breakout_path_ok": false,
+        "pullback_volume_path_ok": false,
+        "confidence_gate_ok": false,
+        "triggered": false,
+        "current_blocking_axis": "vwap_relationship",
+        "transition_readiness_score": 0.4942
+      }
+    },
+    "322000": {
+      "posture": "WAIT",
+      "reason": "pullback_not_mature",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774928837,
+      "entry_state": {
+        "extended_from_vwap_pct": 0.00451596358268036,
+        "volume_ratio": 2.0391807658058774,
+        "breakout_gap_pct": -0.007857142857142896,
+        "reclaim_gate_ok": true,
+        "volume_ok": true,
+        "breakout_ok": false,
+        "extension_ok": true,
+        "breakout_path_ok": false,
+        "pullback_volume_path_ok": false,
+        "confidence_gate_ok": false,
+        "triggered": false,
+        "current_blocking_axis": "pullback_structure",
+        "transition_readiness_score": 0.9976
+      }
+    },
+    "263750": {
+      "posture": "WAIT",
+      "reason": "still_overextended_after_pullback",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774916184
+    },
+    "060900": {
+      "posture": "WAIT",
+      "reason": "still_overextended_after_pullback",
+      "active_exit_axis": "No Position",
+      "updated_at_epoch": 1774916390
+    },
+    "018470": {
+      "posture": "HOLD",
+      "reason": "hold",
+      "active_exit_axis": "Hold",
+      "updated_at_epoch": 1774932155,
+      "entry_state": {
+        "extended_from_vwap_pct": 0.04994436096920385,
+        "volume_ratio": 0.23543920623353326,
+        "breakout_gap_pct": 0.0,
+        "reclaim_gate_ok": true,
+        "volume_ok": false,
+        "breakout_ok": true,
+        "extension_ok": true,
+        "breakout_path_ok": true,
+        "pullback_volume_path_ok": false,
+        "confidence_gate_ok": true,
+        "triggered": true,
+        "current_blocking_axis": "confirmed_entry",
+        "transition_readiness_score": 0.8329
+      }
+    }
+  },
+  "latest_reasoning_trace": {
+    "commander_summary": {
+      "summary": "Monitor gates were not fully aligned yet, so waiting for another bar or clearer confirmation looked appropriate. Runtime note: commander_skip_cached_strategist",
+      "command_intent": "OBSERVE_ONLY",
+      "strategist_invocation": "SKIP",
+      "llm_policy": "SKIP",
+      "no_trade_reason_code": "WAIT_FOR_CONFIRMATION",
+      "source_priority": [
+        "shadow_commander",
+        "runtime_observation",
+        "strategist_fallback"
+      ],
+      "applied_policy": {
+        "enabled": true,
+        "timeframe_minutes": 1,
+        "breakout_lookback": 5,
+        "volume_lookback": 5,
+        "volume_ratio_min": 0.75,
+        "min_extended_from_vwap_pct": -0.02,
+        "max_extended_from_vwap_pct": 0.1,
+        "pullback_min_pct": 0.01,
+        "pullback_max_pct": 0.05,
+        "reclaim_tolerance_pct": 0.002,
+        "breakout_buffer_pct": 0.0,
+        "intent_cooldown_sec": 90,
+        "require_vwap_reclaim": true,
+        "require_rebound": true,
+        "adjustments": [],
+        "policy_source": "strategist"
+      },
+      "policy_source": "strategist",
+      "policy_validation_status": "partial_normalized",
+      "policy_fallback_used": false,
+      "policy_fallback_reason": "missing_fields=enabled",
+      "policy_partial_normalized": true,
+      "policy_default_filled_fields": [
+        "enabled"
+      ],
+      "policy_validation_missing_fields": [
+        "enabled"
+      ],
+      "policy_validation_invalid_fields": [],
+      "override_reason": "",
+      "applied_policy_source_chain": [
+        "strategist",
+        "validation",
+        "commander_confirmed"
+      ]
+    },
+    "strategist_summary": {
+      "summary": "Strategist refined commander context into pullback plan for 5 candidate symbols. News focus: global_score=-0.22 macro_risk=0.00 index_trend=0.00 vix=30.61 vix_pressure=0.531; elevated fear index added defensive macro and hedge queries; weak breadth added 하락 종목 수/약세 업종 quer",
+      "selected_playbook": "pullback",
+      "candidate_hypotheses": [
+        {
+          "symbol": "122630",
+          "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+          "source": "candidate_symbols_hint"
+        },
+        {
+          "symbol": "069500",
+          "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+          "source": "candidate_symbols_hint"
+        },
+        {
+          "symbol": "252670",
+          "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+          "source": "candidate_symbols_hint"
+        },
+        {
+          "symbol": "005930",
+          "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+          "source": "candidate_symbols_hint"
+        },
+        {
+          "symbol": "000660",
+          "hypothesis": "pullback setup candidate with theme=broad_market_leaders, priority=leader_quality",
+          "source": "candidate_symbols_hint"
+        }
+      ],
+      "symbol_constraints": {
+        "candidate_symbols_hint": [
+          "122630",
+          "069500",
+          "252670",
+          "005930",
+          "000660"
+        ],
+        "preferred_themes": [
+          "broad_market_leaders"
+        ],
+        "avoid_themes": [
+          "defensive_assets",
+          "counter_trend_low_liquidity"
+        ],
+        "scanner_priority": [
+          "leader_quality",
+          "trend_strength",
+          "trading_value",
+          "volume_surge",
+          "pullback_quality",
+          "relative_strength"
+        ],
+        "candidate_limit": 5
+      }
+    },
+    "scanner_summary": {
+      "summary": "None",
+      "selected_symbol": "000660",
+      "runner_up_symbol": "",
+      "ranking_factors": [
+        "leader_quality",
+        "trend_strength",
+        "volume_surge",
+        "trading_value",
+        "pullback_quality",
+        "relative_strength",
+        "bias:leader",
+        "scanner_bias:prefer_shallow_pullback_candidates, penalize_overextended, prefer_reclaim_candidates, prefer_volume_confirmation (low)",
+        "playbook:pullback",
+        "commander_mission"
+      ],
+      "rejected_candidates": [
+        {
+          "symbol": "005930",
+          "why_lost": [
+            "lower total score (0.622 vs 0.659)",
+            "lower confidence (0.65 vs 0.71)"
+          ]
+        },
+        {
+          "symbol": "252670",
+          "why_lost": [
+            "lower total score (0.612 vs 0.659)",
+            "lower confidence (0.61 vs 0.71)",
+            "higher risk (1.00 vs 0.69)"
+          ]
+        }
+      ],
+      "playbook": "pullback",
+      "policy_source": "strategist",
+      "applied_policy_present": true,
+      "monitor_entry_policy_summary": {
+        "timeframe_minutes": 1,
+        "breakout_lookback": 5,
+        "volume_lookback": 5,
+        "volume_ratio_min": 0.75,
+        "pullback_min_pct": 0.01,
+        "pullback_max_pct": 0.05,
+        "max_extended_from_vwap_pct": 0.1
+      }
+    },
+    "monitor_summary": {
+      "summary": "mission=Wait for confirmation and avoid low-quality chase entries. | flow=allow_current_flow | playbook=pullback | reason=pullback_below_vwap_reclaim_not_ready",
+      "decision": "NOOP",
+      "action": "",
+      "entry_blockers": [
+        "WAIT_FOR_CONFIRMATION",
+        "pullback_below_vwap_reclaim_not_ready",
+        "reclaim_gate_ok",
+        "vwap_structure_ok",
+        "pullback_mature",
+        "volume_ok",
+        "pullback_volume_path_ok",
+        "breakout_ok"
+      ],
+      "timing_assessment": {
+        "entry_pattern": "",
+        "entry_reason": "pullback_below_vwap_reclaim_not_ready",
+        "entry_plan": {
+          "setup_family": "pullback",
+          "monitor_guidance": "defensive_exit",
+          "risk_tone": "conservative",
+          "trade_aggressiveness": "medium",
+          "scanner_priority": [
+            "leader_quality",
+            "trend_strength",
+            "trading_value",
+            "volume_surge"
+          ],
+          "scanner_mission": "Prioritize balanced liquid leaders with clear scanner fit and manageable risk.",
+          "confirmation_required": true
+        },
+        "monitor_mission": "Wait for confirmation and avoid low-quality chase entries.",
+        "strategy_summary": "Strategist refined commander context into pullback plan for 5 candidate symbols. News focus: global_score=-0.22 macro_risk=0.00 index_trend=0.00 vix=30.61 vix_pressure=0.531; elevated fear index added defensive macro and hedge queries; weak breadth added 하락 종목 수/약세 업종 quer"
+      },
+      "exit_trigger_basis": {
+        "exit_reason": "no_position",
+        "active_exit_axis": "No Position",
+        "exit_plan": {
+          "monitor_guidance": "defensive_exit",
+          "monitor_mission": "Wait for confirmation and avoid low-quality chase entries.",
+          "position_guards": {
+            "min_hold_seconds": 600,
+            "sell_cooldown_seconds": 300,
+            "exit_confirm_ticks": 2,
+            "adjustments": [
+              "mode:defensive_exit",
+              "risk_tone:conservative"
+            ],
+            "note": "monitor_manages_entry_exit_only"
+          },
+          "adaptive_exit": {
+            "stop_loss_pct": 0.01817046,
+            "take_profit_pct": 0.03371682239999999,
+            "trailing_stop_pct": 0.017325,
+            "vol_expansion_ratio": 2.0,
+            "news_shock_threshold": 0.0,
+            "peak_drawdown_exit_pct": 0.01147608,
+            "vwap_breakdown_pct": 0.007,
+            "intraday_low_break_pct": 0.0025,
+            "trend_strength_floor": -0.1,
+            "adjustments": [
+              "baseline:pullback",
+              "playbook:pullback",
+              "monitor_guidance:defensive_exit",
+              "risk_tone:conservative",
+              "trade_aggressiveness:low",
+              "peak_drawdown_exit_pct:auto",
+              "vwap_breakdown_pct:auto",
+              "intraday_low_break_pct:auto",
+              "trend_strength_floor:auto"
+            ],
+            "note": "strategist_exit_policy_baseline"
+          }
+        },
+        "monitor_mission": "Wait for confirmation and avoid low-quality chase entries."
+      },
+      "received_policy": {
+        "enabled": true,
+        "timeframe_minutes": 1,
+        "breakout_lookback": 5,
+        "volume_lookback": 5,
+        "volume_ratio_min": 0.75,
+        "min_extended_from_vwap_pct": -0.02,
+        "max_extended_from_vwap_pct": 0.1,
+        "pullback_min_pct": 0.01,
+        "pullback_max_pct": 0.05,
+        "reclaim_tolerance_pct": 0.002,
+        "breakout_buffer_pct": 0.0,
+        "intent_cooldown_sec": 90,
+        "require_vwap_reclaim": true,
+        "require_rebound": true,
+        "adjustments": [],
+        "policy_source": "strategist"
+      },
+      "received_policy_source": "commander_applied_policy",
+      "effective_policy": {
+        "enabled": true,
+        "timeframe_minutes": 1,
+        "breakout_lookback": 4,
+        "volume_lookback": 5,
+        "volume_ratio_min": 0.71,
+        "min_extended_from_vwap_pct": -0.02,
+        "max_extended_from_vwap_pct": 0.1,
+        "pullback_min_pct": 0.008,
+        "pullback_max_pct": 0.06,
+        "reclaim_tolerance_pct": 0.002,
+        "breakout_buffer_pct": 0.0,
+        "intent_cooldown_sec": 90,
+        "require_vwap_reclaim": true,
+        "require_rebound": true,
+        "adjustments": [
+          "playbook:pullback",
+          "guidance:defensive_exit_pullback",
+          "risk_tone:conservative_pullback"
+        ],
+        "policy_source": "strategist"
+      },
+      "effective_policy_source": "monitor_frame_adjusted",
+      "effective_policy_source_chain": [
+        "commander_applied_policy",
+        "strategy_frame_adjustment",
+        "monitor_effective_policy"
+      ],
+      "policy_adjustments": {
+        "inputs": {
+          "playbook": "pullback",
+          "monitor_guidance": "defensive_exit",
+          "risk_tone": "conservative",
+          "trade_aggressiveness": "medium"
+        },
+        "applied_rules": [
+          "playbook:pullback",
+          "guidance:defensive_exit_pullback",
+          "risk_tone:conservative_pullback"
+        ],
+        "changed_fields": [
+          "breakout_lookback",
+          "volume_ratio_min",
+          "pullback_min_pct",
+          "pullback_max_pct"
+        ]
+      },
+      "policy_adjustment_summary": "pullback + defensive_exit + conservative + medium adjusted breakout_lookback, volume_ratio_min, pullback_min_pct, pullback_max_pct",
+      "policy_adjustment_reasoning": "Monitor used an effective policy derived from the commander-confirmed baseline after strategy-frame adjustment. Changed fields: breakout_lookback, volume_ratio_min, pullback_min_pct, pullback_max_pct.",
+      "effective_policy_deltas": [
+        {
+          "field": "breakout_lookback",
+          "from": 5,
+          "to": 4
+        },
+        {
+          "field": "volume_ratio_min",
+          "from": 0.75,
+          "to": 0.71
+        },
+        {
+          "field": "pullback_min_pct",
+          "from": 0.01,
+          "to": 0.008
+        },
+        {
+          "field": "pullback_max_pct",
+          "from": 0.05,
+          "to": 0.06
+        }
+      ],
+      "applied_policy": {
+        "enabled": true,
+        "timeframe_minutes": 1,
+        "breakout_lookback": 4,
+        "volume_lookback": 5,
+        "volume_ratio_min": 0.71,
+        "min_extended_from_vwap_pct": -0.02,
+        "max_extended_from_vwap_pct": 0.1,
+        "pullback_min_pct": 0.008,
+        "pullback_max_pct": 0.06,
+        "reclaim_tolerance_pct": 0.002,
+        "breakout_buffer_pct": 0.0,
+        "intent_cooldown_sec": 90,
+        "require_vwap_reclaim": true,
+        "require_rebound": true,
+        "adjustments": [
+          "playbook:pullback",
+          "guidance:defensive_exit_pullback",
+          "risk_tone:conservative_pullback"
+        ],
+        "policy_source": "strategist"
+      },
+      "policy_source": "strategist",
+      "policy_validation_status": "partial_normalized",
+      "policy_fallback_used": false,
+      "policy_fallback_reason": "missing_fields=enabled",
+      "policy_partial_normalized": true,
+      "policy_default_filled_fields": [
+        "enabled"
+      ],
+      "policy_validation_missing_fields": [
+        "enabled"
+      ],
+      "policy_validation_invalid_fields": [],
+      "override_reason": ""
+    }
+  },
+  "latest_reasoning_trace_provenance": {
+    "commander_context_source": "state.commander_decision",
+    "strategist_plan_source": "state.strategy_policy.strategist_plan",
+    "scanner_reason_source": "state.scanner_output",
+    "monitor_reason_source": "state.monitor_output",
+    "commander_source_ref": "commander_router.shadow_assessment",
+    "strategist_source_ref": "state.strategy_policy.strategist_plan",
+    "scanner_source_ref": "state.scanner_output",
+    "monitor_source_ref": "state.monitor_output",
+    "shadow_used": true,
+    "strategist_fallback_used": false,
+    "source_priority": [
+      "shadow_commander",
+      "runtime_observation",
+      "strategist_fallback"
+    ]
+  },
+  "position_peak_price": {
+    "018470": 1609.0
+  }
+}
