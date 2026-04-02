@@ -10,9 +10,15 @@ from libs.reporting.trade_read_model import (
     brief_collect_top_headlines,
     brief_top_numeric_drivers,
     build_operator_brief_detail_view,
+    build_trade_report_recent_feedback_pack,
+    load_time_bucketed_trade_report_recent_feedback_pack,
+    load_trade_report_recent_feedback_pack,
+    build_recent_trade_feedback_summary_input,
+    build_trade_report_recent_feedback_view,
     build_linked_trade_report_card,
     build_trade_report_detail_view,
     build_unlinked_trade_report_card,
+    collect_strategist_feedback_inputs,
     extract_labeled_bullet,
     extract_labeled_int,
     load_operator_brief_detail_payloads,
@@ -110,6 +116,12 @@ def test_trade_read_model_explicit_public_surface_includes_detail_builders() -> 
     assert "load_trade_report_payloads" in exported
     assert "build_trade_report_detail_view" in exported
     assert "build_operator_brief_detail_view" in exported
+    assert "build_recent_trade_feedback_summary_input" in exported
+    assert "build_trade_report_recent_feedback_view" in exported
+    assert "build_trade_report_recent_feedback_pack" in exported
+    assert "load_trade_report_recent_feedback_pack" in exported
+    assert "load_time_bucketed_trade_report_recent_feedback_pack" in exported
+    assert "collect_strategist_feedback_inputs" in exported
     assert data_access_reports.__all__ == ["load_trade_report_payloads"]
 
 
@@ -393,6 +405,34 @@ def test_trade_read_model_build_unlinked_trade_report_card_marks_missing_report_
 
 
 def test_trade_read_model_build_trade_report_detail_view_returns_normalized_detail() -> None:
+    recent_items = [
+        {
+            "trade_id": "TRD_OLD_A",
+            "symbol": "005930",
+            "status": "closed",
+            "action": "SELL",
+            "result_pct": 0.8,
+            "strategist_feedback_input": {
+                "selected_symbol": "005930",
+                "playbook": "pullback",
+                "entry_pattern_type": "reclaim",
+                "exit_pattern_type": "take_profit",
+            },
+        },
+        {
+            "trade_id": "TRD_OLD_B",
+            "symbol": "000660",
+            "status": "closed",
+            "action": "SELL",
+            "result_pct": -0.5,
+            "strategist_feedback_input": {
+                "selected_symbol": "000660",
+                "playbook": "defensive",
+                "entry_pattern_type": "pullback",
+                "exit_pattern_type": "vwap_breakdown",
+            },
+        },
+    ]
     detail = build_trade_report_detail_view(
         {
             "trade_id": "TRD_TEST",
@@ -403,6 +443,8 @@ def test_trade_read_model_build_trade_report_detail_view_returns_normalized_deta
             "lifecycle_status": "closed",
             "report_summary": "meta summary",
             "trade_report_json_path": "report.json",
+            "recent_feedback_items": recent_items,
+            "recent_feedback_window_size": 5,
         },
         {
             "report_data": {
@@ -419,6 +461,13 @@ def test_trade_read_model_build_trade_report_detail_view_returns_normalized_deta
             },
             "bundle_data": {
                 "operator_conclusion_human": {"summary": "stay disciplined"},
+                "strategist_feedback_input": {
+                    "selected_symbol": "005930",
+                    "playbook": "pullback",
+                    "entry_pattern_type": "reclaim",
+                    "exit_pattern_type": "vwap_breakdown",
+                    "improvement_tags": ["late_entry"],
+                },
             },
             "lifecycle_data": {"status": "closed", "summary": {"lifecycle_summary_human": "closed cleanly"}},
             "report_exists": True,
@@ -435,6 +484,332 @@ def test_trade_read_model_build_trade_report_detail_view_returns_normalized_deta
     assert detail["symbol"] == "005930"
     assert detail["review_focus"]["why_entered"] == "entered on reclaim"
     assert detail["generation"]["model"] == "gpt-5"
+    assert detail["strategist_feedback_input"]["selected_symbol"] == "005930"
+    assert detail["strategist_feedback_input"]["playbook"] == "pullback"
+    assert detail["strategist_feedback_input"]["entry_pattern_type"] == "reclaim"
+    assert detail["strategist_feedback_input"]["exit_pattern_type"] == "vwap_breakdown"
+    assert detail["strategist_feedback_input"]["improvement_tags"] == ["late_entry"]
+    assert detail["strategist_feedback_recent_window"] == build_recent_trade_feedback_summary_input(recent_items, window_size=5)
+    assert detail["strategist_feedback_recent_window"]["trades_considered"] == 2
+    assert detail["strategist_feedback_recent_window"]["symbols"] == ["005930", "000660"]
+
+
+def test_trade_read_model_collect_strategist_feedback_inputs_extracts_from_detail_and_payload_wrappers() -> None:
+    out = collect_strategist_feedback_inputs(
+        [
+            {
+                "trade_id": "TRD_A",
+                "story_id": "TRD_A",
+                "run_id": "run-a",
+                "strategist_feedback_input": {
+                    "selected_symbol": "005930",
+                    "playbook": "pullback",
+                    "entry_pattern_type": "breakout",
+                    "exit_pattern_type": "take_profit",
+                    "improvement_tags": ["late_entry"],
+                },
+            },
+            {
+                "trade_id": "TRD_B",
+                "story_id": "TRD_B",
+                "run_id": "run-b",
+                "bundle_data": {
+                    "strategist_feedback_input": {
+                        "selected_symbol": "000660",
+                        "playbook": "defensive",
+                    }
+                },
+            },
+        ]
+    )
+    assert len(out) == 2
+    assert out[0]["trade_id"] == "TRD_A"
+    assert out[0]["selected_symbol"] == "005930"
+    assert out[0]["exit_pattern_type"] == "take_profit"
+    assert out[1]["trade_id"] == "TRD_B"
+    assert out[1]["selected_symbol"] == "000660"
+    assert out[1]["entry_pattern_type"] == "unknown"
+    assert out[1]["improvement_tags"] == []
+
+
+def test_trade_read_model_collect_strategist_feedback_inputs_skips_missing_and_stays_unknown_safe() -> None:
+    out = collect_strategist_feedback_inputs(
+        [
+            {"trade_id": "TRD_MISSING"},
+            {
+                "trade_id": "TRD_PARTIAL",
+                "story_input_data": {
+                    "strategist_feedback_input": {
+                        "selected_symbol": "003280",
+                        "review_flags": ["needs_human_review"],
+                    }
+                },
+            },
+        ]
+    )
+    assert len(out) == 1
+    assert out[0]["trade_id"] == "TRD_PARTIAL"
+    assert out[0]["selected_symbol"] == "003280"
+    assert out[0]["entry_pattern_type"] == "unknown"
+    assert out[0]["exit_pattern_type"] == "unknown"
+    assert out[0]["review_flags"] == ["needs_human_review"]
+
+
+def test_trade_read_model_build_recent_trade_feedback_summary_input_aggregates_compact_window() -> None:
+    out = build_recent_trade_feedback_summary_input(
+        [
+            {
+                "trade_id": "TRD_A",
+                "symbol": "005930",
+                "status": "closed",
+                "action": "SELL",
+                "result_pct": 1.2,
+                "strategist_feedback_input": {
+                    "selected_symbol": "005930",
+                    "playbook": "pullback",
+                    "entry_pattern_type": "reclaim",
+                    "exit_pattern_type": "take_profit",
+                    "review_flags": ["high_quality_trade"],
+                },
+            },
+            {
+                "trade_id": "TRD_B",
+                "symbol": "000660",
+                "status": "closed",
+                "action": "SELL",
+                "result_pct": -0.4,
+                "bundle_data": {
+                    "strategist_feedback_input": {
+                        "selected_symbol": "000660",
+                        "playbook": "defensive",
+                        "entry_pattern_type": "pullback",
+                        "exit_pattern_type": "vwap_breakdown",
+                        "improvement_tags": ["late_entry"],
+                    }
+                },
+            },
+            {
+                "trade_id": "TRD_C",
+                "symbol": "003280",
+                "status": "open",
+                "action": "HOLD",
+                "story_input_data": {
+                    "strategist_feedback_input": {
+                        "selected_symbol": "003280",
+                    }
+                },
+            },
+        ],
+        window_size=2,
+    )
+    assert out["window_size"] == 2
+    assert out["trades_considered"] == 2
+    assert out["symbols"] == ["005930", "000660"]
+    assert out["playbooks_seen"] == ["pullback", "defensive"]
+    assert out["final_action_counts"] == {"SELL": 2}
+    assert out["entry_pattern_counts"] == {"pullback": 1, "reclaim": 1}
+    assert out["exit_pattern_counts"] == {"take_profit": 1, "vwap_breakdown": 1}
+    assert out["improvement_tag_counts"] == {"late_entry": 1}
+    assert out["review_flag_counts"] == {"high_quality_trade": 1}
+    assert out["known_result_trade_count"] == 2
+    assert abs(float(out["average_result_pct"]) - 0.4) < 1e-9
+    assert [row["trade_id"] for row in out["recent_trade_refs"]] == ["TRD_A", "TRD_B"]
+
+
+def test_trade_read_model_build_trade_report_recent_feedback_view_is_thin_wrapper_and_empty_safe() -> None:
+    items = [
+        {
+            "trade_id": "TRD_A",
+            "symbol": "005930",
+            "status": "closed",
+            "action": "SELL",
+            "result_pct": 1.0,
+            "strategist_feedback_input": {
+                "selected_symbol": "005930",
+                "entry_pattern_type": "breakout",
+                "exit_pattern_type": "take_profit",
+            },
+        }
+    ]
+    expected = build_recent_trade_feedback_summary_input(items, window_size=3)
+    assert build_trade_report_recent_feedback_view(items, window_size=3) == expected
+
+    empty = build_trade_report_recent_feedback_view(None, window_size=4)
+    assert empty["window_size"] == 4
+    assert empty["trades_considered"] == 0
+    assert empty["recent_trade_refs"] == []
+
+
+def test_trade_read_model_build_trade_report_recent_feedback_pack_wraps_existing_window_payload() -> None:
+    items = [
+        {
+            "trade_id": "TRD_A",
+            "symbol": "005930",
+            "status": "closed",
+            "action": "SELL",
+            "strategist_feedback_input": {
+                "selected_symbol": "005930",
+                "entry_pattern_type": "breakout",
+                "exit_pattern_type": "take_profit",
+            },
+        }
+    ]
+    expected_window = build_trade_report_recent_feedback_view(items, window_size=6)
+    packed = build_trade_report_recent_feedback_pack(items, window_size=6)
+    assert packed["schema_version"] == "strategist_feedback_recent_window_pack.v1"
+    assert packed["payload_type"] == "recent_strategist_feedback_window"
+    assert packed["available"] is True
+    assert packed["window"] == expected_window
+
+    empty = build_trade_report_recent_feedback_pack(None, window_size=2)
+    assert empty["available"] is False
+    assert empty["window"]["window_size"] == 2
+    assert empty["window"]["trades_considered"] == 0
+
+
+def test_trade_read_model_load_trade_report_recent_feedback_pack_reads_meta_payload_shape() -> None:
+    meta = {
+        "recent_feedback_items": [
+            {
+                "trade_id": "TRD_META",
+                "symbol": "005930",
+                "status": "closed",
+                "action": "SELL",
+                "strategist_feedback_input": {
+                    "selected_symbol": "005930",
+                    "entry_pattern_type": "breakout",
+                    "exit_pattern_type": "take_profit",
+                },
+            }
+        ],
+        "recent_feedback_window_size": 7,
+    }
+    payloads = {
+        "recent_feedback_items": [
+            {
+                "trade_id": "TRD_PAYLOAD",
+                "symbol": "000660",
+                "status": "closed",
+                "action": "SELL",
+                "strategist_feedback_input": {
+                    "selected_symbol": "000660",
+                    "entry_pattern_type": "pullback",
+                    "exit_pattern_type": "vwap_breakdown",
+                },
+            }
+        ],
+        "recent_feedback_window_size": 3,
+    }
+    expected = build_trade_report_recent_feedback_pack(
+        payloads["recent_feedback_items"],
+        window_size=3,
+    )
+    assert load_trade_report_recent_feedback_pack(meta, payloads) == expected
+
+    meta_only = load_trade_report_recent_feedback_pack(meta, None)
+    assert meta_only["window"]["window_size"] == 7
+    assert meta_only["window"]["recent_trade_refs"][0]["trade_id"] == "TRD_META"
+
+    empty = load_trade_report_recent_feedback_pack({}, {}, default_window_size=4)
+    assert empty["available"] is False
+    assert empty["window"]["window_size"] == 4
+    assert empty["window"]["trades_considered"] == 0
+
+
+def test_trade_read_model_load_time_bucketed_trade_report_recent_feedback_pack_builds_future_contract_shell() -> None:
+    meta = {
+        "recent_feedback_items": [
+            {
+                "trade_id": "TRD_META",
+                "symbol": "005930",
+                "status": "closed",
+                "action": "SELL",
+                "strategist_feedback_input": {
+                    "selected_symbol": "005930",
+                    "playbook": "pullback",
+                    "entry_pattern_type": "breakout",
+                    "exit_pattern_type": "take_profit",
+                },
+            }
+        ],
+        "recent_feedback_window_size": 5,
+    }
+
+    out = load_time_bucketed_trade_report_recent_feedback_pack(meta, None, default_window_size=10)
+
+    assert out["schema_version"] == "strategist_feedback_time_bucket_pack.v1"
+    assert out["payload_type"] == "time_bucketed_recent_strategist_feedback"
+    assert set(out["buckets"].keys()) == {"overall_recent", "daily_recent", "symbol_recent"}
+
+    expected_overall = build_trade_report_recent_feedback_pack(
+        meta["recent_feedback_items"],
+        window_size=5,
+    )
+    assert out["available"] is True
+    assert out["buckets"]["overall_recent"]["available"] is True
+    assert out["buckets"]["overall_recent"]["window"] == expected_overall["window"]
+    assert out["buckets"]["daily_recent"]["available"] is False
+    assert out["buckets"]["daily_recent"]["window"]["trades_considered"] == 0
+    assert out["buckets"]["symbol_recent"]["available"] is False
+    assert out["buckets"]["symbol_recent"]["window"]["trades_considered"] == 0
+
+
+def test_trade_read_model_load_time_bucketed_trade_report_recent_feedback_pack_uses_explicit_bucket_inputs_when_present() -> None:
+    meta = {
+        "recent_feedback_items": [
+            {
+                "trade_id": "TRD_META",
+                "symbol": "005930",
+                "status": "closed",
+                "action": "SELL",
+                "strategist_feedback_input": {
+                    "selected_symbol": "005930",
+                    "entry_pattern_type": "breakout",
+                    "exit_pattern_type": "take_profit",
+                },
+            }
+        ],
+    }
+    payloads = {
+        "daily_recent_feedback_items": [
+            {
+                "trade_id": "TRD_DAY",
+                "symbol": "000660",
+                "status": "closed",
+                "action": "SELL",
+                "strategist_feedback_input": {
+                    "selected_symbol": "000660",
+                    "entry_pattern_type": "pullback",
+                    "exit_pattern_type": "vwap_breakdown",
+                },
+            }
+        ],
+        "daily_recent_feedback_window_size": 2,
+        "symbol_recent_feedback_items": [
+            {
+                "trade_id": "TRD_SYMBOL",
+                "symbol": "003280",
+                "status": "open",
+                "action": "HOLD",
+                "strategist_feedback_input": {
+                    "selected_symbol": "003280",
+                    "entry_pattern_type": "reclaim",
+                },
+            }
+        ],
+        "symbol_recent_feedback_window_size": 1,
+    }
+
+    out = load_time_bucketed_trade_report_recent_feedback_pack(meta, payloads, default_window_size=10)
+
+    assert out["buckets"]["overall_recent"]["available"] is True
+    assert out["buckets"]["overall_recent"]["window"]["recent_trade_refs"][0]["trade_id"] == "TRD_META"
+    assert out["buckets"]["daily_recent"]["available"] is True
+    assert out["buckets"]["daily_recent"]["window"]["window_size"] == 2
+    assert out["buckets"]["daily_recent"]["window"]["recent_trade_refs"][0]["trade_id"] == "TRD_DAY"
+    assert out["buckets"]["symbol_recent"]["available"] is True
+    assert out["buckets"]["symbol_recent"]["window"]["window_size"] == 1
+    assert out["buckets"]["symbol_recent"]["window"]["recent_trade_refs"][0]["trade_id"] == "TRD_SYMBOL"
 
 
 def test_trade_read_model_build_operator_brief_detail_view_returns_normalized_detail() -> None:

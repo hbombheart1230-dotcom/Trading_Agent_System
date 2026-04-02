@@ -5,7 +5,11 @@ import statistics
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Sequence
 
-from libs.runtime.monitor_policy import MonitorEntryPolicy
+from libs.runtime.monitor_policy import (
+    MonitorEntryPolicy,
+    extract_monitor_entry_policy_mapping,
+    normalize_monitor_entry_policy_schema,
+)
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -111,6 +115,668 @@ def _build_monitor_score_breakdown(
         "volume_ok": 1.0 if bool(volume_ok) else 0.0,
         "confidence_gate_ok": 1.0 if bool(confidence_gate_ok) else 0.0,
     }
+
+
+def _build_monitor_signal_evidence(
+    *,
+    reclaim_score: float,
+    volume_score: float,
+    pullback_score: float,
+    breakout_score: float,
+    confidence_score: float,
+    confidence_threshold: float,
+    reclaim_ok: bool,
+    volume_ok: bool,
+    pullback_ok: bool,
+    breakout_ok: bool,
+    rebound_ok: bool,
+    reclaim_gate_ok: bool,
+    breakout_path_ok: bool,
+    pullback_volume_path_ok: bool,
+    extension_ok: bool,
+    too_extended: bool,
+    reclaim_strength: float,
+    rebound_strength: float,
+    transition_readiness_score: float,
+    reclaim_distance_to_ready: float | None,
+    volume_distance_to_ready: float | None,
+    breakout_distance_to_ready: float | None,
+    score_breakdown: Mapping[str, Any] | None = None,
+    score_threshold: float = 3.0,
+) -> Dict[str, Any]:
+    weighted_scores = dict(score_breakdown or {})
+    total_weighted_score = round(sum(_to_float(v) for v in weighted_scores.values()), 4) if weighted_scores else 0.0
+    threshold_value = float(score_threshold if score_threshold > 0.0 else 3.0)
+    return {
+        "scores": {
+            "reclaim_score": round(_clamp_score(reclaim_score), 4),
+            "volume_score": round(_clamp_score(volume_score), 4),
+            "pullback_score": round(_clamp_score(pullback_score), 4),
+            "breakout_score": round(_clamp_score(breakout_score), 4),
+            "confidence_score": round(_clamp_score(confidence_score), 4),
+        },
+        "checks": {
+            "reclaim_ok": bool(reclaim_ok),
+            "volume_ok": bool(volume_ok),
+            "pullback_ok": bool(pullback_ok),
+            "breakout_ok": bool(breakout_ok),
+            "rebound_ok": bool(rebound_ok),
+            "reclaim_gate_ok": bool(reclaim_gate_ok),
+            "breakout_path_ok": bool(breakout_path_ok),
+            "pullback_volume_path_ok": bool(pullback_volume_path_ok),
+            "extension_ok": bool(extension_ok),
+            "confidence_ok": bool(confidence_score >= confidence_threshold),
+        },
+        "derived": {
+            "too_extended": bool(too_extended),
+            "reclaim_strength": round(_clamp_score(reclaim_strength), 4),
+            "rebound_strength": round(_clamp_score(rebound_strength), 4),
+            "transition_readiness_score": round(_clamp_score(transition_readiness_score), 4),
+            "reclaim_distance_to_ready": reclaim_distance_to_ready,
+            "volume_distance_to_ready": volume_distance_to_ready,
+            "breakout_distance_to_ready": breakout_distance_to_ready,
+            "confidence_threshold": round(float(confidence_threshold), 4),
+            "weighted_score_total": total_weighted_score,
+            "weighted_score_threshold": threshold_value,
+            "weighted_score_passed": bool(total_weighted_score >= threshold_value),
+        },
+        "weighted_scores": weighted_scores,
+    }
+
+
+def _empty_monitor_signal_evidence(*, score_threshold: float = 3.0) -> Dict[str, Any]:
+    return _build_monitor_signal_evidence(
+        reclaim_score=0.0,
+        volume_score=0.0,
+        pullback_score=0.0,
+        breakout_score=0.0,
+        confidence_score=0.0,
+        confidence_threshold=0.55,
+        reclaim_ok=False,
+        volume_ok=False,
+        pullback_ok=False,
+        breakout_ok=False,
+        rebound_ok=False,
+        reclaim_gate_ok=False,
+        breakout_path_ok=False,
+        pullback_volume_path_ok=False,
+        extension_ok=False,
+        too_extended=False,
+        reclaim_strength=0.0,
+        rebound_strength=0.0,
+        transition_readiness_score=0.0,
+        reclaim_distance_to_ready=None,
+        volume_distance_to_ready=None,
+        breakout_distance_to_ready=None,
+        score_breakdown={},
+        score_threshold=score_threshold,
+    )
+
+
+def _dedupe_non_empty(values: Sequence[Any]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for value in list(values or []):
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _volume_priority_hint(volume_ratio_min: float) -> str:
+    if float(volume_ratio_min) >= 1.0:
+        return "high"
+    if float(volume_ratio_min) <= 0.75:
+        return "low"
+    return "normal"
+
+
+def _empty_monitor_policy_interpretation() -> Dict[str, Any]:
+    return {
+        "policy_available": False,
+        "entry_style": None,
+        "contract_source": None,
+        "policy_schema_available": False,
+        "policy_schema_version": None,
+        "policy_schema_raw_keys": [],
+        "interpretation_basis": "none",
+        "explicit_fields_used": [],
+        "required_checks": [],
+        "preferred_checks": [],
+        "relaxable_checks": [],
+        "blockers": [],
+        "priority_hints": {
+            "volume_priority": None,
+            "reclaim_priority": None,
+            "breakout_priority": None,
+            "pullback_priority": None,
+        },
+        "evidence_focus": {
+            "primary": [],
+            "secondary": [],
+        },
+        "policy_source": None,
+        "policy_adjustments": [],
+        "notes": [],
+    }
+
+
+def _empty_monitor_policy_interpreter_trace() -> Dict[str, Any]:
+    return {
+        "available": False,
+        "policy_available": False,
+        "entry_style": None,
+        "focus_alignment": {
+            "primary_focus": [],
+            "secondary_focus": [],
+        },
+        "check_status": {
+            "required": [],
+            "preferred": [],
+            "relaxable": [],
+            "blockers": [],
+        },
+        "alignment_summary": {
+            "policy_alignment_state": None,
+            "primary_blocker": None,
+            "secondary_blockers": [],
+        },
+        "notes": [],
+    }
+
+
+def _empty_monitor_policy_alignment_summary() -> Dict[str, Any]:
+    return {
+        "available": False,
+        "policy_available": False,
+        "entry_style": None,
+        "alignment_state": None,
+        "primary_blocker": None,
+        "secondary_blockers": [],
+        "focus_mismatch": [],
+        "top_failed_required_checks": [],
+        "top_failed_preferred_checks": [],
+        "top_relaxable_gaps": [],
+        "summary_notes": [],
+    }
+
+
+def _empty_monitor_policy_aware_gating() -> Dict[str, Any]:
+    return {
+        "available": False,
+        "applied": False,
+        "applied_hints": [],
+        "required_failures": [],
+        "relaxations_considered": [],
+        "relaxations_applied": [],
+        "blocked_by_required": [],
+        "notes": [],
+    }
+
+
+def _extract_explicit_policy_interpretation_fields(
+    policy_contract: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    contract = dict(policy_contract or {}) if isinstance(policy_contract, Mapping) else {}
+    selected_policy = (
+        dict(contract.get("selected_policy") or {})
+        if isinstance(contract.get("selected_policy"), Mapping)
+        else {}
+    )
+    schema_candidate = (
+        dict(contract.get("selected_policy_schema") or {})
+        if isinstance(contract.get("selected_policy_schema"), Mapping)
+        else normalize_monitor_entry_policy_schema(selected_policy)
+    )
+    explicit_fields_used: List[str] = list(
+        _dedupe_non_empty(schema_candidate.get("explicit_fields_used") or [])
+    )
+
+    def _optional_text(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    def _optional_list(value: Any) -> List[str]:
+        if isinstance(value, str):
+            return _dedupe_non_empty([value])
+        if isinstance(value, (list, tuple, set)):
+            return _dedupe_non_empty(list(value))
+        return []
+
+    def _optional_mapping(value: Any) -> Dict[str, Any]:
+        return dict(value or {}) if isinstance(value, Mapping) else {}
+
+    entry_style = _optional_text(schema_candidate.get("entry_style"))
+    required_checks = _optional_list(schema_candidate.get("required_checks"))
+    preferred_checks = _optional_list(schema_candidate.get("preferred_checks"))
+    relaxable_checks = _optional_list(schema_candidate.get("relaxable_checks"))
+    blockers = _optional_list(schema_candidate.get("blockers"))
+    priority_hints = _optional_mapping(schema_candidate.get("priority_hints"))
+    if not any(priority_hints.values()):
+        priority_hints = {}
+    evidence_focus = _optional_mapping(schema_candidate.get("evidence_focus"))
+    notes = _optional_list(schema_candidate.get("notes"))
+    policy_adjustments = list(schema_candidate.get("policy_adjustments") or [])
+
+    policy_source = _optional_text(selected_policy.get("policy_source"))
+
+    return {
+        "contract_source": _optional_text(contract.get("selected_source")),
+        "selected_policy": selected_policy,
+        "policy_schema_available": bool(schema_candidate.get("available")),
+        "policy_schema_version": _optional_text(schema_candidate.get("schema_version")),
+        "policy_schema_raw_keys": _optional_list(schema_candidate.get("raw_keys")),
+        "entry_style": entry_style.lower() if isinstance(entry_style, str) else None,
+        "required_checks": required_checks,
+        "preferred_checks": preferred_checks,
+        "relaxable_checks": relaxable_checks,
+        "blockers": blockers,
+        "priority_hints": priority_hints,
+        "evidence_focus": {
+            "primary": _optional_list(evidence_focus.get("primary")),
+            "secondary": _optional_list(evidence_focus.get("secondary")),
+        },
+        "notes": notes,
+        "policy_adjustments": policy_adjustments,
+        "policy_source": policy_source,
+        "explicit_fields_used": explicit_fields_used,
+    }
+
+
+def _build_monitor_policy_interpretation(
+    *,
+    received_policy: Mapping[str, Any] | MonitorEntryPolicy | None = None,
+    effective_policy: Mapping[str, Any] | MonitorEntryPolicy | None = None,
+    frame: Mapping[str, Any] | None = None,
+    policy_contract: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    frame_obj = dict(frame or {}) if isinstance(frame, Mapping) else {}
+    playbook = str(frame_obj.get("playbook") or "").strip().lower()
+    explicit_fields = _extract_explicit_policy_interpretation_fields(policy_contract)
+    explicit_entry_style = str(explicit_fields.get("entry_style") or "").strip().lower()
+    source_mapping = (
+        extract_monitor_entry_policy_mapping(received_policy)
+        if isinstance(received_policy, Mapping)
+        else {}
+    )
+    policy_obj = (
+        effective_policy
+        if isinstance(effective_policy, MonitorEntryPolicy)
+        else MonitorEntryPolicy.from_mapping(effective_policy)
+        if isinstance(effective_policy, Mapping) and effective_policy
+        else None
+    )
+    policy_available = bool(source_mapping) or bool(playbook) or bool(explicit_fields.get("selected_policy"))
+    interpretation = _empty_monitor_policy_interpretation()
+    interpretation["policy_available"] = bool(policy_available)
+    interpretation["entry_style"] = explicit_entry_style or playbook or None
+    interpretation["contract_source"] = explicit_fields.get("contract_source")
+    interpretation["policy_schema_available"] = bool(explicit_fields.get("policy_schema_available"))
+    interpretation["policy_schema_version"] = explicit_fields.get("policy_schema_version")
+    interpretation["policy_schema_raw_keys"] = list(explicit_fields.get("policy_schema_raw_keys") or [])
+    interpretation["explicit_fields_used"] = list(explicit_fields.get("explicit_fields_used") or [])
+    if not policy_available:
+        return interpretation
+
+    required_checks: List[str] = []
+    preferred_checks: List[str] = []
+    relaxable_checks: List[str] = []
+    blockers: List[str] = []
+    primary_focus: List[str] = []
+    secondary_focus: List[str] = []
+    notes: List[str] = []
+    volume_ratio_min = 0.68
+    policy_enabled = True
+    require_vwap_reclaim = False
+    require_rebound = False
+    interpretation_style = explicit_entry_style or playbook
+
+    if policy_obj is not None:
+        volume_ratio_min = float(policy_obj.volume_ratio_min)
+        policy_enabled = bool(policy_obj.enabled)
+        require_vwap_reclaim = bool(policy_obj.require_vwap_reclaim)
+        require_rebound = bool(policy_obj.require_rebound)
+        interpretation["policy_source"] = str(policy_obj.policy_source or "") or None
+        interpretation["policy_adjustments"] = list(policy_obj.adjustments or [])
+    if explicit_fields.get("policy_source"):
+        interpretation["policy_source"] = str(explicit_fields.get("policy_source") or "")
+    if explicit_fields.get("policy_adjustments"):
+        interpretation["policy_adjustments"] = list(explicit_fields.get("policy_adjustments") or [])
+    interpretation["priority_hints"] = {
+        "volume_priority": _volume_priority_hint(volume_ratio_min),
+        "reclaim_priority": "high" if require_vwap_reclaim else "normal",
+        "breakout_priority": (
+            "high" if interpretation_style == "breakout" else "low" if interpretation_style in ("pullback", "reversal") else "normal"
+        ),
+        "pullback_priority": (
+            "high" if interpretation_style in ("pullback", "reversal") else "low" if interpretation_style == "breakout" else "normal"
+        ),
+    }
+    if not policy_enabled:
+        blockers.append("policy_disabled")
+    if require_vwap_reclaim and interpretation_style != "breakout":
+        required_checks.append("reclaim_gate_ok")
+        notes.append("vwap_reclaim_required")
+    elif require_vwap_reclaim and interpretation_style == "breakout":
+        preferred_checks.append("reclaim_gate_ok")
+        relaxable_checks.append("reclaim_gate_ok")
+        notes.append("vwap_reclaim_near_ready_relaxable_for_breakout_style")
+    if require_rebound and interpretation_style in ("pullback", "reversal"):
+        required_checks.append("rebound_ok")
+        notes.append("rebound_required_for_pullback_style")
+    if volume_ratio_min >= 1.0:
+        notes.append("volume_threshold_emphasized")
+    elif volume_ratio_min <= 0.75:
+        notes.append("volume_threshold_relatively_loose")
+        relaxable_checks.append("volume_ok")
+    if interpretation_style == "breakout":
+        preferred_checks.extend(["breakout_ok", "volume_ok", "reclaim_gate_ok"])
+        relaxable_checks.extend(["pullback_ok"])
+        primary_focus.extend(["breakout_ok", "volume_ok"])
+        secondary_focus.extend(["reclaim_gate_ok", "confidence_ok"])
+    elif interpretation_style in ("pullback", "reversal"):
+        preferred_checks.extend(["pullback_ok", "volume_ok", "vwap_reclaim_ok"])
+        relaxable_checks.extend(["breakout_ok"])
+        primary_focus.extend(["pullback_ok", "volume_ok"])
+        secondary_focus.extend(["reclaim_gate_ok", "rebound_ok"])
+    elif interpretation_style == "defensive":
+        preferred_checks.extend(["reclaim_gate_ok", "extension_ok", "confidence_ok"])
+        relaxable_checks.extend(["breakout_ok", "pullback_ok"])
+        primary_focus.extend(["reclaim_gate_ok", "extension_ok"])
+        secondary_focus.extend(["volume_ok", "confidence_ok"])
+    else:
+        preferred_checks.extend(["reclaim_gate_ok", "confidence_ok"])
+        primary_focus.extend(["reclaim_gate_ok"])
+        secondary_focus.extend(["volume_ok", "breakout_ok", "pullback_ok"])
+
+    fallback_used = False
+    if explicit_fields.get("required_checks"):
+        required_checks = list(explicit_fields.get("required_checks") or [])
+    elif required_checks:
+        fallback_used = True
+    if explicit_fields.get("preferred_checks"):
+        preferred_checks = list(explicit_fields.get("preferred_checks") or [])
+    elif preferred_checks:
+        fallback_used = True
+    if explicit_fields.get("relaxable_checks"):
+        relaxable_checks = list(explicit_fields.get("relaxable_checks") or [])
+    elif relaxable_checks:
+        fallback_used = True
+    if explicit_fields.get("blockers"):
+        blockers = list(explicit_fields.get("blockers") or [])
+    elif blockers:
+        fallback_used = True
+    if (explicit_fields.get("priority_hints") or {}):
+        merged_priority_hints = dict(interpretation.get("priority_hints") or {})
+        merged_priority_hints.update(dict(explicit_fields.get("priority_hints") or {}))
+        interpretation["priority_hints"] = merged_priority_hints
+    elif any((interpretation.get("priority_hints") or {}).values()):
+        fallback_used = True
+    explicit_focus = dict(explicit_fields.get("evidence_focus") or {})
+    if explicit_focus.get("primary") or explicit_focus.get("secondary"):
+        primary_focus = list(explicit_focus.get("primary") or primary_focus)
+        secondary_focus = list(explicit_focus.get("secondary") or secondary_focus)
+    elif primary_focus or secondary_focus:
+        fallback_used = True
+    if explicit_fields.get("notes"):
+        notes = list(explicit_fields.get("notes") or [])
+    elif notes:
+        fallback_used = True
+
+    explicit_fields_used = list(explicit_fields.get("explicit_fields_used") or [])
+    if explicit_fields_used and fallback_used:
+        interpretation["interpretation_basis"] = "mixed"
+    elif explicit_fields_used:
+        interpretation["interpretation_basis"] = "explicit_policy"
+    elif policy_available and interpretation_style:
+        interpretation["interpretation_basis"] = "fallback_playbook"
+    else:
+        interpretation["interpretation_basis"] = "none"
+
+    interpretation["required_checks"] = _dedupe_non_empty(required_checks)
+    interpretation["preferred_checks"] = _dedupe_non_empty(preferred_checks)
+    interpretation["relaxable_checks"] = _dedupe_non_empty(relaxable_checks)
+    interpretation["blockers"] = _dedupe_non_empty(blockers)
+    interpretation["evidence_focus"] = {
+        "primary": _dedupe_non_empty(primary_focus),
+        "secondary": _dedupe_non_empty(secondary_focus),
+    }
+    interpretation["notes"] = _dedupe_non_empty(notes)
+    return interpretation
+
+
+def _build_monitor_policy_interpreter_trace(
+    *,
+    policy_interpretation: Mapping[str, Any] | None = None,
+    signal_evidence: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    interpretation = dict(policy_interpretation or {}) if isinstance(policy_interpretation, Mapping) else {}
+    evidence = dict(signal_evidence or {}) if isinstance(signal_evidence, Mapping) else {}
+    trace = _empty_monitor_policy_interpreter_trace()
+
+    policy_available = bool(interpretation.get("policy_available"))
+    trace["policy_available"] = policy_available
+    trace["entry_style"] = interpretation.get("entry_style")
+    trace["focus_alignment"] = {
+        "primary_focus": _dedupe_non_empty(((interpretation.get("evidence_focus") or {}).get("primary")) or []),
+        "secondary_focus": _dedupe_non_empty(((interpretation.get("evidence_focus") or {}).get("secondary")) or []),
+    }
+    if not policy_available:
+        return trace
+
+    checks = dict(evidence.get("checks") or {}) if isinstance(evidence.get("checks"), Mapping) else {}
+    derived = dict(evidence.get("derived") or {}) if isinstance(evidence.get("derived"), Mapping) else {}
+
+    def _status_item(name: str, *, blocker: bool = False) -> Dict[str, Any]:
+        if name in checks:
+            return {
+                "name": str(name),
+                "status": ("active" if not bool(checks.get(name)) else "inactive") if blocker else ("pass" if bool(checks.get(name)) else "fail"),
+                "source": f"signal_evidence.checks.{name}",
+            }
+        if name in derived:
+            value = derived.get(name)
+            if isinstance(value, bool):
+                return {
+                    "name": str(name),
+                    "status": ("active" if bool(value) else "inactive") if blocker else ("pass" if bool(value) else "fail"),
+                    "source": f"signal_evidence.derived.{name}",
+                }
+        return {
+            "name": str(name),
+            "status": "unknown",
+            "source": None,
+        }
+
+    required_rows = [_status_item(name) for name in _dedupe_non_empty(interpretation.get("required_checks") or [])]
+    preferred_rows = [_status_item(name) for name in _dedupe_non_empty(interpretation.get("preferred_checks") or [])]
+    relaxable_rows = [_status_item(name) for name in _dedupe_non_empty(interpretation.get("relaxable_checks") or [])]
+    blocker_names = _dedupe_non_empty([
+        *(interpretation.get("blockers") or []),
+        "too_extended" if "too_extended" in derived else "",
+    ])
+    blocker_rows = [_status_item(name, blocker=True) for name in blocker_names]
+
+    trace["available"] = True
+    trace["check_status"] = {
+        "required": required_rows,
+        "preferred": preferred_rows,
+        "relaxable": relaxable_rows,
+        "blockers": blocker_rows,
+    }
+
+    failed_required = [row["name"] for row in required_rows if row.get("status") == "fail"]
+    active_blockers = [row["name"] for row in blocker_rows if row.get("status") == "active"]
+    failed_preferred = [row["name"] for row in preferred_rows if row.get("status") == "fail"]
+
+    alignment_state: str | None
+    if active_blockers or failed_required:
+        alignment_state = "misaligned"
+    elif failed_preferred:
+        alignment_state = "partial"
+    elif required_rows or preferred_rows or relaxable_rows:
+        alignment_state = "aligned"
+    else:
+        alignment_state = "unknown"
+
+    primary_blocker = None
+    secondary_blockers: List[str] = []
+    blocker_order = [*active_blockers, *failed_required, *failed_preferred]
+    if blocker_order:
+        primary_blocker = blocker_order[0]
+        secondary_blockers = blocker_order[1:]
+
+    trace["alignment_summary"] = {
+        "policy_alignment_state": alignment_state,
+        "primary_blocker": primary_blocker,
+        "secondary_blockers": _dedupe_non_empty(secondary_blockers),
+    }
+    trace["notes"] = _dedupe_non_empty(interpretation.get("notes") or [])
+    return trace
+
+
+def _build_monitor_policy_alignment_summary(
+    *,
+    policy_interpreter_trace: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    trace = dict(policy_interpreter_trace or {}) if isinstance(policy_interpreter_trace, Mapping) else {}
+    summary = _empty_monitor_policy_alignment_summary()
+
+    available = bool(trace.get("available"))
+    policy_available = bool(trace.get("policy_available"))
+    summary["policy_available"] = policy_available
+    summary["entry_style"] = trace.get("entry_style")
+    if not available:
+        return summary
+
+    check_status = dict(trace.get("check_status") or {}) if isinstance(trace.get("check_status"), Mapping) else {}
+    alignment_summary = dict(trace.get("alignment_summary") or {}) if isinstance(trace.get("alignment_summary"), Mapping) else {}
+    focus_alignment = dict(trace.get("focus_alignment") or {}) if isinstance(trace.get("focus_alignment"), Mapping) else {}
+
+    def _failed(rows: Any, *, statuses: Sequence[str] = ("fail",)) -> List[str]:
+        out: List[str] = []
+        for row in list(rows or []):
+            if not isinstance(row, Mapping):
+                continue
+            status = str(row.get("status") or "").strip().lower()
+            if status not in {str(x).strip().lower() for x in list(statuses or [])}:
+                continue
+            out.append(str(row.get("name") or "").strip())
+        return _dedupe_non_empty(out)
+
+    primary_focus = _dedupe_non_empty(focus_alignment.get("primary_focus") or [])
+    secondary_focus = _dedupe_non_empty(focus_alignment.get("secondary_focus") or [])
+    failed_required = _failed(check_status.get("required"), statuses=("fail",))
+    failed_preferred = _failed(check_status.get("preferred"), statuses=("fail",))
+    failed_relaxable = _failed(check_status.get("relaxable"), statuses=("fail",))
+    active_blockers = _failed(check_status.get("blockers"), statuses=("active",))
+    focus_mismatch = _dedupe_non_empty(
+        [
+            *(name for name in primary_focus if name in failed_required or name in failed_preferred or name in failed_relaxable),
+            *(name for name in secondary_focus if name in failed_required or name in failed_preferred),
+        ]
+    )
+
+    summary["available"] = True
+    summary["alignment_state"] = alignment_summary.get("policy_alignment_state")
+    summary["primary_blocker"] = alignment_summary.get("primary_blocker")
+    summary["secondary_blockers"] = _dedupe_non_empty(
+        [*list(alignment_summary.get("secondary_blockers") or []), *active_blockers]
+    )
+    summary["focus_mismatch"] = focus_mismatch
+    summary["top_failed_required_checks"] = failed_required[:3]
+    summary["top_failed_preferred_checks"] = failed_preferred[:3]
+    summary["top_relaxable_gaps"] = failed_relaxable[:3]
+    summary["summary_notes"] = _dedupe_non_empty(trace.get("notes") or [])
+    return summary
+
+
+def _build_monitor_policy_aware_gating(
+    *,
+    policy_interpretation: Mapping[str, Any] | None = None,
+    signal_evidence: Mapping[str, Any] | None = None,
+    policy_interpreter_trace: Mapping[str, Any] | None = None,
+    policy_alignment_summary: Mapping[str, Any] | None = None,
+    legacy_triggered: bool = False,
+    legacy_reason: str | None = None,
+) -> Dict[str, Any]:
+    interpretation = dict(policy_interpretation or {}) if isinstance(policy_interpretation, Mapping) else {}
+    evidence = dict(signal_evidence or {}) if isinstance(signal_evidence, Mapping) else {}
+    trace = dict(policy_interpreter_trace or {}) if isinstance(policy_interpreter_trace, Mapping) else {}
+    summary = dict(policy_alignment_summary or {}) if isinstance(policy_alignment_summary, Mapping) else {}
+
+    out = _empty_monitor_policy_aware_gating()
+    policy_available = bool(interpretation.get("policy_available"))
+    if not policy_available:
+        return out
+
+    out["available"] = True
+    relaxable_checks = _dedupe_non_empty(interpretation.get("relaxable_checks") or [])
+    out["relaxations_considered"] = list(relaxable_checks)
+    failed_required = _dedupe_non_empty(summary.get("top_failed_required_checks") or [])
+    out["required_failures"] = list(failed_required)
+
+    checks = dict(evidence.get("checks") or {}) if isinstance(evidence.get("checks"), Mapping) else {}
+    derived = dict(evidence.get("derived") or {}) if isinstance(evidence.get("derived"), Mapping) else {}
+    entry_style = str(interpretation.get("entry_style") or "").strip().lower()
+    alignment_state = str(summary.get("alignment_state") or "").strip().lower()
+    legacy_reason_code = str(legacy_reason or "").strip()
+
+    if failed_required:
+        out["blocked_by_required"] = list(failed_required)
+        out["notes"] = _dedupe_non_empty(
+            [
+                *list(out.get("notes") or []),
+                "required_checks_failed",
+            ]
+        )
+        return out
+    if bool(legacy_triggered):
+        out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "legacy_gate_already_triggered"])
+        return out
+
+    can_consider_reclaim_relax = (
+        entry_style == "breakout"
+        and "reclaim_gate_ok" in relaxable_checks
+    )
+    if not can_consider_reclaim_relax:
+        return out
+
+    reclaim_distance = derived.get("reclaim_distance_to_ready")
+    near_ready = reclaim_distance is not None and -0.0015 <= float(reclaim_distance) < 0.0
+    safe_to_relax = (
+        bool(checks.get("breakout_path_ok"))
+        and bool(checks.get("confidence_ok"))
+        and not bool(derived.get("too_extended"))
+        and alignment_state in {"aligned", "partial"}
+    )
+    relaxable_reason = legacy_reason_code in {
+        "",
+        "below_vwap_reclaim_not_ready",
+    }
+    if not relaxable_reason:
+        out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "legacy_reason_not_relaxable"])
+        return out
+    if bool(checks.get("reclaim_gate_ok")):
+        out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "reclaim_gate_already_passed"])
+        return out
+    if not near_ready:
+        out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "reclaim_not_near_ready"])
+        return out
+    if not safe_to_relax:
+        out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "safe_relaxation_conditions_not_met"])
+        return out
+    if not (bool(checks.get("volume_ok")) or bool(checks.get("breakout_path_ok"))):
+        out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "supporting_path_not_ready"])
+        return out
+
+    out["applied"] = True
+    out["applied_hints"] = ["reclaim_relaxed_near_ready"]
+    out["relaxations_applied"] = ["reclaim_gate_ok"]
+    out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "breakout_reclaim_near_ready_relaxation_applied"])
+    return out
 
 
 def _apply_monitor_scoring_fields(
@@ -420,6 +1086,7 @@ def evaluate_intraday_entry_signal(
     policy: Mapping[str, Any] | MonitorEntryPolicy | None = None,
     frame: Mapping[str, Any] | None = None,
     scoring: Mapping[str, Any] | None = None,
+    policy_contract: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     # When monitor passes a MonitorEntryPolicy instance, it has already resolved
     # the strategy frame for this cycle. Re-applying the frame here would tighten
@@ -447,6 +1114,18 @@ def evaluate_intraday_entry_signal(
     }
     out.update(_empty_entry_transition_trace())
     out["entry_transition_trace"] = _empty_entry_transition_trace()
+    out["signal_evidence"] = _empty_monitor_signal_evidence(
+        score_threshold=float(scoring_settings.get("entry_threshold") or 3.0)
+    )
+    out["policy_interpretation"] = _build_monitor_policy_interpretation(
+        received_policy=policy if isinstance(policy, (Mapping, MonitorEntryPolicy)) else None,
+        effective_policy=resolved_policy,
+        frame=frame,
+        policy_contract=policy_contract,
+    )
+    out["policy_interpreter_trace"] = _empty_monitor_policy_interpreter_trace()
+    out["policy_alignment_summary"] = _empty_monitor_policy_alignment_summary()
+    out["policy_aware_gating"] = _empty_monitor_policy_aware_gating()
     _apply_monitor_scoring_fields(
         out,
         scoring_settings=scoring_settings,
@@ -902,32 +1581,57 @@ def evaluate_intraday_entry_signal(
         confidence_gate_ok=bool(confidence_gate_ok),
     )
     scoring_entry_decision = "BUY" if sum(_to_float(v) for v in score_breakdown.values()) >= float(scoring_settings.get("entry_threshold") or 3.0) else "WAIT"
-    scoring_entry_reason = "monitor_score_threshold_met" if scoring_entry_decision == "BUY" else "monitor_score_threshold_not_met"
-    if str(scoring_settings.get("scoring_mode") or "") == "enabled":
-        triggered = bool(scoring_entry_decision == "BUY")
-        if triggered:
-            if not legacy_triggered:
-                reason = scoring_entry_reason
-            if not pattern:
-                pattern = (
-                    "breakout_score_entry"
-                    if breakout_ok
-                    else ("pullback_score_entry" if pullback_mature else "score_entry")
-                )
-            if not entry_condition_path:
-                entry_condition_path = (
-                    "score_breakout_path"
-                    if breakout_ok
-                    else ("score_pullback_volume_path" if pullback_mature and volume_ok else "score_threshold_path")
-                )
-            if "score_threshold_met" not in signal_chain:
-                signal_chain.append("score_threshold_met")
-            primary_failure_axis = "confirmed_entry"
-        elif legacy_triggered:
-            reason = scoring_entry_reason
-            pattern = legacy_pattern or pattern
-            entry_condition_path = legacy_entry_condition_path or entry_condition_path
-            primary_failure_axis = "score_gate"
+    signal_evidence = _build_monitor_signal_evidence(
+        reclaim_score=vwap_reclaim_progress,
+        volume_score=volume_score,
+        pullback_score=pullback_score,
+        breakout_score=breakout_score,
+        confidence_score=confidence_score,
+        confidence_threshold=confidence_threshold,
+        reclaim_ok=vwap_reclaim_ok,
+        volume_ok=volume_ok,
+        pullback_ok=pullback_ok,
+        breakout_ok=breakout_ok,
+        rebound_ok=rebound_ok,
+        reclaim_gate_ok=reclaim_gate_ok,
+        breakout_path_ok=breakout_path_ok,
+        pullback_volume_path_ok=pullback_volume_path_ok,
+        extension_ok=extension_ok,
+        too_extended=bool(not extension_ok and extended_from_vwap_pct > max_extended_from_vwap_pct),
+        reclaim_strength=vwap_reclaim_progress,
+        rebound_strength=rebound_progress,
+        transition_readiness_score=transition_readiness_score,
+        reclaim_distance_to_ready=reclaim_distance_to_ready,
+        volume_distance_to_ready=volume_distance_to_ready,
+        breakout_distance_to_ready=breakout_distance_to_ready,
+        score_breakdown=score_breakdown,
+        score_threshold=float(scoring_settings.get("entry_threshold") or 3.0),
+    )
+    policy_interpreter_trace = _build_monitor_policy_interpreter_trace(
+        policy_interpretation=out.get("policy_interpretation"),
+        signal_evidence=signal_evidence,
+    )
+    policy_alignment_summary = _build_monitor_policy_alignment_summary(
+        policy_interpreter_trace=policy_interpreter_trace,
+    )
+    policy_aware_gating = _build_monitor_policy_aware_gating(
+        policy_interpretation=out.get("policy_interpretation"),
+        signal_evidence=signal_evidence,
+        policy_interpreter_trace=policy_interpreter_trace,
+        policy_alignment_summary=policy_alignment_summary,
+        legacy_triggered=legacy_triggered,
+        legacy_reason=legacy_reason,
+    )
+    if bool(policy_aware_gating.get("applied")):
+        triggered = True
+        pattern = "breakout_policy_reclaim_near_ready"
+        reason = "breakout_above_recent_high_with_policy_reclaim_near_ready"
+        entry_condition_path = "breakout_path"
+        primary_failure_axis = "confirmed_entry"
+        if "breakout_path" not in entry_condition_paths_passed:
+            entry_condition_paths_passed.append("breakout_path")
+        if "policy_reclaim_near_ready" not in signal_chain:
+            signal_chain.append("policy_reclaim_near_ready")
 
     metrics = {
         "timeframe_minutes": timeframe_minutes,
@@ -991,11 +1695,17 @@ def evaluate_intraday_entry_signal(
             "breakout_distance_to_ready": breakout_distance_to_ready,
             "transition_readiness_score": transition_readiness_score,
             "last_blocking_axis": primary_failure_axis if not triggered else "",
+            "became_ready_this_cycle": bool(policy_aware_gating.get("applied")),
         }
     )
     grouped_logic_trace["triggered_path"] = entry_condition_path
     grouped_logic_trace["scoring_mode"] = str(scoring_settings.get("scoring_mode") or "disabled")
     grouped_logic_trace["score_passed"] = bool(sum(_to_float(v) for v in score_breakdown.values()) >= float(scoring_settings.get("entry_threshold") or 3.0))
+    grouped_logic_trace["signal_evidence_ready"] = True
+    grouped_logic_trace["policy_aware_gating_available"] = bool(policy_aware_gating.get("available"))
+    grouped_logic_trace["policy_aware_gating_applied"] = bool(policy_aware_gating.get("applied"))
+    grouped_logic_trace["policy_aware_gating_hints"] = list(policy_aware_gating.get("applied_hints") or [])
+    grouped_logic_trace["policy_aware_gating_blocked_by_required"] = list(policy_aware_gating.get("blocked_by_required") or [])
     _apply_monitor_scoring_fields(
         out,
         scoring_settings=scoring_settings,
@@ -1034,6 +1744,10 @@ def evaluate_intraday_entry_signal(
             "legacy_entry_reason": legacy_reason,
             "legacy_entry_pattern": legacy_pattern,
             "legacy_entry_condition_path": legacy_entry_condition_path,
+            "signal_evidence": signal_evidence,
+            "policy_interpreter_trace": policy_interpreter_trace,
+            "policy_alignment_summary": policy_alignment_summary,
+            "policy_aware_gating": policy_aware_gating,
             "reclaim_distance_to_ready": reclaim_distance_to_ready,
             "vwap_reclaim_progress": round(vwap_reclaim_progress, 4),
             "rebound_progress": rebound_progress,

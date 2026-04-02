@@ -1,8 +1,10 @@
 from libs.runtime.intraday_monitor_signals import (
+    _build_monitor_policy_aware_gating,
+    _build_monitor_policy_interpretation,
     evaluate_intraday_entry_signal,
     resolve_intraday_entry_policy,
 )
-from libs.runtime.monitor_policy import MonitorEntryPolicy
+from libs.runtime.monitor_policy import MonitorEntryPolicy, normalize_monitor_entry_policy_schema
 from pathlib import Path
 
 
@@ -26,6 +28,12 @@ def _rows_pullback_rebound() -> list[dict]:
         {"open": 100.8, "high": 100.9, "low": 99.7, "close": 100.2, "volume": 980, "vwap": 100.6},
         {"open": 100.2, "high": 101.3, "low": 100.1, "close": 101.1, "volume": 1500, "vwap": 100.7},
     ]
+
+
+def _rows_breakout_reclaim_near_ready() -> list[dict]:
+    rows = _rows_breakout()
+    rows[-1]["vwap"] = 101.96
+    return rows
 
 
 def _rows_daily_seed_like() -> list[dict]:
@@ -391,6 +399,352 @@ def test_intraday_entry_scoring_disabled_keeps_legacy_decision(monkeypatch) -> N
     assert float(out.get("total_score") or 0.0) >= 3.0
 
 
+def test_intraday_entry_policy_interpretation_is_empty_safe_without_explicit_policy() -> None:
+    out = evaluate_intraday_entry_signal(_rows_breakout())
+
+    interpretation = out.get("policy_interpretation") or {}
+    trace = out.get("policy_interpreter_trace") or {}
+    summary = out.get("policy_alignment_summary") or {}
+    assert interpretation.get("policy_available") is False
+    assert interpretation.get("entry_style") is None
+    assert interpretation.get("required_checks") == []
+    assert interpretation.get("preferred_checks") == []
+    assert interpretation.get("relaxable_checks") == []
+    assert interpretation.get("blockers") == []
+    assert interpretation.get("notes") == []
+    assert trace.get("available") is False
+    assert trace.get("policy_available") is False
+    assert (trace.get("alignment_summary") or {}).get("policy_alignment_state") is None
+    assert summary.get("available") is False
+    assert summary.get("alignment_state") is None
+    assert summary.get("primary_blocker") is None
+    assert summary.get("top_failed_required_checks") == []
+    assert summary.get("top_relaxable_gaps") == []
+
+
+def test_intraday_entry_policy_interpretation_maps_pullback_policy_hints_without_changing_buy() -> None:
+    out = evaluate_intraday_entry_signal(
+        _rows_pullback_rebound(),
+        policy={
+            "entry_volume_ratio_min": 0.68,
+            "require_vwap_reclaim": True,
+            "require_rebound": True,
+        },
+        frame={"playbook": "pullback"},
+    )
+
+    interpretation = out.get("policy_interpretation") or {}
+    trace = out.get("policy_interpreter_trace") or {}
+    summary = out.get("policy_alignment_summary") or {}
+    assert interpretation.get("policy_available") is True
+    assert interpretation.get("entry_style") == "pullback"
+    assert "reclaim_gate_ok" in list(interpretation.get("required_checks") or [])
+    assert "rebound_ok" in list(interpretation.get("required_checks") or [])
+    assert "pullback_ok" in list(interpretation.get("preferred_checks") or [])
+    assert "volume_ok" in list(interpretation.get("preferred_checks") or [])
+    assert "breakout_ok" in list(interpretation.get("relaxable_checks") or [])
+    assert ((interpretation.get("priority_hints") or {}).get("pullback_priority")) == "high"
+    assert "pullback_ok" in list(((interpretation.get("evidence_focus") or {}).get("primary")) or [])
+    required_rows = {row["name"]: row for row in list((trace.get("check_status") or {}).get("required") or [])}
+    preferred_rows = {row["name"]: row for row in list((trace.get("check_status") or {}).get("preferred") or [])}
+    relaxable_rows = {row["name"]: row for row in list((trace.get("check_status") or {}).get("relaxable") or [])}
+    blocker_rows = {row["name"]: row for row in list((trace.get("check_status") or {}).get("blockers") or [])}
+    assert trace.get("available") is True
+    assert required_rows["reclaim_gate_ok"]["status"] == "pass"
+    assert required_rows["rebound_ok"]["status"] == "pass"
+    assert preferred_rows["pullback_ok"]["status"] == "pass"
+    assert preferred_rows["volume_ok"]["status"] == "pass"
+    assert relaxable_rows["breakout_ok"]["status"] in {"fail", "pass"}
+    assert blocker_rows["too_extended"]["status"] == "inactive"
+    assert (trace.get("alignment_summary") or {}).get("policy_alignment_state") == "aligned"
+    assert summary.get("available") is True
+    assert summary.get("alignment_state") == "aligned"
+    assert summary.get("primary_blocker") is None
+    assert summary.get("top_failed_required_checks") == []
+    assert "breakout_ok" in list(summary.get("top_relaxable_gaps") or [])
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+
+
+def test_monitor_policy_interpretation_prefers_explicit_selected_policy_fields() -> None:
+    interpretation = _build_monitor_policy_interpretation(
+        effective_policy=MonitorEntryPolicy.from_mapping(
+            {
+                "entry_volume_ratio_min": 1.0,
+                "require_vwap_reclaim": True,
+                "policy_source": "strategist",
+            }
+        ),
+        frame={"playbook": "pullback"},
+        policy_contract={
+            "selected_source": "commander_applied_policy",
+            "selected_policy": {
+                "entry_style": "breakout",
+                "required_checks": ["volume_ok"],
+                "preferred_checks": ["breakout_ok"],
+                "relaxable_checks": ["reclaim_gate_ok"],
+                "blockers": ["policy_disabled"],
+                "priority_hints": {
+                    "volume_priority": "high",
+                    "reclaim_priority": "normal",
+                    "breakout_priority": "high",
+                    "pullback_priority": "low",
+                },
+                "evidence_focus": {
+                    "primary": ["breakout_ok"],
+                    "secondary": ["reclaim_gate_ok"],
+                },
+                "notes": ["explicit_breakout_bias"],
+                "policy_source": "strategist",
+                "policy_adjustments": ["explicit_policy_contract"],
+            },
+        },
+    )
+
+    assert interpretation.get("entry_style") == "breakout"
+    assert interpretation.get("contract_source") == "commander_applied_policy"
+    assert interpretation.get("policy_schema_available") is True
+    assert interpretation.get("policy_schema_version") == "monitor_entry_policy_schema_candidate.v1"
+    assert interpretation.get("interpretation_basis") == "explicit_policy"
+    assert interpretation.get("required_checks") == ["volume_ok"]
+    assert interpretation.get("preferred_checks") == ["breakout_ok"]
+    assert interpretation.get("relaxable_checks") == ["reclaim_gate_ok"]
+    assert interpretation.get("blockers") == ["policy_disabled"]
+    assert ((interpretation.get("priority_hints") or {}).get("breakout_priority")) == "high"
+    assert ((interpretation.get("evidence_focus") or {}).get("primary")) == ["breakout_ok"]
+    assert interpretation.get("notes") == ["explicit_breakout_bias"]
+
+
+def test_monitor_policy_interpretation_keeps_playbook_fallback_when_selected_policy_has_no_explicit_fields() -> None:
+    interpretation = _build_monitor_policy_interpretation(
+        effective_policy=MonitorEntryPolicy.from_mapping(
+            {
+                "entry_volume_ratio_min": 0.68,
+                "require_vwap_reclaim": True,
+                "require_rebound": True,
+                "policy_source": "strategist",
+            }
+        ),
+        frame={"playbook": "pullback"},
+        policy_contract={
+            "selected_source": "commander_applied_policy",
+            "selected_policy": {
+                "volume_ratio_min": 0.68,
+                "policy_source": "strategist",
+            },
+        },
+    )
+
+    assert interpretation.get("entry_style") == "pullback"
+    assert interpretation.get("policy_schema_available") is False
+    assert interpretation.get("policy_schema_version") == "monitor_entry_policy_schema_candidate.v1"
+    assert interpretation.get("interpretation_basis") == "fallback_playbook"
+    assert "reclaim_gate_ok" in list(interpretation.get("required_checks") or [])
+    assert "rebound_ok" in list(interpretation.get("required_checks") or [])
+    assert "pullback_ok" in list(interpretation.get("preferred_checks") or [])
+
+
+def test_intraday_entry_explicit_policy_contract_changes_interpretation_basis_without_forcing_decision() -> None:
+    baseline = evaluate_intraday_entry_signal(
+        _rows_pullback_rebound(),
+        policy={
+            "entry_volume_ratio_min": 0.68,
+            "require_vwap_reclaim": True,
+            "require_rebound": True,
+        },
+        frame={"playbook": "pullback"},
+    )
+    explicit = evaluate_intraday_entry_signal(
+        _rows_pullback_rebound(),
+        policy={
+            "entry_volume_ratio_min": 0.68,
+            "require_vwap_reclaim": True,
+            "require_rebound": True,
+        },
+        frame={"playbook": "pullback"},
+        policy_contract={
+            "selected_source": "commander_applied_policy",
+            "selected_policy": {
+                "entry_style": "pullback",
+                "notes": ["explicit_entry_style"],
+            },
+        },
+    )
+
+    assert baseline.get("triggered") is True
+    assert baseline.get("decision") == "BUY"
+    assert explicit.get("triggered") == baseline.get("triggered")
+    assert explicit.get("decision") == baseline.get("decision")
+    assert (explicit.get("policy_interpretation") or {}).get("policy_schema_available") is True
+    assert (explicit.get("policy_interpretation") or {}).get("policy_schema_version") == "monitor_entry_policy_schema_candidate.v1"
+    assert (explicit.get("policy_interpretation") or {}).get("interpretation_basis") == "mixed"
+
+
+def test_normalize_monitor_entry_policy_schema_stabilizes_loose_selected_policy_fields() -> None:
+    schema = normalize_monitor_entry_policy_schema(
+        {
+            "entry_style": "breakout",
+            "required_checks": ("volume_ok",),
+            "preferred_checks": {"breakout_ok", "reclaim_gate_ok"},
+            "relaxable_checks": "pullback_ok",
+            "blockers": ["policy_disabled"],
+            "priority_hints": {"volume_priority": "high"},
+            "evidence_focus": {
+                "primary": "breakout_ok",
+                "secondary": ("reclaim_gate_ok",),
+            },
+            "policy_adjustments": "explicit_policy_contract",
+            "notes": "explicit_breakout_bias",
+        }
+    )
+
+    assert schema.get("schema_version") == "monitor_entry_policy_schema_candidate.v1"
+    assert schema.get("available") is True
+    assert schema.get("entry_style") == "breakout"
+    assert schema.get("required_checks") == ["volume_ok"]
+    assert set(schema.get("preferred_checks") or []) == {"breakout_ok", "reclaim_gate_ok"}
+    assert schema.get("relaxable_checks") == ["pullback_ok"]
+    assert schema.get("blockers") == ["policy_disabled"]
+    assert schema.get("priority_hints") == {
+        "volume_priority": "high",
+        "reclaim_priority": None,
+        "breakout_priority": None,
+        "pullback_priority": None,
+    }
+    assert schema.get("evidence_focus") == {
+        "primary": ["breakout_ok"],
+        "secondary": ["reclaim_gate_ok"],
+    }
+    assert schema.get("policy_adjustments") == ["explicit_policy_contract"]
+    assert schema.get("notes") == ["explicit_breakout_bias"]
+    assert "required_checks" in list(schema.get("raw_keys") or [])
+
+
+def test_intraday_entry_policy_interpreter_trace_can_show_primary_blocker_without_changing_wait() -> None:
+    rows = _rows_pullback_rebound()
+    rows[-1]["close"] = 100.1
+    rows[-1]["high"] = 100.4
+    rows[-1]["vwap"] = 100.8
+
+    out = evaluate_intraday_entry_signal(
+        rows,
+        policy={
+            "entry_volume_ratio_min": 0.68,
+            "require_vwap_reclaim": True,
+            "require_rebound": True,
+        },
+        frame={"playbook": "pullback"},
+    )
+
+    trace = out.get("policy_interpreter_trace") or {}
+    summary = out.get("policy_alignment_summary") or {}
+    required_rows = {row["name"]: row for row in list((trace.get("check_status") or {}).get("required") or [])}
+    assert required_rows["reclaim_gate_ok"]["status"] == "fail"
+    assert (trace.get("alignment_summary") or {}).get("policy_alignment_state") == "misaligned"
+    assert (trace.get("alignment_summary") or {}).get("primary_blocker") == "reclaim_gate_ok"
+    assert summary.get("alignment_state") == "misaligned"
+    assert summary.get("primary_blocker") == "reclaim_gate_ok"
+    assert "reclaim_gate_ok" in list(summary.get("top_failed_required_checks") or [])
+    assert isinstance(summary.get("summary_notes"), list)
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+    assert out["reason"] == "below_vwap_reclaim_not_ready"
+
+
+def test_intraday_entry_policy_aware_gating_stays_empty_safe_without_policy_hint() -> None:
+    out = evaluate_intraday_entry_signal(_rows_breakout_reclaim_near_ready())
+
+    gating = out.get("policy_aware_gating") or {}
+    assert gating.get("available") is False
+    assert gating.get("applied") is False
+    assert gating.get("relaxations_applied") == []
+    assert out["legacy_entry_decision"] == "WAIT"
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+
+
+def test_intraday_entry_policy_aware_gating_blocks_when_required_check_fails() -> None:
+    rows = _rows_pullback_rebound()
+    rows[-1]["close"] = 100.1
+    rows[-1]["high"] = 100.4
+    rows[-1]["vwap"] = 100.8
+
+    out = evaluate_intraday_entry_signal(
+        rows,
+        policy={
+            "entry_volume_ratio_min": 0.68,
+            "require_vwap_reclaim": True,
+            "require_rebound": True,
+        },
+        frame={"playbook": "pullback"},
+    )
+
+    gating = out.get("policy_aware_gating") or {}
+    assert gating.get("available") is True
+    assert gating.get("applied") is False
+    assert "reclaim_gate_ok" in list(gating.get("required_failures") or [])
+    assert "reclaim_gate_ok" in list(gating.get("blocked_by_required") or [])
+    assert out["legacy_entry_decision"] == "WAIT"
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+
+
+def test_intraday_entry_policy_aware_gating_can_relax_breakout_reclaim_when_near_ready() -> None:
+    out = evaluate_intraday_entry_signal(
+        _rows_breakout_reclaim_near_ready(),
+        policy={
+            "entry_volume_ratio_min": 1.0,
+            "require_vwap_reclaim": True,
+        },
+        frame={"playbook": "breakout"},
+    )
+
+    gating = out.get("policy_aware_gating") or {}
+    assert out["legacy_entry_decision"] == "WAIT"
+    assert gating.get("available") is True
+    assert gating.get("applied") is True
+    assert "reclaim_gate_ok" in list(gating.get("relaxations_applied") or [])
+    assert "reclaim_relaxed_near_ready" in list(gating.get("applied_hints") or [])
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+    assert out["pattern"] == "breakout_policy_reclaim_near_ready"
+    assert out["entry_condition_path"] == "breakout_path"
+    assert out["reason"] == "breakout_above_recent_high_with_policy_reclaim_near_ready"
+
+
+def test_monitor_policy_aware_gating_helper_does_not_relax_when_extension_safety_fails() -> None:
+    gating = _build_monitor_policy_aware_gating(
+        policy_interpretation={
+            "policy_available": True,
+            "entry_style": "breakout",
+            "relaxable_checks": ["reclaim_gate_ok"],
+        },
+        signal_evidence={
+            "checks": {
+                "reclaim_gate_ok": False,
+                "breakout_path_ok": True,
+                "confidence_ok": True,
+                "volume_ok": True,
+            },
+            "derived": {
+                "reclaim_distance_to_ready": -0.0004,
+                "too_extended": True,
+            },
+        },
+        policy_alignment_summary={
+            "alignment_state": "partial",
+            "top_failed_required_checks": [],
+        },
+        legacy_triggered=False,
+        legacy_reason="below_vwap_reclaim_not_ready",
+    )
+
+    assert gating.get("available") is True
+    assert gating.get("applied") is False
+    assert gating.get("relaxations_applied") == []
+    assert "safe_relaxation_conditions_not_met" in list(gating.get("notes") or [])
+
+
 def test_intraday_entry_scoring_shadow_mode_records_score_but_preserves_decision(monkeypatch) -> None:
     monkeypatch.setenv("MONITOR_SCORING_ENABLED", "false")
     monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "true")
@@ -405,6 +759,8 @@ def test_intraday_entry_scoring_shadow_mode_records_score_but_preserves_decision
     assert out["scoring_entry_decision"] == "WAIT"
     assert out["score_passed"] is False
     assert isinstance(out.get("score_breakdown"), dict)
+    assert isinstance(out.get("signal_evidence"), dict)
+    assert isinstance((out.get("signal_evidence") or {}).get("scores"), dict)
 
 
 def test_intraday_entry_scoring_enabled_allows_entry_when_threshold_met(monkeypatch) -> None:
@@ -420,9 +776,10 @@ def test_intraday_entry_scoring_enabled_allows_entry_when_threshold_met(monkeypa
     assert out["scoring_entry_decision"] == "BUY"
     assert out["triggered"] is True
     assert out["decision"] == "BUY"
+    assert (out.get("signal_evidence") or {}).get("derived", {}).get("weighted_score_passed") is True
 
 
-def test_intraday_entry_scoring_enabled_blocks_when_threshold_not_met(monkeypatch) -> None:
+def test_intraday_entry_scoring_enabled_no_longer_blocks_legacy_buy_when_threshold_not_met(monkeypatch) -> None:
     monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
     monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "false")
     monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "8")
@@ -432,9 +789,31 @@ def test_intraday_entry_scoring_enabled_blocks_when_threshold_not_met(monkeypatc
     assert out["legacy_entry_decision"] == "BUY"
     assert out["scoring_entry_decision"] == "WAIT"
     assert out["score_passed"] is False
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+    assert out["reason"] != "monitor_score_threshold_not_met"
+    assert (out.get("signal_evidence") or {}).get("derived", {}).get("weighted_score_passed") is False
+
+
+def test_intraday_entry_scoring_enabled_does_not_force_wait_into_buy_even_if_score_threshold_is_met(monkeypatch) -> None:
+    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
+    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "false")
+    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "1")
+
+    rows = _rows_pullback_rebound()
+    rows[-1]["close"] = 100.1
+    rows[-1]["high"] = 100.4
+    rows[-1]["vwap"] = 100.8
+
+    out = evaluate_intraday_entry_signal(rows, frame={"playbook": "pullback"})
+
+    assert out["legacy_entry_decision"] == "WAIT"
+    assert out["scoring_entry_decision"] == "BUY"
+    assert out["score_passed"] is True
     assert out["triggered"] is False
     assert out["decision"] == "WAIT"
-    assert out["reason"] == "monitor_score_threshold_not_met"
+    assert out["reason"] == "below_vwap_reclaim_not_ready"
+    assert (out.get("signal_evidence") or {}).get("derived", {}).get("weighted_score_passed") is True
 
 
 def test_intraday_entry_scoring_hard_filter_blocks_without_data(monkeypatch) -> None:

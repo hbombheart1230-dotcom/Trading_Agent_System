@@ -266,6 +266,7 @@ def test_build_lifecycle_bundle_populates_top_level_summary_fields() -> None:
     assert isinstance(out["shared_facts"], dict)
     assert out["shared_facts"]["action"] == "SELL"
     assert out["shared_facts"]["status"] == "closed"
+    assert out["strategist_feedback_input"] == {}
 
 
 def test_monitor_reason_human_uses_applied_policy_when_entry_thresholds_missing() -> None:
@@ -619,6 +620,13 @@ def test_trade_story_input_and_lifecycle_bundle_include_reasoning_trace_chain() 
     assert story_input["news_symbol_linkage"]["runner_up_symbol_in_candidate_hints"] is True
     assert story_input["market_context_human"]["news_symbol_linkage"]["linkage_strength"] == "strong"
     assert "runner-up 000660" in story_input["news_symbol_linkage"]["selected_vs_runner_up"]["comparison_summary"]
+    assert story_input["strategist_feedback_input"]["selected_symbol"] == "003280"
+    assert story_input["strategist_feedback_input"]["candidate_symbols_hint"] == ["003280", "000660"]
+    assert "runner-up 000660" in story_input["strategist_feedback_input"]["selected_vs_runner_up_summary"]
+    assert story_input["strategist_feedback_input"]["entry_pattern_type"] == "unknown"
+    assert story_input["strategist_feedback_input"]["entry_confirmation_quality"] == "unknown"
+    assert story_input["strategist_feedback_input"]["exit_pattern_type"] == "unknown"
+    assert story_input["strategist_feedback_input"]["improvement_tags"] == []
 
     lifecycle_bundle = build_lifecycle_bundle(
         day="2026-03-24",
@@ -641,6 +649,9 @@ def test_trade_story_input_and_lifecycle_bundle_include_reasoning_trace_chain() 
     assert lifecycle_bundle["reasoning_provenance"]["strategist_plan_source"] == "canonical"
     assert lifecycle_bundle["news_symbol_linkage"]["selected_symbol"] == "003280"
     assert lifecycle_bundle["news_symbol_linkage"]["runner_up_symbol"] == "000660"
+    assert lifecycle_bundle["strategist_feedback_input"]["selected_symbol"] == "003280"
+    assert "runner-up 000660" in lifecycle_bundle["strategist_feedback_input"]["selected_vs_runner_up_summary"]
+    assert lifecycle_bundle["strategist_feedback_input"] == story_input["strategist_feedback_input"]
 
 
 def test_trade_story_input_prefers_latest_reasoning_trace_snapshot_when_present() -> None:

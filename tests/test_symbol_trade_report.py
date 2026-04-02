@@ -149,3 +149,202 @@ def test_symbol_trade_report_marks_recovered_partial_trade_in_latest_snapshot(tm
     assert latest_snapshot["trade_origin"] == "recovered_partial"
     assert latest_snapshot["lifecycle_completeness"] == "partial"
     assert latest_snapshot["evidence_recovery_used"] is True
+
+
+def test_symbol_trade_report_reads_linked_trade_report_and_operator_brief(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    events_path = tmp_path / "data" / "logs" / "events.jsonl"
+    _write_jsonl(events_path, [])
+    trade_root = reports_root / "trades" / "2026-04-02" / "TRD_20260402_000660_01"
+    _write_json(
+        trade_root / "lifecycle" / "trade_lifecycle.json",
+        {
+            "trade_id": "TRD_20260402_000660_01",
+            "symbol": "000660",
+            "day": "2026-04-02",
+            "status": "closed",
+            "entry": {
+                "run_id": "run-buy",
+                "ts": "2026-04-02T00:10:00+00:00",
+                "strategist_context": {"playbook": "defensive"},
+            },
+            "exit": {
+                "run_id": "run-sell",
+                "ts": "2026-04-02T00:25:00+00:00",
+            },
+            "summary": {
+                "entry_reason_human": "Scanner selected 000660 as rank #1",
+                "exit_reason_human": "SELL was triggered because vwap_breakdown.",
+            },
+        },
+    )
+    _write_json(
+        trade_root / "reports" / "ai_trade_report.json",
+        {
+            "executive_summary": {
+                "headline": "BUY 000660",
+                "summary": "Defensive entry completed and later closed with VWAP breakdown discipline.",
+            },
+            "market_context_at_entry": {
+                "summary": "Market regime was neutral with defensive playbook."
+            },
+            "entry_decision": {
+                "summary": "Pullback reclaim confirmation aligned with defensive entry."
+            },
+            "final_operator_conclusion": {
+                "summary": "The trade stayed disciplined and exited on VWAP loss."
+            },
+            "strategist_feedback_input": {
+                "entry_pattern_type": "pullback",
+                "exit_pattern_type": "vwap_breakdown",
+                "thesis_invalidation_code": "vwap_loss",
+                "improvement_tags": ["insufficient_confirmation"],
+                "review_flags": ["needs_human_review"],
+            },
+            "shared_facts": {
+                "pnl_pct": 0.67
+            },
+        },
+    )
+    _write_json(
+        trade_root / "reports" / "operator_brief.json",
+        {
+            "headline": "000660 VWAP breakdown exit",
+            "executive_summary": "Scanner found the leader, but the trade needed a defensive exit.",
+            "risk_summary": "Momentum weakened near VWAP.",
+            "next_checkpoints": ["watch VWAP reclaim", "check volume recovery"],
+        },
+    )
+
+    payload = build_symbol_trade_summary(events_path, reports_root, "000660")
+
+    assert payload["summary"]["recent_trade_headlines"] == ["000660 VWAP breakdown exit"]
+    assert payload["summary"]["recent_operator_viewpoints"] == [
+        "Scanner found the leader, but the trade needed a defensive exit."
+    ]
+    assert payload["pattern_insights"]["recent_entry_pattern_types"] == ["pullback"]
+    assert payload["pattern_insights"]["recent_exit_pattern_types"] == ["vwap_breakdown"]
+    assert payload["pattern_insights"]["recent_improvement_tags"] == ["insufficient_confirmation"]
+    assert payload["pattern_insights"]["recent_review_flags"] == ["needs_human_review"]
+    assert payload["history_index"][0]["entry_pattern_type"] == "pullback"
+    assert payload["history_index"][0]["exit_pattern_type"] == "vwap_breakdown"
+    assert payload["history_index"][0]["brief_headline"] == "000660 VWAP breakdown exit"
+    assert payload["history_index"][0]["result_pct"] == 0.67
+
+
+def test_symbol_trade_report_normalizes_ratio_like_result_pct_from_bundle_artifacts(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    events_path = tmp_path / "data" / "logs" / "events.jsonl"
+    _write_jsonl(events_path, [])
+    trade_root = reports_root / "trades" / "2026-04-02" / "TRD_20260402_008350_01"
+    _write_json(
+        trade_root / "lifecycle" / "trade_lifecycle.json",
+        {
+            "trade_id": "TRD_20260402_008350_01",
+            "symbol": "008350",
+            "day": "2026-04-02",
+            "status": "closed",
+            "entry": {
+                "run_id": "run-buy",
+                "ts": "2026-04-02T00:10:00+00:00",
+                "strategist_context": {"playbook": "momentum"},
+            },
+            "exit": {
+                "run_id": "run-sell",
+                "ts": "2026-04-02T00:30:00+00:00",
+            },
+            "summary": {
+                "entry_reason_human": "Scanner selected 008350 after breakout move.",
+                "exit_reason_human": "SELL was triggered because hard_stop.",
+            },
+        },
+    )
+    _write_json(
+        trade_root / "lifecycle_bundle.json",
+        {
+            "trade_id": "TRD_20260402_008350_01",
+            "symbol": "008350",
+            "day": "2026-04-02",
+            "shared_facts": {"pnl_pct": -0.0304},
+            "trade_outcome": {"return_pct": -0.0304},
+        },
+    )
+
+    payload = build_symbol_trade_summary(events_path, reports_root, "008350")
+
+    assert abs(float(payload["history_index"][0]["result_pct"]) - (-3.04)) < 1e-9
+
+
+def test_symbol_trade_report_prefers_structured_entry_pattern_for_pattern_rows(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    events_path = tmp_path / "data" / "logs" / "events.jsonl"
+    _write_jsonl(events_path, [])
+
+    winning_trade_root = reports_root / "trades" / "2026-04-02" / "TRD_20260402_000250_01"
+    _write_json(
+        winning_trade_root / "lifecycle" / "trade_lifecycle.json",
+        {
+            "trade_id": "TRD_20260402_000250_01",
+            "symbol": "000250",
+            "day": "2026-04-02",
+            "status": "closed",
+            "entry": {
+                "run_id": "run-buy-1",
+                "ts": "2026-04-02T00:10:00+00:00",
+                "strategist_context": {"playbook": "pullback"},
+            },
+            "exit": {
+                "run_id": "run-sell-1",
+                "ts": "2026-04-02T00:30:00+00:00",
+            },
+            "summary": {
+                "entry_reason_human": "legacy entry reason that should not become the final pattern label",
+                "exit_reason_human": "SELL was triggered because take_profit.",
+            },
+        },
+    )
+    _write_json(
+        winning_trade_root / "reports" / "ai_trade_report.json",
+        {
+            "entry_decision": {"summary": "Breakout confirmation stayed strong."},
+            "strategist_feedback_input": {"entry_pattern_type": "breakout"},
+            "shared_facts": {"pnl_pct": 1.75},
+        },
+    )
+
+    losing_trade_root = reports_root / "trades" / "2026-04-02" / "TRD_20260402_000250_02"
+    _write_json(
+        losing_trade_root / "lifecycle" / "trade_lifecycle.json",
+        {
+            "trade_id": "TRD_20260402_000250_02",
+            "symbol": "000250",
+            "day": "2026-04-02",
+            "status": "closed",
+            "entry": {
+                "run_id": "run-buy-2",
+                "ts": "2026-04-02T01:10:00+00:00",
+                "strategist_context": {"playbook": "pullback"},
+            },
+            "exit": {
+                "run_id": "run-sell-2",
+                "ts": "2026-04-02T01:30:00+00:00",
+            },
+            "summary": {
+                "entry_reason_human": "another legacy entry reason that should not become the failed pattern label",
+                "exit_reason_human": "SELL was triggered because hard_stop.",
+            },
+        },
+    )
+    _write_json(
+        losing_trade_root / "reports" / "ai_trade_report.json",
+        {
+            "entry_decision": {"summary": "Pullback reclaim was weak."},
+            "strategist_feedback_input": {"entry_pattern_type": "pullback"},
+            "shared_facts": {"pnl_pct": -2.1},
+        },
+    )
+
+    payload = build_symbol_trade_summary(events_path, reports_root, "000250")
+
+    assert payload["pattern_insights"]["successful_entry_patterns"] == ["breakout"]
+    assert payload["pattern_insights"]["failed_entry_patterns"] == ["pullback"]

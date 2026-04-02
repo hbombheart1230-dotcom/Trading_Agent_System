@@ -10,7 +10,10 @@ from libs.reporting.reasoning_trace import (
     normalize_reasoning_provenance_aliases,
     normalize_reasoning_trace_aliases,
 )
-from libs.reporting.strategy_read_model import build_news_symbol_linkage_view
+from libs.reporting.strategy_read_model import (
+    build_news_symbol_linkage_view,
+    build_strategist_feedback_input_view,
+)
 from libs.reporting.trade_report_ai import resolve_shared_trade_facts
 from libs.core.symbols import normalize_symbol
 
@@ -599,6 +602,7 @@ def build_lifecycle_bundle(
         "exit": top_level_exit,
         "shared_facts": dict(shared_facts or {}),
         "news_symbol_linkage": dict(story_input.get("news_symbol_linkage") or {}),
+        "strategist_feedback_input": dict(story_input.get("strategist_feedback_input") or {}),
         "lifecycle": {
             "entry": entry_obj,
             "hold": hold_events,
@@ -2408,7 +2412,7 @@ def build_trade_story_input(
             )
             if commander_source_priority:
                 reasoning_provenance["source_priority"] = list(commander_source_priority)
-        return {
+        story_out = {
             "schema_version": "trade_story_input.v2",
             "day": str(bundle_out.get("day") or ""),
             "trade_id": str(lifecycle.get("trade_id") or bundle_out.get("trade_id") or bundle_out.get("story_id") or ""),
@@ -2485,6 +2489,8 @@ def build_trade_story_input(
             ) else "direct_artifact",
             "ai_report_diagnostics": dict(bundle_out.get("ai_report_diagnostics") or {}),
         }
+        story_out["strategist_feedback_input"] = build_strategist_feedback_input_view(story_out)
+        return story_out
 
     derived_reasoning_trace = build_reasoning_trace_from_summaries(
         commander_summary=dict(bundle_out.get("commander_summary") or {}),
@@ -2652,7 +2658,7 @@ def build_trade_story_input(
     )
     monitor_reason_human.setdefault("monitor_stop_policy_trace", dict(monitor_stop_policy_trace))
     monitor_reason_human.setdefault("monitor_blocker_trace", dict(monitor_blocker_trace))
-    return {
+    story_out = {
         "schema_version": "trade_story_input.v1",
         "day": str(bundle_out.get("day") or ""),
         "trade_id": str(bundle_out.get("trade_id") or bundle_out.get("story_id") or ""),
@@ -2699,6 +2705,8 @@ def build_trade_story_input(
         ) else "direct_artifact",
         "ai_report_diagnostics": dict(bundle_out.get("ai_report_diagnostics") or {}),
     }
+    story_out["strategist_feedback_input"] = build_strategist_feedback_input_view(story_out)
+    return story_out
 
 
 def render_bundle_markdown(out: Dict[str, Any]) -> str:

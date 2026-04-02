@@ -17,6 +17,7 @@ from libs.reporting.symbol_trade_report import build_daily_trade_index
 from libs.reporting.symbol_trade_report import collect_symbols_for_day
 from libs.reporting.symbol_trade_report import generate_symbol_trade_report
 
+
 def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
     if not path.exists():
         return []
@@ -31,6 +32,74 @@ def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
                 except Exception:
                     continue
     return gen()
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_operator_summary_snapshot(out_dir: Path, day: str) -> Dict[str, Any]:
+    paths = daily_artifact_paths(out_dir, day)
+    operator_summary = _read_json(paths["operator_summary_json"])
+    if not operator_summary:
+        return {}
+    executive = operator_summary.get("executive_summary") if isinstance(operator_summary.get("executive_summary"), dict) else {}
+    system_health = (
+        operator_summary.get("system_health_status")
+        if isinstance(operator_summary.get("system_health_status"), dict)
+        else {}
+    )
+    trading_activity = (
+        operator_summary.get("trading_activity_summary")
+        if isinstance(operator_summary.get("trading_activity_summary"), dict)
+        else {}
+    )
+    top_issues = operator_summary.get("top_issues") if isinstance(operator_summary.get("top_issues"), list) else []
+    recommended_actions = (
+        operator_summary.get("recommended_operator_actions")
+        if isinstance(operator_summary.get("recommended_operator_actions"), list)
+        else []
+    )
+    return {
+        "available": True,
+        "report_json_path": str(paths["operator_summary_json"]),
+        "report_md_path": str(paths["operator_summary_md"]),
+        "executive_summary": {
+            "system_status": str(executive.get("system_status") or ""),
+            "summary_lines": [str(x or "") for x in list(executive.get("summary_lines") or []) if str(x or "").strip()][:5],
+        },
+        "system_health_status": {
+            "system_health_level": str(system_health.get("system_health_level") or ""),
+            "reasoning": [str(x or "") for x in list(system_health.get("reasoning") or []) if str(x or "").strip()][:5],
+            "recommended_action": [str(x or "") for x in list(system_health.get("recommended_action") or []) if str(x or "").strip()][:3],
+        },
+        "trading_activity_summary": {
+            "run_total": trading_activity.get("run_total"),
+            "decision_action_counts": dict(trading_activity.get("decision_action_counts") or {}),
+            "strategy_counts": dict(trading_activity.get("strategy_counts") or {}),
+            "executions_total": trading_activity.get("executions_total"),
+            "executions_ok_total": trading_activity.get("executions_ok_total"),
+            "executions_fail_total": trading_activity.get("executions_fail_total"),
+            "blocked_total": trading_activity.get("blocked_total"),
+        },
+        "top_issues": [
+            {
+                "code": str((issue or {}).get("code") or ""),
+                "severity": str((issue or {}).get("severity") or ""),
+                "detail": str((issue or {}).get("detail") or ""),
+            }
+            for issue in top_issues[:5]
+            if isinstance(issue, dict)
+        ],
+        "recommended_operator_actions": [str(x or "") for x in recommended_actions[:5] if str(x or "").strip()],
+    }
+
 
 def _day_key(ts: Any) -> str:
     """Return YYYY-MM-DD in **UTC** for determinism across machines/timezones."""
@@ -82,14 +151,30 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             generate_symbol_trade_report(events_path=events_path, reports_root=out_dir, symbol=symbol)
             for symbol in symbols_for_day
         ]
+        operator_summary_snapshot = _load_operator_summary_snapshot(out_dir, day)
         payload = {
             "day": day,
             "events": 0,
             "trade_index": trade_index,
             "symbols_observed": symbols_for_day,
             "generated_symbol_report_count": len(generated_symbol_reports),
+            "operator_summary_snapshot": operator_summary_snapshot,
         }
-        md_text = f"# Daily Report ({day})\n\nNo events found.\n"
+        md_lines = [
+            f"# Daily Report ({day})",
+            "",
+            "No events found.",
+        ]
+        executive = (
+            operator_summary_snapshot.get("executive_summary")
+            if isinstance(operator_summary_snapshot.get("executive_summary"), dict)
+            else {}
+        )
+        if executive.get("summary_lines"):
+            md_lines += ["", "## Operator Summary Snapshot", ""]
+            for line in executive.get("summary_lines") or []:
+                md_lines.append(f"- {line}")
+        md_text = "\n".join(md_lines) + "\n"
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text(md_text, encoding="utf-8")
         js_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -136,9 +221,11 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         generate_symbol_trade_report(events_path=events_path, reports_root=out_dir, symbol=symbol)
         for symbol in symbols_for_day
     ]
+    operator_summary_snapshot = _load_operator_summary_snapshot(out_dir, day)
     summary["trade_index"] = trade_index
     summary["symbols_observed"] = symbols_for_day
     summary["generated_symbol_report_count"] = len(generated_symbol_reports)
+    summary["operator_summary_snapshot"] = operator_summary_snapshot
 
     md_lines = [
         f"# Daily Report ({day})",
@@ -159,6 +246,38 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     md_lines += ["", "## Stage counts", ""]
     for k, v in stage_counter.most_common():
         md_lines.append(f"- {k}: {v}")
+
+    executive = (
+        operator_summary_snapshot.get("executive_summary")
+        if isinstance(operator_summary_snapshot.get("executive_summary"), dict)
+        else {}
+    )
+    if executive.get("summary_lines"):
+        md_lines += ["", "## Operator Summary Snapshot", ""]
+        if executive.get("system_status"):
+            md_lines.append(f"- system_status: **{executive['system_status']}**")
+        for line in executive.get("summary_lines") or []:
+            md_lines.append(f"- {line}")
+
+    top_issues = operator_summary_snapshot.get("top_issues") if isinstance(operator_summary_snapshot.get("top_issues"), list) else []
+    if top_issues:
+        md_lines += ["", "## Top Issues", ""]
+        for issue in top_issues:
+            if not isinstance(issue, dict):
+                continue
+            md_lines.append(
+                f"- [{issue.get('severity') or '-'}] {issue.get('code') or '-'}: {issue.get('detail') or '-'}"
+            )
+
+    recommended_actions = (
+        operator_summary_snapshot.get("recommended_operator_actions")
+        if isinstance(operator_summary_snapshot.get("recommended_operator_actions"), list)
+        else []
+    )
+    if recommended_actions:
+        md_lines += ["", "## Recommended Operator Actions", ""]
+        for action in recommended_actions:
+            md_lines.append(f"- {action}")
 
     paths = daily_artifact_paths(out_dir, day)
     md_path = paths["daily_report_md"]

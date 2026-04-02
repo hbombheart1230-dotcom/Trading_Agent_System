@@ -30,7 +30,11 @@ from libs.runtime.intraday_monitor_signals import (
     evaluate_intraday_entry_signal,
     resolve_intraday_entry_policy,
 )
-from libs.runtime.monitor_policy import MonitorEntryPolicy, summarize_monitor_policy_deltas
+from libs.runtime.monitor_policy import (
+    MonitorEntryPolicy,
+    build_monitor_entry_policy_contract,
+    summarize_monitor_policy_deltas,
+)
 from libs.runtime.position_sizing import evaluate_position_size
 from libs.strategies.contracts import coerce_strategist_output
 
@@ -2246,20 +2250,26 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     elif isinstance((state.get("commander_decision") or {}).get("applied_policy"), dict):
         commander_applied_policy = dict((state.get("commander_decision") or {}).get("applied_policy") or {})
 
-    entry_policy_input: Dict[str, Any] = {}
-    entry_policy_origin = "monitor_policy"
-    if commander_applied_policy:
-        entry_policy_input.update(dict(commander_applied_policy))
-        entry_policy_origin = "commander_applied_policy"
-    elif isinstance(strategist_output.get("monitor_entry_policy"), dict):
-        entry_policy_input.update(dict(strategist_output.get("monitor_entry_policy") or {}))
-        entry_policy_origin = "strategist_output.monitor_entry_policy"
-    elif isinstance(state.get("monitor_entry_policy"), dict):
-        entry_policy_input.update(dict(state.get("monitor_entry_policy") or {}))
-        entry_policy_origin = "state.monitor_entry_policy"
-    elif isinstance(strategy_monitor_policy.get("entry_policy"), dict):
-        entry_policy_input.update(dict(strategy_monitor_policy.get("entry_policy") or {}))
-        entry_policy_origin = "strategy_policy.monitor_policy.entry_policy"
+    entry_policy_contract = build_monitor_entry_policy_contract(
+        commander_applied_policy=commander_applied_policy,
+        strategist_monitor_entry_policy=(
+            dict(strategist_output.get("monitor_entry_policy") or {})
+            if isinstance(strategist_output.get("monitor_entry_policy"), dict)
+            else {}
+        ),
+        state_monitor_entry_policy=(
+            dict(state.get("monitor_entry_policy") or {})
+            if isinstance(state.get("monitor_entry_policy"), dict)
+            else {}
+        ),
+        strategy_monitor_entry_policy=(
+            dict(strategy_monitor_policy.get("entry_policy") or {})
+            if isinstance(strategy_monitor_policy.get("entry_policy"), dict)
+            else {}
+        ),
+    )
+    entry_policy_input: Dict[str, Any] = dict(entry_policy_contract.get("selected_policy") or {})
+    entry_policy_origin = str(entry_policy_contract.get("selected_source") or "monitor_policy")
     buy_blocked_open_position = False
     buy_blocked_post_exit_cooldown = False
     post_exit_cooldown_remaining_sec = 0
@@ -2431,6 +2441,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             features=selected.get("features") if isinstance(selected, dict) and isinstance(selected.get("features"), dict) else {},
             policy=entry_policy,
             frame=strategy_frame,
+            policy_contract=entry_policy_contract,
         )
         entry_info["symbol"] = symbol
         entry_info["selected_symbol"] = symbol
@@ -2444,6 +2455,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
         entry_info["received_policy"] = dict(effective_policy_trace.get("received_policy") or {})
         entry_info["received_policy_source"] = str(effective_policy_trace.get("received_policy_source") or "")
+        entry_info["policy_contract"] = dict(entry_policy_contract)
         entry_info["effective_policy"] = dict(effective_policy_trace.get("effective_policy") or {})
         entry_info["effective_policy_source"] = str(effective_policy_trace.get("effective_policy_source") or "")
         entry_info["effective_policy_source_chain"] = list(effective_policy_trace.get("effective_policy_source_chain") or [])
@@ -2526,6 +2538,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "entry_condition_scores": dict(entry_info.get("condition_scores") or {}),
                     "entry_grouped_logic_trace": dict(entry_info.get("grouped_logic_trace") or {}),
                     "entry_metrics": dict(entry_info.get("metrics") or {}),
+                    "entry_policy_interpretation": dict(entry_info.get("policy_interpretation") or {}),
+                    "entry_signal_evidence": dict(entry_info.get("signal_evidence") or {}),
+                    "entry_policy_interpreter_trace": dict(entry_info.get("policy_interpreter_trace") or {}),
+                    "entry_policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
+                    "entry_policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
                     "entry_scoring": {
                         "hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
                         "hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
@@ -2874,6 +2891,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "entry_hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
             "entry_total_score": entry_info.get("total_score"),
             "entry_score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+            "entry_policy_interpretation": dict(entry_info.get("policy_interpretation") or {}),
+            "entry_signal_evidence": dict(entry_info.get("signal_evidence") or {}),
+            "entry_policy_interpreter_trace": dict(entry_info.get("policy_interpreter_trace") or {}),
+            "entry_policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
+            "entry_policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
             "entry_score_threshold": entry_info.get("entry_threshold"),
             "entry_score_passed": bool(entry_info.get("score_passed")),
             "entry_scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
@@ -2979,6 +3001,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_metrics": dict(entry_info.get("metrics") or {}),
         "entry_received_policy": dict(entry_info.get("received_policy") or entry_received_policy or {}),
         "entry_received_policy_source": str(entry_info.get("received_policy_source") or entry_policy_origin or ""),
+        "entry_policy_contract": dict(entry_info.get("policy_contract") or entry_policy_contract or {}),
         "entry_applied_policy": dict(entry_applied_policy),
         "entry_effective_policy": dict(entry_info.get("effective_policy") or entry_applied_policy),
         "entry_effective_policy_source": str(entry_info.get("effective_policy_source") or ""),
@@ -2995,6 +3018,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
         "entry_total_score": entry_info.get("total_score"),
         "entry_score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+        "entry_policy_interpretation": dict(entry_info.get("policy_interpretation") or {}),
+        "entry_signal_evidence": dict(entry_info.get("signal_evidence") or {}),
+        "entry_policy_interpreter_trace": dict(entry_info.get("policy_interpreter_trace") or {}),
+        "entry_policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
+        "entry_policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "entry_score_threshold": entry_info.get("entry_threshold"),
         "entry_score_passed": bool(entry_info.get("score_passed")),
         "entry_scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
@@ -3137,6 +3165,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_pullback_depth_pct": entry_metrics.get("pullback_depth_pct"),
         "received_policy": dict(entry_info.get("received_policy") or entry_received_policy or {}),
         "received_policy_source": str(entry_info.get("received_policy_source") or entry_policy_origin or ""),
+        "policy_contract": dict(entry_info.get("policy_contract") or entry_policy_contract or {}),
         "effective_policy": dict(entry_info.get("effective_policy") or entry_applied_policy),
         "effective_policy_source": str(entry_info.get("effective_policy_source") or ""),
         "effective_policy_source_chain": list(entry_info.get("effective_policy_source_chain") or []),
@@ -3145,6 +3174,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_adjustment_reasoning": str(entry_info.get("policy_adjustment_reasoning") or ""),
         "effective_policy_deltas": list(entry_info.get("effective_policy_deltas") or []),
         "applied_policy": dict(entry_applied_policy),
+        "policy_contract": dict(entry_info.get("policy_contract") or entry_policy_contract or {}),
         "entry_volume_ratio_min": entry_thresholds.get("volume_ratio_min"),
         "entry_max_extended_from_vwap_pct": entry_thresholds.get("max_extended_from_vwap_pct"),
         "entry_min_extended_from_vwap_pct": entry_thresholds.get("min_extended_from_vwap_pct"),
@@ -3162,6 +3192,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
         "entry_total_score": entry_info.get("total_score"),
         "entry_score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+        "entry_policy_interpretation": dict(entry_info.get("policy_interpretation") or {}),
+        "entry_signal_evidence": dict(entry_info.get("signal_evidence") or {}),
+        "entry_policy_interpreter_trace": dict(entry_info.get("policy_interpreter_trace") or {}),
+        "entry_policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
+        "entry_policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "entry_score_threshold": entry_info.get("entry_threshold"),
         "entry_score_passed": bool(entry_info.get("score_passed")),
         "entry_scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
@@ -3246,6 +3281,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "buy_skipped_reason": buy_skipped_reason,
         "metrics": entry_event_metrics,
         "applied_policy": dict(entry_applied_policy),
+        "policy_contract": dict(entry_info.get("policy_contract") or entry_policy_contract or {}),
         "thresholds": dict(entry_info.get("thresholds") or {}),
         "passed_checks": list(entry_info.get("passed_checks") or []),
         "failed_checks": list(entry_info.get("failed_checks") or []),
@@ -3256,6 +3292,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
         "total_score": entry_info.get("total_score"),
         "score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+        "policy_interpretation": dict(entry_info.get("policy_interpretation") or {}),
+        "signal_evidence": dict(entry_info.get("signal_evidence") or {}),
+        "policy_interpreter_trace": dict(entry_info.get("policy_interpreter_trace") or {}),
+        "policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
+        "policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "entry_threshold": entry_info.get("entry_threshold"),
         "score_passed": bool(entry_info.get("score_passed")),
         "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
@@ -3285,6 +3326,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
         "hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
         "score_breakdown": dict(entry_info.get("score_breakdown") or {}),
+        "policy_interpretation": dict(entry_info.get("policy_interpretation") or {}),
+        "signal_evidence": dict(entry_info.get("signal_evidence") or {}),
+        "policy_interpreter_trace": dict(entry_info.get("policy_interpreter_trace") or {}),
+        "policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
+        "policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "total_score": entry_info.get("total_score"),
         "entry_threshold": entry_info.get("entry_threshold"),
         "score_passed": bool(entry_info.get("score_passed")),
@@ -3371,6 +3417,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["exit_trigger_basis"] = dict(monitor_policy_trace.get("exit_trigger_basis") or {})
         state["monitor_output"]["received_policy"] = dict(entry_info.get("received_policy") or entry_received_policy or {})
         state["monitor_output"]["received_policy_source"] = str(entry_info.get("received_policy_source") or entry_policy_origin or "")
+        state["monitor_output"]["policy_contract"] = dict(entry_info.get("policy_contract") or entry_policy_contract or {})
         state["monitor_output"]["effective_policy"] = dict(entry_info.get("effective_policy") or entry_applied_policy)
         state["monitor_output"]["effective_policy_source"] = str(entry_info.get("effective_policy_source") or "")
         state["monitor_output"]["effective_policy_source_chain"] = list(entry_info.get("effective_policy_source_chain") or [])
@@ -3397,6 +3444,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["hard_filter_fail_reasons"] = list(entry_info.get("hard_filter_fail_reasons") or [])
         state["monitor_output"]["total_score"] = entry_info.get("total_score")
         state["monitor_output"]["score_breakdown"] = dict(entry_info.get("score_breakdown") or {})
+        state["monitor_output"]["policy_interpretation"] = dict(entry_info.get("policy_interpretation") or {})
+        state["monitor_output"]["signal_evidence"] = dict(entry_info.get("signal_evidence") or {})
+        state["monitor_output"]["policy_interpreter_trace"] = dict(entry_info.get("policy_interpreter_trace") or {})
+        state["monitor_output"]["policy_alignment_summary"] = dict(entry_info.get("policy_alignment_summary") or {})
+        state["monitor_output"]["policy_aware_gating"] = dict(entry_info.get("policy_aware_gating") or {})
         state["monitor_output"]["entry_threshold"] = entry_info.get("entry_threshold")
         state["monitor_output"]["score_passed"] = bool(entry_info.get("score_passed"))
         state["monitor_output"]["scoring_mode"] = str(entry_info.get("scoring_mode") or "disabled")
@@ -3421,11 +3473,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
         "legacy_entry_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
         "scoring_entry_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
+        "policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
         "entry_check_summary": str(monitor_policy_trace.get("entry_check_summary") or ""),
         "entry_blockers": list(monitor_policy_trace.get("entry_blockers") or []),
         "timing_assessment": dict(monitor_policy_trace.get("timing_assessment") or {}),
         "received_policy": dict(entry_info.get("received_policy") or entry_received_policy or {}),
+        "policy_contract": dict(entry_info.get("policy_contract") or entry_policy_contract or {}),
         "effective_policy": dict(entry_info.get("effective_policy") or entry_applied_policy),
         "effective_policy_source": str(entry_info.get("effective_policy_source") or ""),
         "effective_policy_source_chain": list(entry_info.get("effective_policy_source_chain") or []),
@@ -3448,6 +3502,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "triggered_rules": list(triggered_rules),
         "blocked_rules": list(dict.fromkeys(blocked_rules))[:8],
         "received_policy": dict(entry_info.get("received_policy") or entry_received_policy or {}),
+        "policy_contract": dict(entry_info.get("policy_contract") or entry_policy_contract or {}),
         "effective_policy": dict(entry_info.get("effective_policy") or entry_applied_policy),
         "effective_policy_source": str(entry_info.get("effective_policy_source") or ""),
         "effective_policy_source_chain": list(entry_info.get("effective_policy_source_chain") or []),

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from collections import Counter
@@ -16,6 +16,31 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except Exception:
         return None
+
+
+def _normalize_pct_like(value: Any) -> Optional[float]:
+    parsed = _safe_float(value)
+    if parsed is None:
+        return None
+    # Many artifact-level return fields are stored as ratios (-0.03 => -3.0%),
+    # while some repaired/fallback paths already store percent-like values (0.67 => 0.67%).
+    if abs(parsed) <= 0.2:
+        return parsed * 100.0
+    return parsed
+
+
+def _pick_result_pct(*values: Any) -> Optional[float]:
+    normalized: List[float] = []
+    for value in values:
+        parsed = _normalize_pct_like(value)
+        if parsed is not None:
+            normalized.append(parsed)
+    if not normalized:
+        return None
+    for parsed in normalized:
+        if abs(parsed) > 1e-12:
+            return parsed
+    return normalized[0]
 
 
 def _safe_int(value: Any) -> int:
@@ -162,6 +187,112 @@ def _result_pct_from_lifecycle(obj: Dict[str, Any]) -> Optional[float]:
     return ((exit_price - entry_price) / entry_price) * 100.0
 
 
+def _list_text(values: Any, *, limit: int = 5) -> List[str]:
+    out: List[str] = []
+    for value in list(values or []):
+        text = str(value or "").strip()
+        if not text or text in out:
+            continue
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _contains_any(text: str, needles: List[str]) -> bool:
+    lowered = str(text or "").strip().lower()
+    return any(needle in lowered for needle in needles)
+
+
+def _classify_entry_pattern(text: str) -> str:
+    if _contains_any(text, ["breakout"]):
+        return "breakout"
+    if _contains_any(text, ["reclaim"]):
+        return "reclaim"
+    if _contains_any(text, ["pullback"]):
+        return "pullback"
+    if _contains_any(text, ["continuation"]):
+        return "continuation"
+    return "unknown"
+
+
+def _classify_exit_pattern(text: str) -> str:
+    if _contains_any(text, ["vwap_breakdown"]):
+        return "vwap_breakdown"
+    if _contains_any(text, ["trend_breakdown"]):
+        return "trend_breakdown"
+    if _contains_any(text, ["peak_drawdown"]):
+        return "peak_drawdown"
+    if _contains_any(text, ["hard_stop"]):
+        return "hard_stop"
+    if _contains_any(text, ["trailing_stop"]):
+        return "trailing_stop"
+    if _contains_any(text, ["take_profit"]):
+        return "take_profit"
+    return "unknown"
+
+
+def _extract_trade_artifact_snapshot(
+    *,
+    report_path: Path,
+    operator_brief_path: Path,
+    lifecycle_bundle_path: Path,
+) -> Dict[str, Any]:
+    report = _read_json(report_path)
+    brief = _read_json(operator_brief_path)
+    bundle = _read_json(lifecycle_bundle_path)
+    report_executive = report.get("executive_summary") if isinstance(report.get("executive_summary"), dict) else {}
+    report_market = report.get("market_context_at_entry") if isinstance(report.get("market_context_at_entry"), dict) else {}
+    report_entry = report.get("entry_decision") if isinstance(report.get("entry_decision"), dict) else {}
+    report_final = report.get("final_operator_conclusion") if isinstance(report.get("final_operator_conclusion"), dict) else {}
+    feedback = (
+        bundle.get("strategist_feedback_input")
+        if isinstance(bundle.get("strategist_feedback_input"), dict)
+        else report.get("strategist_feedback_input")
+        if isinstance(report.get("strategist_feedback_input"), dict)
+        else {}
+    )
+    shared_facts = (
+        bundle.get("shared_facts")
+        if isinstance(bundle.get("shared_facts"), dict)
+        else report.get("shared_facts")
+        if isinstance(report.get("shared_facts"), dict)
+        else {}
+    )
+    trade_outcome = bundle.get("trade_outcome") if isinstance(bundle.get("trade_outcome"), dict) else {}
+    report_shared_facts = report.get("shared_facts") if isinstance(report.get("shared_facts"), dict) else {}
+    artifact_result_pct = _pick_result_pct(
+        trade_outcome.get("return_pct"),
+        shared_facts.get("return_pct"),
+        shared_facts.get("pnl_pct"),
+        report_shared_facts.get("return_pct"),
+        report_shared_facts.get("pnl_pct"),
+    )
+    entry_reason_text = str(report_entry.get("summary") or "").strip()
+    exit_reason_text = str(shared_facts.get("exit_reason") or "").strip()
+    if not exit_reason_text:
+        exit_reason_text = str(report_final.get("summary") or "").strip()
+    entry_pattern_type = str(feedback.get("entry_pattern_type") or "").strip() or _classify_entry_pattern(entry_reason_text)
+    exit_pattern_type = str(feedback.get("exit_pattern_type") or "").strip() or _classify_exit_pattern(exit_reason_text)
+    return {
+        "report_headline": str(report_executive.get("headline") or report.get("headline") or "").strip(),
+        "report_executive_summary": str(report_executive.get("summary") or "").strip(),
+        "report_market_summary": str(report_market.get("summary") or "").strip(),
+        "report_entry_summary": entry_reason_text,
+        "report_final_conclusion": str(report_final.get("summary") or "").strip(),
+        "brief_headline": str(brief.get("headline") or "").strip(),
+        "brief_executive_summary": str(brief.get("executive_summary") or "").strip(),
+        "brief_risk_summary": str(brief.get("risk_summary") or "").strip(),
+        "brief_next_checkpoints": _list_text(brief.get("next_checkpoints"), limit=3),
+        "entry_pattern_type": entry_pattern_type or "unknown",
+        "exit_pattern_type": exit_pattern_type or "unknown",
+        "thesis_invalidation_code": str(feedback.get("thesis_invalidation_code") or "unknown").strip() or "unknown",
+        "improvement_tags": _list_text(feedback.get("improvement_tags"), limit=6),
+        "review_flags": _list_text(feedback.get("review_flags"), limit=6),
+        "artifact_result_pct": artifact_result_pct,
+    }
+
+
 def _hold_seconds_from_lifecycle(obj: Dict[str, Any]) -> Optional[float]:
     entry = obj.get("entry") if isinstance(obj.get("entry"), dict) else {}
     exit_row = obj.get("exit") if isinstance(obj.get("exit"), dict) else {}
@@ -192,6 +323,11 @@ def _build_history_index(reports_root: Path, symbol: str) -> List[Dict[str, Any]
         expected_report_path = trade_root / "reports" / "ai_trade_report.json"
         expected_operator_brief_path = trade_root / "reports" / "operator_brief.json"
         lifecycle_bundle_path = trade_root / "lifecycle_bundle.json"
+        artifact_snapshot = _extract_trade_artifact_snapshot(
+            report_path=Path(str(artifacts.get("ai_trade_report_json") or expected_report_path)),
+            operator_brief_path=Path(str(artifacts.get("operator_brief_json") or expected_operator_brief_path)),
+            lifecycle_bundle_path=Path(str(artifacts.get("lifecycle_bundle_json") or lifecycle_bundle_path)),
+        )
         trade_status = str(obj.get("status") or "").strip()
         if exit_row:
             last_action = "SELL"
@@ -207,6 +343,8 @@ def _build_history_index(reports_root: Path, symbol: str) -> List[Dict[str, Any]
             or str(obj.get("entry_strategist_run_id") or "").strip()
         )
         result_pct = _result_pct_from_lifecycle(obj)
+        if result_pct is None:
+            result_pct = _safe_float(artifact_snapshot.get("artifact_result_pct"))
         history.append(
             {
                 "trade_id": trade_id,
@@ -229,6 +367,20 @@ def _build_history_index(reports_root: Path, symbol: str) -> List[Dict[str, Any]
                 "operator_brief_path": str(artifacts.get("operator_brief_json") or expected_operator_brief_path),
                 "lifecycle_bundle_path": str(artifacts.get("lifecycle_bundle_json") or lifecycle_bundle_path),
                 "trade_root_path": str(trade_root),
+                "report_headline": str(artifact_snapshot.get("report_headline") or ""),
+                "report_executive_summary": str(artifact_snapshot.get("report_executive_summary") or ""),
+                "report_market_summary": str(artifact_snapshot.get("report_market_summary") or ""),
+                "report_entry_summary": str(artifact_snapshot.get("report_entry_summary") or ""),
+                "report_final_conclusion": str(artifact_snapshot.get("report_final_conclusion") or ""),
+                "brief_headline": str(artifact_snapshot.get("brief_headline") or ""),
+                "brief_executive_summary": str(artifact_snapshot.get("brief_executive_summary") or ""),
+                "brief_risk_summary": str(artifact_snapshot.get("brief_risk_summary") or ""),
+                "brief_next_checkpoints": list(artifact_snapshot.get("brief_next_checkpoints") or []),
+                "entry_pattern_type": str(artifact_snapshot.get("entry_pattern_type") or "unknown"),
+                "exit_pattern_type": str(artifact_snapshot.get("exit_pattern_type") or "unknown"),
+                "thesis_invalidation_code": str(artifact_snapshot.get("thesis_invalidation_code") or "unknown"),
+                "improvement_tags": list(artifact_snapshot.get("improvement_tags") or []),
+                "review_flags": list(artifact_snapshot.get("review_flags") or []),
             }
         )
     history.sort(key=lambda row: (str(row.get("date") or ""), str(row.get("trade_id") or "")))
@@ -287,6 +439,10 @@ def _pattern_rows(history: List[Dict[str, Any]], *, positive: bool) -> List[str]
             continue
         if (not positive) and result_pct >= 0:
             continue
+        pattern_type = str(row.get("entry_pattern_type") or "").strip()
+        if pattern_type and pattern_type != "unknown":
+            counter[pattern_type] += 1
+            continue
         reason = str(row.get("entry_reason") or "").strip()
         if reason:
             counter[reason] += 1
@@ -314,6 +470,37 @@ def build_symbol_trade_summary(events_path: Path, reports_root: Path, symbol: st
         for row in reversed(history)
         if str(row.get("exit_reason") or "").strip()
     ]
+    recent_trade_headlines = [
+        str(row.get("brief_headline") or row.get("report_headline") or "").strip()
+        for row in reversed(history)
+        if str(row.get("brief_headline") or row.get("report_headline") or "").strip()
+    ]
+    recent_operator_viewpoints = [
+        str(row.get("brief_executive_summary") or row.get("report_final_conclusion") or "").strip()
+        for row in reversed(history)
+        if str(row.get("brief_executive_summary") or row.get("report_final_conclusion") or "").strip()
+    ]
+    entry_pattern_types = [
+        str(row.get("entry_pattern_type") or "").strip()
+        for row in reversed(history)
+        if str(row.get("entry_pattern_type") or "").strip() and str(row.get("entry_pattern_type") or "").strip() != "unknown"
+    ]
+    exit_pattern_types = [
+        str(row.get("exit_pattern_type") or "").strip()
+        for row in reversed(history)
+        if str(row.get("exit_pattern_type") or "").strip() and str(row.get("exit_pattern_type") or "").strip() != "unknown"
+    ]
+    improvement_tag_counter: Counter[str] = Counter()
+    review_flag_counter: Counter[str] = Counter()
+    for row in history:
+        for tag in list(row.get("improvement_tags") or []):
+            text = str(tag or "").strip()
+            if text:
+                improvement_tag_counter[text] += 1
+        for flag in list(row.get("review_flags") or []):
+            text = str(flag or "").strip()
+            if text:
+                review_flag_counter[text] += 1
 
     completed = [row for row in history if str(row.get("status") or "").strip().lower() == "closed"]
     returns = [value for value in (_safe_float(row.get("result_pct")) for row in completed) if value is not None]
@@ -333,6 +520,8 @@ def build_symbol_trade_summary(events_path: Path, reports_root: Path, symbol: st
         "recent_exit_reasons": list(insights.get("recent_exit_reasons") or history_exit_reasons[:5]),
         "recent_wait_reasons": list(insights.get("recent_wait_reasons") or []),
         "wait_reason_distribution": dict(insights.get("wait_reason_distribution") or {}),
+        "recent_trade_headlines": _list_text(recent_trade_headlines, limit=5),
+        "recent_operator_viewpoints": _list_text(recent_operator_viewpoints, limit=5),
     }
 
     risk_notes: List[str] = []
@@ -351,6 +540,10 @@ def build_symbol_trade_summary(events_path: Path, reports_root: Path, symbol: st
             "successful_entry_patterns": _pattern_rows(history, positive=True),
             "failed_entry_patterns": _pattern_rows(history, positive=False),
             "common_monitor_failures": list(insights.get("common_monitor_failures") or []),
+            "recent_entry_pattern_types": _list_text(entry_pattern_types, limit=5),
+            "recent_exit_pattern_types": _list_text(exit_pattern_types, limit=5),
+            "recent_improvement_tags": [name for name, _count in improvement_tag_counter.most_common(6)],
+            "recent_review_flags": [name for name, _count in review_flag_counter.most_common(6)],
             "risk_notes": risk_notes,
         },
         "history_index": history,
@@ -437,12 +630,18 @@ def _render_symbol_trade_markdown(payload: Dict[str, Any]) -> str:
         f"- 최근 진입 사유: {', '.join(summary.get('recent_entry_reasons') or []) or '없음'}",
         f"- 최근 청산 사유: {', '.join(summary.get('recent_exit_reasons') or []) or '없음'}",
         f"- 최근 WAIT 사유: {', '.join(summary.get('recent_wait_reasons') or []) or '없음'}",
+        f"- recent trade headlines: {', '.join(summary.get('recent_trade_headlines') or []) or 'none'}",
+        f"- recent operator viewpoints: {', '.join(summary.get('recent_operator_viewpoints') or []) or 'none'}",
         "",
         "## 패턴 인사이트",
         "",
         f"- 성과가 좋았던 진입 패턴: {', '.join(insights.get('successful_entry_patterns') or []) or '없음'}",
         f"- 성과가 약했던 진입 패턴: {', '.join(insights.get('failed_entry_patterns') or []) or '없음'}",
         f"- 자주 반복된 모니터 실패 축: {', '.join(insights.get('common_monitor_failures') or []) or '없음'}",
+        f"- recent entry pattern types: {', '.join(insights.get('recent_entry_pattern_types') or []) or 'none'}",
+        f"- recent exit pattern types: {', '.join(insights.get('recent_exit_pattern_types') or []) or 'none'}",
+        f"- recent improvement tags: {', '.join(insights.get('recent_improvement_tags') or []) or 'none'}",
+        f"- recent review flags: {', '.join(insights.get('recent_review_flags') or []) or 'none'}",
     ]
     risk_notes = list(insights.get("risk_notes") or [])
     if risk_notes:

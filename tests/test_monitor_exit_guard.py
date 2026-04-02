@@ -1640,8 +1640,10 @@ def test_monitor_prefers_strategist_monitor_entry_policy_for_entry_thresholds(mo
     assert monitor.get("entry_triggered") is True
     assert monitor.get("entry_condition_path") == "breakout_path"
     applied_policy = monitor.get("entry_applied_policy") or {}
+    contract = monitor.get("entry_policy_contract") or {}
     assert float(applied_policy.get("volume_ratio_min") or 0.0) > 0.68
     assert str(applied_policy.get("policy_source") or "") == "strategist"
+    assert contract.get("selected_source") == "strategist_output.monitor_entry_policy"
 
 
 def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_policy(monkeypatch):
@@ -1742,12 +1744,18 @@ def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_
     applied_policy = monitor.get("entry_applied_policy") or {}
     received_policy = monitor.get("entry_received_policy") or {}
     effective_policy = monitor.get("entry_effective_policy") or {}
+    contract = monitor.get("entry_policy_contract") or {}
     assert float(applied_policy.get("volume_ratio_min") or 0.0) > 0.70
     assert str(applied_policy.get("policy_source") or "") == "strategist"
     assert float(received_policy.get("volume_ratio_min") or 0.0) == 1.25
     assert str(monitor.get("entry_received_policy_source") or "") == "commander_applied_policy"
     assert float(effective_policy.get("volume_ratio_min") or 0.0) == float(applied_policy.get("volume_ratio_min") or 0.0)
     assert str(monitor.get("entry_effective_policy_source") or "") == "monitor_frame_adjusted"
+    assert contract.get("contract_version") == "monitor_entry_policy_contract.v1"
+    assert contract.get("selected_source") == "commander_applied_policy"
+    assert (contract.get("selected_policy_schema") or {}).get("schema_version") == "monitor_entry_policy_schema_candidate.v1"
+    assert (contract.get("selected_policy_schema") or {}).get("available") is False
+    assert (contract.get("sources") or {}).get("strategist_output.monitor_entry_policy", {}).get("available") is True
     assert list(monitor.get("entry_effective_policy_deltas") or [])
     assert monitor.get("entry_triggered") is True
     assert monitor.get("entry_condition_path") == "breakout_path"
@@ -1835,6 +1843,7 @@ def test_monitor_scoring_shadow_mode_preserves_legacy_buy_and_records_score(monk
     out = monitor_node(state)
     intents = out.get("intents") or []
     monitor = out.get("monitor") or {}
+    monitor_output = out.get("monitor_output") or {}
 
     assert len(intents) == 1
     assert intents[0]["side"] == "BUY"
@@ -1843,9 +1852,20 @@ def test_monitor_scoring_shadow_mode_preserves_legacy_buy_and_records_score(monk
     assert monitor.get("entry_scoring_decision") == "WAIT"
     assert monitor.get("entry_score_passed") is False
     assert isinstance(monitor.get("entry_score_breakdown"), dict)
+    assert isinstance(monitor.get("entry_policy_interpretation"), dict)
+    assert isinstance(monitor.get("entry_signal_evidence"), dict)
+    assert isinstance(monitor.get("entry_policy_interpreter_trace"), dict)
+    assert isinstance(monitor.get("entry_policy_alignment_summary"), dict)
+    assert isinstance(monitor.get("entry_policy_aware_gating"), dict)
+    assert isinstance((monitor.get("entry_policy_interpretation") or {}).get("required_checks"), list)
+    assert isinstance(monitor_output.get("policy_interpretation"), dict)
+    assert isinstance(monitor_output.get("signal_evidence"), dict)
+    assert isinstance(monitor_output.get("policy_interpreter_trace"), dict)
+    assert isinstance(monitor_output.get("policy_alignment_summary"), dict)
+    assert isinstance(monitor_output.get("policy_aware_gating"), dict)
 
 
-def test_monitor_scoring_enabled_can_block_legacy_buy_when_score_below_threshold(monkeypatch):
+def test_monitor_scoring_enabled_no_longer_blocks_legacy_buy_when_score_below_threshold(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
     monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
@@ -1867,13 +1887,52 @@ def test_monitor_scoring_enabled_can_block_legacy_buy_when_score_below_threshold
     out = monitor_node(state)
     monitor = out.get("monitor") or {}
 
-    assert out.get("intents") == []
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
     assert monitor.get("entry_scoring_mode") == "enabled"
     assert monitor.get("entry_legacy_decision") == "BUY"
     assert monitor.get("entry_scoring_decision") == "WAIT"
     assert monitor.get("entry_score_passed") is False
-    assert monitor.get("entry_triggered") is False
-    assert monitor.get("entry_reason") == "monitor_score_threshold_not_met"
+    assert monitor.get("entry_triggered") is True
+    assert monitor.get("entry_reason") != "monitor_score_threshold_not_met"
+    assert ((monitor.get("entry_signal_evidence") or {}).get("derived") or {}).get("weighted_score_passed") is False
+
+
+def test_monitor_policy_aware_gating_can_promote_breakout_near_ready_reclaim(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    rows = _entry_breakout_rows()
+    rows[-1]["vwap"] = 101.96
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": -0.0016, "engine_volume_spike20": 1.4},
+        },
+        "strategist_output": {"playbook": "breakout"},
+        "minute_ohlcv_by_symbol": {"BBB": rows},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": _policy_with_entry_cooldown(0),
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    monitor = out.get("monitor") or {}
+    monitor_output = out.get("monitor_output") or {}
+
+    assert len(intents) == 1
+    assert intents[0]["side"] == "BUY"
+    assert monitor.get("entry_legacy_decision") == "WAIT"
+    assert monitor.get("entry_triggered") is True
+    assert monitor.get("entry_reason") == "breakout_above_recent_high_with_policy_reclaim_near_ready"
+    assert ((monitor.get("entry_policy_aware_gating") or {}).get("applied")) is True
+    assert "reclaim_gate_ok" in list(((monitor.get("entry_policy_aware_gating") or {}).get("relaxations_applied")) or [])
+    assert isinstance(monitor_output.get("policy_aware_gating"), dict)
+    assert (monitor_output.get("policy_aware_gating") or {}).get("applied") is True
 
 
 def test_monitor_records_received_vs_effective_policy_when_strategy_frame_tightens(monkeypatch):
@@ -2052,6 +2111,7 @@ def test_monitor_uses_strategy_policy_monitor_contract(monkeypatch):
     assert len(intents) == 1
     assert intents[0]["side"] == "SELL"
     exit_info = out.get("monitor_exit") or {}
+    monitor_output = out.get("monitor_output") or {}
     effective = exit_info.get("effective_exit_policy") or {}
     thresholds = exit_info.get("thresholds") or {}
     assert float(effective.get("stop_loss_pct") or 0.0) >= 0.02
@@ -2063,6 +2123,12 @@ def test_monitor_uses_strategy_policy_monitor_contract(monkeypatch):
     assert str(thresholds.get("effective_stop_reason") or "") == "hard_stop"
     adjustments = exit_info.get("exit_policy_guard_adjustments") or []
     assert "strategist_exit_policy_override" in adjustments
+    contract = monitor_output.get("policy_contract") or {}
+    assert contract.get("contract_version") == "monitor_entry_policy_contract.v1"
+    assert contract.get("selected_source") == "monitor_policy"
+    assert contract.get("available") is False
+    assert (contract.get("selected_policy_schema") or {}).get("schema_version") == "monitor_entry_policy_schema_candidate.v1"
+    assert (contract.get("selected_policy_schema") or {}).get("available") is False
 
 
 def test_monitor_hard_stop_triggers_before_wider_adaptive_stop(monkeypatch):

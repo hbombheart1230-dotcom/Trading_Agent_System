@@ -26,6 +26,65 @@ def _to_bool(value: Any, default: bool) -> bool:
     return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _dedupe_text_list(values: Any) -> list[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        items = [values]
+    elif isinstance(values, (list, tuple, set)):
+        items = list(values)
+    else:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _normalize_priority_hints(value: Any) -> Dict[str, Any]:
+    raw = dict(value or {}) if isinstance(value, Mapping) else {}
+    return {
+        "volume_priority": str(raw.get("volume_priority") or "").strip() or None,
+        "reclaim_priority": str(raw.get("reclaim_priority") or "").strip() or None,
+        "breakout_priority": str(raw.get("breakout_priority") or "").strip() or None,
+        "pullback_priority": str(raw.get("pullback_priority") or "").strip() or None,
+    }
+
+
+def _normalize_evidence_focus(value: Any) -> Dict[str, Any]:
+    raw = dict(value or {}) if isinstance(value, Mapping) else {}
+    return {
+        "primary": _dedupe_text_list(raw.get("primary")),
+        "secondary": _dedupe_text_list(raw.get("secondary")),
+    }
+
+
+def _normalize_policy_adjustments(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, Mapping):
+        return [dict(value)]
+    if isinstance(value, str):
+        text = str(value).strip()
+        return [text] if text else []
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    out: list[Any] = []
+    for item in list(value):
+        if isinstance(item, Mapping):
+            out.append(dict(item))
+            continue
+        text = str(item or "").strip()
+        if text:
+            out.append(text)
+    return out
+
+
 @dataclass(frozen=True)
 class MonitorEntryPolicy:
     enabled: bool = True
@@ -164,6 +223,109 @@ def extract_monitor_entry_policy_mapping(policy: Mapping[str, Any] | None) -> Di
             merged.update(dict(nested or {}))
             return merged
     return raw
+
+
+def build_monitor_entry_policy_contract(
+    *,
+    commander_applied_policy: Mapping[str, Any] | None = None,
+    strategist_monitor_entry_policy: Mapping[str, Any] | None = None,
+    state_monitor_entry_policy: Mapping[str, Any] | None = None,
+    strategy_monitor_entry_policy: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    source_priority = [
+        "commander_applied_policy",
+        "strategist_output.monitor_entry_policy",
+        "state.monitor_entry_policy",
+        "strategy_policy.monitor_policy.entry_policy",
+    ]
+    source_payloads = {
+        "commander_applied_policy": dict(commander_applied_policy or {}) if isinstance(commander_applied_policy, Mapping) else {},
+        "strategist_output.monitor_entry_policy": (
+            dict(strategist_monitor_entry_policy or {})
+            if isinstance(strategist_monitor_entry_policy, Mapping)
+            else {}
+        ),
+        "state.monitor_entry_policy": (
+            dict(state_monitor_entry_policy or {})
+            if isinstance(state_monitor_entry_policy, Mapping)
+            else {}
+        ),
+        "strategy_policy.monitor_policy.entry_policy": (
+            dict(strategy_monitor_entry_policy or {})
+            if isinstance(strategy_monitor_entry_policy, Mapping)
+            else {}
+        ),
+    }
+    selected_source = "monitor_policy"
+    selected_policy: Dict[str, Any] = {}
+    for source_name in source_priority:
+        candidate = dict(source_payloads.get(source_name) or {})
+        if candidate:
+            selected_source = str(source_name)
+            selected_policy = dict(candidate)
+            break
+    return {
+        "contract_version": "monitor_entry_policy_contract.v1",
+        "available": bool(selected_policy),
+        "selected_source": str(selected_source),
+        "selected_policy": dict(selected_policy),
+        "selected_policy_schema": normalize_monitor_entry_policy_schema(selected_policy),
+        "source_priority": list(source_priority),
+        "sources": {
+            name: {
+                "available": bool(payload),
+                "policy_source": str((payload or {}).get("policy_source") or ""),
+                "keys": sorted(str(k) for k in list((payload or {}).keys())),
+            }
+            for name, payload in source_payloads.items()
+        },
+    }
+
+
+def normalize_monitor_entry_policy_schema(policy: Mapping[str, Any] | None) -> Dict[str, Any]:
+    selected_policy = dict(policy or {}) if isinstance(policy, Mapping) else {}
+    raw_keys = sorted(str(k) for k in list(selected_policy.keys()))
+    entry_style = str(selected_policy.get("entry_style") or selected_policy.get("playbook") or "").strip().lower() or None
+    required_checks = _dedupe_text_list(selected_policy.get("required_checks"))
+    preferred_checks = _dedupe_text_list(selected_policy.get("preferred_checks"))
+    relaxable_checks = _dedupe_text_list(selected_policy.get("relaxable_checks"))
+    blockers = _dedupe_text_list(selected_policy.get("blockers"))
+    priority_hints = _normalize_priority_hints(selected_policy.get("priority_hints"))
+    evidence_focus = _normalize_evidence_focus(selected_policy.get("evidence_focus"))
+    policy_adjustments = _normalize_policy_adjustments(
+        selected_policy.get("policy_adjustments", selected_policy.get("adjustments"))
+    )
+    notes = _dedupe_text_list(selected_policy.get("notes", selected_policy.get("policy_notes")))
+    explicit_fields_used = [
+        name
+        for name, active in [
+            ("entry_style", bool(entry_style)),
+            ("required_checks", bool(required_checks)),
+            ("preferred_checks", bool(preferred_checks)),
+            ("relaxable_checks", bool(relaxable_checks)),
+            ("blockers", bool(blockers)),
+            ("priority_hints", any(priority_hints.values())),
+            ("evidence_focus", bool(evidence_focus.get("primary") or evidence_focus.get("secondary"))),
+            ("policy_adjustments", bool(policy_adjustments)),
+            ("notes", bool(notes)),
+        ]
+        if active
+    ]
+    return {
+        "schema_version": "monitor_entry_policy_schema_candidate.v1",
+        "available": bool(explicit_fields_used),
+        "entry_style": entry_style,
+        "required_checks": required_checks,
+        "preferred_checks": preferred_checks,
+        "relaxable_checks": relaxable_checks,
+        "blockers": blockers,
+        "priority_hints": priority_hints,
+        "evidence_focus": evidence_focus,
+        "policy_adjustments": policy_adjustments,
+        "notes": notes,
+        "raw_keys": raw_keys,
+        "explicit_fields_used": explicit_fields_used,
+    }
 
 
 def normalize_monitor_entry_policy(

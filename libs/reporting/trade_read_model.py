@@ -11,6 +11,11 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Optional
 
+from libs.reporting.strategy_read_model import (
+    build_recent_strategist_feedback_window,
+    normalize_strategist_feedback_input,
+)
+
 
 def _pick_first_existing(*paths: Path) -> Path:
     for path in paths:
@@ -325,6 +330,29 @@ def build_trade_report_detail_view(
     reporter_status = trim_text(reporter_eval.get("status"), max_len=48) or trim_text(reporter_status_human.get("status"), max_len=48) or "-"
     reporter_grade = trim_text(reporter_eval.get("grade"), max_len=24) or trim_text(reporter_status_human.get("grade"), max_len=24) or "-"
     review_focus = sections.get("review_focus") if isinstance(sections.get("review_focus"), dict) else {}
+    strategist_feedback_input = normalize_strategist_feedback_input(
+        bundle.get("strategist_feedback_input")
+        if isinstance(bundle.get("strategist_feedback_input"), dict)
+        else lifecycle.get("strategist_feedback_input")
+        if isinstance(lifecycle.get("strategist_feedback_input"), dict)
+        else report.get("strategist_feedback_input")
+        if isinstance(report.get("strategist_feedback_input"), dict)
+        else {}
+    )
+    recent_feedback_items = (
+        payloads.get("recent_feedback_items")
+        if payloads.get("recent_feedback_items") is not None
+        else meta.get("recent_feedback_items")
+    )
+    recent_feedback_window_size = (
+        payloads.get("recent_feedback_window_size")
+        if payloads.get("recent_feedback_window_size") not in (None, "")
+        else meta.get("recent_feedback_window_size")
+    )
+    strategist_feedback_recent_window = build_trade_report_recent_feedback_view(
+        recent_feedback_items,
+        window_size=int(recent_feedback_window_size or 10),
+    )
 
     return {
         "found": True,
@@ -356,6 +384,8 @@ def build_trade_report_detail_view(
         "execution_result": execution_quality,
         "execution_quality": execution_quality,
         "review_focus": review_focus,
+        "strategist_feedback_input": strategist_feedback_input,
+        "strategist_feedback_recent_window": strategist_feedback_recent_window,
         "reporter_evaluation": {
             **reporter_eval,
             "status": reporter_status,
@@ -381,6 +411,178 @@ def build_trade_report_detail_view(
             "brief_llm_response": str(meta.get("brief_llm_response_path") or ""),
         },
         "raw_report": report if isinstance(report, dict) else {},
+    }
+
+
+def collect_strategist_feedback_inputs(items: Any) -> List[Dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        source = (
+            item.get("strategist_feedback_input")
+            if isinstance(item.get("strategist_feedback_input"), dict)
+            else ((item.get("bundle_data") or {}).get("strategist_feedback_input"))
+            if isinstance(item.get("bundle_data"), dict) and isinstance((item.get("bundle_data") or {}).get("strategist_feedback_input"), dict)
+            else ((item.get("lifecycle_data") or {}).get("strategist_feedback_input"))
+            if isinstance(item.get("lifecycle_data"), dict) and isinstance((item.get("lifecycle_data") or {}).get("strategist_feedback_input"), dict)
+            else ((item.get("story_input_data") or {}).get("strategist_feedback_input"))
+            if isinstance(item.get("story_input_data"), dict) and isinstance((item.get("story_input_data") or {}).get("strategist_feedback_input"), dict)
+            else {}
+        )
+        if not isinstance(source, dict) or not source:
+            continue
+        normalized = normalize_strategist_feedback_input(source)
+        normalized["trade_id"] = str(item.get("trade_id") or normalized.get("trade_id") or "")
+        normalized["story_id"] = str(item.get("story_id") or normalized.get("story_id") or "")
+        normalized["run_id"] = str(item.get("run_id") or normalized.get("run_id") or "")
+        normalized["symbol"] = str(item.get("symbol") or normalized.get("selected_symbol") or "")
+        normalized["trade_status"] = str(
+            item.get("trade_status")
+            or item.get("status")
+            or normalized.get("trade_status")
+            or ""
+        )
+        normalized["final_action"] = str(
+            item.get("final_action")
+            or item.get("action")
+            or normalized.get("final_action")
+            or ""
+        )
+        result_pct = item.get("result_pct")
+        if result_pct in (None, "") and isinstance(item.get("summary"), dict):
+            result_pct = (item.get("summary") or {}).get("result_pct")
+        normalized["result_pct"] = result_pct
+        out.append(normalized)
+    return out
+
+
+def build_recent_trade_feedback_summary_input(
+    items: Any,
+    *,
+    window_size: int = 10,
+) -> Dict[str, Any]:
+    return build_recent_strategist_feedback_window(
+        collect_strategist_feedback_inputs(items),
+        window_size=window_size,
+    )
+
+
+def build_trade_report_recent_feedback_view(
+    items: Any,
+    *,
+    window_size: int = 10,
+) -> Dict[str, Any]:
+    return build_recent_trade_feedback_summary_input(items, window_size=window_size)
+
+
+def build_trade_report_recent_feedback_pack(
+    items: Any,
+    *,
+    window_size: int = 10,
+) -> Dict[str, Any]:
+    window = build_trade_report_recent_feedback_view(items, window_size=window_size)
+    return {
+        "schema_version": "strategist_feedback_recent_window_pack.v1",
+        "payload_type": "recent_strategist_feedback_window",
+        "available": bool(int(window.get("trades_considered") or 0) > 0),
+        "window": window,
+    }
+
+
+def load_trade_report_recent_feedback_pack(
+    meta: Dict[str, Any] | None = None,
+    payloads: Dict[str, Any] | None = None,
+    *,
+    default_window_size: int = 10,
+) -> Dict[str, Any]:
+    meta_obj = meta if isinstance(meta, dict) else {}
+    payload_obj = payloads if isinstance(payloads, dict) else {}
+    items = (
+        payload_obj.get("recent_feedback_items")
+        if payload_obj.get("recent_feedback_items") is not None
+        else meta_obj.get("recent_feedback_items")
+    )
+    window_size = (
+        payload_obj.get("recent_feedback_window_size")
+        if payload_obj.get("recent_feedback_window_size") not in (None, "")
+        else meta_obj.get("recent_feedback_window_size")
+    )
+    return build_trade_report_recent_feedback_pack(
+        items,
+        window_size=int(window_size or default_window_size),
+    )
+
+
+def load_time_bucketed_trade_report_recent_feedback_pack(
+    meta: Dict[str, Any] | None = None,
+    payloads: Dict[str, Any] | None = None,
+    *,
+    default_window_size: int = 10,
+) -> Dict[str, Any]:
+    """Future-facing time-bucketed contract candidate for non-UI consumers.
+
+    This helper does not replace the existing recent-window contract.
+    It wraps the existing recent-window pack in a parallel bucketed surface so
+    future runtime or reporting consumers can depend on a common bucket shape
+    without changing current behavior.
+
+    Current buckets intentionally stay minimal:
+    - overall_recent: existing recent-window pack reuse path
+    - daily_recent: optional shell fed by meta/payload inputs if available
+    - symbol_recent: optional shell fed by meta/payload inputs if available
+    """
+
+    meta_obj = meta if isinstance(meta, dict) else {}
+    payload_obj = payloads if isinstance(payloads, dict) else {}
+
+    def _resolve_items(base_key: str) -> Any:
+        bucket_items_key = f"{base_key}_feedback_items"
+        if payload_obj.get(bucket_items_key) is not None:
+            return payload_obj.get(bucket_items_key)
+        if meta_obj.get(bucket_items_key) is not None:
+            return meta_obj.get(bucket_items_key)
+        if base_key == "recent":
+            if payload_obj.get("recent_feedback_items") is not None:
+                return payload_obj.get("recent_feedback_items")
+            return meta_obj.get("recent_feedback_items")
+        return None
+
+    def _resolve_window_size(base_key: str) -> int:
+        bucket_window_key = f"{base_key}_feedback_window_size"
+        if payload_obj.get(bucket_window_key) not in (None, ""):
+            return int(payload_obj.get(bucket_window_key) or default_window_size)
+        if meta_obj.get(bucket_window_key) not in (None, ""):
+            return int(meta_obj.get(bucket_window_key) or default_window_size)
+        if base_key == "recent":
+            if payload_obj.get("recent_feedback_window_size") not in (None, ""):
+                return int(payload_obj.get("recent_feedback_window_size") or default_window_size)
+            if meta_obj.get("recent_feedback_window_size") not in (None, ""):
+                return int(meta_obj.get("recent_feedback_window_size") or default_window_size)
+        return int(default_window_size)
+
+    def _bucket(base_key: str) -> Dict[str, Any]:
+        packed = build_trade_report_recent_feedback_pack(
+            _resolve_items(base_key),
+            window_size=_resolve_window_size(base_key),
+        )
+        return {
+            "available": bool(packed.get("available")),
+            "window": dict(packed.get("window") or {}),
+        }
+
+    buckets = {
+        "overall_recent": _bucket("recent"),
+        "daily_recent": _bucket("daily_recent"),
+        "symbol_recent": _bucket("symbol_recent"),
+    }
+    return {
+        "schema_version": "strategist_feedback_time_bucket_pack.v1",
+        "payload_type": "time_bucketed_recent_strategist_feedback",
+        "available": any(bool((bucket or {}).get("available")) for bucket in buckets.values()),
+        "buckets": buckets,
     }
 
 
@@ -1031,6 +1233,12 @@ __all__ = [
     "normalize_trade_report_detail_sections",
     "normalize_trade_report_detail_meta",
     "build_trade_report_detail_view",
+    "collect_strategist_feedback_inputs",
+    "build_recent_trade_feedback_summary_input",
+    "build_trade_report_recent_feedback_view",
+    "build_trade_report_recent_feedback_pack",
+    "load_trade_report_recent_feedback_pack",
+    "load_time_bucketed_trade_report_recent_feedback_pack",
     "load_reporter_snippet_for_run",
     "build_linked_trade_report_card",
     "build_unlinked_trade_report_card",
