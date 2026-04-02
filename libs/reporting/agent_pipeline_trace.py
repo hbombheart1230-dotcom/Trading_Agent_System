@@ -10,6 +10,7 @@ from libs.reporting.reasoning_trace import (
     build_reasoning_provenance,
     build_reasoning_trace_from_summaries,
 )
+from libs.reporting.strategy_read_model import build_news_symbol_linkage_view
 
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
@@ -208,6 +209,7 @@ def _reporter_analysis_has_run(report_obj: Dict[str, Any], run_id: str) -> bool:
 def _build_reasoning_trace(out: Dict[str, Any]) -> Dict[str, Any]:
     commander = out.get("commander") if isinstance(out.get("commander"), dict) else {}
     strategist = out.get("strategist") if isinstance(out.get("strategist"), dict) else {}
+    news_symbol_linkage = out.get("news_symbol_linkage") if isinstance(out.get("news_symbol_linkage"), dict) else {}
     scanner = out.get("scanner") if isinstance(out.get("scanner"), dict) else {}
     monitor = out.get("monitor") if isinstance(out.get("monitor"), dict) else {}
     return build_reasoning_trace_from_summaries(
@@ -298,6 +300,7 @@ def _build_reasoning_trace(out: Dict[str, Any]) -> Dict[str, Any]:
 def _build_reasoning_provenance(out: Dict[str, Any]) -> Dict[str, Any]:
     commander = out.get("commander") if isinstance(out.get("commander"), dict) else {}
     strategist = out.get("strategist") if isinstance(out.get("strategist"), dict) else {}
+    news_symbol_linkage = out.get("news_symbol_linkage") if isinstance(out.get("news_symbol_linkage"), dict) else {}
     scanner = out.get("scanner") if isinstance(out.get("scanner"), dict) else {}
     monitor = out.get("monitor") if isinstance(out.get("monitor"), dict) else {}
     return build_reasoning_provenance(
@@ -320,6 +323,7 @@ def _build_reasoning_provenance(out: Dict[str, Any]) -> Dict[str, Any]:
 def _build_markdown(out: Dict[str, Any]) -> str:
     commander = out.get("commander") if isinstance(out.get("commander"), dict) else {}
     strategist = out.get("strategist") if isinstance(out.get("strategist"), dict) else {}
+    news_symbol_linkage = out.get("news_symbol_linkage") if isinstance(out.get("news_symbol_linkage"), dict) else {}
     scanner = out.get("scanner") if isinstance(out.get("scanner"), dict) else {}
     monitor = out.get("monitor") if isinstance(out.get("monitor"), dict) else {}
     supervisor = out.get("supervisor") if isinstance(out.get("supervisor"), dict) else {}
@@ -387,6 +391,44 @@ def _build_markdown(out: Dict[str, Any]) -> str:
     if strategist.get("news_sample_titles"):
         lines.append(
             f"- news_sample_titles: `{json.dumps(strategist.get('news_sample_titles') or [], ensure_ascii=False)}`"
+        )
+    lines.append("")
+    lines.append("## News -> Symbol Linkage")
+    lines.append(f"- linkage_strength: **{news_symbol_linkage.get('linkage_strength') or 'unknown'}**")
+    if news_symbol_linkage.get("summary"):
+        lines.append(f"- summary: {news_symbol_linkage.get('summary')}")
+    if news_symbol_linkage.get("candidate_symbols_hint"):
+        lines.append(
+            f"- candidate_symbols_hint: `{json.dumps(news_symbol_linkage.get('candidate_symbols_hint') or [], ensure_ascii=False)}`"
+        )
+    if news_symbol_linkage.get("news_query_targets"):
+        lines.append(
+            f"- linkage_news_query_targets: `{json.dumps(news_symbol_linkage.get('news_query_targets') or [], ensure_ascii=False)}`"
+        )
+    if news_symbol_linkage.get("selected_symbol"):
+        lines.append(
+            f"- selected_symbol_linkage: symbol={news_symbol_linkage.get('selected_symbol')} "
+            f"in_candidate_hints={bool(news_symbol_linkage.get('selected_symbol_in_candidate_hints'))}"
+        )
+    if news_symbol_linkage.get("runner_up_symbol"):
+        lines.append(
+            f"- runner_up_symbol_linkage: symbol={news_symbol_linkage.get('runner_up_symbol')} "
+            f"in_candidate_hints={bool(news_symbol_linkage.get('runner_up_symbol_in_candidate_hints'))}"
+        )
+    if news_symbol_linkage.get("selected_symbol_headlines"):
+        lines.append(
+            f"- selected_symbol_headlines: `{json.dumps(news_symbol_linkage.get('selected_symbol_headlines') or [], ensure_ascii=False)}`"
+        )
+    if news_symbol_linkage.get("runner_up_symbol_headlines"):
+        lines.append(
+            f"- runner_up_symbol_headlines: `{json.dumps(news_symbol_linkage.get('runner_up_symbol_headlines') or [], ensure_ascii=False)}`"
+        )
+    comparison = news_symbol_linkage.get("selected_vs_runner_up") if isinstance(news_symbol_linkage.get("selected_vs_runner_up"), dict) else {}
+    if comparison.get("comparison_summary"):
+        lines.append(f"- selected_vs_runner_up: {comparison.get('comparison_summary')}")
+    if news_symbol_linkage.get("market_headlines"):
+        lines.append(
+            f"- linkage_market_headlines: `{json.dumps(news_symbol_linkage.get('market_headlines') or [], ensure_ascii=False)}`"
         )
     lines.append("")
     lines.append("## Scanner")
@@ -617,6 +659,13 @@ def generate_agent_pipeline_trace_report(
         if isinstance(scanner_trace.get("kiwoom_pool_source_mix"), dict)
         else scanner_source_mix
     )
+    news_symbol_linkage = build_news_symbol_linkage_view(
+        strategist_summary=strategist_summary_payload,
+        strategist_raw_input=strat_raw,
+        strategist_parsed_output=strat_parsed,
+        selected_symbol=str(scanner_trace.get("selected_symbol") or scanner_summary_payload.get("top_stock") or ""),
+        top_ranked_symbols=scanner_summary_payload.get("top_ranked_symbols") or [],
+    )
 
     reporter_rows = [r for r in evidence_rows if str(r.get("agent") or "").lower() == "reporter"]
     reporter_in_run = bool(reporter_rows)
@@ -707,7 +756,9 @@ def generate_agent_pipeline_trace_report(
             "strategy_summary": str(strategist_summary_payload.get("strategy_summary") or ""),
             "shadow_used": bool(strategist_summary_payload.get("shadow_used")),
             "strategist_fallback_used": bool(strategist_summary_payload.get("strategist_fallback_used")),
+            "candidate_symbols_hint": list(news_symbol_linkage.get("candidate_symbols_hint") or []),
         },
+        "news_symbol_linkage": news_symbol_linkage,
         "scanner": {
             "candidate_source": str(scanner_summary_payload.get("candidate_source") or scanner_raw.get("candidate_source") or ""),
             "candidate_pool_before_filter": _safe_int(

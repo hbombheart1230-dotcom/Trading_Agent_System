@@ -47,6 +47,13 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
             "monitor_mission": "Confirm continuation quickly.",
             "llm_policy": "allow",
             "no_trade_reason_code": "NONE",
+            "strategist_refresh_requested": True,
+            "strategist_refresh_reason": "transition_readiness_threshold",
+            "strategist_refresh_context": {
+                "selected_symbol": "005930",
+                "cache_age_sec": 300,
+                "transition_readiness_score": 0.87,
+            },
             "observations": {"market_changed": True, "last_llm_status": "ok"},
             "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
             "shadow_used": True,
@@ -71,6 +78,13 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
                     "session_bias": "active_selection",
                     "risk_mode": "offensive",
                     "decision_summary": "Commander allows offensive momentum scanning.",
+                    "strategist_refresh_requested": True,
+                    "strategist_refresh_reason": "transition_readiness_threshold",
+                    "strategist_refresh_context": {
+                        "selected_symbol": "005930",
+                        "cache_age_sec": 300,
+                        "transition_readiness_score": 0.87,
+                    },
                 },
                 "strategist_plan": {
                     "selected_playbook": "breakout",
@@ -158,11 +172,25 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
                 "strategist_invocation": "RUN",
                 "llm_policy": "allow",
                 "no_trade_reason_code": "NONE",
+                "strategist_refresh_requested": True,
+                "strategist_refresh_reason": "transition_readiness_threshold",
+                "strategist_refresh_context": {
+                    "selected_symbol": "005930",
+                    "cache_age_sec": 300,
+                    "transition_readiness_score": 0.87,
+                },
                 "decision_summary": "Commander allows offensive momentum scanning.",
             },
             "commander_invocation_hint": "RUN",
             "commander_llm_policy": "allow",
             "commander_no_trade_reason_code": "NONE",
+            "commander_refresh_requested": True,
+            "commander_refresh_reason": "transition_readiness_threshold",
+            "commander_refresh_context": {
+                "selected_symbol": "005930",
+                "cache_age_sec": 300,
+                "transition_readiness_score": 0.87,
+            },
             "shadow_used": True,
             "strategist_fallback_used": False,
         },
@@ -207,6 +235,11 @@ def test_strategist_artifact_contains_phase1_sections() -> None:
     assert artifact["commander_invocation_hint"] == "RUN"
     assert artifact["commander_llm_policy"] == "allow"
     assert artifact["commander_no_trade_reason_code"] == "NONE"
+    assert artifact["commander_refresh_requested"] is True
+    assert artifact["commander_refresh_reason"] == "transition_readiness_threshold"
+    assert artifact["commander_refresh_context"]["selected_symbol"] == "005930"
+    assert artifact["commander_context_ref"]["strategist_refresh_requested"] is True
+    assert artifact["commander_context_ref"]["strategist_refresh_reason"] == "transition_readiness_threshold"
     assert artifact["shadow_used"] is True
     assert artifact["strategist_fallback_used"] is False
     assert artifact["monitor_entry_policy"]["volume_ratio_min"] == 0.68
@@ -759,6 +792,9 @@ def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
             "monitor_mission": "Focus on hold versus exit confirmation first.",
             "llm_policy": "allow_if_context_changed",
             "no_trade_reason_code": "POSITION_ALREADY_OPEN",
+            "strategist_refresh_requested": False,
+            "strategist_refresh_reason": "",
+            "strategist_refresh_context": {},
             "source_priority": ["shadow_commander", "runtime_observation", "strategist_fallback"],
             "shadow_used": True,
             "strategist_fallback_used": False,
@@ -824,6 +860,13 @@ def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
     assert artifact.get("shadow_alignment") == "aligned"
     assert artifact.get("source_priority")[0] == "shadow_commander"
     assert artifact.get("strategist_fallback_used") is False
+    assert artifact.get("strategist_refresh_requested") is False
+    assert artifact.get("strategist_refresh_reason") == ""
+    assert artifact.get("runtime_refresh_requested") is False
+    assert artifact.get("runtime_refresh_reason") == ""
+    assert artifact.get("strategist_cache_preferred") is False
+    assert artifact.get("strategist_cache_preference_reason") == ""
+    assert artifact.get("runtime_cache_reuse_reason") == ""
     assert isinstance(artifact.get("commander_decision"), dict)
     assert artifact.get("policy_source") == "strategist"
     assert artifact.get("policy_validation_status") == "ok"
@@ -834,6 +877,153 @@ def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
     assert artifact.get("policy_validation_invalid_fields") == []
     assert artifact.get("applied_policy", {}).get("volume_ratio_min") == 0.68
     assert artifact.get("applied_policy_source_chain") == ["strategist", "validation", "commander_confirmed"]
+
+
+def test_commander_artifact_surfaces_refresh_summary() -> None:
+    state = {
+        "run_id": "run-cmd-refresh",
+        "started_at": "2026-03-18T10:00:00+00:00",
+        "runtime_phase": "session",
+        "runtime_status": "ok",
+        "commander_decision": {
+            "command_intent": "OBSERVE_ONLY",
+            "strategist_invocation": "RUN_REFRESH",
+            "market_regime": "risk_on",
+            "session_bias": "active_selection",
+            "risk_mode": "offensive",
+            "allowed_playbooks": ["breakout", "pullback"],
+            "banned_playbooks": ["defensive"],
+            "scanner_mission": "Refresh strategist context before selecting liquid momentum leaders.",
+            "monitor_mission": "Use the refreshed frame before evaluating continuation quality.",
+            "llm_policy": "allow_context_refresh",
+            "no_trade_reason_code": "NONE",
+            "strategist_refresh_requested": True,
+            "strategist_refresh_reason": "selected_symbol_outside_cached_frame",
+            "strategist_refresh_context": {
+                "selected_symbol": "034020",
+                "selected_symbol_in_cached_frame": False,
+                "cached_candidate_hints": ["005930", "000660"],
+            },
+            "source_priority": ["commander_refresh_heuristic", "shadow_commander"],
+            "shadow_used": True,
+            "strategist_fallback_used": False,
+            "decision_summary": "Commander requested a fresh strategist frame before new entry planning.",
+        },
+        "commander_shadow_runtime": {
+            "strategist_executed": True,
+            "llm_called_by_strategist": True,
+            "used_cached_strategist": False,
+            "market_changed": True,
+            "repeated_same_context": False,
+            "monitor_decision": "NOOP",
+            "executor_action": "",
+            "executor_status": "",
+            "pre_buy_refresh_requested": True,
+            "pre_buy_refresh_reason": "selected_symbol_outside_cached_frame",
+            "pre_buy_refresh_context": {
+                "selected_symbol": "034020",
+                "selected_symbol_in_cached_frame": False,
+            },
+            "prior_context": {"selected_symbol": "005930", "playbook": "pullback", "market_regime": "neutral"},
+        },
+        "runtime_fast_path": {"reason": "commander_requested_refresh"},
+        "portfolio_snapshot": {"positions": [], "cash": 1000},
+        "portfolio_preflight": {"status": "ok", "blocked": False},
+        "monitor": {"open_position_count": 0},
+        "monitor_output": {"selected_symbol": "034020", "intent_side": "NOOP", "entry_exit_reason": "pullback_not_mature"},
+        "selected": {"symbol": "034020", "score_total": 0.78},
+    }
+
+    artifact = build_commander_output_artifact(
+        state,
+        mode="integrated_chain",
+        phase="session",
+        path="integrated_chain",
+        status="ok",
+        reason="commander_requested_refresh",
+    )
+
+    assert artifact.get("strategist_refresh_requested") is True
+    assert artifact.get("strategist_refresh_reason") == "selected_symbol_outside_cached_frame"
+    assert artifact.get("strategist_refresh_context", {}).get("selected_symbol") == "034020"
+    assert artifact.get("runtime_refresh_requested") is True
+    assert artifact.get("runtime_refresh_reason") == "selected_symbol_outside_cached_frame"
+    assert artifact.get("runtime_refresh_context", {}).get("selected_symbol_in_cached_frame") is False
+
+
+def test_commander_artifact_surfaces_cache_reuse_summary() -> None:
+    state = {
+        "run_id": "run-cmd-cache-reuse",
+        "started_at": "2026-03-18T10:00:00+00:00",
+        "runtime_phase": "session",
+        "runtime_status": "ok",
+        "commander_decision": {
+            "command_intent": "OBSERVE_ONLY",
+            "strategist_invocation": "SKIP",
+            "market_regime": "neutral",
+            "session_bias": "active_selection",
+            "risk_mode": "balanced",
+            "allowed_playbooks": ["pullback", "defensive"],
+            "banned_playbooks": ["reversal"],
+            "scanner_mission": "Reuse the current strategist frame while the context is still valid.",
+            "monitor_mission": "Evaluate continuation using the cached strategy frame.",
+            "llm_policy": "prefer_cached_context",
+            "no_trade_reason_code": "NONE",
+            "strategist_cache_preferred": True,
+            "strategist_cache_preference_reason": "commander_preferred_cached_strategist",
+            "strategist_cache_preference_context": {
+                "cache_age_sec": 50,
+                "reuse_sec": 600,
+                "cached_output_present": True,
+            },
+            "source_priority": ["commander_cache_reuse", "shadow_commander"],
+            "shadow_used": True,
+            "strategist_fallback_used": False,
+            "decision_summary": "Commander preferred cached strategist context for this cycle.",
+        },
+        "commander_shadow_runtime": {
+            "strategist_executed": False,
+            "llm_called_by_strategist": False,
+            "used_cached_strategist": True,
+            "market_changed": False,
+            "repeated_same_context": True,
+            "monitor_decision": "NOOP",
+            "executor_action": "",
+            "executor_status": "",
+            "pre_buy_refresh_requested": False,
+            "pre_buy_refresh_reason": "",
+            "pre_buy_refresh_context": {},
+            "prior_context": {"selected_symbol": "005930", "playbook": "pullback", "market_regime": "neutral"},
+        },
+        "runtime_fast_path": {
+            "reason": "commander_skip_cached_strategist",
+            "source": "commander_decision",
+            "cache_age_sec": 50,
+            "reuse_sec": 600,
+        },
+        "portfolio_snapshot": {"positions": [], "cash": 1000},
+        "portfolio_preflight": {"status": "ok", "blocked": False},
+        "monitor": {"open_position_count": 0},
+        "monitor_output": {"selected_symbol": "005930", "intent_side": "NOOP", "entry_exit_reason": "entry_wait"},
+        "selected": {"symbol": "005930", "score_total": 0.78},
+    }
+
+    artifact = build_commander_output_artifact(
+        state,
+        mode="integrated_chain",
+        phase="session",
+        path="integrated_chain_cached_frame",
+        status="ok",
+        reason="commander_skip_cached_strategist",
+    )
+
+    assert artifact.get("selected_route") == "cached_strategist"
+    assert artifact.get("strategist_cache_used") is True
+    assert artifact.get("strategist_cache_preferred") is True
+    assert artifact.get("strategist_cache_preference_reason") == "commander_preferred_cached_strategist"
+    assert artifact.get("strategist_cache_preference_context", {}).get("cache_age_sec") == 50
+    assert artifact.get("runtime_cache_reuse_reason") == "commander_skip_cached_strategist"
+    assert artifact.get("runtime_cache_reuse_context", {}).get("source") == "commander_decision"
 
 
 def test_commander_artifact_routes_blocked_with_cooldown() -> None:

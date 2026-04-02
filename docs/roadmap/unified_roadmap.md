@@ -1,15 +1,15 @@
-# 📘 Trading Agent System Unified Roadmap (Clean Version)
+# Trading Agent System Unified Roadmap (Clean Version)
 
 ---
 
-## 🎯 목적
+## 목적
 
 본 문서는 기존 roadmap 및 addendum 문서들을 통합하여  
 실행 순서와 역할이 명확한 단일 로드맵으로 정리한 것이다.
 
 ---
 
-## 🧭 전체 흐름
+## 전체 흐름
 
 ### Phase 5 (정합성 → 구조화)
 
@@ -68,7 +68,7 @@
 
 ---
 
-## 🚀 Phase 6 (Production System)
+## Phase 6 (Production System)
 
 ### 6-1 Orchestration
 - LangGraph 기반 state machine
@@ -84,7 +84,7 @@
 
 ---
 
-## ⚠️ 핵심 원칙
+## 핵심 원칙
 
 - Monitor는 최소 수정 유지
 - 정책은 strategist/commander로 이동
@@ -93,6 +93,6 @@
 
 ---
 
-## 🔥 한 줄 요약
+## 한 줄 요약
 
 지금은 “정합성 → 구조 분리 → 가시화 → 리포트 → 정책 → 운영” 순서로 진행한다.

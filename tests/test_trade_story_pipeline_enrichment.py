@@ -554,10 +554,32 @@ def test_trade_story_input_and_lifecycle_bundle_include_reasoning_trace_chain() 
             "strategy_summary": "Strategist kept a defensive playbook.",
             "strategist_fallback_used": False,
         },
+        "strategist": {
+            "news_query_targets": ["shipping", "KOSPI"],
+            "candidate_symbols_hint": ["003280", "000660"],
+            "candidate_hypotheses": [
+                {"symbol": "003280", "hypothesis": "shipping momentum candidate"},
+                {"symbol": "000660", "hypothesis": "large-cap ballast candidate"},
+            ],
+            "news_evidence_ranked": {
+                "market_news_ranked": [{"title": "Shipping names stay active in early trade."}],
+                "candidate_news_ranked": [{"symbol": "003280", "title": "003280 extends shipping-theme momentum."}],
+            },
+        },
         "scanner_summary": {
             "selected_symbol": "003280",
             "runner_up_symbol": "000660",
             "selection_summary": "003280 ranked first with better liquidity.",
+        },
+        "scanner": {
+            "selected_symbol": "003280",
+            "top_ranked_symbols": ["003280", "000660"],
+            "candidate_ranking_table": {
+                "rows": [
+                    {"symbol": "003280", "rank": 1, "score_total": 1.18},
+                    {"symbol": "000660", "rank": 2, "score_total": 1.11},
+                ]
+            },
         },
         "monitor_summary": {
             "decision": "WAIT",
@@ -591,6 +613,12 @@ def test_trade_story_input_and_lifecycle_bundle_include_reasoning_trace_chain() 
     assert story_input["reasoning_trace"]["monitor_summary"]["summary"] == "VWAP reclaim confirmation is still pending."
     assert story_input["reasoning_provenance"]["shadow_used"] is True
     assert story_input["reasoning_provenance"]["commander_source_ref"] == "/tmp/commander.json"
+    assert story_input["news_symbol_linkage"]["selected_symbol"] == "003280"
+    assert story_input["news_symbol_linkage"]["runner_up_symbol"] == "000660"
+    assert story_input["news_symbol_linkage"]["selected_symbol_in_candidate_hints"] is True
+    assert story_input["news_symbol_linkage"]["runner_up_symbol_in_candidate_hints"] is True
+    assert story_input["market_context_human"]["news_symbol_linkage"]["linkage_strength"] == "strong"
+    assert "runner-up 000660" in story_input["news_symbol_linkage"]["selected_vs_runner_up"]["comparison_summary"]
 
     lifecycle_bundle = build_lifecycle_bundle(
         day="2026-03-24",
@@ -611,6 +639,8 @@ def test_trade_story_input_and_lifecycle_bundle_include_reasoning_trace_chain() 
 
     assert lifecycle_bundle["reasoning_trace"]["scanner_summary"]["selected_symbol"] == "003280"
     assert lifecycle_bundle["reasoning_provenance"]["strategist_plan_source"] == "canonical"
+    assert lifecycle_bundle["news_symbol_linkage"]["selected_symbol"] == "003280"
+    assert lifecycle_bundle["news_symbol_linkage"]["runner_up_symbol"] == "000660"
 
 
 def test_trade_story_input_prefers_latest_reasoning_trace_snapshot_when_present() -> None:

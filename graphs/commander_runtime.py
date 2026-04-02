@@ -40,6 +40,10 @@ RuntimeMode = Literal["graph_spine", "decision_packet", "integrated_chain"]
 RuntimePhase = Literal["preopen", "session", "closeout"]
 
 
+_PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC = 120
+_PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD = 0.80
+
+
 def _is_trueish(v: Any) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
@@ -350,6 +354,21 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
             "flow_instruction": str(commander_decision.get("flow_instruction") or commander_context.get("flow_instruction") or ""),
             "no_trade_reason_code": str(commander_decision.get("no_trade_reason_code") or commander_context.get("no_trade_reason_code") or ""),
             "decision_summary": str(commander_decision.get("decision_summary") or commander_context.get("decision_summary") or ""),
+            "strategist_refresh_requested": bool(
+                commander_decision.get("strategist_refresh_requested")
+                if commander_decision.get("strategist_refresh_requested") is not None
+                else commander_context.get("strategist_refresh_requested")
+            ),
+            "strategist_refresh_reason": str(
+                commander_decision.get("strategist_refresh_reason")
+                or commander_context.get("strategist_refresh_reason")
+                or ""
+            ),
+            "strategist_refresh_context": dict(
+                commander_decision.get("strategist_refresh_context")
+                or commander_context.get("strategist_refresh_context")
+                or {}
+            ),
             "observations": dict(commander_decision.get("observations") or commander_context.get("observations") or {}),
             "source_priority": list(commander_decision.get("source_priority") or commander_context.get("source_priority") or []),
             "source_refs": dict(commander_decision.get("source_refs") or commander_context.get("source_refs") or {}),
@@ -435,6 +454,9 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_invocation": str(commander_context.get("strategist_invocation") or ""),
         "llm_policy": str(commander_context.get("llm_policy") or ""),
         "no_trade_reason_code": str(commander_context.get("no_trade_reason_code") or ""),
+        "strategist_refresh_requested": bool(commander_context.get("strategist_refresh_requested")),
+        "strategist_refresh_reason": str(commander_context.get("strategist_refresh_reason") or ""),
+        "strategist_refresh_context": dict(commander_context.get("strategist_refresh_context") or {}),
         "decision_summary": str(commander_context.get("decision_summary") or ""),
         "source_priority": list(commander_context.get("source_priority") or []),
         "policy_source": str(policy_meta.get("policy_source") or ""),
@@ -554,13 +576,57 @@ def _build_commander_decision(
     if not no_trade_reason_code:
         no_trade_reason_code = "POSITION_ALREADY_OPEN" if open_position_count > 0 else "NONE"
     observations = dict(shadow_assessment.get("observations") or {}) if isinstance(shadow_assessment.get("observations"), dict) else {}
+    refresh_assessment = _assess_pre_buy_strategist_refresh_need(state, commander_market_regime=market_regime)
+    strategist_refresh_requested = bool(refresh_assessment.get("requested"))
+    strategist_refresh_reason = str(refresh_assessment.get("refresh_signal") or refresh_assessment.get("reason") or "").strip()
+    strategist_refresh_context = {
+        k: v
+        for k, v in dict(refresh_assessment).items()
+        if k not in {"requested"}
+    }
+    cache_reuse_assessment = _assess_cached_strategist_reuse_preference(state)
+    strategist_cache_preferred = bool(cache_reuse_assessment.get("preferred"))
+    strategist_cache_preference_reason = str(cache_reuse_assessment.get("reason") or "").strip()
+    strategist_cache_preference_context = {
+        k: v
+        for k, v in dict(cache_reuse_assessment).items()
+        if k not in {"preferred"}
+    }
+    if strategist_refresh_requested:
+        strategist_invocation = "RUN_REFRESH"
+        llm_policy = "allow_context_refresh"
+        flow_instruction = "REFRESH_STRATEGY_FRAME"
+        observations = {
+            **observations,
+            "strategist_refresh_requested": True,
+            "strategist_refresh_reason": strategist_refresh_reason,
+        }
+    elif strategist_invocation == "RUN" and strategist_cache_preferred:
+        strategist_invocation = "SKIP"
+        llm_policy = "prefer_cached_context"
+        flow_instruction = "REUSE_STRATEGY_FRAME"
+        observations = {
+            **observations,
+            "strategist_cache_preferred": True,
+            "strategist_cache_preference_reason": strategist_cache_preference_reason,
+        }
     source_priority = ["shadow_commander", "runtime_observation", "strategist_fallback"]
+    if strategist_refresh_requested:
+        source_priority = ["commander_refresh_heuristic", *source_priority]
+    elif strategist_invocation == "SKIP" and strategist_cache_preferred:
+        source_priority = ["commander_cache_reuse", *source_priority]
     source_refs = {
         "shadow_event": "commander_router.shadow_assessment",
         "runtime_fast_path_reason": str(runtime_fast_path.get("reason") or ""),
         "runtime_path": str(path_value or ""),
         "strategist_fallback_fields": ["market_regime"] if strategist_fallback_used else [],
     }
+    if strategist_refresh_requested:
+        source_refs["strategist_refresh_reason"] = strategist_refresh_reason
+        source_refs["strategist_refresh_scope"] = "strategy_frame_refresh"
+    elif strategist_invocation == "SKIP" and strategist_cache_preferred:
+        source_refs["strategist_cache_preference_reason"] = strategist_cache_preference_reason
+        source_refs["strategist_cache_preference_scope"] = "cached_strategy_frame_reuse"
     applied_policy_meta = (
         dict(state.get("commander_applied_policy_meta") or {})
         if isinstance(state.get("commander_applied_policy_meta"), dict)
@@ -587,6 +653,16 @@ def _build_commander_decision(
         decision_summary = shadow_reason_summary
     if reason_text:
         decision_summary = f"{decision_summary} Runtime note: {str(reason_text).strip()[:180]}"
+    if strategist_refresh_requested:
+        decision_summary = (
+            f"{decision_summary} Commander requested fresh strategist context "
+            f"before rebuilding the entry frame ({strategist_refresh_reason or 'strategy_refresh'})."
+        )
+    elif strategist_invocation == "SKIP" and strategist_cache_preferred:
+        decision_summary = (
+            f"{decision_summary} Commander preferred cached strategist context "
+            f"for this cycle ({strategist_cache_preference_reason or 'context_reuse'})."
+        )
 
     return {
         "market_regime": market_regime,
@@ -608,6 +684,12 @@ def _build_commander_decision(
         "strategist_fallback_used": bool(strategist_fallback_used),
         "shadow_used": shadow_used,
         "shadow_assessment_summary": shadow_reason_summary,
+        "strategist_refresh_requested": strategist_refresh_requested,
+        "strategist_refresh_reason": strategist_refresh_reason,
+        "strategist_refresh_context": strategist_refresh_context,
+        "strategist_cache_preferred": bool(strategist_invocation == "SKIP" and strategist_cache_preferred),
+        "strategist_cache_preference_reason": strategist_cache_preference_reason,
+        "strategist_cache_preference_context": strategist_cache_preference_context,
         "decision_summary": decision_summary,
         "applied_policy": applied_policy,
         "policy_source": str(applied_policy_meta.get("policy_source") or ""),
@@ -636,6 +718,9 @@ def _ensure_commander_shadow_runtime(state: Dict[str, Any]) -> Dict[str, Any]:
     runtime.setdefault("monitor_decision", "")
     runtime.setdefault("executor_action", "")
     runtime.setdefault("executor_status", "")
+    runtime.setdefault("pre_buy_refresh_requested", False)
+    runtime.setdefault("pre_buy_refresh_reason", "")
+    runtime.setdefault("pre_buy_refresh_context", {})
     runtime.setdefault("prior_context", {})
     state["commander_shadow_runtime"] = runtime
     return runtime
@@ -653,6 +738,9 @@ def _reset_commander_shadow_runtime(state: Dict[str, Any]) -> None:
         "monitor_decision": "",
         "executor_action": "",
         "executor_status": "",
+        "pre_buy_refresh_requested": False,
+        "pre_buy_refresh_reason": "",
+        "pre_buy_refresh_context": {},
         "prior_context": {},
     }
 
@@ -1345,6 +1433,193 @@ def _strategist_cache_payload(state: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _assess_cached_strategist_reuse_preference(state: Dict[str, Any]) -> Dict[str, Any]:
+    enabled = _is_trueish(
+        state.get("enable_cached_strategist_when_flat")
+        if state.get("enable_cached_strategist_when_flat") is not None
+        else os.getenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "false")
+    )
+    open_position_count = _portfolio_open_position_count(state)
+    cache_payload = _strategist_cache_payload(state)
+    cached_output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
+    now_epoch = _runtime_now_epoch(state)
+    generated_epoch = max(0, _coerce_int(cache_payload.get("generated_epoch"), 0))
+    reuse_sec = max(0, _coerce_int(os.getenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600"), 600))
+    age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
+    payload = {
+        "preferred": False,
+        "enabled": bool(enabled),
+        "open_position_count": int(open_position_count),
+        "reuse_sec": int(reuse_sec),
+        "cache_age_sec": int(age_sec) if age_sec < 10**9 else None,
+        "cache_source": str(cache_payload.get("source") or ""),
+        "cached_output_present": bool(cached_output),
+        "reason": "",
+    }
+    if not enabled:
+        payload["reason"] = "disabled"
+        return payload
+    if open_position_count > 0:
+        payload["reason"] = "open_positions_present"
+        return payload
+    if _is_trueish(state.get("force_refresh_strategist")):
+        payload["reason"] = "force_refresh_requested"
+        return payload
+    if not cached_output:
+        payload["reason"] = "no_cached_strategist_output"
+        return payload
+    if generated_epoch <= 0:
+        payload["reason"] = "cache_timestamp_missing"
+        return payload
+    if age_sec > reuse_sec:
+        payload["reason"] = "cache_stale"
+        return payload
+    payload["preferred"] = True
+    payload["reason"] = "commander_preferred_cached_strategist"
+    return payload
+
+
+def _assess_pre_buy_strategist_refresh_need(
+    state: Dict[str, Any],
+    *,
+    commander_market_regime: str = "",
+) -> Dict[str, Any]:
+    min_cache_age_sec = int(_PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC)
+    readiness_threshold = float(_PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD)
+    open_position_count = _portfolio_open_position_count(state)
+    cache_payload = _strategist_cache_payload(state)
+    cached_output = cache_payload.get("output") if isinstance(cache_payload.get("output"), dict) else {}
+    now_epoch = _runtime_now_epoch(state)
+    generated_epoch = max(0, _coerce_int(cache_payload.get("generated_epoch"), 0))
+    cache_age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
+    monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
+    monitor_state = state.get("monitor") if isinstance(state.get("monitor"), dict) else {}
+    entry_detail = state.get("monitor_entry_decision_detail") if isinstance(state.get("monitor_entry_decision_detail"), dict) else {}
+    transition_trace = entry_detail.get("transition_trace") if isinstance(entry_detail.get("transition_trace"), dict) else {}
+    selected = state.get("selected") if isinstance(state.get("selected"), dict) else {}
+    selected_symbol = str(
+        selected.get("symbol")
+        or monitor_output.get("selected_symbol")
+        or ""
+    ).strip()
+    explicit_news_query_targets: list[str] = []
+    for value in list(state.get("news_query_targets") or []):
+        text = str(value or "").strip()
+        if text and text not in explicit_news_query_targets:
+            explicit_news_query_targets.append(text)
+    cached_news_query_targets: list[str] = []
+    for value in list(cached_output.get("news_query_targets") or []):
+        text = str(value or "").strip()
+        if text and text not in cached_news_query_targets:
+            cached_news_query_targets.append(text)
+    cached_candidate_hints: list[str] = []
+    for value in list(cached_output.get("candidate_hints") or []):
+        symbol = str(value or "").strip().upper()
+        if symbol and symbol not in cached_candidate_hints:
+            cached_candidate_hints.append(symbol)
+    for value in list(cached_output.get("candidate_symbols_hint") or []):
+        symbol = str(value or "").strip().upper()
+        if symbol and symbol not in cached_candidate_hints:
+            cached_candidate_hints.append(symbol)
+    for row in list(cached_output.get("candidates") or []):
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if symbol and symbol not in cached_candidate_hints:
+            cached_candidate_hints.append(symbol)
+    selected_symbol_upper = str(selected_symbol or "").strip().upper()
+    selected_symbol_in_cached_frame = bool(
+        not selected_symbol_upper
+        or not cached_candidate_hints
+        or selected_symbol_upper in cached_candidate_hints
+    )
+    cached_market_regime = str(cached_output.get("market_regime") or "").strip().lower()
+    current_market_regime = str(commander_market_regime or state.get("market_regime") or "").strip().lower()
+    readiness_score = _shadow_float(
+        monitor_output.get("entry_transition_readiness_score")
+        if monitor_output.get("entry_transition_readiness_score") not in (None, "")
+        else monitor_state.get("entry_transition_readiness_score")
+        if monitor_state.get("entry_transition_readiness_score") not in (None, "")
+        else transition_trace.get("transition_readiness_score")
+    )
+    became_ready = bool(
+        monitor_output.get("entry_became_ready_this_cycle")
+        or monitor_state.get("entry_became_ready_this_cycle")
+        or transition_trace.get("became_ready_this_cycle")
+    )
+    prior_intent = str(monitor_output.get("intent_side") or "").strip().upper()
+    prior_reason = str(
+        monitor_output.get("entry_exit_reason")
+        or entry_detail.get("primary_reason_code")
+        or entry_detail.get("reason")
+        or ""
+    ).strip()
+
+    signal = ""
+    if (
+        explicit_news_query_targets
+        and cached_news_query_targets
+        and explicit_news_query_targets != cached_news_query_targets
+    ):
+        signal = "news_query_target_drift"
+    elif current_market_regime and cached_market_regime and current_market_regime != cached_market_regime:
+        signal = "market_regime_shifted_since_cache"
+    elif selected_symbol_upper and cached_candidate_hints and selected_symbol_upper not in cached_candidate_hints:
+        signal = "selected_symbol_outside_cached_frame"
+    elif prior_intent == "BUY":
+        signal = "prior_cycle_buy_intent"
+    elif became_ready:
+        signal = "became_ready_this_cycle"
+    elif readiness_score is not None and readiness_score >= readiness_threshold:
+        signal = "transition_readiness_threshold"
+
+    payload = {
+        "requested": False,
+        "open_position_count": int(open_position_count),
+        "selected_symbol": selected_symbol,
+        "selected_symbol_in_cached_frame": bool(selected_symbol_in_cached_frame),
+        "cached_candidate_hints": list(cached_candidate_hints[:8]),
+        "current_news_query_targets": list(explicit_news_query_targets[:8]),
+        "cached_news_query_targets": list(cached_news_query_targets[:8]),
+        "current_market_regime": current_market_regime,
+        "cached_market_regime": cached_market_regime,
+        "cache_age_sec": int(cache_age_sec) if cache_age_sec < 10**9 else None,
+        "min_cache_age_sec": int(min_cache_age_sec),
+        "readiness_threshold": float(readiness_threshold),
+        "transition_readiness_score": readiness_score,
+        "became_ready_this_cycle": bool(became_ready),
+        "prior_intent_side": prior_intent,
+        "prior_reason": prior_reason,
+        "cache_source": str(cache_payload.get("source") or ""),
+        "cached_output_present": bool(cached_output),
+        "refresh_signal": signal,
+        "reason": "",
+    }
+    if open_position_count > 0:
+        payload["reason"] = "open_positions_present"
+        return payload
+    if _is_trueish(state.get("force_refresh_strategist")):
+        payload["requested"] = True
+        payload["refresh_signal"] = "force_refresh_requested"
+        payload["reason"] = "commander_requested_refresh"
+        return payload
+    if not cached_output:
+        payload["reason"] = "no_cached_strategist_output"
+        return payload
+    if not selected_symbol:
+        payload["reason"] = "selected_symbol_missing"
+        return payload
+    if cache_age_sec < min_cache_age_sec:
+        payload["reason"] = "cache_too_fresh_for_refresh"
+        return payload
+    if not signal:
+        payload["reason"] = "no_pre_buy_refresh_signal"
+        return payload
+    payload["requested"] = True
+    payload["reason"] = "commander_requested_refresh"
+    return payload
+
+
 def _should_use_cached_strategist_when_flat(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
     enabled = _is_trueish(
         state.get("enable_cached_strategist_when_flat")
@@ -1365,11 +1640,28 @@ def _should_use_cached_strategist_when_flat(state: Dict[str, Any]) -> Tuple[bool
         "cache_age_sec": int(age_sec) if age_sec < 10**9 else None,
         "reason": "",
     }
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    strategist_refresh_requested = bool(commander_decision.get("strategist_refresh_requested"))
+    strategist_refresh_context = (
+        dict(commander_decision.get("strategist_refresh_context") or {})
+        if isinstance(commander_decision.get("strategist_refresh_context"), dict)
+        else {}
+    )
     if not enabled:
         payload["reason"] = "disabled"
         return False, payload
     if open_position_count > 0:
         payload["reason"] = "open_positions_present"
+        return False, payload
+    if strategist_refresh_requested:
+        payload.update({k: v for k, v in strategist_refresh_context.items() if k != "reason"})
+        payload["source"] = "commander_decision"
+        payload["refresh_signal"] = str(
+            commander_decision.get("strategist_refresh_reason")
+            or strategist_refresh_context.get("refresh_signal")
+            or ""
+        )
+        payload["reason"] = "commander_requested_refresh"
         return False, payload
     if _is_trueish(state.get("force_refresh_strategist")):
         payload["reason"] = "force_refresh_requested"
@@ -1408,8 +1700,23 @@ def _should_use_cached_strategist_from_commander_skip(state: Dict[str, Any]) -> 
         "cache_age_sec": int(age_sec) if age_sec < 10**9 else None,
         "reason": "",
     }
+    strategist_refresh_requested = bool(commander_decision.get("strategist_refresh_requested"))
+    strategist_refresh_context = (
+        dict(commander_decision.get("strategist_refresh_context") or {})
+        if isinstance(commander_decision.get("strategist_refresh_context"), dict)
+        else {}
+    )
     if open_position_count > 0:
         payload["reason"] = "open_positions_present"
+        return False, payload
+    if strategist_refresh_requested:
+        payload.update({k: v for k, v in strategist_refresh_context.items() if k != "reason"})
+        payload["refresh_signal"] = str(
+            commander_decision.get("strategist_refresh_reason")
+            or strategist_refresh_context.get("refresh_signal")
+            or ""
+        )
+        payload["reason"] = "commander_requested_refresh"
         return False, payload
     if strategist_invocation != "SKIP":
         payload["reason"] = "commander_hint_not_skip"
@@ -1452,6 +1759,7 @@ def _run_integrated_chain(
         state,
         prior_cached_output=prior_cached_output if isinstance(prior_cached_output, dict) else {},
     )
+    shadow_runtime = _ensure_commander_shadow_runtime(state)
 
     # Keep integrated chain position/risk context aligned with live state.
     state = build_portfolio_snapshot(state)
@@ -1521,19 +1829,36 @@ def _run_integrated_chain(
         return state
 
     reused_strategist_cache, cache_payload = _should_use_cached_strategist_from_commander_skip(state)
-    if not reused_strategist_cache:
+    if not reused_strategist_cache and str(cache_payload.get("reason") or "").strip() != "commander_requested_refresh":
         reused_strategist_cache, cache_payload = _should_use_cached_strategist_when_flat(state)
     if reused_strategist_cache:
         shadow_runtime["strategist_executed"] = False
         shadow_runtime["strategist_called"] = False
         shadow_runtime["llm_called_by_strategist"] = False
         shadow_runtime["used_cached_strategist"] = True
+        shadow_runtime["pre_buy_refresh_requested"] = False
+        shadow_runtime["pre_buy_refresh_reason"] = ""
+        shadow_runtime["pre_buy_refresh_context"] = {}
         shadow_runtime["market_changed"] = False
         shadow_runtime["repeated_same_context"] = True
         state = _hydrate_strategist_output_cache(state)
         state["runtime_fast_path"] = dict(cache_payload)
         _log_commander_event(state, "fast_path", {"path": "integrated_chain_cached_frame", **cache_payload})
     else:
+        if str(cache_payload.get("reason") or "").strip() == "commander_requested_refresh":
+            shadow_runtime["pre_buy_refresh_requested"] = True
+            shadow_runtime["pre_buy_refresh_reason"] = str(
+                cache_payload.get("refresh_signal")
+                or cache_payload.get("strategist_refresh_reason")
+                or cache_payload.get("reason")
+                or ""
+            )
+            shadow_runtime["pre_buy_refresh_context"] = dict(cache_payload)
+            _log_commander_event(state, "pre_buy_refresh", {"path": "integrated_chain", **cache_payload})
+        else:
+            shadow_runtime["pre_buy_refresh_requested"] = False
+            shadow_runtime["pre_buy_refresh_reason"] = ""
+            shadow_runtime["pre_buy_refresh_context"] = {}
         state = strategist_node(state)
         shadow_runtime["strategist_executed"] = True
         shadow_runtime["strategist_called"] = True

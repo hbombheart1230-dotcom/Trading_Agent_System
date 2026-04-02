@@ -4,8 +4,11 @@ import contextlib
 import io
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
+
+from libs.reporting.llm_artifacts import trade_artifact_paths
 
 
 def _is_trueish(value: Any) -> bool:
@@ -14,6 +17,14 @@ def _is_trueish(value: Any) -> bool:
 
 def _normalize_symbol(value: Any) -> str:
     return str(value or "").strip().upper()
+
+
+def _trade_day_from_trade_id(trade_id: str) -> str:
+    value = str(trade_id or "").strip()
+    match = re.match(r"^TRD_(\d{4})(\d{2})(\d{2})_", value)
+    if not match:
+        return ""
+    return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
 
 
 def _root_dir() -> Path:
@@ -130,18 +141,16 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
         {},
     )
     brief_artifacts: Dict[str, str] = {}
-    if run_id:
-        try:
-            from apps.operator_ui.data_access import OperatorUIConfig, load_run_detail
-
-            detail = load_run_detail(OperatorUIConfig.from_env(repo_root=repo_root), run_id)
-            trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
-            brief_artifacts = {
-                "operator_brief_json_path": str(trade_report.get("operator_brief_json_path") or ""),
-                "operator_brief_md_path": str(trade_report.get("operator_brief_md_path") or ""),
-            }
-        except Exception:
-            brief_artifacts = {}
+    trade_id = str((matched or {}).get("trade_id") or "").strip()
+    trade_day = _trade_day_from_trade_id(trade_id)
+    if trade_id and trade_day:
+        trade_paths = trade_artifact_paths(repo_root / "reports", trade_day, trade_id)
+        brief_json_path = Path(trade_paths.get("brief_json") or Path())
+        brief_md_path = Path(trade_paths.get("brief_md") or Path())
+        brief_artifacts = {
+            "operator_brief_json_path": str(brief_json_path),
+            "operator_brief_md_path": str(brief_md_path),
+        }
 
     return {
         "ok": True,
@@ -149,7 +158,7 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
         "reason": "",
         "return_code": int(rc),
         "summary": summary,
-        "trade_id": str((matched or {}).get("trade_id") or ""),
+        "trade_id": trade_id,
         "story_id": str((matched or {}).get("story_id") or ""),
         "report_status": str((matched or {}).get("report_status") or ""),
         "report_path": str((matched or {}).get("trade_report_json_path") or ""),

@@ -48,6 +48,19 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                     "playbook": "breakout",
                     "scanner_bias": "leader",
                     "scanner_priority": ["momentum", "volume_surge"],
+                    "candidate_symbols_hint": ["005930", "000660"],
+                    "candidate_hypotheses": [
+                        {"symbol": "005930", "hypothesis": "semiconductor leader with AI memory tailwind"},
+                        {"symbol": "000660", "hypothesis": "memory beta follow-through candidate"},
+                    ],
+                    "news_evidence_ranked": {
+                        "news_query_targets": ["반도체", "코스피", "AI"],
+                        "market_news_ranked": [{"title": "코스피 반도체 강세 지속"}],
+                        "candidate_news_ranked": [
+                            {"symbol": "005930", "title": "삼성전자 HBM 수요 기대감 확대"},
+                            {"symbol": "000660", "title": "하이닉스 AI 서버 수요 지속"},
+                        ],
+                    },
                     "macro_stress_overlay": {
                         "active": True,
                         "stress_flags": ["elevated_vix", "dollar_strength"],
@@ -290,6 +303,7 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                 "stage": "theme_selection",
                 "raw_input": {
                     "collected_news": {"005930": {"count": 2, "sample": ["NewsItem(title='삼성전자 반등')"]}},
+                    "news_query_targets": ["반도체", "코스피", "AI"],
                     "global_sentiment_inputs": {
                         "score": 0.12,
                         "status": "ok",
@@ -367,6 +381,15 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert out["strategist"]["macro_stress_overlay"]["active"] is True
     assert "theme hints expanded" in out["strategist"]["news_query_reasoning"]
     assert out["strategist"]["scanner_source_policy"]["preferred_sources"][0] == "top_change_rate"
+    assert out["strategist"]["candidate_symbols_hint"] == ["005930", "000660"]
+    assert out["news_symbol_linkage"]["selected_symbol"] == "005930"
+    assert out["news_symbol_linkage"]["runner_up_symbol"] == "000660"
+    assert out["news_symbol_linkage"]["selected_symbol_in_candidate_hints"] is True
+    assert out["news_symbol_linkage"]["runner_up_symbol_in_candidate_hints"] is True
+    assert out["news_symbol_linkage"]["linkage_strength"] == "strong"
+    assert out["news_symbol_linkage"]["selected_symbol_headlines"][0].startswith("삼성전자")
+    assert out["news_symbol_linkage"]["runner_up_symbol_headlines"][0].startswith("하이닉스")
+    assert "runner-up 000660" in out["news_symbol_linkage"]["selected_vs_runner_up"]["comparison_summary"]
     assert out["scanner"]["top_stock"] == "005930"
     assert out["scanner"]["selected_candidate"]["symbol"] == "005930"
     assert out["scanner"]["runner_up_symbol"] == "000660"
@@ -423,6 +446,9 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     md_body = md_path.read_text(encoding="utf-8")
     assert "## Commander" in md_body
     assert "## Strategist" in md_body
+    assert "## News -> Symbol Linkage" in md_body
+    assert "selected_symbol_linkage: symbol=005930" in md_body
+    assert "runner_up_symbol_linkage: symbol=000660" in md_body
     assert "global_index_moves:" in md_body
     assert "macro_stress:" in md_body
     assert "news_query_reasoning:" in md_body

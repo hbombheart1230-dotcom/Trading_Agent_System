@@ -1122,6 +1122,451 @@ def test_m31_integrated_chain_reuses_cached_strategist_when_flat(monkeypatch):
     ]
 
 
+def test_m31_integrated_chain_refreshes_strategist_before_buy_when_flat_cache_is_near_entry(monkeypatch):
+    calls: list[str] = []
+    logged: list[Dict[str, Any]] = []
+    strategist_decisions: list[Dict[str, Any]] = []
+
+    class _Logger:
+        def log(self, **kwargs: Any) -> None:
+            logged.append(dict(kwargs))
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        strategist_decisions.append(dict(state.get("commander_decision") or {}))
+        state["strategist_output"] = {"playbook": "fresh_entry_frame", "monitor_guidance": "tight_confirm"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        assert (state.get("strategist_output") or {}).get("playbook") == "fresh_entry_frame"
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "run_id": "run-prebuy-refresh-flat",
+            "event_logger": _Logger(),
+            "now_epoch": 1000,
+            "monitor_output": {
+                "selected_symbol": "000660",
+                "intent_side": "NOOP",
+                "entry_became_ready_this_cycle": True,
+                "entry_transition_readiness_score": 0.92,
+                "entry_exit_reason": "pullback_below_vwap_reclaim_not_ready",
+            },
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {"playbook": "cached_frame", "monitor_guidance": "defensive_exit"},
+                    "generated_epoch": 700,
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    assert out["path"] == "integrated_chain"
+    assert (out.get("commander_shadow_runtime") or {}).get("pre_buy_refresh_requested") is True
+    assert (out.get("commander_shadow_runtime") or {}).get("pre_buy_refresh_reason") == "became_ready_this_cycle"
+    assert strategist_decisions
+    assert strategist_decisions[0]["strategist_invocation"] == "RUN_REFRESH"
+    assert strategist_decisions[0]["llm_policy"] == "allow_context_refresh"
+    assert strategist_decisions[0]["strategist_refresh_requested"] is True
+    assert strategist_decisions[0]["strategist_refresh_reason"] == "became_ready_this_cycle"
+    assert strategist_decisions[0]["source_priority"][0] == "commander_refresh_heuristic"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "strategist",
+        "scanner",
+        "monitor",
+        "decision",
+    ]
+    assert any(
+        str(row.get("stage") or "") == "commander_router"
+        and str(row.get("event") or "") == "pre_buy_refresh"
+        for row in logged
+    )
+
+
+def test_m31_integrated_chain_refreshes_when_selected_symbol_is_outside_cached_frame(monkeypatch):
+    calls: list[str] = []
+    strategist_decisions: list[Dict[str, Any]] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        strategist_decisions.append(dict(state.get("commander_decision") or {}))
+        state["strategist_output"] = {"playbook": "fresh_entry_frame", "monitor_guidance": "tight_confirm"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        assert (state.get("strategist_output") or {}).get("playbook") == "fresh_entry_frame"
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "run_id": "run-prebuy-refresh-frame-gap",
+            "now_epoch": 1000,
+            "monitor_output": {
+                "selected_symbol": "034020",
+                "intent_side": "NOOP",
+                "entry_exit_reason": "pullback_not_mature",
+            },
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {
+                        "playbook": "cached_frame",
+                        "monitor_guidance": "defensive_exit",
+                        "candidate_symbols_hint": ["005930", "000660"],
+                    },
+                    "generated_epoch": 700,
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    assert out["path"] == "integrated_chain"
+    assert strategist_decisions
+    assert strategist_decisions[0]["strategist_invocation"] == "RUN_REFRESH"
+    assert strategist_decisions[0]["strategist_refresh_requested"] is True
+    assert strategist_decisions[0]["strategist_refresh_reason"] == "selected_symbol_outside_cached_frame"
+    assert strategist_decisions[0]["strategist_refresh_context"]["selected_symbol"] == "034020"
+    assert strategist_decisions[0]["strategist_refresh_context"]["selected_symbol_in_cached_frame"] is False
+    assert strategist_decisions[0]["strategist_refresh_context"]["cached_candidate_hints"] == ["005930", "000660"]
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "strategist",
+        "scanner",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_refreshes_when_market_regime_shifted_since_cache(monkeypatch):
+    calls: list[str] = []
+    strategist_decisions: list[Dict[str, Any]] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        strategist_decisions.append(dict(state.get("commander_decision") or {}))
+        state["strategist_output"] = {"playbook": "fresh_entry_frame", "monitor_guidance": "tight_confirm"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "run_id": "run-prebuy-refresh-regime-shift",
+            "now_epoch": 1000,
+            "market_regime": "risk_on",
+            "monitor_output": {
+                "selected_symbol": "005930",
+                "intent_side": "NOOP",
+                "entry_exit_reason": "entry_wait",
+            },
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {
+                        "playbook": "cached_frame",
+                        "market_regime": "risk_off",
+                        "candidate_symbols_hint": ["005930", "000660"],
+                    },
+                    "generated_epoch": 700,
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    assert out["path"] == "integrated_chain"
+    assert strategist_decisions
+    assert strategist_decisions[0]["strategist_invocation"] == "RUN_REFRESH"
+    assert strategist_decisions[0]["strategist_refresh_reason"] == "market_regime_shifted_since_cache"
+    assert strategist_decisions[0]["strategist_refresh_context"]["current_market_regime"] == "risk_on"
+    assert strategist_decisions[0]["strategist_refresh_context"]["cached_market_regime"] == "risk_off"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "strategist",
+        "scanner",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_refreshes_when_news_query_targets_drift(monkeypatch):
+    calls: list[str] = []
+    strategist_decisions: list[Dict[str, Any]] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        strategist_decisions.append(dict(state.get("commander_decision") or {}))
+        state["strategist_output"] = {"playbook": "fresh_entry_frame", "monitor_guidance": "tight_confirm"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "run_id": "run-prebuy-refresh-news-drift",
+            "now_epoch": 1000,
+            "news_query_targets": ["semiconductor", "memory", "ai server"],
+            "monitor_output": {
+                "selected_symbol": "005930",
+                "intent_side": "NOOP",
+                "entry_exit_reason": "entry_wait",
+            },
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {
+                        "playbook": "cached_frame",
+                        "market_regime": "neutral",
+                        "candidate_symbols_hint": ["005930", "000660"],
+                        "news_query_targets": ["semiconductor", "memory"],
+                    },
+                    "generated_epoch": 700,
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    assert out["path"] == "integrated_chain"
+    assert strategist_decisions
+    assert strategist_decisions[0]["strategist_invocation"] == "RUN_REFRESH"
+    assert strategist_decisions[0]["strategist_refresh_reason"] == "news_query_target_drift"
+    assert strategist_decisions[0]["strategist_refresh_context"]["current_news_query_targets"] == [
+        "semiconductor",
+        "memory",
+        "ai server",
+    ]
+    assert strategist_decisions[0]["strategist_refresh_context"]["cached_news_query_targets"] == [
+        "semiconductor",
+        "memory",
+    ]
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "strategist",
+        "scanner",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_commander_prefers_cached_strategist_when_frame_is_reusable(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        assert (state.get("strategist_output") or {}).get("playbook") == "cached_frame"
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "run_id": "run-commander-cache-preferred",
+            "now_epoch": 1000,
+            "monitor_output": {
+                "selected_symbol": "005930",
+                "intent_side": "NOOP",
+                "entry_exit_reason": "entry_wait",
+            },
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {
+                        "playbook": "cached_frame",
+                        "market_regime": "neutral",
+                        "candidate_symbols_hint": ["005930", "000660"],
+                    },
+                    "generated_epoch": 950,
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    assert out["path"] == "integrated_chain_cached_frame"
+    assert out["runtime_fast_path"]["reason"] == "commander_skip_cached_strategist"
+    assert out["runtime_fast_path"]["source"] == "commander_decision"
+    assert (out.get("commander_decision") or {}).get("strategist_invocation") == "SKIP"
+    assert (out.get("commander_decision") or {}).get("llm_policy") in {"prefer_cached_context", "SKIP"}
+    assert (out.get("commander_decision") or {}).get("strategist_cache_preferred") is True
+    assert (out.get("commander_decision") or {}).get("strategist_cache_preference_reason") == "commander_preferred_cached_strategist"
+    assert (out.get("commander_decision") or {}).get("source_priority")[0] == "commander_cache_reuse"
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "scanner",
+        "monitor",
+        "decision",
+    ]
+
+
 def test_m31_integrated_chain_runs_fresh_strategist_when_flat_cache_exists_but_default_reuse_is_disabled(monkeypatch):
     calls: list[str] = []
 
@@ -1279,6 +1724,104 @@ def test_m31_integrated_chain_reuses_cache_when_commander_explicitly_says_skip(m
     assert calls == [
         "build_portfolio_snapshot",
         "build_risk_context",
+        "scanner",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_respects_commander_refresh_request_over_cache_reuse(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_build_commander_decision(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+        return {
+            "command_intent": "OBSERVE_ONLY",
+            "strategist_invocation": "RUN_REFRESH",
+            "llm_policy": "allow_context_refresh",
+            "decision_summary": "refresh strategist context before building a new entry frame",
+            "source_priority": ["commander_refresh_heuristic", "shadow_commander"],
+            "shadow_used": True,
+            "strategist_fallback_used": False,
+            "strategist_refresh_requested": True,
+            "strategist_refresh_reason": "transition_readiness_threshold",
+            "strategist_refresh_context": {
+                "selected_symbol": "000660",
+                "cache_age_sec": 300,
+                "transition_readiness_score": 0.87,
+                "refresh_signal": "transition_readiness_threshold",
+            },
+        }
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        state["strategist_output"] = {"playbook": "fresh_entry_frame"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        assert (state.get("strategist_output") or {}).get("playbook") == "fresh_entry_frame"
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.delenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", raising=False)
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.commander_runtime._build_commander_decision", fake_build_commander_decision)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "now_epoch": 1000,
+            "monitor_output": {
+                "selected_symbol": "000660",
+                "intent_side": "NOOP",
+                "entry_transition_readiness_score": 0.87,
+                "entry_exit_reason": "breakout_not_ready",
+            },
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {"playbook": "cached_frame", "monitor_guidance": "defensive_exit"},
+                    "generated_epoch": 700,
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    assert out["path"] == "integrated_chain"
+    assert (out.get("commander_shadow_runtime") or {}).get("pre_buy_refresh_requested") is True
+    assert (out.get("commander_shadow_runtime") or {}).get("pre_buy_refresh_reason") == "transition_readiness_threshold"
+    assert (out.get("commander_shadow_runtime") or {}).get("used_cached_strategist") is False
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "strategist",
         "scanner",
         "monitor",
         "decision",

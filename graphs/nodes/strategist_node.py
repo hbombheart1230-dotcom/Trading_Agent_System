@@ -2583,6 +2583,11 @@ def _build_commander_context_summary(
         "strategist_invocation": str(raw.get("strategist_invocation") or ""),
         "flow_instruction": str(raw.get("flow_instruction") or ""),
         "no_trade_reason_code": str(raw.get("no_trade_reason_code") or ""),
+        "strategist_refresh_requested": bool(raw.get("strategist_refresh_requested")),
+        "strategist_refresh_reason": str(raw.get("strategist_refresh_reason") or ""),
+        "strategist_refresh_context": dict(raw.get("strategist_refresh_context") or {})
+        if isinstance(raw.get("strategist_refresh_context"), dict)
+        else {},
         "decision_summary": str(raw.get("decision_summary") or ""),
         "observations": dict(raw.get("observations") or {}) if isinstance(raw.get("observations"), dict) else {},
         "source_priority": [str(x) for x in list(raw.get("source_priority") or []) if str(x or "").strip()][:4],
@@ -3908,12 +3913,18 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_invocation": str(commander_context.get("strategist_invocation") or ""),
         "llm_policy": str(commander_context.get("llm_policy") or ""),
         "no_trade_reason_code": str(commander_context.get("no_trade_reason_code") or ""),
+        "strategist_refresh_requested": bool(commander_context.get("strategist_refresh_requested")),
+        "strategist_refresh_reason": str(commander_context.get("strategist_refresh_reason") or ""),
+        "strategist_refresh_context": dict(commander_context.get("strategist_refresh_context") or {}),
         "decision_summary": str(commander_context.get("decision_summary") or ""),
         "source_priority": list(commander_context.get("source_priority") or []),
     }
     strategist_output["commander_invocation_hint"] = str(commander_context.get("strategist_invocation") or "")
     strategist_output["commander_llm_policy"] = str(commander_context.get("llm_policy") or "")
     strategist_output["commander_no_trade_reason_code"] = str(commander_context.get("no_trade_reason_code") or "")
+    strategist_output["commander_refresh_requested"] = bool(commander_context.get("strategist_refresh_requested"))
+    strategist_output["commander_refresh_reason"] = str(commander_context.get("strategist_refresh_reason") or "")
+    strategist_output["commander_refresh_context"] = dict(commander_context.get("strategist_refresh_context") or {})
     strategist_output["shadow_used"] = bool(commander_context.get("shadow_used"))
     strategist_output["strategist_fallback_used"] = bool(commander_context.get("strategist_fallback_used"))
     strategist_output["llm_frame_status"] = str(llm_meta.get("status") or "disabled")

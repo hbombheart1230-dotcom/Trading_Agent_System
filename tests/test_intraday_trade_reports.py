@@ -28,7 +28,7 @@ def test_intraday_trade_reports_generates_and_invalidates_cache(tmp_path: Path, 
                     "trade_id": "TRD_20260317_005930_01",
                     "story_id": "TRD_20260317_005930_01",
                     "report_status": "available",
-                    "trade_report_json_path": str(root / "reports" / "trades" / "2026" / "03" / "TRD_20260317_005930_01" / "trade_report.json"),
+                    "trade_report_json_path": str(root / "reports" / "trades" / "2026-03-17" / "TRD_20260317_005930_01" / "reports" / "ai_trade_report.json"),
                     "symbol": "005930",
                 }
             ]
@@ -37,27 +37,11 @@ def test_intraday_trade_reports_generates_and_invalidates_cache(tmp_path: Path, 
         return 0
 
     monkeypatch.setattr("scripts.run_live_execution_bundle_report.main", fake_main)
-    brief_json = root / "reports" / "trades" / "2026" / "03" / "TRD_20260317_005930_01" / "operator_brief.json"
-    brief_md = root / "reports" / "trades" / "2026" / "03" / "TRD_20260317_005930_01" / "operator_brief.md"
-
-    class _FakeConfig:
-        @staticmethod
-        def from_env(repo_root=None):  # type: ignore[no-untyped-def]
-            return object()
-
-    def fake_load_run_detail(config, run_id):  # type: ignore[no-untyped-def]
-        brief_json.parent.mkdir(parents=True, exist_ok=True)
-        brief_json.write_text(json.dumps({"headline": "brief"}, ensure_ascii=False), encoding="utf-8")
-        brief_md.write_text("# brief\n", encoding="utf-8")
-        return {
-            "trade_report": {
-                "operator_brief_json_path": str(brief_json),
-                "operator_brief_md_path": str(brief_md),
-            }
-        }
-
-    monkeypatch.setattr("apps.operator_ui.data_access.OperatorUIConfig", _FakeConfig)
-    monkeypatch.setattr("apps.operator_ui.data_access.load_run_detail", fake_load_run_detail)
+    brief_json = root / "reports" / "trades" / "2026-03-17" / "TRD_20260317_005930_01" / "reports" / "operator_brief.json"
+    brief_md = root / "reports" / "trades" / "2026-03-17" / "TRD_20260317_005930_01" / "reports" / "operator_brief.md"
+    brief_json.parent.mkdir(parents=True, exist_ok=True)
+    brief_json.write_text(json.dumps({"headline": "brief"}, ensure_ascii=False), encoding="utf-8")
+    brief_md.write_text("# brief\n", encoding="utf-8")
 
     out = generate_intraday_trade_artifacts(
         {

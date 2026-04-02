@@ -10,6 +10,7 @@ from libs.reporting.reasoning_trace import (
     normalize_reasoning_provenance_aliases,
     normalize_reasoning_trace_aliases,
 )
+from libs.reporting.strategy_read_model import build_news_symbol_linkage_view
 from libs.reporting.trade_report_ai import resolve_shared_trade_facts
 from libs.core.symbols import normalize_symbol
 
@@ -597,6 +598,7 @@ def build_lifecycle_bundle(
         "entry": top_level_entry,
         "exit": top_level_exit,
         "shared_facts": dict(shared_facts or {}),
+        "news_symbol_linkage": dict(story_input.get("news_symbol_linkage") or {}),
         "lifecycle": {
             "entry": entry_obj,
             "hold": hold_events,
@@ -2269,6 +2271,9 @@ def build_trade_story_input(
         selected_symbol = str(
             scanner_reason_human.get("selected_symbol")
             or (entry.get("scanner_context") or {}).get("selected_symbol")
+            or canonical_scanner.get("selected_symbol")
+            or canonical_scanner.get("top_stock")
+            or (bundle_out.get("scanner_summary") or {}).get("selected_symbol")
             or symbol
             or ""
         ).strip()
@@ -2279,6 +2284,18 @@ def build_trade_story_input(
             fallback_candidate_titles=market_context_human.get("candidate_news_titles"),
         )
         scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
+        ranked_symbols = [
+            str(row.get("symbol") or "").strip()
+            for row in list(scanner_selection_trace.get("ranked_candidates") or [])
+            if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+        ]
+        news_symbol_linkage = build_news_symbol_linkage_view(
+            strategist_summary=canonical_strategist,
+            strategist_raw_input=dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
+            strategist_parsed_output=dict((bundle_out.get("strategist_summary") or {}).get("llm_parsed_output") or {}),
+            selected_symbol=selected_symbol,
+            top_ranked_symbols=ranked_symbols or canonical_scanner.get("top_ranked_symbols") or [],
+        )
         monitor_stop_thresholds = (
             ((canonical_monitor.get("thresholds_guards_used") or {}).get("thresholds"))
             if isinstance((canonical_monitor.get("thresholds_guards_used") or {}).get("thresholds"), dict)
@@ -2297,6 +2314,7 @@ def build_trade_story_input(
         market_context_human.setdefault("market_headlines", strategist_evidence_trace.get("market_headlines") or [])
         market_context_human.setdefault("symbol_headlines", strategist_evidence_trace.get("symbol_headlines") or [])
         market_context_human.setdefault("strategist_evidence_trace", dict(strategist_evidence_trace))
+        market_context_human.setdefault("news_symbol_linkage", dict(news_symbol_linkage))
         scanner_reason_human.setdefault("scanner_selection_trace", dict(scanner_selection_trace))
         scanner_reason_human.setdefault("ranked_candidates", list(scanner_selection_trace.get("ranked_candidates") or []))
         scanner_reason_human.setdefault("selection_reason", scanner_selection_trace.get("selection_reason"))
@@ -2450,6 +2468,7 @@ def build_trade_story_input(
             "strategist_market_headlines": list(strategist_evidence_trace.get("market_headlines") or [])[:3],
             "strategist_symbol_headlines": list(strategist_evidence_trace.get("symbol_headlines") or [])[:3],
             "strategist_evidence_trace": dict(strategist_evidence_trace),
+            "news_symbol_linkage": dict(news_symbol_linkage),
             "scanner_evidence": scanner_evidence,
             "scanner_selection_trace": dict(scanner_selection_trace),
             "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
@@ -2580,6 +2599,9 @@ def build_trade_story_input(
     )
     selected_symbol = str(
         scanner_reason_human.get("selected_symbol")
+        or canonical_scanner.get("selected_symbol")
+        or canonical_scanner.get("top_stock")
+        or (bundle_out.get("scanner_summary") or {}).get("selected_symbol")
         or ((bundle_out.get("execution") or {}).get("symbol"))
         or ""
     ).strip()
@@ -2590,6 +2612,18 @@ def build_trade_story_input(
         fallback_candidate_titles=market_context_human.get("candidate_news_titles"),
     )
     scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
+    ranked_symbols = [
+        str(row.get("symbol") or "").strip()
+        for row in list(scanner_selection_trace.get("ranked_candidates") or [])
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+    ]
+    news_symbol_linkage = build_news_symbol_linkage_view(
+        strategist_summary=canonical_strategist,
+        strategist_raw_input=dict(bundle_out.get("strategist_evidence") or (bundle_out.get("evidence") or {}).get("strategist") or {}),
+        strategist_parsed_output=dict((bundle_out.get("strategist_summary") or {}).get("llm_parsed_output") or {}),
+        selected_symbol=selected_symbol,
+        top_ranked_symbols=ranked_symbols or canonical_scanner.get("top_ranked_symbols") or [],
+    )
     monitor_stop_thresholds = (
         ((canonical_monitor.get("thresholds_guards_used") or {}).get("thresholds"))
         if isinstance((canonical_monitor.get("thresholds_guards_used") or {}).get("thresholds"), dict)
@@ -2608,6 +2642,7 @@ def build_trade_story_input(
     market_context_human.setdefault("market_headlines", strategist_evidence_trace.get("market_headlines") or [])
     market_context_human.setdefault("symbol_headlines", strategist_evidence_trace.get("symbol_headlines") or [])
     market_context_human.setdefault("strategist_evidence_trace", dict(strategist_evidence_trace))
+    market_context_human.setdefault("news_symbol_linkage", dict(news_symbol_linkage))
     scanner_reason_human.setdefault("scanner_selection_trace", dict(scanner_selection_trace))
     scanner_reason_human.setdefault("ranked_candidates", list(scanner_selection_trace.get("ranked_candidates") or []))
     scanner_reason_human.setdefault("selection_reason", scanner_selection_trace.get("selection_reason"))
@@ -2647,6 +2682,7 @@ def build_trade_story_input(
         "strategist_market_headlines": list(strategist_evidence_trace.get("market_headlines") or [])[:3],
         "strategist_symbol_headlines": list(strategist_evidence_trace.get("symbol_headlines") or [])[:3],
         "strategist_evidence_trace": dict(strategist_evidence_trace),
+        "news_symbol_linkage": dict(news_symbol_linkage),
         "scanner_evidence": dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
         "scanner_selection_trace": dict(scanner_selection_trace),
         "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),

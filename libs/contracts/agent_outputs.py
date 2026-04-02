@@ -905,6 +905,22 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "market_regime": _clip(commander_context.get("market_regime"), max_len=80),
                 "session_bias": _clip(commander_context.get("session_bias"), max_len=80),
                 "risk_mode": _clip(commander_context.get("risk_mode"), max_len=80),
+                "strategist_refresh_requested": bool(
+                    strategist_output.get("commander_refresh_requested")
+                    if strategist_output.get("commander_refresh_requested") is not None
+                    else commander_context.get("strategist_refresh_requested")
+                ),
+                "strategist_refresh_reason": _clip(
+                    strategist_output.get("commander_refresh_reason")
+                    or _dict(strategist_output.get("commander_context_ref")).get("strategist_refresh_reason")
+                    or commander_context.get("strategist_refresh_reason"),
+                    max_len=120,
+                ),
+                "strategist_refresh_context": _dict(
+                    strategist_output.get("commander_refresh_context")
+                    or _dict(strategist_output.get("commander_context_ref")).get("strategist_refresh_context")
+                    or commander_context.get("strategist_refresh_context")
+                ),
                 "decision_summary": _clip(
                     (
                         _dict(strategist_output.get("commander_context_ref")).get("decision_summary")
@@ -928,6 +944,20 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 strategist_output.get("commander_no_trade_reason_code")
                 or commander_context.get("no_trade_reason_code"),
                 max_len=80,
+            ),
+            "commander_refresh_requested": bool(
+                strategist_output.get("commander_refresh_requested")
+                if strategist_output.get("commander_refresh_requested") is not None
+                else commander_context.get("strategist_refresh_requested")
+            ),
+            "commander_refresh_reason": _clip(
+                strategist_output.get("commander_refresh_reason")
+                or commander_context.get("strategist_refresh_reason"),
+                max_len=120,
+            ),
+            "commander_refresh_context": _dict(
+                strategist_output.get("commander_refresh_context")
+                or commander_context.get("strategist_refresh_context")
             ),
             "shadow_used": bool(
                 strategist_output.get("shadow_used")
@@ -2006,6 +2036,21 @@ def build_commander_output_artifact(
     )
     source_priority = _listify(commander_decision.get("source_priority"), limit=4, max_len=40)
     strategist_fallback_used = bool(commander_decision.get("strategist_fallback_used"))
+    strategist_refresh_requested = bool(commander_decision.get("strategist_refresh_requested"))
+    strategist_refresh_reason = _clip(commander_decision.get("strategist_refresh_reason"), max_len=120)
+    strategist_refresh_context = _dict(commander_decision.get("strategist_refresh_context"))
+    strategist_cache_preferred = bool(commander_decision.get("strategist_cache_preferred"))
+    strategist_cache_preference_reason = _clip(commander_decision.get("strategist_cache_preference_reason"), max_len=120)
+    strategist_cache_preference_context = _dict(commander_decision.get("strategist_cache_preference_context"))
+    shadow_runtime = _dict(state.get("commander_shadow_runtime"))
+    runtime_refresh_requested = bool(shadow_runtime.get("pre_buy_refresh_requested"))
+    runtime_refresh_reason = _clip(shadow_runtime.get("pre_buy_refresh_reason"), max_len=120)
+    runtime_refresh_context = _dict(shadow_runtime.get("pre_buy_refresh_context"))
+    runtime_cache_reuse_reason = _clip(
+        runtime_fast_path.get("reason") if strategist_cache_used else "",
+        max_len=120,
+    )
+    runtime_cache_reuse_context = _dict(runtime_fast_path) if strategist_cache_used else {}
     applied_policy = _dict(commander_decision.get("applied_policy"))
     policy_source = _clip(commander_decision.get("policy_source"), max_len=120)
     policy_validation_status = _clip(commander_decision.get("policy_validation_status"), max_len=80)
@@ -2074,6 +2119,17 @@ def build_commander_output_artifact(
             "shadow_alignment": shadow_alignment,
             "source_priority": source_priority,
             "strategist_fallback_used": strategist_fallback_used,
+            "strategist_refresh_requested": strategist_refresh_requested,
+            "strategist_refresh_reason": strategist_refresh_reason,
+            "strategist_refresh_context": strategist_refresh_context,
+            "strategist_cache_preferred": strategist_cache_preferred,
+            "strategist_cache_preference_reason": strategist_cache_preference_reason,
+            "strategist_cache_preference_context": strategist_cache_preference_context,
+            "runtime_refresh_requested": runtime_refresh_requested,
+            "runtime_refresh_reason": runtime_refresh_reason,
+            "runtime_refresh_context": runtime_refresh_context,
+            "runtime_cache_reuse_reason": runtime_cache_reuse_reason,
+            "runtime_cache_reuse_context": runtime_cache_reuse_context,
             "applied_policy": applied_policy,
             "policy_source": policy_source,
             "policy_validation_status": policy_validation_status,
@@ -2201,6 +2257,8 @@ def _commander_shadow_actual_runtime(state: Dict[str, Any], *, path: str) -> Dic
         "strategist_called": strategist_called,
         "llm_called_by_strategist": llm_called,
         "used_cached_strategist": used_cached_strategist,
+        "pre_buy_refresh_requested": bool(shadow_runtime.get("pre_buy_refresh_requested")),
+        "pre_buy_refresh_reason": _clip(shadow_runtime.get("pre_buy_refresh_reason"), max_len=80),
         "monitor_decision": monitor_decision or "",
         "executor_action": executor_action or "",
         "executor_status": executor_status,

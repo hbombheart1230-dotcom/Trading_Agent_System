@@ -70,7 +70,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if bool(args.force):
         os.environ["OPERATOR_UI_RUN_BRIEF_FORCE_REGENERATE"] = "1"
 
-    from apps.operator_ui import data_access_core as dac
+    from apps.operator_ui import data_access as dac
 
     cfg = dac.OperatorUIConfig.from_env()
     day = str(args.day or "").strip()
