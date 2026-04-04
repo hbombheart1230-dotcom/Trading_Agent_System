@@ -29,39 +29,32 @@ def _env_model_key(role: str) -> str:
 
 def _role_env_model_keys(role: str) -> List[str]:
     normalized = str(role or "").strip().lower()
-    keys: List[str] = [_env_model_key(normalized)]
-    if normalized == "reporter_final":
-        keys.extend(
-            [
-                "OPENROUTER_MODEL_REPORTER_FINAL",
-                "OPENROUTER_MODEL_DAILY_REPORT",
-                "OPENROUTER_MODEL_REPORTER",
-            ]
-        )
-    elif normalized == "daily_report":
-        keys.extend(
-            [
-                "OPENROUTER_MODEL_DAILY_REPORT",
-                "OPENROUTER_MODEL_REPORTER_FINAL",
-                "OPENROUTER_MODEL_REPORTER",
-            ]
-        )
-    elif normalized == "operator_ui":
-        keys.extend(
-            [
-                "OPENROUTER_MODEL_OPERATOR_UI",
-                "OPENROUTER_MODEL_REPORTER_INTRADAY",
-                "OPENROUTER_MODEL_REPORTER",
-            ]
-        )
+    if normalized == "daily_report":
+        keys: List[str] = [
+            "OPENROUTER_MODEL_REPORTER_FINAL",
+            "OPENROUTER_MODEL_REPORTER",
+        ]
     elif normalized == "reporter_intraday":
-        keys.extend(
-            [
-                "OPENROUTER_MODEL_REPORTER_INTRADAY",
-                "OPENROUTER_MODEL_OPERATOR_UI",
-                "OPENROUTER_MODEL_REPORTER",
-            ]
-        )
+        keys = [
+            "OPENROUTER_MODEL_OPERATOR_UI",
+            "OPENROUTER_MODEL_REPORTER",
+        ]
+    else:
+        keys = [_env_model_key(normalized)]
+        if normalized == "reporter_final":
+            keys.extend(
+                [
+                    "OPENROUTER_MODEL_REPORTER_FINAL",
+                    "OPENROUTER_MODEL_REPORTER",
+                ]
+            )
+        elif normalized == "operator_ui":
+            keys.extend(
+                [
+                    "OPENROUTER_MODEL_OPERATOR_UI",
+                    "OPENROUTER_MODEL_REPORTER",
+                ]
+            )
     # preserve order but dedupe
     seen = set()
     out: List[str] = []

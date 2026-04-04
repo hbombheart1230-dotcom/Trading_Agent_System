@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal
 
-from libs.runtime.monitor_policy import normalize_monitor_entry_policy
+from libs.runtime.monitor_policy import build_monitor_entry_policy_bundle, normalize_monitor_entry_policy
 from libs.runtime.scanner_bias import normalize_scanner_bias_context
 
 
@@ -157,11 +157,21 @@ class StrategistOutput:
             s = str(value or "").strip().lower()
             return s if s in allowed else default
 
-        normalized_monitor_entry_policy = (
-            normalize_monitor_entry_policy(self.monitor_entry_policy)[0].to_dict()
-            if self.monitor_entry_policy
-            else {}
-        )
+        normalized_monitor_entry_policy = {}
+        if self.monitor_entry_policy:
+            normalized_monitor_entry_policy = build_monitor_entry_policy_bundle(
+                threshold_policy=normalize_monitor_entry_policy(self.monitor_entry_policy)[0],
+                playbook=self.playbook,
+                monitor_guidance=self.monitor_guidance,
+                risk_tone=self.risk_tone,
+                trade_aggressiveness=self.trade_aggressiveness,
+                interpretation_policy=(
+                    dict(self.monitor_entry_policy.get("interpretation_policy") or {})
+                    if isinstance(self.monitor_entry_policy, dict)
+                    and isinstance(self.monitor_entry_policy.get("interpretation_policy"), dict)
+                    else None
+                ),
+            )
 
         return {
             "market_regime": _norm_enum(self.market_regime, ["risk_on", "neutral", "risk_off"], "neutral"),
@@ -340,7 +350,19 @@ def coerce_strategist_output(raw: Any) -> Dict[str, Any]:
         strategy_policy=strategy_policy,
         market_regime_summary=str(raw.get("market_regime_summary") or ""),
         monitor_entry_policy=(
-            normalize_monitor_entry_policy(raw_monitor_entry_policy)[0].to_dict()
+            build_monitor_entry_policy_bundle(
+                threshold_policy=normalize_monitor_entry_policy(raw_monitor_entry_policy)[0],
+                playbook=raw.get("playbook", "defensive"),  # type: ignore[arg-type]
+                monitor_guidance=raw.get("monitor_guidance", "defensive_exit"),  # type: ignore[arg-type]
+                risk_tone=raw.get("risk_tone", "normal"),  # type: ignore[arg-type]
+                trade_aggressiveness=raw.get("trade_aggressiveness", "medium"),  # type: ignore[arg-type]
+                interpretation_policy=(
+                    dict(raw_monitor_entry_policy.get("interpretation_policy") or {})
+                    if isinstance(raw_monitor_entry_policy, dict)
+                    and isinstance(raw_monitor_entry_policy.get("interpretation_policy"), dict)
+                    else None
+                ),
+            )
             if raw_monitor_entry_policy not in (None, "")
             else {}
         ),

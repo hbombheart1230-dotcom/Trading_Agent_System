@@ -108,6 +108,13 @@ def test_coerce_strategist_output_normalizes_required_fields_and_keeps_additive_
     assert out["strategy_policy"]["monitor_policy"]["position_guards"]["min_hold_seconds"] == 60
     assert out["monitor_policy"] == {"min_hold_seconds": 600}
     assert out["monitor_entry_policy"]["volume_ratio_min"] == 0.72
+    assert out["monitor_entry_policy"]["threshold_policy"]["volume_ratio_min"] == 0.72
+    assert out["monitor_entry_policy"]["interpretation_policy"]["entry_style"] == "breakout"
+    assert "structure_hh_hl=intact" in list(out["monitor_entry_policy"]["interpretation_policy"]["preferred_checks"] or [])
+    assert "momentum_follow_through=strong" in list(out["monitor_entry_policy"]["interpretation_policy"]["preferred_checks"] or [])
+    assert "failed_breakout=confirmed" in list(out["monitor_entry_policy"]["interpretation_policy"]["blockers"] or [])
+    assert "structure_hh_hl" in list(out["monitor_entry_policy"]["interpretation_policy"]["evidence_focus"]["primary"] or [])
+    assert "momentum_follow_through" in list(out["monitor_entry_policy"]["interpretation_policy"]["evidence_focus"]["primary"] or [])
     assert out["policy_rationale"] == "Use a measured breakout policy."
     assert out["policy_validation_status"] == "ok"
     assert out["policy_fallback_used"] is False

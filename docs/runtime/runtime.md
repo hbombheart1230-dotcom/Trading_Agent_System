@@ -212,8 +212,8 @@
   - OpenRouter role routing:
     - `AI_STRATEGIST_MODEL=openrouter/auto` is the canonical strategist model key and lets Strategist use OpenRouter auto-routing across the full model pool
     - `AI_STRATEGIST_PROVIDER=openai` + `AI_STRATEGIST_ENDPOINT=https://openrouter.ai/api/v1/chat/completions` is the canonical strategist runtime path
-    - `OPENROUTER_MODEL_REPORTER_FINAL=openrouter/auto` and `OPENROUTER_MODEL_DAILY_REPORT=openrouter/auto` let end-of-day reporter summaries use the full routed pool
-    - `OPENROUTER_MODEL_OPERATOR_UI=openrouter/free` and `OPENROUTER_MODEL_REPORTER_INTRADAY=openrouter/free` keep frequent intraday/operator briefs on the free-model pool
+    - `OPENROUTER_MODEL_REPORTER_FINAL=openrouter/auto` is the primary end-of-day reporter review model knob
+    - `OPENROUTER_MODEL_OPERATOR_UI=openrouter/free` is the primary intraday/operator brief model knob
     - `OPENROUTER_DEFAULT_MODEL=openrouter/free` remains the generic low-cost fallback for simple LLM requests
 - Reporter passive analysis artifacts (`scripts/run_reporter_analysis_report.py`):
   - deterministic baseline remains canonical

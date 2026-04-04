@@ -1683,6 +1683,32 @@ def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_
             "require_vwap_reclaim": True,
             "require_rebound": True,
             "policy_source": "strategist",
+            "threshold_policy": {
+                "timeframe_minutes": 1,
+                "breakout_lookback": 5,
+                "volume_lookback": 5,
+                "volume_ratio_min": 1.25,
+                "max_extended_from_vwap_pct": 0.13,
+                "pullback_min_pct": 0.008,
+                "reclaim_tolerance_pct": 0.0015,
+                "breakout_buffer_pct": 0.0,
+                "intent_cooldown_sec": 0,
+                "require_vwap_reclaim": True,
+                "require_rebound": True,
+                "policy_source": "strategist",
+            },
+            "interpretation_policy": {
+                "entry_style": "breakout",
+                "required_checks": ["volume_ok"],
+                "preferred_checks": ["breakout_ok"],
+                "relaxable_checks": ["reclaim_gate_ok"],
+                "priority_hints": {"volume": "high", "breakout": "high"},
+                "evidence_focus": {
+                    "primary": ["breakout_ok", "volume_ok"],
+                    "secondary": ["reclaim_gate_ok"],
+                },
+                "notes": ["explicit_breakout_policy"],
+            },
         },
         "commander_applied_policy_meta": {
             "policy_source": "strategist",
@@ -1701,6 +1727,16 @@ def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_
                     "volume_ratio_min": 1.25,
                     "pullback_min_pct": 0.008,
                     "policy_source": "strategist",
+                    "threshold_policy": {
+                        "timeframe_minutes": 1,
+                        "volume_ratio_min": 1.25,
+                        "pullback_min_pct": 0.008,
+                        "policy_source": "strategist",
+                    },
+                    "interpretation_policy": {
+                        "entry_style": "breakout",
+                        "required_checks": ["volume_ok"],
+                    },
                 },
                 "policy_source": "strategist",
                 "policy_validation_status": "ok",
@@ -1713,6 +1749,16 @@ def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_
                     "volume_ratio_min": 1.25,
                     "pullback_min_pct": 0.008,
                     "policy_source": "strategist",
+                    "threshold_policy": {
+                        "timeframe_minutes": 1,
+                        "volume_ratio_min": 1.25,
+                        "pullback_min_pct": 0.008,
+                        "policy_source": "strategist",
+                    },
+                    "interpretation_policy": {
+                        "entry_style": "breakout",
+                        "required_checks": ["volume_ok"],
+                    },
                 },
                 "policy_source": "strategist",
             },
@@ -1741,6 +1787,7 @@ def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_
     assert len(intents) == 1
     assert intents[0]["side"] == "BUY"
     monitor = out.get("monitor") or {}
+    monitor_output = out.get("monitor_output") or {}
     applied_policy = monitor.get("entry_applied_policy") or {}
     received_policy = monitor.get("entry_received_policy") or {}
     effective_policy = monitor.get("entry_effective_policy") or {}
@@ -1754,8 +1801,13 @@ def test_monitor_prefers_commander_applied_policy_over_strategist_monitor_entry_
     assert contract.get("contract_version") == "monitor_entry_policy_contract.v1"
     assert contract.get("selected_source") == "commander_applied_policy"
     assert (contract.get("selected_policy_schema") or {}).get("schema_version") == "monitor_entry_policy_schema_candidate.v1"
-    assert (contract.get("selected_policy_schema") or {}).get("available") is False
+    assert (contract.get("selected_policy_schema") or {}).get("available") is True
+    assert (contract.get("selected_policy_spec_health") or {}).get("schema_available") is True
+    assert isinstance((contract.get("selected_policy_spec_health") or {}).get("normalized_policy_spec_count"), int)
     assert (contract.get("sources") or {}).get("strategist_output.monitor_entry_policy", {}).get("available") is True
+    interpretation = monitor_output.get("policy_interpretation") or {}
+    assert interpretation.get("policy_schema_available") is True
+    assert interpretation.get("interpretation_basis") == "mixed"
     assert list(monitor.get("entry_effective_policy_deltas") or [])
     assert monitor.get("entry_triggered") is True
     assert monitor.get("entry_condition_path") == "breakout_path"
@@ -1854,15 +1906,19 @@ def test_monitor_scoring_shadow_mode_preserves_legacy_buy_and_records_score(monk
     assert isinstance(monitor.get("entry_score_breakdown"), dict)
     assert isinstance(monitor.get("entry_policy_interpretation"), dict)
     assert isinstance(monitor.get("entry_signal_evidence"), dict)
+    assert isinstance(monitor.get("entry_chart_structure_features"), dict)
     assert isinstance(monitor.get("entry_policy_interpreter_trace"), dict)
     assert isinstance(monitor.get("entry_policy_alignment_summary"), dict)
     assert isinstance(monitor.get("entry_policy_aware_gating"), dict)
+    assert isinstance(monitor.get("entry_chart_structure_decision_hint"), dict)
     assert isinstance((monitor.get("entry_policy_interpretation") or {}).get("required_checks"), list)
     assert isinstance(monitor_output.get("policy_interpretation"), dict)
     assert isinstance(monitor_output.get("signal_evidence"), dict)
+    assert isinstance(monitor_output.get("chart_structure_features"), dict)
     assert isinstance(monitor_output.get("policy_interpreter_trace"), dict)
     assert isinstance(monitor_output.get("policy_alignment_summary"), dict)
     assert isinstance(monitor_output.get("policy_aware_gating"), dict)
+    assert isinstance(monitor_output.get("chart_structure_decision_hint"), dict)
 
 
 def test_monitor_scoring_enabled_no_longer_blocks_legacy_buy_when_score_below_threshold(monkeypatch):
@@ -2129,6 +2185,7 @@ def test_monitor_uses_strategy_policy_monitor_contract(monkeypatch):
     assert contract.get("available") is False
     assert (contract.get("selected_policy_schema") or {}).get("schema_version") == "monitor_entry_policy_schema_candidate.v1"
     assert (contract.get("selected_policy_schema") or {}).get("available") is False
+    assert (contract.get("selected_policy_spec_health") or {}).get("schema_available") is False
 
 
 def test_monitor_hard_stop_triggers_before_wider_adaptive_stop(monkeypatch):

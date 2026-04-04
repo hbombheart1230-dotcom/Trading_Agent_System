@@ -1,94 +1,88 @@
-# Phase 5-3 Close Note - Policy-Driven Monitor Foundation
+# Phase 5-3 Close Note — Policy-Aware Monitor Foundation
 
-## 1. Goal
+## 1. Phase 5-3 Goal
 
-Phase 5-3의 원래 목표는 strategist가 정의한 전략(policy)을 Monitor가 직접 읽을 수 있게 만들어,
-Monitor를 threshold-heavy rule engine에서 policy-aware / policy-driven 방향으로 이동시키는 foundation을 만드는 것이었다.
+Phase 5-3 was the foundation step for moving the Monitor from a threshold-heavy reaction engine toward a policy-aware decision system.
 
-이 phase의 핵심은 final BUY/WAIT ownership을 즉시 완전히 옮기는 것이 아니라,
-정책 source, 해석 surface, evidence surface, narrow integration까지를 먼저 고정하는 데 있었다.
+The goal was not to replace final BUY/WAIT ownership in one step. The goal was to make the Monitor capable of reading strategist/commander policy through explicit contracts, interpretation surfaces, evidence surfaces, and a narrow integration path.
+
+In short:
+
+> Phase 5-3 moved the Monitor from a condition-only engine toward policy-aware decision readiness.
 
 ## 2. Background Problem
 
-Phase 5-3 시작 전 상태의 핵심 문제는 아래와 같았다.
+Phase 5-3 was intended to address the following problems:
 
-- entry 조건과 threshold가 많고 경직적이었다.
-- shadow scoring이 별도 decision layer처럼 보일 위험이 있었다.
-- policy sourcing과 provenance가 암묵적이었다.
-- Monitor 해석이 playbook fallback에 많이 의존했다.
-- evidence / trace / summary surface가 부족해서 non-UI consumer나 후속 wiring이 읽기 어려웠다.
+- Too many rigid thresholds and condition gates in the entry path.
+- Shadow scoring had grown close to a second decision layer.
+- Policy sourcing and provenance were implicit instead of explicit.
+- Monitor interpretation depended too heavily on playbook fallback.
+- Evidence, trace, and summary surfaces were too weak for explanation and downstream consumption.
 
 ## 3. What Phase 5-3 Completed
 
 ### A. Shadow scoring ownership cleanup
 
-shadow scoring은 독립 decision layer에서 내려오고, Monitor 내부 evidence/scoring helper로 재정의되었다.
+Shadow scoring was removed from the role of independent decision owner and redefined as an evidence/scoring helper.
 
-- scoring은 final BUY/WAIT owner가 아니다.
-- scoring은 signal evidence 계산과 trace 용도로 남는다.
+- Scoring is no longer a final BUY/WAIT owner.
+- Scoring now feeds evidence and trace surfaces only.
 
-### B. Evidence / interpretation / trace surfaces
+### B. Monitor explanation surface expansion
 
-이번 phase에서 아래 surface가 추가되었다.
+The following surfaces were added and connected:
 
 - `signal_evidence`
-  - reclaim / volume / pullback / breakout / confidence 관련 score, check, derived 상태를 담는 evidence surface
+  - Evidence surface for scores, checks, and derived signal state.
 - `policy_interpretation`
-  - policy를 Monitor가 읽기 쉬운 required / preferred / relaxable / blocker 축으로 정리한 interpretation surface
+  - Policy interpretation surface that organizes policy into required, preferred, relaxable, blocker, and priority dimensions.
 - `policy_interpreter_trace`
-  - interpretation과 evidence를 연결해서 현재 cycle의 pass/fail/alignment를 보여주는 trace surface
+  - Trace surface that connects interpretation and evidence at the current cycle.
 - `policy_alignment_summary`
-  - full trace를 compact하게 요약하는 summary surface
+  - Compact summary surface for alignment state, blockers, and failed checks.
 
-이 surface들은 final owner가 아니라 explanation / consumption surface다.
+### C. Policy-aware gating (narrow integration)
 
-### C. First narrow policy-aware gating integration
+A narrow policy-aware gating path was introduced for the reclaim near-ready breakout case only.
 
-policy-driven decision migration의 첫 integration으로, breakout 상황의 reclaim near-ready에 대해서만 매우 제한적인 완화가 도입되었다.
+- This is a narrow exception, not a broad relaxation framework.
+- Required failures, extension safety, and confidence conditions remain enforced.
+- Final ownership still stays with the legacy gate path.
 
-이 integration은 broad relaxation이 아니라 narrow policy-aware exception이다.
+### D. Policy source contract introduction
 
-- reclaim gate 한 종류만 제한적으로 고려한다.
-- required failure, extension, confidence, supporting path 같은 안전 조건은 그대로 유지한다.
-- threshold rewrite, multi-gate relaxation, required bypass는 하지 않는다.
-
-### D. Explicit policy sourcing contract
-
-Monitor가 policy source를 명시적으로 읽도록 아래 contract가 도입되었다.
+An explicit policy source contract was introduced:
 
 - `build_monitor_entry_policy_contract(...)`
 - `contract_version = "monitor_entry_policy_contract.v1"`
+
+The contract organizes:
+
 - `selected_source`
 - `selected_policy`
 - `source_priority`
 - `sources`
 
-이 contract는 Monitor가 어떤 source를 실제로 선택했는지와, 어떤 source들이 후보로 있었는지를 explicit하게 보여준다.
-
 ### E. Explicit policy consumer structure
 
-Monitor interpretation은 더 이상 playbook / notes 중심의 암묵적 해석기에만 머물지 않고,
-`entry_policy_contract.selected_policy`를 우선 읽는 explicit policy consumer 구조로 옮겨졌다.
+The Monitor interpretation path now prefers `entry_policy_contract.selected_policy` as its primary input.
 
-- explicit field가 있으면 그것을 우선 사용한다.
-- playbook / notes / rationale은 fallback으로 남는다.
+- Explicit selected policy fields are preferred.
+- `playbook`, `notes`, and older hints remain as fallback only.
 
-### F. Explicit interpretation field schema stabilization
+### F. Policy schema candidate introduction
 
-selected_policy의 loose field를 안정적으로 읽기 위해 normalized schema candidate가 추가되었다.
+A normalized schema candidate was introduced for explicit interpretation fields:
 
 - `normalize_monitor_entry_policy_schema(...)`
 - `schema_version = "monitor_entry_policy_schema_candidate.v1"`
 
-이 단계는 semantic expansion이 아니라 shape stabilization이다.
+Its role is to stabilize loose policy input into a normalized interpretation schema candidate without changing semantics.
 
-- loose string / list / tuple / set 입력을 list-like field로 정리한다.
-- partial dict를 known key 중심으로 정리한다.
-- 없는 의미를 새로 발명하지 않는다.
+## 4. Current System Structure
 
-## 4. Current Structure
-
-현재 5-3 종료 시점의 Monitor 구조는 아래와 같다.
+The current Phase 5-3 structure is:
 
 ```text
 policy sources
@@ -104,113 +98,110 @@ policy sources
 -> final BUY/WAIT
 ```
 
-중요한 점은 final BUY/WAIT owner가 아직 `legacy gates`라는 것이다.
+Important:
 
-5-3은 foundation / contract / narrow integration까지를 수행했고,
-full ownership migration까지는 의도적으로 가지 않았다.
+> The final decision owner is still the legacy gate path.
 
-## 5. Contracts, Schemas, and Surfaces
+## 5. Contract / Surface Summary
 
 ### Policy source contract
 
 - `monitor_entry_policy_contract.v1`
 
-이 contract는 policy source selection과 provenance를 explicit하게 고정한다.
-
 ### Policy schema candidate
 
 - `monitor_entry_policy_schema_candidate.v1`
 
-이 schema candidate는 `selected_policy`의 explicit interpretation field를 normalized shape로 안정화한다.
-
 ### Interpretation provenance
 
-`policy_interpretation`은 아래 provenance 성격 필드를 노출한다.
+The Monitor interpretation path now exposes provenance-oriented fields such as:
 
-- `interpretation_basis`
 - `contract_source`
+- `interpretation_basis`
 - `explicit_fields_used`
 - `policy_schema_available`
 - `policy_schema_version`
 - `policy_schema_raw_keys`
 
-즉 현재 cycle interpretation이 explicit policy에서 왔는지, fallback playbook인지, mixed인지가 드러난다.
+### Explanation surface
 
-### Alignment / explanation surfaces
+The following are explanation and interpretation surfaces, not final decision owners:
 
-아래 surface는 explanation / consumption 용도다.
+- evidence
+- trace
+- summary
+
+That includes:
 
 - `signal_evidence`
 - `policy_interpreter_trace`
 - `policy_alignment_summary`
 
-이들은 final decision owner가 아니다.
+## 6. Actual Runtime Observation
 
-## 6. Source of Truth and Responsibility Boundary
+Intraday verification during the latest market session showed the following:
 
-이번 phase는 새로운 source of truth를 만드는 단계가 아니었다.
+- The six core structures were stable in monitor-complete runs.
+- `selected_source` was centered on `commander_applied_policy`.
+- `interpretation_basis` was centered on `fallback_playbook`.
+- `policy_schema_available` was mostly `false`.
+- BUY and WAIT behavior looked natural and no abnormal entry path was observed.
+- `policy_aware_gating` produced almost no live candidates, which indicates sample scarcity rather than a confirmed branch defect.
 
-- source of truth:
-  - existing policy sources
-  - `entry_policy_contract.selected_policy`
-  - existing monitor checks and thresholds
-- interpretation / exposure layer:
-  - `selected_policy_schema`
-  - `policy_interpretation`
-  - `signal_evidence`
-  - `policy_interpreter_trace`
-  - `policy_alignment_summary`
-  - `policy_aware_gating`
+Key diagnosis:
 
-즉 5-3은 기존 truth를 policy-aware Monitor가 읽기 좋게 정리한 phase다.
+> The current `selected_policy` is still closer to a numeric threshold policy than to an explicit interpretation policy.
 
-## 7. Intentionally Not Done
+This means the policy-aware foundation is present and connected, but producer-side policy shape still has limited explicit interpretation content.
 
-이번 phase에서 의도적으로 하지 않은 것은 아래와 같다.
+## 7. What Phase 5-3 Did Not Do
 
-- final decision ownership을 legacy gate에서 완전히 옮기지 않았다.
-- broad multi-gate relaxation을 하지 않았다.
-- threshold rewrite를 하지 않았다.
-- required check bypass를 하지 않았다.
-- strategist policy generation 방식을 바꾸지 않았다.
-- commander ownership을 바꾸지 않았다.
-- runtime wiring을 하지 않았다.
-- UI / data_access 연결을 하지 않았다.
-- non-UI consumer 연결을 하지 않았다.
-- LLM summary / recommendation layer를 붙이지 않았다.
+Phase 5-3 intentionally did not do the following:
 
-즉 5-3은 foundation / contract / narrow integration까지이고, full migration은 아니다.
+- Final decision ownership migration away from legacy gates.
+- Broad policy-driven decision migration.
+- Threshold removal or threshold rewrite.
+- Required check bypass.
+- Strategist policy generation redesign.
+- Commander ownership redesign.
+- Runtime wiring into downstream consumers.
+- Non-UI consumer connection.
+- LLM summary or recommendation layering.
+
+Boundary statement:
+
+> Phase 5-3 is a foundation phase, not a full policy migration phase.
 
 ## 8. Why Phase 5-3 Can Be Closed Here
 
-Phase 5-3은 아래 이유로 close 가능하다.
+Phase 5-3 can be closed because the foundation goals have been met:
 
-- policy source contract가 생겼다.
-- `selected_policy` preferred 구조가 생겼다.
-- normalized schema candidate가 생겼다.
-- interpretation / evidence / trace / summary / narrow gating이 모두 연결되었다.
-- final owner는 legacy gate로 남겨 안전성을 유지했다.
+- A policy source contract exists.
+- An explicit policy consumer path exists.
+- A schema candidate exists.
+- Interpretation, evidence, trace, and summary surfaces are connected.
+- A narrow policy-aware integration path exists.
+- Runtime stability has been verified in live artifacts.
 
-따라서 5-3의 핵심 목표는 "policy-driven Monitor foundation 구축" 관점에서 달성되었다고 볼 수 있다.
+Therefore:
 
-이후 남은 작업은 5-3 핵심 구현이라기보다 아래 성격에 더 가깝다.
+> Phase 5-3 achieved its goal from a foundation-building perspective.
 
-- contract freeze 이후 wiring
-- ownership transition planning
-- broader policy-driven decision migration
-- later-stage phase 5-4 expansion
+What remains after this point is better treated as:
 
-## 9. Natural Next Steps
+- producer-side policy shaping
+- contract hardening after the candidate stage
+- runtime wiring and ownership transition
+- broader decision migration in later phases
 
-이번 문서에서 구현하지는 않지만, 다음으로 자연스러운 작업은 아래와 같다.
+## 9. Next-Step Preview
 
-- runtime wiring / non-UI consumer connection
-- ownership transition planning
-- policy schema formalization beyond candidate
-- broader policy-driven decision migration
-- phase 5-4 planning
+Natural next steps after Phase 5-3 include:
 
-## 10. One-Line Conclusion
+- producer-side policy shape design for strategist and commander
+- explicit interpretation policy content
+- chart structure features under Phase 5-3-2
+- ownership and wiring design under Phase 5-4
+- gradual decision ownership migration
 
-Phase 5-3은 policy-driven Monitor로 가기 위한 foundation, contract, provenance, explanation surface, narrow policy-aware integration까지를 확보한 상태이며,
-final BUY/WAIT ownership migration은 다음 phase의 작업으로 남겨 두었다.
+These are follow-on phases, not unfinished Phase 5-3 core work.

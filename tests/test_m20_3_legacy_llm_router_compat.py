@@ -80,13 +80,25 @@ def test_m20_3_text_router_resolves_role_specific_auto_and_free_models(monkeypat
     monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "free")
     monkeypatch.setenv("OPENROUTER_MODEL_OPERATOR_UI", "free")
     monkeypatch.setenv("OPENROUTER_MODEL_REPORTER_FINAL", "auto")
-    monkeypatch.setenv("OPENROUTER_MODEL_DAILY_REPORT", "auto")
 
     router = LLMRouter(client=None)  # type: ignore[arg-type]
 
     assert router.resolve("operator_ui").model == "openrouter/free"
     assert router.resolve("reporter_final").model == "openrouter/auto"
     assert router.resolve("daily_report").model == "openrouter/auto"
+    assert router.resolve("reporter_intraday").model == "openrouter/free"
+
+
+def test_m20_3_removed_daily_and_intraday_alias_envs_no_longer_drive_routes(monkeypatch):
+    from libs.llm.llm_router import LLMRouter
+
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "free")
+    monkeypatch.setenv("OPENROUTER_MODEL_DAILY_REPORT", "auto")
+    monkeypatch.setenv("OPENROUTER_MODEL_REPORTER_INTRADAY", "auto")
+
+    router = LLMRouter(client=None)  # type: ignore[arg-type]
+
+    assert router.resolve("daily_report").model == "openrouter/free"
     assert router.resolve("reporter_intraday").model == "openrouter/free"
 
 

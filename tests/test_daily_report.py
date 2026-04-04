@@ -1,5 +1,7 @@
-from pathlib import Path
 import json
+from pathlib import Path
+
+import scripts.generate_daily_report as daily_script
 from libs.reporting.llm_artifacts import daily_artifact_paths
 from libs.reporting.daily_report import generate_daily_report as compat_generate_daily_report
 from scripts.generate_daily_report import generate_daily_report
@@ -161,7 +163,116 @@ def test_generate_daily_report_surfaces_operator_summary_snapshot(tmp_path: Path
     assert snapshot["available"] is True
     assert snapshot["executive_summary"]["system_status"] == "GREEN"
     assert snapshot["executive_summary"]["summary_lines"][0].startswith("runs=12")
+    assert data["policy_surface_quality_summary"]["schema_version"] == "policy_surface_quality_summary.v1"
+    assert data["policy_surface_quality_executive_summary"]["schema_version"] == "policy_surface_quality_executive_summary.v1"
+    assert data["chart_structure_decision_hint_summary"]["schema_version"] == "chart_structure_decision_hint_summary.v1"
+    assert data["chart_structure_decision_hint_executive_summary"]["schema_version"] == "chart_structure_decision_hint_executive_summary.v1"
+    assert "policy_surface_quality_source" in data
+    assert "chart_structure_decision_hint_source" in data
     md_text = md.read_text(encoding="utf-8")
     assert "## Operator Summary Snapshot" in md_text
+    assert "## Policy Surface Executive Summary" in md_text
+    assert "## Policy Surface Quality" in md_text
+    assert "## Chart Structure Decision Hint Executive Summary" in md_text
+    assert "## Chart Structure Decision Hint" in md_text
     assert "## Top Issues" in md_text
     assert "## Recommended Operator Actions" in md_text
+
+
+def test_generate_daily_report_keeps_working_when_policy_surface_summary_unavailable(tmp_path: Path, monkeypatch) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps({"ts": "2026-04-03T01:00:00+00:00", "run_id": "r1", "stage": "monitor", "event": "summary", "payload": {}}) + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "reports"
+
+    def fake_build_phase_runtime_health(**kwargs):
+        raise FileNotFoundError("no canonical monitor runs")
+
+    monkeypatch.setattr(daily_script, "build_phase_5_2_5_3_runtime_health", fake_build_phase_runtime_health)
+
+    md, js = generate_daily_report(events, out_dir, day="2026-04-03")
+
+    data = json.loads(js.read_text(encoding="utf-8"))
+    assert data["policy_surface_quality_summary"]["schema_version"] == "policy_surface_quality_summary.v1"
+    assert data["policy_surface_quality_executive_summary"]["status"] == "unknown"
+    assert data["chart_structure_decision_hint_summary"]["schema_version"] == "chart_structure_decision_hint_summary.v1"
+    assert data["chart_structure_decision_hint_executive_summary"]["status"] == "unknown"
+    assert data["policy_surface_quality_summary"]["run_count"] == 0
+    assert data["policy_surface_quality_source"]["run_count"] == 0
+    assert "no_canonical_monitor_runs_found" in list(data["policy_surface_quality_source"]["notes"])
+    md_text = md.read_text(encoding="utf-8")
+    assert "## Policy Surface Executive Summary" in md_text
+    assert "## Policy Surface Quality" in md_text
+    assert "## Chart Structure Decision Hint Executive Summary" in md_text
+    assert "## Chart Structure Decision Hint" in md_text
+
+
+def test_generate_daily_report_renders_chart_structure_applied_examples(tmp_path: Path, monkeypatch) -> None:
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps({"ts": "2026-04-03T01:00:00+00:00", "run_id": "r1", "stage": "monitor", "event": "summary", "payload": {}}) + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "reports"
+
+    def fake_build_phase_runtime_health(**kwargs):
+        return {
+            "schema_version": "phase_5_runtime_health_check.v1",
+            "run_count": 3,
+            "policy_surface_quality_summary": {
+                "schema_version": "policy_surface_quality_summary.v1",
+                "run_count": 3,
+                "schema_available_rate": 1.0,
+                "normalized_policy_rate": 1.0,
+                "invalid_spec_rate": 0.0,
+                "total_invalid_specs": 0,
+                "top_invalid_features": [],
+                "top_invalid_states": [],
+                "validation_notes_counts": {},
+                "invalid_specs_by_selected_source": {},
+                "validation_notes_by_interpretation_basis": {},
+                "notes": [],
+            },
+            "chart_structure_decision_hint_summary": {
+                "schema_version": "chart_structure_decision_hint_summary.v1",
+                "run_count": 3,
+                "available_run_count": 2,
+                "applied_count": 1,
+                "applied_rate": 0.5,
+                "mode_counts": {"block": 1, "none": 1},
+                "blocking_feature_counts": {"support_holding": 1},
+                "top_blocking_features": ["support_holding"],
+                "applied_run_ids": ["run-pullback-guard"],
+                "reason_counts_when_applied": {"pullback_reversal_structure_guard_blocked": 1},
+                "entry_style_counts_when_applied": {"pullback": 1},
+                "decision_counts_when_applied": {"WAIT": 1},
+                "applied_examples": [
+                    {
+                        "run_id": "run-pullback-guard",
+                        "symbol": "005930",
+                        "entry_style": "pullback",
+                        "mode": "block",
+                        "legacy_decision": "BUY",
+                        "legacy_reason": "pullback_volume_path_ready",
+                        "final_decision": "WAIT",
+                        "final_reason": "pullback_reversal_structure_guard_blocked",
+                        "reason_transition": "pullback_volume_path_ready -> pullback_reversal_structure_guard_blocked",
+                        "blocking_features": ["support_holding=lost"],
+                        "matched_features": [],
+                    }
+                ],
+                "notes": [],
+            },
+        }
+
+    monkeypatch.setattr(daily_script, "build_phase_5_2_5_3_runtime_health", fake_build_phase_runtime_health)
+
+    md, js = generate_daily_report(events, out_dir, day="2026-04-03")
+
+    data = json.loads(js.read_text(encoding="utf-8"))
+    assert data["chart_structure_decision_hint_summary"]["applied_examples"][0]["run_id"] == "run-pullback-guard"
+    md_text = md.read_text(encoding="utf-8")
+    assert "## Chart Structure Decision Hint Applied Examples" in md_text
+    assert "pullback_volume_path_ready -> pullback_reversal_structure_guard_blocked" in md_text

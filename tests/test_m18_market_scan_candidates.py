@@ -83,13 +83,44 @@ def test_m18_strategist_generates_monitor_entry_policy_baseline(monkeypatch):
     assert isinstance(strategist_output.get("monitor_entry_policy"), dict)
     assert strategist_output["monitor_entry_policy"]["volume_ratio_min"] == 0.68
     assert strategist_output["monitor_entry_policy"]["pullback_min_pct"] == 0.008
+    assert strategist_output["monitor_entry_policy"]["threshold_policy"]["volume_ratio_min"] == 0.68
+    assert strategist_output["monitor_entry_policy"]["interpretation_policy"]["entry_style"] == strategist_output.get("playbook")
+    assert "required_checks" in strategist_output["monitor_entry_policy"]["interpretation_policy"]
     assert isinstance(strategist_output.get("policy_rationale"), str)
     assert isinstance(strategist_output.get("market_regime_summary"), str)
     assert isinstance(monitor_policy.get("entry_policy"), dict)
     assert monitor_policy["entry_policy"]["volume_ratio_min"] == 0.68
+    assert monitor_policy["entry_policy"]["threshold_policy"]["volume_ratio_min"] == 0.68
+    assert monitor_policy["entry_policy"]["interpretation_policy"]["entry_style"] == strategist_output.get("playbook")
     assert isinstance(strategist_output.get("scanner_bias_context"), dict)
     assert isinstance((strategy_policy.get("scanner_policy") or {}).get("scanner_bias"), dict)
     assert strategist_output.get("scanner_bias_summary", {}).get("summary")
+
+
+def test_m18_strategist_generates_structure_aware_interpretation_policy(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    out = strategist_node(
+        {
+            "runtime_phase": "session",
+            "candidate_symbols": ["111111", "222222", "333333"],
+            "ai_strategist_output": {
+                "playbook": "breakout",
+                "monitor_guidance": "hold_through_noise",
+                "risk_tone": "normal",
+                "trade_aggressiveness": "high",
+                "policy_source": "strategist",
+            },
+        }
+    )
+
+    interpretation = ((out.get("strategist_output") or {}).get("monitor_entry_policy") or {}).get("interpretation_policy") or {}
+
+    assert interpretation.get("entry_style") == "breakout"
+    assert "structure_hh_hl=intact" in list(interpretation.get("preferred_checks") or [])
+    assert "momentum_follow_through=strong" in list(interpretation.get("preferred_checks") or [])
+    assert "failed_breakout=confirmed" in list(interpretation.get("blockers") or [])
+    assert "momentum_decay=strong" in list(interpretation.get("blockers") or [])
+    assert "structure_hh_hl" in list((interpretation.get("evidence_focus") or {}).get("primary") or [])
 
 
 def test_m18_strategist_invalid_monitor_entry_policy_falls_back_with_trace(monkeypatch):

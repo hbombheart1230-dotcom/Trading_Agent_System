@@ -1,10 +1,19 @@
 from libs.runtime.intraday_monitor_signals import (
+    _build_chart_structure_decision_hint,
+    _build_monitor_policy_alignment_summary,
     _build_monitor_policy_aware_gating,
     _build_monitor_policy_interpretation,
+    _build_monitor_policy_interpreter_trace,
     evaluate_intraday_entry_signal,
     resolve_intraday_entry_policy,
 )
-from libs.runtime.monitor_policy import MonitorEntryPolicy, normalize_monitor_entry_policy_schema
+from libs.runtime.monitor_policy import (
+    MonitorEntryPolicy,
+    build_monitor_entry_policy_bundle,
+    normalize_monitor_entry_policy_schema,
+    normalize_policy_check_spec,
+    normalize_policy_check_specs,
+)
 from pathlib import Path
 
 
@@ -402,9 +411,13 @@ def test_intraday_entry_scoring_disabled_keeps_legacy_decision(monkeypatch) -> N
 def test_intraday_entry_policy_interpretation_is_empty_safe_without_explicit_policy() -> None:
     out = evaluate_intraday_entry_signal(_rows_breakout())
 
+    chart_features = out.get("chart_structure_features") or {}
     interpretation = out.get("policy_interpretation") or {}
     trace = out.get("policy_interpreter_trace") or {}
     summary = out.get("policy_alignment_summary") or {}
+    assert chart_features.get("schema_version") == "chart_structure_features.v1"
+    assert chart_features.get("available") is True
+    assert isinstance((chart_features.get("structure") or {}).get("structure_hh_hl"), str)
     assert interpretation.get("policy_available") is False
     assert interpretation.get("entry_style") is None
     assert interpretation.get("required_checks") == []
@@ -505,7 +518,7 @@ def test_monitor_policy_interpretation_prefers_explicit_selected_policy_fields()
     assert interpretation.get("contract_source") == "commander_applied_policy"
     assert interpretation.get("policy_schema_available") is True
     assert interpretation.get("policy_schema_version") == "monitor_entry_policy_schema_candidate.v1"
-    assert interpretation.get("interpretation_basis") == "explicit_policy"
+    assert interpretation.get("interpretation_basis") in {"explicit_policy", "mixed"}
     assert interpretation.get("required_checks") == ["volume_ok"]
     assert interpretation.get("preferred_checks") == ["breakout_ok"]
     assert interpretation.get("relaxable_checks") == ["reclaim_gate_ok"]
@@ -580,6 +593,62 @@ def test_intraday_entry_explicit_policy_contract_changes_interpretation_basis_wi
     assert (explicit.get("policy_interpretation") or {}).get("interpretation_basis") == "mixed"
 
 
+def test_monitor_policy_interpretation_accepts_high_level_feature_names_without_error() -> None:
+    interpretation = _build_monitor_policy_interpretation(
+        effective_policy=MonitorEntryPolicy.from_mapping(
+            {
+                "entry_volume_ratio_min": 1.0,
+                "policy_source": "strategist",
+            }
+        ),
+        frame={"playbook": "breakout"},
+        policy_contract={
+            "selected_source": "commander_applied_policy",
+            "selected_policy": {
+                "entry_style": "breakout",
+                "preferred_checks": ["structure_hh_hl=intact", "momentum_follow_through=strong"],
+                "blockers": ["failed_breakout=confirmed", "momentum_decay=strong"],
+                "evidence_focus": {
+                    "primary": ["structure_hh_hl", "momentum_follow_through"],
+                    "secondary": ["failed_breakout"],
+                },
+            },
+        },
+    )
+
+    assert interpretation.get("policy_schema_available") is True
+    assert interpretation.get("interpretation_basis") in {"explicit_policy", "mixed"}
+    assert "structure_hh_hl=intact" in list(interpretation.get("preferred_checks") or [])
+    assert "failed_breakout=confirmed" in list(interpretation.get("blockers") or [])
+    assert "structure_hh_hl" in list(((interpretation.get("evidence_focus") or {}).get("primary")) or [])
+
+
+def test_monitor_policy_interpretation_safe_degrades_when_explicit_structure_specs_are_invalid() -> None:
+    interpretation = _build_monitor_policy_interpretation(
+        effective_policy=MonitorEntryPolicy.from_mapping({"policy_source": "strategist"}),
+        frame={"playbook": "breakout"},
+        policy_contract={
+            "selected_source": "commander_applied_policy",
+            "selected_policy": {
+                "interpretation_policy": {
+                    "entry_style": "breakout",
+                    "preferred_checks": ["struture_hh_hl=intact", "momentum_follow_through=very_strong"],
+                    "blockers": ["unknown_feature=active"],
+                },
+            },
+        },
+    )
+
+    assert interpretation.get("policy_schema_available") is True
+    assert interpretation.get("interpretation_basis") in {"explicit_policy", "mixed"}
+    assert "breakout_ok" in list(interpretation.get("preferred_checks") or [])
+    assert "volume_ok" in list(interpretation.get("preferred_checks") or [])
+    assert "reclaim_gate_ok" in list(interpretation.get("preferred_checks") or [])
+    assert "failed_breakout=confirmed" not in list(interpretation.get("blockers") or [])
+    assert any("invalid_feature" in note for note in list(interpretation.get("spec_validation_notes") or []))
+    assert any("invalid_state" in note for note in list(interpretation.get("spec_validation_notes") or []))
+
+
 def test_normalize_monitor_entry_policy_schema_stabilizes_loose_selected_policy_fields() -> None:
     schema = normalize_monitor_entry_policy_schema(
         {
@@ -620,6 +689,280 @@ def test_normalize_monitor_entry_policy_schema_stabilizes_loose_selected_policy_
     assert "required_checks" in list(schema.get("raw_keys") or [])
 
 
+def test_normalize_monitor_entry_policy_schema_prefers_nested_interpretation_policy() -> None:
+    schema = normalize_monitor_entry_policy_schema(
+        {
+            "threshold_policy": {
+                "volume_ratio_min": 1.0,
+                "require_vwap_reclaim": True,
+            },
+            "interpretation_policy": {
+                "entry_style": "breakout",
+                "required_checks": ("volume_ok",),
+                "priority_hints": {"volume": "high", "breakout": "high"},
+                "evidence_focus": {"primary": "breakout_ok"},
+                "notes": "explicit_breakout_bias",
+            },
+        }
+    )
+
+    assert schema.get("available") is True
+    assert schema.get("entry_style") == "breakout"
+    assert schema.get("required_checks") == ["volume_ok"]
+    assert schema.get("priority_hints", {}).get("volume_priority") == "high"
+    assert schema.get("priority_hints", {}).get("breakout_priority") == "high"
+    assert schema.get("evidence_focus") == {
+        "primary": ["breakout_ok"],
+        "secondary": [],
+    }
+    assert schema.get("notes") == ["explicit_breakout_bias"]
+    assert "entry_style" in list(schema.get("raw_keys") or [])
+
+
+def test_normalize_policy_check_spec_accepts_valid_high_level_feature_state() -> None:
+    spec = normalize_policy_check_spec("momentum_follow_through=strong")
+
+    assert spec["feature_name"] == "momentum_follow_through"
+    assert spec["expected_state"] == "strong"
+    assert spec["feature_level"] == "high_level"
+    assert spec["is_valid"] is True
+    assert spec["normalized_spec"] == "momentum_follow_through=strong"
+
+
+def test_normalize_policy_check_spec_keeps_bare_feature_name() -> None:
+    spec = normalize_policy_check_spec("breakout_ok")
+
+    assert spec["feature_name"] == "breakout_ok"
+    assert spec["expected_state"] is None
+    assert spec["feature_level"] == "low_level"
+    assert spec["is_valid"] is True
+    assert spec["normalized_spec"] == "breakout_ok"
+
+
+def test_normalize_policy_check_spec_marks_invalid_feature_and_state_safely() -> None:
+    invalid_feature = normalize_policy_check_spec("struture_hh_hl=intact")
+    invalid_state = normalize_policy_check_spec("momentum_decay=very_strong")
+
+    assert invalid_feature["is_valid"] is False
+    assert invalid_feature["validation_notes"] == ["invalid_feature"]
+    assert invalid_state["is_valid"] is False
+    assert invalid_state["validation_notes"] == ["invalid_state"]
+
+
+def test_normalize_policy_check_specs_drops_invalid_specs_without_failing() -> None:
+    out = normalize_policy_check_specs(
+        [
+            "structure_hh_hl=intact",
+            "struture_hh_hl=intact",
+            "momentum_decay=very_strong",
+            "breakout_ok",
+        ],
+        field_name="preferred_checks",
+    )
+
+    assert out["normalized_specs"] == ["structure_hh_hl=intact", "breakout_ok"]
+    assert len(out["invalid_specs"]) == 2
+    assert any("struture_hh_hl=intact" in note for note in list(out["validation_notes"] or []))
+    assert any("momentum_decay=very_strong" in note for note in list(out["validation_notes"] or []))
+
+
+def test_build_monitor_entry_policy_bundle_keeps_thresholds_and_adds_interpretation_policy() -> None:
+    bundle = build_monitor_entry_policy_bundle(
+        threshold_policy={
+            "volume_ratio_min": 0.72,
+            "pullback_min_pct": 0.01,
+            "require_vwap_reclaim": True,
+            "require_rebound": True,
+            "policy_source": "strategist",
+        },
+        playbook="pullback",
+        monitor_guidance="defensive_exit",
+        risk_tone="normal",
+        trade_aggressiveness="medium",
+    )
+
+    assert bundle.get("volume_ratio_min") == 0.72
+    assert (bundle.get("threshold_policy") or {}).get("volume_ratio_min") == 0.72
+    assert (bundle.get("interpretation_policy") or {}).get("entry_style") == "pullback"
+    assert "reclaim_gate_ok" in list((bundle.get("interpretation_policy") or {}).get("required_checks") or [])
+    assert "rebound_ok" in list((bundle.get("interpretation_policy") or {}).get("required_checks") or [])
+    assert "support_holding=holding" in list((bundle.get("interpretation_policy") or {}).get("preferred_checks") or [])
+    assert "trend_regime=trending" in list((bundle.get("interpretation_policy") or {}).get("preferred_checks") or [])
+    assert "ma_alignment_state=bullish" in list((bundle.get("interpretation_policy") or {}).get("preferred_checks") or [])
+    assert "structure_hh_hl=broken" in list((bundle.get("interpretation_policy") or {}).get("blockers") or [])
+    assert "support_holding=lost" in list((bundle.get("interpretation_policy") or {}).get("blockers") or [])
+
+
+def test_build_monitor_entry_policy_bundle_adds_structure_aware_specs_for_breakout_and_defensive() -> None:
+    breakout_bundle = build_monitor_entry_policy_bundle(
+        threshold_policy={"volume_ratio_min": 1.0, "policy_source": "strategist"},
+        playbook="breakout",
+        monitor_guidance="hold_through_noise",
+        risk_tone="normal",
+        trade_aggressiveness="high",
+    )
+    defensive_bundle = build_monitor_entry_policy_bundle(
+        threshold_policy={"volume_ratio_min": 0.68, "policy_source": "strategist"},
+        playbook="defensive",
+        monitor_guidance="defensive_exit",
+        risk_tone="conservative",
+        trade_aggressiveness="medium",
+    )
+
+    breakout_interpretation = breakout_bundle.get("interpretation_policy") or {}
+    defensive_interpretation = defensive_bundle.get("interpretation_policy") or {}
+
+    assert "structure_hh_hl=intact" in list(breakout_interpretation.get("preferred_checks") or [])
+    assert "momentum_follow_through=strong" in list(breakout_interpretation.get("preferred_checks") or [])
+    assert "failed_breakout=confirmed" in list(breakout_interpretation.get("blockers") or [])
+    assert "momentum_decay=strong" in list(breakout_interpretation.get("blockers") or [])
+    assert "structure_hh_hl" in list((breakout_interpretation.get("evidence_focus") or {}).get("primary") or [])
+    assert "momentum_follow_through" in list((breakout_interpretation.get("evidence_focus") or {}).get("primary") or [])
+
+    assert "trend_regime=transition" in list(defensive_interpretation.get("preferred_checks") or [])
+    assert "structure_range_compression=moderate" in list(defensive_interpretation.get("preferred_checks") or [])
+    assert "failed_breakout=confirmed" in list(defensive_interpretation.get("blockers") or [])
+    assert "momentum_decay=strong" in list(defensive_interpretation.get("blockers") or [])
+    assert "trend_regime" in list((defensive_interpretation.get("evidence_focus") or {}).get("primary") or [])
+
+
+def test_build_monitor_entry_policy_bundle_safe_drops_invalid_structure_specs() -> None:
+    bundle = build_monitor_entry_policy_bundle(
+        threshold_policy={"volume_ratio_min": 1.0, "policy_source": "strategist"},
+        playbook="breakout",
+        interpretation_policy={
+            "entry_style": "breakout",
+            "preferred_checks": [
+                "structure_hh_hl=intact",
+                "struture_hh_hl=intact",
+                "momentum_follow_through=very_strong",
+            ],
+            "blockers": [
+                "failed_breakout=confirmed",
+                "unknown_feature=active",
+            ],
+            "evidence_focus": {
+                "primary": ["structure_hh_hl", "unknown_feature", "momentum_follow_through=strong"],
+            },
+        },
+    )
+
+    interpretation = bundle.get("interpretation_policy") or {}
+
+    assert interpretation.get("preferred_checks") == ["structure_hh_hl=intact"]
+    assert interpretation.get("blockers") == ["failed_breakout=confirmed"]
+    assert (interpretation.get("evidence_focus") or {}).get("primary") == [
+        "structure_hh_hl",
+        "momentum_follow_through",
+    ]
+    assert len(list(interpretation.get("invalid_policy_specs") or [])) == 3
+    assert any("preferred_checks:struture_hh_hl=intact:invalid_feature" == note for note in list(interpretation.get("spec_validation_notes") or []))
+    assert any("preferred_checks:momentum_follow_through=very_strong:invalid_state" == note for note in list(interpretation.get("spec_validation_notes") or []))
+    assert any("blockers:unknown_feature=active:invalid_feature" == note for note in list(interpretation.get("spec_validation_notes") or []))
+
+
+def test_monitor_policy_interpreter_trace_reads_high_level_feature_states() -> None:
+    interpretation = _build_monitor_policy_interpretation(
+        effective_policy=MonitorEntryPolicy.from_mapping({"policy_source": "strategist"}),
+        frame={"playbook": "breakout"},
+        policy_contract={
+            "selected_source": "commander_applied_policy",
+            "selected_policy": {
+                "entry_style": "breakout",
+                "preferred_checks": ["structure_hh_hl=intact", "momentum_follow_through=strong"],
+                "blockers": ["failed_breakout=confirmed"],
+                "evidence_focus": {
+                    "primary": ["structure_hh_hl", "momentum_follow_through"],
+                    "secondary": ["failed_breakout"],
+                },
+            },
+        },
+    )
+    trace = _build_monitor_policy_interpreter_trace(
+        policy_interpretation=interpretation,
+        signal_evidence={},
+        chart_structure_features={
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "structure": {"structure_hh_hl": "intact"},
+            "trend_alignment": {},
+            "support_resistance": {"failed_breakout": "none"},
+            "continuity_momentum": {"momentum_follow_through": "strong"},
+            "notes": [],
+        },
+    )
+
+    preferred_rows = {row["name"]: row for row in list((trace.get("check_status") or {}).get("preferred") or [])}
+    blocker_rows = {row["name"]: row for row in list((trace.get("check_status") or {}).get("blockers") or [])}
+
+    assert trace.get("available") is True
+    assert preferred_rows["structure_hh_hl"]["status"] == "pass"
+    assert preferred_rows["structure_hh_hl"]["actual_state"] == "intact"
+    assert preferred_rows["structure_hh_hl"]["source"] == "chart_structure_features.structure.structure_hh_hl"
+    assert preferred_rows["momentum_follow_through"]["status"] == "pass"
+    assert blocker_rows["failed_breakout"]["status"] == "inactive"
+    assert "chart_structure_features_consumed" in list(trace.get("notes") or [])
+
+
+def test_monitor_policy_interpreter_trace_marks_high_level_feature_unknown_when_unavailable() -> None:
+    trace = _build_monitor_policy_interpreter_trace(
+        policy_interpretation={
+            "policy_available": True,
+            "entry_style": "breakout",
+            "preferred_checks": ["trend_regime=trending"],
+            "evidence_focus": {"primary": ["trend_regime"], "secondary": []},
+            "notes": [],
+        },
+        signal_evidence={},
+        chart_structure_features={
+            "schema_version": "chart_structure_features.v1",
+            "available": False,
+            "structure": {},
+            "trend_alignment": {},
+            "support_resistance": {},
+            "continuity_momentum": {},
+            "notes": ["insufficient_candles"],
+        },
+    )
+
+    preferred_rows = list((trace.get("check_status") or {}).get("preferred") or [])
+    assert trace.get("available") is True
+    assert preferred_rows[0]["name"] == "trend_regime"
+    assert preferred_rows[0]["expected_state"] == "trending"
+    assert preferred_rows[0]["status"] == "unknown"
+
+
+def test_monitor_policy_alignment_summary_surfaces_high_level_feature_mismatch() -> None:
+    trace = _build_monitor_policy_interpreter_trace(
+        policy_interpretation={
+            "policy_available": True,
+            "entry_style": "breakout",
+            "preferred_checks": ["structure_hh_hl=intact"],
+            "blockers": ["failed_breakout=confirmed"],
+            "evidence_focus": {"primary": ["structure_hh_hl"], "secondary": ["failed_breakout"]},
+            "notes": [],
+        },
+        signal_evidence={},
+        chart_structure_features={
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "structure": {"structure_hh_hl": "broken"},
+            "trend_alignment": {},
+            "support_resistance": {"failed_breakout": "confirmed"},
+            "continuity_momentum": {},
+            "notes": [],
+        },
+    )
+    summary = _build_monitor_policy_alignment_summary(policy_interpreter_trace=trace)
+
+    assert summary.get("available") is True
+    assert summary.get("alignment_state") == "misaligned"
+    assert summary.get("primary_blocker") == "failed_breakout"
+    assert "structure_hh_hl" in list(summary.get("top_failed_preferred_checks") or [])
+    assert "failed_breakout" in list(summary.get("secondary_blockers") or [])
+    assert "higher_level_feature_mismatch_present" in list(summary.get("summary_notes") or [])
+
+
 def test_intraday_entry_policy_interpreter_trace_can_show_primary_blocker_without_changing_wait() -> None:
     rows = _rows_pullback_rebound()
     rows[-1]["close"] = 100.1
@@ -649,6 +992,303 @@ def test_intraday_entry_policy_interpreter_trace_can_show_primary_blocker_withou
     assert out["triggered"] is False
     assert out["decision"] == "WAIT"
     assert out["reason"] == "below_vwap_reclaim_not_ready"
+
+
+def test_intraday_entry_high_level_feature_policy_enriches_trace_without_changing_decision() -> None:
+    baseline = evaluate_intraday_entry_signal(_rows_breakout())
+    explicit = evaluate_intraday_entry_signal(
+        _rows_breakout(),
+        policy_contract={
+            "selected_source": "commander_applied_policy",
+            "selected_policy": {
+                "entry_style": "breakout",
+                "preferred_checks": ["structure_hh_hl=intact", "momentum_follow_through=strong"],
+                "blockers": ["failed_breakout=confirmed"],
+                "evidence_focus": {
+                    "primary": ["structure_hh_hl", "momentum_follow_through"],
+                    "secondary": ["failed_breakout"],
+                },
+                "notes": ["structure_aware_breakout_context"],
+            },
+        },
+    )
+
+    trace = explicit.get("policy_interpreter_trace") or {}
+    summary = explicit.get("policy_alignment_summary") or {}
+    preferred_rows = {row["name"]: row for row in list((trace.get("check_status") or {}).get("preferred") or [])}
+
+    assert explicit.get("triggered") == baseline.get("triggered")
+    assert explicit.get("decision") == baseline.get("decision")
+    assert preferred_rows["structure_hh_hl"]["status"] == "pass"
+    assert preferred_rows["momentum_follow_through"]["status"] == "pass"
+    assert summary.get("alignment_state") == "aligned"
+    assert "chart_structure_features_consumed" in list(trace.get("notes") or [])
+
+
+def test_chart_structure_decision_hint_blocks_breakout_on_confirmed_failed_breakout() -> None:
+    hint = _build_chart_structure_decision_hint(
+        policy_interpretation={
+            "policy_available": True,
+            "entry_style": "breakout",
+        },
+        signal_evidence={
+            "checks": {
+                "breakout_path_ok": True,
+                "confidence_ok": True,
+            }
+        },
+        chart_structure_features={
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "structure": {"structure_hh_hl": "intact"},
+            "trend_alignment": {},
+            "support_resistance": {"failed_breakout": "confirmed"},
+            "continuity_momentum": {"momentum_follow_through": "strong"},
+            "notes": [],
+        },
+        legacy_triggered=True,
+        legacy_decision="BUY",
+        legacy_reason="breakout_above_recent_high_with_vwap_structure_confirmation",
+        legacy_entry_condition_path="breakout_path",
+    )
+
+    assert hint["available"] is True
+    assert hint["applied"] is True
+    assert hint["mode"] == "block"
+    assert "failed_breakout=confirmed" in list(hint.get("blocking_features") or [])
+
+
+def test_chart_structure_decision_hint_blocks_pullback_on_lost_support() -> None:
+    hint = _build_chart_structure_decision_hint(
+        policy_interpretation={
+            "policy_available": True,
+            "entry_style": "pullback",
+        },
+        signal_evidence={
+            "checks": {
+                "pullback_volume_path_ok": True,
+                "confidence_ok": True,
+            }
+        },
+        chart_structure_features={
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "structure": {},
+            "trend_alignment": {
+                "trend_regime": "trending",
+                "ma_alignment_state": "bullish",
+            },
+            "support_resistance": {"support_holding": "lost"},
+            "continuity_momentum": {},
+            "notes": [],
+        },
+        legacy_triggered=True,
+        legacy_decision="BUY",
+        legacy_reason="pullback_reclaim_above_vwap_with_rebound_confirmation",
+        legacy_entry_condition_path="pullback_volume_path",
+    )
+
+    assert hint["available"] is True
+    assert hint["applied"] is True
+    assert hint["mode"] == "block"
+    assert "support_holding=lost" in list(hint.get("blocking_features") or [])
+
+
+def test_intraday_entry_structure_guard_can_block_legacy_breakout_buy(monkeypatch) -> None:
+    baseline = evaluate_intraday_entry_signal(_rows_breakout(), frame={"playbook": "breakout"})
+
+    def _mock_chart_features(*args, **kwargs):
+        return {
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "structure": {
+                "structure_hh_hl": "weakening",
+                "structure_range_compression": "none",
+                "structure_breakout_attempt": "confirmed",
+            },
+            "trend_alignment": {
+                "ma_alignment_state": "bullish",
+                "ma_slope_strength": "rising_weak",
+                "trend_regime": "trending",
+            },
+            "support_resistance": {
+                "support_holding": "holding",
+                "resistance_break_confirmed": "confirmed",
+                "failed_breakout": "none",
+            },
+            "continuity_momentum": {
+                "momentum_follow_through": "moderate",
+                "volume_sustain": "strong",
+                "momentum_decay": "none",
+            },
+            "notes": [],
+        }
+
+    monkeypatch.setattr("libs.runtime.intraday_monitor_signals.build_chart_structure_features", _mock_chart_features)
+    out = evaluate_intraday_entry_signal(_rows_breakout(), frame={"playbook": "breakout"})
+
+    assert baseline["legacy_entry_decision"] == "BUY"
+    assert out["legacy_entry_decision"] == "BUY"
+    assert baseline["triggered"] is True
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+    assert out["reason"] == "breakout_continuation_structure_guard_blocked"
+    assert out["primary_failure_axis"] == "chart_structure_continuation"
+    assert "chart_structure_breakout_continuation_guard" in list(out.get("signal_chain") or [])
+    hint = out.get("chart_structure_decision_hint") or {}
+    assert hint.get("applied") is True
+    assert hint.get("mode") == "block"
+    assert "structure_hh_hl=weakening" in list(hint.get("blocking_features") or [])
+    assert "momentum_follow_through=moderate" in list(hint.get("blocking_features") or [])
+    trace = out.get("policy_interpreter_trace") or {}
+    summary = out.get("policy_alignment_summary") or {}
+    assert "chart_structure_decision_hint_evaluated" in list(trace.get("notes") or [])
+    assert "chart_structure_decision_hint_applied" in list(summary.get("summary_notes") or [])
+
+
+def test_intraday_entry_structure_guard_can_block_legacy_pullback_buy(monkeypatch) -> None:
+    baseline = evaluate_intraday_entry_signal(_rows_pullback_rebound(), frame={"playbook": "pullback"})
+
+    def _mock_chart_features(*args, **kwargs):
+        return {
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "structure": {
+                "structure_hh_hl": "weakening",
+                "structure_range_compression": "moderate",
+                "structure_breakout_attempt": "none",
+            },
+            "trend_alignment": {
+                "ma_alignment_state": "bearish",
+                "ma_slope_strength": "falling_weak",
+                "trend_regime": "transition",
+            },
+            "support_resistance": {
+                "support_holding": "lost",
+                "resistance_break_confirmed": "none",
+                "failed_breakout": "none",
+            },
+            "continuity_momentum": {
+                "momentum_follow_through": "weak",
+                "volume_sustain": "adequate",
+                "momentum_decay": "mild",
+            },
+            "notes": [],
+        }
+
+    monkeypatch.setattr("libs.runtime.intraday_monitor_signals.build_chart_structure_features", _mock_chart_features)
+    out = evaluate_intraday_entry_signal(_rows_pullback_rebound(), frame={"playbook": "pullback"})
+
+    assert baseline["legacy_entry_decision"] == "BUY"
+    assert out["legacy_entry_decision"] == "BUY"
+    assert baseline["triggered"] is True
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+    assert out["reason"] == "pullback_reversal_structure_guard_blocked"
+    assert out["primary_failure_axis"] == "chart_structure_support"
+    assert "chart_structure_pullback_reversal_guard" in list(out.get("signal_chain") or [])
+    hint = out.get("chart_structure_decision_hint") or {}
+    assert hint.get("applied") is True
+    assert hint.get("mode") == "block"
+    assert "support_holding=lost" in list(hint.get("blocking_features") or [])
+    assert "ma_alignment_state=bearish" in list(hint.get("blocking_features") or [])
+    assert "trend_regime=transition" in list(hint.get("blocking_features") or [])
+    trace = out.get("policy_interpreter_trace") or {}
+    summary = out.get("policy_alignment_summary") or {}
+    assert "chart_structure_decision_hint_evaluated" in list(trace.get("notes") or [])
+    assert "chart_structure_decision_hint_applied" in list(summary.get("summary_notes") or [])
+
+
+def test_intraday_entry_pullback_structure_guard_does_not_block_when_support_and_trend_hold(monkeypatch) -> None:
+    baseline = evaluate_intraday_entry_signal(_rows_pullback_rebound(), frame={"playbook": "pullback"})
+
+    monkeypatch.setattr(
+        "libs.runtime.intraday_monitor_signals.build_chart_structure_features",
+        lambda *args, **kwargs: {
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "structure": {
+                "structure_hh_hl": "intact",
+                "structure_range_compression": "none",
+                "structure_breakout_attempt": "none",
+            },
+            "trend_alignment": {
+                "ma_alignment_state": "bullish",
+                "ma_slope_strength": "rising_weak",
+                "trend_regime": "trending",
+            },
+            "support_resistance": {
+                "support_holding": "holding",
+                "resistance_break_confirmed": "none",
+                "failed_breakout": "none",
+            },
+            "continuity_momentum": {
+                "momentum_follow_through": "moderate",
+                "volume_sustain": "adequate",
+                "momentum_decay": "none",
+            },
+            "notes": [],
+        },
+    )
+    out = evaluate_intraday_entry_signal(_rows_pullback_rebound(), frame={"playbook": "pullback"})
+
+    assert out["triggered"] == baseline["triggered"]
+    assert out["decision"] == baseline["decision"]
+    assert out["reason"] == baseline["reason"]
+    hint = out.get("chart_structure_decision_hint") or {}
+    assert hint.get("available") is True
+    assert hint.get("applied") is False
+    assert hint.get("notes") == ["pullback_structure_not_blocking"]
+
+
+def test_intraday_entry_structure_guard_stays_noop_when_chart_features_unavailable(monkeypatch) -> None:
+    baseline = evaluate_intraday_entry_signal(_rows_breakout(), frame={"playbook": "breakout"})
+
+    monkeypatch.setattr(
+        "libs.runtime.intraday_monitor_signals.build_chart_structure_features",
+        lambda *args, **kwargs: {
+            "schema_version": "chart_structure_features.v1",
+            "available": False,
+            "structure": {},
+            "trend_alignment": {},
+            "support_resistance": {},
+            "continuity_momentum": {},
+            "notes": ["insufficient_candles"],
+        },
+    )
+    out = evaluate_intraday_entry_signal(_rows_breakout(), frame={"playbook": "breakout"})
+
+    assert out["triggered"] == baseline["triggered"]
+    assert out["decision"] == baseline["decision"]
+    hint = out.get("chart_structure_decision_hint") or {}
+    assert hint.get("available") is True
+    assert hint.get("applied") is False
+    assert hint.get("notes") == ["chart_structure_features_unavailable"]
+
+
+def test_intraday_entry_structure_guard_ignores_non_target_styles(monkeypatch) -> None:
+    baseline = evaluate_intraday_entry_signal(_rows_pullback_rebound(), frame={"playbook": "defensive"})
+
+    monkeypatch.setattr(
+        "libs.runtime.intraday_monitor_signals.build_chart_structure_features",
+        lambda *args, **kwargs: {
+            "schema_version": "chart_structure_features.v1",
+            "available": True,
+            "structure": {"structure_hh_hl": "weakening"},
+            "trend_alignment": {"trend_regime": "transition"},
+            "support_resistance": {"failed_breakout": "confirmed"},
+            "continuity_momentum": {"momentum_follow_through": "weak"},
+            "notes": [],
+        },
+    )
+    out = evaluate_intraday_entry_signal(_rows_pullback_rebound(), frame={"playbook": "defensive"})
+
+    assert out["triggered"] == baseline["triggered"]
+    assert out["decision"] == baseline["decision"]
+    hint = out.get("chart_structure_decision_hint") or {}
+    assert hint.get("available") is True
+    assert hint.get("applied") is False
+    assert hint.get("notes") == ["entry_style_not_chart_structure_guard_target"]
 
 
 def test_intraday_entry_policy_aware_gating_stays_empty_safe_without_policy_hint() -> None:

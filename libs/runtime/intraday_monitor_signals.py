@@ -5,10 +5,15 @@ import statistics
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Sequence
 
+from libs.runtime.chart_structure_features import (
+    build_chart_structure_features,
+    empty_chart_structure_features,
+)
 from libs.runtime.monitor_policy import (
     MonitorEntryPolicy,
     extract_monitor_entry_policy_mapping,
     normalize_monitor_entry_policy_schema,
+    normalize_policy_check_spec,
 )
 
 
@@ -259,6 +264,7 @@ def _empty_monitor_policy_interpretation() -> Dict[str, Any]:
         },
         "policy_source": None,
         "policy_adjustments": [],
+        "spec_validation_notes": [],
         "notes": [],
     }
 
@@ -316,6 +322,19 @@ def _empty_monitor_policy_aware_gating() -> Dict[str, Any]:
     }
 
 
+def _empty_chart_structure_decision_hint() -> Dict[str, Any]:
+    return {
+        "available": False,
+        "applied": False,
+        "mode": "none",
+        "entry_style": None,
+        "considered_features": [],
+        "matched_features": [],
+        "blocking_features": [],
+        "notes": [],
+    }
+
+
 def _extract_explicit_policy_interpretation_fields(
     policy_contract: Mapping[str, Any] | None,
 ) -> Dict[str, Any]:
@@ -359,6 +378,7 @@ def _extract_explicit_policy_interpretation_fields(
     evidence_focus = _optional_mapping(schema_candidate.get("evidence_focus"))
     notes = _optional_list(schema_candidate.get("notes"))
     policy_adjustments = list(schema_candidate.get("policy_adjustments") or [])
+    spec_validation_notes = _optional_list(schema_candidate.get("spec_validation_notes"))
 
     policy_source = _optional_text(selected_policy.get("policy_source"))
 
@@ -382,6 +402,7 @@ def _extract_explicit_policy_interpretation_fields(
         "policy_adjustments": policy_adjustments,
         "policy_source": policy_source,
         "explicit_fields_used": explicit_fields_used,
+        "spec_validation_notes": spec_validation_notes,
     }
 
 
@@ -417,6 +438,7 @@ def _build_monitor_policy_interpretation(
     interpretation["policy_schema_version"] = explicit_fields.get("policy_schema_version")
     interpretation["policy_schema_raw_keys"] = list(explicit_fields.get("policy_schema_raw_keys") or [])
     interpretation["explicit_fields_used"] = list(explicit_fields.get("explicit_fields_used") or [])
+    interpretation["spec_validation_notes"] = list(explicit_fields.get("spec_validation_notes") or [])
     if not policy_available:
         return interpretation
 
@@ -475,21 +497,21 @@ def _build_monitor_policy_interpretation(
         preferred_checks.extend(["breakout_ok", "volume_ok", "reclaim_gate_ok"])
         relaxable_checks.extend(["pullback_ok"])
         primary_focus.extend(["breakout_ok", "volume_ok"])
-        secondary_focus.extend(["reclaim_gate_ok", "confidence_ok"])
+        secondary_focus.extend(["reclaim_gate_ok", "confidence_ok", "structure_hh_hl", "momentum_follow_through"])
     elif interpretation_style in ("pullback", "reversal"):
         preferred_checks.extend(["pullback_ok", "volume_ok", "vwap_reclaim_ok"])
         relaxable_checks.extend(["breakout_ok"])
         primary_focus.extend(["pullback_ok", "volume_ok"])
-        secondary_focus.extend(["reclaim_gate_ok", "rebound_ok"])
+        secondary_focus.extend(["reclaim_gate_ok", "rebound_ok", "support_holding", "trend_regime"])
     elif interpretation_style == "defensive":
         preferred_checks.extend(["reclaim_gate_ok", "extension_ok", "confidence_ok"])
         relaxable_checks.extend(["breakout_ok", "pullback_ok"])
         primary_focus.extend(["reclaim_gate_ok", "extension_ok"])
-        secondary_focus.extend(["volume_ok", "confidence_ok"])
+        secondary_focus.extend(["volume_ok", "confidence_ok", "failed_breakout", "momentum_decay"])
     else:
         preferred_checks.extend(["reclaim_gate_ok", "confidence_ok"])
         primary_focus.extend(["reclaim_gate_ok"])
-        secondary_focus.extend(["volume_ok", "breakout_ok", "pullback_ok"])
+        secondary_focus.extend(["volume_ok", "breakout_ok", "pullback_ok", "trend_regime"])
 
     fallback_used = False
     if explicit_fields.get("required_checks"):
@@ -547,13 +569,191 @@ def _build_monitor_policy_interpretation(
     return interpretation
 
 
+_CHART_FEATURE_GROUP_PATHS: Dict[str, str] = {
+    "structure_hh_hl": "structure",
+    "structure_range_compression": "structure",
+    "structure_breakout_attempt": "structure",
+    "ma_alignment_state": "trend_alignment",
+    "ma_slope_strength": "trend_alignment",
+    "trend_regime": "trend_alignment",
+    "support_holding": "support_resistance",
+    "resistance_break_confirmed": "support_resistance",
+    "failed_breakout": "support_resistance",
+    "momentum_follow_through": "continuity_momentum",
+    "volume_sustain": "continuity_momentum",
+    "momentum_decay": "continuity_momentum",
+}
+
+
+_CHART_FEATURE_STATUS_RULES: Dict[str, Dict[str, set[str]]] = {
+    "structure_hh_hl": {
+        "pass": {"intact"},
+        "fail": {"weakening", "broken"},
+        "blocker_active": {"broken"},
+        "blocker_inactive": {"intact", "weakening"},
+    },
+    "structure_range_compression": {
+        "pass": {"moderate", "tight"},
+        "fail": {"none"},
+        "blocker_active": set(),
+        "blocker_inactive": {"none", "moderate", "tight"},
+    },
+    "structure_breakout_attempt": {
+        "pass": {"confirmed"},
+        "fail": {"rejected"},
+        "blocker_active": {"rejected"},
+        "blocker_inactive": {"forming", "attempting", "confirmed", "none"},
+    },
+    "ma_alignment_state": {
+        "pass": {"bullish"},
+        "fail": {"bearish"},
+        "blocker_active": {"bearish"},
+        "blocker_inactive": {"bullish", "neutral", "mixed"},
+    },
+    "ma_slope_strength": {
+        "pass": {"rising_strong", "rising_weak"},
+        "fail": {"falling_weak", "falling_strong"},
+        "blocker_active": {"falling_strong"},
+        "blocker_inactive": {"rising_strong", "rising_weak", "flat", "falling_weak"},
+    },
+    "trend_regime": {
+        "pass": {"trending"},
+        "fail": set(),
+        "blocker_active": set(),
+        "blocker_inactive": {"trending", "ranging", "transition"},
+    },
+    "support_holding": {
+        "pass": {"holding"},
+        "fail": {"lost"},
+        "blocker_active": {"lost"},
+        "blocker_inactive": {"holding", "testing"},
+    },
+    "resistance_break_confirmed": {
+        "pass": {"confirmed"},
+        "fail": {"failed"},
+        "blocker_active": {"failed"},
+        "blocker_inactive": {"confirmed", "attempting", "none"},
+    },
+    "failed_breakout": {
+        "pass": {"none"},
+        "fail": {"suspected", "confirmed"},
+        "blocker_active": {"confirmed"},
+        "blocker_inactive": {"none", "suspected"},
+    },
+    "momentum_follow_through": {
+        "pass": {"strong", "moderate"},
+        "fail": {"weak", "none"},
+        "blocker_active": {"none"},
+        "blocker_inactive": {"strong", "moderate", "weak"},
+    },
+    "volume_sustain": {
+        "pass": {"strong", "adequate"},
+        "fail": {"fading", "absent"},
+        "blocker_active": {"absent"},
+        "blocker_inactive": {"strong", "adequate", "fading"},
+    },
+    "momentum_decay": {
+        "pass": {"none"},
+        "fail": {"strong"},
+        "blocker_active": {"strong"},
+        "blocker_inactive": {"none", "mild"},
+    },
+}
+
+
+def _flatten_chart_structure_feature_states(
+    chart_structure_features: Mapping[str, Any] | None,
+) -> Dict[str, Dict[str, Any]]:
+    payload = dict(chart_structure_features or {}) if isinstance(chart_structure_features, Mapping) else {}
+    if not bool(payload.get("available")):
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for name, group in _CHART_FEATURE_GROUP_PATHS.items():
+        group_payload = dict(payload.get(group) or {}) if isinstance(payload.get(group), Mapping) else {}
+        state = group_payload.get(name)
+        if state is None:
+            continue
+        state_text = str(state or "").strip()
+        if not state_text:
+            continue
+        out[name] = {
+            "state": state_text,
+            "group": group,
+            "source": f"chart_structure_features.{group}.{name}",
+        }
+    return out
+
+
+def _parse_policy_signal_spec(spec: Any) -> Dict[str, Any]:
+    normalized = normalize_policy_check_spec(spec)
+    return {
+        "name": str(normalized.get("feature_name") or normalized.get("raw") or "").strip(),
+        "expected_state": normalized.get("expected_state"),
+        "raw": str(normalized.get("raw") or "").strip(),
+        "feature_level": normalized.get("feature_level"),
+        "is_valid": bool(normalized.get("is_valid")),
+        "validation_notes": list(normalized.get("validation_notes") or []),
+    }
+
+
+def _chart_feature_status_item(
+    *,
+    spec: Mapping[str, Any],
+    chart_states: Mapping[str, Any],
+    blocker: bool = False,
+) -> Dict[str, Any] | None:
+    name = str(spec.get("name") or "").strip()
+    expected_state = str(spec.get("expected_state") or "").strip() or None
+    feature = dict(chart_states.get(name) or {}) if isinstance(chart_states.get(name), Mapping) else {}
+    if not feature:
+        return None
+    actual_state = str(feature.get("state") or "").strip() or None
+    source = feature.get("source")
+    status = "unknown"
+    if expected_state is not None:
+        if actual_state is None:
+            status = "unknown"
+        elif blocker:
+            status = "active" if actual_state == expected_state else "inactive"
+        else:
+            status = "pass" if actual_state == expected_state else "fail"
+    else:
+        rules = _CHART_FEATURE_STATUS_RULES.get(name) or {}
+        active_states = {str(value).strip() for value in list(rules.get("blocker_active") or set()) if str(value).strip()}
+        inactive_states = {str(value).strip() for value in list(rules.get("blocker_inactive") or set()) if str(value).strip()}
+        pass_states = {str(value).strip() for value in list(rules.get("pass") or set()) if str(value).strip()}
+        fail_states = {str(value).strip() for value in list(rules.get("fail") or set()) if str(value).strip()}
+        if blocker:
+            if actual_state in active_states:
+                status = "active"
+            elif actual_state in inactive_states:
+                status = "inactive"
+        else:
+            if actual_state in pass_states:
+                status = "pass"
+            elif actual_state in fail_states:
+                status = "fail"
+    return {
+        "name": name,
+        "expected_state": expected_state,
+        "actual_state": actual_state,
+        "status": status,
+        "source": source,
+        "feature_level": "high_level_feature",
+        "spec_valid": bool(spec.get("is_valid", True)),
+        "validation_notes": list(spec.get("validation_notes") or []),
+    }
+
+
 def _build_monitor_policy_interpreter_trace(
     *,
     policy_interpretation: Mapping[str, Any] | None = None,
     signal_evidence: Mapping[str, Any] | None = None,
+    chart_structure_features: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     interpretation = dict(policy_interpretation or {}) if isinstance(policy_interpretation, Mapping) else {}
     evidence = dict(signal_evidence or {}) if isinstance(signal_evidence, Mapping) else {}
+    chart_states = _flatten_chart_structure_feature_states(chart_structure_features)
     trace = _empty_monitor_policy_interpreter_trace()
 
     policy_available = bool(interpretation.get("policy_available"))
@@ -569,25 +769,45 @@ def _build_monitor_policy_interpreter_trace(
     checks = dict(evidence.get("checks") or {}) if isinstance(evidence.get("checks"), Mapping) else {}
     derived = dict(evidence.get("derived") or {}) if isinstance(evidence.get("derived"), Mapping) else {}
 
-    def _status_item(name: str, *, blocker: bool = False) -> Dict[str, Any]:
+    def _status_item(spec_value: Any, *, blocker: bool = False) -> Dict[str, Any]:
+        spec = _parse_policy_signal_spec(spec_value)
+        name = str(spec.get("name") or "").strip()
         if name in checks:
             return {
                 "name": str(name),
+                "expected_state": None,
+                "actual_state": None,
                 "status": ("active" if not bool(checks.get(name)) else "inactive") if blocker else ("pass" if bool(checks.get(name)) else "fail"),
                 "source": f"signal_evidence.checks.{name}",
+                "feature_level": "low_level_signal",
+                "spec_valid": bool(spec.get("is_valid", True)),
+                "validation_notes": list(spec.get("validation_notes") or []),
             }
         if name in derived:
             value = derived.get(name)
             if isinstance(value, bool):
                 return {
                     "name": str(name),
+                    "expected_state": None,
+                    "actual_state": None,
                     "status": ("active" if bool(value) else "inactive") if blocker else ("pass" if bool(value) else "fail"),
                     "source": f"signal_evidence.derived.{name}",
+                    "feature_level": "low_level_signal",
+                    "spec_valid": bool(spec.get("is_valid", True)),
+                    "validation_notes": list(spec.get("validation_notes") or []),
                 }
+        feature_item = _chart_feature_status_item(spec=spec, chart_states=chart_states, blocker=blocker)
+        if feature_item is not None:
+            return feature_item
         return {
             "name": str(name),
+            "expected_state": spec.get("expected_state"),
+            "actual_state": None,
             "status": "unknown",
             "source": None,
+            "feature_level": spec.get("feature_level") or "unknown",
+            "spec_valid": bool(spec.get("is_valid")),
+            "validation_notes": list(spec.get("validation_notes") or []),
         }
 
     required_rows = [_status_item(name) for name in _dedupe_non_empty(interpretation.get("required_checks") or [])]
@@ -633,7 +853,15 @@ def _build_monitor_policy_interpreter_trace(
         "primary_blocker": primary_blocker,
         "secondary_blockers": _dedupe_non_empty(secondary_blockers),
     }
-    trace["notes"] = _dedupe_non_empty(interpretation.get("notes") or [])
+    higher_level_used = any(
+        str((row or {}).get("feature_level") or "") == "high_level_feature"
+        for row in [*required_rows, *preferred_rows, *relaxable_rows, *blocker_rows]
+        if isinstance(row, Mapping)
+    )
+    notes = list(interpretation.get("notes") or [])
+    if higher_level_used:
+        notes.append("chart_structure_features_consumed")
+    trace["notes"] = _dedupe_non_empty(notes)
     return trace
 
 
@@ -689,7 +917,17 @@ def _build_monitor_policy_alignment_summary(
     summary["top_failed_required_checks"] = failed_required[:3]
     summary["top_failed_preferred_checks"] = failed_preferred[:3]
     summary["top_relaxable_gaps"] = failed_relaxable[:3]
-    summary["summary_notes"] = _dedupe_non_empty(trace.get("notes") or [])
+    summary_notes = list(trace.get("notes") or [])
+    high_level_mismatch_present = any(
+        str((row or {}).get("feature_level") or "") == "high_level_feature"
+        and str((row or {}).get("status") or "") in {"fail", "active"}
+        for section in ("required", "preferred", "relaxable", "blockers")
+        for row in list(check_status.get(section) or [])
+        if isinstance(row, Mapping)
+    )
+    if high_level_mismatch_present:
+        summary_notes.append("higher_level_feature_mismatch_present")
+    summary["summary_notes"] = _dedupe_non_empty(summary_notes)
     return summary
 
 
@@ -776,6 +1014,154 @@ def _build_monitor_policy_aware_gating(
     out["applied_hints"] = ["reclaim_relaxed_near_ready"]
     out["relaxations_applied"] = ["reclaim_gate_ok"]
     out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "breakout_reclaim_near_ready_relaxation_applied"])
+    return out
+
+
+def _build_chart_structure_decision_hint(
+    *,
+    policy_interpretation: Mapping[str, Any] | None = None,
+    signal_evidence: Mapping[str, Any] | None = None,
+    chart_structure_features: Mapping[str, Any] | None = None,
+    legacy_triggered: bool = False,
+    legacy_decision: str | None = None,
+    legacy_reason: str | None = None,
+    legacy_entry_condition_path: str | None = None,
+) -> Dict[str, Any]:
+    interpretation = dict(policy_interpretation or {}) if isinstance(policy_interpretation, Mapping) else {}
+    evidence = dict(signal_evidence or {}) if isinstance(signal_evidence, Mapping) else {}
+    chart_payload = dict(chart_structure_features or {}) if isinstance(chart_structure_features, Mapping) else {}
+    out = _empty_chart_structure_decision_hint()
+
+    policy_available = bool(interpretation.get("policy_available"))
+    if not policy_available:
+        return out
+
+    out["available"] = True
+    entry_style = str(interpretation.get("entry_style") or "").strip().lower() or None
+    out["entry_style"] = entry_style
+    if entry_style == "breakout":
+        out["considered_features"] = [
+            "structure_hh_hl",
+            "momentum_follow_through",
+            "failed_breakout",
+        ]
+    elif entry_style in {"pullback", "reversal"}:
+        out["considered_features"] = [
+            "support_holding",
+            "trend_regime",
+            "ma_alignment_state",
+        ]
+    else:
+        out["notes"] = ["entry_style_not_chart_structure_guard_target"]
+        return out
+
+    if not bool(chart_payload.get("available")):
+        out["notes"] = ["chart_structure_features_unavailable"]
+        return out
+
+    if not bool(legacy_triggered) or str(legacy_decision or "").strip().upper() != "BUY":
+        out["notes"] = ["legacy_decision_not_structure_guard_target_buy"]
+        return out
+
+    chart_states = _flatten_chart_structure_feature_states(chart_payload)
+    checks = dict(evidence.get("checks") or {}) if isinstance(evidence.get("checks"), Mapping) else {}
+    if entry_style == "breakout":
+        if str(legacy_entry_condition_path or "").strip() != "breakout_path":
+            out["notes"] = ["legacy_entry_path_not_breakout"]
+            return out
+
+        structure_state = str(((chart_states.get("structure_hh_hl") or {}).get("state")) or "").strip().lower()
+        follow_through_state = str(((chart_states.get("momentum_follow_through") or {}).get("state")) or "").strip().lower()
+        failed_breakout_state = str(((chart_states.get("failed_breakout") or {}).get("state")) or "").strip().lower()
+
+        if structure_state == "intact":
+            out["matched_features"].append("structure_hh_hl=intact")
+        elif structure_state:
+            out["blocking_features"].append(f"structure_hh_hl={structure_state}")
+        if follow_through_state == "strong":
+            out["matched_features"].append("momentum_follow_through=strong")
+        elif follow_through_state:
+            out["blocking_features"].append(f"momentum_follow_through={follow_through_state}")
+        if failed_breakout_state == "none":
+            out["matched_features"].append("failed_breakout=none")
+        elif failed_breakout_state:
+            out["blocking_features"].append(f"failed_breakout={failed_breakout_state}")
+
+        if not bool(checks.get("breakout_path_ok")):
+            out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "breakout_path_not_confirmed"])
+            return out
+        if not bool(checks.get("confidence_ok")):
+            out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "confidence_not_confirmed"])
+            return out
+
+        should_block = False
+        if failed_breakout_state == "confirmed":
+            should_block = True
+        elif structure_state == "weakening" and follow_through_state in {"moderate", "weak", "none"}:
+            should_block = True
+
+        if not should_block:
+            out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "continuation_quality_not_blocking"])
+            return out
+
+        out["applied"] = True
+        out["mode"] = "block"
+        out["notes"] = _dedupe_non_empty(
+            [
+                *list(out.get("notes") or []),
+                "breakout_continuation_structure_guard_applied",
+                str(legacy_reason or "").strip() or "legacy_reason_not_provided",
+            ]
+        )
+        return out
+
+    if str(legacy_entry_condition_path or "").strip() != "pullback_volume_path":
+        out["notes"] = ["legacy_entry_path_not_pullback"]
+        return out
+
+    support_state = str(((chart_states.get("support_holding") or {}).get("state")) or "").strip().lower()
+    trend_regime_state = str(((chart_states.get("trend_regime") or {}).get("state")) or "").strip().lower()
+    ma_alignment_state = str(((chart_states.get("ma_alignment_state") or {}).get("state")) or "").strip().lower()
+
+    if support_state == "holding":
+        out["matched_features"].append("support_holding=holding")
+    elif support_state:
+        out["blocking_features"].append(f"support_holding={support_state}")
+    if trend_regime_state == "trending":
+        out["matched_features"].append("trend_regime=trending")
+    elif trend_regime_state:
+        out["blocking_features"].append(f"trend_regime={trend_regime_state}")
+    if ma_alignment_state == "bullish":
+        out["matched_features"].append("ma_alignment_state=bullish")
+    elif ma_alignment_state:
+        out["blocking_features"].append(f"ma_alignment_state={ma_alignment_state}")
+
+    if not bool(checks.get("pullback_volume_path_ok")):
+        out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "pullback_path_not_confirmed"])
+        return out
+    if not bool(checks.get("confidence_ok")):
+        out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "confidence_not_confirmed"])
+        return out
+
+    should_block = False
+    if support_state == "lost":
+        should_block = True
+    elif ma_alignment_state == "bearish" and trend_regime_state in {"transition", "ranging"}:
+        should_block = True
+
+    if not should_block:
+        out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "pullback_structure_not_blocking"])
+        return out
+
+    out["applied"] = True
+    out["mode"] = "block"
+    out["notes"] = _dedupe_non_empty(
+        [
+            *list(out.get("notes") or []),
+            "pullback_reversal_structure_guard_applied",
+            str(legacy_reason or "").strip() or "legacy_reason_not_provided",
+        ]
+    )
     return out
 
 
@@ -1117,6 +1503,7 @@ def evaluate_intraday_entry_signal(
     out["signal_evidence"] = _empty_monitor_signal_evidence(
         score_threshold=float(scoring_settings.get("entry_threshold") or 3.0)
     )
+    out["chart_structure_features"] = empty_chart_structure_features()
     out["policy_interpretation"] = _build_monitor_policy_interpretation(
         received_policy=policy if isinstance(policy, (Mapping, MonitorEntryPolicy)) else None,
         effective_policy=resolved_policy,
@@ -1126,6 +1513,7 @@ def evaluate_intraday_entry_signal(
     out["policy_interpreter_trace"] = _empty_monitor_policy_interpreter_trace()
     out["policy_alignment_summary"] = _empty_monitor_policy_alignment_summary()
     out["policy_aware_gating"] = _empty_monitor_policy_aware_gating()
+    out["chart_structure_decision_hint"] = _empty_chart_structure_decision_hint()
     _apply_monitor_scoring_fields(
         out,
         scoring_settings=scoring_settings,
@@ -1607,9 +1995,23 @@ def evaluate_intraday_entry_signal(
         score_breakdown=score_breakdown,
         score_threshold=float(scoring_settings.get("entry_threshold") or 3.0),
     )
+    chart_structure_features = build_chart_structure_features(
+        candles,
+        current_price=current_close,
+        current_vwap=current_vwap,
+        recent_high=recent_high,
+        breakout_ok=breakout_ok,
+        pullback_ok=pullback_ok,
+        reclaim_ok=vwap_reclaim_ok,
+        volume_ok=volume_ok,
+        confidence_ok=confidence_gate_ok,
+        volume_ratio=volume_ratio,
+        too_extended=bool(not extension_ok and extended_from_vwap_pct > max_extended_from_vwap_pct),
+    )
     policy_interpreter_trace = _build_monitor_policy_interpreter_trace(
         policy_interpretation=out.get("policy_interpretation"),
         signal_evidence=signal_evidence,
+        chart_structure_features=chart_structure_features,
     )
     policy_alignment_summary = _build_monitor_policy_alignment_summary(
         policy_interpreter_trace=policy_interpreter_trace,
@@ -1622,6 +2024,29 @@ def evaluate_intraday_entry_signal(
         legacy_triggered=legacy_triggered,
         legacy_reason=legacy_reason,
     )
+    chart_structure_decision_hint = _build_chart_structure_decision_hint(
+        policy_interpretation=out.get("policy_interpretation"),
+        signal_evidence=signal_evidence,
+        chart_structure_features=chart_structure_features,
+        legacy_triggered=legacy_triggered,
+        legacy_decision=legacy_decision,
+        legacy_reason=legacy_reason,
+        legacy_entry_condition_path=legacy_entry_condition_path,
+    )
+    if bool(chart_structure_decision_hint.get("available")):
+        policy_interpreter_trace["notes"] = _dedupe_non_empty(
+            [
+                *list(policy_interpreter_trace.get("notes") or []),
+                "chart_structure_decision_hint_evaluated",
+            ]
+        )
+    if bool(chart_structure_decision_hint.get("applied")):
+        policy_alignment_summary["summary_notes"] = _dedupe_non_empty(
+            [
+                *list(policy_alignment_summary.get("summary_notes") or []),
+                "chart_structure_decision_hint_applied",
+            ]
+        )
     if bool(policy_aware_gating.get("applied")):
         triggered = True
         pattern = "breakout_policy_reclaim_near_ready"
@@ -1632,6 +2057,19 @@ def evaluate_intraday_entry_signal(
             entry_condition_paths_passed.append("breakout_path")
         if "policy_reclaim_near_ready" not in signal_chain:
             signal_chain.append("policy_reclaim_near_ready")
+    elif bool(chart_structure_decision_hint.get("applied")):
+        triggered = False
+        hint_entry_style = str(chart_structure_decision_hint.get("entry_style") or "").strip().lower()
+        if hint_entry_style in {"pullback", "reversal"}:
+            reason = "pullback_reversal_structure_guard_blocked"
+            primary_failure_axis = "chart_structure_support"
+            if "chart_structure_pullback_reversal_guard" not in signal_chain:
+                signal_chain.append("chart_structure_pullback_reversal_guard")
+        else:
+            reason = "breakout_continuation_structure_guard_blocked"
+            primary_failure_axis = "chart_structure_continuation"
+            if "chart_structure_breakout_continuation_guard" not in signal_chain:
+                signal_chain.append("chart_structure_breakout_continuation_guard")
 
     metrics = {
         "timeframe_minutes": timeframe_minutes,
@@ -1706,6 +2144,10 @@ def evaluate_intraday_entry_signal(
     grouped_logic_trace["policy_aware_gating_applied"] = bool(policy_aware_gating.get("applied"))
     grouped_logic_trace["policy_aware_gating_hints"] = list(policy_aware_gating.get("applied_hints") or [])
     grouped_logic_trace["policy_aware_gating_blocked_by_required"] = list(policy_aware_gating.get("blocked_by_required") or [])
+    grouped_logic_trace["chart_structure_decision_hint_available"] = bool(chart_structure_decision_hint.get("available"))
+    grouped_logic_trace["chart_structure_decision_hint_applied"] = bool(chart_structure_decision_hint.get("applied"))
+    grouped_logic_trace["chart_structure_decision_hint_mode"] = str(chart_structure_decision_hint.get("mode") or "none")
+    grouped_logic_trace["chart_structure_decision_hint_blocking_features"] = list(chart_structure_decision_hint.get("blocking_features") or [])
     _apply_monitor_scoring_fields(
         out,
         scoring_settings=scoring_settings,
@@ -1745,9 +2187,11 @@ def evaluate_intraday_entry_signal(
             "legacy_entry_pattern": legacy_pattern,
             "legacy_entry_condition_path": legacy_entry_condition_path,
             "signal_evidence": signal_evidence,
+            "chart_structure_features": chart_structure_features,
             "policy_interpreter_trace": policy_interpreter_trace,
             "policy_alignment_summary": policy_alignment_summary,
             "policy_aware_gating": policy_aware_gating,
+            "chart_structure_decision_hint": chart_structure_decision_hint,
             "reclaim_distance_to_ready": reclaim_distance_to_ready,
             "vwap_reclaim_progress": round(vwap_reclaim_progress, 4),
             "rebound_progress": rebound_progress,

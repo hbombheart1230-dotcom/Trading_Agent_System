@@ -4981,7 +4981,6 @@ def _load_operator_brief(detail: Dict[str, Any]) -> Dict[str, Any]:
     explicit_model = str(
         os.getenv("OPERATOR_UI_RUN_BRIEF_MODEL", "")
         or os.getenv("OPENROUTER_MODEL_OPERATOR_UI", "")
-        or os.getenv("OPENROUTER_MODEL_REPORTER_INTRADAY", "")
         or ""
     ).strip()
     if hasattr(router, "resolve"):

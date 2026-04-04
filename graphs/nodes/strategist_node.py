@@ -38,6 +38,7 @@ from libs.research.strategy_feedback_builder import build_recent_strategy_feedba
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.monitor_policy import (
     MonitorEntryPolicy,
+    build_monitor_entry_policy_bundle,
     build_default_monitor_entry_policy,
     normalize_monitor_entry_policy,
 )
@@ -3656,7 +3657,18 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         fallback_policy=MonitorEntryPolicy.from_mapping(monitor_entry_policy_seed),
         policy_source=policy_source,
     )
-    monitor_entry_policy = monitor_entry_policy_obj.to_dict()
+    monitor_entry_policy = build_monitor_entry_policy_bundle(
+        threshold_policy=monitor_entry_policy_obj,
+        playbook=playbook,
+        monitor_guidance=monitor_guidance,
+        risk_tone=risk_tone,
+        trade_aggressiveness=trade_aggressiveness,
+        interpretation_policy=(
+            dict(monitor_entry_policy_input.get("interpretation_policy") or {})
+            if isinstance(monitor_entry_policy_input.get("interpretation_policy"), dict)
+            else None
+        ),
+    )
     scanner_bias_context_input = {}
     if isinstance(ai_overrides.get("scanner_bias_context"), dict):
         scanner_bias_context_input = dict(ai_overrides.get("scanner_bias_context") or {})

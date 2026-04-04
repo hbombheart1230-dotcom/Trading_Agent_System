@@ -16,6 +16,15 @@ from libs.reporting.llm_artifacts import daily_artifact_paths
 from libs.reporting.symbol_trade_report import build_daily_trade_index
 from libs.reporting.symbol_trade_report import collect_symbols_for_day
 from libs.reporting.symbol_trade_report import generate_symbol_trade_report
+from libs.reporting.policy_surface_summary import (
+    build_policy_surface_quality_executive_summary,
+    build_policy_surface_quality_summary,
+)
+from libs.reporting.chart_structure_decision_hint_summary import (
+    build_chart_structure_decision_hint_executive_summary,
+    build_chart_structure_decision_hint_summary,
+)
+from scripts.check_phase_5_2_5_3_runtime_health import build_phase_5_2_5_3_runtime_health
 
 
 def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
@@ -101,6 +110,65 @@ def _load_operator_summary_snapshot(out_dir: Path, day: str) -> Dict[str, Any]:
     }
 
 
+def _load_policy_surface_quality_snapshot(events_path: Path, out_dir: Path, day: str) -> Dict[str, Any]:
+    try:
+        runtime_health = build_phase_5_2_5_3_runtime_health(
+            reports_root=out_dir,
+            event_log_path=events_path,
+            day=day,
+            limit=500,
+        )
+    except FileNotFoundError:
+        summary = build_policy_surface_quality_summary([])
+        chart_summary = build_chart_structure_decision_hint_summary([])
+        return {
+            "summary": summary,
+            "executive_summary": build_policy_surface_quality_executive_summary(summary),
+            "chart_structure_summary": chart_summary,
+            "chart_structure_executive_summary": build_chart_structure_decision_hint_executive_summary(chart_summary),
+            "source": {
+                "run_count": 0,
+                "date": day,
+                "source": "daily_monitor_artifacts",
+                "notes": ["no_canonical_monitor_runs_found"],
+            },
+        }
+    except Exception:
+        summary = build_policy_surface_quality_summary([])
+        chart_summary = build_chart_structure_decision_hint_summary([])
+        return {
+            "summary": summary,
+            "executive_summary": build_policy_surface_quality_executive_summary(summary),
+            "chart_structure_summary": chart_summary,
+            "chart_structure_executive_summary": build_chart_structure_decision_hint_executive_summary(chart_summary),
+            "source": {
+                "run_count": 0,
+                "date": day,
+                "source": "daily_monitor_artifacts",
+                "notes": ["policy_surface_quality_summary_unavailable"],
+            },
+        }
+
+    summary = runtime_health.get("policy_surface_quality_summary")
+    if not isinstance(summary, dict):
+        summary = build_policy_surface_quality_summary([])
+    chart_summary = runtime_health.get("chart_structure_decision_hint_summary")
+    if not isinstance(chart_summary, dict):
+        chart_summary = build_chart_structure_decision_hint_summary([])
+    return {
+        "summary": dict(summary),
+        "executive_summary": build_policy_surface_quality_executive_summary(summary),
+        "chart_structure_summary": dict(chart_summary),
+        "chart_structure_executive_summary": build_chart_structure_decision_hint_executive_summary(chart_summary),
+        "source": {
+            "run_count": int(runtime_health.get("run_count") or 0),
+            "date": day,
+            "source": "daily_monitor_artifacts",
+            "health_schema_version": str(runtime_health.get("schema_version") or ""),
+        },
+    }
+
+
 def _day_key(ts: Any) -> str:
     """Return YYYY-MM-DD in **UTC** for determinism across machines/timezones."""
     if ts is None:
@@ -152,6 +220,7 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             for symbol in symbols_for_day
         ]
         operator_summary_snapshot = _load_operator_summary_snapshot(out_dir, day)
+        policy_surface_quality = _load_policy_surface_quality_snapshot(events_path, out_dir, day)
         payload = {
             "day": day,
             "events": 0,
@@ -159,6 +228,12 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             "symbols_observed": symbols_for_day,
             "generated_symbol_report_count": len(generated_symbol_reports),
             "operator_summary_snapshot": operator_summary_snapshot,
+            "policy_surface_quality_summary": dict(policy_surface_quality.get("summary") or {}),
+            "policy_surface_quality_executive_summary": dict(policy_surface_quality.get("executive_summary") or {}),
+            "chart_structure_decision_hint_summary": dict(policy_surface_quality.get("chart_structure_summary") or {}),
+            "chart_structure_decision_hint_executive_summary": dict(policy_surface_quality.get("chart_structure_executive_summary") or {}),
+            "policy_surface_quality_source": dict(policy_surface_quality.get("source") or {}),
+            "chart_structure_decision_hint_source": dict(policy_surface_quality.get("source") or {}),
         }
         md_lines = [
             f"# Daily Report ({day})",
@@ -174,6 +249,52 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             md_lines += ["", "## Operator Summary Snapshot", ""]
             for line in executive.get("summary_lines") or []:
                 md_lines.append(f"- {line}")
+        policy_surface_summary = payload.get("policy_surface_quality_summary") if isinstance(payload.get("policy_surface_quality_summary"), dict) else {}
+        policy_surface_exec = payload.get("policy_surface_quality_executive_summary") if isinstance(payload.get("policy_surface_quality_executive_summary"), dict) else {}
+        chart_structure_summary = payload.get("chart_structure_decision_hint_summary") if isinstance(payload.get("chart_structure_decision_hint_summary"), dict) else {}
+        chart_structure_exec = payload.get("chart_structure_decision_hint_executive_summary") if isinstance(payload.get("chart_structure_decision_hint_executive_summary"), dict) else {}
+        policy_surface_source = payload.get("policy_surface_quality_source") if isinstance(payload.get("policy_surface_quality_source"), dict) else {}
+        chart_structure_source = payload.get("chart_structure_decision_hint_source") if isinstance(payload.get("chart_structure_decision_hint_source"), dict) else {}
+        chart_structure_examples = chart_structure_summary.get("applied_examples") if isinstance(chart_structure_summary.get("applied_examples"), list) else []
+        md_lines += [
+            "",
+            "## Policy Surface Executive Summary",
+            "",
+            f"- status: **{str(policy_surface_exec.get('status') or 'unknown').upper()}**",
+            f"- headline: {str(policy_surface_exec.get('headline') or 'Policy surface unknown')}",
+            "",
+            "## Policy Surface Quality",
+            "",
+            f"- schema_available_rate: **{float(policy_surface_summary.get('schema_available_rate') or 0.0):.4f}**",
+            f"- normalized_policy_rate: **{float(policy_surface_summary.get('normalized_policy_rate') or 0.0):.4f}**",
+            f"- invalid_spec_rate: **{float(policy_surface_summary.get('invalid_spec_rate') or 0.0):.4f}**",
+            f"- total_invalid_specs: **{int(policy_surface_summary.get('total_invalid_specs') or 0)}**",
+            f"- run_count: **{int(policy_surface_source.get('run_count') or 0)}**",
+            "",
+            "## Chart Structure Decision Hint Executive Summary",
+            "",
+            f"- status: **{str(chart_structure_exec.get('status') or 'unknown').upper()}**",
+            f"- headline: {str(chart_structure_exec.get('headline') or 'Chart structure guard unknown')}",
+            "",
+            "## Chart Structure Decision Hint",
+            "",
+            f"- available_run_count: **{int(chart_structure_summary.get('available_run_count') or 0)}**",
+            f"- applied_count: **{int(chart_structure_summary.get('applied_count') or 0)}**",
+            f"- applied_rate: **{float(chart_structure_summary.get('applied_rate') or 0.0):.4f}**",
+            f"- top_blocking_features: `{json.dumps(chart_structure_summary.get('top_blocking_features') or [], ensure_ascii=False)}`",
+            f"- run_count: **{int(chart_structure_source.get('run_count') or 0)}**",
+        ]
+        if chart_structure_examples:
+            md_lines += ["", "## Chart Structure Decision Hint Applied Examples", ""]
+            for example in chart_structure_examples[:3]:
+                if not isinstance(example, dict):
+                    continue
+                md_lines.append(
+                    f"- `{example.get('run_id') or '-'}` "
+                    f"[{str(example.get('entry_style') or '-').upper()}] "
+                    f"{example.get('reason_transition') or '-'} "
+                    f"blockers=`{json.dumps(example.get('blocking_features') or [], ensure_ascii=False)}`"
+                )
         md_text = "\n".join(md_lines) + "\n"
         md_path.parent.mkdir(parents=True, exist_ok=True)
         md_path.write_text(md_text, encoding="utf-8")
@@ -222,10 +343,17 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         for symbol in symbols_for_day
     ]
     operator_summary_snapshot = _load_operator_summary_snapshot(out_dir, day)
+    policy_surface_quality = _load_policy_surface_quality_snapshot(events_path, out_dir, day)
     summary["trade_index"] = trade_index
     summary["symbols_observed"] = symbols_for_day
     summary["generated_symbol_report_count"] = len(generated_symbol_reports)
     summary["operator_summary_snapshot"] = operator_summary_snapshot
+    summary["policy_surface_quality_summary"] = dict(policy_surface_quality.get("summary") or {})
+    summary["policy_surface_quality_executive_summary"] = dict(policy_surface_quality.get("executive_summary") or {})
+    summary["chart_structure_decision_hint_summary"] = dict(policy_surface_quality.get("chart_structure_summary") or {})
+    summary["chart_structure_decision_hint_executive_summary"] = dict(policy_surface_quality.get("chart_structure_executive_summary") or {})
+    summary["policy_surface_quality_source"] = dict(policy_surface_quality.get("source") or {})
+    summary["chart_structure_decision_hint_source"] = dict(policy_surface_quality.get("source") or {})
 
     md_lines = [
         f"# Daily Report ({day})",
@@ -258,6 +386,53 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             md_lines.append(f"- system_status: **{executive['system_status']}**")
         for line in executive.get("summary_lines") or []:
             md_lines.append(f"- {line}")
+
+    policy_surface_summary = summary.get("policy_surface_quality_summary") if isinstance(summary.get("policy_surface_quality_summary"), dict) else {}
+    policy_surface_exec = summary.get("policy_surface_quality_executive_summary") if isinstance(summary.get("policy_surface_quality_executive_summary"), dict) else {}
+    chart_structure_summary = summary.get("chart_structure_decision_hint_summary") if isinstance(summary.get("chart_structure_decision_hint_summary"), dict) else {}
+    chart_structure_exec = summary.get("chart_structure_decision_hint_executive_summary") if isinstance(summary.get("chart_structure_decision_hint_executive_summary"), dict) else {}
+    policy_surface_source = summary.get("policy_surface_quality_source") if isinstance(summary.get("policy_surface_quality_source"), dict) else {}
+    chart_structure_source = summary.get("chart_structure_decision_hint_source") if isinstance(summary.get("chart_structure_decision_hint_source"), dict) else {}
+    chart_structure_examples = chart_structure_summary.get("applied_examples") if isinstance(chart_structure_summary.get("applied_examples"), list) else []
+    md_lines += [
+        "",
+        "## Policy Surface Executive Summary",
+        "",
+        f"- status: **{str(policy_surface_exec.get('status') or 'unknown').upper()}**",
+        f"- headline: {str(policy_surface_exec.get('headline') or 'Policy surface unknown')}",
+        "",
+        "## Policy Surface Quality",
+        "",
+        f"- schema_available_rate: **{float(policy_surface_summary.get('schema_available_rate') or 0.0):.4f}**",
+        f"- normalized_policy_rate: **{float(policy_surface_summary.get('normalized_policy_rate') or 0.0):.4f}**",
+        f"- invalid_spec_rate: **{float(policy_surface_summary.get('invalid_spec_rate') or 0.0):.4f}**",
+        f"- total_invalid_specs: **{int(policy_surface_summary.get('total_invalid_specs') or 0)}**",
+        f"- run_count: **{int(policy_surface_source.get('run_count') or 0)}**",
+        "",
+        "## Chart Structure Decision Hint Executive Summary",
+        "",
+        f"- status: **{str(chart_structure_exec.get('status') or 'unknown').upper()}**",
+        f"- headline: {str(chart_structure_exec.get('headline') or 'Chart structure guard unknown')}",
+        "",
+        "## Chart Structure Decision Hint",
+        "",
+        f"- available_run_count: **{int(chart_structure_summary.get('available_run_count') or 0)}**",
+        f"- applied_count: **{int(chart_structure_summary.get('applied_count') or 0)}**",
+        f"- applied_rate: **{float(chart_structure_summary.get('applied_rate') or 0.0):.4f}**",
+        f"- top_blocking_features: `{json.dumps(chart_structure_summary.get('top_blocking_features') or [], ensure_ascii=False)}`",
+        f"- run_count: **{int(chart_structure_source.get('run_count') or 0)}**",
+    ]
+    if chart_structure_examples:
+        md_lines += ["", "## Chart Structure Decision Hint Applied Examples", ""]
+        for example in chart_structure_examples[:3]:
+            if not isinstance(example, dict):
+                continue
+            md_lines.append(
+                f"- `{example.get('run_id') or '-'}` "
+                f"[{str(example.get('entry_style') or '-').upper()}] "
+                f"{example.get('reason_transition') or '-'} "
+                f"blockers=`{json.dumps(example.get('blocking_features') or [], ensure_ascii=False)}`"
+            )
 
     top_issues = operator_summary_snapshot.get("top_issues") if isinstance(operator_summary_snapshot.get("top_issues"), list) else []
     if top_issues:

@@ -367,9 +367,8 @@ Recommended env shape:
 ```env
 OPENROUTER_DEFAULT_MODEL=openrouter/free
 OPENROUTER_MODEL_OPERATOR_UI=openrouter/free
-OPENROUTER_MODEL_REPORTER_INTRADAY=openrouter/free
 OPENROUTER_MODEL_REPORTER_FINAL=openrouter/auto
-OPENROUTER_MODEL_DAILY_REPORT=openrouter/auto
+OPENROUTER_MODEL_TRADE_REPORT=openrouter/free
 AI_STRATEGIST_PROVIDER=openai
 AI_STRATEGIST_ENDPOINT=https://openrouter.ai/api/v1/chat/completions
 AI_STRATEGIST_MODEL=openrouter/auto

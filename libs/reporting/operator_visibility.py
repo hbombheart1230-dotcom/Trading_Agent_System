@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from libs.reporting.llm_artifacts import daily_artifact_paths
+from libs.reporting.chart_structure_decision_hint_summary import build_chart_structure_decision_hint_executive_summary
+from libs.reporting.policy_surface_summary import build_policy_surface_quality_executive_summary
 
 
 _REASON_LABELS: Dict[str, str] = {
@@ -117,6 +119,59 @@ def _pick_day(rows: List[Dict[str, Any]], requested_day: Optional[str]) -> str:
 def _find_day_artifact(base_dir: Path, prefix: str, day: str) -> Dict[str, Any]:
     path = base_dir / f"{prefix}_{day}.json"
     return _read_json(path)
+
+
+def _load_policy_surface_quality_executive_summary(report_root: Path, day: str) -> Dict[str, Any]:
+    paths = daily_artifact_paths(report_root, day)
+    daily_report = _read_json(paths["daily_report_json"])
+    summary = (
+        daily_report.get("policy_surface_quality_summary")
+        if isinstance(daily_report.get("policy_surface_quality_summary"), dict)
+        else {}
+    )
+    executive = (
+        daily_report.get("policy_surface_quality_executive_summary")
+        if isinstance(daily_report.get("policy_surface_quality_executive_summary"), dict)
+        else {}
+    )
+    if not executive:
+        executive = build_policy_surface_quality_executive_summary(summary)
+    executive_out = dict(executive)
+    executive_out["source"] = {
+        "date": day,
+        "source": "daily_report",
+        "report_json_path": str(paths["daily_report_json"]),
+    }
+    return executive_out
+
+
+def _load_chart_structure_decision_hint_executive_summary(report_root: Path, day: str) -> Dict[str, Any]:
+    paths = daily_artifact_paths(report_root, day)
+    daily_report = _read_json(paths["daily_report_json"])
+    summary = (
+        daily_report.get("chart_structure_decision_hint_summary")
+        if isinstance(daily_report.get("chart_structure_decision_hint_summary"), dict)
+        else {}
+    )
+    executive = (
+        daily_report.get("chart_structure_decision_hint_executive_summary")
+        if isinstance(daily_report.get("chart_structure_decision_hint_executive_summary"), dict)
+        else {}
+    )
+    if not executive:
+        executive = build_chart_structure_decision_hint_executive_summary(summary)
+    executive_out = dict(executive)
+    executive_out["applied_examples"] = (
+        list(summary.get("applied_examples") or [])[:3]
+        if isinstance(summary.get("applied_examples"), list)
+        else []
+    )
+    executive_out["source"] = {
+        "date": day,
+        "source": "daily_report",
+        "report_json_path": str(paths["daily_report_json"]),
+    }
+    return executive_out
 
 
 def _load_or_build_metrics(events_path: Path, metrics_report_dir: Path, day: str) -> Dict[str, Any]:
@@ -925,12 +980,54 @@ def generate_operator_daily_summary(
         canonical_report_root = report_dir.parent
     else:
         canonical_report_root = report_dir
+    policy_surface_executive_summary = _load_policy_surface_quality_executive_summary(canonical_report_root, target_day)
+    chart_structure_decision_hint_executive_summary = _load_chart_structure_decision_hint_executive_summary(canonical_report_root, target_day)
     paths = daily_artifact_paths(canonical_report_root, target_day)
     js_path = paths["operator_summary_json"]
     md_path = paths["operator_summary_md"]
+    executive_headline = str(policy_surface_executive_summary.get("headline") or "").strip()
+    chart_structure_headline = str(chart_structure_decision_hint_executive_summary.get("headline") or "").strip()
+    if executive_headline:
+        out["executive_summary"]["summary_lines"].append(executive_headline)
+    if chart_structure_headline:
+        out["executive_summary"]["summary_lines"].append(chart_structure_headline)
+    out["policy_surface_quality_executive_summary"] = policy_surface_executive_summary
+    out["chart_structure_decision_hint_executive_summary"] = chart_structure_decision_hint_executive_summary
     js_path.parent.mkdir(parents=True, exist_ok=True)
     out["report_json_path"] = str(js_path)
     out["report_md_path"] = str(md_path)
+    if executive_headline:
+        md_lines += [
+            "",
+            "## Policy Surface Executive Summary",
+            "",
+            f"- status: **{str(policy_surface_executive_summary.get('status') or 'unknown').upper()}**",
+            f"- headline: {executive_headline}",
+        ]
+    if chart_structure_headline:
+        md_lines += [
+            "",
+            "## Chart Structure Decision Hint Executive Summary",
+            "",
+            f"- status: **{str(chart_structure_decision_hint_executive_summary.get('status') or 'unknown').upper()}**",
+            f"- headline: {chart_structure_headline}",
+        ]
+        chart_structure_examples = (
+            chart_structure_decision_hint_executive_summary.get("applied_examples")
+            if isinstance(chart_structure_decision_hint_executive_summary.get("applied_examples"), list)
+            else []
+        )
+        if chart_structure_examples:
+            md_lines += ["", "## Chart Structure Decision Hint Applied Examples", ""]
+            for example in chart_structure_examples[:3]:
+                if not isinstance(example, dict):
+                    continue
+                md_lines.append(
+                    f"- `{example.get('run_id') or '-'}` "
+                    f"[{str(example.get('entry_style') or '-').upper()}] "
+                    f"{example.get('reason_transition') or '-'} "
+                    f"blockers=`{json.dumps(example.get('blocking_features') or [], ensure_ascii=False)}`"
+                )
     js_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text("\n".join(md_lines), encoding="utf-8")
     return md_path, js_path

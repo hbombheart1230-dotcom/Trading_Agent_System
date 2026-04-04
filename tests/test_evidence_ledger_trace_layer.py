@@ -158,6 +158,7 @@ def test_reporter_trace_logging_writes_llm_prompt_and_response(tmp_path: Path, m
                     "ai_improvement_suggestions": ["s1"],
                     "ai_run_grade": "B+",
                     "ai_agent_evaluations": {"strategist": "good"},
+                    "ai_evidence_links": [],
                 }
             )
 

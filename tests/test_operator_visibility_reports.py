@@ -89,6 +89,79 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
         m31_dir / f"m31_slo_incident_{day}.json",
         {"ok": True, "failure_total": 0},
     )
+    daily_dir = tmp_path / "daily" / day
+    daily_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(
+        daily_dir / "daily_report.json",
+        {
+            "policy_surface_quality_summary": {
+                "schema_version": "policy_surface_quality_summary.v1",
+                "run_count": 8,
+                "schema_available_rate": 0.82,
+                "normalized_policy_rate": 0.75,
+                "invalid_spec_rate": 0.01,
+                "total_invalid_specs": 1,
+                "top_invalid_features": ["momentum_decay"],
+                "top_invalid_states": ["very_strong"],
+                "validation_notes_counts": {"invalid_state": 1},
+                "invalid_specs_by_selected_source": {"commander_applied_policy": 1},
+                "validation_notes_by_interpretation_basis": {"explicit_policy": 1},
+                "notes": [],
+            },
+            "policy_surface_quality_executive_summary": {
+                "schema_version": "policy_surface_quality_executive_summary.v1",
+                "status": "good",
+                "run_count": 8,
+                "schema_available_rate": 0.82,
+                "normalized_policy_rate": 0.75,
+                "invalid_spec_rate": 0.01,
+                "top_invalid_features": ["momentum_decay"],
+                "headline": "Policy surface healthy: schema 0.82, invalid spec 0.01",
+                "notes": [],
+            },
+            "chart_structure_decision_hint_summary": {
+                "schema_version": "chart_structure_decision_hint_summary.v1",
+                "run_count": 8,
+                "available_run_count": 3,
+                "applied_count": 1,
+                "applied_rate": 0.3333,
+                "mode_counts": {"block": 1, "none": 2},
+                "blocking_feature_counts": {"failed_breakout": 1},
+                "top_blocking_features": ["failed_breakout"],
+                "applied_run_ids": ["r3"],
+                "reason_counts_when_applied": {"breakout_continuation_structure_guard_blocked": 1},
+                "entry_style_counts_when_applied": {"breakout": 1},
+                "decision_counts_when_applied": {"WAIT": 1},
+                "applied_examples": [
+                    {
+                        "run_id": "r3",
+                        "symbol": "005930",
+                        "entry_style": "breakout",
+                        "mode": "block",
+                        "legacy_decision": "BUY",
+                        "legacy_reason": "breakout_above_recent_high_with_vwap_structure_confirmation",
+                        "final_decision": "WAIT",
+                        "final_reason": "breakout_continuation_structure_guard_blocked",
+                        "reason_transition": "breakout_above_recent_high_with_vwap_structure_confirmation -> breakout_continuation_structure_guard_blocked",
+                        "blocking_features": ["failed_breakout=confirmed"],
+                        "matched_features": [],
+                    }
+                ],
+                "notes": [],
+            },
+            "chart_structure_decision_hint_executive_summary": {
+                "schema_version": "chart_structure_decision_hint_executive_summary.v1",
+                "status": "active",
+                "run_count": 8,
+                "available_run_count": 3,
+                "applied_count": 1,
+                "applied_rate": 0.3333,
+                "top_blocking_features": ["failed_breakout"],
+                "headline": "Chart structure guard active: applied 1 times (rate 0.33), top blockers: failed_breakout",
+                "notes": [],
+            },
+        },
+    )
 
     rc = operator_summary_main(
         [
@@ -113,12 +186,21 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
 
     assert rc == 0
     assert obj["executive_summary"]["system_status"] == "RED"
+    assert obj["policy_surface_quality_executive_summary"]["status"] == "good"
+    assert obj["chart_structure_decision_hint_executive_summary"]["status"] == "active"
+    assert obj["chart_structure_decision_hint_executive_summary"]["applied_examples"][0]["run_id"] == "r3"
+    assert any("Policy surface healthy: schema 0.82, invalid spec 0.01" in line for line in obj["executive_summary"]["summary_lines"])
+    assert any("Chart structure guard active: applied 1 times" in line for line in obj["executive_summary"]["summary_lines"])
     assert Path(obj["report_json_path"]).exists()
     assert Path(obj["report_md_path"]).exists()
     assert Path(obj["report_json_path"]) == tmp_path / "daily" / day / "operator_summary.json"
     assert Path(obj["report_md_path"]) == tmp_path / "daily" / day / "operator_summary.md"
     md_body = Path(obj["report_md_path"]).read_text(encoding="utf-8")
     assert "Executive Summary" in md_body
+    assert "Policy Surface Executive Summary" in md_body
+    assert "Chart Structure Decision Hint Executive Summary" in md_body
+    assert "Chart Structure Decision Hint Applied Examples" in md_body
+    assert "breakout_above_recent_high_with_vwap_structure_confirmation -> breakout_continuation_structure_guard_blocked" in md_body
     assert "System Health Status" in md_body
     assert "Trading Activity Summary" in md_body
     assert "Safety Guard Interventions" in md_body

@@ -1978,14 +1978,28 @@ def test_m31_integrated_chain_confirms_applied_policy_from_strategist_before_sca
         assert commander_meta.get("policy_fallback_used") is False
         commander_decision = state.get("commander_decision") or {}
         assert commander_decision.get("applied_policy", {}).get("volume_ratio_min") == 0.72
+        assert commander_decision.get("applied_policy", {}).get("threshold_policy", {}).get("volume_ratio_min") == 0.72
+        assert commander_decision.get("applied_policy", {}).get("interpretation_policy", {}).get("entry_style") == "pullback"
+        assert "support_holding=holding" in list(
+            (commander_decision.get("applied_policy", {}).get("interpretation_policy", {}) or {}).get("preferred_checks") or []
+        )
+        assert "structure_hh_hl=broken" in list(
+            (commander_decision.get("applied_policy", {}).get("interpretation_policy", {}) or {}).get("blockers") or []
+        )
         monitor_policy = ((state.get("strategy_policy") or {}).get("monitor_policy") or {})
         assert monitor_policy.get("policy_source") == "strategist"
         assert monitor_policy.get("applied_policy", {}).get("pullback_min_pct") == 0.01
+        assert monitor_policy.get("applied_policy", {}).get("interpretation_policy", {}).get("entry_style") == "pullback"
         return state
 
     def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
         calls.append("monitor")
         assert state.get("commander_applied_policy", {}).get("volume_ratio_min") == 0.72
+        assert state.get("commander_applied_policy", {}).get("threshold_policy", {}).get("volume_ratio_min") == 0.72
+        assert state.get("commander_applied_policy", {}).get("interpretation_policy", {}).get("entry_style") == "pullback"
+        assert "support_holding=holding" in list(
+            (state.get("commander_applied_policy", {}).get("interpretation_policy", {}) or {}).get("preferred_checks") or []
+        )
         assert state.get("commander_applied_policy_meta", {}).get("policy_source") == "strategist"
         state["intents"] = []
         return state
@@ -2008,6 +2022,11 @@ def test_m31_integrated_chain_confirms_applied_policy_from_strategist_before_sca
     assert out["commander_decision"]["policy_source"] == "strategist"
     assert out["commander_decision"]["policy_validation_status"] == "ok"
     assert out["commander_decision"]["policy_fallback_used"] is False
+    assert out["commander_decision"]["applied_policy"]["threshold_policy"]["volume_ratio_min"] == 0.72
+    assert out["commander_decision"]["applied_policy"]["interpretation_policy"]["entry_style"] == "pullback"
+    assert "support_holding=holding" in list(
+        (out["commander_decision"]["applied_policy"]["interpretation_policy"] or {}).get("preferred_checks") or []
+    )
     assert out["commander_decision"]["applied_policy_source_chain"] == [
         "strategist",
         "validation",

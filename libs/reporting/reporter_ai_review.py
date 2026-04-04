@@ -328,7 +328,6 @@ def build_ai_reporter_review(
     env_model = str(
         os.getenv("REPORTER_AI_REVIEW_MODEL", "")
         or os.getenv("OPENROUTER_MODEL_REPORTER_FINAL", "")
-        or os.getenv("OPENROUTER_MODEL_DAILY_REPORT", "")
         or ""
     ).strip()
     env_temp_raw = str(os.getenv("REPORTER_AI_REVIEW_TEMPERATURE", "")).strip()

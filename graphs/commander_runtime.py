@@ -30,7 +30,11 @@ from graphs.trading_graph import run_trading_graph
 from graphs.nodes.decide_trade import decide_trade
 from graphs.nodes.execute_from_packet import execute_from_packet
 from libs.contracts.agent_outputs import build_commander_shadow_artifact
-from libs.runtime.monitor_policy import build_default_monitor_entry_policy, normalize_monitor_entry_policy
+from libs.runtime.monitor_policy import (
+    build_default_monitor_entry_policy,
+    build_monitor_entry_policy_bundle,
+    normalize_monitor_entry_policy,
+)
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
 from libs.runtime.canonical_artifacts import write_commander_artifact, write_commander_shadow_artifact
 from libs.runtime.resilience_state import ensure_runtime_resilience_state
@@ -256,7 +260,18 @@ def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
             or []
         )
 
-    applied_policy = normalized_policy.to_dict()
+    applied_policy = build_monitor_entry_policy_bundle(
+        threshold_policy=normalized_policy,
+        playbook=str(strategist_output.get("playbook") or ""),
+        monitor_guidance=str(strategist_output.get("monitor_guidance") or ""),
+        risk_tone=str(strategist_output.get("risk_tone") or ""),
+        trade_aggressiveness=str(strategist_output.get("trade_aggressiveness") or ""),
+        interpretation_policy=(
+            dict(candidate_policy.get("interpretation_policy") or {})
+            if isinstance(candidate_policy.get("interpretation_policy"), dict)
+            else None
+        ),
+    )
     policy_source = str(applied_policy.get("policy_source") or policy_source_hint or candidate_source or default_policy.policy_source)
     if not candidate_policy:
         policy_source = "default"

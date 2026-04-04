@@ -72,7 +72,6 @@ def summarize_daily_report_with_artifact(*, state: Dict[str, Any], policy: Dict[
     llm_policy = dict(policy.get("llm") or {})
     env_model = normalize_openrouter_model_name(
         os.getenv("DAILY_REPORT_LLM_MODEL", "")
-        or os.getenv("OPENROUTER_MODEL_DAILY_REPORT", "")
         or os.getenv("OPENROUTER_MODEL_REPORTER_FINAL", "")
         or ""
     )
