@@ -185,6 +185,41 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
                         },
                     }
                 ),
+                json.dumps(
+                    {
+                        "ts": 1700000025,
+                        "run_id": "r10",
+                        "stage": "strategist",
+                        "event": "policy_resolution",
+                        "payload": {"strategy_generation_mode": "fallback", "fallback_used": True},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": 1700000026,
+                        "run_id": "r10",
+                        "stage": "commander_router",
+                        "event": "route_selected",
+                        "payload": {"route_selected": "monitor_only"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": 1700000027,
+                        "run_id": "r10",
+                        "stage": "monitor",
+                        "event": "entry_decision_detail",
+                        "payload": {
+                            "no_trade_surface": {
+                                "no_trade_stage": "pre_intent_wait",
+                                "no_trade_reason_code": "below_vwap_reclaim_not_ready",
+                                "dominant_blocker": "below_vwap_reclaim_not_ready",
+                                "near_ready_flag": True,
+                            },
+                            "scanner_monitor_handoff": {"scanner_vs_monitor_alignment": "partial_mismatch"},
+                        },
+                    }
+                ),
             ]
         )
         + "\n",
@@ -246,6 +281,16 @@ def test_generate_metrics_report_aggregates_core_metrics(tmp_path: Path):
     assert data["skill_hydration"]["errors_total_by_skill"]["market.quote"] == 3
     assert data["skill_hydration"]["errors_total_by_skill"]["account.orders"] == 1
     assert data["skill_hydration"]["errors_total_by_skill"]["order.status"] == 1
+    assert data["no_trade_reason_total"]["below_vwap_reclaim_not_ready"] == 1
+    assert data["dominant_blocker_total"]["below_vwap_reclaim_not_ready"] == 1
+    assert data["near_ready_total"] == 1
+    assert data["strategist_fallback_total"] == 1
+    assert data["strategist_mode_total"]["fallback"] == 1
+    assert data["route_selected_total"]["monitor_only"] == 1
+    assert data["scanner_monitor_alignment_total"]["partial_mismatch"] == 1
+    assert data["pre_intent_wait_total"] == 1
+    assert data["pre_intent_noop_total"] == 0
+    assert data["guard_block_total"] == 0
 
 
 def test_generate_metrics_report_supports_iso_ts_and_latest_day(tmp_path: Path):
@@ -327,6 +372,16 @@ def test_generate_metrics_report_empty_has_llm_summary_keys(tmp_path: Path):
     assert data["broker_api"]["api_error_total_by_api_id"] == {}
     assert data["broker_api"]["api_429_total"] == 0
     assert data["broker_api"]["api_429_rate"] == 0.0
+    assert data["no_trade_reason_total"] == {}
+    assert data["dominant_blocker_total"] == {}
+    assert data["near_ready_total"] == 0
+    assert data["strategist_fallback_total"] == 0
+    assert data["strategist_mode_total"] == {}
+    assert data["route_selected_total"] == {}
+    assert data["scanner_monitor_alignment_total"] == {}
+    assert data["pre_intent_wait_total"] == 0
+    assert data["pre_intent_noop_total"] == 0
+    assert data["guard_block_total"] == 0
 
 
 def test_generate_metrics_report_broker_api_429_rate(tmp_path: Path):

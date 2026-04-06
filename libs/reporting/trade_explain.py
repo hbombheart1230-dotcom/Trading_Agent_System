@@ -152,9 +152,12 @@ def _run_context_default(run_id: str) -> Dict[str, Any]:
     return {
         "run_id": run_id,
         "strategist_llm": {},
+        "strategist_policy_resolution": {},
         "decision": {},
         "scanner": {},
         "monitor": {},
+        "monitor_entry": {},
+        "commander_route": {},
         "verdict": {},
         "execution": {},
         "first_epoch": 0,
@@ -182,16 +185,30 @@ def _build_run_contexts(rows: List[Dict[str, Any]]) -> Tuple[Dict[str, Dict[str,
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         if stage == "strategist_llm" and event == "result":
             ctx["strategist_llm"] = dict(payload)
+        elif stage == "strategist" and event == "policy_resolution":
+            ctx["strategist_policy_resolution"] = dict(payload)
         elif stage == "decision" and event == "trace":
             ctx["decision"] = _extract_decision_context(payload)
         elif stage == "scanner" and event == "summary":
             ctx["scanner"] = dict(payload)
+        elif stage == "scanner" and event == "candidate_selection_reason":
+            scanner = ctx.get("scanner") if isinstance(ctx.get("scanner"), dict) else {}
+            ctx["scanner"] = {**dict(scanner), **dict(payload)}
         elif stage == "monitor" and event == "summary":
             ctx["monitor"] = dict(payload)
+        elif stage == "monitor" and event == "entry_decision_detail":
+            ctx["monitor_entry"] = dict(payload)
         elif stage == "execute_from_packet" and event == "verdict":
             ctx["verdict"] = dict(payload)
         elif stage == "execute_from_packet" and event == "execution":
             ctx["execution"] = dict(payload)
+        elif stage == "commander_router" and event in {"route_selected", "end"}:
+            existing = ctx.get("commander_route") if isinstance(ctx.get("commander_route"), dict) else {}
+            merged = {**dict(existing), **dict(payload)}
+            route_obs = payload.get("route_observability") if isinstance(payload.get("route_observability"), dict) else {}
+            if route_obs:
+                merged.update(dict(route_obs))
+            ctx["commander_route"] = merged
     return by_run, stage_counts
 
 
@@ -220,8 +237,11 @@ def _build_execution_rows(rows: List[Dict[str, Any]], by_run: Dict[str, Dict[str
         decision = ctx.get("decision") if isinstance(ctx.get("decision"), dict) else {}
         scanner = ctx.get("scanner") if isinstance(ctx.get("scanner"), dict) else {}
         monitor = ctx.get("monitor") if isinstance(ctx.get("monitor"), dict) else {}
+        monitor_entry = ctx.get("monitor_entry") if isinstance(ctx.get("monitor_entry"), dict) else {}
         verdict = ctx.get("verdict") if isinstance(ctx.get("verdict"), dict) else {}
         strategist_llm = ctx.get("strategist_llm") if isinstance(ctx.get("strategist_llm"), dict) else {}
+        strategist_policy_resolution = ctx.get("strategist_policy_resolution") if isinstance(ctx.get("strategist_policy_resolution"), dict) else {}
+        commander_route = ctx.get("commander_route") if isinstance(ctx.get("commander_route"), dict) else {}
 
         news = decision.get("news") if isinstance(decision.get("news"), dict) else {}
         tech = decision.get("technical") if isinstance(decision.get("technical"), dict) else {}
@@ -249,8 +269,10 @@ def _build_execution_rows(rows: List[Dict[str, Any]], by_run: Dict[str, Dict[str
                     for sym in (_normalize_live_symbol(x) for x in list(scanner.get("top_ranked_symbols") or []))
                     if sym
                 ],
+                "scanner_vs_monitor_alignment": str((((monitor_entry.get("scanner_monitor_handoff") if isinstance(monitor_entry.get("scanner_monitor_handoff"), dict) else {}) or {}).get("scanner_vs_monitor_alignment")) or ""),
                 "monitor_exit_reason": str(monitor.get("exit_reason") or ""),
                 "monitor_reason": str(monitor.get("monitor_reason") or ""),
+                "monitor_dominant_blocker": str((((monitor_entry.get("no_trade_surface") if isinstance(monitor_entry.get("no_trade_surface"), dict) else {}) or {}).get("dominant_blocker")) or ""),
                 "monitor_price_source": str(monitor.get("price_source") or ""),
                 "monitor_price_source_policy": str(monitor.get("price_source_policy") or ""),
                 "monitor_feature_source": str(monitor.get("feature_source") or ""),
@@ -259,6 +281,9 @@ def _build_execution_rows(rows: List[Dict[str, Any]], by_run: Dict[str, Dict[str
                 "llm_provider": str(strategist_llm.get("provider") or ""),
                 "llm_model": str(strategist_llm.get("model") or ""),
                 "llm_ok": strategist_llm.get("ok"),
+                "strategist_mode": str(strategist_policy_resolution.get("strategy_generation_mode") or ""),
+                "strategist_fallback_used": bool(strategist_policy_resolution.get("fallback_used")),
+                "route_selected": str(commander_route.get("route_selected") or ""),
                 "news_symbol_sentiment_score": news.get("symbol_sentiment_score"),
                 "news_global_sentiment_score": news.get("global_sentiment_score"),
                 "news_symbol_status": str(news.get("symbol_sentiment_status") or ""),
@@ -396,6 +421,7 @@ def _to_markdown(
     sell_pairs: List[Dict[str, Any]],
     executions: List[Dict[str, Any]],
     report_inventory: List[str],
+    no_trade_summary: Dict[str, Any],
     data_gaps: Dict[str, Any],
 ) -> str:
     lines: List[str] = []
@@ -425,6 +451,15 @@ def _to_markdown(
             lines.append(f"- `{path}`")
     else:
         lines.append("- none")
+    lines.append("")
+    lines.append("## No-Trade Summary")
+    lines.append("")
+    lines.append(f"- no_trade_runs_total: **{int(no_trade_summary.get('no_trade_runs_total') or 0)}**")
+    lines.append(f"- near_ready_runs_total: **{int(no_trade_summary.get('near_ready_runs_total') or 0)}**")
+    lines.append(f"- strategist_fallback_total: **{int(no_trade_summary.get('strategist_fallback_total') or 0)}**")
+    lines.append(f"- route_selected_total: `{no_trade_summary.get('route_selected_total') or {}}`")
+    lines.append(f"- scanner_monitor_mismatch_total: **{int(no_trade_summary.get('scanner_monitor_mismatch_total') or 0)}**")
+    lines.append(f"- dominant_blocker_topN: `{no_trade_summary.get('dominant_blocker_topN') or []}`")
     lines.append("")
     lines.append("## Execution Timeline (Latest)")
     lines.append("")
@@ -581,6 +616,48 @@ def generate_trade_explain_report(
         "news_items_missing_total": int(news_items_missing_total),
         "note": "news headline text and scanner score_breakdown are limited by current event-log payload policy.",
     }
+    no_trade_runs_total = 0
+    near_ready_runs_total = 0
+    strategist_fallback_total = 0
+    route_selected_total: Counter[str] = Counter()
+    scanner_monitor_mismatch_total = 0
+    dominant_blocker_total: Counter[str] = Counter()
+    for ctx in by_run.values():
+        if not isinstance(ctx, dict):
+            continue
+        execution = ctx.get("execution") if isinstance(ctx.get("execution"), dict) else {}
+        if execution:
+            pass
+        monitor_entry = ctx.get("monitor_entry") if isinstance(ctx.get("monitor_entry"), dict) else {}
+        no_trade = monitor_entry.get("no_trade_surface") if isinstance(monitor_entry.get("no_trade_surface"), dict) else {}
+        handoff = monitor_entry.get("scanner_monitor_handoff") if isinstance(monitor_entry.get("scanner_monitor_handoff"), dict) else {}
+        strategist_resolution = ctx.get("strategist_policy_resolution") if isinstance(ctx.get("strategist_policy_resolution"), dict) else {}
+        commander_route = ctx.get("commander_route") if isinstance(ctx.get("commander_route"), dict) else {}
+        route_selected = str(commander_route.get("route_selected") or "").strip()
+        if route_selected:
+            route_selected_total[route_selected] += 1
+        if bool(strategist_resolution.get("fallback_used")):
+            strategist_fallback_total += 1
+        if handoff and str(handoff.get("scanner_vs_monitor_alignment") or "").strip() in {"mismatch", "partial_mismatch", "guard_block"}:
+            scanner_monitor_mismatch_total += 1
+        if no_trade and str(no_trade.get("no_trade_stage") or "").strip() in {"guard_block", "pre_intent_wait", "pre_intent_noop"} and not execution:
+            no_trade_runs_total += 1
+            if bool(no_trade.get("near_ready_flag")):
+                near_ready_runs_total += 1
+            dominant_blocker = str(no_trade.get("dominant_blocker") or no_trade.get("no_trade_reason_code") or "").strip()
+            if dominant_blocker:
+                dominant_blocker_total[dominant_blocker] += 1
+    no_trade_summary = {
+        "no_trade_runs_total": int(no_trade_runs_total),
+        "dominant_blocker_topN": [
+            {"reason": str(reason), "count": int(cnt)}
+            for reason, cnt in dominant_blocker_total.most_common(5)
+        ],
+        "near_ready_runs_total": int(near_ready_runs_total),
+        "strategist_fallback_total": int(strategist_fallback_total),
+        "route_selected_total": dict(route_selected_total),
+        "scanner_monitor_mismatch_total": int(scanner_monitor_mismatch_total),
+    }
 
     out: Dict[str, Any] = {
         "schema_version": "trade_explain.v1",
@@ -591,6 +668,7 @@ def generate_trade_explain_report(
         "report_inventory": inventory,
         "executions": execution_tail,
         "sell_pairs": pair_tail,
+        "no_trade_summary": no_trade_summary,
         "data_gaps": data_gaps,
     }
 
@@ -605,6 +683,7 @@ def generate_trade_explain_report(
         sell_pairs=pair_tail,
         executions=execution_tail,
         report_inventory=inventory,
+        no_trade_summary=no_trade_summary,
         data_gaps=data_gaps,
     )
 

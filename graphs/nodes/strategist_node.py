@@ -36,6 +36,7 @@ from libs.research.evidence_ledger import (
 )
 from libs.research.strategy_feedback_builder import build_recent_strategy_feedback
 from libs.runtime.decision_trace import append_decision_trace
+from libs.runtime.decision_observability import build_strategist_policy_resolution_surface
 from libs.runtime.monitor_policy import (
     MonitorEntryPolicy,
     build_monitor_entry_policy_bundle,
@@ -3972,6 +3973,14 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "prompt_hash": str(llm_meta.get("prompt_hash") or ""),
         "response_hash": str(llm_meta.get("response_hash") or ""),
     }
+    strategist_policy_resolution = build_strategist_policy_resolution_surface(
+        strategist_output=strategist_output,
+        strategist_llm=state.get("strategist_llm"),
+        commander_context=commander_context,
+    )
+    strategist_output["policy_resolution"] = dict(strategist_policy_resolution)
+    state["strategist_output"] = strategist_output
+    state["strategist_policy_resolution"] = dict(strategist_policy_resolution)
     ranked_market_news = _rank_news_evidence_rows(
         market_news_items_by_target,
         market_news_signal_map,
@@ -4108,6 +4117,12 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             },
             level="warning" if strategist_llm_blocked else "info",
         )
+    _emit_strategist_event(
+        state,
+        name="policy_resolution",
+        payload=dict(strategist_policy_resolution),
+        level="warning" if bool(strategist_policy_resolution.get("fallback_used")) else "info",
+    )
     _log_strategist_summary(
         state,
         {
@@ -4145,6 +4160,10 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "llm_frame_low_confidence": bool(llm_meta.get("repair_used")),
             "llm_frame_blocked": bool(strategist_llm_blocked),
             "llm_frame_blocked_reason": str(strategist_llm_block_reason or ""),
+            "strategy_generation_mode": str(strategist_policy_resolution.get("strategy_generation_mode") or ""),
+            "fallback_used": bool(strategist_policy_resolution.get("fallback_used")),
+            "fallback_source": str(strategist_policy_resolution.get("fallback_source") or ""),
+            "effective_policy_source": str(strategist_policy_resolution.get("effective_policy_source") or ""),
         },
     )
     append_decision_trace(

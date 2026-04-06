@@ -30,6 +30,7 @@ from graphs.trading_graph import run_trading_graph
 from graphs.nodes.decide_trade import decide_trade
 from graphs.nodes.execute_from_packet import execute_from_packet
 from libs.contracts.agent_outputs import build_commander_shadow_artifact
+from libs.runtime.decision_observability import build_commander_route_observability_surface
 from libs.runtime.monitor_policy import (
     build_default_monitor_entry_policy,
     build_monitor_entry_policy_bundle,
@@ -148,6 +149,21 @@ def _build_shadow_assessment_summary(
 
 def _commander_decision_event_meta(state: Dict[str, Any]) -> Dict[str, Any]:
     commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    route_observability = build_commander_route_observability_surface(
+        selected_route=_derive_commander_selected_route(state),
+        route_reason=str(
+            commander_decision.get("decision_summary")
+            or state.get("runtime_transition")
+            or state.get("runtime_status")
+            or ""
+        ),
+        commander_decision=commander_decision,
+        runtime_fast_path=state.get("runtime_fast_path") if isinstance(state.get("runtime_fast_path"), dict) else {},
+        resilience=state.get("runtime_resilience_state") if isinstance(state.get("runtime_resilience_state"), dict) else state.get("resilience"),
+        runtime_status=state.get("runtime_status"),
+        runtime_transition=state.get("runtime_transition"),
+    )
+    state["commander_route_observability"] = dict(route_observability)
     return {
         "shadow_used": bool(commander_decision.get("shadow_used")),
         "source_priority": list(commander_decision.get("source_priority") or []),
@@ -159,6 +175,22 @@ def _commander_decision_event_meta(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_fallback_reason": str(commander_decision.get("policy_fallback_reason") or ""),
         "override_reason": str(commander_decision.get("override_reason") or ""),
         "applied_policy_source_chain": list(commander_decision.get("applied_policy_source_chain") or []),
+        "route_observability": dict(route_observability),
+        "route_selected": str(route_observability.get("route_selected") or ""),
+        "route_reason": str(route_observability.get("route_reason") or ""),
+        "strategist_call_decision": str(route_observability.get("strategist_call_decision") or ""),
+        "strategist_call_reason": str(route_observability.get("strategist_call_reason") or ""),
+        "strategist_skip_reason": str(route_observability.get("strategist_skip_reason") or ""),
+        "policy_refresh_reason": str(route_observability.get("policy_refresh_reason") or ""),
+        "cache_hit": bool(route_observability.get("cache_hit")),
+        "cache_age_sec": route_observability.get("cache_age_sec"),
+        "applied_policy_source": str(route_observability.get("applied_policy_source") or ""),
+        "applied_policy_id": str(route_observability.get("applied_policy_id") or ""),
+        "monitor_only_reason": str(route_observability.get("monitor_only_reason") or ""),
+        "full_cycle_reason": str(route_observability.get("full_cycle_reason") or ""),
+        "resilience_state": dict(route_observability.get("resilience_state") or {}),
+        "intervention_reason": str(route_observability.get("intervention_reason") or ""),
+        "strategy_generation_mode": str(route_observability.get("strategy_generation_mode") or ""),
     }
 
 
@@ -678,6 +710,10 @@ def _build_commander_decision(
             f"{decision_summary} Commander preferred cached strategist context "
             f"for this cycle ({strategist_cache_preference_reason or 'context_reuse'})."
         )
+        
+    strategist_call_decision = strategist_invocation
+    strategist_call_reason = strategist_refresh_reason if strategist_refresh_requested else ("normal_cycle" if strategist_invocation == "RUN" else "")
+    strategist_skip_reason = strategist_cache_preference_reason if strategist_cache_preferred else ("open_positions_present" if open_position_count > 0 else "")
 
     return {
         "market_regime": market_regime,
@@ -691,6 +727,9 @@ def _build_commander_decision(
         "llm_invocation_policy": llm_policy,
         "command_intent": command_intent,
         "strategist_invocation": strategist_invocation,
+        "strategist_call_decision": strategist_call_decision,
+        "strategist_call_reason": strategist_call_reason,
+        "strategist_skip_reason": strategist_skip_reason,
         "flow_instruction": flow_instruction,
         "no_trade_reason_code": no_trade_reason_code,
         "observations": observations,
@@ -1056,6 +1095,25 @@ def _log_commander_event(state: Dict[str, Any], event: str, payload: Dict[str, A
         logger.log(run_id=run_id, stage="commander_router", event=event, payload=payload)
     except Exception:
         return
+
+
+def _derive_commander_selected_route(state: Dict[str, Any]) -> str:
+    status_text = str(state.get("runtime_status") or "").strip()
+    path_text = str(state.get("path") or "").strip()
+    phase_text = str(state.get("runtime_phase") or "").strip()
+    if "monitor_only" in path_text:
+        return "monitor_only"
+    if "cached" in path_text:
+        return "cached_strategist"
+    if phase_text == "preopen" or "preopen" in path_text:
+        return "preopen"
+    if phase_text == "closeout" or "closeout" in path_text:
+        return "closeout"
+    if "blocked" in path_text or status_text in {"blocked", "preflight_blocked"}:
+        return "blocked"
+    if status_text in {"error", "cooldown_wait", "degraded"}:
+        return "degraded"
+    return "full_cycle"
 
 
 def _portfolio_guard_event_summary(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -2151,6 +2209,16 @@ def run_commander_runtime(
     _log_commander_event(
         state,
         "route",
+        {
+            "mode": selected,
+            "phase": selected_phase,
+            "agents": list(state.get("runtime_plan", {}).get("agents", [])),
+            **_commander_decision_event_meta(state),
+        },
+    )
+    _log_commander_event(
+        state,
+        "route_selected",
         {
             "mode": selected,
             "phase": selected_phase,

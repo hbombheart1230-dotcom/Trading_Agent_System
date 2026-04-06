@@ -568,3 +568,120 @@ def test_m13_eod_report_auto_attaches_operator_visibility_bundle(tmp_path: Path,
     assert called["n"] == 1
     assert out["daily_report"]["day"] == day
     assert out["daily_report"]["operator_visibility"]["day"] == day
+
+
+def test_decision_story_and_run_cards_render_observability_for_no_trade_run(tmp_path: Path, capsys) -> None:
+    day = "2026-04-06"
+    events = tmp_path / "events.jsonl"
+    decision_dir = tmp_path / "decision_story"
+    cards_dir = tmp_path / "run_cards"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "no-trade-1",
+                "ts": f"{day}T01:00:00+00:00",
+                "stage": "strategist",
+                "event": "policy_resolution",
+                "payload": {
+                    "strategy_generation_mode": "fallback",
+                    "fallback_used": True,
+                    "fallback_source": "cached_strategy",
+                    "llm_ok": False,
+                },
+            },
+            {
+                "run_id": "no-trade-1",
+                "ts": f"{day}T01:00:01+00:00",
+                "stage": "commander_router",
+                "event": "route_selected",
+                "payload": {
+                    "route_selected": "monitor_only",
+                    "strategist_call_decision": "skip",
+                    "strategist_skip_reason": "position already open",
+                },
+            },
+            {
+                "run_id": "no-trade-1",
+                "ts": f"{day}T01:00:02+00:00",
+                "stage": "scanner",
+                "event": "selection_output",
+                "payload": {
+                    "scanner_selected_symbol": "005930",
+                    "scanner_rank": 1,
+                    "scanner_score_total": 0.91,
+                    "scanner_top_candidates": [{"rank": 1, "symbol": "005930", "score_total": 0.91}],
+                },
+            },
+            {
+                "run_id": "no-trade-1",
+                "ts": f"{day}T01:00:03+00:00",
+                "stage": "monitor",
+                "event": "entry_decision_detail",
+                "payload": {
+                    "decision": "WAIT",
+                    "reason": "below_vwap_reclaim_not_ready",
+                    "no_trade_surface": {
+                        "decision_outcome": "WAIT",
+                        "pre_intent_decision": "WAIT",
+                        "no_trade_stage": "pre_intent_wait",
+                        "no_trade_reason_code": "below_vwap_reclaim_not_ready",
+                        "no_trade_reason_summary": "below vwap reclaim not ready",
+                        "dominant_blocker": "below_vwap_reclaim_not_ready",
+                        "near_ready_flag": True,
+                        "distance_to_ready": {"reclaim_score_gap": 0.03, "confidence_gap": 0.01},
+                    },
+                    "scanner_monitor_handoff": {
+                        "scanner_selected_symbol": "005930",
+                        "scanner_rank": 1,
+                        "scanner_vs_monitor_alignment": "partial_mismatch",
+                        "monitor_rejection_reason_code": "below_vwap_reclaim_not_ready",
+                    },
+                },
+            },
+        ],
+    )
+
+    rc_story = decision_story_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(decision_dir),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    story_obj = json.loads(capsys.readouterr().out.strip())
+    assert rc_story == 0
+    assert story_obj["story_total"] == 1
+    story_md = Path(story_obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "why_not_buy_summary: below vwap reclaim not ready" in story_md
+    assert "dominant_blocker: below_vwap_reclaim_not_ready" in story_md
+    assert "distance_to_ready: reclaim_score_gap=0.0300, confidence_gap=0.0100" in story_md
+    assert "scanner_monitor_handoff: top1=005930" in story_md
+    assert "strategist_provenance: mode=fallback" in story_md
+    assert "commander_route_provenance: route=monitor_only" in story_md
+
+    rc_cards = run_card_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(cards_dir),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    cards_obj = json.loads(capsys.readouterr().out.strip())
+    assert rc_cards == 0
+    assert cards_obj["card_total"] == 1
+    cards_md = Path(cards_obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "Route: monitor_only" in cards_md
+    assert "Scanner Top-1: 005930/0.91" in cards_md
+    assert "Monitor Outcome: WAIT" in cards_md
+    assert "Dominant Blocker: below_vwap_reclaim_not_ready" in cards_md
+    assert "Near Ready: True" in cards_md
+    assert "Strategist Mode: fallback" in cards_md

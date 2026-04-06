@@ -24,6 +24,10 @@ from libs.core.symbols import normalize_symbol
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 from libs.runtime.canonical_artifacts import write_monitor_artifact
 from libs.runtime.decision_trace import append_decision_trace
+from libs.runtime.decision_observability import (
+    build_monitor_no_trade_surface,
+    build_scanner_monitor_handoff_surface,
+)
 from libs.runtime.exit_policy import apply_env_stop_take_fallbacks, evaluate_exit_policy
 from libs.runtime.feature_engine import build_feature_row
 from libs.runtime.intraday_monitor_signals import (
@@ -3271,8 +3275,28 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         entry_event_metrics["vwap_distance"] = entry_event_metrics.get("extended_from_vwap_pct")
     if "pullback_pct" not in entry_event_metrics:
         entry_event_metrics["pullback_pct"] = entry_event_metrics.get("pullback_depth_pct")
+    final_entry_decision = "BUY" if bool(buy_submitted) else "WAIT"
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    monitor_no_trade_surface = build_monitor_no_trade_surface(
+        entry_info,
+        final_decision=final_entry_decision,
+        buy_submitted=bool(buy_submitted),
+        guard_blocked=bool(entry_info.get("guard_blocked")),
+        guard_reason=entry_info.get("guard_reason"),
+        commander_no_trade_reason_code=commander_decision.get("no_trade_reason_code"),
+    )
+    scanner_monitor_handoff = build_scanner_monitor_handoff_surface(
+        selected=selected if isinstance(selected, dict) else {},
+        ranked_candidates=[row for row in list(state.get("ranked_candidates") or []) if isinstance(row, dict)],
+        scanner_output=state.get("scanner_output") if isinstance(state.get("scanner_output"), dict) else {},
+        final_decision=final_entry_decision,
+        no_trade_surface=monitor_no_trade_surface,
+        entry_info=entry_info,
+    )
+    state["monitor_no_trade_surface"] = dict(monitor_no_trade_surface)
+    state["scanner_monitor_handoff"] = dict(scanner_monitor_handoff)
     entry_decision_detail = {
-        "decision": "BUY" if bool(buy_submitted) else "WAIT",
+        "decision": final_entry_decision,
         "reason": str(entry_info.get("guard_reason") or entry_info.get("reason") or "entry_wait"),
         "entry_evaluated": bool(entry_info.get("evaluated")),
         "entry_triggered": bool(entry_info.get("triggered")),
@@ -3307,6 +3331,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
         "policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "chart_structure_decision_hint": dict(entry_info.get("chart_structure_decision_hint") or {}),
+        "no_trade_surface": dict(monitor_no_trade_surface),
+        "scanner_monitor_handoff": dict(scanner_monitor_handoff),
         "entry_threshold": entry_info.get("entry_threshold"),
         "score_passed": bool(entry_info.get("score_passed")),
         "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
@@ -3349,8 +3375,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
         "legacy_entry_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
         "scoring_entry_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
-        "final_decision": "BUY" if bool(buy_submitted) else "WAIT",
+        "final_decision": final_entry_decision,
         "primary_reason_code": str(entry_info.get("reason") or ""),
+        "no_trade_surface": dict(monitor_no_trade_surface),
+        "scanner_monitor_handoff": dict(scanner_monitor_handoff),
     }
     if not bool(entry_info.get("hard_filter_passed")):
         _emit_monitor_event(
@@ -3463,6 +3491,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["policy_alignment_summary"] = dict(entry_info.get("policy_alignment_summary") or {})
         state["monitor_output"]["policy_aware_gating"] = dict(entry_info.get("policy_aware_gating") or {})
         state["monitor_output"]["chart_structure_decision_hint"] = dict(entry_info.get("chart_structure_decision_hint") or {})
+        state["monitor_output"]["no_trade_surface"] = dict(monitor_no_trade_surface)
+        state["monitor_output"]["scanner_monitor_handoff"] = dict(scanner_monitor_handoff)
         state["monitor_output"]["entry_threshold"] = entry_info.get("entry_threshold")
         state["monitor_output"]["score_passed"] = bool(entry_info.get("score_passed"))
         state["monitor_output"]["scoring_mode"] = str(entry_info.get("scoring_mode") or "disabled")
@@ -3490,6 +3520,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "chart_structure_features": dict(entry_info.get("chart_structure_features") or {}),
         "policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "chart_structure_decision_hint": dict(entry_info.get("chart_structure_decision_hint") or {}),
+        "no_trade_surface": dict(monitor_no_trade_surface),
+        "scanner_monitor_handoff": dict(scanner_monitor_handoff),
         "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
         "entry_check_summary": str(monitor_policy_trace.get("entry_check_summary") or ""),
         "entry_blockers": list(monitor_policy_trace.get("entry_blockers") or []),
@@ -3551,6 +3583,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
         "legacy_entry_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
         "scoring_entry_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
+        "no_trade_surface": dict(monitor_no_trade_surface),
+        "scanner_monitor_handoff": dict(scanner_monitor_handoff),
         "commander_context_consumed": bool(monitor_policy_trace.get("commander_context_consumed")),
         "consumed_fields": list(monitor_policy_trace.get("consumed_fields") or []),
         "shadow_used": bool(monitor_policy_trace.get("shadow_used")),
@@ -3627,6 +3661,21 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "entry_guard_reason": str(entry_info.get("guard_reason") or ""),
             "entry_metrics": dict(entry_info.get("metrics") or {}),
             "entry_thresholds": dict(entry_info.get("thresholds") or {}),
+            "decision_outcome": str(monitor_no_trade_surface.get("decision_outcome") or final_entry_decision),
+            "pre_intent_decision": str(monitor_no_trade_surface.get("pre_intent_decision") or ""),
+            "no_trade_stage": str(monitor_no_trade_surface.get("no_trade_stage") or ""),
+            "no_trade_reason_code": str(monitor_no_trade_surface.get("no_trade_reason_code") or ""),
+            "no_trade_reason_summary": str(monitor_no_trade_surface.get("no_trade_reason_summary") or ""),
+            "dominant_blocker": str(monitor_no_trade_surface.get("dominant_blocker") or ""),
+            "blocker_family": str(monitor_no_trade_surface.get("blocker_family") or ""),
+            "blocker_metrics": dict(monitor_no_trade_surface.get("blocker_metrics") or {}),
+            "distance_to_ready": dict(monitor_no_trade_surface.get("distance_to_ready") or {}),
+            "near_ready_flag": bool(monitor_no_trade_surface.get("near_ready_flag")),
+            "required_checks_failed": list(monitor_no_trade_surface.get("required_checks_failed") or []),
+            "preferred_checks_failed": list(monitor_no_trade_surface.get("preferred_checks_failed") or []),
+            "relaxable_checks_failed": list(monitor_no_trade_surface.get("relaxable_checks_failed") or []),
+            "evidence_snapshot": dict(monitor_no_trade_surface.get("evidence_snapshot") or {}),
+            "scanner_monitor_handoff": dict(scanner_monitor_handoff),
         },
     )
     append_decision_trace(

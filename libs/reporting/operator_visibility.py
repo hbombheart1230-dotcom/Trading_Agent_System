@@ -301,6 +301,40 @@ def _format_reason_rows(rows: List[Dict[str, Any]]) -> str:
     )
 
 
+def _compact_distance_to_ready_text(raw: Any) -> str:
+    row = raw if isinstance(raw, dict) else {}
+    if not row:
+        return "-"
+    parts: List[str] = []
+    for key in ("reclaim_score_gap", "breakout_gap", "volume_gap", "confidence_gap"):
+        if row.get(key) in (None, ""):
+            continue
+        try:
+            parts.append(f"{key}={float(row.get(key)):.4f}")
+        except Exception:
+            parts.append(f"{key}={row.get(key)}")
+    return ", ".join(parts) if parts else "-"
+
+
+def _compact_blocking_features(raw: Any, *, limit: int = 3) -> str:
+    values = raw if isinstance(raw, list) else []
+    clipped = [str(v or "").strip() for v in values if str(v or "").strip()]
+    return ", ".join(clipped[:limit]) if clipped else "-"
+
+
+def _merge_scanner_handoff_with_selection(
+    handoff: Any,
+    selection: Any,
+) -> Dict[str, Any]:
+    handoff_row = handoff if isinstance(handoff, dict) else {}
+    selection_row = selection if isinstance(selection, dict) else {}
+    if not handoff_row and not selection_row:
+        return {}
+    merged = dict(selection_row)
+    merged.update(dict(handoff_row))
+    return merged
+
+
 def _broker_code_success(value: Any) -> Optional[bool]:
     if value is None:
         return None
@@ -343,6 +377,10 @@ def _run_context_default(run_id: str) -> Dict[str, Any]:
         "risk_flags": [],
         "llm": {},
         "decision": {},
+        "monitor_entry": {},
+        "scanner_selection": {},
+        "strategist_policy_resolution": {},
+        "commander_route": {},
         "verdict": {},
         "execution": {},
         "strategy_frame": {},
@@ -353,11 +391,14 @@ def _is_trade_story(story: Dict[str, Any]) -> bool:
     action = str(story.get("action") or "").strip().upper()
     status = str(story.get("execution_status") or "").strip().upper()
     guard_status = str(story.get("guard_status") or "").strip().lower()
+    no_trade = story.get("no_trade_surface") if isinstance(story.get("no_trade_surface"), dict) else {}
     if action in ("BUY", "SELL"):
         return True
     if status in ("EXECUTED", "EXECUTED_OK", "EXECUTED_FAIL", "BLOCKED", "INTENT_ONLY"):
         return True
     if guard_status == "intervened":
+        return True
+    if str(no_trade.get("no_trade_stage") or "").strip() in {"guard_block", "pre_intent_wait", "pre_intent_noop"}:
         return True
     return False
 
@@ -387,6 +428,10 @@ def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         if stage == "strategist_llm" and event == "result":
             ctx["llm"] = dict(payload)
+            continue
+
+        if stage == "strategist" and event == "policy_resolution":
+            ctx["strategist_policy_resolution"] = dict(payload)
             continue
 
         if stage == "decision" and event == "trace":
@@ -494,6 +539,28 @@ def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     ctx["risk_flags"].append("sell_cooldown_blocked")
                 continue
 
+        if stage == "scanner" and event == "candidate_selection_reason":
+            ctx["scanner_selection"] = dict(payload)
+            continue
+
+        if stage == "scanner" and event == "selection_output":
+            existing = ctx.get("scanner_selection") if isinstance(ctx.get("scanner_selection"), dict) else {}
+            ctx["scanner_selection"] = {**dict(existing), **dict(payload)}
+            continue
+
+        if stage == "monitor" and event == "entry_decision_detail":
+            ctx["monitor_entry"] = dict(payload)
+            continue
+
+        if stage == "commander_router" and event in {"route", "route_selected", "end"}:
+            existing = ctx.get("commander_route") if isinstance(ctx.get("commander_route"), dict) else {}
+            merged = {**dict(existing), **dict(payload)}
+            route_obs = payload.get("route_observability") if isinstance(payload.get("route_observability"), dict) else {}
+            if route_obs:
+                merged.update(dict(route_obs))
+            ctx["commander_route"] = merged
+            continue
+
         if stage == "execute_from_packet" and event == "verdict":
             ctx["verdict"] = dict(payload)
             allowed = payload.get("allowed")
@@ -579,6 +646,39 @@ def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ctx["key_reason_raw"] = normalized_reason
         ctx["key_reason"] = _humanize_reason(normalized_reason)
 
+        monitor_entry = ctx.get("monitor_entry") if isinstance(ctx.get("monitor_entry"), dict) else {}
+        no_trade_surface = monitor_entry.get("no_trade_surface") if isinstance(monitor_entry.get("no_trade_surface"), dict) else {}
+        scanner_handoff = monitor_entry.get("scanner_monitor_handoff") if isinstance(monitor_entry.get("scanner_monitor_handoff"), dict) else {}
+        scanner_selection = ctx.get("scanner_selection") if isinstance(ctx.get("scanner_selection"), dict) else {}
+        strategist_resolution = (
+            ctx.get("strategist_policy_resolution") if isinstance(ctx.get("strategist_policy_resolution"), dict) else {}
+        )
+        commander_route = ctx.get("commander_route") if isinstance(ctx.get("commander_route"), dict) else {}
+        if no_trade_surface:
+            ctx["no_trade_surface"] = dict(no_trade_surface)
+            dominant_blocker = str(no_trade_surface.get("dominant_blocker") or no_trade_surface.get("no_trade_reason_code") or "").strip()
+            if dominant_blocker and normalized_reason in {"NO_CANDIDATE", "GUARD_BLOCK", "unspecified"}:
+                ctx["key_reason_raw"] = dominant_blocker
+                ctx["key_reason"] = _humanize_reason(dominant_blocker)
+            ctx["decision_outcome"] = str(no_trade_surface.get("decision_outcome") or "")
+            ctx["dominant_blocker"] = dominant_blocker
+            ctx["near_ready_flag"] = bool(no_trade_surface.get("near_ready_flag"))
+            ctx["distance_to_ready_text"] = _compact_distance_to_ready_text(no_trade_surface.get("distance_to_ready"))
+            ctx["no_trade_summary"] = str(no_trade_surface.get("no_trade_reason_summary") or "")
+        merged_handoff = _merge_scanner_handoff_with_selection(scanner_handoff, scanner_selection)
+        if merged_handoff:
+            ctx["scanner_monitor_handoff"] = merged_handoff
+            if not str(ctx.get("symbol") or "").strip():
+                ctx["symbol"] = str(
+                    merged_handoff.get("scanner_selected_symbol")
+                    or merged_handoff.get("selected_symbol")
+                    or ""
+                ).strip().upper()
+        if strategist_resolution:
+            ctx["strategist_policy_resolution"] = dict(strategist_resolution)
+        if commander_route:
+            ctx["commander_route"] = dict(commander_route)
+
         if not str(ctx.get("final_outcome") or "").strip():
             if str(ctx.get("execution_status")) == "EXECUTED_OK":
                 ctx["final_outcome"] = "order accepted"
@@ -586,6 +686,8 @@ def _build_run_contexts(day_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 ctx["final_outcome"] = "order rejected"
             elif str(ctx.get("execution_status")) == "BLOCKED":
                 ctx["final_outcome"] = f"blocked:{ctx.get('guard_reason')}"
+            elif no_trade_surface:
+                ctx["final_outcome"] = str(no_trade_surface.get("no_trade_reason_summary") or "no trade")
             elif str(ctx.get("execution_status")) == "NOOP":
                 ctx["final_outcome"] = "no trade"
             else:
@@ -1073,6 +1175,10 @@ def generate_decision_story_report(
             qty = _safe_int(s.get("qty"), 0)
             final_action = f"{action} {qty}" if (qty > 0 and action in ("BUY", "SELL")) else action
             operator_int = s.get("operator_intervention") if isinstance(s.get("operator_intervention"), list) else []
+            no_trade = s.get("no_trade_surface") if isinstance(s.get("no_trade_surface"), dict) else {}
+            handoff = s.get("scanner_monitor_handoff") if isinstance(s.get("scanner_monitor_handoff"), dict) else {}
+            strategist_resolution = s.get("strategist_policy_resolution") if isinstance(s.get("strategist_policy_resolution"), dict) else {}
+            commander_route = s.get("commander_route") if isinstance(s.get("commander_route"), dict) else {}
             md_lines += [
                 f"## Run {s.get('run_id')}",
                 "",
@@ -1080,12 +1186,28 @@ def generate_decision_story_report(
                 f"- symbol: **{s.get('symbol') or 'N/A'}**",
                 f"- final_action: **{final_action}**",
                 f"- execution_status: **{s.get('execution_status')}**",
+                f"- final_outcome: {s.get('final_outcome') or '-'}",
+                f"- pre_intent_decision: {str(no_trade.get('pre_intent_decision') or '-')}",
+                f"- guard_decision: {str(no_trade.get('no_trade_stage') or '-')}",
                 f"- decision_reason_summary: {s.get('key_reason') or _humanize_reason('unspecified')}",
+                f"- why_not_buy_summary: {str(no_trade.get('no_trade_reason_summary') or '-')}",
+                f"- dominant_blocker: {str(no_trade.get('dominant_blocker') or '-')}",
+                f"- distance_to_ready: {_compact_distance_to_ready_text(no_trade.get('distance_to_ready'))}",
                 f"- technical_evidence: {s.get('technical_evidence') or '-'}",
                 f"- sentiment_evidence: {s.get('sentiment_evidence') or '-'}",
+                f"- scanner_monitor_handoff: top1={handoff.get('scanner_selected_symbol') or '-'} "
+                f"(rank={handoff.get('scanner_rank') or '-'}) -> "
+                f"alignment={handoff.get('scanner_vs_monitor_alignment') or '-'} / "
+                f"monitor_reason={handoff.get('monitor_rejection_reason_code') or '-'}",
+                f"- strategist_provenance: mode={strategist_resolution.get('strategy_generation_mode') or '-'} / "
+                f"llm_ok={strategist_resolution.get('llm_ok')} / "
+                f"fallback_used={strategist_resolution.get('fallback_used')} / "
+                f"fallback_source={strategist_resolution.get('fallback_source') or '-'}",
+                f"- commander_route_provenance: route={commander_route.get('route_selected') or '-'} / "
+                f"call_decision={commander_route.get('strategist_call_decision') or '-'} / "
+                f"call_reason={commander_route.get('strategist_call_reason') or commander_route.get('strategist_skip_reason') or '-'}",
                 f"- guard_intervention: {s.get('guard_reason_human') or _humanize_reason(s.get('guard_reason') or 'none')}",
                 f"- operator_intervention: {', '.join(operator_int) if operator_int else 'none'}",
-                f"- final_outcome: {s.get('final_outcome') or '-'}",
                 "",
             ]
 
@@ -1146,9 +1268,19 @@ def generate_run_card_report(
             action = str(s.get("action") or "UNKNOWN")
             qty = max(0, _safe_int(s.get("qty"), 0))
             action_text = f"{action} {qty}" if (action in ("BUY", "SELL") and qty > 0) else action
+            no_trade = s.get("no_trade_surface") if isinstance(s.get("no_trade_surface"), dict) else {}
+            handoff = s.get("scanner_monitor_handoff") if isinstance(s.get("scanner_monitor_handoff"), dict) else {}
+            strategist_resolution = s.get("strategist_policy_resolution") if isinstance(s.get("strategist_policy_resolution"), dict) else {}
+            commander_route = s.get("commander_route") if isinstance(s.get("commander_route"), dict) else {}
             lines += [
                 f"Run: {s.get('run_id')}",
                 f"Symbol: {s.get('symbol') or 'N/A'}",
+                f"Route: {commander_route.get('route_selected') or '-'}",
+                f"Scanner Top-1: {(handoff.get('scanner_selected_symbol') or '-')}/{handoff.get('scanner_score_total') if handoff else '-'}",
+                f"Monitor Outcome: {no_trade.get('decision_outcome') or s.get('execution_status') or '-'}",
+                f"Dominant Blocker: {no_trade.get('dominant_blocker') or '-'}",
+                f"Near Ready: {bool(no_trade.get('near_ready_flag'))}",
+                f"Strategist Mode: {strategist_resolution.get('strategy_generation_mode') or '-'}",
                 f"Action: {action_text}",
                 f"Status: {s.get('execution_status')}",
                 f"Guard: {s.get('guard_status')} ({s.get('guard_reason_human') or _humanize_reason(s.get('guard_reason') or 'none')})",

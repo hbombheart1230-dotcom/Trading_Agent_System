@@ -228,3 +228,66 @@ def test_trade_explain_report_filters_malformed_live_like_symbols(tmp_path: Path
     assert int(obj["execution_summary"]["executions_total"]) == 1
     assert "005930:BUY" in (obj["execution_summary"]["symbol_side_counts"] or {})
     assert "A0082N0:BUY" not in (obj["execution_summary"]["symbol_side_counts"] or {})
+
+
+def test_trade_explain_report_adds_no_trade_summary(tmp_path: Path, capsys) -> None:
+    day = "2026-04-06"
+    events = tmp_path / "events.jsonl"
+    out_dir = tmp_path / "trade_explain"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r1",
+                "ts": f"{day}T00:00:00+00:00",
+                "stage": "strategist",
+                "event": "policy_resolution",
+                "payload": {"strategy_generation_mode": "fallback", "fallback_used": True},
+            },
+            {
+                "run_id": "r1",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "commander_router",
+                "event": "route_selected",
+                "payload": {"route_selected": "monitor_only"},
+            },
+            {
+                "run_id": "r1",
+                "ts": f"{day}T00:00:02+00:00",
+                "stage": "monitor",
+                "event": "entry_decision_detail",
+                "payload": {
+                    "no_trade_surface": {
+                        "no_trade_stage": "pre_intent_wait",
+                        "dominant_blocker": "below_vwap_reclaim_not_ready",
+                        "near_ready_flag": True,
+                    },
+                    "scanner_monitor_handoff": {"scanner_vs_monitor_alignment": "partial_mismatch"},
+                },
+            },
+        ],
+    )
+
+    rc = trade_explain_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(out_dir),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    obj = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert obj["no_trade_summary"]["no_trade_runs_total"] == 1
+    assert obj["no_trade_summary"]["near_ready_runs_total"] == 1
+    assert obj["no_trade_summary"]["strategist_fallback_total"] == 1
+    assert obj["no_trade_summary"]["route_selected_total"]["monitor_only"] == 1
+    assert obj["no_trade_summary"]["scanner_monitor_mismatch_total"] == 1
+    assert obj["no_trade_summary"]["dominant_blocker_topN"][0]["reason"] == "below_vwap_reclaim_not_ready"
+    md_body = Path(obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "## No-Trade Summary" in md_body
+    assert "no_trade_runs_total" in md_body

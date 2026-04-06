@@ -335,6 +335,16 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
                 "position_sizing_zero_qty_total": 0,
                 "position_sizing_reason_total": {},
             },
+            "no_trade_reason_total": {},
+            "dominant_blocker_total": {},
+            "near_ready_total": 0,
+            "strategist_fallback_total": 0,
+            "strategist_mode_total": {},
+            "route_selected_total": {},
+            "scanner_monitor_alignment_total": {},
+            "pre_intent_wait_total": 0,
+            "pre_intent_noop_total": 0,
+            "guard_block_total": 0,
             "broker_api": {
                 "api_error_total_by_api_id": {},
                 "api_429_total": 0,
@@ -402,6 +412,16 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     monitor_position_sizing_computed_qty_sum = 0
     monitor_position_sizing_zero_qty_total = 0
     monitor_position_sizing_reason_total: Counter[str] = Counter()
+    no_trade_reason_total: Counter[str] = Counter()
+    dominant_blocker_total: Counter[str] = Counter()
+    strategist_mode_total: Counter[str] = Counter()
+    route_selected_total: Counter[str] = Counter()
+    scanner_monitor_alignment_total: Counter[str] = Counter()
+    near_ready_total = 0
+    strategist_fallback_total = 0
+    pre_intent_wait_total = 0
+    pre_intent_noop_total = 0
+    guard_block_total = 0
 
     for r in day_rows:
         stage = str(r.get("stage") or "")
@@ -496,6 +516,38 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             except Exception:
                 pass
 
+        if stage == "strategist" and event == "policy_resolution":
+            payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+            mode = str(payload.get("strategy_generation_mode") or "").strip()
+            if mode:
+                strategist_mode_total[mode] += 1
+            if bool(payload.get("fallback_used")):
+                strategist_fallback_total += 1
+
+        if stage == "monitor" and event == "entry_decision_detail":
+            payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
+            no_trade = payload.get("no_trade_surface") if isinstance(payload.get("no_trade_surface"), dict) else {}
+            handoff = payload.get("scanner_monitor_handoff") if isinstance(payload.get("scanner_monitor_handoff"), dict) else {}
+            if no_trade:
+                reason_code = str(no_trade.get("no_trade_reason_code") or "").strip()
+                dominant_blocker = str(no_trade.get("dominant_blocker") or "").strip()
+                if reason_code:
+                    no_trade_reason_total[reason_code] += 1
+                if dominant_blocker:
+                    dominant_blocker_total[dominant_blocker] += 1
+                if bool(no_trade.get("near_ready_flag")):
+                    near_ready_total += 1
+                no_trade_stage = str(no_trade.get("no_trade_stage") or "").strip()
+                if no_trade_stage == "pre_intent_wait":
+                    pre_intent_wait_total += 1
+                elif no_trade_stage == "pre_intent_noop":
+                    pre_intent_noop_total += 1
+                elif no_trade_stage == "guard_block":
+                    guard_block_total += 1
+            alignment = str(handoff.get("scanner_vs_monitor_alignment") or "").strip()
+            if alignment:
+                scanner_monitor_alignment_total[alignment] += 1
+
         if stage == "skill_hydration" and event == "summary":
             payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
             skill_hydration_total += 1
@@ -530,6 +582,11 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         if stage == "commander_router":
             payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
             commander_total += 1
+
+            if event == "route_selected":
+                route_selected = str(payload.get("route_selected") or "").strip()
+                if route_selected:
+                    route_selected_total[route_selected] += 1
 
             status = str(payload.get("status") or "").strip()
             if status:
@@ -689,6 +746,16 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             "position_sizing_zero_qty_total": int(monitor_position_sizing_zero_qty_total),
             "position_sizing_reason_total": dict(monitor_position_sizing_reason_total),
         },
+        "no_trade_reason_total": dict(no_trade_reason_total),
+        "dominant_blocker_total": dict(dominant_blocker_total),
+        "near_ready_total": int(near_ready_total),
+        "strategist_fallback_total": int(strategist_fallback_total),
+        "strategist_mode_total": dict(strategist_mode_total),
+        "route_selected_total": dict(route_selected_total),
+        "scanner_monitor_alignment_total": dict(scanner_monitor_alignment_total),
+        "pre_intent_wait_total": int(pre_intent_wait_total),
+        "pre_intent_noop_total": int(pre_intent_noop_total),
+        "guard_block_total": int(guard_block_total),
         "broker_api": {
             "api_error_total_by_api_id": dict(api_errors_by_id),
             "api_429_total": int(api_429_total),
@@ -913,6 +980,53 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     md_lines += ["", "### position_sizing_reason_total", ""]
     if monitor_position_sizing_reason_total:
         for name, cnt in monitor_position_sizing_reason_total.most_common(5):
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += [
+        "",
+        "## No-Trade Observability",
+        "",
+        f"- near_ready_total: **{int(near_ready_total)}**",
+        f"- strategist_fallback_total: **{int(strategist_fallback_total)}**",
+        f"- pre_intent_wait_total: **{int(pre_intent_wait_total)}**",
+        f"- pre_intent_noop_total: **{int(pre_intent_noop_total)}**",
+        f"- guard_block_total: **{int(guard_block_total)}**",
+        "",
+        "### no_trade_reason_total",
+        "",
+    ]
+    if no_trade_reason_total:
+        for name, cnt in no_trade_reason_total.most_common(5):
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### dominant_blocker_total", ""]
+    if dominant_blocker_total:
+        for name, cnt in dominant_blocker_total.most_common(5):
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### strategist_mode_total", ""]
+    if strategist_mode_total:
+        for name, cnt in strategist_mode_total.most_common():
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### route_selected_total", ""]
+    if route_selected_total:
+        for name, cnt in route_selected_total.most_common():
+            md_lines.append(f"- {name}: {cnt}")
+    else:
+        md_lines.append("- (none)")
+
+    md_lines += ["", "### scanner_monitor_alignment_total", ""]
+    if scanner_monitor_alignment_total:
+        for name, cnt in scanner_monitor_alignment_total.most_common():
             md_lines.append(f"- {name}: {cnt}")
     else:
         md_lines.append("- (none)")

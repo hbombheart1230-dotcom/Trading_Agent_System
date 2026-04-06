@@ -4,6 +4,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, TypedDict
 
+from libs.runtime.decision_observability import (
+    build_commander_route_observability_surface,
+    build_monitor_no_trade_surface,
+    build_scanner_monitor_handoff_surface,
+    build_strategist_policy_resolution_surface,
+)
+
 
 AGENT_OUTPUT_SCHEMA_VERSION = "agent_output.v1"
 AGENT_VALIDATION_SCHEMA_VERSION = "agent_output_validation.v1"
@@ -802,6 +809,11 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         or strategist_llm.get("status"),
         max_len=180,
     )
+    policy_resolution = build_strategist_policy_resolution_surface(
+        strategist_output=strategist_output,
+        strategist_llm=strategist_llm,
+        commander_context=commander_context,
+    )
     artifact.update(
         {
             "market_regime": market_regime,
@@ -984,6 +996,20 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "policy_fallback_used": bool(strategist_output.get("policy_fallback_used")),
             "policy_fallback_reason": policy_fallback_reason,
             "policy_validation_issues": policy_validation_issues,
+            "policy_resolution": dict(policy_resolution),
+            "llm_attempted": bool(policy_resolution.get("llm_attempted")),
+            "llm_ok": bool(policy_resolution.get("llm_ok")),
+            "llm_error_type": _clip(policy_resolution.get("llm_error_type"), max_len=80),
+            "llm_error_message_short": _clip(policy_resolution.get("llm_error_message_short"), max_len=180),
+            "latency_ms": policy_resolution.get("latency_ms"),
+            "fallback_source": _clip(policy_resolution.get("fallback_source"), max_len=120),
+            "fallback_policy_id": _clip(policy_resolution.get("fallback_policy_id"), max_len=120),
+            "effective_policy_source": _clip(policy_resolution.get("effective_policy_source"), max_len=120),
+            "effective_prompt_version": _clip(policy_resolution.get("effective_prompt_version"), max_len=120),
+            "effective_schema_version": _clip(policy_resolution.get("effective_schema_version"), max_len=120),
+            "policy_staleness": policy_resolution.get("policy_staleness"),
+            "reused_cached_strategy": bool(policy_resolution.get("reused_cached_strategy")),
+            "strategy_generation_mode": _clip(policy_resolution.get("strategy_generation_mode"), max_len=40),
             "confidence": confidence,
             "scanner_bias": _clip(strategist_output.get("scanner_bias"), max_len=80),
             "scanner_bias_context": _dict(strategist_output.get("scanner_bias_context")),
@@ -1302,6 +1328,11 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "ranked_candidates": candidate_preview,
             "selected_symbol": symbol,
             "selected_rank": selected_rank,
+            "scanner_selected_symbol": symbol,
+            "scanner_rank": selected_rank,
+            "scanner_score_total": selected_score_total,
+            "scanner_score_breakdown": selected_score_breakdown,
+            "scanner_top_candidates": candidate_preview[:3],
             "runner_up_symbol": runner_up_symbol,
             "playbook": playbook,
             "policy_source": policy_source,
@@ -1450,6 +1481,27 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         "shadow_used": _first_trace_bool("shadow_used"),
         "strategist_fallback_used": _first_trace_bool("strategist_fallback_used"),
     }
+    monitor_no_trade_surface = _first_trace_dict("no_trade_surface")
+    if not monitor_no_trade_surface:
+        commander_decision = _dict(state.get("commander_decision"))
+        monitor_no_trade_surface = build_monitor_no_trade_surface(
+            entry_info,
+            final_decision=str(monitor_output.get("intent_side") or "NOOP").strip().upper() or "WAIT",
+            buy_submitted=str(monitor_output.get("intent_side") or "").strip().upper() == "BUY",
+            guard_blocked=bool(entry_info.get("guard_blocked")),
+            guard_reason=entry_info.get("guard_reason"),
+            commander_no_trade_reason_code=commander_decision.get("no_trade_reason_code"),
+        )
+    scanner_monitor_handoff = _first_trace_dict("scanner_monitor_handoff")
+    if not scanner_monitor_handoff:
+        scanner_monitor_handoff = build_scanner_monitor_handoff_surface(
+            selected=selected,
+            ranked_candidates=[row for row in list(state.get("ranked_candidates") or []) if isinstance(row, dict)],
+            scanner_output=_dict(state.get("scanner_output")),
+            final_decision=str(monitor_output.get("intent_side") or "NOOP").strip().upper() or "WAIT",
+            no_trade_surface=monitor_no_trade_surface,
+            entry_info=entry_info,
+        )
     symbol = str(exit_info.get("symbol") or monitor_output.get("selected_symbol") or monitor.get("selected_symbol") or "").strip()
     thresholds = _dict(exit_info.get("thresholds"))
     watch_axes = list(exit_info.get("watch_axes") or [])
@@ -1634,6 +1686,32 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "primary_reason_code": primary_reason_code,
             "primary_reason_text": _clip(primary_reason_code.replace("_", " "), max_len=220),
             "secondary_reason_codes": secondary_reason_codes,
+            "no_trade_surface": dict(monitor_no_trade_surface),
+            "decision_outcome": _clip(monitor_no_trade_surface.get("decision_outcome"), max_len=16),
+            "pre_intent_decision": _clip(monitor_no_trade_surface.get("pre_intent_decision"), max_len=16),
+            "no_trade_stage": _clip(monitor_no_trade_surface.get("no_trade_stage"), max_len=32),
+            "no_trade_reason_code": _clip(monitor_no_trade_surface.get("no_trade_reason_code"), max_len=120),
+            "no_trade_reason_summary": _clip(monitor_no_trade_surface.get("no_trade_reason_summary"), max_len=220),
+            "dominant_blocker": _clip(monitor_no_trade_surface.get("dominant_blocker"), max_len=120),
+            "blocker_family": _clip(monitor_no_trade_surface.get("blocker_family"), max_len=80),
+            "blocker_metrics": _dict(monitor_no_trade_surface.get("blocker_metrics")),
+            "distance_to_ready": _dict(monitor_no_trade_surface.get("distance_to_ready")),
+            "near_ready_flag": bool(monitor_no_trade_surface.get("near_ready_flag")),
+            "required_checks_failed": _listify(monitor_no_trade_surface.get("required_checks_failed"), limit=8, max_len=120),
+            "preferred_checks_failed": _listify(monitor_no_trade_surface.get("preferred_checks_failed"), limit=8, max_len=120),
+            "relaxable_checks_failed": _listify(monitor_no_trade_surface.get("relaxable_checks_failed"), limit=8, max_len=120),
+            "evidence_snapshot": _dict(monitor_no_trade_surface.get("evidence_snapshot")),
+            "scanner_monitor_handoff": dict(scanner_monitor_handoff),
+            "scanner_selected_symbol": _clip(scanner_monitor_handoff.get("scanner_selected_symbol"), max_len=24),
+            "scanner_rank": _safe_int(scanner_monitor_handoff.get("scanner_rank")),
+            "scanner_score_total": scanner_monitor_handoff.get("scanner_score_total"),
+            "scanner_score_breakdown": _dict(scanner_monitor_handoff.get("scanner_score_breakdown")),
+            "scanner_top_candidates": _dict_list(scanner_monitor_handoff.get("scanner_top_candidates"), limit=3),
+            "scanner_vs_monitor_alignment": _clip(scanner_monitor_handoff.get("scanner_vs_monitor_alignment"), max_len=80),
+            "monitor_rejection_after_top_pick": bool(scanner_monitor_handoff.get("monitor_rejection_after_top_pick")),
+            "monitor_rejection_reason_code": _clip(scanner_monitor_handoff.get("monitor_rejection_reason_code"), max_len=120),
+            "monitor_rejection_reason_summary": _clip(scanner_monitor_handoff.get("monitor_rejection_reason_summary"), max_len=220),
+            "handoff_trace": _listify(scanner_monitor_handoff.get("handoff_trace"), limit=6, max_len=120),
             "threshold_snapshot": threshold_snapshot,
             "applied_policy": _dict(entry_info.get("applied_policy")) or _dict(entry_info.get("thresholds")),
             "received_policy": _dict(entry_info.get("received_policy")),
@@ -2062,9 +2140,31 @@ def build_commander_output_artifact(
     policy_validation_invalid_fields = _listify(commander_decision.get("policy_validation_invalid_fields"), limit=12, max_len=80)
     override_reason = _clip(commander_decision.get("override_reason"), max_len=180)
     applied_policy_source_chain = _listify(commander_decision.get("applied_policy_source_chain"), limit=6, max_len=80)
+    route_observability = (
+        _dict(state.get("commander_route_observability"))
+        or build_commander_route_observability_surface(
+            selected_route=selected_route,
+            route_reason=decision_summary,
+            commander_decision=commander_decision,
+            runtime_fast_path=runtime_fast_path,
+            resilience=resilience,
+            runtime_status=state.get("runtime_status"),
+            runtime_transition=state.get("runtime_transition"),
+        )
+    )
+    
+    # Determine actual invocation and strategy source for explicit ownership
+    actual_strategist_invocation = shadow_runtime.get("strategist_executed")
+    if actual_strategist_invocation is None:
+        actual_strategist_invocation = not strategist_cache_used and selected_route not in ("monitor_only", "blocked")
+    actual_strategy_source = "cached_strategist" if strategist_cache_used else ("fresh_strategist" if actual_strategist_invocation else "none")
+
     artifact = _base_output(state, agent="commander", status=status or "ok")
     artifact.update(
         {
+            "ownership_version": "1.0",
+            "actual_strategist_invocation": bool(actual_strategist_invocation),
+            "actual_strategy_source": actual_strategy_source,
             "mode": str(mode or "").strip(),
             "phase": str(phase or "").strip(),
             "path": str(path or "").strip(),
@@ -2113,6 +2213,9 @@ def build_commander_output_artifact(
             "llm_invocation_policy": llm_invocation_policy,
             "decision_summary": decision_summary,
             "commander_decision": commander_decision,
+            "strategist_call_decision": _clip(commander_decision.get("strategist_call_decision") or route_observability.get("strategist_call_decision"), max_len=40),
+            "strategist_call_reason": _clip(commander_decision.get("strategist_call_reason") or route_observability.get("strategist_call_reason"), max_len=180),
+            "strategist_skip_reason": _clip(commander_decision.get("strategist_skip_reason") or route_observability.get("strategist_skip_reason"), max_len=180),
             "shadow_assessment_summary": shadow_assessment_summary,
             "shadow_used": bool(commander_decision.get("shadow_used") or shadow_assessment),
             "shadow_reason_code": shadow_reason_code,
@@ -2141,6 +2244,19 @@ def build_commander_output_artifact(
             "policy_validation_invalid_fields": policy_validation_invalid_fields,
             "override_reason": override_reason,
             "applied_policy_source_chain": applied_policy_source_chain,
+            "route_observability": dict(route_observability),
+            "route_selected": _clip(route_observability.get("route_selected"), max_len=80),
+            "route_reason": _clip(route_observability.get("route_reason"), max_len=220),
+            "policy_refresh_reason": _clip(route_observability.get("policy_refresh_reason"), max_len=180),
+            "cache_hit": bool(strategist_cache_used or route_observability.get("cache_hit")),
+            "cache_age_sec": _safe_int(route_observability.get("cache_age_sec") or runtime_fast_path.get("cache_age_sec")),
+            "applied_policy_source": policy_source,
+            "applied_policy_id": _clip(route_observability.get("applied_policy_id") or commander_decision.get("applied_policy_id"), max_len=120),
+            "monitor_only_reason": _clip(route_observability.get("monitor_only_reason"), max_len=220),
+            "full_cycle_reason": _clip(route_observability.get("full_cycle_reason"), max_len=220),
+            "resilience_state": _dict(route_observability.get("resilience_state")),
+            "intervention_reason": _clip(route_observability.get("intervention_reason"), max_len=180),
+            "strategy_generation_mode": _clip(route_observability.get("strategy_generation_mode"), max_len=40),
             "goal": _clip(
                 decision_frame.get("goal")
                 or ("Execute full session chain." if phase == "session" else f"Run {phase} phase safely."),
