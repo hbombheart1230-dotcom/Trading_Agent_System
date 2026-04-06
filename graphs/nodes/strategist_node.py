@@ -51,6 +51,8 @@ from libs.strategies.contracts import StrategistOutput, coerce_strategist_output
 from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
 from libs.strategies.candidates.market_rank import TopPicksCandidateGenerator
 from libs.strategies.universe_builder import build_candidate_universe
+from libs.reporting.trade_read_model import build_trade_read_model
+from libs.reporting.symbol_read_model import build_symbol_read_model
 
 
 def _is_trueish(v: Any) -> bool:
@@ -508,7 +510,7 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         "You are the Strategist agent for an automated trading system. "
         "You must output a strategic frame only. "
         "Do not select final stock and do not produce order instructions. "
-        "Use strategy_memory as advisory context only (it is not a hard override). "
+        "Use the strictly deterministic 'read_model_facts' to understand recent trade performance and symbol cumulative patterns. "
         "Return exactly one minified JSON object only. "
         "Do not add analysis, markdown, bullet points, or any text before or after the JSON. "
         "The first character must be { and the last character must be }."
@@ -548,8 +550,8 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
     }
     user = (
         "Use the provided market context, news/global sentiment, and candidate hints. "
-        "Incorporate strategy memory hints such as best/worst playbooks, recent failures, and recent success patterns, "
-        "but keep them advisory and context-aware. "
+        "Incorporate the 'read_model_facts' (recent trades and symbol patterns) to adjust your strategy priority. "
+        "Avoid discouraged playbooks and favor preferred playbooks, while adapting dynamically to the current market regime. "
         "Produce a realistic strategic frame for scanner/monitor guidance. "
         "You must choose a playbook, give a short rationale, and draft a monitor_entry_policy that stays realistic and bounded. "
         "Do not make the policy aggressively loose. If confidence is low, keep the conservative baseline. "
@@ -729,6 +731,36 @@ def _compact_strategy_memory_for_llm(memory: Any) -> Dict[str, Any]:
     }
 
 
+def _load_deterministic_read_models(state: Dict[str, Any], candidates: List[str]) -> Dict[str, Any]:
+    """Phase 6-2: Gather strictly deterministic read models for Strategist context."""
+    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+    trades_root = reports_root / "trades"
+    
+    recent_trades = []
+    if trades_root.exists() and trades_root.is_dir():
+        # Find recent trade directories (limit to 5 without using env vars)
+        trade_dirs = sorted([d for d in trades_root.iterdir() if d.is_dir()], key=lambda x: x.stat().st_mtime, reverse=True)[:5]
+        for td in trade_dirs:
+            try:
+                trm = build_trade_read_model(str(td))
+                if trm and trm.get("trade_id"):
+                    recent_trades.append(trm)
+            except Exception:
+                pass
+                
+    symbol_patterns = {}
+    for sym in list(candidates or [])[:5]:
+        try:
+            symbol_patterns[str(sym)] = build_symbol_read_model(str(trades_root), str(sym))
+        except Exception:
+            pass
+            
+    return {
+        "recent_trades": recent_trades,
+        "daily_summary": {},  # Placeholder for daily_summary_read_model
+        "symbol_patterns": symbol_patterns
+    }
+
 def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     compact = dict(payload or {})
     compact["global_sentiment_signal"] = _compact_global_signal_for_llm(compact.get("global_sentiment_signal"))
@@ -760,6 +792,7 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
     compact["key_events_hint"] = [str(x or "") for x in list(compact.get("key_events_hint") or [])[:4]]
     compact["themes_hint"] = [str(x or "") for x in list(compact.get("themes_hint") or [])[:4]]
     compact["news_query_targets"] = [str(x or "") for x in list(compact.get("news_query_targets") or [])[:8]]
+    compact["read_model_facts"] = payload.get("read_model_facts", {})
     return compact
 
 
@@ -852,7 +885,10 @@ def _run_strategist_frame_llm(
             "model": str(runtime.get("model") or ""),
         }
 
-    model = normalize_openrouter_model_name(str(runtime.get("model") or ""))
+    # Phase 5-4 / 6-1 LLM Policy Enforcement
+    primary_model = normalize_openrouter_model_name(os.getenv("AI_STRATEGIST_MODEL_PRIMARY") or str(runtime.get("model") or ""))
+    fallback_model = normalize_openrouter_model_name(os.getenv("AI_STRATEGIST_MODEL_FALLBACK") or "")
+    max_retries = max(1, _to_int(os.getenv("AI_STRATEGIST_RETRY_MAX", "2"), 2))
     temperature = float(runtime.get("temperature") or 0.1)
     max_tokens = max(256, int(runtime.get("max_tokens") or 320))
     timeout_sec = max(1.0, float(runtime.get("timeout_sec") or 15.0))
@@ -868,13 +904,17 @@ def _run_strategist_frame_llm(
     }
     if _env_bool("STRATEGIST_FRAME_LLM_JSON_RESPONSE_FORMAT", True):
         route_policy["response_format"] = {"type": "json_object"}
-    if model:
-        route_policy["model"] = model
-    route = router.resolve("strategist", policy=route_policy)
+        
     compact_payload = _build_compact_strategist_llm_payload(payload)
-    messages = _build_strategist_llm_messages(compact_payload)
-    prompt_text = _messages_to_prompt_text(messages)
-    llm_model = str(route.model or "")
+
+    llm_call_trace = {
+        "primary_attempted": True,
+        "primary_failed": False,
+        "fallback_used": False,
+        "final_model": primary_model,
+        "final_provider": "strategist_router",
+        "final_status": "pending"
+    }
 
     def _persist_llm_artifacts(
         *,
@@ -885,6 +925,7 @@ def _run_strategist_frame_llm(
         reason: str = "",
         attempts_count: int = 1,
         repair: bool = False,
+        active_model: str = "",
     ) -> Dict[str, Any]:
         try:
             return write_llm_artifact_bundle(
@@ -893,9 +934,9 @@ def _run_strategist_frame_llm(
                 prompt_payload={
                     "stage": str(stage or "theme_selection"),
                     "provider": "strategist_router",
-                    "model": llm_model,
+                    "model": active_model,
                     "payload": dict(compact_payload),
-                    "messages": [dict(m) for m in list(messages or []) if isinstance(m, dict)],
+                    "messages": [], # omitted for brevity in loop
                     "prompt_text": str(prompt_value or ""),
                     "temperature": float(temperature),
                     "max_tokens": int(max_tokens),
@@ -904,7 +945,7 @@ def _run_strategist_frame_llm(
                 response_payload={
                     "stage": str(stage or "theme_selection"),
                     "provider": "strategist_router",
-                    "model": llm_model,
+                    "model": active_model,
                     "status": str(status or ""),
                     "reason": str(reason or ""),
                     "repair_used": bool(repair),
@@ -916,7 +957,7 @@ def _run_strategist_frame_llm(
                     "llm_status": str(status or ""),
                     "status": str(status or ""),
                     "reason": str(reason or ""),
-                    "model": llm_model,
+                    "model": active_model,
                     "attempts": int(attempts_count),
                     "repair_used": bool(repair),
                     "stage": str(stage or "theme_selection"),
@@ -925,239 +966,122 @@ def _run_strategist_frame_llm(
         except Exception:
             return {}
 
-    try:
-        record_llm_prompt(
-            run_id=run_id,
-            agent="strategist",
-            stage="theme_selection",
-            raw_input=dict(compact_payload),
-            llm_prompt=prompt_text,
-            decision_link={
-                "model": str(route.model or ""),
-                "provider": "strategist_router",
-                "temperature": float(temperature),
-                "max_tokens": int(max_tokens),
-                "timeout_sec": float(timeout_sec),
-            },
-        )
-    except Exception:
-        pass
-
-    t0 = time.perf_counter()
-    try:
-        raw = router.chat("strategist", messages, policy=route_policy)
-    except Exception as e:
-        latency_ms = int((time.perf_counter() - t0) * 1000)
-        llm_artifacts = _persist_llm_artifacts(
-            stage="theme_selection",
-            prompt_value=prompt_text,
-            response_value=f"ERROR:{type(e).__name__}:{e}",
-            status="error",
-            reason=str(e),
-            attempts_count=1,
-            repair=False,
-        )
+    attempts = 0
+    repair_used = False
+    current_model = primary_model
+    last_reason = ""
+    last_error_type = ""
+    last_raw = ""
+    
+    while attempts < max_retries + 1:
+        attempts += 1
+        
+        if attempts > 1 and attempts == max_retries + 1 and fallback_model:
+            current_model = fallback_model
+            llm_call_trace["primary_failed"] = True
+            llm_call_trace["fallback_used"] = True
+            
+        route_policy["model"] = current_model
+        llm_call_trace["final_model"] = current_model
+        
+        if repair_used and last_raw:
+            route_policy["temperature"] = 0.0
+            route_policy["max_tokens"] = min(max(384, int(max_tokens)), 768)
+            messages = _build_strategist_llm_repair_messages(compact_payload, last_raw)
+            stage_name = "theme_selection_repair"
+        else:
+            messages = _build_strategist_llm_messages(compact_payload)
+            stage_name = "theme_selection"
+            
+        prompt_text = _messages_to_prompt_text(messages)
+        
         try:
-            record_llm_response(
+            record_llm_prompt(
                 run_id=run_id,
                 agent="strategist",
-                stage="theme_selection",
-                llm_response=f"ERROR:{type(e).__name__}:{e}",
-                parsed_output={},
-                decision_link={"status": "error"},
+                stage=stage_name,
+                raw_input=dict(compact_payload),
+                llm_prompt=prompt_text,
+                decision_link={
+                    "model": current_model,
+                    "provider": "strategist_router",
+                    "temperature": float(route_policy.get("temperature", 0.1)),
+                    "max_tokens": int(route_policy.get("max_tokens", 320)),
+                    "repair": repair_used,
+                },
             )
         except Exception:
             pass
-        return {}, {
-            "enabled": True,
-            "status": "error",
-            "reason": str(e),
-            "error_type": type(e).__name__,
-            "latency_ms": latency_ms,
-            "model": route.model,
-            "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
-            "response_ref": str(llm_artifacts.get("response_ref") or ""),
-            "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
-            "response_hash": str(llm_artifacts.get("response_hash") or ""),
-        }
-    latency_ms = int((time.perf_counter() - t0) * 1000)
 
-    attempts = 1
-    repair_used = False
-    repair_prompt_text = ""
-    obj = _extract_json_object(raw)
-    if not isinstance(obj, dict) or not obj:
-        reason = _classify_llm_parse_failure(raw)
-        retry_raw = ""
-        if _env_bool("STRATEGIST_FRAME_LLM_REPAIR_RETRY", True):
+        t0 = time.perf_counter()
+        try:
+            raw = router.chat("strategist", messages, policy=route_policy)
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            
+            obj = _extract_json_object(raw)
+            if isinstance(obj, dict) and obj:
+                overrides = _normalize_llm_overrides(obj)
+                if overrides:
+                    llm_call_trace["final_status"] = "ok"
+                    llm_artifacts = _persist_llm_artifacts(
+                        stage=stage_name, prompt_value=prompt_text, response_value=raw,
+                        status="ok", attempts_count=attempts, repair=repair_used, active_model=current_model
+                    )
+                    try:
+                        record_llm_response(
+                            run_id=run_id, agent="strategist", stage=stage_name,
+                            llm_response=str(raw or ""), parsed_output=dict(overrides),
+                            decision_link={"status": "ok", "model": current_model, "attempts": attempts, "repair": repair_used},
+                        )
+                    except Exception:
+                        pass
+                    return overrides, {
+                        "enabled": True, "status": "ok", "latency_ms": latency_ms,
+                        "model": current_model, "attempts": attempts, "repair_used": repair_used,
+                        "recovery_method": "" if str(raw or "").strip().startswith("{") else "prose_contract",
+                        "llm_call_trace": dict(llm_call_trace),
+                        "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
+                        "response_ref": str(llm_artifacts.get("response_ref") or ""),
+                        "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
+                        "response_hash": str(llm_artifacts.get("response_hash") or ""),
+                    }
+                    
+            last_raw = raw
+            last_reason = _classify_llm_parse_failure(raw)
+            last_error_type = "ParseError"
             repair_used = True
-            repair_messages = _build_strategist_llm_repair_messages(compact_payload, raw)
-            repair_prompt_text = _messages_to_prompt_text(repair_messages)
-            repair_policy = dict(route_policy)
-            repair_policy["temperature"] = 0.0
-            repair_policy["max_tokens"] = min(max(384, int(max_tokens)), 768)
+            
+            _persist_llm_artifacts(stage=stage_name, prompt_value=prompt_text, response_value=raw, status="parse_error", reason=last_reason, attempts_count=attempts, repair=repair_used, active_model=current_model)
             try:
-                record_llm_prompt(
-                    run_id=run_id,
-                    agent="strategist",
-                    stage="theme_selection_repair",
-                    raw_input={"parse_error_reason": reason, "raw_preview": str(raw or "")[:400]},
-                    llm_prompt=repair_prompt_text,
-                    decision_link={
-                        "model": str(route.model or ""),
-                        "provider": "strategist_router",
-                        "repair": True,
-                    },
-                )
+                record_llm_response(run_id=run_id, agent="strategist", stage=stage_name, llm_response=str(raw or ""), parsed_output={}, decision_link={"status": "parse_error", "repair": repair_used})
             except Exception:
                 pass
+                
+        except Exception as e:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            last_error_type = type(e).__name__
+            last_reason = str(e)
+            _persist_llm_artifacts(stage=stage_name, prompt_value=prompt_text, response_value=f"ERROR:{last_error_type}:{last_reason}", status="error", reason=last_reason, attempts_count=attempts, repair=repair_used, active_model=current_model)
             try:
-                retry_raw = router.chat("strategist", repair_messages, policy=repair_policy)
-                attempts += 1
-                obj = _extract_json_object(retry_raw)
-                if isinstance(obj, dict) and obj:
-                    overrides = _normalize_llm_overrides(obj)
-                    if overrides:
-                        llm_artifacts = _persist_llm_artifacts(
-                            stage="theme_selection_repair",
-                            prompt_value=repair_prompt_text,
-                            response_value=retry_raw,
-                            status="ok",
-                            reason="",
-                            attempts_count=attempts,
-                            repair=True,
-                        )
-                        try:
-                            record_llm_response(
-                                run_id=run_id,
-                                agent="strategist",
-                                stage="theme_selection_repair",
-                                llm_response=str(retry_raw or ""),
-                                parsed_output=dict(overrides),
-                                decision_link={
-                                    "status": "ok",
-                                    "repair": True,
-                                    "attempts": int(attempts),
-                                    "model": str(route.model or ""),
-                                },
-                            )
-                        except Exception:
-                            pass
-                        return overrides, {
-                            "enabled": True,
-                            "status": "ok",
-                            "latency_ms": latency_ms,
-                            "model": route.model,
-                            "attempts": int(attempts),
-                            "repair_used": True,
-                            "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
-                            "response_ref": str(llm_artifacts.get("response_ref") or ""),
-                            "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
-                            "response_hash": str(llm_artifacts.get("response_hash") or ""),
-                        }
-                try:
-                    record_llm_response(
-                        run_id=run_id,
-                        agent="strategist",
-                        stage="theme_selection_repair",
-                        llm_response=str(retry_raw or ""),
-                        parsed_output=dict(obj) if isinstance(obj, dict) else {},
-                        decision_link={"status": "parse_error", "repair": True},
-                    )
-                except Exception:
-                    pass
-            except Exception as e:
-                attempts += 1
-                try:
-                    record_llm_response(
-                        run_id=run_id,
-                        agent="strategist",
-                        stage="theme_selection_repair",
-                        llm_response=f"ERROR:{type(e).__name__}:{e}",
-                        parsed_output={},
-                        decision_link={"status": "error", "repair": True},
-                    )
-                except Exception:
-                    pass
-        try:
-            record_llm_response(
-                run_id=run_id,
-                agent="strategist",
-                stage="theme_selection",
-                llm_response=str(raw or ""),
-                parsed_output={},
-                decision_link={"status": "parse_error", "reason": reason, "attempts": int(attempts), "repair_used": bool(repair_used)},
-            )
-        except Exception:
-            pass
-        failed_prompt = repair_prompt_text if str(retry_raw or "").strip() else prompt_text
-        failed_response = retry_raw if str(retry_raw or "").strip() else raw
-        llm_artifacts = _persist_llm_artifacts(
-            stage="theme_selection_repair" if str(retry_raw or "").strip() else "theme_selection",
-            prompt_value=failed_prompt,
-            response_value=failed_response,
-            status="parse_error",
-            reason=reason,
-            attempts_count=attempts,
-            repair=repair_used,
-        )
-        return {}, {
-            "enabled": True,
-            "status": "parse_error",
-            "reason": reason,
-            "latency_ms": latency_ms,
-            "model": route.model,
-            "raw_preview": str(raw or "")[:220],
-            "attempts": int(attempts),
-            "repair_used": bool(repair_used),
-            "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
-            "response_ref": str(llm_artifacts.get("response_ref") or ""),
-            "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
-            "response_hash": str(llm_artifacts.get("response_hash") or ""),
-        }
+                record_llm_response(run_id=run_id, agent="strategist", stage=stage_name, llm_response=f"ERROR:{last_error_type}:{last_reason}", parsed_output={}, decision_link={"status": "error", "repair": repair_used})
+            except Exception:
+                pass
 
-    overrides = _normalize_llm_overrides(obj)
-    if not overrides:
-        llm_artifacts = _persist_llm_artifacts(
-            stage="theme_selection",
-            prompt_value=prompt_text,
-            response_value=raw,
-            status="parse_error",
-            reason="strategist_llm_response_missing_contract_fields",
-            attempts_count=attempts,
-            repair=repair_used,
-        )
-        try:
-            record_llm_response(
-                run_id=run_id,
-                agent="strategist",
-                stage="theme_selection",
-                llm_response=str(raw or ""),
-                parsed_output=dict(obj),
-                decision_link={"status": "parse_error", "reason": "missing_contract_fields", "attempts": int(attempts)},
-            )
-        except Exception:
-            pass
-        return {}, {
-            "enabled": True,
-            "status": "parse_error",
-            "reason": "strategist_llm_response_missing_contract_fields",
-            "latency_ms": latency_ms,
-            "model": route.model,
-            "raw_preview": str(raw or "")[:220],
-            "attempts": int(attempts),
-            "repair_used": bool(repair_used),
-            "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
-            "response_ref": str(llm_artifacts.get("response_ref") or ""),
-            "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
-            "response_hash": str(llm_artifacts.get("response_hash") or ""),
-        }
-
-    recovery_method = ""
-    if not str(raw or "").strip().startswith("{"):
-        recovery_method = "prose_contract"
-
-    try:
+    llm_call_trace["final_status"] = "error" if last_error_type != "ParseError" else "parse_error"
+    if fallback_model and not llm_call_trace["fallback_used"]:
+        llm_call_trace["primary_failed"] = True
+        
+    return {}, {
+        "enabled": True,
+        "status": llm_call_trace["final_status"],
+        "reason": last_reason,
+        "error_type": last_error_type,
+        "latency_ms": latency_ms,
+        "model": current_model,
+        "attempts": attempts,
+        "repair_used": repair_used,
+        "llm_call_trace": dict(llm_call_trace),
+    }
         record_llm_response(
             run_id=run_id,
             agent="strategist",
@@ -3492,6 +3416,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         recent_strategy_feedback.get("suggested_report_focus"),
         limit=8,
     )
+    read_model_facts = _load_deterministic_read_models(state, candidate_symbols)
+    
     state["recent_strategy_feedback"] = dict(recent_strategy_feedback)
     state["strategy_memory"] = dict(strategy_memory_advisory)
 
@@ -3504,6 +3430,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "macro_stress_overlay_hint": dict(macro_stress_overlay),
         "market_regime_hint": market_regime,
         "market_sentiment_hint": market_sentiment,
+        "read_model_facts": dict(read_model_facts),
         "market_structure_hint": market_structure,
         "playbook_hint": playbook,
         "monitor_entry_policy_baseline": build_default_monitor_entry_policy().to_dict(),
@@ -3883,6 +3810,9 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["theme_strength"] = dict(theme_strength)
     strategist_output["recent_strategy_feedback"] = dict(recent_strategy_feedback)
     strategist_output["strategy_memory"] = dict(strategy_memory_advisory)
+    strategist_output["strategy_memory_snapshot"] = dict(strategy_memory_advisory)
+    strategist_output["strategist_feedback"] = dict(strategist_feedback)
+    strategist_output["performance_summary"] = dict(performance_summary)
     strategist_output["playbook"] = playbook
     strategist_output["selected_playbook"] = strategist_plan.get("selected_playbook")
     strategist_output["candidate_hypotheses"] = list(strategist_plan.get("candidate_hypotheses") or [])
@@ -3949,6 +3879,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["llm_frame_strict"] = bool(llm_strict)
     strategist_output["llm_frame_blocked"] = bool(strategist_llm_blocked)
     strategist_output["llm_frame_blocked_reason"] = str(strategist_llm_block_reason or "")
+    strategist_output["llm_call_trace"] = dict(llm_meta.get("llm_call_trace") or {})
     strategist_output["runtime_theme_map_keys"] = sorted(list((state.get("theme_map") or {}).keys()))
     strategist_output["runtime_sector_map_keys"] = sorted(list((state.get("sector_map") or {}).keys()))
     state["strategist_output"] = strategist_output
@@ -3964,6 +3895,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "repair_used": bool(llm_meta.get("repair_used")),
         "low_confidence": bool(llm_meta.get("repair_used")),
         "reason": str(llm_meta.get("reason") or ""),
+        "llm_call_trace": dict(llm_meta.get("llm_call_trace") or {}),
         "error": str(llm_meta.get("reason") or ""),
         "recovery_method": str(llm_meta.get("recovery_method") or ""),
         "blocked": bool(strategist_llm_blocked),

@@ -176,6 +176,9 @@ def _commander_decision_event_meta(state: Dict[str, Any]) -> Dict[str, Any]:
         "override_reason": str(commander_decision.get("override_reason") or ""),
         "applied_policy_source_chain": list(commander_decision.get("applied_policy_source_chain") or []),
         "route_observability": dict(route_observability),
+        "strategist_invocation_mode": str(commander_decision.get("strategist_invocation_mode") or ""),
+        "strategy_selection_mode": str(commander_decision.get("strategy_selection_mode") or ""),
+        "strategy_state": str(commander_decision.get("strategy_state") or ""),
         "route_selected": str(route_observability.get("route_selected") or ""),
         "route_reason": str(route_observability.get("route_reason") or ""),
         "strategist_call_decision": str(route_observability.get("strategist_call_decision") or ""),
@@ -715,6 +718,134 @@ def _build_commander_decision(
     strategist_call_reason = strategist_refresh_reason if strategist_refresh_requested else ("normal_cycle" if strategist_invocation == "RUN" else "")
     strategist_skip_reason = strategist_cache_preference_reason if strategist_cache_preferred else ("open_positions_present" if open_position_count > 0 else "")
 
+    # Task 2: Explicit Strategy Decision Rules
+    cache_payload_for_state = _strategist_cache_payload(state)
+    cached_output_for_state = cache_payload_for_state.get("output") if isinstance(cache_payload_for_state.get("output"), dict) else {}
+    generated_epoch_for_state = max(0, _coerce_int(cache_payload_for_state.get("generated_epoch"), 0))
+    now_epoch_for_state = _runtime_now_epoch(state)
+    cache_age_sec_for_state = max(0, now_epoch_for_state - generated_epoch_for_state) if generated_epoch_for_state > 0 else 10**9
+    reuse_sec_for_state = max(0, _coerce_int(os.getenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600"), 600))
+    is_cache_stale = cache_age_sec_for_state > reuse_sec_for_state
+
+    if not cached_output_for_state:
+        strategy_state = "INVALID"
+    elif strategist_refresh_requested:
+        strategy_state = "REBUILD_REQUIRED"
+    elif is_cache_stale:
+        strategy_state = "STALE"
+    else:
+        strategy_state = "ACTIVE"
+
+    if _is_trueish(state.get("force_refresh_strategist")):
+        strategy_selection_mode = "force_fresh"
+    elif strategist_refresh_requested:
+        strategy_selection_mode = "prefer_fresh"
+    else:
+        strategy_selection_mode = "prefer_cache"
+
+    if open_position_count > 0:
+        strategist_invocation_mode = "SKIP_MONITOR_ONLY"
+    elif not cached_output_for_state:
+        strategist_invocation_mode = "RUN"
+    elif strategist_refresh_requested and is_cache_stale:
+        strategist_invocation_mode = "RUN_REFRESH"
+    elif strategist_refresh_requested and not is_cache_stale:
+        strategist_invocation_mode = "SKIP_USE_CACHE"
+    elif open_position_count == 0 and is_cache_stale:
+        strategist_invocation_mode = "RUN"
+    else:
+        strategist_invocation_mode = "SKIP_USE_CACHE"
+
+    # Task 4: Monitor feedback and adaptive policy
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    monitor_last_states = persisted.get("monitor_last_state_by_symbol") if isinstance(persisted.get("monitor_last_state_by_symbol"), dict) else {}
+    
+    recent_feedback = state.get("recent_strategy_feedback") if isinstance(state.get("recent_strategy_feedback"), dict) else {}
+    recent_monitor_issues = list(recent_feedback.get("recent_monitor_issues") or [])
+    
+    blocker_counts = {}
+    for issue in recent_monitor_issues:
+        issue_str = str(issue).strip()
+        if issue_str:
+            blocker_counts[issue_str] = blocker_counts.get(issue_str, 0) + 1
+            
+    avg_distance = 0.0
+    total_wait = 0
+    near_ready_count = 0
+    
+    for sym, m_state in monitor_last_states.items():
+        if not isinstance(m_state, dict): continue
+        posture = str(m_state.get("posture") or "").upper()
+        if posture in ("WAIT", "HOLD"):
+            reason = str(m_state.get("reason") or "")
+            if reason:
+                blocker_counts[reason] = blocker_counts.get(reason, 0) + 1
+                
+            entry_state = m_state.get("entry_state") if isinstance(m_state.get("entry_state"), dict) else {}
+            score = _runtime_float(entry_state.get("transition_readiness_score"), 0.0)
+            if score > 0:
+                avg_distance += score
+                total_wait += 1
+            if score >= 0.7:
+                near_ready_count += 1
+                
+    dominant_blocker = ""
+    blocker_count = 0
+    if blocker_counts:
+        dominant_blocker = max(blocker_counts, key=blocker_counts.get)
+        blocker_count = blocker_counts[dominant_blocker]
+        
+    avg_distance_to_ready = avg_distance / total_wait if total_wait > 0 else 0.0
+    near_ready_flag = near_ready_count > 0
+    failure_streak = blocker_count
+    
+    injected_feedback = state.get("mock_monitor_feedback")
+    if isinstance(injected_feedback, dict):
+        dominant_blocker = injected_feedback.get("dominant_blocker", dominant_blocker)
+        blocker_count = injected_feedback.get("blocker_count", blocker_count)
+        failure_streak = injected_feedback.get("failure_streak", failure_streak)
+        near_ready_flag = injected_feedback.get("near_ready_flag", near_ready_flag)
+        avg_distance_to_ready = injected_feedback.get("avg_distance_to_ready", avg_distance_to_ready)
+
+    monitor_feedback = {
+        "dominant_blocker": str(dominant_blocker),
+        "blocker_count": int(blocker_count),
+        "failure_streak": int(failure_streak),
+        "near_ready_flag": bool(near_ready_flag),
+        "avg_distance_to_ready": float(avg_distance_to_ready),
+    }
+
+    adaptive_policy = {
+        "entry_bias_adjustment": 0.0,
+        "diversification_adjustment": 0.0,
+        "reentry_penalty_adjustment": 0.0,
+        "scan_aggressiveness": 0.0,
+    }
+    policy_adjustment_trace = []
+
+    if monitor_feedback["dominant_blocker"] and monitor_feedback["failure_streak"] >= 3:
+        adaptive_policy["entry_bias_adjustment"] += 0.02
+        adaptive_policy["scan_aggressiveness"] += 0.05
+        policy_adjustment_trace.append(f"failure_streak>={monitor_feedback['failure_streak']} for {monitor_feedback['dominant_blocker']} -> increased entry_bias_adjustment and scan_aggressiveness")
+
+    if monitor_feedback["near_ready_flag"]:
+        adaptive_policy["entry_bias_adjustment"] += 0.015
+        adaptive_policy["reentry_penalty_adjustment"] -= 0.02
+        policy_adjustment_trace.append("near_ready_flag=True -> increased entry_bias_adjustment, decreased reentry_penalty_adjustment")
+
+    if monitor_feedback["failure_streak"] >= 5:
+        adaptive_policy["diversification_adjustment"] += 0.03
+        policy_adjustment_trace.append(f"failure_streak>={monitor_feedback['failure_streak']} -> increased diversification_adjustment")
+
+    scanner_policy = {
+        "avoid_recent_symbol": False,
+        "recent_symbol_penalty": max(0.0, 0.05 + adaptive_policy["reentry_penalty_adjustment"]),
+        "diversification_bias": max(0.0, 0.02 + adaptive_policy["diversification_adjustment"]),
+        "entry_bias_cap": max(0.0, 0.0 + adaptive_policy["entry_bias_adjustment"]),
+        "allow_same_symbol_reentry": True,
+        "reentry_score_gap_threshold": 0.03,
+    }
+
     return {
         "market_regime": market_regime,
         "session_bias": session_bias,
@@ -725,8 +856,15 @@ def _build_commander_decision(
         "monitor_mission": monitor_mission,
         "llm_policy": llm_policy,
         "llm_invocation_policy": llm_policy,
+        "scanner_policy": dict(scanner_policy),
+        "monitor_feedback": dict(monitor_feedback),
+        "adaptive_policy": dict(adaptive_policy),
+        "policy_adjustment_trace": list(policy_adjustment_trace),
         "command_intent": command_intent,
         "strategist_invocation": strategist_invocation,
+        "strategist_invocation_mode": strategist_invocation_mode,
+        "strategy_selection_mode": strategy_selection_mode,
+        "strategy_state": strategy_state,
         "strategist_call_decision": strategist_call_decision,
         "strategist_call_reason": strategist_call_reason,
         "strategist_skip_reason": strategist_skip_reason,

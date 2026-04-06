@@ -15,3 +15,11 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str) -> Tuple[P
     from scripts.generate_daily_report import generate_daily_report as canonical_generate_daily_report
 
     return canonical_generate_daily_report(events_path, out_dir, day=day)
+
+
+def build_separated_daily_report(daily_model: dict, *, model: str = None) -> dict:
+    """Phase 6-1 Task 4: Fact/Narrative separated daily report."""
+    from libs.reporting.fact_narrative_report import build_separated_report
+    from libs.llm.model_names import normalize_openrouter_model_name
+    chosen_model = normalize_openrouter_model_name(str(model or "").strip() or str(os.getenv("OPENROUTER_MODEL_REPORTER_FINAL", "")).strip())
+    return build_separated_report(daily_model=daily_model, model=chosen_model)

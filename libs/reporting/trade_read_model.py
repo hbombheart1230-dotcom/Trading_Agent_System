@@ -1223,6 +1223,100 @@ def load_trade_report_payloads(
         },
     }
 
+def build_trade_read_model(trade_dir: str) -> Dict[str, Any]:
+    """Phase 6-1 Task 1: Build a deterministic read model for a single trade lifecycle."""
+    import json
+    from datetime import datetime
+
+    def _safe_float(v: Any, default: float = 0.0) -> float:
+        try:
+            return float(v)
+        except Exception:
+            return float(default)
+
+    def _clip(s: Any, max_len: int = 255) -> str:
+        text = str(s or "").strip()
+        if not text or text.lower() in ("none", "null", "unavailable", "nan"):
+            return "unknown"
+        return text[:max_len]
+
+    def _read_json(p: Path) -> Dict[str, Any]:
+        try:
+            if p.exists():
+                val = json.loads(p.read_text(encoding="utf-8"))
+                return val if isinstance(val, dict) else {}
+        except Exception:
+            pass
+        return {}
+
+    td = Path(str(trade_dir))
+    bundle = _read_json(td / "lifecycle_bundle.json")
+    report = _read_json(td / "reports" / "ai_trade_report.json")
+    if not report:
+        report = _read_json(td / "ai_trade_report" / "ai_trade_report.json")
+
+    lifecycle = bundle.get("lifecycle") if isinstance(bundle.get("lifecycle"), dict) else {}
+    canonical = bundle.get("canonical_agent_artifacts") if isinstance(bundle.get("canonical_agent_artifacts"), dict) else {}
+    
+    commander_art = canonical.get("commander") if isinstance(canonical.get("commander"), dict) else {}
+    strategist_art = canonical.get("strategist") if isinstance(canonical.get("strategist"), dict) else {}
+    scanner_art = canonical.get("scanner") if isinstance(canonical.get("scanner"), dict) else {}
+    monitor_art = canonical.get("monitor") if isinstance(canonical.get("monitor"), dict) else {}
+    executor_art = canonical.get("executor") if isinstance(canonical.get("executor"), dict) else {}
+
+    report_data = report.get("report_data") if isinstance(report.get("report_data"), dict) else report
+    shared_facts = report_data.get("shared_facts") if isinstance(report_data.get("shared_facts"), dict) else {}
+
+    entry_obj = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+    exit_obj = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+
+    entry_ts = _clip(entry_obj.get("timestamp") or shared_facts.get("entry_time"))
+    exit_ts = _clip(exit_obj.get("timestamp") or shared_facts.get("exit_time"))
+
+    hold_duration_sec = 0
+    if exit_obj.get("position_age_seconds") is not None:
+        try: hold_duration_sec = int(float(exit_obj["position_age_seconds"]))
+        except Exception: pass
+    if hold_duration_sec <= 0 and entry_ts != "unknown" and exit_ts != "unknown":
+        try:
+            e1 = entry_ts.replace("Z", "+00:00")
+            e2 = exit_ts.replace("Z", "+00:00")
+            dt1 = datetime.fromisoformat(e1)
+            dt2 = datetime.fromisoformat(e2)
+            hold_duration_sec = int((dt2 - dt1).total_seconds())
+        except Exception:
+            pass
+    hold_duration_sec = max(0, hold_duration_sec)
+
+    primary_blocker = "unknown"
+    if not entry_obj:
+        raw_blocker = (
+            monitor_art.get("primary_reason_code") or 
+            monitor_art.get("dominant_blocker") or 
+            scanner_art.get("dominant_block_reason") or 
+            report_data.get("missing_reason")
+        )
+        primary_blocker = _clip(raw_blocker)
+
+    return {
+        "trade_id": _clip(bundle.get("trade_id") or bundle.get("story_id") or report_data.get("trade_id")),
+        "symbol": _clip(bundle.get("symbol") or report_data.get("symbol")),
+        "entry_ts": entry_ts,
+        "exit_ts": exit_ts,
+        "hold_duration_sec": hold_duration_sec,
+        "pnl": _safe_float(exit_obj.get("pnl") or shared_facts.get("pnl")),
+        "pnl_pct": _safe_float(exit_obj.get("pnl_pct") or shared_facts.get("pnl_pct")),
+        "playbook": _clip(strategist_art.get("playbook") or report_data.get("playbook")),
+        "entry_reason": _clip(entry_obj.get("reason") or monitor_art.get("decision_summary")),
+        "exit_reason": _clip(exit_obj.get("reason") or exit_obj.get("monitor_reason")),
+        "primary_blocker_if_no_buy": primary_blocker,
+        "applied_policy_source": _clip(commander_art.get("applied_policy_source") or monitor_art.get("policy_source")),
+        "strategy_policy_source": _clip(strategist_art.get("policy_source")),
+        "execution_label": _clip(lifecycle.get("status") or executor_art.get("final_execution_status") or report_data.get("status")),
+        "data_source": "lifecycle_bundle" if bundle else ("ai_trade_report" if report else "unknown"),
+        "evidence_recovery_used": bool(bundle.get("evidence_recovery_used") or report_data.get("evidence_recovery_used")),
+    }
+
 
 __all__ = [
     "trade_report_artifact_payload",
@@ -1231,6 +1325,7 @@ __all__ = [
     "trade_report_section_bullets",
     "normalize_trade_report_section",
     "normalize_trade_report_detail_sections",
+    "extract_strategy_memory_record",
     "normalize_trade_report_detail_meta",
     "build_trade_report_detail_view",
     "collect_strategist_feedback_inputs",
@@ -1256,4 +1351,5 @@ __all__ = [
     "brief_collect_top_headlines",
     "brief_top_numeric_drivers",
     "load_trade_report_payloads",
+    "build_trade_read_model",
 ]

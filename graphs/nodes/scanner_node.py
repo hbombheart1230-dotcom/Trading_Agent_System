@@ -2667,6 +2667,79 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         reverse=True,
     )
 
+    # ---- [NEW: Commander Policy Overlay] ----
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    commander_scanner_policy = commander_decision.get("scanner_policy") if isinstance(commander_decision.get("scanner_policy"), dict) else {}
+    
+    avoid_recent_symbol = _is_trueish(commander_scanner_policy.get("avoid_recent_symbol", False))
+    recent_symbol_penalty = _to_float(commander_scanner_policy.get("recent_symbol_penalty", 0.0))
+    diversification_bias = _to_float(commander_scanner_policy.get("diversification_bias", 0.0))
+    entry_bias_cap = _to_float(commander_scanner_policy.get("entry_bias_cap", 0.0))
+    allow_same_symbol_reentry = _is_trueish(commander_scanner_policy.get("allow_same_symbol_reentry", True))
+    reentry_score_gap_threshold = _to_float(commander_scanner_policy.get("reentry_score_gap_threshold", 0.0))
+
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    last_trade_symbol = _norm_symbol(persisted.get("last_trade_symbol", ""))
+    positions = state.get("portfolio_snapshot", {}).get("positions", [])
+    if isinstance(positions, dict):
+        open_position_count = sum(1 for v in positions.values() if isinstance(v, dict) and _to_float(v.get("qty")) > 0)
+    elif isinstance(positions, list):
+        open_position_count = sum(1 for v in positions if isinstance(v, dict) and _to_float(v.get("qty")) > 0)
+    else:
+        open_position_count = 0
+    is_flat = open_position_count == 0
+
+    ranking_before_policy = [{"symbol": r.get("symbol"), "score_total": r.get("score_total")} for r in scan_results_sorted]
+    
+    reentry_penalty_applied = False
+    reentry_penalty_value = 0.0
+    diversification_applied = False
+    diversification_bonus_value = 0.0
+    score_adjustment_trace = []
+
+    if entry_bias_cap > 0.0:
+        for r in scan_results_sorted:
+            raw_bias = _to_float(r.get("compatibility_bias", 0.0))
+            if raw_bias > entry_bias_cap:
+                diff = raw_bias - entry_bias_cap
+                r["compatibility_bias"] = entry_bias_cap
+                r["score_total"] = _to_float(r.get("score_total", 0.0)) - diff
+                r["score"] = r["score_total"]
+                r["entry_bias_cap_applied"] = True
+                r["raw_entry_compatibility_bias"] = raw_bias
+                r["effective_entry_compatibility_bias"] = entry_bias_cap
+                score_adjustment_trace.append(f"entry_bias_cap applied to {r.get('symbol')}: {raw_bias:.3f} -> {entry_bias_cap:.3f}")
+        scan_results_sorted.sort(key=lambda r: (float(r.get("score_total") or 0.0), float(r.get("confidence") or 0.0), -float(r.get("risk_score") or 0.0)), reverse=True)
+
+    if len(scan_results_sorted) > 0:
+        top1 = scan_results_sorted[0]
+        top1_sym = _norm_symbol(top1.get("symbol"))
+        top1_score = _to_float(top1.get("score_total"))
+        
+        if len(scan_results_sorted) > 1:
+            top2 = scan_results_sorted[1]
+            top2_score = _to_float(top2.get("score_total"))
+            score_gap = top1_score - top2_score
+            
+            if avoid_recent_symbol and is_flat and last_trade_symbol == top1_sym and allow_same_symbol_reentry:
+                if score_gap <= reentry_score_gap_threshold:
+                    top1["score_total"] = top1_score - recent_symbol_penalty
+                    top1["score"] = top1["score_total"]
+                    reentry_penalty_applied = True
+                    reentry_penalty_value = recent_symbol_penalty
+                    score_adjustment_trace.append(f"reentry_dampener applied to {top1_sym}: -{recent_symbol_penalty:.3f} (gap {score_gap:.3f} <= {reentry_score_gap_threshold:.3f})")
+            elif diversification_bias > 0.0 and score_gap <= reentry_score_gap_threshold:
+                if top2.get("symbol") != last_trade_symbol:
+                    top2["score_total"] = top2_score + diversification_bias
+                    top2["score"] = top2["score_total"]
+                    diversification_applied = True
+                    diversification_bonus_value = diversification_bias
+                    score_adjustment_trace.append(f"diversification_bonus applied to {top2.get('symbol')}: +{diversification_bias:.3f}")
+
+        scan_results_sorted.sort(key=lambda r: (float(r.get("score_total") or 0.0), float(r.get("confidence") or 0.0), -float(r.get("risk_score") or 0.0)), reverse=True)
+
+    ranking_after_policy = [{"symbol": r.get("symbol"), "score_total": r.get("score_total")} for r in scan_results_sorted]
+
     selected = scan_results_sorted[0] if scan_results_sorted else None
     now_epoch = _resolve_now_epoch(state)
     if isinstance(selected, dict):
@@ -2790,6 +2863,18 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_fallback_used": bool(scanner_policy_trace.get("strategist_fallback_used")),
         "policy_provenance": dict(policy_provenance),
         "policy_provenance_ref": dict(scanner_policy_trace.get("policy_provenance_ref") or {}),
+        "applied_scanner_policy": dict(commander_scanner_policy),
+        "score_adjustment_trace": list(score_adjustment_trace),
+        "reentry_penalty_applied": bool(reentry_penalty_applied),
+        "reentry_penalty_value": float(reentry_penalty_value),
+        "diversification_applied": bool(diversification_applied),
+        "diversification_bonus_value": float(diversification_bonus_value),
+        "entry_bias_cap_applied": bool((selected or {}).get("entry_bias_cap_applied") if isinstance(selected, dict) else False),
+        "raw_entry_compatibility_bias": float((selected or {}).get("raw_entry_compatibility_bias") if isinstance(selected, dict) else 0.0),
+        "effective_entry_compatibility_bias": float((selected or {}).get("effective_entry_compatibility_bias") if isinstance(selected, dict) else 0.0),
+        "adjusted_score_total": float(_to_float((selected or {}).get("score_total"))) if isinstance(selected, dict) else 0.0,
+        "ranking_before_policy": ranking_before_policy,
+        "ranking_after_policy": ranking_after_policy,
     }
 
     # Provide a normalized risk snapshot for Decision Node.
@@ -2867,6 +2952,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             if selection_reason_with_bias
             else compatibility_text
         )
+    if score_adjustment_trace:
+        selection_reason_with_bias += f" | overlay: {', '.join(score_adjustment_trace)}"
     runner_up_reasons: List[Dict[str, Any]] = []
     if len(scan_results_sorted) > 1 and isinstance(selected, dict):
         selected_score = float(_to_float(selected.get("score_total") or selected.get("score")))

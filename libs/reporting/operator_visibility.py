@@ -1341,3 +1341,22 @@ def generate_operator_visibility_bundle(
         "run_cards_md": str(run_cards_md),
         "run_card_total": int(run_cards_obj.get("card_total") or 0),
     }
+
+
+def build_separated_operator_brief(trade_dir: str, symbol: str, trades_root: str, *, model: Optional[str] = None) -> Dict[str, Any]:
+    """Phase 6-1 Task 4: Fact/Narrative separated operator brief."""
+    from libs.reporting.trade_read_model import build_trade_read_model
+    from libs.reporting.symbol_read_model import build_symbol_read_model
+    from libs.reporting.fact_narrative_report import build_separated_report
+    
+    try:
+        trade_model = build_trade_read_model(str(trade_dir))
+    except Exception:
+        trade_model = {}
+    try:
+        symbol_model = build_symbol_read_model(str(trades_root), str(symbol))
+    except Exception:
+        symbol_model = {}
+        
+    chosen_model = normalize_openrouter_model_name(str(model or "").strip() or str(os.getenv("OPENROUTER_MODEL_OPERATOR_UI", "")).strip())
+    return build_separated_report(trade_model=trade_model, symbol_model=symbol_model, model=chosen_model)
