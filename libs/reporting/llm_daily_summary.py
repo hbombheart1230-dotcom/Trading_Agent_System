@@ -71,9 +71,10 @@ def summarize_daily_report_with_artifact(*, state: Dict[str, Any], policy: Dict[
     messages = _build_messages(state, policy)
     llm_policy = dict(policy.get("llm") or {})
     env_model = normalize_openrouter_model_name(
-        os.getenv("DAILY_REPORT_LLM_MODEL", "")
-        or os.getenv("OPENROUTER_MODEL_REPORTER_FINAL", "")
-        or ""
+        os.getenv("OPENROUTER_MODEL_REPORTER_FINAL", "")
+        or os.getenv("DAILY_REPORT_LLM_MODEL", "")
+        or os.getenv("OPENROUTER_DEFAULT_MODEL", "")
+        or "openrouter/auto"
     )
     llm_policy.setdefault("max_tokens", 256)
     llm_policy.setdefault("temperature", 0.2)

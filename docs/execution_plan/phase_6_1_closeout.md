@@ -4,7 +4,7 @@
 결정 시스템의 결과를 UI 및 하위 에이전트가 100% Deterministic하게 소비할 수 있도록 읽기 전용 모델(Read-Model)을 구축하고, 리포트 생성 시 Fact와 LLM Narrative의 경계를 완벽히 분리하여 환각(Hallucination) 리스크를 원천 차단한다.
 
 ## B. 완료된 범위
-1. **Read-Model 구현:** `trade_read_model.py`, `symbol_read_model.py`, `daily_read_model.py` (진행/통합 완료)
+1. **Read-Model 구현:** `trade_read_model.py`, `symbol_read_model.py` (신규 분리 완료), 일간 리포트 Read 모델은 `daily_report.py` 내부 구조로 통합 구현됨 (문서/코드 얼라인).
 2. **Fact/Narrative 분리:** `build_separated_report` 체계 도입. LLM에는 오직 Fact Payload만 전달.
 3. **Fallback 보장:** LLM 장애 또는 `DRY_RUN` 시에도 Fact는 항상 정상 서빙되도록 `status: error/dry_run` 구조 확보.
 

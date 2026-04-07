@@ -326,9 +326,10 @@ def build_ai_reporter_review(
         return _default_result(enabled=True, status="unavailable", reason="LLM client unavailable")
 
     env_model = str(
-        os.getenv("REPORTER_AI_REVIEW_MODEL", "")
-        or os.getenv("OPENROUTER_MODEL_REPORTER_FINAL", "")
-        or ""
+        os.getenv("OPENROUTER_MODEL_REPORTER_FINAL", "")
+        or os.getenv("REPORTER_AI_REVIEW_MODEL", "")
+        or os.getenv("OPENROUTER_DEFAULT_MODEL", "")
+        or "openrouter/auto"
     ).strip()
     env_temp_raw = str(os.getenv("REPORTER_AI_REVIEW_TEMPERATURE", "")).strip()
     env_max_tokens_raw = str(os.getenv("REPORTER_AI_REVIEW_MAX_TOKENS", "")).strip()

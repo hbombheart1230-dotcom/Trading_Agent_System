@@ -103,18 +103,29 @@ def strategist_llm_strict(policy: Dict[str, Any] | None = None) -> bool:
     return True
 
 
-def strategist_api_key() -> str:
-    return _first_env("AI_STRATEGIST_API_KEY", "OPENROUTER_API_KEY")
+def strategist_api_key(policy: Dict[str, Any] | None = None) -> str:
+    policy = policy or {}
+    return _first_nonempty(
+        policy.get("ai_strategist_api_key"),
+        policy.get("api_key"),
+        _first_env("AI_STRATEGIST_API_KEY", "OPENROUTER_API_KEY"),
+    )
 
 
-def strategist_endpoint() -> str:
-    return _first_env("AI_STRATEGIST_ENDPOINT")
+def strategist_endpoint(policy: Dict[str, Any] | None = None) -> str:
+    policy = policy or {}
+    return _first_nonempty(
+        policy.get("ai_strategist_endpoint"),
+        policy.get("endpoint"),
+        _first_env("AI_STRATEGIST_ENDPOINT"),
+    )
 
 
 def strategist_model(policy: Dict[str, Any] | None = None) -> str:
     policy = policy or {}
     return normalize_openrouter_model_name(
         _first_nonempty(
+            os.getenv("AI_STRATEGIST_MODEL_PRIMARY", ""),
             policy.get("ai_strategist_model"),
             policy.get("strategist_frame_llm_model"),
             os.getenv("AI_STRATEGIST_MODEL", ""),
@@ -173,8 +184,8 @@ def strategist_runtime_settings(policy: Dict[str, Any] | None = None) -> Dict[st
         "uses_ai": provider in AI_STRATEGIST_PROVIDER_NAMES,
         "uses_rule": provider in RULE_STRATEGIST_PROVIDER_NAMES,
         "uses_legacy_v1": provider in LEGACY_V1_PROVIDER_NAMES,
-        "api_key": strategist_api_key(),
-        "endpoint": strategist_endpoint(),
+        "api_key": strategist_api_key(policy),
+        "endpoint": strategist_endpoint(policy),
         "model": strategist_model(policy),
         "temperature": strategist_temperature(policy),
         "timeout_sec": strategist_timeout_sec(policy),

@@ -295,16 +295,12 @@ def _start_background_command(
 def _query_live_loop_processes(root: Path, lock_path: Path) -> List[Dict[str, Any]]:
     root_text = str(root.resolve())
     lock_text = str(lock_path.resolve())
-    command = (
-        f"$root = {json.dumps(root_text)}; "
-        f"$lock = {json.dumps(lock_text)}; "
-        "$rows = Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-        "Where-Object { "
-        "$cmd = [string]$_.CommandLine; "
-        "((($cmd -like '*scripts/run_m13_live_loop.py*') -or ($cmd -like '*-m scripts.run_m13_live_loop*')) "
-        "-and (($cmd -like ('*' + $lock + '*')) -or ($cmd -like ('*' + $root + '*')))) "
-        "} | Select-Object ProcessId,CommandLine; "
-        "if ($rows) { $rows | ConvertTo-Json -Compress }"
+    command = "\n".join(
+        [
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+            '$rows = Get-CimInstance Win32_Process -Filter "Name=\'python.exe\'" | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine',
+            "if ($rows) { $rows | ConvertTo-Json -Compress }",
+        ]
     )
     try:
         cp = subprocess.run(
@@ -312,6 +308,8 @@ def _query_live_loop_processes(root: Path, lock_path: Path) -> List[Dict[str, An
             cwd=str(root),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except Exception:
@@ -331,27 +329,125 @@ def _query_live_loop_processes(root: Path, lock_path: Path) -> List[Dict[str, An
     for row in parsed if isinstance(parsed, list) else []:
         if not isinstance(row, dict):
             continue
+        cmd = str(row.get("CommandLine") or "")
+        exe = str(row.get("ExecutablePath") or "")
+        cmd_lower = cmd.lower()
+        exe_lower = exe.lower()
+        root_lower = root_text.lower()
+        lock_lower = lock_text.lower()
+        matches_session = (
+            (
+                ("scripts/run_session.py" in cmd_lower or "-m scripts.run_session" in cmd_lower)
+                and "--phase intraday" in cmd_lower
+            )
+            or "scripts/run_m13_live_loop.py" in cmd_lower
+            or "-m scripts.run_m13_live_loop" in cmd_lower
+        )
+        matches_scope = (
+            lock_lower in cmd_lower
+            or root_lower in cmd_lower
+            or exe_lower.startswith(root_lower)
+        )
+        if not (matches_session and matches_scope):
+            continue
         out.append(
             {
                 "pid": _to_int(row.get("ProcessId"), 0),
-                "command_line": str(row.get("CommandLine") or ""),
+                "parent_pid": _to_int(row.get("ParentProcessId"), 0),
+                "executable_path": exe,
+                "command_line": cmd,
             }
         )
     return [row for row in out if int(row.get("pid") or 0) > 0]
 
 
+def _read_lock_owner_pid(lock_path: Path) -> int:
+    if not lock_path.exists():
+        return 0
+    try:
+        obj = json.loads(lock_path.read_text(encoding="utf-8"))
+    except Exception:
+        return 0
+    if not isinstance(obj, dict):
+        return 0
+    return _to_int(obj.get("pid"), 0)
+
+
+def _select_runtime_owner_row(rows: List[Dict[str, Any]], *, owner_pid: int) -> Dict[str, Any]:
+    normalized = [dict(row) for row in rows if int(row.get("pid") or 0) > 0]
+    if not normalized:
+        return {}
+    if owner_pid > 0:
+        for row in normalized:
+            if int(row.get("pid") or 0) == int(owner_pid):
+                return row
+
+    parent_pids = {int(row.get("parent_pid") or 0) for row in normalized if int(row.get("parent_pid") or 0) > 0}
+    leaf_rows = [row for row in normalized if int(row.get("pid") or 0) not in parent_pids]
+    candidates = leaf_rows or normalized
+    candidates.sort(key=lambda row: int(row.get("pid") or 0), reverse=True)
+    return candidates[0]
+
+
+def _collect_runtime_chain(rows: List[Dict[str, Any]], *, owner_row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    normalized = [dict(row) for row in rows if int(row.get("pid") or 0) > 0]
+    if not normalized or not owner_row:
+        return []
+    by_pid = {int(row.get("pid") or 0): row for row in normalized}
+    owner_pid = int(owner_row.get("pid") or 0)
+    if owner_pid <= 0:
+        return []
+
+    related: set[int] = {owner_pid}
+
+    cur = owner_row
+    while True:
+        parent_pid = int(cur.get("parent_pid") or 0)
+        if parent_pid <= 0 or parent_pid not in by_pid:
+            break
+        related.add(parent_pid)
+        cur = by_pid[parent_pid]
+
+    changed = True
+    while changed:
+        changed = False
+        for row in normalized:
+            pid = int(row.get("pid") or 0)
+            parent_pid = int(row.get("parent_pid") or 0)
+            if pid in related:
+                continue
+            if parent_pid in related:
+                related.add(pid)
+                changed = True
+
+    chain = [by_pid[pid] for pid in related if pid in by_pid]
+    chain.sort(key=lambda row: int(row.get("pid") or 0))
+    return chain
+
+
 def _existing_live_loop_step(common: Dict[str, Any]) -> Dict[str, Any]:
-    rows = _query_live_loop_processes(Path(common["root"]), Path(common["lock_path"]))
+    lock_path = Path(common["lock_path"])
+    rows = _query_live_loop_processes(Path(common["root"]), lock_path)
     if not rows:
         return {}
-    first = rows[0]
+    owner_pid = _read_lock_owner_pid(lock_path)
+    owner_row = _select_runtime_owner_row(rows, owner_pid=owner_pid)
+    if not owner_row:
+        return {}
+    chain = _collect_runtime_chain(rows, owner_row=owner_row)
     return {
         "step_id": "session.live_loop_existing",
         "mode": "existing",
         "rc": 0,
         "ok": True,
-        "pid": int(first.get("pid") or 0),
-        "command_line": str(first.get("command_line") or ""),
+        "pid": int(owner_row.get("pid") or 0),
+        "lock_owner_pid": int(owner_pid or 0),
+        "launcher_pid": int(chain[0].get("pid") or 0) if chain else int(owner_row.get("pid") or 0),
+        "runtime_chain_pids": [int(row.get("pid") or 0) for row in chain],
+        "runtime_chain_count": len(chain) if chain else 1,
+        "raw_process_count": len(rows),
+        "command_line": str(owner_row.get("command_line") or ""),
+        "command_line_source": "lock_owner" if owner_pid > 0 and int(owner_row.get("pid") or 0) == int(owner_pid) else "deduped_runtime_owner",
         "duration_sec": 0.0,
     }
 
@@ -707,8 +803,12 @@ def _run_session(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
         if bool(getattr(args, "allow_offhours_simulated_session", False)):
             cmd = [
                 str(common["python_path"]),
-                "-m",
-                "scripts.run_offhours_validation_loop",
+                str(ROOT / "scripts" / "run_session.py"),
+                "--mode",
+                "mock",
+                "--phase",
+                "intraday",
+                "--simulated",
                 "--env-path",
                 str(common["env_path"]),
                 "--event-log-path",
@@ -755,12 +855,17 @@ def _run_session(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
             step_id="session.offhours_probe",
             command=[
                 str(common["python_path"]),
-                str(ROOT / "scripts" / "run_m31_agent_chain_probe.py"),
-                "--symbol",
+                str(ROOT / "scripts" / "run_session.py"),
+                "--mode",
+                "mock",
+                "--phase",
+                "intraday",
+                "--probe",
+                "--probe-symbol",
                 probe_symbol,
-                "--price",
+                "--probe-price",
                 str(probe_price),
-                "--cash",
+                "--probe-cash",
                 str(probe_cash),
                 "--json",
             ],
@@ -785,8 +890,11 @@ def _run_session(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
 
     cmd = [
         str(common["python_path"]),
-        "-m",
-        "scripts.run_m13_live_loop",
+        str(ROOT / "scripts" / "run_session.py"),
+        "--mode",
+        "mock",
+        "--phase",
+        "intraday",
         "--env-path",
         str(common["env_path"]),
         "--tick-pipeline",

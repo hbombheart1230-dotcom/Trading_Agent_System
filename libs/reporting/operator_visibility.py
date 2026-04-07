@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from libs.llm.model_names import normalize_openrouter_model_name
 from libs.reporting.llm_artifacts import daily_artifact_paths
 from libs.reporting.chart_structure_decision_hint_summary import build_chart_structure_decision_hint_executive_summary
 from libs.reporting.policy_surface_summary import build_policy_surface_quality_executive_summary
@@ -1358,5 +1360,10 @@ def build_separated_operator_brief(trade_dir: str, symbol: str, trades_root: str
     except Exception:
         symbol_model = {}
         
-    chosen_model = normalize_openrouter_model_name(str(model or "").strip() or str(os.getenv("OPENROUTER_MODEL_OPERATOR_UI", "")).strip())
+    chosen_model = normalize_openrouter_model_name(
+        str(model or "").strip()
+        or str(os.getenv("OPENROUTER_MODEL_OPERATOR_UI", "")).strip()
+        or str(os.getenv("OPENROUTER_DEFAULT_MODEL", "")).strip()
+        or "openrouter/auto"
+    )
     return build_separated_report(trade_model=trade_model, symbol_model=symbol_model, model=chosen_model)

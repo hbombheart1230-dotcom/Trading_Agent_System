@@ -522,6 +522,11 @@ def test_session_success_starts_background_loop(tmp_path: Path, capsys, monkeypa
     step = (out["phase_result"]["steps"] or [])[0]
     assert int(step["pid"]) == 12345
     cmd = [str(x) for x in step["command"]]
+    assert any("run_session.py" in item for item in cmd)
+    assert "--mode" in cmd
+    assert "mock" in cmd
+    assert "--phase" in cmd
+    assert "intraday" in cmd
     assert "--env-path" in cmd
     assert str(env_path) in cmd
     assert "--tick-pipeline" in cmd
@@ -586,6 +591,62 @@ def test_session_reuses_existing_live_loop_when_present(tmp_path: Path, capsys, 
     step = (out["phase_result"]["steps"] or [])[0]
     assert step["step_id"] == "session.live_loop_existing"
     assert int(step["pid"]) == 45678
+
+
+def test_existing_live_loop_step_prefers_lock_owner_and_dedupes_runtime_chain(tmp_path: Path, monkeypatch) -> None:
+    lock_path = tmp_path / "loop.lock"
+    lock_path.write_text(json.dumps({"pid": 45678}, ensure_ascii=False), encoding="utf-8")
+
+    rows = [
+        {
+            "pid": 40000,
+            "parent_pid": 1234,
+            "executable_path": r"C:\repo\venv\Scripts\python.exe",
+            "command_line": r"python scripts/run_session.py --mode live --phase intraday",
+        },
+        {
+            "pid": 45678,
+            "parent_pid": 40000,
+            "executable_path": r"C:\Users\user\AppData\Local\Python\python.exe",
+            "command_line": r"python scripts/run_session.py --mode live --phase intraday",
+        },
+    ]
+
+    monkeypatch.setattr(mod, "_query_live_loop_processes", lambda root, lock: rows)
+
+    step = mod._existing_live_loop_step({"root": str(tmp_path), "lock_path": str(lock_path)})
+    assert step["step_id"] == "session.live_loop_existing"
+    assert step["pid"] == 45678
+    assert step["lock_owner_pid"] == 45678
+    assert step["launcher_pid"] == 40000
+    assert step["runtime_chain_pids"] == [40000, 45678]
+    assert step["runtime_chain_count"] == 2
+    assert step["raw_process_count"] == 2
+    assert step["command_line_source"] == "lock_owner"
+
+
+def test_existing_live_loop_step_falls_back_to_leaf_when_lock_owner_missing(tmp_path: Path, monkeypatch) -> None:
+    lock_path = tmp_path / "missing.lock"
+    rows = [
+        {
+            "pid": 41000,
+            "parent_pid": 2000,
+            "executable_path": r"C:\repo\venv\Scripts\python.exe",
+            "command_line": r"python scripts/run_session.py --mode live --phase intraday",
+        },
+        {
+            "pid": 47000,
+            "parent_pid": 41000,
+            "executable_path": r"C:\Users\user\AppData\Local\Python\python.exe",
+            "command_line": r"python scripts/run_session.py --mode live --phase intraday",
+        },
+    ]
+    monkeypatch.setattr(mod, "_query_live_loop_processes", lambda root, lock: rows)
+
+    step = mod._existing_live_loop_step({"root": str(tmp_path), "lock_path": str(lock_path)})
+    assert step["pid"] == 47000
+    assert step["launcher_pid"] == 41000
+    assert step["command_line_source"] == "deduped_runtime_owner"
 
 
 def test_session_offhours_probe_mode_when_enabled(tmp_path: Path, capsys, monkeypatch):

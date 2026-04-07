@@ -5,10 +5,10 @@
 
 ## 1) Important Distinction: Runtime Path
 
-1. `scripts/run_m13_live_loop.py` (current live/mock session path)
+1. `scripts/run_session.py` (official trading runtime entrypoint)
 - Supports:
-  - `legacy_m10`
-  - `integrated_chain`
+  - `--mode live|mock`
+  - `--phase preopen|intraday|closeout|watch`
 - Current operating baseline should be treated as `integrated_chain` unless explicitly overridden.
 - `integrated_chain` emits the full chain:
   - `commander_router -> strategist -> scanner -> monitor -> decision -> supervisor -> executor -> reporter`
@@ -16,6 +16,7 @@
   - feature coverage
   - hydrated quote metrics
   - candidate source mix
+- Intraday loop backend remains `scripts/run_m13_live_loop.py`, but it is now a backend implementation rather than the official operator-facing entrypoint.
 
 2. `integrated_chain` probe/runtime
 - Validates full chain presence:

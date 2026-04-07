@@ -1,7 +1,7 @@
 # Mock Exam Day Orchestration Dry-Run Runbook
 
 - Last updated: 2026-03-08
-- Scope: `scripts/run_mock_exam_day.py` based daily mock exam operations
+- Scope: official mock runtime entrypoint is `scripts/run_session.py`; `scripts/run_mock_exam_day.py` remains the orchestration backend for mock preopen/closeout
 - Goal: verify full-day phase orchestration (`preopen -> session -> closeout`) before market-day execution
 
 ## 1) Phase Artifact Samples (Generated)
@@ -56,7 +56,7 @@ Expected schedule template:
 
 Watchdog behavior:
 
-- if `scripts.run_m13_live_loop` process is alive: exit `0` (`ok session_loop_alive`)
+- if `scripts.run_session.py --mode mock --phase intraday` (or legacy `scripts.run_m13_live_loop.py`) is alive: exit `0` (`ok session_loop_alive`)
 - if process is missing: trigger `run_mock_exam_session.bat` to restart session loop
 
 ## 3) Daily Dry-Run Procedure
@@ -66,7 +66,8 @@ Watchdog behavior:
 Run:
 
 ```powershell
-C:\Trading_Agent_System\venv\Scripts\python.exe -m scripts.run_mock_exam_day `
+C:\Trading_Agent_System\venv\Scripts\python.exe scripts\run_session.py `
+  --mode mock `
   --phase preopen `
   --day 2026-03-09 `
   --env-path .env `
@@ -86,8 +87,9 @@ Pass criteria:
 Run:
 
 ```powershell
-C:\Trading_Agent_System\venv\Scripts\python.exe -m scripts.run_mock_exam_day `
-  --phase session `
+C:\Trading_Agent_System\venv\Scripts\python.exe scripts\run_session.py `
+  --mode mock `
+  --phase intraday `
   --day 2026-03-09 `
   --env-path .env `
   --report-dir reports/dev/exam/mock_exam_day `
@@ -109,13 +111,14 @@ Fail criteria (expected off-hours):
 Off-hours probe mode (pipeline verification without market session):
 
 ```powershell
-C:\Trading_Agent_System\venv\Scripts\python.exe -m scripts.run_mock_exam_day `
-  --phase session `
+C:\Trading_Agent_System\venv\Scripts\python.exe scripts\run_session.py `
+  --mode mock `
+  --phase intraday `
   --day 2026-03-09 `
   --env-path .env `
   --report-dir reports/dev/exam/mock_exam_day `
   --event-log-path data/logs/events.jsonl `
-  --allow-offhours-session-probe `
+  --probe `
   --probe-symbol 005930 `
   --json
 ```
@@ -137,15 +140,16 @@ cmd /c scripts\run_mock_exam_session_probe.bat
 Off-hours simulated session mode (continuous local fill/state evaluation):
 
 ```powershell
-C:\Trading_Agent_System\venv\Scripts\python.exe -m scripts.run_mock_exam_day `
-  --phase session `
+C:\Trading_Agent_System\venv\Scripts\python.exe scripts\run_session.py `
+  --mode mock `
+  --phase intraday `
   --day 2026-03-09 `
   --env-path .env `
   --report-dir reports/dev/exam/mock_exam_day `
   --event-log-path data/logs/events.jsonl `
   --state-path data/state/offhours_validation.json `
   --sleep-sec 60 `
-  --allow-offhours-simulated-session `
+  --simulated `
   --json
 ```
 
@@ -173,7 +177,8 @@ Optional env switches for `run_mock_exam_session.bat`:
 Run:
 
 ```powershell
-C:\Trading_Agent_System\venv\Scripts\python.exe -m scripts.run_mock_exam_day `
+C:\Trading_Agent_System\venv\Scripts\python.exe scripts\run_session.py `
+  --mode mock `
   --phase closeout `
   --day 2026-03-09 `
   --env-path .env `

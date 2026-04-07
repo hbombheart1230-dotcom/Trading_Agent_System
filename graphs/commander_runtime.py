@@ -839,9 +839,9 @@ def _build_commander_decision(
 
     scanner_policy = {
         "avoid_recent_symbol": False,
-        "recent_symbol_penalty": max(0.0, 0.05 + adaptive_policy["reentry_penalty_adjustment"]),
-        "diversification_bias": max(0.0, 0.02 + adaptive_policy["diversification_adjustment"]),
-        "entry_bias_cap": max(0.0, 0.0 + adaptive_policy["entry_bias_adjustment"]),
+        "recent_symbol_penalty": round(max(0.0, 0.05 + adaptive_policy["reentry_penalty_adjustment"]), 6),
+        "diversification_bias": round(max(0.0, 0.02 + adaptive_policy["diversification_adjustment"]), 6),
+        "entry_bias_cap": round(max(0.0, 0.0 + adaptive_policy["entry_bias_adjustment"]), 6),
         "allow_same_symbol_reentry": True,
         "reentry_score_gap_threshold": 0.03,
     }

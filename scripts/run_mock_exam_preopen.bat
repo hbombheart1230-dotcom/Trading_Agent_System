@@ -9,7 +9,9 @@ if not exist "%PY%" (
   exit /b 3
 )
 
-"%PY%" -m scripts.run_mock_exam_day ^
+rem Compatibility wrapper. Official trading runtime entrypoint is scripts/run_session.py
+"%PY%" "%ROOT%\scripts\run_session.py" ^
+  --mode mock ^
   --phase preopen ^
   --env-path "%ROOT%\.env" ^
   --report-dir "%ROOT%\reports\mock_exam_day" ^

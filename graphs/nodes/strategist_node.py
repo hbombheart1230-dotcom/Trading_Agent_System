@@ -1082,46 +1082,6 @@ def _run_strategist_frame_llm(
         "repair_used": repair_used,
         "llm_call_trace": dict(llm_call_trace),
     }
-        record_llm_response(
-            run_id=run_id,
-            agent="strategist",
-            stage="theme_selection",
-            llm_response=str(raw or ""),
-            parsed_output=dict(overrides),
-            decision_link={
-                "status": "ok",
-                "model": str(route.model or ""),
-                "latency_ms": int(latency_ms),
-                "attempts": int(attempts),
-                "recovery_method": recovery_method,
-            },
-        )
-    except Exception:
-        pass
-
-    llm_artifacts = _persist_llm_artifacts(
-        stage="theme_selection",
-        prompt_value=prompt_text,
-        response_value=raw,
-        status="ok",
-        reason="",
-        attempts_count=attempts,
-        repair=repair_used,
-    )
-    return overrides, {
-        "enabled": True,
-        "status": "ok",
-        "latency_ms": latency_ms,
-        "model": route.model,
-        "attempts": int(attempts),
-        "repair_used": bool(repair_used),
-        "recovery_method": recovery_method,
-        "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
-        "response_ref": str(llm_artifacts.get("response_ref") or ""),
-        "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
-        "response_hash": str(llm_artifacts.get("response_hash") or ""),
-    }
-
 
 def _extract_themes(state: Dict[str, Any], policy: Dict[str, Any]) -> List[str]:
     out: List[str] = []
@@ -3767,6 +3727,15 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_source_policy": dict(scanner_source_policy),
         "trade_aggressiveness": trade_aggressiveness,
         "risk_tone": risk_tone,
+    }
+    strategist_feedback = _compact_recent_strategy_feedback_for_llm(recent_strategy_feedback)
+    performance_summary = {
+        "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
+        "recent_theme_performance": dict(strategist_feedback.get("recent_theme_performance") or {}),
+        "recent_playbook_performance": dict(strategist_feedback.get("recent_playbook_performance") or {}),
+        "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
+        "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
+        "advisory_only": bool(recent_strategy_feedback.get("advisory_only", True)),
     }
     strategist_output = StrategistOutput(
         market_regime=market_regime,

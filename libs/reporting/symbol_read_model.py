@@ -24,6 +24,17 @@ def _get_dominant(items: List[str], exclude: str = "unknown") -> str:
     return counter.most_common(1)[0][0]
 
 
+def _is_unknown_quality_field(field_name: str, value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text or text == "unknown":
+        return True
+    # Raw lifecycle-only sourcing is still a sparse evidence state for the
+    # cumulative symbol model, so keep counting it as incomplete quality.
+    if field_name == "data_source" and text == "lifecycle_bundle":
+        return True
+    return False
+
+
 def build_symbol_read_model(trades_root: str, symbol: str) -> Dict[str, Any]:
     """
     Phase 6-1 Task 3: Build a deterministic cumulative read model for a specific symbol.
@@ -122,7 +133,7 @@ def _aggregate_symbol_trades(symbol: str, trades: List[Dict[str, Any]]) -> Dict[
         # Data quality tracking
         for f in fields_to_check:
             total_fields_checked += 1
-            if str(t.get(f) or "").strip().lower() == "unknown":
+            if _is_unknown_quality_field(f, t.get(f)):
                 unknown_fields_count += 1
 
         pnl = float(t.get("pnl") or 0.0)

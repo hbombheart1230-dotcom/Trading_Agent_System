@@ -151,8 +151,22 @@
   - `libs/agent/scanner.py`
   - `libs/agent/monitor.py`
 
+## Official Runtime Entrypoint
+
+- Official trading runtime entrypoint:
+  - `python scripts/run_session.py --mode live --phase intraday`
+- Supported phases:
+  - `preopen`
+  - `intraday`
+  - `closeout`
+  - `watch`
+- UI entrypoints stay separate:
+  - `scripts/start_operator_ui.ps1`
+  - `scripts/stop_operator_ui.ps1`
+
 ## M13 Tick Pipeline Selection
 
+- `scripts/run_session.py --mode live --phase intraday` uses `scripts/run_m13_live_loop.py` as the intraday loop backend.
 - `scripts/run_m13_live_loop.py` supports two tick paths:
   - `legacy_m10` (default): `m13_tick -> m10_live_pipeline -> decide_trade -> execute_from_packet`
   - `integrated_chain`: `m13_tick -> commander_runtime(mode=integrated_chain)`

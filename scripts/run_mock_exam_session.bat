@@ -8,12 +8,12 @@ set "SESSION_EXTRA="
 rem Optional off-hours probe mode (env-driven):
 rem   set MOCK_EXAM_OFFHOURS_PROBE=1
 if /I "%MOCK_EXAM_OFFHOURS_PROBE%"=="1" (
-  set "SESSION_EXTRA=%SESSION_EXTRA% --allow-offhours-session-probe"
+  set "SESSION_EXTRA=%SESSION_EXTRA% --probe"
 )
 rem Optional off-hours continuous simulated session:
 rem   set MOCK_EXAM_OFFHOURS_SIMULATED=1
 if /I "%MOCK_EXAM_OFFHOURS_SIMULATED%"=="1" (
-  set "SESSION_EXTRA=%SESSION_EXTRA% --allow-offhours-simulated-session"
+  set "SESSION_EXTRA=%SESSION_EXTRA% --simulated"
 )
 if not "%MOCK_EXAM_PROBE_SYMBOL%"=="" (
   set "SESSION_EXTRA=%SESSION_EXTRA% --probe-symbol %MOCK_EXAM_PROBE_SYMBOL%"
@@ -33,8 +33,10 @@ if not exist "%PY%" (
   exit /b 3
 )
 
-"%PY%" -m scripts.run_mock_exam_day ^
-  --phase session ^
+rem Compatibility wrapper. Official trading runtime entrypoint is scripts/run_session.py
+"%PY%" "%ROOT%\scripts\run_session.py" ^
+  --mode mock ^
+  --phase intraday ^
   --env-path "%ROOT%\.env" ^
   --report-dir "%ROOT%\reports\mock_exam_day" ^
   --event-log-path "%ROOT%\data\logs\events.jsonl" ^

@@ -140,9 +140,11 @@ This document defines agent responsibilities and handoff boundaries.
 
 ## Runtime Path Notes
 
+- Official trading runtime entrypoint is `scripts/run_session.py`.
 - Integrated chain path:
   - Strategist -> Scanner -> Monitor -> Supervisor/Executor
 - Legacy live tick path still exists for compatibility (`m10` pipeline).
+- `scripts/run_session.py --mode live --phase intraday` uses `scripts/run_m13_live_loop.py` as the loop backend.
 - `scripts/run_m13_live_loop.py` can select tick pipeline with:
   - `--tick-pipeline legacy_m10`
   - `--tick-pipeline integrated_chain`

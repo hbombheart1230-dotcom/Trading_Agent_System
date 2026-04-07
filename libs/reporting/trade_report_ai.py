@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import logging
@@ -3386,6 +3386,24 @@ def _failure_report(
     return _normalize_trade_report_output(story_input, out)
 
 
+def build_separated_ai_trade_report(trade_dir: str, *, model: Optional[str] = None) -> Dict[str, Any]:
+    """Phase 6-1 Task 4 Compatibility Wrapper."""
+    from libs.reporting.trade_read_model import build_trade_read_model
+    from libs.reporting.fact_narrative_report import build_separated_report
+    try:
+        trade_model = build_trade_read_model(str(trade_dir))
+    except Exception:
+        trade_model = {}
+    chosen_model = normalize_openrouter_model_name(
+        str(model or "").strip()
+        or str(os.getenv("OPENROUTER_MODEL_TRADE_REPORT", "")).strip()
+        or str(os.getenv("TRADE_REPORT_AI_MODEL", "")).strip()
+        or str(os.getenv("OPENROUTER_DEFAULT_MODEL", "")).strip()
+        or "openrouter/auto"
+    )
+    return build_separated_report(trade_model=trade_model, model=chosen_model)
+
+
 def _trade_report_output_template() -> Dict[str, Any]:
     return {
         "executive_summary": {"headline": "", "summary": ""},
@@ -3605,6 +3623,30 @@ def _attach_report_status_matrix(
     generation["llm_brief_status"] = out["llm_brief_status"]
     generation["ai_trade_report_status"] = out["ai_trade_report_status"]
     out["generation"] = generation
+    if "fact_payload" not in out or "narrative" not in out:
+        try:
+            from libs.reporting.fact_narrative_report import build_separated_report
+
+            separated = build_separated_report(
+                trade_model=dict(story_input or {}),
+                model=str(generation.get("model") or "").strip() or None,
+            )
+        except Exception:
+            separated = {
+                "fact_payload": {"trade": dict(story_input or {}), "daily": {}, "symbol": {}},
+                "narrative": {
+                    "summary": "",
+                    "insight": "",
+                    "recommendation": "",
+                    "source": "llm",
+                    "based_on": "fact_payload",
+                    "status": "error",
+                },
+            }
+        if isinstance(separated.get("fact_payload"), dict):
+            out["fact_payload"] = dict(separated.get("fact_payload") or {})
+        if isinstance(separated.get("narrative"), dict):
+            out["narrative"] = dict(separated.get("narrative") or {})
     return out
 
 
@@ -3635,8 +3677,10 @@ def build_ai_trade_report(
     is_enabled = _env_bool("TRADE_REPORT_AI_ENABLED", True) if enabled is None else bool(enabled)
     chosen_model = normalize_openrouter_model_name(
         str(model or "").strip()
-        or str(os.getenv("TRADE_REPORT_AI_MODEL", "")).strip()
         or str(os.getenv("OPENROUTER_MODEL_TRADE_REPORT", "")).strip()
+        or str(os.getenv("TRADE_REPORT_AI_MODEL", "")).strip()
+        or str(os.getenv("OPENROUTER_DEFAULT_MODEL", "")).strip()
+        or "openrouter/auto"
     )
     trade_id = str(story_input.get("trade_id") or story_input.get("story_id") or "")
     run_id = str(story_input.get("run_id") or "")

@@ -2870,8 +2870,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "diversification_applied": bool(diversification_applied),
         "diversification_bonus_value": float(diversification_bonus_value),
         "entry_bias_cap_applied": bool((selected or {}).get("entry_bias_cap_applied") if isinstance(selected, dict) else False),
-        "raw_entry_compatibility_bias": float((selected or {}).get("raw_entry_compatibility_bias") if isinstance(selected, dict) else 0.0),
-        "effective_entry_compatibility_bias": float((selected or {}).get("effective_entry_compatibility_bias") if isinstance(selected, dict) else 0.0),
+        "raw_entry_compatibility_bias": float(
+            _to_float((selected or {}).get("raw_entry_compatibility_bias")) if isinstance(selected, dict) else 0.0
+        ),
+        "effective_entry_compatibility_bias": float(
+            _to_float((selected or {}).get("effective_entry_compatibility_bias")) if isinstance(selected, dict) else 0.0
+        ),
         "adjusted_score_total": float(_to_float((selected or {}).get("score_total"))) if isinstance(selected, dict) else 0.0,
         "ranking_before_policy": ranking_before_policy,
         "ranking_after_policy": ranking_after_policy,

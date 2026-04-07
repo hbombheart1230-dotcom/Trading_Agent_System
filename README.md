@@ -438,6 +438,11 @@ Operator-facing report scripts:
     - `trade_story_input.json`
     - `trade_report.json`
     - `trade_report.md`
+- Official trading runtime entrypoint:
+  - `python scripts/run_session.py --mode live --phase intraday`
+  - mock session example: `python scripts/run_session.py --mode mock --phase intraday`
+  - watch example: `python scripts/run_session.py --mode live --phase watch`
+  - legacy `.bat` / `.ps1` session launchers are compatibility wrappers around `scripts/run_session.py`
 - Reporter AI review optional flags:
   - `--ai-review` (enable passive AI review stage)
   - `--no-ai-review` (force deterministic-only mode)

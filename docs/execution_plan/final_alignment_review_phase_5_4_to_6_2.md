@@ -14,7 +14,7 @@
 
 ## 3. Env Cleanup 결과
 - **유지 (Policy 승인):** `AI_STRATEGIST_MODEL_PRIMARY`, `AI_STRATEGIST_MODEL_FALLBACK`, `OPENROUTER_MODEL_TRADE_REPORT`, `OPENROUTER_MODEL_OPERATOR_UI`, `OPENROUTER_MODEL_REPORTER_FINAL`
-- **제거/격하 (Drift 방지):** `TRADE_REPORT_AI_MODEL`, `REPORTER_INTRADAY`, 단일 `AI_STRATEGIST_MODEL`
+- **호환 유지 (레거시 폴백):** `TRADE_REPORT_AI_MODEL`, 단일 `AI_STRATEGIST_MODEL`은 하위 호환성을 위해 최하위 폴백으로 유지 중
 - **결과:** Runtime Env Minimization Policy 완벽 준수. 내부 로직 통제를 위한 신규 토글/임계값 Env는 일절 추가되지 않음.
 
 ## 4. 남은 리스크 (Known Gaps)

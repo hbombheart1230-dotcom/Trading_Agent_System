@@ -18,7 +18,7 @@ Phase 6-1에서 구축된 Read-Model과 분리형 Report 구조를 실제 내부
 - Primary 실패 시 Fallback으로 정상 이관되며, 이 이력이 `llm_call_trace` 아티팩트에 영구 기록됨.
 
 ## E. 문서-코드-Env Alignment 상태
-- 완전 일치. 레거시 `TRADE_REPORT_AI_MODEL` 및 단일 `AI_STRATEGIST_MODEL` 라우팅을 걷어내고 공식 Policy Env로 완전 정렬 완료.
+- 완전 일치. 공식 Policy Env(`OPENROUTER_MODEL_TRADE_REPORT`, `AI_STRATEGIST_MODEL_PRIMARY` 등)를 최우선 적용하고, 레거시 환경 변수는 호환성 유지를 위해 하위 우선순위 폴백으로 남겨둠.
 
 ## F. 남은 Known Gaps & G. 다음 Phase로 넘길 항목
 - Fallback 모델마저 실패하는 경우 발동하는 Strict Block(매매 중지)의 장기 통계 분석은 운영 모니터링(M25 등)에서 다룸.

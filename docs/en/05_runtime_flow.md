@@ -49,8 +49,11 @@ Execution note:
 - Emergency exits (`emergency_halt`, `news_shock`) are explicit separate monitor path.
 - Monitor guidance source is canonical `state["strategist_output"]`.
 
-## 5.3 M13 Tick Runtime Path
+## 5.3 Runtime Entry Path
 
+- Official trading runtime entrypoint:
+  - `python scripts/run_session.py --mode live --phase intraday`
+- `scripts/run_session.py --mode live --phase intraday` uses `scripts/run_m13_live_loop.py` as the loop backend.
 - `scripts/run_m13_live_loop.py` supports:
   - `legacy_m10` (default compatibility path)
   - `integrated_chain` (Strategist -> Scanner -> Monitor)

@@ -81,7 +81,8 @@
 
 ## Runtime Notes
 
-- Polling runtime (`scripts/run_m13_live_loop.py`) remains loop-based.
+- Official trading runtime entrypoint is `scripts/run_session.py`.
+- Intraday polling runtime remains loop-based through backend `scripts/run_m13_live_loop.py`.
 - Tick pipeline can be selected:
   - `M13_TICK_PIPELINE=legacy_m10` (default compatibility path)
   - `M13_TICK_PIPELINE=integrated_chain` (Strategist -> Scanner -> Monitor chain)
