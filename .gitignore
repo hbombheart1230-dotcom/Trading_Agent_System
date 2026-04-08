@@ -4,6 +4,7 @@
 venv/
 __pycache__/
 *.pyc
+.pytest-work/
 
 # Logs
 logs/

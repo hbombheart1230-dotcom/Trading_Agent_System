@@ -1,26 +1,52 @@
-# Final Alignment Review (Phase 5-4 to 6-2)
+﻿# Final Alignment Review: Phase 5-4 to 6-2 Operational Baseline
 
-## 1. 개요
-본 문서는 Phase 5-4 (Commander Ownership & Strategy Evolution) 부터 Phase 6-2 (Internal Consumption & Routing Alignment)에 이르는 핵심 시스템 개편이 "계획 문서(Docs)", "실제 코드(Code)", "환경 변수(Env)" 간에 100% 정렬되었는지 확인하는 최종 감사(Audit) 보고서다.
+## Summary
+This document records the current operational baseline across Phase 5-4 through Phase 6-2 after the post-market report/doc alignment patches.
 
-## 2. 항목별 종합 판정
-| 영역 | 세부 항목 | 상태 | 비고 (증빙) |
-| :--- | :--- | :---: | :--- |
-| **Architecture** | Commander Ownership 정립 | **PASS** | Route, Policy provenance 명시 완료 |
-| **Architecture** | Strategist Proposal Owner 강등 | **PASS** | Commander mirrored field 분리 완료 |
-| **Architecture** | Read-Model & Fact/Narrative 분리 | **PASS** | Deterministic Fact 계층 독립 완료 |
-| **Routing** | 역할별 LLM Env Routing | **PASS** | `OPENROUTER_MODEL_*` 계열 완벽 맵핑 |
-| **Resilience** | Strategist Primary -> Fallback | **PASS** | `AI_STRATEGIST_MODEL_PRIMARY/FALLBACK` 적용 |
+## What Is Aligned
+- Commander route source / route provenance:
+  - single source of truth: `reports/canonical/<day>/<run_id>/commander.json`
+  - fallback policy: event fallback only when canonical commander artifacts are missing
+- Daily/operator independence:
+  - `daily_report` and `operator_summary` are generated independently from shared read-only helpers
+  - neither report needs to read the other report file to build its own summary
+- Trade explain alignment:
+  - official operator-facing output path: `reports/dev/analysis/trade_explain/*`
+  - custom output paths remain allowed for ad-hoc generation, but they are non-canonical
+- Narrative axis:
+  - entry-first display for BUY / WAIT / NO_TRADE surfaces
+  - exit-first display for SELL / EXIT surfaces
+  - primary explanation is chosen by axis, with the opposite-side context kept secondary
+- Freshness and stale semantics:
+  - operator-facing reports expose generated time, source run count, latest run id, latest run timestamp, freshness status, stale flag, and stale reason
+  - source differences caused by generation timing are surfaced instead of hidden
 
-## 3. Env Cleanup 결과
-- **유지 (Policy 승인):** `AI_STRATEGIST_MODEL_PRIMARY`, `AI_STRATEGIST_MODEL_FALLBACK`, `OPENROUTER_MODEL_TRADE_REPORT`, `OPENROUTER_MODEL_OPERATOR_UI`, `OPENROUTER_MODEL_REPORTER_FINAL`
-- **호환 유지 (레거시 폴백):** `TRADE_REPORT_AI_MODEL`, 단일 `AI_STRATEGIST_MODEL`은 하위 호환성을 위해 최하위 폴백으로 유지 중
-- **결과:** Runtime Env Minimization Policy 완벽 준수. 내부 로직 통제를 위한 신규 토글/임계값 Env는 일절 추가되지 않음.
+## Runtime Semantics Unchanged
+The following non-negotiable runtime rules remain unchanged:
+- Monitor must never place orders
+- Execution layer must never execute without approval
+- Guards override approvals
+- Approval / execution / risk semantics are unchanged
+- DTO/IO compatibility remains additive-only
+- Reporting and logging remain observational only
 
-## 4. 남은 리스크 (Known Gaps)
-- 현재 구조는 매우 엄격한 Strict Mode를 기반으로 하므로, OpenRouter API나 지정된 Fallback 모델의 동시 장애 발생 시 거래(Trade)가 원천 차단됨. 이는 시스템 보호 철학에 부합하는 의도된 동작임.
+## Official Report Path Baseline
+- `daily_report`: `reports/daily/<day>/daily_report.json|md`
+- `operator_summary`: `reports/daily/<day>/operator_summary.json|md`
+- `metrics`: `reports/metrics/metrics_<day>.json|md`
+- `decision_story`: `reports/decision_story/decision_story_<day>.md`
+- `run_cards`: `reports/run_cards/run_cards_<day>.md`
+- `trade_explain`: `reports/dev/analysis/trade_explain/trade_explain_<day>.json|md`
 
-## 5. 실전 운영 진입 가능 여부 최종 판정
-모든 회귀 테스트(Regression Test)가 통과하였으며, Canonical Artifact 구조가 깨지지 않고 안전하게(Additive) 확장되었음이 증명됨.
+## Remaining Gaps
+- Older or sparse runs can still require event fallback for route provenance.
+- Some report sections remain limited by upstream payload richness.
+- Separate report generation times can still lead to stale summaries; freshness metadata is the intended way to interpret that difference.
+- Historical closeout notes may describe the earlier rollout state, while this document describes the current operational baseline.
 
-**[결론] 본 Trading Agent System은 현재 코드를 기준으로 즉시 실전 운영(Production)에 진입할 준비가 완료되었음을 선언함 (Production-Ready).**
+## Current Operational Reading Order
+1. canonical artifact for run-level truth
+2. metrics / daily / operator summary for aggregation
+3. decision story / run cards / trade explain for operator-facing explanation
+
+This is the baseline to use when comparing current code, reports, and operator-facing documentation.

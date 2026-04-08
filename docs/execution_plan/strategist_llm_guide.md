@@ -1,47 +1,45 @@
-# Strategist LLM Configuration Guide (Phase 5-4)
+﻿# Strategist LLM Configuration Guide (Phase 5-4)
 
-## 목적
-이 문서는 Strategist LLM을 Primary + Fallback 구조로 안정적으로 운영하기 위한 기준 문서이다.
-Codex는 이 문서를 기준으로 Strategist LLM 호출 로직 및 env 구성을 수정해야 한다.
-
----
-
-# 1. 핵심 결론
-
-- Strategist는 단일 모델이 아니라 Primary + Fallback 2단 구조로 운영
-- Primary 실패 시 동일 모델 반복이 아니라 다른 모델로 전환
-- Strict 모드 유지 시 fallback은 필수
+## 紐⑹쟻
+??臾몄꽌??Strategist LLM??Primary + Fallback 援ъ“濡??덉젙?곸쑝濡??댁쁺?섍린 ?꾪븳 湲곗? 臾몄꽌?대떎.
+Codex????臾몄꽌瑜?湲곗??쇰줈 Strategist LLM ?몄텧 濡쒖쭅 諛?env 援ъ꽦???섏젙?댁빞 ?쒕떎.
 
 ---
 
-# 2. 왜 2모델 구조가 필요한가
+# 1. ?듭떖 寃곕줎
 
-현재 구조:
-- 동일 모델 retry
-
-문제:
-- timeout → 계속 timeout
-- JSON 오류 → 계속 동일 오류
-- provider 문제 → 동일 실패 반복
-
-해결:
-- fallback 모델로 실패 패턴 자체 변경
+- Strategist???⑥씪 紐⑤뜽???꾨땲??Primary + Fallback 2??援ъ“濡??댁쁺
+- Primary ?ㅽ뙣 ???숈씪 紐⑤뜽 諛섎났???꾨땲???ㅻⅨ 紐⑤뜽濡??꾪솚
+- Strict 紐⑤뱶 ?좎? ??fallback? ?꾩닔
 
 ---
 
-# 3. 모델 역할
+# 2. ??2紐⑤뜽 援ъ“媛 ?꾩슂?쒓?
+
+?꾩옱 援ъ“:
+- ?숈씪 紐⑤뜽 retry
+
+臾몄젣:
+- timeout ??怨꾩냽 timeout
+- JSON ?ㅻ쪟 ??怨꾩냽 ?숈씪 ?ㅻ쪟
+- provider 臾몄젣 ???숈씪 ?ㅽ뙣 諛섎났
+
+?닿껐:
+- fallback 紐⑤뜽濡??ㅽ뙣 ?⑦꽩 ?먯껜 蹂寃?
+---
+
+# 3. 紐⑤뜽 ??븷
 
 ## Primary (DeepSeek V3.2)
-- 강한 reasoning 능력
-- 전략 생성 품질 핵심
+- 媛뺥븳 reasoning ?λ젰
+- ?꾨왂 ?앹꽦 ?덉쭏 ?듭떖
 
 ## Fallback (MiniMax M2.5)
-- 빠르고 안정적인 응답
-- fallback 안정성 확보용
-
+- 鍮좊Ⅴ怨??덉젙?곸씤 ?묐떟
+- fallback ?덉젙???뺣낫??
 ---
 
-# 4. 추천 env 설정
+# 4. 異붿쿇 env ?ㅼ젙
 
 ```env
 AI_STRATEGIST_PROVIDER=openai
@@ -50,21 +48,22 @@ AI_STRATEGIST_ENDPOINT=https://openrouter.ai/api/v1/chat/completions
 AI_STRATEGIST_MODEL_PRIMARY=deepseek/deepseek-v3.2
 AI_STRATEGIST_MODEL_FALLBACK=minimax/minimax-m2.5
 
-AI_STRATEGIST_TIMEOUT_SEC=15
-AI_STRATEGIST_MAX_TOKENS=8192
-AI_STRATEGIST_RETRY_MAX=2
+Commander-owned strategist execution profile:
+- `applied_policy.llm.strategist.execution_profile.timeout_sec = 15`
+- `applied_policy.llm.strategist.execution_profile.max_tokens = 8192`
+- `applied_policy.llm.strategist.execution_profile.retry_max = 2`
 
-AI_STRATEGIST_STRICT=true
+# `strategist.runtime.strict_mode` is Commander-owned via `applied_policy`
 ```
 
 ---
 
-# 5. 호출 전략
+# 5. ?몄텧 ?꾨왂
 
 ```
-1차: primary 호출
-2차: primary retry
-3차: fallback 호출
+1李? primary ?몄텧
+2李? primary retry
+3李? fallback ?몄텧
 ```
 
 ---
@@ -84,8 +83,7 @@ def call_strategist_llm(payload):
 
 ---
 
-# 7. 필수 메타데이터
-
+# 7. ?꾩닔 硫뷀??곗씠??
 ```json
 {
   "llm_call_trace": {
@@ -99,21 +97,21 @@ def call_strategist_llm(payload):
 
 ---
 
-# 8. strict 모드 의미
+# 8. strict 紐⑤뱶 ?섎?
 
-- LLM 실패 → 매수 금지
-- fallback 도입 → 시스템 안정성 확보
-
----
-
-# 9. 주의사항
-
-- fallback 결과 low confidence 표시
-- final_model 반드시 기록
-- silent fallback 금지
+- LLM ?ㅽ뙣 ??留ㅼ닔 湲덉?
+- fallback ?꾩엯 ???쒖뒪???덉젙???뺣낫
 
 ---
 
-# 10. 핵심 원칙
+# 9. 二쇱쓽?ы빆
 
-Primary는 성능, Fallback은 안정성
+- fallback 寃곌낵 low confidence ?쒖떆
+- final_model 諛섎뱶??湲곕줉
+- silent fallback 湲덉?
+
+---
+
+# 10. ?듭떖 ?먯튃
+
+Primary???깅뒫, Fallback? ?덉젙??

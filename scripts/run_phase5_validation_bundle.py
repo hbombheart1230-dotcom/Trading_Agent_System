@@ -18,7 +18,10 @@ from libs.reporting.operator_visibility import generate_operator_daily_summary
 from libs.reporting.operator_visibility import generate_run_card_report
 from libs.reporting.symbol_trade_report import collect_symbols_for_day
 from libs.reporting.symbol_trade_report import generate_symbol_trade_report
-from libs.reporting.trade_explain import generate_trade_explain_report
+from libs.reporting.trade_explain import (
+    generate_trade_explain_report,
+    official_trade_explain_report_dir,
+)
 from scripts.check_reports_trades_health import audit_reports_trades_health
 from scripts.generate_daily_report import generate_daily_report
 
@@ -310,7 +313,11 @@ def generate_phase5_validation_bundle(
         event_log_path, reports_root / "run_cards", day=day, max_runs=max_runs, trade_only=True
     )
     trade_explain_md, trade_explain_json, trade_explain = generate_trade_explain_report(
-        event_log_path, reports_root / "dev" / "analysis" / "trade_explain", day=day, max_executions=max_executions, max_sell_pairs=max_executions
+        event_log_path,
+        official_trade_explain_report_dir(reports_root),
+        day=day,
+        max_executions=max_executions,
+        max_sell_pairs=max_executions,
     )
     health = audit_reports_trades_health(reports_root, day=day)
 

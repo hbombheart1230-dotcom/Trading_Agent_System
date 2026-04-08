@@ -392,11 +392,7 @@ def test_intraday_entry_rejects_non_intraday_seed_series_as_minute_data() -> Non
     assert metrics.get("series_class") == "daily_or_higher"
 
 
-def test_intraday_entry_scoring_disabled_keeps_legacy_decision(monkeypatch) -> None:
-    monkeypatch.delenv("MONITOR_SCORING_ENABLED", raising=False)
-    monkeypatch.delenv("MONITOR_SCORING_SHADOW_MODE", raising=False)
-    monkeypatch.delenv("MONITOR_ENTRY_SCORE_THRESHOLD", raising=False)
-
+def test_intraday_entry_scoring_disabled_keeps_legacy_decision() -> None:
     out = evaluate_intraday_entry_signal(_rows_breakout())
 
     assert out["triggered"] is True
@@ -1385,12 +1381,8 @@ def test_monitor_policy_aware_gating_helper_does_not_relax_when_extension_safety
     assert "safe_relaxation_conditions_not_met" in list(gating.get("notes") or [])
 
 
-def test_intraday_entry_scoring_shadow_mode_records_score_but_preserves_decision(monkeypatch) -> None:
-    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "false")
-    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "true")
-    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "8")
-
-    out = evaluate_intraday_entry_signal(_rows_breakout())
+def test_intraday_entry_scoring_shadow_mode_records_score_but_preserves_decision() -> None:
+    out = evaluate_intraday_entry_signal(_rows_breakout(), scoring={"enabled": False, "shadow_mode": True, "entry_threshold": 8})
 
     assert out["triggered"] is True
     assert out["decision"] == "BUY"
@@ -1403,12 +1395,8 @@ def test_intraday_entry_scoring_shadow_mode_records_score_but_preserves_decision
     assert isinstance((out.get("signal_evidence") or {}).get("scores"), dict)
 
 
-def test_intraday_entry_scoring_enabled_allows_entry_when_threshold_met(monkeypatch) -> None:
-    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
-    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "3")
-
-    out = evaluate_intraday_entry_signal(_rows_breakout())
+def test_intraday_entry_scoring_enabled_allows_entry_when_threshold_met() -> None:
+    out = evaluate_intraday_entry_signal(_rows_breakout(), scoring={"enabled": True, "shadow_mode": False, "entry_threshold": 3})
 
     assert out["scoring_mode"] == "enabled"
     assert out["hard_filter_passed"] is True
@@ -1419,12 +1407,8 @@ def test_intraday_entry_scoring_enabled_allows_entry_when_threshold_met(monkeypa
     assert (out.get("signal_evidence") or {}).get("derived", {}).get("weighted_score_passed") is True
 
 
-def test_intraday_entry_scoring_enabled_no_longer_blocks_legacy_buy_when_threshold_not_met(monkeypatch) -> None:
-    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
-    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "8")
-
-    out = evaluate_intraday_entry_signal(_rows_breakout())
+def test_intraday_entry_scoring_enabled_no_longer_blocks_legacy_buy_when_threshold_not_met() -> None:
+    out = evaluate_intraday_entry_signal(_rows_breakout(), scoring={"enabled": True, "shadow_mode": False, "entry_threshold": 8})
 
     assert out["legacy_entry_decision"] == "BUY"
     assert out["scoring_entry_decision"] == "WAIT"
@@ -1435,17 +1419,17 @@ def test_intraday_entry_scoring_enabled_no_longer_blocks_legacy_buy_when_thresho
     assert (out.get("signal_evidence") or {}).get("derived", {}).get("weighted_score_passed") is False
 
 
-def test_intraday_entry_scoring_enabled_does_not_force_wait_into_buy_even_if_score_threshold_is_met(monkeypatch) -> None:
-    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
-    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "1")
-
+def test_intraday_entry_scoring_enabled_does_not_force_wait_into_buy_even_if_score_threshold_is_met() -> None:
     rows = _rows_pullback_rebound()
     rows[-1]["close"] = 100.1
     rows[-1]["high"] = 100.4
     rows[-1]["vwap"] = 100.8
 
-    out = evaluate_intraday_entry_signal(rows, frame={"playbook": "pullback"})
+    out = evaluate_intraday_entry_signal(
+        rows,
+        frame={"playbook": "pullback"},
+        scoring={"enabled": True, "shadow_mode": False, "entry_threshold": 1},
+    )
 
     assert out["legacy_entry_decision"] == "WAIT"
     assert out["scoring_entry_decision"] == "BUY"
@@ -1456,12 +1440,8 @@ def test_intraday_entry_scoring_enabled_does_not_force_wait_into_buy_even_if_sco
     assert (out.get("signal_evidence") or {}).get("derived", {}).get("weighted_score_passed") is True
 
 
-def test_intraday_entry_scoring_hard_filter_blocks_without_data(monkeypatch) -> None:
-    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
-    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "3")
-
-    out = evaluate_intraday_entry_signal([])
+def test_intraday_entry_scoring_hard_filter_blocks_without_data() -> None:
+    out = evaluate_intraday_entry_signal([], scoring={"enabled": True, "shadow_mode": False, "entry_threshold": 3})
 
     assert out["hard_filter_passed"] is False
     assert "minute_candle_missing" in list(out.get("hard_filter_fail_reasons") or [])

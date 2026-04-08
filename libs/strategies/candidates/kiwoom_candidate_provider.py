@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Set, Tuple
 
 from libs.core.symbols import normalize_symbol
 from libs.read.kiwoom_condition_reader import KiwoomConditionReader
+from libs.runtime.scanner_policy import resolve_scanner_runtime_policy
 
 
 def _is_trueish(v: Any) -> bool:
@@ -97,16 +98,21 @@ def _extract_theme_symbol_index(state: Dict[str, Any]) -> Dict[str, set[str]]:
     return out
 
 
-def _live_fetch_enabled() -> bool:
+def _live_fetch_enabled(state: Dict[str, Any] | None = None) -> bool:
     # Keep network-safe default for tests/offline.
-    # Operators can enable real Kiwoom candidate fetch explicitly.
+    # Runtime ownership lives in Commander-applied scanner policy.
     if os.getenv("PYTEST_CURRENT_TEST") and not _is_trueish(os.getenv("PYTEST_ALLOW_LIVE_KIWOOM_FETCH", "false")):
         return False
-    return _is_trueish(os.getenv("KIWOOM_CANDIDATE_LIVE_FETCH", "false"))
+    runtime_state = state if isinstance(state, dict) else {}
+    runtime_policy = resolve_scanner_runtime_policy(
+        runtime_state,
+        runtime_state.get("policy") if isinstance(runtime_state.get("policy"), dict) else {},
+    )
+    return bool(runtime_policy.get("live_fetch"))
 
 
-def _fetch_rank_symbols(mode: str, topk: int) -> List[str]:
-    if not _live_fetch_enabled():
+def _fetch_rank_symbols(mode: str, topk: int, *, state: Dict[str, Any] | None = None) -> List[str]:
+    if not _live_fetch_enabled(state):
         return []
     try:
         from libs.read.kiwoom_rank_reader import KiwoomRankReader
@@ -136,7 +142,7 @@ def get_top_volume_stocks(state: Dict[str, Any], topk: int = 30) -> List[str]:
     env_rows = _parse_env_symbols("MOCK_TOP_VOLUME_SYMBOLS")
     if env_rows:
         return env_rows[: max(1, int(topk))]
-    return _fetch_rank_symbols("volume", topk=max(1, int(topk)))
+    return _fetch_rank_symbols("volume", topk=max(1, int(topk)), state=state)
 
 
 def get_top_value_stocks(state: Dict[str, Any], topk: int = 30) -> List[str]:
@@ -146,7 +152,7 @@ def get_top_value_stocks(state: Dict[str, Any], topk: int = 30) -> List[str]:
     env_rows = _parse_env_symbols("MOCK_TOP_VALUE_SYMBOLS")
     if env_rows:
         return env_rows[: max(1, int(topk))]
-    return _fetch_rank_symbols("value", topk=max(1, int(topk)))
+    return _fetch_rank_symbols("value", topk=max(1, int(topk)), state=state)
 
 
 def get_top_change_rate_stocks(state: Dict[str, Any], topk: int = 30) -> List[str]:
@@ -156,7 +162,7 @@ def get_top_change_rate_stocks(state: Dict[str, Any], topk: int = 30) -> List[st
     env_rows = _parse_env_symbols("MOCK_TOP_CHANGE_SYMBOLS")
     if env_rows:
         return env_rows[: max(1, int(topk))]
-    return _fetch_rank_symbols("change_rate", topk=max(1, int(topk)))
+    return _fetch_rank_symbols("change_rate", topk=max(1, int(topk)), state=state)
 
 
 def get_condition_search_results(state: Dict[str, Any], limit: int = 200) -> List[str]:
@@ -364,7 +370,7 @@ def build_kiwoom_candidate_rows(
         "sector_theme_count": len(sector_rows),
         "watchlist_count": len(watch_rows),
         "pool_count": len(normalized),
-        "live_fetch_enabled": bool(_live_fetch_enabled()),
+        "live_fetch_enabled": bool(_live_fetch_enabled(state)),
         "pool_source_mix": {
             "top_value": len(top_value),
             "top_volume": len(top_volume),

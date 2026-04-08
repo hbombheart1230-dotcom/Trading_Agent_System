@@ -9,11 +9,35 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from libs.llm.json_response import parse_llm_json_response, required_key_metadata
+from libs.llm.model_catalog import resolve_policy_llm_execution_slot, resolve_policy_llm_slot
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.reporting.llm_artifacts import build_llm_response_artifact, classify_llm_exception, make_attempt
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_intraday_report_model(source: Dict[str, Any] | None, *, explicit_model: Optional[str] = None) -> str:
+    resolved = resolve_policy_llm_slot(source if isinstance(source, dict) else {}, "reporter", "intraday", default_profile="fast_free")
+    return normalize_openrouter_model_name(
+        str(explicit_model or "").strip()
+        or str(resolved.get("primary") or "").strip()
+        or "minimax/minimax-m2.5"
+    )
+
+
+def _resolve_intraday_report_execution_profile(source: Dict[str, Any] | None) -> Dict[str, Any]:
+    return resolve_policy_llm_execution_slot(
+        source if isinstance(source, dict) else {},
+        "reporter",
+        "intraday",
+        default_profile="concise_review",
+        defaults={
+            "name": "concise_review",
+            "temperature": 0.2,
+            "max_tokens": 8192,
+        },
+    )
 
 
 def _utc_now_iso() -> str:
@@ -198,20 +222,6 @@ def _sanitize_report_language_fields(value: Any) -> Any:
 def _env_bool(name: str, default: bool = True) -> bool:
     raw = str(os.getenv(name, "1" if default else "0")).strip().lower()
     return raw in {"1", "true", "yes", "on"}
-
-
-def _env_int_with_fallback(*names: str, default: int) -> int:
-    for name in names:
-        raw = str(os.getenv(name, "") or "").strip()
-        if not raw:
-            continue
-        try:
-            value = int(float(raw))
-        except Exception:
-            continue
-        if value > 0:
-            return value
-    return int(default)
 
 
 def _normalize_section(section: Any, *, default_summary: str = "", bullet_key: str = "bullets") -> Dict[str, Any]:
@@ -3394,13 +3404,7 @@ def build_separated_ai_trade_report(trade_dir: str, *, model: Optional[str] = No
         trade_model = build_trade_read_model(str(trade_dir))
     except Exception:
         trade_model = {}
-    chosen_model = normalize_openrouter_model_name(
-        str(model or "").strip()
-        or str(os.getenv("OPENROUTER_MODEL_TRADE_REPORT", "")).strip()
-        or str(os.getenv("TRADE_REPORT_AI_MODEL", "")).strip()
-        or str(os.getenv("OPENROUTER_DEFAULT_MODEL", "")).strip()
-        or "openrouter/auto"
-    )
+    chosen_model = _resolve_intraday_report_model(trade_model, explicit_model=model)
     return build_separated_report(trade_model=trade_model, model=chosen_model)
 
 
@@ -3674,14 +3678,36 @@ def build_ai_trade_report(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
-    is_enabled = _env_bool("TRADE_REPORT_AI_ENABLED", True) if enabled is None else bool(enabled)
-    chosen_model = normalize_openrouter_model_name(
-        str(model or "").strip()
-        or str(os.getenv("OPENROUTER_MODEL_TRADE_REPORT", "")).strip()
-        or str(os.getenv("TRADE_REPORT_AI_MODEL", "")).strip()
-        or str(os.getenv("OPENROUTER_DEFAULT_MODEL", "")).strip()
-        or "openrouter/auto"
-    )
+    if enabled is None:
+        applied_policy = story_input.get("applied_policy") if isinstance(story_input.get("applied_policy"), dict) else {}
+        reporter_policy = applied_policy.get("reporter") if isinstance(applied_policy.get("reporter"), dict) else {}
+        trade_report_policy = reporter_policy.get("trade_report") if isinstance(reporter_policy.get("trade_report"), dict) else {}
+        commander = story_input.get("commander") if isinstance(story_input.get("commander"), dict) else {}
+        commander_policy = commander.get("applied_policy") if isinstance(commander.get("applied_policy"), dict) else {}
+        commander_reporter = commander_policy.get("reporter") if isinstance(commander_policy.get("reporter"), dict) else {}
+        commander_trade_report = (
+            commander_reporter.get("trade_report")
+            if isinstance(commander_reporter.get("trade_report"), dict)
+            else {}
+        )
+        reporter_fallback = story_input.get("reporter_policy") if isinstance(story_input.get("reporter_policy"), dict) else {}
+        trade_report_fallback = (
+            reporter_fallback.get("trade_report")
+            if isinstance(reporter_fallback.get("trade_report"), dict)
+            else {}
+        )
+        if trade_report_policy.get("enabled") is not None:
+            is_enabled = bool(trade_report_policy.get("enabled"))
+        elif commander_trade_report.get("enabled") is not None:
+            is_enabled = bool(commander_trade_report.get("enabled"))
+        elif trade_report_fallback.get("enabled") is not None:
+            is_enabled = bool(trade_report_fallback.get("enabled"))
+        else:
+            is_enabled = True
+    else:
+        is_enabled = bool(enabled)
+    chosen_model = _resolve_intraday_report_model(story_input, explicit_model=model)
+    execution_profile = _resolve_intraday_report_execution_profile(story_input)
     trade_id = str(story_input.get("trade_id") or story_input.get("story_id") or "")
     run_id = str(story_input.get("run_id") or "")
     day = str(story_input.get("day") or "")
@@ -3700,7 +3726,7 @@ def build_ai_trade_report(
             status="disabled",
             mode="fallback",
             model=chosen_model,
-            reason="TRADE_REPORT_AI_ENABLED is false",
+            reason="reporter.trade_report.enabled is false",
         )
         report["llm_response_artifact"] = build_llm_response_artifact(
             component="ai_trade_report",
@@ -3712,7 +3738,7 @@ def build_ai_trade_report(
             attempts=[],
             parsed_output={},
             model_info={"provider": "OpenRouter", "model": chosen_model or "openrouter/free"},
-            meta={"reason": "TRADE_REPORT_AI_ENABLED is false", **empty_required_meta},
+            meta={"reason": "reporter.trade_report.enabled is false", **empty_required_meta},
         )
         return _attach_report_status_matrix(report, story_input, ai_trade_report_status="skipped")
 
@@ -3742,23 +3768,14 @@ def build_ai_trade_report(
     temp = float(
         temperature
         if temperature is not None
-        else str(os.getenv("TRADE_REPORT_AI_TEMPERATURE", "0.0")).strip() or "0.0"
+        else execution_profile.get("temperature") or 0.2
     )
     token_budget = (
         int(max_tokens)
         if max_tokens is not None
-        else _env_int_with_fallback(
-            "TRADE_REPORT_AI_MAX_TOKENS",
-            "OPENROUTER_DEFAULT_MAX_TOKENS",
-            default=1400,
-        )
+        else max(600, int(float(execution_profile.get("max_tokens") or 8192)))
     )
-    retry_token_budget = _env_int_with_fallback(
-        "TRADE_REPORT_AI_REPAIR_MAX_TOKENS",
-        "TRADE_REPORT_AI_MAX_TOKENS",
-        "OPENROUTER_DEFAULT_MAX_TOKENS",
-        default=max(800, token_budget),
-    )
+    retry_token_budget = max(800, token_budget)
     messages = _build_messages(story_input)
     attempts: List[Dict[str, Any]] = []
     resolved_model = str(

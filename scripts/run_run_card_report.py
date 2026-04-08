@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from libs.reporting.operator_visibility import generate_run_card_report
+from libs.agent.reporter import Reporter
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -30,14 +30,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     report_dir = Path(str(args.report_dir).strip())
     day = str(args.day).strip() if args.day else None
 
-    md_path, out = generate_run_card_report(
-        events_path,
-        report_dir,
+    result = Reporter().generate_run_cards(
+        event_log_path=events_path,
+        report_dir=report_dir,
         day=day,
         max_runs=max(0, int(args.max_runs)),
         trade_only=(not bool(args.all_runs)),
     )
-    out = dict(out or {})
+    out = dict(result.get("payload") or {})
+    md_path = Path(str(result.get("report_md_path") or out.get("report_md_path") or ""))
     out["report_md_path"] = str(md_path)
 
     if bool(args.json):

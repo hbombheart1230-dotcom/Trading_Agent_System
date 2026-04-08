@@ -83,12 +83,35 @@ def _env_int(key: str) -> int | None:
         return None
 
 
-def _load_recent_strategy_feedback(policy: Dict[str, Any]) -> Dict[str, Any]:
-    enabled_raw = (
-        policy.get("use_strategy_memory_feedback")
-        if policy.get("use_strategy_memory_feedback") is not None
-        else os.getenv("USE_STRATEGY_MEMORY_FEEDBACK", "true")
+def _nested_mapping_value(mapping: Any, *path: str) -> Any:
+    cursor: Any = mapping if isinstance(mapping, dict) else {}
+    for key in path:
+        if not isinstance(cursor, dict):
+            return None
+        cursor = cursor.get(key)
+    return cursor
+
+
+def _load_recent_strategy_feedback(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, Any]:
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    strategist_policy = applied_policy.get("strategist") if isinstance(applied_policy.get("strategist"), dict) else {}
+    memory_feedback_policy = (
+        strategist_policy.get("memory_feedback")
+        if isinstance(strategist_policy.get("memory_feedback"), dict)
+        else {}
     )
+    if isinstance(memory_feedback_policy, dict) and memory_feedback_policy.get("enabled") is not None:
+        enabled_raw = memory_feedback_policy.get("enabled")
+        policy_source = str(memory_feedback_policy.get("policy_source") or "commander_applied_policy")
+    elif strategist_policy.get("memory_feedback_enabled") is not None:
+        enabled_raw = strategist_policy.get("memory_feedback_enabled")
+        policy_source = "strategist_policy_fallback"
+    elif policy.get("use_strategy_memory_feedback") is not None:
+        enabled_raw = policy.get("use_strategy_memory_feedback")
+        policy_source = "policy_fallback"
+    else:
+        enabled_raw = True
+        policy_source = "default_true"
     enabled = _is_trueish(enabled_raw)
     if not enabled:
         return {
@@ -105,16 +128,24 @@ def _load_recent_strategy_feedback(policy: Dict[str, Any]) -> Dict[str, Any]:
             "suggested_report_focus": [],
             "advisory_only": True,
             "status": "disabled",
+            "policy_source": str(policy_source),
         }
-    raw_window = (
-        policy.get("strategy_memory_recent_runs")
-        if policy.get("strategy_memory_recent_runs") is not None
-        else os.getenv("STRATEGY_MEMORY_RECENT_RUNS", "12")
-    )
+    raw_window = _nested_mapping_value(memory_feedback_policy, "recent_runs")
+    if raw_window is not None:
+        policy_source = str(memory_feedback_policy.get("policy_source") or "commander_applied_policy")
+    elif strategist_policy.get("memory_feedback_recent_runs") is not None:
+        raw_window = strategist_policy.get("memory_feedback_recent_runs")
+        policy_source = "strategist_policy_fallback"
+    elif policy.get("strategy_memory_recent_runs") is not None:
+        raw_window = policy.get("strategy_memory_recent_runs")
+        policy_source = "policy_fallback"
+    else:
+        raw_window = 12
     last_n_runs = max(1, _to_int(raw_window, 12))
     feedback = build_recent_strategy_feedback(last_n_runs)
     feedback["status"] = "ok" if int(feedback.get("feedback_window_size") or 0) > 0 else "empty"
     feedback["requested_window_size"] = int(last_n_runs)
+    feedback["policy_source"] = str(policy_source)
     return feedback
 
 
@@ -684,6 +715,240 @@ def _compact_recent_strategy_feedback_for_llm(feedback: Any) -> Dict[str, Any]:
     }
 
 
+def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_mode(value: Any) -> str:
+        mode = str(value or "").strip().lower()
+        return mode if mode in {"auto", "enabled", "disabled"} else "auto"
+
+    def _empty_feedback_packet(
+        *,
+        mode: str,
+        mode_source: str,
+        status: str,
+        gate_reason: str,
+        source_status: str = "",
+        source_available: bool = False,
+    ) -> Dict[str, Any]:
+        return {
+            "available": False,
+            "status": str(status or "disabled"),
+            "advisory_only": True,
+            "feedback_mode": "deterministic",
+            "confidence": "none",
+            "insight_summary": "",
+            "dominant_patterns": [],
+            "blocker_analysis": [],
+            "route_analysis": {},
+            "recommendation": [],
+            "reporter_feedback_mode": str(mode or "auto"),
+            "reporter_feedback_mode_source": str(mode_source or "default_auto"),
+            "consumed": False,
+            "feedback_gate_reason": str(gate_reason or ""),
+            "source_status": str(source_status or ""),
+            "source_available": bool(source_available),
+            "data_freshness": {},
+        }
+
+    def _resolve_mode() -> Tuple[str, str]:
+        applied_policy = state.get("applied_policy")
+        applied_policy = applied_policy if isinstance(applied_policy, dict) else {}
+        applied_policy_strategist = applied_policy.get("strategist")
+        applied_policy_strategist = applied_policy_strategist if isinstance(applied_policy_strategist, dict) else {}
+        strategist_runtime_input = state.get("strategist_runtime_input")
+        strategist_runtime_input = strategist_runtime_input if isinstance(strategist_runtime_input, dict) else {}
+
+        candidates = [
+            (
+                applied_policy_strategist.get("reporter_feedback_mode"),
+                str(applied_policy_strategist.get("reporter_feedback_mode_source") or "commander_applied_policy"),
+                "commander_applied_policy",
+            ),
+            (
+                applied_policy.get("reporter_feedback_mode"),
+                str(applied_policy.get("reporter_feedback_mode_source") or "applied_policy_fallback"),
+                "applied_policy_fallback",
+            ),
+            (
+                state.get("reporter_feedback_mode"),
+                str(state.get("reporter_feedback_mode_source") or "state_fallback"),
+                "state_fallback",
+            ),
+            (
+                strategist_runtime_input.get("reporter_feedback_mode"),
+                "legacy_fallback",
+                "legacy_fallback",
+            ),
+            (
+                policy.get("reporter_feedback_mode"),
+                "legacy_fallback",
+                "legacy_fallback",
+            ),
+        ]
+        for raw_value, source_hint, default_source in candidates:
+            if raw_value not in (None, ""):
+                return _normalize_mode(raw_value), str(source_hint or default_source)
+        return "auto", "default_auto"
+
+    feedback_mode, feedback_mode_source = _resolve_mode()
+    if feedback_mode == "disabled":
+        return _empty_feedback_packet(
+            mode=feedback_mode,
+            mode_source=feedback_mode_source,
+            status="disabled",
+            gate_reason="mode_disabled",
+        )
+
+    src = state.get("strategist_feedback_packet")
+    if not isinstance(src, dict):
+        src = state.get("reporter_feedback_packet")
+    if not isinstance(src, dict):
+        src = {}
+    if not src:
+        return _empty_feedback_packet(
+            mode=feedback_mode,
+            mode_source=feedback_mode_source,
+            status="missing",
+            gate_reason="no_packet",
+        )
+
+    out = dict(src)
+    out["available"] = bool(src.get("available"))
+    out["status"] = str(src.get("status") or "ok")
+    out["advisory_only"] = True
+    out["feedback_mode"] = str(src.get("feedback_mode") or "deterministic")
+    out["confidence"] = str(src.get("confidence") or "none")
+    out["insight_summary"] = str(src.get("insight_summary") or "")
+    out["dominant_patterns"] = list(src.get("dominant_patterns") or [])
+    out["blocker_analysis"] = list(src.get("blocker_analysis") or [])
+    out["route_analysis"] = dict(src.get("route_analysis") or {})
+    out["recommendation"] = [str(x or "") for x in list(src.get("recommendation") or []) if str(x or "").strip()][:4]
+    out["data_freshness"] = dict(src.get("data_freshness") or {})
+    out["reporter_feedback_mode"] = feedback_mode
+    out["reporter_feedback_mode_source"] = feedback_mode_source
+    out["source_status"] = str(src.get("status") or "ok")
+    out["source_available"] = bool(src.get("available"))
+    out["consumed"] = False
+    out["feedback_gate_reason"] = ""
+
+    if feedback_mode == "enabled":
+        if bool(out.get("available")):
+            out["consumed"] = True
+            out["feedback_gate_reason"] = "mode_enabled"
+            return out
+        return _empty_feedback_packet(
+            mode=feedback_mode,
+            mode_source=feedback_mode_source,
+            status="unavailable",
+            gate_reason="source_unavailable",
+            source_status=str(src.get("status") or "unavailable"),
+            source_available=bool(src.get("available")),
+        )
+
+    freshness = out.get("data_freshness") if isinstance(out.get("data_freshness"), dict) else {}
+    freshness_status = str(freshness.get("freshness_status") or "").strip().lower()
+    stale = bool(freshness.get("stale")) or freshness_status == "stale"
+    confidence_raw = src.get("confidence")
+    confidence_text = str(confidence_raw or "none").strip().lower()
+    confidence_numeric = _round_optional(confidence_raw, 4) if confidence_raw not in (None, "") else None
+    confidence_ok = confidence_text in {"medium", "high"} or (
+        isinstance(confidence_numeric, (int, float)) and float(confidence_numeric) >= 0.5
+    )
+    route_analysis = out.get("route_analysis") if isinstance(out.get("route_analysis"), dict) else {}
+    route_selected_total = dict(route_analysis.get("route_selected_total") or {})
+    relevant = bool(
+        str(out.get("insight_summary") or "").strip()
+        or list(out.get("dominant_patterns") or [])
+        or list(out.get("blocker_analysis") or [])
+        or list(out.get("recommendation") or [])
+        or route_selected_total
+        or route_analysis
+    )
+    if not bool(out.get("available")):
+        return _empty_feedback_packet(
+            mode=feedback_mode,
+            mode_source=feedback_mode_source,
+            status="auto_ignored",
+            gate_reason="source_unavailable",
+            source_status=str(src.get("status") or "unavailable"),
+            source_available=False,
+        )
+    if stale:
+        return _empty_feedback_packet(
+            mode=feedback_mode,
+            mode_source=feedback_mode_source,
+            status="auto_ignored",
+            gate_reason="stale",
+            source_status=str(src.get("status") or "ok"),
+            source_available=True,
+        )
+    if not confidence_ok:
+        return _empty_feedback_packet(
+            mode=feedback_mode,
+            mode_source=feedback_mode_source,
+            status="auto_ignored",
+            gate_reason="low_confidence",
+            source_status=str(src.get("status") or "ok"),
+            source_available=True,
+        )
+    if not relevant:
+        return _empty_feedback_packet(
+            mode=feedback_mode,
+            mode_source=feedback_mode_source,
+            status="auto_ignored",
+            gate_reason="not_relevant",
+            source_status=str(src.get("status") or "ok"),
+            source_available=True,
+        )
+    out["consumed"] = True
+    out["feedback_gate_reason"] = "auto_accepted"
+    return out
+
+
+def _compact_reporter_feedback_for_llm(packet: Any) -> Dict[str, Any]:
+    src = packet if isinstance(packet, dict) else {}
+    route_analysis = src.get("route_analysis") if isinstance(src.get("route_analysis"), dict) else {}
+    blocker_analysis = list(src.get("blocker_analysis") or [])
+    dominant_patterns = list(src.get("dominant_patterns") or [])
+    return {
+        "available": bool(src.get("available")),
+        "status": str(src.get("status") or ""),
+        "feedback_mode": str(src.get("feedback_mode") or "deterministic"),
+        "reporter_feedback_mode": str(src.get("reporter_feedback_mode") or "auto"),
+        "reporter_feedback_mode_source": str(src.get("reporter_feedback_mode_source") or "default_auto"),
+        "consumed": bool(src.get("consumed")),
+        "feedback_gate_reason": str(src.get("feedback_gate_reason") or ""),
+        "confidence": str(src.get("confidence") or "none"),
+        "insight_summary": str(src.get("insight_summary") or "")[:240],
+        "route_analysis": {
+            "route_source": str(route_analysis.get("route_source") or ""),
+            "route_selected_total": dict(route_analysis.get("route_selected_total") or {}),
+            "monitor_only_ratio": _round_optional(route_analysis.get("monitor_only_ratio"), 4),
+            "cached_strategist_ratio": _round_optional(route_analysis.get("cached_strategist_ratio"), 4),
+            "full_cycle_ratio": _round_optional(route_analysis.get("full_cycle_ratio"), 4),
+        },
+        "blocker_analysis": [
+            {
+                "blocker": str((item or {}).get("blocker") or ""),
+                "count": int((item or {}).get("count") or 0),
+                "ratio": _round_optional((item or {}).get("ratio"), 4),
+            }
+            for item in blocker_analysis[:3]
+            if isinstance(item, dict)
+        ],
+        "dominant_patterns": [
+            {
+                "name": str((item or {}).get("name") or ""),
+                "value": (item or {}).get("value"),
+                "detail": str((item or {}).get("detail") or ""),
+            }
+            for item in dominant_patterns[:4]
+            if isinstance(item, dict)
+        ],
+        "recommendation": [str(x or "") for x in list(src.get("recommendation") or [])[:3] if str(x or "").strip()],
+        "advisory_only": True,
+    }
+
+
 def _compact_strategy_memory_for_llm(memory: Any) -> Dict[str, Any]:
     src = memory if isinstance(memory, dict) else {}
     market_bias = src.get("market_condition_bias") if isinstance(src.get("market_condition_bias"), dict) else {}
@@ -780,6 +1045,7 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
         "macro_risk": _round_optional(market_ctx.get("macro_risk"), 4),
     }
     compact["recent_strategy_feedback"] = _compact_recent_strategy_feedback_for_llm(compact.get("recent_strategy_feedback"))
+    compact["reporter_feedback_packet"] = _compact_reporter_feedback_for_llm(compact.get("reporter_feedback_packet"))
     compact["strategy_memory"] = _compact_strategy_memory_for_llm(compact.get("strategy_memory"))
     compact["macro_stress_overlay_hint"] = {
         "active": bool(((compact.get("macro_stress_overlay_hint") or {}).get("active"))),
@@ -886,11 +1152,11 @@ def _run_strategist_frame_llm(
         }
 
     # Phase 5-4 / 6-1 LLM Policy Enforcement
-    primary_model = normalize_openrouter_model_name(os.getenv("AI_STRATEGIST_MODEL_PRIMARY") or str(runtime.get("model") or ""))
-    fallback_model = normalize_openrouter_model_name(os.getenv("AI_STRATEGIST_MODEL_FALLBACK") or "")
-    max_retries = max(1, _to_int(os.getenv("AI_STRATEGIST_RETRY_MAX", "2"), 2))
+    primary_model = normalize_openrouter_model_name(str(runtime.get("model") or ""))
+    fallback_model = normalize_openrouter_model_name(str(runtime.get("fallback_model") or ""))
+    max_retries = max(1, _to_int(runtime.get("retry_max"), 2))
     temperature = float(runtime.get("temperature") or 0.1)
-    max_tokens = max(256, int(runtime.get("max_tokens") or 320))
+    max_tokens = max(256, int(runtime.get("max_tokens") or 8192))
     timeout_sec = max(1.0, float(runtime.get("timeout_sec") or 15.0))
 
     router = LLMRouter.from_env()
@@ -913,7 +1179,11 @@ def _run_strategist_frame_llm(
         "fallback_used": False,
         "final_model": primary_model,
         "final_provider": "strategist_router",
-        "final_status": "pending"
+        "final_status": "pending",
+        "llm_profile": str(runtime.get("llm_profile") or ""),
+        "llm_policy_source": str(runtime.get("llm_policy_source") or ""),
+        "llm_execution_profile": str(((runtime.get("llm_execution_profile") or {}).get("name") or "")),
+        "llm_execution_profile_source": str(((runtime.get("llm_execution_profile") or {}).get("policy_source") or "")),
     }
 
     def _persist_llm_artifacts(
@@ -1887,13 +2157,45 @@ def _condition_search_source_enabled() -> bool:
 
 def _monitor_policy(
     *,
+    state: Dict[str, Any] | None = None,
+    policy: Dict[str, Any] | None = None,
     monitor_guidance: str,
     trade_aggressiveness: str,
     risk_tone: str,
 ) -> Dict[str, Any]:
-    min_hold_sec = _to_int(os.getenv("MIN_HOLD_SECONDS", "600"), 600)
-    sell_cooldown = _to_int(os.getenv("SELL_COOLDOWN", os.getenv("SELL_COOLDOWN_SEC", "300")), 300)
-    confirm_ticks = _to_int(os.getenv("MONITOR_EXIT_CONFIRM_TICKS", "2"), 2)
+    applied_policy = state.get("applied_policy") if isinstance(state, dict) and isinstance(state.get("applied_policy"), dict) else {}
+    monitor_applied = applied_policy.get("monitor") if isinstance(applied_policy.get("monitor"), dict) else {}
+    execution_applied = applied_policy.get("execution") if isinstance(applied_policy.get("execution"), dict) else {}
+    policy_row = dict(policy or {}) if isinstance(policy, dict) else {}
+
+    raw_min_hold = (
+        _nested_mapping_value(monitor_applied, "hold", "min_hold_seconds")
+        if _nested_mapping_value(monitor_applied, "hold", "min_hold_seconds") is not None
+        else _nested_mapping_value(policy_row, "monitor", "hold", "min_hold_seconds")
+    )
+    if raw_min_hold is None:
+        raw_min_hold = policy_row.get("min_hold_seconds")
+    min_hold_sec = _to_int(raw_min_hold, 600)
+
+    raw_sell_cooldown = (
+        _nested_mapping_value(execution_applied, "cooldowns", "sell_sec")
+        if _nested_mapping_value(execution_applied, "cooldowns", "sell_sec") is not None
+        else _nested_mapping_value(policy_row, "execution", "cooldowns", "sell_sec")
+    )
+    if raw_sell_cooldown is None:
+        raw_sell_cooldown = policy_row.get("sell_cooldown_seconds")
+    if raw_sell_cooldown is None:
+        raw_sell_cooldown = policy_row.get("sell_cooldown_sec")
+    sell_cooldown = _to_int(raw_sell_cooldown, 300)
+
+    raw_confirm_ticks = (
+        _nested_mapping_value(monitor_applied, "exit", "confirm_ticks")
+        if _nested_mapping_value(monitor_applied, "exit", "confirm_ticks") is not None
+        else _nested_mapping_value(policy_row, "monitor", "exit", "confirm_ticks")
+    )
+    if raw_confirm_ticks is None:
+        raw_confirm_ticks = policy_row.get("exit_confirm_ticks")
+    confirm_ticks = _to_int(raw_confirm_ticks, 2)
     adjustments: List[str] = []
 
     mode = str(monitor_guidance or "").strip().lower()
@@ -3339,6 +3641,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     risk_tone = _risk_tone(trade_aggressiveness)
     monitor_guidance = _monitor_guidance(market_regime=market_regime, playbook=playbook)
     monitor_policy = _monitor_policy(
+        state=state,
+        policy=policy,
         monitor_guidance=monitor_guidance,
         trade_aggressiveness=trade_aggressiveness,
         risk_tone=risk_tone,
@@ -3369,7 +3673,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         news_ctx=news_ctx,
         theme_strength=theme_strength,
     )
-    recent_strategy_feedback = _load_recent_strategy_feedback(policy)
+    recent_strategy_feedback = _load_recent_strategy_feedback(state, policy)
+    reporter_feedback_packet = _load_reporter_feedback_packet(state, policy)
     strategy_memory_advisory = _load_strategy_memory_advisory(state, policy)
     report_focus = _merge_override_text_list(
         report_focus,
@@ -3379,6 +3684,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     read_model_facts = _load_deterministic_read_models(state, candidate_symbols)
     
     state["recent_strategy_feedback"] = dict(recent_strategy_feedback)
+    state["reporter_feedback_packet"] = dict(reporter_feedback_packet)
     state["strategy_memory"] = dict(strategy_memory_advisory)
 
     llm_payload = {
@@ -3386,6 +3692,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "news_context": dict(news_ctx),
         "market_context_inputs": dict(market_context_inputs),
         "recent_strategy_feedback": dict(recent_strategy_feedback),
+        "reporter_feedback_packet": dict(reporter_feedback_packet),
         "strategy_memory": dict(strategy_memory_advisory),
         "macro_stress_overlay_hint": dict(macro_stress_overlay),
         "market_regime_hint": market_regime,
@@ -3434,6 +3741,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "candidate_symbols_hint": list(candidate_symbols)[:10],
                 },
                 "recent_strategy_feedback": dict(recent_strategy_feedback),
+                "reporter_feedback_packet": dict(reporter_feedback_packet),
                 "strategy_memory": dict(strategy_memory_advisory),
                 "llm_payload": dict(llm_payload),
             },
@@ -3524,6 +3832,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         monitor_policy = {**monitor_policy, **dict(monitor_policy_override)}
     else:
         monitor_policy = _monitor_policy(
+            state=state,
+            policy=policy,
             monitor_guidance=monitor_guidance,
             trade_aggressiveness=trade_aggressiveness,
             risk_tone=risk_tone,
@@ -3591,6 +3901,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         report_focus=report_focus,
     )
     monitor_policy = _monitor_policy(
+        state=state,
+        policy=policy,
         monitor_guidance=monitor_guidance,
         trade_aggressiveness=trade_aggressiveness,
         risk_tone=risk_tone,
@@ -3729,6 +4041,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "risk_tone": risk_tone,
     }
     strategist_feedback = _compact_recent_strategy_feedback_for_llm(recent_strategy_feedback)
+    compact_reporter_feedback = _compact_reporter_feedback_for_llm(reporter_feedback_packet)
     performance_summary = {
         "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
         "recent_theme_performance": dict(strategist_feedback.get("recent_theme_performance") or {}),
@@ -3781,6 +4094,8 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["strategy_memory"] = dict(strategy_memory_advisory)
     strategist_output["strategy_memory_snapshot"] = dict(strategy_memory_advisory)
     strategist_output["strategist_feedback"] = dict(strategist_feedback)
+    strategist_output["reporter_feedback_packet"] = dict(reporter_feedback_packet)
+    strategist_output["reporter_feedback_summary"] = dict(compact_reporter_feedback)
     strategist_output["performance_summary"] = dict(performance_summary)
     strategist_output["playbook"] = playbook
     strategist_output["selected_playbook"] = strategist_plan.get("selected_playbook")
@@ -3978,6 +4293,18 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "recent_success_patterns": list(strategy_memory_advisory.get("recent_success_patterns") or [])[:3],
             "recent_playbook_performance": dict(strategy_memory_advisory.get("playbook_performance_snapshot") or {}),
         },
+        "reporter_feedback_packet": {
+            "available": bool(reporter_feedback_packet.get("available")),
+            "status": str(reporter_feedback_packet.get("status") or ""),
+            "reporter_feedback_mode": str(reporter_feedback_packet.get("reporter_feedback_mode") or "auto"),
+            "reporter_feedback_mode_source": str(reporter_feedback_packet.get("reporter_feedback_mode_source") or "default_auto"),
+            "consumed": bool(reporter_feedback_packet.get("consumed")),
+            "feedback_gate_reason": str(reporter_feedback_packet.get("feedback_gate_reason") or ""),
+            "confidence": str(reporter_feedback_packet.get("confidence") or "none"),
+            "insight_summary": str(reporter_feedback_packet.get("insight_summary") or ""),
+            "recommendation": list(reporter_feedback_packet.get("recommendation") or [])[:3],
+            "route_analysis": dict((reporter_feedback_packet.get("route_analysis") or {})),
+        },
         "reason_chain": reason_chain,
         "strategy_policy_summary": {
             "market_policy": dict(strategy_policy.get("market_policy") or {}),
@@ -4046,6 +4373,14 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
             "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
             "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
+            "reporter_feedback_available": bool(reporter_feedback_packet.get("available")),
+            "reporter_feedback_packet_available": bool(reporter_feedback_packet.get("source_available")),
+            "reporter_feedback_status": str(reporter_feedback_packet.get("status") or ""),
+            "reporter_feedback_mode": str(reporter_feedback_packet.get("reporter_feedback_mode") or "auto"),
+            "reporter_feedback_mode_source": str(reporter_feedback_packet.get("reporter_feedback_mode_source") or "default_auto"),
+            "reporter_feedback_gate_reason": str(reporter_feedback_packet.get("feedback_gate_reason") or ""),
+            "reporter_feedback_consumed": bool(reporter_feedback_packet.get("consumed")),
+            "reporter_feedback_confidence": str(reporter_feedback_packet.get("confidence") or "none"),
             "strategy_memory_status": str(strategy_memory_advisory.get("status") or ""),
             "best_playbooks": list(strategy_memory_advisory.get("best_playbooks") or [])[:3],
             "worst_playbooks": list(strategy_memory_advisory.get("worst_playbooks") or [])[:3],
@@ -4089,6 +4424,15 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
             "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
             "recent_reporter_summary": list(recent_strategy_feedback.get("recent_reporter_summary") or [])[:2],
+            "reporter_feedback_available": bool(reporter_feedback_packet.get("available")),
+            "reporter_feedback_packet_available": bool(reporter_feedback_packet.get("source_available")),
+            "reporter_feedback_status": str(reporter_feedback_packet.get("status") or ""),
+            "reporter_feedback_mode": str(reporter_feedback_packet.get("reporter_feedback_mode") or "auto"),
+            "reporter_feedback_mode_source": str(reporter_feedback_packet.get("reporter_feedback_mode_source") or "default_auto"),
+            "reporter_feedback_gate_reason": str(reporter_feedback_packet.get("feedback_gate_reason") or ""),
+            "reporter_feedback_consumed": bool(reporter_feedback_packet.get("consumed")),
+            "reporter_feedback_confidence": str(reporter_feedback_packet.get("confidence") or "none"),
+            "reporter_feedback_insight_summary": str(reporter_feedback_packet.get("insight_summary") or ""),
             "strategy_memory_status": str(strategy_memory_advisory.get("status") or ""),
             "best_playbooks": list(strategy_memory_advisory.get("best_playbooks") or [])[:3],
             "worst_playbooks": list(strategy_memory_advisory.get("worst_playbooks") or [])[:3],
@@ -4129,6 +4473,18 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "feedback_window_size": int(recent_strategy_feedback.get("feedback_window_size") or 0),
                     "top_recent_strengths": list(recent_strategy_feedback.get("top_recent_strengths") or [])[:3],
                     "top_recent_weaknesses": list(recent_strategy_feedback.get("top_recent_weaknesses") or [])[:3],
+                },
+                "reporter_feedback_packet": {
+                    "available": bool(reporter_feedback_packet.get("available")),
+                    "status": str(reporter_feedback_packet.get("status") or ""),
+                    "reporter_feedback_mode": str(reporter_feedback_packet.get("reporter_feedback_mode") or "auto"),
+                    "reporter_feedback_mode_source": str(reporter_feedback_packet.get("reporter_feedback_mode_source") or "default_auto"),
+                    "consumed": bool(reporter_feedback_packet.get("consumed")),
+                    "feedback_gate_reason": str(reporter_feedback_packet.get("feedback_gate_reason") or ""),
+                    "confidence": str(reporter_feedback_packet.get("confidence") or "none"),
+                    "insight_summary": str(reporter_feedback_packet.get("insight_summary") or ""),
+                    "recommendation": list(reporter_feedback_packet.get("recommendation") or [])[:3],
+                    "route_analysis": dict((reporter_feedback_packet.get("route_analysis") or {})),
                 },
                 "strategy_memory": {
                     "status": str(strategy_memory_advisory.get("status") or ""),

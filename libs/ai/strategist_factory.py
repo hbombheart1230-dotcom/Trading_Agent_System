@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-
 from libs.ai.strategist_config import (
     strategist_api_key,
     strategist_endpoint,
@@ -14,19 +12,23 @@ from libs.ai.strategist_config import (
 from libs.ai.strategist import BlockedStrategist, RuleStrategist, StrategyV1Strategist
 
 
-def _strict_ai_strategist_enabled(provider: str) -> bool:
+def _strict_ai_strategist_enabled(provider: str, policy: dict | None = None) -> bool:
     normalized = str(provider or "").strip().lower()
     if normalized not in ("openai", "http", "api"):
         return False
-    raw = str(os.getenv("AI_STRATEGIST_STRICT", "true") or "").strip().lower()
-    return raw not in ("0", "false", "no", "off")
+    return bool(strategist_runtime_settings(policy).get("strict", True))
 
 
-def _legacy_rule_runtime_enabled() -> bool:
-    raw = str(os.getenv("ALLOW_LEGACY_RULE_RUNTIME", "false") or "").strip().lower()
-    return raw in ("1", "true", "yes", "on")
+def _legacy_rule_runtime_enabled(policy: dict | None = None) -> bool:
+    runtime_policy = policy.get("strategist") if isinstance(policy, dict) and isinstance(policy.get("strategist"), dict) else {}
+    runtime_policy = runtime_policy.get("runtime") if isinstance(runtime_policy.get("runtime"), dict) else {}
+    if runtime_policy.get("allow_legacy_rule") is not None:
+        return bool(runtime_policy.get("allow_legacy_rule"))
+    if isinstance(policy, dict) and policy.get("allow_legacy_rule_runtime") is not None:
+        return str(policy.get("allow_legacy_rule_runtime") or "").strip().lower() in ("1", "true", "yes", "on")
+    return False
 
-def get_strategist_from_env():
+def get_strategist_from_env(policy: dict | None = None):
     """Return a strategist instance based on env.
 
     Supported:
@@ -38,40 +40,44 @@ def get_strategist_from_env():
           - Endpoint: AI_STRATEGIST_ENDPOINT
         Missing either -> explicit blocked strategist when strict AI mode is enabled
     """
-    provider = strategist_provider()
-    runtime = strategist_runtime_settings()
+    provider = strategist_provider(policy)
+    runtime = strategist_runtime_settings(policy)
 
-    if strategist_uses_rule():
-        if _legacy_rule_runtime_enabled():
+    if strategist_uses_rule(policy):
+        if _legacy_rule_runtime_enabled(policy):
             return RuleStrategist()
         return BlockedStrategist(
             reason="strategist_llm_required",
             error="legacy_rule_runtime_disabled",
         )
 
-    if strategist_uses_legacy_v1():
-        allow_legacy = str(os.getenv("ALLOW_LEGACY_STRATEGY_V1_RUNTIME", "false") or "").strip().lower()
-        if allow_legacy not in ("1", "true", "yes", "on"):
+    if strategist_uses_legacy_v1(policy):
+        runtime_policy = policy.get("strategist") if isinstance(policy, dict) and isinstance(policy.get("strategist"), dict) else {}
+        runtime_policy = runtime_policy.get("runtime") if isinstance(runtime_policy.get("runtime"), dict) else {}
+        allow_legacy = runtime_policy.get("allow_legacy_strategy_v1")
+        if allow_legacy is None and isinstance(policy, dict):
+            allow_legacy = policy.get("allow_legacy_strategy_v1_runtime")
+        if str(allow_legacy or "").strip().lower() not in ("1", "true", "yes", "on"):
             return BlockedStrategist(
                 reason="strategist_llm_required",
                 error="legacy_strategy_v1_runtime_disabled",
             )
         return StrategyV1Strategist()
 
-    if strategist_uses_ai():
-        api_key = strategist_api_key()
-        endpoint = strategist_endpoint()
+    if strategist_uses_ai(policy):
+        api_key = strategist_api_key(policy)
+        endpoint = strategist_endpoint(policy)
         if not api_key or not endpoint:
             return BlockedStrategist(reason="strategist_llm_required", error="missing_api_key_or_endpoint")
         try:
             from libs.ai.providers.openai_provider import OpenAIStrategist
-            return OpenAIStrategist.from_env()
+            return OpenAIStrategist.from_env(policy)
         except Exception as exc:
             return BlockedStrategist(reason="strategist_llm_failed", error=f"{type(exc).__name__}:{exc}")
 
     # Unknown provider -> safe fallback
-    if runtime.get("requested") or _strict_ai_strategist_enabled(provider):
+    if runtime.get("requested") or _strict_ai_strategist_enabled(provider, policy):
         return BlockedStrategist(reason="strategist_llm_required", error=f"unsupported_provider:{provider}")
-    if _legacy_rule_runtime_enabled():
+    if _legacy_rule_runtime_enabled(policy):
         return RuleStrategist()
     return BlockedStrategist(reason="strategist_llm_required", error=f"unsupported_provider:{provider}")

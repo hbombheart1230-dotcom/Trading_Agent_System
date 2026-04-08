@@ -12,7 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.reporting.report_metadata import (
+    build_data_freshness,
+    build_route_provenance,
+    render_data_freshness_markdown,
+)
 from libs.reporting.report_source_helpers import build_commander_route_summary
+from libs.agent.reporter import Reporter
 
 
 def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
@@ -817,15 +823,22 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         },
         "api_error_total_by_api_id": dict(api_errors_by_id),
     }
+    summary["data_freshness"] = build_data_freshness(
+        generated_at=summary["generated_at"],
+        source_run_count=summary["source_run_count"],
+        latest_run_id=summary["latest_run_id"],
+        latest_run_ts=summary["latest_run_ts"],
+        stale=False,
+    )
+    summary["route_provenance"] = build_route_provenance(route_summary)
 
     md_lines = [
         f"# Metrics Report ({day})",
         "",
         f"- schema_version: **{summary['schema_version']}**",
-        f"- generated_at: `{summary['generated_at']}`",
-        f"- source_run_count: **{summary['source_run_count']}**",
-        f"- latest_run_id: `{summary['latest_run_id'] or '-'}`",
-        f"- latest_run_ts: `{summary['latest_run_ts'] or '-'}`",
+    ]
+    md_lines += render_data_freshness_markdown(summary["data_freshness"])
+    md_lines += [
         f"- events: **{summary['events']}**",
         f"- runs: **{summary['runs']}**",
         f"- intents_created_total: **{intents_created}**",
@@ -1075,10 +1088,13 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     else:
         md_lines.append("- (none)")
 
+    route_provenance = summary["route_provenance"] if isinstance(summary.get("route_provenance"), dict) else {}
+    md_lines += ["", "## Route Provenance", ""]
+    md_lines.append(f"- route_source: `{route_provenance.get('route_source') or summary['route_source']}`")
+    md_lines.append(f"- route_source_run_count: {int(route_provenance.get('route_source_run_count') or summary['route_source_run_count'])}")
+    md_lines.append(f"- route_source_missing_count: {int(route_provenance.get('route_source_missing_count') or summary['route_source_missing_count'])}")
+    md_lines.append(f"- route_source_breakdown: `{dict(route_provenance.get('route_source_breakdown') or summary.get('route_source_breakdown') or {})}`")
     md_lines += ["", "### route_selected_total", ""]
-    md_lines.append(f"- route_source: `{summary['route_source']}`")
-    md_lines.append(f"- route_source_run_count: {int(summary['route_source_run_count'])}")
-    md_lines.append(f"- route_source_missing_count: {int(summary['route_source_missing_count'])}")
     if canonical_route_selected_total:
         for name, cnt in Counter(canonical_route_selected_total).most_common():
             md_lines.append(f"- {name}: {cnt}")
@@ -1139,9 +1155,13 @@ def main() -> None:
     events_path = Path(os.getenv("EVENT_LOG_PATH", "./data/events.jsonl"))
     out_dir = Path(os.getenv("REPORT_DIR", "./reports")) / "metrics"
     day = os.getenv("METRICS_DAY")
-    md, js = generate_metrics_report(events_path, out_dir, day=day)
-    print(f"Wrote: {md}")
-    print(f"Wrote: {js}")
+    result = Reporter().generate_metrics_report(
+        event_log_path=events_path,
+        report_dir=out_dir,
+        day=day,
+    )
+    print(f"Wrote: {result.report_md_path}")
+    print(f"Wrote: {result.report_json_path}")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 from libs.core.settings import load_env_file
 from libs.core.symbols import normalize_symbol
+from libs.llm.model_catalog import resolve_policy_llm_slot
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.reporting.agent_pipeline_trace import generate_agent_pipeline_trace_report
 from libs.reporting.reporter_analysis import generate_reporter_analysis_report
@@ -30,7 +31,10 @@ from libs.reporting.llm_artifacts import (
     write_json,
     write_text,
 )
-from libs.reporting.trade_explain import generate_trade_explain_report
+from libs.reporting.trade_explain import (
+    generate_trade_explain_report,
+    official_trade_explain_report_dir,
+)
 from libs.reporting.trade_report_ai import (
     build_ai_trade_report,
     build_ai_trade_report_compact_input,
@@ -866,6 +870,7 @@ def _seed_diagnostics_for_policy(
     report_requested: bool,
     story_input_available: bool,
     model_hint: str,
+    generate_on_open: bool,
 ) -> Tuple[Dict[str, Any], bool]:
     diagnostics = _base_diagnostics(model_hint)
     diagnostics["story_input_available"] = bool(story_input_available)
@@ -901,7 +906,7 @@ def _seed_diagnostics_for_policy(
         return diagnostics, False
 
     if status == "open":
-        if not _env_bool("TRADE_REPORT_AI_GENERATE_ON_OPEN", True):
+        if not bool(generate_on_open):
             diagnostics["report_status"] = "pending"
             diagnostics["report_reason_code"] = "awaiting_exit_for_full_report"
             diagnostics["report_reason_human"] = _report_reason_human("awaiting_exit_for_full_report")
@@ -909,6 +914,58 @@ def _seed_diagnostics_for_policy(
             return diagnostics, False
 
     return diagnostics, True
+
+
+def _resolve_trade_report_policy(*, runtime_state: Dict[str, Any] | None = None, story_input: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    story_input = story_input if isinstance(story_input, dict) else {}
+    runtime_state = runtime_state if isinstance(runtime_state, dict) else {}
+    llm_slot = resolve_policy_llm_slot(
+        {
+            "applied_policy": (
+                story_input.get("applied_policy")
+                if isinstance(story_input.get("applied_policy"), dict)
+                else runtime_state.get("applied_policy")
+                if isinstance(runtime_state.get("applied_policy"), dict)
+                else {}
+            ),
+            "commander": story_input.get("commander") if isinstance(story_input.get("commander"), dict) else {},
+            "reporter_policy": story_input.get("reporter_policy") if isinstance(story_input.get("reporter_policy"), dict) else {},
+        },
+        "reporter",
+        "intraday",
+        default_profile="fast_free",
+    )
+    for container, source in (
+        (
+            (((story_input.get("applied_policy") or {}).get("reporter") or {}).get("trade_report") or {}),
+            "story_input.applied_policy",
+        ),
+        (
+            ((((story_input.get("commander") or {}).get("applied_policy") or {}).get("reporter") or {}).get("trade_report") or {}),
+            "story_input.commander.applied_policy",
+        ),
+        (
+            (((runtime_state.get("applied_policy") or {}).get("reporter") or {}).get("trade_report") or {}),
+            "runtime_state.applied_policy",
+        ),
+    ):
+        if isinstance(container, dict) and container:
+            return {
+                "enabled": bool(container.get("enabled", True)),
+                "generate_on_open": bool(container.get("generate_on_open", True)),
+                "policy_source": str(container.get("policy_source") or source),
+                "llm_profile": str(llm_slot.get("profile") or "fast_free"),
+                "llm_primary": str(llm_slot.get("primary") or ""),
+                "llm_fallback": str(llm_slot.get("fallback") or ""),
+            }
+    return {
+        "enabled": True,
+        "generate_on_open": True,
+        "policy_source": "default",
+        "llm_profile": str(llm_slot.get("profile") or "fast_free"),
+        "llm_primary": str(llm_slot.get("primary") or ""),
+        "llm_fallback": str(llm_slot.get("fallback") or ""),
+    }
 
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
@@ -2332,7 +2389,8 @@ def _resolve_existing_day_artifact(report_dir: Path, prefix: str, day: str) -> T
 
 
 def _load_or_generate_trade_explain(event_log_path: Path, analysis_root: Path, day: str) -> Tuple[Path, Path, Dict[str, Any]]:
-    report_dir = analysis_root / "trade_explain"
+    reports_root = analysis_root.parent.parent if analysis_root.name == "analysis" else analysis_root
+    report_dir = official_trade_explain_report_dir(reports_root)
     md_path, js_path = _resolve_existing_day_artifact(report_dir, "trade_explain", day)
     if js_path.exists() and md_path.exists():
         return md_path, js_path, _read_json(js_path)
@@ -2393,14 +2451,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     report_dir.mkdir(parents=True, exist_ok=True)
     state_store_path = Path(str(os.getenv("STATE_STORE_PATH", "data/state.json")).strip() or "data/state.json")
     runtime_state = _read_json(state_store_path)
-    report_requested = bool(args.trade_report_ai) if args.trade_report_ai is not None else _env_bool("TRADE_REPORT_AI_ENABLED", True)
+    trade_report_policy = _resolve_trade_report_policy(runtime_state=runtime_state)
+    report_requested = bool(args.trade_report_ai) if args.trade_report_ai is not None else bool(trade_report_policy.get("enabled", True))
     configured_report_model = _normalize_model_name(
         str(args.trade_report_ai_model).strip()
         if args.trade_report_ai_model
-        else os.getenv("TRADE_REPORT_AI_MODEL", "")
-        or os.getenv("OPENROUTER_MODEL_TRADE_REPORT", "")
-        or os.getenv("OPENROUTER_DEFAULT_MODEL", "")
-        or "openrouter/free"
+        else str(trade_report_policy.get("llm_primary") or "")
+        or "minimax/minimax-m2.5"
     )
 
     if not day:
@@ -3210,6 +3267,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             report_requested=report_requested,
             story_input_available=bool(trade_story_input),
             model_hint=configured_report_model,
+            generate_on_open=bool(_resolve_trade_report_policy(runtime_state=runtime_state, story_input=trade_story_input).get("generate_on_open", True)),
         )
 
         strategist_llm_artifact_raw = _build_strategist_llm_response_artifact(

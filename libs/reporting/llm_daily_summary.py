@@ -16,6 +16,7 @@ import os
 import time
 from typing import Any, Dict, List
 
+from libs.llm.model_catalog import resolve_policy_llm_execution_slot, resolve_policy_llm_slot
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.reporting.llm_artifacts import build_llm_response_artifact, classify_llm_exception, make_attempt
@@ -70,14 +71,35 @@ def summarize_daily_report_with_artifact(*, state: Dict[str, Any], policy: Dict[
     trade_id = str(state.get("trade_id") or "")
     messages = _build_messages(state, policy)
     llm_policy = dict(policy.get("llm") or {})
-    env_model = normalize_openrouter_model_name(
-        os.getenv("OPENROUTER_MODEL_REPORTER_FINAL", "")
-        or os.getenv("DAILY_REPORT_LLM_MODEL", "")
-        or os.getenv("OPENROUTER_DEFAULT_MODEL", "")
-        or "openrouter/auto"
+    llm_slot = resolve_policy_llm_slot(
+        {
+            "applied_policy": state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {},
+            "llm": dict(policy.get("llm") or {}),
+        },
+        "reporter",
+        "daily",
+        default_profile="strong_reasoning",
     )
-    llm_policy.setdefault("max_tokens", 256)
-    llm_policy.setdefault("temperature", 0.2)
+    execution_slot = resolve_policy_llm_execution_slot(
+        {
+            "applied_policy": state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {},
+            "llm": dict(policy.get("llm") or {}),
+        },
+        "reporter",
+        "daily",
+        default_profile="deep_review",
+        defaults={
+            "name": "deep_review",
+            "temperature": 0.2,
+            "max_tokens": 8192,
+        },
+    )
+    env_model = normalize_openrouter_model_name(
+        str(llm_slot.get("primary") or "")
+        or "moonshotai/kimi-k2.5"
+    )
+    llm_policy.setdefault("max_tokens", int(float(execution_slot.get("max_tokens") or 8192)))
+    llm_policy.setdefault("temperature", float(execution_slot.get("temperature") or 0.2))
     if env_model and not str(llm_policy.get("model") or "").strip():
         llm_policy["model"] = env_model
     model = normalize_openrouter_model_name(llm_policy.get("model") or env_model or "openrouter/auto")

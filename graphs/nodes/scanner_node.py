@@ -31,6 +31,7 @@ from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_ca
 from libs.strategies.candidates.fallback_pool import is_static_fallback_pool
 from libs.runtime.feature_engine import build_feature_map
 from libs.runtime.scanner_feature_hydration import hydrate_scanner_feature_map
+from libs.runtime.scanner_policy import resolve_scanner_runtime_policy
 from libs.strategies.contracts import coerce_strategist_output
 
 
@@ -886,34 +887,23 @@ def _apply_avoid_theme_filter(
 
 
 def _resolve_candidate_source(state: Dict[str, Any], policy: Dict[str, Any]) -> str:
-    raw = state.get("candidate_source")
-    if raw in (None, ""):
-        raw = policy.get("candidate_source")
-    if raw in (None, ""):
-        raw = os.getenv("CANDIDATE_SOURCE", "kiwoom")
-    v = str(raw or "").strip().lower()
-    if v in ("strategist", "strategist_candidates", "provided"):
+    source_type = str((resolve_scanner_runtime_policy(state, policy) or {}).get("source_type") or "kiwoom").strip().lower()
+    if source_type == "static":
         return "strategist"
-    if v in ("auto", "hybrid"):
+    if source_type == "hybrid":
         return "auto"
     return "kiwoom"
 
 
-def _resolve_block_static_fallback(policy: Dict[str, Any]) -> bool:
-    raw = policy.get("block_static_fallback_when_kiwoom_empty")
-    if raw in (None, ""):
-        raw = os.getenv("BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY", "true")
-    return _is_trueish(raw)
+def _resolve_block_static_fallback(state: Dict[str, Any], policy: Dict[str, Any]) -> bool:
+    return bool((resolve_scanner_runtime_policy(state, policy) or {}).get("block_static_when_empty"))
 
 
-def _resolve_strict_kiwoom_only(policy: Dict[str, Any]) -> bool:
-    raw = policy.get("strict_kiwoom_candidates_only")
-    if raw in (None, ""):
-        raw = os.getenv("STRICT_KIWOOM_CANDIDATES_ONLY", "false")
-    return _is_trueish(raw)
+def _resolve_strict_kiwoom_only(state: Dict[str, Any], policy: Dict[str, Any]) -> bool:
+    return bool((resolve_scanner_runtime_policy(state, policy) or {}).get("strict_only"))
 
 
-def _resolve_candidate_limit(policy: Dict[str, Any]) -> int:
+def _resolve_candidate_limit(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
     raw = policy.get("candidate_k", policy.get("candidate_topk"))
     if raw not in (None, ""):
         return max(1, _to_int(raw, 10))
@@ -924,24 +914,57 @@ def _resolve_candidate_limit(policy: Dict[str, Any]) -> int:
         return max(1, _to_int(env_topn_raw, 10))
 
     # Default behavior: use full candidate pool size instead of fixed 5.
-    env_pool = _to_int(os.getenv("TOP_CANDIDATE_POOL", "30"), 30)
-    return max(1, env_pool)
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    applied_scanner = applied_policy.get("scanner") if isinstance(applied_policy.get("scanner"), dict) else {}
+    applied_candidate = applied_scanner.get("candidate") if isinstance(applied_scanner.get("candidate"), dict) else {}
+    scanner_policy = policy.get("scanner") if isinstance(policy.get("scanner"), dict) else {}
+    candidate_policy = scanner_policy.get("candidate") if isinstance(scanner_policy.get("candidate"), dict) else {}
+    raw_pool = applied_candidate.get("top_pool")
+    if raw_pool in (None, ""):
+        raw_pool = candidate_policy.get("top_pool")
+    if raw_pool in (None, ""):
+        raw_pool = policy.get("top_candidate_pool")
+    return max(1, _to_int(raw_pool, 30))
 
 
-def _resolve_top_candidate_pool(policy: Dict[str, Any], *, candidate_limit: int) -> int:
-    env_pool = _to_int(os.getenv("TOP_CANDIDATE_POOL", "30"), 30)
-    return max(candidate_limit, _to_int(policy.get("top_candidate_pool", env_pool), env_pool))
+def _resolve_top_candidate_pool(state: Dict[str, Any], policy: Dict[str, Any], *, candidate_limit: int) -> int:
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    raw = (
+        (((applied_policy.get("scanner") or {}).get("candidate") or {}).get("top_pool"))
+        if isinstance((applied_policy.get("scanner") or {}).get("candidate"), dict)
+        else None
+    )
+    if raw is None and isinstance(policy.get("scanner"), dict):
+        raw = (
+            (((policy.get("scanner") or {}).get("candidate") or {}).get("top_pool"))
+            if isinstance((policy.get("scanner") or {}).get("candidate"), dict)
+            else None
+        )
+    if raw is None:
+        raw = policy.get("top_candidate_pool")
+    return max(candidate_limit, _to_int(raw, 30))
 
 
-def _resolve_condition_limit(policy: Dict[str, Any], *, top_pool: int) -> int:
-    env_cond = _to_int(os.getenv("KIWOOM_CANDIDATE_CONDITION_LIMIT", "200"), 200)
-    return max(top_pool, _to_int(policy.get("candidate_condition_limit", env_cond), env_cond))
+def _resolve_condition_limit(state: Dict[str, Any], policy: Dict[str, Any], *, top_pool: int) -> int:
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    raw = (
+        (((applied_policy.get("scanner") or {}).get("kiwoom") or {}).get("condition_limit"))
+        if isinstance((applied_policy.get("scanner") or {}).get("kiwoom"), dict)
+        else None
+    )
+    if raw is None and isinstance(policy.get("scanner"), dict):
+        raw = (
+            (((policy.get("scanner") or {}).get("kiwoom") or {}).get("condition_limit"))
+            if isinstance((policy.get("scanner") or {}).get("kiwoom"), dict)
+            else None
+        )
+    if raw is None:
+        raw = policy.get("candidate_condition_limit")
+    return max(top_pool, _to_int(raw, 200))
 
 
-def _resolve_include_change_rate(policy: Dict[str, Any]) -> bool:
-    if policy.get("kiwoom_include_change_rate") is not None:
-        return _is_trueish(policy.get("kiwoom_include_change_rate"))
-    return _is_trueish(os.getenv("KIWOOM_CANDIDATE_INCLUDE_CHANGE_RATE", "true"))
+def _resolve_include_change_rate(state: Dict[str, Any], policy: Dict[str, Any]) -> bool:
+    return bool((resolve_scanner_runtime_policy(state, policy) or {}).get("include_change_rate"))
 
 
 def _resolve_enable_theme_filter(policy: Dict[str, Any]) -> bool:
@@ -1923,14 +1946,15 @@ def _build_kiwoom_candidates(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     scanner_guidance = _extract_scanner_guidance(state)
     source_policy = _normalize_scanner_source_policy(scanner_guidance.get("scanner_source_policy"))
-    candidate_limit = _resolve_candidate_limit(policy)
-    top_pool = _resolve_top_candidate_pool(policy, candidate_limit=candidate_limit)
+    candidate_limit = _resolve_candidate_limit(state, policy)
+    top_pool = _resolve_top_candidate_pool(state, policy, candidate_limit=candidate_limit)
     if source_policy.get("top_candidate_pool"):
         top_pool = max(candidate_limit, int(source_policy.get("top_candidate_pool") or top_pool))
-    condition_limit = _resolve_condition_limit(policy, top_pool=top_pool)
+    condition_limit = _resolve_condition_limit(state, policy, top_pool=top_pool)
     if source_policy.get("condition_limit") is not None:
         condition_limit = max(0, int(source_policy.get("condition_limit") or 0))
-    include_change_rate = _resolve_include_change_rate(policy)
+    scanner_runtime_policy = resolve_scanner_runtime_policy(state, policy)
+    include_change_rate = _resolve_include_change_rate(state, policy)
     if source_policy.get("include_change_rate") is not None:
         include_change_rate = bool(source_policy.get("include_change_rate"))
     enable_theme_filter = _resolve_enable_theme_filter(policy)
@@ -1973,9 +1997,9 @@ def _build_kiwoom_candidates(
     rows = rows[:candidate_limit]
     backfill_count = 0
     backfill_skipped = ""
-    if raw_kiwoom_count > 0 and len(rows) < candidate_limit and not _resolve_strict_kiwoom_only(policy):
+    if raw_kiwoom_count > 0 and len(rows) < candidate_limit and not _resolve_strict_kiwoom_only(state, policy):
         strategist_candidates = _extract_strategist_candidates(state)
-        if strategist_candidates and _resolve_block_static_fallback(policy) and is_static_fallback_pool(strategist_candidates):
+        if strategist_candidates and _resolve_block_static_fallback(state, policy) and is_static_fallback_pool(strategist_candidates):
             strategist_candidates = []
             backfill_skipped = "static_fallback_blocked"
         existing = {_norm_symbol(r.get("symbol")) for r in rows if isinstance(r, dict)}
@@ -2018,6 +2042,10 @@ def _build_kiwoom_candidates(
             "top_candidate_pool": int(top_pool),
             "enable_theme_filter": bool(enable_theme_filter),
             "scanner_source_policy": dict(source_policy),
+            "scanner_policy_source": str(scanner_runtime_policy.get("policy_source") or ""),
+            "scanner_candidate_source": str(scanner_runtime_policy.get("source_type") or "kiwoom"),
+            "scanner_strict_mode": bool(scanner_runtime_policy.get("strict_only")),
+            "scanner_fallback_mode": str(scanner_runtime_policy.get("fallback_mode") or ""),
             "raw_kiwoom_count": int(raw_kiwoom_count),
             "backfill_used": bool(backfill_count > 0),
             "backfill_count": int(backfill_count),
@@ -2029,11 +2057,16 @@ def _build_kiwoom_candidates(
 
 def _resolve_scanner_candidates(state: Dict[str, Any], policy: Dict[str, Any]) -> Tuple[List[Any], Dict[str, Any]]:
     source = _resolve_candidate_source(state, policy)
+    scanner_runtime_policy = resolve_scanner_runtime_policy(state, policy)
     strategist_candidates = _extract_strategist_candidates(state)
 
     if source == "strategist":
         return strategist_candidates, {
             "candidate_source": "strategist",
+            "scanner_candidate_source": str(scanner_runtime_policy.get("source_type") or "static"),
+            "scanner_policy_source": str(scanner_runtime_policy.get("policy_source") or ""),
+            "scanner_strict_mode": bool(scanner_runtime_policy.get("strict_only")),
+            "scanner_fallback_mode": str(scanner_runtime_policy.get("fallback_mode") or ""),
             "candidate_count": int(len(strategist_candidates)),
             "fallback_used": False,
         }
@@ -2042,11 +2075,15 @@ def _resolve_scanner_candidates(state: Dict[str, Any], policy: Dict[str, Any]) -
     if kiwoom_rows:
         return kiwoom_rows, dict(kiwoom_meta)
 
-    if source == "kiwoom" and _resolve_strict_kiwoom_only(policy):
+    if source == "kiwoom" and _resolve_strict_kiwoom_only(state, policy):
         strict_meta = dict(kiwoom_meta)
         strict_meta.update(
             {
                 "candidate_source": "kiwoom",
+                "scanner_candidate_source": str(scanner_runtime_policy.get("source_type") or "kiwoom"),
+                "scanner_policy_source": str(scanner_runtime_policy.get("policy_source") or ""),
+                "scanner_strict_mode": bool(scanner_runtime_policy.get("strict_only")),
+                "scanner_fallback_mode": str(scanner_runtime_policy.get("fallback_mode") or ""),
                 "candidate_count": 0,
                 "fallback_used": False,
                 "fallback_reason": "kiwoom_candidate_pool_empty_strict_mode",
@@ -2056,11 +2093,15 @@ def _resolve_scanner_candidates(state: Dict[str, Any], policy: Dict[str, Any]) -
         return [], strict_meta
 
     if strategist_candidates:
-        if _resolve_block_static_fallback(policy) and is_static_fallback_pool(strategist_candidates):
+        if _resolve_block_static_fallback(state, policy) and is_static_fallback_pool(strategist_candidates):
             blocked_meta = dict(kiwoom_meta)
             blocked_meta.update(
                 {
                     "candidate_source": "kiwoom",
+                    "scanner_candidate_source": str(scanner_runtime_policy.get("source_type") or "kiwoom"),
+                    "scanner_policy_source": str(scanner_runtime_policy.get("policy_source") or ""),
+                    "scanner_strict_mode": bool(scanner_runtime_policy.get("strict_only")),
+                    "scanner_fallback_mode": str(scanner_runtime_policy.get("fallback_mode") or ""),
                     "candidate_count": 0,
                     "fallback_used": False,
                     "fallback_reason": "kiwoom_candidate_pool_empty_static_fallback_blocked",
@@ -2072,6 +2113,10 @@ def _resolve_scanner_candidates(state: Dict[str, Any], policy: Dict[str, Any]) -
         fallback_meta.update(
             {
                 "candidate_source": "strategist_fallback",
+                "scanner_candidate_source": str(scanner_runtime_policy.get("source_type") or "kiwoom"),
+                "scanner_policy_source": str(scanner_runtime_policy.get("policy_source") or ""),
+                "scanner_strict_mode": bool(scanner_runtime_policy.get("strict_only")),
+                "scanner_fallback_mode": str(scanner_runtime_policy.get("fallback_mode") or ""),
                 "candidate_count": int(len(strategist_candidates)),
                 "fallback_used": True,
                 "fallback_reason": "kiwoom_candidate_pool_empty",
@@ -2082,6 +2127,10 @@ def _resolve_scanner_candidates(state: Dict[str, Any], policy: Dict[str, Any]) -
     if source == "auto":
         return strategist_candidates, {
             "candidate_source": "auto",
+            "scanner_candidate_source": str(scanner_runtime_policy.get("source_type") or "hybrid"),
+            "scanner_policy_source": str(scanner_runtime_policy.get("policy_source") or ""),
+            "scanner_strict_mode": bool(scanner_runtime_policy.get("strict_only")),
+            "scanner_fallback_mode": str(scanner_runtime_policy.get("fallback_mode") or ""),
             "candidate_count": int(len(strategist_candidates)),
             "fallback_used": False,
             "fallback_reason": "no_kiwoom_and_no_strategist_candidates",
@@ -2091,6 +2140,10 @@ def _resolve_scanner_candidates(state: Dict[str, Any], policy: Dict[str, Any]) -
     empty_meta.update(
         {
             "candidate_source": "kiwoom",
+            "scanner_candidate_source": str(scanner_runtime_policy.get("source_type") or "kiwoom"),
+            "scanner_policy_source": str(scanner_runtime_policy.get("policy_source") or ""),
+            "scanner_strict_mode": bool(scanner_runtime_policy.get("strict_only")),
+            "scanner_fallback_mode": str(scanner_runtime_policy.get("fallback_mode") or ""),
             "candidate_count": 0,
             "fallback_used": False,
             "fallback_reason": "kiwoom_candidate_pool_empty",
@@ -2807,6 +2860,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "ranked_candidates": list(state.get("ranked_candidates") or [])[:5],
         "watch_candidates": list(state.get("ranked_candidates") or [])[:5],
         "candidate_source": str(pool_meta.get("candidate_source") or ""),
+        "scanner_candidate_source": str(pool_meta.get("scanner_candidate_source") or ""),
+        "scanner_policy_source": str(pool_meta.get("scanner_policy_source") or ""),
+        "scanner_fallback_mode": str(pool_meta.get("scanner_fallback_mode") or ""),
+        "scanner_strict_mode": bool(pool_meta.get("scanner_strict_mode")),
         "fallback_reason": str(pool_meta.get("fallback_reason") or ""),
         "blocked_static_fallback": bool(pool_meta.get("blocked_static_fallback")),
         "strict_kiwoom_only": bool(pool_meta.get("strict_kiwoom_only")),

@@ -6,15 +6,27 @@ import libs.ai.providers.openai_provider as prov
 def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "k")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
-    monkeypatch.setenv("AI_STRATEGIST_MODEL", "gpt-test")
-    monkeypatch.setenv("AI_STRATEGIST_TIMEOUT_SEC", "7.5")
-    monkeypatch.setenv("AI_STRATEGIST_MAX_TOKENS", "256")
-    monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "3")
     monkeypatch.setenv("AI_STRATEGIST_RETRY_BACKOFF_SEC", "0.25")
     monkeypatch.setenv("AI_STRATEGIST_CB_FAIL_THRESHOLD", "4")
     monkeypatch.setenv("AI_STRATEGIST_CB_COOLDOWN_SEC", "90")
 
-    s = prov.OpenAIStrategist.from_env()
+    s = prov.OpenAIStrategist.from_env(
+        {
+            "applied_policy": {
+                "llm": {
+                    "strategist": {
+                        "primary": "gpt-test",
+                        "execution_profile": {
+                            "name": "balanced_reasoning",
+                            "timeout_sec": 7.5,
+                            "max_tokens": 256,
+                            "retry_max": 3,
+                        },
+                    }
+                }
+            }
+        }
+    )
     assert s.api_key == "k"
     assert s.endpoint == "https://example.invalid/strategist"
     assert s.model == "gpt-test"
@@ -34,18 +46,20 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
 def test_m20_1_from_env_normalizes_openrouter_alias_model(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "k")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions")
-    monkeypatch.setenv("AI_STRATEGIST_MODEL", "free")
 
-    s = prov.OpenAIStrategist.from_env()
+    s = prov.OpenAIStrategist.from_env(
+        {"applied_policy": {"llm": {"strategist": {"primary": "free"}}}}
+    )
     assert s.model == "openrouter/free"
 
 
 def test_m20_1_from_env_preserves_direct_provider_model_name(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "k")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions")
-    monkeypatch.setenv("AI_STRATEGIST_MODEL", "minimax/minimax-m2.5")
 
-    s = prov.OpenAIStrategist.from_env()
+    s = prov.OpenAIStrategist.from_env(
+        {"applied_policy": {"llm": {"strategist": {"primary": "minimax/minimax-m2.5"}}}}
+    )
     assert s.model == "minimax/minimax-m2.5"
 
 
@@ -53,7 +67,6 @@ def test_m20_1_from_env_falls_back_to_openrouter_api_key(monkeypatch):
     monkeypatch.delenv("AI_STRATEGIST_API_KEY", raising=False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
-    monkeypatch.delenv("AI_STRATEGIST_MODEL", raising=False)
 
     s = prov.OpenAIStrategist.from_env()
     assert s.api_key == "or-key"
@@ -339,12 +352,10 @@ def test_m20_1_openrouter_chat_content_json_is_adapted(monkeypatch):
         }
 
     monkeypatch.setattr(prov, "_post_json", fake_post_json)
-    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "anthropic/claude-3.5-sonnet")
-
     s = prov.OpenAIStrategist(
         api_key="k",
         endpoint="https://openrouter.ai/api/v1/chat/completions",
-        model="gpt-4.1-mini",  # non openrouter-style; adapter should switch from env
+        model="anthropic/claude-3.5-sonnet",
         timeout_sec=9.0,
         max_tokens=128,
     )

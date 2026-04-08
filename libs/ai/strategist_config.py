@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict
 
+from libs.llm.model_catalog import resolve_policy_llm_execution_slot, resolve_policy_llm_slot
 from libs.llm.model_names import normalize_openrouter_model_name
 
 
@@ -89,6 +90,13 @@ def strategist_llm_requested(policy: Dict[str, Any] | None = None) -> bool:
 
 def strategist_llm_strict(policy: Dict[str, Any] | None = None) -> bool:
     policy = policy or {}
+    nested_runtime = policy.get("strategist") if isinstance(policy.get("strategist"), dict) else {}
+    nested_runtime = nested_runtime.get("runtime") if isinstance(nested_runtime.get("runtime"), dict) else {}
+    if nested_runtime.get("strict_mode") is not None:
+        return _is_trueish(nested_runtime.get("strict_mode"))
+    runtime_policy = policy.get("strategist_runtime") if isinstance(policy.get("strategist_runtime"), dict) else {}
+    if runtime_policy.get("strict_mode") is not None:
+        return _is_trueish(runtime_policy.get("strict_mode"))
     raw = policy.get("strategist_frame_llm_strict")
     if raw is not None:
         return _is_trueish(raw)
@@ -96,10 +104,6 @@ def strategist_llm_strict(policy: Dict[str, Any] | None = None) -> bool:
     alias = _env_bool("STRATEGIST_FRAME_LLM_STRICT")
     if alias is not None:
         return bool(alias)
-
-    env_value = _env_bool("AI_STRATEGIST_STRICT")
-    if env_value is not None:
-        return bool(env_value)
     return True
 
 
@@ -123,26 +127,46 @@ def strategist_endpoint(policy: Dict[str, Any] | None = None) -> str:
 
 def strategist_model(policy: Dict[str, Any] | None = None) -> str:
     policy = policy or {}
+    llm_slot = resolve_policy_llm_slot(policy, "strategist", default_profile="balanced")
     return normalize_openrouter_model_name(
         _first_nonempty(
-            os.getenv("AI_STRATEGIST_MODEL_PRIMARY", ""),
+            llm_slot.get("primary"),
             policy.get("ai_strategist_model"),
             policy.get("strategist_frame_llm_model"),
-            os.getenv("AI_STRATEGIST_MODEL", ""),
-            os.getenv("OPENROUTER_DEFAULT_MODEL", ""),
-            os.getenv("STRATEGIST_FRAME_LLM_MODEL", ""),
+        )
+    )
+
+
+def strategist_fallback_model(policy: Dict[str, Any] | None = None) -> str:
+    policy = policy or {}
+    llm_slot = resolve_policy_llm_slot(policy, "strategist", default_profile="balanced")
+    return normalize_openrouter_model_name(
+        _first_nonempty(
+            llm_slot.get("fallback"),
+            policy.get("ai_strategist_model_fallback"),
+            policy.get("strategist_frame_llm_fallback_model"),
         )
     )
 
 
 def strategist_temperature(policy: Dict[str, Any] | None = None) -> float:
     policy = policy or {}
+    execution_slot = resolve_policy_llm_execution_slot(
+        policy,
+        "strategist",
+        default_profile="balanced_reasoning",
+        defaults={
+            "name": "balanced_reasoning",
+            "temperature": 0.1,
+            "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry_max": 2,
+        },
+    )
     raw = _first_nonempty(
         policy.get("ai_strategist_temperature"),
         policy.get("strategist_frame_llm_temperature"),
-        os.getenv("AI_STRATEGIST_TEMPERATURE", ""),
-        os.getenv("STRATEGIST_FRAME_LLM_TEMPERATURE", ""),
-        os.getenv("OPENROUTER_DEFAULT_TEMPERATURE", ""),
+        execution_slot.get("temperature"),
         "0.1",
     )
     return _to_float(raw, 0.1)
@@ -150,12 +174,22 @@ def strategist_temperature(policy: Dict[str, Any] | None = None) -> float:
 
 def strategist_timeout_sec(policy: Dict[str, Any] | None = None) -> float:
     policy = policy or {}
+    execution_slot = resolve_policy_llm_execution_slot(
+        policy,
+        "strategist",
+        default_profile="balanced_reasoning",
+        defaults={
+            "name": "balanced_reasoning",
+            "temperature": 0.1,
+            "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry_max": 2,
+        },
+    )
     raw = _first_nonempty(
         policy.get("ai_strategist_timeout_sec"),
         policy.get("strategist_frame_llm_timeout_sec"),
-        os.getenv("AI_STRATEGIST_TIMEOUT_SEC", ""),
-        os.getenv("STRATEGIST_FRAME_LLM_TIMEOUT_SEC", ""),
-        os.getenv("OPENROUTER_TIMEOUT_SEC", ""),
+        execution_slot.get("timeout_sec"),
         "15",
     )
     return max(1.0, _to_float(raw, 15.0))
@@ -163,19 +197,65 @@ def strategist_timeout_sec(policy: Dict[str, Any] | None = None) -> float:
 
 def strategist_max_tokens(policy: Dict[str, Any] | None = None) -> int:
     policy = policy or {}
+    execution_slot = resolve_policy_llm_execution_slot(
+        policy,
+        "strategist",
+        default_profile="balanced_reasoning",
+        defaults={
+            "name": "balanced_reasoning",
+            "temperature": 0.1,
+            "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry_max": 2,
+        },
+    )
     raw = _first_nonempty(
         policy.get("ai_strategist_max_tokens"),
         policy.get("strategist_frame_llm_max_tokens"),
-        os.getenv("AI_STRATEGIST_MAX_TOKENS", ""),
-        os.getenv("OPENROUTER_DEFAULT_MAX_TOKENS", ""),
-        os.getenv("STRATEGIST_FRAME_LLM_MAX_TOKENS", ""),
-        "320",
+        execution_slot.get("max_tokens"),
+        "8192",
     )
-    return max(256, _to_int(raw, 320))
+    return max(256, _to_int(raw, 8192))
+
+
+def strategist_retry_max(policy: Dict[str, Any] | None = None) -> int:
+    policy = policy or {}
+    execution_slot = resolve_policy_llm_execution_slot(
+        policy,
+        "strategist",
+        default_profile="balanced_reasoning",
+        defaults={
+            "name": "balanced_reasoning",
+            "temperature": 0.1,
+            "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry_max": 2,
+        },
+    )
+    raw = _first_nonempty(
+        policy.get("ai_strategist_retry_max"),
+        policy.get("strategist_frame_llm_retry_max"),
+        execution_slot.get("retry_max"),
+        "2",
+    )
+    return max(0, _to_int(raw, 2))
 
 
 def strategist_runtime_settings(policy: Dict[str, Any] | None = None) -> Dict[str, Any]:
     policy = policy or {}
+    llm_slot = resolve_policy_llm_slot(policy, "strategist", default_profile="balanced")
+    execution_slot = resolve_policy_llm_execution_slot(
+        policy,
+        "strategist",
+        default_profile="balanced_reasoning",
+        defaults={
+            "name": "balanced_reasoning",
+            "temperature": 0.1,
+            "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry_max": 2,
+        },
+    )
     provider = strategist_provider(policy)
     return {
         "provider": provider,
@@ -187,7 +267,13 @@ def strategist_runtime_settings(policy: Dict[str, Any] | None = None) -> Dict[st
         "api_key": strategist_api_key(policy),
         "endpoint": strategist_endpoint(policy),
         "model": strategist_model(policy),
+        "fallback_model": strategist_fallback_model(policy),
+        "llm_profile": str(llm_slot.get("profile") or "balanced"),
+        "llm_policy_source": str(llm_slot.get("policy_source") or "default_profile"),
         "temperature": strategist_temperature(policy),
         "timeout_sec": strategist_timeout_sec(policy),
         "max_tokens": strategist_max_tokens(policy),
+        "retry_max": strategist_retry_max(policy),
+        "llm_execution_profile": execution_slot,
+        "llm_execution_profile_source": str(execution_slot.get("policy_source") or "default_execution_profile"),
     }

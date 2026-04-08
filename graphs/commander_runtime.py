@@ -36,7 +36,9 @@ from libs.runtime.monitor_policy import (
     build_monitor_entry_policy_bundle,
     normalize_monitor_entry_policy,
 )
+from libs.llm.model_catalog import resolve_execution_profile, resolve_model_profile
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
+from libs.runtime.scanner_policy import normalize_scanner_source_type
 from libs.runtime.canonical_artifacts import write_commander_artifact, write_commander_shadow_artifact
 from libs.runtime.resilience_state import ensure_runtime_resilience_state
 
@@ -47,6 +49,66 @@ RuntimePhase = Literal["preopen", "session", "closeout"]
 
 _PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC = 120
 _PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD = 0.80
+_COMMANDER_OWNED_POLICY_FIELDS = [
+    "reporter.ai_review.enabled",
+    "reporter.trade_report.enabled",
+    "reporter.trade_report.generate_on_open",
+    "strategist.runtime.strict_mode",
+    "strategist.runtime.allow_legacy_rule",
+    "strategist.runtime.allow_legacy_strategy_v1",
+    "strategist.memory_feedback.enabled",
+    "strategist.reporter_feedback_mode",
+    "commander.route.monitor_only_when_holding",
+    "commander.route.cached_strategist_when_flat",
+    "monitor.entry.scoring.enabled",
+    "monitor.entry.scoring.shadow_mode",
+]
+_COMMANDER_OWNED_SCANNER_POLICY_FIELDS = [
+    "scanner.source.type",
+    "scanner.kiwoom.strict_only",
+    "scanner.fallback.block_static_when_empty",
+    "scanner.kiwoom.live_fetch",
+    "scanner.kiwoom.include_change_rate",
+]
+_COMMANDER_OWNED_NUMERIC_POLICY_FIELDS = [
+    "execution.cooldowns.post_exit_sec",
+    "execution.cooldowns.sell_sec",
+    "monitor.hold.min_hold_seconds",
+    "monitor.exit.confirm_ticks",
+    "monitor.exit.eod_flat.cutoff_min",
+    "scanner.candidate.top_pool",
+    "scanner.kiwoom.condition_limit",
+    "monitor.entry.scoring.threshold",
+    "strategist.memory_feedback.recent_runs",
+]
+_COMMANDER_OWNED_LLM_POLICY_FIELDS = [
+    "llm.strategist.profile",
+    "llm.reporter.intraday.profile",
+    "llm.reporter.daily.profile",
+]
+_COMMANDER_OWNED_LLM_EXECUTION_POLICY_FIELDS = [
+    "llm.strategist.execution_profile.name",
+    "llm.strategist.execution_profile.temperature",
+    "llm.strategist.execution_profile.max_tokens",
+    "llm.strategist.execution_profile.timeout_sec",
+    "llm.strategist.execution_profile.retry_max",
+    "llm.reporter.intraday.execution_profile.name",
+    "llm.reporter.intraday.execution_profile.temperature",
+    "llm.reporter.intraday.execution_profile.max_tokens",
+    "llm.reporter.daily.execution_profile.name",
+    "llm.reporter.daily.execution_profile.temperature",
+    "llm.reporter.daily.execution_profile.max_tokens",
+]
+
+
+def _merge_nested_policy_dict(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(base or {})
+    for key, value in dict(updates or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge_nested_policy_dict(dict(out.get(key) or {}), value)
+        else:
+            out[key] = value
+    return out
 
 
 def _is_trueish(v: Any) -> bool:
@@ -194,6 +256,15 @@ def _commander_decision_event_meta(state: Dict[str, Any]) -> Dict[str, Any]:
         "resilience_state": dict(route_observability.get("resilience_state") or {}),
         "intervention_reason": str(route_observability.get("intervention_reason") or ""),
         "strategy_generation_mode": str(route_observability.get("strategy_generation_mode") or ""),
+        "commander_applied_policy_summary": dict(state.get("commander_applied_policy_summary") or {}),
+        "policy_sources": dict(
+            (
+                (state.get("applied_policy") or {}).get("policy_sources")
+                if isinstance((state.get("applied_policy") or {}).get("policy_sources"), dict)
+                else {}
+            )
+        ),
+        "llm_execution_profile_source": "commander_applied_policy",
     }
 
 
@@ -348,12 +419,480 @@ def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _resolve_commander_reporter_feedback_policy(
+    state: Dict[str, Any],
+    *,
+    selected_route: str = "",
+    phase: str = "",
+) -> Dict[str, Any]:
+    route = str(selected_route or _derive_commander_selected_route(state) or "").strip().lower()
+    phase_text = str(phase or state.get("runtime_phase") or "session").strip().lower() or "session"
+
+    if phase_text == "closeout":
+        mode = "enabled"
+        reason = "closeout_report_heavy"
+    elif route == "monitor_only":
+        mode = "disabled"
+        reason = "monitor_only_route"
+    elif route == "cached_strategist":
+        mode = "disabled"
+        reason = "cached_strategist_route"
+    elif route == "full_cycle":
+        mode = "auto"
+        reason = "full_cycle_route"
+    else:
+        mode = "auto"
+        reason = f"{phase_text}_default_auto"
+
+    return {
+        "reporter_feedback_mode": mode,
+        "reporter_feedback_mode_source": "commander_applied_policy",
+        "reporter_feedback_mode_reason": reason,
+        "reporter_feedback_semantics": "advisory_only",
+        "selected_route": route or "unknown",
+        "runtime_phase": phase_text,
+    }
+
+
+def _resolve_commander_behavior_policy(
+    state: Dict[str, Any],
+    *,
+    selected_route: str = "",
+    phase: str = "",
+) -> Dict[str, Any]:
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+
+    def _existing_value(*path: str) -> Any:
+        cursor: Any = applied_policy
+        for key in path:
+            if not isinstance(cursor, dict):
+                return None
+            cursor = cursor.get(key)
+        return cursor
+
+    route = str(selected_route or _derive_commander_selected_route(state) or "").strip().lower() or "unknown"
+    phase_text = str(phase or state.get("runtime_phase") or "session").strip().lower() or "session"
+    feedback_policy = _resolve_commander_reporter_feedback_policy(
+        state,
+        selected_route=route,
+        phase=phase_text,
+    )
+    reporter_ai_review_enabled = _existing_value("reporter", "ai_review", "enabled")
+    if reporter_ai_review_enabled is None:
+        reporter_ai_review_enabled = False
+    trade_report_enabled = _existing_value("reporter", "trade_report", "enabled")
+    if trade_report_enabled is None:
+        trade_report_enabled = True
+    trade_report_generate_on_open = _existing_value("reporter", "trade_report", "generate_on_open")
+    if trade_report_generate_on_open is None:
+        trade_report_generate_on_open = True
+    strict_mode = _existing_value("strategist", "runtime", "strict_mode")
+    if strict_mode is None:
+        strict_mode = True
+    allow_legacy_rule = _existing_value("strategist", "runtime", "allow_legacy_rule")
+    if allow_legacy_rule is None:
+        allow_legacy_rule = False
+    allow_legacy_strategy_v1 = _existing_value("strategist", "runtime", "allow_legacy_strategy_v1")
+    if allow_legacy_strategy_v1 is None:
+        allow_legacy_strategy_v1 = False
+    memory_feedback_enabled = _existing_value("strategist", "memory_feedback", "enabled")
+    if memory_feedback_enabled is None:
+        memory_feedback_enabled = True
+    monitor_only_when_holding = _existing_value("commander", "route", "monitor_only_when_holding")
+    if monitor_only_when_holding is None:
+        monitor_only_when_holding = True
+    cached_strategist_when_flat = _existing_value("commander", "route", "cached_strategist_when_flat")
+    if cached_strategist_when_flat is None:
+        cached_strategist_when_flat = False
+    monitor_scoring_enabled = _existing_value("monitor", "entry", "scoring", "enabled")
+    if monitor_scoring_enabled is None:
+        monitor_scoring_enabled = False
+    monitor_scoring_shadow_mode = _existing_value("monitor", "entry", "scoring", "shadow_mode")
+    if monitor_scoring_shadow_mode is None:
+        monitor_scoring_shadow_mode = True
+    post_exit_cooldown_sec = _existing_value("execution", "cooldowns", "post_exit_sec")
+    if post_exit_cooldown_sec is None:
+        post_exit_cooldown_sec = 180
+    sell_cooldown_sec = _existing_value("execution", "cooldowns", "sell_sec")
+    if sell_cooldown_sec is None:
+        sell_cooldown_sec = 300
+    min_hold_seconds = _existing_value("monitor", "hold", "min_hold_seconds")
+    if min_hold_seconds is None:
+        min_hold_seconds = 600
+    exit_confirm_ticks = _existing_value("monitor", "exit", "confirm_ticks")
+    if exit_confirm_ticks is None:
+        exit_confirm_ticks = 2
+    eod_flat_cutoff_min = _existing_value("monitor", "exit", "eod_flat", "cutoff_min")
+    if eod_flat_cutoff_min is None:
+        eod_flat_cutoff_min = 10
+    top_candidate_pool = _existing_value("scanner", "candidate", "top_pool")
+    if top_candidate_pool is None:
+        top_candidate_pool = 30
+    kiwoom_condition_limit = _existing_value("scanner", "kiwoom", "condition_limit")
+    if kiwoom_condition_limit is None:
+        kiwoom_condition_limit = 200
+    scanner_source_type = _existing_value("scanner", "source", "type")
+    if scanner_source_type in (None, ""):
+        scanner_source_type = "kiwoom"
+    scanner_strict_only = _existing_value("scanner", "kiwoom", "strict_only")
+    if scanner_strict_only is None:
+        scanner_strict_only = True
+    scanner_strict_only = _is_trueish(scanner_strict_only)
+    scanner_block_static_when_empty = _existing_value("scanner", "fallback", "block_static_when_empty")
+    if scanner_block_static_when_empty is None:
+        scanner_block_static_when_empty = True
+    scanner_block_static_when_empty = _is_trueish(scanner_block_static_when_empty)
+    scanner_live_fetch = _existing_value("scanner", "kiwoom", "live_fetch")
+    if scanner_live_fetch is None:
+        scanner_live_fetch = True
+    scanner_live_fetch = _is_trueish(scanner_live_fetch)
+    scanner_include_change_rate = _existing_value("scanner", "kiwoom", "include_change_rate")
+    if scanner_include_change_rate is None:
+        scanner_include_change_rate = True
+    scanner_include_change_rate = _is_trueish(scanner_include_change_rate)
+    monitor_scoring_threshold = _existing_value("monitor", "entry", "scoring", "threshold")
+    if monitor_scoring_threshold is None:
+        monitor_scoring_threshold = 3
+    strategy_memory_recent_runs = _existing_value("strategist", "memory_feedback", "recent_runs")
+    if strategy_memory_recent_runs is None:
+        strategy_memory_recent_runs = 12
+    strategist_llm_profile = str(_existing_value("llm", "strategist", "profile") or "balanced").strip().lower() or "balanced"
+    reporter_intraday_profile = str(_existing_value("llm", "reporter", "intraday", "profile") or "fast_free").strip().lower() or "fast_free"
+    reporter_daily_profile = str(_existing_value("llm", "reporter", "daily", "profile") or "strong_reasoning").strip().lower() or "strong_reasoning"
+    strategist_llm = resolve_model_profile(strategist_llm_profile, default_profile="balanced")
+    reporter_intraday_llm = resolve_model_profile(reporter_intraday_profile, default_profile="fast_free")
+    reporter_daily_llm = resolve_model_profile(reporter_daily_profile, default_profile="strong_reasoning")
+    strategist_execution_profile_name = (
+        str(_existing_value("llm", "strategist", "execution_profile", "name") or "balanced_reasoning").strip().lower()
+        or "balanced_reasoning"
+    )
+    reporter_intraday_execution_profile_name = (
+        str(_existing_value("llm", "reporter", "intraday", "execution_profile", "name") or "concise_review").strip().lower()
+        or "concise_review"
+    )
+    reporter_daily_execution_profile_name = (
+        str(_existing_value("llm", "reporter", "daily", "execution_profile", "name") or "deep_review").strip().lower()
+        or "deep_review"
+    )
+    strategist_execution_profile = resolve_execution_profile(
+        strategist_execution_profile_name,
+        default_profile="balanced_reasoning",
+        defaults={
+            "name": "balanced_reasoning",
+            "temperature": 0.1,
+            "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry_max": 2,
+        },
+    )
+    reporter_intraday_execution_profile = resolve_execution_profile(
+        reporter_intraday_execution_profile_name,
+        default_profile="concise_review",
+        defaults={
+            "name": "concise_review",
+            "temperature": 0.2,
+            "max_tokens": 8192,
+        },
+    )
+    reporter_daily_execution_profile = resolve_execution_profile(
+        reporter_daily_execution_profile_name,
+        default_profile="deep_review",
+        defaults={
+            "name": "deep_review",
+            "temperature": 0.2,
+            "max_tokens": 8192,
+        },
+    )
+    return {
+        "execution": {
+            "cooldowns": {
+                "post_exit_sec": max(0, _coerce_int(post_exit_cooldown_sec, 180)),
+                "sell_sec": max(0, _coerce_int(sell_cooldown_sec, 300)),
+                "policy_source": "commander_applied_policy",
+            },
+        },
+        "llm": {
+            "strategist": {
+                "profile": str(strategist_llm.get("profile") or "balanced"),
+                "primary": str(strategist_llm.get("primary") or ""),
+                "fallback": str(strategist_llm.get("fallback") or ""),
+                "execution_profile": {
+                    "name": str(strategist_execution_profile.get("name") or "balanced_reasoning"),
+                    "temperature": float(_runtime_float(strategist_execution_profile.get("temperature"), 0.1)),
+                    "max_tokens": max(256, _coerce_int(strategist_execution_profile.get("max_tokens"), 8192)),
+                    "timeout_sec": max(1, _coerce_int(strategist_execution_profile.get("timeout_sec"), 15)),
+                    "retry_max": max(0, _coerce_int(strategist_execution_profile.get("retry_max"), 2)),
+                    "policy_source": "commander_applied_policy",
+                },
+                "policy_source": "commander_applied_policy",
+            },
+            "reporter": {
+                "intraday": {
+                    "profile": str(reporter_intraday_llm.get("profile") or "fast_free"),
+                    "primary": str(reporter_intraday_llm.get("primary") or ""),
+                    "fallback": str(reporter_intraday_llm.get("fallback") or ""),
+                    "execution_profile": {
+                        "name": str(reporter_intraday_execution_profile.get("name") or "concise_review"),
+                        "temperature": float(_runtime_float(reporter_intraday_execution_profile.get("temperature"), 0.2)),
+                        "max_tokens": max(256, _coerce_int(reporter_intraday_execution_profile.get("max_tokens"), 8192)),
+                        "policy_source": "commander_applied_policy",
+                    },
+                    "policy_source": "commander_applied_policy",
+                },
+                "daily": {
+                    "profile": str(reporter_daily_llm.get("profile") or "strong_reasoning"),
+                    "primary": str(reporter_daily_llm.get("primary") or ""),
+                    "fallback": str(reporter_daily_llm.get("fallback") or ""),
+                    "execution_profile": {
+                        "name": str(reporter_daily_execution_profile.get("name") or "deep_review"),
+                        "temperature": float(_runtime_float(reporter_daily_execution_profile.get("temperature"), 0.2)),
+                        "max_tokens": max(256, _coerce_int(reporter_daily_execution_profile.get("max_tokens"), 8192)),
+                        "policy_source": "commander_applied_policy",
+                    },
+                    "policy_source": "commander_applied_policy",
+                },
+            },
+        },
+        "reporter": {
+            "ai_review": {
+                "enabled": bool(reporter_ai_review_enabled),
+                "policy_source": "commander_applied_policy",
+            },
+            "trade_report": {
+                "enabled": bool(trade_report_enabled),
+                "generate_on_open": bool(trade_report_generate_on_open),
+                "policy_source": "commander_applied_policy",
+            },
+        },
+        "strategist": {
+            "runtime": {
+                "strict_mode": bool(strict_mode),
+                "allow_legacy_rule": bool(allow_legacy_rule),
+                "allow_legacy_strategy_v1": bool(allow_legacy_strategy_v1),
+                "policy_source": "commander_applied_policy",
+            },
+            "memory_feedback": {
+                "enabled": bool(memory_feedback_enabled),
+                "recent_runs": max(1, _coerce_int(strategy_memory_recent_runs, 12)),
+                "policy_source": "commander_applied_policy",
+            },
+            "reporter_feedback_mode": str(feedback_policy.get("reporter_feedback_mode") or "auto"),
+            "reporter_feedback_mode_source": str(
+                feedback_policy.get("reporter_feedback_mode_source") or "commander_applied_policy"
+            ),
+            "reporter_feedback_mode_reason": str(feedback_policy.get("reporter_feedback_mode_reason") or ""),
+            "reporter_feedback_semantics": "advisory_only",
+        },
+        "commander": {
+            "route": {
+                "monitor_only_when_holding": bool(monitor_only_when_holding),
+                "cached_strategist_when_flat": bool(cached_strategist_when_flat),
+                "policy_source": "commander_applied_policy",
+            },
+        },
+        "scanner": {
+            "source": {
+                "type": normalize_scanner_source_type(scanner_source_type),
+                "policy_source": "commander_applied_policy",
+            },
+            "candidate": {
+                "top_pool": max(1, _coerce_int(top_candidate_pool, 30)),
+                "policy_source": "commander_applied_policy",
+            },
+            "kiwoom": {
+                "condition_limit": max(0, _coerce_int(kiwoom_condition_limit, 200)),
+                "strict_only": bool(scanner_strict_only),
+                "live_fetch": bool(scanner_live_fetch),
+                "include_change_rate": bool(scanner_include_change_rate),
+                "policy_source": "commander_applied_policy",
+            },
+            "fallback": {
+                "block_static_when_empty": bool(scanner_block_static_when_empty),
+                "policy_source": "commander_applied_policy",
+            },
+        },
+        "monitor": {
+            "hold": {
+                "min_hold_seconds": max(0, _coerce_int(min_hold_seconds, 600)),
+                "policy_source": "commander_applied_policy",
+            },
+            "exit": {
+                "confirm_ticks": max(1, _coerce_int(exit_confirm_ticks, 2)),
+                "eod_flat": {
+                    "cutoff_min": max(0, _coerce_int(eod_flat_cutoff_min, 10)),
+                },
+                "policy_source": "commander_applied_policy",
+            },
+            "entry": {
+                "scoring": {
+                    "enabled": bool(monitor_scoring_enabled),
+                    "shadow_mode": bool(monitor_scoring_shadow_mode),
+                    "threshold": max(0.0, float(_runtime_float(monitor_scoring_threshold, 3.0))),
+                    "entry_threshold": max(0.0, float(_runtime_float(monitor_scoring_threshold, 3.0))),
+                    "policy_source": "commander_applied_policy",
+                },
+            },
+        },
+        "policy_sources": {
+            "commander_owned_fields": list(_COMMANDER_OWNED_POLICY_FIELDS),
+            "commander_owned_scanner_fields": list(_COMMANDER_OWNED_SCANNER_POLICY_FIELDS),
+            "commander_owned_numeric_fields": list(_COMMANDER_OWNED_NUMERIC_POLICY_FIELDS),
+            "commander_owned_llm_fields": list(_COMMANDER_OWNED_LLM_POLICY_FIELDS),
+            "commander_owned_llm_execution_fields": list(_COMMANDER_OWNED_LLM_EXECUTION_POLICY_FIELDS),
+        },
+        "commander_applied_policy_summary": {
+            "selected_route": route,
+            "runtime_phase": phase_text,
+            "reporter_ai_review_enabled": bool(reporter_ai_review_enabled),
+            "trade_report_enabled": bool(trade_report_enabled),
+            "trade_report_generate_on_open": bool(trade_report_generate_on_open),
+            "strategist_strict_mode": bool(strict_mode),
+            "allow_legacy_rule": bool(allow_legacy_rule),
+            "allow_legacy_strategy_v1": bool(allow_legacy_strategy_v1),
+            "strategy_memory_feedback_enabled": bool(memory_feedback_enabled),
+            "monitor_only_when_holding": bool(monitor_only_when_holding),
+            "cached_strategist_when_flat": bool(cached_strategist_when_flat),
+            "monitor_scoring_enabled": bool(monitor_scoring_enabled),
+            "monitor_scoring_shadow_mode": bool(monitor_scoring_shadow_mode),
+            "reporter_feedback_mode": str(feedback_policy.get("reporter_feedback_mode") or "auto"),
+            "scanner_fields": {
+                "source_type": normalize_scanner_source_type(scanner_source_type),
+                "strict_only": bool(scanner_strict_only),
+                "block_static_when_empty": bool(scanner_block_static_when_empty),
+                "live_fetch": bool(scanner_live_fetch),
+                "include_change_rate": bool(scanner_include_change_rate),
+            },
+            "llm_profiles": {
+                "strategist": {
+                    "profile": str(strategist_llm.get("profile") or "balanced"),
+                    "primary": str(strategist_llm.get("primary") or ""),
+                    "fallback": str(strategist_llm.get("fallback") or ""),
+                },
+                "reporter_intraday": {
+                    "profile": str(reporter_intraday_llm.get("profile") or "fast_free"),
+                    "primary": str(reporter_intraday_llm.get("primary") or ""),
+                    "fallback": str(reporter_intraday_llm.get("fallback") or ""),
+                },
+                "reporter_daily": {
+                    "profile": str(reporter_daily_llm.get("profile") or "strong_reasoning"),
+                    "primary": str(reporter_daily_llm.get("primary") or ""),
+                    "fallback": str(reporter_daily_llm.get("fallback") or ""),
+                },
+            },
+            "llm_execution_profiles": {
+                "strategist": {
+                    "name": str(strategist_execution_profile.get("name") or "balanced_reasoning"),
+                    "temperature": float(_runtime_float(strategist_execution_profile.get("temperature"), 0.1)),
+                    "max_tokens": max(256, _coerce_int(strategist_execution_profile.get("max_tokens"), 8192)),
+                    "timeout_sec": max(1, _coerce_int(strategist_execution_profile.get("timeout_sec"), 15)),
+                    "retry_max": max(0, _coerce_int(strategist_execution_profile.get("retry_max"), 2)),
+                },
+                "reporter_intraday": {
+                    "name": str(reporter_intraday_execution_profile.get("name") or "concise_review"),
+                    "temperature": float(_runtime_float(reporter_intraday_execution_profile.get("temperature"), 0.2)),
+                    "max_tokens": max(256, _coerce_int(reporter_intraday_execution_profile.get("max_tokens"), 8192)),
+                },
+                "reporter_daily": {
+                    "name": str(reporter_daily_execution_profile.get("name") or "deep_review"),
+                    "temperature": float(_runtime_float(reporter_daily_execution_profile.get("temperature"), 0.2)),
+                    "max_tokens": max(256, _coerce_int(reporter_daily_execution_profile.get("max_tokens"), 8192)),
+                },
+            },
+            "numeric_fields": {
+                "post_exit_cooldown_sec": max(0, _coerce_int(post_exit_cooldown_sec, 180)),
+                "sell_cooldown_sec": max(0, _coerce_int(sell_cooldown_sec, 300)),
+                "min_hold_seconds": max(0, _coerce_int(min_hold_seconds, 600)),
+                "exit_confirm_ticks": max(1, _coerce_int(exit_confirm_ticks, 2)),
+                "eod_flat_cutoff_min": max(0, _coerce_int(eod_flat_cutoff_min, 10)),
+                "top_candidate_pool": max(1, _coerce_int(top_candidate_pool, 30)),
+                "kiwoom_condition_limit": max(0, _coerce_int(kiwoom_condition_limit, 200)),
+                "monitor_entry_scoring_threshold": max(0.0, float(_runtime_float(monitor_scoring_threshold, 3.0))),
+                "strategy_memory_recent_runs": max(1, _coerce_int(strategy_memory_recent_runs, 12)),
+            },
+        },
+    }
+
+
+def _attach_commander_behavior_policy(
+    state: Dict[str, Any],
+    *,
+    selected_route: str = "",
+    phase: str = "",
+) -> Dict[str, Any]:
+    behavior_policy = _resolve_commander_behavior_policy(
+        state,
+        selected_route=selected_route,
+        phase=phase,
+    )
+    applied_policy = dict(state.get("applied_policy") or {}) if isinstance(state.get("applied_policy"), dict) else {}
+    for section_name in ("execution", "llm", "reporter", "strategist", "commander", "scanner", "monitor", "policy_sources"):
+        section_value = behavior_policy.get(section_name)
+        if not isinstance(section_value, dict):
+            continue
+        existing = dict(applied_policy.get(section_name) or {}) if isinstance(applied_policy.get(section_name), dict) else {}
+        applied_policy[section_name] = _merge_nested_policy_dict(existing, section_value)
+    applied_policy["reporter_feedback_mode"] = str(
+        ((behavior_policy.get("strategist") or {}).get("reporter_feedback_mode") or "auto")
+    )
+    applied_policy["reporter_feedback_mode_source"] = str(
+        ((behavior_policy.get("strategist") or {}).get("reporter_feedback_mode_source") or "commander_applied_policy")
+    )
+    applied_policy["reporter_feedback_mode_reason"] = str(
+        ((behavior_policy.get("strategist") or {}).get("reporter_feedback_mode_reason") or "")
+    )
+    state["applied_policy"] = applied_policy
+    state["commander_behavior_policy"] = dict(behavior_policy)
+    state["commander_applied_policy_summary"] = dict(behavior_policy.get("commander_applied_policy_summary") or {})
+    return state
+
+
+def _attach_commander_reporter_feedback_policy(
+    state: Dict[str, Any],
+    *,
+    selected_route: str = "",
+    phase: str = "",
+) -> Dict[str, Any]:
+    feedback_policy = _resolve_commander_reporter_feedback_policy(
+        state,
+        selected_route=selected_route,
+        phase=phase,
+    )
+    state = _attach_commander_behavior_policy(
+        state,
+        selected_route=selected_route,
+        phase=phase,
+    )
+    state["commander_reporter_feedback_policy"] = dict(feedback_policy)
+    return state
+
+
 def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     policy_meta = _resolve_commander_applied_policy(state)
     applied_policy = dict(policy_meta.get("applied_policy") or {})
     state["commander_applied_policy"] = dict(applied_policy)
     state["commander_applied_policy_meta"] = dict(policy_meta)
     state["monitor_entry_policy"] = dict(applied_policy)
+    applied_policy_wrapper = dict(state.get("applied_policy") or {}) if isinstance(state.get("applied_policy"), dict) else {}
+    strategist_policy = (
+        dict(applied_policy_wrapper.get("strategist") or {})
+        if isinstance(applied_policy_wrapper.get("strategist"), dict)
+        else {}
+    )
+    merged_applied_policy = dict(applied_policy_wrapper)
+    merged_applied_policy.update(applied_policy)
+    if strategist_policy:
+        merged_applied_policy["strategist"] = strategist_policy
+    for section_name in ("execution", "llm", "reporter", "commander", "scanner", "monitor", "policy_sources"):
+        section_value = applied_policy_wrapper.get(section_name)
+        if isinstance(section_value, dict):
+            merged_applied_policy[section_name] = dict(section_value)
+    if applied_policy_wrapper.get("reporter_feedback_mode") not in (None, ""):
+        merged_applied_policy["reporter_feedback_mode"] = applied_policy_wrapper.get("reporter_feedback_mode")
+    if applied_policy_wrapper.get("reporter_feedback_mode_source") not in (None, ""):
+        merged_applied_policy["reporter_feedback_mode_source"] = applied_policy_wrapper.get("reporter_feedback_mode_source")
+    if applied_policy_wrapper.get("reporter_feedback_mode_reason") not in (None, ""):
+        merged_applied_policy["reporter_feedback_mode_reason"] = applied_policy_wrapper.get("reporter_feedback_mode_reason")
+    state["applied_policy"] = merged_applied_policy
 
     strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
     if not strategist_output:
@@ -524,6 +1063,27 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     return state
 
 
+def _resolve_commander_route_toggle(
+    state: Dict[str, Any],
+    *,
+    nested_path: tuple[str, ...],
+    state_key: str,
+    default: bool,
+) -> tuple[bool, str]:
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    cursor: Any = applied_policy
+    for key in nested_path:
+        if not isinstance(cursor, dict):
+            cursor = None
+            break
+        cursor = cursor.get(key)
+    if cursor is not None:
+        return _is_trueish(cursor), "commander_applied_policy"
+    if state.get(state_key) is not None:
+        return _is_trueish(state.get(state_key)), "state_fallback"
+    return bool(default), "default"
+
+
 def _build_commander_decision(
     state: Dict[str, Any],
     *,
@@ -682,6 +1242,11 @@ def _build_commander_decision(
         if isinstance(state.get("commander_applied_policy_meta"), dict)
         else {}
     )
+    reporter_feedback_policy = (
+        dict(state.get("commander_reporter_feedback_policy") or {})
+        if isinstance(state.get("commander_reporter_feedback_policy"), dict)
+        else {}
+    )
     if not applied_policy_meta:
         strategist_policy_present = bool(
             (isinstance(strategist_output.get("monitor_entry_policy"), dict) and strategist_output.get("monitor_entry_policy"))
@@ -694,6 +1259,19 @@ def _build_commander_decision(
         if strategist_policy_present:
             applied_policy_meta = _resolve_commander_applied_policy(state)
     applied_policy = dict(applied_policy_meta.get("applied_policy") or {})
+    commander_behavior_policy = (
+        dict(state.get("commander_behavior_policy") or {})
+        if isinstance(state.get("commander_behavior_policy"), dict)
+        else {}
+    )
+    commander_applied_policy_summary = dict(state.get("commander_applied_policy_summary") or {})
+    policy_sources = (
+        dict(applied_policy.get("policy_sources") or {})
+        if isinstance(applied_policy.get("policy_sources"), dict)
+        else dict(commander_behavior_policy.get("policy_sources") or {})
+        if isinstance(commander_behavior_policy.get("policy_sources"), dict)
+        else {}
+    )
 
     decision_summary = (
         f"Commander set regime={market_regime}, session_bias={session_bias}, risk_mode={risk_mode}; "
@@ -894,6 +1472,19 @@ def _build_commander_decision(
         "policy_validation_invalid_fields": list(applied_policy_meta.get("policy_validation_invalid_fields") or []),
         "override_reason": str(applied_policy_meta.get("override_reason") or ""),
         "applied_policy_source_chain": list(applied_policy_meta.get("applied_policy_source_chain") or []),
+        "commander_applied_policy_summary": dict(commander_applied_policy_summary),
+        "policy_sources": dict(policy_sources),
+        "strategist_runtime_policy_source": "commander_applied_policy",
+        "llm_policy_source": "commander_applied_policy",
+        "llm_execution_profile_source": "commander_applied_policy",
+        "reporter_policy_source": "commander_applied_policy",
+        "monitor_policy_source": "commander_applied_policy",
+        "scanner_policy_source": "commander_applied_policy",
+        "execution_policy_source": "commander_applied_policy",
+        "reporter_feedback_mode": str(reporter_feedback_policy.get("reporter_feedback_mode") or "auto"),
+        "reporter_feedback_mode_source": str(reporter_feedback_policy.get("reporter_feedback_mode_source") or "default_auto"),
+        "reporter_feedback_mode_reason": str(reporter_feedback_policy.get("reporter_feedback_mode_reason") or ""),
+        "reporter_feedback_semantics": "advisory_only",
     }
 
 
@@ -1254,6 +1845,142 @@ def _derive_commander_selected_route(state: Dict[str, Any]) -> str:
     return "full_cycle"
 
 
+def _normalize_reporter_integration_config(state: Dict[str, Any]) -> Dict[str, Any]:
+    config = state.get("reporter_integration") if isinstance(state.get("reporter_integration"), dict) else {}
+    hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
+    return {
+        "enabled": _is_trueish(config.get("enabled")),
+        "emit_reports": _is_trueish(config.get("emit_reports")),
+        "hooks": dict(hooks),
+        "event_log_path": str(config.get("event_log_path") or state.get("event_log_path") or "data/logs/events.jsonl"),
+        "reports_root": str(config.get("reports_root") or state.get("reports_root") or "reports"),
+        "day": str(config.get("day") or state.get("day") or ""),
+    }
+
+
+def _reporter_hook_requested(config: Dict[str, Any], hook_name: str, *, default: bool = False) -> bool:
+    hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
+    if hook_name in hooks:
+        return _is_trueish(hooks.get(hook_name))
+    direct_key = f"{hook_name}_enabled"
+    if direct_key in config:
+        return _is_trueish(config.get(direct_key))
+    return bool(default)
+
+
+def _resolve_reporter_agent(state: Dict[str, Any]) -> Any:
+    injected = state.get("reporter_agent") or state.get("reporter")
+    if injected is not None:
+        return injected
+    from libs.agent.reporter import Reporter
+
+    return Reporter()
+
+
+def _invoke_reporter_hook(
+    state: Dict[str, Any],
+    *,
+    hook_name: str,
+    hook_fn: Callable[..., Dict[str, Any]],
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    try:
+        result = hook_fn(
+            enabled=True,
+            emit_reports=bool(config.get("emit_reports")),
+            event_log_path=str(config.get("event_log_path") or "data/logs/events.jsonl"),
+            reports_root=str(config.get("reports_root") or "reports"),
+            day=str(config.get("day") or ""),
+        )
+    except TypeError:
+        # Some hook placeholders intentionally accept a smaller surface.
+        result = hook_fn(
+            enabled=True,
+            day=str(config.get("day") or ""),
+            reports_root=str(config.get("reports_root") or "reports"),
+        )
+    except Exception as exc:
+        return {
+            "hook_name": hook_name,
+            "enabled": True,
+            "status": "failed",
+            "executed": False,
+            "reason": f"hook_exception:{type(exc).__name__}",
+            "report_only": True,
+            "execution_authority": False,
+            "route_override_authority": False,
+            "threshold_override_authority": False,
+            "warnings": [str(exc)],
+        }
+    return dict(result or {})
+
+
+def _maybe_run_reporter_hooks(
+    state: Dict[str, Any],
+    *,
+    mode_value: str,
+    phase_value: str,
+) -> Dict[str, Any]:
+    config = _normalize_reporter_integration_config(state)
+    if not bool(config.get("enabled")):
+        return state
+
+    reporter = _resolve_reporter_agent(state)
+    requested_hooks: list[tuple[str, Callable[..., Dict[str, Any]]]] = []
+    if str(phase_value or "").strip() == "session":
+        if _reporter_hook_requested(config, "intraday_summary", default=True):
+            requested_hooks.append(("intraday_summary", reporter.maybe_generate_intraday_summary))
+    elif str(phase_value or "").strip() == "closeout":
+        if _reporter_hook_requested(config, "eod_reports", default=True):
+            requested_hooks.append(("eod_reports", reporter.maybe_generate_eod_reports))
+        if _reporter_hook_requested(config, "strategist_feedback", default=True):
+            requested_hooks.append(("strategist_feedback", reporter.maybe_generate_strategist_feedback))
+
+    if not requested_hooks:
+        return state
+
+    results: Dict[str, Any] = {}
+    for hook_name, hook_fn in requested_hooks:
+        hook_result = _invoke_reporter_hook(state, hook_name=hook_name, hook_fn=hook_fn, config=config)
+        hook_result.setdefault("hook_name", hook_name)
+        hook_result.setdefault("report_only", True)
+        hook_result.setdefault("execution_authority", False)
+        hook_result.setdefault("route_override_authority", False)
+        hook_result.setdefault("threshold_override_authority", False)
+        hook_result.setdefault("mode", str(mode_value or ""))
+        hook_result.setdefault("phase", str(phase_value or ""))
+        results[hook_name] = hook_result
+        _log_commander_event(
+            state,
+            "reporter_hook",
+            {
+                "hook_name": hook_name,
+                "mode": str(mode_value or ""),
+                "phase": str(phase_value or ""),
+                "status": str(hook_result.get("status") or ""),
+                "executed": bool(hook_result.get("executed")),
+                "report_only": True,
+                "execution_authority": False,
+                "route_override_authority": False,
+                "threshold_override_authority": False,
+            },
+        )
+
+    state["reporter_hook_results"] = results
+    state["reporter_hook_summary"] = {
+        "enabled": True,
+        "mode": str(mode_value or ""),
+        "phase": str(phase_value or ""),
+        "requested_hooks": [name for name, _ in requested_hooks],
+        "emit_reports": bool(config.get("emit_reports")),
+        "report_only": True,
+        "execution_authority": False,
+        "route_override_authority": False,
+        "threshold_override_authority": False,
+    }
+    return state
+
+
 def _portfolio_guard_event_summary(state: Dict[str, Any]) -> Dict[str, Any]:
     pg = state.get("portfolio_guard")
     if not isinstance(pg, dict):
@@ -1604,10 +2331,11 @@ def _hydrate_monitor_symbol_features(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-    enabled = _is_trueish(
-        state.get("enable_monitor_only_fast_path")
-        if state.get("enable_monitor_only_fast_path") is not None
-        else os.getenv("COMMANDER_MONITOR_ONLY_WHEN_HOLDING_ENABLED", "true")
+    enabled, policy_source = _resolve_commander_route_toggle(
+        state,
+        nested_path=("commander", "route", "monitor_only_when_holding"),
+        state_key="enable_monitor_only_fast_path",
+        default=True,
     )
     open_position_count = _portfolio_open_position_count(state)
     block_buy_when_open_position = _is_trueish(
@@ -1617,6 +2345,7 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
     )
     payload = {
         "enabled": bool(enabled),
+        "policy_source": str(policy_source),
         "open_position_count": int(open_position_count),
         "block_buy_when_open_position": bool(block_buy_when_open_position),
         "reason": "",
@@ -1645,10 +2374,11 @@ def _strategist_cache_payload(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _assess_cached_strategist_reuse_preference(state: Dict[str, Any]) -> Dict[str, Any]:
-    enabled = _is_trueish(
-        state.get("enable_cached_strategist_when_flat")
-        if state.get("enable_cached_strategist_when_flat") is not None
-        else os.getenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "false")
+    enabled, policy_source = _resolve_commander_route_toggle(
+        state,
+        nested_path=("commander", "route", "cached_strategist_when_flat"),
+        state_key="enable_cached_strategist_when_flat",
+        default=False,
     )
     open_position_count = _portfolio_open_position_count(state)
     cache_payload = _strategist_cache_payload(state)
@@ -1660,6 +2390,7 @@ def _assess_cached_strategist_reuse_preference(state: Dict[str, Any]) -> Dict[st
     payload = {
         "preferred": False,
         "enabled": bool(enabled),
+        "policy_source": str(policy_source),
         "open_position_count": int(open_position_count),
         "reuse_sec": int(reuse_sec),
         "cache_age_sec": int(age_sec) if age_sec < 10**9 else None,
@@ -1832,10 +2563,11 @@ def _assess_pre_buy_strategist_refresh_need(
 
 
 def _should_use_cached_strategist_when_flat(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-    enabled = _is_trueish(
-        state.get("enable_cached_strategist_when_flat")
-        if state.get("enable_cached_strategist_when_flat") is not None
-        else os.getenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "false")
+    enabled, policy_source = _resolve_commander_route_toggle(
+        state,
+        nested_path=("commander", "route", "cached_strategist_when_flat"),
+        state_key="enable_cached_strategist_when_flat",
+        default=False,
     )
     open_position_count = _portfolio_open_position_count(state)
     cache_payload = _strategist_cache_payload(state)
@@ -1846,6 +2578,7 @@ def _should_use_cached_strategist_when_flat(state: Dict[str, Any]) -> Tuple[bool
     age_sec = max(0, now_epoch - generated_epoch) if generated_epoch > 0 else 10**9
     payload = {
         "enabled": bool(enabled),
+        "policy_source": str(policy_source),
         "open_position_count": int(open_position_count),
         "reuse_sec": int(reuse_sec),
         "cache_age_sec": int(age_sec) if age_sec < 10**9 else None,
@@ -1996,6 +2729,7 @@ def _run_integrated_chain(
         shadow_runtime["llm_called_by_strategist"] = False
         shadow_runtime["used_cached_strategist"] = False
         state = _hydrate_strategist_output_cache(state)
+        state = _attach_commander_reporter_feedback_policy(state, selected_route="monitor_only", phase="session")
         state = _attach_commander_applied_policy(state)
         state["commander_decision"] = _build_commander_decision(
             state,
@@ -2070,6 +2804,7 @@ def _run_integrated_chain(
             shadow_runtime["pre_buy_refresh_requested"] = False
             shadow_runtime["pre_buy_refresh_reason"] = ""
             shadow_runtime["pre_buy_refresh_context"] = {}
+        state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase="session")
         state = strategist_node(state)
         shadow_runtime["strategist_executed"] = True
         shadow_runtime["strategist_called"] = True
@@ -2088,6 +2823,8 @@ def _run_integrated_chain(
         if _strategist_frame_blocked(state):
             return _apply_strategist_block(state, phase="integrated_chain")
         state = _persist_strategist_output_cache(state)
+    if reused_strategist_cache:
+        state = _attach_commander_reporter_feedback_policy(state, selected_route="cached_strategist", phase="session")
     state = _attach_commander_applied_policy(state)
     state["commander_decision"] = _build_commander_decision(
         state,
@@ -2145,6 +2882,7 @@ def _run_preopen_phase(state: Dict[str, Any]) -> Dict[str, Any]:
         path_value=str(state.get("path") or "preopen_pending"),
         reason_text="",
     )
+    state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase="preopen")
     state = strategist_node(state)
     if _strategist_frame_blocked(state):
         return _apply_strategist_block(state, phase="preopen")
@@ -2165,6 +2903,7 @@ def _run_preopen_phase(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def _run_closeout_phase(state: Dict[str, Any]) -> Dict[str, Any]:
     """Keep commander passive during closeout; reporting remains script-driven."""
+    state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase="closeout")
     state["path"] = "closeout_idle"
     state["runtime_status"] = str(state.get("runtime_status") or "closeout_ready")
     return state
@@ -2462,6 +3201,7 @@ def run_commander_runtime(
                 },
             )
             _persist_commander(selected, selected_phase, status_value=str(state.get("runtime_status", "closeout_ready") or "closeout_ready"), path_value=str(state.get("path", "closeout_idle") or "closeout_idle"))
+            state = _maybe_run_reporter_hooks(state, mode_value=selected, phase_value=selected_phase)
             return state
 
         if selected == "decision_packet":
@@ -2481,6 +3221,7 @@ def run_commander_runtime(
                 },
             )
             _persist_commander(selected, selected_phase, status_value=str(state.get("runtime_status", "ok") or "ok"), path_value="decision_packet")
+            state = _maybe_run_reporter_hooks(state, mode_value=selected, phase_value=selected_phase)
             return state
 
         if selected == "integrated_chain":
@@ -2499,6 +3240,7 @@ def run_commander_runtime(
                 },
             )
             _persist_commander(selected, selected_phase, status_value=str(state.get("runtime_status", "ok") or "ok"), path_value=str(state.get("path", "integrated_chain") or "integrated_chain"))
+            state = _maybe_run_reporter_hooks(state, mode_value=selected, phase_value=selected_phase)
             return state
 
         if _graph_spine_portfolio_preflight_enabled(state, phase=selected_phase):
@@ -2519,6 +3261,7 @@ def run_commander_runtime(
             },
         )
         _persist_commander(selected, selected_phase, status_value=str(state.get("runtime_status", "ok") or "ok"), path_value=str(state.get("path", "graph_spine") or "graph_spine"))
+        state = _maybe_run_reporter_hooks(state, mode_value=selected, phase_value=selected_phase)
         return state
     except Exception as e:
         incident_payload = _register_commander_incident(state, error_type=type(e).__name__)

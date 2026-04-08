@@ -426,6 +426,8 @@ def test_generate_metrics_report_counts_routes_from_commander_end_payload(tmp_pa
     assert data["route_source_run_count"] == 2
     assert data["source_run_count"] == 2
     assert data["latest_run_id"] == "r2"
+    assert data["data_freshness"]["freshness_status"] == "fresh"
+    assert data["route_provenance"]["route_source"] == "canonical_commander_preferred"
 
 
 def test_generate_metrics_report_prefers_canonical_commander_route_source(tmp_path: Path):
@@ -468,6 +470,7 @@ def test_generate_metrics_report_prefers_canonical_commander_route_source(tmp_pa
     assert data["route_source_run_count"] == 1
     assert data["route_source_missing_count"] == 0
     assert data["route_source_breakdown"] == {"canonical_commander": 1}
+    assert data["route_provenance"]["route_source_breakdown"] == {"canonical_commander": 1}
 
 
 def test_generate_metrics_report_uses_event_fallback_when_commander_artifact_missing(tmp_path: Path):
@@ -492,6 +495,7 @@ def test_generate_metrics_report_uses_event_fallback_when_commander_artifact_mis
 
     assert data["route_selected_total"] == {"cached_strategist": 1}
     assert data["route_source_breakdown"] == {"event_fallback": 1}
+    assert data["route_provenance"]["route_source_breakdown"] == {"event_fallback": 1}
 
 
 def test_generate_metrics_report_broker_api_429_rate(tmp_path: Path):

@@ -35,7 +35,6 @@ def test_m20_3_llm_event_logged_on_success(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
     monkeypatch.setenv("AI_STRATEGIST_MODEL", "test-model")
-    monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
 
     def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
         return {
@@ -56,6 +55,11 @@ def test_m20_3_llm_event_logged_on_success(monkeypatch, tmp_path: Path):
     state = {
         "market_snapshot": {"symbol": "005930", "price": 70000},
         "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+        "policy": {
+            "applied_policy": {
+                "llm": {"strategist": {"execution_profile": {"name": "balanced_reasoning", "retry_max": 0}}}
+            }
+        },
     }
     out = decide_trade(state)
 
@@ -84,7 +88,6 @@ def test_m20_3_llm_event_logs_signal_status_fields(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
     monkeypatch.setenv("AI_STRATEGIST_MODEL", "test-model")
-    monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
 
     def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
         return {"intent": {"action": "NOOP", "reason": "model_no_signal"}, "rationale": "hold"}
@@ -95,6 +98,11 @@ def test_m20_3_llm_event_logs_signal_status_fields(monkeypatch, tmp_path: Path):
         "symbol": "005930",
         "market_snapshot": {"symbol": "005930", "price": 70000},
         "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+        "policy": {
+            "applied_policy": {
+                "llm": {"strategist": {"execution_profile": {"name": "balanced_reasoning", "retry_max": 0}}}
+            }
+        },
         "news_sentiment_signal": {
             "005930": {
                 "score": 0.0,
@@ -130,7 +138,6 @@ def test_m20_3_llm_event_logged_on_error(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
-    monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
     monkeypatch.setenv("AI_STRATEGIST_RETRY_BACKOFF_SEC", "0")
 
     def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
@@ -141,6 +148,11 @@ def test_m20_3_llm_event_logged_on_error(monkeypatch, tmp_path: Path):
     state = {
         "market_snapshot": {"symbol": "005930", "price": 70000},
         "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+        "policy": {
+            "applied_policy": {
+                "llm": {"strategist": {"execution_profile": {"name": "balanced_reasoning", "retry_max": 0}}}
+            }
+        },
     }
     out = decide_trade(state)
 
@@ -164,7 +176,6 @@ def test_m20_9_llm_event_logs_circuit_breaker_fields(monkeypatch, tmp_path: Path
     monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist-cb-event")
-    monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
     monkeypatch.setenv("AI_STRATEGIST_CB_FAIL_THRESHOLD", "1")
     monkeypatch.setenv("AI_STRATEGIST_CB_COOLDOWN_SEC", "60")
     monkeypatch.setattr(prov.time, "time", lambda: 1000.0)
@@ -180,6 +191,11 @@ def test_m20_9_llm_event_logs_circuit_breaker_fields(monkeypatch, tmp_path: Path
     state = {
         "market_snapshot": {"symbol": "005930", "price": 70000},
         "portfolio_snapshot": {"cash": 2_000_000, "open_positions": 0},
+        "policy": {
+            "applied_policy": {
+                "llm": {"strategist": {"execution_profile": {"name": "balanced_reasoning", "retry_max": 0}}}
+            }
+        },
     }
 
     # 1st call: strategist_error + breaker open

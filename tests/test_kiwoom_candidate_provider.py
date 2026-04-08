@@ -183,10 +183,16 @@ def test_scanner_node_blocks_static_fallback_when_kiwoom_empty_by_default():
     assert bool(scanner_output.get("blocked_static_fallback")) is True
 
 
-def test_scanner_node_can_allow_static_fallback_when_explicitly_enabled(monkeypatch):
-    monkeypatch.setenv("BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY", "false")
+def test_scanner_node_can_allow_static_fallback_when_explicitly_enabled():
     state = {
         "candidate_source": "kiwoom",
+        "applied_policy": {
+            "scanner": {
+                "source": {"type": "kiwoom"},
+                "kiwoom": {"strict_only": False},
+                "fallback": {"block_static_when_empty": False},
+            }
+        },
         "candidates": [
             {"symbol": "005930", "why": "fallback_static", "fallback_source": "static_default"},
             {"symbol": "000660", "why": "fallback_static", "fallback_source": "static_default"},
@@ -201,12 +207,21 @@ def test_scanner_node_can_allow_static_fallback_when_explicitly_enabled(monkeypa
     assert out.get("top_stock") == "005930"
     scanner_output = out.get("scanner_output") or {}
     assert scanner_output.get("candidate_source") == "strategist_fallback"
+    assert scanner_output.get("scanner_candidate_source") == "kiwoom"
+    assert scanner_output.get("scanner_fallback_mode") == "allow_static_fallback"
+    assert scanner_output.get("scanner_strict_mode") is False
 
 
-def test_scanner_node_strict_kiwoom_only_blocks_strategist_fallback(monkeypatch):
-    monkeypatch.setenv("STRICT_KIWOOM_CANDIDATES_ONLY", "true")
+def test_scanner_node_strict_kiwoom_only_blocks_strategist_fallback():
     state = {
         "candidate_source": "kiwoom",
+        "applied_policy": {
+            "scanner": {
+                "source": {"type": "kiwoom"},
+                "kiwoom": {"strict_only": True},
+                "fallback": {"block_static_when_empty": False},
+            }
+        },
         "strategist_output": {"candidates": ["123456"]},
         "mock_scan_results": {
             "123456": {"score": 0.5, "risk_score": 0.1, "confidence": 0.8},
@@ -218,12 +233,20 @@ def test_scanner_node_strict_kiwoom_only_blocks_strategist_fallback(monkeypatch)
     assert scanner_output.get("candidate_source") == "kiwoom"
     assert scanner_output.get("fallback_reason") == "kiwoom_candidate_pool_empty_strict_mode"
     assert bool(scanner_output.get("strict_kiwoom_only")) is True
+    assert scanner_output.get("scanner_fallback_mode") == "strict_kiwoom_only"
+    assert scanner_output.get("scanner_strict_mode") is True
 
 
-def test_scanner_node_avoid_theme_overreach_keeps_empty_pool_under_strict_mode(monkeypatch):
-    monkeypatch.setenv("STRICT_KIWOOM_CANDIDATES_ONLY", "true")
+def test_scanner_node_avoid_theme_overreach_keeps_empty_pool_under_strict_mode():
     state = {
         "candidate_source": "kiwoom",
+        "applied_policy": {
+            "scanner": {
+                "source": {"type": "kiwoom"},
+                "kiwoom": {"strict_only": True},
+                "fallback": {"block_static_when_empty": True},
+            }
+        },
         "themes": ["semiconductor"],
         "theme_map": {
             "semiconductor": ["005930", "000660"],
@@ -249,10 +272,10 @@ def test_scanner_node_avoid_theme_overreach_keeps_empty_pool_under_strict_mode(m
 
 def test_scanner_candidate_limit_defaults_to_top_pool_when_top_n_unset(monkeypatch):
     monkeypatch.delenv("TOP_N_CANDIDATES", raising=False)
-    monkeypatch.setenv("TOP_CANDIDATE_POOL", "8")
 
     state = {
         "candidate_source": "kiwoom",
+        "applied_policy": {"scanner": {"candidate": {"top_pool": 8}}},
         "mock_top_value_symbols": [
             "A01", "A02", "A03", "A04", "A05", "A06", "A07", "A08", "A09", "A10"
         ],
@@ -297,11 +320,17 @@ def test_fallback_symbols_returns_empty_when_no_runtime_inputs(monkeypatch):
 
 def test_scanner_kiwoom_pool_can_backfill_from_strategist_candidates(monkeypatch):
     monkeypatch.delenv("TOP_N_CANDIDATES", raising=False)
-    monkeypatch.setenv("TOP_CANDIDATE_POOL", "6")
-    monkeypatch.setenv("BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY", "false")
 
     state = {
         "candidate_source": "kiwoom",
+        "applied_policy": {
+            "scanner": {
+                "candidate": {"top_pool": 6},
+                "source": {"type": "kiwoom"},
+                "kiwoom": {"strict_only": False},
+                "fallback": {"block_static_when_empty": False},
+            }
+        },
         "mock_top_value_symbols": ["A01", "A02"],
         "strategist_output": {
             "candidates": ["A01", "A02", "A03", "A04", "A05", "A06"],

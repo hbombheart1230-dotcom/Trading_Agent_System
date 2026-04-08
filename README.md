@@ -68,16 +68,17 @@ Notes:
 - Samsung-only trading is **not** the target architecture.
 - `005930` in examples is illustrative sample data.
 - `SYMBOL_ALLOWLIST` is an optional operational guard.
-- `CANDIDATE_SOURCE=kiwoom` is the default path.
+- Scanner source/fallback strictness is Commander-owned via `applied_policy.scanner.*`.
+- The Commander baseline uses `scanner.source.type=kiwoom`.
 - Strategist candidates remain a compatibility fallback when Kiwoom pool is empty.
-- Pure static fallback pools can be blocked with `BLOCK_STATIC_FALLBACK_WHEN_KIWOOM_EMPTY=true` (default).
-- All strategist fallback can be disabled with `STRICT_KIWOOM_CANDIDATES_ONLY=true` (strict mode).
+- `scanner.fallback.block_static_when_empty=true` blocks pure static fallback pools when Kiwoom is empty.
+- `scanner.kiwoom.strict_only=true` blocks all strategist fallback on Kiwoom-empty.
 - Fallback candidate symbols can be overridden with `FALLBACK_CANDIDATE_SYMBOLS`.
 - `condition_search` is excluded from the default mock/operational baseline.
 - It remains optional only when `KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH=true`.
 - Without Kiwoom websocket condition-search integration its report status will remain `unavailable` instead of silently pretending to contribute candidates.
 - Candidate reduction knobs:
-  - `TOP_CANDIDATE_POOL`
+  - Commander-applied candidate pool baseline (`applied_policy.scanner.candidate.top_pool`)
   - `MIN_TRADING_VALUE`
   - `MIN_VOLUME`
   - `ENABLE_THEME_FILTER`
@@ -219,9 +220,8 @@ Example scanner output:
   - canonical strategist envs:
     - `AI_STRATEGIST_PROVIDER=openai`
     - `AI_STRATEGIST_ENDPOINT=https://openrouter.ai/api/v1/chat/completions`
-    - `AI_STRATEGIST_MODEL=<provider/model>`
-    - `AI_STRATEGIST_TIMEOUT_SEC=<seconds>`
-    - `AI_STRATEGIST_MAX_TOKENS=<tokens>`
+    - Commander-applied `llm.strategist.profile` selects strategist primary/fallback model
+    - Commander-applied `llm.strategist.execution_profile.*` selects timeout / token / retry posture
     - `OPENROUTER_API_KEY=<key>`
   - `STRATEGIST_FRAME_*` variables remain compatibility aliases only
   - observability: EventLog `stage=strategist_llm`, `event=result`
@@ -271,10 +271,10 @@ Example scanner output:
 - Consumes strategist guidance deterministically:
   - `monitor_guidance`, `risk_tone`, `trade_aggressiveness`, `monitor_policy`
 - Monitor guidance is sourced from canonical `state["strategist_output"]`
-- Normal SELL exits are stabilized with:
-  - `MIN_HOLD_SECONDS`
-  - `SELL_COOLDOWN` (`SELL_COOLDOWN_SEC` alias)
-  - `MONITOR_EXIT_CONFIRM_TICKS`
+- Normal SELL exits are stabilized with Commander-owned numeric policy:
+  - `applied_policy.monitor.hold.min_hold_seconds`
+  - `applied_policy.execution.cooldowns.sell_sec`
+  - `applied_policy.monitor.exit.confirm_ticks`
 - Emergency exits (`emergency_halt`, `news_shock`) are handled as explicit separate path
 - Never selects stocks and never places orders
 
@@ -365,19 +365,25 @@ Implemented Milestones:
 Recommended env shape:
 
 ```env
-OPENROUTER_DEFAULT_MODEL=openrouter/free
-OPENROUTER_MODEL_OPERATOR_UI=openrouter/free
-OPENROUTER_MODEL_REPORTER_FINAL=openrouter/auto
-OPENROUTER_MODEL_TRADE_REPORT=openrouter/free
 AI_STRATEGIST_PROVIDER=openai
 AI_STRATEGIST_ENDPOINT=https://openrouter.ai/api/v1/chat/completions
-AI_STRATEGIST_MODEL=openrouter/auto
-AI_STRATEGIST_TIMEOUT_SEC=15
-AI_STRATEGIST_MAX_TOKENS=4096
-AI_STRATEGIST_STRICT=true
-ALLOW_LEGACY_RULE_RUNTIME=false
-ALLOW_LEGACY_STRATEGY_V1_RUNTIME=false
 ```
+
+Commander-owned LLM profile baseline:
+
+- `applied_policy.llm.strategist.profile = balanced`
+- `applied_policy.llm.reporter.intraday.profile = fast_free`
+- `applied_policy.llm.reporter.daily.profile = strong_reasoning`
+
+Commander-owned LLM execution profile baseline:
+
+- `applied_policy.llm.strategist.execution_profile.name = balanced_reasoning`
+- `applied_policy.llm.reporter.intraday.execution_profile.name = concise_review`
+- `applied_policy.llm.reporter.daily.execution_profile.name = deep_review`
+
+Behavior toggles such as strict mode, legacy runtime allowance, route toggles,
+report generation switches, and monitor scoring mode are Commander-owned and are
+injected through `applied_policy` / runtime state rather than env.
 
 Next Steps:
 - Circuit breaker + safe fallback mode
@@ -429,6 +435,8 @@ Operator-facing report scripts:
 - `python -m scripts.run_decision_story_report --event-log-path data/logs/events.jsonl --report-dir reports/decision_story --day <YYYY-MM-DD>`
 - `python -m scripts.run_run_card_report --event-log-path data/logs/events.jsonl --report-dir reports/run_cards --day <YYYY-MM-DD>`
 - `python -m scripts.run_trade_explain_report --event-log-path data/logs/events.jsonl --report-dir reports/dev/analysis/trade_explain --day <YYYY-MM-DD>`
+  - official `trade_explain` path: `reports/dev/analysis/trade_explain/*`
+  - custom `--report-dir` is still supported for ad-hoc output, but it is treated as non-canonical
 - `python -m scripts.run_reporter_analysis_report --event-log-path data/logs/events.jsonl --intents-path data/logs/intents.jsonl --report-dir reports/dev/analysis/reporter_analysis --day <YYYY-MM-DD>`
 - `python -m scripts.run_agent_pipeline_trace_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/dev/analysis/agent_pipeline_trace --run-id <RUN_ID>`
 - `python -m scripts.run_live_execution_bundle_report --event-log-path data/logs/events.jsonl --evidence-log-path data/evidence_ledger/events.jsonl --report-dir reports/dev/analysis/live_execution_bundles --day <YYYY-MM-DD>`

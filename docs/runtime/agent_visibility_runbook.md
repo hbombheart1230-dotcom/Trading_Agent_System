@@ -138,6 +138,9 @@ python -m scripts.generate_metrics_report
 - Output:
   - `reports/dev/analysis/trade_explain/trade_explain_<day>.md`
   - `reports/dev/analysis/trade_explain/trade_explain_<day>.json`
+- Official path policy:
+  - official output path: `reports/dev/analysis/trade_explain/*`
+  - custom output paths are allowed for ad-hoc generation, but they are non-canonical and should not be treated as the operator baseline
 - Purpose:
   - Show BUY/SELL execution timeline with reason chain.
   - Build FIFO sell-pair analysis (hold duration + estimated realized PnL).

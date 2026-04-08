@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from libs.reporting.operator_visibility import generate_operator_daily_summary
+from libs.agent.reporter import Reporter
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -36,20 +36,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     m31_dir = Path(str(args.m31_slo_incident_dir).strip())
     day = str(args.day).strip() if args.day else None
 
-    md_path, js_path = generate_operator_daily_summary(
-        events_path,
-        report_dir,
+    result = Reporter().generate_operator_summary(
+        event_log_path=events_path,
+        report_dir=report_dir,
         day=day,
         metrics_report_dir=metrics_dir,
         m30_post_golive_dir=m30_post_dir,
         m30_golive_dir=m30_go_dir,
         m31_slo_incident_dir=m31_dir,
     )
-    out: Dict[str, Any] = {}
-    try:
-        out = json.loads(js_path.read_text(encoding="utf-8"))
-    except Exception:
-        out = {}
+    out: Dict[str, Any] = dict(result.get("payload") or {})
+    md_path = Path(str(result.get("report_md_path") or out.get("report_md_path") or ""))
+    js_path = Path(str(result.get("report_json_path") or out.get("report_json_path") or ""))
 
     if bool(args.json):
         print(json.dumps(out, ensure_ascii=False))

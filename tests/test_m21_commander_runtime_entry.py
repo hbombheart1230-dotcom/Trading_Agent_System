@@ -430,11 +430,11 @@ def test_m21_runtime_emits_route_and_end_events():
     out = run_commander_runtime({"event_logger": logger}, graph_runner=graph_runner)
 
     router_rows = [r for r in logger.rows if r.get("stage") == "commander_router"]
-    assert [r["event"] for r in router_rows][:2] == ["route", "end"]
+    assert [r["event"] for r in router_rows][:3] == ["route", "route_selected", "end"]
     assert router_rows[-1]["event"] == "shadow_assessment"
     assert router_rows[0]["payload"]["mode"] == "graph_spine"
     assert router_rows[0]["payload"]["phase"] == "session"
-    assert router_rows[1]["payload"]["path"] == "graph_spine"
+    assert router_rows[2]["payload"]["path"] == "graph_spine"
     assert out.get("run_id")
 
 
@@ -452,11 +452,11 @@ def test_m21_runtime_emits_transition_for_pause_control():
     )
 
     router_rows = [r for r in logger.rows if r.get("stage") == "commander_router"]
-    assert [r["event"] for r in router_rows][:3] == ["route", "transition", "end"]
+    assert [r["event"] for r in router_rows][:4] == ["route", "route_selected", "transition", "end"]
     assert router_rows[-1]["event"] == "shadow_assessment"
-    assert router_rows[1]["payload"]["transition"] == "pause"
-    assert router_rows[1]["payload"]["status"] == "paused"
-    assert router_rows[2]["payload"]["path"] is None
+    assert router_rows[2]["payload"]["transition"] == "pause"
+    assert router_rows[2]["payload"]["status"] == "paused"
+    assert router_rows[3]["payload"]["path"] is None
     assert called["graph"] == 0
     assert out["runtime_status"] == "paused"
 
@@ -903,7 +903,6 @@ def test_m31_integrated_chain_uses_monitor_only_fast_path_when_holding(monkeypat
         calls.append("execute")
         return state
 
-    monkeypatch.setenv("COMMANDER_MONITOR_ONLY_WHEN_HOLDING_ENABLED", "true")
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "true")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -912,10 +911,17 @@ def test_m31_integrated_chain_uses_monitor_only_fast_path_when_holding(monkeypat
     monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
     monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
 
-    out = _run_integrated_chain({}, execute_fn=fake_execute)
+    out = _run_integrated_chain(
+        {"applied_policy": {"commander": {"route": {"monitor_only_when_holding": True}}}},
+        execute_fn=fake_execute,
+    )
 
     assert out["path"] == "integrated_chain_monitor_only"
     assert out["runtime_fast_path"]["reason"] == "holding_position_monitor_only"
+    assert out["commander_decision"]["reporter_feedback_mode"] == "disabled"
+    assert out["commander_decision"]["reporter_feedback_mode_source"] == "commander_applied_policy"
+    assert out["commander_decision"]["reporter_feedback_mode_reason"] == "monitor_only_route"
+    assert ((out.get("applied_policy") or {}).get("strategist") or {}).get("reporter_feedback_mode") == "disabled"
     assert calls == [
         "build_portfolio_snapshot",
         "build_risk_context",
@@ -963,7 +969,6 @@ def test_m31_integrated_chain_monitor_only_hydrates_held_symbols_before_monitor(
         state["decision"] = "hold"
         return state
 
-    monkeypatch.setenv("COMMANDER_MONITOR_ONLY_WHEN_HOLDING_ENABLED", "true")
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "true")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -971,7 +976,10 @@ def test_m31_integrated_chain_monitor_only_hydrates_held_symbols_before_monitor(
     monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
     monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
 
-    out = _run_integrated_chain({}, execute_fn=lambda state: state)
+    out = _run_integrated_chain(
+        {"applied_policy": {"commander": {"route": {"monitor_only_when_holding": True}}}},
+        execute_fn=lambda state: state,
+    )
 
     assert out["path"] == "integrated_chain_monitor_only"
     assert calls == [
@@ -1020,7 +1028,6 @@ def test_m31_integrated_chain_monitor_only_uses_position_strategy_context_when_c
         state["decision"] = "hold"
         return state
 
-    monkeypatch.setenv("COMMANDER_MONITOR_ONLY_WHEN_HOLDING_ENABLED", "true")
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "true")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -1030,6 +1037,7 @@ def test_m31_integrated_chain_monitor_only_uses_position_strategy_context_when_c
 
     out = _run_integrated_chain(
         {
+            "applied_policy": {"commander": {"route": {"monitor_only_when_holding": True}}},
             "persisted_state": {
                 "position_strategy_context": {
                     "322000": {
@@ -1088,7 +1096,6 @@ def test_m31_integrated_chain_reuses_cached_strategist_when_flat(monkeypatch):
         state["decision"] = "hold"
         return state
 
-    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
     monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "180")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -1099,6 +1106,7 @@ def test_m31_integrated_chain_reuses_cached_strategist_when_flat(monkeypatch):
 
     out = _run_integrated_chain(
         {
+            "applied_policy": {"commander": {"route": {"cached_strategist_when_flat": True}}},
             "now_epoch": 1000,
             "persisted_state": {
                 "strategist_output_cache": {
@@ -1165,7 +1173,6 @@ def test_m31_integrated_chain_refreshes_strategist_before_buy_when_flat_cache_is
         state["decision"] = "hold"
         return state
 
-    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
     monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -1178,6 +1185,7 @@ def test_m31_integrated_chain_refreshes_strategist_before_buy_when_flat_cache_is
         {
             "run_id": "run-prebuy-refresh-flat",
             "event_logger": _Logger(),
+            "applied_policy": {"commander": {"route": {"cached_strategist_when_flat": True}}},
             "now_epoch": 1000,
             "monitor_output": {
                 "selected_symbol": "000660",
@@ -1258,7 +1266,6 @@ def test_m31_integrated_chain_refreshes_when_selected_symbol_is_outside_cached_f
         state["decision"] = "hold"
         return state
 
-    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
     monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -1270,6 +1277,7 @@ def test_m31_integrated_chain_refreshes_when_selected_symbol_is_outside_cached_f
     out = _run_integrated_chain(
         {
             "run_id": "run-prebuy-refresh-frame-gap",
+            "applied_policy": {"commander": {"route": {"cached_strategist_when_flat": True}}},
             "now_epoch": 1000,
             "monitor_output": {
                 "selected_symbol": "034020",
@@ -1345,7 +1353,6 @@ def test_m31_integrated_chain_refreshes_when_market_regime_shifted_since_cache(m
         state["decision"] = "hold"
         return state
 
-    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
     monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -1357,6 +1364,7 @@ def test_m31_integrated_chain_refreshes_when_market_regime_shifted_since_cache(m
     out = _run_integrated_chain(
         {
             "run_id": "run-prebuy-refresh-regime-shift",
+            "applied_policy": {"commander": {"route": {"cached_strategist_when_flat": True}}},
             "now_epoch": 1000,
             "market_regime": "risk_on",
             "monitor_output": {
@@ -1431,7 +1439,6 @@ def test_m31_integrated_chain_refreshes_when_news_query_targets_drift(monkeypatc
         state["decision"] = "hold"
         return state
 
-    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
     monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -1443,6 +1450,7 @@ def test_m31_integrated_chain_refreshes_when_news_query_targets_drift(monkeypatc
     out = _run_integrated_chain(
         {
             "run_id": "run-prebuy-refresh-news-drift",
+            "applied_policy": {"commander": {"route": {"cached_strategist_when_flat": True}}},
             "now_epoch": 1000,
             "news_query_targets": ["semiconductor", "memory", "ai server"],
             "monitor_output": {
@@ -1519,7 +1527,6 @@ def test_m31_integrated_chain_commander_prefers_cached_strategist_when_frame_is_
         state["decision"] = "hold"
         return state
 
-    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
     monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -1530,6 +1537,7 @@ def test_m31_integrated_chain_commander_prefers_cached_strategist_when_frame_is_
     out = _run_integrated_chain(
         {
             "run_id": "run-commander-cache-preferred",
+            "applied_policy": {"commander": {"route": {"cached_strategist_when_flat": True}}},
             "now_epoch": 1000,
             "monitor_output": {
                 "selected_symbol": "005930",
@@ -1614,7 +1622,6 @@ def test_m31_integrated_chain_runs_fresh_strategist_when_flat_cache_exists_but_d
         state["decision"] = "hold"
         return state
 
-    monkeypatch.delenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", raising=False)
     monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "180")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -1695,7 +1702,6 @@ def test_m31_integrated_chain_reuses_cache_when_commander_explicitly_says_skip(m
         state["decision"] = "hold"
         return state
 
-    monkeypatch.delenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", raising=False)
     monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "180")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -1785,7 +1791,6 @@ def test_m31_integrated_chain_respects_commander_refresh_request_over_cache_reus
         state["decision"] = "hold"
         return state
 
-    monkeypatch.delenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", raising=False)
     monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -1875,7 +1880,6 @@ def test_m31_integrated_chain_reuses_cache_for_ten_minutes_by_default_when_comma
         state["decision"] = "hold"
         return state
 
-    monkeypatch.delenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", raising=False)
     monkeypatch.delenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", raising=False)
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -1990,6 +1994,8 @@ def test_m31_integrated_chain_confirms_applied_policy_from_strategist_before_sca
         assert monitor_policy.get("policy_source") == "strategist"
         assert monitor_policy.get("applied_policy", {}).get("pullback_min_pct") == 0.01
         assert monitor_policy.get("applied_policy", {}).get("interpretation_policy", {}).get("entry_style") == "pullback"
+        assert (((state.get("applied_policy") or {}).get("strategist") or {}).get("reporter_feedback_mode")) == "auto"
+        assert (((state.get("applied_policy") or {}).get("strategist") or {}).get("reporter_feedback_mode_source")) == "commander_applied_policy"
         return state
 
     def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -2024,6 +2030,9 @@ def test_m31_integrated_chain_confirms_applied_policy_from_strategist_before_sca
     assert out["commander_decision"]["policy_fallback_used"] is False
     assert out["commander_decision"]["applied_policy"]["threshold_policy"]["volume_ratio_min"] == 0.72
     assert out["commander_decision"]["applied_policy"]["interpretation_policy"]["entry_style"] == "pullback"
+    assert out["commander_decision"]["reporter_feedback_mode"] == "auto"
+    assert out["commander_decision"]["reporter_feedback_mode_source"] == "commander_applied_policy"
+    assert out["commander_decision"]["reporter_feedback_mode_reason"] == "full_cycle_route"
     assert "support_holding=holding" in list(
         (out["commander_decision"]["applied_policy"]["interpretation_policy"] or {}).get("preferred_checks") or []
     )
@@ -2088,7 +2097,6 @@ def test_m31_integrated_chain_hydrates_held_symbols_before_monitor_after_scanner
         state["decision"] = "hold"
         return state
 
-    monkeypatch.setenv("COMMANDER_MONITOR_ONLY_WHEN_HOLDING_ENABLED", "false")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
     monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
@@ -2097,7 +2105,10 @@ def test_m31_integrated_chain_hydrates_held_symbols_before_monitor_after_scanner
     monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
     monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
 
-    out = _run_integrated_chain({}, execute_fn=lambda state: state)
+    out = _run_integrated_chain(
+        {"applied_policy": {"commander": {"route": {"monitor_only_when_holding": False}}}},
+        execute_fn=lambda state: state,
+    )
 
     assert out["path"] == "integrated_chain"
     assert calls == [
@@ -2146,7 +2157,6 @@ def test_m31_integrated_chain_runs_strategist_when_flat_cache_is_stale(monkeypat
         state["decision"] = "hold"
         return state
 
-    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_WHEN_FLAT_ENABLED", "true")
     monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "60")
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
@@ -2157,6 +2167,7 @@ def test_m31_integrated_chain_runs_strategist_when_flat_cache_is_stale(monkeypat
 
     out = _run_integrated_chain(
         {
+            "applied_policy": {"commander": {"route": {"cached_strategist_when_flat": True}}},
             "now_epoch": 1000,
             "persisted_state": {
                 "strategist_output_cache": {

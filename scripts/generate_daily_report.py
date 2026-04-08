@@ -18,10 +18,16 @@ from libs.reporting.operator_visibility import (
     build_operator_daily_summary_payload,
     build_operator_summary_snapshot_from_payload,
 )
+from libs.reporting.report_metadata import (
+    build_data_freshness,
+    build_route_provenance,
+    render_data_freshness_markdown,
+)
 from libs.reporting.report_source_helpers import build_policy_surface_quality_snapshot
 from libs.reporting.symbol_trade_report import build_daily_trade_index
 from libs.reporting.symbol_trade_report import collect_symbols_for_day
 from libs.reporting.symbol_trade_report import generate_symbol_trade_report
+from libs.agent.reporter import Reporter
 
 
 def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
@@ -147,7 +153,12 @@ def _build_snapshot_freshness(
     if snapshot and snapshot_latest_ts and source_latest_ts and _to_epoch(source_latest_ts) > _to_epoch(snapshot_latest_ts):
         snapshot_stale = True
         notes.append("operator_summary_latest_run_behind_daily_source")
-    return {
+    stale_reason = "aligned_with_source_window"
+    if not bool(snapshot.get("available")):
+        stale_reason = "snapshot_unavailable"
+    elif snapshot_stale:
+        stale_reason = "source_window_advanced_since_snapshot_generation"
+    meta = {
         "available": bool(snapshot.get("available")),
         "stale": bool(snapshot_stale),
         "notes": notes,
@@ -158,6 +169,17 @@ def _build_snapshot_freshness(
         "source_latest_run_id": str(source_freshness.get("latest_run_id") or ""),
         "source_latest_run_ts": source_latest_ts,
     }
+    meta.update(
+        build_data_freshness(
+            generated_at=str(snapshot.get("generated_at") or source_freshness.get("generated_at") or ""),
+            source_run_count=int(source_freshness.get("source_run_count") or 0),
+            latest_run_id=str(source_freshness.get("latest_run_id") or ""),
+            latest_run_ts=str(source_freshness.get("latest_run_ts") or ""),
+            stale=bool(snapshot_stale),
+            stale_reason=stale_reason,
+        )
+    )
+    return meta
 
 
 def _load_policy_surface_quality_snapshot(events_path: Path, out_dir: Path, day: str) -> Dict[str, Any]:
@@ -233,6 +255,13 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             "latest_run_id": report_freshness["latest_run_id"],
             "latest_run_ts": report_freshness["latest_run_ts"],
             "report_freshness": report_freshness,
+            "data_freshness": build_data_freshness(
+                generated_at=report_freshness["generated_at"],
+                source_run_count=report_freshness["source_run_count"],
+                latest_run_id=report_freshness["latest_run_id"],
+                latest_run_ts=report_freshness["latest_run_ts"],
+                stale=False,
+            ),
             "operator_summary_snapshot_freshness": operator_snapshot_freshness,
             "events": 0,
             "trade_index": trade_index,
@@ -246,6 +275,7 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             "policy_surface_quality_source": dict(policy_surface_quality.get("source") or {}),
             "chart_structure_decision_hint_source": dict(policy_surface_quality.get("source") or {}),
             "route_summary": dict(operator_summary_snapshot.get("route_summary") or {}),
+            "route_provenance": build_route_provenance(operator_summary_snapshot.get("route_summary") if isinstance(operator_summary_snapshot.get("route_summary"), dict) else {}),
             "narrative_axis_policy": narrative_axis_policy(),
         }
         md_lines = [
@@ -253,16 +283,8 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             "",
             "No events found.",
         ]
-        md_lines += [
-            "",
-            "## Report Freshness",
-            "",
-            f"- generated_at: `{report_freshness['generated_at']}`",
-            f"- source_run_count: **{report_freshness['source_run_count']}**",
-            f"- latest_run_id: `{report_freshness['latest_run_id'] or '-'}`",
-            f"- latest_run_ts: `{report_freshness['latest_run_ts'] or '-'}`",
-            f"- operator_summary_snapshot_stale: **{operator_snapshot_freshness['stale']}**",
-        ]
+        md_lines += [""] + render_data_freshness_markdown(payload["data_freshness"])
+        md_lines += [f"- operator_summary_snapshot_stale: **{operator_snapshot_freshness['stale']}**"]
         executive = (
             operator_summary_snapshot.get("executive_summary")
             if isinstance(operator_summary_snapshot.get("executive_summary"), dict)
@@ -276,11 +298,12 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         narrative_policy = payload.get("narrative_axis_policy") if isinstance(payload.get("narrative_axis_policy"), dict) else narrative_axis_policy()
         md_lines += [
             "",
-            "## Route Summary",
+            "## Route Provenance",
             "",
             f"- route_source: `{route_summary.get('route_source') or '-'}`",
             f"- route_source_run_count: **{int(route_summary.get('route_source_run_count') or 0)}**",
             f"- route_source_missing_count: **{int(route_summary.get('route_source_missing_count') or 0)}**",
+            f"- route_source_breakdown: `{json.dumps(route_summary.get('route_source_breakdown') or {}, ensure_ascii=False)}`",
             f"- route_selected_total: `{json.dumps(route_summary.get('route_selected_total') or {}, ensure_ascii=False)}`",
             "",
             "## Narrative Axis Policy",
@@ -395,12 +418,20 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     summary["latest_run_id"] = report_freshness["latest_run_id"]
     summary["latest_run_ts"] = report_freshness["latest_run_ts"]
     summary["report_freshness"] = report_freshness
+    summary["data_freshness"] = build_data_freshness(
+        generated_at=report_freshness["generated_at"],
+        source_run_count=report_freshness["source_run_count"],
+        latest_run_id=report_freshness["latest_run_id"],
+        latest_run_ts=report_freshness["latest_run_ts"],
+        stale=False,
+    )
     summary["trade_index"] = trade_index
     summary["symbols_observed"] = symbols_for_day
     summary["generated_symbol_report_count"] = len(generated_symbol_reports)
     summary["operator_summary_snapshot"] = operator_summary_snapshot
     summary["operator_summary_snapshot_freshness"] = operator_summary_snapshot_freshness
     summary["route_summary"] = dict(operator_summary_snapshot.get("route_summary") or {})
+    summary["route_provenance"] = build_route_provenance(operator_summary_snapshot.get("route_summary") if isinstance(operator_summary_snapshot.get("route_summary"), dict) else {})
     summary["policy_surface_quality_summary"] = dict(policy_surface_quality.get("summary") or {})
     summary["policy_surface_quality_executive_summary"] = dict(policy_surface_quality.get("executive_summary") or {})
     summary["chart_structure_decision_hint_summary"] = dict(policy_surface_quality.get("chart_structure_summary") or {})
@@ -412,12 +443,7 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     md_lines = [
         f"# Daily Report ({day})",
         "",
-        "## Report Freshness",
-        "",
-        f"- generated_at: `{report_freshness['generated_at']}`",
-        f"- source_run_count: **{report_freshness['source_run_count']}**",
-        f"- latest_run_id: `{report_freshness['latest_run_id'] or '-'}`",
-        f"- latest_run_ts: `{report_freshness['latest_run_ts'] or '-'}`",
+        *render_data_freshness_markdown(summary["data_freshness"]),
         f"- operator_summary_snapshot_stale: **{operator_summary_snapshot_freshness['stale']}**",
         "",
         f"- events: **{summary['events']}**",
@@ -452,11 +478,12 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     narrative_policy = summary.get("narrative_axis_policy") if isinstance(summary.get("narrative_axis_policy"), dict) else narrative_axis_policy()
     md_lines += [
         "",
-        "## Route Summary",
+        "## Route Provenance",
         "",
         f"- route_source: `{route_summary.get('route_source') or '-'}`",
         f"- route_source_run_count: **{int(route_summary.get('route_source_run_count') or 0)}**",
         f"- route_source_missing_count: **{int(route_summary.get('route_source_missing_count') or 0)}**",
+        f"- route_source_breakdown: `{json.dumps(route_summary.get('route_source_breakdown') or {}, ensure_ascii=False)}`",
         f"- route_selected_total: `{json.dumps(route_summary.get('route_selected_total') or {}, ensure_ascii=False)}`",
         "",
         "## Narrative Axis Policy",
@@ -547,9 +574,13 @@ def main() -> None:
     events_path = Path(os.getenv("EVENT_LOG_PATH", "./data/logs/events.jsonl"))
     out_dir = Path(os.getenv("REPORT_DIR", "./reports"))
     day = os.getenv("REPORT_DAY")  # optional YYYY-MM-DD (UTC)
-    md, js = generate_daily_report(events_path, out_dir, day=day)
-    print(f"Wrote: {md}")
-    print(f"Wrote: {js}")
+    result = Reporter().generate_daily_report(
+        event_log_path=events_path,
+        reports_root=out_dir,
+        day=day,
+    )
+    print(f"Wrote: {result.report_md_path}")
+    print(f"Wrote: {result.report_json_path}")
 
 if __name__ == "__main__":
     main()

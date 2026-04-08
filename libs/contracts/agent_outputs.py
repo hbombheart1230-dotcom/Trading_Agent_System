@@ -1308,6 +1308,10 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         {
             "candidate_pool_snapshot": {
                 "candidate_source": _clip(pool_meta.get("candidate_source"), max_len=80),
+                "scanner_candidate_source": _clip(pool_meta.get("scanner_candidate_source"), max_len=40),
+                "scanner_policy_source": _clip(pool_meta.get("scanner_policy_source"), max_len=80),
+                "scanner_fallback_mode": _clip(pool_meta.get("scanner_fallback_mode"), max_len=80),
+                "scanner_strict_mode": bool(pool_meta.get("scanner_strict_mode")),
                 "candidate_pool_before_filter": _safe_int(pool_meta.get("candidate_pool_before_filter")),
                 "candidate_pool_after_filter": _safe_int(pool_meta.get("candidate_pool_after_filter") or len(ranked)),
                 "source_mix": _dict(pool_meta.get("pool_source_mix")),
@@ -1324,6 +1328,10 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "universe_size": _safe_int(scanner_output.get("candidate_pool_size") or scanner_output.get("candidate_count")),
             "candidate_list_summary": {
                 "candidate_source": _clip(scanner_output.get("candidate_source"), max_len=80),
+                "scanner_candidate_source": _clip(scanner_output.get("scanner_candidate_source"), max_len=40),
+                "scanner_policy_source": _clip(scanner_output.get("scanner_policy_source"), max_len=80),
+                "scanner_fallback_mode": _clip(scanner_output.get("scanner_fallback_mode"), max_len=80),
+                "scanner_strict_mode": bool(scanner_output.get("scanner_strict_mode")),
                 "source_mix": _dict(scanner_output.get("source_mix")),
                 "candidate_count": _safe_int(scanner_output.get("candidate_count")),
             },
@@ -2229,6 +2237,19 @@ def build_commander_output_artifact(
     policy_validation_invalid_fields = _listify(commander_decision.get("policy_validation_invalid_fields"), limit=12, max_len=80)
     override_reason = _clip(commander_decision.get("override_reason"), max_len=180)
     applied_policy_source_chain = _listify(commander_decision.get("applied_policy_source_chain"), limit=6, max_len=80)
+    reporter_feedback_mode = _clip(commander_decision.get("reporter_feedback_mode"), max_len=40)
+    reporter_feedback_mode_source = _clip(commander_decision.get("reporter_feedback_mode_source"), max_len=80)
+    reporter_feedback_mode_reason = _clip(commander_decision.get("reporter_feedback_mode_reason"), max_len=120)
+    reporter_feedback_semantics = _clip(commander_decision.get("reporter_feedback_semantics"), max_len=40)
+    commander_applied_policy_summary = _dict(commander_decision.get("commander_applied_policy_summary"))
+    policy_sources = _dict(commander_decision.get("policy_sources"))
+    strategist_runtime_policy_source = _clip(commander_decision.get("strategist_runtime_policy_source"), max_len=80)
+    llm_policy_source = _clip(commander_decision.get("llm_policy_source"), max_len=80)
+    llm_execution_profile_source = _clip(commander_decision.get("llm_execution_profile_source"), max_len=80)
+    reporter_policy_source = _clip(commander_decision.get("reporter_policy_source"), max_len=80)
+    monitor_policy_source = _clip(commander_decision.get("monitor_policy_source"), max_len=80)
+    scanner_policy_source = _clip(commander_decision.get("scanner_policy_source"), max_len=80)
+    execution_policy_source = _clip(commander_decision.get("execution_policy_source"), max_len=80)
     route_observability = (
         _dict(state.get("commander_route_observability"))
         or build_commander_route_observability_surface(
@@ -2340,6 +2361,19 @@ def build_commander_output_artifact(
             "policy_validation_invalid_fields": policy_validation_invalid_fields,
             "override_reason": override_reason,
             "applied_policy_source_chain": applied_policy_source_chain,
+            "reporter_feedback_mode": reporter_feedback_mode,
+            "reporter_feedback_mode_source": reporter_feedback_mode_source,
+            "reporter_feedback_mode_reason": reporter_feedback_mode_reason,
+            "reporter_feedback_semantics": reporter_feedback_semantics or "advisory_only",
+            "commander_applied_policy_summary": commander_applied_policy_summary,
+            "policy_sources": policy_sources,
+            "strategist_runtime_policy_source": strategist_runtime_policy_source,
+            "llm_policy_source": llm_policy_source,
+            "llm_execution_profile_source": llm_execution_profile_source,
+            "reporter_policy_source": reporter_policy_source,
+            "monitor_policy_source": monitor_policy_source,
+            "scanner_policy_source": scanner_policy_source,
+            "execution_policy_source": execution_policy_source,
             "route_observability": dict(route_observability),
             "route_selected": _clip(route_observability.get("route_selected"), max_len=80),
             "route_reason": _clip(route_observability.get("route_reason"), max_len=220),

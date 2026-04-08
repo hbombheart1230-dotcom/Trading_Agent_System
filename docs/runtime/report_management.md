@@ -14,12 +14,14 @@
 Operators should check the first six directories for day-to-day operations.
 `reports/dev` is for diagnostics, replay, and deep analysis outputs.
 `reports/milestones` is for M30/M31 evidence bundles.
+For daily execution explainability, the official `trade_explain` output lives under `reports/dev/analysis/trade_explain/*`.
+Top-level `reports/trade_explain/*` should be treated as legacy or ad-hoc output, not the canonical operator baseline.
 
 Recommended `reports/dev` layout:
 
 - `reports/dev/analysis`
   - `agent_pipeline_trace`
-  - `trade_explain`
+  - `trade_explain`  <- official daily trade-explain output path
   - `reporter_analysis`
   - `ops_diagnostic`
 - `reports/dev/live`

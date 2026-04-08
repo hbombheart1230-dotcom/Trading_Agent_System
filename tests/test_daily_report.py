@@ -184,7 +184,10 @@ def test_generate_daily_report_surfaces_operator_summary_snapshot(tmp_path: Path
     assert snapshot["executive_summary"]["system_status"] == "GREEN"
     assert snapshot["executive_summary"]["summary_lines"][0].startswith("runs=12")
     assert snapshot["route_summary"]["route_source"] == "canonical_commander_preferred"
+    assert snapshot["data_freshness"]["freshness_status"] == "fresh"
     assert data["report_freshness"]["source_run_count"] == 1
+    assert data["data_freshness"]["freshness_status"] == "fresh"
+    assert data["route_provenance"]["route_source"] == "canonical_commander_preferred"
     assert data["operator_summary_snapshot_freshness"]["stale"] is True
     assert data["policy_surface_quality_summary"]["schema_version"] == "policy_surface_quality_summary.v1"
     assert data["policy_surface_quality_executive_summary"]["schema_version"] == "policy_surface_quality_executive_summary.v1"
@@ -193,9 +196,9 @@ def test_generate_daily_report_surfaces_operator_summary_snapshot(tmp_path: Path
     assert "policy_surface_quality_source" in data
     assert "chart_structure_decision_hint_source" in data
     md_text = md.read_text(encoding="utf-8")
-    assert "## Report Freshness" in md_text
+    assert "## Data Freshness" in md_text
     assert "## Operator Summary Snapshot" in md_text
-    assert "## Route Summary" in md_text
+    assert "## Route Provenance" in md_text
     assert "## Policy Surface Executive Summary" in md_text
     assert "## Policy Surface Quality" in md_text
     assert "## Chart Structure Decision Hint Executive Summary" in md_text
@@ -230,9 +233,10 @@ def test_generate_daily_report_keeps_working_when_policy_surface_summary_unavail
     assert data["policy_surface_quality_summary"]["run_count"] == 0
     assert data["policy_surface_quality_source"]["run_count"] == 0
     assert data["report_freshness"]["source_run_count"] == 1
+    assert data["data_freshness"]["freshness_status"] == "fresh"
     assert "no_canonical_monitor_runs_found" in list(data["policy_surface_quality_source"]["notes"])
     md_text = md.read_text(encoding="utf-8")
-    assert "## Report Freshness" in md_text
+    assert "## Data Freshness" in md_text
     assert "## Policy Surface Executive Summary" in md_text
     assert "## Policy Surface Quality" in md_text
     assert "## Chart Structure Decision Hint Executive Summary" in md_text

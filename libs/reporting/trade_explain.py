@@ -8,11 +8,19 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from libs.core.symbols import normalize_symbol
 from libs.reporting.narrative_axes import build_narrative_explanation, narrative_axis_policy
+from libs.reporting.report_metadata import (
+    build_data_freshness,
+    build_route_provenance,
+    render_data_freshness_markdown,
+)
 from libs.reporting.report_source_helpers import (
     build_commander_route_summary,
     epoch_to_iso,
     utc_now_iso,
 )
+
+OFFICIAL_TRADE_EXPLAIN_RELATIVE_DIR = Path("dev") / "analysis" / "trade_explain"
+OFFICIAL_TRADE_EXPLAIN_REPORT_DIR = (Path("reports") / OFFICIAL_TRADE_EXPLAIN_RELATIVE_DIR).as_posix()
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -98,6 +106,25 @@ def _canonical_report_root(report_dir: Path) -> Path:
     if report_dir.name in {"trade_explain", "daily", "metrics", "run_cards", "decision_story", "operator_summary"}:
         return report_dir.parent
     return report_dir
+
+
+def official_trade_explain_report_dir(reports_root: Path) -> Path:
+    return Path(reports_root) / OFFICIAL_TRADE_EXPLAIN_RELATIVE_DIR
+
+
+def build_trade_explain_output_path_metadata(report_dir: Path) -> Dict[str, Any]:
+    canonical_reports_root = _canonical_report_root(report_dir)
+    requested_dir = Path(report_dir)
+    official_dir = official_trade_explain_report_dir(canonical_reports_root)
+    is_official = requested_dir == official_dir
+    return {
+        "official_report_dir": str(official_dir),
+        "requested_report_dir": str(requested_dir),
+        "path_status": "official" if is_official else "custom_nonofficial",
+        "deprecated_note": ""
+        if is_official
+        else f"Official trade_explain path is `{official_dir}`; custom output path is supported but non-canonical.",
+    }
 
 
 def _extract_news_items(news: Dict[str, Any], llm_ctx: Dict[str, Any]) -> List[str]:
@@ -496,6 +523,9 @@ def _to_markdown(
     event_log_path: Path,
     route_summary: Dict[str, Any],
     freshness: Dict[str, Any],
+    data_freshness: Dict[str, Any],
+    route_provenance: Dict[str, Any],
+    output_path_policy: Dict[str, Any],
     execution_summary: Dict[str, Any],
     agent_activity: Dict[str, Any],
     sell_pairs: List[Dict[str, Any]],
@@ -508,16 +538,30 @@ def _to_markdown(
     lines.append(f"# Trade Explain Report ({day})")
     lines.append("")
     lines.append(f"- event_log_path: `{event_log_path}`")
-    lines.append(f"- generated_at: `{freshness.get('generated_at') or ''}`")
-    lines.append(f"- source_run_count: **{int(freshness.get('source_run_count') or 0)}**")
-    lines.append(f"- latest_run_id: `{freshness.get('latest_run_id') or '-'}`")
-    lines.append(f"- latest_run_ts: `{freshness.get('latest_run_ts') or '-'}`")
     lines.append(f"- narrative_policy: exit-first for SELL/EXIT, entry-first for BUY/WAIT/NO_TRADE")
-    lines.append(f"- executions_total: **{int(execution_summary.get('executions_total') or 0)}**")
-    lines.append(f"- sell_pairs_total: **{int(execution_summary.get('sell_pairs_total') or 0)}**")
     lines.append("")
+    lines += render_data_freshness_markdown(data_freshness)
+    lines += [
+        "",
+        "## Output Path Policy",
+        "",
+        f"- official_report_dir: `{output_path_policy.get('official_report_dir') or ''}`",
+        f"- requested_report_dir: `{output_path_policy.get('requested_report_dir') or ''}`",
+        f"- path_status: `{output_path_policy.get('path_status') or 'unknown'}`",
+        f"- note: {output_path_policy.get('deprecated_note') or 'requested path is canonical'}",
+        "",
+        "## Route Provenance",
+        "",
+        f"- route_source: `{route_provenance.get('route_source') or 'unavailable'}`",
+        f"- route_source_run_count: **{int(route_provenance.get('route_source_run_count') or 0)}**",
+        f"- route_source_missing_count: **{int(route_provenance.get('route_source_missing_count') or 0)}**",
+        f"- route_source_breakdown: `{route_provenance.get('route_source_breakdown') or {}}`",
+        "",
+    ]
     lines.append("## Executive Summary")
     lines.append("")
+    lines.append(f"- executions_total: **{int(execution_summary.get('executions_total') or 0)}**")
+    lines.append(f"- sell_pairs_total: **{int(execution_summary.get('sell_pairs_total') or 0)}**")
     lines.append(f"- symbols_executed: `{execution_summary.get('symbols_executed') or []}`")
     lines.append(f"- action_counts: `{execution_summary.get('action_counts') or {}}`")
     lines.append(f"- symbol_side_counts: `{execution_summary.get('symbol_side_counts') or {}}`")
@@ -641,12 +685,14 @@ def generate_trade_explain_report(
 ) -> Tuple[Path, Path, Dict[str, Any]]:
     selected_day = str(day or "").strip() or (_latest_day(event_log_path) or "")
     report_dir.mkdir(parents=True, exist_ok=True)
+    output_path_policy = build_trade_explain_output_path_metadata(report_dir)
 
     if not selected_day:
         out = {
             "schema_version": "trade_explain.v1",
             "day": "",
             "event_log_path": str(event_log_path),
+            "output_path_policy": output_path_policy,
             "executions_total": 0,
             "sell_pairs_total": 0,
             "report_json_path": "",
@@ -787,6 +833,14 @@ def generate_trade_explain_report(
         "latest_run_id": str((latest_row or {}).get("run_id") or ""),
         "latest_run_ts": epoch_to_iso(latest_epoch),
     }
+    data_freshness = build_data_freshness(
+        generated_at=freshness["generated_at"],
+        source_run_count=freshness["source_run_count"],
+        latest_run_id=freshness["latest_run_id"],
+        latest_run_ts=freshness["latest_run_ts"],
+        stale=False,
+    )
+    route_provenance = build_route_provenance(route_summary)
 
     out: Dict[str, Any] = {
         "schema_version": "trade_explain.v1",
@@ -796,7 +850,10 @@ def generate_trade_explain_report(
         "source_run_count": freshness["source_run_count"],
         "latest_run_id": freshness["latest_run_id"],
         "latest_run_ts": freshness["latest_run_ts"],
+        "data_freshness": data_freshness,
+        "route_provenance": route_provenance,
         "narrative_axis_policy": narrative_axis_policy(),
+        "output_path_policy": output_path_policy,
         "route_summary": {
             "route_source": str(route_summary.get("route_source") or "unavailable"),
             "route_source_run_count": int(route_summary.get("route_source_run_count") or 0),
@@ -826,6 +883,9 @@ def generate_trade_explain_report(
         event_log_path=event_log_path,
         route_summary=out["route_summary"],
         freshness=freshness,
+        data_freshness=data_freshness,
+        route_provenance=route_provenance,
+        output_path_policy=output_path_policy,
         execution_summary=execution_summary,
         agent_activity=agent_activity,
         sell_pairs=pair_tail,

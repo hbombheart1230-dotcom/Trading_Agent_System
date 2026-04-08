@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 from libs.agent.strategist import Plan
 from libs.core.symbols import normalize_symbol
+from libs.runtime.scanner_policy import resolve_scanner_runtime_policy
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 
 
@@ -53,20 +54,31 @@ class Scanner:
         if isinstance(provided, list) and all(isinstance(x, dict) for x in provided):
             return provided
 
-        source = str(context.get("candidate_source") or os.getenv("CANDIDATE_SOURCE", "kiwoom")).strip().lower()
-        top_pool = max(1, _to_int(context.get("top_candidate_pool"), _to_int(os.getenv("TOP_CANDIDATE_POOL", "30"), 30)))
+        applied_policy = context.get("applied_policy") if isinstance(context.get("applied_policy"), dict) else {}
+        scanner_policy = applied_policy.get("scanner") if isinstance(applied_policy.get("scanner"), dict) else {}
+        candidate_policy = scanner_policy.get("candidate") if isinstance(scanner_policy.get("candidate"), dict) else {}
+        kiwoom_policy = scanner_policy.get("kiwoom") if isinstance(scanner_policy.get("kiwoom"), dict) else {}
+        runtime_scanner_policy = resolve_scanner_runtime_policy(context, context.get("policy") if isinstance(context.get("policy"), dict) else {})
+        source = str(runtime_scanner_policy.get("source_type") or "kiwoom").strip().lower()
+        raw_top_pool = context.get("top_candidate_pool")
+        if raw_top_pool in (None, ""):
+            raw_top_pool = candidate_policy.get("top_pool")
+        top_pool = max(1, _to_int(raw_top_pool, 30))
         candidate_limit = max(1, _to_int(context.get("top_n_candidates"), _to_int(os.getenv("TOP_N_CANDIDATES", "5"), 5)))
-        condition_limit = max(top_pool, _to_int(context.get("candidate_condition_limit"), _to_int(os.getenv("KIWOOM_CANDIDATE_CONDITION_LIMIT", "200"), 200)))
+        raw_condition_limit = context.get("candidate_condition_limit")
+        if raw_condition_limit in (None, ""):
+            raw_condition_limit = kiwoom_policy.get("condition_limit")
+        condition_limit = max(top_pool, _to_int(raw_condition_limit, 200))
 
         # Candidate ranking path (additive):
         # Primary source is Kiwoom market data; strategist candidates are fallback hints.
         candidate_rows: List[Dict[str, Any]] = []
-        if source in ("kiwoom", "market_data"):
+        if source in ("kiwoom", "hybrid", "market_data"):
             rows, _meta = build_kiwoom_candidate_rows(
                 state=context,
                 top_pool=top_pool,
                 condition_limit=condition_limit,
-                include_change_rate=True,
+                include_change_rate=bool(runtime_scanner_policy.get("include_change_rate")),
             )
             themes = [str(x).strip().lower() for x in (getattr(plan, "themes", []) or []) if str(x).strip()]
             theme_idx = _extract_theme_map(context)

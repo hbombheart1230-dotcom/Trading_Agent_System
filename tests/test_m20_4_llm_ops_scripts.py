@@ -27,7 +27,6 @@ def test_m20_4_smoke_show_llm_event_in_openai_mode(monkeypatch, tmp_path: Path, 
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
     monkeypatch.setenv("AI_STRATEGIST_MODEL", "test-model")
-    monkeypatch.setenv("AI_STRATEGIST_RETRY_MAX", "0")
     monkeypatch.setenv("EVENT_LOG_PATH", str(events))
 
     def fake_post_json(url, headers, payload, timeout=15.0):  # type: ignore[no-untyped-def]
@@ -73,7 +72,6 @@ def test_m20_4_smoke_show_llm_event_in_openai_mode(monkeypatch, tmp_path: Path, 
 def test_m20_4_smoke_require_llm_event_succeeds_with_blocked_llm_event(monkeypatch, tmp_path: Path):
     events = tmp_path / "events.jsonl"
     monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "rule")
-    monkeypatch.setenv("ALLOW_LEGACY_RULE_RUNTIME", "false")
     monkeypatch.setenv("EVENT_LOG_PATH", str(events))
     rc = smoke_main(["--event-log-path", str(events), "--require-llm-event"])
     assert rc == 0

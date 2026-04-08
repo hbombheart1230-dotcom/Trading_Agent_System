@@ -7,9 +7,15 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from libs.llm.model_catalog import resolve_policy_llm_slot
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.reporting.llm_artifacts import daily_artifact_paths
 from libs.reporting.narrative_axes import build_narrative_explanation, narrative_axis_policy
+from libs.reporting.report_metadata import (
+    build_data_freshness,
+    build_route_provenance,
+    render_data_freshness_markdown,
+)
 from libs.reporting.report_source_helpers import (
     build_commander_route_summary,
     build_policy_surface_quality_snapshot,
@@ -422,12 +428,20 @@ def build_operator_summary_snapshot_from_payload(payload: Dict[str, Any]) -> Dic
         else []
     )
     route_summary = payload.get("route_summary") if isinstance(payload.get("route_summary"), dict) else {}
+    data_freshness = build_data_freshness(
+        generated_at=str(payload.get("generated_at") or ""),
+        source_run_count=payload.get("source_run_count"),
+        latest_run_id=str(payload.get("latest_run_id") or ""),
+        latest_run_ts=str(payload.get("latest_run_ts") or ""),
+        stale=False,
+    )
     return {
         "available": True,
         "generated_at": str(payload.get("generated_at") or ""),
         "source_run_count": payload.get("source_run_count"),
         "latest_run_id": str(payload.get("latest_run_id") or ""),
         "latest_run_ts": str(payload.get("latest_run_ts") or ""),
+        "data_freshness": data_freshness,
         "executive_summary": {
             "system_status": str(executive.get("system_status") or ""),
             "summary_lines": [str(x or "") for x in list(executive.get("summary_lines") or []) if str(x or "").strip()][:5],
@@ -450,9 +464,11 @@ def build_operator_summary_snapshot_from_payload(payload: Dict[str, Any]) -> Dic
             "route_source": str(route_summary.get("route_source") or ""),
             "route_source_run_count": int(route_summary.get("route_source_run_count") or 0),
             "route_source_missing_count": int(route_summary.get("route_source_missing_count") or 0),
+            "route_source_breakdown": dict(route_summary.get("route_source_breakdown") or {}),
             "route_selected_total": dict(route_summary.get("route_selected_total") or {}),
             "strategy_generation_mode_total": dict(route_summary.get("strategy_generation_mode_total") or {}),
         },
+        "route_provenance": build_route_provenance(route_summary),
         "top_issues": [
             {
                 "code": str((issue or {}).get("code") or ""),
@@ -1037,6 +1053,13 @@ def build_operator_daily_summary_payload(
         "source_run_count": int(freshness["source_run_count"]),
         "latest_run_id": freshness["latest_run_id"],
         "latest_run_ts": freshness["latest_run_ts"],
+        "data_freshness": build_data_freshness(
+            generated_at=freshness["generated_at"],
+            source_run_count=freshness["source_run_count"],
+            latest_run_id=freshness["latest_run_id"],
+            latest_run_ts=freshness["latest_run_ts"],
+            stale=False,
+        ),
         "inputs": {
             "event_log_path": str(events_path),
             "metrics_json_path": str((metrics_dir / f"metrics_{target_day}.json")),
@@ -1068,6 +1091,7 @@ def build_operator_daily_summary_payload(
             "strategy_generation_mode_total": dict(route_summary.get("strategy_generation_mode_total") or {}),
             "strategist_fallback_total": int(route_summary.get("strategist_fallback_total") or 0),
         },
+        "route_provenance": build_route_provenance(route_summary),
         "safety_guard_interventions": {
             "blocked_total": int(blocked_total),
             "blocked_reason_top": dict(blocked_reason_counts.most_common(5)),
@@ -1145,12 +1169,9 @@ def generate_operator_daily_summary(
     md_lines = [
         f"# Operator Daily Summary ({target_day})",
         "",
-        "## Report Freshness",
-        "",
-        f"- generated_at: `{out['generated_at']}`",
-        f"- source_run_count: **{out['source_run_count']}**",
-        f"- latest_run_id: `{out['latest_run_id'] or '-'}`",
-        f"- latest_run_ts: `{out['latest_run_ts'] or '-'}`",
+    ]
+    md_lines += render_data_freshness_markdown(out.get("data_freshness") if isinstance(out.get("data_freshness"), dict) else {})
+    md_lines += [
         "",
         "## Executive Summary",
         "",
@@ -1199,7 +1220,7 @@ def generate_operator_daily_summary(
         f"- noop_reason_top_human: {_format_reason_rows(list(tas.get('noop_reason_top_human') or []))}",
         f"- fallback_signal_status_top_human: {_format_reason_rows(list(tas.get('fallback_signal_status_top_human') or []))}",
         "",
-        "## Commander Route Summary",
+        "## Route Provenance",
         "",
         f"- route_source: `{route_summary.get('route_source') or '-'}`",
         f"- route_source_run_count: **{int(route_summary.get('route_source_run_count') or 0)}**",
@@ -1290,11 +1311,16 @@ def generate_decision_story_report(
     stories = stories_all[:limit] if limit > 0 else stories_all
 
     md_lines = [f"# Decision Story Report ({target_day})", ""]
+    md_lines += render_data_freshness_markdown(
+        build_data_freshness(
+            generated_at=freshness["generated_at"],
+            source_run_count=freshness["source_run_count"],
+            latest_run_id=freshness["latest_run_id"],
+            latest_run_ts=freshness["latest_run_ts"],
+            stale=False,
+        )
+    )
     md_lines += [
-        f"- generated_at: `{freshness['generated_at']}`",
-        f"- source_run_count: **{freshness['source_run_count']}**",
-        f"- latest_run_id: `{freshness['latest_run_id'] or '-'}`",
-        f"- latest_run_ts: `{freshness['latest_run_ts'] or '-'}`",
         f"- story_total: **{int(len(stories_all))}**",
         f"- rendered_story_total: **{int(len(stories))}**",
     ]
@@ -1368,9 +1394,17 @@ def generate_decision_story_report(
         "source_run_count": int(freshness["source_run_count"]),
         "latest_run_id": freshness["latest_run_id"],
         "latest_run_ts": freshness["latest_run_ts"],
+        "data_freshness": build_data_freshness(
+            generated_at=freshness["generated_at"],
+            source_run_count=freshness["source_run_count"],
+            latest_run_id=freshness["latest_run_id"],
+            latest_run_ts=freshness["latest_run_ts"],
+            stale=False,
+        ),
         "route_source": str(route_summary.get("route_source") or "canonical_commander_preferred"),
         "route_source_run_count": int(route_summary.get("route_source_run_count") or 0),
         "route_source_missing_count": int(route_summary.get("route_source_missing_count") or 0),
+        "route_provenance": build_route_provenance(route_summary),
         "story_total": int(len(stories_all)),
         "rendered_story_total": int(len(stories)),
         "truncated": bool(len(stories) < len(stories_all)),
@@ -1411,11 +1445,16 @@ def generate_run_card_report(
     stories = stories_all[:limit] if limit > 0 else stories_all
 
     lines = [f"# Run Cards ({target_day})", ""]
+    lines += render_data_freshness_markdown(
+        build_data_freshness(
+            generated_at=freshness["generated_at"],
+            source_run_count=freshness["source_run_count"],
+            latest_run_id=freshness["latest_run_id"],
+            latest_run_ts=freshness["latest_run_ts"],
+            stale=False,
+        )
+    )
     lines += [
-        f"- generated_at: `{freshness['generated_at']}`",
-        f"- source_run_count: **{freshness['source_run_count']}**",
-        f"- latest_run_id: `{freshness['latest_run_id'] or '-'}`",
-        f"- latest_run_ts: `{freshness['latest_run_ts'] or '-'}`",
         f"- card_total: **{int(len(stories_all))}**",
         f"- rendered_card_total: **{int(len(stories))}**",
     ]
@@ -1470,9 +1509,17 @@ def generate_run_card_report(
         "source_run_count": int(freshness["source_run_count"]),
         "latest_run_id": freshness["latest_run_id"],
         "latest_run_ts": freshness["latest_run_ts"],
+        "data_freshness": build_data_freshness(
+            generated_at=freshness["generated_at"],
+            source_run_count=freshness["source_run_count"],
+            latest_run_id=freshness["latest_run_id"],
+            latest_run_ts=freshness["latest_run_ts"],
+            stale=False,
+        ),
         "route_source": str(route_summary.get("route_source") or "canonical_commander_preferred"),
         "route_source_run_count": int(route_summary.get("route_source_run_count") or 0),
         "route_source_missing_count": int(route_summary.get("route_source_missing_count") or 0),
+        "route_provenance": build_route_provenance(route_summary),
         "card_total": int(len(stories_all)),
         "rendered_card_total": int(len(stories)),
         "truncated": bool(len(stories) < len(stories_all)),
@@ -1536,11 +1583,10 @@ def build_separated_operator_brief(trade_dir: str, symbol: str, trades_root: str
         symbol_model = build_symbol_read_model(str(trades_root), str(symbol))
     except Exception:
         symbol_model = {}
-        
+    llm_scope = trade_model if isinstance(trade_model, dict) and trade_model else symbol_model
     chosen_model = normalize_openrouter_model_name(
         str(model or "").strip()
-        or str(os.getenv("OPENROUTER_MODEL_OPERATOR_UI", "")).strip()
-        or str(os.getenv("OPENROUTER_DEFAULT_MODEL", "")).strip()
-        or "openrouter/auto"
+        or str(resolve_policy_llm_slot(llm_scope if isinstance(llm_scope, dict) else {}, "reporter", "intraday", default_profile="fast_free").get("primary") or "").strip()
+        or "minimax/minimax-m2.5"
     )
     return build_separated_report(trade_model=trade_model, symbol_model=symbol_model, model=chosen_model)

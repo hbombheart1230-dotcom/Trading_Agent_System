@@ -60,6 +60,21 @@ class _EmptyDailyRouter:
         return ""
 
 
+class _CaptureDailyRouter:
+    last_policy: dict | None = None
+
+    def __init__(self) -> None:
+        self.client = object()
+
+    @staticmethod
+    def from_env() -> "_CaptureDailyRouter":
+        return _CaptureDailyRouter()
+
+    def chat(self, role: str, messages: list[dict], *, policy: dict | None = None) -> str:
+        _CaptureDailyRouter.last_policy = dict(policy or {})
+        return "- 요약\nTakeaway: ok"
+
+
 def test_m19_6_daily_summary_retries_and_records_failure_artifact(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DRY_RUN", "0")
     monkeypatch.setenv("OPENROUTER_API_KEY", "dummy")
@@ -75,3 +90,38 @@ def test_m19_6_daily_summary_retries_and_records_failure_artifact(monkeypatch: p
     assert artifact["status"] == "empty_response"
     assert artifact["retry_count"] == 2
     assert len(artifact["attempts"]) == 3
+
+
+def test_m19_6_daily_summary_uses_policy_execution_profile(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("DRY_RUN", "0")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "dummy")
+    monkeypatch.setattr("libs.reporting.llm_daily_summary.LLMRouter", _CaptureDailyRouter)
+
+    summary, artifact = summarize_daily_report_with_artifact(
+        state={
+            "eod_day": "2026-03-18",
+            "daily_report": {"approvals": 1, "denials": 0, "runs": 3},
+            "applied_policy": {
+                "llm": {
+                    "reporter": {
+                        "daily": {
+                            "primary": "moonshotai/kimi-k2.5",
+                            "execution_profile": {
+                                "name": "deep_review",
+                                "temperature": 0.35,
+                                "max_tokens": 1234,
+                            },
+                        }
+                    }
+                }
+            },
+        },
+        policy={},
+    )
+
+    assert summary
+    assert artifact["status"] == "ok"
+    assert isinstance(_CaptureDailyRouter.last_policy, dict)
+    assert _CaptureDailyRouter.last_policy["model"] == "moonshotai/kimi-k2.5"
+    assert float(_CaptureDailyRouter.last_policy["temperature"]) == 0.35
+    assert int(_CaptureDailyRouter.last_policy["max_tokens"]) == 1234

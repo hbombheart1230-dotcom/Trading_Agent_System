@@ -12,7 +12,7 @@ from .operator_visibility import (
     generate_run_card_report,
 )
 from .reporter_ai_review import build_ai_reporter_review
-from .trade_explain import generate_trade_explain_report
+from .trade_explain import generate_trade_explain_report, official_trade_explain_report_dir
 from libs.core.symbols import normalize_symbol
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 from libs.research.strategy_memory_store import (
@@ -1500,7 +1500,7 @@ def _build_improvement_suggestions(
     if (no_focus or wants_theme) and str(strategist_eval.get("theme_alignment_status") or "") in ("partial", "insufficient_data"):
         suggestions.append("Improve strategist-to-market alignment evidence: add stronger theme mapping and leader validation inputs.")
     if (no_focus or wants_scanner) and str(scanner_eval.get("selection_status") or "") == "needs_review":
-        suggestions.append("Tune scanner candidate pool reduction (TOP_CANDIDATE_POOL/MIN_TRADING_VALUE/MIN_VOLUME) to reduce empty selections.")
+        suggestions.append("Tune scanner candidate pool reduction (Commander candidate pool baseline / MIN_TRADING_VALUE / MIN_VOLUME) to reduce empty selections.")
     if (no_focus or wants_exit) and str(monitor_eval.get("monitor_status") or "") == "overtrading_risk":
         suggestions.append("Reduce monitor flip risk by increasing confirmation strictness or widening non-emergency exit thresholds.")
     if (no_focus or wants_guard) and _safe_float(supervisor_activity.get("blocked_rate"), 0.0) >= 0.40:
@@ -1773,7 +1773,7 @@ def generate_reporter_analysis_report(
 
     trade_md, trade_js, trade_obj = generate_trade_explain_report(
         event_log_path,
-        root / "trade_explain",
+        official_trade_explain_report_dir(root.parent.parent) if root.name == "analysis" else root / "trade_explain",
         day=target_day,
         max_executions=300,
         max_sell_pairs=300,

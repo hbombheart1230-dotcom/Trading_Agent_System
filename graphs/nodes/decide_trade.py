@@ -42,12 +42,14 @@ def _is_trueish(v: Any) -> bool:
 
 
 def _legacy_rule_runtime_enabled(state: Dict[str, Any] | None = None) -> bool:
+    applied_policy = state.get("applied_policy") if isinstance(state, dict) and isinstance(state.get("applied_policy"), dict) else {}
+    strategist_policy = applied_policy.get("strategist") if isinstance(applied_policy.get("strategist"), dict) else {}
+    runtime_policy = strategist_policy.get("runtime") if isinstance(strategist_policy.get("runtime"), dict) else {}
+    if runtime_policy.get("allow_legacy_rule") is not None:
+        return _is_trueish(runtime_policy.get("allow_legacy_rule"))
     policy = state.get("policy") if isinstance(state, dict) and isinstance(state.get("policy"), dict) else {}
     if policy.get("allow_legacy_rule_runtime") is not None:
         return _is_trueish(policy.get("allow_legacy_rule_runtime"))
-    env_raw = str(os.getenv("ALLOW_LEGACY_RULE_RUNTIME", "") or "").strip()
-    if env_raw:
-        return _is_trueish(env_raw)
     return False
 
 
@@ -178,6 +180,7 @@ def _resolve_exit_policy_enabled(state: Dict[str, Any]) -> bool:
 
 def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
     cfg = policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else {}
     out = dict(cfg or {})
 
@@ -186,7 +189,17 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
     vol_exp_raw = str(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "") or "").strip()
     news_shock_raw = str(os.getenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "") or "").strip()
     eod_flat_raw = str(os.getenv("EXIT_POLICY_USE_EOD_FLAT", "") or "").strip()
-    eod_cutoff_raw = str(os.getenv("EXIT_POLICY_EOD_FLAT_CUTOFF_MIN", "") or "").strip()
+    eod_cutoff_value = (
+        ((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("cutoff_min"))
+        if isinstance((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")), dict)
+        else None
+    )
+    if eod_cutoff_value is None and isinstance(policy.get("monitor"), dict):
+        eod_cutoff_value = (
+            ((((policy.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("cutoff_min"))
+            if isinstance((((policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")), dict)
+            else None
+        )
     emergency_raw = str(os.getenv("EXIT_POLICY_EMERGENCY_HALT", "") or "").strip()
 
     out = apply_env_stop_take_fallbacks(out)
@@ -200,8 +213,8 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
         out["news_shock_threshold"] = _to_float(news_shock_raw, _to_float(out.get("news_shock_threshold"), 0.0))
     if eod_flat_raw:
         out["use_eod_flat"] = _is_trueish(eod_flat_raw)
-    if eod_cutoff_raw:
-        out["eod_flat_cutoff_min"] = int(_to_float(eod_cutoff_raw, _to_float(out.get("eod_flat_cutoff_min"), 10.0)))
+    if eod_cutoff_value is not None:
+        out["eod_flat_cutoff_min"] = int(_to_float(eod_cutoff_value, _to_float(out.get("eod_flat_cutoff_min"), 10.0)))
     if emergency_raw:
         out["emergency_halt"] = _is_trueish(emergency_raw)
     return out
@@ -224,22 +237,46 @@ def _resolve_position_hold_sec(state: Dict[str, Any]) -> int | None:
 
 def _resolve_post_exit_cooldown_sec(state: Dict[str, Any]) -> int:
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
     raw = (
-        policy.get("post_exit_cooldown_sec")
-        if policy.get("post_exit_cooldown_sec") is not None
-        else os.getenv("POST_EXIT_COOLDOWN_SEC", "300")
+        (((applied_policy.get("execution") or {}).get("cooldowns") or {}).get("post_exit_sec"))
+        if isinstance((applied_policy.get("execution") or {}).get("cooldowns"), dict)
+        else None
     )
+    if raw is None and isinstance(policy.get("execution"), dict):
+        raw = (
+            (((policy.get("execution") or {}).get("cooldowns") or {}).get("post_exit_sec"))
+            if isinstance((policy.get("execution") or {}).get("cooldowns"), dict)
+            else None
+        )
+    if raw is None:
+        raw = policy.get("post_exit_cooldown_sec")
+    if raw is None:
+        raw = 180
     try:
         return max(0, int(float(raw)))
     except Exception:
-        return 300
+        return 180
 
 
 def _resolve_min_hold_sec(state: Dict[str, Any]) -> int:
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
-    raw = policy.get("min_hold_seconds")
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    raw = (
+        (((applied_policy.get("monitor") or {}).get("hold") or {}).get("min_hold_seconds"))
+        if isinstance((applied_policy.get("monitor") or {}).get("hold"), dict)
+        else None
+    )
+    if raw is None and isinstance(policy.get("monitor"), dict):
+        raw = (
+            (((policy.get("monitor") or {}).get("hold") or {}).get("min_hold_seconds"))
+            if isinstance((policy.get("monitor") or {}).get("hold"), dict)
+            else None
+        )
     if raw is None:
-        raw = os.getenv("MIN_HOLD_SECONDS", "600")
+        raw = policy.get("min_hold_seconds")
+    if raw is None:
+        raw = 600
     try:
         return max(0, int(float(raw)))
     except Exception:
@@ -248,11 +285,22 @@ def _resolve_min_hold_sec(state: Dict[str, Any]) -> int:
 
 def _resolve_sell_cooldown_sec(state: Dict[str, Any]) -> int:
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
-    raw = policy.get("sell_cooldown_sec")
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    raw = (
+        (((applied_policy.get("execution") or {}).get("cooldowns") or {}).get("sell_sec"))
+        if isinstance((applied_policy.get("execution") or {}).get("cooldowns"), dict)
+        else None
+    )
+    if raw is None and isinstance(policy.get("execution"), dict):
+        raw = (
+            (((policy.get("execution") or {}).get("cooldowns") or {}).get("sell_sec"))
+            if isinstance((policy.get("execution") or {}).get("cooldowns"), dict)
+            else None
+        )
     if raw is None:
-        raw = os.getenv("SELL_COOLDOWN", "")
+        raw = policy.get("sell_cooldown_sec")
     if raw in (None, ""):
-        raw = os.getenv("SELL_COOLDOWN_SEC", "300")
+        raw = 300
     try:
         return max(0, int(float(raw)))
     except Exception:
@@ -738,6 +786,11 @@ def _strategy_v1_enabled(state: Dict[str, Any]) -> bool:
     runtime = strategist_runtime_settings(state.get("policy") if isinstance(state.get("policy"), dict) else {})
     if bool(runtime.get("uses_ai")):
         return False
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    strategist_applied = applied_policy.get("strategist") if isinstance(applied_policy.get("strategist"), dict) else {}
+    strategist_runtime = strategist_applied.get("runtime") if isinstance(strategist_applied.get("runtime"), dict) else {}
+    if strategist_runtime.get("allow_legacy_strategy_v1") is not None:
+        return _is_trueish(strategist_runtime.get("allow_legacy_strategy_v1"))
     strategist_output = state.get("strategist_output") if isinstance(state.get("strategist_output"), dict) else {}
     strategy_policy = strategist_output.get("strategy_policy") if isinstance(strategist_output.get("strategy_policy"), dict) else {}
     decision_policy = strategy_policy.get("decision_policy") if isinstance(strategy_policy.get("decision_policy"), dict) else {}
@@ -748,9 +801,6 @@ def _strategy_v1_enabled(state: Dict[str, Any]) -> bool:
         return _is_trueish(policy.get("allow_legacy_strategy_v1_runtime"))
     if policy.get("use_strategy_v1") is not None:
         return _is_trueish(policy.get("use_strategy_v1"))
-    legacy_env = os.getenv("ALLOW_LEGACY_STRATEGY_V1_RUNTIME", "")
-    if str(legacy_env or "").strip():
-        return _is_trueish(legacy_env)
     if strategist_uses_legacy_v1():
         return True
     return _is_trueish(os.getenv("USE_STRATEGY_V1", "false"))
@@ -965,7 +1015,16 @@ def decide_trade(state: dict) -> dict:
     strategist = state.get("strategist")
     if strategist is None:
         from libs.ai.strategist_factory import get_strategist_from_env
-        strategist = get_strategist_from_env()
+        applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+        strategist_policy = dict(policy)
+        for key, value in dict(applied_policy).items():
+            if isinstance(value, dict) and isinstance(strategist_policy.get(key), dict):
+                merged_section = dict(strategist_policy.get(key) or {})
+                merged_section.update(dict(value or {}))
+                strategist_policy[key] = merged_section
+            else:
+                strategist_policy[key] = value
+        strategist = get_strategist_from_env(strategist_policy)
         state["strategist"] = strategist
 
     price = market.get("price")

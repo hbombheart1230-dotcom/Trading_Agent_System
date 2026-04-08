@@ -111,6 +111,49 @@ def _base_state() -> dict:
     }
 
 
+def _with_commander_numeric_policy(
+    state: dict,
+    *,
+    post_exit_sec: int = 180,
+    sell_sec: int = 300,
+    min_hold_seconds: int = 600,
+    confirm_ticks: int = 2,
+    eod_flat_cutoff_min: int = 10,
+    scoring_threshold: float = 3.0,
+) -> dict:
+    out = dict(state or {})
+    applied_policy = dict(out.get("applied_policy") or {}) if isinstance(out.get("applied_policy"), dict) else {}
+    execution_policy = dict(applied_policy.get("execution") or {}) if isinstance(applied_policy.get("execution"), dict) else {}
+    execution_policy["cooldowns"] = {
+        "post_exit_sec": int(post_exit_sec),
+        "sell_sec": int(sell_sec),
+        "policy_source": "test_commander_applied_policy",
+    }
+    monitor_policy = dict(applied_policy.get("monitor") or {}) if isinstance(applied_policy.get("monitor"), dict) else {}
+    monitor_policy["hold"] = {
+        "min_hold_seconds": int(min_hold_seconds),
+        "policy_source": "test_commander_applied_policy",
+    }
+    monitor_policy["exit"] = {
+        "confirm_ticks": int(confirm_ticks),
+        "eod_flat": {"cutoff_min": int(eod_flat_cutoff_min)},
+        "policy_source": "test_commander_applied_policy",
+    }
+    entry_policy = dict((monitor_policy.get("entry") or {})) if isinstance(monitor_policy.get("entry"), dict) else {}
+    entry_policy["scoring"] = {
+        "enabled": False,
+        "shadow_mode": True,
+        "threshold": float(scoring_threshold),
+        "entry_threshold": float(scoring_threshold),
+        "policy_source": "test_commander_applied_policy",
+    }
+    monitor_policy["entry"] = entry_policy
+    applied_policy["execution"] = execution_policy
+    applied_policy["monitor"] = monitor_policy
+    out["applied_policy"] = applied_policy
+    return out
+
+
 def _policy_with_entry_cooldown(seconds: int, base: dict | None = None) -> dict:
     out = dict(base or {})
     monitor_policy = dict(out.get("monitor_policy") or {}) if isinstance(out.get("monitor_policy"), dict) else {}
@@ -165,11 +208,7 @@ def test_monitor_exit_policy_respects_min_hold_guard(monkeypatch):
 
 
 def test_monitor_exit_requires_confirmation_ticks(monkeypatch):
-    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
-    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
-    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "2")
-
-    s1 = _base_state()
+    s1 = _with_commander_numeric_policy(_base_state(), min_hold_seconds=0, sell_sec=0, confirm_ticks=2)
     out1 = monitor_node(s1)
     assert out1["intents"] == []
     assert out1["monitor_exit"]["triggered"] is False
@@ -183,11 +222,7 @@ def test_monitor_exit_requires_confirmation_ticks(monkeypatch):
 
 
 def test_monitor_exit_cooldown_suppresses_duplicate_sell_intents(monkeypatch):
-    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
-    monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
-    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
-
-    base = _base_state()
+    base = _with_commander_numeric_policy(_base_state(), min_hold_seconds=0, sell_sec=300, confirm_ticks=1)
     base["tick_ts"] = 1772850000
     out1 = monitor_node(base)
     intents1 = out1.get("intents") or []
@@ -201,11 +236,7 @@ def test_monitor_exit_cooldown_suppresses_duplicate_sell_intents(monkeypatch):
 
 
 def test_monitor_exit_cooldown_applies_after_position_closed(monkeypatch):
-    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
-    monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
-    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
-
-    s1 = _base_state()
+    s1 = _with_commander_numeric_policy(_base_state(), min_hold_seconds=0, sell_sec=300, confirm_ticks=1)
     s1["tick_ts"] = 1772850000
     out1 = monitor_node(s1)
     assert (out1.get("intents") or [{}])[0].get("side") == "SELL"
@@ -861,17 +892,19 @@ def test_monitor_pullback_with_defensive_guidance_can_still_buy_on_clean_reclaim
 
 
 def test_monitor_blocks_reentry_during_post_exit_cooldown(monkeypatch):
-    monkeypatch.setenv("POST_EXIT_COOLDOWN_SEC", "600")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
 
-    state = {
-        "tick_ts": 2000,
-        "plan": {"thesis": "test"},
-        "selected": {"symbol": "BBB"},
-        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
-        "persisted_state": {"last_trade_side": "SELL", "last_trade_epoch": 1500},
-        "policy": {},
-    }
+    state = _with_commander_numeric_policy(
+        {
+            "tick_ts": 2000,
+            "plan": {"thesis": "test"},
+            "selected": {"symbol": "BBB"},
+            "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+            "persisted_state": {"last_trade_side": "SELL", "last_trade_epoch": 1500},
+            "policy": {},
+        },
+        post_exit_sec=600,
+    )
     out = monitor_node(state)
     assert out.get("intents") == []
     mon = out.get("monitor") or {}
@@ -1450,20 +1483,22 @@ def test_monitor_ignores_invalid_live_like_positions(monkeypatch):
 
 
 def test_monitor_applies_exit_policy_env_overrides(monkeypatch):
-    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
-    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
-    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
     monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "60")
 
-    state = {
-        "plan": {"thesis": "test"},
-        "selected": {"symbol": "AAA"},
-        "portfolio_snapshot": {
-            "cash": 2_000_000.0,
-            "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0, "hold_sec": 120}],
+    state = _with_commander_numeric_policy(
+        {
+            "plan": {"thesis": "test"},
+            "selected": {"symbol": "AAA"},
+            "portfolio_snapshot": {
+                "cash": 2_000_000.0,
+                "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0, "hold_sec": 120}],
+            },
+            "policy": {"use_exit_policy": True},
         },
-        "policy": {"use_exit_policy": True},
-    }
+        min_hold_seconds=0,
+        sell_sec=0,
+        confirm_ticks=1,
+    )
     out = monitor_node(state)
     intents = out.get("intents") or []
     assert len(intents) == 1
@@ -1532,20 +1567,22 @@ def test_monitor_max_hold_respects_min_hold_guard(monkeypatch):
 
 
 def test_monitor_max_hold_requires_confirmation_ticks(monkeypatch):
-    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
-    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
-    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "2")
     monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "60")
 
-    state = {
-        "plan": {"thesis": "test"},
-        "selected": {"symbol": "AAA"},
-        "portfolio_snapshot": {
-            "cash": 2_000_000.0,
-            "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0, "hold_sec": 120}],
+    state = _with_commander_numeric_policy(
+        {
+            "plan": {"thesis": "test"},
+            "selected": {"symbol": "AAA"},
+            "portfolio_snapshot": {
+                "cash": 2_000_000.0,
+                "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0, "hold_sec": 120}],
+            },
+            "policy": {"use_exit_policy": True},
         },
-        "policy": {"use_exit_policy": True},
-    }
+        min_hold_seconds=0,
+        sell_sec=0,
+        confirm_ticks=2,
+    )
     out1 = monitor_node(state)
     assert out1.get("intents") == []
     exit1 = out1.get("monitor_exit") or {}
@@ -1562,20 +1599,22 @@ def test_monitor_max_hold_requires_confirmation_ticks(monkeypatch):
 
 
 def test_monitor_harmonizes_max_hold_when_shorter_than_min_hold(monkeypatch):
-    monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
-    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
-    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
     monkeypatch.setenv("EXIT_POLICY_MAX_HOLD_SEC", "60")
 
-    state = {
-        "plan": {"thesis": "test"},
-        "selected": {"symbol": "AAA"},
-        "portfolio_snapshot": {
-            "cash": 2_000_000.0,
-            "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0, "hold_sec": 620}],
+    state = _with_commander_numeric_policy(
+        {
+            "plan": {"thesis": "test"},
+            "selected": {"symbol": "AAA"},
+            "portfolio_snapshot": {
+                "cash": 2_000_000.0,
+                "positions": [{"symbol": "AAA", "qty": 1, "avg_price": 100.0, "hold_sec": 620}],
+            },
+            "policy": {"use_exit_policy": True},
         },
-        "policy": {"use_exit_policy": True},
-    }
+        min_hold_seconds=600,
+        sell_sec=0,
+        confirm_ticks=1,
+    )
     out = monitor_node(state)
     exit_info = out.get("monitor_exit") or {}
     assert exit_info.get("triggered") is True
@@ -1965,9 +2004,6 @@ def test_monitor_records_wait_to_buy_transition_trace_for_reclaim_recovery(monke
 def test_monitor_scoring_shadow_mode_preserves_legacy_buy_and_records_score(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "false")
-    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "true")
-    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "8")
 
     state = {
         "plan": {"thesis": "test"},
@@ -1979,6 +2015,7 @@ def test_monitor_scoring_shadow_mode_preserves_legacy_buy_and_records_score(monk
         "minute_ohlcv_by_symbol": {"BBB": _entry_breakout_rows()},
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
         "policy": _policy_with_entry_cooldown(0),
+        "applied_policy": {"monitor": {"entry": {"scoring": {"enabled": False, "shadow_mode": True, "entry_threshold": 8}}}},
     }
 
     out = monitor_node(state)
@@ -2052,9 +2089,6 @@ def test_monitor_artifact_surfaces_entry_minute_and_chart_fields_top_level(monke
 def test_monitor_scoring_enabled_no_longer_blocks_legacy_buy_when_score_below_threshold(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
-    monkeypatch.setenv("MONITOR_SCORING_ENABLED", "true")
-    monkeypatch.setenv("MONITOR_SCORING_SHADOW_MODE", "false")
-    monkeypatch.setenv("MONITOR_ENTRY_SCORE_THRESHOLD", "8")
 
     state = {
         "plan": {"thesis": "test"},
@@ -2066,6 +2100,7 @@ def test_monitor_scoring_enabled_no_longer_blocks_legacy_buy_when_score_below_th
         "minute_ohlcv_by_symbol": {"BBB": _entry_breakout_rows()},
         "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
         "policy": _policy_with_entry_cooldown(0),
+        "applied_policy": {"monitor": {"entry": {"scoring": {"enabled": True, "shadow_mode": False, "entry_threshold": 8}}}},
     }
 
     out = monitor_node(state)

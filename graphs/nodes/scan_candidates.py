@@ -10,6 +10,7 @@ contracts that still expect `state["candidates"]`.
 import os
 from typing import Any, Dict, List
 
+from libs.runtime.scanner_policy import resolve_scanner_runtime_policy
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 from libs.strategies.candidates.market_rank import (
     MarketRankCandidateGenerator,
@@ -131,9 +132,19 @@ def _build_rows_with_legacy_generators(state: Dict[str, Any], policy: Dict[str, 
 
 
 def _build_rows_with_kiwoom_source(state: Dict[str, Any], policy: Dict[str, Any], k: int) -> List[Dict[str, Any]]:
-    top_pool = max(k, _to_int(policy.get("top_candidate_pool", os.getenv("TOP_CANDIDATE_POOL", "30")), 30))
-    cond_limit = max(top_pool, _to_int(policy.get("candidate_condition_limit", os.getenv("KIWOOM_CANDIDATE_CONDITION_LIMIT", "200")), 200))
-    include_change_rate = _is_trueish(policy.get("kiwoom_include_change_rate", os.getenv("KIWOOM_CANDIDATE_INCLUDE_CHANGE_RATE", "true")))
+    runtime_scanner_policy = resolve_scanner_runtime_policy(state, policy)
+    scanner_policy = policy.get("scanner") if isinstance(policy.get("scanner"), dict) else {}
+    candidate_policy = scanner_policy.get("candidate") if isinstance(scanner_policy.get("candidate"), dict) else {}
+    kiwoom_policy = scanner_policy.get("kiwoom") if isinstance(scanner_policy.get("kiwoom"), dict) else {}
+    raw_top_pool = candidate_policy.get("top_pool")
+    if raw_top_pool in (None, ""):
+        raw_top_pool = policy.get("top_candidate_pool")
+    raw_condition_limit = kiwoom_policy.get("condition_limit")
+    if raw_condition_limit in (None, ""):
+        raw_condition_limit = policy.get("candidate_condition_limit")
+    top_pool = max(k, _to_int(raw_top_pool, 30))
+    cond_limit = max(top_pool, _to_int(raw_condition_limit, 200))
+    include_change_rate = bool(runtime_scanner_policy.get("include_change_rate"))
     rows, _meta = build_kiwoom_candidate_rows(
         state=state,
         top_pool=top_pool,
@@ -170,11 +181,12 @@ def scan_candidates(state: dict) -> dict:
     """
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
     k = max(1, _to_int(policy.get("candidate_k", policy.get("candidate_topk", 5)), 5))
-    source = str(policy.get("candidate_source") or os.getenv("CANDIDATE_SOURCE", "kiwoom")).strip().lower()
+    runtime_scanner_policy = resolve_scanner_runtime_policy(state, policy)
+    source = str(runtime_scanner_policy.get("source_type") or "kiwoom").strip().lower()
 
     rows = _extract_injected_rows(state, k)
     if not rows:
-        if source in ("kiwoom", "market_data"):
+        if source in ("kiwoom", "hybrid", "market_data"):
             rows = _build_rows_with_kiwoom_source(state=state, policy=policy, k=k)
         if not rows:
             use_builder = _is_trueish(policy.get("use_universe_builder", os.getenv("USE_UNIVERSE_BUILDER", "true")))

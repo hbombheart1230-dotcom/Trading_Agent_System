@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import statistics
 from dataclasses import replace
 from typing import Any, Dict, List, Mapping, Sequence
@@ -87,9 +86,9 @@ def _env_trueish(value: Any, default: bool = False) -> bool:
 
 def _resolve_monitor_scoring_settings(scoring: Mapping[str, Any] | None = None) -> Dict[str, Any]:
     raw = dict(scoring or {}) if isinstance(scoring, Mapping) else {}
-    enabled = _env_trueish(raw.get("enabled"), _env_trueish(os.getenv("MONITOR_SCORING_ENABLED"), False))
-    shadow_mode = _env_trueish(raw.get("shadow_mode"), _env_trueish(os.getenv("MONITOR_SCORING_SHADOW_MODE"), False))
-    threshold = _to_float(raw.get("entry_threshold"), _to_float(os.getenv("MONITOR_ENTRY_SCORE_THRESHOLD"), 3.0))
+    enabled = _env_trueish(raw.get("enabled"), False)
+    shadow_mode = _env_trueish(raw.get("shadow_mode"), False)
+    threshold = _to_float(raw.get("threshold") if raw.get("threshold") not in (None, "") else raw.get("entry_threshold"), 3.0)
     threshold = float(threshold if threshold > 0.0 else 3.0)
     if enabled:
         mode = "enabled"

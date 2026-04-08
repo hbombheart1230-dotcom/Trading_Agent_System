@@ -457,9 +457,22 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
 
 
 def _resolve_min_hold_sec(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
-    raw = policy.get("min_hold_seconds") if isinstance(policy, dict) else None
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    raw = (
+        (((applied_policy.get("monitor") or {}).get("hold") or {}).get("min_hold_seconds"))
+        if isinstance((applied_policy.get("monitor") or {}).get("hold"), dict)
+        else None
+    )
+    if raw is None and isinstance(policy, dict):
+        raw = (
+            (((policy.get("monitor") or {}).get("hold") or {}).get("min_hold_seconds"))
+            if isinstance((policy.get("monitor") or {}).get("hold"), dict)
+            else None
+        )
+    if raw is None and isinstance(policy, dict):
+        raw = policy.get("min_hold_seconds")
     if raw is None:
-        raw = os.getenv("MIN_HOLD_SECONDS", "600")
+        raw = 600
     try:
         return max(0, int(float(raw)))
     except Exception:
@@ -467,13 +480,24 @@ def _resolve_min_hold_sec(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
 
 
 def _resolve_sell_cooldown_sec(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
-    raw = policy.get("sell_cooldown_sec") if isinstance(policy, dict) else None
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    raw = (
+        (((applied_policy.get("execution") or {}).get("cooldowns") or {}).get("sell_sec"))
+        if isinstance((applied_policy.get("execution") or {}).get("cooldowns"), dict)
+        else None
+    )
+    if raw is None and isinstance(policy, dict):
+        raw = (
+            (((policy.get("execution") or {}).get("cooldowns") or {}).get("sell_sec"))
+            if isinstance((policy.get("execution") or {}).get("cooldowns"), dict)
+            else None
+        )
+    if raw is None and isinstance(policy, dict):
+        raw = policy.get("sell_cooldown_sec")
     if raw is None and isinstance(policy, dict):
         raw = policy.get("sell_cooldown_seconds")
-    if raw is None:
-        raw = os.getenv("SELL_COOLDOWN", "")
     if raw in (None, ""):
-        raw = os.getenv("SELL_COOLDOWN_SEC", "300")
+        raw = 300
     try:
         return max(0, int(float(raw)))
     except Exception:
@@ -481,9 +505,22 @@ def _resolve_sell_cooldown_sec(state: Dict[str, Any], policy: Dict[str, Any]) ->
 
 
 def _resolve_exit_confirm_ticks(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
-    raw = policy.get("exit_confirm_ticks") if isinstance(policy, dict) else None
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    raw = (
+        (((applied_policy.get("monitor") or {}).get("exit") or {}).get("confirm_ticks"))
+        if isinstance((applied_policy.get("monitor") or {}).get("exit"), dict)
+        else None
+    )
+    if raw is None and isinstance(policy, dict):
+        raw = (
+            (((policy.get("monitor") or {}).get("exit") or {}).get("confirm_ticks"))
+            if isinstance((policy.get("monitor") or {}).get("exit"), dict)
+            else None
+        )
+    if raw is None and isinstance(policy, dict):
+        raw = policy.get("exit_confirm_ticks")
     if raw is None:
-        raw = os.getenv("MONITOR_EXIT_CONFIRM_TICKS", "2")
+        raw = 2
     try:
         return max(1, int(float(raw)))
     except Exception:
@@ -499,17 +536,30 @@ def _resolve_use_exit_policy(state: Dict[str, Any], policy: Dict[str, Any]) -> b
 
 
 def _resolve_post_exit_cooldown_sec(state: Dict[str, Any], policy: Dict[str, Any], monitor_policy: Dict[str, Any]) -> int:
-    raw = state.get("post_exit_cooldown_sec")
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    raw = (
+        (((applied_policy.get("execution") or {}).get("cooldowns") or {}).get("post_exit_sec"))
+        if isinstance((applied_policy.get("execution") or {}).get("cooldowns"), dict)
+        else None
+    )
+    if raw in (None, ""):
+        raw = state.get("post_exit_cooldown_sec")
     if raw in (None, "") and isinstance(monitor_policy, dict):
         raw = monitor_policy.get("post_exit_cooldown_sec")
     if raw in (None, "") and isinstance(policy, dict):
+        raw = (
+            (((policy.get("execution") or {}).get("cooldowns") or {}).get("post_exit_sec"))
+            if isinstance((policy.get("execution") or {}).get("cooldowns"), dict)
+            else None
+        )
+    if raw in (None, "") and isinstance(policy, dict):
         raw = policy.get("post_exit_cooldown_sec")
     if raw in (None, ""):
-        raw = os.getenv("POST_EXIT_COOLDOWN_SEC", "0")
+        raw = 180
     try:
         return max(0, int(float(raw)))
     except Exception:
-        return 0
+        return 180
 
 
 def _resolve_block_buy_when_open_position(
@@ -526,7 +576,7 @@ def _resolve_block_buy_when_open_position(
     return _is_trueish(os.getenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false"))
 
 
-def _resolve_exit_policy_config(policy: Dict[str, Any]) -> Dict[str, Any]:
+def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, Any]:
     cfg = policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else {}
     out = dict(cfg or {})
 
@@ -560,7 +610,18 @@ def _resolve_exit_policy_config(policy: Dict[str, Any]) -> Dict[str, Any]:
     intraday_low_break_raw = str(os.getenv("EXIT_POLICY_INTRADAY_LOW_BREAK_PCT", "") or "").strip()
     trend_strength_floor_raw = str(os.getenv("EXIT_POLICY_TREND_STRENGTH_FLOOR", "") or "").strip()
     eod_flat_raw = str(os.getenv("EXIT_POLICY_USE_EOD_FLAT", "") or "").strip()
-    eod_cutoff_raw = str(os.getenv("EXIT_POLICY_EOD_FLAT_CUTOFF_MIN", "") or "").strip()
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    eod_cutoff_value = (
+        ((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("cutoff_min"))
+        if isinstance((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")), dict)
+        else None
+    )
+    if eod_cutoff_value is None and isinstance(policy.get("monitor"), dict):
+        eod_cutoff_value = (
+            ((((policy.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("cutoff_min"))
+            if isinstance((((policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")), dict)
+            else None
+        )
     emergency_raw = str(os.getenv("EXIT_POLICY_EMERGENCY_HALT", "") or "").strip()
 
     out = apply_env_stop_take_fallbacks(out)
@@ -596,11 +657,11 @@ def _resolve_exit_policy_config(policy: Dict[str, Any]) -> Dict[str, Any]:
         out["trend_strength_floor"] = _to_float(trend_strength_floor_raw, _to_float(out.get("trend_strength_floor")))
     if eod_flat_raw:
         out["use_eod_flat"] = _is_trueish(eod_flat_raw)
-    if eod_cutoff_raw:
+    if eod_cutoff_value is not None:
         base = _to_float(out.get("eod_flat_cutoff_min"))
         if base <= 0.0:
             base = 10.0
-        x = _to_float(eod_cutoff_raw)
+        x = _to_float(eod_cutoff_value)
         out["eod_flat_cutoff_min"] = int(x if x > 0.0 else base)
     if emergency_raw:
         out["emergency_halt"] = _is_trueish(emergency_raw)
@@ -801,6 +862,32 @@ def _build_monitor_policy_trace(
             "monitor_mission": monitor_mission,
         },
     }
+
+
+def _resolve_monitor_entry_scoring_config(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, Any]:
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    monitor_policy = applied_policy.get("monitor") if isinstance(applied_policy.get("monitor"), dict) else {}
+    entry_policy = monitor_policy.get("entry") if isinstance(monitor_policy.get("entry"), dict) else {}
+    scoring_policy = entry_policy.get("scoring") if isinstance(entry_policy.get("scoring"), dict) else {}
+    if isinstance(scoring_policy, dict) and scoring_policy:
+        out = dict(scoring_policy)
+        if out.get("entry_threshold") in (None, "") and out.get("threshold") not in (None, ""):
+            out["entry_threshold"] = out.get("threshold")
+        out.setdefault("policy_source", str(scoring_policy.get("policy_source") or "commander_applied_policy"))
+        return out
+    state_scoring = state.get("monitor_entry_scoring")
+    if isinstance(state_scoring, dict) and state_scoring:
+        out = dict(state_scoring)
+        out.setdefault("policy_source", str(state_scoring.get("policy_source") or "state_fallback"))
+        return out
+    policy_scoring = policy.get("monitor_entry_scoring") if isinstance(policy.get("monitor_entry_scoring"), dict) else {}
+    if isinstance(policy_scoring, dict) and policy_scoring:
+        out = dict(policy_scoring)
+        if out.get("entry_threshold") in (None, "") and out.get("threshold") not in (None, ""):
+            out["entry_threshold"] = out.get("threshold")
+        out.setdefault("policy_source", str(policy_scoring.get("policy_source") or "policy_fallback"))
+        return out
+    return {}
 
 
 def _has_strategy_policy_content(strategy_policy: Any) -> bool:
@@ -2454,6 +2541,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(state.get("monitor_minute_ohlcv_fetch"), dict)
             else {}
         )
+        entry_scoring_policy = _resolve_monitor_entry_scoring_config(state, policy)
         if symbol and isinstance(minute_ohlcv_by_symbol.get(symbol), list):
             entry_rows = list(minute_ohlcv_by_symbol.get(symbol) or [])
         entry_info = evaluate_intraday_entry_signal(
@@ -2461,6 +2549,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             current_price=selected.get("price") if isinstance(selected, dict) else None,
             features=selected.get("features") if isinstance(selected, dict) and isinstance(selected.get("features"), dict) else {},
             policy=entry_policy,
+            scoring=entry_scoring_policy,
             frame=strategy_frame,
             policy_contract=entry_policy_contract,
         )
@@ -2608,7 +2697,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # Optional M29-2 exit policy (default disabled for backward compatibility).
     use_exit_policy = _resolve_use_exit_policy(state, policy)
-    exit_policy_base = _resolve_exit_policy_config(policy)
+    exit_policy_base = _resolve_exit_policy_config(state, policy)
     exit_info: Dict[str, Any] = {
         "enabled": bool(use_exit_policy),
         "evaluated": False,

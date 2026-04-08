@@ -185,8 +185,11 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     assert Path(obj["report_json_path"]) == tmp_path / "daily" / day / "operator_summary.json"
     assert Path(obj["report_md_path"]) == tmp_path / "daily" / day / "operator_summary.md"
     assert obj["route_summary"]["route_source"] == "canonical_commander_preferred"
+    assert obj["data_freshness"]["freshness_status"] == "fresh"
+    assert obj["route_provenance"]["route_source"] == "canonical_commander_preferred"
     assert obj["narrative_axis_policy"]["entry_primary_for"] == ["BUY", "WAIT", "NOOP", "NO_TRADE"]
     md_body = Path(obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "Data Freshness" in md_body
     assert "Executive Summary" in md_body
     assert "Narrative Axis Policy" in md_body
     assert "Policy Surface Executive Summary" in md_body
@@ -738,7 +741,10 @@ def test_decision_story_and_run_cards_separate_exit_narrative_for_sell_run(tmp_p
     )
     story_obj = json.loads(capsys.readouterr().out.strip())
     assert rc_story == 0
+    assert story_obj["data_freshness"]["freshness_status"] == "fresh"
+    assert story_obj["route_provenance"]["route_source"] == "canonical_commander_preferred"
     story_md = Path(story_obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "## Data Freshness" in story_md
     assert "decision_axis: exit" in story_md
     assert "primary_explanation: peak_drawdown" in story_md
     assert "entry_narrative: -" in story_md
@@ -760,7 +766,10 @@ def test_decision_story_and_run_cards_separate_exit_narrative_for_sell_run(tmp_p
     )
     cards_obj = json.loads(capsys.readouterr().out.strip())
     assert rc_cards == 0
+    assert cards_obj["data_freshness"]["freshness_status"] == "fresh"
+    assert cards_obj["route_provenance"]["route_source"] == "canonical_commander_preferred"
     cards_md = Path(cards_obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "## Data Freshness" in cards_md
     assert "Decision Axis: exit" in cards_md
     assert "Primary Explanation: peak_drawdown" in cards_md
     assert "Narrative Order: exit" in cards_md

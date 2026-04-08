@@ -1,93 +1,89 @@
-# LLM Model Selection Policy (Phase 5-4 / 6-1)
+﻿# LLM Model Selection Policy (Phase 5-4 / 6-1)
 
-## 목적
-이 문서는 Trading Agent System에서 LLM을 **역할별로 안정적이고 예측 가능하게 사용하는 기준**을 정의한다.  
-Codex는 이 문서를 기준으로 env 설정 및 모델 선택 로직을 구성해야 한다.
-
----
-
-# 1. 핵심 원칙
-
-## 1.1 예측 가능성이 최우선
-- auto / free 모델 사용 금지 (실전 경로)
-- 비용보다 **일관성**이 더 중요
-- 동일 입력 → 유사 출력 구조 유지
-
-## 1.2 역할 기반 모델 선택
-- 모델은 기능이 아니라 **역할 기준으로 분리**
-- strategist / brief / report 각각 다르게 사용
-
-## 1.3 LLM 최소 사용
-- Commander: 사용 금지
-- Scanner: 사용 금지
-- Monitor: 사용 금지
-- Reporter: 제한적 사용
-- Strategist: 핵심 사용
+## 紐⑹쟻
+??臾몄꽌??Trading Agent System?먯꽌 LLM??**??븷蹂꾨줈 ?덉젙?곸씠怨??덉륫 媛?ν븯寃??ъ슜?섎뒗 湲곗?**???뺤쓽?쒕떎.  
+Codex????臾몄꽌瑜?湲곗??쇰줈 env ?ㅼ젙 諛?紐⑤뜽 ?좏깮 濡쒖쭅??援ъ꽦?댁빞 ?쒕떎.
 
 ---
 
-# 2. 역할별 모델 정책
+# 1. ?듭떖 ?먯튃
 
-## 2.1 Strategist (핵심)
-역할:
-- 전략 생성
+## 1.1 ?덉륫 媛?μ꽦??理쒖슦??- auto / free 紐⑤뜽 ?ъ슜 湲덉? (?ㅼ쟾 寃쎈줈)
+- 鍮꾩슜蹂대떎 **?쇨???*????以묒슂
+- ?숈씪 ?낅젰 ???좎궗 異쒕젰 援ъ“ ?좎?
+
+## 1.2 ??븷 湲곕컲 紐⑤뜽 ?좏깮
+- 紐⑤뜽? 湲곕뒫???꾨땲??**??븷 湲곗??쇰줈 遺꾨━**
+- strategist / brief / report 媛곴컖 ?ㅻⅤ寃??ъ슜
+
+## 1.3 LLM 理쒖냼 ?ъ슜
+- Commander: ?ъ슜 湲덉?
+- Scanner: ?ъ슜 湲덉?
+- Monitor: ?ъ슜 湲덉?
+- Reporter: ?쒗븳???ъ슜
+- Strategist: ?듭떖 ?ъ슜
+
+---
+
+# 2. ??븷蹂?紐⑤뜽 ?뺤콉
+
+## 2.1 Strategist (?듭떖)
+??븷:
+- ?꾨왂 ?앹꽦
 - playbook
 - policy proposal
 
-### 설정
-- Primary + Fallback 구조 필수
+### ?ㅼ젙
+- Primary + Fallback 援ъ“ ?꾩닔
 
-### 추천 모델
+### 異붿쿇 紐⑤뜽
 - Primary: deepseek/deepseek-v3.2
 - Fallback: minimax/minimax-m2.5
 
-### 특징
-- reasoning 중요
-- 실패 시 trading block 영향 큼
-
+### ?뱀쭠
+- reasoning 以묒슂
+- ?ㅽ뙣 ??trading block ?곹뼢 ??
 ---
 
-## 2.2 Operator Brief (장중)
-역할:
-- 빠른 상태 요약
-- 운영 판단 보조
+## 2.2 Operator Brief (?μ쨷)
+??븷:
+- 鍮좊Ⅸ ?곹깭 ?붿빟
+- ?댁쁺 ?먮떒 蹂댁“
 
-### 추천 모델
+### 異붿쿇 紐⑤뜽
 - minimax/minimax-m2.5
 
-### 특징
-- 빠름
-- 안정성 중요
-- hallucination 최소화
-
+### ?뱀쭠
+- 鍮좊쫫
+- ?덉젙??以묒슂
+- hallucination 理쒖냼??
 ---
 
-## 2.3 Trade Report (매매 단위)
-역할:
-- entry / exit 회고
-- lesson 정리
+## 2.3 Trade Report (留ㅻℓ ?⑥쐞)
+??븷:
+- entry / exit ?뚭퀬
+- lesson ?뺣━
 
-### 추천 모델
-- 기본: minimax/minimax-m2.5
-- 필요 시: moonshotai/kimi-k2.5
+### 異붿쿇 紐⑤뜽
+- 湲곕낯: minimax/minimax-m2.5
+- ?꾩슂 ?? moonshotai/kimi-k2.5
 
 ---
 
 ## 2.4 Daily / Weekly / Monthly Report
-역할:
-- 장후 해석
-- 전략 피드백
-
-### 추천 모델
+??븷:
+- ?ν썑 ?댁꽍
+- ?꾨왂 ?쇰뱶諛?
+### 異붿쿇 紐⑤뜽
 - moonshotai/kimi-k2.5
 
-### 특징
-- 긴 문맥
-- 해석력 중요
+### ?뱀쭠
+- 湲?臾몃㎘
+- ?댁꽍??以묒슂
 
 ---
 
-# 3. 추천 env 설정
+# 3. 異붿쿇 env ?ㅼ젙
 
 ```env
 OPENROUTER_DEFAULT_MODEL=minimax/minimax-m2.5
@@ -97,10 +93,11 @@ AI_STRATEGIST_PROVIDER=openai
 AI_STRATEGIST_ENDPOINT=https://openrouter.ai/api/v1/chat/completions
 AI_STRATEGIST_MODEL_PRIMARY=deepseek/deepseek-v3.2
 AI_STRATEGIST_MODEL_FALLBACK=minimax/minimax-m2.5
-AI_STRATEGIST_TIMEOUT_SEC=15
-AI_STRATEGIST_MAX_TOKENS=8192
-AI_STRATEGIST_RETRY_MAX=2
-AI_STRATEGIST_STRICT=true
+Commander-owned strategist execution profile:
+- `applied_policy.llm.strategist.execution_profile.timeout_sec = 15`
+- `applied_policy.llm.strategist.execution_profile.max_tokens = 8192`
+- `applied_policy.llm.strategist.execution_profile.retry_max = 2`
+# `strategist.runtime.strict_mode` is Commander-owned via `applied_policy`
 
 # --- Reporter / UI ---
 OPENROUTER_MODEL_OPERATOR_UI=minimax/minimax-m2.5
@@ -110,16 +107,16 @@ OPENROUTER_MODEL_REPORTER_FINAL=moonshotai/kimi-k2.5
 
 ---
 
-# 4. 모델 선택 전략 (중요)
+# 4. 紐⑤뜽 ?좏깮 ?꾨왂 (以묒슂)
 
 ## 4.1 Strategist
 ```
-Primary → Retry → Fallback
+Primary ??Retry ??Fallback
 ```
 
 ## 4.2 Reporter
 ```
-Deterministic facts → LLM narrative
+Deterministic facts ??LLM narrative
 ```
 
 ## 4.3 Operator Brief
@@ -129,41 +126,41 @@ Deterministic 80% + LLM 20%
 
 ---
 
-# 5. 금지 사항
+# 5. 湲덉? ?ы빆
 
-- auto 모델 사용 금지 (실시간 경로)
-- free 모델 의존 금지
-- report facts를 LLM으로 생성 금지
-- strategist fallback 없이 운영 금지
+- auto 紐⑤뜽 ?ъ슜 湲덉? (?ㅼ떆媛?寃쎈줈)
+- free 紐⑤뜽 ?섏〈 湲덉?
+- report facts瑜?LLM?쇰줈 ?앹꽦 湲덉?
+- strategist fallback ?놁씠 ?댁쁺 湲덉?
 
 ---
 
-# 6. 향후 확장 방향
+# 6. ?ν썑 ?뺤옣 諛⑺뼢
 
-현재: env 기반
+?꾩옱: env 湲곕컲
 
-미래:
+誘몃옒:
 ```
 select_model(role, phase, strict)
 ```
 
-예:
-- strategist → high reasoning
-- brief → fast/cheap
-- report → narrative strong
+??
+- strategist ??high reasoning
+- brief ??fast/cheap
+- report ??narrative strong
 
 ---
 
-# 7. 최종 요약
+# 7. 理쒖쥌 ?붿빟
 
-- Strategist는 Primary + Fallback 필수
-- Brief는 빠르고 안정적으로
-- Report는 해석 중심
-- LLM은 최소한으로, 정확하게 사용
+- Strategist??Primary + Fallback ?꾩닔
+- Brief??鍮좊Ⅴ怨??덉젙?곸쑝濡?- Report???댁꽍 以묒떖
+- LLM? 理쒖냼?쒖쑝濡? ?뺥솗?섍쾶 ?ъ슜
 
 ---
 
-# 8. 한 줄 결론
+# 8. ??以?寃곕줎
 
-LLM은 많을수록 좋은 게 아니라  
-**정확한 위치에 정확하게 써야 시스템이 안정된다**
+LLM? 留롮쓣?섎줉 醫뗭? 寃??꾨땲?? 
+**?뺥솗???꾩튂???뺥솗?섍쾶 ?⑥빞 ?쒖뒪?쒖씠 ?덉젙?쒕떎**
+

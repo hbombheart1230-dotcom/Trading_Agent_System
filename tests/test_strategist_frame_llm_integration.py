@@ -158,6 +158,10 @@ class _FakeRouterCapturePolicy(_FakeRouterOk):
         _FakeRouterCapturePolicy.last_policy = dict(policy or {})
         return _Route(model=str((policy or {}).get("model") or "minimax/minimax-m2.5"))
 
+    def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+        _FakeRouterCapturePolicy.last_policy = dict(policy or {})
+        return super().chat(role, messages, policy=policy)
+
 
 class _FakeRouterHintOnlyProse(_FakeRouterOk):
     @staticmethod
@@ -236,7 +240,7 @@ def test_strategist_frame_llm_parse_error_falls_back_to_deterministic(monkeypatc
     assert strategist_llm.get("status") == "parse_error"
     assert strategist_llm.get("applied") is False
     assert strategist_llm.get("reason") == "strategist_llm_response_not_json"
-    assert strategist_llm.get("attempts") == 2
+    assert strategist_llm.get("attempts") == 3
     assert strategist_llm.get("repair_used") is True
     assert strategist_llm.get("blocked") is True
     assert strategist_llm.get("blocked_reason") == "strategist_llm_failed"
@@ -257,7 +261,7 @@ def test_strategist_frame_llm_empty_response_is_classified(monkeypatch):
     strategist_llm = out.get("strategist_llm") or {}
     assert strategist_llm.get("status") == "parse_error"
     assert strategist_llm.get("reason") == "strategist_llm_response_empty"
-    assert strategist_llm.get("attempts") == 2
+    assert strategist_llm.get("attempts") == 3
     assert strategist_llm.get("repair_used") is True
 
 
@@ -276,7 +280,7 @@ def test_strategist_frame_llm_truncated_json_is_classified(monkeypatch):
     strategist_llm = out.get("strategist_llm") or {}
     assert strategist_llm.get("status") == "parse_error"
     assert strategist_llm.get("reason") == "strategist_llm_response_truncated_json"
-    assert strategist_llm.get("attempts") == 2
+    assert strategist_llm.get("attempts") == 3
     assert strategist_llm.get("repair_used") is True
 
 
@@ -482,6 +486,312 @@ def test_strategist_produces_feedback_field_even_when_memory_empty(monkeypatch, 
     assert strategist_output.get("playbook") in ("breakout", "pullback", "reversal", "defensive")
 
 
+def test_strategist_recent_feedback_can_be_disabled_by_commander_applied_policy(monkeypatch, tmp_path):
+    memory_path = tmp_path / "strategy_memory" / "feedback.jsonl"
+    save_strategy_feedback(
+        "reporter-2026-03-10",
+        {
+            "day": "2026-03-10",
+            "strategy_frame_summary": {"theme_top": {"semiconductor": 1}},
+            "strategist_evaluation": {"themes_proposed": ["semiconductor"], "assessment": "aligned"},
+            "scanner_evaluation": {"selection_status": "stable"},
+            "monitor_evaluation": {"monitor_status": "stable"},
+            "supervisor_activity": {"blocked_rate": 0.0},
+            "incident_postmortem": {"incidents": []},
+            "trade_summary": {"trade_count": 1, "symbols_traded": ["005930"], "symbol_hold_durations": []},
+            "trade_decision_summaries": {"trade_summaries": [{"estimated_realized_pnl": 1.0}]},
+            "operator_facing_summary": {"summary_lines": ["good run"]},
+            "report_focus_targets": ["theme_accuracy"],
+        },
+        path=memory_path,
+        timestamp="2026-03-10T15:30:00+00:00",
+    )
+    monkeypatch.setenv("STRATEGY_MEMORY_PATH", str(memory_path))
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "false")
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["applied_policy"] = {"strategist": {"memory_feedback": {"enabled": False, "policy_source": "commander_applied_policy"}}}
+
+    out = strategist_node(state)
+
+    feedback = out.get("recent_strategy_feedback") or {}
+    assert feedback.get("status") == "disabled"
+    assert feedback.get("policy_source") == "commander_applied_policy"
+    assert feedback.get("feedback_window_size") == 0
+
+
+def test_strategist_reporter_feedback_mode_disabled_ignores_packet(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterOk)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["applied_policy"] = {
+        "strategist": {
+            "reporter_feedback_mode": "disabled",
+            "reporter_feedback_mode_source": "commander_applied_policy",
+        }
+    }
+    state["strategist_feedback_packet"] = {
+        "available": True,
+        "status": "ok",
+        "confidence": "high",
+        "insight_summary": "Monitor-only share is high.",
+        "route_analysis": {"route_selected_total": {"monitor_only": 12, "full_cycle": 3}},
+        "recommendation": ["Review monitor-only concentration."],
+    }
+
+    out = strategist_node(state)
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("playbook") == "breakout"
+    assert strategist_output.get("themes") == ["semiconductor", "ai"]
+    reporter_feedback = strategist_output.get("reporter_feedback_packet") or {}
+    assert reporter_feedback.get("status") == "disabled"
+    assert reporter_feedback.get("available") is False
+    assert reporter_feedback.get("reporter_feedback_mode") == "disabled"
+    assert reporter_feedback.get("reporter_feedback_mode_source") == "commander_applied_policy"
+    assert reporter_feedback.get("feedback_gate_reason") == "mode_disabled"
+
+
+def test_strategist_reporter_feedback_mode_enabled_consumes_advisory_only(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterOk)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["applied_policy"] = {
+        "strategist": {
+            "reporter_feedback_mode": "enabled",
+            "reporter_feedback_mode_source": "commander_applied_policy",
+        }
+    }
+    state["strategist_feedback_packet"] = {
+        "available": True,
+        "status": "ok",
+        "feedback_mode": "deterministic",
+        "confidence": "medium",
+        "insight_summary": "Reclaim blockers are elevated while monitor-only remains dominant.",
+        "route_analysis": {
+            "route_source": "canonical_commander_preferred",
+            "route_selected_total": {"monitor_only": 12, "cached_strategist": 5, "full_cycle": 3},
+            "monitor_only_ratio": 0.6,
+            "cached_strategist_ratio": 0.25,
+            "full_cycle_ratio": 0.15,
+        },
+        "blocker_analysis": [
+            {"blocker": "below_vwap_reclaim_not_ready", "count": 6, "ratio": 0.3},
+            {"blocker": "pullback_ok", "count": 5, "ratio": 0.25},
+        ],
+        "recommendation": [
+            "Review reclaim readiness evidence.",
+            "Compare cached strategist reuse against fresh full-cycle opportunities.",
+        ],
+    }
+
+    out = strategist_node(state)
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("playbook") == "breakout"
+    assert strategist_output.get("themes") == ["semiconductor", "ai"]
+    reporter_feedback = strategist_output.get("reporter_feedback_packet") or {}
+    assert reporter_feedback.get("available") is True
+    assert reporter_feedback.get("status") == "ok"
+    assert reporter_feedback.get("reporter_feedback_mode") == "enabled"
+    assert reporter_feedback.get("reporter_feedback_mode_source") == "commander_applied_policy"
+    assert reporter_feedback.get("consumed") is True
+    assert reporter_feedback.get("feedback_gate_reason") == "mode_enabled"
+    assert reporter_feedback.get("insight_summary") == "Reclaim blockers are elevated while monitor-only remains dominant."
+
+    frame = out.get("strategist_decision_frame") or {}
+    assert (frame.get("reporter_feedback_packet") or {}).get("available") is True
+    assert (frame.get("reporter_feedback_packet") or {}).get("confidence") == "medium"
+
+    trace_rows = [r for r in logger.rows if r.get("stage") == "decision_trace" and r.get("event") == "strategic_frame"]
+    assert len(trace_rows) == 1
+    trace_payload = ((trace_rows[0].get("payload") or {}).get("payload") or {})
+    assert trace_payload.get("reporter_feedback_available") is True
+    assert trace_payload.get("reporter_feedback_status") == "ok"
+    assert trace_payload.get("reporter_feedback_mode") == "enabled"
+    assert trace_payload.get("reporter_feedback_mode_source") == "commander_applied_policy"
+    assert trace_payload.get("reporter_feedback_gate_reason") == "mode_enabled"
+    assert trace_payload.get("reporter_feedback_consumed") is True
+    assert trace_payload.get("reporter_feedback_confidence") == "medium"
+
+
+def test_strategist_reporter_feedback_mode_auto_consumes_fresh_relevant_packet(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterOk)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["applied_policy"] = {
+        "strategist": {
+            "reporter_feedback_mode": "auto",
+            "reporter_feedback_mode_source": "commander_applied_policy",
+        }
+    }
+    state["strategist_feedback_packet"] = {
+        "available": True,
+        "status": "ok",
+        "feedback_mode": "deterministic",
+        "confidence": "high",
+        "insight_summary": "Fresh route context is available for advisory review.",
+        "route_analysis": {
+            "route_source": "canonical_commander_preferred",
+            "route_selected_total": {"monitor_only": 8, "full_cycle": 4},
+            "monitor_only_ratio": 0.6667,
+            "full_cycle_ratio": 0.3333,
+        },
+        "recommendation": ["Review monitor-only concentration before broadening playbook assumptions."],
+        "data_freshness": {"freshness_status": "fresh", "stale": False},
+    }
+
+    out = strategist_node(state)
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("playbook") == "breakout"
+    assert strategist_output.get("themes") == ["semiconductor", "ai"]
+    reporter_feedback = strategist_output.get("reporter_feedback_packet") or {}
+    assert reporter_feedback.get("available") is True
+    assert reporter_feedback.get("status") == "ok"
+    assert reporter_feedback.get("reporter_feedback_mode") == "auto"
+    assert reporter_feedback.get("reporter_feedback_mode_source") == "commander_applied_policy"
+    assert reporter_feedback.get("consumed") is True
+    assert reporter_feedback.get("feedback_gate_reason") == "auto_accepted"
+
+
+def test_strategist_reporter_feedback_mode_auto_ignores_stale_packet(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterOk)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["applied_policy"] = {
+        "strategist": {
+            "reporter_feedback_mode": "auto",
+            "reporter_feedback_mode_source": "commander_applied_policy",
+        }
+    }
+    state["strategist_feedback_packet"] = {
+        "available": True,
+        "status": "ok",
+        "feedback_mode": "deterministic",
+        "confidence": "high",
+        "insight_summary": "This packet is stale and should be ignored.",
+        "route_analysis": {"route_selected_total": {"monitor_only": 12}},
+        "recommendation": ["Ignore stale packet."],
+        "data_freshness": {"freshness_status": "stale", "stale": True, "stale_reason": "source_window_behind"},
+    }
+
+    out = strategist_node(state)
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("playbook") == "breakout"
+    assert strategist_output.get("themes") == ["semiconductor", "ai"]
+    reporter_feedback = strategist_output.get("reporter_feedback_packet") or {}
+    assert reporter_feedback.get("available") is False
+    assert reporter_feedback.get("status") == "auto_ignored"
+    assert reporter_feedback.get("reporter_feedback_mode") == "auto"
+    assert reporter_feedback.get("reporter_feedback_mode_source") == "commander_applied_policy"
+    assert reporter_feedback.get("consumed") is False
+    assert reporter_feedback.get("feedback_gate_reason") == "stale"
+
+
+def test_strategist_reporter_feedback_mode_auto_ignores_missing_packet(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterOk)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["applied_policy"] = {
+        "strategist": {
+            "reporter_feedback_mode": "auto",
+            "reporter_feedback_mode_source": "commander_applied_policy",
+        }
+    }
+
+    out = strategist_node(state)
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("playbook") == "breakout"
+    assert strategist_output.get("themes") == ["semiconductor", "ai"]
+    reporter_feedback = strategist_output.get("reporter_feedback_packet") or {}
+    assert reporter_feedback.get("available") is False
+    assert reporter_feedback.get("status") == "missing"
+    assert reporter_feedback.get("reporter_feedback_mode") == "auto"
+    assert reporter_feedback.get("reporter_feedback_mode_source") == "commander_applied_policy"
+    assert reporter_feedback.get("feedback_gate_reason") == "no_packet"
+
+
+def test_strategist_prefers_commander_canonical_mode_over_state_fallback(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterOk)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["reporter_feedback_mode"] = "enabled"
+    state["applied_policy"] = {
+        "reporter_feedback_mode": "enabled",
+        "strategist": {
+            "reporter_feedback_mode": "disabled",
+            "reporter_feedback_mode_source": "commander_applied_policy",
+        },
+    }
+    state["strategist_feedback_packet"] = {
+        "available": True,
+        "status": "ok",
+        "confidence": "high",
+        "insight_summary": "Canonical commander mode should win.",
+    }
+
+    out = strategist_node(state)
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("playbook") == "breakout"
+    assert strategist_output.get("themes") == ["semiconductor", "ai"]
+    reporter_feedback = strategist_output.get("reporter_feedback_packet") or {}
+    assert reporter_feedback.get("status") == "disabled"
+    assert reporter_feedback.get("reporter_feedback_mode") == "disabled"
+    assert reporter_feedback.get("reporter_feedback_mode_source") == "commander_applied_policy"
+    assert reporter_feedback.get("feedback_gate_reason") == "mode_disabled"
+
+
+def test_strategist_reporter_feedback_mode_state_fallback_remains_supported(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterOk)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["reporter_feedback_mode"] = "enabled"
+    state["strategist_feedback_packet"] = {
+        "available": True,
+        "status": "ok",
+        "confidence": "medium",
+        "insight_summary": "State fallback remains supported for compatibility.",
+        "route_analysis": {"route_selected_total": {"monitor_only": 4, "full_cycle": 2}},
+    }
+
+    out = strategist_node(state)
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output.get("playbook") == "breakout"
+    assert strategist_output.get("themes") == ["semiconductor", "ai"]
+    reporter_feedback = strategist_output.get("reporter_feedback_packet") or {}
+    assert reporter_feedback.get("available") is True
+    assert reporter_feedback.get("reporter_feedback_mode") == "enabled"
+    assert reporter_feedback.get("reporter_feedback_mode_source") == "state_fallback"
+    assert reporter_feedback.get("consumed") is True
+
+
 def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
     payload = {
         "global_sentiment_signal": {
@@ -503,6 +813,32 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
             "recent_theme_performance": {"semiconductor": {"appearance_count": 4}, "defense": {"appearance_count": 6}, "ai": {"appearance_count": 2}, "energy": {"appearance_count": 1}},
             "recent_playbook_performance": {"pullback": {"appearance_count": 9}, "defensive": {"appearance_count": 3}, "breakout": {"appearance_count": 1}, "reversal": {"appearance_count": 2}},
             "advisory_only": True,
+        },
+        "reporter_feedback_packet": {
+            "available": True,
+            "status": "ok",
+            "feedback_mode": "deterministic",
+            "confidence": "medium",
+            "insight_summary": "Monitor-only share is elevated and reclaim blockers are common.",
+            "route_analysis": {
+                "route_source": "canonical_commander_preferred",
+                "route_selected_total": {"monitor_only": 12, "cached_strategist": 5, "full_cycle": 3},
+                "monitor_only_ratio": 0.6,
+                "cached_strategist_ratio": 0.25,
+                "full_cycle_ratio": 0.15,
+            },
+            "blocker_analysis": [
+                {"blocker": "below_vwap_reclaim_not_ready", "count": 6, "ratio": 0.3},
+                {"blocker": "pullback_ok", "count": 5, "ratio": 0.25},
+            ],
+            "dominant_patterns": [
+                {"name": "monitor_only_ratio", "value": 0.6, "detail": "monitor_only 12/20"},
+                {"name": "reclaim_blocked_ratio", "value": 0.3, "detail": "reclaim blockers 6/20"},
+            ],
+            "recommendation": [
+                "Review reclaim readiness evidence.",
+                "Compare cached strategist reuse against fresh full-cycle opportunities.",
+            ],
         },
         "macro_stress_overlay_hint": {"active": True, "stress_flags": ["elevated_vix", "dollar_strength", "yield_rise", "extra"], "reason": "macro stress"},
         "market_news_sample": {
@@ -532,6 +868,10 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
     assert len(compact["recent_strategy_feedback"]["top_recent_weaknesses"]) == 4
     assert len(compact["recent_strategy_feedback"]["suggested_report_focus"]) == 4
     assert compact["recent_strategy_feedback"]["recent_theme_performance"]["defense"]["appearance_count"] == 6
+    assert compact["reporter_feedback_packet"]["available"] is True
+    assert compact["reporter_feedback_packet"]["route_analysis"]["monitor_only_ratio"] == 0.6
+    assert len(compact["reporter_feedback_packet"]["blocker_analysis"]) == 2
+    assert len(compact["reporter_feedback_packet"]["recommendation"]) == 2
     assert len(compact["market_news_sample"]) == 4
     assert len(compact["candidate_news_sample"]) == 4
     assert len(compact["candidate_symbols_hint"]) == 5
@@ -541,28 +881,50 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
 
 
 def test_strategist_frame_llm_max_tokens_falls_back_to_ai_strategist_setting(monkeypatch):
-    monkeypatch.delenv("STRATEGIST_FRAME_LLM_MAX_TOKENS", raising=False)
-    monkeypatch.setenv("AI_STRATEGIST_MAX_TOKENS", "320")
     monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
     monkeypatch.setenv("DRY_RUN", "false")
     monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterCapturePolicy)
 
     logger = _MemoryLogger()
-    strategist_node(_base_state(logger))
+    state = _base_state(logger)
+    state["policy"] = {
+        "applied_policy": {
+            "llm": {
+                "strategist": {
+                    "execution_profile": {
+                        "name": "balanced_reasoning",
+                        "max_tokens": 320,
+                    }
+                }
+            }
+        }
+    }
+    strategist_node(state)
 
     assert isinstance(_FakeRouterCapturePolicy.last_policy, dict)
     assert int(_FakeRouterCapturePolicy.last_policy.get("max_tokens") or 0) == 320
 
 
 def test_strategist_frame_llm_timeout_falls_back_to_ai_strategist_setting(monkeypatch):
-    monkeypatch.delenv("STRATEGIST_FRAME_LLM_TIMEOUT_SEC", raising=False)
-    monkeypatch.setenv("AI_STRATEGIST_TIMEOUT_SEC", "15")
     monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
     monkeypatch.setenv("DRY_RUN", "false")
     monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterCapturePolicy)
 
     logger = _MemoryLogger()
-    strategist_node(_base_state(logger))
+    state = _base_state(logger)
+    state["policy"] = {
+        "applied_policy": {
+            "llm": {
+                "strategist": {
+                    "execution_profile": {
+                        "name": "balanced_reasoning",
+                        "timeout_sec": 15,
+                    }
+                }
+            }
+        }
+    }
+    strategist_node(state)
 
     assert isinstance(_FakeRouterCapturePolicy.last_policy, dict)
     assert float(_FakeRouterCapturePolicy.last_policy.get("timeout_sec") or 0.0) == 15.0

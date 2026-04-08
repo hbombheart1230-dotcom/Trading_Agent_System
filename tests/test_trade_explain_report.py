@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from libs.reporting.trade_explain import OFFICIAL_TRADE_EXPLAIN_REPORT_DIR
+from scripts.run_trade_explain_report import _build_parser
 from scripts.run_trade_explain_report import main as trade_explain_main
 
 
@@ -17,6 +19,11 @@ def _write_commander_artifact(reports_root: Path, day: str, run_id: str, payload
     commander_path = reports_root / "canonical" / day / run_id / "commander.json"
     commander_path.parent.mkdir(parents=True, exist_ok=True)
     commander_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def test_trade_explain_cli_defaults_to_official_report_dir() -> None:
+    args = _build_parser().parse_args([])
+    assert args.report_dir == OFFICIAL_TRADE_EXPLAIN_REPORT_DIR
 
 
 def test_trade_explain_report_builds_sell_pair_with_hold_and_pnl(tmp_path: Path, capsys) -> None:
@@ -306,7 +313,10 @@ def test_trade_explain_report_adds_no_trade_summary(tmp_path: Path, capsys) -> N
     assert obj["no_trade_summary"]["route_source_breakdown"] == {"event_fallback": 1}
     assert obj["no_trade_summary"]["scanner_monitor_mismatch_total"] == 1
     assert obj["no_trade_summary"]["dominant_blocker_topN"][0]["reason"] == "below_vwap_reclaim_not_ready"
+    assert obj["output_path_policy"]["path_status"] == "custom_nonofficial"
+    assert "Official trade_explain path is" in obj["output_path_policy"]["deprecated_note"]
     md_body = Path(obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "## Data Freshness" in md_body
     assert "## No-Trade Summary" in md_body
     assert "no_trade_runs_total" in md_body
 
@@ -418,6 +428,9 @@ def test_trade_explain_report_prefers_canonical_commander_route_source(tmp_path:
     assert obj["route_summary"]["route_selected_total"] == {"cached_strategist": 1, "monitor_only": 1}
     assert obj["route_summary"]["strategy_generation_mode_total"] == {"cached": 1, "live_llm": 1}
     assert obj["route_source"] == "canonical_commander_preferred"
+    assert obj["route_provenance"]["route_source"] == "canonical_commander_preferred"
+    assert obj["data_freshness"]["freshness_status"] == "fresh"
+    assert obj["output_path_policy"]["path_status"] == "official"
     assert obj["source_run_count"] == 2
     assert obj["latest_run_id"] == "r_sell"
     assert obj["latest_run_ts"].startswith(f"{day}T00:05:02")
@@ -431,6 +444,9 @@ def test_trade_explain_report_prefers_canonical_commander_route_source(tmp_path:
     assert pair["why_not_buy_summary"] == "-"
 
     md_body = Path(obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "## Data Freshness" in md_body
+    assert "## Output Path Policy" in md_body
+    assert "## Route Provenance" in md_body
     assert "## Route Summary" in md_body
     assert "route_source: `canonical_commander_preferred`" in md_body
     assert "commander_route: route=monitor_only, source=canonical_commander, strategist_mode=live_llm" in md_body
@@ -556,3 +572,4 @@ def test_trade_explain_report_uses_event_fallback_when_commander_artifact_missin
     assert obj["route_summary"]["strategy_generation_mode_total"] == {"fallback": 1}
     assert obj["route_summary"]["strategist_fallback_total"] == 1
     assert obj["route_source_missing_count"] == 0
+    assert obj["output_path_policy"]["path_status"] == "custom_nonofficial"

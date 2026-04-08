@@ -4,6 +4,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+from libs.llm.model_catalog import resolve_policy_llm_execution_slot, resolve_policy_llm_slot
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.llm.json_response import (
@@ -315,9 +316,31 @@ def build_ai_reporter_review(
 ) -> Dict[str, Any]:
     """Optional passive AI review stage layered on deterministic reporter analysis."""
     run_id = f"reporter-{str(day)}"
-    is_enabled = _env_bool("REPORTER_AI_REVIEW_ENABLED", False) if enabled is None else bool(enabled)
+    if enabled is None:
+        applied_policy = reporter_output.get("applied_policy") if isinstance(reporter_output.get("applied_policy"), dict) else {}
+        reporter_policy = applied_policy.get("reporter") if isinstance(applied_policy.get("reporter"), dict) else {}
+        ai_review_policy = reporter_policy.get("ai_review") if isinstance(reporter_policy.get("ai_review"), dict) else {}
+        policy_fallback = reporter_output.get("reporter_policy") if isinstance(reporter_output.get("reporter_policy"), dict) else {}
+        ai_review_fallback = policy_fallback.get("ai_review") if isinstance(policy_fallback.get("ai_review"), dict) else {}
+        payload_policy = reporter_output.get("policy") if isinstance(reporter_output.get("policy"), dict) else {}
+        payload_reporter_policy = payload_policy.get("reporter") if isinstance(payload_policy.get("reporter"), dict) else {}
+        payload_ai_review_policy = (
+            payload_reporter_policy.get("ai_review")
+            if isinstance(payload_reporter_policy.get("ai_review"), dict)
+            else {}
+        )
+        if ai_review_policy.get("enabled") is not None:
+            is_enabled = bool(ai_review_policy.get("enabled"))
+        elif ai_review_fallback.get("enabled") is not None:
+            is_enabled = bool(ai_review_fallback.get("enabled"))
+        elif payload_ai_review_policy.get("enabled") is not None:
+            is_enabled = bool(payload_ai_review_policy.get("enabled"))
+        else:
+            is_enabled = False
+    else:
+        is_enabled = bool(enabled)
     if not is_enabled:
-        return _default_result(enabled=False, status="disabled", reason="REPORTER_AI_REVIEW_ENABLED is false")
+        return _default_result(enabled=False, status="disabled", reason="reporter.ai_review.enabled is false")
     if _env_bool("DRY_RUN", False):
         return _default_result(enabled=True, status="dry_run", reason="DRY_RUN mode")
 
@@ -325,30 +348,27 @@ def build_ai_reporter_review(
     if router.client is None:
         return _default_result(enabled=True, status="unavailable", reason="LLM client unavailable")
 
-    env_model = str(
-        os.getenv("OPENROUTER_MODEL_REPORTER_FINAL", "")
-        or os.getenv("REPORTER_AI_REVIEW_MODEL", "")
-        or os.getenv("OPENROUTER_DEFAULT_MODEL", "")
-        or "openrouter/auto"
-    ).strip()
-    env_temp_raw = str(os.getenv("REPORTER_AI_REVIEW_TEMPERATURE", "")).strip()
-    env_max_tokens_raw = str(os.getenv("REPORTER_AI_REVIEW_MAX_TOKENS", "")).strip()
+    llm_slot = resolve_policy_llm_slot(reporter_output, "reporter", "daily", default_profile="strong_reasoning")
+    execution_slot = resolve_policy_llm_execution_slot(
+        reporter_output,
+        "reporter",
+        "daily",
+        default_profile="deep_review",
+        defaults={
+            "name": "deep_review",
+            "temperature": 0.2,
+            "max_tokens": 8192,
+        },
+    )
+    env_model = str(llm_slot.get("primary") or "moonshotai/kimi-k2.5").strip()
     resolved_model = normalize_openrouter_model_name(model or env_model or "")
     if temperature is not None:
         resolved_temp = float(temperature)
-    elif env_temp_raw:
-        try:
-            resolved_temp = float(env_temp_raw)
-        except Exception:
-            resolved_temp = 0.1
     else:
-        resolved_temp = 0.1
+        resolved_temp = float(execution_slot.get("temperature") or 0.2)
     resolved_max_tokens = int(max_tokens)
-    if env_max_tokens_raw and max_tokens == 900:
-        try:
-            resolved_max_tokens = int(float(env_max_tokens_raw))
-        except Exception:
-            resolved_max_tokens = int(max_tokens)
+    if max_tokens == 900:
+        resolved_max_tokens = int(float(execution_slot.get("max_tokens") or 8192))
 
     policy: Dict[str, Any] = {
         "max_tokens": max(256, int(resolved_max_tokens)),

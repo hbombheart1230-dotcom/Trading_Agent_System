@@ -10,7 +10,9 @@ from libs.ai.strategist_config import (
     strategist_api_key,
     strategist_endpoint,
     strategist_max_tokens,
+    strategist_fallback_model,
     strategist_model,
+    strategist_retry_max,
     strategist_timeout_sec,
 )
 from libs.llm.json_response import extract_json_object_loose, strip_fenced_code_block
@@ -222,8 +224,9 @@ class OpenAIStrategist:
     Env:
       - AI_STRATEGIST_API_KEY (or OPENROUTER_API_KEY as fallback)
       - AI_STRATEGIST_ENDPOINT
-      - AI_STRATEGIST_MODEL (optional)
-      - AI_STRATEGIST_TIMEOUT_SEC (optional)
+
+    Runtime execution profile:
+      - Commander-owned through applied policy
     """
 
     _CB_STATE: Dict[str, Dict[str, float]] = {}
@@ -263,39 +266,21 @@ class OpenAIStrategist:
 
     def _effective_model(self) -> str:
         model = normalize_openrouter_model_name(self.model)
-        if _looks_like_chat_completions_endpoint(self.endpoint):
-            # OpenRouter often expects provider/model style names.
-            if (not model) or ("/" not in model):
-                env_model = normalize_openrouter_model_name(
-                    (os.getenv("OPENROUTER_DEFAULT_MODEL") or "").strip()
-                )
-                if env_model:
-                    model = env_model
-        return model or "gpt-4.1-mini"
+        if _looks_like_chat_completions_endpoint(self.endpoint) and model and "/" not in model:
+            model = normalize_openrouter_model_name(model)
+        return model or normalize_openrouter_model_name("deepseek/deepseek-v3.2")
 
     @classmethod
-    def from_env(cls) -> "OpenAIStrategist":
-        api_key = strategist_api_key()
-        endpoint = strategist_endpoint()
-        model = strategist_model()
+    def from_env(cls, policy: Dict[str, Any] | None = None) -> "OpenAIStrategist":
+        api_key = strategist_api_key(policy)
+        endpoint = strategist_endpoint(policy)
+        model = strategist_model(policy)
         if not model:
-            if _looks_like_chat_completions_endpoint(endpoint):
-                model = normalize_openrouter_model_name(
-                    (os.getenv("OPENROUTER_DEFAULT_MODEL") or "").strip()
-                    or "openrouter/auto"
-                )
-            else:
-                model = "gpt-4.1-mini"
-        timeout_sec = strategist_timeout_sec()
-        resolved_max_tokens = strategist_max_tokens()
+            model = strategist_fallback_model(policy) or normalize_openrouter_model_name("deepseek/deepseek-v3.2")
+        timeout_sec = strategist_timeout_sec(policy)
+        resolved_max_tokens = strategist_max_tokens(policy)
         max_tokens: Optional[int] = int(resolved_max_tokens) if int(resolved_max_tokens) > 0 else None
-
-        raw_retry_max = (os.getenv("AI_STRATEGIST_RETRY_MAX") or "1").strip()
-        retry_max = 1
-        try:
-            retry_max = max(0, int(raw_retry_max))
-        except Exception:
-            retry_max = 1
+        retry_max = strategist_retry_max(policy)
 
         raw_backoff = (os.getenv("AI_STRATEGIST_RETRY_BACKOFF_SEC") or "0.5").strip()
         retry_backoff_sec = 0.5

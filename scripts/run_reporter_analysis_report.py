@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.agent.reporter import Reporter
 from libs.core.settings import load_env_file
-from libs.reporting.reporter_analysis import generate_reporter_analysis_report
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -43,9 +43,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     reports_root = Path(str(args.reports_root).strip())
     day = str(args.day).strip() if args.day else None
 
-    md_path, js_path, out = generate_reporter_analysis_report(
-        event_log_path,
-        report_dir,
+    out = Reporter().analyze_event_logs(
+        event_log_path=event_log_path,
+        report_dir=report_dir,
         day=day,
         intents_path=intents_path if intents_path.exists() else None,
         reports_root=reports_root,
@@ -55,6 +55,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         ai_review_temperature=args.ai_review_temperature,
         ai_review_max_tokens=max(256, int(args.ai_review_max_tokens)),
     )
+    md_path = Path(str(out.get("report_md_path") or ""))
+    js_path = Path(str(out.get("report_json_path") or ""))
 
     if bool(args.json):
         print(json.dumps(out, ensure_ascii=False))

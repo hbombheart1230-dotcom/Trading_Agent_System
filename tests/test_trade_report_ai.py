@@ -823,12 +823,23 @@ def test_ai_trade_report_compact_input_is_smaller_than_full_story() -> None:
     assert "holding_events" not in json.dumps(compact_input, ensure_ascii=False)
 
 
-def test_ai_trade_report_uses_openrouter_default_max_tokens_when_role_value_missing(monkeypatch) -> None:
+def test_ai_trade_report_uses_policy_execution_profile_max_tokens_when_role_value_missing(monkeypatch) -> None:
     monkeypatch.setattr(mod, "LLMRouter", _CapturePolicyRouter)
-    monkeypatch.delenv("TRADE_REPORT_AI_MAX_TOKENS", raising=False)
-    monkeypatch.setenv("OPENROUTER_DEFAULT_MAX_TOKENS", "4096")
+    story_input = _story_input()
+    story_input["applied_policy"] = {
+        "llm": {
+            "reporter": {
+                "intraday": {
+                    "execution_profile": {
+                        "name": "concise_review",
+                        "max_tokens": 4096,
+                    }
+                }
+            }
+        }
+    }
 
-    report = mod.build_ai_trade_report(_story_input(), enabled=True, model="free")
+    report = mod.build_ai_trade_report(story_input, enabled=True, model="free")
 
     assert report["generation"]["status"] == "ok"
     assert _CapturePolicyRouter.last_policies

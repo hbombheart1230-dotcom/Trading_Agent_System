@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from libs.strategies.contracts import StrategistOutput, coerce_strategist_output
+from libs.strategies.contracts import StrategyInput, StrategistOutput, coerce_strategist_output
 
 
 def test_strategist_output_schema_normalizes_enum_fields() -> None:
@@ -190,3 +190,18 @@ def test_coerce_strategist_output_invalid_scanner_bias_context_falls_back_safely
 
     assert out["scanner_bias_context"]["prefer_shallow_pullback_candidates"] is True
     assert out["scanner_bias_context"]["bias_strength"] == "low"
+
+
+def test_strategy_input_contract_keeps_reporter_feedback_packet_additively() -> None:
+    dto = StrategyInput(
+        symbol="005930",
+        strategist_feedback_packet={
+            "available": True,
+            "status": "ok",
+            "insight_summary": "Monitor-only share is elevated.",
+        },
+    ).to_dict()
+
+    assert dto["symbol"] == "005930"
+    assert dto["strategist_feedback_packet"]["available"] is True
+    assert dto["strategist_feedback_packet"]["status"] == "ok"

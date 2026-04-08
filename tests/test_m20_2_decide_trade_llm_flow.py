@@ -304,7 +304,7 @@ def test_m20_2_decide_trade_blocks_buy_when_position_already_open(monkeypatch):
     out = decide_trade(state)
 
     assert out["decision_packet"]["intent"]["action"] == "NOOP"
-    assert out["decision_packet"]["intent"]["reason"] == "position_hold"
+    assert out["decision_packet"]["intent"]["reason"] == "position_already_open"
 
 
 def test_m20_2_decide_trade_exit_policy_triggers_sell(monkeypatch):
@@ -458,6 +458,14 @@ def test_m20_2_decide_trade_exit_policy_max_hold_triggers_sell(monkeypatch):
             "cash": 2_000_000,
             "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0}],
             "open_positions": 1,
+        },
+        "applied_policy": {
+            "monitor": {
+                "hold": {"min_hold_seconds": 0},
+            },
+            "execution": {
+                "cooldowns": {"sell_sec": 0},
+            },
         },
         "persisted_state": {"last_trade_side": "BUY", "last_trade_epoch": 1900},
         "risk_context": {"open_positions": 1, "daily_pnl_ratio": 0.0, "last_order_epoch": 0},
