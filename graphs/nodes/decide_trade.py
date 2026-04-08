@@ -915,6 +915,35 @@ def _sync_legacy_circuit_fields(state: dict, llm_meta: Dict[str, Any]) -> None:
             pass
 
 
+def _build_optional_exit_chart_context(state: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    sym = str(symbol or "").strip().upper()
+    candidates = []
+    for key in ("monitor_entry_decision_detail", "monitor_output"):
+        row = state.get(key)
+        if isinstance(row, dict):
+            candidates.append(row)
+
+    for row in candidates:
+        row_symbol = str(row.get("symbol") or row.get("selected_symbol") or "").strip().upper()
+        if row_symbol and sym and row_symbol != sym:
+            continue
+        chart_features = row.get("chart_structure_features")
+        if isinstance(chart_features, dict):
+            return {
+                "source": f"state.{key}",
+                "chart_structure_features": dict(chart_features),
+            }
+
+    return {
+        "source": "unavailable",
+        "chart_structure_features": {
+            "schema_version": "chart_structure_features.v1",
+            "available": False,
+            "notes": ["chart_context_unavailable"],
+        },
+    }
+
+
 def decide_trade(state: dict) -> dict:
     market: Dict[str, Any] = state.get("market_snapshot", {}) or {}
     portfolio: Dict[str, Any] = state.get("portfolio_snapshot", {}) or {}
@@ -976,6 +1005,7 @@ def decide_trade(state: dict) -> dict:
     score_override_applied = False
     strategy_v1_decision: Dict[str, Any] | None = None
     decision_source = "rule"
+    exit_policy_decision: Dict[str, Any] | None = None
 
     cooldown_remaining = _post_exit_cooldown_remaining_sec(state, open_positions)
     if cooldown_remaining > 0:
@@ -1008,6 +1038,7 @@ def decide_trade(state: dict) -> dict:
             if news_ctx:
                 exit_policy_cfg["symbol_sentiment_score"] = _to_float(news_ctx.get("symbol_sentiment_score"), 0.0)
                 exit_policy_cfg["global_sentiment_score"] = _to_float(news_ctx.get("global_sentiment_score"), 0.0)
+            exit_policy_cfg["chart_context"] = _build_optional_exit_chart_context(state, symbol)
             exit_decision = evaluate_exit_policy(
                 price=px,
                 avg_price=avg_price,
@@ -1015,6 +1046,7 @@ def decide_trade(state: dict) -> dict:
                 hold_sec=_resolve_position_hold_sec(state),
                 policy=exit_policy_cfg,
             )
+            exit_policy_decision = dict(exit_decision)
             reason = str(exit_decision.get("reason") or "hold")
             if bool(exit_decision.get("triggered")):
                 static_intent = {
@@ -1347,6 +1379,8 @@ def decide_trade(state: dict) -> dict:
         trace["strategy_v1_name"] = str(state.get("strategy_v1_name") or "")
     if error:
         trace["error"] = error
+    if isinstance(exit_policy_decision, dict):
+        trace["exit_policy_decision"] = dict(exit_policy_decision)
 
     state["decision_packet"] = packet
     state["decision_trace"] = trace

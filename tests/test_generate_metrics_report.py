@@ -384,6 +384,116 @@ def test_generate_metrics_report_empty_has_llm_summary_keys(tmp_path: Path):
     assert data["guard_block_total"] == 0
 
 
+def test_generate_metrics_report_counts_routes_from_commander_end_payload(tmp_path: Path):
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "ts": "2026-04-08T01:00:00+00:00",
+                        "run_id": "r1",
+                        "stage": "commander_router",
+                        "event": "end",
+                        "payload": {
+                            "status": "ok",
+                            "route_observability": {"route_selected": "monitor_only"},
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "ts": "2026-04-08T01:00:01+00:00",
+                        "run_id": "r2",
+                        "stage": "commander_router",
+                        "event": "route_selected",
+                        "payload": {"route_selected": "full_cycle"},
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "reports"
+    _, js = generate_metrics_report(events, out_dir, day="2026-04-08")
+    data = json.loads(js.read_text(encoding="utf-8"))
+
+    assert data["route_selected_total"]["monitor_only"] == 1
+    assert data["route_selected_total"]["full_cycle"] == 1
+    assert data["route_source"] == "canonical_commander_preferred"
+    assert data["route_source_run_count"] == 2
+    assert data["source_run_count"] == 2
+    assert data["latest_run_id"] == "r2"
+
+
+def test_generate_metrics_report_prefers_canonical_commander_route_source(tmp_path: Path):
+    day = "2026-04-08"
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps(
+            {
+                "ts": f"{day}T01:00:00+00:00",
+                "run_id": "r1",
+                "stage": "commander_router",
+                "event": "route_selected",
+                "payload": {"route_selected": "full_cycle"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    reports_root = tmp_path / "reports"
+    commander_path = reports_root / "canonical" / day / "r1" / "commander.json"
+    commander_path.parent.mkdir(parents=True, exist_ok=True)
+    commander_path.write_text(
+        json.dumps(
+            {
+                "route_selected": "monitor_only",
+                "strategy_generation_mode": "cached",
+                "strategist_call_decision": "skip",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    _, js = generate_metrics_report(events, reports_root / "metrics", day=day)
+    data = json.loads(js.read_text(encoding="utf-8"))
+
+    assert data["route_selected_total"] == {"monitor_only": 1}
+    assert data["strategist_mode_total"] == {"cached": 1}
+    assert data["route_source_run_count"] == 1
+    assert data["route_source_missing_count"] == 0
+    assert data["route_source_breakdown"] == {"canonical_commander": 1}
+
+
+def test_generate_metrics_report_uses_event_fallback_when_commander_artifact_missing(tmp_path: Path):
+    day = "2026-04-08"
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps(
+            {
+                "ts": f"{day}T01:00:00+00:00",
+                "run_id": "r1",
+                "stage": "commander_router",
+                "event": "route_selected",
+                "payload": {"route_selected": "cached_strategist"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _, js = generate_metrics_report(events, tmp_path / "reports" / "metrics", day=day)
+    data = json.loads(js.read_text(encoding="utf-8"))
+
+    assert data["route_selected_total"] == {"cached_strategist": 1}
+    assert data["route_source_breakdown"] == {"event_fallback": 1}
+
+
 def test_generate_metrics_report_broker_api_429_rate(tmp_path: Path):
     events = tmp_path / "events.jsonl"
     events.write_text(

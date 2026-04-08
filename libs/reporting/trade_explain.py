@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from libs.core.symbols import normalize_symbol
+from libs.reporting.narrative_axes import build_narrative_explanation, narrative_axis_policy
+from libs.reporting.report_source_helpers import (
+    build_commander_route_summary,
+    epoch_to_iso,
+    utc_now_iso,
+)
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -83,6 +89,15 @@ def _latest_day(path: Path) -> Optional[str]:
         if best is None or d > best:
             best = d
     return best
+
+
+def _canonical_report_root(report_dir: Path) -> Path:
+    for candidate in (report_dir, *report_dir.parents):
+        if candidate.name == "reports":
+            return candidate
+    if report_dir.name in {"trade_explain", "daily", "metrics", "run_cards", "decision_story", "operator_summary"}:
+        return report_dir.parent
+    return report_dir
 
 
 def _extract_news_items(news: Dict[str, Any], llm_ctx: Dict[str, Any]) -> List[str]:
@@ -212,6 +227,22 @@ def _build_run_contexts(rows: List[Dict[str, Any]]) -> Tuple[Dict[str, Dict[str,
     return by_run, stage_counts
 
 
+def _apply_commander_route_overlay(
+    by_run: Dict[str, Dict[str, Any]],
+    route_summary: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    route_by_run = route_summary.get("by_run") if isinstance(route_summary.get("by_run"), dict) else {}
+    if not route_by_run:
+        return by_run
+    for run_id, route_row in route_by_run.items():
+        if not isinstance(route_row, dict):
+            continue
+        ctx = by_run.setdefault(run_id, _run_context_default(run_id))
+        existing = ctx.get("commander_route") if isinstance(ctx.get("commander_route"), dict) else {}
+        ctx["commander_route"] = {**dict(existing), **dict(route_row)}
+    return by_run
+
+
 def _build_execution_rows(rows: List[Dict[str, Any]], by_run: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for row in rows:
@@ -245,6 +276,16 @@ def _build_execution_rows(rows: List[Dict[str, Any]], by_run: Dict[str, Dict[str
 
         news = decision.get("news") if isinstance(decision.get("news"), dict) else {}
         tech = decision.get("technical") if isinstance(decision.get("technical"), dict) else {}
+        narrative = build_narrative_explanation(
+            action=action,
+            decision_rationale=decision.get("decision_rationale"),
+            decision_reason=decision.get("decision_reason"),
+            key_reason=decision.get("decision_reason"),
+            entry_reason=monitor.get("monitor_reason") if action == "BUY" else "",
+            dominant_blocker=((monitor_entry.get("no_trade_surface") if isinstance(monitor_entry.get("no_trade_surface"), dict) else {}) or {}).get("dominant_blocker"),
+            exit_reason=monitor.get("exit_reason") if action == "SELL" else "",
+            exit_monitor_reason=monitor.get("monitor_reason") if action == "SELL" else "",
+        )
 
         out.append(
             {
@@ -281,9 +322,24 @@ def _build_execution_rows(rows: List[Dict[str, Any]], by_run: Dict[str, Dict[str
                 "llm_provider": str(strategist_llm.get("provider") or ""),
                 "llm_model": str(strategist_llm.get("model") or ""),
                 "llm_ok": strategist_llm.get("ok"),
-                "strategist_mode": str(strategist_policy_resolution.get("strategy_generation_mode") or ""),
+                "strategist_mode": str(
+                    commander_route.get("strategy_generation_mode")
+                    or strategist_policy_resolution.get("strategy_generation_mode")
+                    or ""
+                ),
                 "strategist_fallback_used": bool(strategist_policy_resolution.get("fallback_used")),
                 "route_selected": str(commander_route.get("route_selected") or ""),
+                "route_source": str(commander_route.get("route_source") or "unavailable"),
+                "decision_axis": str(narrative.get("decision_axis") or "unknown"),
+                "primary_explanation": str(narrative.get("primary_explanation") or "-"),
+                "entry_narrative": str(narrative.get("entry_narrative") or "-"),
+                "exit_narrative": str(narrative.get("exit_narrative") or "-"),
+                "why_not_buy_summary": str(narrative.get("why_not_buy_summary") or "-"),
+                "why_exit_summary": str(narrative.get("why_exit_summary") or "-"),
+                "narrative_order": list(narrative.get("narrative_order") or []),
+                "narrative_order_text": str(narrative.get("narrative_order_text") or "-"),
+                "narrative_consistency_flag": bool(narrative.get("narrative_consistency_flag")),
+                "entry_context_blocker": str(narrative.get("entry_context_blocker") or "-"),
                 "news_symbol_sentiment_score": news.get("symbol_sentiment_score"),
                 "news_global_sentiment_score": news.get("global_sentiment_score"),
                 "news_symbol_status": str(news.get("symbol_sentiment_status") or ""),
@@ -355,6 +411,15 @@ def _build_sell_pairs_fifo(executions: List[Dict[str, Any]]) -> List[Dict[str, A
 
         avg_entry = (total_entry / float(matched_qty)) if matched_qty > 0 else 0.0
         avg_hold_sec = (weighted_hold / float(matched_qty)) if matched_qty > 0 else 0.0
+        narrative = build_narrative_explanation(
+            action="SELL",
+            decision_rationale=row.get("decision_rationale"),
+            decision_reason=row.get("decision_reason"),
+            key_reason=row.get("decision_reason") or row.get("monitor_exit_reason"),
+            exit_reason=row.get("monitor_exit_reason"),
+            exit_monitor_reason=row.get("monitor_reason"),
+            dominant_blocker=row.get("monitor_dominant_blocker"),
+        )
         pairs.append(
             {
                 "sell_run_id": str(row.get("run_id") or ""),
@@ -379,6 +444,19 @@ def _build_sell_pairs_fifo(executions: List[Dict[str, Any]]) -> List[Dict[str, A
                 "scanner_top_stock": str(row.get("scanner_top_stock") or ""),
                 "scanner_top_score": row.get("scanner_top_score"),
                 "scanner_top_ranked_symbols": list(row.get("scanner_top_ranked_symbols") or []),
+                "route_selected": str(row.get("route_selected") or ""),
+                "route_source": str(row.get("route_source") or "unavailable"),
+                "strategist_mode": str(row.get("strategist_mode") or ""),
+                "decision_axis": str(narrative.get("decision_axis") or "unknown"),
+                "primary_explanation": str(narrative.get("primary_explanation") or "-"),
+                "entry_narrative": str(narrative.get("entry_narrative") or "-"),
+                "exit_narrative": str(narrative.get("exit_narrative") or "-"),
+                "why_not_buy_summary": str(narrative.get("why_not_buy_summary") or "-"),
+                "why_exit_summary": str(narrative.get("why_exit_summary") or "-"),
+                "narrative_order": list(narrative.get("narrative_order") or []),
+                "narrative_order_text": str(narrative.get("narrative_order_text") or "-"),
+                "narrative_consistency_flag": bool(narrative.get("narrative_consistency_flag")),
+                "entry_context_blocker": str(narrative.get("entry_context_blocker") or "-"),
                 "news_symbol_sentiment_score": row.get("news_symbol_sentiment_score"),
                 "news_global_sentiment_score": row.get("news_global_sentiment_score"),
                 "news_symbol_status": str(row.get("news_symbol_status") or ""),
@@ -416,6 +494,8 @@ def _to_markdown(
     *,
     day: str,
     event_log_path: Path,
+    route_summary: Dict[str, Any],
+    freshness: Dict[str, Any],
     execution_summary: Dict[str, Any],
     agent_activity: Dict[str, Any],
     sell_pairs: List[Dict[str, Any]],
@@ -428,6 +508,11 @@ def _to_markdown(
     lines.append(f"# Trade Explain Report ({day})")
     lines.append("")
     lines.append(f"- event_log_path: `{event_log_path}`")
+    lines.append(f"- generated_at: `{freshness.get('generated_at') or ''}`")
+    lines.append(f"- source_run_count: **{int(freshness.get('source_run_count') or 0)}**")
+    lines.append(f"- latest_run_id: `{freshness.get('latest_run_id') or '-'}`")
+    lines.append(f"- latest_run_ts: `{freshness.get('latest_run_ts') or '-'}`")
+    lines.append(f"- narrative_policy: exit-first for SELL/EXIT, entry-first for BUY/WAIT/NO_TRADE")
     lines.append(f"- executions_total: **{int(execution_summary.get('executions_total') or 0)}**")
     lines.append(f"- sell_pairs_total: **{int(execution_summary.get('sell_pairs_total') or 0)}**")
     lines.append("")
@@ -437,6 +522,15 @@ def _to_markdown(
     lines.append(f"- action_counts: `{execution_summary.get('action_counts') or {}}`")
     lines.append(f"- symbol_side_counts: `{execution_summary.get('symbol_side_counts') or {}}`")
     lines.append(f"- short_holds_lt_120s: **{int(execution_summary.get('short_holds_lt_120s') or 0)}**")
+    lines.append("")
+    lines.append("## Route Summary")
+    lines.append("")
+    lines.append(f"- route_source: `{route_summary.get('route_source') or 'unavailable'}`")
+    lines.append(f"- route_source_run_count: **{int(route_summary.get('route_source_run_count') or 0)}**")
+    lines.append(f"- route_source_missing_count: **{int(route_summary.get('route_source_missing_count') or 0)}**")
+    lines.append(f"- route_source_breakdown: `{route_summary.get('route_source_breakdown') or {}}`")
+    lines.append(f"- route_selected_total: `{route_summary.get('route_selected_total') or {}}`")
+    lines.append(f"- strategy_generation_mode_total: `{route_summary.get('strategy_generation_mode_total') or {}}`")
     lines.append("")
     lines.append("## Agent Activity Snapshot")
     lines.append("")
@@ -478,7 +572,7 @@ def _to_markdown(
                     qty=int(_safe_int(row.get("qty"), 0)),
                     price=round(_safe_float(row.get("price"), 0.0), 4),
                     strategy=str(row.get("strategy") or "-"),
-                    reason=str(row.get("decision_rationale") or row.get("decision_reason") or "-"),
+                    reason=str(row.get("primary_explanation") or "-"),
                 )
             )
     lines.append("")
@@ -499,10 +593,20 @@ def _to_markdown(
             lines.append(
                 f"- entry_vs_exit_price: entry_avg={round(_safe_float(pair.get('avg_entry_price'), 0.0), 4)}, exit={round(_safe_float(pair.get('sell_price'), 0.0), 4)}"
             )
+            lines.append(f"- decision_axis: {pair.get('decision_axis') or '-'}")
+            lines.append(f"- primary_explanation: {pair.get('primary_explanation') or '-'}")
+            lines.append(f"- narrative_order: {pair.get('narrative_order_text') or '-'}")
+            lines.append(f"- narrative_consistency_flag: {bool(pair.get('narrative_consistency_flag'))}")
             lines.append(f"- strategy: {pair.get('strategy') or '-'}")
             lines.append(f"- sell_reason: {pair.get('decision_rationale') or pair.get('decision_reason') or '-'}")
+            lines.append(f"- entry_narrative: {pair.get('entry_narrative') or '-'}")
+            lines.append(f"- exit_narrative: {pair.get('exit_narrative') or '-'}")
+            lines.append(f"- entry_context_blocker: {pair.get('entry_context_blocker') or '-'}")
             lines.append(
                 f"- scanner_context: source={pair.get('scanner_source') or '-'}, top_stock={pair.get('scanner_top_stock') or '-'}, top_score={pair.get('scanner_top_score')}"
+            )
+            lines.append(
+                f"- commander_route: route={pair.get('route_selected') or '-'}, source={pair.get('route_source') or 'unavailable'}, strategist_mode={pair.get('strategist_mode') or '-'}"
             )
             lines.append(
                 f"- sentiment_context: symbol={pair.get('news_symbol_sentiment_score')}, global={pair.get('news_global_sentiment_score')}, status=({pair.get('news_symbol_status') or '-'}, {pair.get('news_global_status') or '-'})"
@@ -563,9 +667,24 @@ def generate_trade_explain_report(
             continue
         day_rows.append(row)
 
+    canonical_report_root = _canonical_report_root(report_dir)
+    route_summary = build_commander_route_summary(
+        reports_root=canonical_report_root,
+        day=selected_day,
+        day_rows=day_rows,
+    )
     by_run, stage_counts = _build_run_contexts(day_rows)
+    by_run = _apply_commander_route_overlay(by_run, route_summary)
     execution_rows = _build_execution_rows(day_rows, by_run)
     sell_pairs = _build_sell_pairs_fifo(execution_rows)
+    latest_row: Dict[str, Any] | None = None
+    latest_epoch = 0
+    run_ids = {str(r.get("run_id") or "").strip() for r in day_rows if str(r.get("run_id") or "").strip()}
+    for row in day_rows:
+        epoch = _to_epoch(row.get("ts")) or 0
+        if epoch >= latest_epoch:
+            latest_epoch = epoch
+            latest_row = row
 
     action_counts: Counter = Counter()
     symbol_side_counts: Counter = Counter()
@@ -636,7 +755,7 @@ def generate_trade_explain_report(
         route_selected = str(commander_route.get("route_selected") or "").strip()
         if route_selected:
             route_selected_total[route_selected] += 1
-        if bool(strategist_resolution.get("fallback_used")):
+        if bool(commander_route.get("strategist_fallback_used")) or bool(strategist_resolution.get("fallback_used")):
             strategist_fallback_total += 1
         if handoff and str(handoff.get("scanner_vs_monitor_alignment") or "").strip() in {"mismatch", "partial_mismatch", "guard_block"}:
             scanner_monitor_mismatch_total += 1
@@ -654,15 +773,42 @@ def generate_trade_explain_report(
             for reason, cnt in dominant_blocker_total.most_common(5)
         ],
         "near_ready_runs_total": int(near_ready_runs_total),
-        "strategist_fallback_total": int(strategist_fallback_total),
-        "route_selected_total": dict(route_selected_total),
+        "strategist_fallback_total": int(route_summary.get("strategist_fallback_total") or strategist_fallback_total),
+        "route_selected_total": dict(route_summary.get("route_selected_total") or route_selected_total),
+        "route_source": str(route_summary.get("route_source") or "unavailable"),
+        "route_source_run_count": int(route_summary.get("route_source_run_count") or 0),
+        "route_source_missing_count": int(route_summary.get("route_source_missing_count") or 0),
+        "route_source_breakdown": dict(route_summary.get("route_source_breakdown") or {}),
         "scanner_monitor_mismatch_total": int(scanner_monitor_mismatch_total),
+    }
+    freshness = {
+        "generated_at": utc_now_iso(),
+        "source_run_count": int(len(run_ids)),
+        "latest_run_id": str((latest_row or {}).get("run_id") or ""),
+        "latest_run_ts": epoch_to_iso(latest_epoch),
     }
 
     out: Dict[str, Any] = {
         "schema_version": "trade_explain.v1",
         "day": selected_day,
         "event_log_path": str(event_log_path),
+        "generated_at": freshness["generated_at"],
+        "source_run_count": freshness["source_run_count"],
+        "latest_run_id": freshness["latest_run_id"],
+        "latest_run_ts": freshness["latest_run_ts"],
+        "narrative_axis_policy": narrative_axis_policy(),
+        "route_summary": {
+            "route_source": str(route_summary.get("route_source") or "unavailable"),
+            "route_source_run_count": int(route_summary.get("route_source_run_count") or 0),
+            "route_source_missing_count": int(route_summary.get("route_source_missing_count") or 0),
+            "route_source_breakdown": dict(route_summary.get("route_source_breakdown") or {}),
+            "route_selected_total": dict(route_summary.get("route_selected_total") or {}),
+            "strategy_generation_mode_total": dict(route_summary.get("strategy_generation_mode_total") or {}),
+            "strategist_fallback_total": int(route_summary.get("strategist_fallback_total") or 0),
+        },
+        "route_source": str(route_summary.get("route_source") or "unavailable"),
+        "route_source_run_count": int(route_summary.get("route_source_run_count") or 0),
+        "route_source_missing_count": int(route_summary.get("route_source_missing_count") or 0),
         "execution_summary": execution_summary,
         "agent_activity": agent_activity,
         "report_inventory": inventory,
@@ -678,6 +824,8 @@ def generate_trade_explain_report(
     md_body = _to_markdown(
         day=selected_day,
         event_log_path=event_log_path,
+        route_summary=out["route_summary"],
+        freshness=freshness,
         execution_summary=execution_summary,
         agent_activity=agent_activity,
         sell_pairs=pair_tail,

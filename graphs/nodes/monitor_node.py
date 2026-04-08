@@ -100,16 +100,25 @@ def _resolve_monitor_skill_runner(state: Dict[str, Any]) -> tuple[Any, str]:
         os.getenv("M22_AUTO_SKILL_RUNNER", "")
     )
     if not auto_requested:
-        return None, "none"
+        runtime_path = str(
+            state.get("m13_tick_pipeline")
+            or state.get("tick_pipeline")
+            or state.get("runtime_path")
+            or ""
+        ).strip().lower()
+        if runtime_path not in {"integrated_chain", "integrated", "chain"}:
+            return None, "none"
 
     try:
         from libs.skills.runner import CompositeSkillRunner
 
         built = CompositeSkillRunner.from_env()
         state["skill_runner"] = built
-        return built, "auto.composite_skill_runner"
+        source = "auto.composite_skill_runner" if auto_requested else "integrated_chain_auto.composite_skill_runner"
+        return built, source
     except Exception:
-        return None, "auto_runner_error"
+        source = "auto_runner_error" if auto_requested else "integrated_chain_auto_runner_error"
+        return None, source
 
 
 def _monitor_skill_output_to_record(out: Any) -> Dict[str, Any]:
@@ -322,6 +331,8 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
             "minute_refetch_reason": refetch_trigger_reason or "missing_snapshot",
             "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
             "minute_refetch_failure_reason": "skill_runner_unavailable",
+            "minute_refetch_failure_detail": str(runner_source or "none"),
+            "minute_refetch_runner_source": str(runner_source or "none"),
             "minute_refetch_produced_fresh_snapshot": False,
         }
         return state
@@ -380,6 +391,8 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
             "minute_refetch_reason": refetch_trigger_reason or "missing_snapshot",
             "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
             "minute_refetch_failure_reason": str(result.get("action") or "refetch_not_ready"),
+            "minute_refetch_failure_detail": str(result.get("question") or result.get("action") or "refetch_not_ready"),
+            "minute_refetch_runner_source": str(runner_source or ""),
             "minute_refetch_produced_fresh_snapshot": False,
         }
         return state
@@ -404,6 +417,8 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
             "minute_refetch_reason": refetch_trigger_reason or "missing_snapshot",
             "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
             "minute_refetch_failure_reason": "refetch_empty_rows",
+            "minute_refetch_failure_detail": "refetch_empty_rows",
+            "minute_refetch_runner_source": str(runner_source or ""),
             "minute_refetch_produced_fresh_snapshot": False,
         }
         return state
@@ -433,6 +448,8 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
         "minute_refetch_reason": refetch_trigger_reason,
         "minute_refetch_trigger_reason": refetch_trigger_reason,
         "minute_refetch_failure_reason": "",
+        "minute_refetch_failure_detail": "",
+        "minute_refetch_runner_source": str(runner_source or ""),
         "minute_refetch_produced_fresh_snapshot": not bool(final_stale_reason),
         "previous_latest_candle_ts": existing_latest_candle_ts,
     }
@@ -2481,6 +2498,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         entry_metrics["minute_refetch_reason"] = str(minute_fetch_meta.get("minute_refetch_reason") or "")
         entry_metrics["minute_refetch_trigger_reason"] = str(minute_fetch_meta.get("minute_refetch_trigger_reason") or "")
         entry_metrics["minute_refetch_failure_reason"] = str(minute_fetch_meta.get("minute_refetch_failure_reason") or "")
+        entry_metrics["minute_refetch_failure_detail"] = str(minute_fetch_meta.get("minute_refetch_failure_detail") or "")
+        entry_metrics["minute_refetch_runner_source"] = str(minute_fetch_meta.get("minute_refetch_runner_source") or "")
         entry_metrics["minute_refetch_produced_fresh_snapshot"] = bool(
             minute_fetch_meta.get("minute_refetch_produced_fresh_snapshot")
         )
@@ -3331,6 +3350,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
         "policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "chart_structure_decision_hint": dict(entry_info.get("chart_structure_decision_hint") or {}),
+        "minute_source_meta": dict(entry_info.get("minute_source_meta") or {}),
+        "minute_fetch_meta": dict(entry_info.get("minute_fetch_meta") or {}),
         "no_trade_surface": dict(monitor_no_trade_surface),
         "scanner_monitor_handoff": dict(scanner_monitor_handoff),
         "entry_threshold": entry_info.get("entry_threshold"),
@@ -3369,6 +3390,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_alignment_summary": dict(entry_info.get("policy_alignment_summary") or {}),
         "policy_aware_gating": dict(entry_info.get("policy_aware_gating") or {}),
         "chart_structure_decision_hint": dict(entry_info.get("chart_structure_decision_hint") or {}),
+        "minute_source_meta": dict(entry_info.get("minute_source_meta") or {}),
+        "minute_fetch_meta": dict(entry_info.get("minute_fetch_meta") or {}),
         "total_score": entry_info.get("total_score"),
         "entry_threshold": entry_info.get("entry_threshold"),
         "score_passed": bool(entry_info.get("score_passed")),

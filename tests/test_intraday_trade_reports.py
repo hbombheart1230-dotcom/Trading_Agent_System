@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from libs.reporting.intraday_trade_reports import generate_intraday_trade_artifacts
@@ -80,3 +81,47 @@ def test_intraday_trade_reports_skips_when_execution_failed(monkeypatch) -> None
     )
     assert out["ok"] is False
     assert out["reason"] == "execution_not_successful"
+
+
+def test_intraday_trade_reports_queues_background_job_after_timeout(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path
+    monkeypatch.setenv("INTRADAY_TRADE_REPORTS_ENABLED", "true")
+    monkeypatch.setenv("EVENT_LOG_PATH", str(root / "data" / "logs" / "events.jsonl"))
+    monkeypatch.setenv("EVIDENCE_LOG_PATH", str(root / "data" / "evidence_ledger" / "events.jsonl"))
+    monkeypatch.setenv("INTENTS_PATH", str(root / "data" / "logs" / "intents.jsonl"))
+    monkeypatch.setenv("ENV_PATH", str(root / ".env"))
+    monkeypatch.setenv("INTRADAY_TRADE_REPORT_SYNC_TIMEOUT_SEC", "0.5")
+
+    popen_calls: list[list[str]] = []
+
+    def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise subprocess.TimeoutExpired(cmd=kwargs.get("args") or args[0], timeout=0.5)
+
+    class DummyProc:
+        pid = 43210
+
+    def fake_popen(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        popen_calls.append(list(cmd))
+        return DummyProc()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    out = generate_intraday_trade_artifacts(
+        {
+            "run_id": "run-timeout",
+            "execution": {
+                "ok": True,
+                "allowed": True,
+                "order": {"action": "SELL", "symbol": "069500"},
+            },
+        }
+    )
+
+    assert out["ok"] is True
+    assert out["status"] == "queued"
+    assert out["report_status"] == "queued"
+    assert out["queue_mode"] == "background_subprocess"
+    assert out["background_pid"] == 43210
+    assert out["symbol"] == "069500"
+    assert popen_calls

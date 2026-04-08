@@ -213,3 +213,48 @@ def test_exit_policy_trend_breakdown_triggers():
     assert out["triggered"] is True
     assert out["reason"] == "trend_breakdown"
     assert float(out.get("trend_strength") or 0.0) == -0.25
+
+
+def test_exit_policy_without_chart_context_keeps_existing_hold_behavior():
+    out = evaluate_exit_policy(
+        price=100.5,
+        avg_price=100.0,
+        qty=1,
+        policy={"take_profit_pct": 0.10, "stop_loss_pct": 0.05},
+    )
+    assert out["triggered"] is False
+    assert out["reason"] == "hold"
+    assert out["chart_context_available"] is False
+    assert str(out.get("structure_breakdown_signal") or "") == ""
+
+
+def test_exit_policy_accepts_optional_chart_context_without_changing_threshold_decision():
+    out = evaluate_exit_policy(
+        price=95.0,
+        avg_price=90.0,
+        qty=10,
+        policy={
+            "trailing_stop_pct": 0.04,
+            "peak_price": 100.0,
+            "take_profit_pct": 0.0,
+            "chart_context": {
+                "source": "state.monitor_entry_decision_detail",
+                "chart_structure_features": {
+                    "schema_version": "chart_structure_features.v1",
+                    "available": True,
+                    "structure": {"structure_hh_hl": "weakening"},
+                    "trend_alignment": {"ma_alignment_state": "bearish", "trend_regime": "transition"},
+                    "support_resistance": {"support_holding": "lost", "failed_breakout": "confirmed"},
+                    "continuity_momentum": {"momentum_follow_through": "weak"},
+                    "notes": ["minute_snapshot_fresh"],
+                },
+            },
+        },
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "trailing_stop"
+    assert out["chart_context_available"] is True
+    assert str(out.get("structure_breakdown_signal") or "") == "failed_breakout"
+    summary = out.get("chart_context_summary") or {}
+    assert summary.get("support_holding") == "lost"
+    assert summary.get("failed_breakout") == "confirmed"

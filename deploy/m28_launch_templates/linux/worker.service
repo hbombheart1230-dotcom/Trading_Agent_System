@@ -1,0 +1,13 @@
+[Unit]
+Description=M28 worker launch (preflight wrapped)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=C:\Trading_Agent_System
+ExecStart=C:\Trading_Agent_System\venv\Scripts\python.exe scripts/launch_with_preflight.py --role worker --profile dev --env-path .env -- python scripts/run_commander_runtime_once.py --mode decision_packet --live --json
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

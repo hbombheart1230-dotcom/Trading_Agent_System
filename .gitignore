@@ -1,20 +1,20 @@
+# Environments & Python
+.env
+.venv/
 venv/
 __pycache__/
 *.pyc
-.env
-*.db
-.pytest_cache/
-.pytest-tmp/
-.pytest-work/
 
-# Runtime/generated artifacts
+# Logs
+logs/
 data/logs/
+data/
+*.log
+
+# Reports
+reports/
+
+# State & Dynamic Data
+data/state/
 data/evidence_ledger/
 data/strategy_memory/
-data/operator_ui/
-data/state/
-data/state.json
-data/token_cache.json
-reports/
-deploy/m28_launch_templates/
-deploy/m28_registration_helpers/

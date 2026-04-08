@@ -62,11 +62,16 @@ def _normalize_tick_pipeline(v: Any) -> str:
 
 def _build_initial_state(symbol: str, *, tick_pipeline: str) -> Dict[str, Any]:
     # Minimal initial state; nodes/pipelines will enrich it.
+    normalized_tick_pipeline = _normalize_tick_pipeline(tick_pipeline)
     state: Dict[str, Any] = {
-        "m13_tick_pipeline": _normalize_tick_pipeline(tick_pipeline),
+        "m13_tick_pipeline": normalized_tick_pipeline,
         # Keep integrated runtime exit behavior deterministic from env-driven runtime profile.
         "use_exit_policy": _to_bool(os.getenv("USE_EXIT_POLICY", "false"), False),
     }
+    if normalized_tick_pipeline == "integrated_chain":
+        # Official intraday runtime expects market-skill hydration to be available
+        # for monitor-side minute snapshot refreshes during hold cycles.
+        state["auto_skill_runner"] = True
     if symbol:
         state["symbol"] = symbol
     return state
@@ -164,10 +169,66 @@ def _acquire_lock(lock_path: Path, *, lock_stale_sec: int) -> tuple[bool, str]:
         return False, "lock_create_failed"
 
 
+def _refresh_lock(lock_path: Path) -> tuple[bool, str]:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    now = int(time.time())
+    current_pid = int(os.getpid())
+    current_payload = {
+        "pid": current_pid,
+        "started_epoch": int(now),
+        "started_ts": datetime.now(timezone.utc).isoformat(),
+        "heartbeat_epoch": int(now),
+        "heartbeat_ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if not lock_path.exists():
+        try:
+            lock_path.write_text(json.dumps(current_payload, ensure_ascii=False), encoding="utf-8")
+            return True, "lock_recreated"
+        except Exception:
+            return False, "lock_recreate_failed"
+
+    existing: Dict[str, Any] = {}
+    try:
+        existing = json.loads(lock_path.read_text(encoding="utf-8"))
+    except Exception:
+        existing = {}
+
+    owner_pid = _to_int(existing.get("pid"), 0)
+    if owner_pid > 0 and owner_pid != current_pid and _pid_exists(owner_pid):
+        return False, "lock_owned_by_other_process"
+
+    payload = dict(existing or {})
+    if owner_pid <= 0:
+        payload["pid"] = current_pid
+    elif owner_pid != current_pid:
+        payload["pid"] = current_pid
+    if _to_int(payload.get("started_epoch"), 0) <= 0:
+        payload["started_epoch"] = int(now)
+    if not str(payload.get("started_ts") or "").strip():
+        payload["started_ts"] = datetime.now(timezone.utc).isoformat()
+    payload["heartbeat_epoch"] = int(now)
+    payload["heartbeat_ts"] = datetime.now(timezone.utc).isoformat()
+    try:
+        lock_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return True, "lock_heartbeat_updated"
+    except Exception:
+        return False, "lock_refresh_failed"
+
+
 def _release_lock(lock_path: Path) -> None:
     try:
-        if lock_path.exists():
-            lock_path.unlink()
+        if not lock_path.exists():
+            return
+        owner_pid = 0
+        try:
+            obj = json.loads(lock_path.read_text(encoding="utf-8"))
+            owner_pid = _to_int(obj.get("pid"), 0)
+        except Exception:
+            owner_pid = 0
+        if owner_pid > 0 and owner_pid != int(os.getpid()) and _pid_exists(owner_pid):
+            return
+        lock_path.unlink()
     except Exception:
         pass
 
@@ -239,8 +300,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     try:
         while True:
+            _refresh_lock(lock_path)
             dt: datetime = now_kst()
             state = run_m13_once(state, dt=dt)
+            _refresh_lock(lock_path)
 
             if args.once:
                 break

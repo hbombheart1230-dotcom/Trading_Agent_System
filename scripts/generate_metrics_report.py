@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from libs.reporting.report_source_helpers import build_commander_route_summary
 
 
 def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
@@ -209,6 +216,20 @@ def _extract_skill_error_tag(v: Any) -> str:
     return (s.split(":", 1)[0] or "unknown").strip() or "unknown"
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _epoch_to_iso(epoch: Any) -> str:
+    try:
+        n = int(float(epoch))
+    except Exception:
+        return ""
+    if n <= 0:
+        return ""
+    return datetime.fromtimestamp(n, tz=timezone.utc).isoformat(timespec="seconds")
+
+
 def _latency_summary(rows: List[Dict[str, Any]]) -> Dict[str, float]:
     start_by_run: Dict[str, int] = {}
     latencies: List[float] = []
@@ -341,6 +362,10 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             "strategist_fallback_total": 0,
             "strategist_mode_total": {},
             "route_selected_total": {},
+            "route_source": "canonical_commander_preferred",
+            "route_source_run_count": 0,
+            "route_source_missing_count": 0,
+            "route_source_breakdown": {},
             "scanner_monitor_alignment_total": {},
             "pre_intent_wait_total": 0,
             "pre_intent_noop_total": 0,
@@ -422,10 +447,18 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
     pre_intent_wait_total = 0
     pre_intent_noop_total = 0
     guard_block_total = 0
+    route_selected_by_run: Dict[str, str] = {}
+    latest_run_id = ""
+    latest_run_epoch = 0
 
     for r in day_rows:
         stage = str(r.get("stage") or "")
         event = str(r.get("event") or "")
+        run_id = str(r.get("run_id") or "").strip()
+        epoch = int(r.get("_epoch") or 0)
+        if run_id and epoch >= latest_run_epoch:
+            latest_run_epoch = epoch
+            latest_run_id = run_id
 
         if stage == "decision" and event == "trace":
             action = _extract_intent_action(r)
@@ -583,10 +616,15 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
             payload = r.get("payload") if isinstance(r.get("payload"), dict) else {}
             commander_total += 1
 
-            if event == "route_selected":
-                route_selected = str(payload.get("route_selected") or "").strip()
+            if event in {"route_selected", "end"} and run_id:
+                route_obs = payload.get("route_observability") if isinstance(payload.get("route_observability"), dict) else {}
+                route_selected = str(
+                    payload.get("route_selected")
+                    or route_obs.get("route_selected")
+                    or ""
+                ).strip()
                 if route_selected:
-                    route_selected_total[route_selected] += 1
+                    route_selected_by_run[run_id] = route_selected
 
             status = str(payload.get("status") or "").strip()
             if status:
@@ -661,10 +699,22 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         if skill_hydration_total > 0
         else 0.0
     )
+    route_summary = build_commander_route_summary(
+        reports_root=out_dir.parent,
+        day=day,
+        day_rows=day_rows,
+    )
+    canonical_route_selected_total = dict(route_summary.get("route_selected_total") or {})
+    canonical_strategy_mode_total = dict(route_summary.get("strategy_generation_mode_total") or {})
+    canonical_fallback_total = int(route_summary.get("strategist_fallback_total") or 0)
 
     summary = {
         "schema_version": "metrics.v1",
         "day": day,
+        "generated_at": _utc_now_iso(),
+        "source_run_count": int(len(run_ids)),
+        "latest_run_id": latest_run_id,
+        "latest_run_ts": _epoch_to_iso(latest_run_epoch),
         "events": len(day_rows),
         "runs": len(run_ids),
         "intents_created_total": intents_created,
@@ -749,9 +799,13 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         "no_trade_reason_total": dict(no_trade_reason_total),
         "dominant_blocker_total": dict(dominant_blocker_total),
         "near_ready_total": int(near_ready_total),
-        "strategist_fallback_total": int(strategist_fallback_total),
-        "strategist_mode_total": dict(strategist_mode_total),
-        "route_selected_total": dict(route_selected_total),
+        "strategist_fallback_total": int(canonical_fallback_total),
+        "strategist_mode_total": dict(canonical_strategy_mode_total),
+        "route_selected_total": dict(canonical_route_selected_total),
+        "route_source": str(route_summary.get("route_source") or "canonical_commander_preferred"),
+        "route_source_run_count": int(route_summary.get("route_source_run_count") or 0),
+        "route_source_missing_count": int(route_summary.get("route_source_missing_count") or 0),
+        "route_source_breakdown": dict(route_summary.get("route_source_breakdown") or {}),
         "scanner_monitor_alignment_total": dict(scanner_monitor_alignment_total),
         "pre_intent_wait_total": int(pre_intent_wait_total),
         "pre_intent_noop_total": int(pre_intent_noop_total),
@@ -768,6 +822,10 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         f"# Metrics Report ({day})",
         "",
         f"- schema_version: **{summary['schema_version']}**",
+        f"- generated_at: `{summary['generated_at']}`",
+        f"- source_run_count: **{summary['source_run_count']}**",
+        f"- latest_run_id: `{summary['latest_run_id'] or '-'}`",
+        f"- latest_run_ts: `{summary['latest_run_ts'] or '-'}`",
         f"- events: **{summary['events']}**",
         f"- runs: **{summary['runs']}**",
         f"- intents_created_total: **{intents_created}**",
@@ -1011,15 +1069,18 @@ def generate_metrics_report(events_path: Path, out_dir: Path, day: str | None = 
         md_lines.append("- (none)")
 
     md_lines += ["", "### strategist_mode_total", ""]
-    if strategist_mode_total:
-        for name, cnt in strategist_mode_total.most_common():
+    if canonical_strategy_mode_total:
+        for name, cnt in Counter(canonical_strategy_mode_total).most_common():
             md_lines.append(f"- {name}: {cnt}")
     else:
         md_lines.append("- (none)")
 
     md_lines += ["", "### route_selected_total", ""]
-    if route_selected_total:
-        for name, cnt in route_selected_total.most_common():
+    md_lines.append(f"- route_source: `{summary['route_source']}`")
+    md_lines.append(f"- route_source_run_count: {int(summary['route_source_run_count'])}")
+    md_lines.append(f"- route_source_missing_count: {int(summary['route_source_missing_count'])}")
+    if canonical_route_selected_total:
+        for name, cnt in Counter(canonical_route_selected_total).most_common():
             md_lines.append(f"- {name}: {cnt}")
     else:
         md_lines.append("- (none)")

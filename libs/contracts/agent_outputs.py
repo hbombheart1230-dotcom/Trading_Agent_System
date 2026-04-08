@@ -1487,6 +1487,15 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 return value
         return None
 
+    def _first_trace_value(key: str) -> Any:
+        for source in trace_sources:
+            if key not in source:
+                continue
+            value = source.get(key)
+            if value not in (None, "", [], {}):
+                return value
+        return None
+
     policy_trace = {
         "policy_ref": _first_trace_dict("policy_ref"),
         "entry_check_summary": _first_trace_text("entry_check_summary"),
@@ -1647,6 +1656,57 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_confirm_ticks": _safe_int(exit_info.get("exit_confirm_ticks")),
         "exit_confirm_count": _safe_int(exit_info.get("exit_confirm_count")),
     }
+    entry_metrics = (
+        _dict(entry_info.get("metrics"))
+        or _dict(entry_detail.get("metrics"))
+        or _dict(monitor.get("entry_metrics"))
+    )
+    entry_chart_structure_features = (
+        _dict(monitor_output.get("chart_structure_features"))
+        or _dict(entry_info.get("chart_structure_features"))
+        or _dict(monitor.get("entry_chart_structure_features"))
+    )
+    entry_policy_interpreter_trace = (
+        _dict(monitor_output.get("policy_interpreter_trace"))
+        or _dict(entry_info.get("policy_interpreter_trace"))
+        or _dict(monitor.get("entry_policy_interpreter_trace"))
+    )
+    entry_policy_alignment_summary = (
+        _dict(monitor_output.get("policy_alignment_summary"))
+        or _dict(entry_info.get("policy_alignment_summary"))
+        or _dict(monitor.get("entry_policy_alignment_summary"))
+    )
+    entry_minute_source_present = threshold_snapshot.get("entry_minute_source_present")
+    if entry_minute_source_present is None:
+        entry_minute_source_present = entry_metrics.get("minute_source_present")
+    if entry_minute_source_present is None:
+        entry_minute_source_present = _first_trace_value("entry_minute_source_present")
+    entry_minute_source_used = threshold_snapshot.get("entry_minute_source_used")
+    if entry_minute_source_used in (None, ""):
+        entry_minute_source_used = entry_metrics.get("minute_source_used")
+    if entry_minute_source_used in (None, ""):
+        entry_minute_source_used = _first_trace_value("entry_minute_source_used")
+    entry_minute_refetch_attempted = threshold_snapshot.get("entry_minute_refetch_attempted")
+    if entry_minute_refetch_attempted is None:
+        entry_minute_refetch_attempted = entry_metrics.get("minute_refetch_attempted")
+    if entry_minute_refetch_attempted is None:
+        entry_minute_refetch_attempted = _first_trace_value("entry_minute_refetch_attempted")
+    entry_minute_refetch_succeeded = threshold_snapshot.get("entry_minute_refetch_succeeded")
+    if entry_minute_refetch_succeeded is None:
+        entry_minute_refetch_succeeded = entry_metrics.get("minute_refetch_succeeded")
+    if entry_minute_refetch_succeeded is None:
+        entry_minute_refetch_succeeded = _first_trace_value("entry_minute_refetch_succeeded")
+    entry_minute_refetch_failure_reason = threshold_snapshot.get("entry_minute_refetch_failure_reason")
+    if entry_minute_refetch_failure_reason in (None, ""):
+        entry_minute_refetch_failure_reason = entry_metrics.get("minute_refetch_failure_reason")
+    if entry_minute_refetch_failure_reason in (None, ""):
+        entry_minute_refetch_failure_reason = _first_trace_value("entry_minute_refetch_failure_reason")
+    entry_minute_refetch_failure_detail = entry_metrics.get("minute_refetch_failure_detail")
+    if entry_minute_refetch_failure_detail in (None, ""):
+        entry_minute_refetch_failure_detail = _first_trace_value("entry_minute_refetch_failure_detail")
+    entry_minute_refetch_runner_source = entry_metrics.get("minute_refetch_runner_source")
+    if entry_minute_refetch_runner_source in (None, ""):
+        entry_minute_refetch_runner_source = _first_trace_value("entry_minute_refetch_runner_source")
     signal_snapshot = {
         "entry_evaluated": bool(entry_info.get("evaluated")),
         "entry_triggered": bool(entry_info.get("triggered")),
@@ -1761,6 +1821,16 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "override_reason": _clip(_dict(policy_trace.get("policy_ref")).get("override_reason"), max_len=180),
             "applied_policy_source_chain": _listify(_dict(policy_trace.get("policy_ref")).get("applied_policy_source_chain"), limit=6, max_len=80),
             "signal_snapshot": signal_snapshot,
+            "entry_minute_source_present": entry_minute_source_present,
+            "entry_minute_source_used": _clip(entry_minute_source_used, max_len=80),
+            "entry_minute_refetch_attempted": entry_minute_refetch_attempted,
+            "entry_minute_refetch_succeeded": entry_minute_refetch_succeeded,
+            "entry_minute_refetch_failure_reason": _clip(entry_minute_refetch_failure_reason, max_len=120),
+            "entry_minute_refetch_failure_detail": _clip(entry_minute_refetch_failure_detail, max_len=220),
+            "entry_minute_refetch_runner_source": _clip(entry_minute_refetch_runner_source, max_len=80),
+            "entry_chart_structure_features": entry_chart_structure_features,
+            "policy_interpreter_trace": entry_policy_interpreter_trace,
+            "policy_alignment_summary": entry_policy_alignment_summary,
             "entry_condition_path": _clip(entry_info.get("entry_condition_path"), max_len=80),
             "entry_condition_paths_passed": _listify(entry_info.get("entry_condition_paths_passed"), limit=4, max_len=80),
             "entry_condition_scores": _dict(entry_info.get("condition_scores")),

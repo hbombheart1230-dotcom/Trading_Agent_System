@@ -23,6 +23,59 @@ def _to_bool(v: Any, default: bool = False) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _build_chart_context_summary(policy: Dict[str, Any]) -> Dict[str, Any]:
+    raw = policy.get("chart_context")
+    chart_context = dict(raw) if isinstance(raw, dict) else {}
+    features = chart_context.get("chart_structure_features")
+    if not isinstance(features, dict):
+        features = chart_context if chart_context else {}
+
+    summary = {
+        "available": False,
+        "schema_version": str(features.get("schema_version") or "") if isinstance(features, dict) else "",
+        "structure_hh_hl": None,
+        "support_holding": None,
+        "trend_regime": None,
+        "ma_alignment_state": None,
+        "failed_breakout": None,
+        "momentum_follow_through": None,
+        "structure_breakdown_signal": "",
+        "notes": [],
+    }
+    if not isinstance(features, dict) or not bool(features):
+        return summary
+
+    structure = features.get("structure") if isinstance(features.get("structure"), dict) else {}
+    trend_alignment = features.get("trend_alignment") if isinstance(features.get("trend_alignment"), dict) else {}
+    support_resistance = (
+        features.get("support_resistance") if isinstance(features.get("support_resistance"), dict) else {}
+    )
+    continuity_momentum = (
+        features.get("continuity_momentum") if isinstance(features.get("continuity_momentum"), dict) else {}
+    )
+
+    summary["structure_hh_hl"] = structure.get("structure_hh_hl")
+    summary["support_holding"] = support_resistance.get("support_holding")
+    summary["trend_regime"] = trend_alignment.get("trend_regime")
+    summary["ma_alignment_state"] = trend_alignment.get("ma_alignment_state")
+    summary["failed_breakout"] = support_resistance.get("failed_breakout")
+    summary["momentum_follow_through"] = continuity_momentum.get("momentum_follow_through")
+    summary["available"] = bool(features.get("available"))
+    summary["notes"] = [str(x or "").strip() for x in list(features.get("notes") or []) if str(x or "").strip()]
+
+    if str(summary["failed_breakout"] or "").strip().lower() == "confirmed":
+        summary["structure_breakdown_signal"] = "failed_breakout"
+    elif str(summary["support_holding"] or "").strip().lower() == "lost":
+        summary["structure_breakdown_signal"] = "support_lost"
+    elif (
+        str(summary["ma_alignment_state"] or "").strip().lower() == "bearish"
+        and str(summary["trend_regime"] or "").strip().lower() in {"transition", "ranging"}
+    ):
+        summary["structure_breakdown_signal"] = "trend_alignment_breakdown"
+
+    return summary
+
+
 def apply_env_stop_take_fallbacks(policy: Dict[str, Any] | None) -> Dict[str, Any]:
     """Use env stop/take baselines only when policy does not already define them."""
     out = dict(policy or {})
@@ -53,11 +106,15 @@ def evaluate_exit_policy(
     Returns a deterministic decision payload. It never raises.
     """
     p = dict(policy or {})
+    chart_context_summary = _build_chart_context_summary(p)
     out: Dict[str, Any] = {
         "evaluated": True,
         "triggered": False,
         "reason": "",
         "pnl_ratio": None,
+        "chart_context_available": bool(chart_context_summary.get("available")),
+        "chart_context_summary": dict(chart_context_summary),
+        "structure_breakdown_signal": str(chart_context_summary.get("structure_breakdown_signal") or ""),
         "thresholds": {
             "hard_stop_pct": _clamp_non_negative(_to_float(p.get("hard_stop_pct"), 0.0)),
             "stop_loss_pct": _clamp_non_negative(_to_float(p.get("stop_loss_pct"), 0.03)),

@@ -113,7 +113,7 @@ def test_generate_daily_report_uses_lifecycle_bundle_for_trade_index(tmp_path: P
     assert data["symbols_observed"] == ["005930"]
 
 
-def test_generate_daily_report_surfaces_operator_summary_snapshot(tmp_path: Path) -> None:
+def test_generate_daily_report_surfaces_operator_summary_snapshot(tmp_path: Path, monkeypatch) -> None:
     events = tmp_path / "events.jsonl"
     events.write_text(
         json.dumps({"ts": "2026-04-02T01:00:00+00:00", "run_id": "r1", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": True}}) + "\n",
@@ -122,47 +122,70 @@ def test_generate_daily_report_surfaces_operator_summary_snapshot(tmp_path: Path
     out_dir = tmp_path / "reports"
     daily_root = out_dir / "daily" / "2026-04-02"
     daily_root.mkdir(parents=True, exist_ok=True)
-    (daily_root / "operator_summary.json").write_text(
-        json.dumps(
-            {
-                "schema_version": "operator_summary.v1",
-                "executive_summary": {
-                    "system_status": "GREEN",
-                    "summary_lines": [
-                        "runs=12, executions=2 (ok=2, fail=0), blocks=1.",
-                        "Top guard block: noop_intent_skipped (1)",
-                    ],
-                },
-                "system_health_status": {
-                    "system_health_level": "GREEN",
-                    "reasoning": ["no critical or warning issues detected"],
-                    "recommended_action": ["Continue current configuration."],
-                },
-                "trading_activity_summary": {
-                    "run_total": 12,
-                    "decision_action_counts": {"BUY": 1, "SELL": 1},
-                    "strategy_counts": {"defensive": 2},
-                    "executions_total": 2,
-                    "executions_ok_total": 2,
-                    "executions_fail_total": 0,
-                    "blocked_total": 1,
-                },
-                "top_issues": [{"code": "none", "severity": "GREEN", "detail": "no critical or warning issues detected"}],
-                "recommended_operator_actions": ["Continue current configuration."],
+    (daily_root / "operator_summary.json").write_text(json.dumps({"junk": True}), encoding="utf-8")
+
+    def fake_operator_payload(*args, **kwargs):
+        return {
+            "schema_version": "operator_summary.v1",
+            "generated_at": "2026-04-02T00:59:59+00:00",
+            "source_run_count": 12,
+            "latest_run_id": "r-prev",
+            "latest_run_ts": "2026-04-02T00:59:59+00:00",
+            "executive_summary": {
+                "system_status": "GREEN",
+                "summary_lines": [
+                    "runs=12, executions=2 (ok=2, fail=0), blocks=1.",
+                    "Top guard block: noop_intent_skipped (1)",
+                ],
             },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+            "system_health_status": {
+                "system_health_level": "GREEN",
+                "reasoning": ["no critical or warning issues detected"],
+                "recommended_action": ["Continue current configuration."],
+            },
+            "trading_activity_summary": {
+                "run_total": 12,
+                "decision_action_counts": {"BUY": 1, "SELL": 1},
+                "strategy_counts": {"defensive": 2},
+                "executions_total": 2,
+                "executions_ok_total": 2,
+                "executions_fail_total": 0,
+                "blocked_total": 1,
+            },
+            "route_summary": {
+                "route_source": "canonical_commander_preferred",
+                "route_source_run_count": 12,
+                "route_source_missing_count": 0,
+                "route_selected_total": {"monitor_only": 10, "full_cycle": 2},
+                "strategy_generation_mode_total": {"cached": 10, "live_llm": 2},
+            },
+            "top_issues": [{"code": "none", "severity": "GREEN", "detail": "no critical or warning issues detected"}],
+            "recommended_operator_actions": ["Continue current configuration."],
+        }
+
+    def fake_policy_snapshot(*args, **kwargs):
+        return {
+            "summary": {"schema_version": "policy_surface_quality_summary.v1", "run_count": 8},
+            "executive_summary": {"schema_version": "policy_surface_quality_executive_summary.v1", "status": "good", "headline": "Policy surface healthy"},
+            "chart_structure_summary": {"schema_version": "chart_structure_decision_hint_summary.v1", "run_count": 8},
+            "chart_structure_executive_summary": {"schema_version": "chart_structure_decision_hint_executive_summary.v1", "status": "inactive", "headline": "Chart structure guard inactive"},
+            "source": {"run_count": 8, "source": "daily_monitor_artifacts"},
+        }
+
+    monkeypatch.setattr(daily_script, "build_operator_daily_summary_payload", fake_operator_payload)
+    monkeypatch.setattr(daily_script, "build_policy_surface_quality_snapshot", fake_policy_snapshot)
 
     md, js = generate_daily_report(events, out_dir, day="2026-04-02")
 
     data = json.loads(js.read_text(encoding="utf-8"))
     snapshot = data["operator_summary_snapshot"]
     assert snapshot["available"] is True
+    assert snapshot["generated_at"] == "2026-04-02T00:59:59+00:00"
     assert snapshot["executive_summary"]["system_status"] == "GREEN"
     assert snapshot["executive_summary"]["summary_lines"][0].startswith("runs=12")
+    assert snapshot["route_summary"]["route_source"] == "canonical_commander_preferred"
+    assert data["report_freshness"]["source_run_count"] == 1
+    assert data["operator_summary_snapshot_freshness"]["stale"] is True
     assert data["policy_surface_quality_summary"]["schema_version"] == "policy_surface_quality_summary.v1"
     assert data["policy_surface_quality_executive_summary"]["schema_version"] == "policy_surface_quality_executive_summary.v1"
     assert data["chart_structure_decision_hint_summary"]["schema_version"] == "chart_structure_decision_hint_summary.v1"
@@ -170,7 +193,9 @@ def test_generate_daily_report_surfaces_operator_summary_snapshot(tmp_path: Path
     assert "policy_surface_quality_source" in data
     assert "chart_structure_decision_hint_source" in data
     md_text = md.read_text(encoding="utf-8")
+    assert "## Report Freshness" in md_text
     assert "## Operator Summary Snapshot" in md_text
+    assert "## Route Summary" in md_text
     assert "## Policy Surface Executive Summary" in md_text
     assert "## Policy Surface Quality" in md_text
     assert "## Chart Structure Decision Hint Executive Summary" in md_text
@@ -187,10 +212,13 @@ def test_generate_daily_report_keeps_working_when_policy_surface_summary_unavail
     )
     out_dir = tmp_path / "reports"
 
-    def fake_build_phase_runtime_health(**kwargs):
-        raise FileNotFoundError("no canonical monitor runs")
-
-    monkeypatch.setattr(daily_script, "build_phase_5_2_5_3_runtime_health", fake_build_phase_runtime_health)
+    monkeypatch.setattr(daily_script, "build_policy_surface_quality_snapshot", lambda *args, **kwargs: {
+        "summary": {"schema_version": "policy_surface_quality_summary.v1", "run_count": 0},
+        "executive_summary": {"schema_version": "policy_surface_quality_executive_summary.v1", "status": "unknown"},
+        "chart_structure_summary": {"schema_version": "chart_structure_decision_hint_summary.v1", "run_count": 0},
+        "chart_structure_executive_summary": {"schema_version": "chart_structure_decision_hint_executive_summary.v1", "status": "unknown"},
+        "source": {"run_count": 0, "notes": ["no_canonical_monitor_runs_found"]},
+    })
 
     md, js = generate_daily_report(events, out_dir, day="2026-04-03")
 
@@ -201,8 +229,10 @@ def test_generate_daily_report_keeps_working_when_policy_surface_summary_unavail
     assert data["chart_structure_decision_hint_executive_summary"]["status"] == "unknown"
     assert data["policy_surface_quality_summary"]["run_count"] == 0
     assert data["policy_surface_quality_source"]["run_count"] == 0
+    assert data["report_freshness"]["source_run_count"] == 1
     assert "no_canonical_monitor_runs_found" in list(data["policy_surface_quality_source"]["notes"])
     md_text = md.read_text(encoding="utf-8")
+    assert "## Report Freshness" in md_text
     assert "## Policy Surface Executive Summary" in md_text
     assert "## Policy Surface Quality" in md_text
     assert "## Chart Structure Decision Hint Executive Summary" in md_text
@@ -217,11 +247,9 @@ def test_generate_daily_report_renders_chart_structure_applied_examples(tmp_path
     )
     out_dir = tmp_path / "reports"
 
-    def fake_build_phase_runtime_health(**kwargs):
+    def fake_policy_snapshot(*args, **kwargs):
         return {
-            "schema_version": "phase_5_runtime_health_check.v1",
-            "run_count": 3,
-            "policy_surface_quality_summary": {
+            "summary": {
                 "schema_version": "policy_surface_quality_summary.v1",
                 "run_count": 3,
                 "schema_available_rate": 1.0,
@@ -235,7 +263,12 @@ def test_generate_daily_report_renders_chart_structure_applied_examples(tmp_path
                 "validation_notes_by_interpretation_basis": {},
                 "notes": [],
             },
-            "chart_structure_decision_hint_summary": {
+            "executive_summary": {
+                "schema_version": "policy_surface_quality_executive_summary.v1",
+                "status": "good",
+                "headline": "Policy surface healthy: schema 1.00, invalid spec 0.00",
+            },
+            "chart_structure_summary": {
                 "schema_version": "chart_structure_decision_hint_summary.v1",
                 "run_count": 3,
                 "available_run_count": 2,
@@ -265,9 +298,23 @@ def test_generate_daily_report_renders_chart_structure_applied_examples(tmp_path
                 ],
                 "notes": [],
             },
+            "chart_structure_executive_summary": {
+                "schema_version": "chart_structure_decision_hint_executive_summary.v1",
+                "status": "active",
+                "headline": "Chart structure guard active: applied 1 times",
+                "applied_examples": [
+                    {
+                        "run_id": "run-pullback-guard",
+                        "reason_transition": "pullback_volume_path_ready -> pullback_reversal_structure_guard_blocked",
+                        "blocking_features": ["support_holding=lost"],
+                        "entry_style": "pullback",
+                    }
+                ],
+            },
+            "source": {"run_count": 3, "source": "daily_monitor_artifacts"},
         }
 
-    monkeypatch.setattr(daily_script, "build_phase_5_2_5_3_runtime_health", fake_build_phase_runtime_health)
+    monkeypatch.setattr(daily_script, "build_policy_surface_quality_snapshot", fake_policy_snapshot)
 
     md, js = generate_daily_report(events, out_dir, day="2026-04-03")
 
@@ -276,3 +323,45 @@ def test_generate_daily_report_renders_chart_structure_applied_examples(tmp_path
     md_text = md.read_text(encoding="utf-8")
     assert "## Chart Structure Decision Hint Applied Examples" in md_text
     assert "pullback_volume_path_ready -> pullback_reversal_structure_guard_blocked" in md_text
+
+
+def test_generate_daily_report_does_not_read_operator_summary_file(tmp_path: Path, monkeypatch) -> None:
+    day = "2026-04-08"
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        json.dumps({"ts": f"{day}T01:00:00+00:00", "run_id": "r1", "stage": "execute_from_packet", "event": "verdict", "payload": {"allowed": True}}) + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "reports"
+    daily_root = out_dir / "daily" / day
+    daily_root.mkdir(parents=True, exist_ok=True)
+    (daily_root / "operator_summary.json").write_text(
+        json.dumps({"executive_summary": {"summary_lines": ["stale-file-should-not-be-read"]}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(daily_script, "build_operator_daily_summary_payload", lambda *args, **kwargs: {
+        "generated_at": "2026-04-08T01:00:00+00:00",
+        "source_run_count": 1,
+        "latest_run_id": "r1",
+        "latest_run_ts": "2026-04-08T01:00:00+00:00",
+        "executive_summary": {"system_status": "GREEN", "summary_lines": ["fresh-source-line"]},
+        "system_health_status": {"system_health_level": "GREEN", "reasoning": [], "recommended_action": []},
+        "trading_activity_summary": {"run_total": 1, "decision_action_counts": {}, "strategy_counts": {}, "executions_total": 0, "executions_ok_total": 0, "executions_fail_total": 0, "blocked_total": 0},
+        "route_summary": {"route_source": "canonical_commander_preferred", "route_source_run_count": 1, "route_source_missing_count": 0, "route_selected_total": {"monitor_only": 1}, "strategy_generation_mode_total": {}},
+        "top_issues": [],
+        "recommended_operator_actions": [],
+    })
+    monkeypatch.setattr(daily_script, "build_policy_surface_quality_snapshot", lambda *args, **kwargs: {
+        "summary": {"schema_version": "policy_surface_quality_summary.v1", "run_count": 0},
+        "executive_summary": {"schema_version": "policy_surface_quality_executive_summary.v1", "status": "unknown"},
+        "chart_structure_summary": {"schema_version": "chart_structure_decision_hint_summary.v1", "run_count": 0},
+        "chart_structure_executive_summary": {"schema_version": "chart_structure_decision_hint_executive_summary.v1", "status": "unknown"},
+        "source": {"run_count": 0},
+    })
+
+    _md, js = generate_daily_report(events, out_dir, day=day)
+    data = json.loads(js.read_text(encoding="utf-8"))
+    assert data["operator_summary_snapshot"]["executive_summary"]["summary_lines"] == ["fresh-source-line"]
+    assert data["narrative_axis_policy"]["entry_primary_for"] == ["BUY", "WAIT", "NOOP", "NO_TRADE"]
+    assert data["narrative_axis_policy"]["exit_primary_for"] == ["SELL", "EXIT"]

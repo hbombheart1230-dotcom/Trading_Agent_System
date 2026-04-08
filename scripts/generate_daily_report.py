@@ -13,18 +13,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.reporting.llm_artifacts import daily_artifact_paths
+from libs.reporting.narrative_axes import narrative_axis_policy
+from libs.reporting.operator_visibility import (
+    build_operator_daily_summary_payload,
+    build_operator_summary_snapshot_from_payload,
+)
+from libs.reporting.report_source_helpers import build_policy_surface_quality_snapshot
 from libs.reporting.symbol_trade_report import build_daily_trade_index
 from libs.reporting.symbol_trade_report import collect_symbols_for_day
 from libs.reporting.symbol_trade_report import generate_symbol_trade_report
-from libs.reporting.policy_surface_summary import (
-    build_policy_surface_quality_executive_summary,
-    build_policy_surface_quality_summary,
-)
-from libs.reporting.chart_structure_decision_hint_summary import (
-    build_chart_structure_decision_hint_executive_summary,
-    build_chart_structure_decision_hint_summary,
-)
-from scripts.check_phase_5_2_5_3_runtime_health import build_phase_5_2_5_3_runtime_health
 
 
 def _iter_events(path: Path) -> Iterable[Dict[str, Any]]:
@@ -53,120 +50,118 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _load_operator_summary_snapshot(out_dir: Path, day: str) -> Dict[str, Any]:
-    paths = daily_artifact_paths(out_dir, day)
-    operator_summary = _read_json(paths["operator_summary_json"])
-    if not operator_summary:
-        return {}
-    executive = operator_summary.get("executive_summary") if isinstance(operator_summary.get("executive_summary"), dict) else {}
-    system_health = (
-        operator_summary.get("system_health_status")
-        if isinstance(operator_summary.get("system_health_status"), dict)
-        else {}
-    )
-    trading_activity = (
-        operator_summary.get("trading_activity_summary")
-        if isinstance(operator_summary.get("trading_activity_summary"), dict)
-        else {}
-    )
-    top_issues = operator_summary.get("top_issues") if isinstance(operator_summary.get("top_issues"), list) else []
-    recommended_actions = (
-        operator_summary.get("recommended_operator_actions")
-        if isinstance(operator_summary.get("recommended_operator_actions"), list)
-        else []
-    )
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _to_epoch(ts: Any) -> int:
+    if ts is None:
+        return 0
+    if isinstance(ts, (int, float)):
+        return int(ts)
+    s = str(ts).strip()
+    if not s:
+        return 0
+    try:
+        return int(float(s))
+    except Exception:
+        pass
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return 0
+
+
+def _epoch_to_iso(epoch: Any) -> str:
+    try:
+        n = int(float(epoch))
+    except Exception:
+        return ""
+    if n <= 0:
+        return ""
+    return datetime.fromtimestamp(n, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def _build_report_freshness(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    latest_row: Dict[str, Any] | None = None
+    latest_epoch = 0
+    run_ids = {
+        str(row.get("run_id") or "").strip()
+        for row in rows
+        if str(row.get("run_id") or "").strip()
+    }
+    for row in rows:
+        ts = row.get("ts") or (row.get("payload") or {}).get("ts")
+        epoch = _to_epoch(ts)
+        if epoch >= latest_epoch:
+            latest_epoch = epoch
+            latest_row = row
     return {
-        "available": True,
-        "report_json_path": str(paths["operator_summary_json"]),
-        "report_md_path": str(paths["operator_summary_md"]),
-        "executive_summary": {
-            "system_status": str(executive.get("system_status") or ""),
-            "summary_lines": [str(x or "") for x in list(executive.get("summary_lines") or []) if str(x or "").strip()][:5],
-        },
-        "system_health_status": {
-            "system_health_level": str(system_health.get("system_health_level") or ""),
-            "reasoning": [str(x or "") for x in list(system_health.get("reasoning") or []) if str(x or "").strip()][:5],
-            "recommended_action": [str(x or "") for x in list(system_health.get("recommended_action") or []) if str(x or "").strip()][:3],
-        },
-        "trading_activity_summary": {
-            "run_total": trading_activity.get("run_total"),
-            "decision_action_counts": dict(trading_activity.get("decision_action_counts") or {}),
-            "strategy_counts": dict(trading_activity.get("strategy_counts") or {}),
-            "executions_total": trading_activity.get("executions_total"),
-            "executions_ok_total": trading_activity.get("executions_ok_total"),
-            "executions_fail_total": trading_activity.get("executions_fail_total"),
-            "blocked_total": trading_activity.get("blocked_total"),
-        },
-        "top_issues": [
-            {
-                "code": str((issue or {}).get("code") or ""),
-                "severity": str((issue or {}).get("severity") or ""),
-                "detail": str((issue or {}).get("detail") or ""),
-            }
-            for issue in top_issues[:5]
-            if isinstance(issue, dict)
-        ],
-        "recommended_operator_actions": [str(x or "") for x in recommended_actions[:5] if str(x or "").strip()],
+        "generated_at": _utc_now_iso(),
+        "source_run_count": int(len(run_ids)),
+        "latest_run_id": str((latest_row or {}).get("run_id") or ""),
+        "latest_run_ts": _epoch_to_iso(latest_epoch),
+    }
+
+
+def _load_operator_summary_snapshot(events_path: Path, out_dir: Path, day: str) -> Dict[str, Any]:
+    paths = daily_artifact_paths(out_dir, day)
+    payload = build_operator_daily_summary_payload(
+        events_path,
+        out_dir,
+        day=day,
+        metrics_report_dir=out_dir / "metrics",
+        m30_post_golive_dir=out_dir / "milestones" / "m30_post_golive",
+        m30_golive_dir=out_dir / "milestones" / "m30_golive",
+        m31_slo_incident_dir=out_dir / "m31_slo_incident",
+    )
+    snapshot = build_operator_summary_snapshot_from_payload(payload)
+    snapshot["report_json_path"] = str(paths["operator_summary_json"])
+    snapshot["report_md_path"] = str(paths["operator_summary_md"])
+    return snapshot
+
+
+def _build_snapshot_freshness(
+    *,
+    snapshot: Dict[str, Any],
+    source_freshness: Dict[str, Any],
+) -> Dict[str, Any]:
+    snapshot_run_count = 0
+    if isinstance(snapshot.get("trading_activity_summary"), dict):
+        try:
+            snapshot_run_count = int(float((snapshot.get("trading_activity_summary") or {}).get("run_total") or 0))
+        except Exception:
+            snapshot_run_count = 0
+    snapshot_latest_ts = str(snapshot.get("latest_run_ts") or "")
+    source_latest_ts = str(source_freshness.get("latest_run_ts") or "")
+    snapshot_stale = False
+    notes: List[str] = []
+    if snapshot and snapshot_run_count and int(source_freshness.get("source_run_count") or 0) > snapshot_run_count:
+        snapshot_stale = True
+        notes.append("operator_summary_run_count_behind_daily_source")
+    if snapshot and snapshot_latest_ts and source_latest_ts and _to_epoch(source_latest_ts) > _to_epoch(snapshot_latest_ts):
+        snapshot_stale = True
+        notes.append("operator_summary_latest_run_behind_daily_source")
+    return {
+        "available": bool(snapshot.get("available")),
+        "stale": bool(snapshot_stale),
+        "notes": notes,
+        "snapshot_run_total": int(snapshot_run_count),
+        "snapshot_latest_run_id": str(snapshot.get("latest_run_id") or ""),
+        "snapshot_latest_run_ts": snapshot_latest_ts,
+        "source_run_count": int(source_freshness.get("source_run_count") or 0),
+        "source_latest_run_id": str(source_freshness.get("latest_run_id") or ""),
+        "source_latest_run_ts": source_latest_ts,
     }
 
 
 def _load_policy_surface_quality_snapshot(events_path: Path, out_dir: Path, day: str) -> Dict[str, Any]:
-    try:
-        runtime_health = build_phase_5_2_5_3_runtime_health(
-            reports_root=out_dir,
-            event_log_path=events_path,
-            day=day,
-            limit=500,
-        )
-    except FileNotFoundError:
-        summary = build_policy_surface_quality_summary([])
-        chart_summary = build_chart_structure_decision_hint_summary([])
-        return {
-            "summary": summary,
-            "executive_summary": build_policy_surface_quality_executive_summary(summary),
-            "chart_structure_summary": chart_summary,
-            "chart_structure_executive_summary": build_chart_structure_decision_hint_executive_summary(chart_summary),
-            "source": {
-                "run_count": 0,
-                "date": day,
-                "source": "daily_monitor_artifacts",
-                "notes": ["no_canonical_monitor_runs_found"],
-            },
-        }
-    except Exception:
-        summary = build_policy_surface_quality_summary([])
-        chart_summary = build_chart_structure_decision_hint_summary([])
-        return {
-            "summary": summary,
-            "executive_summary": build_policy_surface_quality_executive_summary(summary),
-            "chart_structure_summary": chart_summary,
-            "chart_structure_executive_summary": build_chart_structure_decision_hint_executive_summary(chart_summary),
-            "source": {
-                "run_count": 0,
-                "date": day,
-                "source": "daily_monitor_artifacts",
-                "notes": ["policy_surface_quality_summary_unavailable"],
-            },
-        }
-
-    summary = runtime_health.get("policy_surface_quality_summary")
-    if not isinstance(summary, dict):
-        summary = build_policy_surface_quality_summary([])
-    chart_summary = runtime_health.get("chart_structure_decision_hint_summary")
-    if not isinstance(chart_summary, dict):
-        chart_summary = build_chart_structure_decision_hint_summary([])
-    return {
-        "summary": dict(summary),
-        "executive_summary": build_policy_surface_quality_executive_summary(summary),
-        "chart_structure_summary": dict(chart_summary),
-        "chart_structure_executive_summary": build_chart_structure_decision_hint_executive_summary(chart_summary),
-        "source": {
-            "run_count": int(runtime_health.get("run_count") or 0),
-            "date": day,
-            "source": "daily_monitor_artifacts",
-            "health_schema_version": str(runtime_health.get("schema_version") or ""),
-        },
-    }
+    return build_policy_surface_quality_snapshot(events_path, out_dir, day)
 
 
 def _day_key(ts: Any) -> str:
@@ -219,10 +214,26 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             generate_symbol_trade_report(events_path=events_path, reports_root=out_dir, symbol=symbol)
             for symbol in symbols_for_day
         ]
-        operator_summary_snapshot = _load_operator_summary_snapshot(out_dir, day)
+        operator_summary_snapshot = _load_operator_summary_snapshot(events_path, out_dir, day)
+        report_freshness = {
+            "generated_at": _utc_now_iso(),
+            "source_run_count": 0,
+            "latest_run_id": "",
+            "latest_run_ts": "",
+        }
+        operator_snapshot_freshness = _build_snapshot_freshness(
+            snapshot=operator_summary_snapshot,
+            source_freshness=report_freshness,
+        )
         policy_surface_quality = _load_policy_surface_quality_snapshot(events_path, out_dir, day)
         payload = {
             "day": day,
+            "generated_at": report_freshness["generated_at"],
+            "source_run_count": report_freshness["source_run_count"],
+            "latest_run_id": report_freshness["latest_run_id"],
+            "latest_run_ts": report_freshness["latest_run_ts"],
+            "report_freshness": report_freshness,
+            "operator_summary_snapshot_freshness": operator_snapshot_freshness,
             "events": 0,
             "trade_index": trade_index,
             "symbols_observed": symbols_for_day,
@@ -234,11 +245,23 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             "chart_structure_decision_hint_executive_summary": dict(policy_surface_quality.get("chart_structure_executive_summary") or {}),
             "policy_surface_quality_source": dict(policy_surface_quality.get("source") or {}),
             "chart_structure_decision_hint_source": dict(policy_surface_quality.get("source") or {}),
+            "route_summary": dict(operator_summary_snapshot.get("route_summary") or {}),
+            "narrative_axis_policy": narrative_axis_policy(),
         }
         md_lines = [
             f"# Daily Report ({day})",
             "",
             "No events found.",
+        ]
+        md_lines += [
+            "",
+            "## Report Freshness",
+            "",
+            f"- generated_at: `{report_freshness['generated_at']}`",
+            f"- source_run_count: **{report_freshness['source_run_count']}**",
+            f"- latest_run_id: `{report_freshness['latest_run_id'] or '-'}`",
+            f"- latest_run_ts: `{report_freshness['latest_run_ts'] or '-'}`",
+            f"- operator_summary_snapshot_stale: **{operator_snapshot_freshness['stale']}**",
         ]
         executive = (
             operator_summary_snapshot.get("executive_summary")
@@ -249,6 +272,24 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             md_lines += ["", "## Operator Summary Snapshot", ""]
             for line in executive.get("summary_lines") or []:
                 md_lines.append(f"- {line}")
+        route_summary = payload.get("route_summary") if isinstance(payload.get("route_summary"), dict) else {}
+        narrative_policy = payload.get("narrative_axis_policy") if isinstance(payload.get("narrative_axis_policy"), dict) else narrative_axis_policy()
+        md_lines += [
+            "",
+            "## Route Summary",
+            "",
+            f"- route_source: `{route_summary.get('route_source') or '-'}`",
+            f"- route_source_run_count: **{int(route_summary.get('route_source_run_count') or 0)}**",
+            f"- route_source_missing_count: **{int(route_summary.get('route_source_missing_count') or 0)}**",
+            f"- route_selected_total: `{json.dumps(route_summary.get('route_selected_total') or {}, ensure_ascii=False)}`",
+            "",
+            "## Narrative Axis Policy",
+            "",
+            f"- entry_primary_for: `{narrative_policy.get('entry_primary_for') or []}`",
+            f"- exit_primary_for: `{narrative_policy.get('exit_primary_for') or []}`",
+            f"- mixed_only_for_ambiguous_cases: **{bool(narrative_policy.get('mixed_only_for_ambiguous_cases'))}**",
+            f"- runtime_semantics_unchanged: **{bool(narrative_policy.get('runtime_semantics_unchanged'))}**",
+        ]
         policy_surface_summary = payload.get("policy_surface_quality_summary") if isinstance(payload.get("policy_surface_quality_summary"), dict) else {}
         policy_surface_exec = payload.get("policy_surface_quality_executive_summary") if isinstance(payload.get("policy_surface_quality_executive_summary"), dict) else {}
         chart_structure_summary = payload.get("chart_structure_decision_hint_summary") if isinstance(payload.get("chart_structure_decision_hint_summary"), dict) else {}
@@ -304,6 +345,7 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
 
     day = day or sorted({r["_day"] for r in rows})[-1]
     day_rows = [r for r in rows if r["_day"] == day]
+    report_freshness = _build_report_freshness(day_rows)
 
     stage_counter = Counter(r.get("stage") for r in day_rows)
     event_counter = Counter((r.get("stage"), r.get("event")) for r in day_rows)
@@ -342,21 +384,41 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         generate_symbol_trade_report(events_path=events_path, reports_root=out_dir, symbol=symbol)
         for symbol in symbols_for_day
     ]
-    operator_summary_snapshot = _load_operator_summary_snapshot(out_dir, day)
+    operator_summary_snapshot = _load_operator_summary_snapshot(events_path, out_dir, day)
+    operator_summary_snapshot_freshness = _build_snapshot_freshness(
+        snapshot=operator_summary_snapshot,
+        source_freshness=report_freshness,
+    )
     policy_surface_quality = _load_policy_surface_quality_snapshot(events_path, out_dir, day)
+    summary["generated_at"] = report_freshness["generated_at"]
+    summary["source_run_count"] = report_freshness["source_run_count"]
+    summary["latest_run_id"] = report_freshness["latest_run_id"]
+    summary["latest_run_ts"] = report_freshness["latest_run_ts"]
+    summary["report_freshness"] = report_freshness
     summary["trade_index"] = trade_index
     summary["symbols_observed"] = symbols_for_day
     summary["generated_symbol_report_count"] = len(generated_symbol_reports)
     summary["operator_summary_snapshot"] = operator_summary_snapshot
+    summary["operator_summary_snapshot_freshness"] = operator_summary_snapshot_freshness
+    summary["route_summary"] = dict(operator_summary_snapshot.get("route_summary") or {})
     summary["policy_surface_quality_summary"] = dict(policy_surface_quality.get("summary") or {})
     summary["policy_surface_quality_executive_summary"] = dict(policy_surface_quality.get("executive_summary") or {})
     summary["chart_structure_decision_hint_summary"] = dict(policy_surface_quality.get("chart_structure_summary") or {})
     summary["chart_structure_decision_hint_executive_summary"] = dict(policy_surface_quality.get("chart_structure_executive_summary") or {})
     summary["policy_surface_quality_source"] = dict(policy_surface_quality.get("source") or {})
     summary["chart_structure_decision_hint_source"] = dict(policy_surface_quality.get("source") or {})
+    summary["narrative_axis_policy"] = narrative_axis_policy()
 
     md_lines = [
         f"# Daily Report ({day})",
+        "",
+        "## Report Freshness",
+        "",
+        f"- generated_at: `{report_freshness['generated_at']}`",
+        f"- source_run_count: **{report_freshness['source_run_count']}**",
+        f"- latest_run_id: `{report_freshness['latest_run_id'] or '-'}`",
+        f"- latest_run_ts: `{report_freshness['latest_run_ts'] or '-'}`",
+        f"- operator_summary_snapshot_stale: **{operator_summary_snapshot_freshness['stale']}**",
         "",
         f"- events: **{summary['events']}**",
         f"- approvals: **{approvals}** / blocks: **{blocks}**",
@@ -386,6 +448,24 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
             md_lines.append(f"- system_status: **{executive['system_status']}**")
         for line in executive.get("summary_lines") or []:
             md_lines.append(f"- {line}")
+    route_summary = summary.get("route_summary") if isinstance(summary.get("route_summary"), dict) else {}
+    narrative_policy = summary.get("narrative_axis_policy") if isinstance(summary.get("narrative_axis_policy"), dict) else narrative_axis_policy()
+    md_lines += [
+        "",
+        "## Route Summary",
+        "",
+        f"- route_source: `{route_summary.get('route_source') or '-'}`",
+        f"- route_source_run_count: **{int(route_summary.get('route_source_run_count') or 0)}**",
+        f"- route_source_missing_count: **{int(route_summary.get('route_source_missing_count') or 0)}**",
+        f"- route_selected_total: `{json.dumps(route_summary.get('route_selected_total') or {}, ensure_ascii=False)}`",
+        "",
+        "## Narrative Axis Policy",
+        "",
+        f"- entry_primary_for: `{narrative_policy.get('entry_primary_for') or []}`",
+        f"- exit_primary_for: `{narrative_policy.get('exit_primary_for') or []}`",
+        f"- mixed_only_for_ambiguous_cases: **{bool(narrative_policy.get('mixed_only_for_ambiguous_cases'))}**",
+        f"- runtime_semantics_unchanged: **{bool(narrative_policy.get('runtime_semantics_unchanged'))}**",
+    ]
 
     policy_surface_summary = summary.get("policy_surface_quality_summary") if isinstance(summary.get("policy_surface_quality_summary"), dict) else {}
     policy_surface_exec = summary.get("policy_surface_quality_executive_summary") if isinstance(summary.get("policy_surface_quality_executive_summary"), dict) else {}

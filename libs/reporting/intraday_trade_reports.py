@@ -5,6 +5,8 @@ import io
 import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -29,6 +31,10 @@ def _trade_day_from_trade_id(trade_id: str) -> str:
 
 def _root_dir() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _script_path(root: Path) -> Path:
+    return root / "scripts" / "run_live_execution_bundle_report.py"
 
 
 def _brief_cache_dir(root: Path) -> Path:
@@ -81,6 +87,104 @@ def _invalidate_brief_cache(root: Path, run_ids: Iterable[str]) -> List[str]:
     return removed
 
 
+def _build_bundle_argv(root: Path) -> List[str]:
+    return [
+        "--env-path",
+        str(Path(os.getenv("ENV_PATH", str(root / ".env")))),
+        "--event-log-path",
+        str(Path(os.getenv("EVENT_LOG_PATH", str(root / "data" / "logs" / "events.jsonl")))),
+        "--evidence-log-path",
+        str(Path(os.getenv("EVIDENCE_LOG_PATH", str(root / "data" / "evidence_ledger" / "events.jsonl")))),
+        "--report-dir",
+        str(root / "reports" / "dev" / "analysis" / "live_execution_bundles"),
+        "--reports-root",
+        str(root / "reports"),
+        "--intents-path",
+        str(Path(os.getenv("INTENTS_PATH", str(root / "data" / "logs" / "intents.jsonl")))),
+        "--max-runs",
+        str(int(float(os.getenv("INTRADAY_TRADE_REPORT_MAX_RUNS", "200")))),
+        "--trade-report-ai",
+        "--json",
+    ]
+
+
+def _run_bundle_sync(argv: List[str]) -> tuple[int, str]:
+    from scripts.run_live_execution_bundle_report import main as bundle_main
+
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        rc = bundle_main(argv)
+    return int(rc), stdout.getvalue().strip()
+
+
+def _background_creationflags() -> int:
+    flags = 0
+    for name in ("CREATE_NO_WINDOW", "DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+        flags |= int(getattr(subprocess, name, 0) or 0)
+    return flags
+
+
+def _run_bundle_with_timeout(root: Path, argv: List[str], *, timeout_sec: float) -> tuple[int | None, str, int | None]:
+    cmd = [sys.executable, str(_script_path(root)), *argv]
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=max(0.5, float(timeout_sec)),
+            check=False,
+        )
+        return int(completed.returncode), str(completed.stdout or "").strip(), None
+    except subprocess.TimeoutExpired:
+        proc = subprocess.Popen(  # noqa: S603
+            cmd,
+            cwd=str(root),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=_background_creationflags(),
+        )
+        return None, "", int(getattr(proc, "pid", 0) or 0)
+
+
+def _build_generation_result(*, root: Path, summary: Dict[str, Any], run_id: str, return_code: int) -> Dict[str, Any]:
+    cache_run_ids = _cache_run_ids(summary, run_id)
+    removed_cache = _invalidate_brief_cache(root, cache_run_ids)
+    run_bundles = summary.get("run_bundles") if isinstance(summary.get("run_bundles"), list) else []
+    matched = next(
+        (row for row in run_bundles if isinstance(row, dict) and str(row.get("run_id") or "").strip() == run_id),
+        {},
+    )
+    brief_artifacts: Dict[str, str] = {}
+    trade_id = str((matched or {}).get("trade_id") or "").strip()
+    trade_day = _trade_day_from_trade_id(trade_id)
+    if trade_id and trade_day:
+        trade_paths = trade_artifact_paths(root / "reports", trade_day, trade_id)
+        brief_json_path = Path(trade_paths.get("brief_json") or Path())
+        brief_md_path = Path(trade_paths.get("brief_md") or Path())
+        brief_artifacts = {
+            "operator_brief_json_path": str(brief_json_path),
+            "operator_brief_md_path": str(brief_md_path),
+        }
+
+    return {
+        "ok": True,
+        "status": "generated",
+        "reason": "",
+        "return_code": int(return_code),
+        "summary": summary,
+        "trade_id": trade_id,
+        "story_id": str((matched or {}).get("story_id") or ""),
+        "report_status": str((matched or {}).get("report_status") or ""),
+        "report_path": str((matched or {}).get("trade_report_json_path") or ""),
+        "symbol": _normalize_symbol((matched or {}).get("symbol") or ""),
+        "cache_invalidated": removed_cache,
+        **brief_artifacts,
+    }
+
+
 def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | None = None) -> Dict[str, Any]:
     if not _is_trueish(os.getenv("INTRADAY_TRADE_REPORTS_ENABLED", "true")):
         return {"ok": False, "status": "disabled", "reason": "intraday_trade_reports_disabled"}
@@ -94,31 +198,37 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
 
     repo_root = Path(root) if root is not None else _root_dir()
     run_id = str(state.get("run_id") or "").strip()
-    from scripts.run_live_execution_bundle_report import main as bundle_main
+    argv = _build_bundle_argv(repo_root)
+    force_sync = root is not None or _is_trueish(state.get("force_sync_intraday_trade_reports"))
+    if force_sync:
+        rc, raw = _run_bundle_sync(argv)
+        queued_pid = None
+    else:
+        rc, raw, queued_pid = _run_bundle_with_timeout(
+            repo_root,
+            argv,
+            timeout_sec=float(os.getenv("INTRADAY_TRADE_REPORT_SYNC_TIMEOUT_SEC", "2.0") or 2.0),
+        )
 
-    argv = [
-        "--env-path",
-        str(Path(os.getenv("ENV_PATH", str(repo_root / ".env")))),
-        "--event-log-path",
-        str(Path(os.getenv("EVENT_LOG_PATH", str(repo_root / "data" / "logs" / "events.jsonl")))),
-        "--evidence-log-path",
-        str(Path(os.getenv("EVIDENCE_LOG_PATH", str(repo_root / "data" / "evidence_ledger" / "events.jsonl")))),
-        "--report-dir",
-        str(repo_root / "reports" / "dev" / "analysis" / "live_execution_bundles"),
-        "--reports-root",
-        str(repo_root / "reports"),
-        "--intents-path",
-        str(Path(os.getenv("INTENTS_PATH", str(repo_root / "data" / "logs" / "intents.jsonl")))),
-        "--max-runs",
-        str(int(float(os.getenv("INTRADAY_TRADE_REPORT_MAX_RUNS", "200")))),
-        "--trade-report-ai",
-        "--json",
-    ]
+    if queued_pid:
+        execution = state.get("execution") if isinstance(state.get("execution"), dict) else {}
+        order = execution.get("order") if isinstance(execution.get("order"), dict) else {}
+        return {
+            "ok": True,
+            "status": "queued",
+            "reason": "",
+            "return_code": None,
+            "summary": {},
+            "trade_id": "",
+            "story_id": "",
+            "report_status": "queued",
+            "report_path": "",
+            "symbol": _normalize_symbol(order.get("symbol") or ""),
+            "cache_invalidated": [],
+            "queue_mode": "background_subprocess",
+            "background_pid": int(queued_pid),
+        }
 
-    stdout = io.StringIO()
-    with contextlib.redirect_stdout(stdout):
-        rc = bundle_main(argv)
-    raw = stdout.getvalue().strip()
     try:
         summary = json.loads(raw) if raw else {}
     except Exception:
@@ -133,36 +243,4 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
             "stdout": raw[-1000:],
         }
 
-    cache_run_ids = _cache_run_ids(summary, run_id)
-    removed_cache = _invalidate_brief_cache(repo_root, cache_run_ids)
-    run_bundles = summary.get("run_bundles") if isinstance(summary.get("run_bundles"), list) else []
-    matched = next(
-        (row for row in run_bundles if isinstance(row, dict) and str(row.get("run_id") or "").strip() == run_id),
-        {},
-    )
-    brief_artifacts: Dict[str, str] = {}
-    trade_id = str((matched or {}).get("trade_id") or "").strip()
-    trade_day = _trade_day_from_trade_id(trade_id)
-    if trade_id and trade_day:
-        trade_paths = trade_artifact_paths(repo_root / "reports", trade_day, trade_id)
-        brief_json_path = Path(trade_paths.get("brief_json") or Path())
-        brief_md_path = Path(trade_paths.get("brief_md") or Path())
-        brief_artifacts = {
-            "operator_brief_json_path": str(brief_json_path),
-            "operator_brief_md_path": str(brief_md_path),
-        }
-
-    return {
-        "ok": True,
-        "status": "generated",
-        "reason": "",
-        "return_code": int(rc),
-        "summary": summary,
-        "trade_id": trade_id,
-        "story_id": str((matched or {}).get("story_id") or ""),
-        "report_status": str((matched or {}).get("report_status") or ""),
-        "report_path": str((matched or {}).get("trade_report_json_path") or ""),
-        "symbol": _normalize_symbol((matched or {}).get("symbol") or ""),
-        "cache_invalidated": removed_cache,
-        **brief_artifacts,
-    }
+    return _build_generation_result(root=repo_root, summary=summary, run_id=run_id, return_code=int(rc))

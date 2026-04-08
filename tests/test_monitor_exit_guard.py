@@ -4,6 +4,7 @@ from libs.skills.dto import MinuteOHLCVDTO
 from libs.skills.runner import SkillRunResult
 
 from graphs.nodes.monitor_node import _extract_monitor_strategy_frame, monitor_node
+from libs.contracts.agent_outputs import build_monitor_output_artifact
 
 
 class _FakeMinuteSkillRunner:
@@ -595,10 +596,98 @@ def test_monitor_records_stale_snapshot_when_refetch_fails_without_changing_flow
     assert metrics.get("minute_refetch_reason") == "stale_snapshot_age_exceeded"
     assert metrics.get("minute_refetch_trigger_reason") == "stale_snapshot_age_exceeded"
     assert metrics.get("minute_refetch_failure_reason") == "error"
+    assert metrics.get("minute_refetch_failure_detail") == "error"
     assert metrics.get("minute_refetch_produced_fresh_snapshot") is False
     assert metrics.get("minute_snapshot_was_stale") is True
     assert metrics.get("latest_candle_ts") == 1710000300
     assert ((out.get("skill_results") or {}).get("market.minute_ohlcv_by_symbol") or {}).get("BBB")
+
+
+def test_monitor_auto_bootstraps_skill_runner_for_hold_cycle_minute_fetch(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+
+    class _AutoRunner:
+        def __init__(self):
+            self.call_count = 0
+
+        def run(self, run_id, skill, args):
+            self.call_count += 1
+            assert skill == "market.minute_ohlcv"
+            return {
+                "result": {
+                    "action": "ready",
+                    "data": {
+                        "rows": [
+                            {"ts": 1710000300, "open": 101.2, "high": 101.4, "low": 101.0, "close": 101.2, "volume": 1080, "vwap": 100.9},
+                            {"ts": 1710000360, "open": 101.2, "high": 101.4, "low": 100.9, "close": 101.1, "volume": 1100, "vwap": 101.0},
+                            {"ts": 1710000420, "open": 101.1, "high": 101.5, "low": 101.0, "close": 101.3, "volume": 1120, "vwap": 101.1},
+                            {"ts": 1710000480, "open": 101.3, "high": 101.6, "low": 101.1, "close": 101.4, "volume": 1150, "vwap": 101.2},
+                            {"ts": 1710000540, "open": 101.4, "high": 101.7, "low": 101.2, "close": 101.5, "volume": 1180, "vwap": 101.25},
+                            {"ts": 1710000600, "open": 101.5, "high": 102.0, "low": 101.3, "close": 101.8, "volume": 2500, "vwap": 101.4},
+                        ]
+                    },
+                }
+            }
+
+    auto_runner = _AutoRunner()
+    monkeypatch.setattr("libs.skills.runner.CompositeSkillRunner.from_env", lambda: auto_runner)
+    state = {
+        "run_id": "run-monitor-hold-auto-minute-fetch",
+        "tick_ts": 1710000600,
+        "m13_tick_pipeline": "integrated_chain",
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": [{"symbol": "BBB", "qty": 2, "avg_price": 100.0}]},
+        "policy": {"use_exit_policy": True},
+        "market_snapshot": {"symbol": "BBB", "price": 101.8},
+    }
+
+    out = monitor_node(state)
+    metrics = (out.get("monitor") or {}).get("entry_metrics") or {}
+    entry_detail = out.get("monitor_entry_decision_detail") or {}
+    assert auto_runner.call_count == 1
+    assert metrics.get("minute_source_present") is True
+    assert metrics.get("minute_refetch_attempted") is True
+    assert metrics.get("minute_refetch_succeeded") is True
+    assert metrics.get("minute_refetch_runner_source") == "integrated_chain_auto.composite_skill_runner"
+    assert metrics.get("minute_refetch_failure_reason") == ""
+    assert isinstance(entry_detail.get("minute_fetch_meta"), dict)
+    assert (entry_detail.get("minute_fetch_meta") or {}).get("minute_refetch_runner_source") == "integrated_chain_auto.composite_skill_runner"
+
+
+def test_monitor_hold_cycle_runner_unavailable_keeps_observability(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    monkeypatch.setattr("libs.skills.runner.CompositeSkillRunner.from_env", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    state = {
+        "run_id": "run-monitor-hold-runner-unavailable",
+        "tick_ts": 1710000600,
+        "m13_tick_pipeline": "integrated_chain",
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": [{"symbol": "BBB", "qty": 2, "avg_price": 100.0}]},
+        "policy": {"use_exit_policy": True},
+        "market_snapshot": {"symbol": "BBB", "price": 101.8},
+    }
+
+    out = monitor_node(state)
+    metrics = (out.get("monitor") or {}).get("entry_metrics") or {}
+    assert metrics.get("minute_source_present") is False
+    assert metrics.get("minute_refetch_attempted") is True
+    assert metrics.get("minute_refetch_succeeded") is False
+    assert metrics.get("minute_refetch_failure_reason") == "skill_runner_unavailable"
+    assert metrics.get("minute_refetch_failure_detail") == "integrated_chain_auto_runner_error"
+    assert metrics.get("minute_refetch_runner_source") == "integrated_chain_auto_runner_error"
 
 
 def test_monitor_waits_when_ohlcv_series_is_daily_seed_not_minute_data(monkeypatch):
@@ -1919,6 +2008,45 @@ def test_monitor_scoring_shadow_mode_preserves_legacy_buy_and_records_score(monk
     assert isinstance(monitor_output.get("policy_alignment_summary"), dict)
     assert isinstance(monitor_output.get("policy_aware_gating"), dict)
     assert isinstance(monitor_output.get("chart_structure_decision_hint"), dict)
+
+
+def test_monitor_artifact_surfaces_entry_minute_and_chart_fields_top_level(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "run_id": "run-monitor-artifact-top-level",
+        "started_at": "2026-04-08T01:00:00+00:00",
+        "runtime_phase": "session",
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "005930",
+            "price": 100.2,
+            "features": {"engine_vwap_distance": 0.001, "engine_volume_spike20": 1.2},
+        },
+        "minute_ohlcv_by_symbol": {"005930": _entry_wait_rows_reclaim()},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.5, "hold_sec": 1200}],
+        },
+        "policy": {
+            "use_exit_policy": True,
+            "exit_policy": {"take_profit_pct": 0.1, "stop_loss_pct": 0.1},
+        },
+    }
+
+    out = monitor_node(state)
+    artifact = build_monitor_output_artifact(out)
+
+    assert artifact["entry_minute_source_present"] is True
+    assert artifact["entry_minute_source_used"] == "state.minute_ohlcv_by_symbol"
+    assert isinstance(artifact["entry_minute_refetch_attempted"], bool)
+    assert isinstance(artifact["entry_minute_refetch_succeeded"], bool)
+    assert artifact["entry_minute_refetch_failure_reason"] == "skill_runner_unavailable"
+    assert isinstance(artifact.get("entry_chart_structure_features"), dict)
+    assert isinstance(artifact.get("policy_interpreter_trace"), dict)
+    assert isinstance(artifact.get("policy_alignment_summary"), dict)
 
 
 def test_monitor_scoring_enabled_no_longer_blocks_legacy_buy_when_score_below_threshold(monkeypatch):

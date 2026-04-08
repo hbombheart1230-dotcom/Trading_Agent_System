@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from graphs.pipelines.m13_eod_report import run_m13_eod_report
+import libs.reporting.operator_visibility as operator_visibility
 from libs.runtime.market_hours import MarketHours
 from scripts.run_decision_story_report import main as decision_story_main
 from scripts.run_operator_daily_summary import main as operator_summary_main
@@ -25,7 +26,7 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, capsys) -> None:
+def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, capsys, monkeypatch) -> None:
     day = "2026-03-06"
     events = tmp_path / "events.jsonl"
     metrics_dir = tmp_path / "metrics"
@@ -94,44 +95,25 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     _write_json(
         daily_dir / "daily_report.json",
         {
-            "policy_surface_quality_summary": {
-                "schema_version": "policy_surface_quality_summary.v1",
-                "run_count": 8,
-                "schema_available_rate": 0.82,
-                "normalized_policy_rate": 0.75,
-                "invalid_spec_rate": 0.01,
-                "total_invalid_specs": 1,
-                "top_invalid_features": ["momentum_decay"],
-                "top_invalid_states": ["very_strong"],
-                "validation_notes_counts": {"invalid_state": 1},
-                "invalid_specs_by_selected_source": {"commander_applied_policy": 1},
-                "validation_notes_by_interpretation_basis": {"explicit_policy": 1},
-                "notes": [],
-            },
-            "policy_surface_quality_executive_summary": {
+            "policy_surface_quality_executive_summary": {"headline": "stale-file-should-not-be-read"},
+        },
+    )
+
+    monkeypatch.setattr(
+        operator_visibility,
+        "build_policy_surface_quality_snapshot",
+        lambda *args, **kwargs: {
+            "summary": {"schema_version": "policy_surface_quality_summary.v1", "run_count": 8},
+            "executive_summary": {
                 "schema_version": "policy_surface_quality_executive_summary.v1",
                 "status": "good",
-                "run_count": 8,
-                "schema_available_rate": 0.82,
-                "normalized_policy_rate": 0.75,
-                "invalid_spec_rate": 0.01,
-                "top_invalid_features": ["momentum_decay"],
                 "headline": "Policy surface healthy: schema 0.82, invalid spec 0.01",
-                "notes": [],
             },
-            "chart_structure_decision_hint_summary": {
+            "chart_structure_summary": {
                 "schema_version": "chart_structure_decision_hint_summary.v1",
                 "run_count": 8,
                 "available_run_count": 3,
                 "applied_count": 1,
-                "applied_rate": 0.3333,
-                "mode_counts": {"block": 1, "none": 2},
-                "blocking_feature_counts": {"failed_breakout": 1},
-                "top_blocking_features": ["failed_breakout"],
-                "applied_run_ids": ["r3"],
-                "reason_counts_when_applied": {"breakout_continuation_structure_guard_blocked": 1},
-                "entry_style_counts_when_applied": {"breakout": 1},
-                "decision_counts_when_applied": {"WAIT": 1},
                 "applied_examples": [
                     {
                         "run_id": "r3",
@@ -147,9 +129,8 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
                         "matched_features": [],
                     }
                 ],
-                "notes": [],
             },
-            "chart_structure_decision_hint_executive_summary": {
+            "chart_structure_executive_summary": {
                 "schema_version": "chart_structure_decision_hint_executive_summary.v1",
                 "status": "active",
                 "run_count": 8,
@@ -158,8 +139,16 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
                 "applied_rate": 0.3333,
                 "top_blocking_features": ["failed_breakout"],
                 "headline": "Chart structure guard active: applied 1 times (rate 0.33), top blockers: failed_breakout",
-                "notes": [],
+                "applied_examples": [
+                    {
+                        "run_id": "r3",
+                        "reason_transition": "breakout_above_recent_high_with_vwap_structure_confirmation -> breakout_continuation_structure_guard_blocked",
+                        "blocking_features": ["failed_breakout=confirmed"],
+                        "entry_style": "breakout",
+                    }
+                ],
             },
+            "source": {"run_count": 8, "source": "daily_monitor_artifacts"},
         },
     )
 
@@ -195,8 +184,11 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     assert Path(obj["report_md_path"]).exists()
     assert Path(obj["report_json_path"]) == tmp_path / "daily" / day / "operator_summary.json"
     assert Path(obj["report_md_path"]) == tmp_path / "daily" / day / "operator_summary.md"
+    assert obj["route_summary"]["route_source"] == "canonical_commander_preferred"
+    assert obj["narrative_axis_policy"]["entry_primary_for"] == ["BUY", "WAIT", "NOOP", "NO_TRADE"]
     md_body = Path(obj["report_md_path"]).read_text(encoding="utf-8")
     assert "Executive Summary" in md_body
+    assert "Narrative Axis Policy" in md_body
     assert "Policy Surface Executive Summary" in md_body
     assert "Chart Structure Decision Hint Executive Summary" in md_body
     assert "Chart Structure Decision Hint Applied Examples" in md_body
@@ -657,6 +649,11 @@ def test_decision_story_and_run_cards_render_observability_for_no_trade_run(tmp_
     assert rc_story == 0
     assert story_obj["story_total"] == 1
     story_md = Path(story_obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "decision_axis: entry" in story_md
+    assert "primary_explanation: below vwap reclaim not ready" in story_md
+    assert "entry_narrative: below vwap reclaim not ready" in story_md
+    assert "exit_narrative: -" in story_md
+    assert "narrative_order: entry" in story_md
     assert "why_not_buy_summary: below vwap reclaim not ready" in story_md
     assert "dominant_blocker: below_vwap_reclaim_not_ready" in story_md
     assert "distance_to_ready: reclaim_score_gap=0.0300, confidence_gap=0.0100" in story_md
@@ -680,8 +677,148 @@ def test_decision_story_and_run_cards_render_observability_for_no_trade_run(tmp_
     assert cards_obj["card_total"] == 1
     cards_md = Path(cards_obj["report_md_path"]).read_text(encoding="utf-8")
     assert "Route: monitor_only" in cards_md
+    assert "Route Source: event_fallback" in cards_md
+    assert "Decision Axis: entry" in cards_md
+    assert "Primary Explanation: below vwap reclaim not ready" in cards_md
+    assert "Narrative Order: entry" in cards_md
+    assert "Entry Narrative: below vwap reclaim not ready" in cards_md
+    assert "Exit Narrative: -" in cards_md
     assert "Scanner Top-1: 005930/0.91" in cards_md
     assert "Monitor Outcome: WAIT" in cards_md
     assert "Dominant Blocker: below_vwap_reclaim_not_ready" in cards_md
     assert "Near Ready: True" in cards_md
     assert "Strategist Mode: fallback" in cards_md
+
+
+def test_decision_story_and_run_cards_separate_exit_narrative_for_sell_run(tmp_path: Path, capsys) -> None:
+    day = "2026-04-08"
+    events = tmp_path / "events.jsonl"
+    decision_dir = tmp_path / "decision_story"
+    cards_dir = tmp_path / "run_cards"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "sell-1",
+                "ts": f"{day}T01:00:00+00:00",
+                "stage": "decision_trace",
+                "event": "entry_exit_decision",
+                "payload": {
+                    "agent": "monitor",
+                    "payload": {
+                        "selected_symbol": "069500",
+                        "exit_reason": "peak_drawdown",
+                        "thresholds": {"hard_stop_pct": 0.03},
+                    },
+                },
+            },
+            {
+                "run_id": "sell-1",
+                "ts": f"{day}T01:00:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {
+                    "order": {"action": "SELL", "symbol": "069500", "qty": 1},
+                    "payload": {"broker_code": "0"},
+                },
+            },
+        ],
+    )
+
+    rc_story = decision_story_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(decision_dir),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    story_obj = json.loads(capsys.readouterr().out.strip())
+    assert rc_story == 0
+    story_md = Path(story_obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "decision_axis: exit" in story_md
+    assert "primary_explanation: peak_drawdown" in story_md
+    assert "entry_narrative: -" in story_md
+    assert "exit_narrative: peak_drawdown" in story_md
+    assert "narrative_order: exit" in story_md
+    assert "why_exit_summary: peak_drawdown" in story_md
+    assert "why_not_buy_summary: -" in story_md
+
+    rc_cards = run_card_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(cards_dir),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    cards_obj = json.loads(capsys.readouterr().out.strip())
+    assert rc_cards == 0
+    cards_md = Path(cards_obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "Decision Axis: exit" in cards_md
+    assert "Primary Explanation: peak_drawdown" in cards_md
+    assert "Narrative Order: exit" in cards_md
+    assert "Entry Narrative: -" in cards_md
+    assert "Exit Narrative: peak_drawdown" in cards_md
+    assert "Dominant Blocker: -" in cards_md
+
+
+def test_run_cards_prefers_canonical_commander_route_source(tmp_path: Path, capsys) -> None:
+    day = "2026-04-08"
+    events = tmp_path / "events.jsonl"
+    cards_dir = tmp_path / "run_cards"
+    _write_jsonl(
+        events,
+        [
+            {
+                "run_id": "r1",
+                "ts": f"{day}T01:00:00+00:00",
+                "stage": "decision",
+                "event": "trace",
+                "payload": {"decision_packet": {"intent": {"action": "BUY", "symbol": "005930", "qty": 1, "reason": "signal"}}},
+            },
+            {
+                "run_id": "r1",
+                "ts": f"{day}T01:00:01+00:00",
+                "stage": "commander_router",
+                "event": "route_selected",
+                "payload": {"route_selected": "full_cycle"},
+            },
+            {
+                "run_id": "r1",
+                "ts": f"{day}T01:00:02+00:00",
+                "stage": "execute_from_packet",
+                "event": "verdict",
+                "payload": {"allowed": False, "reason": "blocked"},
+            },
+        ],
+    )
+    commander_path = tmp_path / "canonical" / day / "r1" / "commander.json"
+    commander_path.parent.mkdir(parents=True, exist_ok=True)
+    commander_path.write_text(
+        json.dumps({"route_selected": "monitor_only", "strategy_generation_mode": "cached"}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    rc_cards = run_card_main(
+        [
+            "--event-log-path",
+            str(events),
+            "--report-dir",
+            str(cards_dir),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    cards_obj = json.loads(capsys.readouterr().out.strip())
+    assert rc_cards == 0
+    cards_md = Path(cards_obj["report_md_path"]).read_text(encoding="utf-8")
+    assert "Route: monitor_only" in cards_md
+    assert "Route Source: canonical_commander" in cards_md
