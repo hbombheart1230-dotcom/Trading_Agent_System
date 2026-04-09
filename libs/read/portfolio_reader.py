@@ -27,6 +27,12 @@ class MockPortfolioReader:
                     avg_price=float(p.get("avg_price", 0.0)),
                     unrealized_pnl=float(p.get("unrealized_pnl", 0.0)),
                     current_price=(float(p.get("current_price")) if p.get("current_price") not in (None, "") else None),
+                    account_pnl_ratio=(
+                        float(p.get("account_pnl_ratio"))
+                        if p.get("account_pnl_ratio") not in (None, "")
+                        else None
+                    ),
+                    account_pnl_ratio_source=str(p.get("account_pnl_ratio_source") or ""),
                 )
             )
         return PortfolioSnapshot(cash=self.cash, positions=pos)

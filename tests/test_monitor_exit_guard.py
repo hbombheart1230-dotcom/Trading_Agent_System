@@ -1109,6 +1109,77 @@ def test_monitor_prefers_position_current_price_over_market_snapshot_when_quote_
     assert float(exit_info.get("price") or 0.0) == 96.0
 
 
+def test_monitor_crosschecks_account_unrealized_pnl_and_uses_more_conservative_exit_basis():
+    state = _with_commander_numeric_policy(_base_state(), min_hold_seconds=0, sell_sec=0, confirm_ticks=1)
+    state["selected"] = {"symbol": "AAA"}
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [
+            {
+                "symbol": "AAA",
+                "qty": 1,
+                "avg_price": 100.0,
+                "current_price": 97.0,
+                "unrealized_pnl": -4.5,
+                "hold_sec": 900,
+            }
+        ],
+    }
+    state["policy"] = {"use_exit_policy": True, "stop_loss_pct": 0.04, "take_profit_pct": 0.10}
+
+    out = monitor_node(state)
+
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("price_source") == "position.current_price"
+    assert float(exit_info.get("price") or 0.0) == 97.0
+    assert float(exit_info.get("effective_price") or 0.0) == 95.5
+    assert float(exit_info.get("account_mark_price") or 0.0) == 95.5
+    assert round(float(exit_info.get("raw_pnl_ratio") or 0.0), 4) == -0.03
+    assert round(float(exit_info.get("pnl_ratio") or 0.0), 4) == -0.045
+    assert exit_info.get("pnl_crosscheck_applied") is True
+    assert str(exit_info.get("pnl_crosscheck_reason") or "") == "account_unrealized_pnl_more_conservative"
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    artifact = build_monitor_output_artifact(out)
+    assert float(artifact.get("effective_price") or 0.0) == 95.5
+    assert float(artifact.get("account_mark_price") or 0.0) == 95.5
+    assert round(float(artifact.get("account_pnl_ratio") or 0.0), 4) == -0.045
+    assert artifact.get("pnl_crosscheck_applied") is True
+
+
+def test_monitor_prefers_direct_account_pnl_ratio_when_present():
+    state = _with_commander_numeric_policy(_base_state(), min_hold_seconds=0, sell_sec=0, confirm_ticks=1)
+    state["selected"] = {"symbol": "AAA"}
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [
+            {
+                "symbol": "AAA",
+                "qty": 1,
+                "avg_price": 100.0,
+                "current_price": 97.0,
+                "unrealized_pnl": -3.0,
+                "account_pnl_ratio": -0.0337,
+                "account_pnl_ratio_source": "position.evlu_pfls_rt",
+                "hold_sec": 900,
+            }
+        ],
+    }
+    state["policy"] = {"use_exit_policy": True, "stop_loss_pct": 0.032, "take_profit_pct": 0.10}
+
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    assert round(float(exit_info.get("account_pnl_ratio") or 0.0), 4) == -0.0337
+    assert str(exit_info.get("account_pnl_ratio_source") or "") == "position.evlu_pfls_rt"
+    assert round(float(exit_info.get("effective_price") or 0.0), 2) == 96.63
+    assert round(float(exit_info.get("pnl_ratio") or 0.0), 4) == -0.0337
+    assert str(exit_info.get("pnl_crosscheck_reason") or "") == "account_pnl_ratio_more_conservative"
+    artifact = build_monitor_output_artifact(out)
+    assert round(float(artifact.get("account_pnl_ratio") or 0.0), 4) == -0.0337
+    assert str(artifact.get("account_pnl_ratio_source") or "") == "position.evlu_pfls_rt"
+
+
 def test_monitor_uses_feature_engine_snapshot_for_held_symbol_fallback(monkeypatch):
     monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")

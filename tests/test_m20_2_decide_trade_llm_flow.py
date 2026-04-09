@@ -393,6 +393,64 @@ def test_m20_2_decide_trade_stop_take_env_are_fallback_only(monkeypatch):
     assert out["decision_packet"]["intent"]["reason"] == "position_hold"
 
 
+def test_m20_2_decide_trade_exit_policy_crosschecks_account_unrealized_pnl(monkeypatch):
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+
+    class AlwaysBuyStrategist:
+        def decide(self, x):  # type: ignore[no-untyped-def]
+            class Decision:
+                intent = {
+                    "action": "BUY",
+                    "symbol": "005930",
+                    "qty": 1,
+                    "price": 97.0,
+                    "order_type": "limit",
+                    "order_api_id": "ORDER_SUBMIT",
+                }
+                rationale = "always-buy"
+                meta = {}
+
+            return Decision()
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 97.0},
+        "portfolio_snapshot": {
+            "cash": 2_000_000,
+            "positions": [
+                {
+                    "symbol": "005930",
+                    "qty": 1,
+                    "avg_price": 100.0,
+                    "current_price": 97.0,
+                    "unrealized_pnl": -4.5,
+                }
+            ],
+            "open_positions": 1,
+        },
+        "policy": {
+            "use_exit_policy": True,
+            "exit_policy": {
+                "stop_loss_pct": 0.04,
+                "take_profit_pct": 0.10,
+            },
+        },
+        "risk_context": {"open_positions": 1, "daily_pnl_ratio": 0.0, "last_order_epoch": 0},
+        "strategist": AlwaysBuyStrategist(),
+    }
+    out = decide_trade(state)
+
+    assert out["decision_trace"]["strategy"] == "ExitPolicyStrategist"
+    assert out["decision_packet"]["intent"]["action"] == "SELL"
+    exit_decision = dict(out["decision_trace"].get("exit_policy_decision") or {})
+    assert float(exit_decision.get("raw_price") or 0.0) == 97.0
+    assert float(exit_decision.get("effective_price") or 0.0) == 95.5
+    assert round(float(exit_decision.get("pnl_ratio") or 0.0), 4) == -0.045
+    assert exit_decision.get("pnl_crosscheck_applied") is True
+
+
 def test_m20_2_decide_trade_post_exit_cooldown_blocks_reentry(monkeypatch):
     monkeypatch.setenv("POST_EXIT_COOLDOWN_SEC", "300")
     monkeypatch.setattr(time, "time", lambda: 1500.0)

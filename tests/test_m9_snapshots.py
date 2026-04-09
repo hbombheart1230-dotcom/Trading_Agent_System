@@ -49,6 +49,29 @@ def test_build_portfolio_snapshot_preserves_position_current_price():
     assert ps["positions"][0]["current_price"] == 71200.0
 
 
+def test_build_portfolio_snapshot_preserves_account_pnl_ratio():
+    state = {
+        "portfolio_reader": MockPortfolioReader(
+            cash=10000000,
+            positions=[
+                {
+                    "symbol": "005930",
+                    "qty": 1,
+                    "avg_price": 210500,
+                    "unrealized_pnl": -6850,
+                    "current_price": 205500,
+                    "account_pnl_ratio": -0.0337,
+                    "account_pnl_ratio_source": "broker_ui_rate",
+                }
+            ],
+        )
+    }
+    out = build_portfolio_snapshot(state)
+    ps = out["portfolio_snapshot"]
+    assert round(float(ps["positions"][0]["account_pnl_ratio"] or 0.0), 4) == -0.0337
+    assert ps["positions"][0]["account_pnl_ratio_source"] == "broker_ui_rate"
+
+
 def test_build_market_snapshot_falls_back_when_mock_reader_returns_non_positive(monkeypatch):
     class ZeroPriceReader:
         def get_market_snapshot(self, symbol):  # type: ignore[no-untyped-def]

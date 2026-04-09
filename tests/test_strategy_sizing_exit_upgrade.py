@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from libs.runtime.exit_policy import evaluate_exit_policy
+from libs.runtime.exit_policy import apply_account_pnl_crosscheck_context, evaluate_exit_policy
 from libs.runtime.position_sizing import evaluate_position_size
 
 
@@ -258,3 +258,60 @@ def test_exit_policy_accepts_optional_chart_context_without_changing_threshold_d
     summary = out.get("chart_context_summary") or {}
     assert summary.get("support_holding") == "lost"
     assert summary.get("failed_breakout") == "confirmed"
+
+
+def test_exit_policy_crosschecks_account_unrealized_pnl_conservatively():
+    policy = apply_account_pnl_crosscheck_context(
+        {"stop_loss_pct": 0.04, "take_profit_pct": 0.10},
+        position={
+            "symbol": "005930",
+            "qty": 1,
+            "avg_price": 100.0,
+            "current_price": 97.0,
+            "unrealized_pnl": -4.5,
+        },
+    )
+    out = evaluate_exit_policy(
+        price=97.0,
+        avg_price=100.0,
+        qty=1,
+        policy=policy,
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "stop_loss"
+    assert float(out.get("raw_price") or 0.0) == 97.0
+    assert float(out.get("effective_price") or 0.0) == 95.5
+    assert round(float(out.get("raw_pnl_ratio") or 0.0), 4) == -0.03
+    assert round(float(out.get("account_pnl_ratio") or 0.0), 4) == -0.045
+    assert round(float(out.get("pnl_ratio") or 0.0), 4) == -0.045
+    assert out.get("pnl_crosscheck_applied") is True
+    assert str(out.get("pnl_crosscheck_reason") or "") == "account_unrealized_pnl_more_conservative"
+
+
+def test_exit_policy_prefers_direct_account_pnl_ratio_when_available():
+    policy = apply_account_pnl_crosscheck_context(
+        {"stop_loss_pct": 0.032, "take_profit_pct": 0.10},
+        position={
+            "symbol": "005930",
+            "qty": 1,
+            "avg_price": 100.0,
+            "current_price": 97.0,
+            "unrealized_pnl": -3.0,
+            "account_pnl_ratio": -0.0337,
+            "account_pnl_ratio_source": "position.evlu_pfls_rt",
+        },
+    )
+    out = evaluate_exit_policy(
+        price=97.0,
+        avg_price=100.0,
+        qty=1,
+        policy=policy,
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "stop_loss"
+    assert round(float(out.get("account_pnl_ratio") or 0.0), 4) == -0.0337
+    assert str(out.get("account_pnl_ratio_source") or "") == "position.evlu_pfls_rt"
+    assert round(float(out.get("effective_price") or 0.0), 2) == 96.63
+    assert round(float(out.get("pnl_ratio") or 0.0), 4) == -0.0337
+    assert out.get("pnl_crosscheck_applied") is True
+    assert str(out.get("pnl_crosscheck_reason") or "") == "account_pnl_ratio_more_conservative"

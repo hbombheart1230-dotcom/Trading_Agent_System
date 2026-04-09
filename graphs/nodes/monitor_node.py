@@ -28,7 +28,11 @@ from libs.runtime.decision_observability import (
     build_monitor_no_trade_surface,
     build_scanner_monitor_handoff_surface,
 )
-from libs.runtime.exit_policy import apply_env_stop_take_fallbacks, evaluate_exit_policy
+from libs.runtime.exit_policy import (
+    apply_account_pnl_crosscheck_context,
+    apply_env_stop_take_fallbacks,
+    evaluate_exit_policy,
+)
 from libs.runtime.feature_engine import build_feature_row
 from libs.runtime.intraday_monitor_signals import (
     evaluate_intraday_entry_signal,
@@ -1710,6 +1714,10 @@ def _preview_exit_decision_for_symbol(
     mctx = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
     if mctx.get("minutes_to_close") is not None:
         exit_policy_map.setdefault("minutes_to_close", mctx.get("minutes_to_close"))
+    exit_policy_map = apply_account_pnl_crosscheck_context(
+        exit_policy_map,
+        position=position,
+    )
 
     decision = evaluate_exit_policy(
         price=price,
@@ -1876,6 +1884,10 @@ def _evaluate_overnight_carry_decision(
     no_eod_policy = dict(exit_policy_base or {})
     no_eod_policy["use_eod_flat"] = False
     no_eod_policy["minutes_to_close"] = float(minutes_to_close)
+    no_eod_policy = apply_account_pnl_crosscheck_context(
+        no_eod_policy,
+        position=position,
+    )
     risk_decision = evaluate_exit_policy(
         price=primary_decision.get("_price"),
         avg_price=primary_decision.get("_avg_price"),
@@ -2943,9 +2955,23 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "exit_symbol_fallback": bool(symbol and symbol != selected_symbol),
             "qty": int(qty),
             "pnl_ratio": decision.get("pnl_ratio"),
+            "raw_pnl_ratio": decision.get("raw_pnl_ratio"),
+            "effective_pnl_ratio": decision.get("effective_pnl_ratio"),
             "price": price,
+            "raw_price": decision.get("raw_price"),
+            "effective_price": decision.get("effective_price"),
             "avg_price": avg_price if avg_price > 0.0 else None,
             "peak_price": decision.get("_peak_price"),
+            "account_current_price": decision.get("account_current_price"),
+            "account_current_price_source": str(decision.get("account_current_price_source") or ""),
+            "account_mark_price": decision.get("account_mark_price"),
+            "account_unrealized_pnl": decision.get("account_unrealized_pnl"),
+            "account_pnl_ratio": decision.get("account_pnl_ratio"),
+            "account_pnl_ratio_source": str(decision.get("account_pnl_ratio_source") or ""),
+            "pnl_crosscheck_applied": bool(decision.get("pnl_crosscheck_applied")),
+            "pnl_crosscheck_reason": str(decision.get("pnl_crosscheck_reason") or ""),
+            "pnl_crosscheck_gap": decision.get("pnl_crosscheck_gap"),
+            "price_crosscheck_gap": decision.get("price_crosscheck_gap"),
             "thresholds": decision.get("thresholds") if isinstance(decision.get("thresholds"), dict) else {},
             "effective_exit_policy": dict(effective_exit_policy_base),
             "hold_sec": hold_sec if hold_sec > 0 else None,
@@ -2955,7 +2981,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "volatility_ratio": decision.get("volatility_ratio"),
             "volatility_regime": str(features.get("engine_regime") or ""),
             "price_source": str(decision.get("_price_source") or ""),
-            "price_source_policy": "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized",
+            "effective_price_source": str(decision.get("effective_price_source") or ""),
+            "price_source_policy": "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized; effective_exit_price=min(raw_price, account_mark_price)",
             "feature_source": str(decision.get("_feature_source") or ""),
             "minutes_to_close": decision.get("minutes_to_close"),
             "min_hold_sec": int(min_hold_sec),
@@ -3034,8 +3061,17 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "meta": {
                         "exit_reason": str(decision.get("reason") or ""),
                         "pnl_ratio": decision.get("pnl_ratio"),
+                        "raw_pnl_ratio": decision.get("raw_pnl_ratio"),
+                        "effective_pnl_ratio": decision.get("effective_pnl_ratio"),
                         "avg_price": avg_price if avg_price > 0.0 else None,
                         "price": price,
+                        "effective_price": decision.get("effective_price"),
+                        "account_current_price": decision.get("account_current_price"),
+                        "account_mark_price": decision.get("account_mark_price"),
+                        "account_unrealized_pnl": decision.get("account_unrealized_pnl"),
+                        "account_pnl_ratio_source": str(decision.get("account_pnl_ratio_source") or ""),
+                        "pnl_crosscheck_applied": bool(decision.get("pnl_crosscheck_applied")),
+                        "pnl_crosscheck_reason": str(decision.get("pnl_crosscheck_reason") or ""),
                         "source": "monitor_exit_policy",
                         "reason": str(decision.get("reason") or ""),
                         "signal_source": "monitor_exit_policy",
@@ -3080,9 +3116,22 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_triggered": bool(exit_info.get("triggered")),
         "exit_reason": str(exit_info.get("reason") or ""),
         "exit_pnl_ratio": exit_info.get("pnl_ratio"),
+        "exit_raw_pnl_ratio": exit_info.get("raw_pnl_ratio"),
+        "exit_effective_pnl_ratio": exit_info.get("effective_pnl_ratio"),
         "exit_symbol": exit_info.get("symbol"),
         "exit_symbol_fallback": bool(exit_info.get("exit_symbol_fallback")),
         "exit_qty": int(exit_info.get("qty") or 0),
+        "exit_raw_price": exit_info.get("raw_price"),
+        "exit_effective_price": exit_info.get("effective_price"),
+        "exit_effective_price_source": str(exit_info.get("effective_price_source") or ""),
+        "exit_account_current_price": exit_info.get("account_current_price"),
+        "exit_account_mark_price": exit_info.get("account_mark_price"),
+        "exit_account_unrealized_pnl": exit_info.get("account_unrealized_pnl"),
+        "exit_account_pnl_ratio": exit_info.get("account_pnl_ratio"),
+        "exit_account_pnl_ratio_source": str(exit_info.get("account_pnl_ratio_source") or ""),
+        "exit_pnl_crosscheck_applied": bool(exit_info.get("pnl_crosscheck_applied")),
+        "exit_pnl_crosscheck_reason": str(exit_info.get("pnl_crosscheck_reason") or ""),
+        "exit_pnl_crosscheck_gap": exit_info.get("pnl_crosscheck_gap"),
         "exit_position_age_seconds": exit_info.get("position_age_seconds"),
         "exit_min_hold_sec": int(exit_info.get("min_hold_sec") or 0),
         "exit_sell_cooldown_sec": int(exit_info.get("sell_cooldown_sec") or 0),
@@ -3521,6 +3570,17 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     exit_decision_detail = {
         "exit_triggered": bool(exit_info.get("triggered")),
         "triggered_rule": str(exit_info.get("reason") or ""),
+        "pnl_ratio": exit_info.get("pnl_ratio"),
+        "raw_pnl_ratio": exit_info.get("raw_pnl_ratio"),
+        "effective_pnl_ratio": exit_info.get("effective_pnl_ratio"),
+        "price": exit_info.get("price"),
+        "effective_price": exit_info.get("effective_price"),
+        "account_mark_price": exit_info.get("account_mark_price"),
+        "account_unrealized_pnl": exit_info.get("account_unrealized_pnl"),
+        "account_pnl_ratio_source": str(exit_info.get("account_pnl_ratio_source") or ""),
+        "pnl_crosscheck_applied": bool(exit_info.get("pnl_crosscheck_applied")),
+        "pnl_crosscheck_reason": str(exit_info.get("pnl_crosscheck_reason") or ""),
+        "pnl_crosscheck_gap": exit_info.get("pnl_crosscheck_gap"),
         "confirm_count": int(exit_info.get("exit_confirm_count") or 0),
         "confirm_required": int(exit_info.get("exit_confirm_ticks") or 0),
         "guard_blocked": bool(exit_info.get("sell_guard_blocked")),

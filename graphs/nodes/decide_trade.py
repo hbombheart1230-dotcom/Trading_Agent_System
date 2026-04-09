@@ -16,7 +16,11 @@ from libs.data_quality.signal_contract import (
     SIGNAL_STATUS_FALLBACK,
     make_signal,
 )
-from libs.runtime.exit_policy import apply_env_stop_take_fallbacks, evaluate_exit_policy
+from libs.runtime.exit_policy import (
+    apply_account_pnl_crosscheck_context,
+    apply_env_stop_take_fallbacks,
+    evaluate_exit_policy,
+)
 from libs.runtime.circuit_breaker import (
     gate_runtime_circuit,
     mark_runtime_circuit_failure,
@@ -1098,6 +1102,10 @@ def decide_trade(state: dict) -> dict:
                 exit_policy_cfg["symbol_sentiment_score"] = _to_float(news_ctx.get("symbol_sentiment_score"), 0.0)
                 exit_policy_cfg["global_sentiment_score"] = _to_float(news_ctx.get("global_sentiment_score"), 0.0)
             exit_policy_cfg["chart_context"] = _build_optional_exit_chart_context(state, symbol)
+            exit_policy_cfg = apply_account_pnl_crosscheck_context(
+                exit_policy_cfg,
+                position=position,
+            )
             exit_decision = evaluate_exit_policy(
                 price=px,
                 avg_price=avg_price,

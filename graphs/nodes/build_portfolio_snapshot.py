@@ -22,6 +22,18 @@ def _safe_float(value: object, default: float = 0.0) -> float:
         return default
 
 
+def _safe_ratio(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        out = float(value)
+    except Exception:
+        return None
+    if abs(out) > 1.0:
+        out = out / 100.0
+    return float(out)
+
+
 def _normalize_positions(raw: object) -> list[dict]:
     out: list[dict] = []
     if not isinstance(raw, list):
@@ -41,6 +53,15 @@ def _normalize_positions(raw: object) -> list[dict]:
                 "unrealized_pnl": _safe_float(row.get("unrealized_pnl"), 0.0),
             }
         )
+        account_pnl_ratio = _safe_ratio(
+            row.get("account_pnl_ratio")
+            if row.get("account_pnl_ratio") not in (None, "")
+            else row.get("unrealized_pnl_rate")
+        )
+        if account_pnl_ratio is not None:
+            out[-1]["account_pnl_ratio"] = float(account_pnl_ratio)
+            ratio_source = str(row.get("account_pnl_ratio_source") or "position.account_pnl_ratio").strip()
+            out[-1]["account_pnl_ratio_source"] = ratio_source
         current_price = _safe_float(
             row.get("current_price")
             if row.get("current_price") not in (None, "")
@@ -72,6 +93,8 @@ def _merge_position_current_prices(base_rows: list[dict], source_rows: list[dict
     if not isinstance(base_rows, list):
         return []
     current_price_by_symbol: dict[str, float] = {}
+    account_pnl_ratio_by_symbol: dict[str, float] = {}
+    account_pnl_ratio_source_by_symbol: dict[str, str] = {}
     for row in source_rows:
         if not isinstance(row, dict):
             continue
@@ -84,6 +107,16 @@ def _merge_position_current_prices(base_rows: list[dict], source_rows: list[dict
         )
         if current_price > 0.0:
             current_price_by_symbol[symbol] = float(current_price)
+        account_pnl_ratio = _safe_ratio(
+            row.get("account_pnl_ratio")
+            if row.get("account_pnl_ratio") not in (None, "")
+            else row.get("unrealized_pnl_rate")
+        )
+        if account_pnl_ratio is not None:
+            account_pnl_ratio_by_symbol[symbol] = float(account_pnl_ratio)
+            account_pnl_ratio_source_by_symbol[symbol] = str(
+                row.get("account_pnl_ratio_source") or "position.account_pnl_ratio"
+            ).strip()
 
     merged: list[dict] = []
     for raw_row in base_rows:
@@ -94,6 +127,9 @@ def _merge_position_current_prices(base_rows: list[dict], source_rows: list[dict
         current_price = current_price_by_symbol.get(symbol, 0.0)
         if current_price > 0.0:
             row["current_price"] = float(current_price)
+        if symbol in account_pnl_ratio_by_symbol:
+            row["account_pnl_ratio"] = float(account_pnl_ratio_by_symbol[symbol])
+            row["account_pnl_ratio_source"] = str(account_pnl_ratio_source_by_symbol.get(symbol) or "")
         merged.append(row)
     return merged
 

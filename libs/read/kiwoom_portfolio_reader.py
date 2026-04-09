@@ -33,6 +33,22 @@ def _first_present(d: Dict[str, Any], keys: List[str]) -> Any:
     return None
 
 
+def _first_present_key(d: Dict[str, Any], keys: List[str]) -> str:
+    for k in keys:
+        if k in d and d[k] not in (None, ""):
+            return k
+    return ""
+
+
+def _ratio(x: Any) -> float | None:
+    if x in (None, ""):
+        return None
+    value = _num(x)
+    if abs(value) > 1.0:
+        value = value / 100.0
+    return float(value)
+
+
 def _extract_cash(payload: Dict[str, Any]) -> float:
     for root in (payload, payload.get("output") or {}, payload.get("output1") or {}, payload.get("result") or {}):
         if isinstance(root, dict):
@@ -95,6 +111,16 @@ def _extract_positions(payload: Dict[str, Any]) -> List[PositionSnapshot]:
         upnl = _num(_first_present(it, ["unrealized_pnl", "evlu_pfls_amt", "pnl", "prft"]) or 0)
         if upnl == 0.0:
             upnl = _num(_first_present(it, ["evltv_prft"]) or 0)
+        pnl_ratio_keys = [
+            "account_pnl_ratio",
+            "unrealized_pnl_rate",
+            "evlu_pfls_rt",
+            "evltv_prft_rt",
+            "pnl_ratio",
+            "prft_rt",
+        ]
+        account_pnl_ratio = _ratio(_first_present(it, pnl_ratio_keys))
+        account_pnl_ratio_source = _first_present_key(it, pnl_ratio_keys)
         current_price = _num(
             _first_present(
                 it,
@@ -121,6 +147,8 @@ def _extract_positions(payload: Dict[str, Any]) -> List[PositionSnapshot]:
                 avg_price=avg_price,
                 unrealized_pnl=upnl,
                 current_price=(current_price if current_price > 0.0 else None),
+                account_pnl_ratio=account_pnl_ratio,
+                account_pnl_ratio_source=account_pnl_ratio_source,
             )
         )
     return pos

@@ -11,6 +11,8 @@ class PositionSnapshot:
     avg_price: float
     unrealized_pnl: float = 0.0
     current_price: float | None = None
+    account_pnl_ratio: float | None = None
+    account_pnl_ratio_source: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

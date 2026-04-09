@@ -23,6 +23,181 @@ def _to_bool(v: Any, default: bool = False) -> bool:
     return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _to_ratio(v: Any) -> float | None:
+    if v in (None, ""):
+        return None
+    try:
+        out = float(v)
+    except Exception:
+        return None
+    if abs(out) > 1.0:
+        out = out / 100.0
+    return float(out)
+
+
+def apply_account_pnl_crosscheck_context(
+    policy: Dict[str, Any] | None,
+    *,
+    position: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    """Attach authoritative account fields used for exit PnL cross-checking.
+
+    The caller keeps ownership of how positions are sourced. This helper only
+    normalizes a few optional fields so exit evaluation can reconcile
+    raw/live-price PnL with account-authoritative unrealized PnL.
+    """
+    out = dict(policy or {})
+    if not isinstance(position, dict):
+        return out
+
+    qty = max(0, int(_to_float(position.get("qty"), 0.0)))
+    avg_price = _to_float(position.get("avg_price"), 0.0)
+    if qty > 0 and out.get("account_qty") in (None, ""):
+        out["account_qty"] = int(qty)
+    if avg_price > 0.0 and out.get("account_avg_price") in (None, ""):
+        out["account_avg_price"] = float(avg_price)
+
+    for key in ("price", "cur_price", "last_price", "current_price"):
+        raw = position.get(key)
+        if raw in (None, ""):
+            continue
+        px = _to_float(raw, 0.0)
+        if px > 0.0 and out.get("account_current_price") in (None, ""):
+            out["account_current_price"] = float(px)
+            out.setdefault("account_current_price_source", f"position.{key}")
+            break
+
+    unrealized = position.get("unrealized_pnl")
+    if unrealized not in (None, "") and out.get("account_unrealized_pnl") in (None, ""):
+        out["account_unrealized_pnl"] = float(_to_float(unrealized, 0.0))
+    ratio = _to_ratio(
+        position.get("account_pnl_ratio")
+        if position.get("account_pnl_ratio") not in (None, "")
+        else position.get("unrealized_pnl_rate")
+    )
+    if ratio is not None and out.get("account_pnl_ratio") in (None, ""):
+        out["account_pnl_ratio"] = float(ratio)
+        out.setdefault(
+            "account_pnl_ratio_source",
+            str(position.get("account_pnl_ratio_source") or "position.account_pnl_ratio"),
+        )
+
+    out.setdefault("account_crosscheck_mode", "conservative")
+    return out
+
+
+def _build_account_pnl_crosscheck(
+    policy: Dict[str, Any],
+    *,
+    price: Optional[float],
+    avg_price: Optional[float],
+    qty: int,
+) -> Dict[str, Any]:
+    q = max(0, int(qty or 0))
+    raw_price = _to_float(price, 0.0) if price is not None else 0.0
+    avg = _to_float(avg_price, 0.0) if avg_price is not None else 0.0
+    raw_pnl_ratio = float((raw_price / avg) - 1.0) if raw_price > 0.0 and avg > 0.0 else None
+
+    account_qty_raw = policy.get("account_qty")
+    account_qty = max(0, int(_to_float(account_qty_raw, float(q)))) if account_qty_raw not in (None, "") else q
+    account_avg_raw = policy.get("account_avg_price")
+    account_avg = _to_float(account_avg_raw, avg) if account_avg_raw not in (None, "") else avg
+    account_current_price = None
+    if policy.get("account_current_price") not in (None, ""):
+        px = _to_float(policy.get("account_current_price"), 0.0)
+        if px > 0.0:
+            account_current_price = float(px)
+    account_pnl_ratio = _to_ratio(policy.get("account_pnl_ratio"))
+    account_pnl_ratio_source = str(policy.get("account_pnl_ratio_source") or "")
+
+    account_unrealized_pnl = None
+    if policy.get("account_unrealized_pnl") not in (None, ""):
+        account_unrealized_pnl = float(_to_float(policy.get("account_unrealized_pnl"), 0.0))
+
+    account_mark_price = None
+    if account_pnl_ratio is not None and account_avg > 0.0:
+        account_mark = float(account_avg * (1.0 + float(account_pnl_ratio)))
+        if account_mark > 0.0:
+            account_mark_price = float(account_mark)
+    elif account_unrealized_pnl is not None and account_qty > 0 and account_avg > 0.0:
+        account_mark = account_avg + (account_unrealized_pnl / float(account_qty))
+        if account_mark > 0.0:
+            account_mark_price = float(account_mark)
+        notional = float(account_avg * float(account_qty))
+        if notional > 0.0:
+            account_pnl_ratio = float(account_unrealized_pnl / notional)
+            if not account_pnl_ratio_source:
+                account_pnl_ratio_source = "account_unrealized_pnl"
+
+    effective_price = None
+    effective_source = "unavailable"
+    applied = False
+    reason = "unavailable"
+
+    if raw_price > 0.0:
+        effective_price = float(raw_price)
+        effective_source = "raw_price"
+        reason = "raw_price_only"
+
+    if account_mark_price is not None and account_mark_price > 0.0:
+        if effective_price is None or effective_price <= 0.0:
+            effective_price = float(account_mark_price)
+            effective_source = "account_unrealized_mark"
+            applied = True
+            reason = "account_mark_fallback"
+        elif str(policy.get("account_crosscheck_mode") or "conservative").strip().lower() == "conservative":
+            if account_mark_price < effective_price - 1e-9:
+                effective_price = float(account_mark_price)
+                effective_source = (
+                    "account_pnl_ratio_mark"
+                    if account_pnl_ratio_source and account_pnl_ratio_source != "account_unrealized_pnl"
+                    else "account_unrealized_mark"
+                )
+                applied = True
+                if account_pnl_ratio_source and account_pnl_ratio_source != "account_unrealized_pnl":
+                    reason = "account_pnl_ratio_more_conservative"
+                else:
+                    reason = "account_unrealized_pnl_more_conservative"
+            elif raw_pnl_ratio is not None and account_pnl_ratio is not None:
+                gap = float(account_pnl_ratio - raw_pnl_ratio)
+                if abs(gap) <= 1e-6:
+                    reason = "aligned"
+                else:
+                    reason = "account_mark_higher_than_raw_price"
+
+    effective_pnl_ratio = None
+    if effective_price is not None and effective_price > 0.0 and avg > 0.0:
+        effective_pnl_ratio = float((effective_price / avg) - 1.0)
+
+    pnl_ratio_gap = None
+    if raw_pnl_ratio is not None and account_pnl_ratio is not None:
+        pnl_ratio_gap = float(account_pnl_ratio - raw_pnl_ratio)
+
+    price_gap = None
+    if account_mark_price is not None and raw_price > 0.0:
+        price_gap = float(account_mark_price - raw_price)
+
+    return {
+        "available": bool(raw_pnl_ratio is not None or account_pnl_ratio is not None),
+        "mode": str(policy.get("account_crosscheck_mode") or "conservative"),
+        "raw_price": float(raw_price) if raw_price > 0.0 else None,
+        "raw_pnl_ratio": raw_pnl_ratio,
+        "account_current_price": account_current_price,
+        "account_current_price_source": str(policy.get("account_current_price_source") or ""),
+        "account_unrealized_pnl": account_unrealized_pnl,
+        "account_mark_price": account_mark_price,
+        "account_pnl_ratio": account_pnl_ratio,
+        "account_pnl_ratio_source": account_pnl_ratio_source,
+        "effective_price": effective_price,
+        "effective_price_source": effective_source,
+        "effective_pnl_ratio": effective_pnl_ratio,
+        "pnl_ratio_gap": pnl_ratio_gap,
+        "price_gap": price_gap,
+        "applied": bool(applied),
+        "reason": reason,
+    }
+
+
 def _build_chart_context_summary(policy: Dict[str, Any]) -> Dict[str, Any]:
     raw = policy.get("chart_context")
     chart_context = dict(raw) if isinstance(raw, dict) else {}
@@ -112,6 +287,22 @@ def evaluate_exit_policy(
         "triggered": False,
         "reason": "",
         "pnl_ratio": None,
+        "raw_pnl_ratio": None,
+        "effective_pnl_ratio": None,
+        "raw_price": None,
+        "effective_price": None,
+        "effective_price_source": "",
+        "account_current_price": None,
+        "account_current_price_source": "",
+        "account_unrealized_pnl": None,
+        "account_mark_price": None,
+        "account_pnl_ratio": None,
+        "account_pnl_ratio_source": "",
+        "pnl_crosscheck_gap": None,
+        "price_crosscheck_gap": None,
+        "pnl_crosscheck_applied": False,
+        "pnl_crosscheck_reason": "",
+        "account_crosscheck": {},
         "chart_context_available": bool(chart_context_summary.get("available")),
         "chart_context_summary": dict(chart_context_summary),
         "structure_breakdown_signal": str(chart_context_summary.get("structure_breakdown_signal") or ""),
@@ -183,8 +374,31 @@ def evaluate_exit_policy(
             out["reason"] = "news_shock"
             return out
 
-    px = _to_float(price, 0.0) if price is not None else 0.0
     apx = _to_float(avg_price, 0.0) if avg_price is not None else 0.0
+    crosscheck = _build_account_pnl_crosscheck(
+        p,
+        price=price,
+        avg_price=avg_price,
+        qty=q,
+    )
+    out["account_crosscheck"] = dict(crosscheck)
+    out["raw_price"] = crosscheck.get("raw_price")
+    out["effective_price"] = crosscheck.get("effective_price")
+    out["effective_price_source"] = str(crosscheck.get("effective_price_source") or "")
+    out["account_current_price"] = crosscheck.get("account_current_price")
+    out["account_current_price_source"] = str(crosscheck.get("account_current_price_source") or "")
+    out["account_unrealized_pnl"] = crosscheck.get("account_unrealized_pnl")
+    out["account_mark_price"] = crosscheck.get("account_mark_price")
+    out["account_pnl_ratio"] = crosscheck.get("account_pnl_ratio")
+    out["account_pnl_ratio_source"] = str(crosscheck.get("account_pnl_ratio_source") or "")
+    out["raw_pnl_ratio"] = crosscheck.get("raw_pnl_ratio")
+    out["effective_pnl_ratio"] = crosscheck.get("effective_pnl_ratio")
+    out["pnl_crosscheck_gap"] = crosscheck.get("pnl_ratio_gap")
+    out["price_crosscheck_gap"] = crosscheck.get("price_gap")
+    out["pnl_crosscheck_applied"] = bool(crosscheck.get("applied"))
+    out["pnl_crosscheck_reason"] = str(crosscheck.get("reason") or "")
+
+    px = _to_float(crosscheck.get("effective_price"), 0.0) if crosscheck.get("effective_price") is not None else 0.0
     if px <= 0.0 or apx <= 0.0:
         out["reason"] = "price_unavailable"
         return out
@@ -204,6 +418,7 @@ def evaluate_exit_policy(
 
     pnl_ratio = float((px / apx) - 1.0)
     out["pnl_ratio"] = pnl_ratio
+    out["effective_pnl_ratio"] = pnl_ratio
 
     sl = float(out["thresholds"]["stop_loss_pct"])
     hard_sl = float(out["thresholds"]["hard_stop_pct"])

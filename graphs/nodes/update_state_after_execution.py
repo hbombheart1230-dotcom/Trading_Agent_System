@@ -22,6 +22,18 @@ def _as_float(value, default: float = 0.0) -> float:  # type: ignore[no-untyped-
         return default
 
 
+def _as_ratio(value):  # type: ignore[no-untyped-def]
+    if value in (None, ""):
+        return None
+    try:
+        out = float(value)
+    except Exception:
+        return None
+    if abs(out) > 1.0:
+        out = out / 100.0
+    return float(out)
+
+
 def _normalize_mock_positions(raw):  # type: ignore[no-untyped-def]
     out = []
     if not isinstance(raw, list):
@@ -41,6 +53,16 @@ def _normalize_mock_positions(raw):  # type: ignore[no-untyped-def]
                 "unrealized_pnl": _as_float(row.get("unrealized_pnl"), 0.0),
             }
         )
+        account_pnl_ratio = _as_ratio(
+            row.get("account_pnl_ratio")
+            if row.get("account_pnl_ratio") not in (None, "")
+            else row.get("unrealized_pnl_rate")
+        )
+        if account_pnl_ratio is not None:
+            out[-1]["account_pnl_ratio"] = float(account_pnl_ratio)
+            out[-1]["account_pnl_ratio_source"] = str(
+                row.get("account_pnl_ratio_source") or "position.account_pnl_ratio"
+            ).strip()
         current_price = _as_float(
             row.get("current_price") if row.get("current_price") not in (None, "") else row.get("cur_price"),
             0.0,
