@@ -179,6 +179,26 @@ def _story_input() -> Dict[str, Any]:
     }
 
 
+def test_deterministic_trade_report_does_not_invoke_hidden_fact_narrative_llm(monkeypatch) -> None:
+    class ExplodingRouter:
+        client = object()
+
+        @staticmethod
+        def from_env() -> "ExplodingRouter":
+            return ExplodingRouter()
+
+        def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+            raise AssertionError("deterministic report should not trigger hidden fact_narrative LLM calls")
+
+    monkeypatch.setattr("libs.reporting.fact_narrative_report.LLMRouter", ExplodingRouter)
+
+    report = mod.build_deterministic_trade_report(_story_input())
+    narrative = report.get("narrative") if isinstance(report.get("narrative"), dict) else {}
+    assert narrative.get("status") == "skipped"
+    assert narrative.get("reason") == "explicit_model_not_provided"
+    assert narrative.get("llm_call_skipped") is True
+
+
 def test_trade_report_shared_facts_align_between_deterministic_and_ai(monkeypatch) -> None:
     monkeypatch.setattr(mod, "LLMRouter", _RetrySuccessRouter)
     story_input = _story_input()
@@ -845,6 +865,38 @@ def test_ai_trade_report_uses_policy_execution_profile_max_tokens_when_role_valu
     assert _CapturePolicyRouter.last_policies
     assert int(_CapturePolicyRouter.last_policies[0]["max_tokens"]) == 4096
     assert _CapturePolicyRouter.last_policies[0]["plugins"] == [{"id": "response-healing"}]
+
+
+def test_ai_trade_report_prefers_top_level_execution_profile(monkeypatch) -> None:
+    monkeypatch.setattr(mod, "LLMRouter", _CapturePolicyRouter)
+    story_input = _story_input()
+    story_input["applied_policy"] = {
+        "llm": {
+            "execution_profile": {
+                "profile_name": "default_intraday",
+                "temperature": 0.33,
+                "max_tokens": 1337,
+                "timeout_sec": 11,
+                "retry": {"max_attempts": 3, "backoff_sec": 0.0},
+            },
+            "reporter": {
+                "intraday": {
+                    "execution_profile": {
+                        "name": "concise_review",
+                        "max_tokens": 4096,
+                    }
+                }
+            },
+        }
+    }
+
+    report = mod.build_ai_trade_report(story_input, enabled=True, model="free")
+
+    assert report["generation"]["status"] == "ok"
+    assert _CapturePolicyRouter.last_policies
+    assert float(_CapturePolicyRouter.last_policies[0]["temperature"]) == 0.33
+    assert int(_CapturePolicyRouter.last_policies[0]["max_tokens"]) == 1337
+    assert float(_CapturePolicyRouter.last_policies[0]["timeout_sec"]) == 11.0
 
 
 def test_ai_trade_report_fallback_preserves_structured_market_context_fields() -> None:

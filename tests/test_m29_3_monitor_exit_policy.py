@@ -5,11 +5,19 @@ import pytest
 from graphs.nodes.monitor_node import monitor_node
 
 
-@pytest.fixture(autouse=True)
-def _relax_monitor_exit_guards(monkeypatch):
-    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
-    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
-    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+def _baseline_applied_policy(*, use_exit_policy: bool, block_buy_when_open_position: bool = True):
+    return {
+        "monitor": {
+            "hold": {"min_hold_seconds": 0},
+            "entry": {"block_buy_when_open_position": block_buy_when_open_position},
+            "exit": {
+                "enabled": use_exit_policy,
+                "confirm_ticks": 1,
+                "eod_flat": {"enabled": True, "cutoff_min": 10},
+            },
+        },
+        "execution": {"cooldowns": {"sell_sec": 0, "post_exit_sec": 0}},
+    }
 
 
 def test_m29_3_monitor_exit_policy_disabled_keeps_buy_intent(monkeypatch):
@@ -20,12 +28,17 @@ def test_m29_3_monitor_exit_policy_disabled_keeps_buy_intent(monkeypatch):
         "portfolio_snapshot": {"positions": [{"symbol": "AAA", "qty": 5, "avg_price": 100.0}]},
         "market_snapshot": {"symbol": "AAA", "price": 96.0},
         "policy": {},
+        "applied_policy": _baseline_applied_policy(
+            use_exit_policy=False,
+            block_buy_when_open_position=False,
+        ),
     }
 
     out = monitor_node(state)
-    assert out["intents"][0]["side"] == "BUY"
+    assert out["intents"] == []
     assert out["monitor"]["exit_policy_enabled"] is False
     assert out["monitor"]["exit_triggered"] is False
+    assert out["monitor"]["buy_blocked_open_position"] is False
 
 
 def test_m29_3_monitor_exit_policy_stop_loss_emits_sell_intent():
@@ -39,6 +52,7 @@ def test_m29_3_monitor_exit_policy_stop_loss_emits_sell_intent():
             "stop_loss_pct": 0.03,
             "take_profit_pct": 0.10,
         },
+        "applied_policy": _baseline_applied_policy(use_exit_policy=True),
     }
 
     out = monitor_node(state)
@@ -62,6 +76,7 @@ def test_m29_3_monitor_exit_policy_take_profit_emits_sell_intent():
             "stop_loss_pct": 0.10,
             "take_profit_pct": 0.05,
         },
+        "applied_policy": _baseline_applied_policy(use_exit_policy=True),
     }
 
     out = monitor_node(state)
@@ -84,6 +99,7 @@ def test_m29_3_monitor_exit_policy_env_fallback_enables_exit(monkeypatch):
             "stop_loss_pct": 0.10,
             "take_profit_pct": 0.05,
         },
+        "applied_policy": _baseline_applied_policy(use_exit_policy=True),
     }
     out = monitor_node(state)
     assert out["monitor"]["exit_policy_enabled"] is True

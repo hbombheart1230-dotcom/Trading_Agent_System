@@ -1180,6 +1180,87 @@ def test_monitor_prefers_direct_account_pnl_ratio_when_present():
     assert str(artifact.get("account_pnl_ratio_source") or "") == "position.evlu_pfls_rt"
 
 
+def test_monitor_flags_account_ratio_mark_anomaly_and_falls_back_before_exit():
+    state = _with_commander_numeric_policy(_base_state(), min_hold_seconds=0, sell_sec=0, confirm_ticks=1)
+    state["selected"] = {"symbol": "AAA"}
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [
+            {
+                "symbol": "AAA",
+                "qty": 1,
+                "avg_price": 100.0,
+                "current_price": 97.0,
+                "unrealized_pnl": -3.0,
+                "account_pnl_ratio": -0.9,
+                "account_pnl_ratio_source": "prft_rt",
+                "hold_sec": 900,
+            }
+        ],
+    }
+    state["policy"] = {"use_exit_policy": True, "stop_loss_pct": 0.02, "take_profit_pct": 0.10}
+
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("price_anomaly_flag") is True
+    assert "account_pnl_ratio_mark" in str(exit_info.get("price_anomaly_reason") or "")
+    assert exit_info.get("pnl_fallback_applied") is True
+    assert str(exit_info.get("fallback_price_source") or "") == "account_unrealized_mark"
+    assert round(float(exit_info.get("effective_price") or 0.0), 2) == 97.0
+    assert str(exit_info.get("effective_price_source") or "") == "account_unrealized_mark"
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    artifact = build_monitor_output_artifact(out)
+    assert artifact.get("price_anomaly_flag") is True
+    assert str(artifact.get("fallback_price_source") or "") == "account_unrealized_mark"
+
+
+def test_monitor_stop_loss_bypasses_hold_confirmation_guards():
+    state = _with_commander_numeric_policy(_base_state(), min_hold_seconds=600, sell_sec=300, confirm_ticks=3)
+    state["selected"] = {"symbol": "AAA"}
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [
+            {
+                "symbol": "AAA",
+                "qty": 1,
+                "avg_price": 100.0,
+                "current_price": 97.0,
+                "unrealized_pnl": -3.0,
+                "hold_sec": 120,
+            }
+        ],
+    }
+    state["policy"] = {"use_exit_policy": True, "stop_loss_pct": 0.02, "take_profit_pct": 0.10}
+
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    assert exit_info.get("triggered") is True
+    assert str(exit_info.get("reason") or "") == "stop_loss"
+    assert exit_info.get("sell_guard_blocked") is False
+    assert exit_info.get("min_hold_blocked") is False
+    assert int(exit_info.get("exit_confirm_count") or 0) == 0
+
+
+def test_monitor_hold_block_reason_and_final_exit_thresholds_are_explicit():
+    state = _with_commander_numeric_policy(_base_state(), min_hold_seconds=600, sell_sec=0, confirm_ticks=1)
+    out = monitor_node(state)
+    exit_info = out.get("monitor_exit") or {}
+    assert exit_info.get("triggered") is False
+    assert "take_profit" in str(exit_info.get("hold_block_reason") or "")
+    assert "sell_guard_min_hold" in str(exit_info.get("hold_block_reason") or "")
+    assert isinstance(exit_info.get("final_exit_thresholds"), dict)
+    assert str(exit_info.get("exit_threshold_source") or "") != ""
+    artifact = build_monitor_output_artifact(out)
+    assert isinstance(artifact.get("final_exit_thresholds"), dict)
+    assert str(artifact.get("exit_threshold_source") or "") != ""
+    assert "sell_guard_min_hold" in str(artifact.get("hold_block_reason") or "")
+
+
 def test_monitor_uses_feature_engine_snapshot_for_held_symbol_fallback(monkeypatch):
     monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
     monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
@@ -2498,6 +2579,16 @@ def test_monitor_peak_drawdown_exit_uses_persisted_peak(monkeypatch):
     exit_info = out.get("monitor_exit") or {}
     assert str(exit_info.get("reason") or "") == "peak_drawdown"
     assert float(exit_info.get("peak_drawdown") or 0.0) <= -0.05
+    assert float(exit_info.get("final_peak_drawdown_ratio") or 0.0) <= -0.05
+    assert str(exit_info.get("peak_drawdown_source") or "") == "effective_price_vs_peak_price"
+    assert str(exit_info.get("exit_trigger_metric_name") or "") == "peak_drawdown_ratio"
+    assert float(exit_info.get("exit_trigger_metric_value") or 0.0) <= -0.05
+    assert str(exit_info.get("exit_trigger_metric_source") or "") == "effective_price_vs_peak_price"
+    artifact = build_monitor_output_artifact(out)
+    assert float(artifact.get("final_peak_drawdown_ratio") or 0.0) <= -0.05
+    assert str(artifact.get("peak_drawdown_source") or "") == "effective_price_vs_peak_price"
+    assert str(artifact.get("exit_trigger_metric_name") or "") == "peak_drawdown_ratio"
+    assert float(artifact.get("exit_trigger_metric_value") or 0.0) <= -0.05
 
 
 def test_monitor_vwap_breakdown_exit_uses_feature_signal(monkeypatch):

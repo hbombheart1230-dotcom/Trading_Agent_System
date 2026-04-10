@@ -159,3 +159,31 @@ def test_kiwoom_portfolio_reader_extracts_account_pnl_ratio_when_available():
     snap = r.get_portfolio_snapshot()
     assert round(float(snap.positions[0].account_pnl_ratio or 0.0), 4) == -0.0337
     assert snap.positions[0].account_pnl_ratio_source == "evlu_pfls_rt"
+
+
+def test_kiwoom_portfolio_reader_treats_prft_rt_as_percent_points():
+    class StubAccountPnlRatio:
+        def get_account_balance(self, *, dry_run: bool = False):  # type: ignore
+            class R:
+                status_code = 200
+                ok = True
+                payload = {
+                    "cash": "10000000",
+                    "positions": [
+                        {
+                            "symbol": "005930",
+                            "qty": "1",
+                            "avg_price": "210500",
+                            "unrealized_pnl": "-6850",
+                            "prpr": "205500",
+                            "prft_rt": "-0.9",
+                        },
+                    ],
+                }
+                raw_text = ""
+            return R()
+
+    r = KiwoomPortfolioReader(account=StubAccountPnlRatio())  # type: ignore
+    snap = r.get_portfolio_snapshot()
+    assert round(float(snap.positions[0].account_pnl_ratio or 0.0), 4) == -0.009
+    assert snap.positions[0].account_pnl_ratio_source == "prft_rt"

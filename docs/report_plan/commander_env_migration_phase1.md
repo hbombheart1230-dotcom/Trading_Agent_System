@@ -42,7 +42,7 @@ The phase 1 baseline preserves current operating posture as closely as possible.
 
 - `reporter.ai_review.enabled = false`
 - `reporter.trade_report.enabled = true`
-- `reporter.trade_report.generate_on_open = true`
+- `reporter.trade_report.generate_on_open = false`
 - `strategist.runtime.strict_mode = true`
 - `strategist.runtime.allow_legacy_rule = false`
 - `strategist.runtime.allow_legacy_strategy_v1 = false`

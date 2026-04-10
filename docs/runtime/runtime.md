@@ -155,6 +155,9 @@
 
 - Official trading runtime entrypoint:
   - `python scripts/run_session.py --mode live --phase intraday`
+- Important note:
+  - this is currently a **single entrypoint**, not yet a guaranteed **single long-lived process**
+  - live intraday may still appear as a parent/worker pair plus optional report helper subprocesses
 - Supported phases:
   - `preopen`
   - `intraday`
@@ -167,6 +170,10 @@
 ## M13 Tick Pipeline Selection
 
 - `scripts/run_session.py --mode live --phase intraday` uses `scripts/run_m13_live_loop.py` as the intraday loop backend.
+- This means operational process visibility is currently:
+  - entrypoint: `scripts/run_session.py`
+  - live loop backend: `scripts/run_m13_live_loop.py` path ownership
+  - optional helper reports: `scripts/run_live_execution_bundle_report.py`
 - `scripts/run_m13_live_loop.py` supports two tick paths:
   - `legacy_m10` (default): `m13_tick -> m10_live_pipeline -> decide_trade -> execute_from_packet`
   - `integrated_chain`: `m13_tick -> commander_runtime(mode=integrated_chain)`
@@ -182,6 +189,9 @@
 
 - Runtime/agent visibility reference:
   - `docs/runtime/agent_visibility_runbook.md`
+- Session/process visibility references:
+  - `docs/runtime/live_session_process_observation_2026_04_10.md`
+  - `docs/runtime/session_process_consolidation_plan.md`
 - Report inventory / cleanup reference:
   - `docs/runtime/report_management.md`
 - Log inventory / cleanup reference:

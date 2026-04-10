@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Callable, Dict, Any, Optional
 
@@ -13,18 +12,18 @@ def _resolve_tick_pipeline(state: Dict[str, Any]) -> str:
     Priority:
       1) state["m13_tick_pipeline"]
       2) state["runtime_path"]
-      3) env M13_TICK_PIPELINE
-      4) legacy_m10 (default)
+      3) integrated_chain (default)
     """
     raw = (
         state.get("m13_tick_pipeline")
         or state.get("runtime_path")
-        or os.getenv("M13_TICK_PIPELINE", "")
     )
     v = str(raw or "").strip().lower()
     if v in ("integrated_chain", "integrated", "chain"):
         return "integrated_chain"
-    return "legacy_m10"
+    if v in ("legacy_m10", "legacy", "m10"):
+        return "legacy_m10"
+    return "integrated_chain"
 
 
 def run_m13_tick(

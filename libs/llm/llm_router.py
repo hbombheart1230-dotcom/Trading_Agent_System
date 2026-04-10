@@ -23,6 +23,16 @@ from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.openrouter_client import OpenRouterClient
 
 
+ROLE_DEFAULT_MODELS: Dict[str, str] = {
+    "strategist": "deepseek/deepseek-v3.2",
+    "trade_report": "minimax/minimax-m2.5",
+    "operator_ui": "minimax/minimax-m2.5",
+    "reporter_intraday": "minimax/minimax-m2.5",
+    "reporter_final": "moonshotai/kimi-k2.5",
+    "daily_report": "moonshotai/kimi-k2.5",
+}
+
+
 def _env_model_key(role: str) -> str:
     return f"OPENROUTER_MODEL_{role.upper()}"
 
@@ -65,6 +75,18 @@ def _role_env_model_keys(role: str) -> List[str]:
         out.append(key)
     return out
 
+
+def _sanitize_resolved_model(candidate: Any) -> str:
+    normalized = normalize_openrouter_model_name(str(candidate or "").strip())
+    if normalized == "openrouter/auto":
+        return ""
+    return normalized
+
+
+def _role_default_model(role: str) -> str:
+    normalized = str(role or "").strip().lower()
+    return str(ROLE_DEFAULT_MODELS.get(normalized) or "")
+
 @dataclass
 class LLMRoute:
     role: str
@@ -84,17 +106,17 @@ class LLMRouter:
     def resolve(self, role: str, *, policy: Optional[Dict[str, Any]] = None) -> LLMRoute:
         policy = policy or {}
         # policy overrides env
-        model = normalize_openrouter_model_name(str(policy.get("openrouter_model") or policy.get("model") or "").strip())
+        model = _sanitize_resolved_model(policy.get("openrouter_model") or policy.get("model"))
         if not model:
             for key in _role_env_model_keys(role):
-                candidate = normalize_openrouter_model_name(os.getenv(key, "") or "")
+                candidate = _sanitize_resolved_model(os.getenv(key, "") or "")
                 if candidate:
                     model = candidate
                     break
         if not model:
-            model = normalize_openrouter_model_name(os.getenv("OPENROUTER_DEFAULT_MODEL", "") or "")
+            model = _sanitize_resolved_model(os.getenv("OPENROUTER_DEFAULT_MODEL", "") or "")
         if not model:
-            model = "openrouter/auto"
+            model = _role_default_model(role)
 
         temperature = float(policy.get("temperature") or os.getenv("OPENROUTER_DEFAULT_TEMPERATURE", "0.2"))
         max_tokens = int(policy.get("max_tokens") or os.getenv("OPENROUTER_DEFAULT_MAX_TOKENS", "512"))

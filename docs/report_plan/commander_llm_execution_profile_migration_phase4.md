@@ -20,45 +20,50 @@ profile values come from.
 - `AI_STRATEGIST_RETRY_MAX`
 
 ## Canonical policy paths
-- `applied_policy.llm.strategist.execution_profile.name`
-- `applied_policy.llm.strategist.execution_profile.temperature`
-- `applied_policy.llm.strategist.execution_profile.max_tokens`
-- `applied_policy.llm.strategist.execution_profile.timeout_sec`
-- `applied_policy.llm.strategist.execution_profile.retry_max`
+- `applied_policy.llm.execution_profile.profile_name`
+- `applied_policy.llm.execution_profile.temperature`
+- `applied_policy.llm.execution_profile.max_tokens`
+- `applied_policy.llm.execution_profile.timeout_sec`
+- `applied_policy.llm.execution_profile.retry.max_attempts`
+- `applied_policy.llm.execution_profile.retry.backoff_sec`
 
-- `applied_policy.llm.reporter.intraday.execution_profile.name`
-- `applied_policy.llm.reporter.intraday.execution_profile.temperature`
-- `applied_policy.llm.reporter.intraday.execution_profile.max_tokens`
+Compatibility role-scoped surfaces may still exist:
+- `applied_policy.llm.strategist.execution_profile.*`
+- `applied_policy.llm.reporter.intraday.execution_profile.*`
+- `applied_policy.llm.reporter.daily.execution_profile.*`
 
-- `applied_policy.llm.reporter.daily.execution_profile.name`
-- `applied_policy.llm.reporter.daily.execution_profile.temperature`
-- `applied_policy.llm.reporter.daily.execution_profile.max_tokens`
+Runtime callers prefer the canonical top-level execution profile first, then
+role-scoped compatibility overrides, then env/default fallback when needed.
 
 ## Baseline execution profiles
-- strategist: `balanced_reasoning`
-  - `temperature = 0.1`
+- canonical baseline: `default_intraday`
+  - `temperature = 0.2`
   - `max_tokens = 8192`
   - `timeout_sec = 15`
-  - `retry_max = 2`
-- reporter intraday: `concise_review`
-  - `temperature = 0.2`
-  - `max_tokens = 8192`
-- reporter daily: `deep_review`
-  - `temperature = 0.2`
-  - `max_tokens = 8192`
+  - `retry.max_attempts = 2`
+  - `retry.backoff_sec = 0.0`
+- role-scoped execution profiles remain available as compatibility surfaces:
+  - strategist: `balanced_reasoning`
+  - reporter intraday: `concise_review`
+  - reporter daily: `deep_review`
 
 ## Model selection vs execution profile
 - model selection answers: which model card/profile should run
 - execution profile answers: how that model call should run
 - Commander now owns both:
   - model profile under `applied_policy.llm.*.profile`
-  - execution profile under `applied_policy.llm.*.execution_profile`
+  - canonical execution profile under `applied_policy.llm.execution_profile`
+  - optional compatibility overrides under `applied_policy.llm.*.execution_profile`
 
 ## Consumer policy
 - Strategist reads Commander-applied execution profile and does not own timeout,
   token budget, or retry count
 - Reporter surfaces read Commander-applied execution profile and do not own
   review temperature or token budget
+- Artifacts expose:
+  - `llm_execution_profile_name`
+  - `llm_execution_profile_source`
+  - `llm_execution_effective_config`
 - explicit function argument overrides remain available for narrow compatibility
   cases
 

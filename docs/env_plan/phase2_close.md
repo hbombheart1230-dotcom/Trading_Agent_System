@@ -4,15 +4,15 @@
 Numeric runtime parameters moved to Commander.
 
 ## Key Changes
-- cooldown / hold / threshold moved to applied_policy
-- env minimized
+- cooldown / hold / threshold style runtime parameters moved to `applied_policy`
+- env minimized further
 
 ## Result
-Commander owns operational parameters.
+Commander owns operational numeric parameters.
 
 ## Validation
 - Regression tests passed
 - Candidate distribution unchanged
 
 ## Status
-✅ CLOSED
+CLOSED

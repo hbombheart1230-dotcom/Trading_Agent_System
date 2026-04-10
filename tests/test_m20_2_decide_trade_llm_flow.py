@@ -568,6 +568,32 @@ def test_m20_2_decide_trade_blocks_fast_sell_with_min_hold_guard(monkeypatch):
     assert out["decision_trace"]["sell_timing_guard"]["blocked"] is True
 
 
+def test_m20_2_decide_trade_hard_stop_bypasses_sell_timing_guard(monkeypatch):
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "600")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "300")
+    monkeypatch.setattr(time, "time", lambda: 2000.0)
+
+    state = {
+        "symbol": "005930",
+        "market_snapshot": {"symbol": "005930", "price": 68000},
+        "portfolio_snapshot": {
+            "cash": 2_000_000,
+            "positions": [{"symbol": "005930", "qty": 2, "avg_price": 70000.0}],
+            "open_positions": 1,
+        },
+        "persisted_state": {"last_trade_side": "BUY", "last_trade_epoch": 1950},
+        "risk_context": {"open_positions": 1, "daily_pnl_ratio": 0.0, "last_order_epoch": 0},
+        "policy": {"use_exit_policy": True, "hard_stop_pct": 0.02, "stop_loss_pct": 0.08},
+    }
+    out = decide_trade(state)
+
+    intent = out["decision_packet"]["intent"]
+    assert intent["action"] == "SELL"
+    assert intent["rationale"] == "exit_policy:hard_stop"
+    assert out["decision_trace"]["sell_timing_guard"]["blocked"] is False
+
+
 def test_m20_2_decide_trade_does_not_convert_noop_to_buy_via_env_thresholds(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_PROVIDER", "openai")
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "dummy")

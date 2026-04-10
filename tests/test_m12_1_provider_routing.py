@@ -1,6 +1,7 @@
 import pytest
 
 from graphs.nodes.decide_trade import decide_trade
+from libs.ai.strategist_config import strategist_provider
 
 
 @pytest.fixture(autouse=True)
@@ -39,3 +40,10 @@ def test_provider_rule_is_blocked_when_legacy_runtime_disabled(monkeypatch):
     assert out["decision_trace"]["strategy"] == "BlockedStrategist"
     assert out["decision_packet"]["intent"]["action"] == "NOOP"
     assert out["decision_packet"]["intent"]["reason"] == "strategist_llm_required"
+
+
+def test_provider_defaults_to_openai_when_endpoint_present_and_provider_env_missing(monkeypatch):
+    monkeypatch.delenv("AI_STRATEGIST_PROVIDER", raising=False)
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
+
+    assert strategist_provider({}) == "openai"

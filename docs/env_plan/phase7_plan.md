@@ -1,7 +1,7 @@
 # Phase 7: Feedback Loop Integration
 
 ## Goal
-Reporter → Commander feedback loop for policy evolution.
+Reporter -> Commander feedback loop for policy evolution.
 
 ## Flow
 - Reporter generates insights
@@ -10,3 +10,7 @@ Reporter → Commander feedback loop for policy evolution.
 
 ## Status
 PLANNED
+
+## Boundary
+- not implemented yet
+- no runtime execution authority change

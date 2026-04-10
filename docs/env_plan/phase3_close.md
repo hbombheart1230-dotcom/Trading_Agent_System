@@ -4,8 +4,8 @@
 Scanner fallback and source policy moved to Commander.
 
 ## Key Changes
-- strict_only / fallback / source ownership moved
-- env keys removed
+- `strict_only` / fallback / source ownership moved
+- scanner env keys removed
 
 ## Result
 Commander controls candidate generation policy.
@@ -20,4 +20,4 @@ Commander controls candidate generation policy.
 - additional scanner policies
 
 ## Status
-✅ CLOSED (Ready for live validation)
+CLOSED (Ready for live validation)

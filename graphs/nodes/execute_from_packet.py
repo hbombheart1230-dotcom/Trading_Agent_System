@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from libs.core.symbols import is_valid_symbol, normalize_symbol
 from libs.runtime.canonical_artifacts import write_executor_artifact, write_supervisor_artifact
+from libs.runtime.asset_universe_policy import inspect_asset_universe_candidate
 from libs.runtime.decision_trace import append_decision_trace
 
 
@@ -175,6 +176,56 @@ def _evaluate_symbol_allowlist_guard(order: Dict[str, Any]) -> Tuple[bool, str, 
         return True, "", details
     details["allowlist"] = sorted(allow)
     return False, "symbol_not_allowlisted", details
+
+
+def _extract_market_quotes_safe(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    try:
+        from graphs.nodes.skill_contracts import extract_market_quotes  # type: ignore
+
+        quotes, _meta = extract_market_quotes(state)
+        return dict(quotes or {})
+    except Exception:
+        return {}
+
+
+def _evaluate_asset_universe_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
+    action = str(order.get("action") or "").strip().upper()
+    details: Dict[str, Any] = {
+        "guard_applied": True,
+        "action": action,
+    }
+    if action != "BUY":
+        details["risk_reducing"] = action in ("SELL", "EXIT", "CLOSE")
+        return True, "", details
+
+    symbol = _extract_order_symbol(order)
+    details["symbol"] = symbol
+    if not symbol:
+        details["symbol_evaluable"] = False
+        return True, "", details
+
+    inspection = inspect_asset_universe_candidate(
+        symbol=symbol,
+        candidate=state.get("selected") if isinstance(state.get("selected"), dict) else None,
+        state=state,
+        policy=state.get("policy") if isinstance(state.get("policy"), dict) else {},
+        market_quotes=_extract_market_quotes_safe(state),
+        allow_remote_lookup=True,
+    )
+    details.update(
+        {
+            "asset_policy_type": str(inspection.get("asset_policy_type") or ""),
+            "asset_policy_source": str(inspection.get("asset_policy_source") or ""),
+            "asset_class_detected": str(inspection.get("asset_class_detected") or ""),
+            "detection_source": str(inspection.get("detection_source") or ""),
+            "excluded_by_asset_policy": bool(inspection.get("excluded_by_asset_policy")),
+            "exclusion_reason": str(inspection.get("exclusion_reason") or ""),
+            "detected_name": str(inspection.get("detected_name") or ""),
+        }
+    )
+    if bool(inspection.get("excluded_by_asset_policy")):
+        return False, "asset_universe_policy_blocked", details
+    return True, "", details
 
 
 def _evaluate_symbol_format_guard(order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
@@ -1349,6 +1400,34 @@ def execute_from_packet(state: dict) -> dict:
                 supervisor_allowed=False,
                 supervisor_reason=symbol_reason,
                 supervisor_details=symbol_details,
+            )
+            logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
+            return state
+
+        asset_allowed, asset_reason, asset_details = _evaluate_asset_universe_guard(state, order)
+        if not asset_allowed:
+            state["execution"] = _normalize_execution(
+                allowed=False,
+                execution_result=None,
+                allow_result=None,
+                order=order,
+                reason=asset_reason,
+                strategy_policy_summary=strategy_policy_summary,
+            )
+            state["execution"]["asset_universe_guard"] = asset_details
+            _append_execution_trace_entries(
+                state, order=order, execution=state["execution"], allow_result=None, strategy_policy_summary=strategy_policy_summary
+            )
+            logger.log(
+                run_id=run_id,
+                stage="execute_from_packet",
+                event="asset_universe_guard_block",
+                payload={"allowed": False, "reason": asset_reason, **asset_details},
+            )
+            _persist_execution_artifacts(
+                supervisor_allowed=False,
+                supervisor_reason=asset_reason,
+                supervisor_details=asset_details,
             )
             logger.log(run_id=run_id, stage="execute_from_packet", event="end", payload={"ok": True})
             return state

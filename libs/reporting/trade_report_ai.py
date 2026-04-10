@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from libs.llm.json_response import parse_llm_json_response, required_key_metadata
-from libs.llm.model_catalog import resolve_policy_llm_execution_slot, resolve_policy_llm_slot
+from libs.llm.model_catalog import build_execution_profile_observability, resolve_policy_llm_execution_slot, resolve_policy_llm_slot
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.reporting.llm_artifacts import build_llm_response_artifact, classify_llm_exception, make_attempt
@@ -33,9 +33,14 @@ def _resolve_intraday_report_execution_profile(source: Dict[str, Any] | None) ->
         "intraday",
         default_profile="concise_review",
         defaults={
+            "profile_name": "concise_review",
             "name": "concise_review",
             "temperature": 0.2,
             "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry": {"max_attempts": 2, "backoff_sec": 0.0},
+            "retry_max": 2,
+            "retry_backoff_sec": 0.0,
         },
     )
 
@@ -3405,7 +3410,12 @@ def build_separated_ai_trade_report(trade_dir: str, *, model: Optional[str] = No
     except Exception:
         trade_model = {}
     chosen_model = _resolve_intraday_report_model(trade_model, explicit_model=model)
-    return build_separated_report(trade_model=trade_model, model=chosen_model)
+    execution_profile = _resolve_intraday_report_execution_profile(trade_model if isinstance(trade_model, dict) else {})
+    return build_separated_report(
+        trade_model=trade_model,
+        model=chosen_model,
+        execution_profile=execution_profile,
+    )
 
 
 def _trade_report_output_template() -> Dict[str, Any]:
@@ -3634,6 +3644,9 @@ def _attach_report_status_matrix(
             separated = build_separated_report(
                 trade_model=dict(story_input or {}),
                 model=str(generation.get("model") or "").strip() or None,
+                execution_profile=_resolve_intraday_report_execution_profile(
+                    dict(story_input or {}) if isinstance(story_input, dict) else {}
+                ),
             )
         except Exception:
             separated = {
@@ -3711,7 +3724,17 @@ def build_ai_trade_report(
     trade_id = str(story_input.get("trade_id") or story_input.get("story_id") or "")
     run_id = str(story_input.get("run_id") or "")
     day = str(story_input.get("day") or "")
-    retry_max = max(0, int(float(str(os.getenv("TRADE_REPORT_AI_RETRY_MAX", "2")).strip() or "2")))
+    env_retry_fallback = str(os.getenv("TRADE_REPORT_AI_RETRY_MAX", "") or "").strip()
+    execution_slot_source = str(execution_profile.get("policy_source") or "").strip().lower()
+    if execution_slot_source not in {"", "default_execution_profile", "default"}:
+        retry_max = max(0, int(float(execution_profile.get("retry_max") or 0)))
+        execution_profile_source = "applied_policy"
+    elif env_retry_fallback:
+        retry_max = max(0, int(float(env_retry_fallback or "2")))
+        execution_profile_source = "fallback_env"
+    else:
+        retry_max = max(0, int(float(execution_profile.get("retry_max") or 2)))
+        execution_profile_source = "default"
     empty_required_meta = {
         "parse_mode": "none",
         "required_keys_expected": list(AI_TRADE_REPORT_REQUIRED_KEYS),
@@ -3738,7 +3761,7 @@ def build_ai_trade_report(
             attempts=[],
             parsed_output={},
             model_info={"provider": "OpenRouter", "model": chosen_model or "openrouter/free"},
-            meta={"reason": "reporter.trade_report.enabled is false", **empty_required_meta},
+            meta={"reason": "reporter.trade_report.enabled is false", **empty_required_meta, **build_execution_profile_observability(execution_profile, env_used=(execution_profile_source == "fallback_env"))},
         )
         return _attach_report_status_matrix(report, story_input, ai_trade_report_status="skipped")
 
@@ -3761,7 +3784,7 @@ def build_ai_trade_report(
             attempts=[],
             parsed_output={},
             model_info={"provider": "OpenRouter", "model": chosen_model or "openrouter/free"},
-            meta={"reason": "OPENROUTER_API_KEY is not configured", "error": "llm_client_unavailable", **empty_required_meta},
+            meta={"reason": "OPENROUTER_API_KEY is not configured", "error": "llm_client_unavailable", **empty_required_meta, **execution_observability},
         )
         return _attach_report_status_matrix(report, story_input, ai_trade_report_status="error")
 
@@ -3775,6 +3798,21 @@ def build_ai_trade_report(
         if max_tokens is not None
         else max(600, int(float(execution_profile.get("max_tokens") or 8192)))
     )
+    timeout_sec = max(1.0, float(execution_profile.get("timeout_sec") or 15.0))
+    retry_backoff_sec = max(0.0, float(execution_profile.get("retry_backoff_sec") or 0.0))
+    execution_observability = build_execution_profile_observability(
+        execution_profile,
+        env_used=(execution_profile_source == "fallback_env"),
+        effective_overrides={
+            "temperature": float(temp),
+            "max_tokens": int(max(600, token_budget)),
+            "timeout_sec": float(timeout_sec),
+            "retry": {
+                "max_attempts": int(retry_max),
+                "backoff_sec": float(retry_backoff_sec),
+            },
+        },
+    )
     retry_token_budget = max(800, token_budget)
     messages = _build_messages(story_input)
     attempts: List[Dict[str, Any]] = []
@@ -3784,6 +3822,7 @@ def build_ai_trade_report(
             policy={
                 "temperature": temp,
                 "max_tokens": max(600, token_budget),
+                "timeout_sec": float(timeout_sec),
                 **({"model": chosen_model} if chosen_model else {}),
             },
         ).model
@@ -3800,6 +3839,7 @@ def build_ai_trade_report(
     current_policy = {
         "temperature": temp,
         "max_tokens": max(600, token_budget),
+        "timeout_sec": float(timeout_sec),
         "response_format": {"type": "json_object"},
         "plugins": [{"id": "response-healing"}],
         **({"model": chosen_model} if chosen_model else {}),
@@ -3824,7 +3864,7 @@ def build_ai_trade_report(
                     model=chosen_model or resolved_model,
                     latency_ms=final_latency_ms,
                     status=final_status,
-                    meta={"role": "ai_trade_report", "error": final_error},
+                    meta={"role": "ai_trade_report", "error": final_error, **execution_observability},
                 )
             )
         else:
@@ -3852,7 +3892,7 @@ def build_ai_trade_report(
                         model=chosen_model or resolved_model,
                         latency_ms=final_latency_ms,
                         status=final_status,
-                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
+                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta, **execution_observability},
                     )
                 )
             elif bool(parse_result.get("is_full")) and not parse_meta.get("required_keys_missing"):
@@ -3869,7 +3909,7 @@ def build_ai_trade_report(
                             model=chosen_model or resolved_model,
                             latency_ms=final_latency_ms,
                             status=final_status,
-                            meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
+                            meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta, **execution_observability},
                         )
                     )
                 else:
@@ -3885,7 +3925,7 @@ def build_ai_trade_report(
                             model=chosen_model or resolved_model,
                             latency_ms=final_latency_ms,
                             status=final_status,
-                            meta={"role": "ai_trade_report", **parse_meta, **language_meta},
+                            meta={"role": "ai_trade_report", **parse_meta, **language_meta, **execution_observability},
                         )
                     )
                     break
@@ -3903,7 +3943,7 @@ def build_ai_trade_report(
                             model=chosen_model or resolved_model,
                             latency_ms=final_latency_ms,
                             status=final_status,
-                            meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
+                            meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta, **execution_observability},
                         )
                     )
                 else:
@@ -3924,6 +3964,7 @@ def build_ai_trade_report(
                                 "finish_reason": "complete_json_extracted_after_protocol_deviation",
                                 **parse_meta,
                                 **language_meta,
+                                **execution_observability,
                             },
                         )
                     )
@@ -3948,7 +3989,7 @@ def build_ai_trade_report(
                         model=chosen_model or resolved_model,
                         latency_ms=final_latency_ms,
                         status=final_status,
-                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
+                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta, **execution_observability},
                     )
                 )
             else:
@@ -3963,7 +4004,7 @@ def build_ai_trade_report(
                         model=chosen_model or resolved_model,
                         latency_ms=final_latency_ms,
                         status=final_status,
-                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta},
+                        meta={"role": "ai_trade_report", "error": final_reason, **parse_meta, **language_meta, **execution_observability},
                     )
                 )
         if attempt_index < retry_max:
@@ -3979,6 +4020,8 @@ def build_ai_trade_report(
                 "temperature": 0.0,
                 "max_tokens": max(800, retry_token_budget),
             }
+            if retry_backoff_sec > 0.0:
+                time.sleep(float(retry_backoff_sec))
 
     if not parsed and best_partial:
         final_status = "salvaged"
@@ -4007,6 +4050,7 @@ def build_ai_trade_report(
                 "error": final_error,
                 **best_partial_meta,
                 "used_fallback_sections": list(out.get("used_fallback_sections") or []),
+                **execution_observability,
             },
         )
         return _attach_report_status_matrix(out, story_input, ai_trade_report_status=final_status)
@@ -4031,7 +4075,7 @@ def build_ai_trade_report(
             parsed_output={},
             model_info={"provider": "OpenRouter", "model": chosen_model or resolved_model},
             latency_ms=sum(int(row.get("latency_ms") or 0) for row in attempts),
-            meta={"reason": final_reason, "error": final_error, **empty_required_meta},
+            meta={"reason": final_reason, "error": final_error, **empty_required_meta, **execution_observability},
         )
         return _attach_report_status_matrix(report, story_input, ai_trade_report_status=final_status)
 
@@ -4059,6 +4103,7 @@ def build_ai_trade_report(
             **parse_meta,
             "reason": final_reason,
             "used_fallback_sections": list(out.get("used_fallback_sections") or []),
+            **execution_observability,
         },
     )
     return _attach_report_status_matrix(out, story_input, ai_trade_report_status=final_status)

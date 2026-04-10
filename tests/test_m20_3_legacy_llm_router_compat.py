@@ -74,7 +74,7 @@ def test_m20_3_legacy_router_passes_response_format():
     assert client.payload["response_format"] == {"type": "json_object"}
 
 
-def test_m20_3_text_router_resolves_role_specific_auto_and_free_models(monkeypatch):
+def test_m20_3_text_router_blocks_auto_and_falls_back_to_role_defaults(monkeypatch):
     from libs.llm.llm_router import LLMRouter
 
     monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "free")
@@ -84,8 +84,8 @@ def test_m20_3_text_router_resolves_role_specific_auto_and_free_models(monkeypat
     router = LLMRouter(client=None)  # type: ignore[arg-type]
 
     assert router.resolve("operator_ui").model == "openrouter/free"
-    assert router.resolve("reporter_final").model == "openrouter/auto"
-    assert router.resolve("daily_report").model == "openrouter/auto"
+    assert router.resolve("reporter_final").model == "openrouter/free"
+    assert router.resolve("daily_report").model == "openrouter/free"
     assert router.resolve("reporter_intraday").model == "openrouter/free"
 
 
@@ -102,11 +102,11 @@ def test_m20_3_removed_daily_and_intraday_alias_envs_no_longer_drive_routes(monk
     assert router.resolve("reporter_intraday").model == "openrouter/free"
 
 
-def test_m20_3_text_router_normalizes_policy_auto_alias():
+def test_m20_3_text_router_rejects_policy_auto_alias_and_uses_role_default():
     from libs.llm.llm_router import LLMRouter
 
     router = LLMRouter(client=None)  # type: ignore[arg-type]
-    assert router.resolve("strategist", policy={"model": "auto"}).model == "openrouter/auto"
+    assert router.resolve("strategist", policy={"model": "auto"}).model == "deepseek/deepseek-v3.2"
     assert router.resolve("operator_ui", policy={"model": "free"}).model == "openrouter/free"
 
 

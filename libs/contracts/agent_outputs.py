@@ -1100,6 +1100,9 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "theme_match": _safe_float(row.get("theme_match")),
                 "feature_coverage": _safe_float(row.get("feature_coverage")),
                 "status": _clip(row.get("status"), max_len=40) or "active",
+                "asset_class_detected": _clip(row.get("asset_class_detected"), max_len=80),
+                "detection_source": _clip(row.get("detection_source"), max_len=40),
+                "excluded_by_asset_policy": bool(row.get("excluded_by_asset_policy")),
                 "exclusion_reason": _clip(row.get("exclusion_reason"), max_len=160),
                 "compact_feature_snapshot": {
                     "engine_trend_strength": compact_features.get("engine_trend_strength"),
@@ -1312,6 +1315,10 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "scanner_policy_source": _clip(pool_meta.get("scanner_policy_source"), max_len=80),
                 "scanner_fallback_mode": _clip(pool_meta.get("scanner_fallback_mode"), max_len=80),
                 "scanner_strict_mode": bool(pool_meta.get("scanner_strict_mode")),
+                "asset_universe_policy": _clip(scanner_output.get("asset_universe_policy") or pool_meta.get("asset_universe_policy"), max_len=80),
+                "asset_universe_policy_source": _clip(scanner_output.get("asset_universe_policy_source") or pool_meta.get("asset_universe_policy_source"), max_len=80),
+                "excluded_candidate_count_by_asset_policy": _safe_int(scanner_output.get("excluded_candidate_count_by_asset_policy") or pool_meta.get("asset_policy_excluded_count")),
+                "excluded_candidates_by_asset_policy": _dict_list(scanner_output.get("excluded_candidates_by_asset_policy") or pool_meta.get("asset_policy_exclusions"), limit=20),
                 "candidate_pool_before_filter": _safe_int(pool_meta.get("candidate_pool_before_filter")),
                 "candidate_pool_after_filter": _safe_int(pool_meta.get("candidate_pool_after_filter") or len(ranked)),
                 "source_mix": _dict(pool_meta.get("pool_source_mix")),
@@ -1320,6 +1327,7 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "filter_funnel": {
                 "before": _safe_int(pool_meta.get("candidate_pool_before_filter")),
                 "after": _safe_int(pool_meta.get("candidate_pool_after_filter") or len(ranked)),
+                "excluded_by_asset_policy": _safe_int(scanner_output.get("excluded_candidate_count_by_asset_policy") or pool_meta.get("asset_policy_excluded_count")),
                 "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
                 "avoid_filter_applied": bool(pool_meta.get("avoid_filter_applied")),
                 "blocked_static_fallback": bool(pool_meta.get("blocked_static_fallback")),
@@ -1332,6 +1340,9 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "scanner_policy_source": _clip(scanner_output.get("scanner_policy_source"), max_len=80),
                 "scanner_fallback_mode": _clip(scanner_output.get("scanner_fallback_mode"), max_len=80),
                 "scanner_strict_mode": bool(scanner_output.get("scanner_strict_mode")),
+                "asset_universe_policy": _clip(scanner_output.get("asset_universe_policy"), max_len=80),
+                "asset_universe_policy_source": _clip(scanner_output.get("asset_universe_policy_source"), max_len=80),
+                "excluded_candidate_count_by_asset_policy": _safe_int(scanner_output.get("excluded_candidate_count_by_asset_policy")),
                 "source_mix": _dict(scanner_output.get("source_mix")),
                 "candidate_count": _safe_int(scanner_output.get("candidate_count")),
             },
@@ -1421,6 +1432,8 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "selected_candidate": {
                 "symbol": symbol,
                 "why": _clip(selected.get("why"), max_len=180),
+                "asset_class_detected": _clip(selected.get("asset_class_detected") or scanner_output.get("selected_asset_class_detected"), max_len=80),
+                "detection_source": _clip(selected.get("detection_source") or scanner_output.get("selected_asset_detection_source"), max_len=40),
                 "sources": list(selected_candidate.get("sources") or [])[:8],
                 "source_scores": _dict(selected_candidate.get("source_scores")),
                 "score_total": _safe_float(selected.get("score_total") or selected.get("score")),
@@ -1966,10 +1979,16 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "peak_price": exit_info.get("peak_price"),
             "account_current_price": exit_info.get("account_current_price"),
             "account_mark_price": exit_info.get("account_mark_price"),
+            "account_mark_price_source": _clip(exit_info.get("account_mark_price_source"), max_len=120),
             "account_unrealized_pnl": exit_info.get("account_unrealized_pnl"),
             "account_pnl_ratio_source": _clip(exit_info.get("account_pnl_ratio_source"), max_len=120),
             "current_drawdown": exit_info.get("current_drawdown"),
             "peak_drawdown": exit_info.get("peak_drawdown"),
+            "final_peak_drawdown_ratio": exit_info.get("final_peak_drawdown_ratio"),
+            "peak_drawdown_source": _clip(exit_info.get("peak_drawdown_source"), max_len=120),
+            "exit_trigger_metric_name": _clip(exit_info.get("exit_trigger_metric_name"), max_len=120),
+            "exit_trigger_metric_value": exit_info.get("exit_trigger_metric_value"),
+            "exit_trigger_metric_source": _clip(exit_info.get("exit_trigger_metric_source"), max_len=120),
             "vwap_distance": exit_info.get("vwap_distance"),
             "position_age_seconds": exit_info.get("position_age_seconds"),
             "price_source": price_source,
@@ -1983,6 +2002,13 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "pnl_crosscheck_reason": _clip(exit_info.get("pnl_crosscheck_reason"), max_len=180),
             "pnl_crosscheck_gap": exit_info.get("pnl_crosscheck_gap"),
             "price_crosscheck_gap": exit_info.get("price_crosscheck_gap"),
+            "price_anomaly_flag": bool(exit_info.get("price_anomaly_flag")),
+            "price_anomaly_reason": _clip(exit_info.get("price_anomaly_reason"), max_len=180),
+            "pnl_fallback_applied": bool(exit_info.get("pnl_fallback_applied")),
+            "fallback_price_source": _clip(exit_info.get("fallback_price_source"), max_len=120),
+            "final_exit_thresholds": _dict(exit_info.get("final_exit_thresholds")),
+            "exit_threshold_source": _clip(exit_info.get("exit_threshold_source"), max_len=120),
+            "hold_block_reason": _clip(exit_info.get("hold_block_reason"), max_len=180),
             "active_exit_axis": _clip(exit_info.get("active_exit_axis"), max_len=120),
             "watch_axes": watch_axes[:8],
             "exit_triggered": bool(exit_info.get("triggered")),
@@ -2249,7 +2275,10 @@ def build_commander_output_artifact(
     policy_default_filled_fields = _listify(commander_decision.get("policy_default_filled_fields"), limit=12, max_len=80)
     policy_validation_missing_fields = _listify(commander_decision.get("policy_validation_missing_fields"), limit=12, max_len=80)
     policy_validation_invalid_fields = _listify(commander_decision.get("policy_validation_invalid_fields"), limit=12, max_len=80)
+    override_triggered = bool(commander_decision.get("override_triggered"))
     override_reason = _clip(commander_decision.get("override_reason"), max_len=180)
+    override_action = _clip(commander_decision.get("override_action"), max_len=120)
+    override_context = _dict(commander_decision.get("override_context"))
     applied_policy_source_chain = _listify(commander_decision.get("applied_policy_source_chain"), limit=6, max_len=80)
     reporter_feedback_mode = _clip(commander_decision.get("reporter_feedback_mode"), max_len=40)
     reporter_feedback_mode_source = _clip(commander_decision.get("reporter_feedback_mode_source"), max_len=80)
@@ -2373,7 +2402,10 @@ def build_commander_output_artifact(
             "policy_default_filled_fields": policy_default_filled_fields,
             "policy_validation_missing_fields": policy_validation_missing_fields,
             "policy_validation_invalid_fields": policy_validation_invalid_fields,
+            "override_triggered": override_triggered,
             "override_reason": override_reason,
+            "override_action": override_action,
+            "override_context": override_context,
             "applied_policy_source_chain": applied_policy_source_chain,
             "reporter_feedback_mode": reporter_feedback_mode,
             "reporter_feedback_mode_source": reporter_feedback_mode_source,

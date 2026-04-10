@@ -49,7 +49,9 @@ RuntimePhase = Literal["preopen", "session", "closeout"]
 
 _PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC = 120
 _PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD = 0.80
+_OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC = 900
 _COMMANDER_OWNED_POLICY_FIELDS = [
+    "universe.asset_type",
     "reporter.ai_review.enabled",
     "reporter.trade_report.enabled",
     "reporter.trade_report.generate_on_open",
@@ -60,8 +62,14 @@ _COMMANDER_OWNED_POLICY_FIELDS = [
     "strategist.reporter_feedback_mode",
     "commander.route.monitor_only_when_holding",
     "commander.route.cached_strategist_when_flat",
+    "monitor.exit.enabled",
+    "monitor.exit.eod_flat.enabled",
+    "monitor.entry.block_buy_when_open_position",
     "monitor.entry.scoring.enabled",
     "monitor.entry.scoring.shadow_mode",
+]
+_COMMANDER_OWNED_UNIVERSE_POLICY_FIELDS = [
+    "universe.asset_type",
 ]
 _COMMANDER_OWNED_SCANNER_POLICY_FIELDS = [
     "scanner.source.type",
@@ -87,6 +95,12 @@ _COMMANDER_OWNED_LLM_POLICY_FIELDS = [
     "llm.reporter.daily.profile",
 ]
 _COMMANDER_OWNED_LLM_EXECUTION_POLICY_FIELDS = [
+    "llm.execution_profile.profile_name",
+    "llm.execution_profile.temperature",
+    "llm.execution_profile.max_tokens",
+    "llm.execution_profile.timeout_sec",
+    "llm.execution_profile.retry.max_attempts",
+    "llm.execution_profile.retry.backoff_sec",
     "llm.strategist.execution_profile.name",
     "llm.strategist.execution_profile.temperature",
     "llm.strategist.execution_profile.max_tokens",
@@ -482,10 +496,10 @@ def _resolve_commander_behavior_policy(
         reporter_ai_review_enabled = False
     trade_report_enabled = _existing_value("reporter", "trade_report", "enabled")
     if trade_report_enabled is None:
-        trade_report_enabled = True
+        trade_report_enabled = False
     trade_report_generate_on_open = _existing_value("reporter", "trade_report", "generate_on_open")
     if trade_report_generate_on_open is None:
-        trade_report_generate_on_open = True
+        trade_report_generate_on_open = False
     strict_mode = _existing_value("strategist", "runtime", "strict_mode")
     if strict_mode is None:
         strict_mode = True
@@ -504,6 +518,15 @@ def _resolve_commander_behavior_policy(
     cached_strategist_when_flat = _existing_value("commander", "route", "cached_strategist_when_flat")
     if cached_strategist_when_flat is None:
         cached_strategist_when_flat = False
+    exit_policy_enabled = _existing_value("monitor", "exit", "enabled")
+    if exit_policy_enabled is None:
+        exit_policy_enabled = True
+    exit_policy_use_eod_flat = _existing_value("monitor", "exit", "eod_flat", "enabled")
+    if exit_policy_use_eod_flat is None:
+        exit_policy_use_eod_flat = True
+    block_buy_when_open_position = _existing_value("monitor", "entry", "block_buy_when_open_position")
+    if block_buy_when_open_position is None:
+        block_buy_when_open_position = True
     monitor_scoring_enabled = _existing_value("monitor", "entry", "scoring", "enabled")
     if monitor_scoring_enabled is None:
         monitor_scoring_enabled = False
@@ -550,6 +573,9 @@ def _resolve_commander_behavior_policy(
     if scanner_include_change_rate is None:
         scanner_include_change_rate = True
     scanner_include_change_rate = _is_trueish(scanner_include_change_rate)
+    universe_asset_type = _existing_value("universe", "asset_type")
+    if universe_asset_type in (None, ""):
+        universe_asset_type = "common_stock_only"
     monitor_scoring_threshold = _existing_value("monitor", "entry", "scoring", "threshold")
     if monitor_scoring_threshold is None:
         monitor_scoring_threshold = 3
@@ -562,6 +588,28 @@ def _resolve_commander_behavior_policy(
     strategist_llm = resolve_model_profile(strategist_llm_profile, default_profile="balanced")
     reporter_intraday_llm = resolve_model_profile(reporter_intraday_profile, default_profile="fast_free")
     reporter_daily_llm = resolve_model_profile(reporter_daily_profile, default_profile="strong_reasoning")
+    default_execution_profile_name = (
+        str(
+            _existing_value("llm", "execution_profile", "profile_name")
+            or _existing_value("llm", "execution_profile", "name")
+            or "default_intraday"
+        ).strip().lower()
+        or "default_intraday"
+    )
+    default_execution_profile = resolve_execution_profile(
+        default_execution_profile_name,
+        default_profile="default_intraday",
+        defaults={
+            "profile_name": "default_intraday",
+            "name": "default_intraday",
+            "temperature": 0.2,
+            "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry": {"max_attempts": 2, "backoff_sec": 0.0},
+            "retry_max": 2,
+            "retry_backoff_sec": 0.0,
+        },
+    )
     strategist_execution_profile_name = (
         str(_existing_value("llm", "strategist", "execution_profile", "name") or "balanced_reasoning").strip().lower()
         or "balanced_reasoning"
@@ -578,29 +626,51 @@ def _resolve_commander_behavior_policy(
         strategist_execution_profile_name,
         default_profile="balanced_reasoning",
         defaults={
+            "profile_name": "balanced_reasoning",
             "name": "balanced_reasoning",
             "temperature": 0.1,
             "max_tokens": 8192,
             "timeout_sec": 15,
+            "retry": {
+                "max_attempts": int(((default_execution_profile.get("retry") or {}).get("max_attempts") or 2)),
+                "backoff_sec": float(((default_execution_profile.get("retry") or {}).get("backoff_sec") or 0.0)),
+            },
             "retry_max": 2,
+            "retry_backoff_sec": float(((default_execution_profile.get("retry") or {}).get("backoff_sec") or 0.0)),
         },
     )
     reporter_intraday_execution_profile = resolve_execution_profile(
         reporter_intraday_execution_profile_name,
         default_profile="concise_review",
         defaults={
+            "profile_name": "concise_review",
             "name": "concise_review",
             "temperature": 0.2,
             "max_tokens": 8192,
+            "timeout_sec": max(1, _coerce_int(default_execution_profile.get("timeout_sec"), 15)),
+            "retry": {
+                "max_attempts": int(((default_execution_profile.get("retry") or {}).get("max_attempts") or 2)),
+                "backoff_sec": float(((default_execution_profile.get("retry") or {}).get("backoff_sec") or 0.0)),
+            },
+            "retry_max": int(((default_execution_profile.get("retry") or {}).get("max_attempts") or 2)),
+            "retry_backoff_sec": float(((default_execution_profile.get("retry") or {}).get("backoff_sec") or 0.0)),
         },
     )
     reporter_daily_execution_profile = resolve_execution_profile(
         reporter_daily_execution_profile_name,
         default_profile="deep_review",
         defaults={
+            "profile_name": "deep_review",
             "name": "deep_review",
             "temperature": 0.2,
             "max_tokens": 8192,
+            "timeout_sec": max(1, _coerce_int(default_execution_profile.get("timeout_sec"), 15)),
+            "retry": {
+                "max_attempts": int(((default_execution_profile.get("retry") or {}).get("max_attempts") or 2)),
+                "backoff_sec": float(((default_execution_profile.get("retry") or {}).get("backoff_sec") or 0.0)),
+            },
+            "retry_max": int(((default_execution_profile.get("retry") or {}).get("max_attempts") or 2)),
+            "retry_backoff_sec": float(((default_execution_profile.get("retry") or {}).get("backoff_sec") or 0.0)),
         },
     )
     return {
@@ -612,16 +682,36 @@ def _resolve_commander_behavior_policy(
             },
         },
         "llm": {
+            "execution_profile": {
+                "profile_name": str(default_execution_profile.get("profile_name") or default_execution_profile.get("name") or "default_intraday"),
+                "name": str(default_execution_profile.get("name") or "default_intraday"),
+                "temperature": float(_runtime_float(default_execution_profile.get("temperature"), 0.2)),
+                "max_tokens": max(256, _coerce_int(default_execution_profile.get("max_tokens"), 8192)),
+                "timeout_sec": max(1, _coerce_int(default_execution_profile.get("timeout_sec"), 15)),
+                    "retry": {
+                        "max_attempts": max(0, _coerce_int((default_execution_profile.get("retry") or {}).get("max_attempts"), 2)),
+                        "backoff_sec": max(0.0, float(_runtime_float((default_execution_profile.get("retry") or {}).get("backoff_sec"), 0.0))),
+                    },
+                    "retry_max": max(0, _coerce_int((default_execution_profile.get("retry") or {}).get("max_attempts"), 2)),
+                    "retry_backoff_sec": max(0.0, float(_runtime_float((default_execution_profile.get("retry") or {}).get("backoff_sec"), 0.0))),
+                    "policy_source": "commander_applied_policy",
+                },
             "strategist": {
                 "profile": str(strategist_llm.get("profile") or "balanced"),
                 "primary": str(strategist_llm.get("primary") or ""),
                 "fallback": str(strategist_llm.get("fallback") or ""),
                 "execution_profile": {
+                    "profile_name": str(strategist_execution_profile.get("profile_name") or strategist_execution_profile.get("name") or "balanced_reasoning"),
                     "name": str(strategist_execution_profile.get("name") or "balanced_reasoning"),
                     "temperature": float(_runtime_float(strategist_execution_profile.get("temperature"), 0.1)),
                     "max_tokens": max(256, _coerce_int(strategist_execution_profile.get("max_tokens"), 8192)),
                     "timeout_sec": max(1, _coerce_int(strategist_execution_profile.get("timeout_sec"), 15)),
+                    "retry": {
+                        "max_attempts": max(0, _coerce_int((strategist_execution_profile.get("retry") or {}).get("max_attempts"), 2)),
+                        "backoff_sec": max(0.0, float(_runtime_float((strategist_execution_profile.get("retry") or {}).get("backoff_sec"), 0.0))),
+                    },
                     "retry_max": max(0, _coerce_int(strategist_execution_profile.get("retry_max"), 2)),
+                    "retry_backoff_sec": max(0.0, float(_runtime_float(strategist_execution_profile.get("retry_backoff_sec"), 0.0))),
                     "policy_source": "commander_applied_policy",
                 },
                 "policy_source": "commander_applied_policy",
@@ -632,9 +722,17 @@ def _resolve_commander_behavior_policy(
                     "primary": str(reporter_intraday_llm.get("primary") or ""),
                     "fallback": str(reporter_intraday_llm.get("fallback") or ""),
                     "execution_profile": {
+                        "profile_name": str(reporter_intraday_execution_profile.get("profile_name") or reporter_intraday_execution_profile.get("name") or "concise_review"),
                         "name": str(reporter_intraday_execution_profile.get("name") or "concise_review"),
                         "temperature": float(_runtime_float(reporter_intraday_execution_profile.get("temperature"), 0.2)),
                         "max_tokens": max(256, _coerce_int(reporter_intraday_execution_profile.get("max_tokens"), 8192)),
+                        "timeout_sec": max(1, _coerce_int(reporter_intraday_execution_profile.get("timeout_sec"), 15)),
+                        "retry": {
+                            "max_attempts": max(0, _coerce_int((reporter_intraday_execution_profile.get("retry") or {}).get("max_attempts"), 2)),
+                            "backoff_sec": max(0.0, float(_runtime_float((reporter_intraday_execution_profile.get("retry") or {}).get("backoff_sec"), 0.0))),
+                        },
+                        "retry_max": max(0, _coerce_int(reporter_intraday_execution_profile.get("retry_max"), 2)),
+                        "retry_backoff_sec": max(0.0, float(_runtime_float(reporter_intraday_execution_profile.get("retry_backoff_sec"), 0.0))),
                         "policy_source": "commander_applied_policy",
                     },
                     "policy_source": "commander_applied_policy",
@@ -644,9 +742,17 @@ def _resolve_commander_behavior_policy(
                     "primary": str(reporter_daily_llm.get("primary") or ""),
                     "fallback": str(reporter_daily_llm.get("fallback") or ""),
                     "execution_profile": {
+                        "profile_name": str(reporter_daily_execution_profile.get("profile_name") or reporter_daily_execution_profile.get("name") or "deep_review"),
                         "name": str(reporter_daily_execution_profile.get("name") or "deep_review"),
                         "temperature": float(_runtime_float(reporter_daily_execution_profile.get("temperature"), 0.2)),
                         "max_tokens": max(256, _coerce_int(reporter_daily_execution_profile.get("max_tokens"), 8192)),
+                        "timeout_sec": max(1, _coerce_int(reporter_daily_execution_profile.get("timeout_sec"), 15)),
+                        "retry": {
+                            "max_attempts": max(0, _coerce_int((reporter_daily_execution_profile.get("retry") or {}).get("max_attempts"), 2)),
+                            "backoff_sec": max(0.0, float(_runtime_float((reporter_daily_execution_profile.get("retry") or {}).get("backoff_sec"), 0.0))),
+                        },
+                        "retry_max": max(0, _coerce_int(reporter_daily_execution_profile.get("retry_max"), 2)),
+                        "retry_backoff_sec": max(0.0, float(_runtime_float(reporter_daily_execution_profile.get("retry_backoff_sec"), 0.0))),
                         "policy_source": "commander_applied_policy",
                     },
                     "policy_source": "commander_applied_policy",
@@ -690,6 +796,10 @@ def _resolve_commander_behavior_policy(
                 "policy_source": "commander_applied_policy",
             },
         },
+        "universe": {
+            "asset_type": str(universe_asset_type or "common_stock_only").strip().lower() or "common_stock_only",
+            "policy_source": "commander_applied_policy",
+        },
         "scanner": {
             "source": {
                 "type": normalize_scanner_source_type(scanner_source_type),
@@ -717,13 +827,16 @@ def _resolve_commander_behavior_policy(
                 "policy_source": "commander_applied_policy",
             },
             "exit": {
+                "enabled": bool(exit_policy_enabled),
                 "confirm_ticks": max(1, _coerce_int(exit_confirm_ticks, 2)),
                 "eod_flat": {
+                    "enabled": bool(exit_policy_use_eod_flat),
                     "cutoff_min": max(0, _coerce_int(eod_flat_cutoff_min, 10)),
                 },
                 "policy_source": "commander_applied_policy",
             },
             "entry": {
+                "block_buy_when_open_position": bool(block_buy_when_open_position),
                 "scoring": {
                     "enabled": bool(monitor_scoring_enabled),
                     "shadow_mode": bool(monitor_scoring_shadow_mode),
@@ -735,6 +848,7 @@ def _resolve_commander_behavior_policy(
         },
         "policy_sources": {
             "commander_owned_fields": list(_COMMANDER_OWNED_POLICY_FIELDS),
+            "commander_owned_universe_fields": list(_COMMANDER_OWNED_UNIVERSE_POLICY_FIELDS),
             "commander_owned_scanner_fields": list(_COMMANDER_OWNED_SCANNER_POLICY_FIELDS),
             "commander_owned_numeric_fields": list(_COMMANDER_OWNED_NUMERIC_POLICY_FIELDS),
             "commander_owned_llm_fields": list(_COMMANDER_OWNED_LLM_POLICY_FIELDS),
@@ -752,9 +866,15 @@ def _resolve_commander_behavior_policy(
             "strategy_memory_feedback_enabled": bool(memory_feedback_enabled),
             "monitor_only_when_holding": bool(monitor_only_when_holding),
             "cached_strategist_when_flat": bool(cached_strategist_when_flat),
+            "exit_policy_enabled": bool(exit_policy_enabled),
+            "exit_policy_use_eod_flat": bool(exit_policy_use_eod_flat),
+            "block_buy_when_open_position": bool(block_buy_when_open_position),
             "monitor_scoring_enabled": bool(monitor_scoring_enabled),
             "monitor_scoring_shadow_mode": bool(monitor_scoring_shadow_mode),
             "reporter_feedback_mode": str(feedback_policy.get("reporter_feedback_mode") or "auto"),
+            "universe_fields": {
+                "asset_type": str(universe_asset_type or "common_stock_only").strip().lower() or "common_stock_only",
+            },
             "scanner_fields": {
                 "source_type": normalize_scanner_source_type(scanner_source_type),
                 "strict_only": bool(scanner_strict_only),
@@ -780,22 +900,45 @@ def _resolve_commander_behavior_policy(
                 },
             },
             "llm_execution_profiles": {
+                "default": {
+                    "profile_name": str(default_execution_profile.get("profile_name") or default_execution_profile.get("name") or "default_intraday"),
+                    "temperature": float(_runtime_float(default_execution_profile.get("temperature"), 0.2)),
+                    "max_tokens": max(256, _coerce_int(default_execution_profile.get("max_tokens"), 8192)),
+                    "timeout_sec": max(1, _coerce_int(default_execution_profile.get("timeout_sec"), 15)),
+                    "retry": {
+                        "max_attempts": max(0, _coerce_int((default_execution_profile.get("retry") or {}).get("max_attempts"), 2)),
+                        "backoff_sec": max(0.0, float(_runtime_float((default_execution_profile.get("retry") or {}).get("backoff_sec"), 0.0))),
+                    },
+                },
                 "strategist": {
-                    "name": str(strategist_execution_profile.get("name") or "balanced_reasoning"),
+                    "profile_name": str(strategist_execution_profile.get("profile_name") or strategist_execution_profile.get("name") or "balanced_reasoning"),
                     "temperature": float(_runtime_float(strategist_execution_profile.get("temperature"), 0.1)),
                     "max_tokens": max(256, _coerce_int(strategist_execution_profile.get("max_tokens"), 8192)),
                     "timeout_sec": max(1, _coerce_int(strategist_execution_profile.get("timeout_sec"), 15)),
-                    "retry_max": max(0, _coerce_int(strategist_execution_profile.get("retry_max"), 2)),
+                    "retry": {
+                        "max_attempts": max(0, _coerce_int((strategist_execution_profile.get("retry") or {}).get("max_attempts"), 2)),
+                        "backoff_sec": max(0.0, float(_runtime_float((strategist_execution_profile.get("retry") or {}).get("backoff_sec"), 0.0))),
+                    },
                 },
                 "reporter_intraday": {
-                    "name": str(reporter_intraday_execution_profile.get("name") or "concise_review"),
+                    "profile_name": str(reporter_intraday_execution_profile.get("profile_name") or reporter_intraday_execution_profile.get("name") or "concise_review"),
                     "temperature": float(_runtime_float(reporter_intraday_execution_profile.get("temperature"), 0.2)),
                     "max_tokens": max(256, _coerce_int(reporter_intraday_execution_profile.get("max_tokens"), 8192)),
+                    "timeout_sec": max(1, _coerce_int(reporter_intraday_execution_profile.get("timeout_sec"), 15)),
+                    "retry": {
+                        "max_attempts": max(0, _coerce_int((reporter_intraday_execution_profile.get("retry") or {}).get("max_attempts"), 2)),
+                        "backoff_sec": max(0.0, float(_runtime_float((reporter_intraday_execution_profile.get("retry") or {}).get("backoff_sec"), 0.0))),
+                    },
                 },
                 "reporter_daily": {
-                    "name": str(reporter_daily_execution_profile.get("name") or "deep_review"),
+                    "profile_name": str(reporter_daily_execution_profile.get("profile_name") or reporter_daily_execution_profile.get("name") or "deep_review"),
                     "temperature": float(_runtime_float(reporter_daily_execution_profile.get("temperature"), 0.2)),
                     "max_tokens": max(256, _coerce_int(reporter_daily_execution_profile.get("max_tokens"), 8192)),
+                    "timeout_sec": max(1, _coerce_int(reporter_daily_execution_profile.get("timeout_sec"), 15)),
+                    "retry": {
+                        "max_attempts": max(0, _coerce_int((reporter_daily_execution_profile.get("retry") or {}).get("max_attempts"), 2)),
+                        "backoff_sec": max(0.0, float(_runtime_float((reporter_daily_execution_profile.get("retry") or {}).get("backoff_sec"), 0.0))),
+                    },
                 },
             },
             "numeric_fields": {
@@ -813,6 +956,16 @@ def _resolve_commander_behavior_policy(
     }
 
 
+def _commander_trade_report_enabled(state: Dict[str, Any]) -> bool:
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    reporter = applied_policy.get("reporter") if isinstance(applied_policy.get("reporter"), dict) else {}
+    trade_report = reporter.get("trade_report") if isinstance(reporter.get("trade_report"), dict) else {}
+    enabled = trade_report.get("enabled")
+    if enabled is None:
+        return False
+    return bool(enabled)
+
+
 def _attach_commander_behavior_policy(
     state: Dict[str, Any],
     *,
@@ -825,7 +978,7 @@ def _attach_commander_behavior_policy(
         phase=phase,
     )
     applied_policy = dict(state.get("applied_policy") or {}) if isinstance(state.get("applied_policy"), dict) else {}
-    for section_name in ("execution", "llm", "reporter", "strategist", "commander", "scanner", "monitor", "policy_sources"):
+    for section_name in ("execution", "llm", "reporter", "strategist", "commander", "scanner", "monitor", "universe", "policy_sources"):
         section_value = behavior_policy.get(section_name)
         if not isinstance(section_value, dict):
             continue
@@ -882,7 +1035,7 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     merged_applied_policy.update(applied_policy)
     if strategist_policy:
         merged_applied_policy["strategist"] = strategist_policy
-    for section_name in ("execution", "llm", "reporter", "commander", "scanner", "monitor", "policy_sources"):
+    for section_name in ("execution", "llm", "reporter", "commander", "scanner", "monitor", "universe", "policy_sources"):
         section_value = applied_policy_wrapper.get(section_name)
         if isinstance(section_value, dict):
             merged_applied_policy[section_name] = dict(section_value)
@@ -1264,6 +1417,11 @@ def _build_commander_decision(
         if isinstance(state.get("commander_behavior_policy"), dict)
         else {}
     )
+    commander_override = (
+        dict(state.get("commander_open_position_override") or {})
+        if isinstance(state.get("commander_open_position_override"), dict)
+        else {}
+    )
     commander_applied_policy_summary = dict(state.get("commander_applied_policy_summary") or {})
     policy_sources = (
         dict(applied_policy.get("policy_sources") or {})
@@ -1281,6 +1439,12 @@ def _build_commander_decision(
         decision_summary = shadow_reason_summary
     if reason_text:
         decision_summary = f"{decision_summary} Runtime note: {str(reason_text).strip()[:180]}"
+    if bool(commander_override.get("override_triggered")):
+        decision_summary = (
+            f"{decision_summary} Commander override requested "
+            f"{str(commander_override.get('override_action') or 'force_exit_review')} "
+            f"because {str(commander_override.get('override_reason') or 'open_position_risk')}."
+        )
     if strategist_refresh_requested:
         decision_summary = (
             f"{decision_summary} Commander requested fresh strategist context "
@@ -1470,7 +1634,14 @@ def _build_commander_decision(
         "policy_default_filled_fields": list(applied_policy_meta.get("policy_default_filled_fields") or []),
         "policy_validation_missing_fields": list(applied_policy_meta.get("policy_validation_missing_fields") or []),
         "policy_validation_invalid_fields": list(applied_policy_meta.get("policy_validation_invalid_fields") or []),
-        "override_reason": str(applied_policy_meta.get("override_reason") or ""),
+        "override_triggered": bool(commander_override.get("override_triggered")),
+        "override_reason": str(
+            commander_override.get("override_reason")
+            or applied_policy_meta.get("override_reason")
+            or ""
+        ),
+        "override_action": str(commander_override.get("override_action") or ""),
+        "override_context": dict(commander_override),
         "applied_policy_source_chain": list(applied_policy_meta.get("applied_policy_source_chain") or []),
         "commander_applied_policy_summary": dict(commander_applied_policy_summary),
         "policy_sources": dict(policy_sources),
@@ -2296,6 +2467,227 @@ def _portfolio_open_position_symbols(state: Dict[str, Any]) -> list[str]:
     return symbols
 
 
+def _normalize_position_ratio(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    ratio = _runtime_float(value, 0.0)
+    return float(ratio)
+
+
+def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str, Any]:
+    snapshot = state.get("portfolio_snapshot") if isinstance(state.get("portfolio_snapshot"), dict) else {}
+    positions = snapshot.get("positions")
+    if isinstance(positions, dict):
+        rows = list(positions.values())
+    elif isinstance(positions, list):
+        rows = positions
+    else:
+        rows = []
+
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    monitor_last_state = (
+        persisted.get("monitor_last_state_by_symbol")
+        if isinstance(persisted.get("monitor_last_state_by_symbol"), dict)
+        else {}
+    )
+    prior_hold_counts = (
+        persisted.get("commander_open_position_hold_repeat_by_symbol")
+        if isinstance(persisted.get("commander_open_position_hold_repeat_by_symbol"), dict)
+        else {}
+    )
+    prior_refresh_cooldowns = (
+        persisted.get("commander_open_position_refresh_cooldown_until_by_symbol")
+        if isinstance(persisted.get("commander_open_position_refresh_cooldown_until_by_symbol"), dict)
+        else {}
+    )
+
+    next_hold_counts: Dict[str, int] = {}
+    next_refresh_cooldowns: Dict[str, int] = {}
+    reasons: list[str] = []
+    rows_summary: list[Dict[str, Any]] = []
+    repeated_hold_rows: list[Dict[str, Any]] = []
+    anomaly_found = False
+    risk_found = False
+    max_hold_repeat = 0
+    min_effective_loss_ratio: float | None = None
+    now_epoch = _runtime_now_epoch(state)
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        qty = max(0, _coerce_int(row.get("qty"), 0))
+        if qty <= 0:
+            continue
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+
+        avg_price = _runtime_float(row.get("avg_price"), 0.0)
+        current_price = _runtime_float(
+            row.get("current_price")
+            if row.get("current_price") not in (None, "")
+            else row.get("price"),
+            0.0,
+        )
+        unrealized_pnl = _runtime_float(row.get("unrealized_pnl"), 0.0)
+        account_pnl_ratio = _normalize_position_ratio(row.get("account_pnl_ratio"))
+        account_mark_price = 0.0
+        price_anomaly = False
+        price_anomaly_reason = ""
+        if account_pnl_ratio is not None and avg_price > 0.0:
+            account_mark_price = float(avg_price * (1.0 + float(account_pnl_ratio)))
+            if current_price > 0.0 and account_mark_price > 0.0:
+                mark_ratio = float(account_mark_price / current_price)
+                if mark_ratio < 0.5:
+                    price_anomaly = True
+                    price_anomaly_reason = f"account_mark_below_reference_ratio:{mark_ratio:.4f}"
+                elif mark_ratio > 1.5:
+                    price_anomaly = True
+                    price_anomaly_reason = f"account_mark_above_reference_ratio:{mark_ratio:.4f}"
+
+        raw_loss_ratio = (
+            float((current_price / avg_price) - 1.0)
+            if current_price > 0.0 and avg_price > 0.0
+            else None
+        )
+        unrealized_loss_ratio = (
+            float(unrealized_pnl / float(avg_price * qty))
+            if avg_price > 0.0 and qty > 0
+            else None
+        )
+        candidate_loss_ratios = [x for x in (raw_loss_ratio, unrealized_loss_ratio) if x is not None]
+        if account_pnl_ratio is not None and not price_anomaly:
+            candidate_loss_ratios.append(float(account_pnl_ratio))
+        effective_loss_ratio = min(candidate_loss_ratios) if candidate_loss_ratios else None
+
+        previous = monitor_last_state.get(symbol) if isinstance(monitor_last_state, dict) else {}
+        previous_posture = str((previous or {}).get("posture") or "").strip().lower()
+        hold_repeat_count = max(0, _coerce_int(prior_hold_counts.get(symbol), 0))
+        if previous_posture == "hold":
+            hold_repeat_count += 1
+        else:
+            hold_repeat_count = 0
+        next_hold_counts[symbol] = int(hold_repeat_count)
+        max_hold_repeat = max(max_hold_repeat, int(hold_repeat_count))
+        refresh_cooldown_until = max(0, _coerce_int(prior_refresh_cooldowns.get(symbol), 0))
+        if refresh_cooldown_until > now_epoch:
+            next_refresh_cooldowns[symbol] = int(refresh_cooldown_until)
+
+        if effective_loss_ratio is not None:
+            min_effective_loss_ratio = (
+                float(effective_loss_ratio)
+                if min_effective_loss_ratio is None
+                else min(float(min_effective_loss_ratio), float(effective_loss_ratio))
+            )
+
+        if price_anomaly:
+            anomaly_found = True
+            reasons.append(f"{symbol}:price_anomaly:{price_anomaly_reason}")
+        if effective_loss_ratio is not None and effective_loss_ratio <= -0.01:
+            risk_found = True
+            reasons.append(f"{symbol}:loss_threshold:{effective_loss_ratio:.4f}")
+        if hold_repeat_count >= 3:
+            reasons.append(f"{symbol}:hold_repeat:{hold_repeat_count}")
+            repeated_hold_rows.append(
+                {
+                    "symbol": symbol,
+                    "hold_repeat_count": int(hold_repeat_count),
+                    "refresh_cooldown_until": int(refresh_cooldown_until) if refresh_cooldown_until > 0 else 0,
+                    "refresh_cooldown_remaining_sec": max(0, int(refresh_cooldown_until - now_epoch))
+                    if refresh_cooldown_until > now_epoch
+                    else 0,
+                }
+            )
+
+        rows_summary.append(
+            {
+                "symbol": symbol,
+                "qty": int(qty),
+                "effective_loss_ratio": effective_loss_ratio,
+                "raw_loss_ratio": raw_loss_ratio,
+                "account_pnl_ratio": account_pnl_ratio,
+                "price_anomaly": bool(price_anomaly),
+                "price_anomaly_reason": str(price_anomaly_reason),
+                "hold_repeat_count": int(hold_repeat_count),
+                "refresh_cooldown_until": int(refresh_cooldown_until) if refresh_cooldown_until > 0 else None,
+                "refresh_cooldown_remaining_sec": max(0, int(refresh_cooldown_until - now_epoch))
+                if refresh_cooldown_until > now_epoch
+                else 0,
+            }
+        )
+
+    if next_hold_counts:
+        persisted["commander_open_position_hold_repeat_by_symbol"] = dict(next_hold_counts)
+    elif "commander_open_position_hold_repeat_by_symbol" in persisted:
+        persisted.pop("commander_open_position_hold_repeat_by_symbol", None)
+
+    override_triggered = bool(anomaly_found or risk_found or max_hold_repeat >= 3)
+    override_action = ""
+    override_reason = ""
+    override_suppressed = False
+    override_suppressed_reason = ""
+    refresh_cooldown_symbol = ""
+    refresh_cooldown_until = 0
+    refresh_cooldown_remaining_sec = 0
+    if override_triggered:
+        if anomaly_found:
+            override_action = "force_exit_review"
+            override_reason = "price_pnl_anomaly"
+        elif risk_found:
+            override_action = "force_exit_review"
+            override_reason = "loss_threshold_exceeded"
+        else:
+            repeated_hold_rows = sorted(
+                repeated_hold_rows,
+                key=lambda item: (
+                    -_coerce_int(item.get("hold_repeat_count"), 0),
+                    str(item.get("symbol") or ""),
+                ),
+            )
+            selected_row = repeated_hold_rows[0] if repeated_hold_rows else {}
+            refresh_cooldown_symbol = str(selected_row.get("symbol") or "")
+            refresh_cooldown_until = max(0, _coerce_int(selected_row.get("refresh_cooldown_until"), 0))
+            if refresh_cooldown_until > now_epoch:
+                override_triggered = False
+                override_suppressed = True
+                override_suppressed_reason = "repeated_hold_monitor_only_refresh_cooldown"
+                refresh_cooldown_remaining_sec = max(0, int(refresh_cooldown_until - now_epoch))
+                reasons.append(
+                    f"{refresh_cooldown_symbol}:refresh_cooldown_active:{refresh_cooldown_remaining_sec}"
+                )
+            else:
+                override_action = "strategist_refresh"
+                override_reason = "repeated_hold_monitor_only"
+                refresh_cooldown_until = int(now_epoch + _OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC)
+                refresh_cooldown_remaining_sec = int(_OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC)
+                if refresh_cooldown_symbol:
+                    next_refresh_cooldowns[refresh_cooldown_symbol] = int(refresh_cooldown_until)
+
+    if next_refresh_cooldowns:
+        persisted["commander_open_position_refresh_cooldown_until_by_symbol"] = dict(next_refresh_cooldowns)
+    elif "commander_open_position_refresh_cooldown_until_by_symbol" in persisted:
+        persisted.pop("commander_open_position_refresh_cooldown_until_by_symbol", None)
+    state["persisted_state"] = persisted
+
+    return {
+        "override_triggered": bool(override_triggered),
+        "override_reason": str(override_reason),
+        "override_action": str(override_action),
+        "override_suppressed": bool(override_suppressed),
+        "override_suppressed_reason": str(override_suppressed_reason),
+        "reason_chain": list(reasons[:8]),
+        "hold_repeat_count_max": int(max_hold_repeat),
+        "effective_loss_ratio_min": min_effective_loss_ratio,
+        "price_anomaly_flag": bool(anomaly_found),
+        "refresh_cooldown_sec": int(_OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC),
+        "refresh_cooldown_symbol": str(refresh_cooldown_symbol),
+        "refresh_cooldown_until": int(refresh_cooldown_until) if refresh_cooldown_until > 0 else None,
+        "refresh_cooldown_remaining_sec": int(refresh_cooldown_remaining_sec),
+        "policy_source": "commander_open_position_override",
+        "positions": rows_summary,
+    }
+
+
 def _hydrate_monitor_symbol_features(state: Dict[str, Any]) -> Dict[str, Any]:
     held_symbols = _portfolio_open_position_symbols(state)
     if not held_symbols:
@@ -2338,10 +2730,16 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
         default=True,
     )
     open_position_count = _portfolio_open_position_count(state)
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    applied_entry = (applied_policy.get("monitor") or {}).get("entry") if isinstance((applied_policy.get("monitor") or {}), dict) else {}
     block_buy_when_open_position = _is_trueish(
-        state.get("monitor_block_buy_when_open_position")
-        if state.get("monitor_block_buy_when_open_position") is not None
-        else os.getenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+        applied_entry.get("block_buy_when_open_position")
+        if isinstance(applied_entry, dict) and applied_entry.get("block_buy_when_open_position") is not None
+        else (
+            state.get("monitor_block_buy_when_open_position")
+            if state.get("monitor_block_buy_when_open_position") is not None
+            else True
+        )
     )
     payload = {
         "enabled": bool(enabled),
@@ -2350,12 +2748,58 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
         "block_buy_when_open_position": bool(block_buy_when_open_position),
         "reason": "",
     }
+    state["commander_open_position_override"] = {
+        "override_triggered": False,
+        "override_reason": "",
+        "override_action": "",
+        "policy_source": "commander_open_position_override",
+    }
+    state.pop("force_refresh_strategist", None)
     if not enabled:
         payload["reason"] = "disabled"
         return False, payload
     if open_position_count <= 0:
         payload["reason"] = "no_open_position"
         return False, payload
+    override_assessment = _assess_open_position_commander_override(state)
+    state["commander_open_position_override"] = dict(override_assessment)
+    if bool(override_assessment.get("override_triggered")):
+        if str(override_assessment.get("override_action") or "").strip().lower() == "strategist_refresh":
+            state["force_refresh_strategist"] = True
+        payload.update(
+            {
+                "override_triggered": True,
+                "override_reason": str(override_assessment.get("override_reason") or ""),
+                "override_action": str(override_assessment.get("override_action") or ""),
+                "effective_loss_ratio_min": override_assessment.get("effective_loss_ratio_min"),
+                "hold_repeat_count_max": int(override_assessment.get("hold_repeat_count_max") or 0),
+                "price_anomaly_flag": bool(override_assessment.get("price_anomaly_flag")),
+                "override_suppressed": bool(override_assessment.get("override_suppressed")),
+                "override_suppressed_reason": str(override_assessment.get("override_suppressed_reason") or ""),
+                "refresh_cooldown_sec": int(override_assessment.get("refresh_cooldown_sec") or 0),
+                "refresh_cooldown_symbol": str(override_assessment.get("refresh_cooldown_symbol") or ""),
+                "refresh_cooldown_until": override_assessment.get("refresh_cooldown_until"),
+                "refresh_cooldown_remaining_sec": int(
+                    override_assessment.get("refresh_cooldown_remaining_sec") or 0
+                ),
+            }
+        )
+        payload["reason"] = "holding_position_override_full_cycle"
+        return False, payload
+    if bool(override_assessment.get("override_suppressed")):
+        payload.update(
+            {
+                "override_suppressed": True,
+                "override_suppressed_reason": str(override_assessment.get("override_suppressed_reason") or ""),
+                "hold_repeat_count_max": int(override_assessment.get("hold_repeat_count_max") or 0),
+                "refresh_cooldown_sec": int(override_assessment.get("refresh_cooldown_sec") or 0),
+                "refresh_cooldown_symbol": str(override_assessment.get("refresh_cooldown_symbol") or ""),
+                "refresh_cooldown_until": override_assessment.get("refresh_cooldown_until"),
+                "refresh_cooldown_remaining_sec": int(
+                    override_assessment.get("refresh_cooldown_remaining_sec") or 0
+                ),
+            }
+        )
     if not block_buy_when_open_position:
         payload["reason"] = "buy_not_blocked_when_open_position"
         return False, payload
@@ -2762,13 +3206,21 @@ def _run_integrated_chain(
             shadow_runtime["executor_action"] = str((((state.get("execution") or {}).get("order") or {}).get("action") or ((state.get("decision_packet") or {}).get("intent") or {}).get("action") or ""))
             shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
             state = update_state_after_execution(state)
-            try:
-                state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
-            except Exception as exc:
+            if _commander_trade_report_enabled(state):
+                try:
+                    state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
+                except Exception as exc:
+                    state["intraday_trade_report"] = {
+                        "ok": False,
+                        "status": "failed",
+                        "reason": f"intraday_trade_artifact_exception:{type(exc).__name__}",
+                    }
+            else:
                 state["intraday_trade_report"] = {
                     "ok": False,
-                    "status": "failed",
-                    "reason": f"intraday_trade_artifact_exception:{type(exc).__name__}",
+                    "status": "disabled",
+                    "reason": "reporter.trade_report.enabled is false",
+                    "policy_source": "commander_applied_policy",
                 }
         state["path"] = "integrated_chain_monitor_only"
         return state
@@ -2848,13 +3300,21 @@ def _run_integrated_chain(
         shadow_runtime["executor_action"] = str((((state.get("execution") or {}).get("order") or {}).get("action") or ((state.get("decision_packet") or {}).get("intent") or {}).get("action") or ""))
         shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
         state = update_state_after_execution(state)
-        try:
-            state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
-        except Exception as exc:
+        if _commander_trade_report_enabled(state):
+            try:
+                state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
+            except Exception as exc:
+                state["intraday_trade_report"] = {
+                    "ok": False,
+                    "status": "failed",
+                    "reason": f"intraday_trade_artifact_exception:{type(exc).__name__}",
+                }
+        else:
             state["intraday_trade_report"] = {
                 "ok": False,
-                "status": "failed",
-                "reason": f"intraday_trade_artifact_exception:{type(exc).__name__}",
+                "status": "disabled",
+                "reason": "reporter.trade_report.enabled is false",
+                "policy_source": "commander_applied_policy",
             }
 
     state["path"] = "integrated_chain_cached_frame" if reused_strategist_cache else "integrated_chain"

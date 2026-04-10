@@ -198,6 +198,9 @@ def build_llm_response_artifact(
             "completeness_score",
             "used_fallback_sections",
             "finish_reason",
+            "llm_execution_profile_name",
+            "llm_execution_profile_source",
+            "llm_execution_effective_config",
         ):
             if key in out and out.get(key) not in (None, "", [], {}):
                 continue
@@ -209,6 +212,9 @@ def build_llm_response_artifact(
                     out[key] = float(value)
                 except Exception:
                     continue
+            elif key == "llm_execution_effective_config":
+                if isinstance(value, dict):
+                    out[key] = dict(value)
             elif key in {"required_keys_expected", "required_keys_present", "required_keys_missing", "used_fallback_sections"}:
                 if isinstance(value, list):
                     out[key] = list(value)
@@ -228,6 +234,12 @@ def build_llm_response_artifact(
         out["used_fallback_sections"] = []
     if "finish_reason" not in out:
         out["finish_reason"] = ""
+    if "llm_execution_profile_name" not in out:
+        out["llm_execution_profile_name"] = ""
+    if "llm_execution_profile_source" not in out:
+        out["llm_execution_profile_source"] = ""
+    if "llm_execution_effective_config" not in out:
+        out["llm_execution_effective_config"] = {}
     if "token_usage" not in out:
         out["token_usage"] = {}
     if "response_truncated" not in out:

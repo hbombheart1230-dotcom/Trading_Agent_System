@@ -175,11 +175,22 @@ def _extract_position_for_symbol(portfolio: Dict[str, Any], symbol: Any) -> Dict
 
 def _resolve_exit_policy_enabled(state: Dict[str, Any]) -> bool:
     policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
-    if _is_trueish(state.get("use_exit_policy")):
-        return True
-    if _is_trueish(policy.get("use_exit_policy")):
-        return True
-    return _is_trueish(os.getenv("USE_EXIT_POLICY", "false"))
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    applied_exit = (
+        (((applied_policy.get("monitor") or {}).get("exit") or {}).get("enabled"))
+        if isinstance((applied_policy.get("monitor") or {}).get("exit"), dict)
+        else None
+    )
+    if applied_exit is not None:
+        return _is_trueish(applied_exit)
+    if state.get("use_exit_policy") is not None:
+        return _is_trueish(state.get("use_exit_policy"))
+    if policy.get("use_exit_policy") is not None:
+        return _is_trueish(policy.get("use_exit_policy"))
+    raw_env = str(os.getenv("USE_EXIT_POLICY", "") or "").strip()
+    if raw_env:
+        return _is_trueish(raw_env)
+    return True
 
 
 def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -188,10 +199,42 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
     cfg = policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else {}
     out = dict(cfg or {})
 
+    alias_map = {
+        "hard_stop_pct": "hard_stop_pct",
+        "stop_loss_pct": "stop_loss_pct",
+        "take_profit_pct": "take_profit_pct",
+        "max_hold_sec": "max_hold_sec",
+        "time_stop_sec": "time_stop_sec",
+        "trailing_stop_pct": "trailing_stop_pct",
+        "vol_expansion_ratio": "vol_expansion_ratio",
+        "news_shock_threshold": "news_shock_threshold",
+        "peak_drawdown_exit_pct": "peak_drawdown_exit_pct",
+        "vwap_breakdown_pct": "vwap_breakdown_pct",
+        "intraday_low_break_pct": "intraday_low_break_pct",
+        "trend_strength_floor": "trend_strength_floor",
+        "use_eod_flat": "use_eod_flat",
+        "eod_flat_cutoff_min": "eod_flat_cutoff_min",
+        "emergency_halt": "emergency_halt",
+    }
+    for src_key, dst_key in alias_map.items():
+        if out.get(dst_key) in (None, "") and policy.get(src_key) not in (None, ""):
+            out[dst_key] = policy.get(src_key)
+
     mh_raw = str(os.getenv("EXIT_POLICY_MAX_HOLD_SEC", "") or "").strip()
     trail_raw = str(os.getenv("EXIT_POLICY_TRAILING_STOP_PCT", "") or "").strip()
     vol_exp_raw = str(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "") or "").strip()
     news_shock_raw = str(os.getenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "") or "").strip()
+    eod_flat_enabled = (
+        ((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("enabled"))
+        if isinstance((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")), dict)
+        else None
+    )
+    if eod_flat_enabled is None and isinstance(policy.get("monitor"), dict):
+        eod_flat_enabled = (
+            ((((policy.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("enabled"))
+            if isinstance((((policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")), dict)
+            else None
+        )
     eod_flat_raw = str(os.getenv("EXIT_POLICY_USE_EOD_FLAT", "") or "").strip()
     eod_cutoff_value = (
         ((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("cutoff_min"))
@@ -215,12 +258,18 @@ def _resolve_exit_policy_config(state: Dict[str, Any]) -> Dict[str, Any]:
         out["vol_expansion_ratio"] = _to_float(vol_exp_raw, _to_float(out.get("vol_expansion_ratio"), 0.0))
     if news_shock_raw:
         out["news_shock_threshold"] = _to_float(news_shock_raw, _to_float(out.get("news_shock_threshold"), 0.0))
-    if eod_flat_raw:
+    if eod_flat_enabled is not None:
+        out["use_eod_flat"] = _is_trueish(eod_flat_enabled)
+    elif eod_flat_raw:
         out["use_eod_flat"] = _is_trueish(eod_flat_raw)
+    elif out.get("use_eod_flat") in (None, ""):
+        out["use_eod_flat"] = True
     if eod_cutoff_value is not None:
         out["eod_flat_cutoff_min"] = int(_to_float(eod_cutoff_value, _to_float(out.get("eod_flat_cutoff_min"), 10.0)))
     if emergency_raw:
         out["emergency_halt"] = _is_trueish(emergency_raw)
+    out.setdefault("policy_source", str(out.get("effective_policy_source") or "decide_trade_exit_policy_effective"))
+    out.setdefault("effective_policy_source", str(out.get("policy_source") or "decide_trade_exit_policy_effective"))
     return out
 
 
@@ -315,12 +364,20 @@ def _sell_timing_guard_exempt(raw_intent: Dict[str, Any]) -> bool:
     rationale = str(raw_intent.get("rationale") or raw_intent.get("reason") or "").strip().lower()
     if rationale.startswith("eod_force_liquidation"):
         return True
-    if rationale.startswith("exit_policy:emergency_halt"):
-        return True
-    if rationale.startswith("exit_policy:stop_loss"):
-        return True
-    if rationale.startswith("exit_policy:news_shock"):
-        return True
+    for reason in (
+        "emergency_halt",
+        "stop_loss",
+        "hard_stop",
+        "peak_drawdown",
+        "news_shock",
+        "intraday_low_break",
+        "trend_breakdown",
+        "vwap_breakdown",
+        "volatility_expansion",
+        "trailing_stop",
+    ):
+        if rationale.startswith(f"exit_policy:{reason}"):
+            return True
     return False
 
 

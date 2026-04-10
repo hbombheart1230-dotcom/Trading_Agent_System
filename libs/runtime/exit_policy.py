@@ -114,20 +114,78 @@ def _build_account_pnl_crosscheck(
     if policy.get("account_unrealized_pnl") not in (None, ""):
         account_unrealized_pnl = float(_to_float(policy.get("account_unrealized_pnl"), 0.0))
 
-    account_mark_price = None
+    account_ratio_mark_price = None
     if account_pnl_ratio is not None and account_avg > 0.0:
         account_mark = float(account_avg * (1.0 + float(account_pnl_ratio)))
         if account_mark > 0.0:
-            account_mark_price = float(account_mark)
-    elif account_unrealized_pnl is not None and account_qty > 0 and account_avg > 0.0:
+            account_ratio_mark_price = float(account_mark)
+
+    account_unrealized_mark_price = None
+    if account_unrealized_pnl is not None and account_qty > 0 and account_avg > 0.0:
         account_mark = account_avg + (account_unrealized_pnl / float(account_qty))
         if account_mark > 0.0:
-            account_mark_price = float(account_mark)
+            account_unrealized_mark_price = float(account_mark)
         notional = float(account_avg * float(account_qty))
-        if notional > 0.0:
+        if notional > 0.0 and account_pnl_ratio is None:
             account_pnl_ratio = float(account_unrealized_pnl / notional)
             if not account_pnl_ratio_source:
                 account_pnl_ratio_source = "account_unrealized_pnl"
+
+    reference_price = 0.0
+    if raw_price > 0.0:
+        reference_price = float(raw_price)
+    elif account_current_price is not None and account_current_price > 0.0:
+        reference_price = float(account_current_price)
+
+    def _price_ratio(candidate: Optional[float]) -> float | None:
+        if candidate is None or candidate <= 0.0 or reference_price <= 0.0:
+            return None
+        return float(candidate / reference_price)
+
+    def _price_anomaly_reason(candidate: Optional[float], *, source: str) -> str:
+        ratio = _price_ratio(candidate)
+        if ratio is None:
+            return ""
+        if ratio < 0.5:
+            return f"{source}_below_reference_ratio:{ratio:.4f}"
+        if ratio > 1.5:
+            return f"{source}_above_reference_ratio:{ratio:.4f}"
+        return ""
+
+    ratio_mark_anomaly_reason = _price_anomaly_reason(account_ratio_mark_price, source="account_pnl_ratio_mark")
+    unrealized_mark_anomaly_reason = _price_anomaly_reason(
+        account_unrealized_mark_price,
+        source="account_unrealized_mark",
+    )
+
+    account_mark_price = None
+    account_mark_price_source = ""
+    price_anomaly_flag = False
+    price_anomaly_reason = ""
+    pnl_fallback_applied = False
+    fallback_price_source = ""
+
+    if account_ratio_mark_price is not None and not ratio_mark_anomaly_reason:
+        account_mark_price = float(account_ratio_mark_price)
+        account_mark_price_source = "account_pnl_ratio_mark"
+    elif account_unrealized_mark_price is not None and not unrealized_mark_anomaly_reason:
+        account_mark_price = float(account_unrealized_mark_price)
+        account_mark_price_source = "account_unrealized_mark"
+        if account_ratio_mark_price is not None and bool(ratio_mark_anomaly_reason):
+            price_anomaly_flag = True
+            price_anomaly_reason = str(ratio_mark_anomaly_reason)
+            pnl_fallback_applied = True
+            fallback_price_source = "account_unrealized_mark"
+    elif account_ratio_mark_price is not None and bool(ratio_mark_anomaly_reason):
+        price_anomaly_flag = True
+        price_anomaly_reason = str(ratio_mark_anomaly_reason)
+        pnl_fallback_applied = True
+        fallback_price_source = "raw_price" if raw_price > 0.0 else "account_current_price"
+    elif account_unrealized_mark_price is not None and bool(unrealized_mark_anomaly_reason):
+        price_anomaly_flag = True
+        price_anomaly_reason = str(unrealized_mark_anomaly_reason)
+        pnl_fallback_applied = True
+        fallback_price_source = "raw_price" if raw_price > 0.0 else "account_current_price"
 
     effective_price = None
     effective_source = "unavailable"
@@ -142,20 +200,18 @@ def _build_account_pnl_crosscheck(
     if account_mark_price is not None and account_mark_price > 0.0:
         if effective_price is None or effective_price <= 0.0:
             effective_price = float(account_mark_price)
-            effective_source = "account_unrealized_mark"
+            effective_source = str(account_mark_price_source or "account_unrealized_mark")
             applied = True
-            reason = "account_mark_fallback"
+            reason = "account_mark_fallback" if not pnl_fallback_applied else f"price_anomaly_fallback:{effective_source}"
         elif str(policy.get("account_crosscheck_mode") or "conservative").strip().lower() == "conservative":
             if account_mark_price < effective_price - 1e-9:
                 effective_price = float(account_mark_price)
-                effective_source = (
-                    "account_pnl_ratio_mark"
-                    if account_pnl_ratio_source and account_pnl_ratio_source != "account_unrealized_pnl"
-                    else "account_unrealized_mark"
-                )
+                effective_source = str(account_mark_price_source or "account_unrealized_mark")
                 applied = True
-                if account_pnl_ratio_source and account_pnl_ratio_source != "account_unrealized_pnl":
+                if effective_source == "account_pnl_ratio_mark":
                     reason = "account_pnl_ratio_more_conservative"
+                elif pnl_fallback_applied:
+                    reason = f"price_anomaly_fallback:{effective_source}"
                 else:
                     reason = "account_unrealized_pnl_more_conservative"
             elif raw_pnl_ratio is not None and account_pnl_ratio is not None:
@@ -164,6 +220,19 @@ def _build_account_pnl_crosscheck(
                     reason = "aligned"
                 else:
                     reason = "account_mark_higher_than_raw_price"
+    elif pnl_fallback_applied and effective_price is not None and effective_price > 0.0:
+        effective_source = str(fallback_price_source or effective_source)
+        reason = f"price_anomaly_fallback:{effective_source}"
+
+    if (
+        pnl_fallback_applied
+        and account_mark_price is not None
+        and effective_price is not None
+        and abs(float(account_mark_price) - float(effective_price)) <= 1e-9
+    ):
+        effective_source = str(account_mark_price_source or effective_source)
+        applied = True
+        reason = f"price_anomaly_fallback:{effective_source}"
 
     effective_pnl_ratio = None
     if effective_price is not None and effective_price > 0.0 and avg > 0.0:
@@ -186,6 +255,9 @@ def _build_account_pnl_crosscheck(
         "account_current_price_source": str(policy.get("account_current_price_source") or ""),
         "account_unrealized_pnl": account_unrealized_pnl,
         "account_mark_price": account_mark_price,
+        "account_mark_price_source": account_mark_price_source,
+        "account_ratio_mark_price": account_ratio_mark_price,
+        "account_unrealized_mark_price": account_unrealized_mark_price,
         "account_pnl_ratio": account_pnl_ratio,
         "account_pnl_ratio_source": account_pnl_ratio_source,
         "effective_price": effective_price,
@@ -195,6 +267,10 @@ def _build_account_pnl_crosscheck(
         "price_gap": price_gap,
         "applied": bool(applied),
         "reason": reason,
+        "price_anomaly_flag": bool(price_anomaly_flag),
+        "price_anomaly_reason": str(price_anomaly_reason),
+        "pnl_fallback_applied": bool(pnl_fallback_applied),
+        "fallback_price_source": str(fallback_price_source),
     }
 
 
@@ -286,6 +362,12 @@ def evaluate_exit_policy(
         "evaluated": True,
         "triggered": False,
         "reason": "",
+        "hold_block_reason": "",
+        "final_peak_drawdown_ratio": None,
+        "peak_drawdown_source": "",
+        "exit_trigger_metric_name": "",
+        "exit_trigger_metric_value": None,
+        "exit_trigger_metric_source": "",
         "pnl_ratio": None,
         "raw_pnl_ratio": None,
         "effective_pnl_ratio": None,
@@ -296,16 +378,27 @@ def evaluate_exit_policy(
         "account_current_price_source": "",
         "account_unrealized_pnl": None,
         "account_mark_price": None,
+        "account_mark_price_source": "",
         "account_pnl_ratio": None,
         "account_pnl_ratio_source": "",
         "pnl_crosscheck_gap": None,
         "price_crosscheck_gap": None,
         "pnl_crosscheck_applied": False,
         "pnl_crosscheck_reason": "",
+        "price_anomaly_flag": False,
+        "price_anomaly_reason": "",
+        "pnl_fallback_applied": False,
+        "fallback_price_source": "",
         "account_crosscheck": {},
         "chart_context_available": bool(chart_context_summary.get("available")),
         "chart_context_summary": dict(chart_context_summary),
         "structure_breakdown_signal": str(chart_context_summary.get("structure_breakdown_signal") or ""),
+        "exit_threshold_source": str(
+            p.get("final_exit_threshold_source")
+            or p.get("policy_source")
+            or p.get("effective_policy_source")
+            or "effective_policy"
+        ),
         "thresholds": {
             "hard_stop_pct": _clamp_non_negative(_to_float(p.get("hard_stop_pct"), 0.0)),
             "stop_loss_pct": _clamp_non_negative(_to_float(p.get("stop_loss_pct"), 0.03)),
@@ -330,27 +423,69 @@ def evaluate_exit_policy(
             "eod_flat_cutoff_min": max(0, int(_to_float(p.get("eod_flat_cutoff_min"), 10))),
         },
     }
+
+    def _finalize(
+        triggered: bool | None = None,
+        reason: str | None = None,
+        *,
+        metric_name: str = "",
+        metric_value: Any = None,
+        metric_source: str = "",
+    ) -> Dict[str, Any]:
+        if triggered is not None:
+            out["triggered"] = bool(triggered)
+        if reason is not None:
+            out["reason"] = str(reason or "")
+        final_reason = str(out.get("reason") or "")
+        inferred_metric_name = str(metric_name or "")
+        inferred_metric_value = metric_value
+        inferred_metric_source = str(metric_source or "")
+        if not inferred_metric_name and final_reason in {"hard_stop", "stop_loss", "take_profit"}:
+            inferred_metric_name = "effective_pnl_ratio"
+            inferred_metric_value = out.get("effective_pnl_ratio")
+            inferred_metric_source = "effective_pnl_ratio"
+        elif not inferred_metric_name and final_reason == "peak_drawdown":
+            inferred_metric_name = "peak_drawdown_ratio"
+            inferred_metric_value = out.get("final_peak_drawdown_ratio")
+            inferred_metric_source = str(out.get("peak_drawdown_source") or "effective_price_vs_peak_price")
+        elif not inferred_metric_name and final_reason == "vwap_breakdown":
+            inferred_metric_name = "vwap_distance"
+            inferred_metric_value = out.get("vwap_distance")
+            inferred_metric_source = "selected.features.engine_vwap_distance"
+        elif not inferred_metric_name and final_reason == "trend_breakdown":
+            inferred_metric_name = "trend_strength"
+            inferred_metric_value = out.get("trend_strength")
+            inferred_metric_source = "selected.features.engine_trend_strength"
+        elif not inferred_metric_name and final_reason == "volatility_expansion":
+            inferred_metric_name = "volatility_ratio"
+            inferred_metric_value = out.get("volatility_ratio")
+            inferred_metric_source = "current_volatility_vs_baseline"
+        elif not inferred_metric_name and final_reason == "eod_flat":
+            inferred_metric_name = "minutes_to_close"
+            inferred_metric_value = out.get("minutes_to_close")
+            inferred_metric_source = "session_clock"
+        out["exit_trigger_metric_name"] = inferred_metric_name
+        out["exit_trigger_metric_value"] = inferred_metric_value
+        out["exit_trigger_metric_source"] = inferred_metric_source
+        out["final_exit_thresholds"] = dict(out.get("thresholds") or {})
+        return out
+
     has_explicit_time_stop = "time_stop_sec" in p
 
     q = max(0, int(qty or 0))
     if q <= 0:
-        out["reason"] = "no_position"
-        return out
+        return _finalize(reason="no_position")
 
     emergency_halt = _to_bool(p.get("emergency_halt"), False)
     if emergency_halt:
-        out["triggered"] = True
-        out["reason"] = "emergency_halt"
-        return out
+        return _finalize(triggered=True, reason="emergency_halt")
 
     use_eod_flat = _to_bool(p.get("use_eod_flat"), False)
     minutes_to_close = _to_float(p.get("minutes_to_close"), -1.0)
     eod_cutoff = int(out["thresholds"]["eod_flat_cutoff_min"])
     if use_eod_flat and minutes_to_close >= 0.0 and minutes_to_close <= float(eod_cutoff):
-        out["triggered"] = True
-        out["reason"] = "eod_flat"
         out["minutes_to_close"] = float(minutes_to_close)
-        return out
+        return _finalize(triggered=True, reason="eod_flat")
 
     max_hold_sec = int(out["thresholds"]["max_hold_sec"])
     time_stop_sec = int(out["thresholds"]["time_stop_sec"])
@@ -358,9 +493,10 @@ def evaluate_exit_policy(
     hs = None if hold_sec is None else max(0, int(hold_sec))
     out["hold_sec"] = hs
     if hold_limit > 0 and hs is not None and hs >= hold_limit:
-        out["triggered"] = True
-        out["reason"] = "time_stop" if has_explicit_time_stop and time_stop_sec > 0 else "max_hold"
-        return out
+        return _finalize(
+            triggered=True,
+            reason="time_stop" if has_explicit_time_stop and time_stop_sec > 0 else "max_hold",
+        )
 
     # News shock exit (optional): sentiment crash forces immediate flattening.
     news_shock_th = float(out["thresholds"]["news_shock_threshold"])
@@ -370,9 +506,7 @@ def evaluate_exit_policy(
         out["symbol_sentiment_score"] = float(symbol_sent)
         out["global_sentiment_score"] = float(global_sent)
         if symbol_sent <= -news_shock_th or global_sent <= -news_shock_th:
-            out["triggered"] = True
-            out["reason"] = "news_shock"
-            return out
+            return _finalize(triggered=True, reason="news_shock")
 
     apx = _to_float(avg_price, 0.0) if avg_price is not None else 0.0
     crosscheck = _build_account_pnl_crosscheck(
@@ -389,6 +523,7 @@ def evaluate_exit_policy(
     out["account_current_price_source"] = str(crosscheck.get("account_current_price_source") or "")
     out["account_unrealized_pnl"] = crosscheck.get("account_unrealized_pnl")
     out["account_mark_price"] = crosscheck.get("account_mark_price")
+    out["account_mark_price_source"] = str(crosscheck.get("account_mark_price_source") or "")
     out["account_pnl_ratio"] = crosscheck.get("account_pnl_ratio")
     out["account_pnl_ratio_source"] = str(crosscheck.get("account_pnl_ratio_source") or "")
     out["raw_pnl_ratio"] = crosscheck.get("raw_pnl_ratio")
@@ -397,11 +532,16 @@ def evaluate_exit_policy(
     out["price_crosscheck_gap"] = crosscheck.get("price_gap")
     out["pnl_crosscheck_applied"] = bool(crosscheck.get("applied"))
     out["pnl_crosscheck_reason"] = str(crosscheck.get("reason") or "")
+    out["price_anomaly_flag"] = bool(crosscheck.get("price_anomaly_flag"))
+    out["price_anomaly_reason"] = str(crosscheck.get("price_anomaly_reason") or "")
+    out["pnl_fallback_applied"] = bool(crosscheck.get("pnl_fallback_applied"))
+    out["fallback_price_source"] = str(crosscheck.get("fallback_price_source") or "")
 
     px = _to_float(crosscheck.get("effective_price"), 0.0) if crosscheck.get("effective_price") is not None else 0.0
     if px <= 0.0 or apx <= 0.0:
-        out["reason"] = "price_unavailable"
-        return out
+        if out["price_anomaly_flag"] and not out["hold_block_reason"]:
+            out["hold_block_reason"] = str(out["price_anomaly_reason"] or "price_anomaly")
+        return _finalize(reason="price_unavailable")
 
     # Volatility expansion stop (optional).
     vol_ratio_th = float(out["thresholds"]["vol_expansion_ratio"])
@@ -412,9 +552,7 @@ def evaluate_exit_policy(
             vol_ratio = float(current_vol / baseline_vol)
             out["volatility_ratio"] = vol_ratio
             if vol_ratio >= vol_ratio_th:
-                out["triggered"] = True
-                out["reason"] = "volatility_expansion"
-                return out
+                return _finalize(triggered=True, reason="volatility_expansion")
 
     pnl_ratio = float((px / apx) - 1.0)
     out["pnl_ratio"] = pnl_ratio
@@ -446,14 +584,10 @@ def evaluate_exit_policy(
         out["thresholds"]["effective_stop_reason"] = ""
 
     if effective_stop_pct > 0.0 and pnl_ratio <= -effective_stop_pct:
-        out["triggered"] = True
-        out["reason"] = str(effective_stop_reason or "stop_loss")
-        return out
+        return _finalize(triggered=True, reason=str(effective_stop_reason or "stop_loss"))
 
     if tp > 0.0 and pnl_ratio >= tp:
-        out["triggered"] = True
-        out["reason"] = "take_profit"
-        return out
+        return _finalize(triggered=True, reason="take_profit")
 
     peak_price = _to_float(p.get("peak_price"), 0.0)
     if peak_price <= 0.0:
@@ -461,11 +595,17 @@ def evaluate_exit_policy(
     if peak_price > 0.0:
         peak_drawdown = float((px / peak_price) - 1.0)
         out["peak_drawdown"] = peak_drawdown
+        out["final_peak_drawdown_ratio"] = peak_drawdown
+        out["peak_drawdown_source"] = "effective_price_vs_peak_price"
         peak_drawdown_th = float(out["thresholds"]["peak_drawdown_exit_pct"])
-        if peak_drawdown_th > 0.0 and peak_price > apx and peak_drawdown <= -peak_drawdown_th:
-            out["triggered"] = True
-            out["reason"] = "peak_drawdown"
-            return out
+        if peak_drawdown_th > 0.0 and peak_drawdown <= -peak_drawdown_th:
+            return _finalize(
+                triggered=True,
+                reason="peak_drawdown",
+                metric_name="peak_drawdown_ratio",
+                metric_value=peak_drawdown,
+                metric_source="effective_price_vs_peak_price",
+            )
 
     vwap_breakdown_th = float(out["thresholds"]["vwap_breakdown_pct"])
     if vwap_breakdown_th > 0.0:
@@ -473,18 +613,14 @@ def evaluate_exit_policy(
         out["vwap_distance"] = float(vwap_distance)
         require_profit = _to_bool(p.get("vwap_break_requires_profit"), True)
         if vwap_distance <= -vwap_breakdown_th and (not require_profit or peak_price > apx or pnl_ratio > 0.0):
-            out["triggered"] = True
-            out["reason"] = "vwap_breakdown"
-            return out
+            return _finalize(triggered=True, reason="vwap_breakdown")
 
     intraday_low_break_pct = float(out["thresholds"]["intraday_low_break_pct"])
     if intraday_low_break_pct > 0.0:
         prior_bar_low = _to_float(p.get("prior_bar_low"), 0.0)
         out["prior_bar_low"] = float(prior_bar_low)
         if prior_bar_low > 0.0 and px <= float(prior_bar_low * (1.0 - intraday_low_break_pct)):
-            out["triggered"] = True
-            out["reason"] = "intraday_low_break"
-            return out
+            return _finalize(triggered=True, reason="intraday_low_break")
 
     trend_strength_floor = float(out["thresholds"]["trend_strength_floor"])
     if trend_strength_floor != 0.0:
@@ -493,9 +629,7 @@ def evaluate_exit_policy(
         vwap_distance = _to_float(p.get("vwap_distance"), out.get("vwap_distance") or 0.0)
         out["vwap_distance"] = float(vwap_distance)
         if trend_strength <= trend_strength_floor and vwap_distance < 0.0:
-            out["triggered"] = True
-            out["reason"] = "trend_breakdown"
-            return out
+            return _finalize(triggered=True, reason="trend_breakdown")
 
     # Trailing stop (optional).
     trail = float(out["thresholds"]["trailing_stop_pct"])
@@ -504,9 +638,8 @@ def evaluate_exit_policy(
             drawdown = float((px / peak_price) - 1.0)
             out["trailing_drawdown"] = drawdown
             if drawdown <= -trail:
-                out["triggered"] = True
-                out["reason"] = "trailing_stop"
-                return out
+                return _finalize(triggered=True, reason="trailing_stop")
 
-    out["reason"] = "hold"
-    return out
+    if out["price_anomaly_flag"] and not out["hold_block_reason"]:
+        out["hold_block_reason"] = f"price_anomaly_fallback:{str(out.get('price_anomaly_reason') or '')}".strip(":")
+    return _finalize(reason="hold")

@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_TIMEOUT_SEC = 15
+DEFAULT_X_TITLE = "Trading_Agent_System"
 
 # Backward-compatible message type alias used by legacy router import paths.
 ChatMessage = Dict[str, Any]
@@ -55,7 +56,7 @@ class OpenRouterClient:
             api_key=api_key,
             base_url=os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL,
             http_referer=os.getenv("OPENROUTER_HTTP_REFERER") or None,
-            x_title=os.getenv("OPENROUTER_X_TITLE") or None,
+            x_title=DEFAULT_X_TITLE,
             timeout_sec=int(
                 os.getenv(
                     "OPENROUTER_TIMEOUT_SEC",

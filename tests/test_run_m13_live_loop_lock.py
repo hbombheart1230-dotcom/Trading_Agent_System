@@ -112,6 +112,16 @@ def test_m13_initial_state_propagates_use_exit_policy_from_env(monkeypatch):
     assert st["use_exit_policy"] is True
 
 
+def test_m13_initial_state_defaults_to_integrated_exit_policy_baseline():
+    st = live._build_initial_state("005930", tick_pipeline="integrated_chain")
+    assert st["use_exit_policy"] is True
+
+
+def test_m13_tick_pipeline_env_key_removed_from_env_example() -> None:
+    text = Path("config/.env.example").read_text(encoding="utf-8")
+    assert "M13_TICK_PIPELINE" not in text
+
+
 def test_m13_resolve_env_path_prefers_cli_value(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ENV_PATH", str(tmp_path / "ignored.env"))
     env_path = live._resolve_env_path(["--env-path", str(tmp_path / "custom.env")])

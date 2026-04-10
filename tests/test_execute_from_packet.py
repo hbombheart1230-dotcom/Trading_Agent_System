@@ -2,6 +2,7 @@ from libs.risk.intent import TradeIntent, RiskContext, ExecutionContext, TradeDe
 from libs.core.api_response import ApiResponse
 from graphs.nodes.execute_from_packet import execute_from_packet
 import graphs.nodes.execute_from_packet as execute_from_packet_module
+import libs.runtime.asset_universe_policy as asset_universe_policy
 
 
 def test_execute_from_packet_mock(tmp_path, monkeypatch):
@@ -138,6 +139,75 @@ def test_execute_from_packet_blocks_invalid_symbol_format(tmp_path, monkeypatch)
     assert out["execution"]["allowed"] is False
     assert out["execution"]["reason"] == "invalid_symbol_format"
     assert out["execution"]["symbol_format_guard"]["raw_symbol"] == "0082N0"
+
+
+def test_execute_from_packet_blocks_buy_when_asset_universe_policy_rejects_etf(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "applied_policy": {"universe": {"asset_type": "common_stock_only"}},
+        "symbol_metadata": {
+            "069500": {
+                "name": "KODEX 200 ETF",
+            }
+        },
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "069500", "qty": 1, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "asset_universe_policy_blocked"
+    guard = out["execution"]["asset_universe_guard"]
+    assert guard["excluded_by_asset_policy"] is True
+    assert guard["exclusion_reason"] == "etf_or_etn_not_allowed"
+    assert guard["asset_class_detected"] == "etf"
+    assert guard["detection_source"] == "name_heuristic"
+
+
+def test_execute_from_packet_blocks_buy_when_remote_symbol_profile_identifies_etf(tmp_path, monkeypatch):
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+
+    cat = tmp_path / "api_catalog.jsonl"
+    cat.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        asset_universe_policy,
+        "_lookup_remote_symbol_profile",
+        lambda symbol: {"stk_cd": str(symbol), "stk_nm": "TIGER 반도체TOP10"},
+    )
+
+    state = {
+        "catalog_path": str(cat),
+        "applied_policy": {"universe": {"asset_type": "common_stock_only"}},
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "396500", "qty": 1, "order_api_id": "ORDER_SUBMIT"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+    assert out["execution"]["allowed"] is False
+    assert out["execution"]["reason"] == "asset_universe_policy_blocked"
+    guard = out["execution"]["asset_universe_guard"]
+    assert guard["excluded_by_asset_policy"] is True
+    assert guard["asset_class_detected"] == "etf"
+    assert guard["detection_source"] == "name_heuristic"
+    assert (state.get("symbol_metadata") or {}).get("396500", {}).get("stk_nm") == "TIGER 반도체TOP10"
 
 
 def test_execute_from_packet_blocks_qty_limit_with_max_qty_alias(tmp_path, monkeypatch):
@@ -636,8 +706,9 @@ def test_execute_from_packet_blocks_buy_for_mock_broker_restricted_symbol_record
 
     out = execute_from_packet(state)
     assert out["execution"]["allowed"] is False
-    assert out["execution"]["reason"] == "mock_broker_restricted_symbol_blocked"
-    assert out["execution"]["mock_broker_restricted_symbol_guard"]["symbol"] == "252670"
+    assert out["execution"]["reason"] == "asset_universe_policy_blocked"
+    assert out["execution"]["asset_universe_guard"]["symbol"] == "252670"
+    assert out["execution"]["asset_universe_guard"]["excluded_by_asset_policy"] is True
     assert called["execute"] == 0
 
 

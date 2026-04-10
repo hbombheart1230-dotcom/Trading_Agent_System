@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import atexit
+import contextlib
 import html
 import json
 import os
@@ -952,7 +954,7 @@ def _resolve_trade_report_policy(*, runtime_state: Dict[str, Any] | None = None,
         if isinstance(container, dict) and container:
             return {
                 "enabled": bool(container.get("enabled", True)),
-                "generate_on_open": bool(container.get("generate_on_open", True)),
+                "generate_on_open": bool(container.get("generate_on_open", False)),
                 "policy_source": str(container.get("policy_source") or source),
                 "llm_profile": str(llm_slot.get("profile") or "fast_free"),
                 "llm_primary": str(llm_slot.get("primary") or ""),
@@ -960,12 +962,49 @@ def _resolve_trade_report_policy(*, runtime_state: Dict[str, Any] | None = None,
             }
     return {
         "enabled": True,
-        "generate_on_open": True,
+        "generate_on_open": False,
         "policy_source": "default",
         "llm_profile": str(llm_slot.get("profile") or "fast_free"),
         "llm_primary": str(llm_slot.get("primary") or ""),
         "llm_fallback": str(llm_slot.get("fallback") or ""),
     }
+
+
+def _background_job_lock_path() -> Path | None:
+    raw = str(os.getenv("INTRADAY_TRADE_REPORT_JOB_LOCK_PATH") or "").strip()
+    if not raw:
+        return None
+    return Path(raw)
+
+
+def _write_background_job_lock(path: Path | None, *, status: str) -> None:
+    if path is None:
+        return
+    payload = {
+        "pid": int(os.getpid()),
+        "status": str(status or "running"),
+        "started_at": utc_now_iso(),
+        "script": "run_live_execution_bundle_report.py",
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        return
+
+
+def _clear_background_job_lock(path: Path | None) -> None:
+    if path is None or not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    owner_pid = int(payload.get("pid") or 0) if isinstance(payload, dict) else 0
+    if owner_pid not in (0, int(os.getpid())):
+        return
+    with contextlib.suppress(Exception):
+        path.unlink()
 
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
@@ -2440,6 +2479,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
+    background_lock_path = _background_job_lock_path()
+    _write_background_job_lock(background_lock_path, status="running")
+    if background_lock_path is not None:
+        atexit.register(_clear_background_job_lock, background_lock_path)
     load_env_file(str(args.env_path).strip() or ".env")
     event_log_path = Path(str(args.event_log_path).strip())
     evidence_log_path = Path(str(args.evidence_log_path).strip())

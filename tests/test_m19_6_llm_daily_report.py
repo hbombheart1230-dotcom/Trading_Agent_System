@@ -125,3 +125,48 @@ def test_m19_6_daily_summary_uses_policy_execution_profile(monkeypatch: pytest.M
     assert _CaptureDailyRouter.last_policy["model"] == "moonshotai/kimi-k2.5"
     assert float(_CaptureDailyRouter.last_policy["temperature"]) == 0.35
     assert int(_CaptureDailyRouter.last_policy["max_tokens"]) == 1234
+    assert artifact["llm_execution_profile_name"] == "deep_review"
+    assert artifact["llm_execution_profile_source"] == "applied_policy"
+    assert int(((artifact["llm_execution_effective_config"] or {}).get("retry") or {}).get("max_attempts") or 0) == 2
+
+
+def test_m19_6_daily_summary_prefers_top_level_execution_profile(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("DRY_RUN", "0")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "dummy")
+    monkeypatch.setattr("libs.reporting.llm_daily_summary.LLMRouter", _CaptureDailyRouter)
+
+    summary, artifact = summarize_daily_report_with_artifact(
+        state={
+            "eod_day": "2026-03-18",
+            "daily_report": {"approvals": 1, "denials": 0, "runs": 3},
+            "applied_policy": {
+                "llm": {
+                    "execution_profile": {
+                        "profile_name": "default_intraday",
+                        "temperature": 0.41,
+                        "max_tokens": 1500,
+                        "timeout_sec": 9,
+                        "retry": {"max_attempts": 4, "backoff_sec": 0.0},
+                    },
+                    "reporter": {
+                        "daily": {
+                            "primary": "moonshotai/kimi-k2.5",
+                            "execution_profile": {
+                                "name": "deep_review",
+                                "temperature": 0.35,
+                                "max_tokens": 1234,
+                            },
+                        }
+                    },
+                }
+            },
+        },
+        policy={},
+    )
+
+    assert summary
+    assert float(_CaptureDailyRouter.last_policy["temperature"]) == 0.41
+    assert int(_CaptureDailyRouter.last_policy["max_tokens"]) == 1500
+    assert float(_CaptureDailyRouter.last_policy["timeout_sec"]) == 9.0
+    assert artifact["llm_execution_profile_name"] == "default_intraday"
+    assert artifact["llm_execution_profile_source"] == "applied_policy"

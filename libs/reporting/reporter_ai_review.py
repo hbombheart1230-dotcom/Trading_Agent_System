@@ -4,7 +4,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-from libs.llm.model_catalog import resolve_policy_llm_execution_slot, resolve_policy_llm_slot
+from libs.llm.model_catalog import build_execution_profile_observability, resolve_policy_llm_execution_slot, resolve_policy_llm_slot
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.llm.json_response import (
@@ -355,24 +355,50 @@ def build_ai_reporter_review(
         "daily",
         default_profile="deep_review",
         defaults={
+            "profile_name": "deep_review",
             "name": "deep_review",
             "temperature": 0.2,
             "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry": {"max_attempts": 2, "backoff_sec": 0.0},
+            "retry_max": 2,
+            "retry_backoff_sec": 0.0,
         },
     )
     env_model = str(llm_slot.get("primary") or "moonshotai/kimi-k2.5").strip()
+    execution_slot_source = str(execution_slot.get("policy_source") or "").strip().lower()
+    env_temp = _clip_str(os.getenv("REPORTER_AI_REVIEW_TEMPERATURE") or "", max_len=32)
+    env_max_tokens = _clip_str(os.getenv("REPORTER_AI_REVIEW_MAX_TOKENS") or "", max_len=32)
+    env_execution_fallback_used = False
+    if execution_slot_source in {"", "default_execution_profile", "default"} and (env_temp or env_max_tokens):
+        env_execution_fallback_used = True
     resolved_model = normalize_openrouter_model_name(model or env_model or "")
     if temperature is not None:
         resolved_temp = float(temperature)
+    elif env_execution_fallback_used and env_temp:
+        resolved_temp = float(env_temp)
     else:
         resolved_temp = float(execution_slot.get("temperature") or 0.2)
     resolved_max_tokens = int(max_tokens)
-    if max_tokens == 900:
+    if max_tokens == 900 and env_execution_fallback_used and env_max_tokens:
+        resolved_max_tokens = int(float(env_max_tokens))
+    elif max_tokens == 900:
         resolved_max_tokens = int(float(execution_slot.get("max_tokens") or 8192))
+    resolved_timeout_sec = max(1.0, float(execution_slot.get("timeout_sec") or 15.0))
+    execution_observability = build_execution_profile_observability(
+        execution_slot,
+        env_used=env_execution_fallback_used,
+        effective_overrides={
+            "temperature": float(resolved_temp),
+            "max_tokens": max(256, int(resolved_max_tokens)),
+            "timeout_sec": float(resolved_timeout_sec),
+        },
+    )
 
     policy: Dict[str, Any] = {
         "max_tokens": max(256, int(resolved_max_tokens)),
         "temperature": float(resolved_temp),
+        "timeout_sec": float(resolved_timeout_sec),
     }
     if resolved_model:
         policy["model"] = resolved_model
@@ -415,7 +441,9 @@ def build_ai_reporter_review(
             )
         except Exception:
             pass
-        return _default_result(enabled=True, status="error", reason=f"ai_call_failed:{e}", model=route.model)
+        result = _default_result(enabled=True, status="error", reason=f"ai_call_failed:{e}", model=route.model)
+        result.update(execution_observability)
+        return result
 
     parsed_result = parse_llm_json_response(raw)
     obj = parsed_result.get("full_object") if isinstance(parsed_result.get("full_object"), dict) else None
@@ -453,6 +481,7 @@ def build_ai_reporter_review(
         )
         result["parse_mode"] = parse_mode
         result.update(key_meta)
+        result.update(execution_observability)
         return result
     try:
         record_llm_response(
@@ -465,4 +494,6 @@ def build_ai_reporter_review(
         )
     except Exception:
         pass
-    return _normalize_result(obj, enabled=True, model=route.model)
+    result = _normalize_result(obj, enabled=True, model=route.model)
+    result.update(execution_observability)
+    return result

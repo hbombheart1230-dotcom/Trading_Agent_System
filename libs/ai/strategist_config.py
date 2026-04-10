@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict
 
-from libs.llm.model_catalog import resolve_policy_llm_execution_slot, resolve_policy_llm_slot
+from libs.llm.model_catalog import build_execution_profile_observability, resolve_policy_llm_execution_slot, resolve_policy_llm_slot
 from libs.llm.model_names import normalize_openrouter_model_name
 
 
@@ -39,6 +39,15 @@ def _env_bool(name: str) -> bool | None:
     return _is_trueish(raw)
 
 
+def _nested_get(mapping: Any, *path: str) -> Any:
+    cursor = mapping if isinstance(mapping, dict) else {}
+    for key in path:
+        if not isinstance(cursor, dict):
+            return None
+        cursor = cursor.get(key)
+    return cursor
+
+
 def _to_float(value: Any, default: float) -> float:
     try:
         return float(value)
@@ -60,7 +69,19 @@ def strategist_provider(policy: Dict[str, Any] | None = None) -> str:
         policy.get("strategist_provider"),
         os.getenv("AI_STRATEGIST_PROVIDER", ""),
     )
-    return str(provider or "rule").strip().lower()
+    if provider:
+        return str(provider).strip().lower()
+    if _first_nonempty(
+        policy.get("ai_strategist_endpoint"),
+        policy.get("endpoint"),
+        _nested_get(policy, "applied_policy", "llm", "strategist", "primary"),
+        _nested_get(policy, "applied_policy", "llm", "strategist", "profile"),
+        _nested_get(policy, "llm", "strategist", "primary"),
+        _nested_get(policy, "llm", "strategist", "profile"),
+        os.getenv("AI_STRATEGIST_ENDPOINT", ""),
+    ):
+        return "openai"
+    return "rule"
 
 
 def strategist_uses_ai(policy: Dict[str, Any] | None = None) -> bool:
@@ -164,9 +185,9 @@ def strategist_temperature(policy: Dict[str, Any] | None = None) -> float:
         },
     )
     raw = _first_nonempty(
+        execution_slot.get("temperature"),
         policy.get("ai_strategist_temperature"),
         policy.get("strategist_frame_llm_temperature"),
-        execution_slot.get("temperature"),
         "0.1",
     )
     return _to_float(raw, 0.1)
@@ -187,9 +208,9 @@ def strategist_timeout_sec(policy: Dict[str, Any] | None = None) -> float:
         },
     )
     raw = _first_nonempty(
+        execution_slot.get("timeout_sec"),
         policy.get("ai_strategist_timeout_sec"),
         policy.get("strategist_frame_llm_timeout_sec"),
-        execution_slot.get("timeout_sec"),
         "15",
     )
     return max(1.0, _to_float(raw, 15.0))
@@ -210,9 +231,9 @@ def strategist_max_tokens(policy: Dict[str, Any] | None = None) -> int:
         },
     )
     raw = _first_nonempty(
+        execution_slot.get("max_tokens"),
         policy.get("ai_strategist_max_tokens"),
         policy.get("strategist_frame_llm_max_tokens"),
-        execution_slot.get("max_tokens"),
         "8192",
     )
     return max(256, _to_int(raw, 8192))
@@ -233,12 +254,38 @@ def strategist_retry_max(policy: Dict[str, Any] | None = None) -> int:
         },
     )
     raw = _first_nonempty(
+        execution_slot.get("retry_max"),
         policy.get("ai_strategist_retry_max"),
         policy.get("strategist_frame_llm_retry_max"),
-        execution_slot.get("retry_max"),
         "2",
     )
     return max(0, _to_int(raw, 2))
+
+
+def strategist_retry_backoff_sec(policy: Dict[str, Any] | None = None) -> float:
+    policy = policy or {}
+    execution_slot = resolve_policy_llm_execution_slot(
+        policy,
+        "strategist",
+        default_profile="balanced_reasoning",
+        defaults={
+            "profile_name": "balanced_reasoning",
+            "name": "balanced_reasoning",
+            "temperature": 0.1,
+            "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry": {"max_attempts": 2, "backoff_sec": 0.0},
+            "retry_max": 2,
+            "retry_backoff_sec": 0.0,
+        },
+    )
+    raw = _first_nonempty(
+        execution_slot.get("retry_backoff_sec"),
+        (execution_slot.get("retry") or {}).get("backoff_sec") if isinstance(execution_slot.get("retry"), dict) else None,
+        os.getenv("AI_STRATEGIST_RETRY_BACKOFF_SEC", ""),
+        "0.0",
+    )
+    return max(0.0, _to_float(raw, 0.0))
 
 
 def strategist_runtime_settings(policy: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -249,14 +296,40 @@ def strategist_runtime_settings(policy: Dict[str, Any] | None = None) -> Dict[st
         "strategist",
         default_profile="balanced_reasoning",
         defaults={
+            "profile_name": "balanced_reasoning",
             "name": "balanced_reasoning",
             "temperature": 0.1,
             "max_tokens": 8192,
             "timeout_sec": 15,
+            "retry": {"max_attempts": 2, "backoff_sec": 0.0},
             "retry_max": 2,
+            "retry_backoff_sec": 0.0,
         },
     )
     provider = strategist_provider(policy)
+    env_profile_fallback_used = False
+    if str(execution_slot.get("policy_source") or "").strip().lower() in {"", "default_execution_profile", "default"}:
+        env_profile_fallback_used = bool(
+            _first_nonempty(
+                os.getenv("AI_STRATEGIST_TIMEOUT_SEC", ""),
+                os.getenv("AI_STRATEGIST_MAX_TOKENS", ""),
+                os.getenv("AI_STRATEGIST_RETRY_MAX", ""),
+                os.getenv("AI_STRATEGIST_RETRY_BACKOFF_SEC", ""),
+            )
+        )
+    execution_profile_observability = build_execution_profile_observability(
+        execution_slot,
+        env_used=env_profile_fallback_used,
+        effective_overrides={
+            "temperature": strategist_temperature(policy),
+            "max_tokens": strategist_max_tokens(policy),
+            "timeout_sec": strategist_timeout_sec(policy),
+            "retry": {
+                "max_attempts": strategist_retry_max(policy),
+                "backoff_sec": strategist_retry_backoff_sec(policy),
+            },
+        },
+    )
     return {
         "provider": provider,
         "requested": strategist_llm_requested(policy),
@@ -274,6 +347,9 @@ def strategist_runtime_settings(policy: Dict[str, Any] | None = None) -> Dict[st
         "timeout_sec": strategist_timeout_sec(policy),
         "max_tokens": strategist_max_tokens(policy),
         "retry_max": strategist_retry_max(policy),
+        "retry_backoff_sec": strategist_retry_backoff_sec(policy),
         "llm_execution_profile": execution_slot,
-        "llm_execution_profile_source": str(execution_slot.get("policy_source") or "default_execution_profile"),
+        "llm_execution_profile_name": str(execution_profile_observability.get("llm_execution_profile_name") or ""),
+        "llm_execution_profile_source": str(execution_profile_observability.get("llm_execution_profile_source") or "default"),
+        "llm_execution_effective_config": dict(execution_profile_observability.get("llm_execution_effective_config") or {}),
     }

@@ -493,7 +493,7 @@ def _classify_llm_parse_failure(raw: Any) -> str:
 def _resolve_strategist_frame_llm_enabled(policy: Dict[str, Any]) -> bool:
     if os.getenv("PYTEST_CURRENT_TEST") and policy.get("strategist_frame_use_llm") is None:
         raw_env = str(os.getenv("STRATEGIST_FRAME_USE_LLM", "") or "").strip()
-        provider = str(os.getenv("AI_STRATEGIST_PROVIDER", "") or "").strip().lower()
+        provider = str((strategist_runtime_settings(policy) or {}).get("provider") or "").strip().lower()
         if not raw_env and provider not in ("openai", "http", "api"):
             return False
     return strategist_llm_requested(policy)
@@ -1158,6 +1158,7 @@ def _run_strategist_frame_llm(
     temperature = float(runtime.get("temperature") or 0.1)
     max_tokens = max(256, int(runtime.get("max_tokens") or 8192))
     timeout_sec = max(1.0, float(runtime.get("timeout_sec") or 15.0))
+    retry_backoff_sec = max(0.0, float(runtime.get("retry_backoff_sec") or 0.0))
 
     router = LLMRouter.from_env()
     if router.client is None:
@@ -1182,8 +1183,21 @@ def _run_strategist_frame_llm(
         "final_status": "pending",
         "llm_profile": str(runtime.get("llm_profile") or ""),
         "llm_policy_source": str(runtime.get("llm_policy_source") or ""),
-        "llm_execution_profile": str(((runtime.get("llm_execution_profile") or {}).get("name") or "")),
-        "llm_execution_profile_source": str(((runtime.get("llm_execution_profile") or {}).get("policy_source") or "")),
+        "llm_execution_profile": str(runtime.get("llm_execution_profile_name") or ((runtime.get("llm_execution_profile") or {}).get("name") or "")),
+        "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ((runtime.get("llm_execution_profile") or {}).get("name") or "")),
+        "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ((runtime.get("llm_execution_profile") or {}).get("policy_source") or "")),
+        "llm_execution_effective_config": dict(
+            runtime.get("llm_execution_effective_config")
+            or {
+                "temperature": float(temperature),
+                "max_tokens": int(max_tokens),
+                "timeout_sec": float(timeout_sec),
+                "retry": {
+                    "max_attempts": int(max_retries),
+                    "backoff_sec": float(retry_backoff_sec),
+                },
+            }
+        ),
     }
 
     def _persist_llm_artifacts(
@@ -1211,6 +1225,11 @@ def _run_strategist_frame_llm(
                     "temperature": float(temperature),
                     "max_tokens": int(max_tokens),
                     "timeout_sec": float(timeout_sec),
+                    "retry_max": int(max_retries),
+                    "retry_backoff_sec": float(retry_backoff_sec),
+                    "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
+                    "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
+                    "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
                 },
                 response_payload={
                     "stage": str(stage or "theme_selection"),
@@ -1220,6 +1239,9 @@ def _run_strategist_frame_llm(
                     "reason": str(reason or ""),
                     "repair_used": bool(repair),
                     "attempts": int(attempts_count),
+                    "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
+                    "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
+                    "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
                     "response_text": str(response_value or ""),
                 },
                 meta_payload={
@@ -1231,6 +1253,9 @@ def _run_strategist_frame_llm(
                     "attempts": int(attempts_count),
                     "repair_used": bool(repair),
                     "stage": str(stage or "theme_selection"),
+                    "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
+                    "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
+                    "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
                 },
             )
         except Exception:
@@ -1310,6 +1335,9 @@ def _run_strategist_frame_llm(
                         "model": current_model, "attempts": attempts, "repair_used": repair_used,
                         "recovery_method": "" if str(raw or "").strip().startswith("{") else "prose_contract",
                         "llm_call_trace": dict(llm_call_trace),
+                        "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
+                        "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
+                        "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
                         "prompt_ref": str(llm_artifacts.get("prompt_ref") or ""),
                         "response_ref": str(llm_artifacts.get("response_ref") or ""),
                         "prompt_hash": str(llm_artifacts.get("prompt_hash") or ""),
@@ -1351,6 +1379,9 @@ def _run_strategist_frame_llm(
         "attempts": attempts,
         "repair_used": repair_used,
         "llm_call_trace": dict(llm_call_trace),
+        "llm_execution_profile_name": str(runtime.get("llm_execution_profile_name") or ""),
+        "llm_execution_profile_source": str(runtime.get("llm_execution_profile_source") or ""),
+        "llm_execution_effective_config": dict(runtime.get("llm_execution_effective_config") or {}),
     }
 
 def _extract_themes(state: Dict[str, Any], policy: Dict[str, Any]) -> List[str]:
@@ -1631,7 +1662,10 @@ def _default_policy(user_policy: Dict[str, Any] | None) -> Dict[str, Any]:
         "use_news_analysis",
         _is_trueish(os.getenv("M10_USE_NEWS_SENTIMENT", "false" if pytest_mode else "true")),
     )
-    p.setdefault("use_exit_policy", _is_trueish(os.getenv("USE_EXIT_POLICY", "false")))
+    exit_enabled = _nested_mapping_value(p, "applied_policy", "monitor", "exit", "enabled")
+    if exit_enabled is None:
+        exit_enabled = p.get("use_exit_policy")
+    p.setdefault("use_exit_policy", True if exit_enabled is None else _is_trueish(exit_enabled))
     # news plugin
     p.setdefault("news_provider", "naver")
     p.setdefault("news_scorer", "simple")
@@ -2665,6 +2699,15 @@ def _build_strategy_policy(
     market_news_count = _to_int(news_ctx.get("headline_count"), 0)
     candidate_news_count = _to_int(news_ctx.get("candidate_signal_total"), 0)
     entry_policy = _strategy_policy_entry_policy()
+    effective_use_eod_flat = exit_policy.get("use_eod_flat") if isinstance(exit_policy, dict) else None
+    if effective_use_eod_flat is None and isinstance(monitor_policy, dict):
+        effective_use_eod_flat = (
+            (((monitor_policy.get("exit") or {}).get("eod_flat") or {}).get("enabled"))
+            if isinstance((monitor_policy.get("exit") or {}).get("eod_flat"), dict)
+            else None
+        )
+    if effective_use_eod_flat is None:
+        effective_use_eod_flat = True
     return {
         "schema_version": "strategy_policy.v1",
         "market_policy": {
@@ -2721,7 +2764,7 @@ def _build_strategy_policy(
             "hard_risk_rails": {
                 "hard_stop_pct": _to_float(os.getenv("EXIT_POLICY_STOP_LOSS_PCT", "0.03"), 0.03),
                 "max_stop_pct_cap": _to_float(os.getenv("STRATEGY_POLICY_MAX_STOP_PCT_CAP", "0.10"), 0.10),
-                "use_eod_flat": _is_trueish(os.getenv("EXIT_POLICY_USE_EOD_FLAT", "false")),
+                "use_eod_flat": _is_trueish(effective_use_eod_flat),
             },
         },
         "decision_policy": {
@@ -3775,6 +3818,9 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "repair_used": bool(llm_meta.get("repair_used")),
             "prompt_version": str(os.getenv("STRATEGIST_FRAME_LLM_PROMPT_VERSION", "m31-strategic-frame-v1") or "m31-strategic-frame-v1"),
             "schema_version": "strategist_output.v1",
+            "llm_execution_profile_name": str(llm_meta.get("llm_execution_profile_name") or ""),
+            "llm_execution_profile_source": str(llm_meta.get("llm_execution_profile_source") or ""),
+            "llm_execution_effective_config": dict(llm_meta.get("llm_execution_effective_config") or {}),
             "themes": list((llm_overrides or {}).get("themes") or [])[:5],
             "avoid_themes": list((llm_overrides or {}).get("avoid_themes") or [])[:5],
             "playbook": str((llm_overrides or {}).get("playbook") or ""),
@@ -4188,6 +4234,9 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "response_ref": str(llm_meta.get("response_ref") or ""),
         "prompt_hash": str(llm_meta.get("prompt_hash") or ""),
         "response_hash": str(llm_meta.get("response_hash") or ""),
+        "llm_execution_profile_name": str(llm_meta.get("llm_execution_profile_name") or ""),
+        "llm_execution_profile_source": str(llm_meta.get("llm_execution_profile_source") or ""),
+        "llm_execution_effective_config": dict(llm_meta.get("llm_execution_effective_config") or {}),
     }
     strategist_policy_resolution = build_strategist_policy_resolution_surface(
         strategist_output=strategist_output,

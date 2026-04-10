@@ -65,8 +65,8 @@ def _build_initial_state(symbol: str, *, tick_pipeline: str) -> Dict[str, Any]:
     normalized_tick_pipeline = _normalize_tick_pipeline(tick_pipeline)
     state: Dict[str, Any] = {
         "m13_tick_pipeline": normalized_tick_pipeline,
-        # Keep integrated runtime exit behavior deterministic from env-driven runtime profile.
-        "use_exit_policy": _to_bool(os.getenv("USE_EXIT_POLICY", "false"), False),
+        # Exit policy is part of the canonical runtime baseline.
+        "use_exit_policy": True,
     }
     if normalized_tick_pipeline == "integrated_chain":
         # Official intraday runtime expects market-skill hydration to be available
@@ -254,7 +254,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument(
         "--tick-pipeline",
         choices=["legacy_m10", "integrated_chain"],
-        default=_normalize_tick_pipeline(os.getenv("M13_TICK_PIPELINE", "legacy_m10")),
+        default="integrated_chain",
         help="Tick runtime path: legacy M10 pipeline or integrated strategist->scanner->monitor chain.",
     )
     p.add_argument("--once", action="store_true", help="Run a single iteration and exit.")

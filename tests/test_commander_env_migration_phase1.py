@@ -13,6 +13,9 @@ _REMOVED_ENV_KEYS = [
     "REPORTER_AI_REVIEW_ENABLED",
     "TRADE_REPORT_AI_ENABLED",
     "TRADE_REPORT_AI_GENERATE_ON_OPEN",
+    "USE_EXIT_POLICY",
+    "EXIT_POLICY_USE_EOD_FLAT",
+    "MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION",
     "AI_STRATEGIST_STRICT",
     "ALLOW_LEGACY_RULE_RUNTIME",
     "ALLOW_LEGACY_STRATEGY_V1_RUNTIME",
@@ -148,14 +151,17 @@ def test_commander_injects_behavior_policy_defaults_into_applied_policy(monkeypa
     applied = out.get("applied_policy") or {}
 
     assert (((applied.get("reporter") or {}).get("ai_review") or {}).get("enabled")) is False
-    assert (((applied.get("reporter") or {}).get("trade_report") or {}).get("enabled")) is True
-    assert (((applied.get("reporter") or {}).get("trade_report") or {}).get("generate_on_open")) is True
+    assert (((applied.get("reporter") or {}).get("trade_report") or {}).get("enabled")) is False
+    assert (((applied.get("reporter") or {}).get("trade_report") or {}).get("generate_on_open")) is False
     assert (((applied.get("strategist") or {}).get("runtime") or {}).get("strict_mode")) is True
     assert (((applied.get("strategist") or {}).get("runtime") or {}).get("allow_legacy_rule")) is False
     assert (((applied.get("strategist") or {}).get("runtime") or {}).get("allow_legacy_strategy_v1")) is False
     assert (((applied.get("strategist") or {}).get("memory_feedback") or {}).get("enabled")) is True
     assert (((applied.get("commander") or {}).get("route") or {}).get("monitor_only_when_holding")) is True
     assert (((applied.get("commander") or {}).get("route") or {}).get("cached_strategist_when_flat")) is False
+    assert (((applied.get("monitor") or {}).get("exit") or {}).get("enabled")) is True
+    assert ((((applied.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("enabled")) is True
+    assert (((applied.get("monitor") or {}).get("entry") or {}).get("block_buy_when_open_position")) is True
     assert ((((applied.get("monitor") or {}).get("entry") or {}).get("scoring") or {}).get("enabled")) is False
     assert ((((applied.get("monitor") or {}).get("entry") or {}).get("scoring") or {}).get("shadow_mode")) is True
     assert "reporter.ai_review.enabled" in list(((applied.get("policy_sources") or {}).get("commander_owned_fields") or []))

@@ -76,7 +76,7 @@ class KiwoomPriceReader:
         token = KiwoomTokenClient(s, http)
         return cls(s, http, token)
 
-    def get_market_snapshot(self, symbol: str) -> MarketSnapshot:
+    def get_stock_info_payload(self, symbol: str) -> Dict[str, Any]:
         # ensure token (real HTTP call even in mock trading)
         tok = self.token.ensure_token(dry_run=False)
         if not tok.token:
@@ -111,6 +111,10 @@ class KiwoomPriceReader:
         if rc and rc not in ("0",):
             msg = str(payload.get("return_msg") or "").strip()
             raise RuntimeError(f"kiwoom_price_error:return_code={rc} return_msg={msg}")
+        return dict(payload)
+
+    def get_market_snapshot(self, symbol: str) -> MarketSnapshot:
+        payload = self.get_stock_info_payload(symbol)
 
         price = _extract_current_price(payload)
         if price <= 0.0:

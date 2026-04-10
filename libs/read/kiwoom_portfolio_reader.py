@@ -40,11 +40,20 @@ def _first_present_key(d: Dict[str, Any], keys: List[str]) -> str:
     return ""
 
 
-def _ratio(x: Any) -> float | None:
+_BROKER_PERCENT_RATIO_KEYS = {
+    "evlu_pfls_rt",
+    "evltv_prft_rt",
+    "unrealized_pnl_rate",
+    "pnl_ratio",
+    "prft_rt",
+}
+
+
+def _ratio(x: Any, *, force_percent: bool = False) -> float | None:
     if x in (None, ""):
         return None
     value = _num(x)
-    if abs(value) > 1.0:
+    if force_percent or abs(value) > 1.0:
         value = value / 100.0
     return float(value)
 
@@ -119,8 +128,11 @@ def _extract_positions(payload: Dict[str, Any]) -> List[PositionSnapshot]:
             "pnl_ratio",
             "prft_rt",
         ]
-        account_pnl_ratio = _ratio(_first_present(it, pnl_ratio_keys))
         account_pnl_ratio_source = _first_present_key(it, pnl_ratio_keys)
+        account_pnl_ratio = _ratio(
+            _first_present(it, pnl_ratio_keys),
+            force_percent=account_pnl_ratio_source in _BROKER_PERCENT_RATIO_KEYS,
+        )
         current_price = _num(
             _first_present(
                 it,

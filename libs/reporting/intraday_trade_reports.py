@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -41,6 +42,62 @@ def _brief_cache_dir(root: Path) -> Path:
     return Path(
         os.getenv("OPERATOR_UI_CACHE_PATH", str(root / "data" / "operator_ui" / "brief_cache"))
     )
+
+
+def _bundle_job_lock_path(root: Path) -> Path:
+    return root / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+
+
+def _read_lock_payload(path: Path) -> Dict[str, Any]:
+    try:
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _pid_active(pid: int) -> bool:
+    if int(pid or 0) <= 0:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _active_bundle_job(path: Path, *, stale_after_sec: float = 900.0) -> Dict[str, Any]:
+    payload = _read_lock_payload(path)
+    if not payload:
+        return {}
+    pid = int(payload.get("pid") or 0)
+    started_at = float(payload.get("started_at_epoch") or 0.0)
+    age_sec = max(0.0, float(time.time()) - started_at) if started_at > 0 else stale_after_sec + 1.0
+    active = _pid_active(pid)
+    if active and age_sec <= stale_after_sec:
+        out = dict(payload)
+        out["lock_path"] = str(path)
+        out["age_sec"] = age_sec
+        return out
+    if age_sec > stale_after_sec or not active:
+        with contextlib.suppress(Exception):
+            path.unlink()
+    return {}
+
+
+def _write_bundle_job_lock(path: Path, *, pid: int, argv: List[str]) -> None:
+    payload = {
+        "pid": int(pid or 0),
+        "started_at_epoch": float(time.time()),
+        "script": "run_live_execution_bundle_report.py",
+        "argv": list(argv or []),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _execution_action(state: Dict[str, Any]) -> str:
@@ -139,13 +196,18 @@ def _run_bundle_with_timeout(root: Path, argv: List[str], *, timeout_sec: float)
         )
         return int(completed.returncode), str(completed.stdout or "").strip(), None
     except subprocess.TimeoutExpired:
+        lock_path = _bundle_job_lock_path(root)
+        env = dict(os.environ)
+        env["INTRADAY_TRADE_REPORT_JOB_LOCK_PATH"] = str(lock_path)
         proc = subprocess.Popen(  # noqa: S603
             cmd,
             cwd=str(root),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=env,
             creationflags=_background_creationflags(),
         )
+        _write_bundle_job_lock(lock_path, pid=int(getattr(proc, "pid", 0) or 0), argv=cmd)
         return None, "", int(getattr(proc, "pid", 0) or 0)
 
 
@@ -189,6 +251,17 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
     if not _is_trueish(os.getenv("INTRADAY_TRADE_REPORTS_ENABLED", "true")):
         return {"ok": False, "status": "disabled", "reason": "intraday_trade_reports_disabled"}
 
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    reporter = applied_policy.get("reporter") if isinstance(applied_policy.get("reporter"), dict) else {}
+    trade_report = reporter.get("trade_report") if isinstance(reporter.get("trade_report"), dict) else {}
+    if trade_report and trade_report.get("enabled") is False:
+        return {
+            "ok": False,
+            "status": "disabled",
+            "reason": "reporter.trade_report.enabled is false",
+            "policy_source": str(trade_report.get("policy_source") or "commander_applied_policy"),
+        }
+
     if not _execution_ok(state):
         return {"ok": False, "status": "skipped", "reason": "execution_not_successful"}
 
@@ -200,6 +273,27 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
     run_id = str(state.get("run_id") or "").strip()
     argv = _build_bundle_argv(repo_root)
     force_sync = root is not None or _is_trueish(state.get("force_sync_intraday_trade_reports"))
+    execution = state.get("execution") if isinstance(state.get("execution"), dict) else {}
+    order = execution.get("order") if isinstance(execution.get("order"), dict) else {}
+    if not force_sync:
+        active_job = _active_bundle_job(_bundle_job_lock_path(repo_root))
+        if active_job:
+            return {
+                "ok": True,
+                "status": "skipped",
+                "reason": "bundle_job_already_running",
+                "return_code": None,
+                "summary": {},
+                "trade_id": "",
+                "story_id": "",
+                "report_status": "queued",
+                "report_path": "",
+                "symbol": _normalize_symbol(order.get("symbol") or ""),
+                "cache_invalidated": [],
+                "queue_mode": "background_subprocess_deduped",
+                "background_pid": int(active_job.get("pid") or 0),
+                "lock_path": str(active_job.get("lock_path") or ""),
+            }
     if force_sync:
         rc, raw = _run_bundle_sync(argv)
         queued_pid = None
@@ -211,8 +305,6 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
         )
 
     if queued_pid:
-        execution = state.get("execution") if isinstance(state.get("execution"), dict) else {}
-        order = execution.get("order") if isinstance(execution.get("order"), dict) else {}
         return {
             "ok": True,
             "status": "queued",
@@ -227,6 +319,7 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
             "cache_invalidated": [],
             "queue_mode": "background_subprocess",
             "background_pid": int(queued_pid),
+            "lock_path": str(_bundle_job_lock_path(repo_root)),
         }
 
     try:

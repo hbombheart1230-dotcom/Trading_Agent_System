@@ -221,7 +221,8 @@ Example scanner output:
     - `AI_STRATEGIST_PROVIDER=openai`
     - `AI_STRATEGIST_ENDPOINT=https://openrouter.ai/api/v1/chat/completions`
     - Commander-applied `llm.strategist.profile` selects strategist primary/fallback model
-    - Commander-applied `llm.strategist.execution_profile.*` selects timeout / token / retry posture
+    - Commander-applied `llm.execution_profile.*` is the canonical timeout / token / retry posture
+    - role-scoped `llm.<role>.execution_profile.*` remains compatibility-only when explicitly present
     - `OPENROUTER_API_KEY=<key>`
   - `STRATEGIST_FRAME_*` variables remain compatibility aliases only
   - observability: EventLog `stage=strategist_llm`, `event=result`
@@ -376,6 +377,15 @@ Commander-owned LLM profile baseline:
 - `applied_policy.llm.reporter.daily.profile = strong_reasoning`
 
 Commander-owned LLM execution profile baseline:
+
+- `applied_policy.llm.execution_profile.profile_name = default_intraday`
+- `applied_policy.llm.execution_profile.temperature = 0.2`
+- `applied_policy.llm.execution_profile.max_tokens = 8192`
+- `applied_policy.llm.execution_profile.timeout_sec = 15`
+- `applied_policy.llm.execution_profile.retry.max_attempts = 2`
+- `applied_policy.llm.execution_profile.retry.backoff_sec = 0.0`
+
+Compatibility role-scoped execution slots may still exist:
 
 - `applied_policy.llm.strategist.execution_profile.name = balanced_reasoning`
 - `applied_policy.llm.reporter.intraday.execution_profile.name = concise_review`

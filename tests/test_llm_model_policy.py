@@ -5,7 +5,11 @@ from unittest.mock import patch
 
 from graphs.commander_runtime import _run_integrated_chain
 from graphs.nodes.strategist_node import _run_strategist_frame_llm, strategist_node
-from libs.llm.model_catalog import resolve_execution_profile, resolve_model_profile
+from libs.llm.model_catalog import (
+    resolve_execution_profile,
+    resolve_model_profile,
+    resolve_policy_llm_execution_slot,
+)
 from libs.reporting.daily_report import build_separated_daily_report
 from libs.reporting.llm_daily_summary import summarize_daily_report_with_artifact
 from libs.reporting.operator_visibility import build_separated_operator_brief
@@ -27,10 +31,14 @@ def test_llm_profiles_resolve_expected_primary_and_fallback() -> None:
 
 
 def test_llm_execution_profiles_resolve_expected_defaults() -> None:
+    baseline = resolve_execution_profile("default_intraday", default_profile="default_intraday")
     strategist = resolve_execution_profile("balanced_reasoning", default_profile="balanced_reasoning")
     intraday = resolve_execution_profile("concise_review", default_profile="concise_review")
     daily = resolve_execution_profile("deep_review", default_profile="deep_review")
 
+    assert baseline["profile_name"] == "default_intraday"
+    assert baseline["retry"]["max_attempts"] == 2
+    assert baseline["retry"]["backoff_sec"] == 0.0
     assert strategist["temperature"] == 0.1
     assert strategist["max_tokens"] == 8192
     assert strategist["timeout_sec"] == 15
@@ -44,12 +52,14 @@ def test_llm_execution_profiles_resolve_expected_defaults() -> None:
 def test_llm_model_env_keys_removed_from_env_example() -> None:
     text = Path("config/.env.example").read_text(encoding="utf-8")
     for key in (
+        "AI_STRATEGIST_PROVIDER",
         "AI_STRATEGIST_MODEL_PRIMARY",
         "AI_STRATEGIST_MODEL_FALLBACK",
         "OPENROUTER_DEFAULT_MODEL",
         "OPENROUTER_MODEL_OPERATOR_UI",
         "OPENROUTER_MODEL_TRADE_REPORT",
         "OPENROUTER_MODEL_REPORTER_FINAL",
+        "OPENROUTER_X_TITLE",
         "REPORTER_AI_REVIEW_TEMPERATURE",
         "REPORTER_AI_REVIEW_MAX_TOKENS",
         "AI_STRATEGIST_TIMEOUT_SEC",
@@ -96,6 +106,13 @@ def test_commander_injects_llm_profiles_into_applied_policy(monkeypatch) -> None
     llm_policy = ((out.get("applied_policy") or {}).get("llm") or {})
     commander_decision = out.get("commander_decision") or {}
 
+    top_level_exec = llm_policy.get("execution_profile") or {}
+    assert top_level_exec.get("profile_name") == "default_intraday"
+    assert top_level_exec.get("temperature") == 0.2
+    assert top_level_exec.get("max_tokens") == 8192
+    assert top_level_exec.get("timeout_sec") == 15
+    assert (top_level_exec.get("retry") or {}).get("max_attempts") == 2
+    assert (top_level_exec.get("retry") or {}).get("backoff_sec") == 0.0
     assert ((llm_policy.get("strategist") or {}).get("profile")) == "balanced"
     assert ((llm_policy.get("strategist") or {}).get("primary")) == "deepseek/deepseek-v3.2"
     assert ((llm_policy.get("strategist") or {}).get("fallback")) == "minimax/minimax-m2.5"
@@ -118,6 +135,51 @@ def test_commander_injects_llm_profiles_into_applied_policy(monkeypatch) -> None
     assert commander_decision.get("llm_execution_profile_source") == "commander_applied_policy"
 
 
+def test_top_level_execution_profile_is_canonical_over_role_specific_slot() -> None:
+    execution_slot = resolve_policy_llm_execution_slot(
+        {
+            "applied_policy": {
+                "llm": {
+                    "execution_profile": {
+                        "profile_name": "default_intraday",
+                        "temperature": 0.25,
+                        "max_tokens": 2048,
+                        "timeout_sec": 11,
+                        "retry": {"max_attempts": 4, "backoff_sec": 0.2},
+                    },
+                    "strategist": {
+                        "execution_profile": {
+                            "name": "balanced_reasoning",
+                            "temperature": 0.1,
+                            "max_tokens": 8192,
+                            "timeout_sec": 15,
+                            "retry_max": 2,
+                        }
+                    },
+                }
+            }
+        },
+        "strategist",
+        default_profile="balanced_reasoning",
+        defaults={
+            "profile_name": "balanced_reasoning",
+            "name": "balanced_reasoning",
+            "temperature": 0.1,
+            "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry": {"max_attempts": 2, "backoff_sec": 0.0},
+        },
+    )
+
+    assert execution_slot.get("profile_name") == "default_intraday"
+    assert execution_slot.get("temperature") == 0.25
+    assert execution_slot.get("max_tokens") == 2048
+    assert execution_slot.get("timeout_sec") == 11
+    assert execution_slot.get("policy_source") == "applied_policy.llm.execution_profile"
+    assert (execution_slot.get("retry") or {}).get("max_attempts") == 4
+    assert (execution_slot.get("retry") or {}).get("backoff_sec") == 0.2
+
+
 def test_reporting_roles_use_applied_policy_models(monkeypatch):
     monkeypatch.setenv("DRY_RUN", "1")
 
@@ -128,14 +190,25 @@ def test_reporting_roles_use_applied_policy_models(monkeypatch):
         assert mock_report.call_args[1]["model"] == "minimax/minimax-m2.5"
 
     with patch("libs.reporting.fact_narrative_report.build_separated_report") as mock_report:
-        build_separated_daily_report({"applied_policy": {"llm": {"reporter": {"daily": {"primary": "moonshotai/kimi-k2.5"}}}}})
+        build_separated_daily_report(
+            {
+                "applied_policy": {
+                    "llm": {
+                        "reporter": {"daily": {"primary": "moonshotai/kimi-k2.5"}},
+                        "execution_profile": {"profile_name": "default_intraday", "max_tokens": 1444},
+                    }
+                }
+            }
+        )
         assert mock_report.call_args[1]["model"] == "moonshotai/kimi-k2.5"
+        assert mock_report.call_args[1]["execution_profile"]["profile_name"] == "default_intraday"
 
     with patch("libs.reporting.trade_read_model.build_trade_read_model", return_value={"applied_policy": {"llm": {"reporter": {"intraday": {"primary": "minimax/minimax-m2.5"}}}}}), patch(
         "libs.reporting.symbol_read_model.build_symbol_read_model", return_value={}
     ), patch("libs.reporting.fact_narrative_report.build_separated_report") as mock_report:
         build_separated_operator_brief("dir", "SYM", "root")
         assert mock_report.call_args[1]["model"] == "minimax/minimax-m2.5"
+        assert mock_report.call_args[1]["execution_profile"]["profile_name"] in {"default_intraday", "concise_review"}
 
     _summary, artifact = summarize_daily_report_with_artifact(
         state={"eod_day": "2026-04-07", "applied_policy": {"llm": {"reporter": {"daily": {"primary": "moonshotai/kimi-k2.5"}}}}},
@@ -207,6 +280,59 @@ def test_reporter_final_review_prefers_applied_policy_profile_model(monkeypatch)
     assert captured["policy"]["max_tokens"] == 4096
     assert captured["chat_policy"]["model"] == "moonshotai/kimi-k2.5"
     assert out["model"] == "moonshotai/kimi-k2.5"
+
+
+def test_reporter_final_review_uses_env_execution_fallback_when_policy_missing(monkeypatch):
+    monkeypatch.delenv("DRY_RUN", raising=False)
+    monkeypatch.setenv("REPORTER_AI_REVIEW_TEMPERATURE", "0.45")
+    monkeypatch.setenv("REPORTER_AI_REVIEW_MAX_TOKENS", "1536")
+
+    captured = {}
+
+    class FakeRoute:
+        def __init__(self, model):
+            self.model = model
+
+    class FakeRouter:
+        def __init__(self):
+            self.client = True
+
+        def resolve(self, role, policy=None):
+            captured["policy"] = dict(policy or {})
+            return FakeRoute(captured["policy"].get("model"))
+
+        def chat(self, role, messages, policy=None):
+            captured["chat_policy"] = dict(policy or {})
+            return (
+                '{"ai_summary":"ok","ai_findings":["f"],"ai_root_causes":["r"],'
+                '"ai_improvement_suggestions":["i"],"ai_run_grade":"A",'
+                '"ai_agent_evaluations":{},"ai_evidence_links":{"findings":[],"root_causes":[],"improvements":[]}}'
+            )
+
+        @classmethod
+        def from_env(cls):
+            return cls()
+
+    monkeypatch.setattr("libs.reporting.reporter_ai_review.LLMRouter", FakeRouter)
+    monkeypatch.setattr("libs.reporting.reporter_ai_review.record_raw_input", lambda *args, **kwargs: None)
+    monkeypatch.setattr("libs.reporting.reporter_ai_review.record_llm_prompt", lambda *args, **kwargs: None)
+    monkeypatch.setattr("libs.reporting.reporter_ai_review.record_llm_response", lambda *args, **kwargs: None)
+
+    out = build_ai_reporter_review(
+        day="2026-04-09",
+        reporter_output={
+            "applied_policy": {
+                "reporter": {"ai_review": {"enabled": True}},
+                "llm": {"reporter": {"daily": {"primary": "moonshotai/kimi-k2.5"}}},
+            }
+        },
+    )
+
+    assert float(captured["policy"]["temperature"]) == 0.45
+    assert int(captured["policy"]["max_tokens"]) == 1536
+    assert out["llm_execution_profile_source"] == "fallback_env"
+    assert float((out["llm_execution_effective_config"] or {}).get("temperature") or 0.0) == 0.45
+    assert int((out["llm_execution_effective_config"] or {}).get("max_tokens") or 0) == 1536
 
 
 def test_strategist_primary_fallback_trace_reads_policy_models(monkeypatch):

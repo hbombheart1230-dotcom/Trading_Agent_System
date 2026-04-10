@@ -12,6 +12,8 @@ from libs.ai.strategist_config import (
     strategist_max_tokens,
     strategist_fallback_model,
     strategist_model,
+    strategist_runtime_settings,
+    strategist_retry_backoff_sec,
     strategist_retry_max,
     strategist_timeout_sec,
 )
@@ -248,6 +250,9 @@ class OpenAIStrategist:
         cb_fail_threshold: int = DEFAULT_CB_FAIL_THRESHOLD,
         cb_cooldown_sec: float = DEFAULT_CB_COOLDOWN_SEC,
         json_response_format: bool = True,
+        llm_execution_profile_name: str = "",
+        llm_execution_profile_source: str = "",
+        llm_execution_effective_config: Dict[str, Any] | None = None,
     ):
         self.api_key = api_key
         self.endpoint = endpoint
@@ -263,6 +268,9 @@ class OpenAIStrategist:
         self.cb_fail_threshold = max(0, int(cb_fail_threshold))
         self.cb_cooldown_sec = max(0.0, float(cb_cooldown_sec))
         self.json_response_format = bool(json_response_format)
+        self.llm_execution_profile_name = str(llm_execution_profile_name or "").strip()
+        self.llm_execution_profile_source = str(llm_execution_profile_source or "").strip()
+        self.llm_execution_effective_config = dict(llm_execution_effective_config or {})
 
     def _effective_model(self) -> str:
         model = normalize_openrouter_model_name(self.model)
@@ -272,6 +280,7 @@ class OpenAIStrategist:
 
     @classmethod
     def from_env(cls, policy: Dict[str, Any] | None = None) -> "OpenAIStrategist":
+        runtime_settings = strategist_runtime_settings(policy)
         api_key = strategist_api_key(policy)
         endpoint = strategist_endpoint(policy)
         model = strategist_model(policy)
@@ -281,13 +290,7 @@ class OpenAIStrategist:
         resolved_max_tokens = strategist_max_tokens(policy)
         max_tokens: Optional[int] = int(resolved_max_tokens) if int(resolved_max_tokens) > 0 else None
         retry_max = strategist_retry_max(policy)
-
-        raw_backoff = (os.getenv("AI_STRATEGIST_RETRY_BACKOFF_SEC") or "0.5").strip()
-        retry_backoff_sec = 0.5
-        try:
-            retry_backoff_sec = max(0.0, float(raw_backoff))
-        except Exception:
-            retry_backoff_sec = 0.5
+        retry_backoff_sec = strategist_retry_backoff_sec(policy)
         prompt_version = DEFAULT_PROMPT_VERSION
         schema_version = DEFAULT_SCHEMA_VERSION
         raw_cb_fail_threshold = (os.getenv("AI_STRATEGIST_CB_FAIL_THRESHOLD") or str(DEFAULT_CB_FAIL_THRESHOLD)).strip()
@@ -321,6 +324,9 @@ class OpenAIStrategist:
             cb_fail_threshold=cb_fail_threshold,
             cb_cooldown_sec=cb_cooldown_sec,
             json_response_format=json_response_format,
+            llm_execution_profile_name=str(runtime_settings.get("llm_execution_profile_name") or ""),
+            llm_execution_profile_source=str(runtime_settings.get("llm_execution_profile_source") or ""),
+            llm_execution_effective_config=dict(runtime_settings.get("llm_execution_effective_config") or {}),
         )
 
     @staticmethod
@@ -681,6 +687,9 @@ class OpenAIStrategist:
             )
             meta.setdefault("prompt_version", self.prompt_version)
             meta.setdefault("schema_version", self.schema_version)
+            meta.setdefault("llm_execution_profile_name", self.llm_execution_profile_name)
+            meta.setdefault("llm_execution_profile_source", self.llm_execution_profile_source)
+            meta.setdefault("llm_execution_effective_config", dict(self.llm_execution_effective_config or {}))
             if usage.get("prompt_tokens") is not None:
                 meta.setdefault("prompt_tokens", int(usage["prompt_tokens"]))
             if usage.get("completion_tokens") is not None:

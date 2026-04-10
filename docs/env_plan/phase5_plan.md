@@ -1,12 +1,17 @@
 # Phase 5: Model Catalog Automation (Lightweight)
 
 ## Goal
-Introduce automatic model catalog collection (no auto-switching).
+Introduce automatic model catalog collection without runtime switching.
 
 ## Scope
 - OpenRouter model list fetch
-- Internal model card generation
-- No runtime impact
+- internal model card generation
+- runtime-neutral catalog layer only
 
 ## Status
-PLANNED
+CLOSED
+
+## Reference
+- Close note: `docs/env_plan/phase5_close.md`
+- Catalog review: `docs/env_plan/phase5_catalog_review.md`
+- Sync ops note: `docs/env_plan/phase5_sync_ops_note.md`

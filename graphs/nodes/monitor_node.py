@@ -532,11 +532,22 @@ def _resolve_exit_confirm_ticks(state: Dict[str, Any], policy: Dict[str, Any]) -
 
 
 def _resolve_use_exit_policy(state: Dict[str, Any], policy: Dict[str, Any]) -> bool:
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    applied_exit = (
+        (((applied_policy.get("monitor") or {}).get("exit") or {}).get("enabled"))
+        if isinstance((applied_policy.get("monitor") or {}).get("exit"), dict)
+        else None
+    )
+    if applied_exit is not None:
+        return _is_trueish(applied_exit)
     if state.get("use_exit_policy") is not None:
         return _is_trueish(state.get("use_exit_policy"))
     if isinstance(policy, dict) and policy.get("use_exit_policy") is not None:
         return _is_trueish(policy.get("use_exit_policy"))
-    return _is_trueish(os.getenv("USE_EXIT_POLICY", "false"))
+    raw_env = str(os.getenv("USE_EXIT_POLICY", "") or "").strip()
+    if raw_env:
+        return _is_trueish(raw_env)
+    return True
 
 
 def _resolve_post_exit_cooldown_sec(state: Dict[str, Any], policy: Dict[str, Any], monitor_policy: Dict[str, Any]) -> int:
@@ -571,13 +582,20 @@ def _resolve_block_buy_when_open_position(
     policy: Dict[str, Any],
     monitor_policy: Dict[str, Any],
 ) -> bool:
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    applied_entry = (applied_policy.get("monitor") or {}).get("entry") if isinstance((applied_policy.get("monitor") or {}), dict) else {}
+    if isinstance(applied_entry, dict) and applied_entry.get("block_buy_when_open_position") is not None:
+        return _is_trueish(applied_entry.get("block_buy_when_open_position"))
     if state.get("monitor_block_buy_when_open_position") is not None:
         return _is_trueish(state.get("monitor_block_buy_when_open_position"))
     if isinstance(monitor_policy, dict) and monitor_policy.get("block_buy_when_open_position") is not None:
         return _is_trueish(monitor_policy.get("block_buy_when_open_position"))
     if isinstance(policy, dict) and policy.get("block_buy_when_open_position") is not None:
         return _is_trueish(policy.get("block_buy_when_open_position"))
-    return _is_trueish(os.getenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false"))
+    raw_env = str(os.getenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "") or "").strip()
+    if raw_env:
+        return _is_trueish(raw_env)
+    return True
 
 
 def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, Any]:
@@ -613,8 +631,19 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
     vwap_breakdown_raw = str(os.getenv("EXIT_POLICY_VWAP_BREAKDOWN_PCT", "") or "").strip()
     intraday_low_break_raw = str(os.getenv("EXIT_POLICY_INTRADAY_LOW_BREAK_PCT", "") or "").strip()
     trend_strength_floor_raw = str(os.getenv("EXIT_POLICY_TREND_STRENGTH_FLOOR", "") or "").strip()
-    eod_flat_raw = str(os.getenv("EXIT_POLICY_USE_EOD_FLAT", "") or "").strip()
     applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    eod_flat_enabled = (
+        ((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("enabled"))
+        if isinstance((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")), dict)
+        else None
+    )
+    if eod_flat_enabled is None and isinstance(policy.get("monitor"), dict):
+        eod_flat_enabled = (
+            ((((policy.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("enabled"))
+            if isinstance((((policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")), dict)
+            else None
+        )
+    eod_flat_raw = str(os.getenv("EXIT_POLICY_USE_EOD_FLAT", "") or "").strip()
     eod_cutoff_value = (
         ((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("cutoff_min"))
         if isinstance((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")), dict)
@@ -659,8 +688,12 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
         out["intraday_low_break_pct"] = float(x if x > 0.0 else base)
     if trend_strength_floor_raw:
         out["trend_strength_floor"] = _to_float(trend_strength_floor_raw, _to_float(out.get("trend_strength_floor")))
-    if eod_flat_raw:
+    if eod_flat_enabled is not None:
+        out["use_eod_flat"] = _is_trueish(eod_flat_enabled)
+    elif eod_flat_raw:
         out["use_eod_flat"] = _is_trueish(eod_flat_raw)
+    elif out.get("use_eod_flat") in (None, ""):
+        out["use_eod_flat"] = True
     if eod_cutoff_value is not None:
         base = _to_float(out.get("eod_flat_cutoff_min"))
         if base <= 0.0:
@@ -669,6 +702,8 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
         out["eod_flat_cutoff_min"] = int(x if x > 0.0 else base)
     if emergency_raw:
         out["emergency_halt"] = _is_trueish(emergency_raw)
+    out.setdefault("policy_source", str(out.get("effective_policy_source") or "monitor_exit_policy_effective"))
+    out.setdefault("effective_policy_source", str(out.get("policy_source") or "monitor_exit_policy_effective"))
     return out
 
 
@@ -862,6 +897,14 @@ def _build_monitor_policy_trace(
         "exit_trigger_basis": {
             "exit_reason": str(exit_info.get("reason") or ""),
             "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
+            "final_exit_thresholds": dict(exit_info.get("final_exit_thresholds") or {}),
+            "exit_threshold_source": str(exit_info.get("exit_threshold_source") or ""),
+            "hold_block_reason": str(exit_info.get("hold_block_reason") or ""),
+            "final_peak_drawdown_ratio": exit_info.get("final_peak_drawdown_ratio"),
+            "peak_drawdown_source": str(exit_info.get("peak_drawdown_source") or ""),
+            "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
+            "exit_trigger_metric_value": exit_info.get("exit_trigger_metric_value"),
+            "exit_trigger_metric_source": str(exit_info.get("exit_trigger_metric_source") or ""),
             "exit_plan": exit_plan,
             "monitor_mission": monitor_mission,
         },
@@ -2756,6 +2799,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             min_hold_sec=min_hold_sec,
         )
         effective_exit_policy_base = dict(exit_policy_harmonized.get("policy") or {})
+        effective_exit_policy_base["policy_source"] = str(
+            effective_exit_policy_base.get("policy_source")
+            or effective_exit_policy_base.get("effective_policy_source")
+            or "monitor_effective_exit_policy"
+        )
+        effective_exit_policy_base["effective_policy_source"] = str(
+            effective_exit_policy_base.get("effective_policy_source")
+            or effective_exit_policy_base.get("policy_source")
+            or "monitor_effective_exit_policy"
+        )
         exit_policy_guard_adjustments = list(exit_policy_harmonized.get("adjustments") or [])
         exit_policy_strategy = _apply_exit_policy_strategy_frame(
             state=state,
@@ -2765,6 +2818,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             frame=frame_applied,
         )
         effective_exit_policy_base = dict(exit_policy_strategy.get("policy") or effective_exit_policy_base)
+        effective_exit_policy_base["policy_source"] = str(
+            effective_exit_policy_base.get("policy_source")
+            or effective_exit_policy_base.get("effective_policy_source")
+            or "monitor_effective_exit_policy"
+        )
+        effective_exit_policy_base["effective_policy_source"] = str(
+            effective_exit_policy_base.get("effective_policy_source")
+            or effective_exit_policy_base.get("policy_source")
+            or "monitor_effective_exit_policy"
+        )
         exit_policy_guard_adjustments.extend(list(exit_policy_strategy.get("adjustments") or []))
         symbol = _select_exit_symbol(
             selected_symbol,
@@ -2863,6 +2926,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         confirm_count = 0
         sell_guard_blocked = False
         sell_guard_reason = ""
+        hold_block_reason = str(decision.get("hold_block_reason") or "")
         monitor_reason = "hold"
         min_hold_blocked = False
         sell_cooldown_blocked = False
@@ -2887,16 +2951,19 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 sell_guard_blocked = True
                 sell_guard_reason = "sell_guard_pending_exit_lock"
                 monitor_reason = "pending_exit_lock"
+                hold_block_reason = f"{str(decision.get('reason') or 'exit_signal')}:{sell_guard_reason}"
             elif not emergency_exit and not hard_exit and min_hold_sec > 0 and hold_sec > 0 and hold_sec < min_hold_sec:
                 sell_guard_blocked = True
                 min_hold_blocked = True
                 sell_guard_reason = f"sell_guard_min_hold:{hold_sec}s<{min_hold_sec}s"
                 monitor_reason = "min_hold_active"
+                hold_block_reason = f"{str(decision.get('reason') or 'exit_signal')}:{sell_guard_reason}"
             elif not emergency_exit and not hard_exit and sell_cooldown_sec > 0 and cooldown_until > now_epoch:
                 sell_guard_blocked = True
                 sell_cooldown_blocked = True
                 sell_guard_reason = f"sell_guard_cooldown:{max(0, cooldown_until - now_epoch)}s_remaining"
                 monitor_reason = "cooldown_active"
+                hold_block_reason = f"{str(decision.get('reason') or 'exit_signal')}:{sell_guard_reason}"
             elif not emergency_exit and not hard_exit and confirm_ticks > 1:
                 confirm_count = _to_int(confirm_map.get(confirm_key)) + 1
                 confirm_map[confirm_key] = int(confirm_count)
@@ -2904,6 +2971,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     sell_guard_blocked = True
                     sell_guard_reason = f"exit_confirmation_pending:{confirm_count}/{confirm_ticks}"
                     monitor_reason = "exit_signal_pending_confirmation"
+                    hold_block_reason = f"{str(decision.get('reason') or 'exit_signal')}:{sell_guard_reason}"
             if not sell_guard_blocked and not monitor_reason:
                 monitor_reason = "confirmed_exit_signal"
         else:
@@ -2965,6 +3033,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "account_current_price": decision.get("account_current_price"),
             "account_current_price_source": str(decision.get("account_current_price_source") or ""),
             "account_mark_price": decision.get("account_mark_price"),
+            "account_mark_price_source": str(decision.get("account_mark_price_source") or ""),
             "account_unrealized_pnl": decision.get("account_unrealized_pnl"),
             "account_pnl_ratio": decision.get("account_pnl_ratio"),
             "account_pnl_ratio_source": str(decision.get("account_pnl_ratio_source") or ""),
@@ -2972,7 +3041,22 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "pnl_crosscheck_reason": str(decision.get("pnl_crosscheck_reason") or ""),
             "pnl_crosscheck_gap": decision.get("pnl_crosscheck_gap"),
             "price_crosscheck_gap": decision.get("price_crosscheck_gap"),
+            "price_anomaly_flag": bool(decision.get("price_anomaly_flag")),
+            "price_anomaly_reason": str(decision.get("price_anomaly_reason") or ""),
+            "pnl_fallback_applied": bool(decision.get("pnl_fallback_applied")),
+            "fallback_price_source": str(decision.get("fallback_price_source") or ""),
             "thresholds": decision.get("thresholds") if isinstance(decision.get("thresholds"), dict) else {},
+            "final_exit_thresholds": (
+                dict(decision.get("final_exit_thresholds") or {})
+                if isinstance(decision.get("final_exit_thresholds"), dict)
+                else dict(decision.get("thresholds") or {})
+            ),
+            "exit_threshold_source": str(decision.get("exit_threshold_source") or ""),
+            "final_peak_drawdown_ratio": decision.get("final_peak_drawdown_ratio"),
+            "peak_drawdown_source": str(decision.get("peak_drawdown_source") or ""),
+            "exit_trigger_metric_name": str(decision.get("exit_trigger_metric_name") or ""),
+            "exit_trigger_metric_value": decision.get("exit_trigger_metric_value"),
+            "exit_trigger_metric_source": str(decision.get("exit_trigger_metric_source") or ""),
             "effective_exit_policy": dict(effective_exit_policy_base),
             "hold_sec": hold_sec if hold_sec > 0 else None,
             "trailing_drawdown": decision.get("trailing_drawdown"),
@@ -2982,7 +3066,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "volatility_regime": str(features.get("engine_regime") or ""),
             "price_source": str(decision.get("_price_source") or ""),
             "effective_price_source": str(decision.get("effective_price_source") or ""),
-            "price_source_policy": "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized; effective_exit_price=min(raw_price, account_mark_price)",
+            "price_source_policy": "market.quote > position.current_price > selected > market_snapshot > position.avg_plus_unrealized; effective_exit_price prefers the most conservative sane cross-check price and falls back when account-derived mark is anomalous",
             "feature_source": str(decision.get("_feature_source") or ""),
             "minutes_to_close": decision.get("minutes_to_close"),
             "min_hold_sec": int(min_hold_sec),
@@ -2995,6 +3079,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "exit_signal_detected": bool(exit_signal_detected),
             "min_hold_blocked": bool(min_hold_blocked),
             "sell_cooldown_blocked": bool(sell_cooldown_blocked),
+            "hold_block_reason": str(hold_block_reason),
             "sell_cooldown_until": (int(cooldown_until) if cooldown_until > 0 else None),
             "pending_exit_lock_active": bool(lock_until > now_epoch),
             "pending_exit_lock_until": (int(lock_until) if lock_until > 0 else None),
@@ -3304,12 +3389,24 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "effective_stop_loss_pct": thresholds.get("effective_stop_loss_pct"),
         "take_profit_pct": thresholds.get("take_profit_pct"),
         "trailing_stop_pct": thresholds.get("trailing_stop_pct"),
+        "final_exit_thresholds": dict(exit_info.get("final_exit_thresholds") or {}),
+        "exit_threshold_source": str(exit_info.get("exit_threshold_source") or ""),
+        "hold_block_reason": str(exit_info.get("hold_block_reason") or ""),
+        "final_peak_drawdown_ratio": exit_info.get("final_peak_drawdown_ratio"),
+        "peak_drawdown_source": str(exit_info.get("peak_drawdown_source") or ""),
+        "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
+        "exit_trigger_metric_value": exit_info.get("exit_trigger_metric_value"),
+        "exit_trigger_metric_source": str(exit_info.get("exit_trigger_metric_source") or ""),
         "vwap_distance_pct": exit_info.get("vwap_distance"),
         "volatility_regime": str(exit_info.get("volatility_regime") or ""),
         "active_exit_axis": str(exit_info.get("active_exit_axis") or ""),
         "watch_axes": list(exit_info.get("watch_axes") or []),
         "exit_confirm_required": int(exit_info.get("exit_confirm_ticks") or 0),
         "exit_confirm_count": int(exit_info.get("exit_confirm_count") or 0),
+        "price_anomaly_flag": bool(exit_info.get("price_anomaly_flag")),
+        "price_anomaly_reason": str(exit_info.get("price_anomaly_reason") or ""),
+        "pnl_fallback_applied": bool(exit_info.get("pnl_fallback_applied")),
+        "fallback_price_source": str(exit_info.get("fallback_price_source") or ""),
         "entry_timeframe_minutes": entry_metrics.get("timeframe_minutes"),
         "entry_minute_source_present": entry_metrics.get("minute_source_present"),
         "entry_minute_source_used": entry_metrics.get("minute_source_used"),
@@ -3576,15 +3673,28 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "price": exit_info.get("price"),
         "effective_price": exit_info.get("effective_price"),
         "account_mark_price": exit_info.get("account_mark_price"),
+        "account_mark_price_source": str(exit_info.get("account_mark_price_source") or ""),
         "account_unrealized_pnl": exit_info.get("account_unrealized_pnl"),
         "account_pnl_ratio_source": str(exit_info.get("account_pnl_ratio_source") or ""),
         "pnl_crosscheck_applied": bool(exit_info.get("pnl_crosscheck_applied")),
         "pnl_crosscheck_reason": str(exit_info.get("pnl_crosscheck_reason") or ""),
         "pnl_crosscheck_gap": exit_info.get("pnl_crosscheck_gap"),
+        "price_anomaly_flag": bool(exit_info.get("price_anomaly_flag")),
+        "price_anomaly_reason": str(exit_info.get("price_anomaly_reason") or ""),
+        "pnl_fallback_applied": bool(exit_info.get("pnl_fallback_applied")),
+        "fallback_price_source": str(exit_info.get("fallback_price_source") or ""),
         "confirm_count": int(exit_info.get("exit_confirm_count") or 0),
         "confirm_required": int(exit_info.get("exit_confirm_ticks") or 0),
         "guard_blocked": bool(exit_info.get("sell_guard_blocked")),
         "guard_reason": str(exit_info.get("sell_guard_reason") or ""),
+        "hold_block_reason": str(exit_info.get("hold_block_reason") or ""),
+        "final_exit_thresholds": dict(exit_info.get("final_exit_thresholds") or {}),
+        "exit_threshold_source": str(exit_info.get("exit_threshold_source") or ""),
+        "final_peak_drawdown_ratio": exit_info.get("final_peak_drawdown_ratio"),
+        "peak_drawdown_source": str(exit_info.get("peak_drawdown_source") or ""),
+        "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
+        "exit_trigger_metric_value": exit_info.get("exit_trigger_metric_value"),
+        "exit_trigger_metric_source": str(exit_info.get("exit_trigger_metric_source") or ""),
         "sell_submitted": bool(sell_submitted),
         "sell_skipped_reason": sell_skipped_reason,
         "final_reason": current_reason,
@@ -3627,6 +3737,14 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["entry_blockers"] = list(monitor_policy_trace.get("entry_blockers") or [])
         state["monitor_output"]["timing_assessment"] = dict(monitor_policy_trace.get("timing_assessment") or {})
         state["monitor_output"]["exit_trigger_basis"] = dict(monitor_policy_trace.get("exit_trigger_basis") or {})
+        state["monitor_output"]["final_exit_thresholds"] = dict(exit_info.get("final_exit_thresholds") or {})
+        state["monitor_output"]["exit_threshold_source"] = str(exit_info.get("exit_threshold_source") or "")
+        state["monitor_output"]["hold_block_reason"] = str(exit_info.get("hold_block_reason") or "")
+        state["monitor_output"]["final_peak_drawdown_ratio"] = exit_info.get("final_peak_drawdown_ratio")
+        state["monitor_output"]["peak_drawdown_source"] = str(exit_info.get("peak_drawdown_source") or "")
+        state["monitor_output"]["exit_trigger_metric_name"] = str(exit_info.get("exit_trigger_metric_name") or "")
+        state["monitor_output"]["exit_trigger_metric_value"] = exit_info.get("exit_trigger_metric_value")
+        state["monitor_output"]["exit_trigger_metric_source"] = str(exit_info.get("exit_trigger_metric_source") or "")
         state["monitor_output"]["received_policy"] = dict(entry_info.get("received_policy") or entry_received_policy or {})
         state["monitor_output"]["received_policy_source"] = str(entry_info.get("received_policy_source") or entry_policy_origin or "")
         state["monitor_output"]["policy_contract"] = dict(entry_info.get("policy_contract") or entry_policy_contract or {})

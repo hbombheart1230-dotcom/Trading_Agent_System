@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from libs.llm.model_catalog import resolve_policy_llm_slot
+from libs.llm.model_catalog import resolve_policy_llm_execution_slot, resolve_policy_llm_slot
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.reporting.llm_artifacts import daily_artifact_paths
 from libs.reporting.narrative_axes import build_narrative_explanation, narrative_axis_policy
@@ -1589,4 +1589,25 @@ def build_separated_operator_brief(trade_dir: str, symbol: str, trades_root: str
         or str(resolve_policy_llm_slot(llm_scope if isinstance(llm_scope, dict) else {}, "reporter", "intraday", default_profile="fast_free").get("primary") or "").strip()
         or "minimax/minimax-m2.5"
     )
-    return build_separated_report(trade_model=trade_model, symbol_model=symbol_model, model=chosen_model)
+    execution_profile = resolve_policy_llm_execution_slot(
+        llm_scope if isinstance(llm_scope, dict) else {},
+        "reporter",
+        "intraday",
+        default_profile="concise_review",
+        defaults={
+            "profile_name": "concise_review",
+            "name": "concise_review",
+            "temperature": 0.2,
+            "max_tokens": 8192,
+            "timeout_sec": 15,
+            "retry": {"max_attempts": 2, "backoff_sec": 0.0},
+            "retry_max": 2,
+            "retry_backoff_sec": 0.0,
+        },
+    )
+    return build_separated_report(
+        trade_model=trade_model,
+        symbol_model=symbol_model,
+        model=chosen_model,
+        execution_profile=execution_profile,
+    )

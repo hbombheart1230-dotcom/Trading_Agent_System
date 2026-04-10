@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional
 import json
 import os
 from libs.llm.llm_router import LLMRouter
+from libs.llm.model_catalog import build_execution_profile_observability
 from libs.llm.json_response import parse_llm_json_response
 
 def build_fact_payload(
@@ -16,16 +17,41 @@ def build_fact_payload(
         "symbol": symbol_model or {}
     }
 
-def generate_narrative(fact_payload: Dict[str, Any], *, model: Optional[str] = None) -> Dict[str, Any]:
+def generate_narrative(
+    fact_payload: Dict[str, Any],
+    *,
+    model: Optional[str] = None,
+    execution_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Phase 6-1 Task 4: Generate strictly narrative part using LLM based ONLY on fact_payload."""
+    execution_slot = dict(execution_profile or {})
+    temperature = float(execution_slot.get("temperature") or 0.2)
+    max_tokens = max(256, int(float(execution_slot.get("max_tokens") or 8192)))
+    timeout_sec = max(1.0, float(execution_slot.get("timeout_sec") or 15.0))
+    execution_observability = build_execution_profile_observability(
+        execution_slot,
+        effective_overrides={
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "timeout_sec": timeout_sec,
+        },
+    )
     narrative = {
         "summary": "",
         "insight": "",
         "recommendation": "",
         "source": "llm",
         "based_on": "fact_payload",
-        "status": "skipped"
+        "status": "skipped",
+        **execution_observability,
     }
+
+    explicit_model = str(model or "").strip()
+    if not explicit_model:
+        narrative["status"] = "skipped"
+        narrative["reason"] = "explicit_model_not_provided"
+        narrative["llm_call_skipped"] = True
+        return narrative
 
     if str(os.getenv("DRY_RUN", "0")).strip().lower() in ("1", "true", "yes", "on"):
         narrative["status"] = "dry_run"
@@ -51,11 +77,16 @@ def generate_narrative(fact_payload: Dict[str, Any], *, model: Optional[str] = N
         {"role": "user", "content": json.dumps(fact_payload, ensure_ascii=False)}
     ]
 
-    primary_model = model
+    primary_model = explicit_model
     fallback_model = "minimax/minimax-m2.5"
     
     def _attempt_call(target_model: str) -> Dict[str, Any]:
-        policy = {"response_format": {"type": "json_object"}}
+        policy = {
+            "response_format": {"type": "json_object"},
+            "temperature": float(temperature),
+            "max_tokens": int(max_tokens),
+            "timeout_sec": float(timeout_sec),
+        }
         if target_model:
             policy["model"] = target_model
         raw = router.chat("reporter_final", messages, policy=policy)
@@ -94,11 +125,12 @@ def build_separated_report(
     daily_model: Optional[Dict[str, Any]] = None,
     symbol_model: Optional[Dict[str, Any]] = None,
     *,
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    execution_profile: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Phase 6-1 Task 4: Build the unified report structure with separated facts and narrative."""
     fact_payload = build_fact_payload(trade_model, daily_model, symbol_model)
-    narrative = generate_narrative(fact_payload, model=model)
+    narrative = generate_narrative(fact_payload, model=model, execution_profile=execution_profile)
     return {
         "fact_payload": fact_payload,
         "narrative": narrative

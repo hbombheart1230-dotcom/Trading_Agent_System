@@ -43,6 +43,44 @@ def test_m20_1_from_env_reads_timeout_and_max_tokens(monkeypatch):
     assert s.json_response_format is True
 
 
+def test_m20_1_from_env_prefers_top_level_execution_profile(monkeypatch):
+    monkeypatch.setenv("AI_STRATEGIST_API_KEY", "k")
+    monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://example.invalid/strategist")
+
+    s = prov.OpenAIStrategist.from_env(
+        {
+            "applied_policy": {
+                "llm": {
+                    "execution_profile": {
+                        "profile_name": "default_intraday",
+                        "temperature": 0.3,
+                        "max_tokens": 777,
+                        "timeout_sec": 8,
+                        "retry": {"max_attempts": 4, "backoff_sec": 0.0},
+                    },
+                    "strategist": {
+                        "primary": "gpt-test",
+                        "execution_profile": {
+                            "name": "balanced_reasoning",
+                            "timeout_sec": 15,
+                            "max_tokens": 256,
+                            "retry_max": 1,
+                        },
+                    },
+                }
+            }
+        }
+    )
+
+    assert s.model == "gpt-test"
+    assert abs(float(s.timeout_sec) - 8.0) < 1e-9
+    assert s.max_tokens == 777
+    assert s.retry_max == 4
+    assert s.llm_execution_profile_name == "default_intraday"
+    assert s.llm_execution_profile_source == "applied_policy"
+    assert int(((s.llm_execution_effective_config or {}).get("retry") or {}).get("max_attempts") or 0) == 4
+
+
 def test_m20_1_from_env_normalizes_openrouter_alias_model(monkeypatch):
     monkeypatch.setenv("AI_STRATEGIST_API_KEY", "k")
     monkeypatch.setenv("AI_STRATEGIST_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions")
@@ -124,6 +162,8 @@ def test_m20_1_decide_posts_payload_and_parses_response(monkeypatch):
     assert d.meta["completion_tokens"] == 50
     assert d.meta["total_tokens"] == 150
     assert abs(float(d.meta["estimated_cost_usd"]) - 0.00105) < 1e-12
+    assert d.meta["llm_execution_profile_name"] == ""
+    assert d.meta["llm_execution_profile_source"] == ""
 
     assert captured["url"] == "https://example.invalid/strategist"
     assert captured["headers"]["Authorization"] == "Bearer k"

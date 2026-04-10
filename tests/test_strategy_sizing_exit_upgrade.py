@@ -315,3 +315,57 @@ def test_exit_policy_prefers_direct_account_pnl_ratio_when_available():
     assert round(float(out.get("pnl_ratio") or 0.0), 4) == -0.0337
     assert out.get("pnl_crosscheck_applied") is True
     assert str(out.get("pnl_crosscheck_reason") or "") == "account_pnl_ratio_more_conservative"
+
+
+def test_exit_policy_flags_account_ratio_mark_anomaly_and_falls_back_to_sane_price():
+    policy = apply_account_pnl_crosscheck_context(
+        {"stop_loss_pct": 0.02, "take_profit_pct": 0.10},
+        position={
+            "symbol": "005930",
+            "qty": 1,
+            "avg_price": 100.0,
+            "current_price": 97.0,
+            "unrealized_pnl": -3.0,
+            "account_pnl_ratio": -0.9,
+            "account_pnl_ratio_source": "position.prft_rt",
+        },
+    )
+    out = evaluate_exit_policy(
+        price=97.0,
+        avg_price=100.0,
+        qty=1,
+        policy=policy,
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "stop_loss"
+    assert out["price_anomaly_flag"] is True
+    assert "account_pnl_ratio_mark" in str(out.get("price_anomaly_reason") or "")
+    assert out["pnl_fallback_applied"] is True
+    assert str(out.get("fallback_price_source") or "") == "account_unrealized_mark"
+    assert round(float(out.get("effective_price") or 0.0), 2) == 97.0
+    assert str(out.get("effective_price_source") or "") == "account_unrealized_mark"
+    assert round(float(out.get("pnl_ratio") or 0.0), 4) == -0.03
+
+
+def test_exit_policy_peak_drawdown_triggers_even_without_profitable_peak_buffer():
+    out = evaluate_exit_policy(
+        price=97.5,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "peak_drawdown_exit_pct": 0.02,
+            "take_profit_pct": 0.0,
+            "stop_loss_pct": 0.0,
+            "hard_stop_pct": 0.0,
+        },
+    )
+    assert out["triggered"] is True
+    assert out["reason"] == "peak_drawdown"
+    assert float(out.get("peak_drawdown") or 0.0) <= -0.02
+    assert float(out.get("final_peak_drawdown_ratio") or 0.0) <= -0.02
+    assert str(out.get("peak_drawdown_source") or "") == "effective_price_vs_peak_price"
+    assert str(out.get("exit_trigger_metric_name") or "") == "peak_drawdown_ratio"
+    assert float(out.get("exit_trigger_metric_value") or 0.0) <= -0.02
+    assert str(out.get("exit_trigger_metric_source") or "") == "effective_price_vs_peak_price"
+    assert isinstance(out.get("final_exit_thresholds"), dict)
+    assert str(out.get("exit_threshold_source") or "") != ""

@@ -84,7 +84,7 @@ def _build_parser(default_env_path: Path) -> argparse.ArgumentParser:
     parser.add_argument(
         "--tick-pipeline",
         choices=["legacy_m10", "integrated_chain"],
-        default=_normalize_tick_pipeline(os.getenv("M13_TICK_PIPELINE", "integrated_chain")),
+        default="integrated_chain",
     )
     parser.add_argument("--sleep-sec", type=int, default=_to_int(os.getenv("SCAN_INTERVAL_SEC", "60"), 60))
     parser.add_argument("--once", action="store_true")
