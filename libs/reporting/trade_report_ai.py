@@ -3735,6 +3735,10 @@ def build_ai_trade_report(
     else:
         retry_max = max(0, int(float(execution_profile.get("retry_max") or 2)))
         execution_profile_source = "default"
+    execution_observability = build_execution_profile_observability(
+        execution_profile,
+        env_used=(execution_profile_source == "fallback_env"),
+    )
     empty_required_meta = {
         "parse_mode": "none",
         "required_keys_expected": list(AI_TRADE_REPORT_REQUIRED_KEYS),

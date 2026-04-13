@@ -1525,6 +1525,351 @@ def _backfill_open_lifecycle_monitor_reason(
     return out
 
 
+def _null_if_empty(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    return value
+
+
+def _build_execution_details_from_bundle(
+    bundle: Dict[str, Any],
+    *,
+    context: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    bundle = bundle if isinstance(bundle, dict) else {}
+    context = context if isinstance(context, dict) else {}
+    execution = bundle.get("execution") if isinstance(bundle.get("execution"), dict) else {}
+    executor = bundle.get("executor") if isinstance(bundle.get("executor"), dict) else {}
+    executor_broker_result = executor.get("broker_result") if isinstance(executor.get("broker_result"), dict) else {}
+    order_request = executor.get("order_request_summary") if isinstance(executor.get("order_request_summary"), dict) else {}
+    monitor_context = context.get("monitor_context") if isinstance(context.get("monitor_context"), dict) else {}
+    execution_context = context.get("execution_context") if isinstance(context.get("execution_context"), dict) else {}
+
+    order_status = (
+        _null_if_empty(execution.get("status"))
+        or _null_if_empty(executor_broker_result.get("status"))
+        or _null_if_empty(executor.get("broker_message"))
+        or _null_if_empty(executor.get("final_execution_status"))
+        or _null_if_empty(execution_context.get("status_text"))
+        or _null_if_empty(execution_context.get("summary"))
+    )
+    order_id = (
+        _null_if_empty(execution.get("order_id"))
+        or _null_if_empty(execution.get("ord_no"))
+        or _null_if_empty(executor.get("order_id"))
+        or _null_if_empty(executor_broker_result.get("ord_no"))
+        or _null_if_empty(executor_broker_result.get("order_id"))
+    )
+    
+    if not order_id:
+        for text_field in (
+            executor.get("broker_message"), 
+            execution_context.get("summary"), 
+            execution_context.get("status_text")
+        ):
+            if text_field and isinstance(text_field, str):
+                match = re.search(r"(?:ord_no|order_id|order)\s*[:=]\s*([A-Za-z0-9_]+)", text_field, re.IGNORECASE)
+                if match:
+                    order_id = match.group(1)
+                    break
+
+    execution_mode = (
+        _null_if_empty(executor.get("execution_mode"))
+        or _null_if_empty(executor.get("effective_mode"))
+        or _null_if_empty(executor.get("mode"))
+        or _null_if_empty(execution_context.get("execution_mode"))
+    )
+    broker_env = (
+        _null_if_empty(executor.get("broker_env"))
+        or _null_if_empty(executor_broker_result.get("broker_env"))
+        or _null_if_empty(execution_context.get("broker_env"))
+    )
+    filled_qty = _null_if_empty(
+        execution.get("filled_qty")
+        if execution.get("filled_qty") not in (None, "")
+        else execution.get("qty")
+        if execution.get("qty") not in (None, "")
+        else order_request.get("qty")
+    )
+    avg_price = _null_if_empty(
+        _safe_float(execution.get("avg_price"), None)
+        if execution.get("avg_price") not in (None, "")
+        else _safe_float(execution.get("price"), None)
+        if execution.get("price") not in (None, "")
+        else _safe_float(executor_broker_result.get("avg_price"), None)
+        if executor_broker_result.get("avg_price") not in (None, "")
+        else _safe_float(executor_broker_result.get("price"), None)
+        if executor_broker_result.get("price") not in (None, "")
+        else _safe_float(execution.get("order_price"), None)
+        if execution.get("order_price") not in (None, "")
+        else _safe_float(context.get("price"), None)
+        if context.get("price") not in (None, "")
+        else _safe_float(monitor_context.get("average_price"), None)
+        if monitor_context.get("average_price") not in (None, "")
+        else _safe_float(monitor_context.get("avg_price"), None)
+        if monitor_context.get("avg_price") not in (None, "")
+        else _safe_float(monitor_context.get("current_price"), None)
+    )
+
+    return {
+        "order_status": order_status,
+        "order_id": order_id,
+        "execution_mode": execution_mode,
+        "broker_env": broker_env,
+        "filled_qty": filled_qty,
+        "avg_price": avg_price,
+    }
+
+
+def _build_hold_signal_transitions(monitor_context_snapshots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    previous: Dict[str, Any] | None = None
+    keys = ("posture", "monitor_reason", "exit_reason", "active_exit_axis", "exit_triggered")
+    for current in list(monitor_context_snapshots or []):
+        if not isinstance(current, dict):
+            continue
+        if previous is None:
+            previous = current
+            continue
+        changes: Dict[str, Dict[str, Any]] = {}
+        for key in keys:
+            before = previous.get(key)
+            after = current.get(key)
+            if before != after:
+                changes[str(key)] = {"from": before, "to": after}
+        if changes:
+            change_labels = ", ".join(sorted(changes.keys()))
+            out.append(
+                {
+                    "from_run_id": str(previous.get("run_id") or ""),
+                    "to_run_id": str(current.get("run_id") or ""),
+                    "ts": str(current.get("ts") or ""),
+                    "changes": changes,
+                    "summary": f"Hold context changed in {change_labels}.",
+                }
+            )
+        previous = current
+    return out
+
+
+def _build_holding_phase_observability(
+    lifecycle: Dict[str, Any],
+    *,
+    monitor_timeline: Dict[str, Any],
+) -> Dict[str, Any]:
+    lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
+    summary_obj = lifecycle.get("summary") if isinstance(lifecycle.get("summary"), dict) else {}
+    holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+    exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+    hold_events = [
+        dict(row)
+        for row in list(holding.get("holding_events") or [])
+        if isinstance(row, dict)
+    ]
+    monitor_context_snapshots: List[Dict[str, Any]] = []
+    for row in hold_events:
+        monitor_context = row.get("monitor_context") if isinstance(row.get("monitor_context"), dict) else {}
+        monitor_context_snapshots.append(
+            {
+                "run_id": str(row.get("run_id") or ""),
+                "ts": str(row.get("ts") or ""),
+                "posture": str(row.get("posture") or ""),
+                "monitor_reason": _null_if_empty(row.get("monitor_reason") or monitor_context.get("monitor_reason")),
+                "exit_reason": _null_if_empty(row.get("exit_reason") or monitor_context.get("exit_reason")),
+                "active_exit_axis": _null_if_empty(monitor_context.get("active_exit_axis") or monitor_context.get("trigger_type")),
+                "exit_triggered": monitor_context.get("exit_triggered") if "exit_triggered" in monitor_context else None,
+                "current_drawdown": _null_if_empty(monitor_context.get("current_drawdown")),
+                "peak_drawdown": _null_if_empty(monitor_context.get("peak_drawdown")),
+                "price_source": _null_if_empty(monitor_context.get("price_source")),
+                "summary": str(row.get("summary") or ""),
+            }
+        )
+    hold_signal_transitions = _build_hold_signal_transitions(monitor_context_snapshots)
+    hold_events_count = int(len(hold_events))
+    hold_duration = str(summary_obj.get("holding_duration") or "")
+    entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+    entry_ts = _to_epoch(entry.get("ts"))
+    exit_ts = _to_epoch(exit_ctx.get("ts"))
+    hold_duration_sec = None
+    if entry_ts is not None:
+        if exit_ts is not None:
+            hold_duration_sec = max(0, int(exit_ts - entry_ts))
+        elif monitor_context_snapshots:
+            latest_hold_ts = _to_epoch(monitor_context_snapshots[-1].get("ts"))
+            if latest_hold_ts is not None:
+                hold_duration_sec = max(0, int(latest_hold_ts - entry_ts))
+
+    last_hold_snapshot = monitor_context_snapshots[-1] if monitor_context_snapshots else {}
+    exit_monitor_context = exit_ctx.get("monitor_context") if isinstance(exit_ctx.get("monitor_context"), dict) else {}
+    deterioration_signals: List[str] = []
+    if bool(exit_monitor_context.get("exit_triggered")):
+        deterioration_signals.append("exit_triggered")
+    active_axis = str(exit_monitor_context.get("active_exit_axis") or exit_monitor_context.get("trigger_type") or "").strip()
+    if active_axis:
+        deterioration_signals.append(f"active_exit_axis:{active_axis}")
+    current_drawdown = _safe_float(exit_monitor_context.get("current_drawdown"), None)
+    if current_drawdown is not None and current_drawdown < 0:
+        deterioration_signals.append("current_drawdown_negative")
+    peak_drawdown = _safe_float(exit_monitor_context.get("peak_drawdown"), None)
+    if peak_drawdown is not None and peak_drawdown < 0:
+        deterioration_signals.append("peak_drawdown_negative")
+
+    pre_exit_context_summary = {
+        "available": bool(exit_ctx),
+        "last_hold_run_id": str(last_hold_snapshot.get("run_id") or ""),
+        "last_hold_ts": str(last_hold_snapshot.get("ts") or ""),
+        "last_hold_posture": _null_if_empty(last_hold_snapshot.get("posture")),
+        "last_hold_monitor_reason": _null_if_empty(last_hold_snapshot.get("monitor_reason")),
+        "last_hold_exit_reason": _null_if_empty(last_hold_snapshot.get("exit_reason")),
+        "deterioration_signals": deterioration_signals,
+        "summary": (
+            f"Pre-exit context captured {hold_events_count} holding updates; last hold posture was "
+            f"{str(last_hold_snapshot.get('posture') or 'not_captured')} before exit."
+            if exit_ctx
+            else "No exit context yet; pre-exit monitor summary is not available."
+        ),
+    }
+
+    timeline_summary = monitor_timeline if isinstance(monitor_timeline, dict) else {}
+    threshold_snapshot_count = len(list(timeline_summary.get("threshold_snapshots") or []))
+    state_transition_count = len(list(timeline_summary.get("state_transitions") or []))
+    hold_evidence_thin = hold_events_count <= 0 or not monitor_context_snapshots
+    
+    if hold_evidence_thin:
+        recovered_snapshot = {}
+        if exit_monitor_context:
+            recovered_snapshot = dict(exit_monitor_context)
+            recovered_snapshot["_recovery_source"] = "exit_monitor_context"
+            recovered_snapshot["ts"] = str(exit_ctx.get("ts") or "")
+            recovered_snapshot["run_id"] = str(exit_ctx.get("run_id") or "")
+        elif entry.get("monitor_context"):
+            recovered_snapshot = dict(entry.get("monitor_context") or {})
+            recovered_snapshot["_recovery_source"] = "entry_monitor_context"
+            recovered_snapshot["ts"] = str(entry.get("ts") or "")
+            recovered_snapshot["run_id"] = str(entry.get("run_id") or "")
+            
+        if recovered_snapshot:
+            monitor_context_snapshots.append({
+                "run_id": recovered_snapshot.get("run_id", ""),
+                "ts": recovered_snapshot.get("ts", ""),
+                "posture": recovered_snapshot.get("posture", "HOLD"),
+                "monitor_reason": _null_if_empty(recovered_snapshot.get("monitor_reason")),
+                "exit_reason": _null_if_empty(recovered_snapshot.get("exit_reason")),
+                "active_exit_axis": _null_if_empty(recovered_snapshot.get("active_exit_axis") or recovered_snapshot.get("trigger_type")),
+                "exit_triggered": recovered_snapshot.get("exit_triggered"),
+                "current_drawdown": _null_if_empty(recovered_snapshot.get("current_drawdown")),
+                "peak_drawdown": _null_if_empty(recovered_snapshot.get("peak_drawdown")),
+                "price_source": _null_if_empty(recovered_snapshot.get("price_source")),
+                "summary": "Recovered from nearby execution context",
+                "_recovery_source": recovered_snapshot.get("_recovery_source")
+            })
+            hold_evidence_thin = False
+            holding_phase_summary = "Hold evidence recovered from execution context due to short hold duration."
+            hold_events_count = max(1, hold_events_count)
+        else:
+            holding_phase_summary = "No explicit holding monitor updates were captured, and no nearby context was available for recovery."
+    else:
+        holding_phase_summary = (
+            f"Held across {hold_events_count} monitor updates over {hold_duration or 'uncaptured duration'}. "
+            f"Signal transitions observed: {len(hold_signal_transitions)}. "
+            f"Timeline snapshots: thresholds={threshold_snapshot_count}, state_transitions={state_transition_count}."
+        )
+
+    return {
+        "hold_duration": hold_duration,
+        "hold_duration_sec": hold_duration_sec,
+        "holding_phase_summary": holding_phase_summary,
+        "hold_events_count": hold_events_count,
+        "monitor_context_snapshots": monitor_context_snapshots[:20],
+        "hold_signal_transitions": hold_signal_transitions[:20],
+        "pre_exit_context_summary": pre_exit_context_summary,
+        "deterioration_signals": deterioration_signals,
+        "hold_evidence_thin": hold_evidence_thin,
+    }
+
+
+def _build_same_day_reporter_linkage(
+    *,
+    reporter_obj: Dict[str, Any],
+    reporter_js: Path,
+    reporter_md: Path,
+    entry_run_id: str,
+    exit_run_id: str,
+    entry_bundle: Dict[str, Any],
+    exit_bundle: Dict[str, Any],
+) -> Dict[str, Any]:
+    reporter_obj = reporter_obj if isinstance(reporter_obj, dict) else {}
+    entry_reporter = entry_bundle.get("reporter") if isinstance(entry_bundle.get("reporter"), dict) else {}
+    exit_reporter = exit_bundle.get("reporter") if isinstance(exit_bundle.get("reporter"), dict) else {}
+    reporter_day_file_found = bool(reporter_js.exists() or reporter_md.exists() or entry_reporter.get("reporter_analysis_day_file_found") or exit_reporter.get("reporter_analysis_day_file_found"))
+    linked_run_ids: List[str] = []
+    if bool(entry_reporter.get("reporter_analysis_found")) and entry_run_id:
+        linked_run_ids.append(str(entry_run_id))
+    if bool(exit_reporter.get("reporter_analysis_found")) and exit_run_id and exit_run_id not in linked_run_ids:
+        linked_run_ids.append(str(exit_run_id))
+    run_link_found = bool(linked_run_ids)
+    if run_link_found:
+        status = "linked_run"
+        linkage_source = "run_specific"
+        linkage_reason = "A same-day reporter analysis linked directly to this lifecycle run."
+    elif reporter_day_file_found:
+        status = "linked_day_fallback"
+        linkage_source = "day_fallback"
+        linkage_reason = "A same-day reporter analysis file was attached as fallback context for this lifecycle."
+    else:
+        status = "missing"
+        linkage_source = "missing"
+        linkage_reason = "Same-day reporter analysis is not available for this lifecycle yet."
+    return {
+        "schema_version": "same_day_reporter_linkage.v1",
+        "status": status,
+        "linkage_source": linkage_source,
+        "linkage_reason": linkage_reason,
+        "reporter_analysis_day_file_found": reporter_day_file_found,
+        "run_link_found": run_link_found,
+        "linked_run_ids": linked_run_ids,
+        "reporter_analysis_json_path": str(reporter_js) if reporter_js.exists() else "",
+        "reporter_analysis_md_path": str(reporter_md) if reporter_md.exists() else "",
+        "reporter_analysis_summary": str(reporter_obj.get("ai_summary") or ""),
+        "reporter_analysis_grade": str(reporter_obj.get("ai_run_grade") or "N/A"),
+    }
+
+
+def _build_failure_classification(
+    *,
+    lifecycle: Dict[str, Any],
+    diagnostics: Dict[str, Any],
+    same_day_reporter_linkage: Dict[str, Any],
+    holding_phase_observability: Dict[str, Any],
+    execution_details: Dict[str, Any],
+) -> Dict[str, bool]:
+    lifecycle = lifecycle if isinstance(lifecycle, dict) else {}
+    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    status = str(lifecycle.get("status") or "").strip().lower()
+    entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+    exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+    story_type = str(lifecycle.get("story_type") or "").strip().lower()
+    ai_status = str(diagnostics.get("ai_trade_report_status") or "").strip().lower()
+    reporter_status = str((same_day_reporter_linkage or {}).get("status") or "").strip().lower()
+    return {
+        "entry_failure": (not bool(entry)) or bool(entry.get("inferred_entry")),
+        "hold_failure": bool((holding_phase_observability or {}).get("hold_evidence_thin")),
+        "exit_failure": status in {"closed", "failed"} and not bool(exit_ctx),
+        "execution_failure": story_type == "failed_execution" or (
+            status in {"closed", "partial", "failed"}
+            and not bool(execution_details.get("order_status"))
+            and not bool(execution_details.get("order_id"))
+        ),
+        "reporting_failure": (
+            reporter_status == "missing"
+            or (status == "closed" and ai_status not in {"ok", "salvaged", "partial"})
+        ),
+    }
+
+
 def _to_epoch(ts: Any) -> Optional[int]:
     if ts is None:
         return None
@@ -3934,10 +4279,249 @@ def main(argv: Optional[List[str]] = None) -> int:
                 updated_events.append(event_obj)
             holding_live["holding_events"] = updated_events
             lifecycle["holding"] = holding_live
+        holding_live = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+        existing_hold_events = [
+            dict(row)
+            for row in list(holding_live.get("holding_events") or [])
+            if isinstance(row, dict)
+        ]
+        if not existing_hold_events:
+            fallback_hold_events: List[Dict[str, Any]] = []
+            fallback_hold_run_ids: List[str] = []
+            seen_hold_runs: set[str] = set()
+            for collection_name in ("cycle_summaries", "state_transitions", "threshold_snapshots", "exit_decision_details"):
+                for row in list(monitor_timeline.get(collection_name) or []):
+                    if not isinstance(row, dict):
+                        continue
+                    run_id = str(row.get("run_id") or "").strip()
+                    if not run_id or run_id in seen_hold_runs or run_id in {entry_run_id, exit_run_id}:
+                        continue
+                    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                    monitor_reason = str(
+                        payload.get("monitor_reason")
+                        or payload.get("current_reason")
+                        or payload.get("final_reason")
+                        or payload.get("summary")
+                        or ""
+                    ).strip()
+                    posture = str(
+                        payload.get("posture")
+                        or payload.get("current_posture")
+                        or ("HOLD" if collection_name != "entry_decision_details" else "")
+                    ).strip()
+                    event_summary = str(row.get("summary") or monitor_reason or posture or "").strip()
+                    fallback_hold_events.append(
+                        {
+                            "run_id": run_id,
+                            "ts": str(row.get("ts") or ""),
+                            "posture": posture,
+                            "monitor_reason": monitor_reason,
+                            "exit_reason": str(payload.get("exit_reason") or ""),
+                            "summary": event_summary,
+                            "monitor_context": dict(payload),
+                            "source": f"monitor_timeline.{collection_name}",
+                        }
+                    )
+                    fallback_hold_run_ids.append(run_id)
+                    seen_hold_runs.add(run_id)
+            if fallback_hold_events:
+                holding_live["holding_events"] = fallback_hold_events
+                holding_live["run_ids"] = fallback_hold_run_ids
+                if not list(holding_live.get("monitor_updates") or []):
+                    holding_live["monitor_updates"] = [
+                        str(row.get("summary") or "")
+                        for row in fallback_hold_events
+                        if str(row.get("summary") or "").strip()
+                    ][:20]
+                lifecycle["holding"] = holding_live
+                hold_run_ids = list(fallback_hold_run_ids)
+        if not hold_run_ids:
+            fallback_rows_by_run: Dict[str, Dict[str, Any]] = {}
+            for row in list(day_event_rows or []):
+                if not isinstance(row, dict):
+                    continue
+                run_id = str(row.get("run_id") or "").strip()
+                if not run_id or run_id in {entry_run_id, exit_run_id}:
+                    continue
+                stage = str(row.get("stage") or row.get("agent") or "").strip().lower()
+                if stage not in {"monitor", "decision_trace"}:
+                    continue
+                payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                if stage == "decision_trace":
+                    trace_agent = str(payload.get("agent") or "").strip().lower()
+                    payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+                    if trace_agent not in {"", "monitor"}:
+                        continue
+                selected_symbol = normalize_symbol(
+                    payload.get("selected_symbol")
+                    or payload.get("monitor_symbol")
+                    or row.get("symbol")
+                    or symbol,
+                    allow_test_symbols=True,
+                )
+                if symbol and selected_symbol not in {"", symbol}:
+                    continue
+                entry = fallback_rows_by_run.setdefault(
+                    run_id,
+                    {
+                        "run_id": run_id,
+                        "ts": str(row.get("ts") or ""),
+                        "monitor_context": {},
+                        "posture": "",
+                        "monitor_reason": "",
+                        "exit_reason": "",
+                        "summary": "",
+                        "source": "day_event_rows.monitor_trace",
+                    },
+                )
+                monitor_context = entry["monitor_context"] if isinstance(entry.get("monitor_context"), dict) else {}
+                monitor_context.update(dict(payload))
+                entry["monitor_context"] = monitor_context
+                if not str(entry.get("posture") or "").strip():
+                    entry["posture"] = str(
+                        payload.get("posture")
+                        or payload.get("current_posture")
+                        or payload.get("action")
+                        or "HOLD"
+                    ).strip()
+                if not str(entry.get("monitor_reason") or "").strip():
+                    entry["monitor_reason"] = str(
+                        payload.get("monitor_reason")
+                        or payload.get("current_reason")
+                        or payload.get("final_reason")
+                        or ""
+                    ).strip()
+                if not str(entry.get("exit_reason") or "").strip():
+                    entry["exit_reason"] = str(payload.get("exit_reason") or "").strip()
+                if not str(entry.get("summary") or "").strip():
+                    entry["summary"] = str(
+                        row.get("summary")
+                        or payload.get("summary")
+                        or payload.get("monitor_reason")
+                        or payload.get("exit_reason")
+                        or entry.get("posture")
+                        or ""
+                    ).strip()
+            if fallback_rows_by_run:
+                fallback_hold_events = [dict(value) for _, value in sorted(fallback_rows_by_run.items())]
+                hold_run_ids = [str(row.get("run_id") or "") for row in fallback_hold_events if str(row.get("run_id") or "").strip()]
+                holding_live = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+                holding_live["holding_events"] = fallback_hold_events
+                holding_live["run_ids"] = hold_run_ids
+                if not list(holding_live.get("monitor_updates") or []):
+                    holding_live["monitor_updates"] = [
+                        str(row.get("summary") or "")
+                        for row in fallback_hold_events
+                        if str(row.get("summary") or "").strip()
+                    ][:20]
+                lifecycle["holding"] = holding_live
+        elif not hold_run_ids:
+            hold_run_ids = [
+                str(row.get("run_id") or "").strip()
+                for row in existing_hold_events
+                if str(row.get("run_id") or "").strip()
+            ]
+            if hold_run_ids:
+                holding_live["run_ids"] = hold_run_ids
+                lifecycle["holding"] = holding_live
+        for hold_run_id in list(hold_run_ids or []):
+            if hold_run_id and hold_run_id not in linked_run_ids:
+                linked_run_ids.append(str(hold_run_id))
+        lifecycle["run_ids_all"] = list(linked_run_ids)
+        lifecycle_bundle["linked_run_ids"] = list(linked_run_ids)
+        entry_bundle = run_bundles_by_run.get(entry_run_id) if isinstance(run_bundles_by_run.get(entry_run_id), dict) else {}
+        exit_bundle = run_bundles_by_run.get(exit_run_id) if isinstance(run_bundles_by_run.get(exit_run_id), dict) else {}
+        entry_execution_details = _build_execution_details_from_bundle(entry_bundle, context=entry_ctx_live)
+        exit_execution_details = _build_execution_details_from_bundle(exit_bundle, context=exit_ctx_live)
+        execution_details = dict(exit_execution_details if status == "closed" else entry_execution_details)
+        holding_phase_observability = _build_holding_phase_observability(
+            lifecycle,
+            monitor_timeline=monitor_timeline,
+        )
+        same_day_reporter_linkage = _build_same_day_reporter_linkage(
+            reporter_obj=reporter_obj,
+            reporter_js=reporter_js,
+            reporter_md=reporter_md,
+            entry_run_id=entry_run_id,
+            exit_run_id=exit_run_id,
+            entry_bundle=entry_bundle,
+            exit_bundle=exit_bundle,
+        )
+        entry_ctx_live["execution_details"] = dict(entry_execution_details)
+        lifecycle["entry"] = entry_ctx_live
+        if exit_ctx_live:
+            exit_ctx_live["execution_details"] = dict(exit_execution_details)
+            lifecycle["exit"] = exit_ctx_live
+        holding_live = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+        holding_live["hold_duration"] = holding_phase_observability.get("hold_duration")
+        holding_live["hold_duration_sec"] = holding_phase_observability.get("hold_duration_sec")
+        holding_live["holding_phase_summary"] = holding_phase_observability.get("holding_phase_summary")
+        holding_live["hold_events_count"] = holding_phase_observability.get("hold_events_count")
+        holding_live["monitor_context_snapshots"] = list(holding_phase_observability.get("monitor_context_snapshots") or [])
+        holding_live["hold_signal_transitions"] = list(holding_phase_observability.get("hold_signal_transitions") or [])
+        holding_live["pre_exit_context_summary"] = dict(holding_phase_observability.get("pre_exit_context_summary") or {})
+        holding_live["deterioration_signals"] = list(holding_phase_observability.get("deterioration_signals") or [])
+        holding_live["hold_evidence_thin"] = bool(holding_phase_observability.get("hold_evidence_thin"))
+        lifecycle["holding"] = holding_live
+        summary_obj["holding_duration"] = str(
+            summary_obj.get("holding_duration")
+            or holding_phase_observability.get("hold_duration")
+            or ""
+        )
+        summary_obj["holding_phase_summary"] = str(
+            holding_phase_observability.get("holding_phase_summary")
+            or summary_obj.get("holding_phase_summary")
+            or ""
+        )
+        summary_obj["pre_exit_context_summary"] = dict(
+            holding_phase_observability.get("pre_exit_context_summary") or {}
+        )
+        summary_obj["same_day_reporter_linkage_status"] = str(
+            same_day_reporter_linkage.get("status") or ""
+        )
+        lifecycle["summary"] = summary_obj
+        lifecycle["execution_details"] = dict(execution_details)
+        lifecycle["same_day_reporter_linkage"] = dict(same_day_reporter_linkage)
+        lifecycle["holding_phase_summary"] = str(holding_phase_observability.get("holding_phase_summary") or "")
+        lifecycle["pre_exit_context_summary"] = dict(
+            holding_phase_observability.get("pre_exit_context_summary") or {}
+        )
+        lifecycle_bundle["entry_execution_details"] = dict(entry_execution_details)
+        lifecycle_bundle["exit_execution_details"] = dict(exit_execution_details)
+        lifecycle_bundle["execution_details"] = dict(execution_details)
+        lifecycle_bundle["hold_duration"] = holding_phase_observability.get("hold_duration")
+        lifecycle_bundle["hold_duration_sec"] = holding_phase_observability.get("hold_duration_sec")
+        lifecycle_bundle["holding_phase_summary"] = holding_phase_observability.get("holding_phase_summary")
+        lifecycle_bundle["hold_events_count"] = holding_phase_observability.get("hold_events_count")
+        lifecycle_bundle["monitor_context_snapshots"] = list(holding_phase_observability.get("monitor_context_snapshots") or [])
+        lifecycle_bundle["hold_signal_transitions"] = list(holding_phase_observability.get("hold_signal_transitions") or [])
+        lifecycle_bundle["pre_exit_context_summary"] = dict(holding_phase_observability.get("pre_exit_context_summary") or {})
+        lifecycle_bundle["same_day_reporter_linkage"] = dict(same_day_reporter_linkage)
+        lifecycle_bundle["reporter_status_human"] = {
+            **(
+                lifecycle_bundle.get("reporter_status_human")
+                if isinstance(lifecycle_bundle.get("reporter_status_human"), dict)
+                else {}
+            ),
+            "same_day_linkage_status": str(same_day_reporter_linkage.get("status") or ""),
+            "same_day_linkage_reason": str(same_day_reporter_linkage.get("linkage_reason") or ""),
+            "same_day_linkage_source": str(same_day_reporter_linkage.get("linkage_source") or ""),
+        }
         trade_story_input = build_trade_story_input(lifecycle_bundle, trade_lifecycle=lifecycle)
         trade_story_input["day"] = day
         trade_story_input["entry_strategist_run_id"] = strategy_anchor_run_id
         trade_story_input["strategy_anchor_run_id"] = strategy_anchor_run_id
+        trade_story_input["hold_duration"] = holding_phase_observability.get("hold_duration")
+        trade_story_input["hold_duration_sec"] = holding_phase_observability.get("hold_duration_sec")
+        trade_story_input["holding_phase_summary"] = holding_phase_observability.get("holding_phase_summary")
+        trade_story_input["hold_events_count"] = holding_phase_observability.get("hold_events_count")
+        trade_story_input["monitor_context_snapshots"] = list(holding_phase_observability.get("monitor_context_snapshots") or [])
+        trade_story_input["hold_signal_transitions"] = list(holding_phase_observability.get("hold_signal_transitions") or [])
+        trade_story_input["pre_exit_context_summary"] = dict(holding_phase_observability.get("pre_exit_context_summary") or {})
+        trade_story_input["same_day_reporter_linkage"] = dict(same_day_reporter_linkage)
+        trade_story_input["execution_details"] = dict(execution_details)
+        trade_story_input["entry_execution_details"] = dict(entry_execution_details)
+        trade_story_input["exit_execution_details"] = dict(exit_execution_details)
         strategist_trace_summary = _build_strategist_trace_summary_mirror(
             lifecycle_bundle.get("strategist") if isinstance(lifecycle_bundle.get("strategist"), dict) else {},
             trade_story_input.get("market_context_human") if isinstance(trade_story_input.get("market_context_human"), dict) else {},
@@ -3975,6 +4559,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             model_hint=configured_report_model,
             generate_on_open=bool(_resolve_trade_report_policy(runtime_state=runtime_state, story_input=trade_story_input).get("generate_on_open", True)),
         )
+        diagnostics["holding_evidence_thin"] = bool(holding_phase_observability.get("hold_evidence_thin"))
+        diagnostics["hold_events_count"] = int(holding_phase_observability.get("hold_events_count") or 0)
+        diagnostics["hold_duration_sec"] = holding_phase_observability.get("hold_duration_sec")
+        diagnostics["same_day_reporter_linkage_status"] = str(same_day_reporter_linkage.get("status") or "")
+        diagnostics["same_day_reporter_linkage_reason"] = str(same_day_reporter_linkage.get("linkage_reason") or "")
+        diagnostics["execution_fields_missing"] = [
+            key
+            for key in ("order_status", "order_id", "execution_mode", "broker_env", "filled_qty", "avg_price")
+            if execution_details.get(key) in (None, "", [])
+        ]
 
         strategist_llm_artifact_raw = _build_strategist_llm_response_artifact(
             lifecycle_bundle,
@@ -4244,12 +4838,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         }
         generation_state["components"] = generation_components
         _write_report_generation_state(generation_state_path, generation_state)
+        failure_classification = _build_failure_classification(
+            lifecycle=lifecycle,
+            diagnostics=diagnostics,
+            same_day_reporter_linkage=same_day_reporter_linkage,
+            holding_phase_observability=holding_phase_observability,
+            execution_details=execution_details,
+        )
 
         lifecycle["ai_report_diagnostics"] = dict(diagnostics)
         lifecycle["evidence_artifacts"] = dict(lifecycle.get("evidence") or {})
         lifecycle["section_provenance"] = dict(trade_story_input.get("section_provenance") or {})
+        lifecycle["failure_classification"] = dict(failure_classification)
+        lifecycle["same_day_reporter_linkage"] = dict(same_day_reporter_linkage)
+        lifecycle["execution_details"] = dict(execution_details)
         lifecycle_bundle["ai_report_diagnostics"] = dict(diagnostics)
         lifecycle_bundle["section_provenance"] = dict(trade_story_input.get("section_provenance") or {})
+        lifecycle_bundle["failure_classification"] = dict(failure_classification)
         lifecycle_bundle["evidence"] = {
             "strategist": strategist_evidence,
             "scanner": scanner_evidence,
@@ -4266,6 +4871,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         trade_story_input["strategist_evidence"] = dict(strategist_evidence)
         trade_story_input["scanner_evidence"] = dict(scanner_evidence)
         trade_story_input["monitor_timeline"] = dict(monitor_timeline)
+        trade_story_input["same_day_reporter_linkage"] = dict(same_day_reporter_linkage)
+        trade_story_input["failure_classification"] = dict(failure_classification)
         if trade_report:
             trade_report["ai_report_diagnostics"] = dict(diagnostics)
 
@@ -4552,6 +5159,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         entry_payload = dict(lifecycle.get("entry") or {})
         holding_payload = dict(lifecycle.get("holding") or {})
         exit_payload = dict(lifecycle.get("exit") or {})
+        entry_payload.setdefault("execution_details", dict(entry_execution_details))
+        holding_payload.setdefault("hold_duration", holding_phase_observability.get("hold_duration"))
+        holding_payload.setdefault("hold_duration_sec", holding_phase_observability.get("hold_duration_sec"))
+        holding_payload.setdefault("holding_phase_summary", holding_phase_observability.get("holding_phase_summary"))
+        holding_payload.setdefault("hold_events_count", holding_phase_observability.get("hold_events_count"))
+        holding_payload.setdefault("monitor_context_snapshots", list(holding_phase_observability.get("monitor_context_snapshots") or []))
+        holding_payload.setdefault("hold_signal_transitions", list(holding_phase_observability.get("hold_signal_transitions") or []))
+        holding_payload.setdefault("pre_exit_context_summary", dict(holding_phase_observability.get("pre_exit_context_summary") or {}))
+        holding_payload.setdefault("deterioration_signals", list(holding_phase_observability.get("deterioration_signals") or []))
+        holding_payload.setdefault("hold_evidence_thin", bool(holding_phase_observability.get("hold_evidence_thin")))
+        exit_payload.setdefault("execution_details", dict(exit_execution_details))
         lifecycle_bundle_v1 = build_lifecycle_bundle(
             day=day,
             trade_id=trade_id,
@@ -4614,6 +5232,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "evidence_provenance": dict(lifecycle_bundle.get("evidence_provenance") or {}),
                 "section_provenance": dict(trade_story_input.get("section_provenance") or {}),
                 "ai_report_diagnostics": dict(diagnostics or {}),
+                "same_day_reporter_linkage": dict(same_day_reporter_linkage),
+                "failure_classification": dict(failure_classification),
+                "execution_details": dict(execution_details),
+                "entry_execution_details": dict(entry_execution_details),
+                "exit_execution_details": dict(exit_execution_details),
+                "hold_duration": holding_phase_observability.get("hold_duration"),
+                "hold_duration_sec": holding_phase_observability.get("hold_duration_sec"),
+                "holding_phase_summary": holding_phase_observability.get("holding_phase_summary"),
+                "hold_events_count": holding_phase_observability.get("hold_events_count"),
+                "monitor_context_snapshots": list(holding_phase_observability.get("monitor_context_snapshots") or []),
+                "hold_signal_transitions": list(holding_phase_observability.get("hold_signal_transitions") or []),
+                "pre_exit_context_summary": dict(holding_phase_observability.get("pre_exit_context_summary") or {}),
                 "timeline": list(lifecycle.get("timeline") or []),
                 "strategist_llm_status": str(
                     ((lifecycle_bundle_v1.get("llm_summary") or {}) if isinstance(lifecycle_bundle_v1.get("llm_summary"), dict) else {}).get("strategist_llm_status")

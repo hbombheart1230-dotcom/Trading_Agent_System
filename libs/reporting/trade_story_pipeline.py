@@ -513,6 +513,19 @@ def build_lifecycle_bundle(
         or str((story_input.get("entry_reason_human") or {}).get("summary") or "")
     )
     monitor_snapshot = dict(story_input.get("monitor_reason_human") or {})
+    same_day_reporter_linkage = dict(story_input.get("same_day_reporter_linkage") or lifecycle_obj.get("same_day_reporter_linkage") or {})
+    execution_details = dict(story_input.get("execution_details") or lifecycle_obj.get("execution_details") or {})
+    entry_execution_details = dict(
+        story_input.get("entry_execution_details")
+        or (entry_obj.get("execution_details") if isinstance(entry_obj.get("execution_details"), dict) else {})
+        or {}
+    )
+    exit_execution_details = dict(
+        story_input.get("exit_execution_details")
+        or (exit_obj.get("execution_details") if isinstance(exit_obj.get("execution_details"), dict) else {})
+        or {}
+    )
+    failure_classification = dict(story_input.get("failure_classification") or lifecycle_obj.get("failure_classification") or {})
     derived_reasoning_trace = build_reasoning_trace_from_summaries(
         commander_summary=dict(commander_summary or {}),
         strategist_summary=dict(strategist_summary or {}),
@@ -620,6 +633,57 @@ def build_lifecycle_bundle(
             "holding_time": str(summary_obj.get("holding_duration") or ""),
             "exit_reason": str(exit_reason or ""),
         },
+        "hold_duration": str(
+            summary_obj.get("holding_duration")
+            or holding_obj.get("hold_duration")
+            or story_input.get("hold_duration")
+            or ""
+        ),
+        "hold_duration_sec": (
+            holding_obj.get("hold_duration_sec")
+            if holding_obj.get("hold_duration_sec") is not None
+            else story_input.get("hold_duration_sec")
+        ),
+        "holding_phase_summary": str(
+            holding_obj.get("holding_phase_summary")
+            or story_input.get("holding_phase_summary")
+            or ""
+        ),
+        "hold_events_count": (
+            holding_obj.get("hold_events_count")
+            if holding_obj.get("hold_events_count") is not None
+            else story_input.get("hold_events_count")
+            if story_input.get("hold_events_count") is not None
+            else len(hold_events)
+        ),
+        "monitor_context_snapshots": [
+            dict(row)
+            for row in list(
+                holding_obj.get("monitor_context_snapshots")
+                or story_input.get("monitor_context_snapshots")
+                or []
+            )
+            if isinstance(row, dict)
+        ][:20],
+        "hold_signal_transitions": [
+            dict(row)
+            for row in list(
+                holding_obj.get("hold_signal_transitions")
+                or story_input.get("hold_signal_transitions")
+                or []
+            )
+            if isinstance(row, dict)
+        ][:20],
+        "pre_exit_context_summary": dict(
+            holding_obj.get("pre_exit_context_summary")
+            or story_input.get("pre_exit_context_summary")
+            or {}
+        ),
+        "same_day_reporter_linkage": same_day_reporter_linkage,
+        "execution_details": execution_details,
+        "entry_execution_details": entry_execution_details,
+        "exit_execution_details": exit_execution_details,
+        "failure_classification": failure_classification,
         "evidence_summary": {
             "completeness_score": float(completeness.get("completeness_score") or 0.0),
             "missing_sections": [str(x or "") for x in list(completeness.get("missing_sections") or []) if str(x or "").strip()],
@@ -2439,6 +2503,13 @@ def build_trade_story_input(
                 "holding_events": [dict(x) for x in list(holding.get("holding_events") or []) if isinstance(x, dict)][:20],
                 "posture_history": [dict(x) for x in list(holding.get("posture_history") or []) if isinstance(x, dict)][:20],
                 "monitor_updates": [str(x or "") for x in list(holding.get("monitor_updates") or []) if str(x or "").strip()][:20],
+                "hold_duration": str(holding.get("hold_duration") or bundle_out.get("hold_duration") or ""),
+                "hold_duration_sec": holding.get("hold_duration_sec") if holding.get("hold_duration_sec") is not None else bundle_out.get("hold_duration_sec"),
+                "holding_phase_summary": str(holding.get("holding_phase_summary") or bundle_out.get("holding_phase_summary") or ""),
+                "hold_events_count": holding.get("hold_events_count") if holding.get("hold_events_count") is not None else bundle_out.get("hold_events_count"),
+                "monitor_context_snapshots": [dict(x) for x in list(holding.get("monitor_context_snapshots") or bundle_out.get("monitor_context_snapshots") or []) if isinstance(x, dict)][:20],
+                "hold_signal_transitions": [dict(x) for x in list(holding.get("hold_signal_transitions") or bundle_out.get("hold_signal_transitions") or []) if isinstance(x, dict)][:20],
+                "pre_exit_context_summary": dict(holding.get("pre_exit_context_summary") or bundle_out.get("pre_exit_context_summary") or {}),
             },
             "exit_summary": {
                 "run_id": str(exit_ctx.get("run_id") or ""),
@@ -2463,6 +2534,13 @@ def build_trade_story_input(
             "guard_reason_human": guard_reason_human,
             "execution_outcome_human": execution_outcome_human,
             "reporter_status_human": reporter_status_human,
+            "same_day_reporter_linkage": dict(
+                lifecycle.get("same_day_reporter_linkage")
+                if isinstance(lifecycle.get("same_day_reporter_linkage"), dict)
+                else bundle_out.get("same_day_reporter_linkage")
+                if isinstance(bundle_out.get("same_day_reporter_linkage"), dict)
+                else {}
+            ),
             "operator_conclusion_human": operator_conclusion_human,
             "timeline": [dict(x) for x in list(lifecycle.get("timeline") or bundle_out.get("timeline") or []) if isinstance(x, dict)][:40],
             "warnings": [str(x or "") for x in list(bundle_out.get("warnings") or lifecycle.get("warnings") or []) if str(x or "").strip()][:20],
@@ -2488,6 +2566,10 @@ def build_trade_story_input(
                 for source in evidence_provenance.values()
             ) else "direct_artifact",
             "ai_report_diagnostics": dict(bundle_out.get("ai_report_diagnostics") or {}),
+            "execution_details": dict(bundle_out.get("execution_details") or lifecycle.get("execution_details") or {}),
+            "entry_execution_details": dict((entry.get("execution_details") if isinstance(entry.get("execution_details"), dict) else {}) or bundle_out.get("entry_execution_details") or {}),
+            "exit_execution_details": dict((exit_ctx.get("execution_details") if isinstance(exit_ctx.get("execution_details"), dict) else {}) or bundle_out.get("exit_execution_details") or {}),
+            "failure_classification": dict(bundle_out.get("failure_classification") or lifecycle.get("failure_classification") or {}),
         }
         story_out["strategist_feedback_input"] = build_strategist_feedback_input_view(story_out)
         return story_out
