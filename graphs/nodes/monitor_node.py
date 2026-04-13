@@ -25,6 +25,7 @@ from libs.research.evidence_ledger import record_decision_bridge, record_raw_inp
 from libs.runtime.canonical_artifacts import write_monitor_artifact
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.decision_observability import (
+    build_entry_blocker_surface,
     build_monitor_no_trade_surface,
     build_scanner_monitor_handoff_surface,
 )
@@ -596,6 +597,30 @@ def _resolve_block_buy_when_open_position(
     if raw_env:
         return _is_trueish(raw_env)
     return True
+
+
+def _resolve_entry_closeout_window_guard(
+    state: Dict[str, Any],
+    policy: Dict[str, Any],
+) -> Dict[str, Any]:
+    exit_policy = _resolve_exit_policy_config(state, policy)
+    market_ctx = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    minutes_to_close = _optional_float(market_ctx.get("minutes_to_close"))
+    use_eod_flat = bool(exit_policy.get("use_eod_flat"))
+    cutoff_min = int(_to_float(exit_policy.get("eod_flat_cutoff_min") or 10))
+    active = bool(
+        use_eod_flat
+        and minutes_to_close is not None
+        and minutes_to_close >= 0.0
+        and minutes_to_close <= float(cutoff_min)
+    )
+    return {
+        "active": active,
+        "minutes_to_close": minutes_to_close,
+        "cutoff_min": int(cutoff_min),
+        "use_eod_flat": bool(use_eod_flat),
+        "reason": "buy_blocked_closeout_window" if active else "",
+    }
 
 
 def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, Any]:
@@ -2435,6 +2460,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     entry_policy_origin = str(entry_policy_contract.get("selected_source") or "monitor_policy")
     buy_blocked_open_position = False
     buy_blocked_post_exit_cooldown = False
+    buy_blocked_closeout_window = False
     post_exit_cooldown_remaining_sec = 0
     entry_info: Dict[str, Any] = {
         "enabled": True,
@@ -2568,6 +2594,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
         last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
         last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
+        closeout_window_guard = _resolve_entry_closeout_window_guard(state, policy)
         if (
             open_position_count <= 0
             and post_exit_cooldown_sec > 0
@@ -2608,6 +2635,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             frame=strategy_frame,
             policy_contract=entry_policy_contract,
         )
+        entry_info["closeout_window_guard"] = dict(closeout_window_guard)
+        entry_info["minutes_to_close"] = closeout_window_guard.get("minutes_to_close")
+        entry_info["eod_flat_cutoff_min"] = int(closeout_window_guard.get("cutoff_min") or 0)
+        entry_info["closeout_window_active"] = bool(closeout_window_guard.get("active"))
         entry_info["symbol"] = symbol
         entry_info["selected_symbol"] = symbol
         entry_info["applied_policy"] = dict(entry_info.get("applied_policy") or entry_info.get("thresholds") or entry_policy.to_dict())
@@ -2667,6 +2698,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             entry_guard_blocked = True
             entry_guard_reason = "buy_blocked_open_position"
             buy_blocked_open_position = True
+        elif bool(closeout_window_guard.get("active")):
+            entry_guard_blocked = True
+            entry_guard_reason = "buy_blocked_closeout_window"
+            buy_blocked_closeout_window = True
         elif buy_blocked_post_exit_cooldown:
             entry_guard_blocked = True
             entry_guard_reason = "post_exit_cooldown"
@@ -3236,9 +3271,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "open_position_count": int(open_position_count),
         "block_buy_when_open_position": bool(block_buy_open_position),
         "buy_blocked_open_position": bool(buy_blocked_open_position),
+        "buy_blocked_closeout_window": bool(buy_blocked_closeout_window),
         "post_exit_cooldown_sec": int(post_exit_cooldown_sec),
         "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
         "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
+        "minutes_to_close": entry_info.get("minutes_to_close"),
+        "eod_flat_cutoff_min": int(entry_info.get("eod_flat_cutoff_min") or 0),
+        "closeout_window_active": bool(entry_info.get("closeout_window_active")),
         "entry_evaluated": bool(entry_info.get("evaluated")),
         "entry_triggered": bool(entry_info.get("triggered")),
         "entry_reason": str(entry_info.get("reason") or ""),
@@ -3298,6 +3337,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "post_exit_cooldown"
                 if bool(buy_blocked_post_exit_cooldown)
                 else (
+                "buy_blocked_closeout_window"
+                if bool(buy_blocked_closeout_window)
+                else (
                 "buy_blocked_open_position"
                 if bool(buy_blocked_open_position)
                 else (
@@ -3306,6 +3348,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     else (
                         str(entry_info.get("reason") or "entry_wait")
                     )
+                )
                 )
                 )
             )
@@ -3549,6 +3592,29 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     )
     state["monitor_no_trade_surface"] = dict(monitor_no_trade_surface)
     state["scanner_monitor_handoff"] = dict(scanner_monitor_handoff)
+    entry_blocker_surface = build_entry_blocker_surface(
+        entry_info,
+        final_decision=final_entry_decision,
+        no_trade_surface=monitor_no_trade_surface,
+        entry_blockers=list(monitor_policy_trace.get("entry_blockers") or []),
+        buy_blocked_open_position=bool(buy_blocked_open_position),
+        buy_blocked_closeout_window=bool(buy_blocked_closeout_window),
+        buy_blocked_post_exit_cooldown=bool(buy_blocked_post_exit_cooldown),
+        post_exit_cooldown_remaining_sec=post_exit_cooldown_remaining_sec,
+        open_position_count=open_position_count,
+        minutes_to_close=entry_info.get("minutes_to_close"),
+        eod_flat_cutoff_min=entry_info.get("eod_flat_cutoff_min"),
+    )
+    state["monitor_entry_blocker_surface"] = dict(entry_blocker_surface)
+    if isinstance(state.get("monitor_output"), dict):
+        state["monitor_output"]["entry_blocker_surface"] = dict(entry_blocker_surface)
+    _emit_monitor_event(
+        state,
+        name="entry_blocker_surface",
+        payload=entry_blocker_surface,
+        level="info",
+        symbol=monitor_symbol or entry_symbol,
+    )
     entry_decision_detail = {
         "decision": final_entry_decision,
         "reason": str(entry_info.get("guard_reason") or entry_info.get("reason") or "entry_wait"),
@@ -3589,6 +3655,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "minute_fetch_meta": dict(entry_info.get("minute_fetch_meta") or {}),
         "no_trade_surface": dict(monitor_no_trade_surface),
         "scanner_monitor_handoff": dict(scanner_monitor_handoff),
+        "entry_blocker_surface": dict(entry_blocker_surface),
         "entry_threshold": entry_info.get("entry_threshold"),
         "score_passed": bool(entry_info.get("score_passed")),
         "scoring_mode": str(entry_info.get("scoring_mode") or "disabled"),
@@ -3637,6 +3704,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "primary_reason_code": str(entry_info.get("reason") or ""),
         "no_trade_surface": dict(monitor_no_trade_surface),
         "scanner_monitor_handoff": dict(scanner_monitor_handoff),
+        "entry_blocker_surface": dict(entry_blocker_surface),
     }
     if not bool(entry_info.get("hard_filter_passed")):
         _emit_monitor_event(
@@ -3898,7 +3966,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "entry_triggered": bool(entry_info.get("triggered")),
             "entry_pattern": str(entry_info.get("pattern") or ""),
             "buy_blocked_open_position": bool(buy_blocked_open_position),
+            "buy_blocked_closeout_window": bool(buy_blocked_closeout_window),
             "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
+            "minutes_to_close": entry_info.get("minutes_to_close"),
+            "eod_flat_cutoff_min": int(entry_info.get("eod_flat_cutoff_min") or 0),
+            "closeout_window_active": bool(entry_info.get("closeout_window_active")),
+            "entry_blocker_surface": dict(entry_blocker_surface),
         },
         symbol=monitor_symbol,
     )
@@ -3940,9 +4013,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "open_position_count": int(open_position_count),
             "block_buy_when_open_position": bool(block_buy_open_position),
             "buy_blocked_open_position": bool(buy_blocked_open_position),
+            "buy_blocked_closeout_window": bool(buy_blocked_closeout_window),
             "post_exit_cooldown_sec": int(post_exit_cooldown_sec),
             "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
             "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
+            "minutes_to_close": entry_info.get("minutes_to_close"),
+            "eod_flat_cutoff_min": int(entry_info.get("eod_flat_cutoff_min") or 0),
+            "closeout_window_active": bool(entry_info.get("closeout_window_active")),
             "entry_evaluated": bool(entry_info.get("evaluated")),
             "entry_triggered": bool(entry_info.get("triggered")),
             "entry_pattern": str(entry_info.get("pattern") or ""),
@@ -3966,6 +4043,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "relaxable_checks_failed": list(monitor_no_trade_surface.get("relaxable_checks_failed") or []),
             "evidence_snapshot": dict(monitor_no_trade_surface.get("evidence_snapshot") or {}),
             "scanner_monitor_handoff": dict(scanner_monitor_handoff),
+            "entry_blocker_surface": dict(entry_blocker_surface),
         },
     )
     append_decision_trace(
@@ -4074,8 +4152,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "sell_guard_reason": str(exit_info.get("sell_guard_reason") or ""),
                 "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
                 "post_exit_cooldown_sec": int(post_exit_cooldown_sec),
+                "buy_blocked_closeout_window": bool(buy_blocked_closeout_window),
                 "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
                 "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
+                "minutes_to_close": entry_info.get("minutes_to_close"),
+                "eod_flat_cutoff_min": int(entry_info.get("eod_flat_cutoff_min") or 0),
+                "closeout_window_active": bool(entry_info.get("closeout_window_active")),
                 "entry_evaluated": bool(entry_info.get("evaluated")),
                 "entry_triggered": bool(entry_info.get("triggered")),
                 "entry_pattern": str(entry_info.get("pattern") or ""),

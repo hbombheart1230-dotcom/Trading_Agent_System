@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -32,6 +33,14 @@ def _trade_day_from_trade_id(trade_id: str) -> str:
 
 def _root_dir() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _bundle_role() -> str:
+    return "intraday_trade_report_bundle"
 
 
 def _script_path(root: Path) -> Path:
@@ -75,8 +84,13 @@ def _active_bundle_job(path: Path, *, stale_after_sec: float = 900.0) -> Dict[st
     if not payload:
         return {}
     pid = int(payload.get("pid") or 0)
-    started_at = float(payload.get("started_at_epoch") or 0.0)
-    age_sec = max(0.0, float(time.time()) - started_at) if started_at > 0 else stale_after_sec + 1.0
+    touched_at = float(
+        payload.get("touched_at_epoch")
+        or payload.get("heartbeat_epoch")
+        or payload.get("started_at_epoch")
+        or 0.0
+    )
+    age_sec = max(0.0, float(time.time()) - touched_at) if touched_at > 0 else stale_after_sec + 1.0
     active = _pid_active(pid)
     if active and age_sec <= stale_after_sec:
         out = dict(payload)
@@ -89,12 +103,151 @@ def _active_bundle_job(path: Path, *, stale_after_sec: float = 900.0) -> Dict[st
     return {}
 
 
-def _write_bundle_job_lock(path: Path, *, pid: int, argv: List[str]) -> None:
+def _active_bundle_process(root: Path) -> Dict[str, Any]:
+    script_path = str(_script_path(root)).lower()
+    current_pid = int(os.getpid())
+    try:
+        if os.name == "nt":
+            probe = (
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*run_live_execution_bundle_report.py*' } | "
+                "Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine | ConvertTo-Json -Compress"
+            )
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", probe],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3.0,
+                check=False,
+            )
+            raw = str(completed.stdout or "").strip()
+            if not raw:
+                return {}
+            payload = json.loads(raw)
+            rows = payload if isinstance(payload, list) else [payload]
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                pid = int(row.get("ProcessId") or 0)
+                cmd = str(row.get("CommandLine") or "").lower()
+                if pid <= 0 or pid == current_pid:
+                    continue
+                if script_path not in cmd and "run_live_execution_bundle_report.py" not in cmd:
+                    continue
+                creation_epoch = _creation_epoch_from_wmi(row.get("CreationDate"))
+                return {
+                    "pid": pid,
+                    "parent_pid": int(row.get("ParentProcessId") or 0),
+                    "script": "run_live_execution_bundle_report.py",
+                    "command_line": str(row.get("CommandLine") or ""),
+                    "detection_source": "process_scan",
+                    "creation_epoch": creation_epoch,
+                    "age_sec": max(0.0, float(time.time()) - creation_epoch) if creation_epoch > 0 else None,
+                }
+        else:
+            completed = subprocess.run(
+                ["ps", "-eo", "pid=,args="],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3.0,
+                check=False,
+            )
+            for raw in str(completed.stdout or "").splitlines():
+                line = str(raw or "").strip()
+                if not line:
+                    continue
+                try:
+                    pid_text, cmd = line.split(None, 1)
+                except ValueError:
+                    continue
+                pid = int(pid_text or 0)
+                cmd_lower = str(cmd or "").lower()
+                if pid <= 0 or pid == current_pid:
+                    continue
+                if script_path not in cmd_lower and "run_live_execution_bundle_report.py" not in cmd_lower:
+                    continue
+                return {
+                    "pid": pid,
+                    "parent_pid": int(parent_pid or 0),
+                    "script": "run_live_execution_bundle_report.py",
+                    "command_line": str(cmd or ""),
+                    "detection_source": "process_scan",
+                }
+    except Exception:
+        return {}
+    return {}
+
+
+def _creation_epoch_from_wmi(value: Any) -> float:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
+    match = re.search(r"/Date\((\d+)", raw)
+    if match:
+        try:
+            return float(match.group(1)) / 1000.0
+        except Exception:
+            return 0.0
+    return 0.0
+
+
+def _stale_process_after_sec() -> float:
+    try:
+        return max(30.0, float(os.getenv("INTRADAY_TRADE_REPORT_STALE_PROCESS_SEC", "180") or 180.0))
+    except Exception:
+        return 180.0
+
+
+def _terminate_process_tree(pid: int) -> bool:
+    pid = int(pid or 0)
+    if pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            completed = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5.0,
+                check=False,
+            )
+            return int(completed.returncode or 1) == 0
+        os.kill(pid, 15)
+        return True
+    except Exception:
+        return False
+
+
+def _write_bundle_job_lock(
+    path: Path,
+    *,
+    pid: int,
+    argv: List[str],
+    target_run_id: str = "",
+    target_symbol: str = "",
+) -> None:
+    now_epoch = float(time.time())
     payload = {
         "pid": int(pid or 0),
-        "started_at_epoch": float(time.time()),
+        "parent_pid": int(os.getpid()),
+        "role": _bundle_role(),
+        "status": "running",
+        "created_at": _utc_iso(),
+        "created_at_epoch": now_epoch,
+        "started_at": _utc_iso(),
+        "started_at_epoch": now_epoch,
+        "touched_at": _utc_iso(),
+        "touched_at_epoch": now_epoch,
         "script": "run_live_execution_bundle_report.py",
         "argv": list(argv or []),
+        "target_run_id": str(target_run_id or ""),
+        "target_symbol": _normalize_symbol(target_symbol),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -144,8 +297,13 @@ def _invalidate_brief_cache(root: Path, run_ids: Iterable[str]) -> List[str]:
     return removed
 
 
-def _build_bundle_argv(root: Path) -> List[str]:
-    return [
+def _build_bundle_argv(root: Path, state: Dict[str, Any] | None = None) -> List[str]:
+    runtime_state = state if isinstance(state, dict) else {}
+    execution = runtime_state.get("execution") if isinstance(runtime_state.get("execution"), dict) else {}
+    order = execution.get("order") if isinstance(execution.get("order"), dict) else {}
+    run_id = str(runtime_state.get("run_id") or "").strip()
+    symbol = _normalize_symbol(order.get("symbol") or execution.get("symbol") or runtime_state.get("symbol") or "")
+    argv = [
         "--env-path",
         str(Path(os.getenv("ENV_PATH", str(root / ".env")))),
         "--event-log-path",
@@ -158,11 +316,61 @@ def _build_bundle_argv(root: Path) -> List[str]:
         str(root / "reports"),
         "--intents-path",
         str(Path(os.getenv("INTENTS_PATH", str(root / "data" / "logs" / "intents.jsonl")))),
-        "--max-runs",
-        str(int(float(os.getenv("INTRADAY_TRADE_REPORT_MAX_RUNS", "200")))),
+        "--role",
+        _bundle_role(),
         "--trade-report-ai",
         "--json",
     ]
+    if run_id:
+        argv.extend(["--target-run-id", run_id])
+    if symbol:
+        argv.extend(["--target-symbol", symbol])
+    return argv
+
+
+def _make_bundle_event_logger(root: Path):
+    try:
+        from libs.core.event_logger import EventLogger, resolve_event_log_path
+    except Exception:
+        return None
+    try:
+        return EventLogger(log_path=resolve_event_log_path(str(root / "data" / "logs" / "events.jsonl")))
+    except Exception:
+        return None
+
+
+def _log_bundle_event(
+    root: Path,
+    *,
+    event: str,
+    reason: str = "",
+    run_id: str = "",
+    trade_id: str = "",
+    symbol: str = "",
+    payload: Dict[str, Any] | None = None,
+) -> None:
+    logger = _make_bundle_event_logger(root)
+    if logger is None:
+        return
+    safe_payload = dict(payload or {})
+    safe_payload.setdefault("role", _bundle_role())
+    if reason:
+        safe_payload.setdefault("reason", str(reason))
+    safe_payload.setdefault("pid", int(os.getpid()))
+    safe_payload.setdefault("parent_pid", int(os.getpid()))
+    with contextlib.suppress(Exception):
+        logger.log(
+            run_id=str(run_id or "runtime-report-bundle"),
+            stage="reporting",
+            event=event,
+            event_name=f"reporting.{event}",
+            level="info",
+            trade_id=str(trade_id or ""),
+            agent="reporting",
+            phase="runtime",
+            symbol=_normalize_symbol(symbol),
+            payload=safe_payload,
+        )
 
 
 def _run_bundle_sync(argv: List[str]) -> tuple[int, str]:
@@ -181,7 +389,14 @@ def _background_creationflags() -> int:
     return flags
 
 
-def _run_bundle_with_timeout(root: Path, argv: List[str], *, timeout_sec: float) -> tuple[int | None, str, int | None]:
+def _run_bundle_with_timeout(
+    root: Path,
+    argv: List[str],
+    *,
+    timeout_sec: float,
+    target_run_id: str = "",
+    target_symbol: str = "",
+) -> tuple[int | None, str, int | None]:
     cmd = [sys.executable, str(_script_path(root)), *argv]
     try:
         completed = subprocess.run(
@@ -199,6 +414,7 @@ def _run_bundle_with_timeout(root: Path, argv: List[str], *, timeout_sec: float)
         lock_path = _bundle_job_lock_path(root)
         env = dict(os.environ)
         env["INTRADAY_TRADE_REPORT_JOB_LOCK_PATH"] = str(lock_path)
+        env["INTRADAY_TRADE_REPORT_PARENT_SPAWN"] = "1"
         proc = subprocess.Popen(  # noqa: S603
             cmd,
             cwd=str(root),
@@ -207,7 +423,13 @@ def _run_bundle_with_timeout(root: Path, argv: List[str], *, timeout_sec: float)
             env=env,
             creationflags=_background_creationflags(),
         )
-        _write_bundle_job_lock(lock_path, pid=int(getattr(proc, "pid", 0) or 0), argv=cmd)
+        _write_bundle_job_lock(
+            lock_path,
+            pid=int(getattr(proc, "pid", 0) or 0),
+            argv=cmd,
+            target_run_id=target_run_id,
+            target_symbol=target_symbol,
+        )
         return None, "", int(getattr(proc, "pid", 0) or 0)
 
 
@@ -268,16 +490,91 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
     action = _execution_action(state)
     if action not in {"BUY", "SELL"}:
         return {"ok": False, "status": "skipped", "reason": "non_trade_action"}
-
+    execution = state.get("execution") if isinstance(state.get("execution"), dict) else {}
     repo_root = Path(root) if root is not None else _root_dir()
     run_id = str(state.get("run_id") or "").strip()
-    argv = _build_bundle_argv(repo_root)
+    argv = _build_bundle_argv(repo_root, state)
     force_sync = root is not None or _is_trueish(state.get("force_sync_intraday_trade_reports"))
-    execution = state.get("execution") if isinstance(state.get("execution"), dict) else {}
+
+    generate_on_open = bool(trade_report.get("generate_on_open", False))
+    if action == "BUY" and not generate_on_open and not force_sync:
+        return {
+            "ok": True,
+            "status": "skipped",
+            "reason": "trade_report_generate_on_open_disabled",
+            "report_status": "pending",
+            "symbol": _normalize_symbol(
+                ((execution.get("order") or {}) if isinstance(execution.get("order"), dict) else {}).get("symbol")
+                or execution.get("symbol")
+                or state.get("symbol")
+                or ""
+            ),
+            "target_run_id": str(state.get("run_id") or "").strip(),
+            "target_symbol": _normalize_symbol(
+                ((execution.get("order") or {}) if isinstance(execution.get("order"), dict) else {}).get("symbol")
+                or execution.get("symbol")
+                or state.get("symbol")
+                or ""
+            ),
+            "role": _bundle_role(),
+            "policy_source": str(trade_report.get("policy_source") or "commander_applied_policy"),
+        }
+
     order = execution.get("order") if isinstance(execution.get("order"), dict) else {}
+    symbol = _normalize_symbol(order.get("symbol") or execution.get("symbol") or state.get("symbol") or "")
+    _log_bundle_event(
+        repo_root,
+        event="report_bundle_spawn_requested",
+        run_id=run_id,
+        symbol=symbol,
+        payload={
+            "lock_path": str(_bundle_job_lock_path(repo_root)),
+            "target_run_id": run_id,
+            "target_symbol": symbol,
+            "force_sync": bool(force_sync),
+        },
+    )
     if not force_sync:
         active_job = _active_bundle_job(_bundle_job_lock_path(repo_root))
+        if not active_job:
+            active_job = _active_bundle_process(repo_root)
+            active_pid = int(active_job.get("pid") or 0) if isinstance(active_job, dict) else 0
+            active_age_sec = float(active_job.get("age_sec") or 0.0) if isinstance(active_job, dict) else 0.0
+            if active_pid > 0 and active_age_sec >= _stale_process_after_sec():
+                terminated = _terminate_process_tree(active_pid)
+                _log_bundle_event(
+                    repo_root,
+                    event="report_bundle_stale_process_terminated",
+                    reason="orphan_bundle_process_exceeded_stale_window",
+                    run_id=run_id,
+                    symbol=symbol,
+                    payload={
+                        "lock_path": str(_bundle_job_lock_path(repo_root)),
+                        "active_pid": active_pid,
+                        "active_age_sec": active_age_sec,
+                        "terminated": bool(terminated),
+                        "target_run_id": run_id,
+                        "target_symbol": symbol,
+                    },
+                )
+                if terminated:
+                    time.sleep(0.2)
+                    active_job = {}
         if active_job:
+            _log_bundle_event(
+                repo_root,
+                event="report_bundle_spawn_skipped_existing_process",
+                reason="bundle_job_already_running",
+                run_id=run_id,
+                symbol=symbol,
+                payload={
+                    "lock_path": str(active_job.get("lock_path") or _bundle_job_lock_path(repo_root)),
+                    "active_pid": int(active_job.get("pid") or 0),
+                    "dedupe_source": str(active_job.get("detection_source") or "lock"),
+                    "target_run_id": run_id,
+                    "target_symbol": symbol,
+                },
+            )
             return {
                 "ok": True,
                 "status": "skipped",
@@ -288,11 +585,15 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
                 "story_id": "",
                 "report_status": "queued",
                 "report_path": "",
-                "symbol": _normalize_symbol(order.get("symbol") or ""),
+                "symbol": symbol,
                 "cache_invalidated": [],
                 "queue_mode": "background_subprocess_deduped",
                 "background_pid": int(active_job.get("pid") or 0),
                 "lock_path": str(active_job.get("lock_path") or ""),
+                "dedupe_source": str(active_job.get("detection_source") or "lock"),
+                "target_run_id": run_id,
+                "target_symbol": symbol,
+                "role": _bundle_role(),
             }
     if force_sync:
         rc, raw = _run_bundle_sync(argv)
@@ -302,9 +603,23 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
             repo_root,
             argv,
             timeout_sec=float(os.getenv("INTRADAY_TRADE_REPORT_SYNC_TIMEOUT_SEC", "2.0") or 2.0),
+            target_run_id=run_id,
+            target_symbol=symbol,
         )
 
     if queued_pid:
+        _log_bundle_event(
+            repo_root,
+            event="report_bundle_spawned_background",
+            run_id=run_id,
+            symbol=symbol,
+            payload={
+                "lock_path": str(_bundle_job_lock_path(repo_root)),
+                "background_pid": int(queued_pid),
+                "target_run_id": run_id,
+                "target_symbol": symbol,
+            },
+        )
         return {
             "ok": True,
             "status": "queued",
@@ -315,11 +630,14 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
             "story_id": "",
             "report_status": "queued",
             "report_path": "",
-            "symbol": _normalize_symbol(order.get("symbol") or ""),
+            "symbol": symbol,
             "cache_invalidated": [],
             "queue_mode": "background_subprocess",
             "background_pid": int(queued_pid),
             "lock_path": str(_bundle_job_lock_path(repo_root)),
+            "target_run_id": run_id,
+            "target_symbol": symbol,
+            "role": _bundle_role(),
         }
 
     try:
@@ -336,4 +654,8 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
             "stdout": raw[-1000:],
         }
 
-    return _build_generation_result(root=repo_root, summary=summary, run_id=run_id, return_code=int(rc))
+    result = _build_generation_result(root=repo_root, summary=summary, run_id=run_id, return_code=int(rc))
+    result["target_run_id"] = run_id
+    result["target_symbol"] = symbol
+    result["role"] = _bundle_role()
+    return result

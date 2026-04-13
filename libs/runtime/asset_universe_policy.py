@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from libs.core.symbols import normalize_symbol
@@ -34,6 +35,19 @@ _CLASS_FIELDS = (
     "market_category",
     "issue_type",
 )
+_MARKET_CONTEXT_FIELDS = (
+    "market",
+    "market_type",
+    "market_name",
+    "market_segment",
+    "market_division",
+    "market_category",
+    "exchange",
+    "exchange_name",
+    "board",
+    "board_name",
+    "mkt_tp_nm",
+)
 _SYMBOL_METADATA_MAP_KEYS = (
     "symbol_metadata",
     "symbol_meta",
@@ -60,6 +74,9 @@ _KR_FUTURES = "\uc120\ubb3c"
 _KR_COVERED_CALL = "\ucee4\ubc84\ub4dc\ucf5c"
 _KR_COMMON_STOCK = "\ubcf4\ud1b5\uc8fc"
 _KR_STOCK = "\uc8fc\uc2dd"
+_KR_KOSPI = "\ucf54\uc2a4\ud53c"
+_KR_KOSDAQ = "\ucf54\uc2a4\ub2e5"
+_KR_KONEX = "\ucf54\ub125\uc2a4"
 _ETF_BRAND_PREFIXES = (
     "TIGER ",
     "KODEX ",
@@ -72,6 +89,19 @@ _ETF_BRAND_PREFIXES = (
     "PLUS ",
     "RISE ",
     "SOL ",
+)
+_COMMON_STOCK_MARKET_HINTS = (
+    "KOSPI",
+    "KOSDAQ",
+    "KONEX",
+    "STOCK",
+    "EQUITY",
+    "COMMON",
+    _KR_KOSPI,
+    _KR_KOSDAQ,
+    _KR_KONEX,
+    _KR_COMMON_STOCK,
+    _KR_STOCK,
 )
 _REMOTE_SYMBOL_PROFILE_CACHE: Dict[str, Dict[str, Any]] = {}
 
@@ -256,30 +286,74 @@ def _classify_from_explicit_metadata(contexts: Sequence[Dict[str, Any]]) -> Tupl
 
 
 def _classify_from_name(name: str) -> str:
+    asset_class, _source = _classify_from_name_detail(name)
+    return asset_class
+
+
+def _classify_from_name_detail(name: str) -> Tuple[str, str]:
     text = _normalize_text(name)
     if not text:
-        return ""
+        return "", ""
     upper = text.upper()
     padded = f" {upper} "
-    if any(upper.startswith(prefix) for prefix in _ETF_BRAND_PREFIXES):
-        return "etf"
     if "ETN" in upper:
-        return "etn"
+        return "etn", "name_heuristic"
     if _KR_COVERED_CALL in text or "COVERED CALL" in upper:
-        return "covered_call_etf"
+        return "covered_call_etf", "name_heuristic_extended"
     if _KR_LEVERAGED in text or "LEVERAGE" in upper:
-        return "leveraged_etf"
+        return "leveraged_etf", "name_heuristic_extended"
     if _KR_INVERSE in text or "INVERSE" in upper:
-        return "inverse_etf"
+        return "inverse_etf", "name_heuristic_extended"
     if _KR_ACTIVE in text or " ACTIVE " in padded:
-        return "active_etf"
+        return "active_etf", "name_heuristic_extended"
     if _KR_FUTURES in text or " FUTURES " in padded or " FUTURE " in padded:
-        return "futures_etf"
-    if " TR " in padded or upper.endswith(" TR") or upper.startswith("TR "):
-        return "tr_index_product"
+        return "futures_etf", "name_heuristic_extended"
+    if " TR " in padded or upper.endswith(" TR") or upper.endswith("TR") or upper.startswith("TR "):
+        return "tr_index_product", "name_heuristic_extended"
+    if any(upper.startswith(prefix) for prefix in _ETF_BRAND_PREFIXES):
+        return "etf", "name_heuristic_extended"
     if "ETF" in upper:
-        return "etf"
-    return "common_stock"
+        return "etf", "name_heuristic"
+    return "common_stock", "name_heuristic"
+
+
+def _classify_from_symbol_context(symbol: str, contexts: Sequence[Dict[str, Any]]) -> Tuple[str, str, str]:
+    normalized_symbol = _normalize_symbol(symbol)
+    if not normalized_symbol:
+        return "", "", ""
+
+    for context in contexts:
+        market_value = _normalize_text(_find_value_recursive(context, _MARKET_CONTEXT_FIELDS, max_depth=3))
+        if not market_value:
+            continue
+        upper = market_value.upper()
+        if any(token in market_value or token in upper for token in _COMMON_STOCK_MARKET_HINTS):
+            return "common_stock", "symbol_context", "market"
+    return "", "", ""
+
+
+def enrich_candidate_with_asset_inspection(
+    candidate: Mapping[str, Any],
+    inspection: Mapping[str, Any],
+) -> Dict[str, Any]:
+    enriched = dict(candidate)
+    for target_key, source_key in (
+        ("asset_class_detected", "asset_class_detected"),
+        ("detection_source", "detection_source"),
+        ("detection_field", "detection_field"),
+        ("asset_policy_type", "asset_policy_type"),
+        ("asset_policy_source", "asset_policy_source"),
+        ("excluded_by_asset_policy", "excluded_by_asset_policy"),
+        ("exclusion_reason", "exclusion_reason"),
+    ):
+        source_value = inspection.get(source_key)
+        if source_value not in (None, ""):
+            enriched[target_key] = source_value
+
+    detected_name = _normalize_text(inspection.get("detected_name"))
+    if detected_name and not _normalize_text(enriched.get("name")):
+        enriched["name"] = detected_name
+    return enriched
 
 
 
@@ -340,9 +414,8 @@ def inspect_asset_universe_candidate(
             detected_name = _normalize_text(name_value)
             if not detected_name:
                 continue
-            asset_class_detected = _classify_from_name(detected_name)
+            asset_class_detected, detection_source = _classify_from_name_detail(detected_name)
             if asset_class_detected:
-                detection_source = "name_heuristic"
                 detection_field = "name"
                 break
 
@@ -362,14 +435,19 @@ def inspect_asset_universe_candidate(
                 name_value = _find_value_recursive(remote_profile, _NAME_FIELDS, max_depth=2)
                 detected_name = _normalize_text(name_value)
                 if detected_name:
-                    asset_class_detected = _classify_from_name(detected_name)
+                    asset_class_detected, detection_source = _classify_from_name_detail(detected_name)
                     if asset_class_detected:
-                        detection_source = "name_heuristic"
                         detection_field = "remote_symbol_profile"
 
     if not asset_class_detected:
+        asset_class_detected, detection_source, detection_field = _classify_from_symbol_context(
+            normalized_symbol,
+            contexts,
+        )
+
+    if not asset_class_detected:
         asset_class_detected = "unknown"
-        detection_source = "fallback"
+        detection_source = "unknown"
         detection_field = ""
 
     excluded = bool(runtime_policy.get("common_stock_only")) and asset_class_detected in _BLOCKED_ASSET_CLASSES
@@ -393,11 +471,18 @@ def apply_asset_universe_filter(
     state: Dict[str, Any],
     policy: Optional[Dict[str, Any]] = None,
     market_quotes: Optional[Mapping[str, Dict[str, Any]]] = None,
+    allow_remote_lookup: bool = False,
 ) -> Tuple[List[Any], Dict[str, Any]]:
     runtime_policy = resolve_universe_runtime_policy(state, policy if isinstance(policy, dict) else None)
     kept: List[Any] = []
     excluded_rows: List[Dict[str, Any]] = []
     evaluated = 0
+    total_before_filter = int(len(list(candidates or [])))
+    by_asset_class: Counter[str] = Counter()
+    by_detection_source: Counter[str] = Counter()
+    kept_by_asset_class: Counter[str] = Counter()
+    excluded_by_asset_class: Counter[str] = Counter()
+    unknown_asset_candidate_count = 0
 
     for item in list(candidates or []):
         symbol = _normalize_symbol(item.get("symbol")) if isinstance(item, dict) else _normalize_symbol(item)
@@ -410,29 +495,33 @@ def apply_asset_universe_filter(
             state=state,
             policy=policy,
             market_quotes=market_quotes,
+            allow_remote_lookup=allow_remote_lookup,
         )
+        asset_class_detected = str(inspection.get("asset_class_detected") or "unknown")
+        detection_source = str(inspection.get("detection_source") or "unknown")
+        by_asset_class[asset_class_detected] += 1
+        by_detection_source[detection_source] += 1
+        if asset_class_detected == "unknown":
+            unknown_asset_candidate_count += 1
         if inspection.get("excluded_by_asset_policy"):
+            excluded_by_asset_class[asset_class_detected] += 1
             excluded_rows.append(
                 {
                     "symbol": symbol,
-                    "asset_class_detected": str(inspection.get("asset_class_detected") or ""),
-                    "detection_source": str(inspection.get("detection_source") or ""),
+                    "asset_class_detected": asset_class_detected,
+                    "detection_source": detection_source,
+                    "detection_field": str(inspection.get("detection_field") or ""),
                     "exclusion_reason": str(inspection.get("exclusion_reason") or ETF_ETN_EXCLUSION_REASON),
                     "detected_name": str(inspection.get("detected_name") or ""),
                 }
             )
             continue
         if isinstance(item, dict):
-            enriched = dict(item)
-            enriched.setdefault("asset_class_detected", str(inspection.get("asset_class_detected") or ""))
-            enriched.setdefault("detection_source", str(inspection.get("detection_source") or ""))
-            enriched.setdefault("excluded_by_asset_policy", False)
-            enriched.setdefault("exclusion_reason", "")
-            if inspection.get("detected_name") and not enriched.get("name"):
-                enriched["name"] = str(inspection.get("detected_name") or "")
+            enriched = enrich_candidate_with_asset_inspection(item, inspection)
             kept.append(enriched)
         else:
             kept.append(item)
+        kept_by_asset_class[asset_class_detected] += 1
 
     meta = {
         "asset_universe_policy": str(runtime_policy.get("asset_type") or COMMON_STOCK_ONLY_ASSET_TYPE),
@@ -443,5 +532,17 @@ def apply_asset_universe_filter(
         "asset_policy_excluded_symbols": [str(row.get("symbol") or "") for row in excluded_rows[:20]],
         "asset_policy_exclusions": list(excluded_rows[:20]),
         "asset_policy_filter_reason": ETF_ETN_EXCLUSION_REASON if excluded_rows else "",
+        "asset_detection_stats": {
+            "evaluated_count": int(evaluated),
+            "kept_count": int(len(kept)),
+            "excluded_count": int(len(excluded_rows)),
+            "by_asset_class": dict(by_asset_class),
+            "by_detection_source": dict(by_detection_source),
+            "kept_by_asset_class": dict(kept_by_asset_class),
+            "excluded_by_asset_class": dict(excluded_by_asset_class),
+        },
+        "unknown_asset_candidate_count": int(unknown_asset_candidate_count),
+        "total_candidates_before_filter": int(total_before_filter),
+        "total_candidates_after_filter": int(len(kept)),
     }
     return kept, meta

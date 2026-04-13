@@ -218,6 +218,7 @@ def _evaluate_asset_universe_guard(state: Dict[str, Any], order: Dict[str, Any])
             "asset_policy_source": str(inspection.get("asset_policy_source") or ""),
             "asset_class_detected": str(inspection.get("asset_class_detected") or ""),
             "detection_source": str(inspection.get("detection_source") or ""),
+            "detection_field": str(inspection.get("detection_field") or ""),
             "excluded_by_asset_policy": bool(inspection.get("excluded_by_asset_policy")),
             "exclusion_reason": str(inspection.get("exclusion_reason") or ""),
             "detected_name": str(inspection.get("detected_name") or ""),

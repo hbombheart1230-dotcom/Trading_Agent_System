@@ -913,6 +913,42 @@ def test_monitor_blocks_reentry_during_post_exit_cooldown(monkeypatch):
     assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "post_exit_cooldown"
 
 
+def test_monitor_blocks_new_buy_inside_closeout_window(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": _entry_breakout_rows()},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {
+            **_policy_with_entry_cooldown(0),
+            "exit_policy": {"use_eod_flat": True, "eod_flat_cutoff_min": 10},
+        },
+        "market_context": {"minutes_to_close": 5},
+    }
+
+    out = monitor_node(state)
+    mon = out.get("monitor") or {}
+    blocker_surface = dict(out.get("monitor_entry_blocker_surface") or {})
+
+    assert out.get("intents") == []
+    assert mon.get("buy_blocked_closeout_window") is True
+    assert mon.get("entry_guard_reason") == "buy_blocked_closeout_window"
+    assert mon.get("minutes_to_close") == 5
+    assert mon.get("eod_flat_cutoff_min") == 10
+    assert mon.get("closeout_window_active") is True
+    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "buy_blocked_closeout_window"
+    assert blocker_surface.get("closeout_window_blocked") is True
+    assert blocker_surface.get("minutes_to_close") == 5
+    assert blocker_surface.get("eod_flat_cutoff_min") == 10
+
+
 def test_monitor_entry_intent_cooldown_suppresses_duplicate_buy_intents(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
@@ -2304,6 +2340,44 @@ def test_monitor_policy_aware_gating_can_promote_breakout_near_ready_reclaim(mon
     assert "reclaim_gate_ok" in list(((monitor.get("entry_policy_aware_gating") or {}).get("relaxations_applied")) or [])
     assert isinstance(monitor_output.get("policy_aware_gating"), dict)
     assert (monitor_output.get("policy_aware_gating") or {}).get("applied") is True
+
+
+def test_monitor_policy_aware_gating_surfaces_reclaim_tuning_provenance(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    rows = _entry_breakout_rows()
+    rows[-1]["vwap"] = 102.12
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": -0.0031, "engine_volume_spike20": 1.4},
+        },
+        "strategist_output": {"playbook": "breakout"},
+        "minute_ohlcv_by_symbol": {"BBB": rows},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": _policy_with_entry_cooldown(0),
+    }
+
+    out = monitor_node(state)
+    monitor = out.get("monitor") or {}
+    monitor_output = out.get("monitor_output") or {}
+    blocker_surface = dict(out.get("monitor_entry_blocker_surface") or monitor_output.get("entry_blocker_surface") or {})
+    policy_gating = dict(monitor.get("entry_policy_aware_gating") or {})
+
+    assert policy_gating.get("applied") is True
+    assert policy_gating.get("reclaim_readiness_tuned") is True
+    assert policy_gating.get("reclaim_tuning_version") == "small_relaxation_v1"
+    assert policy_gating.get("reclaim_tuning_scope") == "below_vwap_reclaim_not_ready_only"
+    assert "reclaim_small_relaxation_v1" in list(policy_gating.get("entry_tuning_flags") or [])
+    assert blocker_surface.get("reclaim_readiness_tuned") is True
+    assert blocker_surface.get("reclaim_tuning_version") == "small_relaxation_v1"
+    assert blocker_surface.get("reclaim_tuning_scope") == "below_vwap_reclaim_not_ready_only"
+    assert isinstance(monitor_output.get("entry_blocker_surface"), dict)
+    assert isinstance(monitor_output.get("policy_aware_gating"), dict)
 
 
 def test_monitor_records_received_vs_effective_policy_when_strategy_frame_tightens(monkeypatch):

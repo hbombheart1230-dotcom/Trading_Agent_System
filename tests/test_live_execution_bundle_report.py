@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from datetime import datetime, timezone
 
 import libs.reporting.trade_story_pipeline as story_pipeline
 import scripts.run_live_execution_bundle_report as mod
@@ -1289,11 +1290,397 @@ def test_live_execution_bundle_report_preserves_existing_ai_report_when_generati
         assert llm_response_path.read_text(encoding="utf-8") == existing_llm
 
 
+def test_live_execution_bundle_report_skips_when_background_job_is_already_running(tmp_path: Path, capsys, monkeypatch) -> None:
+    lock_path = tmp_path / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": 77777,
+                "status": "running",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "script": "run_live_execution_bundle_report.py",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(mod, "_background_job_lock_path", lambda: lock_path)
+    monkeypatch.setattr(mod, "_pid_active", lambda pid: True)
+
+    rc = mod.main(["--day", "2026-04-13", "--json"])
+    out = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert out["ok"] is True
+    assert out["status"] == "skipped"
+    assert out["reason"] == "bundle_job_already_running"
+    assert out["active_pid"] == 77777
+    assert out["lock_path"] == str(lock_path)
+    assert out["detection_source"] == "lock"
+
+
+def test_live_execution_bundle_report_ignores_process_scan_when_no_lock_owner_exists(tmp_path: Path, capsys, monkeypatch) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+    lock_path = tmp_path / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:10:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}}},
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(mod, "_background_job_lock_path", lambda: lock_path)
+    monkeypatch.setattr(
+        mod,
+        "_active_background_process",
+        lambda role: {
+            "pid": 88888,
+            "parent_pid": 777,
+            "role": role,
+            "command_line": "python scripts/run_live_execution_bundle_report.py --role intraday_trade_report_bundle",
+            "detection_source": "process_scan",
+        },
+    )
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--target-run-id",
+            "run-2",
+            "--role",
+            "intraday_trade_report_bundle",
+            "--no-trade-report-ai",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert out["ok"] is True
+    assert out["targeted_mode"] is True
+    assert out["target_run_id"] == "run-2"
+
+
+def test_live_execution_bundle_report_parent_spawn_bypasses_process_self_guard(tmp_path: Path, capsys, monkeypatch) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+    lock_path = tmp_path / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:10:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}}},
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(mod, "_background_job_lock_path", lambda: lock_path)
+    monkeypatch.setattr(
+        mod,
+        "_active_background_process",
+        lambda role: {
+            "pid": 88888,
+            "parent_pid": 777,
+            "role": role,
+            "command_line": "python scripts/run_live_execution_bundle_report.py --role intraday_trade_report_bundle",
+            "detection_source": "process_scan",
+        },
+    )
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setenv("INTRADAY_TRADE_REPORT_PARENT_SPAWN", "1")
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--target-run-id",
+            "run-2",
+            "--role",
+            "intraday_trade_report_bundle",
+            "--no-trade-report-ai",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert out["ok"] is True
+    assert out["targeted_mode"] is True
+    assert out["target_run_id"] == "run-2"
+    assert out["target_symbol"] == "000660"
+    assert out["targeted_execution_run_count"] == 1
+
+
+def test_live_execution_bundle_report_targeted_mode_filters_to_target_symbol_runs(tmp_path: Path, capsys, monkeypatch) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+    lock_path = tmp_path / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:05:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}}},
+            {"run_id": "run-3", "ts": f"{day}T00:10:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "005930", "qty": 1}, "payload": {"response_payload": {"ord_no": "B1", "return_msg": "ok"}}}},
+            {"run_id": "run-4", "ts": f"{day}T00:15:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "005930", "qty": 1}, "payload": {"response_payload": {"ord_no": "B2", "return_msg": "ok"}}}},
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(mod, "_background_job_lock_path", lambda: lock_path)
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--target-run-id",
+            "run-2",
+            "--role",
+            "intraday_trade_report_bundle",
+            "--no-trade-report-ai",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert out["ok"] is True
+    assert out["targeted_mode"] is True
+    assert out["target_run_id"] == "run-2"
+    assert out["target_symbol"] == "000660"
+    assert out["targeted_execution_run_count"] == 1
+    assert out["targeted_lifecycle_context_run_count"] == 2
+    assert len(out["run_bundles"]) == 1
+    assert out["run_bundles"][0]["run_id"] == "run-2"
+    assert {row["symbol"] for row in out["run_bundles"]} == {"000660"}
+    assert {row["symbol"] for row in out["bundles"]} == {"000660"}
+
+
+def test_live_execution_bundle_report_skips_ai_regeneration_when_fingerprint_matches(tmp_path: Path, capsys, monkeypatch) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+    lock_path = tmp_path / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:10:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}}},
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(mod, "_background_job_lock_path", lambda: lock_path)
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+
+    calls = {"count": 0}
+
+    def fake_ai(story_input, **kwargs):  # type: ignore[no-untyped-def]
+        calls["count"] += 1
+        return _fake_ai_trade_report_ok(story_input, **kwargs)
+
+    monkeypatch.setattr(mod, "build_ai_trade_report", fake_ai)
+
+    first_rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--role",
+            "intraday_trade_report_bundle",
+            "--json",
+        ]
+    )
+    first_out = json.loads(capsys.readouterr().out.strip())
+    assert first_rc == 0
+    assert first_out["ok"] is True
+    assert calls["count"] == 1
+
+    second_rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--role",
+            "intraday_trade_report_bundle",
+            "--json",
+        ]
+    )
+    second_out = json.loads(capsys.readouterr().out.strip())
+    assert second_rc == 0
+    assert second_out["ok"] is True
+    assert calls["count"] == 1
+
+    trade_id = str(second_out["bundles"][0]["trade_id"])
+    trade_dir = reports_root / "trades" / day / trade_id
+    bundle = json.loads((trade_dir / "lifecycle_bundle.json").read_text(encoding="utf-8"))
+    diagnostics = bundle.get("ai_report_diagnostics") or {}
+    generation_state = json.loads((trade_dir / "reports" / "report_generation_state.json").read_text(encoding="utf-8"))
+    assert diagnostics.get("report_generation_reason") == "fingerprint_match_existing_success"
+    assert generation_state["components"]["ai_trade_report"]["skip_reason"] == "fingerprint_match_existing_success"
+
+
 def test_story_type_classification_is_deterministic() -> None:
     assert mod._classify_story_type({"action": "BUY"}, {"execution_attempted": True, "execution_ok": True, "broker_env": "mock"}) == "simulation"
     assert mod._classify_story_type({"action": "BUY"}, {"execution_attempted": True, "execution_ok": False, "broker_env": "real"}) == "failed_execution"
     assert mod._classify_story_type({}, {"execution_attempted": False, "execution_ok": False, "broker_env": "real"}) == "decision_only"
     assert mod._classify_story_type({"action": "BUY"}, {"execution_attempted": True, "execution_ok": True, "broker_env": "real"}) == "live_trade"
+
+
+def test_build_trade_lifecycles_promotes_closed_trade_story_type_from_exit_bundle() -> None:
+    lifecycles = mod._build_trade_lifecycles(
+        day="2026-04-13",
+        run_snapshots=[
+            {
+                "run_id": "buy-run",
+                "ts_start": "2026-04-13T05:59:31+00:00",
+                "ts_epoch": 1,
+                "symbol": "010170",
+                "execution_action": "BUY",
+                "execution": {"action": "BUY", "symbol": "010170", "qty": 1},
+                "verdict_allowed": True,
+                "monitor_reason": "",
+                "exit_reason": "",
+                "monitor": {},
+            },
+            {
+                "run_id": "sell-run",
+                "ts_start": "2026-04-13T06:01:33+00:00",
+                "ts_epoch": 2,
+                "symbol": "010170",
+                "execution_action": "SELL",
+                "execution": {"action": "SELL", "symbol": "010170", "qty": 1},
+                "verdict_allowed": True,
+                "monitor_reason": "",
+                "exit_reason": "peak_drawdown",
+                "monitor": {},
+            },
+        ],
+        run_bundles={
+            "buy-run": {},
+            "sell-run": {
+                "story_contract": {
+                    "story_type": "simulation",
+                    "execution_mode_label": "simulation (mock broker)",
+                }
+            },
+        },
+    )
+    assert len(lifecycles) == 1
+    lifecycle = lifecycles[0]
+    assert lifecycle["status"] == "closed"
+    assert lifecycle["story_type"] == "simulation"
+    assert lifecycle["execution_mode_label"] == "simulation (mock broker)"
+
+
+def test_build_trade_lifecycles_promotes_closed_trade_story_type_from_snapshot_when_bundle_missing() -> None:
+    lifecycles = mod._build_trade_lifecycles(
+        day="2026-04-13",
+        run_snapshots=[
+            {
+                "run_id": "buy-run",
+                "ts_start": "2026-04-13T05:59:31+00:00",
+                "ts_epoch": 1,
+                "symbol": "010170",
+                "execution_action": "BUY",
+                "execution": {"action": "BUY", "symbol": "010170", "qty": 1},
+                "verdict_allowed": True,
+                "monitor_reason": "",
+                "exit_reason": "",
+                "monitor": {},
+            },
+            {
+                "run_id": "sell-run",
+                "ts_start": "2026-04-13T06:01:33+00:00",
+                "ts_epoch": 2,
+                "symbol": "010170",
+                "execution_action": "SELL",
+                "execution": {"action": "SELL", "symbol": "010170", "qty": 1},
+                "verdict_allowed": True,
+                "monitor_reason": "",
+                "exit_reason": "peak_drawdown",
+                "monitor": {},
+            },
+        ],
+        run_bundles={
+            "buy-run": {},
+            "sell-run": {},
+        },
+    )
+    assert len(lifecycles) == 1
+    lifecycle = lifecycles[0]
+    assert lifecycle["status"] == "closed"
+    assert lifecycle["story_type"] == "live_trade"
+    assert lifecycle["execution_mode_label"] == "decision only"
 
 
 def test_live_execution_bundle_report_succeeds_with_zero_executions_for_explicit_day(tmp_path: Path, capsys, monkeypatch) -> None:

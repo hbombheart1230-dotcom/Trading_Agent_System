@@ -51,6 +51,37 @@ def _humanize_reason_code(value: Any) -> str:
     return text.replace("_", " ")
 
 
+def _reclaim_evidence_explanation(
+    *,
+    reclaim_blocked: bool,
+    reclaim_gate_ok: bool | None,
+    vwap_hold_ok: bool | None,
+    vwap_reclaim_ok: bool | None,
+    reclaim_distance_to_ready: Any,
+    reclaim_readiness_tuned: bool,
+) -> str:
+    if reclaim_readiness_tuned:
+        return (
+            "VWAP reclaim was slightly short of the standard near-ready band, "
+            "but small_relaxation_v1 allowed the breakout path because supporting evidence stayed intact."
+        )
+    if bool(reclaim_gate_ok):
+        if bool(vwap_reclaim_ok) and not bool(vwap_hold_ok):
+            return "VWAP reclaim confirmation is in place even though the hold check is still marginal."
+        if bool(vwap_hold_ok):
+            return "VWAP hold condition is satisfied."
+        return "VWAP reclaim gate is satisfied."
+    if reclaim_blocked:
+        distance = _to_float(reclaim_distance_to_ready)
+        if distance:
+            return (
+                "VWAP reclaim confirmation is still short of ready state "
+                f"(distance_to_ready={distance:.4f})."
+            )
+        return "VWAP reclaim confirmation is still short of ready state."
+    return ""
+
+
 def _extract_failed_names(rows: Any, *, statuses: Sequence[str]) -> List[str]:
     expected = {str(item or "").strip().lower() for item in list(statuses or []) if str(item or "").strip()}
     out: List[str] = []
@@ -240,6 +271,229 @@ def build_monitor_no_trade_surface(
         "preferred_checks_failed": preferred_checks_failed,
         "relaxable_checks_failed": relaxable_checks_failed,
         "evidence_snapshot": evidence_snapshot,
+    }
+
+
+def _resolve_check_state(
+    *,
+    name: str,
+    metrics: Mapping[str, Any],
+    passed_checks: Sequence[Any],
+    failed_checks: Sequence[Any],
+    check_status: Mapping[str, Any],
+) -> Any:
+    if name in metrics:
+        value = metrics.get(name)
+        if isinstance(value, bool):
+            return value
+        if value not in (None, ""):
+            return value
+    for candidate in list(passed_checks or []):
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        if text == name or text.startswith(f"{name}="):
+            return True
+    for candidate in list(failed_checks or []):
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        if text == name or text.startswith(f"{name}="):
+            return False
+    for rows in list(check_status.values()):
+        for row in list(rows or []):
+            if not isinstance(row, Mapping):
+                continue
+            row_name = str(row.get("name") or "").strip()
+            if row_name != name and not row_name.startswith(f"{name}="):
+                continue
+            status = str(row.get("status") or "").strip().lower()
+            if status == "pass":
+                return True
+            if status == "fail":
+                return False
+            actual_state = row.get("actual_state")
+            if actual_state not in (None, ""):
+                return actual_state
+    return None
+
+
+def _resolve_structure_state(chart_features: Mapping[str, Any], check_status: Mapping[str, Any]) -> str:
+    structure = chart_features.get("structure")
+    if isinstance(structure, Mapping):
+        state = str(structure.get("structure_hh_hl") or "").strip()
+        if state:
+            return state
+    direct_state = str(chart_features.get("structure_hh_hl") or "").strip()
+    if direct_state:
+        return direct_state
+    for rows in list(check_status.values()):
+        for row in list(rows or []):
+            if not isinstance(row, Mapping):
+                continue
+            row_name = str(row.get("name") or "").strip()
+            if row_name != "structure_hh_hl" and not row_name.startswith("structure_hh_hl="):
+                continue
+            actual_state = str(row.get("actual_state") or "").strip()
+            if actual_state:
+                return actual_state
+            if "=" in row_name:
+                return row_name.split("=", 1)[1].strip()
+    return ""
+
+
+def build_entry_blocker_surface(
+    entry_info: Mapping[str, Any] | None,
+    *,
+    final_decision: Any,
+    no_trade_surface: Mapping[str, Any] | None = None,
+    entry_blockers: Sequence[Any] | None = None,
+    buy_blocked_open_position: bool = False,
+    buy_blocked_closeout_window: bool = False,
+    buy_blocked_post_exit_cooldown: bool = False,
+    post_exit_cooldown_remaining_sec: Any = None,
+    open_position_count: Any = None,
+    minutes_to_close: Any = None,
+    eod_flat_cutoff_min: Any = None,
+) -> Dict[str, Any]:
+    row = dict(entry_info or {}) if isinstance(entry_info, Mapping) else {}
+    no_trade = dict(no_trade_surface or {}) if isinstance(no_trade_surface, Mapping) else {}
+    metrics = dict(row.get("metrics") or {}) if isinstance(row.get("metrics"), Mapping) else {}
+    condition_scores = dict(row.get("condition_scores") or {}) if isinstance(row.get("condition_scores"), Mapping) else {}
+    policy_interpretation = dict(row.get("policy_interpretation") or {}) if isinstance(row.get("policy_interpretation"), Mapping) else {}
+    chart_features = dict(row.get("chart_structure_features") or {}) if isinstance(row.get("chart_structure_features"), Mapping) else {}
+    interpreter_trace = dict(row.get("policy_interpreter_trace") or {}) if isinstance(row.get("policy_interpreter_trace"), Mapping) else {}
+    check_status = dict(interpreter_trace.get("check_status") or {}) if isinstance(interpreter_trace.get("check_status"), Mapping) else {}
+    policy_gating = dict(row.get("policy_aware_gating") or {}) if isinstance(row.get("policy_aware_gating"), Mapping) else {}
+    passed_checks = list(row.get("passed_checks") or [])
+    failed_checks = list(row.get("failed_checks") or [])
+
+    no_trade_code = str(no_trade.get("no_trade_reason_code") or row.get("guard_reason") or row.get("reason") or "").strip()
+    dominant_blocker = str(no_trade.get("dominant_blocker") or no_trade_code or row.get("primary_failure_axis") or "").strip()
+
+    primary_blockers = _dedupe_non_empty(
+        [dominant_blocker, no_trade_code]
+        + list(no_trade.get("required_checks_failed") or [])
+        + list(no_trade.get("preferred_checks_failed") or [])
+        + list(no_trade.get("relaxable_checks_failed") or []),
+        limit=8,
+    )
+    raw_entry_blockers = _dedupe_non_empty(list(entry_blockers or []), limit=8)
+    if not primary_blockers:
+        primary_blockers = list(raw_entry_blockers)
+    elif len(primary_blockers) < 2 and raw_entry_blockers:
+        primary_blockers = _dedupe_non_empty(list(primary_blockers) + list(raw_entry_blockers), limit=8)
+
+    volume_ok = _resolve_check_state(
+        name="volume_ok",
+        metrics=metrics,
+        passed_checks=passed_checks,
+        failed_checks=failed_checks,
+        check_status=check_status,
+    )
+    rebound_ok = _resolve_check_state(
+        name="rebound_ok",
+        metrics=metrics,
+        passed_checks=passed_checks,
+        failed_checks=failed_checks,
+        check_status=check_status,
+    )
+    pullback_ok = _resolve_check_state(
+        name="pullback_ok",
+        metrics=metrics,
+        passed_checks=passed_checks,
+        failed_checks=failed_checks,
+        check_status=check_status,
+    )
+    structure_state = _resolve_structure_state(chart_features, check_status)
+
+    final_outcome = _normalize_decision_outcome(final_decision, fallback="WAIT")
+    cooldown_remaining = _to_int(post_exit_cooldown_remaining_sec)
+    volume_missing = no_trade_code == "volume_confirmation_missing" or dominant_blocker == "volume_confirmation_missing"
+    pullback_not_mature = no_trade_code == "pullback_not_mature" or dominant_blocker == "pullback_not_mature"
+    reclaim_blocked = no_trade_code == "below_vwap_reclaim_not_ready" or dominant_blocker == "below_vwap_reclaim_not_ready"
+    reclaim_gate_ok = _resolve_check_state(
+        name="reclaim_gate_ok",
+        metrics=metrics,
+        passed_checks=passed_checks,
+        failed_checks=failed_checks,
+        check_status=check_status,
+    )
+    vwap_hold_ok = _resolve_check_state(
+        name="vwap_hold_ok",
+        metrics=metrics,
+        passed_checks=passed_checks,
+        failed_checks=failed_checks,
+        check_status=check_status,
+    )
+    vwap_reclaim_ok = _resolve_check_state(
+        name="vwap_reclaim_ok",
+        metrics=metrics,
+        passed_checks=passed_checks,
+        failed_checks=failed_checks,
+        check_status=check_status,
+    )
+    reclaim_readiness_tuned = bool(policy_gating.get("reclaim_readiness_tuned"))
+    reclaim_distance_to_ready = metrics.get("reclaim_distance_to_ready", row.get("reclaim_distance_to_ready"))
+    reclaim_evidence_explanation = _reclaim_evidence_explanation(
+        reclaim_blocked=reclaim_blocked,
+        reclaim_gate_ok=reclaim_gate_ok,
+        vwap_hold_ok=vwap_hold_ok,
+        vwap_reclaim_ok=vwap_reclaim_ok,
+        reclaim_distance_to_ready=reclaim_distance_to_ready,
+        reclaim_readiness_tuned=reclaim_readiness_tuned,
+    )
+
+    return {
+        "schema_version": "entry_blocker_surface.v1",
+        "final_decision": final_outcome,
+        "no_trade_code": no_trade_code,
+        "dominant_blocker": dominant_blocker,
+        "primary_blockers": primary_blockers,
+        "raw_entry_blockers": raw_entry_blockers,
+        "entry_style": str(policy_interpretation.get("entry_style") or "").strip(),
+        "confidence_score": metrics.get("confidence_score", condition_scores.get("confidence_score")),
+        "confidence_threshold": metrics.get("confidence_threshold", condition_scores.get("confidence_threshold")),
+        "rebound_ok": rebound_ok,
+        "rebound_progress": metrics.get("rebound_progress"),
+        "pullback_ok": pullback_ok,
+        "pullback_mature": metrics.get("pullback_mature"),
+        "pullback_not_too_deep": metrics.get("pullback_not_too_deep"),
+        "pullback_not_mature": bool(pullback_not_mature),
+        "pullback_depth_pct": metrics.get("pullback_depth_pct", metrics.get("pullback_pct")),
+        "volume_ok": volume_ok,
+        "volume_ratio": metrics.get("volume_ratio"),
+        "volume_confirmation_missing": bool(volume_missing),
+        "structure_hh_hl": structure_state,
+        "breakout_ok": _resolve_check_state(
+            name="breakout_ok",
+            metrics=metrics,
+            passed_checks=passed_checks,
+            failed_checks=failed_checks,
+            check_status=check_status,
+        ),
+        "below_vwap_reclaim_not_ready": bool(reclaim_blocked),
+        "reclaim_gate_ok": reclaim_gate_ok,
+        "vwap_hold_ok": vwap_hold_ok,
+        "vwap_reclaim_ok": vwap_reclaim_ok,
+        "reclaim_distance_to_ready": reclaim_distance_to_ready,
+        "reclaim_readiness_tuned": reclaim_readiness_tuned,
+        "reclaim_tuning_version": str(policy_gating.get("reclaim_tuning_version") or ""),
+        "reclaim_tuning_scope": str(policy_gating.get("reclaim_tuning_scope") or ""),
+        "reclaim_tuning_band_used": str(policy_gating.get("reclaim_tuning_band_used") or ""),
+        "reclaim_near_ready_distance_min": policy_gating.get("reclaim_near_ready_distance_min"),
+        "entry_tuning_flags": _dedupe_non_empty(list(policy_gating.get("entry_tuning_flags") or []), limit=6),
+        "reclaim_evidence_explanation": reclaim_evidence_explanation,
+        "open_position_blocked": bool(buy_blocked_open_position),
+        "closeout_window_blocked": bool(buy_blocked_closeout_window),
+        "cooldown_blocked": bool(buy_blocked_post_exit_cooldown),
+        "post_exit_cooldown_remaining_sec": cooldown_remaining,
+        "open_position_count": _to_int(open_position_count),
+        "minutes_to_close": minutes_to_close,
+        "eod_flat_cutoff_min": eod_flat_cutoff_min,
+        "entry_reason": str(row.get("reason") or "").strip(),
+        "primary_failure_axis": str(row.get("primary_failure_axis") or "").strip(),
+        "transition_readiness_score": metrics.get("transition_readiness_score"),
     }
 
 

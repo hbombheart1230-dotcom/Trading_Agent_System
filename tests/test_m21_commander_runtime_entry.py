@@ -4,8 +4,9 @@ from typing import Any, Dict
 
 from graphs.commander_runtime import (
     _assess_open_position_commander_override,
-    _hydrate_strategist_output_cache,
     _run_integrated_chain,
+    _should_use_session_closeout_fast_path,
+    _hydrate_strategist_output_cache,
     resolve_runtime_mode,
     resolve_runtime_phase,
     run_commander_runtime,
@@ -266,6 +267,80 @@ def test_m21_runtime_phase_resolution_precedence(monkeypatch):
     assert resolve_runtime_phase({"runtime_phase": "closeout"}) == "closeout"
     assert resolve_runtime_phase({}) == "preopen"
     assert resolve_runtime_phase({"runtime_phase": "invalid"}) == "session"
+
+
+def test_m21_session_closeout_fast_path_activates_inside_eod_cutoff():
+    enabled, payload = _should_use_session_closeout_fast_path(
+        {
+            "runtime_phase": "session",
+            "market_context": {"minutes_to_close": 5},
+            "applied_policy": {
+                "monitor": {"exit": {"eod_flat": {"enabled": True, "cutoff_min": 10}}},
+            },
+            "portfolio_snapshot": {"positions": [{"symbol": "000660", "qty": 1}]},
+        }
+    )
+
+    assert enabled is True
+    assert payload["reason"] == "session_closeout_window"
+    assert payload["minutes_to_close"] == 5
+    assert payload["cutoff_min"] == 10
+    assert payload["open_position_count"] == 1
+
+
+def test_m21_integrated_chain_prefers_closeout_guard_over_cached_or_full_cycle(monkeypatch):
+    import graphs.nodes.build_portfolio_snapshot as portfolio_mod
+    import graphs.nodes.build_risk_context as risk_mod
+    import graphs.nodes.decision_node as decision_mod
+    import graphs.nodes.monitor_node as monitor_mod
+    import graphs.nodes.scanner_node as scanner_mod
+    import graphs.nodes.strategist_node as strategist_mod
+
+    called = {"strategist": 0, "scanner": 0, "monitor": 0}
+
+    monkeypatch.setattr(
+        portfolio_mod,
+        "build_portfolio_snapshot",
+        lambda state: {**state, "portfolio_snapshot": {"cash": 1000.0, "positions": []}},
+    )
+    monkeypatch.setattr(risk_mod, "build_risk_context", lambda state: state)
+
+    def _strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["strategist"] += 1
+        raise AssertionError("strategist should not run inside session closeout guard")
+
+    def _scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["scanner"] += 1
+        raise AssertionError("scanner should not run inside session closeout guard")
+
+    def _monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["monitor"] += 1
+        state["intents"] = []
+        state["monitor_output"] = {"intent_side": "NOOP", "entry_exit_reason": "buy_blocked_closeout_window"}
+        state["monitor"] = {"closeout_window_active": True}
+        return state
+
+    monkeypatch.setattr(strategist_mod, "strategist_node", _strategist)
+    monkeypatch.setattr(scanner_mod, "scanner_node", _scanner)
+    monkeypatch.setattr(monitor_mod, "monitor_node", _monitor)
+    monkeypatch.setattr(decision_mod, "decision_node", lambda state: {**state, "decision": "reject"})
+
+    out = _run_integrated_chain(
+        {
+            "runtime_phase": "session",
+            "market_context": {"minutes_to_close": 5},
+            "applied_policy": {
+                "monitor": {"exit": {"eod_flat": {"enabled": True, "cutoff_min": 10}}},
+            },
+        },
+        execute_fn=lambda state: state,
+    )
+
+    assert out["path"] == "integrated_chain_closeout_guard"
+    assert (out.get("session_closeout_guard") or {}).get("active") is True
+    assert "session_closeout_window" in str((out.get("commander_decision") or {}).get("decision_summary") or "")
+    assert (out.get("commander_decision") or {}).get("llm_policy") == "SKIP"
+    assert called == {"strategist": 0, "scanner": 0, "monitor": 1}
 
 
 def test_m21_runtime_entry_uses_env_mode_when_state_missing(monkeypatch):
@@ -861,9 +936,9 @@ def test_m31_integrated_chain_triggers_intraday_trade_artifacts_after_success(mo
 
     out = _run_integrated_chain({}, execute_fn=fake_execute)
 
-    assert calls == []
-    assert out["intraday_trade_report"]["status"] == "disabled"
-    assert out["intraday_trade_report"]["reason"] == "reporter.trade_report.enabled is false"
+    assert calls == ["005930"]
+    assert out["intraday_trade_report"]["status"] == "generated"
+    assert out["intraday_trade_report"]["trade_id"] == "TRD_1"
 
 
 def test_m31_integrated_chain_uses_monitor_only_fast_path_when_holding(monkeypatch):

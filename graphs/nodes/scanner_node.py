@@ -245,6 +245,9 @@ def _compact_selected_snapshot(selected: Dict[str, Any] | None) -> Dict[str, Any
     return {
         "symbol": str(selected.get("symbol") or ""),
         "why": str(selected.get("why") or ""),
+        "asset_class_detected": str(selected.get("asset_class_detected") or ""),
+        "detection_source": str(selected.get("detection_source") or ""),
+        "detection_field": str(selected.get("detection_field") or ""),
         "sources": list(candidate.get("sources") or [])[:8],
         "source_scores": dict(candidate.get("source_scores") or {}),
         "rank_score": _to_float(candidate.get("rank_score") or 0.0),
@@ -2339,6 +2342,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state=state,
         policy=policy,
         market_quotes=skill_quotes,
+        allow_remote_lookup=True,
     )
     if int(asset_policy_meta.get("asset_policy_excluded_count") or 0) > 0:
         if not asset_filtered_candidates and not str((pool_meta or {}).get("fallback_reason") or "").strip():
@@ -2353,6 +2357,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "excluded_candidate_count": int(asset_policy_meta.get("asset_policy_excluded_count") or 0),
                 "excluded_symbols": list(asset_policy_meta.get("asset_policy_excluded_symbols") or []),
                 "exclusions": list(asset_policy_meta.get("asset_policy_exclusions") or []),
+                "asset_detection_stats": dict(asset_policy_meta.get("asset_detection_stats") or {}),
+                "unknown_asset_candidate_count": int(asset_policy_meta.get("unknown_asset_candidate_count") or 0),
+                "total_candidates_before_filter": int(asset_policy_meta.get("total_candidates_before_filter") or 0),
+                "total_candidates_after_filter": int(asset_policy_meta.get("total_candidates_after_filter") or 0),
             },
         )
     candidates = list(asset_filtered_candidates)
@@ -2624,6 +2632,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["why"] = str(candidate_meta.get("why") or row.get("why") or "")
         row["asset_class_detected"] = str(candidate_meta.get("asset_class_detected") or "")
         row["detection_source"] = str(candidate_meta.get("detection_source") or "")
+        row["detection_field"] = str(candidate_meta.get("detection_field") or "")
         row["excluded_by_asset_policy"] = bool(candidate_meta.get("excluded_by_asset_policy"))
         row["exclusion_reason"] = str(candidate_meta.get("exclusion_reason") or "")
         row["candidate"] = {
@@ -2635,6 +2644,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "source_count": int(candidate_meta.get("source_count") or len(list(candidate_meta.get("sources") or []))),
             "asset_class_detected": str(candidate_meta.get("asset_class_detected") or ""),
             "detection_source": str(candidate_meta.get("detection_source") or ""),
+            "detection_field": str(candidate_meta.get("detection_field") or ""),
             "excluded_by_asset_policy": bool(candidate_meta.get("excluded_by_asset_policy")),
             "exclusion_reason": str(candidate_meta.get("exclusion_reason") or ""),
         }
@@ -2834,6 +2844,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     state["ranked_candidates"] = [
         {
             "symbol": str(r.get("symbol") or ""),
+            "asset_class_detected": str(r.get("asset_class_detected") or ""),
+            "detection_source": str(r.get("detection_source") or ""),
+            "detection_field": str(r.get("detection_field") or ""),
             "score_total": float(r.get("score_total") if r.get("score_total") is not None else _to_float(r.get("score"))),
             "score_breakdown": dict(r.get("score_breakdown") or {}),
             "risk_score": float(_to_float(r.get("risk_score"))),
@@ -2913,6 +2926,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "asset_universe_policy_source": str(pool_meta.get("asset_universe_policy_source") or ""),
         "excluded_candidate_count_by_asset_policy": int(pool_meta.get("asset_policy_excluded_count") or 0),
         "excluded_candidates_by_asset_policy": list(pool_meta.get("asset_policy_exclusions") or []),
+        "asset_detection_stats": dict(pool_meta.get("asset_detection_stats") or {}),
+        "unknown_asset_candidate_count": int(pool_meta.get("unknown_asset_candidate_count") or 0),
+        "total_candidates_before_filter": int(pool_meta.get("total_candidates_before_filter") or 0),
+        "total_candidates_after_filter": int(pool_meta.get("total_candidates_after_filter") or 0),
         "condition_search_status": str(pool_meta.get("condition_search_status") or ""),
         "condition_search_source": str(pool_meta.get("condition_search_source") or ""),
         "condition_search_reason": str(pool_meta.get("condition_search_reason") or ""),
@@ -3120,6 +3137,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_provenance_ref": dict(scanner_policy_trace.get("policy_provenance_ref") or {}),
         "selected_asset_class_detected": str((selected or {}).get("asset_class_detected") or "") if isinstance(selected, dict) else "",
         "selected_asset_detection_source": str((selected or {}).get("detection_source") or "") if isinstance(selected, dict) else "",
+        "selected_asset_detection_field": str((selected or {}).get("detection_field") or "") if isinstance(selected, dict) else "",
     }
     if isinstance(state.get("scanner_output"), dict):
         state["scanner_output"]["selection_summary"] = selection_summary
@@ -3147,6 +3165,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["scanner_output"]["pre_adjust_score_total"] = float(_to_float((selected or {}).get("pre_adjust_score_total"))) if isinstance(selected, dict) else 0.0
         state["scanner_output"]["post_adjust_score_total"] = float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0
         state["scanner_output"]["quote_data_diagnostic"] = dict(state.get("scanner_quote_diagnostic") or {})
+        state["scanner_output"]["selected_asset_class_detected"] = str((selected or {}).get("asset_class_detected") or "") if isinstance(selected, dict) else ""
+        state["scanner_output"]["selected_asset_detection_source"] = str((selected or {}).get("detection_source") or "") if isinstance(selected, dict) else ""
+        state["scanner_output"]["selected_asset_detection_field"] = str((selected or {}).get("detection_field") or "") if isinstance(selected, dict) else ""
     state["scanner_margin_vs_second"] = float(margin_vs_second)
     _emit_scanner_event(
         state,
@@ -3159,6 +3180,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "asset_universe_policy_source": str(pool_meta.get("asset_universe_policy_source") or ""),
             "excluded_candidate_count_by_asset_policy": int(pool_meta.get("asset_policy_excluded_count") or 0),
             "excluded_symbols_by_asset_policy": list(pool_meta.get("asset_policy_excluded_symbols") or []),
+            "asset_detection_stats": dict(pool_meta.get("asset_detection_stats") or {}),
+            "unknown_asset_candidate_count": int(pool_meta.get("unknown_asset_candidate_count") or 0),
+            "total_candidates_before_filter": int(pool_meta.get("total_candidates_before_filter") or 0),
+            "total_candidates_after_filter": int(pool_meta.get("total_candidates_after_filter") or 0),
             "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
             "avoid_filter_applied": bool(pool_meta.get("avoid_filter_applied")),
             "avoid_filter_reason": str(pool_meta.get("avoid_filter_reason") or ""),
@@ -3260,6 +3285,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_score_breakdown": dict((selected or {}).get("score_breakdown") or {}) if isinstance(selected, dict) else {},
             "scanner_top_candidates": ranking_table[:3],
             "candidate_count": int(len(scan_results_sorted)),
+            "selected_asset_class_detected": str((selected or {}).get("asset_class_detected") or "") if isinstance(selected, dict) else "",
+            "selected_asset_detection_source": str((selected or {}).get("detection_source") or "") if isinstance(selected, dict) else "",
             "ranking_top_n": ranking_table,
             "selected_candidate": selected_snapshot,
         },
@@ -3275,6 +3302,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "asset_universe_policy": str(pool_meta.get("asset_universe_policy") or ""),
             "asset_universe_policy_source": str(pool_meta.get("asset_universe_policy_source") or ""),
             "excluded_candidate_count_by_asset_policy": int(pool_meta.get("asset_policy_excluded_count") or 0),
+            "asset_detection_stats": dict(pool_meta.get("asset_detection_stats") or {}),
+            "unknown_asset_candidate_count": int(pool_meta.get("unknown_asset_candidate_count") or 0),
+            "total_candidates_before_filter": int(pool_meta.get("total_candidates_before_filter") or 0),
+            "total_candidates_after_filter": int(pool_meta.get("total_candidates_after_filter") or 0),
             "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
             "fallback_reason": str(pool_meta.get("fallback_reason") or ""),
             "blocked_static_fallback": bool(pool_meta.get("blocked_static_fallback")),
@@ -3330,6 +3361,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "candidate_source": str(pool_meta.get("candidate_source") or ""),
             "asset_universe_policy": str(pool_meta.get("asset_universe_policy") or ""),
             "excluded_candidate_count_by_asset_policy": int(pool_meta.get("asset_policy_excluded_count") or 0),
+            "asset_detection_stats": dict(pool_meta.get("asset_detection_stats") or {}),
+            "unknown_asset_candidate_count": int(pool_meta.get("unknown_asset_candidate_count") or 0),
             "kiwoom_pool_source_mix": dict(pool_meta.get("pool_source_mix") or {}),
             "condition_search_status": str(pool_meta.get("condition_search_status") or ""),
             "condition_search_source": str(pool_meta.get("condition_search_source") or ""),

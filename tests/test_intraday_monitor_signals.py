@@ -45,6 +45,18 @@ def _rows_breakout_reclaim_near_ready() -> list[dict]:
     return rows
 
 
+def _rows_breakout_reclaim_tuned_only_band() -> list[dict]:
+    rows = _rows_breakout()
+    rows[-1]["vwap"] = 102.12
+    return rows
+
+
+def _rows_breakout_reclaim_still_too_early() -> list[dict]:
+    rows = _rows_breakout()
+    rows[-1]["vwap"] = 102.20
+    return rows
+
+
 def _rows_daily_seed_like() -> list[dict]:
     start_ts = 1_710_000_000
     rows: list[dict] = []
@@ -1379,6 +1391,83 @@ def test_monitor_policy_aware_gating_helper_does_not_relax_when_extension_safety
     assert gating.get("applied") is False
     assert gating.get("relaxations_applied") == []
     assert "safe_relaxation_conditions_not_met" in list(gating.get("notes") or [])
+
+
+def test_intraday_entry_policy_aware_gating_small_reclaim_tuning_can_promote_tuned_only_boundary() -> None:
+    out = evaluate_intraday_entry_signal(
+        _rows_breakout_reclaim_tuned_only_band(),
+        policy={
+            "entry_volume_ratio_min": 1.0,
+            "require_vwap_reclaim": True,
+        },
+        frame={"playbook": "breakout"},
+    )
+
+    gating = out.get("policy_aware_gating") or {}
+    assert out["legacy_entry_decision"] == "WAIT"
+    assert gating.get("available") is True
+    assert gating.get("applied") is True
+    assert gating.get("reclaim_readiness_tuned") is True
+    assert gating.get("reclaim_tuning_version") == "small_relaxation_v1"
+    assert gating.get("reclaim_tuning_scope") == "below_vwap_reclaim_not_ready_only"
+    assert gating.get("reclaim_tuning_band_used") == "tuned"
+    assert "reclaim_small_relaxation_v1" in list(gating.get("entry_tuning_flags") or [])
+    assert out["triggered"] is True
+    assert out["decision"] == "BUY"
+    assert out["reason"] == "breakout_above_recent_high_with_policy_reclaim_near_ready"
+
+
+def test_intraday_entry_policy_aware_gating_still_blocks_when_reclaim_gap_is_clearly_too_large() -> None:
+    out = evaluate_intraday_entry_signal(
+        _rows_breakout_reclaim_still_too_early(),
+        policy={
+            "entry_volume_ratio_min": 1.0,
+            "require_vwap_reclaim": True,
+        },
+        frame={"playbook": "breakout"},
+    )
+
+    gating = out.get("policy_aware_gating") or {}
+    assert gating.get("available") is True
+    assert gating.get("applied") is False
+    assert gating.get("reclaim_readiness_tuned") is False
+    assert "reclaim_not_near_ready" in list(gating.get("notes") or [])
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+    assert out["reason"] == "below_vwap_reclaim_not_ready"
+
+
+def test_monitor_policy_aware_gating_tuned_reclaim_band_still_requires_volume_confirmation() -> None:
+    gating = _build_monitor_policy_aware_gating(
+        policy_interpretation={
+            "policy_available": True,
+            "entry_style": "breakout",
+            "relaxable_checks": ["reclaim_gate_ok"],
+        },
+        signal_evidence={
+            "checks": {
+                "reclaim_gate_ok": False,
+                "breakout_path_ok": True,
+                "confidence_ok": True,
+                "volume_ok": False,
+            },
+            "derived": {
+                "reclaim_distance_to_ready": -0.0017,
+                "too_extended": False,
+            },
+        },
+        policy_alignment_summary={
+            "alignment_state": "aligned",
+            "top_failed_required_checks": [],
+        },
+        legacy_triggered=False,
+        legacy_reason="below_vwap_reclaim_not_ready",
+    )
+
+    assert gating.get("available") is True
+    assert gating.get("applied") is False
+    assert gating.get("reclaim_readiness_tuned") is False
+    assert "tuned_reclaim_requires_volume_confirmation" in list(gating.get("notes") or [])
 
 
 def test_intraday_entry_scoring_shadow_mode_records_score_but_preserves_decision() -> None:

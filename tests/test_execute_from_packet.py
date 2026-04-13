@@ -172,7 +172,7 @@ def test_execute_from_packet_blocks_buy_when_asset_universe_policy_rejects_etf(t
     assert guard["excluded_by_asset_policy"] is True
     assert guard["exclusion_reason"] == "etf_or_etn_not_allowed"
     assert guard["asset_class_detected"] == "etf"
-    assert guard["detection_source"] == "name_heuristic"
+    assert guard["detection_source"] == "name_heuristic_extended"
 
 
 def test_execute_from_packet_blocks_buy_when_remote_symbol_profile_identifies_etf(tmp_path, monkeypatch):
@@ -206,7 +206,8 @@ def test_execute_from_packet_blocks_buy_when_remote_symbol_profile_identifies_et
     guard = out["execution"]["asset_universe_guard"]
     assert guard["excluded_by_asset_policy"] is True
     assert guard["asset_class_detected"] == "etf"
-    assert guard["detection_source"] == "name_heuristic"
+    assert guard["detection_source"] == "name_heuristic_extended"
+    assert guard["detection_field"] == "remote_symbol_profile"
     assert (state.get("symbol_metadata") or {}).get("396500", {}).get("stk_nm") == "TIGER 반도체TOP10"
 
 
@@ -706,9 +707,9 @@ def test_execute_from_packet_blocks_buy_for_mock_broker_restricted_symbol_record
 
     out = execute_from_packet(state)
     assert out["execution"]["allowed"] is False
-    assert out["execution"]["reason"] == "asset_universe_policy_blocked"
-    assert out["execution"]["asset_universe_guard"]["symbol"] == "252670"
-    assert out["execution"]["asset_universe_guard"]["excluded_by_asset_policy"] is True
+    assert out["execution"]["reason"] == "mock_broker_restricted_symbol_blocked"
+    assert out["execution"]["mock_broker_restricted_symbol_guard"]["symbol"] == "252670"
+    assert out["execution"]["mock_broker_restricted_symbol_guard"]["blocked"] is True
     assert called["execute"] == 0
 
 

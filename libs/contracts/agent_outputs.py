@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, TypedDict
 
 from libs.runtime.decision_observability import (
+    build_entry_blocker_surface,
     build_commander_route_observability_surface,
     build_monitor_no_trade_surface,
     build_scanner_monitor_handoff_surface,
@@ -1319,6 +1320,10 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "asset_universe_policy_source": _clip(scanner_output.get("asset_universe_policy_source") or pool_meta.get("asset_universe_policy_source"), max_len=80),
                 "excluded_candidate_count_by_asset_policy": _safe_int(scanner_output.get("excluded_candidate_count_by_asset_policy") or pool_meta.get("asset_policy_excluded_count")),
                 "excluded_candidates_by_asset_policy": _dict_list(scanner_output.get("excluded_candidates_by_asset_policy") or pool_meta.get("asset_policy_exclusions"), limit=20),
+                "asset_detection_stats": _dict(scanner_output.get("asset_detection_stats") or pool_meta.get("asset_detection_stats")),
+                "unknown_asset_candidate_count": _safe_int(scanner_output.get("unknown_asset_candidate_count") or pool_meta.get("unknown_asset_candidate_count")),
+                "total_candidates_before_filter": _safe_int(scanner_output.get("total_candidates_before_filter") or pool_meta.get("total_candidates_before_filter")),
+                "total_candidates_after_filter": _safe_int(scanner_output.get("total_candidates_after_filter") or pool_meta.get("total_candidates_after_filter")),
                 "candidate_pool_before_filter": _safe_int(pool_meta.get("candidate_pool_before_filter")),
                 "candidate_pool_after_filter": _safe_int(pool_meta.get("candidate_pool_after_filter") or len(ranked)),
                 "source_mix": _dict(pool_meta.get("pool_source_mix")),
@@ -1343,6 +1348,10 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "asset_universe_policy": _clip(scanner_output.get("asset_universe_policy"), max_len=80),
                 "asset_universe_policy_source": _clip(scanner_output.get("asset_universe_policy_source"), max_len=80),
                 "excluded_candidate_count_by_asset_policy": _safe_int(scanner_output.get("excluded_candidate_count_by_asset_policy")),
+                "asset_detection_stats": _dict(scanner_output.get("asset_detection_stats")),
+                "unknown_asset_candidate_count": _safe_int(scanner_output.get("unknown_asset_candidate_count")),
+                "total_candidates_before_filter": _safe_int(scanner_output.get("total_candidates_before_filter")),
+                "total_candidates_after_filter": _safe_int(scanner_output.get("total_candidates_after_filter")),
                 "source_mix": _dict(scanner_output.get("source_mix")),
                 "candidate_count": _safe_int(scanner_output.get("candidate_count")),
             },
@@ -1434,6 +1443,7 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "why": _clip(selected.get("why"), max_len=180),
                 "asset_class_detected": _clip(selected.get("asset_class_detected") or scanner_output.get("selected_asset_class_detected"), max_len=80),
                 "detection_source": _clip(selected.get("detection_source") or scanner_output.get("selected_asset_detection_source"), max_len=40),
+                "detection_field": _clip(selected.get("detection_field") or scanner_output.get("selected_asset_detection_field"), max_len=80),
                 "sources": list(selected_candidate.get("sources") or [])[:8],
                 "source_scores": _dict(selected_candidate.get("source_scores")),
                 "score_total": _safe_float(selected.get("score_total") or selected.get("score")),
@@ -1550,6 +1560,18 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             final_decision=str(monitor_output.get("intent_side") or "NOOP").strip().upper() or "WAIT",
             no_trade_surface=monitor_no_trade_surface,
             entry_info=entry_info,
+        )
+    entry_blocker_surface = _first_trace_dict("entry_blocker_surface")
+    if not entry_blocker_surface:
+        entry_blocker_surface = build_entry_blocker_surface(
+            entry_info,
+            final_decision=str(monitor_output.get("intent_side") or "NOOP").strip().upper() or "WAIT",
+            no_trade_surface=monitor_no_trade_surface,
+            entry_blockers=_first_trace_list("entry_blockers"),
+            buy_blocked_open_position=bool(monitor.get("buy_blocked_open_position")),
+            buy_blocked_post_exit_cooldown=bool(monitor.get("buy_blocked_post_exit_cooldown")),
+            post_exit_cooldown_remaining_sec=monitor.get("post_exit_cooldown_remaining_sec"),
+            open_position_count=monitor.get("open_position_count"),
         )
     symbol = str(exit_info.get("symbol") or monitor_output.get("selected_symbol") or monitor.get("selected_symbol") or "").strip()
     thresholds = _dict(exit_info.get("thresholds"))
@@ -1801,6 +1823,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "preferred_checks_failed": _listify(monitor_no_trade_surface.get("preferred_checks_failed"), limit=8, max_len=120),
             "relaxable_checks_failed": _listify(monitor_no_trade_surface.get("relaxable_checks_failed"), limit=8, max_len=120),
             "evidence_snapshot": _dict(monitor_no_trade_surface.get("evidence_snapshot")),
+            "entry_blocker_surface": dict(entry_blocker_surface),
             "scanner_monitor_handoff": dict(scanner_monitor_handoff),
             "scanner_selected_symbol": _clip(scanner_monitor_handoff.get("scanner_selected_symbol"), max_len=24),
             "scanner_rank": _safe_int(scanner_monitor_handoff.get("scanner_rank")),

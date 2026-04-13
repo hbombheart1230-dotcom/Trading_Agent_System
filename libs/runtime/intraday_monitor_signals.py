@@ -16,6 +16,12 @@ from libs.runtime.monitor_policy import (
 )
 
 
+_RECLAIM_TUNING_VERSION = "small_relaxation_v1"
+_RECLAIM_TUNING_SCOPE = "below_vwap_reclaim_not_ready_only"
+_RECLAIM_NEAR_READY_DISTANCE_MIN_BASE = -0.0015
+_RECLAIM_NEAR_READY_DISTANCE_MIN_TUNED = -0.0018
+
+
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -318,6 +324,13 @@ def _empty_monitor_policy_aware_gating() -> Dict[str, Any]:
         "relaxations_applied": [],
         "blocked_by_required": [],
         "notes": [],
+        "entry_tuning_flags": [],
+        "reclaim_readiness_tuned": False,
+        "reclaim_tuning_version": _RECLAIM_TUNING_VERSION,
+        "reclaim_tuning_scope": _RECLAIM_TUNING_SCOPE,
+        "reclaim_near_ready_distance_min": _RECLAIM_NEAR_READY_DISTANCE_MIN_BASE,
+        "reclaim_tuning_band_used": "standard",
+        "reclaim_evidence_explanation": "",
     }
 
 
@@ -982,7 +995,27 @@ def _build_monitor_policy_aware_gating(
         return out
 
     reclaim_distance = derived.get("reclaim_distance_to_ready")
-    near_ready = reclaim_distance is not None and -0.0015 <= float(reclaim_distance) < 0.0
+    reclaim_distance_value: float | None = None
+    if reclaim_distance not in (None, ""):
+        try:
+            reclaim_distance_value = float(reclaim_distance)
+        except Exception:
+            reclaim_distance_value = None
+
+    standard_near_ready = (
+        reclaim_distance_value is not None
+        and _RECLAIM_NEAR_READY_DISTANCE_MIN_BASE <= reclaim_distance_value < 0.0
+    )
+    tuned_near_ready = (
+        reclaim_distance_value is not None
+        and _RECLAIM_NEAR_READY_DISTANCE_MIN_TUNED <= reclaim_distance_value < 0.0
+    )
+    tuned_only_band = (
+        legacy_reason_code == "below_vwap_reclaim_not_ready"
+        and not standard_near_ready
+        and tuned_near_ready
+    )
+    near_ready = bool(standard_near_ready or tuned_only_band)
     safe_to_relax = (
         bool(checks.get("breakout_path_ok"))
         and bool(checks.get("confidence_ok"))
@@ -1005,14 +1038,39 @@ def _build_monitor_policy_aware_gating(
     if not safe_to_relax:
         out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "safe_relaxation_conditions_not_met"])
         return out
+    if tuned_only_band and not bool(checks.get("volume_ok")):
+        out["notes"] = _dedupe_non_empty(
+            [*list(out.get("notes") or []), "tuned_reclaim_requires_volume_confirmation"]
+        )
+        return out
     if not (bool(checks.get("volume_ok")) or bool(checks.get("breakout_path_ok"))):
         out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "supporting_path_not_ready"])
         return out
 
+    if tuned_only_band:
+        out["entry_tuning_flags"] = ["reclaim_small_relaxation_v1"]
+        out["reclaim_readiness_tuned"] = True
+        out["reclaim_near_ready_distance_min"] = _RECLAIM_NEAR_READY_DISTANCE_MIN_TUNED
+        out["reclaim_tuning_band_used"] = "tuned"
+        out["reclaim_evidence_explanation"] = (
+            "VWAP reclaim is slightly short of the standard near-ready band, "
+            "but small_relaxation_v1 allows it when breakout path and volume confirmation remain intact."
+        )
+    elif standard_near_ready:
+        out["reclaim_tuning_band_used"] = "standard"
+        out["reclaim_evidence_explanation"] = (
+            "VWAP reclaim is already inside the standard near-ready band."
+        )
+
     out["applied"] = True
     out["applied_hints"] = ["reclaim_relaxed_near_ready"]
     out["relaxations_applied"] = ["reclaim_gate_ok"]
-    out["notes"] = _dedupe_non_empty([*list(out.get("notes") or []), "breakout_reclaim_near_ready_relaxation_applied"])
+    out["notes"] = _dedupe_non_empty(
+        [
+            *list(out.get("notes") or []),
+            "breakout_reclaim_near_ready_relaxation_applied",
+        ]
+    )
     return out
 
 
@@ -2143,6 +2201,10 @@ def evaluate_intraday_entry_signal(
     grouped_logic_trace["policy_aware_gating_applied"] = bool(policy_aware_gating.get("applied"))
     grouped_logic_trace["policy_aware_gating_hints"] = list(policy_aware_gating.get("applied_hints") or [])
     grouped_logic_trace["policy_aware_gating_blocked_by_required"] = list(policy_aware_gating.get("blocked_by_required") or [])
+    grouped_logic_trace["entry_tuning_flags"] = list(policy_aware_gating.get("entry_tuning_flags") or [])
+    grouped_logic_trace["reclaim_readiness_tuned"] = bool(policy_aware_gating.get("reclaim_readiness_tuned"))
+    grouped_logic_trace["reclaim_tuning_version"] = str(policy_aware_gating.get("reclaim_tuning_version") or "")
+    grouped_logic_trace["reclaim_tuning_scope"] = str(policy_aware_gating.get("reclaim_tuning_scope") or "")
     grouped_logic_trace["chart_structure_decision_hint_available"] = bool(chart_structure_decision_hint.get("available"))
     grouped_logic_trace["chart_structure_decision_hint_applied"] = bool(chart_structure_decision_hint.get("applied"))
     grouped_logic_trace["chart_structure_decision_hint_mode"] = str(chart_structure_decision_hint.get("mode") or "none")

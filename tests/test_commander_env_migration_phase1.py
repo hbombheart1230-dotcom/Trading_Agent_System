@@ -151,7 +151,7 @@ def test_commander_injects_behavior_policy_defaults_into_applied_policy(monkeypa
     applied = out.get("applied_policy") or {}
 
     assert (((applied.get("reporter") or {}).get("ai_review") or {}).get("enabled")) is False
-    assert (((applied.get("reporter") or {}).get("trade_report") or {}).get("enabled")) is False
+    assert (((applied.get("reporter") or {}).get("trade_report") or {}).get("enabled")) is True
     assert (((applied.get("reporter") or {}).get("trade_report") or {}).get("generate_on_open")) is False
     assert (((applied.get("strategist") or {}).get("runtime") or {}).get("strict_mode")) is True
     assert (((applied.get("strategist") or {}).get("runtime") or {}).get("allow_legacy_rule")) is False

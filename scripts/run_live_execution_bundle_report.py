@@ -3,11 +3,14 @@ from __future__ import annotations
 import argparse
 import atexit
 import contextlib
+import hashlib
 import html
 import json
 import os
 import re
+import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -972,20 +975,327 @@ def _resolve_trade_report_policy(*, runtime_state: Dict[str, Any] | None = None,
 
 def _background_job_lock_path() -> Path | None:
     raw = str(os.getenv("INTRADAY_TRADE_REPORT_JOB_LOCK_PATH") or "").strip()
-    if not raw:
+    if raw:
+        return Path(raw)
+    return Path(__file__).resolve().parents[1] / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+
+
+def _bundle_role(value: Any = "") -> str:
+    raw = str(value or "").strip()
+    return raw or "intraday_trade_report_bundle"
+
+
+def _pid_active(pid: int) -> bool:
+    if int(pid or 0) <= 0:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _make_bundle_event_logger(event_log_path: Path | None):
+    if event_log_path is None:
         return None
-    return Path(raw)
+    try:
+        from libs.core.event_logger import EventLogger
+    except Exception:
+        return None
+    try:
+        return EventLogger(log_path=event_log_path)
+    except Exception:
+        return None
 
 
-def _write_background_job_lock(path: Path | None, *, status: str) -> None:
+def _log_bundle_event(
+    event_log_path: Path | None,
+    *,
+    role: str,
+    event: str,
+    run_id: str = "report-bundle",
+    symbol: str = "",
+    trade_id: str = "",
+    payload: Dict[str, Any] | None = None,
+) -> None:
+    logger = _make_bundle_event_logger(event_log_path)
+    if logger is None:
+        return
+    try:
+        logger.log(
+            run_id=str(run_id or "report-bundle"),
+            stage="report_bundle",
+            event=event,
+            event_name=f"report_bundle.{event}",
+            agent="report_bundle",
+            phase="reporting",
+            symbol=str(symbol or ""),
+            trade_id=str(trade_id or ""),
+            payload=dict(payload or {}),
+        )
+    except Exception:
+        return
+
+
+def _active_background_process(*, role: str) -> Dict[str, Any]:
+    script_hint = "run_live_execution_bundle_report.py"
+    role_hint = f"--role {str(role or '').strip()}".lower()
+    current_pid = int(os.getpid())
+    current_ppid = int(os.getppid())
+    argv_lower = [str(arg or "").strip().lower() for arg in sys.argv]
+    current_target_run_id = ""
+    current_target_symbol = ""
+    for idx, token in enumerate(argv_lower):
+        if token == "--target-run-id" and idx + 1 < len(argv_lower):
+            current_target_run_id = str(argv_lower[idx + 1] or "").strip().lower()
+        if token == "--target-symbol" and idx + 1 < len(argv_lower):
+            current_target_symbol = str(argv_lower[idx + 1] or "").strip().lower()
+    try:
+        if os.name == "nt":
+            probe = (
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*run_live_execution_bundle_report.py*' } | "
+                "Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine | ConvertTo-Json -Compress"
+            )
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", probe],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3.0,
+                check=False,
+            )
+            raw = str(completed.stdout or "").strip()
+            if not raw:
+                return {}
+            payload = json.loads(raw)
+            rows = payload if isinstance(payload, list) else [payload]
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                pid = int(row.get("ProcessId") or 0)
+                parent_pid = int(row.get("ParentProcessId") or 0)
+                cmd = str(row.get("CommandLine") or "")
+                cmd_lower = cmd.lower()
+                if pid <= 0 or pid == current_pid:
+                    continue
+                if (
+                    parent_pid == current_ppid
+                    and role_hint
+                    and role_hint in cmd_lower
+                    and current_target_run_id
+                    and f"--target-run-id {current_target_run_id}" in cmd_lower
+                    and (
+                        not current_target_symbol
+                        or f"--target-symbol {current_target_symbol}" in cmd_lower
+                    )
+                ):
+                    continue
+                if script_hint not in cmd_lower:
+                    continue
+                if role_hint and role_hint not in cmd_lower:
+                    continue
+                creation_epoch = _creation_epoch_from_wmi(row.get("CreationDate"))
+                return {
+                    "pid": pid,
+                    "parent_pid": parent_pid,
+                    "command_line": cmd,
+                    "script": script_hint,
+                    "role": _bundle_role(role),
+                    "detection_source": "process_scan",
+                    "creation_epoch": creation_epoch,
+                    "age_sec": max(0.0, float(time.time()) - creation_epoch) if creation_epoch > 0 else None,
+                }
+        else:
+            completed = subprocess.run(
+                ["ps", "-eo", "pid=,ppid=,args="],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3.0,
+                check=False,
+            )
+            for raw in str(completed.stdout or "").splitlines():
+                line = str(raw or "").strip()
+                if not line:
+                    continue
+                parts = line.split(None, 2)
+                if len(parts) < 3:
+                    continue
+                pid = int(parts[0] or 0)
+                parent_pid = int(parts[1] or 0)
+                cmd = str(parts[2] or "")
+                cmd_lower = cmd.lower()
+                if pid <= 0 or pid == current_pid:
+                    continue
+                if (
+                    parent_pid == current_ppid
+                    and role_hint
+                    and role_hint in cmd_lower
+                    and current_target_run_id
+                    and f"--target-run-id {current_target_run_id}" in cmd_lower
+                    and (
+                        not current_target_symbol
+                        or f"--target-symbol {current_target_symbol}" in cmd_lower
+                    )
+                ):
+                    continue
+                if script_hint not in cmd_lower:
+                    continue
+                if role_hint and role_hint not in cmd_lower:
+                    continue
+                return {
+                    "pid": pid,
+                    "parent_pid": parent_pid,
+                    "command_line": cmd,
+                    "script": script_hint,
+                    "role": _bundle_role(role),
+                    "detection_source": "process_scan",
+                }
+    except Exception:
+        return {}
+    return {}
+
+
+def _creation_epoch_from_wmi(value: Any) -> float:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
+    match = re.search(r"/Date\((\d+)", raw)
+    if match:
+        try:
+            return float(match.group(1)) / 1000.0
+        except Exception:
+            return 0.0
+    return 0.0
+
+
+def _stale_process_after_sec() -> float:
+    try:
+        return max(30.0, float(os.getenv("INTRADAY_TRADE_REPORT_STALE_PROCESS_SEC", "180") or 180.0))
+    except Exception:
+        return 180.0
+
+
+def _terminate_process_tree(pid: int) -> bool:
+    pid = int(pid or 0)
+    if pid <= 0:
+        return False
+    try:
+        if os.name == "nt":
+            completed = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5.0,
+                check=False,
+            )
+            return int(completed.returncode or 1) == 0
+        os.kill(pid, 15)
+        return True
+    except Exception:
+        return False
+
+
+def _lock_timestamp_epoch(payload: Dict[str, Any], *, stale_after_sec: float) -> float:
+    raw = (
+        payload.get("touched_at_epoch")
+        or payload.get("heartbeat_epoch")
+        or payload.get("started_at_epoch")
+    )
+    try:
+        epoch = float(raw or 0.0)
+    except Exception:
+        epoch = 0.0
+    if epoch > 0:
+        return epoch
+    started_at = str(payload.get("started_at") or "").strip()
+    return _to_epoch(started_at) or (time.time() - stale_after_sec - 1.0)
+
+
+def _active_background_job(
+    path: Path | None,
+    *,
+    stale_after_sec: float = 900.0,
+    event_log_path: Path | None = None,
+    role: str = "",
+) -> Dict[str, Any]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict) or not payload:
+        return {}
+    owner_pid = int(payload.get("pid") or 0)
+    heartbeat_epoch = _lock_timestamp_epoch(payload, stale_after_sec=stale_after_sec)
+    age_sec = max(0.0, time.time() - heartbeat_epoch)
+    lock_role = _bundle_role(payload.get("role") or role)
+    if owner_pid in (0, int(os.getpid())):
+        out = dict(payload)
+        out["lock_path"] = str(path)
+        out["age_sec"] = age_sec
+        out["detection_source"] = "lock"
+        out["role"] = lock_role
+        return out
+    if _pid_active(owner_pid) and age_sec <= stale_after_sec:
+        out = dict(payload)
+        out["lock_path"] = str(path)
+        out["age_sec"] = age_sec
+        out["detection_source"] = "lock"
+        out["role"] = lock_role
+        return out
+    with contextlib.suppress(Exception):
+        path.unlink()
+    _log_bundle_event(
+        event_log_path,
+        role=lock_role,
+        event="report_bundle_stale_lock_removed",
+        payload={
+            "pid": owner_pid,
+            "role": lock_role,
+            "lock_path": str(path),
+            "reason": "pid_missing_or_stale_lock",
+            "age_sec": age_sec,
+        },
+    )
+    return {}
+
+
+def _write_background_job_lock(
+    path: Path | None,
+    *,
+    status: str,
+    role: str,
+    extra: Dict[str, Any] | None = None,
+) -> None:
     if path is None:
         return
+    now_epoch = float(time.time())
     payload = {
         "pid": int(os.getpid()),
+        "parent_pid": int(os.getppid()),
+        "role": _bundle_role(role),
         "status": str(status or "running"),
+        "created_at": utc_now_iso(),
+        "created_at_epoch": now_epoch,
         "started_at": utc_now_iso(),
+        "started_at_epoch": now_epoch,
+        "touched_at": utc_now_iso(),
+        "touched_at_epoch": now_epoch,
+        "heartbeat": utc_now_iso(),
+        "heartbeat_epoch": now_epoch,
         "script": "run_live_execution_bundle_report.py",
     }
+    if isinstance(extra, dict) and extra:
+        payload.update({str(k): v for k, v in extra.items()})
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -993,7 +1303,48 @@ def _write_background_job_lock(path: Path | None, *, status: str) -> None:
         return
 
 
-def _clear_background_job_lock(path: Path | None) -> None:
+def _touch_background_job_lock(path: Path | None, *, role: str, extra: Dict[str, Any] | None = None) -> None:
+    if path is None:
+        return
+    payload = {}
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    owner_pid = int(payload.get("pid") or 0)
+    if owner_pid not in (0, int(os.getpid())):
+        return
+    now_epoch = float(time.time())
+    payload.update(
+        {
+            "pid": int(os.getpid()),
+            "parent_pid": int(os.getppid()),
+            "role": _bundle_role(role),
+            "status": str(payload.get("status") or "running"),
+            "script": "run_live_execution_bundle_report.py",
+            "touched_at": utc_now_iso(),
+            "touched_at_epoch": now_epoch,
+            "heartbeat": utc_now_iso(),
+            "heartbeat_epoch": now_epoch,
+        }
+    )
+    if not payload.get("created_at_epoch"):
+        payload["created_at"] = utc_now_iso()
+        payload["created_at_epoch"] = now_epoch
+    if not payload.get("started_at_epoch"):
+        payload["started_at"] = utc_now_iso()
+        payload["started_at_epoch"] = now_epoch
+    if isinstance(extra, dict) and extra:
+        payload.update({str(k): v for k, v in extra.items()})
+    with contextlib.suppress(Exception):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _clear_background_job_lock(path: Path | None, *, role: str = "") -> None:
     if path is None or not path.exists():
         return
     try:
@@ -1811,6 +2162,148 @@ def _resolve_execution_runs(event_log_path: Path, day: str) -> List[Dict[str, An
     return out
 
 
+def _targeted_execution_context(
+    execution_runs: List[Dict[str, Any]],
+    *,
+    target_run_id: str = "",
+    target_symbol: str = "",
+    max_runs: int = 50,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    rows = list(execution_runs or [])
+    normalized_symbol = normalize_symbol(target_symbol, allow_test_symbols=True)
+    targeted_mode = False
+    target_row: Dict[str, Any] = {}
+    if target_run_id:
+        target_row = next(
+            (row for row in rows if str(row.get("run_id") or "").strip() == str(target_run_id or "").strip()),
+            {},
+        )
+        if isinstance(target_row, dict) and target_row:
+            targeted_mode = True
+            normalized_symbol = normalize_symbol(target_row.get("symbol") or normalized_symbol, allow_test_symbols=True)
+            target_ts_epoch = _to_epoch(target_row.get("ts")) or 0.0
+            lifecycle_context_rows = [
+                row
+                for row in rows
+                if (
+                    not normalized_symbol
+                    or normalize_symbol(row.get("symbol") or "", allow_test_symbols=True) == normalized_symbol
+                )
+                and ((_to_epoch(row.get("ts")) or 0.0) <= target_ts_epoch)
+            ]
+            rows = [dict(target_row)]
+        else:
+            lifecycle_context_rows = []
+    elif normalized_symbol:
+        targeted_mode = True
+        rows = [
+            row
+            for row in rows
+            if normalize_symbol(row.get("symbol") or "", allow_test_symbols=True) == normalized_symbol
+        ]
+        lifecycle_context_rows = list(rows)
+    else:
+        rows = rows[: max(1, int(max_runs))]
+        lifecycle_context_rows = list(rows)
+    return rows, {
+        "targeted_mode": bool(targeted_mode),
+        "target_run_id": str(target_run_id or ""),
+        "target_symbol": str(normalized_symbol or ""),
+        "target_row": dict(target_row or {}),
+        "execution_run_count": len(rows),
+        "lifecycle_context_run_ids": [
+            str(row.get("run_id") or "").strip()
+            for row in lifecycle_context_rows
+            if str(row.get("run_id") or "").strip()
+        ],
+        "lifecycle_context_run_count": len(lifecycle_context_rows),
+    }
+
+
+def _lifecycle_matches_target(lifecycle: Dict[str, Any], *, target_run_id: str = "", target_symbol: str = "") -> bool:
+    run_id_target = str(target_run_id or "").strip()
+    symbol_target = normalize_symbol(target_symbol, allow_test_symbols=True)
+    if not run_id_target and not symbol_target:
+        return True
+    lifecycle_symbol = normalize_symbol(lifecycle.get("symbol") or "", allow_test_symbols=True)
+    if symbol_target and lifecycle_symbol and lifecycle_symbol != symbol_target:
+        return False
+    run_ids = {str(x or "").strip() for x in list(lifecycle.get("run_ids_all") or []) if str(x or "").strip()}
+    entry_ctx = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+    exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+    holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+    run_ids.add(str(entry_ctx.get("run_id") or "").strip())
+    run_ids.add(str(exit_ctx.get("run_id") or "").strip())
+    run_ids.update(str(x or "").strip() for x in list(holding.get("run_ids") or []) if str(x or "").strip())
+    if run_id_target:
+        return run_id_target in run_ids
+    return True
+
+
+def _stable_json_text(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _payload_fingerprint(payload: Any) -> str:
+    return hashlib.sha256(_stable_json_text(payload).encode("utf-8")).hexdigest()
+
+
+def _report_generation_state_path(trade_paths: Dict[str, Any]) -> Path:
+    return Path(str(trade_paths.get("reports_dir") or "")) / "report_generation_state.json"
+
+
+def _load_report_generation_state(path: Path) -> Dict[str, Any]:
+    try:
+        if not path.exists():
+            return {"schema_version": "report_generation_state.v1", "components": {}}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            payload.setdefault("schema_version", "report_generation_state.v1")
+            payload.setdefault("components", {})
+            return payload
+    except Exception:
+        pass
+    return {"schema_version": "report_generation_state.v1", "components": {}}
+
+
+def _write_report_generation_state(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _build_component_fingerprint(
+    *,
+    component: str,
+    trade_id: str,
+    run_id: str,
+    lifecycle_status: str,
+    story_type: str,
+    model: str,
+    story_input: Dict[str, Any],
+    compact_input: Dict[str, Any],
+) -> Dict[str, Any]:
+    story_hash = _payload_fingerprint(story_input)
+    compact_hash = _payload_fingerprint(compact_input)
+    payload = {
+        "component": str(component or ""),
+        "trade_id": str(trade_id or ""),
+        "run_id": str(run_id or ""),
+        "lifecycle_status": str(lifecycle_status or ""),
+        "story_type": str(story_type or ""),
+        "model": str(model or ""),
+        "story_input_sha256": story_hash,
+        "compact_input_sha256": compact_hash,
+    }
+    return {
+        "fingerprint": _payload_fingerprint(payload),
+        "source_inputs": {
+            "story_input_sha256": story_hash,
+            "compact_input_sha256": compact_hash,
+        },
+        "payload": payload,
+    }
+
+
 def _has_meaningful_payload(payload: Any) -> bool:
     if not isinstance(payload, dict) or not payload:
         return False
@@ -1853,13 +2346,21 @@ def _prefer_canonical_payload(
     return dict(fallback or {}), str(fallback_source or "fallback"), canonical_path
 
 
-def _build_run_snapshots(event_log_path: Path, day: str, *, reports_root: Path) -> List[Dict[str, Any]]:
+def _build_run_snapshots(
+    event_log_path: Path,
+    day: str,
+    *,
+    reports_root: Path,
+    include_run_ids: Optional[set[str]] = None,
+) -> List[Dict[str, Any]]:
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for row in _iter_jsonl(event_log_path):
         if day and _utc_day(row.get("ts")) != day:
             continue
         run_id = str(row.get("run_id") or "").strip()
         if not run_id:
+            continue
+        if include_run_ids and run_id not in include_run_ids:
             continue
         grouped.setdefault(run_id, []).append(row)
 
@@ -2120,6 +2621,33 @@ def _build_trade_lifecycles(
         story_contract = bundle.get("story_contract") if isinstance(bundle.get("story_contract"), dict) else {}
         return str(story_contract.get("execution_mode_label") or "").strip()
 
+    def _infer_story_contract_from_snapshot(snapshot: Dict[str, Any]) -> Tuple[str, str]:
+        execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
+        action = str(snapshot.get("execution_action") or execution.get("action") or "").strip().upper()
+        verdict_allowed = bool(snapshot.get("verdict_allowed"))
+        executor_stub = {
+            "execution_attempted": bool(action),
+            "execution_ok": bool(action) and verdict_allowed,
+        }
+        story_type = _classify_story_type(
+            {
+                "action": action,
+                "symbol": str(snapshot.get("symbol") or execution.get("symbol") or ""),
+                "qty": safe_int(execution.get("qty"), 0),
+            },
+            executor_stub,
+        )
+        mode_label = execution_mode_label(executor_stub)
+        return story_type, mode_label
+
+    def _resolve_story_contract(bundle: Dict[str, Any], snapshot: Dict[str, Any]) -> Tuple[str, str]:
+        bundle_story_type = _bundle_story_type(bundle)
+        bundle_mode_label = _bundle_mode_label(bundle)
+        if bundle_story_type:
+            return bundle_story_type, bundle_mode_label or "decision only"
+        inferred_story_type, inferred_mode_label = _infer_story_contract_from_snapshot(snapshot)
+        return inferred_story_type or "decision_only", inferred_mode_label or "decision only"
+
     def _entry_context(snapshot: Dict[str, Any], bundle: Dict[str, Any]) -> Dict[str, Any]:
         execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
         strategist_payload = bundle.get("strategist") if isinstance(bundle.get("strategist"), dict) else {}
@@ -2253,8 +2781,7 @@ def _build_trade_lifecycles(
                         }
                     )
             trade_id = _next_trade_id(symbol)
-            story_type = _bundle_story_type(bundle) or "decision_only"
-            mode_label = _bundle_mode_label(bundle) or "decision only"
+            story_type, mode_label = _resolve_story_contract(bundle, snapshot)
             lifecycle = _build_lifecycle_from_seed(
                 trade_id=trade_id,
                 symbol=symbol,
@@ -2279,8 +2806,7 @@ def _build_trade_lifecycles(
             lifecycle = active_by_symbol.get(symbol)
             if not lifecycle:
                 trade_id = _next_trade_id(symbol)
-                story_type = _bundle_story_type(bundle) or "decision_only"
-                mode_label = _bundle_mode_label(bundle) or "decision only"
+                story_type, mode_label = _resolve_story_contract(bundle, snapshot)
                 lifecycle = _build_lifecycle_from_seed(
                     trade_id=trade_id,
                     symbol=symbol,
@@ -2303,6 +2829,17 @@ def _build_trade_lifecycles(
             )
             if lifecycle.get("entry"):
                 lifecycle["status"] = "closed"
+                resolved_story_type, resolved_mode_label = _resolve_story_contract(bundle, snapshot)
+                if resolved_story_type and resolved_story_type != "decision_only":
+                    lifecycle["story_type"] = resolved_story_type
+                elif str(lifecycle.get("story_type") or "").strip().lower() == "decision_only":
+                    inferred_story_type, inferred_mode_label = _infer_story_contract_from_snapshot(snapshot)
+                    if inferred_story_type and inferred_story_type != "decision_only":
+                        lifecycle["story_type"] = inferred_story_type
+                        if inferred_mode_label:
+                            lifecycle["execution_mode_label"] = inferred_mode_label
+                if resolved_mode_label and resolved_mode_label != "decision only":
+                    lifecycle["execution_mode_label"] = resolved_mode_label
             else:
                 lifecycle["status"] = "partial"
             active_by_symbol.pop(symbol, None)
@@ -2466,6 +3003,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--intents-path", default="data/logs/intents.jsonl")
     p.add_argument("--day", default=None)
     p.add_argument("--max-runs", type=int, default=50)
+    p.add_argument("--target-run-id", default=None)
+    p.add_argument("--target-symbol", default=None)
+    p.add_argument("--role", default="intraday_trade_report_bundle")
     ai = p.add_mutually_exclusive_group()
     ai.add_argument("--trade-report-ai", dest="trade_report_ai", action="store_true")
     ai.add_argument("--no-trade-report-ai", dest="trade_report_ai", action="store_false")
@@ -2479,12 +3019,67 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
-    background_lock_path = _background_job_lock_path()
-    _write_background_job_lock(background_lock_path, status="running")
-    if background_lock_path is not None:
-        atexit.register(_clear_background_job_lock, background_lock_path)
-    load_env_file(str(args.env_path).strip() or ".env")
+    role = _bundle_role(args.role)
     event_log_path = Path(str(args.event_log_path).strip())
+    background_lock_path = _background_job_lock_path()
+    active_job = _active_background_job(
+        background_lock_path,
+        event_log_path=event_log_path,
+        role=role,
+    )
+    owner_pid = int(active_job.get("pid") or 0) if active_job else 0
+    if active_job and owner_pid not in (0, int(os.getpid())):
+        out = {
+            "schema_version": "live_execution_bundles.v2",
+            "ok": True,
+            "status": "skipped",
+            "reason": "bundle_job_already_running",
+            "active_pid": owner_pid,
+            "lock_path": str(active_job.get("lock_path") or background_lock_path or ""),
+            "detection_source": str(active_job.get("detection_source") or "lock"),
+            "role": role,
+        }
+        _log_bundle_event(
+            event_log_path,
+            role=role,
+            event="report_bundle_spawn_skipped_existing_process",
+            payload={
+                "pid": owner_pid,
+                "parent_pid": int(active_job.get("parent_pid") or 0),
+                "role": role,
+                "lock_path": str(active_job.get("lock_path") or background_lock_path or ""),
+                "reason": "bundle_job_already_running",
+                "detection_source": str(active_job.get("detection_source") or "lock"),
+            },
+        )
+        print(json.dumps(out, ensure_ascii=False) if bool(args.json) else "ok=true status=skipped reason=bundle_job_already_running")
+        return 0
+    _write_background_job_lock(
+        background_lock_path,
+        status="running",
+        role=role,
+        extra={
+            "role": role,
+            "target_run_id": str(args.target_run_id or ""),
+            "target_symbol": normalize_symbol(args.target_symbol or "", allow_test_symbols=True),
+        },
+    )
+    _log_bundle_event(
+        event_log_path,
+        role=role,
+        event="report_bundle_lock_acquired",
+        payload={
+            "pid": int(os.getpid()),
+            "parent_pid": int(os.getppid()),
+            "role": role,
+            "lock_path": str(background_lock_path or ""),
+            "target_run_id": str(args.target_run_id or ""),
+            "target_symbol": normalize_symbol(args.target_symbol or "", allow_test_symbols=True),
+        },
+    )
+    if background_lock_path is not None:
+        atexit.register(_clear_background_job_lock, background_lock_path, role=role)
+    load_env_file(str(args.env_path).strip() or ".env")
     evidence_log_path = Path(str(args.evidence_log_path).strip())
     report_dir = Path(str(args.report_dir).strip())
     reports_root = Path(str(args.reports_root).strip())
@@ -2513,6 +3108,19 @@ def main(argv: Optional[List[str]] = None) -> int:
             "bundle_count": 0,
             "bundles": [],
         }
+        _log_bundle_event(
+            event_log_path,
+            role=role,
+            event="report_bundle_lock_released",
+            payload={
+                "pid": int(os.getpid()),
+                "parent_pid": int(os.getppid()),
+                "role": role,
+                "lock_path": str(background_lock_path or ""),
+                "reason": "no_execution_day_detected",
+            },
+        )
+        _clear_background_job_lock(background_lock_path, role=role)
         print(json.dumps(out, ensure_ascii=False) if bool(args.json) else "ok=false error=no_execution_day_detected")
         return 3
 
@@ -2522,9 +3130,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         for row in _iter_jsonl(evidence_log_path)
         if not day or _utc_day(row.get("timestamp") or row.get("ts")) == day
     ]
-    execution_runs = _resolve_execution_runs(event_log_path, day)[: max(1, int(args.max_runs))]
-    trade_md, trade_js, trade_obj = _load_or_generate_trade_explain(event_log_path, analysis_root, day)
-    reporter_md, reporter_js, reporter_obj = _load_or_generate_reporter_analysis(event_log_path, analysis_root, reports_root, intents_path, day)
+    all_execution_runs = _resolve_execution_runs(event_log_path, day)
+    execution_runs, target_ctx = _targeted_execution_context(
+        all_execution_runs,
+        target_run_id=str(args.target_run_id or "").strip(),
+        target_symbol=str(args.target_symbol or "").strip(),
+        max_runs=max(1, int(args.max_runs)),
+    )
+    targeted_mode = bool(target_ctx.get("targeted_mode"))
+    if targeted_mode:
+        trade_report_dir = official_trade_explain_report_dir(reports_root)
+        trade_md, trade_js = _resolve_existing_day_artifact(trade_report_dir, "trade_explain", day)
+        trade_obj = _read_json(trade_js) if trade_js.exists() else {}
+        reporter_report_dir = analysis_root / "reporter_analysis"
+        reporter_md, reporter_js = _resolve_existing_day_artifact(reporter_report_dir, "reporter_analysis", day)
+        reporter_obj = _read_json(reporter_js) if reporter_js.exists() else {}
+    else:
+        trade_md, trade_js, trade_obj = _load_or_generate_trade_explain(event_log_path, analysis_root, day)
+        reporter_md, reporter_js, reporter_obj = _load_or_generate_reporter_analysis(event_log_path, analysis_root, reports_root, intents_path, day)
     daily_paths = daily_artifact_paths(reports_root, day)
     operator_summary_json = daily_paths["operator_summary_json"]
     operator_summary_md = daily_paths["operator_summary_md"]
@@ -2540,6 +3163,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     run_story_type_counts: Dict[str, int] = {}
     for execution in execution_runs:
         run_id = str(execution.get("run_id") or "").strip()
+        _touch_background_job_lock(
+            background_lock_path,
+            role=role,
+            extra={
+                "status": "running",
+                "current_run_id": run_id,
+                "current_symbol": str(execution.get("symbol") or ""),
+            },
+        )
         trace_md, trace_js, trace_out = generate_agent_pipeline_trace_report(
             event_log_path=event_log_path,
             evidence_log_path=evidence_log_path,
@@ -2739,12 +3371,34 @@ def main(argv: Optional[List[str]] = None) -> int:
             }
         )
 
-    run_snapshots = _build_run_snapshots(event_log_path, day, reports_root=reports_root)
+    run_id_set = {str(row.get("run_id") or "").strip() for row in execution_runs if str(row.get("run_id") or "").strip()}
+    if targeted_mode:
+        run_id_set.update(
+            str(run_id or "").strip()
+            for run_id in list(target_ctx.get("lifecycle_context_run_ids") or [])
+            if str(run_id or "").strip()
+        )
+    run_snapshots = _build_run_snapshots(
+        event_log_path,
+        day,
+        reports_root=reports_root,
+        include_run_ids=run_id_set or None,
+    )
     trade_lifecycles = _build_trade_lifecycles(
         day=day,
         run_snapshots=run_snapshots,
         run_bundles=run_bundles_by_run,
     )
+    if bool(target_ctx.get("targeted_mode")):
+        trade_lifecycles = [
+            lifecycle
+            for lifecycle in trade_lifecycles
+            if _lifecycle_matches_target(
+                lifecycle,
+                target_run_id=str(target_ctx.get("target_run_id") or ""),
+                target_symbol=str(target_ctx.get("target_symbol") or ""),
+            )
+        ]
     lifecycle_rows: List[Dict[str, Any]] = []
     lifecycle_story_type_counts: Dict[str, int] = {}
     run_bundle_lookup = {str(row.get("run_id") or ""): row for row in run_bundle_rows}
@@ -2754,6 +3408,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not trade_id:
             continue
         symbol = normalize_symbol(lifecycle.get("symbol") or "", allow_test_symbols=True)
+        _touch_background_job_lock(
+            background_lock_path,
+            role=role,
+            extra={
+                "status": "running",
+                "current_trade_id": trade_id,
+                "current_symbol": symbol,
+            },
+        )
         status = str(lifecycle.get("status") or "open").strip().lower()
         story_type = str(lifecycle.get("story_type") or "decision_only").strip().lower()
         execution_mode_label_text = str(lifecycle.get("execution_mode_label") or "decision only").strip()
@@ -3333,6 +3996,28 @@ def main(argv: Optional[List[str]] = None) -> int:
             existing_brief_llm_artifact.get("llm_status") or existing_brief_llm_artifact.get("status") or "skipped",
             default="skipped",
         )
+        trade_story_compact_input = build_ai_trade_report_compact_input(trade_story_input)
+        generation_state_path = _report_generation_state_path(trade_paths)
+        generation_state = _load_report_generation_state(generation_state_path)
+        generation_components = (
+            generation_state.get("components") if isinstance(generation_state.get("components"), dict) else {}
+        )
+        ai_trade_report_generation_state = (
+            generation_components.get("ai_trade_report")
+            if isinstance(generation_components.get("ai_trade_report"), dict)
+            else {}
+        )
+        ai_trade_report_fingerprint_info = _build_component_fingerprint(
+            component="ai_trade_report",
+            trade_id=trade_id,
+            run_id=str(anchor_run_id or ""),
+            lifecycle_status=status,
+            story_type=story_type,
+            model=str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else configured_report_model,
+            story_input=trade_story_input,
+            compact_input=trade_story_compact_input,
+        )
+        ai_trade_report_fingerprint = str(ai_trade_report_fingerprint_info.get("fingerprint") or "")
 
         deterministic_report = build_deterministic_trade_report(trade_story_input)
         trade_report: Dict[str, Any] = dict(deterministic_report)
@@ -3342,49 +4027,103 @@ def main(argv: Optional[List[str]] = None) -> int:
         existing_trade_report_artifact = _read_json_if_exists(trade_report_json_path)
         existing_ai_trade_report_llm_artifact = _read_json_if_exists(ai_trade_report_llm_response_path)
         if should_attempt_generation:
-            diagnostics["generation_attempted"] = True
-            diagnostics["generation_ts"] = utc_now_iso()
-            ai_trade_report = build_ai_trade_report(
-                trade_story_input,
-                enabled=True,
-                model=str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else configured_report_model,
-                temperature=args.trade_report_ai_temperature,
-                max_tokens=args.trade_report_ai_max_tokens,
+            existing_ai_status = canonical_llm_status(
+                existing_ai_trade_report_llm_artifact.get("llm_status")
+                or existing_ai_trade_report_llm_artifact.get("status")
+                or ((existing_trade_report_artifact.get("generation") or {}) if isinstance(existing_trade_report_artifact.get("generation"), dict) else {}).get("status")
+                or existing_trade_report_artifact.get("ai_trade_report_status")
+                or "skipped",
+                default="skipped",
             )
-            ai_trade_report_llm_artifact = (
-                ai_trade_report.get("llm_response_artifact")
-                if isinstance(ai_trade_report.get("llm_response_artifact"), dict)
-                else {}
+            fingerprint_match = (
+                str(ai_trade_report_generation_state.get("fingerprint") or "") == ai_trade_report_fingerprint
             )
-            generation = ai_trade_report.get("generation") if isinstance(ai_trade_report.get("generation"), dict) else {}
-            ai_status = canonical_llm_status(
-                ai_trade_report.get("ai_trade_report_status")
-                or generation.get("ai_trade_report_status")
-                or generation.get("status")
-                or ai_trade_report.get("status")
-                or "error",
-                default="error",
+            existing_report_success = (
+                fingerprint_match
+                and existing_ai_status in {"ok", "salvaged", "partial"}
+                and trade_report_json_path.exists()
+                and trade_report_md_path.exists()
             )
-            diagnostics["ai_trade_report_status"] = ai_status
-            diagnostics["llm_model_used"] = _normalize_model_name(generation.get("model") or configured_report_model) or "openrouter/free"
-            if ai_status in {"ok", "salvaged", "partial"}:
-                trade_report = dict(ai_trade_report)
+            if existing_report_success and existing_trade_report_artifact:
+                merged_existing = dict(deterministic_report)
+                merged_existing.update(dict(existing_trade_report_artifact))
+                trade_report = merged_existing
+                ai_trade_report_llm_artifact = dict(existing_ai_trade_report_llm_artifact or {})
+                diagnostics["generation_attempted"] = False
+                diagnostics["generation_ts"] = utc_now_iso()
+                diagnostics["ai_trade_report_status"] = existing_ai_status
+                diagnostics["llm_model_used"] = _normalize_model_name(
+                    ((existing_trade_report_artifact.get("generation") or {}) if isinstance(existing_trade_report_artifact.get("generation"), dict) else {}).get("model")
+                    or ai_trade_report_generation_state.get("model")
+                    or configured_report_model
+                ) or "openrouter/free"
                 diagnostics["report_status"] = "available"
                 diagnostics["report_reason_code"] = ""
-                diagnostics["report_reason_human"] = (
-                    "AI trade report was generated successfully."
-                    if ai_status == "ok"
-                    else "AI trade report was generated with recovery. Deterministic evidence remains the factual source."
+                diagnostics["report_reason_human"] = "Existing AI trade report artifact was reused because inputs fingerprint matched."
+                diagnostics["report_generation_reason"] = "fingerprint_match_existing_success"
+                diagnostics["next_expected_step"] = "Open the existing full report for detailed lifecycle analysis."
+                _log_bundle_event(
+                    event_log_path,
+                    role=role,
+                    event="report_generation_skipped_fingerprint_match",
+                    run_id=str(anchor_run_id or "report-bundle"),
+                    symbol=symbol,
+                    trade_id=trade_id,
+                    payload={
+                        "pid": int(os.getpid()),
+                        "parent_pid": int(os.getppid()),
+                        "role": role,
+                        "component": "ai_trade_report",
+                        "trade_id": trade_id,
+                        "run_id": str(anchor_run_id or ""),
+                        "fingerprint": ai_trade_report_fingerprint,
+                        "reason": "existing_successful_artifact_with_matching_inputs",
+                    },
                 )
-                diagnostics["next_expected_step"] = "Open the full report for detailed lifecycle analysis."
             else:
-                trade_report = dict(deterministic_report)
-                diagnostics["report_status"] = "available"
-                diagnostics["report_reason_code"] = "llm_generation_failed"
-                diagnostics["report_reason_human"] = "AI trade report generation failed. Deterministic report was preserved."
-                diagnostics["next_expected_step"] = _report_next_step("llm_generation_failed")
-                diagnostics["last_error_message"] = _sanitize_error_message(generation.get("reason"))
-            diagnostics["report_generation_reason"] = str(diagnostics.get("report_reason_human") or "")
+                diagnostics["generation_attempted"] = True
+                diagnostics["generation_ts"] = utc_now_iso()
+                ai_trade_report = build_ai_trade_report(
+                    trade_story_input,
+                    enabled=True,
+                    model=str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else configured_report_model,
+                    temperature=args.trade_report_ai_temperature,
+                    max_tokens=args.trade_report_ai_max_tokens,
+                )
+                ai_trade_report_llm_artifact = (
+                    ai_trade_report.get("llm_response_artifact")
+                    if isinstance(ai_trade_report.get("llm_response_artifact"), dict)
+                    else {}
+                )
+                generation = ai_trade_report.get("generation") if isinstance(ai_trade_report.get("generation"), dict) else {}
+                ai_status = canonical_llm_status(
+                    ai_trade_report.get("ai_trade_report_status")
+                    or generation.get("ai_trade_report_status")
+                    or generation.get("status")
+                    or ai_trade_report.get("status")
+                    or "error",
+                    default="error",
+                )
+                diagnostics["ai_trade_report_status"] = ai_status
+                diagnostics["llm_model_used"] = _normalize_model_name(generation.get("model") or configured_report_model) or "openrouter/free"
+                if ai_status in {"ok", "salvaged", "partial"}:
+                    trade_report = dict(ai_trade_report)
+                    diagnostics["report_status"] = "available"
+                    diagnostics["report_reason_code"] = ""
+                    diagnostics["report_reason_human"] = (
+                        "AI trade report was generated successfully."
+                        if ai_status == "ok"
+                        else "AI trade report was generated with recovery. Deterministic evidence remains the factual source."
+                    )
+                    diagnostics["next_expected_step"] = "Open the full report for detailed lifecycle analysis."
+                else:
+                    trade_report = dict(deterministic_report)
+                    diagnostics["report_status"] = "available"
+                    diagnostics["report_reason_code"] = "llm_generation_failed"
+                    diagnostics["report_reason_human"] = "AI trade report generation failed. Deterministic report was preserved."
+                    diagnostics["next_expected_step"] = _report_next_step("llm_generation_failed")
+                    diagnostics["last_error_message"] = _sanitize_error_message(generation.get("reason"))
+                diagnostics["report_generation_reason"] = str(diagnostics.get("report_reason_human") or "")
         elif existing_trade_report_artifact:
             if not report_requested:
                 trade_report = dict(existing_trade_report_artifact)
@@ -3457,6 +4196,54 @@ def main(argv: Optional[List[str]] = None) -> int:
             ai_trade_report_llm_artifact = ai_trade_report_llm_compact
         elif ai_trade_report_llm_response_path.exists():
             ai_trade_report_llm_response_written = str(ai_trade_report_llm_response_path)
+
+        generation_components["ai_trade_report"] = {
+            "fingerprint": ai_trade_report_fingerprint,
+            "component": "ai_trade_report",
+            "status": str(diagnostics.get("ai_trade_report_status") or "skipped"),
+            "report_status": str(diagnostics.get("report_status") or ""),
+            "skip_reason": (
+                "fingerprint_match_existing_success"
+                if str(diagnostics.get("report_generation_reason") or "") == "fingerprint_match_existing_success"
+                else ""
+            ),
+            "trade_id": trade_id,
+            "run_id": str(anchor_run_id or ""),
+            "updated_at": utc_now_iso(),
+            "model": str(diagnostics.get("llm_model_used") or configured_report_model or ""),
+            "report_json_path": str(trade_report_json_path),
+            "report_md_path": str(trade_report_md_path),
+            "llm_response_path": str(ai_trade_report_llm_response_path if ai_trade_report_llm_response_written else ""),
+            "source_inputs": dict(ai_trade_report_fingerprint_info.get("source_inputs") or {}),
+        }
+        generation_components["operator_brief"] = {
+            "fingerprint": _payload_fingerprint(
+                {
+                    "component": "operator_brief",
+                    "trade_id": trade_id,
+                    "run_id": str(anchor_run_id or ""),
+                    "brief_json_exists": bool(operator_brief_json_path.exists()),
+                    "brief_md_exists": bool(operator_brief_md_path.exists()),
+                    "brief_llm_exists": bool(brief_llm_response_path.exists()),
+                    "brief_llm_status": str(diagnostics.get("llm_brief_status") or "skipped"),
+                }
+            ),
+            "component": "operator_brief",
+            "status": str(diagnostics.get("llm_brief_status") or "skipped"),
+            "skip_reason": (
+                "existing_artifact_state_reused"
+                if operator_brief_json_path.exists() or operator_brief_md_path.exists() or brief_llm_response_path.exists()
+                else "missing_brief_artifact"
+            ),
+            "trade_id": trade_id,
+            "run_id": str(anchor_run_id or ""),
+            "updated_at": utc_now_iso(),
+            "report_json_path": str(operator_brief_json_path),
+            "report_md_path": str(operator_brief_md_path),
+            "llm_response_path": str(brief_llm_response_path),
+        }
+        generation_state["components"] = generation_components
+        _write_report_generation_state(generation_state_path, generation_state)
 
         lifecycle["ai_report_diagnostics"] = dict(diagnostics)
         lifecycle["evidence_artifacts"] = dict(lifecycle.get("evidence") or {})
@@ -3751,7 +4538,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         trade_artifact_links_payload["links"]["ai_trade_report_llm_response_ref"] = str(ai_trade_report_llm_artifact.get("response_ref") or "")
 
         write_json(story_input_path, trade_story_input)
-        trade_story_compact_input = build_ai_trade_report_compact_input(trade_story_input)
         trade_story_compact_artifact = build_compact_input_artifact(
             component="ai_trade_report",
             run_id=str(anchor_run_id or ""),
@@ -4033,6 +4819,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "ok": True,
         "ts": utc_now_iso(),
         "day": day,
+        "role": role,
         "event_log_path": str(event_log_path),
         "evidence_log_path": str(evidence_log_path),
         "bundle_count": len(lifecycle_rows),
@@ -4041,6 +4828,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         "story_type_counts": lifecycle_story_type_counts,
         "report_status_counts": report_status_counts,
         "run_story_type_counts": run_story_type_counts,
+        "targeted_mode": bool(target_ctx.get("targeted_mode")),
+        "target_run_id": str(target_ctx.get("target_run_id") or ""),
+        "target_symbol": str(target_ctx.get("target_symbol") or ""),
+        "targeted_execution_run_count": int(target_ctx.get("execution_run_count") or 0),
+        "targeted_lifecycle_context_run_count": int(target_ctx.get("lifecycle_context_run_count") or 0),
         "canonical_trades_root": str(canonical_trades_root),
         "bundles": lifecycle_rows,
         "run_bundles": run_bundle_rows,
@@ -4065,6 +4857,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(summary_out, ensure_ascii=False))
     else:
         print(f"day={day} bundle_count={len(lifecycle_rows)} report_json={summary_json} report_md={summary_md}")
+    _log_bundle_event(
+        event_log_path,
+        role=role,
+        event="report_bundle_lock_released",
+        payload={
+            "pid": int(os.getpid()),
+            "parent_pid": int(os.getppid()),
+            "role": role,
+            "lock_path": str(background_lock_path or ""),
+            "reason": "completed",
+            "bundle_count": len(lifecycle_rows),
+            "target_run_id": str(target_ctx.get("target_run_id") or ""),
+            "target_symbol": str(target_ctx.get("target_symbol") or ""),
+        },
+    )
+    _clear_background_job_lock(background_lock_path, role=role)
     return 0
 
 

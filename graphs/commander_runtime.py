@@ -496,7 +496,7 @@ def _resolve_commander_behavior_policy(
         reporter_ai_review_enabled = False
     trade_report_enabled = _existing_value("reporter", "trade_report", "enabled")
     if trade_report_enabled is None:
-        trade_report_enabled = False
+        trade_report_enabled = True
     trade_report_generate_on_open = _existing_value("reporter", "trade_report", "generate_on_open")
     if trade_report_generate_on_open is None:
         trade_report_generate_on_open = False
@@ -2807,6 +2807,63 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
     return True, payload
 
 
+def _should_use_session_closeout_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    policy = state.get("policy") if isinstance(state.get("policy"), dict) else {}
+    monitor_exit = (
+        ((applied_policy.get("monitor") or {}).get("exit") or {})
+        if isinstance((applied_policy.get("monitor") or {}).get("exit"), dict)
+        else {}
+    )
+    eod_flat = (
+        (monitor_exit.get("eod_flat") or {})
+        if isinstance(monitor_exit.get("eod_flat"), dict)
+        else {}
+    )
+    if not eod_flat and isinstance((((policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")), dict):
+        eod_flat = dict((((policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")) or {})
+    use_eod_flat = (
+        eod_flat.get("enabled")
+        if eod_flat.get("enabled") is not None
+        else (
+            (policy.get("exit_policy") or {}).get("use_eod_flat")
+            if isinstance(policy.get("exit_policy"), dict)
+            else None
+        )
+    )
+    cutoff_min = (
+        eod_flat.get("cutoff_min")
+        if eod_flat.get("cutoff_min") not in (None, "")
+        else (
+            (policy.get("exit_policy") or {}).get("eod_flat_cutoff_min")
+            if isinstance(policy.get("exit_policy"), dict)
+            else None
+        )
+    )
+    market_context = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    raw_minutes_to_close = market_context.get("minutes_to_close")
+    minutes_to_close = None if raw_minutes_to_close in (None, "") else float(_runtime_float(raw_minutes_to_close, 0.0))
+    active = bool(
+        _is_trueish(use_eod_flat if use_eod_flat is not None else True)
+        and minutes_to_close is not None
+        and minutes_to_close >= 0.0
+        and minutes_to_close <= float(_coerce_int(cutoff_min, 10))
+    )
+    payload = {
+        "active": bool(active),
+        "minutes_to_close": minutes_to_close,
+        "cutoff_min": int(_coerce_int(cutoff_min, 10)),
+        "use_eod_flat": bool(_is_trueish(use_eod_flat if use_eod_flat is not None else True)),
+        "open_position_count": int(_portfolio_open_position_count(state)),
+        "reason": "session_closeout_window" if active else (
+            "minutes_to_close_unavailable"
+            if minutes_to_close is None
+            else "outside_closeout_window"
+        ),
+    }
+    return bool(active), payload
+
+
 def _strategist_cache_payload(state: Dict[str, Any]) -> Dict[str, Any]:
     persisted_state = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
     raw_cached = persisted_state.get("strategist_output_cache") if isinstance(persisted_state.get("strategist_output_cache"), dict) else {}
@@ -3165,6 +3222,69 @@ def _run_integrated_chain(
         path_value=str(state.get("path") or "integrated_chain_pending"),
         reason_text=str((state.get("runtime_fast_path") or {}).get("reason") or ""),
     )
+
+    use_closeout_guard, closeout_payload = _should_use_session_closeout_fast_path(state)
+    if use_closeout_guard:
+        shadow_runtime["strategist_executed"] = False
+        shadow_runtime["strategist_called"] = False
+        shadow_runtime["llm_called_by_strategist"] = False
+        shadow_runtime["used_cached_strategist"] = False
+        state = _hydrate_strategist_output_cache(state)
+        state = _attach_commander_reporter_feedback_policy(state, selected_route="closeout", phase="session")
+        state = _attach_commander_applied_policy(state)
+        state["runtime_fast_path"] = dict(closeout_payload)
+        state["session_closeout_guard"] = dict(closeout_payload)
+        state["commander_decision"] = _build_commander_decision(
+            state,
+            mode_value="integrated_chain",
+            phase_value=str(state.get("runtime_phase") or "session"),
+            status_value=str(state.get("runtime_status") or "planning"),
+            path_value="integrated_chain_closeout_guard",
+            reason_text=str(closeout_payload.get("reason") or ""),
+        )
+        held_symbols = _portfolio_open_position_symbols(state)
+        if held_symbols:
+            state["selected"] = {
+                "symbol": held_symbols[0],
+                "_monitor_synthetic_selected": True,
+                "_closeout_guard_selected": True,
+            }
+        else:
+            state.pop("selected", None)
+        state.pop("scanner_output", None)
+        _log_commander_event(state, "fast_path", {"path": "integrated_chain_closeout_guard", **closeout_payload})
+        state = _hydrate_monitor_symbol_features(state)
+        state = monitor_node(state)
+        shadow_runtime["monitor_decision"] = str(((state.get("monitor_output") or {}).get("intent_side") or "NOOP"))
+        state = decision_node(state)
+        decision = str(state.get("decision") or "").strip().lower()
+        if decision == "approve":
+            intent = _intent_from_monitor_state(state)
+            state["decision_packet"] = _build_packet_from_state(state, intent=intent)
+            state = execute_fn(state)
+            shadow_runtime["executor_action"] = str(
+                (((state.get("execution") or {}).get("order") or {}).get("action") or ((state.get("decision_packet") or {}).get("intent") or {}).get("action") or "")
+            )
+            shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
+            state = update_state_after_execution(state)
+            if _commander_trade_report_enabled(state):
+                try:
+                    state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
+                except Exception as exc:
+                    state["intraday_trade_report"] = {
+                        "ok": False,
+                        "status": "failed",
+                        "reason": f"intraday_trade_artifact_exception:{type(exc).__name__}",
+                    }
+            else:
+                state["intraday_trade_report"] = {
+                    "ok": False,
+                    "status": "disabled",
+                    "reason": "reporter.trade_report.enabled is false",
+                    "policy_source": "commander_applied_policy",
+                }
+        state["path"] = "integrated_chain_closeout_guard"
+        return state
 
     use_monitor_only, fast_path_payload = _should_use_monitor_only_fast_path(state)
     if use_monitor_only:
