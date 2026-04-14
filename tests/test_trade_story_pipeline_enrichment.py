@@ -654,6 +654,71 @@ def test_trade_story_input_and_lifecycle_bundle_include_reasoning_trace_chain() 
     assert lifecycle_bundle["strategist_feedback_input"] == story_input["strategist_feedback_input"]
 
 
+def test_trade_story_input_replaces_empty_placeholder_traces_with_normalized_values() -> None:
+    bundle_out = {
+        "day": "2026-03-24",
+        "run_id": "run-placeholder-1",
+        "trade_id": "TRD_TEST_PLACEHOLDER",
+        "story_id": "TRD_TEST_PLACEHOLDER",
+        "scanner_reason_human": {
+            "summary": "scanner summary",
+            "scanner_selection_trace": {
+                "ranked_candidates": [],
+                "selected_symbol": "",
+                "selected_rank": 0,
+                "selection_reason": "",
+                "selected_symbol_score_drivers": {},
+            },
+            "ranked_candidates": [],
+        },
+        "monitor_reason_human": {
+            "summary": "monitor summary",
+            "monitor_stop_policy_trace": {
+                "hard_stop_pct": None,
+                "adaptive_stop_loss_pct": None,
+                "effective_stop_loss_pct": None,
+                "trailing_stop_pct": None,
+                "take_profit_pct": None,
+            },
+            "monitor_blocker_trace": {},
+        },
+        "scanner_summary": {"selected_symbol": "005930"},
+        "monitor_summary": {"decision": "WAIT"},
+        "canonical_agent_artifacts": {
+            "scanner": {
+                "selected_symbol": "005930",
+                "top_stock": "005930",
+                "candidate_ranking_table": {
+                    "rows": [
+                        {"symbol": "005930", "rank": 1, "score_total": 1.12},
+                        {"symbol": "000660", "rank": 2, "score_total": 1.04},
+                    ]
+                },
+            },
+            "monitor": {
+                "threshold_snapshot": {
+                    "hard_stop_pct": 0.03,
+                    "stop_loss_pct": 0.0092,
+                    "effective_stop_loss_pct": 0.0092,
+                    "trailing_stop_pct": 0.014,
+                    "take_profit_pct": 0.0175,
+                }
+            },
+        },
+    }
+
+    story_input = build_trade_story_input(bundle_out)
+
+    scanner_trace = story_input["scanner_reason_human"]["scanner_selection_trace"]
+    monitor_trace = story_input["monitor_reason_human"]["monitor_stop_policy_trace"]
+
+    assert scanner_trace["selected_symbol"] == "005930"
+    assert len(scanner_trace["ranked_candidates"]) == 2
+    assert len(story_input["scanner_reason_human"]["ranked_candidates"]) == 2
+    assert monitor_trace["hard_stop_pct"] == 0.03
+    assert monitor_trace["effective_stop_loss_pct"] == 0.0092
+
+
 def test_trade_story_input_prefers_latest_reasoning_trace_snapshot_when_present() -> None:
     out = build_trade_story_input(
         {

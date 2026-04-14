@@ -1102,6 +1102,77 @@ def test_live_execution_bundle_report_adds_day1_diagnostic_fields(tmp_path: Path
     assert isinstance(story_input["failure_classification"], dict)
 
 
+def test_live_execution_bundle_report_preserves_canonical_paths_in_lifecycle_artifacts(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:10:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}}},
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    for rid in ("run-1", "run-2"):
+        canonical_dir = reports_root / "canonical" / day / rid
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        (canonical_dir / "commander.json").write_text(json.dumps({"run_id": rid, "agent": "commander"}, ensure_ascii=False), encoding="utf-8")
+        (canonical_dir / "strategist.json").write_text(json.dumps({"run_id": rid, "agent": "strategist"}, ensure_ascii=False), encoding="utf-8")
+        (canonical_dir / "scanner.json").write_text(json.dumps({"run_id": rid, "agent": "scanner", "selected_symbol": "000660"}, ensure_ascii=False), encoding="utf-8")
+        (canonical_dir / "monitor.json").write_text(json.dumps({"run_id": rid, "agent": "monitor", "selected_symbol": "000660"}, ensure_ascii=False), encoding="utf-8")
+        (canonical_dir / "supervisor.json").write_text(json.dumps({"run_id": rid, "agent": "supervisor"}, ensure_ascii=False), encoding="utf-8")
+        (canonical_dir / "executor.json").write_text(json.dumps({"run_id": rid, "agent": "executor", "symbol": "000660"}, ensure_ascii=False), encoding="utf-8")
+
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    trade_id = out["bundles"][0]["story_id"]
+    trade_dir = reports_root / "trades" / day / trade_id
+    lifecycle_bundle = json.loads((trade_dir / "lifecycle_bundle.json").read_text(encoding="utf-8"))
+    artifact_links = json.loads((trade_dir / "_artifact_links.json").read_text(encoding="utf-8"))
+    provenance = json.loads((trade_dir / "_provenance.json").read_text(encoding="utf-8"))
+
+    for key in (
+        "canonical_commander_json",
+        "canonical_strategist_json",
+        "canonical_scanner_json",
+        "canonical_monitor_json",
+        "canonical_supervisor_json",
+        "canonical_executor_json",
+    ):
+        path_text = str((lifecycle_bundle.get("artifacts") or {}).get(key) or "")
+        assert path_text
+        assert Path(path_text).exists()
+        assert str((artifact_links.get("links") or {}).get(key) or "") == path_text
+        assert str((provenance.get("canonical_agent_artifact_paths") or {}).get(key) or "") == path_text
+
+
 def test_live_execution_bundle_report_backfills_open_monitor_snapshot_from_runtime_state(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:
@@ -2094,6 +2165,29 @@ def test_live_execution_bundle_report_succeeds_with_zero_executions_for_explicit
     assert rc == 0
     assert out["ok"] is True
     assert out["bundle_count"] == 0
+
+
+def test_same_day_reporter_linkage_keeps_missing_path_honest(tmp_path: Path) -> None:
+    reporter_js = tmp_path / "reporter_analysis_2026-03-18.json"
+    reporter_md = tmp_path / "reporter_analysis_2026-03-18.md"
+
+    linkage = mod._build_same_day_reporter_linkage(  # type: ignore[attr-defined]
+        reporter_obj={},
+        reporter_js=reporter_js,
+        reporter_md=reporter_md,
+        entry_run_id="run-1",
+        exit_run_id="run-2",
+        entry_bundle={"reporter": {"reporter_analysis_found": False, "reporter_analysis_day_file_found": False}},
+        exit_bundle={"reporter": {"reporter_analysis_found": False, "reporter_analysis_day_file_found": False}},
+    )
+
+    assert linkage["status"] == "missing"
+    assert linkage["reporter_analysis_json_path"] == ""
+    assert linkage["reporter_analysis_md_path"] == ""
+    assert linkage["reporter_analysis_expected_json_path"].endswith("reporter_analysis_2026-03-18.json")
+    assert linkage["reporter_analysis_expected_md_path"].endswith("reporter_analysis_2026-03-18.md")
+    assert linkage["reporter_analysis_json_found"] is False
+    assert linkage["reporter_analysis_md_found"] is False
 
 
 def test_build_run_snapshots_prefers_canonical_agent_artifacts(tmp_path: Path) -> None:

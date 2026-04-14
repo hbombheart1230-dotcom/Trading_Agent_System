@@ -101,6 +101,11 @@ def _fake_ai_report(story_input: Dict[str, Any], *, enabled: bool | None = None,
     }
 
 
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def test_single_trade_report_generates_without_bundle(tmp_path: Path, monkeypatch) -> None:
     popen_called = False
     run_called = False
@@ -141,6 +146,63 @@ def test_single_trade_report_generates_without_bundle(tmp_path: Path, monkeypatc
     assert (trade_root / "reports" / "report_generation_state.json").exists()
     assert popen_called is False
     assert run_called is False
+
+
+def test_single_trade_report_preserves_provenance_and_traces_when_canonical_exists(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(single_trade_report, "build_ai_trade_report", _fake_ai_report)
+    monkeypatch.setattr(single_trade_report, "render_trade_report_markdown", lambda report: "# report")
+
+    state = _state()
+    canonical_dir = tmp_path / "reports" / "canonical" / "2026-04-14" / "run-sell-1"
+    _write_json(
+        canonical_dir / "scanner.json",
+        {
+            "selected_symbol": "005930",
+            "ranked_candidates": [
+                {"symbol": "005930", "score_total": 0.92},
+                {"symbol": "000660", "score_total": 0.71},
+            ],
+            "selection_reason": "Selected as the highest-quality candidate.",
+            "selected_symbol_score_drivers": {"volume": 0.8, "trend": 0.7},
+        },
+    )
+    _write_json(
+        canonical_dir / "monitor.json",
+        {
+            "threshold_snapshot": {
+                "hard_stop_pct": 0.03,
+                "take_profit_pct": 0.05,
+                "trailing_stop_pct": 0.02,
+            },
+            "entry_check_summary": "monitor review",
+            "entry_blockers": ["breakout_not_ready"],
+        },
+    )
+    _write_json(canonical_dir / "strategist.json", {"playbook": "pullback"})
+    _write_json(canonical_dir / "commander.json", {"selected_route": "full_cycle"})
+    _write_json(canonical_dir / "supervisor.json", {"allowed": True, "reason": "Allowed"})
+    _write_json(canonical_dir / "executor.json", {"execution_ok": True, "broker_env": "real"})
+    reporter_json = tmp_path / "reports" / "dev" / "analysis" / "reporter_analysis" / "reporter_analysis_2026-04-14.json"
+    _write_json(reporter_json, {"ai_summary": "Same-day summary", "ai_run_grade": "B"})
+
+    trade_id = single_trade_report.build_single_trade_report_id(state, root=tmp_path)
+    single_trade_report.generate_single_trade_report(trade_id, state=state, root=tmp_path)
+
+    trade_root = tmp_path / "reports" / "trades" / "2026-04-14" / trade_id
+    story_input = json.loads((trade_root / "ai_trade_report_input.json").read_text(encoding="utf-8"))
+    lifecycle_bundle = json.loads((trade_root / "lifecycle_bundle.json").read_text(encoding="utf-8"))
+
+    assert story_input["section_provenance"]["scanner_reason_human"]["source"] == "canonical"
+    assert story_input["section_provenance"]["monitor_reason_human"]["source"] == "canonical"
+    assert story_input["section_provenance"]["reporter_status_human"]["source"] == "direct_artifact"
+    assert story_input["scanner_reason_human"]["scanner_selection_trace"]["ranked_candidates"]
+    assert story_input["monitor_reason_human"]["monitor_stop_policy_trace"]["hard_stop_pct"] == 0.03
+    assert lifecycle_bundle["evidence_provenance"]["scanner"] == "canonical"
+    assert lifecycle_bundle["artifacts"]["canonical_scanner_json"].endswith("scanner.json")
+    assert lifecycle_bundle["same_day_reporter_linkage"]["status"] == "linked_day_fallback"
+    assert lifecycle_bundle["same_day_reporter_linkage"]["reporter_analysis_json_path"].endswith(
+        "reporter_analysis_2026-04-14.json"
+    )
 
 
 class _Route:

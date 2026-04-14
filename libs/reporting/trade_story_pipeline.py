@@ -84,6 +84,31 @@ def _merge_missing_values(base: Dict[str, Any], fallback: Dict[str, Any]) -> Dic
     return out
 
 
+def _is_empty_placeholder(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value is False
+    if isinstance(value, (int, float)):
+        return value == 0
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, list):
+        return len(value) == 0
+    if isinstance(value, dict):
+        if not value:
+            return True
+        return all(_is_empty_placeholder(item) for item in value.values())
+    return False
+
+
+def _set_or_replace_placeholder(target: Dict[str, Any], key: str, value: Any) -> None:
+    if not isinstance(target, dict):
+        return
+    if key not in target or _is_empty_placeholder(target.get(key)):
+        target[key] = value
+
+
 def _headline_text(row: Any) -> str:
     item = row if isinstance(row, dict) else {}
     for key in ("title", "headline", "summary", "description", "text", "news_title"):
@@ -2383,15 +2408,31 @@ def build_trade_story_input(
         market_context_human.setdefault("symbol_headlines", strategist_evidence_trace.get("symbol_headlines") or [])
         market_context_human.setdefault("strategist_evidence_trace", dict(strategist_evidence_trace))
         market_context_human.setdefault("news_symbol_linkage", dict(news_symbol_linkage))
-        scanner_reason_human.setdefault("scanner_selection_trace", dict(scanner_selection_trace))
-        scanner_reason_human.setdefault("ranked_candidates", list(scanner_selection_trace.get("ranked_candidates") or []))
+        _set_or_replace_placeholder(
+            scanner_reason_human,
+            "scanner_selection_trace",
+            dict(scanner_selection_trace),
+        )
+        _set_or_replace_placeholder(
+            scanner_reason_human,
+            "ranked_candidates",
+            list(scanner_selection_trace.get("ranked_candidates") or []),
+        )
         scanner_reason_human.setdefault("selection_reason", scanner_selection_trace.get("selection_reason"))
         scanner_reason_human.setdefault(
             "selected_symbol_score_drivers",
             dict(scanner_selection_trace.get("selected_symbol_score_drivers") or {}),
         )
-        monitor_reason_human.setdefault("monitor_stop_policy_trace", dict(monitor_stop_policy_trace))
-        monitor_reason_human.setdefault("monitor_blocker_trace", dict(monitor_blocker_trace))
+        _set_or_replace_placeholder(
+            monitor_reason_human,
+            "monitor_stop_policy_trace",
+            dict(monitor_stop_policy_trace),
+        )
+        _set_or_replace_placeholder(
+            monitor_reason_human,
+            "monitor_blocker_trace",
+            dict(monitor_blocker_trace),
+        )
         derived_reasoning_trace = build_reasoning_trace_from_summaries(
             commander_summary=dict(bundle_out.get("commander_summary") or {}),
             strategist_summary=dict(bundle_out.get("strategist_summary") or {}),
@@ -2731,15 +2772,31 @@ def build_trade_story_input(
     market_context_human.setdefault("symbol_headlines", strategist_evidence_trace.get("symbol_headlines") or [])
     market_context_human.setdefault("strategist_evidence_trace", dict(strategist_evidence_trace))
     market_context_human.setdefault("news_symbol_linkage", dict(news_symbol_linkage))
-    scanner_reason_human.setdefault("scanner_selection_trace", dict(scanner_selection_trace))
-    scanner_reason_human.setdefault("ranked_candidates", list(scanner_selection_trace.get("ranked_candidates") or []))
+    _set_or_replace_placeholder(
+        scanner_reason_human,
+        "scanner_selection_trace",
+        dict(scanner_selection_trace),
+    )
+    _set_or_replace_placeholder(
+        scanner_reason_human,
+        "ranked_candidates",
+        list(scanner_selection_trace.get("ranked_candidates") or []),
+    )
     scanner_reason_human.setdefault("selection_reason", scanner_selection_trace.get("selection_reason"))
     scanner_reason_human.setdefault(
         "selected_symbol_score_drivers",
         dict(scanner_selection_trace.get("selected_symbol_score_drivers") or {}),
     )
-    monitor_reason_human.setdefault("monitor_stop_policy_trace", dict(monitor_stop_policy_trace))
-    monitor_reason_human.setdefault("monitor_blocker_trace", dict(monitor_blocker_trace))
+    _set_or_replace_placeholder(
+        monitor_reason_human,
+        "monitor_stop_policy_trace",
+        dict(monitor_stop_policy_trace),
+    )
+    _set_or_replace_placeholder(
+        monitor_reason_human,
+        "monitor_blocker_trace",
+        dict(monitor_blocker_trace),
+    )
     story_out = {
         "schema_version": "trade_story_input.v1",
         "day": str(bundle_out.get("day") or ""),

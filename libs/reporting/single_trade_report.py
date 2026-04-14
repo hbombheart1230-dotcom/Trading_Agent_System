@@ -19,6 +19,9 @@ from libs.reporting.trade_report_ai import (
     render_trade_report_markdown,
 )
 from libs.reporting.trade_story_pipeline import (
+    _build_monitor_blocker_trace,
+    _build_monitor_stop_policy_trace,
+    _build_scanner_selection_trace,
     build_execution_outcome_human,
     build_filters_human,
     build_guard_reason_human,
@@ -91,6 +94,16 @@ def _execution_symbol(state: Dict[str, Any]) -> str:
     return _normalize_symbol(order.get("symbol") or execution.get("symbol") or state.get("symbol") or "")
 
 
+def _load_json_dict(path: Path) -> Dict[str, Any]:
+    try:
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
 def _resolve_trade_day(state: Dict[str, Any], *, root: Path | None = None) -> str:
     raw_day = str(state.get("day") or "").strip()
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_day):
@@ -119,6 +132,118 @@ def _resolve_trade_day(state: Dict[str, Any], *, root: Path | None = None) -> st
                     if (day_dir / run_id).exists():
                         return day_dir.name
     return datetime.now().astimezone().date().isoformat()
+
+
+def _same_day_reporter_paths(*, root: Path, day: str) -> tuple[Path, Path]:
+    reporter_dir = root / "reports" / "dev" / "analysis" / "reporter_analysis"
+    return (
+        reporter_dir / f"reporter_analysis_{day}.json",
+        reporter_dir / f"reporter_analysis_{day}.md",
+    )
+
+
+def _build_same_day_reporter_linkage_for_single_trade(
+    *,
+    root: Path,
+    day: str,
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    reporter_js, reporter_md = _same_day_reporter_paths(root=root, day=day)
+    reporter_day_obj = _load_json_dict(reporter_js)
+    json_found = reporter_js.exists()
+    md_found = reporter_md.exists()
+    day_file_found = bool(json_found or md_found)
+    if day_file_found:
+        status = "linked_day_fallback"
+        linkage_source = "day_fallback"
+        linkage_reason = "A same-day reporter analysis file was attached as fallback context for this lifecycle."
+    else:
+        status = "missing"
+        linkage_source = "missing"
+        linkage_reason = "Same-day reporter analysis is not available for this lifecycle yet."
+    linkage = {
+        "schema_version": "same_day_reporter_linkage.v1",
+        "status": status,
+        "linkage_source": linkage_source,
+        "linkage_reason": linkage_reason,
+        "reporter_analysis_day_file_found": day_file_found,
+        "run_link_found": False,
+        "linked_run_ids": [],
+        "reporter_analysis_json_path": str(reporter_js) if json_found else "",
+        "reporter_analysis_md_path": str(reporter_md) if md_found else "",
+        "reporter_analysis_expected_json_path": str(reporter_js),
+        "reporter_analysis_expected_md_path": str(reporter_md),
+        "reporter_analysis_json_found": json_found,
+        "reporter_analysis_md_found": md_found,
+        "reporter_analysis_summary": str(reporter_day_obj.get("ai_summary") or ""),
+        "reporter_analysis_grade": str(reporter_day_obj.get("ai_run_grade") or "N/A"),
+    }
+    reporter_ctx = {
+        "reporter_analysis_day_file_found": day_file_found,
+        "reporter_analysis_found": False,
+        "reporter_analysis_summary": str(reporter_day_obj.get("ai_summary") or ""),
+    }
+    return linkage, reporter_ctx
+
+
+def _build_canonical_context(
+    *,
+    root: Path,
+    day: str,
+    run_id: str,
+    commander: Dict[str, Any],
+    strategist: Dict[str, Any],
+    scanner: Dict[str, Any],
+    monitor: Dict[str, Any],
+    supervisor: Dict[str, Any],
+    execution: Dict[str, Any],
+) -> Dict[str, Any]:
+    canonical_root = root / "reports" / "canonical" / day / run_id if day and run_id else None
+    file_map = {
+        "commander": "commander.json",
+        "strategist": "strategist.json",
+        "scanner": "scanner.json",
+        "monitor": "monitor.json",
+        "supervisor": "supervisor.json",
+        "executor": "executor.json",
+    }
+    direct_map = {
+        "commander": dict(commander),
+        "strategist": dict(strategist),
+        "scanner": dict(scanner),
+        "monitor": dict(monitor),
+        "supervisor": dict(supervisor),
+        "executor": dict(execution),
+    }
+    artifacts: Dict[str, Any] = {}
+    canonical_agent_artifacts: Dict[str, Any] = {}
+    evidence_provenance: Dict[str, str] = {}
+    for agent, filename in file_map.items():
+        path = canonical_root / filename if canonical_root is not None else None
+        path_text = str(path) if path is not None and path.exists() else ""
+        payload = _load_json_dict(path) if path is not None else {}
+        direct_payload = direct_map.get(agent) if isinstance(direct_map.get(agent), dict) else {}
+        artifacts[f"canonical_{agent}_json"] = path_text
+        if payload:
+            canonical_agent_artifacts[agent] = dict(payload)
+            evidence_provenance[agent] = "canonical"
+        elif direct_payload:
+            canonical_agent_artifacts[agent] = dict(direct_payload)
+            evidence_provenance[agent] = "direct_artifact"
+    agent_trace_path = (
+        root
+        / "reports"
+        / "dev"
+        / "analysis"
+        / "live_execution_bundles"
+        / "agent_pipeline_trace"
+        / f"agent_pipeline_trace_{run_id[:20]}.json"
+    )
+    artifacts["agent_pipeline_trace_json"] = str(agent_trace_path) if run_id and agent_trace_path.exists() else ""
+    return {
+        "artifacts": artifacts,
+        "canonical_agent_artifacts": canonical_agent_artifacts,
+        "evidence_provenance": evidence_provenance,
+    }
 
 
 def _execution_ok(state: Dict[str, Any]) -> bool:
@@ -361,6 +486,30 @@ def _build_trade_report_inputs(
         "status": str(execution.get("reason") or ""),
         "ord_no": str(execution_details.get("order_id") or ""),
     }
+    same_day_reporter_linkage, reporter_ctx = _build_same_day_reporter_linkage_for_single_trade(
+        root=root,
+        day=day,
+    )
+    reporter_day_obj = _load_json_dict(Path(str(same_day_reporter_linkage.get("reporter_analysis_json_path") or ""))) if str(same_day_reporter_linkage.get("reporter_analysis_json_path") or "").strip() else {}
+    canonical_context = _build_canonical_context(
+        root=root,
+        day=day,
+        run_id=run_id,
+        commander=commander,
+        strategist=strategist,
+        scanner=scanner,
+        monitor=monitor,
+        supervisor=supervisor,
+        execution=execution,
+    )
+    artifacts = dict(canonical_context.get("artifacts") or {})
+    artifacts["reporter_analysis_json"] = str(same_day_reporter_linkage.get("reporter_analysis_json_path") or "")
+    artifacts["reporter_analysis_md"] = str(same_day_reporter_linkage.get("reporter_analysis_md_path") or "")
+    evidence_provenance = dict(canonical_context.get("evidence_provenance") or {})
+    if str(same_day_reporter_linkage.get("reporter_analysis_json_path") or "").strip():
+        evidence_provenance["reporter"] = "direct_artifact"
+    elif str(same_day_reporter_linkage.get("reporter_analysis_md_path") or "").strip():
+        evidence_provenance["reporter"] = "direct_artifact"
     bundle_out: Dict[str, Any] = {
         "day": day,
         "run_id": run_id,
@@ -381,10 +530,7 @@ def _build_trade_report_inputs(
         "execution_details": dict(execution_details),
         "entry_execution_details": dict(entry_execution_details),
         "exit_execution_details": dict(exit_execution_details),
-        "same_day_reporter_linkage": {
-            "status": "missing",
-            "reason": "intraday_single_trade_path_does_not_attach_day_reporter",
-        },
+        "same_day_reporter_linkage": dict(same_day_reporter_linkage),
         "failure_classification": {
             "entry_failure": False,
             "hold_failure": False,
@@ -399,19 +545,45 @@ def _build_trade_report_inputs(
         "monitor_context_snapshots": [monitor_snapshot] if hold_duration_sec > 0 else [],
         "hold_signal_transitions": [],
         "pre_exit_context_summary": dict(monitor_snapshot) if action == "SELL" else {},
-        "canonical_agent_artifacts": {
-            "commander": dict(commander),
-            "strategist": dict(strategist),
-            "scanner": dict(scanner),
-            "monitor": dict(monitor),
-            "executor": dict(execution),
-        },
+        "canonical_agent_artifacts": dict(canonical_context.get("canonical_agent_artifacts") or {}),
+        "evidence_provenance": evidence_provenance,
+        "artifacts": artifacts,
     }
     story_contract = build_story_contract(bundle_out)
     market_context_human = build_market_context_human(dict(strategist))
     scanner_reason_human = build_scanner_reason_human(dict(scanner), dict(strategist))
     filters_human = build_filters_human(dict(scanner), dict(strategist), dict(supervisor))
     monitor_reason_human = build_monitor_reason_human(dict(monitor), dict(execution_view))
+    canonical_scanner = (
+        canonical_context.get("canonical_agent_artifacts", {}).get("scanner")
+        if isinstance(canonical_context.get("canonical_agent_artifacts", {}).get("scanner"), dict)
+        else dict(scanner)
+    )
+    canonical_monitor = (
+        canonical_context.get("canonical_agent_artifacts", {}).get("monitor")
+        if isinstance(canonical_context.get("canonical_agent_artifacts", {}).get("monitor"), dict)
+        else dict(monitor)
+    )
+    scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
+    if scanner_selection_trace:
+        scanner_reason_human["scanner_selection_trace"] = dict(scanner_selection_trace)
+        if scanner_selection_trace.get("ranked_candidates"):
+            scanner_reason_human["ranked_candidates"] = list(scanner_selection_trace.get("ranked_candidates") or [])
+    monitor_thresholds = (
+        ((canonical_monitor.get("thresholds_guards_used") or {}).get("thresholds"))
+        if isinstance((canonical_monitor.get("thresholds_guards_used") or {}).get("thresholds"), dict)
+        else canonical_monitor.get("thresholds")
+        if isinstance(canonical_monitor.get("thresholds"), dict)
+        else canonical_monitor.get("threshold_snapshot")
+        if isinstance(canonical_monitor.get("threshold_snapshot"), dict)
+        else {}
+    )
+    monitor_stop_policy_trace = _build_monitor_stop_policy_trace(canonical_monitor, monitor_thresholds)
+    if monitor_stop_policy_trace:
+        monitor_reason_human["monitor_stop_policy_trace"] = dict(monitor_stop_policy_trace)
+    monitor_blocker_trace = _build_monitor_blocker_trace(monitor_reason_human)
+    if monitor_blocker_trace:
+        monitor_reason_human["monitor_blocker_trace"] = dict(monitor_blocker_trace)
     guard_reason_human = build_guard_reason_human(dict(supervisor))
     execution_outcome_human = build_execution_outcome_human(
         dict(execution_view),
@@ -419,7 +591,7 @@ def _build_trade_report_inputs(
         story_type=str(story_contract.get("story_type") or "decision_only"),
         mode_label=str(story_contract.get("execution_mode_label") or ""),
     )
-    reporter_status_human = build_reporter_status_human({}, {})
+    reporter_status_human = build_reporter_status_human(reporter_ctx, reporter_day_obj)
     operator_conclusion_human = build_operator_conclusion_human(
         execution=dict(execution_view),
         scanner_reason_human=scanner_reason_human,
@@ -546,6 +718,11 @@ def _build_trade_report_inputs(
         "ai_trade_report_md": str((root / "reports" / "trades" / day / trade_id / "reports" / "ai_trade_report.md")),
         "ai_trade_report_llm_response_json": str((root / "reports" / "trades" / day / trade_id / "reports" / "ai_trade_report_llm_response.json")),
     }
+    canonical_refs = {
+        key: value
+        for key, value in artifacts.items()
+        if str(key).startswith("canonical_") and str(key).endswith("_json")
+    }
     lifecycle_bundle = build_lifecycle_bundle(
         day=day,
         trade_id=trade_id,
@@ -558,9 +735,21 @@ def _build_trade_report_inputs(
         commander_summary=dict(commander),
         story_input=dict(story_input),
         diagnostics={},
-        canonical_refs={},
+        canonical_refs=canonical_refs,
         llm_refs={},
         artifact_links=artifact_links,
+    )
+    lifecycle_bundle.update(
+        {
+            "artifacts": dict(artifacts),
+            "canonical_agent_artifacts": dict(canonical_context.get("canonical_agent_artifacts") or {}),
+            "evidence_provenance": dict(evidence_provenance),
+            "section_provenance": dict(story_input.get("section_provenance") or {}),
+            "same_day_reporter_linkage": dict(same_day_reporter_linkage),
+            "execution_details": dict(execution_details),
+            "entry_execution_details": dict(entry_execution_details),
+            "exit_execution_details": dict(exit_execution_details),
+        }
     )
     return {
         "story_input": story_input,
