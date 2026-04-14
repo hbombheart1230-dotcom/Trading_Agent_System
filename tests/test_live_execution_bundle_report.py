@@ -1,4 +1,4 @@
-﻿﻿from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -1584,6 +1584,227 @@ def test_live_execution_bundle_report_targeted_mode_filters_to_target_symbol_run
     assert out["run_bundles"][0]["run_id"] == "run-2"
     assert {row["symbol"] for row in out["run_bundles"]} == {"000660"}
     assert {row["symbol"] for row in out["bundles"]} == {"000660"}
+
+
+def test_live_execution_bundle_report_marks_story_input_for_intraday_bundle_skip(tmp_path: Path, capsys, monkeypatch) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+    lock_path = tmp_path / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "005930", "qty": 1}, "payload": {"response_payload": {"ord_no": "B1", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:05:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "005930", "qty": 1}, "payload": {"response_payload": {"ord_no": "B2", "return_msg": "ok"}}}},
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    captured_story_inputs: list[dict] = []
+
+    def _capture_ai_trade_report(story_input: dict, **kwargs):  # type: ignore[no-untyped-def]
+        captured_story_inputs.append(dict(story_input))
+        return _fake_ai_trade_report_ok(story_input, **kwargs)
+
+    monkeypatch.setattr(mod, "_background_job_lock_path", lambda: lock_path)
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(mod, "build_ai_trade_report", _capture_ai_trade_report)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--target-run-id",
+            "run-2",
+            "--role",
+            "intraday_trade_report_bundle",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert out["ok"] is True
+    assert captured_story_inputs
+    story_input = captured_story_inputs[0]
+    assert story_input["report_runtime_mode"] == "intraday_bundle"
+    assert story_input["skip_separated_report_llm"] is True
+
+
+def test_live_execution_bundle_report_spawns_followup_from_queue_after_completion(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+    lock_path = tmp_path / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+    queue_path = tmp_path / "reports" / "runtime" / "intraday_trade_report_bundle.queue.json"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:05:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}}},
+            {"run_id": "run-3", "ts": f"{day}T00:10:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "005930", "qty": 1}, "payload": {"response_payload": {"ord_no": "B1", "return_msg": "ok"}}}},
+            {"run_id": "run-4", "ts": f"{day}T00:15:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "005930", "qty": 1}, "payload": {"response_payload": {"ord_no": "B2", "return_msg": "ok"}}}},
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_text(
+        json.dumps(
+            [
+                {
+                    "target_run_id": "run-4",
+                    "target_symbol": "005930",
+                    "role": "intraday_trade_report_bundle",
+                    "reason": "bundle_job_already_running",
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    spawned: list[list[str]] = []
+
+    class DummyProc:
+        pid = 77777
+
+    def fake_popen(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        spawned.append(list(cmd))
+        return DummyProc()
+
+    monkeypatch.setattr(mod, "_background_job_lock_path", lambda: lock_path)
+    monkeypatch.setattr(mod, "_background_job_queue_path", lambda: queue_path)
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--target-run-id",
+            "run-2",
+            "--target-symbol",
+            "000660",
+            "--role",
+            "intraday_trade_report_bundle",
+            "--no-trade-report-ai",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert out["ok"] is True
+    assert spawned
+    flat_cmd = " ".join(spawned[0])
+    assert "--target-run-id run-4" in flat_cmd
+    assert "--target-symbol 005930" in flat_cmd
+    queue_rows = json.loads(queue_path.read_text(encoding="utf-8"))
+    assert queue_rows == []
+
+
+def test_live_execution_bundle_report_targeted_mode_prefilters_trace_inputs(tmp_path: Path, capsys, monkeypatch) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+    lock_path = tmp_path / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+
+    _write_jsonl(
+        event_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}}}},
+            {"run_id": "run-1", "ts": f"{day}T00:00:02+00:00", "stage": "monitor", "event": "summary", "payload": {"symbol": "000660"}},
+            {"run_id": "run-2", "ts": f"{day}T00:05:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "000660", "qty": 1}, "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}}}},
+            {"run_id": "run-2", "ts": f"{day}T00:05:02+00:00", "stage": "monitor", "event": "summary", "payload": {"symbol": "000660"}},
+            {"run_id": "run-3", "ts": f"{day}T00:10:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "BUY", "symbol": "005930", "qty": 1}, "payload": {"response_payload": {"ord_no": "B1", "return_msg": "ok"}}}},
+            {"run_id": "run-4", "ts": f"{day}T00:15:01+00:00", "stage": "execute_from_packet", "event": "execution", "payload": {"order": {"action": "SELL", "symbol": "005930", "qty": 1}, "payload": {"response_payload": {"ord_no": "B2", "return_msg": "ok"}}}},
+        ],
+    )
+    _write_jsonl(
+        evidence_log,
+        [
+            {"run_id": "run-1", "ts": f"{day}T00:00:01+00:00", "agent": "strategist", "stage": "theme_selection", "raw_input": {"llm_payload": {"themes": ["semis"]}}},
+            {"run_id": "run-2", "ts": f"{day}T00:05:01+00:00", "agent": "strategist", "stage": "theme_selection", "raw_input": {"llm_payload": {"themes": ["semis"]}}},
+            {"run_id": "run-4", "ts": f"{day}T00:15:01+00:00", "agent": "strategist", "stage": "theme_selection", "raw_input": {"llm_payload": {"themes": ["chips"]}}},
+        ],
+    )
+
+    monkeypatch.setattr(mod, "_background_job_lock_path", lambda: lock_path)
+    monkeypatch.setattr(mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
+
+    captured: dict[str, list[str]] = {}
+
+    def fake_trace(*args, **kwargs):  # type: ignore[no-untyped-def]
+        event_rows = list(kwargs.get("event_rows") or [])
+        evidence_rows = list(kwargs.get("evidence_rows_all") or [])
+        captured["event_run_ids"] = sorted({str(row.get("run_id") or "") for row in event_rows})
+        captured["evidence_run_ids"] = sorted({str(row.get("run_id") or "") for row in evidence_rows})
+        kwargs.pop("event_rows", None)
+        kwargs.pop("evidence_rows_all", None)
+        return _fake_trace(*args, **kwargs)
+
+    monkeypatch.setattr(mod, "generate_agent_pipeline_trace_report", fake_trace)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--target-run-id",
+            "run-2",
+            "--role",
+            "intraday_trade_report_bundle",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert out["ok"] is True
+    assert out["targeted_mode"] is True
+    assert captured["event_run_ids"] == ["run-2"]
+    assert captured["evidence_run_ids"] == ["run-2"]
 
 
 def test_live_execution_bundle_report_skips_ai_regeneration_when_fingerprint_matches(tmp_path: Path, capsys, monkeypatch) -> None:

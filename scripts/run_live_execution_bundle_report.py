@@ -980,9 +980,142 @@ def _background_job_lock_path() -> Path | None:
     return Path(__file__).resolve().parents[1] / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
 
 
+def _background_job_queue_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "reports" / "runtime" / "intraday_trade_report_bundle.queue.json"
+
+
 def _bundle_role(value: Any = "") -> str:
     raw = str(value or "").strip()
     return raw or "intraday_trade_report_bundle"
+
+
+def _load_background_job_queue(path: Path) -> List[Dict[str, Any]]:
+    try:
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            return []
+        return [dict(row) for row in payload if isinstance(row, dict)]
+    except Exception:
+        return []
+
+
+def _write_background_job_queue(path: Path, rows: List[Dict[str, Any]]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        return
+
+
+def _pop_next_background_job_request(
+    path: Path,
+    *,
+    current_run_id: str = "",
+    current_symbol: str = "",
+) -> Dict[str, Any]:
+    rows = _load_background_job_queue(path)
+    if not rows:
+        return {}
+    normalized_run_id = str(current_run_id or "").strip()
+    normalized_symbol = str(current_symbol or "").strip().upper()
+    next_row: Dict[str, Any] = {}
+    remaining: List[Dict[str, Any]] = []
+    for row in rows:
+        row_run_id = str(row.get("target_run_id") or "").strip()
+        row_symbol = str(row.get("target_symbol") or "").strip().upper()
+        if not next_row and not (
+            row_run_id == normalized_run_id and row_symbol == normalized_symbol
+        ):
+            next_row = dict(row)
+            continue
+        remaining.append(dict(row))
+    _write_background_job_queue(path, remaining)
+    return next_row
+
+
+def _spawn_followup_background_job(
+    next_request: Dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    role: str,
+    event_log_path: Path | None,
+) -> Dict[str, Any]:
+    target_run_id = str(next_request.get("target_run_id") or "").strip()
+    target_symbol = str(next_request.get("target_symbol") or "").strip()
+    if not target_run_id:
+        return {}
+    cmd = [sys.executable, str(Path(__file__).resolve())]
+    if args.env_path:
+        cmd.extend(["--env-path", str(args.env_path)])
+    cmd.extend(["--event-log-path", str(args.event_log_path)])
+    cmd.extend(["--evidence-log-path", str(args.evidence_log_path)])
+    cmd.extend(["--report-dir", str(args.report_dir)])
+    cmd.extend(["--reports-root", str(args.reports_root)])
+    if args.intents_path:
+        cmd.extend(["--intents-path", str(args.intents_path)])
+    if args.day:
+        cmd.extend(["--day", str(args.day)])
+    cmd.extend(["--role", str(role or _bundle_role())])
+    cmd.extend(["--target-run-id", target_run_id])
+    if target_symbol:
+        cmd.extend(["--target-symbol", target_symbol])
+    if bool(args.trade_report_ai):
+        cmd.append("--trade-report-ai")
+    if args.trade_report_ai_model:
+        cmd.extend(["--trade-report-ai-model", str(args.trade_report_ai_model)])
+    if args.trade_report_ai_temperature is not None:
+        cmd.extend(["--trade-report-ai-temperature", str(args.trade_report_ai_temperature)])
+    if args.trade_report_ai_max_tokens is not None:
+        cmd.extend(["--trade-report-ai-max-tokens", str(args.trade_report_ai_max_tokens)])
+    if bool(args.json):
+        cmd.append("--json")
+    env = dict(os.environ)
+    env["INTRADAY_TRADE_REPORT_PARENT_SPAWN"] = "1"
+    try:
+        proc = subprocess.Popen(  # noqa: S603
+            cmd,
+            cwd=str(Path(__file__).resolve().parents[1]),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            creationflags=_background_creationflags(),
+        )
+    except Exception as exc:
+        _log_bundle_event(
+            event_log_path,
+            role=role,
+            event="report_bundle_followup_spawn_failed",
+            run_id=target_run_id or "report-bundle",
+            symbol=target_symbol,
+            payload={
+                "reason": "followup_spawn_failed",
+                "error": str(exc),
+                "queued_run_id": target_run_id,
+                "queued_symbol": target_symbol,
+            },
+        )
+        return {}
+    _log_bundle_event(
+        event_log_path,
+        role=role,
+        event="report_bundle_spawned_followup_from_queue",
+        run_id=target_run_id or "report-bundle",
+        symbol=target_symbol,
+        payload={
+            "pid": int(getattr(proc, "pid", 0) or 0),
+            "parent_pid": int(os.getpid()),
+            "role": role,
+            "queued_run_id": target_run_id,
+            "queued_symbol": target_symbol,
+        },
+    )
+    return {
+        "pid": int(getattr(proc, "pid", 0) or 0),
+        "target_run_id": target_run_id,
+        "target_symbol": target_symbol,
+    }
 
 
 def _pid_active(pid: int) -> bool:
@@ -1201,6 +1334,13 @@ def _terminate_process_tree(pid: int) -> bool:
         return True
     except Exception:
         return False
+
+
+def _background_creationflags() -> int:
+    flags = 0
+    for name in ("CREATE_NO_WINDOW", "DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+        flags |= int(getattr(subprocess, name, 0) or 0)
+    return flags
 
 
 def _lock_timestamp_epoch(payload: Dict[str, Any], *, stale_after_sec: float) -> float:
@@ -2476,10 +2616,16 @@ def _build_scanner_trace_summary_mirror(
     }
 
 
-def _resolve_execution_runs(event_log_path: Path, day: str) -> List[Dict[str, Any]]:
+def _resolve_execution_runs(
+    event_log_path: Path,
+    day: str,
+    *,
+    event_rows: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     seen: set[str] = set()
     out: List[Dict[str, Any]] = []
-    rows = sorted(_iter_jsonl(event_log_path), key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)
+    source_rows = list(event_rows) if isinstance(event_rows, list) else list(_iter_jsonl(event_log_path))
+    rows = sorted(source_rows, key=lambda row: _to_epoch(row.get("ts")) or 0, reverse=True)
     for row in rows:
         if str(row.get("stage") or "") != "execute_from_packet" or str(row.get("event") or "") != "execution":
             continue
@@ -2697,9 +2843,11 @@ def _build_run_snapshots(
     *,
     reports_root: Path,
     include_run_ids: Optional[set[str]] = None,
+    event_rows: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     grouped: Dict[str, List[Dict[str, Any]]] = {}
-    for row in _iter_jsonl(event_log_path):
+    source_rows = list(event_rows) if isinstance(event_rows, list) else list(_iter_jsonl(event_log_path))
+    for row in source_rows:
         if day and _utc_day(row.get("ts")) != day:
             continue
         run_id = str(row.get("run_id") or "").strip()
@@ -2893,6 +3041,54 @@ def _build_run_snapshots(
         )
     out.sort(key=lambda row: int(row.get("ts_epoch") or 0))
     return out
+
+
+def _filter_rows_by_run_ids(
+    rows: List[Dict[str, Any]] | None,
+    run_ids: Iterable[str] | None,
+) -> List[Dict[str, Any]]:
+    source_rows = list(rows or [])
+    allowed = {str(run_id or "").strip() for run_id in list(run_ids or []) if str(run_id or "").strip()}
+    if not allowed:
+        return source_rows
+    return [
+        row
+        for row in source_rows
+        if str((row or {}).get("run_id") or "").strip() in allowed
+    ]
+
+
+def _generate_agent_pipeline_trace_report_fast(
+    *,
+    event_log_path: Path,
+    evidence_log_path: Path,
+    report_dir: Path,
+    run_id: str,
+    day: str,
+    reports_root: Path,
+    event_rows: List[Dict[str, Any]] | None = None,
+    evidence_rows_all: List[Dict[str, Any]] | None = None,
+) -> Tuple[Path, Path, Dict[str, Any]]:
+    try:
+        return generate_agent_pipeline_trace_report(
+            event_log_path=event_log_path,
+            evidence_log_path=evidence_log_path,
+            report_dir=report_dir,
+            run_id=run_id,
+            day=day,
+            reports_root=reports_root,
+            event_rows=event_rows,
+            evidence_rows_all=evidence_rows_all,
+        )
+    except TypeError:
+        return generate_agent_pipeline_trace_report(
+            event_log_path=event_log_path,
+            evidence_log_path=evidence_log_path,
+            report_dir=report_dir,
+            run_id=run_id,
+            day=day,
+            reports_root=reports_root,
+        )
 
 
 def _format_duration_human(seconds: int) -> str:
@@ -3475,7 +3671,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         for row in _iter_jsonl(evidence_log_path)
         if not day or _utc_day(row.get("timestamp") or row.get("ts")) == day
     ]
-    all_execution_runs = _resolve_execution_runs(event_log_path, day)
+    all_execution_runs = _resolve_execution_runs(event_log_path, day, event_rows=day_event_rows)
     execution_runs, target_ctx = _targeted_execution_context(
         all_execution_runs,
         target_run_id=str(args.target_run_id or "").strip(),
@@ -3483,6 +3679,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         max_runs=max(1, int(args.max_runs)),
     )
     targeted_mode = bool(target_ctx.get("targeted_mode"))
+    if targeted_mode:
+        targeted_run_ids = {
+            str(run_id or "").strip()
+            for run_id in list(target_ctx.get("lifecycle_context_run_ids") or [])
+            if str(run_id or "").strip()
+        }
+        targeted_run_ids.update(
+            str(row.get("run_id") or "").strip()
+            for row in list(execution_runs or [])
+            if str(row.get("run_id") or "").strip()
+        )
+        day_event_rows = _filter_rows_by_run_ids(day_event_rows, targeted_run_ids)
+        day_evidence_rows = _filter_rows_by_run_ids(day_evidence_rows, targeted_run_ids)
     if targeted_mode:
         trade_report_dir = official_trade_explain_report_dir(reports_root)
         trade_md, trade_js = _resolve_existing_day_artifact(trade_report_dir, "trade_explain", day)
@@ -3508,6 +3717,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     run_story_type_counts: Dict[str, int] = {}
     for execution in execution_runs:
         run_id = str(execution.get("run_id") or "").strip()
+        run_event_rows = _filter_rows_by_run_ids(day_event_rows, [run_id])
+        run_evidence_rows = _filter_rows_by_run_ids(day_evidence_rows, [run_id])
         _touch_background_job_lock(
             background_lock_path,
             role=role,
@@ -3517,13 +3728,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "current_symbol": str(execution.get("symbol") or ""),
             },
         )
-        trace_md, trace_js, trace_out = generate_agent_pipeline_trace_report(
+        trace_md, trace_js, trace_out = _generate_agent_pipeline_trace_report_fast(
             event_log_path=event_log_path,
             evidence_log_path=evidence_log_path,
             report_dir=report_dir / "agent_pipeline_trace",
             run_id=run_id,
             day=day,
             reports_root=analysis_root,
+            event_rows=run_event_rows,
+            evidence_rows_all=run_evidence_rows,
         )
         canonical_sources = load_run_canonical_artifacts(
             reports_root=reports_root,
@@ -3728,6 +3941,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         day,
         reports_root=reports_root,
         include_run_ids=run_id_set or None,
+        event_rows=day_event_rows,
     )
     trade_lifecycles = _build_trade_lifecycles(
         day=day,
@@ -4509,6 +4723,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         }
         trade_story_input = build_trade_story_input(lifecycle_bundle, trade_lifecycle=lifecycle)
         trade_story_input["day"] = day
+        trade_story_input["report_runtime_mode"] = "intraday_bundle"
+        trade_story_input["skip_separated_report_llm"] = True
         trade_story_input["entry_strategist_run_id"] = strategy_anchor_run_id
         trade_story_input["strategy_anchor_run_id"] = strategy_anchor_run_id
         trade_story_input["hold_duration"] = holding_phase_observability.get("hold_duration")
@@ -5487,6 +5703,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(json.dumps(summary_out, ensure_ascii=False))
     else:
         print(f"day={day} bundle_count={len(lifecycle_rows)} report_json={summary_json} report_md={summary_md}")
+    queue_path = _background_job_queue_path()
+    next_queued_request = _pop_next_background_job_request(
+        queue_path,
+        current_run_id=str(target_ctx.get("target_run_id") or ""),
+        current_symbol=str(target_ctx.get("target_symbol") or ""),
+    )
     _log_bundle_event(
         event_log_path,
         role=role,
@@ -5503,6 +5725,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         },
     )
     _clear_background_job_lock(background_lock_path, role=role)
+    if next_queued_request:
+        _spawn_followup_background_job(
+            next_queued_request,
+            args=args,
+            role=role,
+            event_log_path=event_log_path,
+        )
     return 0
 
 

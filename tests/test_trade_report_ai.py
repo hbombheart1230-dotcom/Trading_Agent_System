@@ -199,6 +199,34 @@ def test_deterministic_trade_report_does_not_invoke_hidden_fact_narrative_llm(mo
     assert narrative.get("llm_call_skipped") is True
 
 
+def test_ai_trade_report_can_skip_hidden_separated_report_llm_for_intraday_bundle(monkeypatch) -> None:
+    class ExplodingRouter:
+        client = object()
+
+        @staticmethod
+        def from_env() -> "ExplodingRouter":
+            return ExplodingRouter()
+
+        def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+            raise AssertionError("intraday bundle path should skip hidden separated-report LLM calls")
+
+    monkeypatch.setattr(mod, "LLMRouter", _CapturePolicyRouter)
+    monkeypatch.setattr("libs.reporting.fact_narrative_report.LLMRouter", ExplodingRouter)
+    story_input = _story_input()
+    story_input["status"] = "closed"
+    story_input["action"] = "SELL"
+    story_input["report_runtime_mode"] = "intraday_bundle"
+    story_input["skip_separated_report_llm"] = True
+
+    report = mod.build_ai_trade_report(story_input, enabled=True, model="free")
+
+    assert report["generation"]["status"] == "ok"
+    narrative = report.get("narrative") if isinstance(report.get("narrative"), dict) else {}
+    assert narrative.get("status") == "skipped"
+    assert narrative.get("reason") == "intraday_bundle_skip_separated_report_llm"
+    assert narrative.get("llm_call_skipped") is True
+
+
 def test_trade_report_shared_facts_align_between_deterministic_and_ai(monkeypatch) -> None:
     monkeypatch.setattr(mod, "LLMRouter", _RetrySuccessRouter)
     story_input = _story_input()

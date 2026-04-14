@@ -533,18 +533,24 @@ def generate_agent_pipeline_trace_report(
     day: Optional[str] = None,
     reports_root: Optional[Path] = None,
     max_news_titles: int = 5,
+    event_rows: Optional[List[Dict[str, Any]]] = None,
+    evidence_rows_all: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Path, Path, Dict[str, Any]]:
-    event_rows = list(_iter_jsonl(event_log_path))
-    rid = _pick_run_id(event_rows, run_id=run_id, day=day)
+    loaded_event_rows = list(event_rows) if isinstance(event_rows, list) else list(_iter_jsonl(event_log_path))
+    rid = _pick_run_id(loaded_event_rows, run_id=run_id, day=day)
     if not rid:
         raise RuntimeError("No run_id could be resolved from event log.")
 
-    run_rows = [r for r in event_rows if str(r.get("run_id") or "").strip() == rid]
+    run_rows = [r for r in loaded_event_rows if str(r.get("run_id") or "").strip() == rid]
     run_rows.sort(key=lambda r: _to_epoch(r.get("ts")) or 0)
     run_day = day or (_utc_day((run_rows[0] if run_rows else {}).get("ts")) or "")
 
-    evidence_rows_all = list(_iter_jsonl(evidence_log_path))
-    evidence_rows = [r for r in evidence_rows_all if str(r.get("run_id") or "").strip() == rid]
+    loaded_evidence_rows = (
+        list(evidence_rows_all)
+        if isinstance(evidence_rows_all, list)
+        else list(_iter_jsonl(evidence_log_path))
+    )
+    evidence_rows = [r for r in loaded_evidence_rows if str(r.get("run_id") or "").strip() == rid]
 
     route = _latest_row(run_rows, stage="commander_router", event="route")
     route_payload = route.get("payload") if isinstance(route.get("payload"), dict) else {}

@@ -3418,6 +3418,24 @@ def build_separated_ai_trade_report(trade_dir: str, *, model: Optional[str] = No
     )
 
 
+def _build_skipped_separated_report(trade_model: Dict[str, Any], *, reason: str) -> Dict[str, Any]:
+    from libs.reporting.fact_narrative_report import build_fact_payload
+
+    return {
+        "fact_payload": build_fact_payload(trade_model=trade_model),
+        "narrative": {
+            "summary": "",
+            "insight": "",
+            "recommendation": "",
+            "source": "llm",
+            "based_on": "fact_payload",
+            "status": "skipped",
+            "reason": reason,
+            "llm_call_skipped": True,
+        },
+    }
+
+
 def _trade_report_output_template() -> Dict[str, Any]:
     return {
         "executive_summary": {"headline": "", "summary": ""},
@@ -3638,16 +3656,24 @@ def _attach_report_status_matrix(
     generation["ai_trade_report_status"] = out["ai_trade_report_status"]
     out["generation"] = generation
     if "fact_payload" not in out or "narrative" not in out:
+        runtime_mode = str(story_input.get("report_runtime_mode") or "").strip().lower()
+        skip_separated_report_llm = bool(story_input.get("skip_separated_report_llm"))
         try:
-            from libs.reporting.fact_narrative_report import build_separated_report
+            if skip_separated_report_llm:
+                separated = _build_skipped_separated_report(
+                    dict(story_input or {}),
+                    reason=f"{runtime_mode or 'runtime'}_skip_separated_report_llm",
+                )
+            else:
+                from libs.reporting.fact_narrative_report import build_separated_report
 
-            separated = build_separated_report(
-                trade_model=dict(story_input or {}),
-                model=str(generation.get("model") or "").strip() or None,
-                execution_profile=_resolve_intraday_report_execution_profile(
-                    dict(story_input or {}) if isinstance(story_input, dict) else {}
-                ),
-            )
+                separated = build_separated_report(
+                    trade_model=dict(story_input or {}),
+                    model=str(generation.get("model") or "").strip() or None,
+                    execution_profile=_resolve_intraday_report_execution_profile(
+                        dict(story_input or {}) if isinstance(story_input, dict) else {}
+                    ),
+                )
         except Exception:
             separated = {
                 "fact_payload": {"trade": dict(story_input or {}), "daily": {}, "symbol": {}},

@@ -57,6 +57,10 @@ def _bundle_job_lock_path(root: Path) -> Path:
     return root / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
 
 
+def _bundle_job_queue_path(root: Path) -> Path:
+    return root / "reports" / "runtime" / "intraday_trade_report_bundle.queue.json"
+
+
 def _read_lock_payload(path: Path) -> Dict[str, Any]:
     try:
         if not path.exists():
@@ -65,6 +69,64 @@ def _read_lock_payload(path: Path) -> Dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def _load_bundle_queue(path: Path) -> List[Dict[str, Any]]:
+    try:
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            return []
+        return [dict(row) for row in payload if isinstance(row, dict)]
+    except Exception:
+        return []
+
+
+def _write_bundle_queue(path: Path, rows: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _enqueue_bundle_request(
+    root: Path,
+    *,
+    run_id: str,
+    symbol: str,
+    reason: str,
+) -> Dict[str, Any]:
+    queue_path = _bundle_job_queue_path(root)
+    rows = _load_bundle_queue(queue_path)
+    normalized_run_id = str(run_id or "").strip()
+    normalized_symbol = _normalize_symbol(symbol)
+    for row in rows:
+        if (
+            str(row.get("target_run_id") or "").strip() == normalized_run_id
+            and _normalize_symbol(row.get("target_symbol")) == normalized_symbol
+        ):
+            row["last_seen_at"] = _utc_iso()
+            row["reason"] = str(reason or row.get("reason") or "")
+            _write_bundle_queue(queue_path, rows)
+            out = dict(row)
+            out["queue_path"] = str(queue_path)
+            out["queue_length"] = len(rows)
+            out["deduped"] = True
+            return out
+    entry = {
+        "target_run_id": normalized_run_id,
+        "target_symbol": normalized_symbol,
+        "role": _bundle_role(),
+        "reason": str(reason or ""),
+        "enqueued_at": _utc_iso(),
+        "last_seen_at": _utc_iso(),
+    }
+    rows.append(entry)
+    _write_bundle_queue(queue_path, rows)
+    out = dict(entry)
+    out["queue_path"] = str(queue_path)
+    out["queue_length"] = len(rows)
+    out["deduped"] = False
+    return out
 
 
 def _pid_active(pid: int) -> bool:
@@ -561,6 +623,26 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
                     time.sleep(0.2)
                     active_job = {}
         if active_job:
+            queued_request = _enqueue_bundle_request(
+                repo_root,
+                run_id=run_id,
+                symbol=symbol,
+                reason="bundle_job_already_running",
+            )
+            _log_bundle_event(
+                repo_root,
+                event="report_bundle_request_queued",
+                reason="bundle_job_already_running",
+                run_id=run_id,
+                symbol=symbol,
+                payload={
+                    "queue_path": str(queued_request.get("queue_path") or ""),
+                    "queue_length": int(queued_request.get("queue_length") or 0),
+                    "target_run_id": run_id,
+                    "target_symbol": symbol,
+                    "deduped": bool(queued_request.get("deduped")),
+                },
+            )
             _log_bundle_event(
                 repo_root,
                 event="report_bundle_spawn_skipped_existing_process",
@@ -590,6 +672,8 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
                 "queue_mode": "background_subprocess_deduped",
                 "background_pid": int(active_job.get("pid") or 0),
                 "lock_path": str(active_job.get("lock_path") or ""),
+                "queue_path": str(queued_request.get("queue_path") or ""),
+                "queue_length": int(queued_request.get("queue_length") or 0),
                 "dedupe_source": str(active_job.get("detection_source") or "lock"),
                 "target_run_id": run_id,
                 "target_symbol": symbol,
