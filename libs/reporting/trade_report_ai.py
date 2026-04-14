@@ -3657,14 +3657,10 @@ def _attach_report_status_matrix(
     out["generation"] = generation
     if "fact_payload" not in out or "narrative" not in out:
         runtime_mode = str(story_input.get("report_runtime_mode") or "").strip().lower()
+        enable_separated_narrative = bool(story_input.get("enable_separated_narrative"))
         skip_separated_report_llm = bool(story_input.get("skip_separated_report_llm"))
         try:
-            if skip_separated_report_llm:
-                separated = _build_skipped_separated_report(
-                    dict(story_input or {}),
-                    reason=f"{runtime_mode or 'runtime'}_skip_separated_report_llm",
-                )
-            else:
+            if enable_separated_narrative and not skip_separated_report_llm:
                 from libs.reporting.fact_narrative_report import build_separated_report
 
                 separated = build_separated_report(
@@ -3673,6 +3669,16 @@ def _attach_report_status_matrix(
                     execution_profile=_resolve_intraday_report_execution_profile(
                         dict(story_input or {}) if isinstance(story_input, dict) else {}
                     ),
+                )
+            else:
+                skip_reason = (
+                    f"{runtime_mode or 'runtime'}_skip_separated_report_llm"
+                    if skip_separated_report_llm
+                    else f"{runtime_mode or 'runtime'}_separated_narrative_disabled"
+                )
+                separated = _build_skipped_separated_report(
+                    dict(story_input or {}),
+                    reason=skip_reason,
                 )
         except Exception:
             separated = {

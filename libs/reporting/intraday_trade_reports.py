@@ -623,57 +623,34 @@ def generate_intraday_trade_artifacts(state: Dict[str, Any], *, root: Path | Non
                     time.sleep(0.2)
                     active_job = {}
         if active_job:
-            queued_request = _enqueue_bundle_request(
-                repo_root,
-                run_id=run_id,
-                symbol=symbol,
-                reason="bundle_job_already_running",
-            )
-            _log_bundle_event(
-                repo_root,
-                event="report_bundle_request_queued",
-                reason="bundle_job_already_running",
-                run_id=run_id,
-                symbol=symbol,
-                payload={
-                    "queue_path": str(queued_request.get("queue_path") or ""),
-                    "queue_length": int(queued_request.get("queue_length") or 0),
-                    "target_run_id": run_id,
-                    "target_symbol": symbol,
-                    "deduped": bool(queued_request.get("deduped")),
-                },
-            )
             _log_bundle_event(
                 repo_root,
                 event="report_bundle_spawn_skipped_existing_process",
-                reason="bundle_job_already_running",
+                reason="bundle_busy_no_queue",
                 run_id=run_id,
                 symbol=symbol,
                 payload={
+                    "target_run_id": run_id,
+                    "target_symbol": symbol,
                     "lock_path": str(active_job.get("lock_path") or _bundle_job_lock_path(repo_root)),
                     "active_pid": int(active_job.get("pid") or 0),
                     "dedupe_source": str(active_job.get("detection_source") or "lock"),
-                    "target_run_id": run_id,
-                    "target_symbol": symbol,
                 },
             )
             return {
                 "ok": True,
                 "status": "skipped",
-                "reason": "bundle_job_already_running",
+                "reason": "bundle_busy_no_queue",
                 "return_code": None,
                 "summary": {},
                 "trade_id": "",
                 "story_id": "",
-                "report_status": "queued",
+                "report_status": "skipped",
                 "report_path": "",
                 "symbol": symbol,
                 "cache_invalidated": [],
-                "queue_mode": "background_subprocess_deduped",
                 "background_pid": int(active_job.get("pid") or 0),
                 "lock_path": str(active_job.get("lock_path") or ""),
-                "queue_path": str(queued_request.get("queue_path") or ""),
-                "queue_length": int(queued_request.get("queue_length") or 0),
                 "dedupe_source": str(active_job.get("detection_source") or "lock"),
                 "target_run_id": run_id,
                 "target_symbol": symbol,

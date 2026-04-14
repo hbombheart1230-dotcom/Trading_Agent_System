@@ -3195,7 +3195,7 @@ def _run_integrated_chain(
     from graphs.nodes.monitor_node import monitor_node
     from graphs.nodes.decision_node import decision_node
     from graphs.nodes.update_state_after_execution import update_state_after_execution
-    from libs.reporting.intraday_trade_reports import generate_intraday_trade_artifacts
+    from libs.reporting.single_trade_report import build_single_trade_report_id, generate_single_trade_report
 
     shadow_runtime = _ensure_commander_shadow_runtime(state)
     prior_cache_payload = _strategist_cache_payload(state)
@@ -3266,10 +3266,12 @@ def _run_integrated_chain(
                 (((state.get("execution") or {}).get("order") or {}).get("action") or ((state.get("decision_packet") or {}).get("intent") or {}).get("action") or "")
             )
             shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
-            state = update_state_after_execution(state)
             if _commander_trade_report_enabled(state):
                 try:
-                    state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
+                    state["intraday_trade_report"] = generate_single_trade_report(
+                        build_single_trade_report_id(state),
+                        state=state,
+                    )
                 except Exception as exc:
                     state["intraday_trade_report"] = {
                         "ok": False,
@@ -3283,6 +3285,7 @@ def _run_integrated_chain(
                     "reason": "reporter.trade_report.enabled is false",
                     "policy_source": "commander_applied_policy",
                 }
+            state = update_state_after_execution(state)
         state["path"] = "integrated_chain_closeout_guard"
         return state
 
@@ -3325,10 +3328,12 @@ def _run_integrated_chain(
             state = execute_fn(state)
             shadow_runtime["executor_action"] = str((((state.get("execution") or {}).get("order") or {}).get("action") or ((state.get("decision_packet") or {}).get("intent") or {}).get("action") or ""))
             shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
-            state = update_state_after_execution(state)
             if _commander_trade_report_enabled(state):
                 try:
-                    state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
+                    state["intraday_trade_report"] = generate_single_trade_report(
+                        build_single_trade_report_id(state),
+                        state=state,
+                    )
                 except Exception as exc:
                     state["intraday_trade_report"] = {
                         "ok": False,
@@ -3342,6 +3347,7 @@ def _run_integrated_chain(
                     "reason": "reporter.trade_report.enabled is false",
                     "policy_source": "commander_applied_policy",
                 }
+            state = update_state_after_execution(state)
         state["path"] = "integrated_chain_monitor_only"
         return state
 
@@ -3419,10 +3425,12 @@ def _run_integrated_chain(
         state = execute_fn(state)
         shadow_runtime["executor_action"] = str((((state.get("execution") or {}).get("order") or {}).get("action") or ((state.get("decision_packet") or {}).get("intent") or {}).get("action") or ""))
         shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
-        state = update_state_after_execution(state)
         if _commander_trade_report_enabled(state):
             try:
-                state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
+                state["intraday_trade_report"] = generate_single_trade_report(
+                    build_single_trade_report_id(state),
+                    state=state,
+                )
             except Exception as exc:
                 state["intraday_trade_report"] = {
                     "ok": False,
@@ -3436,6 +3444,7 @@ def _run_integrated_chain(
                 "reason": "reporter.trade_report.enabled is false",
                 "policy_source": "commander_applied_policy",
             }
+        state = update_state_after_execution(state)
 
     state["path"] = "integrated_chain_cached_frame" if reused_strategist_cache else "integrated_chain"
     return state
