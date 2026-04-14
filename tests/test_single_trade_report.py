@@ -210,10 +210,10 @@ def test_ai_trade_report_defaults_to_single_llm_call_without_separated_narrative
     assert narrative.get("llm_call_skipped") is True
 
 
-def test_commander_runtime_no_longer_uses_bundle_helper_for_intraday_reports() -> None:
+def test_commander_runtime_restores_intraday_bundle_helper_for_live_reports() -> None:
     source = Path("graphs/commander_runtime.py").read_text(encoding="utf-8")
-    assert "generate_single_trade_report(" in source
-    assert "generate_intraday_trade_artifacts(" not in source
+    assert "generate_intraday_trade_artifacts(" in source
+    assert "generate_single_trade_report(" not in source
 
 
 def test_single_trade_report_output_is_readable_by_existing_reader(tmp_path: Path, monkeypatch) -> None:

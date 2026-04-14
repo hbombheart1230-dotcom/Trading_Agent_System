@@ -238,16 +238,12 @@ def test_intraday_trade_reports_dedupes_when_background_job_is_already_running(t
 
     assert out["ok"] is True
     assert out["status"] == "skipped"
-    assert out["reason"] == "bundle_job_already_running"
-    assert out["report_status"] == "queued"
-    assert out["queue_mode"] == "background_subprocess_deduped"
+    assert out["reason"] == "bundle_busy_no_queue"
+    assert out["report_status"] == "skipped"
     assert out["background_pid"] == os.getpid()
     assert out["lock_path"] == str(lock_path)
     queue_path = root / "reports" / "runtime" / "intraday_trade_report_bundle.queue.json"
-    queue_rows = json.loads(queue_path.read_text(encoding="utf-8"))
-    assert len(queue_rows) == 1
-    assert queue_rows[0]["target_run_id"] == "run-dedupe"
-    assert queue_rows[0]["target_symbol"] == "005930"
+    assert queue_path.exists() is False
     assert popen_called is False
 
 
@@ -291,16 +287,12 @@ def test_intraday_trade_reports_dedupes_when_background_process_is_already_runni
 
     assert out["ok"] is True
     assert out["status"] == "skipped"
-    assert out["reason"] == "bundle_job_already_running"
-    assert out["report_status"] == "queued"
-    assert out["queue_mode"] == "background_subprocess_deduped"
+    assert out["reason"] == "bundle_busy_no_queue"
+    assert out["report_status"] == "skipped"
     assert out["background_pid"] == 65432
     assert out["dedupe_source"] == "process_scan"
     queue_path = root / "reports" / "runtime" / "intraday_trade_report_bundle.queue.json"
-    queue_rows = json.loads(queue_path.read_text(encoding="utf-8"))
-    assert len(queue_rows) == 1
-    assert queue_rows[0]["target_run_id"] == "run-dedupe-process"
-    assert queue_rows[0]["target_symbol"] == "005930"
+    assert queue_path.exists() is False
     assert popen_called is False
 
 

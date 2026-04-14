@@ -933,6 +933,10 @@ def test_m31_integrated_chain_triggers_intraday_trade_artifacts_after_success(mo
     monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
     monkeypatch.setattr("graphs.nodes.update_state_after_execution.update_state_after_execution", fake_update_state_after_execution)
     monkeypatch.setattr("libs.reporting.intraday_trade_reports.generate_intraday_trade_artifacts", fake_generate_intraday_trade_artifacts)
+    monkeypatch.setattr(
+        "libs.reporting.single_trade_report.generate_single_trade_report",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("single_trade_report must not be used in live intraday flow")),
+    )
 
     out = _run_integrated_chain({}, execute_fn=fake_execute)
 

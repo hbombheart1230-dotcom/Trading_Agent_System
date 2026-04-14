@@ -3195,7 +3195,7 @@ def _run_integrated_chain(
     from graphs.nodes.monitor_node import monitor_node
     from graphs.nodes.decision_node import decision_node
     from graphs.nodes.update_state_after_execution import update_state_after_execution
-    from libs.reporting.single_trade_report import build_single_trade_report_id, generate_single_trade_report
+    from libs.reporting.intraday_trade_reports import generate_intraday_trade_artifacts
 
     shadow_runtime = _ensure_commander_shadow_runtime(state)
     prior_cache_payload = _strategist_cache_payload(state)
@@ -3268,10 +3268,7 @@ def _run_integrated_chain(
             shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
             if _commander_trade_report_enabled(state):
                 try:
-                    state["intraday_trade_report"] = generate_single_trade_report(
-                        build_single_trade_report_id(state),
-                        state=state,
-                    )
+                    state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
                 except Exception as exc:
                     state["intraday_trade_report"] = {
                         "ok": False,
@@ -3330,10 +3327,7 @@ def _run_integrated_chain(
             shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
             if _commander_trade_report_enabled(state):
                 try:
-                    state["intraday_trade_report"] = generate_single_trade_report(
-                        build_single_trade_report_id(state),
-                        state=state,
-                    )
+                    state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
                 except Exception as exc:
                     state["intraday_trade_report"] = {
                         "ok": False,
@@ -3427,10 +3421,7 @@ def _run_integrated_chain(
         shadow_runtime["executor_status"] = str(((state.get("execution") or {}).get("reason") or ((state.get("execution") or {}).get("ok_source") or "")))
         if _commander_trade_report_enabled(state):
             try:
-                state["intraday_trade_report"] = generate_single_trade_report(
-                    build_single_trade_report_id(state),
-                    state=state,
-                )
+                state["intraday_trade_report"] = generate_intraday_trade_artifacts(state)
             except Exception as exc:
                 state["intraday_trade_report"] = {
                     "ok": False,

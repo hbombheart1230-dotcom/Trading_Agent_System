@@ -989,6 +989,10 @@ def _bundle_role(value: Any = "") -> str:
     return raw or "intraday_trade_report_bundle"
 
 
+def _is_trueish(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _load_background_job_queue(path: Path) -> List[Dict[str, Any]]:
     try:
         if not path.exists():
@@ -3563,13 +3567,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     role = _bundle_role(args.role)
     event_log_path = Path(str(args.event_log_path).strip())
     background_lock_path = _background_job_lock_path()
+    parent_spawn = _is_trueish(os.getenv("INTRADAY_TRADE_REPORT_PARENT_SPAWN", "0"))
+    target_run_id = str(args.target_run_id or "").strip()
+    target_symbol = normalize_symbol(args.target_symbol or "", allow_test_symbols=True)
     active_job = _active_background_job(
         background_lock_path,
         event_log_path=event_log_path,
         role=role,
     )
     owner_pid = int(active_job.get("pid") or 0) if active_job else 0
-    if active_job and owner_pid not in (0, int(os.getpid())):
+    lock_matches_current_target = bool(
+        active_job
+        and parent_spawn
+        and str(active_job.get("target_run_id") or "").strip() == target_run_id
+        and normalize_symbol(active_job.get("target_symbol") or "", allow_test_symbols=True) == target_symbol
+    )
+    if active_job and owner_pid not in (0, int(os.getpid())) and not lock_matches_current_target:
         out = {
             "schema_version": "live_execution_bundles.v2",
             "ok": True,
@@ -3601,8 +3614,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         role=role,
         extra={
             "role": role,
-            "target_run_id": str(args.target_run_id or ""),
-            "target_symbol": normalize_symbol(args.target_symbol or "", allow_test_symbols=True),
+            "target_run_id": target_run_id,
+            "target_symbol": target_symbol,
         },
     )
     _log_bundle_event(
@@ -3614,8 +3627,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             "parent_pid": int(os.getppid()),
             "role": role,
             "lock_path": str(background_lock_path or ""),
-            "target_run_id": str(args.target_run_id or ""),
-            "target_symbol": normalize_symbol(args.target_symbol or "", allow_test_symbols=True),
+            "target_run_id": target_run_id,
+            "target_symbol": target_symbol,
         },
     )
     if background_lock_path is not None:
