@@ -1724,6 +1724,8 @@ def evaluate_intraday_entry_signal(
     reclaim_gate_ok = bool(vwap_structure_ok) if bool(resolved_policy.require_vwap_reclaim) else True
     breakout_path_ok = bool(breakout_ok)
     pullback_volume_path_ok = bool(pullback_ok and volume_ok)
+    breakout_volume_gate_required = False
+    breakout_volume_gate_ok = True
     breakout_score = 1.0 if breakout_ok else _clamp_score((current_close / breakout_level) if breakout_level > 0.0 and current_close > 0.0 else 0.0)
     volume_score = _min_threshold_score(volume_ratio, _to_float(resolved_policy.volume_ratio_min))
     pullback_score = min(
@@ -1815,12 +1817,16 @@ def evaluate_intraday_entry_signal(
         signal_chain.append("pullback_volume_path_ready")
 
     playbook = str((frame or {}).get("playbook") or "").strip().lower()
+    if playbook in ("pullback", "reversal"):
+        breakout_volume_gate_required = True
+        breakout_volume_gate_ok = (not breakout_path_ok) or bool(volume_ok)
     checks = {
         "breakout_ok": bool(breakout_ok),
         "vwap_hold_ok": bool(vwap_hold_ok),
         "vwap_reclaim_ok": bool(vwap_reclaim_ok),
         "vwap_structure_ok": bool(vwap_structure_ok),
         "reclaim_gate_ok": bool(reclaim_gate_ok),
+        "breakout_volume_gate_ok": bool(breakout_volume_gate_ok),
         "volume_ok": bool(volume_ok),
         "rebound_ok": bool(rebound_ok),
         "confirmation_ok": bool(confirmation_ok),
@@ -1839,6 +1845,7 @@ def evaluate_intraday_entry_signal(
             "pullback_mature",
             "pullback_not_too_deep",
             "volume_ok",
+            "breakout_volume_gate_ok",
             "pullback_volume_path_ok",
             "breakout_ok",
             "breakout_path_ok",
@@ -1904,6 +1911,8 @@ def evaluate_intraday_entry_signal(
         "logic_mode": "reclaim_and_grouped_paths_v1",
         "reclaim_gate_required": bool(resolved_policy.require_vwap_reclaim),
         "reclaim_gate_ok": bool(reclaim_gate_ok),
+        "breakout_volume_gate_required": bool(breakout_volume_gate_required),
+        "breakout_volume_gate_ok": bool(breakout_volume_gate_ok),
         "extension_required": True,
         "extension_ok": bool(extension_ok),
         "breakout_path_ok": bool(breakout_path_ok),
@@ -1914,28 +1923,35 @@ def evaluate_intraday_entry_signal(
     }
     if playbook in ("pullback", "reversal"):
         if reclaim_gate_ok and extension_ok and confidence_gate_ok and (breakout_path_ok or pullback_volume_path_ok):
-            triggered = True
-            if breakout_path_ok:
-                entry_condition_path = "breakout_path"
-                pattern = "breakout_vwap_hold"
-                if vwap_reclaim_ok and not vwap_hold_ok:
-                    reason = "breakout_above_recent_high_with_vwap_reclaim_confirmation"
-                elif volume_ok and vwap_hold_ok:
-                    reason = "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation"
-                else:
-                    reason = "breakout_above_recent_high_with_vwap_structure_confirmation"
-            elif vwap_reclaim_ok and rebound_ok:
-                entry_condition_path = "pullback_volume_path"
-                pattern = "pullback_vwap_reclaim"
-                reason = "pullback_reclaim_above_vwap_with_rebound_confirmation"
-            elif rebound_ok:
-                entry_condition_path = "pullback_volume_path"
-                pattern = "pullback_rebound"
-                reason = "pullback_rebound_above_vwap_with_confirmation"
+            if breakout_path_ok and not pullback_volume_path_ok and not breakout_volume_gate_ok:
+                triggered = False
+                entry_condition_path = ""
+                pattern = ""
+                reason = "volume_confirmation_missing"
+                primary_failure_axis = "volume_confirmation"
             else:
-                entry_condition_path = "pullback_volume_path"
-                pattern = "pullback_vwap_hold"
-                reason = "pullback_structure_above_vwap_with_volume_confirmation"
+                triggered = True
+                if breakout_path_ok:
+                    entry_condition_path = "breakout_path"
+                    pattern = "breakout_vwap_hold"
+                    if vwap_reclaim_ok and not vwap_hold_ok:
+                        reason = "breakout_above_recent_high_with_vwap_reclaim_confirmation"
+                    elif volume_ok and vwap_hold_ok:
+                        reason = "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation"
+                    else:
+                        reason = "breakout_above_recent_high_with_vwap_structure_confirmation"
+                elif vwap_reclaim_ok and rebound_ok:
+                    entry_condition_path = "pullback_volume_path"
+                    pattern = "pullback_vwap_reclaim"
+                    reason = "pullback_reclaim_above_vwap_with_rebound_confirmation"
+                elif rebound_ok:
+                    entry_condition_path = "pullback_volume_path"
+                    pattern = "pullback_rebound"
+                    reason = "pullback_rebound_above_vwap_with_confirmation"
+                else:
+                    entry_condition_path = "pullback_volume_path"
+                    pattern = "pullback_vwap_hold"
+                    reason = "pullback_structure_above_vwap_with_volume_confirmation"
         else:
             if not extension_ok:
                 if extended_from_vwap_pct > max_extended_from_vwap_pct:
@@ -1948,6 +1964,9 @@ def evaluate_intraday_entry_signal(
             elif not reclaim_gate_ok:
                 reason = "below_vwap_reclaim_not_ready"
                 primary_failure_axis = "vwap_relationship"
+            elif not breakout_volume_gate_ok and breakout_path_ok:
+                reason = "volume_confirmation_missing"
+                primary_failure_axis = "volume_confirmation"
             elif not pullback_mature:
                 reason = "pullback_not_mature"
                 primary_failure_axis = "pullback_structure"

@@ -1240,6 +1240,17 @@ def build_trade_read_model(trade_dir: str) -> Dict[str, Any]:
             return "unknown"
         return text[:max_len]
 
+    def _is_meaningful(v: Any) -> bool:
+        text = str(v or "").strip().lower()
+        return bool(text and text not in {"unknown", "none", "null", "unavailable", "nan"})
+
+    def _pick_with_source(candidates: List[tuple[str, Any]], *, default: str = "unknown") -> tuple[str, str]:
+        for source_key, raw in candidates:
+            clipped = _clip(raw)
+            if _is_meaningful(clipped):
+                return clipped, source_key
+        return str(default), "default"
+
     def _read_json(p: Path) -> Dict[str, Any]:
         try:
             if p.exists():
@@ -1250,13 +1261,24 @@ def build_trade_read_model(trade_dir: str) -> Dict[str, Any]:
         return {}
 
     td = Path(str(trade_dir))
-    bundle = _read_json(td / "lifecycle_bundle.json")
-    report = _read_json(td / "reports" / "ai_trade_report.json")
+    bundle_path = td / "lifecycle_bundle.json"
+    report_path_normalized = td / "reports" / "ai_trade_report.json"
+    report_path_legacy = td / "ai_trade_report" / "ai_trade_report.json"
+
+    bundle = _read_json(bundle_path)
+    report = _read_json(report_path_normalized)
+    report_path_used = report_path_normalized if report else Path()
     if not report:
-        report = _read_json(td / "ai_trade_report" / "ai_trade_report.json")
+        report = _read_json(report_path_legacy)
+        if report:
+            report_path_used = report_path_legacy
 
     lifecycle = bundle.get("lifecycle") if isinstance(bundle.get("lifecycle"), dict) else {}
     canonical = bundle.get("canonical_agent_artifacts") if isinstance(bundle.get("canonical_agent_artifacts"), dict) else {}
+    artifacts = bundle.get("artifacts") if isinstance(bundle.get("artifacts"), dict) else {}
+    evidence_provenance = bundle.get("evidence_provenance") if isinstance(bundle.get("evidence_provenance"), dict) else {}
+    same_day_linkage = bundle.get("same_day_reporter_linkage") if isinstance(bundle.get("same_day_reporter_linkage"), dict) else {}
+    story_meta = bundle.get("trade_story_input_meta") if isinstance(bundle.get("trade_story_input_meta"), dict) else {}
     
     commander_art = canonical.get("commander") if isinstance(canonical.get("commander"), dict) else {}
     strategist_art = canonical.get("strategist") if isinstance(canonical.get("strategist"), dict) else {}
@@ -1270,13 +1292,29 @@ def build_trade_read_model(trade_dir: str) -> Dict[str, Any]:
     entry_obj = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
     exit_obj = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
 
-    entry_ts = _clip(entry_obj.get("timestamp") or shared_facts.get("entry_time"))
-    exit_ts = _clip(exit_obj.get("timestamp") or shared_facts.get("exit_time"))
+    entry_ts, entry_ts_source = _pick_with_source(
+        [
+            ("lifecycle.entry.timestamp", entry_obj.get("timestamp")),
+            ("ai_trade_report.shared_facts.entry_time", shared_facts.get("entry_time")),
+        ],
+        default="unknown",
+    )
+    exit_ts, exit_ts_source = _pick_with_source(
+        [
+            ("lifecycle.exit.timestamp", exit_obj.get("timestamp")),
+            ("ai_trade_report.shared_facts.exit_time", shared_facts.get("exit_time")),
+        ],
+        default="unknown",
+    )
 
     hold_duration_sec = 0
+    hold_duration_source = "default"
     if exit_obj.get("position_age_seconds") is not None:
-        try: hold_duration_sec = int(float(exit_obj["position_age_seconds"]))
-        except Exception: pass
+        try:
+            hold_duration_sec = int(float(exit_obj["position_age_seconds"]))
+            hold_duration_source = "lifecycle.exit.position_age_seconds"
+        except Exception:
+            pass
     if hold_duration_sec <= 0 and entry_ts != "unknown" and exit_ts != "unknown":
         try:
             e1 = entry_ts.replace("Z", "+00:00")
@@ -1284,37 +1322,328 @@ def build_trade_read_model(trade_dir: str) -> Dict[str, Any]:
             dt1 = datetime.fromisoformat(e1)
             dt2 = datetime.fromisoformat(e2)
             hold_duration_sec = int((dt2 - dt1).total_seconds())
+            hold_duration_source = "derived.timestamp_diff"
         except Exception:
             pass
     hold_duration_sec = max(0, hold_duration_sec)
 
-    primary_blocker = "unknown"
-    if not entry_obj:
-        raw_blocker = (
-            monitor_art.get("primary_reason_code") or 
-            monitor_art.get("dominant_blocker") or 
-            scanner_art.get("dominant_block_reason") or 
-            report_data.get("missing_reason")
-        )
-        primary_blocker = _clip(raw_blocker)
+    pnl_value, pnl_source = _pick_with_source(
+        [
+            ("lifecycle.exit.pnl", exit_obj.get("pnl")),
+            ("ai_trade_report.shared_facts.pnl", shared_facts.get("pnl")),
+        ],
+        default="0.0",
+    )
+    pnl_pct_value, pnl_pct_source = _pick_with_source(
+        [
+            ("lifecycle.exit.pnl_pct", exit_obj.get("pnl_pct")),
+            ("ai_trade_report.shared_facts.pnl_pct", shared_facts.get("pnl_pct")),
+        ],
+        default="0.0",
+    )
+    trade_id_value, trade_id_source = _pick_with_source(
+        [
+            ("lifecycle_bundle.trade_id", bundle.get("trade_id")),
+            ("lifecycle_bundle.story_id", bundle.get("story_id")),
+            ("ai_trade_report.report_data.trade_id", report_data.get("trade_id")),
+        ],
+        default="unknown",
+    )
+    symbol_value, symbol_source = _pick_with_source(
+        [
+            ("lifecycle_bundle.symbol", bundle.get("symbol")),
+            ("ai_trade_report.report_data.symbol", report_data.get("symbol")),
+        ],
+        default="unknown",
+    )
 
-    return {
-        "trade_id": _clip(bundle.get("trade_id") or bundle.get("story_id") or report_data.get("trade_id")),
-        "symbol": _clip(bundle.get("symbol") or report_data.get("symbol")),
+    primary_blocker = "unknown"
+    primary_blocker_source = "default"
+    if not entry_obj:
+        primary_blocker, primary_blocker_source = _pick_with_source(
+            [
+                ("canonical.monitor.primary_reason_code", monitor_art.get("primary_reason_code")),
+                ("canonical.monitor.dominant_blocker", monitor_art.get("dominant_blocker")),
+                ("canonical.scanner.dominant_block_reason", scanner_art.get("dominant_block_reason")),
+                ("ai_trade_report.report_data.missing_reason", report_data.get("missing_reason")),
+            ],
+            default="unknown",
+        )
+
+    playbook_value, playbook_source = _pick_with_source(
+        [
+            ("canonical.strategist.playbook", strategist_art.get("playbook")),
+            ("lifecycle.entry.strategist_context.playbook", (entry_obj.get("strategist_context") if isinstance(entry_obj.get("strategist_context"), dict) else {}).get("playbook")),
+            ("ai_trade_report.report_data.playbook", report_data.get("playbook")),
+        ],
+        default="unknown",
+    )
+    entry_reason_value, entry_reason_source = _pick_with_source(
+        [
+            ("lifecycle.entry.reason", entry_obj.get("reason")),
+            ("lifecycle.entry.reason_human", entry_obj.get("reason_human")),
+            ("canonical.monitor.decision_summary", monitor_art.get("decision_summary")),
+            ("canonical.monitor.summary", monitor_art.get("summary")),
+        ],
+        default="unknown",
+    )
+    exit_reason_value, exit_reason_source = _pick_with_source(
+        [
+            ("lifecycle.exit.reason", exit_obj.get("reason")),
+            ("lifecycle.exit.monitor_reason", exit_obj.get("monitor_reason")),
+            ("lifecycle.exit.reason_human", exit_obj.get("reason_human")),
+        ],
+        default="unknown",
+    )
+    applied_policy_source_value, applied_policy_source_field = _pick_with_source(
+        [
+            ("canonical.commander.applied_policy_source", commander_art.get("applied_policy_source")),
+            ("canonical.monitor.policy_source", monitor_art.get("policy_source")),
+        ],
+        default="unknown",
+    )
+    strategy_policy_source_value, strategy_policy_source_field = _pick_with_source(
+        [
+            ("canonical.strategist.policy_source", strategist_art.get("policy_source")),
+        ],
+        default="unknown",
+    )
+    execution_label_value, execution_label_source = _pick_with_source(
+        [
+            ("lifecycle.status", lifecycle.get("status")),
+            ("canonical.executor.final_execution_status", executor_art.get("final_execution_status")),
+            ("ai_trade_report.report_data.status", report_data.get("status")),
+        ],
+        default="unknown",
+    )
+    evidence_recovery_value = bool(bundle.get("evidence_recovery_used") or report_data.get("evidence_recovery_used"))
+    evidence_recovery_source = (
+        "lifecycle_bundle.evidence_recovery_used"
+        if bundle.get("evidence_recovery_used") is not None
+        else ("ai_trade_report.report_data.evidence_recovery_used" if report_data.get("evidence_recovery_used") is not None else "default")
+    )
+
+    facts = {
+        "trade_id": trade_id_value,
+        "symbol": symbol_value,
         "entry_ts": entry_ts,
         "exit_ts": exit_ts,
         "hold_duration_sec": hold_duration_sec,
-        "pnl": _safe_float(exit_obj.get("pnl") or shared_facts.get("pnl")),
-        "pnl_pct": _safe_float(exit_obj.get("pnl_pct") or shared_facts.get("pnl_pct")),
-        "playbook": _clip(strategist_art.get("playbook") or report_data.get("playbook")),
-        "entry_reason": _clip(entry_obj.get("reason") or monitor_art.get("decision_summary")),
-        "exit_reason": _clip(exit_obj.get("reason") or exit_obj.get("monitor_reason")),
+        "pnl": _safe_float(pnl_value),
+        "pnl_pct": _safe_float(pnl_pct_value),
+        "playbook": playbook_value,
+        "entry_reason": entry_reason_value,
+        "exit_reason": exit_reason_value,
         "primary_blocker_if_no_buy": primary_blocker,
-        "applied_policy_source": _clip(commander_art.get("applied_policy_source") or monitor_art.get("policy_source")),
-        "strategy_policy_source": _clip(strategist_art.get("policy_source")),
-        "execution_label": _clip(lifecycle.get("status") or executor_art.get("final_execution_status") or report_data.get("status")),
+        "applied_policy_source": applied_policy_source_value,
+        "strategy_policy_source": strategy_policy_source_value,
+        "execution_label": execution_label_value,
         "data_source": "lifecycle_bundle" if bundle else ("ai_trade_report" if report else "unknown"),
-        "evidence_recovery_used": bool(bundle.get("evidence_recovery_used") or report_data.get("evidence_recovery_used")),
+        "evidence_recovery_used": evidence_recovery_value,
+    }
+
+    canonical_paths = {
+        key: str(artifacts.get(key) or bundle.get(key) or "")
+        for key in (
+            "canonical_commander_json",
+            "canonical_strategist_json",
+            "canonical_scanner_json",
+            "canonical_monitor_json",
+            "canonical_supervisor_json",
+            "canonical_executor_json",
+        )
+    }
+
+    same_day_status = _clip(
+        same_day_linkage.get("status")
+        or story_meta.get("same_day_reporter_linkage_status")
+        or "missing"
+    )
+    same_day_reason = _clip(
+        same_day_linkage.get("reason")
+        or story_meta.get("same_day_reporter_linkage_reason")
+        or "Same-day reporter linkage was not captured."
+    )
+    same_day_analysis_path = str(same_day_linkage.get("analysis_path") or same_day_linkage.get("artifact_path") or "").strip()
+    same_day_expected_path = str(
+        same_day_linkage.get("expected_path")
+        or same_day_linkage.get("fallback_expected_path")
+        or story_meta.get("same_day_reporter_expected_path")
+        or ""
+    ).strip()
+    same_day_file_found = bool(same_day_linkage.get("file_found"))
+    if same_day_analysis_path and Path(same_day_analysis_path).exists():
+        same_day_file_found = True
+
+    provenance = {
+        "schema_version": "trade_read_model.v2",
+        "data_source": facts["data_source"],
+        "paths": {
+            "trade_root_path": str(td),
+            "lifecycle_bundle_json": str(bundle_path) if bundle_path.exists() else "",
+            "ai_trade_report_json": str(report_path_used) if report_path_used.exists() else "",
+        },
+        "canonical_artifact_paths": canonical_paths,
+        "evidence_provenance": evidence_provenance,
+        "same_day_reporter_linkage": {
+            "status": same_day_status,
+            "reason": same_day_reason,
+            "analysis_path": same_day_analysis_path,
+            "expected_path": same_day_expected_path,
+            "file_found": same_day_file_found,
+        },
+        "field_sources": {
+            "trade_id": trade_id_source,
+            "symbol": symbol_source,
+            "entry_ts": entry_ts_source,
+            "exit_ts": exit_ts_source,
+            "hold_duration_sec": hold_duration_source,
+            "pnl": pnl_source,
+            "pnl_pct": pnl_pct_source,
+            "entry_reason": entry_reason_source,
+            "exit_reason": exit_reason_source,
+            "playbook": playbook_source,
+            "primary_blocker_if_no_buy": primary_blocker_source,
+            "applied_policy_source": applied_policy_source_field,
+            "strategy_policy_source": strategy_policy_source_field,
+            "execution_label": execution_label_source,
+            "data_source": "derived.presence_check",
+            "evidence_recovery_used": evidence_recovery_source,
+        },
+    }
+
+    stop_policy_trace = monitor_art.get("monitor_stop_policy_trace")
+    stop_policy_trace = stop_policy_trace if isinstance(stop_policy_trace, dict) else {}
+    blocker_trace = monitor_art.get("monitor_blocker_trace")
+    blocker_trace = blocker_trace if isinstance(blocker_trace, dict) else {}
+    watch_axes = monitor_art.get("watch_axes")
+    if not isinstance(watch_axes, list):
+        watch_axes = stop_policy_trace.get("watch_axes") if isinstance(stop_policy_trace.get("watch_axes"), list) else []
+    thresholds_snapshot = (
+        monitor_art.get("thresholds_snapshot")
+        if isinstance(monitor_art.get("thresholds_snapshot"), dict)
+        else {}
+    )
+    if not thresholds_snapshot:
+        thresholds_snapshot = {
+            "effective_stop_loss_pct": monitor_art.get("effective_stop_loss_pct"),
+            "take_profit_pct": monitor_art.get("take_profit_pct"),
+            "confirm_required": monitor_art.get("confirm_required"),
+            "confirm_count": monitor_art.get("confirm_count"),
+        }
+        thresholds_snapshot = {k: v for k, v in thresholds_snapshot.items() if v is not None}
+    monitor_exit_trigger = _clip(
+        monitor_art.get("trigger_type")
+        or monitor_art.get("active_exit_axis")
+        or stop_policy_trace.get("active_exit_axis")
+        or exit_obj.get("monitor_reason")
+        or exit_obj.get("reason")
+    )
+    data_source_quality = {
+        "has_lifecycle_bundle": bool(bundle),
+        "has_ai_trade_report": bool(report),
+        "has_canonical_artifacts": bool(canonical),
+        "has_evidence_provenance": bool(evidence_provenance),
+        "same_day_reporter_found": bool(same_day_file_found),
+    }
+
+    context = {
+        "scanner_selection_summary": _clip(
+            scanner_art.get("summary")
+            or scanner_art.get("selection_reason")
+            or scanner_art.get("comparison")
+        ),
+        "scanner_score_drivers": (
+            scanner_art.get("selected_symbol_score_drivers")
+            if isinstance(scanner_art.get("selected_symbol_score_drivers"), dict)
+            else {}
+        ),
+        "scanner_top_candidates": (
+            list(scanner_art.get("top_candidates") or [])[:5]
+            if isinstance(scanner_art.get("top_candidates"), list)
+            else (list(scanner_art.get("ranked_candidates") or [])[:5] if isinstance(scanner_art.get("ranked_candidates"), list) else [])
+        ),
+        "monitor_entry_reason": _clip(
+            monitor_art.get("summary")
+            or monitor_art.get("decision_summary")
+            or monitor_art.get("monitor_reason_human")
+        ),
+        "monitor_primary_blocker": _clip(
+            monitor_art.get("primary_reason_code")
+            or monitor_art.get("dominant_blocker")
+            or monitor_art.get("no_trade_code")
+        ),
+        "monitor_exit_trigger": monitor_exit_trigger,
+        "thresholds_snapshot": thresholds_snapshot,
+        "watch_axes": list(watch_axes)[:8],
+        "monitor_stop_policy_trace": stop_policy_trace,
+        "monitor_blocker_trace": blocker_trace,
+        "executor_execution_details": executor_art.get("execution_details")
+        if isinstance(executor_art.get("execution_details"), dict)
+        else {},
+        "same_day_reporter_status": same_day_status,
+        "same_day_reporter_linkage_status": same_day_status,
+        "same_day_reporter_linkage_reason": same_day_reason,
+        "data_source_quality": data_source_quality,
+        "scanner": {
+            "summary": _clip(
+                scanner_art.get("summary")
+                or scanner_art.get("selection_reason")
+                or scanner_art.get("comparison")
+            ),
+            "score_drivers": (
+                scanner_art.get("selected_symbol_score_drivers")
+                if isinstance(scanner_art.get("selected_symbol_score_drivers"), dict)
+                else {}
+            ),
+            "top_candidates": (
+                list(scanner_art.get("top_candidates") or [])[:5]
+                if isinstance(scanner_art.get("top_candidates"), list)
+                else (list(scanner_art.get("ranked_candidates") or [])[:5] if isinstance(scanner_art.get("ranked_candidates"), list) else [])
+            ),
+        },
+        "monitor": {
+            "entry_reason": _clip(
+                monitor_art.get("summary")
+                or monitor_art.get("decision_summary")
+                or monitor_art.get("monitor_reason_human")
+            ),
+            "exit_trigger": monitor_exit_trigger,
+            "primary_blocker": _clip(
+                monitor_art.get("primary_reason_code")
+                or monitor_art.get("dominant_blocker")
+                or monitor_art.get("no_trade_code")
+            ),
+            "stop_policy_trace": stop_policy_trace,
+            "blocker_trace": blocker_trace,
+            "thresholds_snapshot": thresholds_snapshot,
+            "watch_axes": list(watch_axes)[:8],
+        },
+        "strategist": {
+            "playbook": playbook_value,
+            "policy_source": strategy_policy_source_value,
+            "themes": (
+                (entry_obj.get("strategist_context") if isinstance(entry_obj.get("strategist_context"), dict) else {}).get("themes")
+                if isinstance((entry_obj.get("strategist_context") if isinstance(entry_obj.get("strategist_context"), dict) else {}).get("themes"), list)
+                else []
+            ),
+            "market_context_summary": _clip(
+                (entry_obj.get("strategist_context") if isinstance(entry_obj.get("strategist_context"), dict) else {}).get("market_context_summary")
+            ),
+        },
+        "executor": {
+            "execution_label": execution_label_value,
+            "execution_details": executor_art.get("execution_details")
+            if isinstance(executor_art.get("execution_details"), dict)
+            else {},
+        },
+    }
+
+    return {
+        **facts,
+        "facts": dict(facts),
+        "provenance": provenance,
+        "context": context,
     }
 
 

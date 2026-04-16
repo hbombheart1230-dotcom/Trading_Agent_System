@@ -32,14 +32,75 @@ function Stop-ById {
   if ($PidValue -le 0) {
     return $false
   }
-  $proc = Get-Process -Id $PidValue -ErrorAction SilentlyContinue
-  if (!$proc) {
+  $exists = Get-Process -Id $PidValue -ErrorAction SilentlyContinue
+  if (!$exists) {
     return $false
   }
-  Stop-Process -Id $PidValue -Force -ErrorAction SilentlyContinue
+  try {
+    $null = & taskkill /PID $PidValue /T /F
+  } catch {
+    Stop-Process -Id $PidValue -Force -ErrorAction SilentlyContinue
+  }
   Start-Sleep -Milliseconds 200
   $remaining = Get-Process -Id $PidValue -ErrorAction SilentlyContinue
   return ($null -eq $remaining)
+}
+
+function Read-LockOwnerPid {
+  param([string]$Path)
+  if (!(Test-Path $Path)) {
+    return 0
+  }
+  try {
+    $obj = Get-Content $Path -Raw | ConvertFrom-Json
+    $owner = [int]($obj.pid)
+    if ($owner -gt 0 -and (Get-Process -Id $owner -ErrorAction SilentlyContinue)) {
+      return $owner
+    }
+  } catch {}
+  return 0
+}
+
+function Get-LoopRows {
+  param(
+    [string]$ResolvedRoot,
+    [string]$AbsLockPath
+  )
+  return @(
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
+      $cmd = [string]$_.CommandLine
+      (
+        ($cmd -like "*scripts/run_m13_live_loop.py*") -or
+        ($cmd -like "*-m scripts.run_m13_live_loop*")
+      ) -and (
+        ($cmd -like "*$AbsLockPath*") -or
+        ($cmd -like "*$ResolvedRoot*")
+      )
+    } | Select-Object ProcessId, ParentProcessId
+  )
+}
+
+function Resolve-RootRuntimePids {
+  param([array]$Rows)
+  if (!$Rows -or $Rows.Count -le 0) {
+    return @()
+  }
+  $byPid = @{}
+  foreach ($r in $Rows) {
+    $pidVal = [int]$r.ProcessId
+    if ($pidVal -gt 0) {
+      $byPid[$pidVal] = $r
+    }
+  }
+  $roots = @()
+  foreach ($pidKey in $byPid.Keys) {
+    $row = $byPid[$pidKey]
+    $pp = [int]$row.ParentProcessId
+    if ($pp -le 0 -or -not $byPid.ContainsKey($pp)) {
+      $roots += [int]$pidKey
+    }
+  }
+  return @($roots | Sort-Object)
 }
 
 if (Test-Path $absPidPath) {
@@ -53,25 +114,27 @@ if (Test-Path $absPidPath) {
   Remove-Item -Path $absPidPath -Force -ErrorAction SilentlyContinue
 }
 
-$fallback = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
-  $cmd = [string]$_.CommandLine
-  (
-    ($cmd -like "*scripts/run_m13_live_loop.py*") -or
-    ($cmd -like "*-m scripts.run_m13_live_loop*")
-  ) -and (
-    ($cmd -like "*$absLockPath*") -or
-    ($cmd -like "*$resolvedRoot*")
-  )
+$lockOwnerPid = Read-LockOwnerPid -Path $absLockPath
+if ($lockOwnerPid -gt 0) {
+  if (Stop-ById -PidValue $lockOwnerPid) {
+    $stopped += 1
+  }
 }
 
-foreach ($p in $fallback) {
-  $pidVal = [int]$p.ProcessId
+$fallbackRows = Get-LoopRows -ResolvedRoot $resolvedRoot -AbsLockPath $absLockPath
+$rootPids = @(Resolve-RootRuntimePids -Rows $fallbackRows)
+foreach ($pidVal in $rootPids) {
   if (Stop-ById -PidValue $pidVal) {
     $stopped += 1
   }
 }
 
+$rootPidText = ""
+if ($rootPids -and $rootPids.Count -gt 0) {
+  $rootPidText = [string]::Join(',', $rootPids)
+}
+
 Remove-Item -Path $absLockPath -Force -ErrorAction SilentlyContinue
 
-Write-ControlLog "stopped_total=$stopped pid_path=$absPidPath lock_path=$absLockPath"
-Write-Output "stopped_total=$stopped pid_path=$absPidPath lock_path=$absLockPath"
+Write-ControlLog "stopped_total=$stopped lock_owner_pid=$lockOwnerPid root_runtime_pids=$rootPidText pid_path=$absPidPath lock_path=$absLockPath"
+Write-Output "stopped_total=$stopped lock_owner_pid=$lockOwnerPid root_runtime_pids=$rootPidText pid_path=$absPidPath lock_path=$absLockPath"

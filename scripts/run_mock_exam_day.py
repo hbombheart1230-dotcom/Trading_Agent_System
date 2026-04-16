@@ -435,12 +435,22 @@ def _existing_live_loop_step(common: Dict[str, Any]) -> Dict[str, Any]:
     if not owner_row:
         return {}
     chain = _collect_runtime_chain(rows, owner_row=owner_row)
+    runtime_owner_pid = int(owner_row.get("pid") or 0)
+    logical_instance_count = 1 if runtime_owner_pid > 0 else 0
+    launcher_wrapper_detected = False
+    if len(chain) == 2:
+        chain_exe = [str(row.get("executable_path") or "").lower() for row in chain]
+        if any("\\venv\\scripts\\python" in path for path in chain_exe) and any("pythoncore-" in path for path in chain_exe):
+            launcher_wrapper_detected = True
     return {
         "step_id": "session.live_loop_existing",
         "mode": "existing",
         "rc": 0,
         "ok": True,
-        "pid": int(owner_row.get("pid") or 0),
+        "pid": runtime_owner_pid,
+        "runtime_owner_pid": runtime_owner_pid,
+        "logical_instance_count": int(logical_instance_count),
+        "launcher_wrapper_detected": bool(launcher_wrapper_detected),
         "lock_owner_pid": int(owner_pid or 0),
         "launcher_pid": int(chain[0].get("pid") or 0) if chain else int(owner_row.get("pid") or 0),
         "runtime_chain_pids": [int(row.get("pid") or 0) for row in chain],

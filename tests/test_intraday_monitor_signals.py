@@ -151,6 +151,27 @@ def test_intraday_entry_allows_breakout_path_without_strict_volume_confirmation(
     }
 
 
+def test_intraday_entry_pullback_playbook_blocks_breakout_without_volume_confirmation() -> None:
+    rows = _rows_breakout()
+    rows[-1]["volume"] = 900
+    out = evaluate_intraday_entry_signal(
+        rows,
+        policy={"entry_volume_ratio_min": 1.0},
+        frame={"playbook": "pullback"},
+    )
+
+    assert out["evaluated"] is True
+    assert out["triggered"] is False
+    assert out["decision"] == "WAIT"
+    assert out["entry_condition_path"] == ""
+    assert out["reason"] == "volume_confirmation_missing"
+    assert out.get("primary_failure_axis") == "volume_confirmation"
+    assert "breakout_volume_gate_ok" in list(out.get("failed_checks") or [])
+    grouped = out.get("grouped_logic_trace") or {}
+    assert grouped.get("breakout_volume_gate_required") is True
+    assert grouped.get("breakout_volume_gate_ok") is False
+
+
 def test_intraday_entry_rejects_failed_reclaim() -> None:
     rows = _rows_pullback_rebound()
     rows[-1]["close"] = 100.1

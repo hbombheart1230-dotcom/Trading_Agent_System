@@ -274,7 +274,8 @@ def test_ai_trade_report_defaults_to_single_llm_call_without_separated_narrative
 
 def test_commander_runtime_restores_intraday_bundle_helper_for_live_reports() -> None:
     source = Path("graphs/commander_runtime.py").read_text(encoding="utf-8")
-    assert "generate_intraday_trade_artifacts(" in source
+    assert "from graphs.nodes.reporter_node import reporter_node" in source
+    assert "state = _emit_intraday_trade_report(state)" in source
     assert "generate_single_trade_report(" not in source
 
 

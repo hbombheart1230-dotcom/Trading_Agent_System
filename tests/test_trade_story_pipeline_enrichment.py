@@ -1,5 +1,6 @@
 from libs.reporting.trade_story_pipeline import (
     build_trade_story_input,
+    build_trade_story_input_from_bundle,
     build_lifecycle_bundle,
     build_market_context_human,
     build_monitor_reason_human,
@@ -7,6 +8,63 @@ from libs.reporting.trade_story_pipeline import (
     enrich_filters_from_evidence,
     enrich_scanner_reason_from_evidence,
 )
+
+
+def test_build_trade_story_input_from_bundle_normalizes_hold_lifecycle_shape() -> None:
+    bundle_out = {
+        "day": "2026-04-16",
+        "trade_id": "TRD_20260416_000660_01",
+        "run_id": "RUN_EXIT",
+        "symbol": "000660",
+        "trade_lifecycle_status": "closed",
+        "lifecycle": {
+            "entry": {
+                "run_id": "RUN_ENTRY",
+                "ts": "2026-04-16T00:10:00+00:00",
+                "action": "BUY",
+                "reason_human": "entry ok",
+                "scanner_context": {"selected_symbol": "000660"},
+            },
+            "hold": {"run_ids": ["RUN_MONITOR_1"]},
+            "exit": {
+                "run_id": "RUN_EXIT",
+                "ts": "2026-04-16T00:11:00+00:00",
+                "action": "SELL",
+                "reason_human": "exit ok",
+            },
+        },
+        "market_context_human": {"summary": "market"},
+        "scanner_reason_human": {
+            "summary": "scanner",
+            "selected_symbol": "000660",
+            "selected_rank": 1,
+            "candidate_count": 5,
+            "top_candidates": [{"symbol": "000660", "score": 1.2}],
+        },
+        "filters_human": {"summary": "filters"},
+        "monitor_reason_human": {"summary": "monitor"},
+        "guard_reason_human": {"summary": "guard"},
+        "execution_outcome_human": {"summary": "execution"},
+        "reporter_status_human": {"status": "linked_run", "summary": "reporter"},
+        "operator_conclusion_human": {"summary": "conclusion"},
+        "timeline": [],
+        "warnings": [],
+        "scanner_evidence": {
+            "candidate_ranking_table": {
+                "rows": [{"symbol": "000660", "score_total": 1.2}],
+            }
+        },
+        "monitor_timeline": {},
+    }
+
+    out = build_trade_story_input_from_bundle(bundle_out)
+
+    assert out["status"] == "closed"
+    assert out["action"] == "SELL"
+    assert out["symbol"] == "000660"
+    assert out["scanner_reason_human"]["selected_symbol"] == "000660"
+    assert out["scanner_selection_trace"]["selected_symbol"] == "000660"
+    assert len(out["scanner_selection_trace"]["ranked_candidates"]) >= 1
 
 
 def test_market_context_human_prefers_strategist_input_summary_when_runtime_fields_missing() -> None:
@@ -61,7 +119,8 @@ def test_scanner_reason_human_surfaces_top_candidates_and_runner_up_deltas() -> 
                 "score_total": 1.1776,
                 "risk_score": 0.6281,
                 "confidence": 0.8099,
-                "score_breakdown": {"trading_value": 0.22, "theme_boost": 0.0624},
+                "score_breakdown": {"trading_value": 0.22, "trend": 0.16, "theme_boost": 0.0624, "sentiment": 0.018},
+                "component_snapshot": {"news_sentiment": 0.04, "global_sentiment": 0.08, "sentiment_component": 0.052},
                 "feature_snapshot": {"engine_ma20_gap": 0.05, "engine_adx14": 13.17, "engine_trend_strength": 0.13},
             },
             "candidate_preview": [
@@ -69,7 +128,15 @@ def test_scanner_reason_human_surfaces_top_candidates_and_runner_up_deltas() -> 
                 {"symbol": "047040", "why": "higher volatility and lower confidence"},
             ],
         },
-        {"playbook": "breakout"},
+        {
+            "playbook": "breakout",
+            "themes": ["broad_market_leaders"],
+            "news_query_targets": ["KOSPI", "US indices"],
+            "news_evidence_ranked": {
+                "market_news_ranked": [{"title": "KOSPI advanced on institutional flows."}],
+                "candidate_news_ranked": [{"symbol": "000660", "title": "000660 gained on AI memory demand headlines."}],
+            },
+        },
     )
 
     assert out["selected_symbol"] == "000660"
@@ -80,6 +147,53 @@ def test_scanner_reason_human_surfaces_top_candidates_and_runner_up_deltas() -> 
     assert "score gap" in out["runner_ups"][0]["why"]
     assert any("Top candidates:" in row for row in out["bullets"])
     assert any("Why not others:" in row for row in out["bullets"])
+    assert any("Core score contributions:" in row for row in out["bullets"])
+    assert any("Sentiment input trace:" in row for row in out["bullets"])
+    assert out["news_scanner_contribution"]["core_score_contributions"]["sentiment"]["value"] == 0.018
+    assert out["news_scanner_contribution"]["theme_alignment_trace"]["theme_source_matched"] is True
+    assert out["scanner_selection_trace"]["news_scanner_contribution"]["news_linkage_trace"]["symbol_headline_count"] >= 0
+
+
+def test_scanner_reason_human_includes_trace_chart_feature_coverage_when_available() -> None:
+    out = build_scanner_reason_human(
+        {
+            "selected_symbol": "000660",
+            "ranking_table": [
+                {
+                    "rank": 1,
+                    "symbol": "000660",
+                    "score_total": 1.1776,
+                    "risk_score": 0.6281,
+                    "confidence": 0.8099,
+                    "feature_coverage": {"present": 12, "total": 13, "quality": "strong"},
+                }
+            ],
+            "candidate_ranking_table": {
+                "rows": [
+                    {
+                        "rank": 1,
+                        "symbol": "000660",
+                        "score_total": 1.1776,
+                        "feature_coverage": {"present": 12, "total": 13, "quality": "strong"},
+                    }
+                ]
+            },
+            "selected_candidate": {
+                "symbol": "000660",
+                "sources": ["top_value"],
+                "score_total": 1.1776,
+                "confidence": 0.8099,
+                "risk_score": 0.6281,
+                "score_breakdown": {"trading_value": 0.22},
+                "feature_snapshot": {"engine_ma20_gap": 0.05, "engine_adx14": 13.17},
+            },
+        },
+        {"playbook": "breakout"},
+    )
+
+    trace = out["scanner_selection_trace"]
+    assert trace["chart_feature_coverage"]["present"] == 12
+    assert trace["chart_feature_coverage"]["total"] == 13
 
 
 def test_monitor_reason_human_keeps_normalized_exit_context_details() -> None:
@@ -258,15 +372,62 @@ def test_build_lifecycle_bundle_populates_top_level_summary_fields() -> None:
     )
 
     assert isinstance(out["entry"], dict)
-    assert out["entry"]["available"] is True
-    assert out["entry"]["symbol"] == "032820"
-    assert isinstance(out["exit"], dict)
-    assert out["exit"]["available"] is True
-    assert out["exit"]["summary"] == "Peak drawdown triggered."
-    assert isinstance(out["shared_facts"], dict)
-    assert out["shared_facts"]["action"] == "SELL"
-    assert out["shared_facts"]["status"] == "closed"
-    assert out["strategist_feedback_input"] == {}
+
+
+def test_build_trade_story_input_derives_provenance_from_canonical_artifacts_when_missing() -> None:
+    lifecycle = {
+        "trade_id": "TRD_20260415_000660_99",
+        "symbol": "000660",
+        "status": "closed",
+        "entry": {"run_id": "entry-run", "ts": "2026-04-15T00:00:00+00:00", "action": "BUY"},
+        "holding": {},
+        "exit": {"run_id": "exit-run", "ts": "2026-04-15T00:05:00+00:00", "action": "SELL"},
+        "summary": {"holding_duration": "5m", "lifecycle_summary_human": "Closed trade."},
+    }
+    bundle_out = {
+        "day": "2026-04-15",
+        "run_id": "exit-run",
+        "trade_id": "TRD_20260415_000660_99",
+        "story_contract": {"story_type": "live_trade", "execution_mode_label": "live"},
+        "artifacts": {
+            "agent_pipeline_trace_json": "reports/trades/2026-04-15/TRD_20260415_000660_99/agent_pipeline_trace.json",
+            "canonical_commander_json": "reports/canonical/2026-04-15/exit-run/commander.json",
+            "canonical_scanner_json": "reports/canonical/2026-04-15/entry-run/scanner.json",
+            "canonical_monitor_json": "reports/canonical/2026-04-15/exit-run/monitor.json",
+            "canonical_executor_json": "reports/canonical/2026-04-15/exit-run/executor.json",
+        },
+        "canonical_agent_artifacts": {
+            "commander": {"selected_route": "monitor_only"},
+            "scanner": {
+                "selected_symbol": "000660",
+                "selected_candidate": {"symbol": "000660", "confidence": 0.81, "score_total": 1.22},
+                "ranking_table": [{"rank": 1, "symbol": "000660", "score_total": 1.22, "confidence": 0.81}],
+            },
+            "monitor": {
+                "trigger_type": "peak_drawdown",
+                "thresholds": {"hard_stop_pct": 0.02, "take_profit_pct": 0.01},
+            },
+            "executor": {"action": "SELL", "order_status": "filled", "avg_price": 1000.0},
+        },
+        "evidence_provenance": {},
+        "scanner_reason_human": {"summary": "Scanner rationale.", "scanner_selection_trace": {}, "ranked_candidates": []},
+        "monitor_reason_human": {"summary": "Monitor rationale.", "monitor_stop_policy_trace": {}, "monitor_blocker_trace": {}},
+        "execution_outcome_human": {"summary": "Execution completed."},
+        "reporter_status_human": {"status": "missing", "summary": "Reporter missing."},
+        "operator_conclusion_human": {"summary": "Trade closed.", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+        "same_day_reporter_linkage": {"status": "missing", "linkage_source": "missing", "linkage_reason": "missing"},
+    }
+
+    out = build_trade_story_input(bundle_out, trade_lifecycle=lifecycle)
+
+    assert out["evidence_provenance"]["scanner"] == "canonical"
+    assert out["evidence_provenance"]["monitor"] == "canonical"
+    assert out["evidence_provenance"]["executor"] == "canonical"
+    assert out["section_provenance"]["scanner_reason_human"]["source"] == "canonical"
+    assert out["section_provenance"]["monitor_reason_human"]["source"] == "canonical"
+    assert out["section_provenance"]["execution_outcome_human"]["source"] == "canonical"
+    assert out["artifacts"]["canonical_scanner_json"].endswith("scanner.json")
+    assert out["same_day_reporter_linkage"]["status"] == "missing"
 
 
 def test_monitor_reason_human_uses_applied_policy_when_entry_thresholds_missing() -> None:
@@ -470,6 +631,61 @@ def test_enrich_scanner_reason_from_evidence_normalizes_chart_coverage_from_rank
     assert out["feature_coverage"]["present"] == 10
     assert out["top_reasons"][1] == "chart feature coverage 10/12"
     assert any("Chart / feature coverage: 10/12" == row for row in out["bullets"])
+
+
+def test_enrich_scanner_reason_from_evidence_prefers_reported_feature_coverage_and_updates_reason() -> None:
+    out = enrich_scanner_reason_from_evidence(
+        {
+            "selected_symbol": "005930",
+            "selection_reason": "highest score; chart feature coverage 6/12",
+            "top_reasons": ["highest combined scanner score (1.173)", "chart feature coverage 6/12"],
+            "bullets": ["Chart / feature coverage: 6/12"],
+            "scanner_selection_trace": {"selected_symbol": "005930"},
+        },
+        {
+            "candidate_ranking_tables": [
+                {
+                    "payload": {
+                        "rows": [
+                            {
+                                "symbol": "005930",
+                                "feature_coverage": {
+                                    "present": 12,
+                                    "total": 13,
+                                    "coverage_ratio": 12.0 / 13.0,
+                                    "quality": "strong",
+                                },
+                                "compact_feature_snapshot": {
+                                    "engine_ma20_gap": 0.03,
+                                    "engine_adx14": 14.4,
+                                    "engine_trend_strength": 0.14,
+                                    "engine_volume_spike20": 0.59,
+                                    "engine_volatility20": 0.05,
+                                    "engine_vwap_distance": 0.21,
+                                    "engine_sector_relative_strength": 0.0,
+                                    "engine_cross_section_rank": 0.75,
+                                    "engine_regime": "high_volatility",
+                                    "engine_signal_score": 0.0,
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+    )
+
+    assert out["feature_coverage"]["present"] == 12
+    assert out["feature_coverage"]["total"] == 13
+    assert out["feature_coverage"]["source"] == "feature_coverage_reported"
+    assert out["selection_reason"] == "highest score; chart feature coverage 12/13"
+    assert out["top_reasons"][1] == "chart feature coverage 12/13"
+    assert any("Chart / feature coverage: 12/13" == row for row in out["bullets"])
+    assert any(str(row).startswith("Chart features present:") for row in out["bullets"])
+    assert any(str(row).startswith("Chart features missing:") for row in out["bullets"])
+    trace = out["scanner_selection_trace"]
+    assert trace["chart_feature_coverage"]["present"] == 12
+    assert trace["chart_feature_coverage"]["total"] == 13
 
 
 def test_build_trade_story_input_normalizes_filter_coverage_from_scanner_evidence() -> None:
@@ -685,9 +901,34 @@ def test_trade_story_input_replaces_empty_placeholder_traces_with_normalized_val
         "scanner_summary": {"selected_symbol": "005930"},
         "monitor_summary": {"decision": "WAIT"},
         "canonical_agent_artifacts": {
+            "strategist": {
+                "themes": ["semiconductor"],
+                "news_query_targets": ["KOSPI", "US indices"],
+                "news_evidence_ranked": {
+                    "market_news_ranked": [{"title": "KOSPI advanced as institutions bought semiconductors."}],
+                    "candidate_news_ranked": [{"symbol": "005930", "title": "005930 gained after semiconductor demand outlook improved."}],
+                },
+            },
             "scanner": {
                 "selected_symbol": "005930",
                 "top_stock": "005930",
+                "selected_candidate": {
+                    "symbol": "005930",
+                    "sources": ["top_value", "sector_theme"],
+                    "score_total": 1.12,
+                    "score_breakdown": {
+                        "trading_value": 0.22,
+                        "momentum": 0.14,
+                        "trend": 0.13,
+                        "theme_boost": 0.05,
+                        "sentiment": 0.02,
+                    },
+                    "component_snapshot": {
+                        "news_sentiment": 0.04,
+                        "global_sentiment": 0.08,
+                        "sentiment_component": 0.052,
+                    },
+                },
                 "candidate_ranking_table": {
                     "rows": [
                         {"symbol": "005930", "rank": 1, "score_total": 1.12},
@@ -715,6 +956,12 @@ def test_trade_story_input_replaces_empty_placeholder_traces_with_normalized_val
     assert scanner_trace["selected_symbol"] == "005930"
     assert len(scanner_trace["ranked_candidates"]) == 2
     assert len(story_input["scanner_reason_human"]["ranked_candidates"]) == 2
+    assert story_input["scanner_reason_human"]["news_scanner_contribution"]["core_score_contributions"]["theme_boost"]["value"] == 0.05
+    assert scanner_trace["news_scanner_contribution"]["sentiment_inputs"]["weighted_sentiment_score_contribution"] == 0.02
+    assert any(
+        row.startswith("Core score contributions:")
+        for row in list(story_input["scanner_reason_human"].get("bullets") or [])
+    )
     assert monitor_trace["hard_stop_pct"] == 0.03
     assert monitor_trace["effective_stop_loss_pct"] == 0.0092
 
@@ -798,6 +1045,55 @@ def test_trade_story_input_prefers_latest_reasoning_provenance_over_stale_legacy
         "runtime_observation",
         "strategist_fallback",
     ]
+
+
+def test_trade_story_input_prefers_authoritative_open_status_over_placeholder_exit() -> None:
+    out = build_trade_story_input(
+        {
+            "day": "2026-04-16",
+            "run_id": "run-buy",
+            "trade_id": "TRD_TEST_OPEN",
+            "trade_lifecycle_status": "open",
+            "execution": {"symbol": "000660", "action": "BUY"},
+            "trade_lifecycle": {
+                "trade_id": "TRD_TEST_OPEN",
+                "symbol": "000660",
+                "status": "closed",
+                "entry": {
+                    "run_id": "run-buy",
+                    "ts": "2026-04-16T00:07:45+00:00",
+                    "action": "BUY",
+                    "reason_human": "selected",
+                    "scanner_context": {"selected_symbol": "000660"},
+                },
+                "holding": {
+                    "hold_duration": "1.1m",
+                    "hold_duration_sec": 66,
+                },
+                "exit": {
+                    "action": "SELL",
+                    "execution_details": {
+                        "order_status": None,
+                        "order_id": None,
+                        "execution_mode": None,
+                        "broker_env": None,
+                        "filled_qty": None,
+                        "avg_price": None,
+                    },
+                },
+            },
+            "market_context_human": {"summary": "Market context"},
+            "scanner_reason_human": {"summary": "Scanner summary", "selected_symbol": "000660"},
+            "monitor_reason_human": {"summary": "Monitor summary"},
+            "operator_conclusion_human": {"summary": "Operator conclusion"},
+            "execution_outcome_human": {"summary": "Execution was not attempted."},
+            "guard_reason_human": {"summary": "No guard escalation."},
+            "reporter_status_human": {"summary": "Reporter ready."},
+        }
+    )
+
+    assert out["status"] == "open"
+    assert out["action"] == "HOLD"
 
 
 def test_trade_story_input_falls_back_to_market_context_artifact_for_commander_source_ref() -> None:

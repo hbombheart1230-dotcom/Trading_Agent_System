@@ -60,7 +60,7 @@ from libs.reporting.trade_story_pipeline import (
     build_story_contract,
     build_story_id,
     build_timeline,
-    build_trade_story_input,
+    build_trade_story_input_from_bundle,
     compute_evidence_completeness,
     classify_story_type as _classify_story_type,
     collect_story_warnings,
@@ -177,6 +177,104 @@ def _read_json_if_exists(path: Path) -> Dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def _preferred_run_ids_for_agent(
+    agent: str,
+    *,
+    anchor_run_id: str,
+    entry_run_id: str,
+    exit_run_id: str,
+) -> List[str]:
+    if agent in {"strategist", "scanner"}:
+        ordered = [entry_run_id, anchor_run_id, exit_run_id]
+    elif agent in {"monitor", "supervisor", "executor"}:
+        ordered = [exit_run_id, anchor_run_id, entry_run_id]
+    else:
+        ordered = [anchor_run_id, entry_run_id, exit_run_id]
+    out: List[str] = []
+    for item in ordered:
+        rid = str(item or "").strip()
+        if rid and rid not in out:
+            out.append(rid)
+    return out
+
+
+def _resolve_lifecycle_bundle_sources(
+    *,
+    reports_root: Path,
+    day: str,
+    anchor_bundle: Dict[str, Any],
+    anchor_run_id: str,
+    entry_run_id: str,
+    exit_run_id: str,
+) -> Dict[str, Any]:
+    agents = ("commander", "strategist", "scanner", "monitor", "supervisor", "executor")
+    artifacts = dict((anchor_bundle.get("artifacts") if isinstance(anchor_bundle.get("artifacts"), dict) else {}) or {})
+    canonical_agent_artifacts = dict(
+        (anchor_bundle.get("canonical_agent_artifacts") if isinstance(anchor_bundle.get("canonical_agent_artifacts"), dict) else {}) or {}
+    )
+    evidence_provenance = dict(
+        (anchor_bundle.get("evidence_provenance") if isinstance(anchor_bundle.get("evidence_provenance"), dict) else {}) or {}
+    )
+    resolved_agents: Dict[str, Dict[str, Any]] = {
+        agent: dict(anchor_bundle.get(agent) or {}) if isinstance(anchor_bundle.get(agent), dict) else {}
+        for agent in agents
+    }
+    run_cache: Dict[str, Dict[str, Any]] = {}
+
+    def _load_sources(run_id: str) -> Dict[str, Any]:
+        rid = str(run_id or "").strip()
+        if not rid:
+            return {}
+        if rid not in run_cache:
+            run_cache[rid] = load_run_canonical_artifacts(
+                reports_root=reports_root,
+                run_id=rid,
+                day_hint=day,
+            )
+        return run_cache[rid]
+
+    for agent in agents:
+        canonical_key = f"canonical_{agent}_json"
+        for rid in _preferred_run_ids_for_agent(
+            agent,
+            anchor_run_id=anchor_run_id,
+            entry_run_id=entry_run_id,
+            exit_run_id=exit_run_id,
+        ):
+            sources = _load_sources(rid)
+            paths = dict(sources.get("paths") or {}) if isinstance(sources.get("paths"), dict) else {}
+            payloads = dict(sources.get("artifacts") or {}) if isinstance(sources.get("artifacts"), dict) else {}
+            if not str(artifacts.get(canonical_key) or "").strip():
+                resolved_path = str(paths.get(agent) or "").strip()
+                if resolved_path:
+                    artifacts[canonical_key] = resolved_path
+            if not (
+                isinstance(canonical_agent_artifacts.get(agent), dict) and bool(canonical_agent_artifacts.get(agent))
+            ):
+                resolved_payload = payloads.get(agent)
+                if isinstance(resolved_payload, dict) and bool(resolved_payload):
+                    canonical_agent_artifacts[agent] = dict(resolved_payload)
+            if not resolved_agents.get(agent):
+                if isinstance(canonical_agent_artifacts.get(agent), dict) and bool(canonical_agent_artifacts.get(agent)):
+                    resolved_agents[agent] = dict(canonical_agent_artifacts.get(agent) or {})
+            if resolved_agents.get(agent) and str(artifacts.get(canonical_key) or "").strip():
+                break
+        if not str(evidence_provenance.get(agent) or "").strip():
+            if str(artifacts.get(canonical_key) or "").strip() or (
+                isinstance(canonical_agent_artifacts.get(agent), dict) and bool(canonical_agent_artifacts.get(agent))
+            ):
+                evidence_provenance[agent] = "canonical"
+            elif resolved_agents.get(agent):
+                evidence_provenance[agent] = "direct_artifact"
+
+    return {
+        "artifacts": artifacts,
+        "canonical_agent_artifacts": canonical_agent_artifacts,
+        "evidence_provenance": evidence_provenance,
+        "agents": resolved_agents,
+    }
 
 
 def _latest_strategist_evidence_ledger_row(
@@ -442,17 +540,55 @@ def _enrich_scanner_reason_from_evidence(
                 top_reasons.append(f"chart feature coverage {present}/{total}")
             out["top_reasons"] = top_reasons[:6]
 
+            selection_reason = str(out.get("selection_reason") or "").strip()
+            if selection_reason:
+                if "chart feature coverage " in selection_reason.lower():
+                    selection_reason = re.sub(
+                        r"chart feature coverage\s+\d+/\d+",
+                        f"chart feature coverage {present}/{total}",
+                        selection_reason,
+                        flags=re.IGNORECASE,
+                    )
+                else:
+                    selection_reason = f"{selection_reason}; chart feature coverage {present}/{total}"
+            else:
+                selection_reason = f"chart feature coverage {present}/{total}"
+            out["selection_reason"] = selection_reason[:260]
+
             bullets = [str(x or "") for x in list(out.get("bullets") or []) if str(x or "").strip()]
             updated_bullets: List[str] = []
             replaced_chart_bullet = False
+            coverage_detail_inserted = False
+            present_keys = [str(x or "") for x in list(coverage.get("present_keys") or []) if str(x or "").strip()]
+            missing_keys = [str(x or "") for x in list(coverage.get("missing_keys") or []) if str(x or "").strip()]
+            coverage_source = str(coverage.get("source") or "").strip()
+
+            def _append_coverage_details(target: List[str]) -> None:
+                nonlocal coverage_detail_inserted
+                if coverage_detail_inserted:
+                    return
+                if present_keys:
+                    target.append(
+                        "Chart features present: " + ", ".join(present_keys[:8]) + (", ..." if len(present_keys) > 8 else "")
+                    )
+                if missing_keys:
+                    target.append(
+                        "Chart features missing: " + ", ".join(missing_keys[:8]) + (", ..." if len(missing_keys) > 8 else "")
+                    )
+                if coverage_source:
+                    target.append(f"Chart feature coverage source: {coverage_source}")
+                coverage_detail_inserted = True
+
             for bullet in bullets:
                 if bullet.lower().startswith("chart / feature coverage:"):
                     updated_bullets.append(f"Chart / feature coverage: {present}/{total}")
                     replaced_chart_bullet = True
+                    _append_coverage_details(updated_bullets)
                 else:
                     updated_bullets.append(bullet)
             if not replaced_chart_bullet:
                 updated_bullets.append(f"Chart / feature coverage: {present}/{total}")
+                _append_coverage_details(updated_bullets)
             out["bullets"] = updated_bullets[:12]
 
     if why_selected:
@@ -485,6 +621,10 @@ def _enrich_scanner_reason_from_evidence(
             bullets.append(runner_text)
     if bullets:
         out["bullets"] = bullets[:12]
+    trace = out.get("scanner_selection_trace") if isinstance(out.get("scanner_selection_trace"), dict) else {}
+    if trace and coverage:
+        trace["chart_feature_coverage"] = dict(coverage)
+        out["scanner_selection_trace"] = trace
     return out
 
 
@@ -520,10 +660,11 @@ def _normalized_feature_coverage_from_scanner_evidence(
     if not matched_row:
         return {}
 
+    reported = matched_row.get("feature_coverage") if isinstance(matched_row.get("feature_coverage"), dict) else {}
     snapshot = matched_row.get("compact_feature_snapshot") if isinstance(matched_row.get("compact_feature_snapshot"), dict) else {}
     if not snapshot:
         snapshot = matched_row.get("feature_snapshot") if isinstance(matched_row.get("feature_snapshot"), dict) else {}
-    if not snapshot:
+    if not snapshot and not reported:
         return {}
 
     keys = [
@@ -540,17 +681,24 @@ def _normalized_feature_coverage_from_scanner_evidence(
         "engine_regime",
         "engine_signal_score",
     ]
-    present_keys = [key for key in keys if snapshot.get(key) is not None]
-    missing_keys = [key for key in keys if snapshot.get(key) is None]
-    total = len(keys)
-    present = len(present_keys)
-    coverage_ratio = float(present) / float(total) if total else 0.0
-    if coverage_ratio >= 0.75:
-        quality = "strong"
-    elif coverage_ratio >= 0.5:
-        quality = "partial"
-    else:
-        quality = "weak"
+    computed_present_keys = [key for key in keys if snapshot.get(key) is not None]
+    computed_missing_keys = [key for key in keys if snapshot.get(key) is None]
+    computed_total = len(keys)
+    computed_present = len(computed_present_keys)
+    present = safe_int(reported.get("present"), computed_present)
+    total = safe_int(reported.get("total"), computed_total)
+    coverage_ratio = _safe_float(reported.get("coverage_ratio"), float(present) / float(total) if total else 0.0) or 0.0
+    quality = str(reported.get("quality") or "").strip().lower()
+    if not quality:
+        if coverage_ratio >= 0.75:
+            quality = "strong"
+        elif coverage_ratio >= 0.5:
+            quality = "partial"
+        else:
+            quality = "weak"
+    present_keys = [str(x or "") for x in list(reported.get("present_keys") or computed_present_keys) if str(x or "").strip()]
+    missing_keys = [str(x or "") for x in list(reported.get("missing_keys") or computed_missing_keys) if str(x or "").strip()]
+    coverage_source = "feature_coverage_reported" if reported else "snapshot_derived"
     return {
         "present": present,
         "total": total,
@@ -558,6 +706,7 @@ def _normalized_feature_coverage_from_scanner_evidence(
         "quality": quality,
         "present_keys": present_keys,
         "missing_keys": missing_keys,
+        "source": coverage_source,
     }
 
 
@@ -2505,10 +2654,16 @@ def _derive_trade_recovery_metadata(
     scanner_context = entry.get("scanner_context") if isinstance(entry.get("scanner_context"), dict) else {}
     strategist_context = entry.get("strategist_context") if isinstance(entry.get("strategist_context"), dict) else {}
     inferred_entry = bool(entry.get("inferred_entry"))
+    entry_evidence_complete = _has_substantive_entry_evidence(entry)
     scanner_selected_symbol = str(scanner_context.get("selected_symbol") or "").strip()
     scanner_summary = str(scanner_context.get("summary") or "").strip().lower()
     strategist_summary = str(strategist_context.get("market_context_summary") or "").strip()
-    lifecycle_recovered = status == "partial" or (not entry_present) or (status not in {"open"} and not exit_present)
+    lifecycle_recovered = (
+        status == "partial"
+        or (not entry_present)
+        or (status not in {"open"} and not exit_present)
+        or (status not in {"open"} and not entry_evidence_complete)
+    )
     recovery_sources = {
         src for src in provenance_sources if src in {"event_log", "fallback", "normalized_trade_artifact"}
     }
@@ -2523,6 +2678,9 @@ def _derive_trade_recovery_metadata(
     if inferred_entry:
         missing_sections.add("entry_evidence")
         recovery_sources.add("inferred_entry")
+    if entry_present and not entry_evidence_complete:
+        missing_sections.add("entry_evidence")
+        recovery_sources.add("entry_evidence_thin")
     if entry_present and (not scanner_selected_symbol or not scanner_summary or "not captured" in scanner_summary or "did not record" in scanner_summary):
         missing_sections.add("scanner_context")
         recovery_sources.add("scanner_context_missing")
@@ -3115,6 +3273,209 @@ def _build_trade_id(day: str, symbol: str, seq: int) -> str:
     return f"TRD_{compact_day}_{clean_symbol}_{int(seq):02d}"
 
 
+def _trade_id_sequence(trade_id: str) -> int:
+    text = str(trade_id or "").strip()
+    if not text:
+        return 10**9
+    tail = text.rsplit("_", 1)[-1]
+    try:
+        return int(tail)
+    except Exception:
+        return 10**9
+
+
+def _existing_trade_run_ids(trade_dir: Path) -> List[str]:
+    lifecycle_path = trade_dir / "lifecycle_bundle.json"
+    if not lifecycle_path.exists():
+        return []
+    payload = _read_json_if_exists(lifecycle_path)
+    run_ids: List[str] = [str(x or "").strip() for x in list(payload.get("linked_run_ids") or []) if str(x or "").strip()]
+    entry = payload.get("entry") if isinstance(payload.get("entry"), dict) else {}
+    exit_ctx = payload.get("exit") if isinstance(payload.get("exit"), dict) else {}
+    lifecycle = payload.get("lifecycle") if isinstance(payload.get("lifecycle"), dict) else {}
+    holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+    for item in (
+        entry.get("run_id"),
+        exit_ctx.get("run_id"),
+    ):
+        rid = str(item or "").strip()
+        if rid and rid not in run_ids:
+            run_ids.append(rid)
+    for item in list(holding.get("run_ids") or []):
+        rid = str(item or "").strip()
+        if rid and rid not in run_ids:
+            run_ids.append(rid)
+    return run_ids
+
+
+def _find_existing_trade_id_for_run_ids(
+    *,
+    reports_root: Path,
+    day: str,
+    symbol: str,
+    run_ids: Iterable[str],
+) -> str:
+    day_root = Path(reports_root) / "trades" / str(day or "").strip()
+    if not day_root.exists():
+        return ""
+    requested = {str(item or "").strip() for item in list(run_ids or []) if str(item or "").strip()}
+    if not requested:
+        return ""
+    symbol_norm = normalize_symbol(symbol or "", allow_test_symbols=True) or ""
+    matches: List[Tuple[int, str]] = []
+    for trade_dir in day_root.iterdir():
+        if not trade_dir.is_dir():
+            continue
+        trade_id = str(trade_dir.name or "").strip()
+        if symbol_norm and f"_{symbol_norm}_" not in trade_id:
+            continue
+        existing_run_ids = set(_existing_trade_run_ids(trade_dir))
+        if not existing_run_ids.intersection(requested):
+            continue
+        matches.append((_trade_id_sequence(trade_id), trade_id))
+    if not matches:
+        return ""
+    matches.sort(key=lambda item: (item[0], item[1]))
+    return str(matches[0][1] or "")
+
+
+def _extract_lifecycle_entry(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    entry = payload.get("entry") if isinstance(payload.get("entry"), dict) else {}
+    if entry:
+        return dict(entry)
+    lifecycle = payload.get("lifecycle") if isinstance(payload.get("lifecycle"), dict) else {}
+    entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+    return dict(entry)
+
+
+def _extract_lifecycle_exit(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    exit_ctx = payload.get("exit") if isinstance(payload.get("exit"), dict) else {}
+    if exit_ctx:
+        return dict(exit_ctx)
+    lifecycle = payload.get("lifecycle") if isinstance(payload.get("lifecycle"), dict) else {}
+    exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+    return dict(exit_ctx)
+
+
+def _extract_lifecycle_holding(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    holding = payload.get("hold") if isinstance(payload.get("hold"), dict) else {}
+    if holding:
+        return dict(holding)
+    holding = payload.get("holding") if isinstance(payload.get("holding"), dict) else {}
+    if holding:
+        return dict(holding)
+    lifecycle = payload.get("lifecycle") if isinstance(payload.get("lifecycle"), dict) else {}
+    holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
+    if holding:
+        return dict(holding)
+    hold = lifecycle.get("hold") if isinstance(lifecycle.get("hold"), dict) else {}
+    return dict(hold)
+
+
+def _load_existing_open_lifecycle_candidates(
+    *,
+    reports_root: Path,
+    day: str,
+) -> Dict[str, List[Dict[str, Any]]]:
+    day_root = Path(reports_root) / "trades" / str(day or "").strip()
+    candidates: Dict[str, List[Dict[str, Any]]] = {}
+    if not day_root.exists():
+        return candidates
+    for trade_dir in day_root.iterdir():
+        if not trade_dir.is_dir():
+            continue
+        lifecycle_path = trade_dir / "lifecycle_bundle.json"
+        if not lifecycle_path.exists():
+            continue
+        payload = _read_json_if_exists(lifecycle_path)
+        if not isinstance(payload, dict) or not payload:
+            continue
+        status = str(payload.get("trade_lifecycle_status") or payload.get("status") or "").strip().lower()
+        if status not in {"open", "partial"}:
+            continue
+        entry_ctx = _extract_lifecycle_entry(payload)
+        if not _has_substantive_entry_evidence(entry_ctx):
+            continue
+        exit_ctx = _extract_lifecycle_exit(payload)
+        if str(exit_ctx.get("run_id") or "").strip():
+            # Closed lifecycle should not be reused.
+            continue
+        symbol = normalize_symbol(
+            payload.get("symbol")
+            or entry_ctx.get("symbol")
+            or (payload.get("execution") or {}).get("symbol")
+            or "",
+            allow_test_symbols=True,
+        )
+        if not symbol:
+            continue
+        holding = _extract_lifecycle_holding(payload)
+        run_ids_all = [str(x or "").strip() for x in list(payload.get("linked_run_ids") or []) if str(x or "").strip()]
+        entry_run_id = str(entry_ctx.get("run_id") or "").strip()
+        if entry_run_id and entry_run_id not in run_ids_all:
+            run_ids_all.append(entry_run_id)
+        for item in list(holding.get("run_ids") or []):
+            rid = str(item or "").strip()
+            if rid and rid not in run_ids_all:
+                run_ids_all.append(rid)
+        candidate = {
+            "trade_id": str(payload.get("trade_id") or trade_dir.name or "").strip(),
+            "symbol": symbol,
+            "status": status,
+            "entry": dict(entry_ctx),
+            "holding": dict(holding),
+            "run_ids_all": run_ids_all,
+            "story_type": str(payload.get("story_type") or "simulation"),
+            "execution_mode_label": str(payload.get("execution_mode_label") or "simulation (mock broker)"),
+            "timeline": [dict(row) for row in list(payload.get("timeline") or []) if isinstance(row, dict)],
+            "warnings": [str(x or "") for x in list(payload.get("warnings") or []) if str(x or "").strip()],
+            "entry_ts_epoch": _to_epoch(entry_ctx.get("ts")) or 0.0,
+        }
+        candidates.setdefault(symbol, []).append(candidate)
+    for symbol, rows in candidates.items():
+        rows.sort(
+            key=lambda row: (
+                _trade_id_sequence(str(row.get("trade_id") or "")),
+                float(row.get("entry_ts_epoch") or 0.0),
+            ),
+            reverse=True,
+        )
+    return candidates
+
+
+def _snapshot_execution_debug(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
+    return {
+        "execution_symbol": str(snapshot.get("symbol") or execution.get("symbol") or ""),
+        "execution_ts": str(snapshot.get("ts_start") or ""),
+        "execution_side": str(snapshot.get("execution_action") or execution.get("action") or "").upper(),
+        "execution_order_id": str(
+            execution.get("ord_no")
+            or snapshot.get("execution_ord_no")
+            or execution.get("order_id")
+            or ""
+        ),
+        "execution_run_id": str(snapshot.get("run_id") or ""),
+        "execution_filled_qty": safe_int(
+            execution.get("qty")
+            if execution.get("qty") not in (None, "")
+            else snapshot.get("execution_qty"),
+            0,
+        ),
+        "execution_filled_price": (
+            execution.get("price")
+            if execution.get("price") not in (None, "")
+            else snapshot.get("execution_price")
+        ),
+    }
+
+
 def _build_lifecycle_from_seed(
     *,
     trade_id: str,
@@ -3147,15 +3508,48 @@ def _build_lifecycle_from_seed(
     }
 
 
+def _has_substantive_entry_evidence(entry: Dict[str, Any]) -> bool:
+    entry_obj = entry if isinstance(entry, dict) else {}
+    if not entry_obj:
+        return False
+    if str(entry_obj.get("run_id") or "").strip():
+        return True
+    if str(entry_obj.get("ts") or "").strip():
+        return True
+    for key in ("price", "avg_price", "qty"):
+        value = entry_obj.get(key)
+        if value not in (None, "", 0, 0.0):
+            return True
+    scanner_context = entry_obj.get("scanner_context") if isinstance(entry_obj.get("scanner_context"), dict) else {}
+    if str(scanner_context.get("selected_symbol") or "").strip():
+        return True
+    if str(scanner_context.get("summary") or "").strip():
+        return True
+    execution_context = entry_obj.get("execution_context") if isinstance(entry_obj.get("execution_context"), dict) else {}
+    execution_details = entry_obj.get("execution_details") if isinstance(entry_obj.get("execution_details"), dict) else {}
+    if str(execution_context.get("order_status") or execution_details.get("order_status") or "").strip():
+        return True
+    if str(execution_context.get("order_id") or execution_details.get("order_id") or "").strip():
+        return True
+    return False
+
+
 def _build_trade_lifecycles(
     *,
     day: str,
     run_snapshots: List[Dict[str, Any]],
     run_bundles: Dict[str, Dict[str, Any]],
+    existing_open_lifecycles_by_symbol: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> List[Dict[str, Any]]:
     symbol_seq: Dict[str, int] = {}
     active_by_symbol: Dict[str, Dict[str, Any]] = {}
     out: List[Dict[str, Any]] = []
+    existing_candidates = (
+        existing_open_lifecycles_by_symbol
+        if isinstance(existing_open_lifecycles_by_symbol, dict)
+        else {}
+    )
+    consumed_existing_open_trade_ids: set[str] = set()
 
     def _next_trade_id(symbol: str) -> str:
         key = normalize_symbol(symbol, allow_test_symbols=True) or "UNKNOWN"
@@ -3352,19 +3746,82 @@ def _build_trade_lifecycles(
             continue
 
         if action == "SELL":
+            attach_debug: Dict[str, Any] = {
+                **_snapshot_execution_debug(snapshot),
+                "matched_open_trade_id": "",
+                "candidate_open_trade_ids": [],
+                "attach_match_reason": "",
+                "new_trade_created_reason": "",
+                "recovered_lifecycle_reason": "",
+            }
             lifecycle = active_by_symbol.get(symbol)
+            if lifecycle:
+                attach_debug["candidate_open_trade_ids"] = [str(lifecycle.get("trade_id") or "")]
             if not lifecycle:
-                trade_id = _next_trade_id(symbol)
-                story_type, mode_label = _resolve_story_contract(bundle, snapshot)
-                lifecycle = _build_lifecycle_from_seed(
-                    trade_id=trade_id,
-                    symbol=symbol,
-                    day=day,
-                    execution_mode_label_text=mode_label,
-                    story_type=story_type,
-                )
-                lifecycle["status"] = "partial"
-                out.append(lifecycle)
+                sell_ts_epoch = float(snapshot.get("ts_epoch") or 0.0)
+                symbol_candidates = [
+                    dict(row)
+                    for row in list(existing_candidates.get(symbol) or [])
+                    if isinstance(row, dict)
+                ]
+                attach_debug["candidate_open_trade_ids"] = [
+                    str(row.get("trade_id") or "")
+                    for row in symbol_candidates
+                    if str(row.get("trade_id") or "").strip()
+                ]
+                matched_candidate: Dict[str, Any] = {}
+                for candidate in symbol_candidates:
+                    candidate_trade_id = str(candidate.get("trade_id") or "").strip()
+                    if candidate_trade_id and candidate_trade_id in consumed_existing_open_trade_ids:
+                        continue
+                    entry_ts_epoch = float(candidate.get("entry_ts_epoch") or 0.0)
+                    if sell_ts_epoch > 0.0 and entry_ts_epoch > 0.0 and entry_ts_epoch > sell_ts_epoch:
+                        continue
+                    matched_candidate = candidate
+                    break
+                if matched_candidate:
+                    lifecycle = _build_lifecycle_from_seed(
+                        trade_id=str(matched_candidate.get("trade_id") or _next_trade_id(symbol)),
+                        symbol=symbol,
+                        day=day,
+                        execution_mode_label_text=str(matched_candidate.get("execution_mode_label") or "simulation (mock broker)"),
+                        story_type=str(matched_candidate.get("story_type") or "simulation"),
+                    )
+                    lifecycle["entry"] = dict(matched_candidate.get("entry") or {})
+                    lifecycle["holding"] = dict(matched_candidate.get("holding") or lifecycle.get("holding") or {})
+                    lifecycle["run_ids_all"] = [
+                        str(x or "").strip()
+                        for x in list(matched_candidate.get("run_ids_all") or [])
+                        if str(x or "").strip()
+                    ]
+                    lifecycle["timeline"] = [dict(row) for row in list(matched_candidate.get("timeline") or []) if isinstance(row, dict)]
+                    lifecycle["warnings"] = [
+                        str(x or "")
+                        for x in list(matched_candidate.get("warnings") or [])
+                        if str(x or "").strip()
+                    ]
+                    lifecycle["status"] = "open"
+                    attach_debug["matched_open_trade_id"] = str(lifecycle.get("trade_id") or "")
+                    attach_debug["attach_match_reason"] = "matched_existing_open_lifecycle_by_symbol_and_time"
+                    attach_debug["recovered_lifecycle_reason"] = "reused_existing_open_lifecycle_artifact"
+                    if str(lifecycle.get("trade_id") or "").strip():
+                        consumed_existing_open_trade_ids.add(str(lifecycle.get("trade_id") or "").strip())
+                    out.append(lifecycle)
+                    active_by_symbol[symbol] = lifecycle
+                else:
+                    trade_id = _next_trade_id(symbol)
+                    story_type, mode_label = _resolve_story_contract(bundle, snapshot)
+                    lifecycle = _build_lifecycle_from_seed(
+                        trade_id=trade_id,
+                        symbol=symbol,
+                        day=day,
+                        execution_mode_label_text=mode_label,
+                        story_type=story_type,
+                    )
+                    lifecycle["status"] = "partial"
+                    attach_debug["new_trade_created_reason"] = "no_active_or_existing_open_lifecycle"
+                    attach_debug["recovered_lifecycle_reason"] = "sell_without_attachable_open_entry"
+                    out.append(lifecycle)
             lifecycle["exit"] = _exit_context(snapshot, bundle)
             lifecycle.setdefault("run_ids_all", [])
             if run_id not in lifecycle["run_ids_all"]:
@@ -3378,6 +3835,9 @@ def _build_trade_lifecycles(
             )
             if lifecycle.get("entry"):
                 lifecycle["status"] = "closed"
+                if not attach_debug.get("attach_match_reason"):
+                    attach_debug["matched_open_trade_id"] = str(lifecycle.get("trade_id") or "")
+                    attach_debug["attach_match_reason"] = "matched_active_open_lifecycle_in_current_pass"
                 resolved_story_type, resolved_mode_label = _resolve_story_contract(bundle, snapshot)
                 if resolved_story_type and resolved_story_type != "decision_only":
                     lifecycle["story_type"] = resolved_story_type
@@ -3391,6 +3851,13 @@ def _build_trade_lifecycles(
                     lifecycle["execution_mode_label"] = resolved_mode_label
             else:
                 lifecycle["status"] = "partial"
+                if not attach_debug.get("new_trade_created_reason"):
+                    attach_debug["new_trade_created_reason"] = "entry_missing_after_sell_attach"
+                if not attach_debug.get("recovered_lifecycle_reason"):
+                    attach_debug["recovered_lifecycle_reason"] = "sell_processed_without_substantive_entry"
+            lifecycle.setdefault("lifecycle_attach_debug", [])
+            if isinstance(lifecycle.get("lifecycle_attach_debug"), list):
+                lifecycle["lifecycle_attach_debug"].append(attach_debug)
             active_by_symbol.pop(symbol, None)
             continue
 
@@ -3434,13 +3901,16 @@ def _build_trade_lifecycles(
         entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
         exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
         holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
-        entry_ts = _to_epoch(entry.get("ts"))
+        entry_has_execution_evidence = _has_substantive_entry_evidence(entry)
+        entry_ts = _to_epoch(entry.get("ts")) if entry_has_execution_evidence else None
         end_ts = _to_epoch(exit_ctx.get("ts"))
+        duration_sec: Optional[int] = None
         if end_ts is None:
             latest_hold_ts = max((_to_epoch((row or {}).get("ts")) or 0 for row in list(holding.get("holding_events") or [])), default=0)
             end_ts = latest_hold_ts or entry_ts or 0
-        duration_sec = int(max(0, (end_ts or 0) - (entry_ts or end_ts or 0)))
-        holding_duration = _format_duration_human(duration_sec)
+        if entry_ts is not None:
+            duration_sec = int(max(0, (end_ts or 0) - (entry_ts or end_ts or 0)))
+        holding_duration = _format_duration_human(duration_sec) if duration_sec is not None else ""
         entry_reason_human = str(entry.get("reason_human") or "Entry reason was not captured.")
         if lifecycle.get("status") == "open":
             exit_reason_human = "Position is still open; monitor is watching for exit triggers."
@@ -3448,15 +3918,21 @@ def _build_trade_lifecycles(
             exit_reason_human = "Lifecycle is partial because exit evidence is missing."
         else:
             exit_reason_human = str(exit_ctx.get("reason_human") or "Exit reason was not captured.")
+        holding_duration_clause = (
+            f"Holding duration is {holding_duration}. "
+            if holding_duration
+            else "Holding duration is unavailable because entry timing evidence was not captured. "
+        )
         lifecycle_summary = (
             f"Trade {lifecycle.get('trade_id')} for {lifecycle.get('symbol')} is {lifecycle.get('status')}. "
-            f"Holding duration is {holding_duration}. "
+            f"{holding_duration_clause}"
             f"Entry: {entry_reason_human} "
             f"Exit: {exit_reason_human}"
         )
         operator_conclusion_human = (
             f"Current lifecycle status is {lifecycle.get('status')}. "
             f"{'Position remains open and requires monitoring.' if lifecycle.get('status') == 'open' else 'Entry and exit are connected in one lifecycle story.'}"
+            f"{' Entry execution evidence is partially recovered.' if not entry_has_execution_evidence and lifecycle.get('status') != 'open' else ''}"
         )
 
         reporter_summary = ""
@@ -3484,6 +3960,8 @@ def _build_trade_lifecycles(
             improvement_points.append("Capture additional monitor runs so hold behavior quality can be evaluated.")
         if not holding.get("run_ids"):
             improvement_points.append("Holding-phase evidence is thin; preserve more monitor context between entry and exit.")
+        if not entry_has_execution_evidence and lifecycle.get("status") != "open":
+            improvement_points.append("Entry execution evidence is incomplete; preserve BUY linkage for closed-trade diagnosis.")
 
         lifecycle["summary"] = {
             "holding_duration": holding_duration,
@@ -3505,6 +3983,8 @@ def _build_trade_lifecycles(
             lifecycle["warnings"].append("Lifecycle is partial because entry or exit evidence is incomplete.")
         if lifecycle.get("status") == "open":
             lifecycle["warnings"].append("Lifecycle is open; no closing SELL execution has been recorded yet.")
+        if not entry_has_execution_evidence and lifecycle.get("status") != "open":
+            lifecycle["warnings"].append("Entry execution evidence is incomplete; lifecycle entry was partially recovered.")
 
     return out
 
@@ -3960,10 +4440,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         include_run_ids=run_id_set or None,
         event_rows=day_event_rows,
     )
+    existing_open_lifecycles_by_symbol = _load_existing_open_lifecycle_candidates(
+        reports_root=reports_root,
+        day=day,
+    )
     trade_lifecycles = _build_trade_lifecycles(
         day=day,
         run_snapshots=run_snapshots,
         run_bundles=run_bundles_by_run,
+        existing_open_lifecycles_by_symbol=existing_open_lifecycles_by_symbol,
     )
     if bool(target_ctx.get("targeted_mode")):
         trade_lifecycles = [
@@ -3975,6 +4460,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                 target_symbol=str(target_ctx.get("target_symbol") or ""),
             )
         ]
+        for lifecycle in trade_lifecycles:
+            lifecycle_run_ids = [str(x or "").strip() for x in list(lifecycle.get("run_ids_all") or []) if str(x or "").strip()]
+            entry_ctx = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+            exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+            for item in (entry_ctx.get("run_id"), exit_ctx.get("run_id")):
+                rid = str(item or "").strip()
+                if rid and rid not in lifecycle_run_ids:
+                    lifecycle_run_ids.append(rid)
+            existing_trade_id = _find_existing_trade_id_for_run_ids(
+                reports_root=reports_root,
+                day=day,
+                symbol=str(lifecycle.get("symbol") or ""),
+                run_ids=lifecycle_run_ids,
+            )
+            if existing_trade_id:
+                lifecycle["trade_id"] = existing_trade_id
     lifecycle_rows: List[Dict[str, Any]] = []
     lifecycle_story_type_counts: Dict[str, int] = {}
     run_bundle_lookup = {str(row.get("run_id") or ""): row for row in run_bundle_rows}
@@ -4003,11 +4504,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         entry_run_id = str(entry_ctx.get("run_id") or "")
         exit_run_id = str(exit_ctx.get("run_id") or "")
         linked_run_ids = [str(x or "").strip() for x in list(lifecycle.get("run_ids_all") or []) if str(x or "").strip()]
+        for rid in (entry_run_id, exit_run_id):
+            if rid and rid not in linked_run_ids:
+                linked_run_ids.append(rid)
         holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
         hold_run_ids = [str(x or "").strip() for x in list(holding.get("run_ids") or []) if str(x or "").strip()]
 
         anchor_run_id = entry_run_id or exit_run_id or (linked_run_ids[0] if linked_run_ids else "")
         anchor_bundle = run_bundles_by_run.get(anchor_run_id) if isinstance(run_bundles_by_run.get(anchor_run_id), dict) else {}
+        resolved_bundle_sources = _resolve_lifecycle_bundle_sources(
+            reports_root=reports_root,
+            day=day,
+            anchor_bundle=anchor_bundle,
+            anchor_run_id=anchor_run_id,
+            entry_run_id=entry_run_id,
+            exit_run_id=exit_run_id,
+        )
         anchor_execution = anchor_bundle.get("execution") if isinstance(anchor_bundle.get("execution"), dict) else {}
         if not anchor_execution:
             anchor_execution = {
@@ -4080,15 +4592,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             "trade_lifecycle_summary": str(summary_obj.get("lifecycle_summary_human") or ""),
             "story_contract": story_contract,
             "execution": dict(anchor_execution),
-            "commander": dict(anchor_bundle.get("commander") or {}),
-            "strategist": dict(anchor_bundle.get("strategist") or {}),
-            "scanner": dict(anchor_bundle.get("scanner") or {}),
-            "monitor": dict(anchor_bundle.get("monitor") or {}),
-            "supervisor": dict(anchor_bundle.get("supervisor") or {}),
-            "executor": dict(anchor_bundle.get("executor") or {}),
+            "commander": dict((resolved_bundle_sources.get("agents") or {}).get("commander") or anchor_bundle.get("commander") or {}),
+            "strategist": dict((resolved_bundle_sources.get("agents") or {}).get("strategist") or anchor_bundle.get("strategist") or {}),
+            "scanner": dict((resolved_bundle_sources.get("agents") or {}).get("scanner") or anchor_bundle.get("scanner") or {}),
+            "monitor": dict((resolved_bundle_sources.get("agents") or {}).get("monitor") or anchor_bundle.get("monitor") or {}),
+            "supervisor": dict((resolved_bundle_sources.get("agents") or {}).get("supervisor") or anchor_bundle.get("supervisor") or {}),
+            "executor": dict((resolved_bundle_sources.get("agents") or {}).get("executor") or anchor_bundle.get("executor") or {}),
             "reporter": dict(anchor_bundle.get("reporter") or {}),
-            "canonical_agent_artifacts": dict(anchor_bundle.get("canonical_agent_artifacts") or {}),
-            "evidence_provenance": dict(anchor_bundle.get("evidence_provenance") or {}),
+            "canonical_agent_artifacts": dict(resolved_bundle_sources.get("canonical_agent_artifacts") or {}),
+            "evidence_provenance": dict(resolved_bundle_sources.get("evidence_provenance") or {}),
             "market_context_human": dict(anchor_bundle.get("market_context_human") or entry_ctx.get("strategist_context") or {}),
             "scanner_reason_human": dict(anchor_bundle.get("scanner_reason_human") or entry_ctx.get("scanner_context") or {}),
             "filters_human": dict(anchor_bundle.get("filters_human") or {}),
@@ -4109,6 +4621,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             },
             "timeline": list(lifecycle.get("timeline") or []),
             "warnings": list(story_contract.get("warnings") or []),
+            "lifecycle_attach_debug": [dict(row) for row in list(lifecycle.get("lifecycle_attach_debug") or []) if isinstance(row, dict)],
             "trade_lifecycle": lifecycle,
             "artifacts": {
                 "agent_pipeline_trace_json": str(anchor_bundle.get("artifacts", {}).get("agent_pipeline_trace_json") or ""),
@@ -4119,12 +4632,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "reporter_analysis_md": str(reporter_md) if reporter_md.exists() else "",
                 "operator_summary_json": str(operator_summary_json) if operator_summary_json.exists() else "",
                 "operator_summary_md": str(operator_summary_md) if operator_summary_md.exists() else "",
-                "canonical_commander_json": str(anchor_bundle.get("artifacts", {}).get("canonical_commander_json") or ""),
-                "canonical_strategist_json": str(anchor_bundle.get("artifacts", {}).get("canonical_strategist_json") or ""),
-                "canonical_scanner_json": str(anchor_bundle.get("artifacts", {}).get("canonical_scanner_json") or ""),
-                "canonical_monitor_json": str(anchor_bundle.get("artifacts", {}).get("canonical_monitor_json") or ""),
-                "canonical_supervisor_json": str(anchor_bundle.get("artifacts", {}).get("canonical_supervisor_json") or ""),
-                "canonical_executor_json": str(anchor_bundle.get("artifacts", {}).get("canonical_executor_json") or ""),
+                "canonical_commander_json": str((resolved_bundle_sources.get("artifacts") or {}).get("canonical_commander_json") or ""),
+                "canonical_strategist_json": str((resolved_bundle_sources.get("artifacts") or {}).get("canonical_strategist_json") or ""),
+                "canonical_scanner_json": str((resolved_bundle_sources.get("artifacts") or {}).get("canonical_scanner_json") or ""),
+                "canonical_monitor_json": str((resolved_bundle_sources.get("artifacts") or {}).get("canonical_monitor_json") or ""),
+                "canonical_supervisor_json": str((resolved_bundle_sources.get("artifacts") or {}).get("canonical_supervisor_json") or ""),
+                "canonical_executor_json": str((resolved_bundle_sources.get("artifacts") or {}).get("canonical_executor_json") or ""),
             },
             "trade_explain_summary": {
                 "executions_total": safe_int((trade_obj.get("execution_summary") or {}).get("executions_total"), 0)
@@ -4744,7 +5257,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "same_day_linkage_reason": str(same_day_reporter_linkage.get("linkage_reason") or ""),
             "same_day_linkage_source": str(same_day_reporter_linkage.get("linkage_source") or ""),
         }
-        trade_story_input = build_trade_story_input(lifecycle_bundle, trade_lifecycle=lifecycle)
+        trade_story_input = build_trade_story_input_from_bundle(lifecycle_bundle, trade_lifecycle=lifecycle)
         trade_story_input["day"] = day
         trade_story_input["report_runtime_mode"] = "intraday_bundle"
         trade_story_input["skip_separated_report_llm"] = True
@@ -4859,6 +5372,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         ai_trade_report_llm_artifact: Dict[str, Any] = {}
         existing_trade_report_artifact = _read_json_if_exists(trade_report_json_path)
         existing_ai_trade_report_llm_artifact = _read_json_if_exists(ai_trade_report_llm_response_path)
+        existing_story_input_artifact = _read_json_if_exists(story_input_path)
         if should_attempt_generation:
             existing_ai_status = canonical_llm_status(
                 existing_ai_trade_report_llm_artifact.get("llm_status")
@@ -5383,7 +5897,60 @@ def main(argv: Optional[List[str]] = None) -> int:
         trade_artifact_links_payload["links"]["ai_trade_report_llm_prompt_ref"] = str(ai_trade_report_llm_artifact.get("prompt_ref") or "")
         trade_artifact_links_payload["links"]["ai_trade_report_llm_response_ref"] = str(ai_trade_report_llm_artifact.get("response_ref") or "")
 
-        write_json(story_input_path, trade_story_input)
+        story_input_to_persist = dict(trade_story_input)
+        preserved_closed_story_input = False
+        current_status_lower = str(status or "").strip().lower()
+        existing_report_status_lower = str((existing_trade_report_artifact or {}).get("status") or "").strip().lower()
+        existing_story_status_lower = str((existing_story_input_artifact or {}).get("status") or "").strip().lower()
+        if (
+            current_status_lower == "open"
+            and not should_attempt_generation
+            and existing_report_status_lower == "closed"
+        ):
+            if existing_story_status_lower == "closed":
+                # Keep the last closed snapshot stable when open-trade generation is intentionally skipped.
+                story_input_to_persist = dict(existing_story_input_artifact)
+                preserved_closed_story_input = True
+                diagnostics["story_input_persist_strategy"] = "preserve_existing_closed_snapshot"
+            else:
+                # One-time repair path: prevent open snapshot overwrite when a closed report already exists.
+                repaired_story_input = dict(trade_story_input)
+                repaired_story_input["status"] = "closed"
+                report_action = str((existing_trade_report_artifact or {}).get("action") or "").strip().upper()
+                report_run_id = str((existing_trade_report_artifact or {}).get("run_id") or "").strip()
+                if report_action in {"BUY", "SELL", "EXIT", "WAIT", "HOLD"}:
+                    repaired_story_input["action"] = report_action
+                if report_run_id:
+                    repaired_story_input["run_id"] = report_run_id
+                repaired_shared_facts = (
+                    repaired_story_input.get("shared_facts")
+                    if isinstance(repaired_story_input.get("shared_facts"), dict)
+                    else {}
+                )
+                repaired_shared_facts["status"] = "closed"
+                if report_action in {"BUY", "SELL", "EXIT", "WAIT", "HOLD"}:
+                    repaired_shared_facts["action"] = report_action
+                    resolved_trade_facts = (
+                        repaired_shared_facts.get("resolved_trade_facts")
+                        if isinstance(repaired_shared_facts.get("resolved_trade_facts"), dict)
+                        else {}
+                    )
+                    resolved_trade_facts["status"] = "closed"
+                    resolved_trade_facts["action"] = report_action
+                    repaired_shared_facts["resolved_trade_facts"] = resolved_trade_facts
+                repaired_story_input["shared_facts"] = repaired_shared_facts
+                story_input_to_persist = repaired_story_input
+                diagnostics["story_input_persist_strategy"] = "repair_closed_snapshot_from_existing_report"
+        else:
+            diagnostics["story_input_persist_strategy"] = "persist_current_runtime_snapshot"
+
+        trade_story_compact_input_to_persist = (
+            build_ai_trade_report_compact_input(story_input_to_persist)
+            if preserved_closed_story_input
+            else trade_story_compact_input
+        )
+
+        write_json(story_input_path, story_input_to_persist)
         trade_story_compact_artifact = build_compact_input_artifact(
             component="ai_trade_report",
             run_id=str(anchor_run_id or ""),
@@ -5391,8 +5958,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             story_id=trade_id,
             day=day,
             source_artifact_path=str(story_input_path),
-            source_input=trade_story_input,
-            compact_input=trade_story_compact_input,
+            source_input=story_input_to_persist,
+            compact_input=trade_story_compact_input_to_persist,
         )
         write_json(story_compact_input_path, trade_story_compact_artifact)
         entry_payload = dict(lifecycle.get("entry") or {})
@@ -5409,17 +5976,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         holding_payload.setdefault("deterioration_signals", list(holding_phase_observability.get("deterioration_signals") or []))
         holding_payload.setdefault("hold_evidence_thin", bool(holding_phase_observability.get("hold_evidence_thin")))
         exit_payload.setdefault("execution_details", dict(exit_execution_details))
+        normalized_lifecycle = dict(lifecycle if isinstance(lifecycle, dict) else {})
+        normalized_lifecycle["entry"] = dict(entry_payload)
+        normalized_lifecycle["holding"] = dict(holding_payload)
+        normalized_lifecycle["exit"] = dict(exit_payload)
+        normalized_lifecycle["summary"] = dict(summary_obj if isinstance(summary_obj, dict) else {})
+        normalized_lifecycle["execution_details"] = dict(execution_details)
+        normalized_lifecycle["same_day_reporter_linkage"] = dict(same_day_reporter_linkage)
+        normalized_lifecycle["failure_classification"] = dict(failure_classification)
+        normalized_lifecycle["run_ids_all"] = list(linked_run_ids)
         lifecycle_bundle_v1 = build_lifecycle_bundle(
             day=day,
             trade_id=trade_id,
             run_id=str(anchor_run_id or ""),
             symbol=symbol,
-            lifecycle=lifecycle,
+            lifecycle=normalized_lifecycle,
             strategist_summary=dict(lifecycle_bundle.get("strategist") or {}),
             scanner_summary=dict(lifecycle_bundle.get("scanner") or {}),
             monitor_summary=dict(lifecycle_bundle.get("monitor") or {}),
             commander_summary=dict(lifecycle_bundle.get("commander") or {}),
-            story_input=trade_story_input,
+            story_input=story_input_to_persist,
             diagnostics={
                 **dict(diagnostics or {}),
                 "strategist_llm_status": str(strategist_llm_artifact.get("llm_status") or strategist_llm_artifact.get("status") or "skipped"),
@@ -5483,7 +6059,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "monitor_context_snapshots": list(holding_phase_observability.get("monitor_context_snapshots") or []),
                 "hold_signal_transitions": list(holding_phase_observability.get("hold_signal_transitions") or []),
                 "pre_exit_context_summary": dict(holding_phase_observability.get("pre_exit_context_summary") or {}),
-                "timeline": list(lifecycle.get("timeline") or []),
+                "timeline": list(normalized_lifecycle.get("timeline") or []),
+                "lifecycle_attach_debug": [dict(row) for row in list(lifecycle.get("lifecycle_attach_debug") or []) if isinstance(row, dict)],
                 "strategist_llm_status": str(
                     ((lifecycle_bundle_v1.get("llm_summary") or {}) if isinstance(lifecycle_bundle_v1.get("llm_summary"), dict) else {}).get("strategist_llm_status")
                     or diagnostics.get("strategist_llm_status")

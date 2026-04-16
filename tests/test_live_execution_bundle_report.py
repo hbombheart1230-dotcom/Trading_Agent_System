@@ -1173,6 +1173,87 @@ def test_live_execution_bundle_report_preserves_canonical_paths_in_lifecycle_art
         assert str((provenance.get("canonical_agent_artifact_paths") or {}).get(key) or "") == path_text
 
 
+def test_resolve_lifecycle_bundle_sources_backfills_thin_anchor_bundle_from_canonical_runs(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    day = "2026-03-16"
+    entry_run = "entry-run"
+    exit_run = "exit-run"
+    for rid, agents in {
+        entry_run: {
+            "strategist": {"run_id": entry_run, "agent": "strategist"},
+            "scanner": {"run_id": entry_run, "agent": "scanner", "selected_symbol": "000660"},
+        },
+        exit_run: {
+            "monitor": {"run_id": exit_run, "agent": "monitor", "trigger_type": "peak_drawdown"},
+            "supervisor": {"run_id": exit_run, "agent": "supervisor"},
+            "executor": {"run_id": exit_run, "agent": "executor", "symbol": "000660"},
+            "commander": {"run_id": exit_run, "agent": "commander"},
+        },
+    }.items():
+        canonical_dir = reports_root / "canonical" / day / rid
+        canonical_dir.mkdir(parents=True, exist_ok=True)
+        for agent, payload in agents.items():
+            (canonical_dir / f"{agent}.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    resolved = mod._resolve_lifecycle_bundle_sources(
+        reports_root=reports_root,
+        day=day,
+        anchor_bundle={
+            "commander": {},
+            "strategist": {},
+            "scanner": {},
+            "monitor": {},
+            "supervisor": {},
+            "executor": {},
+            "artifacts": {},
+            "canonical_agent_artifacts": {},
+            "evidence_provenance": {},
+        },
+        anchor_run_id=entry_run,
+        entry_run_id=entry_run,
+        exit_run_id=exit_run,
+    )
+
+    assert resolved["evidence_provenance"]["scanner"] == "canonical"
+    assert resolved["evidence_provenance"]["monitor"] == "canonical"
+    assert resolved["evidence_provenance"]["executor"] == "canonical"
+    assert str((resolved["artifacts"] or {}).get("canonical_scanner_json") or "").endswith("scanner.json")
+    assert str((resolved["artifacts"] or {}).get("canonical_monitor_json") or "").endswith("monitor.json")
+    assert isinstance((resolved["canonical_agent_artifacts"] or {}).get("scanner"), dict)
+    assert isinstance((resolved["canonical_agent_artifacts"] or {}).get("monitor"), dict)
+
+
+def test_find_existing_trade_id_for_run_ids_prefers_earliest_existing_trade_id(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    day_root = reports_root / "trades" / "2026-03-16"
+    for trade_id, entry_run, exit_run in (
+        ("TRD_20260316_005930_02", "entry-a", "exit-a"),
+        ("TRD_20260316_005930_04", "entry-b", "exit-a"),
+    ):
+        trade_dir = day_root / trade_id
+        trade_dir.mkdir(parents=True, exist_ok=True)
+        (trade_dir / "lifecycle_bundle.json").write_text(
+            json.dumps(
+                {
+                    "entry": {"run_id": entry_run},
+                    "exit": {"run_id": exit_run},
+                    "linked_run_ids": [entry_run, exit_run],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    resolved = mod._find_existing_trade_id_for_run_ids(
+        reports_root=reports_root,
+        day="2026-03-16",
+        symbol="005930",
+        run_ids=["exit-a"],
+    )
+
+    assert resolved == "TRD_20260316_005930_02"
+
+
 def test_live_execution_bundle_report_backfills_open_monitor_snapshot_from_runtime_state(
     tmp_path: Path, capsys, monkeypatch
 ) -> None:

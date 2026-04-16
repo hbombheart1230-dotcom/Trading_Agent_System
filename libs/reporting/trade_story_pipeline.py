@@ -102,11 +102,75 @@ def _is_empty_placeholder(value: Any) -> bool:
     return False
 
 
+def _has_substantive_exit_evidence(exit_payload: Any) -> bool:
+    exit_ctx = exit_payload if isinstance(exit_payload, dict) else {}
+    if not exit_ctx:
+        return False
+    if str(exit_ctx.get("run_id") or "").strip():
+        return True
+    if str(exit_ctx.get("ts") or "").strip():
+        return True
+    if str(exit_ctx.get("reason_human") or "").strip():
+        return True
+    for key in ("price", "avg_price", "qty"):
+        if exit_ctx.get(key) not in (None, "", 0, 0.0):
+            return True
+    execution_details = exit_ctx.get("execution_details") if isinstance(exit_ctx.get("execution_details"), dict) else {}
+    if str(execution_details.get("order_status") or "").strip():
+        return True
+    if str(execution_details.get("order_id") or "").strip():
+        return True
+    monitor_context = exit_ctx.get("monitor_context") if isinstance(exit_ctx.get("monitor_context"), dict) else {}
+    if str(monitor_context.get("trigger_type") or "").strip():
+        return True
+    return False
+
+
 def _set_or_replace_placeholder(target: Dict[str, Any], key: str, value: Any) -> None:
     if not isinstance(target, dict):
         return
     if key not in target or _is_empty_placeholder(target.get(key)):
         target[key] = value
+
+
+def _derive_evidence_provenance(bundle_out: Dict[str, Any]) -> Dict[str, Any]:
+    evidence = dict(bundle_out.get("evidence_provenance") or {})
+    artifacts = bundle_out.get("artifacts") if isinstance(bundle_out.get("artifacts"), dict) else {}
+    canonical_agent_artifacts = (
+        bundle_out.get("canonical_agent_artifacts")
+        if isinstance(bundle_out.get("canonical_agent_artifacts"), dict)
+        else {}
+    )
+
+    for agent in ("commander", "strategist", "scanner", "monitor", "supervisor", "executor"):
+        if not _is_empty_placeholder(evidence.get(agent)):
+            continue
+        canonical_key = f"canonical_{agent}_json"
+        canonical_path = str(artifacts.get(canonical_key) or "").strip()
+        canonical_payload = canonical_agent_artifacts.get(agent)
+        if canonical_path or (
+            isinstance(canonical_payload, dict) and bool(canonical_payload)
+        ) or (
+            isinstance(canonical_payload, str) and canonical_payload.strip()
+        ):
+            evidence[agent] = "canonical"
+            continue
+        direct_payload = bundle_out.get(agent)
+        if isinstance(direct_payload, dict) and bool(direct_payload):
+            evidence[agent] = "direct_artifact"
+
+    if _is_empty_placeholder(evidence.get("reporter")):
+        reporter_path = str(artifacts.get("reporter_analysis_json") or "").strip()
+        same_day_linkage = (
+            bundle_out.get("same_day_reporter_linkage")
+            if isinstance(bundle_out.get("same_day_reporter_linkage"), dict)
+            else {}
+        )
+        reporter_status = str((same_day_linkage or {}).get("status") or "").strip().lower()
+        if reporter_path or reporter_status in {"linked_run", "linked_day_fallback"}:
+            evidence["reporter"] = "direct_artifact"
+
+    return evidence
 
 
 def _headline_text(row: Any) -> str:
@@ -272,13 +336,193 @@ def _build_scanner_selection_trace(scanner_reason: Dict[str, Any], scanner_artif
         or clip((artifact.get("candidate_selection_reason") or {}).get("selection_summary"), max_len=260)
         or clip(reason.get("summary"), max_len=260)
     )
+    chart_feature_coverage = reason.get("feature_coverage") if isinstance(reason.get("feature_coverage"), dict) else {}
+    if not chart_feature_coverage:
+        selected_row: Dict[str, Any] = {}
+        for row in ranked_candidates:
+            if str(row.get("symbol") or "").strip() == selected_symbol:
+                selected_row = row
+                break
+        if not selected_row or not isinstance(selected_row.get("feature_coverage"), dict):
+            ranking_table = artifact.get("candidate_ranking_table") if isinstance(artifact.get("candidate_ranking_table"), dict) else {}
+            for row in list(ranking_table.get("rows") or []):
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("symbol") or "").strip() == selected_symbol:
+                    selected_row = dict(row)
+                    break
+        if isinstance(selected_row.get("feature_coverage"), dict):
+            chart_feature_coverage = dict(selected_row.get("feature_coverage") or {})
     return {
         "ranked_candidates": ranked_candidates[:5],
         "selected_symbol": selected_symbol,
         "selected_rank": selected_rank,
         "selection_reason": selection_reason,
         "selected_symbol_score_drivers": score_drivers,
+        "chart_feature_coverage": chart_feature_coverage,
     }
+
+
+def _optional_float(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    return safe_float(value, 0.0)
+
+
+def _build_news_scanner_contribution_trace(
+    *,
+    selected_symbol: str,
+    selected_score: Any,
+    selected_sources: List[str],
+    score_breakdown: Dict[str, Any],
+    component_snapshot: Dict[str, Any],
+    strategist: Dict[str, Any],
+) -> Dict[str, Any]:
+    positive_total = sum(max(safe_float(value, 0.0), 0.0) for value in dict(score_breakdown or {}).values())
+    key_rows: Dict[str, Dict[str, Any]] = {}
+    for key in ("trading_value", "momentum", "trend", "theme_boost", "sentiment"):
+        value = safe_float(score_breakdown.get(key), 0.0)
+        key_rows[key] = {
+            "value": value,
+            "positive_share_pct": (100.0 * value / positive_total) if positive_total > 0 else 0.0,
+        }
+
+    ranked = strategist.get("news_evidence_ranked") if isinstance(strategist.get("news_evidence_ranked"), dict) else {}
+    market_headlines = _collect_top_headlines(list(ranked.get("market_news_ranked") or []), limit=3)
+    symbol_headlines = _collect_top_headlines(
+        list(ranked.get("candidate_news_ranked") or []),
+        limit=3,
+        symbol=selected_symbol,
+    )
+    query_targets = _list_text(
+        strategist.get("news_query_targets")
+        if strategist.get("news_query_targets") is not None
+        else ranked.get("news_query_targets"),
+        limit=8,
+        max_len=80,
+    )
+
+    return {
+        "selected_score_total": safe_float(selected_score, 0.0),
+        "positive_contribution_total": positive_total,
+        "core_score_contributions": key_rows,
+        "sentiment_inputs": {
+            "news_sentiment_score": _optional_float(component_snapshot.get("news_sentiment")),
+            "global_sentiment_score": _optional_float(component_snapshot.get("global_sentiment")),
+            "blended_sentiment_component": _optional_float(component_snapshot.get("sentiment_component")),
+            "weighted_sentiment_score_contribution": safe_float(score_breakdown.get("sentiment"), 0.0),
+        },
+        "theme_alignment_trace": {
+            "theme_boost_score_contribution": safe_float(score_breakdown.get("theme_boost"), 0.0),
+            "theme_source_matched": ("sector_theme" in selected_sources) or safe_float(score_breakdown.get("theme_boost"), 0.0) > 0.0,
+            "strategist_themes": _list_text(strategist.get("themes"), limit=6, max_len=80),
+        },
+        "news_linkage_trace": {
+            "news_query_targets": query_targets,
+            "symbol_headlines_used": symbol_headlines,
+            "market_headlines_used": market_headlines,
+            "symbol_headline_count": len(symbol_headlines),
+            "market_headline_count": len(market_headlines),
+        },
+    }
+
+
+def _attach_news_scanner_contribution(
+    *,
+    scanner_reason_human: Dict[str, Any],
+    scanner_selection_trace: Dict[str, Any],
+    canonical_scanner: Dict[str, Any],
+    canonical_strategist: Dict[str, Any],
+    selected_symbol: str,
+) -> None:
+    selected_candidate = (
+        canonical_scanner.get("selected_candidate")
+        if isinstance(canonical_scanner.get("selected_candidate"), dict)
+        else {}
+    )
+    selected_sources = [
+        str(x or "")
+        for x in list(
+            scanner_reason_human.get("selected_sources")
+            or selected_candidate.get("sources")
+            or []
+        )
+        if str(x or "").strip()
+    ]
+    score_breakdown = (
+        scanner_reason_human.get("score_breakdown")
+        if isinstance(scanner_reason_human.get("score_breakdown"), dict)
+        else selected_candidate.get("score_breakdown")
+        if isinstance(selected_candidate.get("score_breakdown"), dict)
+        else {}
+    )
+    component_snapshot = (
+        selected_candidate.get("component_snapshot")
+        if isinstance(selected_candidate.get("component_snapshot"), dict)
+        else {}
+    )
+    selected_score = (
+        scanner_reason_human.get("selected_score")
+        if scanner_reason_human.get("selected_score") not in (None, "")
+        else selected_candidate.get("score_total")
+    )
+    news_scanner_contribution = _build_news_scanner_contribution_trace(
+        selected_symbol=selected_symbol,
+        selected_score=selected_score,
+        selected_sources=selected_sources,
+        score_breakdown=score_breakdown if isinstance(score_breakdown, dict) else {},
+        component_snapshot=component_snapshot if isinstance(component_snapshot, dict) else {},
+        strategist=canonical_strategist if isinstance(canonical_strategist, dict) else {},
+    )
+    _set_or_replace_placeholder(
+        scanner_reason_human,
+        "news_scanner_contribution",
+        dict(news_scanner_contribution),
+    )
+    _set_or_replace_placeholder(
+        scanner_selection_trace,
+        "news_scanner_contribution",
+        dict(news_scanner_contribution),
+    )
+    bullets = [str(x or "") for x in list(scanner_reason_human.get("bullets") or []) if str(x or "").strip()]
+    if not any(row.startswith("Core score contributions:") for row in bullets):
+        bullets.append(
+            "Core score contributions: "
+            f"trading_value {safe_float((score_breakdown or {}).get('trading_value'), 0.0):+.3f}, "
+            f"momentum {safe_float((score_breakdown or {}).get('momentum'), 0.0):+.3f}, "
+            f"trend {safe_float((score_breakdown or {}).get('trend'), 0.0):+.3f}, "
+            f"theme_boost {safe_float((score_breakdown or {}).get('theme_boost'), 0.0):+.3f}, "
+            f"sentiment {safe_float((score_breakdown or {}).get('sentiment'), 0.0):+.3f}"
+        )
+    if not any(row.startswith("Theme linkage:") for row in bullets):
+        theme_trace = news_scanner_contribution.get("theme_alignment_trace") if isinstance(news_scanner_contribution.get("theme_alignment_trace"), dict) else {}
+        bullets.append(
+            "Theme linkage: "
+            f"matched={bool(theme_trace.get('theme_source_matched'))}, "
+            f"theme_boost={safe_float(theme_trace.get('theme_boost_score_contribution'), 0.0):+.3f}, "
+            f"themes={', '.join(_list_text(theme_trace.get('strategist_themes'), limit=4, max_len=60)) or 'none captured'}"
+        )
+    if not any(row.startswith("Sentiment input trace:") for row in bullets):
+        sentiment_inputs = news_scanner_contribution.get("sentiment_inputs") if isinstance(news_scanner_contribution.get("sentiment_inputs"), dict) else {}
+        if any(sentiment_inputs.get(key) is not None for key in ("news_sentiment_score", "global_sentiment_score", "blended_sentiment_component")):
+            bullets.append(
+                "Sentiment input trace: "
+                f"news={safe_float(sentiment_inputs.get('news_sentiment_score'), 0.0):+.3f}, "
+                f"global={safe_float(sentiment_inputs.get('global_sentiment_score'), 0.0):+.3f}, "
+                f"blended={safe_float(sentiment_inputs.get('blended_sentiment_component'), 0.0):+.3f}, "
+                f"weighted_score={safe_float(sentiment_inputs.get('weighted_sentiment_score_contribution'), 0.0):+.3f}"
+            )
+    if not any(row.startswith("News linkage to scanner:") for row in bullets):
+        news_linkage = news_scanner_contribution.get("news_linkage_trace") if isinstance(news_scanner_contribution.get("news_linkage_trace"), dict) else {}
+        if safe_int(news_linkage.get("symbol_headline_count"), 0) > 0 or safe_int(news_linkage.get("market_headline_count"), 0) > 0:
+            bullets.append(
+                "News linkage to scanner: "
+                f"symbol_headlines={safe_int(news_linkage.get('symbol_headline_count'), 0)}, "
+                f"market_headlines={safe_int(news_linkage.get('market_headline_count'), 0)}, "
+                f"query_targets={', '.join(_list_text(news_linkage.get('news_query_targets'), limit=5, max_len=60)) or 'not captured'}"
+            )
+    if bullets:
+        scanner_reason_human["bullets"] = bullets[:14]
 
 
 def _normalize_stop_thresholds(thresholds: Dict[str, Any]) -> Dict[str, Any]:
@@ -745,9 +989,7 @@ def _section_source_entry(
 
 def build_section_provenance(bundle_out: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
     artifacts = bundle_out.get("artifacts") if isinstance(bundle_out.get("artifacts"), dict) else {}
-    evidence_provenance = (
-        bundle_out.get("evidence_provenance") if isinstance(bundle_out.get("evidence_provenance"), dict) else {}
-    )
+    evidence_provenance = _derive_evidence_provenance(bundle_out)
 
     def _agent_source(agent: str) -> str:
         return str(evidence_provenance.get(agent) or "fallback").strip().lower()
@@ -1135,6 +1377,7 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
     )
     selected_sources = [str(x or "") for x in list(selected.get("sources") or []) if str(x or "").strip()]
     score_breakdown = selected.get("score_breakdown") if isinstance(selected.get("score_breakdown"), dict) else {}
+    component_snapshot = selected.get("component_snapshot") if isinstance(selected.get("component_snapshot"), dict) else {}
     preview_map = {
         str(row.get("symbol") or "").strip(): dict(row)
         for row in list(scanner.get("candidate_preview") or [])
@@ -1161,6 +1404,14 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
     selected_confidence = selected.get("confidence")
     if selected_confidence in (None, ""):
         selected_confidence = selected_row.get("confidence")
+    news_scanner_contribution = _build_news_scanner_contribution_trace(
+        selected_symbol=selected_symbol,
+        selected_score=selected_score,
+        selected_sources=selected_sources,
+        score_breakdown=score_breakdown,
+        component_snapshot=component_snapshot,
+        strategist=strategist if isinstance(strategist, dict) else {},
+    )
     top_reasons: List[str] = [
         f"highest combined scanner score ({safe_float(selected_score, 0.0):.3f})",
         f"selected from {', '.join(selected_sources) if selected_sources else 'captured scanner sources'}",
@@ -1225,7 +1476,39 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
         f"Selected because: {top_reasons[0]}",
         f"Selection sources: {', '.join(selected_sources) if selected_sources else 'not captured'}",
         f"Chart / feature coverage: {coverage['present']}/{coverage['total']}" if coverage["total"] else "Chart / feature coverage: not captured",
+        (
+            "Core score contributions: "
+            f"trading_value {safe_float(score_breakdown.get('trading_value'), 0.0):+.3f}, "
+            f"momentum {safe_float(score_breakdown.get('momentum'), 0.0):+.3f}, "
+            f"trend {safe_float(score_breakdown.get('trend'), 0.0):+.3f}, "
+            f"theme_boost {safe_float(score_breakdown.get('theme_boost'), 0.0):+.3f}, "
+            f"sentiment {safe_float(score_breakdown.get('sentiment'), 0.0):+.3f}"
+        ),
     ]
+    sentiment_inputs = news_scanner_contribution.get("sentiment_inputs") if isinstance(news_scanner_contribution.get("sentiment_inputs"), dict) else {}
+    if any(sentiment_inputs.get(key) is not None for key in ("news_sentiment_score", "global_sentiment_score", "blended_sentiment_component")):
+        bullets.append(
+            "Sentiment input trace: "
+            f"news={safe_float(sentiment_inputs.get('news_sentiment_score'), 0.0):+.3f}, "
+            f"global={safe_float(sentiment_inputs.get('global_sentiment_score'), 0.0):+.3f}, "
+            f"blended={safe_float(sentiment_inputs.get('blended_sentiment_component'), 0.0):+.3f}, "
+            f"weighted_score={safe_float(sentiment_inputs.get('weighted_sentiment_score_contribution'), 0.0):+.3f}"
+        )
+    theme_trace = news_scanner_contribution.get("theme_alignment_trace") if isinstance(news_scanner_contribution.get("theme_alignment_trace"), dict) else {}
+    bullets.append(
+        "Theme linkage: "
+        f"matched={bool(theme_trace.get('theme_source_matched'))}, "
+        f"theme_boost={safe_float(theme_trace.get('theme_boost_score_contribution'), 0.0):+.3f}, "
+        f"themes={', '.join(_list_text(theme_trace.get('strategist_themes'), limit=4, max_len=60)) or 'none captured'}"
+    )
+    news_linkage = news_scanner_contribution.get("news_linkage_trace") if isinstance(news_scanner_contribution.get("news_linkage_trace"), dict) else {}
+    if safe_int(news_linkage.get("symbol_headline_count"), 0) > 0 or safe_int(news_linkage.get("market_headline_count"), 0) > 0:
+        bullets.append(
+            "News linkage to scanner: "
+            f"symbol_headlines={safe_int(news_linkage.get('symbol_headline_count'), 0)}, "
+            f"market_headlines={safe_int(news_linkage.get('market_headline_count'), 0)}, "
+            f"query_targets={', '.join(_list_text(news_linkage.get('news_query_targets'), limit=5, max_len=60)) or 'not captured'}"
+        )
     if top_candidates:
         bullets.append(
             "Top candidates: "
@@ -1249,6 +1532,7 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
         },
         scanner,
     )
+    scanner_selection_trace["news_scanner_contribution"] = dict(news_scanner_contribution)
     return {
         "selected_symbol": selected_symbol,
         "selected_rank": selected_rank,
@@ -1266,6 +1550,7 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
         "ranked_candidates": list(scanner_selection_trace.get("ranked_candidates") or [])[:5],
         "selection_reason": clip(scanner_selection_trace.get("selection_reason"), max_len=260),
         "selected_symbol_score_drivers": dict(scanner_selection_trace.get("selected_symbol_score_drivers") or {}),
+        "news_scanner_contribution": dict(news_scanner_contribution),
         "scanner_selection_trace": dict(scanner_selection_trace or {}),
         "summary": (
             f"Scanner selected {selected_symbol or '-'} as rank #{selected_rank or 1} out of {universe_size or 0} candidates "
@@ -1339,6 +1624,20 @@ def enrich_scanner_reason_from_evidence(
             if not replaced_top_reason:
                 top_reasons.append(f"chart feature coverage {present}/{total}")
             out["top_reasons"] = top_reasons[:6]
+            selection_reason = clip(out.get("selection_reason"), max_len=260)
+            if selection_reason:
+                if "chart feature coverage " in selection_reason.lower():
+                    selection_reason = re.sub(
+                        r"chart feature coverage\s+\d+/\d+",
+                        f"chart feature coverage {present}/{total}",
+                        selection_reason,
+                        flags=re.IGNORECASE,
+                    )
+                else:
+                    selection_reason = clip(f"{selection_reason}; chart feature coverage {present}/{total}", max_len=260)
+            else:
+                selection_reason = f"chart feature coverage {present}/{total}"
+            out["selection_reason"] = selection_reason
 
     if why_selected:
         out["why_selected"] = why_selected
@@ -1355,14 +1654,37 @@ def enrich_scanner_reason_from_evidence(
         total = safe_int(coverage.get("total"), 0)
         updated_bullets: List[str] = []
         replaced_chart_bullet = False
+        coverage_detail_inserted = False
+        present_keys = [str(x or "") for x in list(coverage.get("present_keys") or []) if str(x or "").strip()]
+        missing_keys = [str(x or "") for x in list(coverage.get("missing_keys") or []) if str(x or "").strip()]
+        coverage_source = clip(coverage.get("source"), max_len=80)
+
+        def _append_coverage_details(target: List[str]) -> None:
+            nonlocal coverage_detail_inserted
+            if coverage_detail_inserted:
+                return
+            if present_keys:
+                target.append(
+                    "Chart features present: " + ", ".join(present_keys[:8]) + (", ..." if len(present_keys) > 8 else "")
+                )
+            if missing_keys:
+                target.append(
+                    "Chart features missing: " + ", ".join(missing_keys[:8]) + (", ..." if len(missing_keys) > 8 else "")
+                )
+            if coverage_source:
+                target.append(f"Chart feature coverage source: {coverage_source}")
+            coverage_detail_inserted = True
+
         for bullet in bullets:
             if bullet.lower().startswith("chart / feature coverage:"):
                 updated_bullets.append(f"Chart / feature coverage: {present}/{total}")
                 replaced_chart_bullet = True
+                _append_coverage_details(updated_bullets)
             else:
                 updated_bullets.append(bullet)
         if not replaced_chart_bullet and present > 0 and total > 0:
             updated_bullets.append(f"Chart / feature coverage: {present}/{total}")
+            _append_coverage_details(updated_bullets)
         bullets = updated_bullets
     if why_selected:
         bullets.append("Selection decision: " + "; ".join(why_selected))
@@ -1385,6 +1707,10 @@ def enrich_scanner_reason_from_evidence(
                 deduped.append(bullet)
                 seen.add(bullet)
         out["bullets"] = deduped[:12]
+    trace = out.get("scanner_selection_trace") if isinstance(out.get("scanner_selection_trace"), dict) else {}
+    if trace and coverage:
+        trace["chart_feature_coverage"] = dict(coverage)
+        out["scanner_selection_trace"] = trace
     return out
 
 
@@ -1421,10 +1747,11 @@ def _normalized_feature_coverage_from_scanner_evidence(
     if not matched_row:
         return {}
 
+    reported = matched_row.get("feature_coverage") if isinstance(matched_row.get("feature_coverage"), dict) else {}
     snapshot = matched_row.get("compact_feature_snapshot") if isinstance(matched_row.get("compact_feature_snapshot"), dict) else {}
     if not snapshot:
         snapshot = matched_row.get("feature_snapshot") if isinstance(matched_row.get("feature_snapshot"), dict) else {}
-    if not snapshot:
+    if not snapshot and not reported:
         return {}
 
     keys = [
@@ -1441,17 +1768,24 @@ def _normalized_feature_coverage_from_scanner_evidence(
         "engine_regime",
         "engine_signal_score",
     ]
-    present_keys = [key for key in keys if snapshot.get(key) is not None]
-    missing_keys = [key for key in keys if snapshot.get(key) is None]
-    total = len(keys)
-    present = len(present_keys)
-    coverage_ratio = float(present) / float(total) if total else 0.0
-    if coverage_ratio >= 0.75:
-        quality = "strong"
-    elif coverage_ratio >= 0.5:
-        quality = "partial"
-    else:
-        quality = "weak"
+    computed_present_keys = [key for key in keys if snapshot.get(key) is not None]
+    computed_missing_keys = [key for key in keys if snapshot.get(key) is None]
+    computed_total = len(keys)
+    computed_present = len(computed_present_keys)
+    present = safe_int(reported.get("present"), computed_present)
+    total = safe_int(reported.get("total"), computed_total)
+    coverage_ratio = safe_float(reported.get("coverage_ratio"), float(present) / float(total) if total else 0.0)
+    quality = str(reported.get("quality") or "").strip().lower()
+    if not quality:
+        if coverage_ratio >= 0.75:
+            quality = "strong"
+        elif coverage_ratio >= 0.5:
+            quality = "partial"
+        else:
+            quality = "weak"
+    present_keys = [str(x or "") for x in list(reported.get("present_keys") or computed_present_keys) if str(x or "").strip()]
+    missing_keys = [str(x or "") for x in list(reported.get("missing_keys") or computed_missing_keys) if str(x or "").strip()]
+    coverage_source = "feature_coverage_reported" if reported else "snapshot_derived"
     return {
         "present": present,
         "total": total,
@@ -1459,6 +1793,7 @@ def _normalized_feature_coverage_from_scanner_evidence(
         "quality": quality,
         "present_keys": present_keys,
         "missing_keys": missing_keys,
+        "source": coverage_source,
     }
 
 
@@ -2247,6 +2582,146 @@ def collect_story_warnings(
     return deduped[:10]
 
 
+def _normalize_trade_lifecycle_for_story_input(
+    bundle_out: Dict[str, Any],
+    *,
+    trade_lifecycle: Dict[str, Any] | None = None,
+    existing_story_input: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    lifecycle_src = (
+        trade_lifecycle
+        if isinstance(trade_lifecycle, dict)
+        else bundle_out.get("lifecycle")
+        if isinstance(bundle_out.get("lifecycle"), dict)
+        else {}
+    )
+    if not lifecycle_src:
+        return {}
+
+    out = dict(lifecycle_src)
+    entry_ctx = (
+        lifecycle_src.get("entry")
+        if isinstance(lifecycle_src.get("entry"), dict)
+        else bundle_out.get("entry")
+        if isinstance(bundle_out.get("entry"), dict)
+        else {}
+    )
+    holding_ctx = (
+        lifecycle_src.get("holding")
+        if isinstance(lifecycle_src.get("holding"), dict)
+        else lifecycle_src.get("hold")
+        if isinstance(lifecycle_src.get("hold"), dict)
+        else bundle_out.get("holding")
+        if isinstance(bundle_out.get("holding"), dict)
+        else bundle_out.get("hold")
+        if isinstance(bundle_out.get("hold"), dict)
+        else {}
+    )
+    exit_ctx = (
+        lifecycle_src.get("exit")
+        if isinstance(lifecycle_src.get("exit"), dict)
+        else bundle_out.get("exit")
+        if isinstance(bundle_out.get("exit"), dict)
+        else {}
+    )
+    summary_ctx = (
+        lifecycle_src.get("summary")
+        if isinstance(lifecycle_src.get("summary"), dict)
+        else bundle_out.get("trade_outcome")
+        if isinstance(bundle_out.get("trade_outcome"), dict)
+        else bundle_out.get("summary")
+        if isinstance(bundle_out.get("summary"), dict)
+        else {}
+    )
+    reporter_ctx = (
+        lifecycle_src.get("reporter")
+        if isinstance(lifecycle_src.get("reporter"), dict)
+        else {}
+    )
+    if not reporter_ctx:
+        reporter_status_human = (
+            bundle_out.get("reporter_status_human")
+            if isinstance(bundle_out.get("reporter_status_human"), dict)
+            else {}
+        )
+        if reporter_status_human:
+            reporter_ctx = {
+                "status_human": str(reporter_status_human.get("status") or ""),
+                "summary": str(reporter_status_human.get("summary") or ""),
+                "grade": str(reporter_status_human.get("grade") or ""),
+                "improvement_points": list(reporter_status_human.get("bullets") or []),
+            }
+
+    out["entry"] = dict(entry_ctx)
+    out["holding"] = dict(holding_ctx)
+    out["exit"] = dict(exit_ctx)
+    out["summary"] = dict(summary_ctx)
+    out["reporter"] = dict(reporter_ctx)
+    out["trade_id"] = str(
+        out.get("trade_id")
+        or bundle_out.get("trade_id")
+        or (existing_story_input or {}).get("trade_id")
+        or ""
+    ).strip()
+    out["symbol"] = str(
+        out.get("symbol")
+        or bundle_out.get("symbol")
+        or (entry_ctx.get("symbol") if isinstance(entry_ctx, dict) else "")
+        or (exit_ctx.get("symbol") if isinstance(exit_ctx, dict) else "")
+        or (existing_story_input or {}).get("symbol")
+        or ""
+    ).strip()
+    out["status"] = str(
+        out.get("status")
+        or bundle_out.get("trade_lifecycle_status")
+        or (existing_story_input or {}).get("status")
+        or ""
+    ).strip()
+    if not out.get("execution_details") and isinstance(bundle_out.get("execution_details"), dict):
+        out["execution_details"] = dict(bundle_out.get("execution_details") or {})
+    if (
+        not out.get("same_day_reporter_linkage")
+        and isinstance(bundle_out.get("same_day_reporter_linkage"), dict)
+    ):
+        out["same_day_reporter_linkage"] = dict(bundle_out.get("same_day_reporter_linkage") or {})
+    if (
+        not out.get("failure_classification")
+        and isinstance(bundle_out.get("failure_classification"), dict)
+    ):
+        out["failure_classification"] = dict(bundle_out.get("failure_classification") or {})
+    return out
+
+
+def build_trade_story_input_from_bundle(
+    bundle_out: Dict[str, Any],
+    *,
+    trade_lifecycle: Dict[str, Any] | None = None,
+    existing_story_input: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    normalized_lifecycle = _normalize_trade_lifecycle_for_story_input(
+        bundle_out,
+        trade_lifecycle=trade_lifecycle,
+        existing_story_input=existing_story_input,
+    )
+    story_input = build_trade_story_input(
+        bundle_out,
+        trade_lifecycle=normalized_lifecycle if normalized_lifecycle else trade_lifecycle,
+    )
+    existing = existing_story_input if isinstance(existing_story_input, dict) else {}
+    for key in (
+        "report_runtime_mode",
+        "skip_separated_report_llm",
+        "entry_strategist_run_id",
+        "strategy_anchor_run_id",
+    ):
+        if key not in story_input and key in existing:
+            story_input[key] = existing.get(key)
+    for key in ("trade_id", "day", "run_id"):
+        if story_input.get(key) in (None, "", [], {}) and existing.get(key) not in (None, "", [], {}):
+            story_input[key] = existing.get(key)
+    return story_input
+
+
 def build_trade_story_input(
     bundle_out: Dict[str, Any],
     *,
@@ -2255,7 +2730,7 @@ def build_trade_story_input(
     story_contract = bundle_out.get("story_contract") if isinstance(bundle_out.get("story_contract"), dict) else {}
     section_provenance = build_section_provenance(bundle_out)
     canonical_agent_artifacts = dict(bundle_out.get("canonical_agent_artifacts") or {})
-    evidence_provenance = dict(bundle_out.get("evidence_provenance") or {})
+    evidence_provenance = _derive_evidence_provenance(bundle_out)
     # Reporting layers prefer the canonical reasoning snapshot when it is already
     # mirrored into bundle inputs; otherwise they derive a compatible mirror.
     bundle_reasoning_trace = bundle_out.get("reasoning_trace") if isinstance(bundle_out.get("reasoning_trace"), dict) else {}
@@ -2276,10 +2751,15 @@ def build_trade_story_input(
         summary = lifecycle.get("summary") if isinstance(lifecycle.get("summary"), dict) else {}
         reporter = lifecycle.get("reporter") if isinstance(lifecycle.get("reporter"), dict) else {}
         symbol = str(lifecycle.get("symbol") or (bundle_out.get("execution") or {}).get("symbol") or "")
-        status = str(lifecycle.get("status") or "open")
+        authoritative_status = str(bundle_out.get("trade_lifecycle_status") or lifecycle.get("status") or "open").strip() or "open"
+        status = authoritative_status
         entry_action = str(entry.get("action") or (bundle_out.get("execution") or {}).get("action") or "BUY")
         exit_action = str(exit_ctx.get("action") or "")
-        lifecycle_action = exit_action or entry_action or "WAIT"
+        exit_evidence = _has_substantive_exit_evidence(exit_ctx)
+        if status.lower() == "open" and not exit_evidence:
+            lifecycle_action = "HOLD" if entry_action else "WAIT"
+        else:
+            lifecycle_action = exit_action or entry_action or "WAIT"
         market_context_human = dict(bundle_out.get("market_context_human") or {})
         scanner_reason_human = dict(bundle_out.get("scanner_reason_human") or {})
         scanner_evidence = dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {})
@@ -2377,6 +2857,13 @@ def build_trade_story_input(
             fallback_candidate_titles=market_context_human.get("candidate_news_titles"),
         )
         scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
+        _attach_news_scanner_contribution(
+            scanner_reason_human=scanner_reason_human,
+            scanner_selection_trace=scanner_selection_trace,
+            canonical_scanner=canonical_scanner,
+            canonical_strategist=canonical_strategist,
+            selected_symbol=selected_symbol,
+        )
         ranked_symbols = [
             str(row.get("symbol") or "").strip()
             for row in list(scanner_selection_trace.get("ranked_candidates") or [])
@@ -2517,6 +3004,11 @@ def build_trade_story_input(
             )
             if commander_source_priority:
                 reasoning_provenance["source_priority"] = list(commander_source_priority)
+        story_artifacts = dict(bundle_out.get("artifacts") or {})
+        if isinstance(lifecycle.get("artifacts"), dict):
+            for key, value in dict(lifecycle.get("artifacts") or {}).items():
+                if key not in story_artifacts or _is_empty_placeholder(story_artifacts.get(key)):
+                    story_artifacts[key] = value
         story_out = {
             "schema_version": "trade_story_input.v2",
             "day": str(bundle_out.get("day") or ""),
@@ -2597,6 +3089,7 @@ def build_trade_story_input(
             "monitor_timeline": dict(bundle_out.get("monitor_timeline") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
             "monitor_stop_policy_trace": dict(monitor_stop_policy_trace),
             "monitor_blocker_trace": dict(monitor_blocker_trace),
+            "artifacts": story_artifacts,
             "canonical_agent_artifacts": canonical_agent_artifacts,
             "evidence_provenance": evidence_provenance,
             "section_provenance": dict(section_provenance),
@@ -2741,6 +3234,13 @@ def build_trade_story_input(
         fallback_candidate_titles=market_context_human.get("candidate_news_titles"),
     )
     scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
+    _attach_news_scanner_contribution(
+        scanner_reason_human=scanner_reason_human,
+        scanner_selection_trace=scanner_selection_trace,
+        canonical_scanner=canonical_scanner,
+        canonical_strategist=canonical_strategist,
+        selected_symbol=selected_symbol,
+    )
     ranked_symbols = [
         str(row.get("symbol") or "").strip()
         for row in list(scanner_selection_trace.get("ranked_candidates") or [])
@@ -2804,8 +3304,15 @@ def build_trade_story_input(
         "story_id": str(bundle_out.get("story_id") or ""),
         "run_id": str(bundle_out.get("run_id") or ""),
         "symbol": str((bundle_out.get("execution") or {}).get("symbol") or ""),
-        "action": str((bundle_out.get("execution") or {}).get("action") or ""),
-        "status": str(bundle_out.get("trade_lifecycle_status") or "closed"),
+        "action": (
+            "HOLD"
+            if str(bundle_out.get("trade_lifecycle_status") or "").strip().lower() == "open"
+            and not _has_substantive_exit_evidence(
+                lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+            )
+            else str((bundle_out.get("execution") or {}).get("action") or "")
+        ),
+        "status": str(bundle_out.get("trade_lifecycle_status") or lifecycle.get("status") or "closed"),
         "story_type": str(story_contract.get("story_type") or ""),
         "execution_mode_label": str(story_contract.get("execution_mode_label") or ""),
         "market_context_human": market_context_human,

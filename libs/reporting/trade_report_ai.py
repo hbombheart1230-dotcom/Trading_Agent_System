@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ast
+import html
 import json
 import logging
 import os
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -43,6 +46,38 @@ def _resolve_intraday_report_execution_profile(source: Dict[str, Any] | None) ->
             "retry_backoff_sec": 0.0,
         },
     )
+
+
+def _router_chat_with_hard_timeout(
+    router: LLMRouter,
+    role: str,
+    messages: List[Dict[str, Any]],
+    *,
+    policy: Optional[Dict[str, Any]] = None,
+    hard_timeout_sec: Optional[float] = None,
+) -> str:
+    if hard_timeout_sec in (None, "", 0):
+        return router.chat(role, messages, policy=policy)
+    timeout_value = max(0.1, float(hard_timeout_sec or 0.0))
+    result: Dict[str, Any] = {}
+    failure: Dict[str, Exception] = {}
+    done = threading.Event()
+
+    def _run() -> None:
+        try:
+            result["value"] = router.chat(role, messages, policy=policy)
+        except Exception as exc:
+            failure["exc"] = exc
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=_run, name="trade-report-chat", daemon=True)
+    worker.start()
+    if not done.wait(timeout_value):
+        raise TimeoutError(f"trade_report_ai hard timeout after {timeout_value:.1f}s")
+    if "exc" in failure:
+        raise failure["exc"]
+    return str(result.get("value") or "")
 
 
 def _utc_now_iso() -> str:
@@ -313,6 +348,28 @@ def _as_status(value: Any) -> str:
     return text
 
 
+def _action_from_exit_reason(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if "sell" in text or "매도" in text or "청산" in text:
+        return "SELL"
+    return ""
+
+
+def _is_open_position_placeholder_reason(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    markers = (
+        "position is still open",
+        "monitor is watching for exit",
+        "still open",
+        "포지션이 아직",
+    )
+    return any(token in text for token in markers)
+
+
 def _present_fact(value: Any) -> bool:
     if value is None:
         return False
@@ -537,6 +594,29 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
     )
     for candidate in (monitor_reason.get("pnl_pct"), monitor_reason.get("current_drawdown")):
         _set_fact_if_missing(resolved=resolved, data_source=data_source, field="pnl_pct", value=candidate, source="fallback")
+
+    # Closed-lifecycle reconciliation:
+    # If monitor entry decision(BUY) was captured first but lifecycle is closed, prefer
+    # explicit exit-side action evidence to prevent BUY+closed inconsistencies.
+    resolved_status = _as_status(resolved.get("status"))
+    resolved_action = _as_action(resolved.get("action"))
+    if resolved_status == "closed" and resolved_action == "BUY":
+        reconciled_action = ""
+        for candidate in (
+            _as_action(exit_summary.get("action")),
+            _as_action(lifecycle_exit.get("action")),
+            _as_action(_as_dict(story_input.get("execution")).get("action")),
+            _as_action(story_input.get("action")),
+            _action_from_exit_reason(resolved.get("exit_reason")),
+            _action_from_exit_reason(exit_summary.get("reason_human")),
+            _action_from_exit_reason(lifecycle.get("exit_reason")),
+        ):
+            if candidate in {"SELL", "EXIT"}:
+                reconciled_action = candidate
+                break
+        if reconciled_action:
+            resolved["action"] = reconciled_action
+            data_source["action"] = "closed_lifecycle_reconcile"
 
     monitor_decision = {
         "phase": _clip(canonical_monitor.get("decision_phase"), max_len=32) or "unavailable",
@@ -1003,6 +1083,22 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
     status_text = _clip(shared_seed.get("lifecycle_status"), max_len=32) or _clip(out.get("status"), max_len=32) or "closed"
     story_type = _clip(story_input.get("story_type"), max_len=40) or _clip(out.get("story_type"), max_len=40)
     execution_mode = _clip(story_input.get("execution_mode_label"), max_len=80) or _clip(out.get("execution_mode_label"), max_len=80)
+    if status_text.lower() == "closed" and str(action or "").upper() == "BUY":
+        resolved_trade_facts = (
+            shared_seed.get("resolved_trade_facts")
+            if isinstance(shared_seed.get("resolved_trade_facts"), dict)
+            else {}
+        )
+        report_shared_facts = out.get("shared_facts") if isinstance(out.get("shared_facts"), dict) else {}
+        report_exit_decision = out.get("exit_decision") if isinstance(out.get("exit_decision"), dict) else {}
+        for candidate in (
+            _action_from_exit_reason(resolved_trade_facts.get("exit_reason")),
+            _action_from_exit_reason(report_shared_facts.get("exit_reason")),
+            _action_from_exit_reason(report_exit_decision.get("summary")),
+        ):
+            if candidate in {"SELL", "EXIT"}:
+                action = candidate
+                break
 
     out["symbol"] = symbol
     out["action"] = action
@@ -1033,6 +1129,7 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
     for section_key in (
         "executive_summary",
         "market_context_at_entry",
+        "strategist_summary",
         "why_this_symbol_was_chosen",
         "entry_decision",
         "holding_monitoring_story",
@@ -1076,17 +1173,37 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
         if not current_summary or _is_low_information_bullet(current_summary):
             market_section["summary"] = "Strategist evidence unavailable for this trade. Market-context detail is limited."
         out["market_context_at_entry"] = market_section
+    resolved_trade_facts = dict(shared_seed.get("resolved_trade_facts") or {})
+    resolved_data_source = dict((_as_dict(resolved_trade_facts).get("data_source")))
+    resolved_exit_reason = _clip(shared_seed.get("exit_reason"), max_len=280) or "unavailable"
+    report_shared_facts = out.get("shared_facts") if isinstance(out.get("shared_facts"), dict) else {}
+    report_exit_decision = out.get("exit_decision") if isinstance(out.get("exit_decision"), dict) else {}
+    if status_text.lower() == "closed" and (
+        _is_open_position_placeholder_reason(resolved_exit_reason)
+        or str(resolved_exit_reason or "").strip().lower() in {"", "unavailable"}
+    ):
+        for candidate in (
+            _clip(report_shared_facts.get("exit_reason"), max_len=280),
+            _clip(report_exit_decision.get("summary"), max_len=280),
+        ):
+            if candidate and not _is_open_position_placeholder_reason(candidate):
+                resolved_exit_reason = candidate
+                resolved_trade_facts["exit_reason"] = candidate
+                resolved_data_source["exit_reason"] = "normalize_existing_report"
+                resolved_trade_facts["data_source"] = dict(resolved_data_source)
+                break
+
     out["shared_facts"] = {
         "symbol": symbol,
         "trade_id": _clip(shared_seed.get("trade_id"), max_len=120),
         "action": action,
         "status": status_text,
         "holding_duration": _clip(shared_seed.get("holding_duration"), max_len=80) or "unavailable",
-        "exit_reason": _clip(shared_seed.get("exit_reason"), max_len=280) or "unavailable",
+        "exit_reason": resolved_exit_reason,
         "pnl": shared_seed.get("pnl", "unavailable"),
         "pnl_pct": shared_seed.get("pnl_pct", "unavailable"),
-        "data_source": dict((_as_dict(shared_seed.get("resolved_trade_facts")).get("data_source"))),
-        "resolved_trade_facts": dict(shared_seed.get("resolved_trade_facts") or {}),
+        "data_source": dict(resolved_data_source),
+        "resolved_trade_facts": dict(resolved_trade_facts),
         "lifecycle_action": action,
         "lifecycle_status": status_text,
         "monitor_decision": dict(shared_seed.get("monitor_decision") or {}),
@@ -1264,49 +1381,561 @@ def _compact_monitor_snapshot(section: Any) -> Dict[str, Any]:
     return {key: value for key, value in out.items() if value not in ("", None, [])}
 
 
-def _build_market_context_bullets(section: Any) -> List[str]:
-    data = section if isinstance(section, dict) else {}
-    bullets = _listify(data.get("bullets"), max_items=12, max_len=260)
-    extras: List[str] = []
-    existing_prefixes = {
-        prefix
-        for prefix in (
-            "News input:",
-            "News query targets:",
-            "Key strategist inputs:",
-            "Strategist candidate hints:",
-            "Strategist market headlines:",
-            "Strategist symbol headlines:",
-            "Market news titles:",
-            "Candidate news titles:",
-        )
-        if any(str(row).startswith(prefix) for row in bullets)
+def _is_market_context_noise_bullet(value: Any) -> bool:
+    text = _clip(value, max_len=260).strip()
+    if not text:
+        return True
+    lowered = text.lower()
+    if lowered.startswith("news input:"):
+        return True
+    if lowered.startswith("news query targets:"):
+        return True
+    if "headlines were considered across" in lowered:
+        return True
+    if text.startswith("뉴스 입력 요약은"):
+        return True
+    if text.startswith("뉴스 조회 대상은"):
+        return True
+    if "관련 헤드라인" in text and "반영" in text:
+        return True
+    return False
+
+
+def _sanitize_market_context_summary(value: Any) -> str:
+    text = _clip(value, max_len=600).strip()
+    if not text:
+        return ""
+    cleaned = re.sub(
+        r"[^.]*\b\d+\s*headlines were considered across \d+\s*targets[^.]*\.?\s*",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"[^.]*관련 헤드라인\s*\d+건[^.]*\.?\s*",
+        " ",
+        cleaned,
+    )
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" .")
+    return cleaned or text
+
+
+def _num_opt(value: Any) -> Optional[float]:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _clean_news_title(value: Any, *, max_len: int = 220) -> str:
+    text = html.unescape(_clip(value, max_len=max_len).strip())
+    if not text:
+        return ""
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" .;")
+    return text
+
+
+def _market_token_label(value: Any) -> str:
+    raw = _clip(value, max_len=80).strip().lower()
+    mapping = {
+        "neutral": "중립",
+        "bullish": "강세",
+        "bearish": "약세",
+        "pullback": "눌림목",
+        "breakout": "돌파",
+        "trend": "추세",
+        "defensive": "방어적",
+        "risk_off": "위험회피",
+        "risk_on": "위험선호",
+        "not_captured": "직접 캡처되지 않음",
+        "unavailable": "확인 불가",
     }
-    news_input = _clip(data.get("news_input_summary"), max_len=220)
-    news_targets = ", ".join(_listify(data.get("news_query_targets"), max_items=6, max_len=80))
-    key_events = "; ".join(_listify(data.get("key_events_hint"), max_items=4, max_len=160))
-    candidate_hints = ", ".join(_listify(data.get("candidate_hints"), max_items=6, max_len=24))
-    strategist_market_headlines = "; ".join(_listify(data.get("market_headlines"), max_items=3, max_len=120))
-    strategist_symbol_headlines = "; ".join(_listify(data.get("symbol_headlines"), max_items=3, max_len=120))
-    market_titles = "; ".join(_listify(data.get("market_news_titles"), max_items=3, max_len=120))
-    candidate_titles = "; ".join(_listify(data.get("candidate_news_titles"), max_items=3, max_len=120))
-    if news_input and "News input:" not in existing_prefixes:
-        extras.append(f"뉴스 입력 요약은 {news_input}입니다.")
-    if news_targets and "News query targets:" not in existing_prefixes:
-        extras.append(f"뉴스 조회 대상은 {news_targets}입니다.")
-    if key_events and "Key strategist inputs:" not in existing_prefixes:
-        extras.append(f"전략가 핵심 입력은 {key_events}입니다.")
-    if market_titles and "Market news titles:" not in existing_prefixes:
-        extras.append(f"주요 시장 뉴스는 {market_titles}입니다.")
-    if candidate_titles and "Candidate news titles:" not in existing_prefixes:
-        extras.append(f"후보 종목 관련 뉴스는 {candidate_titles}입니다.")
-    if candidate_hints and "Strategist candidate hints:" not in existing_prefixes:
-        extras.append(f"Strategist candidate hints: {candidate_hints}")
-    if strategist_market_headlines and "Strategist market headlines:" not in existing_prefixes:
-        extras.append(f"Strategist market headlines: {strategist_market_headlines}")
-    if strategist_symbol_headlines and "Strategist symbol headlines:" not in existing_prefixes:
-        extras.append(f"Strategist symbol headlines: {strategist_symbol_headlines}")
-    return _dedupe_list(bullets + extras, max_items=12, max_len=260)
+    return mapping.get(raw, _clip(value, max_len=80))
+
+
+def _theme_token_label(value: Any) -> str:
+    raw = _clip(value, max_len=80).strip().lower()
+    mapping = {
+        "broad_market_leaders": "브로드마켓 리더",
+        "semiconductor_leaders": "반도체 리더",
+        "high_beta_leaders": "고베타 리더",
+    }
+    return mapping.get(raw, _clip(value, max_len=80))
+
+
+def _theme_text(values: Any, *, max_items: int = 4) -> str:
+    labels = [_theme_token_label(item) for item in _listify(values, max_items=max_items, max_len=80)]
+    labels = [item for item in labels if item]
+    if len(labels) == 2:
+        return f"{labels[0]}와 {labels[1]}"
+    if len(labels) >= 3:
+        return ", ".join(labels[:-1]) + f", {labels[-1]}"
+    return labels[0] if labels else "not_captured"
+
+
+def _theme_linkage_label(values: Any) -> str:
+    theme_values = [str(item or "").strip().lower() for item in _listify(values, max_items=4, max_len=80)]
+    if "broad_market_leaders" in theme_values:
+        return "시장 주도 대형주 우위"
+    if "semiconductor_leaders" in theme_values:
+        return "반도체 리더 우위"
+    if "high_beta_leaders" in theme_values:
+        return "고베타 리더 우위"
+    themed = _theme_text(values, max_items=2)
+    return f"{themed} 맥락" if themed and themed != "not_captured" else "시장 맥락"
+
+
+def _risk_mode_label(value: Any) -> str:
+    raw = _clip(value, max_len=80).strip().lower()
+    mapping = {
+        "balanced": "균형형",
+        "conservative": "보수형",
+        "aggressive": "공격형",
+    }
+    return mapping.get(raw, _clip(value, max_len=80))
+
+
+def _strategy_constraint_label(value: Any) -> str:
+    raw = _clip(value, max_len=80).strip().lower()
+    mapping = {
+        "defensive_assets": "방어 자산",
+        "counter_trend_low_liquidity": "역추세 저유동성",
+        "high_beta_leaders": "고베타 리더",
+        "semiconductor_leaders": "반도체 리더",
+        "broad_market_leaders": "브로드마켓 리더",
+        "illiquid_microcap": "저유동성 소형주",
+        "headline_only_momentum": "헤드라인 추격 모멘텀",
+        "high_gap_speculative": "갭 급등 투기성 종목",
+    }
+    return mapping.get(raw, _clip(value, max_len=80))
+
+
+def _strategy_constraint_text(values: Any, *, max_items: int = 4) -> str:
+    labels = [_strategy_constraint_label(item) for item in _listify(values, max_items=max_items, max_len=80)]
+    labels = [item for item in labels if item]
+    if len(labels) >= 3:
+        return ", ".join(labels[:-1]) + f", {labels[-1]}"
+    if len(labels) == 2:
+        return ", ".join(labels)
+    return labels[0] if labels else ""
+
+
+def _scanner_bias_label(value: Any) -> str:
+    raw = _clip(value, max_len=80).strip().lower()
+    mapping = {
+        "prefer_shallow_pullback_candidates": "얕은 눌림목 후보 선호",
+        "penalize_overextended": "과확장 후보 패널티",
+        "prefer_reclaim_candidates": "재회복 후보 선호",
+        "prefer_volume_confirmation": "거래량 확인 후보 선호",
+    }
+    return mapping.get(raw, _clip(value, max_len=80))
+
+
+def _scanner_bias_text(summary: Any) -> str:
+    data = summary if isinstance(summary, dict) else {}
+    active_values = data.get("active_biases")
+    if isinstance(active_values, str):
+        raw = active_values.strip()
+        if raw.startswith("[") and raw.endswith("]"):
+            try:
+                parsed = ast.literal_eval(raw)
+                if isinstance(parsed, list):
+                    active_values = parsed
+            except Exception:
+                pass
+    active = [_scanner_bias_label(item) for item in _listify(active_values, max_items=6, max_len=80)]
+    active = [item for item in active if item]
+    strength = _clip(data.get("bias_strength"), max_len=24).strip().lower()
+    strength_label = {"low": "낮음", "medium": "중간", "high": "높음"}.get(strength, _clip(strength, max_len=24))
+    if active:
+        joined = ", ".join(active)
+        if strength_label:
+            return f"{joined} (강도 {strength_label})"
+        return joined
+    raw_summary = _clip(data.get("summary"), max_len=220)
+    return raw_summary
+
+
+def _extract_us_indices_snapshot(events: Any) -> Dict[str, float]:
+    for row in _listify(events, max_items=8, max_len=220):
+        match = re.search(
+            r"sp500=([+-]?\d+(?:\.\d+)?)%\s+nasdaq=([+-]?\d+(?:\.\d+)?)%\s+dow=([+-]?\d+(?:\.\d+)?)%",
+            str(row),
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        return {
+            "sp500": float(match.group(1)),
+            "nasdaq": float(match.group(2)),
+            "dow": float(match.group(3)),
+        }
+    return {}
+
+
+def _format_pct_points(value: Any) -> str:
+    number = _num_opt(value)
+    if number is None:
+        return "-"
+    return f"{number:+.2f}%"
+
+
+def _select_symbol_headline(headlines: Any, symbol: str = "") -> str:
+    cleaned_rows = [_clean_news_title(row) for row in _listify(headlines, max_items=6, max_len=240)]
+    cleaned_rows = [row for row in cleaned_rows if row]
+    if not cleaned_rows:
+        return ""
+    symbol_token = str(symbol or "").strip()
+    if symbol_token:
+        for row in cleaned_rows:
+            if row.startswith(f"{symbol_token}:"):
+                return row
+    return cleaned_rows[0]
+
+
+def _join_headlines(headlines: Any, *, max_items: int = 2, max_len: int = 180) -> str:
+    cleaned = [_clean_news_title(row, max_len=max_len) for row in _listify(headlines, max_items=max_items, max_len=max_len)]
+    cleaned = [row for row in cleaned if row]
+    return "; ".join(cleaned)
+
+
+def _build_market_context_summary(section: Any, *, scanner_reason: Dict[str, Any] | None = None) -> str:
+    market = section if isinstance(section, dict) else {}
+    scanner = scanner_reason if isinstance(scanner_reason, dict) else {}
+    regime = _market_token_label(market.get("regime")) or ""
+    market_sentiment = _market_token_label(market.get("market_sentiment")) or ""
+    selected_playbook = _market_token_label(market.get("selected_playbook")) or _clip(market.get("selected_playbook"), max_len=40)
+    playbook = _market_token_label(market.get("playbook")) or selected_playbook or "?? ??"
+    themes = _theme_text(market.get("themes") or market.get("preferred_themes"), max_items=3)
+    sentiment = _num_opt(market.get("global_sentiment_score"))
+    fear_index = market.get("fear_index") if isinstance(market.get("fear_index"), dict) else {}
+    vix_level = _num_opt(market.get("vix_level"))
+    if vix_level is None:
+        vix_level = _num_opt(fear_index.get("level"))
+    headline_count = int(float(market.get("headline_count") or 0)) if _num_opt(market.get("headline_count")) is not None else 0
+    query_count = int(float(market.get("news_query_count") or 0)) if _num_opt(market.get("news_query_count")) is not None else 0
+    us_indices = _extract_us_indices_snapshot(market.get("key_events") or market.get("key_events_hint"))
+    selected_symbol = _clip(scanner.get("selected_symbol"), max_len=24)
+
+    regime_missing = regime in {"", "?? ???? ??", "?? ??"}
+    sentiment_missing = market_sentiment in {"", "?? ???? ??", "?? ??"}
+    playbook_known = playbook not in {"", "?? ???? ??", "?? ??"}
+    themes_known = themes not in {"", "not_captured", "?? ???? ??", "?? ??"}
+
+    if regime_missing and sentiment_missing and (playbook_known or themes_known):
+        frame_bits: List[str] = []
+        if playbook_known:
+            frame_bits.append(f"{playbook} ????")
+        if themes_known:
+            frame_bits.append(f"{themes} ???")
+        frame_text = "? ".join(frame_bits) if frame_bits else "?? ???"
+        sentences: List[str] = [
+            f"?? ??? ?? ?? ?? ???? ???? ???? {frame_text}? ??????."
+        ]
+    else:
+        regime_text = regime or "?? ??"
+        sentences = [
+            f"??? {regime_text} ???? ???? ????? {playbook}? ??????."
+        ]
+
+    metric_bits: List[str] = []
+    if sentiment is not None:
+        metric_bits.append(f"??? ?? {sentiment:.3f}")
+    if vix_level is not None:
+        metric_bits.append(f"VIX {vix_level:.2f}")
+    if metric_bits:
+        sentences.append(", ".join(metric_bits) + " ???? ??? ???? ??? ??? ?????.")
+    if us_indices:
+        sentences.append(
+            f"?? ??? S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
+            f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}? ?????."
+        )
+    if headline_count or query_count:
+        sentences.append(
+            f"?? ??? ???? {headline_count}?? ?? ?? {query_count}?? ???? ??? ?? ??? ?? ??????."
+        )
+    if themes_known:
+        theme_sentence = f"??? ???? {themes} ??? ???? ??????."
+        if selected_symbol:
+            theme_sentence = f"??? ???? {themes} ??? ???? ????, ? ??? {selected_symbol} ?? ??? ??????."
+        sentences.append(theme_sentence)
+    return " ".join(sentences[:5]).strip()
+
+
+def _build_market_context_bullets(section: Any, *, scanner_reason: Dict[str, Any] | None = None) -> List[str]:
+    data = section if isinstance(section, dict) else {}
+    scanner = scanner_reason if isinstance(scanner_reason, dict) else {}
+    regime = _market_token_label(data.get("regime")) or ""
+    market_sentiment = _market_token_label(data.get("market_sentiment")) or ""
+    selected_playbook = _market_token_label(data.get("selected_playbook")) or _clip(data.get("selected_playbook"), max_len=40)
+    playbook = _market_token_label(data.get("playbook")) or selected_playbook or "?? ??"
+    themes = _theme_text(data.get("themes") or data.get("preferred_themes"), max_items=4)
+    sentiment = _num_opt(data.get("global_sentiment_score"))
+    fear_index = data.get("fear_index") if isinstance(data.get("fear_index"), dict) else {}
+    vix_level = _num_opt(data.get("vix_level"))
+    if vix_level is None:
+        vix_level = _num_opt(fear_index.get("level"))
+    vix_change = _num_opt(fear_index.get("change_pct"))
+    headline_count = int(float(data.get("headline_count") or 0)) if _num_opt(data.get("headline_count")) is not None else 0
+    query_count = int(float(data.get("news_query_count") or 0)) if _num_opt(data.get("news_query_count")) is not None else 0
+    us_indices = _extract_us_indices_snapshot(data.get("key_events") or data.get("key_events_hint"))
+    market_titles = _join_headlines(data.get("market_news_titles") or data.get("market_headlines"), max_items=2, max_len=180)
+    symbol_title = _select_symbol_headline(
+        data.get("candidate_news_titles") or data.get("symbol_headlines"),
+        _clip(scanner.get("selected_symbol"), max_len=24),
+    )
+    targets = ", ".join(_listify(data.get("news_query_targets"), max_items=7, max_len=40))
+
+    bullets: List[str] = []
+    regime_missing = regime in {"", "?? ???? ??", "?? ??"}
+    sentiment_missing = market_sentiment in {"", "?? ???? ??", "?? ??"}
+    themes_known = themes not in {"", "not_captured", "?? ???? ??", "?? ??"}
+    if regime_missing and sentiment_missing and (playbook != "?? ??" or themes_known):
+        bullets.append(
+            f"?? ??? ??? ?? ???? ???, ??? ?? ???? {playbook}, ?? ??? {themes if themes_known else '?? ??'}????."
+        )
+    else:
+        bullets.append(
+            f"?? ??? {regime or '?? ??'}, ?? ??? {market_sentiment or '?? ??'}, ????? {playbook}?? ?? ??? {themes}???."
+        )
+    if sentiment is not None or vix_level is not None:
+        metric = []
+        if sentiment is not None:
+            metric.append(f"??? ?? {sentiment:.3f}")
+        if vix_level is not None:
+            change_text = f", ?? ?? {_format_pct_points(vix_change)}" if vix_change is not None else ""
+            metric.append(f"VIX {vix_level:.2f}{change_text}")
+        bullets.append("??? ? ?? ??? " + ", ".join(metric) + "???.")
+    if us_indices:
+        bullets.append(
+            f"?? ??? S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
+            f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}???."
+        )
+    if headline_count or query_count or targets:
+        bullets.append(
+            f"?? ??? {headline_count}? ????? {query_count}? ?? ??"
+            + (f" ({targets})" if targets else "")
+            + "? ??????."
+        )
+    if market_titles:
+        bullets.append(f"?? ?? ??? {market_titles}???.")
+    if symbol_title:
+        bullets.append(f"?? ??/?? ??? {symbol_title}???.")
+    return _dedupe_list(bullets, max_items=8, max_len=260)
+
+
+def _build_strategist_summary_section(
+    market_context: Dict[str, Any],
+    scanner_reason: Dict[str, Any],
+) -> Dict[str, Any]:
+    regime = _market_token_label(market_context.get("regime")) or ""
+    market_sentiment = _market_token_label(market_context.get("market_sentiment")) or ""
+    selected_playbook = _market_token_label(market_context.get("selected_playbook")) or _clip(market_context.get("selected_playbook"), max_len=40)
+    playbook = _market_token_label(market_context.get("playbook")) or selected_playbook or "?? ??"
+    themes = _theme_text(market_context.get("themes") or market_context.get("preferred_themes"), max_items=3)
+    risk_mode = _risk_mode_label(market_context.get("risk_mode"))
+    preferred_themes = _strategy_constraint_text(market_context.get("preferred_themes"), max_items=4)
+    avoid_themes = _strategy_constraint_text(market_context.get("avoid_themes"), max_items=4)
+    scanner_bias = _scanner_bias_text(market_context.get("scanner_bias_summary"))
+    sentiment = _num_opt(market_context.get("global_sentiment_score"))
+    fear_index = market_context.get("fear_index") if isinstance(market_context.get("fear_index"), dict) else {}
+    vix_level = _num_opt(market_context.get("vix_level"))
+    if vix_level is None:
+        vix_level = _num_opt(fear_index.get("level"))
+    headline_count = int(float(market_context.get("headline_count") or 0)) if _num_opt(market_context.get("headline_count")) is not None else 0
+    query_count = int(float(market_context.get("news_query_count") or 0)) if _num_opt(market_context.get("news_query_count")) is not None else 0
+    query_targets = ", ".join(_listify(market_context.get("news_query_targets"), max_items=7, max_len=32))
+    stress_flags = _listify(market_context.get("stress_flags"), max_items=4, max_len=48)
+    candidate_hints = _listify(market_context.get("candidate_hints"), max_items=4, max_len=48)
+    selected_symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24)
+    selected_rank = scanner_reason.get("selected_rank")
+    selected_score = _num_opt(scanner_reason.get("selected_score"))
+    selected_sources = _scanner_source_text(scanner_reason.get("selected_sources"))
+    scanner_bias_applied = bool(scanner_reason.get("scanner_bias_applied"))
+    contribution = scanner_reason.get("news_scanner_contribution") if isinstance(scanner_reason.get("news_scanner_contribution"), dict) else {}
+    core = contribution.get("core_score_contributions") if isinstance(contribution.get("core_score_contributions"), dict) else {}
+    sentiment_inputs = contribution.get("sentiment_inputs") if isinstance(contribution.get("sentiment_inputs"), dict) else {}
+
+    def _core_value_opt(key: str) -> Optional[float]:
+        row = core.get(key)
+        if isinstance(row, dict):
+            return _num_opt(row.get("value"))
+        return _num_opt(row)
+
+    sentiment_contrib = _core_value_opt("sentiment")
+    if sentiment_contrib is None:
+        sentiment_contrib = _num_opt(sentiment_inputs.get("weighted_sentiment_score_contribution"))
+    theme_boost = _core_value_opt("theme_boost")
+    market_titles = _join_headlines(market_context.get("market_news_titles") or market_context.get("market_headlines"), max_items=1, max_len=110)
+    symbol_title = _select_symbol_headline(
+        market_context.get("candidate_news_titles") or market_context.get("symbol_headlines"),
+        selected_symbol,
+    )
+    theme_linkage = _theme_linkage_label(market_context.get("themes") or market_context.get("preferred_themes"))
+
+    regime_missing = regime in {"", "?? ???? ??", "?? ??"}
+    sentiment_missing = market_sentiment in {"", "?? ???? ??", "?? ??"}
+    themes_known = themes not in {"", "not_captured", "?? ???? ??", "?? ??"}
+
+    if regime_missing and sentiment_missing:
+        frame_bits: List[str] = []
+        if playbook not in {"", "?? ??", "?? ???? ??"}:
+            frame_bits.append(f"{playbook} ????")
+        if themes_known:
+            frame_bits.append(f"{themes} ???")
+        frame_text = "? ".join(frame_bits) if frame_bits else "?? ???"
+        summary_parts = [f"???? ?? ?? ????? ??? ?? ???? {frame_text}? ??????."]
+    else:
+        summary_parts = [f"???? ??? {regime or '?? ??'}, ?? ??? {market_sentiment or '?? ??'}?? ???? {playbook} ????? {themes} ???? ??????."]
+    if not stress_flags:
+        summary_parts.append("??? ???? ??? ?????.")
+    if selected_symbol:
+        scanner_sentence = f"? ??? ???? {selected_symbol} ??? ??????."
+        if selected_rank not in (None, "") and selected_score is not None:
+            scanner_sentence = f"? ??? ????? {selected_symbol}? {selected_rank}?, ?? ?? {selected_score:.3f}? ??? ? ??????."
+        summary_parts.append(scanner_sentence)
+    summary = " ".join(summary_parts)
+
+    bullets: List[str] = []
+    input_bits: List[str] = []
+    if sentiment is not None:
+        input_bits.append(f"??? ?? {sentiment:.3f}")
+    if vix_level is not None:
+        input_bits.append(f"VIX {vix_level:.2f}")
+    if headline_count or query_count:
+        input_bits.append(f"?? {headline_count}?/{query_count}??")
+    us_indices = _extract_us_indices_snapshot(market_context.get("key_events") or market_context.get("key_events_hint"))
+    if us_indices:
+        input_bits.append(
+            f"?? ?? S&P500 {_format_pct_points(us_indices.get('sp500'))}, Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}"
+        )
+    if input_bits:
+        bullets.append("?? ??? " + ", ".join(input_bits) + "???.")
+
+    if regime_missing and sentiment_missing:
+        interpretation_bits = [f"???? {playbook}"]
+        if themes_known:
+            interpretation_bits.append(f"?? ?? {themes}")
+        interpretation_bits.append("???? ?? ??" if not stress_flags else "???? ?? " + ", ".join(stress_flags))
+        bullets.append("?? ??? ?? ????? ?? ?? ?? " + ", ".join(interpretation_bits) + " ???????.")
+    else:
+        interpretation_bits = [f"?? ?? {regime}", f"?? ?? {market_sentiment}", f"???? {playbook}", f"?? ?? {themes}"]
+        if stress_flags:
+            interpretation_bits.append("???? ?? " + ", ".join(stress_flags))
+        else:
+            interpretation_bits.append("???? ?? ??")
+        bullets.append("?? ??? " + ", ".join(interpretation_bits) + " ???????.")
+
+    if query_targets:
+        bullets.append(f"???? ??? ??? ??? ?????: {query_targets}.")
+    if risk_mode or selected_playbook:
+        if risk_mode and selected_playbook:
+            bullets.append(f"??? ?? ??? ??? ?? {risk_mode}???, ?? ????? {selected_playbook}?????.")
+        elif risk_mode:
+            bullets.append(f"??? ?? ??? ??? ?? {risk_mode}?????.")
+        else:
+            bullets.append(f"??? ?? ??? ?? ???? {selected_playbook}?????.")
+    if preferred_themes or avoid_themes:
+        theme_pref_bits: List[str] = []
+        if preferred_themes:
+            theme_pref_bits.append(f"?? ?? {preferred_themes}")
+        if avoid_themes:
+            theme_pref_bits.append(f"?? ?? {avoid_themes}")
+        bullets.append("??? ??/?? ??? " + ", ".join(theme_pref_bits) + "?????.")
+    if scanner_bias:
+        bullets.append(f"??? ????? {scanner_bias} ???????.")
+    if candidate_hints:
+        bullets.append("??? ?? ??? " + ", ".join(candidate_hints) + "???.")
+    if market_titles or symbol_title:
+        linkage_parts: List[str] = []
+        if market_titles:
+            linkage_parts.append(f"?? ??? {theme_linkage} ??? ????")
+        if symbol_title and selected_symbol:
+            linkage_parts.append(f"?? ??? {selected_symbol} ?? ???? ??????")
+        linkage_line = "?? ?? ??? " + ", ".join(linkage_parts) if linkage_parts else "?? ?? ??? headline ???????."
+        if selected_sources:
+            linkage_line += f". ? ??? {selected_sources} ??? ??????."
+        evidence_parts: List[str] = []
+        if market_titles:
+            evidence_parts.append(f"??: {market_titles}")
+        if symbol_title:
+            evidence_parts.append(f"??: {symbol_title}")
+        if evidence_parts:
+            linkage_line += " ?? headline? ??? ????: " + " / ".join(evidence_parts)
+        bullets.append(linkage_line)
+    contribution_bits: List[str] = []
+    if sentiment_contrib is not None:
+        contribution_bits.append(f"?? ?? {sentiment_contrib:+.3f}")
+    if theme_boost is not None:
+        contribution_bits.append(f"?? ?? {theme_boost:+.3f}")
+    if selected_sources:
+        contribution_bits.append(f"?? ?? {selected_sources}")
+    if scanner_bias_applied:
+        contribution_bits.append("??? ???? ??")
+    if contribution_bits:
+        bullets.append("??? ??? " + ", ".join(contribution_bits) + " ???? ??????.")
+    if selected_symbol:
+        symbol_bits = [selected_symbol]
+        if selected_rank not in (None, ""):
+            symbol_bits.append(f"{selected_rank}?")
+        if selected_score is not None:
+            symbol_bits.append(f"?? {selected_score:.3f}")
+        bullets.append("?? ??? " + ", ".join(symbol_bits) + "? ?????.")
+    return {
+        "summary": summary,
+        "bullets": _dedupe_list(bullets, max_items=10, max_len=260),
+    }
+
+
+def _build_market_scanner_linkage_bullet(section: Any, scanner_reason: Dict[str, Any] | None = None) -> str:
+    market = section if isinstance(section, dict) else {}
+    scanner = scanner_reason if isinstance(scanner_reason, dict) else {}
+    symbol = _clip(scanner.get("selected_symbol"), max_len=24)
+    if not symbol:
+        return ""
+    playbook = _clip(market.get("playbook"), max_len=40) or "not_captured"
+    source_text = ", ".join(_listify(scanner.get("selected_sources"), max_items=4, max_len=80))
+    contribution = scanner.get("news_scanner_contribution") if isinstance(scanner.get("news_scanner_contribution"), dict) else {}
+    core = contribution.get("core_score_contributions") if isinstance(contribution.get("core_score_contributions"), dict) else {}
+    sentiment_inputs = contribution.get("sentiment_inputs") if isinstance(contribution.get("sentiment_inputs"), dict) else {}
+
+    def _core_value_opt(key: str) -> Optional[float]:
+        row = core.get(key)
+        if isinstance(row, dict):
+            return _num_opt(row.get("value"))
+        return _num_opt(row)
+
+    score_value = _num_opt(scanner.get("selected_score"))
+    sentiment_contrib = _core_value_opt("sentiment")
+    if sentiment_contrib is None:
+        sentiment_contrib = _num_opt(sentiment_inputs.get("weighted_sentiment_score_contribution"))
+    theme_boost = _core_value_opt("theme_boost")
+    global_sentiment_value = _num_opt(sentiment_inputs.get("global_sentiment_score"))
+    if global_sentiment_value is None:
+        global_sentiment_value = _num_opt(market.get("global_sentiment_score"))
+    vix_value = _num_opt(market.get("vix_level"))
+
+    metric_bits: List[str] = []
+    if score_value is not None:
+        metric_bits.append(f"종합 점수 {score_value:.3f}")
+    if sentiment_contrib is not None:
+        metric_bits.append(f"감성 기여 {sentiment_contrib:+.3f}")
+    if theme_boost is not None:
+        metric_bits.append(f"테마 가점 {theme_boost:+.3f}")
+    if global_sentiment_value is not None:
+        metric_bits.append(f"글로벌 감성 {global_sentiment_value:.3f}")
+    if vix_value is not None:
+        metric_bits.append(f"VIX {vix_value:.2f}")
+
+    parts: List[str] = [f"종목 {symbol}을 {playbook} 플레이북 기준으로 선정했고"]
+    if metric_bits:
+        parts.append(", ".join(metric_bits))
+    if source_text:
+        parts.append(f"선정 소스 {source_text}")
+    return "Scanner linkage: " + ", ".join(parts)
 
 
 def _fmt_num(value: Any, *, digits: int = 3) -> str:
@@ -1317,69 +1946,741 @@ def _fmt_num(value: Any, *, digits: int = 3) -> str:
 
 
 def _scanner_basis_text(scanner_reason: Dict[str, Any]) -> str:
+    def _basis_label(value: Any) -> str:
+        raw = _clip(value, max_len=120).strip()
+        mapping = {
+            "trading value": "거래대금",
+            "theme and sector alignment": "섹터·테마 정렬",
+            "sentiment support": "감성 지원",
+            "top value": "거래대금 상위",
+            "top volume": "거래량 상위",
+            "momentum": "모멘텀",
+            "trend": "추세",
+            "confidence": "신뢰도",
+        }
+        return mapping.get(raw.lower(), raw)
+
     basis = scanner_reason.get("ranking_basis")
     if isinstance(basis, list):
-        return ", ".join(_listify(basis, max_items=4, max_len=80))
-    return _clip(basis, max_len=220)
+        return ", ".join(_basis_label(item) for item in _listify(basis, max_items=4, max_len=80) if _basis_label(item))
+    return _basis_label(_clip(basis, max_len=220))
+
+
+def _scanner_source_label(value: Any) -> str:
+    raw = _clip(value, max_len=80).strip().lower()
+    mapping = {
+        "top_value": "거래대금 상위",
+        "top_volume": "거래량 상위",
+        "sector_theme": "섹터·테마 정렬",
+        "sentiment": "감성 반영",
+        "news": "뉴스 반영",
+    }
+    return mapping.get(raw, _clip(value, max_len=80))
+
+
+def _scanner_source_text(values: Any) -> str:
+    labels = [_scanner_source_label(item) for item in _listify(values, max_items=4, max_len=80)]
+    labels = [item for item in labels if item]
+    if len(labels) == 2:
+        return f"{labels[0]}와 {labels[1]}"
+    if len(labels) >= 3:
+        return ", ".join(labels[:-1]) + f", {labels[-1]}"
+    return ", ".join(labels)
+
+
+def _scanner_score_driver_label(value: Any) -> str:
+    raw = _clip(value, max_len=80).strip().lower()
+    mapping = {
+        "trading_value": "거래대금",
+        "momentum": "모멘텀",
+        "trend": "추세",
+        "ma_alignment": "이동평균 정렬",
+        "adx_trend": "ADX 추세",
+        "volume_surge": "거래량 스파이크",
+        "intraday_strength": "장중 강도",
+        "vwap_alignment": "VWAP 정렬",
+        "theme_boost": "테마 가점",
+        "sentiment": "감성",
+        "cross_section_rank": "횡단면 순위",
+        "entry_compatibility_bias": "진입 적합성",
+        "rank_bonus": "순위 가점",
+        "risk_penalty": "리스크 패널티",
+        "repeat_symbol_penalty": "중복 종목 패널티",
+        "scanner_bias": "스캐너 바이어스",
+    }
+    return mapping.get(raw, _clip(value, max_len=80))
+
+
+def _scanner_chart_feature_label(value: Any) -> str:
+    raw = _clip(value, max_len=80).strip().lower()
+    mapping = {
+        "engine_ma20_gap": "20일선 이격",
+        "engine_ma60": "60일선",
+        "engine_ma120": "120일선",
+        "engine_adx14": "ADX14",
+        "engine_trend_strength": "추세 강도",
+        "engine_volume_spike20": "20봉 거래량 스파이크",
+        "engine_volatility20": "20봉 변동성",
+        "engine_vwap_distance": "VWAP 이격",
+        "engine_sector_relative_strength": "섹터 상대강도",
+        "engine_cross_section_rank": "횡단면 순위",
+        "engine_regime": "레짐",
+        "engine_signal_score": "신호 점수",
+    }
+    return mapping.get(raw, _clip(value, max_len=80))
+
+
+def _scanner_ranked_candidates(scanner_reason: Dict[str, Any]) -> List[Dict[str, Any]]:
+    for key in ("top_candidates", "ranked_candidates"):
+        rows = [row for row in list(scanner_reason.get(key) or []) if isinstance(row, dict)]
+        if rows:
+            return rows[:5]
+    trace = scanner_reason.get("scanner_selection_trace") if isinstance(scanner_reason.get("scanner_selection_trace"), dict) else {}
+    return [row for row in list(trace.get("ranked_candidates") or []) if isinstance(row, dict)][:5]
+
+
+def _scanner_chart_feature_coverage(scanner_reason: Dict[str, Any]) -> Dict[str, Any]:
+    trace = scanner_reason.get("scanner_selection_trace") if isinstance(scanner_reason.get("scanner_selection_trace"), dict) else {}
+    row = trace.get("chart_feature_coverage") if isinstance(trace.get("chart_feature_coverage"), dict) else {}
+    return dict(row)
+
+
+def _build_scanner_driver_summary(scanner_reason: Dict[str, Any]) -> str:
+    driver_source = (
+        scanner_reason.get("selected_symbol_score_drivers")
+        if isinstance(scanner_reason.get("selected_symbol_score_drivers"), dict)
+        else {}
+    )
+    if not driver_source:
+        trace = scanner_reason.get("scanner_selection_trace") if isinstance(scanner_reason.get("scanner_selection_trace"), dict) else {}
+        driver_source = trace.get("selected_symbol_score_drivers") if isinstance(trace.get("selected_symbol_score_drivers"), dict) else {}
+    driver_rows: List[tuple[str, float]] = []
+    for key, value in dict(driver_source or {}).items():
+        numeric = _num_opt(value)
+        if numeric is None or numeric <= 0:
+            continue
+        driver_rows.append((_scanner_score_driver_label(key), numeric))
+    if not driver_rows:
+        return ""
+    driver_rows.sort(key=lambda item: item[1], reverse=True)
+    top_rows = [f"{label} {value:.3f}" for label, value in driver_rows[:3]]
+    return ", ".join(top_rows)
+
+
+def _build_runner_up_comparison(
+    row: Dict[str, Any],
+    *,
+    selected_symbol: str,
+    selected_score: Optional[float],
+    selected_risk: Optional[float],
+) -> str:
+    runner_symbol = _clip(row.get("symbol"), max_len=24)
+    if not runner_symbol:
+        return ""
+    parts: List[str] = []
+    runner_score = _num_opt(row.get("score_total"))
+    runner_risk = _num_opt(row.get("risk_score"))
+    if runner_score is not None and selected_score is not None:
+        gap = selected_score - runner_score
+        if gap >= 0:
+            parts.append(
+                f"종합 점수 {runner_score:.3f}로 {selected_symbol}({selected_score:.3f})보다 {gap:.3f} 낮았습니다"
+            )
+    if runner_risk is not None and selected_risk is not None and runner_risk > selected_risk:
+        parts.append(
+            f"리스크 점수 {runner_risk:.3f}로 {selected_symbol}({selected_risk:.3f})보다 높았습니다"
+        )
+    if not parts:
+        why_text = _clip(row.get("why") or row.get("summary"), max_len=220)
+        if why_text:
+            parts.append(_operatorize_report_text(why_text))
+    if not parts:
+        return ""
+    return f"{runner_symbol}은 " + ". ".join(parts) + "."
+
+
+def _build_scanner_choice_bullets(
+    scanner_reason: Dict[str, Any],
+    market_context: Dict[str, Any],
+) -> List[str]:
+    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "선정 종목"
+    rank = scanner_reason.get("selected_rank")
+    universe = scanner_reason.get("universe_size")
+    score_value = _num_opt(scanner_reason.get("selected_score"))
+    confidence_value = _num_opt(scanner_reason.get("confidence"))
+    ranked_rows = _scanner_ranked_candidates(scanner_reason)
+    selected_row = ranked_rows[0] if ranked_rows else {}
+    selected_risk = _num_opt(selected_row.get("risk_score"))
+    basis = _scanner_basis_text(scanner_reason)
+    source_text = _scanner_source_text(scanner_reason.get("selected_sources"))
+    playbook = _market_token_label(market_context.get("playbook")) or _clip(market_context.get("playbook"), max_len=32)
+    driver_summary = _build_scanner_driver_summary(scanner_reason)
+    coverage = _scanner_chart_feature_coverage(scanner_reason)
+
+    bullets: List[str] = []
+    if universe not in (None, "") and rank not in (None, ""):
+        bullets.append(f"총 {int(universe)}개 후보를 비교했고 {symbol}이 {rank}위로 선정됐습니다.")
+    elif rank not in (None, ""):
+        bullets.append(f"{symbol}의 최종 선정 순위는 {rank}위였습니다.")
+    if score_value is not None:
+        metric_bits = [f"종합 점수 {score_value:.3f}"]
+        if confidence_value is not None:
+            metric_bits.append(f"신뢰도 {confidence_value:.2f}")
+        if selected_risk is not None:
+            metric_bits.append(f"리스크 {selected_risk:.3f}")
+        bullets.append(", ".join(metric_bits) + "로 집계됐습니다.")
+    if basis:
+        bullets.append(f"주요 선정 기준은 {basis} 축이었습니다.")
+    if source_text:
+        bullets.append(f"선정에는 {source_text}이 반영됐습니다.")
+    if driver_summary:
+        bullets.append(f"주요 점수 기여는 {driver_summary}였습니다.")
+    if playbook:
+        bullets.append(f"전략가 플레이북 {playbook}과 정렬된 후보였습니다.")
+    if ranked_rows:
+        ranked_text = " / ".join(
+            f"#{int(float(row.get('rank') or idx + 1))} {_clip(row.get('symbol'), max_len=24)}({_fmt_num(row.get('score_total'))})"
+            for idx, row in enumerate(ranked_rows[:3])
+            if _clip(row.get("symbol"), max_len=24)
+        )
+        if ranked_text:
+            bullets.append(f"상위 후보는 {ranked_text} 순이었습니다.")
+    if coverage:
+        present = int(float(coverage.get("present") or 0)) if _num_opt(coverage.get("present")) is not None else 0
+        total = int(float(coverage.get("total") or 0)) if _num_opt(coverage.get("total")) is not None else 0
+        missing = [
+            _scanner_chart_feature_label(item)
+            for item in _listify(coverage.get("missing_keys"), max_items=4, max_len=80)
+            if _scanner_chart_feature_label(item)
+        ]
+        coverage_text = f"차트 피처 커버리지는 {present}/{total}였습니다." if present and total else ""
+        if coverage_text and missing:
+            coverage_text += f" 누락된 항목은 {', '.join(missing)}이었습니다."
+        elif missing:
+            coverage_text = f"누락된 차트 피처는 {', '.join(missing)}였습니다."
+        if coverage_text:
+            bullets.append(coverage_text)
+    for row in list(scanner_reason.get("runner_ups") or [])[:2]:
+        if isinstance(row, dict):
+            rendered = _build_runner_up_comparison(
+                row,
+                selected_symbol=symbol,
+                selected_score=score_value,
+                selected_risk=selected_risk,
+            )
+            if rendered:
+                bullets.append(rendered)
+    return _dedupe_list(bullets, max_items=10, max_len=260)
 
 
 def _build_scanner_choice_summary(scanner_reason: Dict[str, Any], market_context: Dict[str, Any]) -> str:
     symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "선정 종목"
     rank = scanner_reason.get("selected_rank")
     universe = scanner_reason.get("universe_size")
-    score_text = _fmt_num(scanner_reason.get("selected_score"))
+    score_value = _num_opt(scanner_reason.get("selected_score"))
     basis = _scanner_basis_text(scanner_reason)
-    sources = ", ".join(_listify(scanner_reason.get("selected_sources"), max_items=4, max_len=80))
-    confidence = _fmt_num(scanner_reason.get("confidence"))
-    playbook = _clip(market_context.get("playbook"), max_len=32)
+    sources = _scanner_source_text(scanner_reason.get("selected_sources"))
+    playbook = _market_token_label(market_context.get("playbook")) or _clip(market_context.get("playbook"), max_len=32)
+    confidence_value = _num_opt(scanner_reason.get("confidence"))
+    ranked_rows = _scanner_ranked_candidates(scanner_reason)
+    selected_row = ranked_rows[0] if ranked_rows else {}
+    selected_risk = _num_opt(selected_row.get("risk_score"))
+    driver_summary = _build_scanner_driver_summary(scanner_reason)
     comparison_bits: List[str] = []
-    for row in list(scanner_reason.get("runner_ups_lost") or [])[:2]:
+    for row in list(scanner_reason.get("runner_ups") or [])[:2]:
         if not isinstance(row, dict):
             continue
-        runner_symbol = _clip(row.get("symbol"), max_len=24)
-        runner_summary = _clip(row.get("summary"), max_len=180)
-        if runner_symbol and runner_summary:
-            comparison_bits.append(f"{runner_symbol}은 {runner_summary} 때문에 밀렸습니다")
+        rendered = _build_runner_up_comparison(
+            row,
+            selected_symbol=symbol,
+            selected_score=score_value,
+            selected_risk=selected_risk,
+        )
+        if rendered:
+            comparison_bits.append(rendered.rstrip("."))
 
-    summary = f"스캐너는 {symbol}을 선택했습니다"
+    if universe not in (None, "") and rank == 1:
+        summary = f"{symbol}은 총 {int(universe)}개 후보 중 1위로 선정됐습니다"
+    elif rank == 1:
+        summary = f"{symbol}은 스캐너 후보 중 최종 1순위였습니다"
+    else:
+        summary = f"{symbol}이 스캐너 후보로 선정됐습니다"
     if universe not in (None, "") and rank not in (None, ""):
-        summary += f". 총 {int(universe)}개 후보 중 {rank}순위입니다"
+        if not (rank == 1 and summary.endswith("선정됐습니다")):
+            summary += f". 총 {int(universe)}개 후보 중 {rank}위였습니다"
     elif rank not in (None, ""):
-        summary += f". 선정 순위는 {rank}위입니다"
+        summary += f". 선정 순위는 {rank}위였습니다"
     elif universe not in (None, ""):
-        summary += f". 비교한 후보는 총 {int(universe)}개입니다"
-    if score_text != "-":
-        summary += f". 종합 점수는 {score_text}입니다"
+        summary += f". 비교한 후보는 총 {int(universe)}개였습니다"
+    if score_value is not None:
+        summary += f". 종합 점수는 {score_value:.3f}로 가장 높았습니다"
     if basis:
-        summary += f". 주요 산정 기준은 {basis}입니다"
+        summary += f". 강했던 축은 {basis} 축이었습니다"
     details: List[str] = []
     if sources:
-        details.append(f"선정에 반영된 소스는 {sources}")
-    if confidence != "-":
-        details.append(f"신뢰도는 {confidence}")
+        details.append(f"선정에는 {sources}이 반영됐습니다")
+    if driver_summary:
+        details.append(f"핵심 점수 기여는 {driver_summary}였습니다")
+    if confidence_value is not None:
+        details.append(f"신뢰도는 {confidence_value:.2f} 수준이었습니다")
+    if selected_risk is not None:
+        details.append(f"리스크는 {selected_risk:.3f} 수준이었습니다")
     if playbook:
-        details.append(f"전략가 플레이북 {playbook}과 정렬되었습니다")
+        details.append(f"전략가 플레이북 {playbook}과도 정렬됐습니다")
     if details:
-        summary += ". " + ", ".join(details) + "."
+        summary += ". " + ". ".join(details) + "."
     if comparison_bits:
-        summary += " " + " ".join(comparison_bits) + "."
+        summary += " " + ". ".join(comparison_bits) + "."
     return summary
+
+
+def _build_scanner_candidate_comparison_section(
+    scanner_reason: Dict[str, Any],
+    market_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    ranked_rows = _scanner_ranked_candidates(scanner_reason)
+    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "?? ??"
+    universe = scanner_reason.get("universe_size")
+    if not ranked_rows and universe in (None, "", 0):
+        return {
+            "summary": "??? ?? ??? ?? ??? candidate list? ??? ?? ??? ???? ?????.",
+            "bullets": [
+                f"?? ??? {symbol}? ?????, ranked candidate? runner-up trace? ?? ?? ??? ???? ?????.",
+            ],
+        }
+
+    summary = _build_scanner_choice_summary(scanner_reason, market_context)
+    bullets = _build_scanner_choice_bullets(scanner_reason, market_context)
+    if universe not in (None, "") and ranked_rows:
+        bullets = [f"?? ?? ?? universe? ? {int(float(universe))}?????."] + list(bullets)
+    return {
+        "summary": summary,
+        "bullets": _dedupe_list(bullets, max_items=12, max_len=260),
+    }
+
+
+def _has_noisy_trade_report_text(value: Any) -> bool:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return False
+    noisy_tokens = (
+        "cached_strategist",
+        "policy_validation_status",
+        "fallback_invalid",
+        "strategist invocation",
+        "headlines were considered",
+        "market regime",
+        "scanner selected ",
+        "source mix:",
+        "chart feature coverage",
+        "trading value",
+        "theme and sector alignment",
+        "confidence:",
+        "risk_score",
+        "timeframe ",
+        "breakout lookback",
+        "volume lookback",
+        "volume_ratio_min",
+        "min_extended_from_vwap_pct",
+        "max_extended_from_vwap_pct",
+    )
+    return any(token in raw for token in noisy_tokens)
+
+
+def _scanner_check_name_label(value: Any) -> str:
+    raw = _clip(value, max_len=80).strip().lower()
+    mapping = {
+        "liquidity filter": "유동성 점검",
+        "유동성 필터": "유동성 점검",
+        "turnover filter": "회전율 점검",
+        "회전율 필터": "회전율 점검",
+        "sector/theme alignment": "섹터·테마 정렬 점검",
+        "섹터/테마 정렬": "섹터·테마 정렬 점검",
+        "chart completeness filter": "차트 피처 충실도 점검",
+        "차트 완전성 필터": "차트 피처 충실도 점검",
+        "sentiment gate": "시장 심리 점검",
+        "시장 심리 게이트": "시장 심리 점검",
+        "risk gate": "리스크 점검",
+        "리스크 게이트": "리스크 점검",
+        "price anomaly filter": "가격 이상치 점검",
+        "가격 이상치 필터": "가격 이상치 점검",
+        "spread/slippage filter": "호가 스프레드·슬리피지 점검",
+        "스프레드/슬리피지 필터": "호가 스프레드·슬리피지 점검",
+    }
+    return mapping.get(raw, _clip(value, max_len=80) or "스캐너 점검")
+
+
+def _scanner_check_status_label(value: Any) -> str:
+    raw = _clip(value, max_len=40).strip().upper()
+    mapping = {
+        "PASS": "통과",
+        "FAIL": "미통과",
+        "NOT_AVAILABLE": "확인 불가",
+    }
+    return mapping.get(raw, _clip(value, max_len=40) or "확인 불가")
+
+
+def _build_scanner_filters_summary(filters_human: Dict[str, Any]) -> str:
+    checks = [row for row in list(filters_human.get("checks") or []) if isinstance(row, dict)]
+    feature_coverage = filters_human.get("feature_coverage") if isinstance(filters_human.get("feature_coverage"), dict) else {}
+    if not checks:
+        return _clip(filters_human.get("summary"), max_len=600) or "스캐너 후보 비교 근거는 저장된 범위 안에서 제한적으로 확인됩니다."
+    pass_count = sum(1 for row in checks if str(row.get("status") or "").strip().upper() == "PASS")
+    fail_count = sum(1 for row in checks if str(row.get("status") or "").strip().upper() == "FAIL")
+    na_count = sum(1 for row in checks if str(row.get("status") or "").strip().upper() == "NOT_AVAILABLE")
+    present = int(float(feature_coverage.get("present") or 0)) if _num_opt(feature_coverage.get("present")) is not None else 0
+    total = int(float(feature_coverage.get("total") or 0)) if _num_opt(feature_coverage.get("total")) is not None else 0
+    quality_raw = _clip(feature_coverage.get("quality"), max_len=40).strip().lower()
+    quality = {
+        "strong": "양호",
+        "good": "양호",
+        "moderate": "보통",
+        "weak": "취약",
+    }.get(quality_raw, _clip(feature_coverage.get("quality"), max_len=40) or "not_captured")
+
+    summary = f"스캐너 후보 비교에서는 {len(checks)}개 체크 중 통과 {pass_count}개, 미통과 {fail_count}개, 확인 불가 {na_count}개였습니다."
+    if present and total:
+        summary += f" 차트 피처 커버리지는 {present}/{total}로 {quality} 수준이었습니다."
+    return summary
+
+
+def _build_scanner_filters_bullets(filters_human: Dict[str, Any]) -> List[str]:
+    checks = [row for row in list(filters_human.get("checks") or []) if isinstance(row, dict)]
+    if not checks:
+        return _listify(filters_human.get("bullets"), max_items=10, max_len=260)
+    bullets: List[str] = []
+    for row in checks[:8]:
+        label = _scanner_check_name_label(row.get("name"))
+        status = _scanner_check_status_label(row.get("status"))
+        detail = _operatorize_report_text(row.get("detail"))
+        if detail:
+            bullets.append(f"{label}은 {status}였습니다. 근거: {detail}")
+        else:
+            bullets.append(f"{label}은 {status}였습니다.")
+    return _dedupe_list(bullets, max_items=10, max_len=260)
 
 
 def _build_entry_decision_summary(
     entry_summary: Dict[str, Any],
     scanner_reason: Dict[str, Any],
     market_context: Dict[str, Any],
+    monitor_reason: Dict[str, Any],
     action: str,
 ) -> str:
     reason_human = _clip(entry_summary.get("reason_human"), max_len=600)
-    if reason_human:
-        return reason_human
+    reason_label = _entry_reason_label(reason_human)
+    grouped_trace = (
+        monitor_reason.get("entry_grouped_logic_trace")
+        if isinstance(monitor_reason.get("entry_grouped_logic_trace"), dict)
+        else {}
+    )
+    entry_scores = (
+        monitor_reason.get("entry_condition_scores")
+        if isinstance(monitor_reason.get("entry_condition_scores"), dict)
+        else {}
+    )
+    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24)
+    rank = scanner_reason.get("selected_rank")
+    triggered_path = _entry_path_label(
+        grouped_trace.get("triggered_path")
+        or monitor_reason.get("entry_condition_path")
+    )
+    playbook = _market_token_label(market_context.get("playbook")) or _clip(market_context.get("playbook"), max_len=32)
+    confidence_score = _num_opt(entry_scores.get("confidence_score"))
+    confidence_threshold = _num_opt(entry_scores.get("confidence_threshold"))
+
+    summary_parts: List[str] = []
+    if reason_label:
+        summary_parts.append(f"진입은 {reason_label} 조건에서 실행됐습니다.")
+    if symbol and rank not in (None, ""):
+        summary_parts.append(f"{symbol}이 스캐너 {rank}위 후보로 올라온 뒤 매수로 이어졌습니다.")
+    elif symbol:
+        summary_parts.append(f"{symbol}에 대한 매수 판단으로 진입이 이어졌습니다.")
+    if playbook and triggered_path:
+        if playbook == "눌림목" and triggered_path != "눌림목·거래량 경로":
+            summary_parts.append(f"전략가 플레이북은 {playbook}이었지만 실제 엔트리는 {triggered_path}에서 확정됐습니다.")
+        else:
+            summary_parts.append(f"실제 엔트리 경로는 {triggered_path}였습니다.")
+    elif triggered_path:
+        summary_parts.append(f"실제 엔트리 경로는 {triggered_path}였습니다.")
+    if confidence_score is not None and confidence_threshold is not None:
+        if abs(confidence_score - confidence_threshold) <= 1e-6:
+            summary_parts.append(
+                f"진입 신뢰도 점수는 {confidence_score:.2f}로 기준 {confidence_threshold:.2f}와 동일했습니다."
+            )
+        else:
+            relation = "상회했습니다" if confidence_score > confidence_threshold else "하회했습니다"
+            summary_parts.append(
+                f"진입 신뢰도 점수는 {confidence_score:.2f}로 기준 {confidence_threshold:.2f}를 {relation}."
+            )
+    if summary_parts:
+        return " ".join(summary_parts)
     scanner_summary = _build_scanner_choice_summary(scanner_reason, market_context)
     if scanner_summary:
         entry_action = _operator_action_label(_clip(entry_summary.get("action"), max_len=24) or action or "BUY")
         return f"{scanner_summary} 이에 따라 진입 판단은 {entry_action}로 이어졌습니다."
     return "진입 판단 근거는 저장된 데이터 범위 안에서 충분히 확인되지 않았습니다."
+
+
+def _entry_reason_label(value: Any) -> str:
+    raw = _clip(value, max_len=220).strip()
+    mapping = {
+        "breakout_above_recent_high_with_vwap_structure_confirmation": "직전 고점 돌파와 VWAP 구조 확인",
+        "breakout_confirmed": "돌파 확인",
+        "pullback_rebound_confirmed": "눌림목 반등 확인",
+        "reclaim_confirmed": "VWAP 재회복 확인",
+        "breakout_vwap_hold": "돌파 후 VWAP 지지 확인",
+    }
+    if not raw:
+        return ""
+    if raw in mapping:
+        return mapping[raw]
+    return raw.replace("_", " ")
+
+
+def _exit_reason_label(value: Any) -> str:
+    raw = _clip(value, max_len=220).strip()
+    lowered = raw.lower()
+    if not raw:
+        return ""
+    if "peak_drawdown" in lowered:
+        return "고점 대비 하락폭 확대로 청산"
+    if "hard_stop" in lowered:
+        return "고정 손절 기준으로 청산"
+    if "take_profit" in lowered:
+        return "목표 수익 실현으로 청산"
+    if "trailing_stop" in lowered:
+        return "추적 손절로 청산"
+    if "vwap_breakdown" in lowered:
+        return "VWAP 이탈로 청산"
+    return raw.replace("_", " ")
+
+
+def _decision_chain_label(value: Any) -> str:
+    raw = _clip(value, max_len=80).strip().lower()
+    mapping = {
+        "confirmed_exit_signal": "청산 확인 신호",
+        "peak_drawdown": "고점 대비 하락폭",
+        "breakout_above_recent_high_with_vwap_structure_confirmation": "직전 고점 돌파와 VWAP 구조 확인",
+        "hard_stop": "고정 손절",
+        "vwap_breakdown": "VWAP 이탈",
+        "breakout_path": "돌파 경로",
+    }
+    return mapping.get(raw, _clip(value, max_len=80))
+
+
+def _humanize_duration_text(value: Any, *, fallback_seconds: Any = None) -> str:
+    text = _clip(value, max_len=80).strip()
+    lowered = text.lower()
+    total_seconds: Optional[int] = None
+
+    if text:
+        if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", text):
+            hours, minutes, seconds = [int(part) for part in text.split(":")]
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+        elif re.fullmatch(r"\d{1,2}:\d{2}", text):
+            minutes, seconds = [int(part) for part in text.split(":")]
+            total_seconds = minutes * 60 + seconds
+        else:
+            hour_match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*h", lowered)
+            minute_match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*m", lowered)
+            second_match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*s", lowered)
+            if hour_match:
+                total_seconds = int(round(float(hour_match.group(1)) * 3600))
+            elif minute_match:
+                total_seconds = int(round(float(minute_match.group(1)) * 60))
+            elif second_match:
+                total_seconds = int(round(float(second_match.group(1))))
+
+    if total_seconds is None and fallback_seconds not in (None, ""):
+        try:
+            total_seconds = int(round(float(fallback_seconds)))
+        except Exception:
+            total_seconds = None
+
+    if total_seconds is None:
+        return text
+
+    hours, remainder = divmod(max(total_seconds, 0), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    parts: List[str] = []
+    if hours:
+        parts.append(f"{hours}시간")
+    if minutes:
+        parts.append(f"{minutes}분")
+    if seconds or not parts:
+        parts.append(f"{seconds}초")
+    return " ".join(parts)
+
+
+def _holding_duration_label(value: Any) -> str:
+    text = _humanize_duration_text(value)
+    if not text:
+        return ""
+    return f"보유 시간은 {text}였습니다."
+
+
+def _execution_mode_label(value: Any) -> str:
+    raw = _clip(value, max_len=120).strip().lower()
+    mapping = {
+        "simulation trade report": "시뮬레이션 거래 리포트",
+        "simulation": "시뮬레이션",
+        "simulation (mock broker)": "시뮬레이션 (모의 브로커)",
+        "real": "실거래",
+        "live": "실거래",
+    }
+    return mapping.get(raw, _clip(value, max_len=120))
+
+
+def _entry_path_label(value: Any) -> str:
+    raw = _clip(value, max_len=80).strip().lower()
+    mapping = {
+        "breakout_path": "돌파 경로",
+        "pullback_volume_path": "눌림목·거래량 경로",
+        "reclaim_path": "재회복 경로",
+    }
+    return mapping.get(raw, _clip(value, max_len=80))
+
+
+def _entry_gate_state_label(value: Any) -> str:
+    if value is True:
+        return "통과"
+    if value is False:
+        return "미통과"
+    return "기록 없음"
+
+
+def _entry_gate_name_label(value: str) -> str:
+    mapping = {
+        "reclaim": "VWAP 재회복",
+        "extension": "과확장 점검",
+        "confidence gate": "신뢰도 게이트",
+    }
+    return mapping.get(value, value)
+
+
+def _korean_predicate(value: str, *, noun_suffix: str = "입니다.") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return noun_suffix
+    tail = "입니다." if noun_suffix == "입니다." else noun_suffix
+    last = text[-1]
+    code = ord(last)
+    if 0xAC00 <= code <= 0xD7A3:
+        has_batchim = (code - 0xAC00) % 28 != 0
+        if tail == "입니다.":
+            return "이었습니다." if has_batchim else "였습니다."
+    return tail
+
+
+def _korean_euro_ro(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "로"
+    last = text[-1]
+    code = ord(last)
+    if 0xAC00 <= code <= 0xD7A3:
+        jong = (code - 0xAC00) % 28
+        if jong == 0 or jong == 8:
+            return "로"
+        return "으로"
+    return "로"
+
+
+def _build_entry_decision_bullets(
+    entry_summary: Dict[str, Any],
+    scanner_reason: Dict[str, Any],
+    market_context: Dict[str, Any],
+    monitor_reason: Dict[str, Any],
+    action: str,
+) -> List[str]:
+    bullets: List[str] = [
+        f"진입 run은 {_clip(entry_summary.get('run_id'), max_len=80) or '기록 없음'}입니다.",
+        f"진입 시각은 {_clip(entry_summary.get('ts'), max_len=80) or '기록 없음'}입니다.",
+        f"진입 액션은 {_operator_action_label(_clip(entry_summary.get('action'), max_len=40) or action)}였습니다.",
+    ]
+    reason_label = _entry_reason_label(entry_summary.get("reason_human"))
+    if reason_label:
+        bullets.append(f"진입 사유는 {reason_label}{_korean_predicate(reason_label)}")
+
+    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24)
+    rank = scanner_reason.get("selected_rank")
+    selected_score = _num_opt(scanner_reason.get("selected_score"))
+    if symbol and rank not in (None, "") and selected_score is not None:
+        bullets.append(f"진입 시점 스캐너에서는 {symbol}이 {rank}위, 종합 점수 {selected_score:.3f}였습니다.")
+
+    grouped_trace = (
+        monitor_reason.get("entry_grouped_logic_trace")
+        if isinstance(monitor_reason.get("entry_grouped_logic_trace"), dict)
+        else {}
+    )
+    triggered_path = _entry_path_label(grouped_trace.get("triggered_path") or monitor_reason.get("entry_condition_path"))
+    paths_passed = [
+        _entry_path_label(item)
+        for item in _listify(
+            grouped_trace.get("paths_passed") or monitor_reason.get("entry_condition_paths_passed"),
+            max_items=4,
+            max_len=80,
+        )
+        if _entry_path_label(item)
+    ]
+    if triggered_path or paths_passed:
+        parts: List[str] = []
+        if triggered_path:
+            parts.append(f"실제 진입 경로는 {triggered_path}였습니다")
+        if paths_passed:
+            parts.append(f"통과 경로는 {', '.join(paths_passed)}였습니다")
+        bullets.append(". ".join(parts) + ".")
+
+    gate_bits: List[str] = []
+    if "reclaim_gate_ok" in grouped_trace:
+        gate_bits.append(f"{_entry_gate_name_label('reclaim')} {_entry_gate_state_label(grouped_trace.get('reclaim_gate_ok'))}")
+    if "extension_ok" in grouped_trace:
+        gate_bits.append(f"{_entry_gate_name_label('extension')} {_entry_gate_state_label(grouped_trace.get('extension_ok'))}")
+    if "confidence_gate_ok" in grouped_trace:
+        gate_bits.append(f"{_entry_gate_name_label('confidence gate')} {_entry_gate_state_label(grouped_trace.get('confidence_gate_ok'))}")
+    if gate_bits:
+        bullets.append("진입 게이트 상태는 " + ", ".join(gate_bits) + "였습니다.")
+
+    entry_scores = (
+        monitor_reason.get("entry_condition_scores")
+        if isinstance(monitor_reason.get("entry_condition_scores"), dict)
+        else {}
+    )
+    confidence_score = _num_opt(entry_scores.get("confidence_score"))
+    confidence_threshold = _num_opt(entry_scores.get("confidence_threshold"))
+    if confidence_score is not None and confidence_threshold is not None:
+        bullets.append(f"진입 신뢰도 점수는 {confidence_score:.2f}, 기준은 {confidence_threshold:.2f}였습니다.")
+
+    entry_thresholds = (
+        monitor_reason.get("entry_thresholds")
+        if isinstance(monitor_reason.get("entry_thresholds"), dict)
+        else {}
+    )
+    timeframe = entry_thresholds.get("timeframe_minutes")
+    breakout_lookback = entry_thresholds.get("breakout_lookback")
+    volume_ratio_min = _num_opt(entry_thresholds.get("volume_ratio_min"))
+    require_vwap_reclaim = entry_thresholds.get("require_vwap_reclaim")
+    require_rebound = entry_thresholds.get("require_rebound")
+    threshold_bits: List[str] = []
+    if timeframe not in (None, ""):
+        threshold_bits.append(f"{int(float(timeframe))}분봉")
+    if breakout_lookback not in (None, ""):
+        threshold_bits.append(f"돌파 확인 기준 봉 수 {int(float(breakout_lookback))}")
+    if volume_ratio_min is not None:
+        threshold_bits.append(f"최소 거래량 비율 {volume_ratio_min:.2f}")
+    if require_vwap_reclaim is not None:
+        threshold_bits.append(f"VWAP 재회복 {'필수' if require_vwap_reclaim else '비필수'}")
+    if require_rebound is not None:
+        threshold_bits.append(f"반등 확인 {'필수' if require_rebound else '비필수'}")
+    if threshold_bits:
+        bullets.append("적용 정책은 " + ", ".join(threshold_bits) + "였습니다.")
+
+    playbook = _market_token_label(market_context.get("playbook")) or _clip(market_context.get("playbook"), max_len=32)
+    if playbook and triggered_path:
+        bullets.append(f"전략가 플레이북은 {playbook}, 실제 진입 경로는 {triggered_path}였습니다.")
+
+    return _dedupe_list(bullets, max_items=10, max_len=260)
 
 
 def _build_holding_story_summary(hold_count: int, monitor_reason: Dict[str, Any], status_text: str) -> str:
@@ -1390,7 +2691,7 @@ def _build_holding_story_summary(hold_count: int, monitor_reason: Dict[str, Any]
     confirm_count = monitor_reason.get("confirm_count")
     exit_triggered = bool(monitor_reason.get("exit_triggered"))
     if hold_count > 0:
-        base = f"보유 구간에서는 모니터가 총 {hold_count}회 실행되었고, 현재 포지션 판단은 {posture}로 유지되었습니다. 핵심 감시 축은 {axis}였습니다."
+        base = f"보유 구간에서는 모니터가 총 {hold_count}회 실행되었고, 마지막 포지션 판단은 {posture}였습니다. 핵심 감시 축은 {axis}{_korean_euro_ro(axis)} 유지됐습니다."
     else:
         base = "이번 lifecycle의 보유 구간 기록은 제한적이어서, 저장된 모니터 근거를 중심으로 보수적으로 정리했습니다."
     if confirm_required is not None:
@@ -1403,7 +2704,7 @@ def _build_holding_story_summary(hold_count: int, monitor_reason: Dict[str, Any]
 def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason: Dict[str, Any]) -> List[str]:
     hold_count = len(list(holding_summary.get("run_ids") or []))
     watch_axes = ", ".join(_operator_axis_label(item) for item in _listify(monitor_reason.get("watch_axes"), max_items=6, max_len=80))
-    decision_chain = " -> ".join(_listify(monitor_reason.get("decision_reason_chain"), max_items=5, max_len=60))
+    decision_chain = " -> ".join(_decision_chain_label(item) for item in _listify(monitor_reason.get("decision_reason_chain"), max_items=5, max_len=60))
     hard_stop = _fmt_pct(monitor_reason.get("hard_stop_pct"))
     adaptive_stop = _fmt_pct(monitor_reason.get("adaptive_stop_loss_pct"))
     effective_stop = _fmt_pct(monitor_reason.get("effective_stop_loss_pct"))
@@ -1420,7 +2721,8 @@ def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason
     if _clip(monitor_reason.get("posture"), max_len=48):
         bullets.append(f"현재 포지션 판단은 {_operator_action_label(monitor_reason.get('posture'))}입니다.")
     if _clip(monitor_reason.get("trigger_type"), max_len=64):
-        bullets.append(f"감지된 핵심 신호는 {_operator_axis_label(monitor_reason.get('trigger_type'))}입니다.")
+        trigger_label = _operator_axis_label(monitor_reason.get("trigger_type"))
+        bullets.append(f"보유 중 가장 강하게 감시된 신호는 {trigger_label}{_korean_predicate(trigger_label)}")
     if monitor_reason.get("position_age_seconds") not in (None, ""):
         bullets.append(f"포지션 보유 시간은 약 {int(monitor_reason.get('position_age_seconds') or 0)}초입니다.")
     if effective_stop != "-":
@@ -1430,7 +2732,8 @@ def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason
     if take_profit != "-":
         bullets.append(f"목표 수익 실현 기준은 {take_profit} 수준입니다.")
     if _clip(monitor_reason.get("active_exit_axis"), max_len=80):
-        bullets.append(f"현재 우선 감시 중인 청산 축은 {_operator_axis_label(monitor_reason.get('active_exit_axis'))}입니다.")
+        axis_label = _operator_axis_label(monitor_reason.get("active_exit_axis"))
+        bullets.append(f"당시 우선 감시 중이던 청산 축은 {axis_label}{_korean_predicate(axis_label)}")
     if monitor_reason.get("confirm_required") is not None:
         bullets.append(f"청산 확인 조건은 {int(monitor_reason.get('confirm_count') or 0)}/{int(monitor_reason.get('confirm_required') or 0)} 단계로 기록되었습니다.")
     if watch_axes:
@@ -1456,6 +2759,185 @@ def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason
     return _dedupe_list(bullets, max_items=12, max_len=260)
 
 
+def _build_reporter_evaluation_section(
+    shared_seed: Dict[str, Any],
+    scanner_reason: Dict[str, Any],
+    monitor_reason: Dict[str, Any],
+    execution_outcome: Dict[str, Any],
+    reporter_status: Dict[str, Any],
+) -> Dict[str, Any]:
+    status = _clip(reporter_status.get("status"), max_len=40) or "missing"
+    grade = _clip(reporter_status.get("grade"), max_len=16) or "N/A"
+    symbol = _clip(scanner_reason.get("selected_symbol") or shared_seed.get("symbol"), max_len=24) or "선정 종목"
+    selected_rank = scanner_reason.get("selected_rank")
+    selected_score = _num_opt(scanner_reason.get("selected_score"))
+    confidence = _num_opt(scanner_reason.get("confidence"))
+    ranked_rows = _scanner_ranked_candidates(scanner_reason)
+    selected_row = ranked_rows[0] if ranked_rows else {}
+    selected_risk = _num_opt(selected_row.get("risk_score"))
+    hold_seconds = int(monitor_reason.get("position_age_seconds") or 0)
+    hold_duration = _humanize_duration_text(shared_seed.get("holding_duration"), fallback_seconds=hold_seconds)
+    trigger_type = _operator_axis_label(
+        _clip(monitor_reason.get("trigger_type"), max_len=80)
+        or _clip(shared_seed.get("exit_reason"), max_len=120)
+    )
+    exit_reason = _clip(shared_seed.get("exit_reason"), max_len=220)
+    execution_summary = _clip(execution_outcome.get("summary"), max_len=300)
+    same_day_status = _clip(reporter_status.get("same_day_linkage_status"), max_len=40)
+    same_day_reason = _clip(reporter_status.get("same_day_linkage_reason"), max_len=220)
+    reporter_summary = _clip(reporter_status.get("summary"), max_len=300)
+    reporter_summary_lower = reporter_summary.lower()
+    if "overtrading" in reporter_summary_lower or "rapid exit pressure" in reporter_summary_lower:
+        reporter_summary = "동일 일자 reporter도 과매매 또는 빠른 청산 압력을 시사했습니다."
+    same_day_status_label = {
+        "linked_run": "동일 실행 기록 직접 연계",
+        "linked_trade": "동일 거래 직접 연계",
+        "linked_day": "당일 묶음 연계",
+        "missing": "미연계",
+    }.get(same_day_status, same_day_status)
+
+    is_short_hold = hold_seconds > 0 and hold_seconds <= 120
+    peak_drawdown_exit = "peak_drawdown" in str(monitor_reason.get("trigger_type") or "").lower() or "peak_drawdown" in exit_reason.lower()
+    execution_recorded = "recorded" in execution_summary.lower() or "approved" in execution_summary.lower()
+
+    summary_parts: List[str] = []
+    if is_short_hold and peak_drawdown_exit:
+        summary_parts.append("이번 거래는 종목 선정 자체보다 진입 타이밍 부담이 더 크게 드러났습니다.")
+    elif peak_drawdown_exit:
+        summary_parts.append("이번 거래는 보유 이후 되밀림 관리가 더 크게 작동한 케이스로 보입니다.")
+    else:
+        summary_parts.append("이번 거래는 저장된 근거상 scanner, entry, hold, exit 축을 함께 봐야 합니다.")
+    if selected_rank == 1 and selected_score is not None:
+        scanner_bits = [f"스캐너는 {symbol}을 {selected_rank}위"]
+        if selected_score is not None:
+            scanner_bits.append(f"종합 점수 {selected_score:.3f}")
+        if confidence is not None:
+            scanner_bits.append(f"신뢰도 {confidence:.2f}")
+        if selected_risk is not None:
+            scanner_bits.append(f"리스크 {selected_risk:.3f}")
+        summary_parts.append(", ".join(scanner_bits) + "로 올렸고 선정 자체는 크게 흔들리지 않았습니다.")
+    if hold_duration and peak_drawdown_exit:
+        summary_parts.append(f"다만 진입 후 약 {hold_duration} 만에 {trigger_type} 축 청산이 발생해 추가 상승 지속성이 약했습니다.")
+    elif hold_duration:
+        summary_parts.append(f"보유 시간은 약 {hold_duration}로 짧아 hold 단계 해석은 제한적입니다.")
+    if execution_recorded:
+        summary_parts.append("실행 기록상 주문 자체 문제는 보이지 않았습니다.")
+    elif execution_summary:
+        summary_parts.append("실행 기록은 남아 있지만 주문 품질은 추가 확인이 필요합니다.")
+
+    bullets: List[str] = []
+    if selected_rank not in (None, "") and selected_score is not None:
+        scanner_line = f"종목 선정 평가는 {symbol} {selected_rank}위, 종합 점수 {selected_score:.3f}"
+        if confidence is not None:
+            scanner_line += f", 신뢰도 {confidence:.2f}"
+        if selected_risk is not None:
+            scanner_line += f", 리스크 {selected_risk:.3f}"
+        scanner_line += "로 종목 선택 자체는 비교적 정상으로 보입니다."
+        bullets.append(scanner_line)
+    if is_short_hold and peak_drawdown_exit:
+        bullets.append(
+            f"진입 평가는 진입 후 약 {hold_duration or f'{hold_seconds}초'} 만에 {trigger_type} 청산이 나와, 종목 선정보다 진입 위치 부담이 더 컸던 것으로 읽힙니다."
+        )
+    elif hold_duration:
+        bullets.append(f"진입·보유 평가는 보유 시간이 {hold_duration}로 짧아 추가 사례 비교가 필요합니다.")
+    if hold_duration:
+        bullets.append(f"보유 평가는 보유 시간이 {hold_duration}에 그쳐 중간 악화 흐름을 두껍게 읽기에는 정보가 부족합니다.")
+    if trigger_type:
+        bullets.append(f"청산 평가는 청산 축이 {trigger_type}{_korean_euro_ro(trigger_type)} 명확해 청산 규칙 자체는 규칙대로 작동한 것으로 보입니다.")
+    if execution_recorded:
+        bullets.append("실행 평가는 주문 승인 및 기록이 남아 있어 실행 누락보다는 전략/타이밍 해석 이슈 쪽에 가깝습니다.")
+    elif execution_summary:
+        bullets.append(f"실행 평가는 {execution_summary}")
+    if same_day_status:
+        linkage_line = f"당일 reporter 연계 상태는 {same_day_status_label}였습니다."
+        bullets.append(linkage_line)
+    if reporter_summary:
+        bullets.append(reporter_summary)
+
+    return {
+        "summary": " ".join(summary_parts).strip(),
+        "status": status,
+        "grade": grade,
+        "bullets": _dedupe_list(bullets, max_items=8, max_len=260),
+    }
+
+
+def _build_execution_quality_section(
+    story_input: Dict[str, Any],
+    execution_outcome: Dict[str, Any],
+    lifecycle_summary: Dict[str, Any],
+) -> Dict[str, Any]:
+    execution_details = story_input.get("execution_details") if isinstance(story_input.get("execution_details"), dict) else {}
+    symbol = _clip(story_input.get("symbol"), max_len=24) or "종목"
+    action = _operator_action_label(_clip(story_input.get("action"), max_len=24) or "WAIT")
+    filled_qty = execution_details.get("filled_qty")
+    avg_price = _fmt_price(execution_details.get("avg_price"))
+    order_status = _clip(execution_details.get("order_status"), max_len=80)
+    order_id = _clip(execution_details.get("order_id"), max_len=120)
+    execution_mode = _clip(execution_details.get("execution_mode"), max_len=80)
+    execution_mode_label = _clip(story_input.get("execution_mode_label"), max_len=80)
+    broker_env = _clip(execution_details.get("broker_env"), max_len=80)
+    outcome = _clip(execution_outcome.get("outcome"), max_len=80)
+    quantity = execution_outcome.get("quantity")
+    order_status_label = {
+        "allowed": "허용",
+        "approved": "승인",
+        "recorded": "기록 완료",
+        "rejected": "거부",
+    }.get(order_status.lower(), order_status) if order_status else ""
+    mode_label = {
+        "real": "실거래",
+        "live": "실거래",
+        "simulation": "시뮬레이션",
+    }.get(execution_mode.lower(), execution_mode) if execution_mode else ""
+    if execution_mode_label:
+        mode_label = _execution_mode_label(execution_mode_label)
+
+    summary_parts: List[str] = []
+    if outcome == "recorded":
+        qty_text = str(int(quantity)) if quantity not in (None, "") else (str(int(filled_qty)) if filled_qty not in (None, "") else "기록된 수량")
+        summary_parts.append(f"{symbol} {qty_text}주 {action} 주문은 승인 및 기록까지 확인됐습니다.")
+    elif _clip(execution_outcome.get("summary"), max_len=300):
+        summary_parts.append(_operatorize_report_text(execution_outcome.get("summary")))
+    elif _clip(lifecycle_summary.get("lifecycle_summary_human"), max_len=300):
+        summary_parts.append(_operatorize_report_text(lifecycle_summary.get("lifecycle_summary_human")))
+    else:
+        summary_parts.append("실행 품질 세부 정보는 제한적으로만 확인됩니다.")
+    if avg_price != "-":
+        summary_parts.append(f"체결 기준 가격은 {avg_price}였습니다.")
+    summary = " ".join(summary_parts)
+
+    bullets: List[str] = []
+    if outcome:
+        outcome_label = {"recorded": "기록 완료", "approved": "승인", "rejected": "거부"}.get(outcome, outcome)
+        bullets.append(f"주문 실행 결과는 {outcome_label}였습니다.")
+    if quantity not in (None, ""):
+        bullets.append(f"주문 수량은 {int(quantity)}주였습니다.")
+    elif filled_qty not in (None, ""):
+        bullets.append(f"체결 수량은 {int(filled_qty)}주였습니다.")
+    if mode_label:
+        bullets.append(f"실행 모드는 {mode_label}였습니다.")
+    if broker_env:
+        bullets.append(f"브로커 환경은 {broker_env}였습니다.")
+    else:
+        bullets.append("브로커 환경 정보는 별도로 기록되지 않았습니다.")
+    if order_status_label:
+        bullets.append(f"주문 상태는 {order_status_label}{_korean_euro_ro(order_status_label)} 확인됐습니다.")
+    else:
+        bullets.append("주문 상태는 별도로 기록되지 않았습니다.")
+    if order_id:
+        bullets.append(f"주문 번호는 {order_id}였습니다.")
+    else:
+        bullets.append("주문 번호는 별도로 기록되지 않았습니다.")
+    if avg_price != "-":
+        bullets.append(f"평균 체결가는 {avg_price}였습니다.")
+
+    return {
+        "summary": summary,
+        "bullets": _dedupe_list(bullets, max_items=8, max_len=260),
+    }
+
+
 def _build_exit_decision_summary(
     exit_summary: Dict[str, Any],
     monitor_context: Dict[str, Any],
@@ -1463,9 +2945,10 @@ def _build_exit_decision_summary(
     status_text: str,
 ) -> str:
     reason = _clip(exit_summary.get("reason_human"), max_len=600)
+    reason_label = _exit_reason_label(reason)
     if status_text.lower() == "open":
-        return reason or "현재 포지션은 아직 열려 있어 확정된 청산 체결은 기록되지 않았습니다."
-    if reason:
+        return reason_label or "현재 포지션은 아직 열려 있어 확정된 청산 체결은 기록되지 않았습니다."
+    if reason or reason_label:
         price = _fmt_price(monitor_context.get("current_price"))
         avg_price = _fmt_price(monitor_context.get("average_price"))
         drawdown = _fmt_pct(monitor_context.get("current_drawdown"))
@@ -1482,8 +2965,8 @@ def _build_exit_decision_summary(
         if drawdown != "-":
             details.append(f"현재 손익 변동은 {drawdown}")
         if details:
-            return f"{reason} 청산 당시 상황은 " + ", ".join(details) + "입니다."
-        return reason
+            return f"{reason_label or reason}. 청산 당시 상황은 " + ", ".join(details) + "입니다."
+        return reason_label or reason
     return "청산 판단 근거는 저장된 데이터 범위 안에서 충분히 확인되지 않았습니다."
 
 
@@ -1495,16 +2978,20 @@ def _build_exit_decision_bullets(
 ) -> List[str]:
     guard_context = exit_summary.get("guard_context") if isinstance(exit_summary.get("guard_context"), dict) else {}
     execution_context = exit_summary.get("execution_context") if isinstance(exit_summary.get("execution_context"), dict) else {}
+    reason_label = _exit_reason_label(exit_summary.get("reason_human"))
+    decision_chain = " -> ".join(_decision_chain_label(item) for item in _listify(monitor_context.get("decision_reason_chain"), max_items=5, max_len=60))
     bullets: List[str] = [
         f"청산 판단이 기록된 run은 {_clip(exit_summary.get('run_id'), max_len=80) or 'not_captured'}입니다.",
         f"청산 시각은 {_clip(exit_summary.get('ts'), max_len=80) or 'not_captured'}입니다.",
         f"청산 액션은 {_operator_action_label(_clip(exit_summary.get('action'), max_len=40) or ('HOLD' if status_text == 'open' else 'not_captured'))}입니다.",
-        f"청산 사유는 {_clip(exit_summary.get('reason_human'), max_len=220) or ('position still open' if status_text == 'open' else 'not_captured')}입니다.",
+        f"청산 사유는 {reason_label or ('포지션이 아직 열려 있음' if status_text == 'open' else '기록 없음')}입니다.",
     ]
     if _clip(monitor_context.get("trigger_type"), max_len=80):
-        bullets.append(f"감지된 핵심 신호는 {_operator_axis_label(monitor_context.get('trigger_type'))}입니다.")
+        trigger_label = _operator_axis_label(monitor_context.get("trigger_type"))
+        bullets.append(f"청산을 직접 촉발한 신호는 {trigger_label}{_korean_predicate(trigger_label)}")
     if _clip(monitor_context.get("active_exit_axis"), max_len=120):
-        bullets.append(f"현재 우선 감시 중인 청산 축은 {_operator_axis_label(monitor_context.get('active_exit_axis'))}입니다.")
+        axis_label = _operator_axis_label(monitor_context.get("active_exit_axis"))
+        bullets.append(f"청산 시점 우선 감시 축은 {axis_label}{_korean_predicate(axis_label)}")
     if monitor_context.get("confirm_required") is not None:
         bullets.append(f"청산 확인 조건은 {int(monitor_context.get('confirm_count') or 0)}/{int(monitor_context.get('confirm_required') or 0)} 단계로 기록되었습니다.")
     effective_stop = _fmt_pct(monitor_context.get("effective_stop_loss_pct"))
@@ -1524,9 +3011,10 @@ def _build_exit_decision_bullets(
     peak_drawdown = _fmt_pct(monitor_context.get("peak_drawdown"))
     if current_drawdown != "-" or peak_drawdown != "-":
         bullets.append(f"현재 손익 변동과 고점 대비 하락폭은 {current_drawdown} / {peak_drawdown}입니다.")
-    decision_chain = " -> ".join(_listify(monitor_context.get("decision_reason_chain"), max_items=5, max_len=80))
+    if not decision_chain:
+        decision_chain = reason_label
     if decision_chain:
-        bullets.append(f"판단 흐름은 {decision_chain} 순서로 이어졌습니다.")
+        bullets.append(f"판단 흐름은 {decision_chain} 기준으로 이어졌습니다.")
     if _clip(guard_context.get("summary"), max_len=220):
         bullets.append(f"가드 판단 결과는 {_clip(guard_context.get('summary'), max_len=220)}입니다.")
     if _clip(execution_context.get("summary"), max_len=220):
@@ -1598,6 +3086,70 @@ def _compact_entry_or_exit_summary(summary: Any) -> Dict[str, Any]:
     }
 
 
+def _extract_policy_ref_context(story_input: Dict[str, Any], monitor_reason: Dict[str, Any]) -> Dict[str, Any]:
+    candidates: List[Dict[str, Any]] = []
+    if isinstance(monitor_reason.get("policy_ref"), dict):
+        candidates.append(monitor_reason.get("policy_ref"))
+    for key in ("entry_summary", "exit_summary"):
+        block = story_input.get(key) if isinstance(story_input.get(key), dict) else {}
+        monitor_ctx = block.get("monitor_context") if isinstance(block.get("monitor_context"), dict) else {}
+        policy_ref = monitor_ctx.get("policy_ref") if isinstance(monitor_ctx.get("policy_ref"), dict) else {}
+        if policy_ref:
+            candidates.append(policy_ref)
+    holding = story_input.get("holding_summary") if isinstance(story_input.get("holding_summary"), dict) else {}
+    for row in list(holding.get("holding_events") or [])[:8]:
+        if not isinstance(row, dict):
+            continue
+        monitor_ctx = row.get("monitor_context") if isinstance(row.get("monitor_context"), dict) else {}
+        policy_ref = monitor_ctx.get("policy_ref") if isinstance(monitor_ctx.get("policy_ref"), dict) else {}
+        if policy_ref:
+            candidates.append(policy_ref)
+    for policy_ref in candidates:
+        symbol_constraints = policy_ref.get("symbol_constraints") if isinstance(policy_ref.get("symbol_constraints"), dict) else {}
+        risk_mode = _clip(policy_ref.get("risk_mode"), max_len=40)
+        selected_playbook = _clip(policy_ref.get("selected_playbook"), max_len=40)
+        preferred_themes = _listify(symbol_constraints.get("preferred_themes"), max_items=6, max_len=80)
+        avoid_themes = _listify(symbol_constraints.get("avoid_themes"), max_items=6, max_len=80)
+        if risk_mode or selected_playbook or preferred_themes or avoid_themes:
+            return {
+                "risk_mode": risk_mode,
+                "selected_playbook": selected_playbook,
+                "preferred_themes": preferred_themes,
+                "avoid_themes": avoid_themes,
+            }
+    return {}
+
+
+def _extract_scanner_bias_summary(story_input: Dict[str, Any], scanner_reason: Dict[str, Any]) -> Dict[str, Any]:
+    candidates: List[Dict[str, Any]] = []
+    if isinstance(scanner_reason.get("scanner_bias_summary"), dict) and scanner_reason.get("scanner_bias_summary"):
+        candidates.append(scanner_reason.get("scanner_bias_summary"))
+    scanner_trace_summary = story_input.get("scanner_trace_summary") if isinstance(story_input.get("scanner_trace_summary"), dict) else {}
+    if isinstance(scanner_trace_summary.get("scanner_bias_summary"), dict) and scanner_trace_summary.get("scanner_bias_summary"):
+        candidates.append(scanner_trace_summary.get("scanner_bias_summary"))
+    canonical_artifacts = story_input.get("canonical_agent_artifacts") if isinstance(story_input.get("canonical_agent_artifacts"), dict) else {}
+    canonical_scanner = canonical_artifacts.get("scanner") if isinstance(canonical_artifacts.get("scanner"), dict) else {}
+    if isinstance(canonical_scanner.get("scanner_bias_summary"), dict) and canonical_scanner.get("scanner_bias_summary"):
+        candidates.append(canonical_scanner.get("scanner_bias_summary"))
+    scanner_evidence = story_input.get("scanner_evidence") if isinstance(story_input.get("scanner_evidence"), dict) else {}
+    for row in list(scanner_evidence.get("candidate_selection_reasons") or [])[:3]:
+        if not isinstance(row, dict):
+            continue
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        if isinstance(payload.get("scanner_bias_summary"), dict) and payload.get("scanner_bias_summary"):
+            candidates.append(payload.get("scanner_bias_summary"))
+    for item in candidates:
+        if item:
+            return {
+                "enabled": item.get("enabled"),
+                "active_biases": _listify(item.get("active_biases"), max_items=6, max_len=80),
+                "bias_strength": _clip(item.get("bias_strength"), max_len=24),
+                "bias_source": _clip(item.get("bias_source"), max_len=80),
+                "summary": _clip(item.get("summary"), max_len=220),
+            }
+    return {}
+
+
 def _evidence_digest(evidence: Any, keys: List[str]) -> Dict[str, int]:
     data = evidence if isinstance(evidence, dict) else {}
     return {key: len(list(data.get(key) or [])) for key in keys}
@@ -1619,6 +3171,8 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     strategist_evidence = shared_seed.get("strategist_evidence") if isinstance(shared_seed.get("strategist_evidence"), dict) else {}
     scanner_reasoning = shared_seed.get("scanner_reasoning") if isinstance(shared_seed.get("scanner_reasoning"), dict) else {}
     monitor_reasoning = shared_seed.get("monitor_reasoning") if isinstance(shared_seed.get("monitor_reasoning"), dict) else {}
+    policy_ref_context = _extract_policy_ref_context(story_input, monitor_reason)
+    scanner_bias_summary = _extract_scanner_bias_summary(story_input, scanner_reason)
     return {
         "trade_id": story_input.get("trade_id") or story_input.get("story_id"),
         "story_id": story_input.get("story_id"),
@@ -1642,6 +3196,11 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "market_sentiment": _clip(market_context.get("market_sentiment"), max_len=24),
             "playbook": _clip(market_context.get("playbook"), max_len=32),
             "themes": _listify(market_context.get("themes"), max_items=4, max_len=80),
+            "risk_mode": _clip(policy_ref_context.get("risk_mode"), max_len=32),
+            "selected_playbook": _clip(policy_ref_context.get("selected_playbook"), max_len=32),
+            "preferred_themes": _listify(policy_ref_context.get("preferred_themes"), max_items=4, max_len=80),
+            "avoid_themes": _listify(policy_ref_context.get("avoid_themes"), max_items=4, max_len=80),
+            "scanner_bias_summary": scanner_bias_summary,
             "global_sentiment_score": market_context.get("global_sentiment_score"),
             "vix_level": market_context.get("vix_level"),
             "candidate_hints": _listify(
@@ -1926,6 +3485,17 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "market_sentiment": market.get("market_sentiment"),
             "playbook": market.get("playbook"),
             "themes": _listify(market.get("themes"), max_items=3, max_len=60),
+            "risk_mode": market.get("risk_mode"),
+            "selected_playbook": market.get("selected_playbook"),
+            "preferred_themes": _listify(market.get("preferred_themes"), max_items=4, max_len=60),
+            "avoid_themes": _listify(market.get("avoid_themes"), max_items=4, max_len=60),
+            "scanner_bias_summary": {
+                "enabled": (market.get("scanner_bias_summary") or {}).get("enabled"),
+                "active_biases": _listify((market.get("scanner_bias_summary") or {}).get("active_biases"), max_items=6, max_len=80),
+                "bias_strength": _clip((market.get("scanner_bias_summary") or {}).get("bias_strength"), max_len=24),
+                "bias_source": _clip((market.get("scanner_bias_summary") or {}).get("bias_source"), max_len=80),
+                "summary": _clip((market.get("scanner_bias_summary") or {}).get("summary"), max_len=220),
+            },
             "global_sentiment_score": market.get("global_sentiment_score"),
             "vix_level": market.get("vix_level"),
             "stress_flags": _listify(market.get("stress_flags"), max_items=3, max_len=60),
@@ -2185,6 +3755,7 @@ def _report_section_provenance(story_input: Dict[str, Any]) -> Dict[str, Dict[st
     return {
         "executive_summary": _normalize_provenance_entry(source.get("operator_conclusion_human") or fallback),
         "market_context_at_entry": _normalize_provenance_entry(source.get("market_context_human") or fallback),
+        "strategist_summary": _normalize_provenance_entry(source.get("market_context_human") or fallback),
         "why_this_symbol_was_chosen": _normalize_provenance_entry(source.get("scanner_reason_human") or fallback),
         "entry_decision": _normalize_provenance_entry(source.get("scanner_reason_human") or fallback),
         "holding_monitoring_story": _normalize_provenance_entry(source.get("monitor_reason_human") or fallback),
@@ -2342,6 +3913,8 @@ def _normalize_trade_report_language(text: Any) -> str:
     replacements = (
         ("Trailing stop", "추적 손절"),
         ("trailing stop", "추적 손절"),
+        ("시장 시장 상태은", "시장 상태는"),
+        ("시장 상태은", "시장 상태는"),
         ("Scanner selected", "스캐너는"),
         ("Market Sentiment", "시장 심리"),
         ("Market sentiment", "시장 심리"),
@@ -2359,6 +3932,9 @@ def _normalize_trade_report_language(text: Any) -> str:
         ("Total Score", "총점"),
         ("strategist-guided weighting, source scoring, and risk penalties", "전략가 가중치, 소스 점수, 리스크 패널티"),
         ("it led on trading value, theme and sector alignment", "거래대금과 테마·섹터 정렬에서 앞섰기 때문"),
+        ("breakout_above_recent_high_with_vwap_structure_confirmation", "직전 고점 돌파와 VWAP 구조 확인"),
+        ("breakout_path", "돌파 경로"),
+        ("pullback_volume_path", "눌림목·거래량 경로"),
         ("candidate signals", "후보 신호"),
         ("market /", "시장 /"),
         ("bearish", "약세"),
@@ -2382,6 +3958,9 @@ def _operatorize_report_text(text: Any) -> str:
     lowered = cleaned.lower()
     exact_mapping = {
         "the decision path was recorded, but the operator-facing summary is limited.": "의사결정 경로는 기록되었지만 운영자용 요약은 제한적으로만 남아 있습니다.",
+        "current lifecycle status is closed. entry and exit are connected in one lifecycle story.": "이번 라이프사이클은 종결 상태이며, 진입과 청산이 하나의 거래 흐름으로 연결됐습니다.",
+        "current lifecycle status is open. entry and exit are still unfolding within one lifecycle story.": "이번 라이프사이클은 아직 진행 중이며, 진입 이후 청산 판단이 이어지고 있습니다.",
+        "supervisor approved the order because allowed.": "슈퍼바이저는 주문을 승인했고 가드 판단은 허용이었습니다.",
         "execution quality details were not captured.": "실행 품질 세부 내용은 별도로 기록되지 않았습니다.",
         "reporter linkage was not available yet.": "Reporter 연계 결과는 아직 연결되지 않았습니다.",
         "reporter linkage status was recorded separately.": "Reporter 연계 상태는 별도로 기록되어 있습니다.",
@@ -2404,6 +3983,28 @@ def _operatorize_report_text(text: Any) -> str:
         "execution": "실행 결과를 정리했습니다.",
         "reporter": "리포터 평가를 정리했습니다.",
         "none": "추가 보완 포인트는 제한적입니다.",
+        "top value or trading-value input supported the selection": "거래대금 상위 신호가 선정 근거를 뒷받침했습니다.",
+        "top volume or turnover input supported the selection": "회전율 신호는 존재했지만 최종 우위 근거로는 약했습니다.",
+        "theme boost or sector source matched the strategist frame": "테마 가점과 섹터 소스가 전략가 프레임과 맞아떨어졌습니다.",
+        "12/13 captured chart features": "13개 중 12개 차트 피처가 확보됐습니다.",
+        "news/global sentiment contribution was 0.295": "뉴스와 글로벌 감성 기여 합산값은 0.295였습니다.",
+        "risk score was 0.563 and supervisor allow=true": "리스크 점수는 0.563이었고 supervisor 허용 상태도 유지됐습니다.",
+        "price anomaly check was not captured in this run": "이번 run에서는 가격 이상치 점검 결과가 저장되지 않았습니다.",
+        "price anomaly check was 기록되지 않음 in this run": "이번 run에서는 가격 이상치 점검 결과가 저장되지 않았습니다.",
+        "spread or slippage diagnostics were not captured in this run": "이번 run에서는 호가 스프레드 또는 슬리피지 진단이 저장되지 않았습니다.",
+        "spread or slippage diagnostics were 기록되지 않음 in this run": "이번 run에서는 호가 스프레드 또는 슬리피지 진단이 저장되지 않았습니다.",
+        "holding-phase evidence is thin; preserve more monitor context between entry and exit.": "보유 단계 근거가 얇아 진입과 청산 사이의 모니터 맥락을 더 보존해야 합니다.",
+        "monitor trigger changes": "모니터 트리거 변화",
+        "macro/news shifts": "거시 환경 및 뉴스 변화",
+        "stop-loss breach": "손절 기준 이탈",
+        "monitor and scanner divergence": "모니터와 스캐너 판단 발산",
+        "negative macro regime shift": "거시 환경의 부정적 전환",
+        "guard reason: allowed": "가드 판단 사유는 허용입니다.",
+        "supervisor verdict: approve": "슈퍼바이저 최종 판단은 승인입니다.",
+        "broad_market_leaders": "브로드마켓 리더",
+        "top_value": "거래대금 상위",
+        "top_volume": "거래량 상위",
+        "sector_theme": "섹터·테마 정렬",
     }
     if lowered in exact_mapping:
         return exact_mapping[lowered]
@@ -2432,6 +4033,29 @@ def _operatorize_report_text(text: Any) -> str:
     m = re.fullmatch(r"News query targets:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         return f"뉴스 조회 대상은 {_clip(m.group(1), max_len=220)}입니다."
+    m = re.fullmatch(
+        r"적용 정책[:：]?\s*timeframe\s*([0-9]+)\s*분,\s*breakout lookback\s*([0-9]+),\s*volume ratio min\s*([0-9.]+)",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        return (
+            f"적용 정책은 {int(m.group(1))}분봉, 돌파 확인 기준 봉 수 {int(m.group(2))}, "
+            f"최소 거래량 비율 {float(m.group(3)):.2f}였습니다."
+        )
+    m = re.fullmatch(r"Commander 의도[:：]?\s*([^,]+),\s*라우트[:：]?\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"Commander 의도는 {_clip(m.group(1), max_len=80)}이고, 선택된 라우트는 {_clip(m.group(2), max_len=120)}입니다."
+    m = re.fullmatch(r"정책 검증 상태[:：]?\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        status_text = _clip(m.group(1), max_len=200).replace("(", ", ").replace(")", "")
+        return f"정책 검증 상태는 {status_text}입니다."
+    m = re.fullmatch(r"VWAP 확장 비율 조건[:：]?\s*([^,]+),\s*눌림목 비율[:：]?\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"VWAP 확장 허용 범위는 {_clip(m.group(1), max_len=80)}이고, 눌림목 비율 범위는 {_clip(m.group(2), max_len=80)}입니다."
+    m = re.fullmatch(r"Scanner linkage:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"스캐너 연결 근거는 {_clip(m.group(1), max_len=260)}입니다."
     m = re.fullmatch(r"Key strategist inputs:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         return f"전략가 핵심 입력은 {_clip(m.group(1), max_len=240)}입니다."
@@ -2634,9 +4258,27 @@ def _operatorize_report_text(text: Any) -> str:
     m = re.fullmatch(r"Approval mode:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         value = _clip(m.group(1), max_len=120)
-        if value == "not captured in the execution trace":
+        lowered_value = value.lower()
+        if lowered_value == "not captured in the execution trace" or (
+            "execution trace" in lowered_value and ("not captured" in lowered_value or "기록되지 않음" in value)
+        ):
             return "승인 모드는 실행 추적에는 별도로 남아 있지 않습니다."
         return f"승인 모드는 {value}입니다."
+    m = re.fullmatch(r"Lifecycle status:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        status_token = _clip(m.group(1), max_len=80).strip().lower()
+        status_label = {
+            "closed": "종결",
+            "open": "진행 중",
+            "pending": "대기",
+        }.get(status_token, _clip(m.group(1), max_len=80))
+        return f"라이프사이클 상태 {status_label}"
+    m = re.fullmatch(r"Entry\s+([A-Z_]+)\s+was executed by run\s+([A-Za-z0-9_-]+)\.?", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"run {_clip(m.group(2), max_len=80)}에서 {_operator_action_label(m.group(1))} 진입이 실행됐습니다."
+    m = re.fullmatch(r"Exit\s+([A-Z_]+)\s+was executed by run\s+([A-Za-z0-9_-]+)\.?", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"run {_clip(m.group(2), max_len=80)}에서 {_operator_action_label(m.group(1))} 청산이 실행됐습니다."
     m = re.fullmatch(r"슈퍼바이저 판단:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         return f"감독 승인 판단은 {_operator_action_label(m.group(1))}입니다."
@@ -2701,6 +4343,87 @@ def _prefer_fallback_text(ai_text: Any, fallback_text: Any) -> str:
     return ai_clean
 
 
+def _prefer_fallback_summary(section_key: str, ai_text: Any, fallback_text: Any) -> str:
+    ai_clean = _clip(ai_text, max_len=2000)
+    fallback_clean = _clip(fallback_text, max_len=2000)
+    preferred = _prefer_fallback_text(ai_clean, fallback_clean)
+    if preferred == fallback_clean:
+        return preferred
+    if not fallback_clean:
+        return preferred
+    token = str(section_key or "").strip().lower()
+    if token in {"entry_decision", "holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision", "execution_quality", "reporter_evaluation"}:
+        return fallback_clean
+    ai_lower = ai_clean.lower()
+    if token in {"market_context_at_entry", "strategist_summary"}:
+        if (
+            not _contains_hangul(ai_clean)
+            or _has_noisy_trade_report_text(ai_clean)
+            or "headlines were considered" in ai_lower
+            or "market regime" in ai_lower
+            or "neutral regime" in ai_lower
+        ):
+            return fallback_clean
+    if token in {"scanner_filters"}:
+        if "scanner and guard checks" in ai_lower or not _contains_hangul(ai_clean):
+            return fallback_clean
+    if token in {"why_this_symbol_was_chosen", "why_this_symbol"}:
+        if (
+            not _contains_hangul(ai_clean)
+            or _has_noisy_trade_report_text(ai_clean)
+            or "trading value" in ai_lower
+            or "theme and sector alignment" in ai_lower
+            or "highest total score" in ai_lower
+            or "highest combined scanner score" in ai_lower
+        ):
+            return fallback_clean
+    if token in {"scanner_candidate_comparison"}:
+        if not _contains_hangul(ai_clean) or _has_noisy_trade_report_text(ai_clean):
+            return fallback_clean
+    if token in {"entry_decision"}:
+        if (
+            not _contains_hangul(ai_clean)
+            or "strategist-guided weighting" in ai_lower
+            or "breakout_above_recent_high_with_vwap_structure_confirmation" in ai_lower
+            or "entry timing" in ai_lower
+        ):
+            return fallback_clean
+    if token in {"holding_monitoring_story", "monitor_trigger_reasoning"}:
+        if (
+            "holding_duration:" in ai_lower
+            or "run_count:" in ai_lower
+            or "recent_monitor_updates:" in ai_lower
+            or "peak_price:" in ai_lower
+            or "current_price:" in ai_lower
+        ):
+            return fallback_clean
+    if token in {"exit_decision"}:
+        if (
+            "exit_reason_human" in ai_lower
+            or "trigger_type:" in ai_lower
+            or "hard_stop_pct" in ai_lower
+            or "effective_stop_loss_pct" in ai_lower
+            or "take_profit_pct" in ai_lower
+        ):
+            return fallback_clean
+    if token in {"execution_quality"}:
+        if (
+            "execution outcome:" in ai_lower
+            or "order status:" in ai_lower
+            or "broker environment:" in ai_lower
+        ):
+            return fallback_clean
+    if token in {"reporter_evaluation"}:
+        if (
+            not _contains_hangul(ai_clean)
+            or "overtrading" in ai_lower
+            or "rapid exit pressure" in ai_lower
+            or "reporter linkage" in ai_lower
+        ):
+            return fallback_clean
+    return preferred
+
+
 def _trade_report_priority_bullet_prefixes(section_key: str) -> List[str]:
     key = str(section_key or "").strip().lower()
     if key in {"market_context_at_entry", "market_context"}:
@@ -2710,10 +4433,7 @@ def _trade_report_priority_bullet_prefixes(section_key: str) -> List[str]:
             "Global sentiment score:",
             "글로벌 감성 점수는",
             "VIX",
-            "News input:",
-            "뉴스 입력 요약은",
-            "News query targets:",
-            "뉴스 조회 대상은",
+            "Scanner linkage:",
             "Key strategist inputs:",
             "전략가 핵심 입력은",
             "Market news titles:",
@@ -2721,7 +4441,19 @@ def _trade_report_priority_bullet_prefixes(section_key: str) -> List[str]:
             "Candidate news titles:",
             "후보 종목 관련 뉴스는",
         ]
-    if key in {"why_this_symbol_was_chosen", "why_this_symbol", "entry_decision"}:
+    if key in {"strategist_summary"}:
+        return [
+            "핵심 입력은",
+            "전략 해석은",
+            "뉴스 연결 해석은",
+            "스캐너 반영은",
+            "종목 연결은",
+            "Scanner linkage:",
+            "전략가 핵심 입력은",
+            "주요 시장 뉴스는",
+            "스캐너 연결 근거는",
+        ]
+    if key in {"why_this_symbol_was_chosen", "why_this_symbol", "scanner_candidate_comparison", "entry_decision"}:
         return [
             "Top candidates:",
             "상위 후보는",
@@ -2775,6 +4507,10 @@ def _trade_report_priority_bullet_prefixes(section_key: str) -> List[str]:
 
 
 def _merge_bullets_with_fallback(section_key: str, ai_bullets: List[str], fallback_bullets: List[str]) -> List[str]:
+    section_token = str(section_key or "").strip().lower()
+    if section_token in {"market_context_at_entry", "market_context"}:
+        ai_bullets = [row for row in ai_bullets if not _is_market_context_noise_bullet(row)]
+        fallback_bullets = [row for row in fallback_bullets if not _is_market_context_noise_bullet(row)]
     if not ai_bullets:
         return fallback_bullets[:12]
     if not fallback_bullets:
@@ -2835,10 +4571,38 @@ def _merge_section_with_fallback(ai_section: Any, fallback_section: Dict[str, An
     section = ai_section if isinstance(ai_section, dict) else {}
     fallback = fallback_section if isinstance(fallback_section, dict) else {}
     merged = dict(section)
-    merged["summary"] = _prefer_fallback_text(section.get("summary"), fallback.get("summary"))
+    merged["summary"] = _prefer_fallback_summary(section_key, section.get("summary"), fallback.get("summary"))
     ai_bullets = _listify(section.get("bullets"), max_items=12, max_len=260)
     fallback_bullets = _listify(fallback.get("bullets"), max_items=12, max_len=260)
     if not ai_bullets:
+        merged["bullets"] = fallback_bullets
+    elif fallback_bullets and section_key in {"entry_decision", "holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision", "execution_quality", "reporter_evaluation"}:
+        merged["bullets"] = fallback_bullets
+    elif (
+        fallback_bullets
+        and section_key in {"entry_decision", "holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision", "execution_quality"}
+        and any(
+            any(token in str(item).lower() for token in (
+                "entry_reason_human:",
+                "risk_score:",
+                "score_drivers:",
+                "holding_duration:",
+                "run_count:",
+                "recent_monitor_updates:",
+                "peak_price:",
+                "current_price:",
+                "exit_reason_human:",
+                "trigger_type:",
+                "hard_stop_pct",
+                "effective_stop_loss_pct",
+                "take_profit_pct",
+                "execution outcome:",
+                "broker environment:",
+                "order status:",
+            ))
+            for item in ai_bullets
+        )
+    ):
         merged["bullets"] = fallback_bullets
     elif section_key in {"execution_quality", "guard_approval_result"} and any(_contains_hangul(item) for item in ai_bullets):
         merged["bullets"] = ai_bullets[:12]
@@ -2846,6 +4610,22 @@ def _merge_section_with_fallback(ai_section: Any, fallback_section: Dict[str, An
         fallback_bullets
         and section_key in {"holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision"}
         and sum(1 for item in ai_bullets if _is_low_information_bullet(item)) >= max(3, len(ai_bullets) // 2)
+    ):
+        merged["bullets"] = fallback_bullets
+    elif (
+        fallback_bullets
+        and section_key in {"market_context_at_entry", "strategist_summary", "why_this_symbol_was_chosen", "scanner_candidate_comparison"}
+        and (
+            sum(
+                1
+                for item in ai_bullets
+                if _is_low_information_bullet(item) or _has_noisy_trade_report_text(item)
+            ) >= max(1, len(ai_bullets) // 2)
+            or (
+                not any(_contains_hangul(item) for item in ai_bullets)
+                and any(_contains_hangul(item) for item in fallback_bullets)
+            )
+        )
     ):
         merged["bullets"] = fallback_bullets
     elif fallback_bullets and not any(_contains_hangul(item) for item in ai_bullets) and any(_contains_hangul(item) for item in fallback_bullets):
@@ -2923,6 +4703,7 @@ def _merge_trade_report_candidate(
 
     _merge_into("executive_summary", candidate.get("executive_summary"))
     _merge_into("market_context_at_entry", candidate.get("market_context_at_entry") or candidate.get("market_context"), "market_context")
+    _merge_into("strategist_summary", candidate.get("strategist_summary"))
     _merge_into("why_this_symbol_was_chosen", candidate.get("why_this_symbol_was_chosen") or candidate.get("why_this_symbol"), "why_this_symbol")
     _merge_into("entry_decision", candidate.get("entry_decision"))
     _merge_into("holding_monitoring_story", candidate.get("holding_monitoring_story") or candidate.get("monitor_trigger_reasoning"), "monitor_trigger_reasoning")
@@ -2995,6 +4776,19 @@ def _fallback_report(
     operator_conclusion = (
         story_input.get("operator_conclusion_human") if isinstance(story_input.get("operator_conclusion_human"), dict) else {}
     )
+    policy_ref_context = _extract_policy_ref_context(story_input, monitor_reason)
+    scanner_bias_summary = _extract_scanner_bias_summary(story_input, scanner_reason)
+    market_context = dict(market_context)
+    if policy_ref_context.get("risk_mode") and not market_context.get("risk_mode"):
+        market_context["risk_mode"] = policy_ref_context.get("risk_mode")
+    if policy_ref_context.get("selected_playbook") and not market_context.get("selected_playbook"):
+        market_context["selected_playbook"] = policy_ref_context.get("selected_playbook")
+    if policy_ref_context.get("preferred_themes") and not market_context.get("preferred_themes"):
+        market_context["preferred_themes"] = policy_ref_context.get("preferred_themes")
+    if policy_ref_context.get("avoid_themes") and not market_context.get("avoid_themes"):
+        market_context["avoid_themes"] = policy_ref_context.get("avoid_themes")
+    if scanner_bias_summary and not market_context.get("scanner_bias_summary"):
+        market_context["scanner_bias_summary"] = scanner_bias_summary
     action = _clip(shared_seed.get("lifecycle_action"), max_len=24) or _clip(story_input.get("action"), max_len=24) or "WAIT"
     monitor_stop_trace = _as_dict(
         monitor_reason.get("monitor_stop_policy_trace")
@@ -3036,6 +4830,63 @@ def _fallback_report(
     lifecycle_summary = story_input.get("lifecycle_summary") if isinstance(story_input.get("lifecycle_summary"), dict) else {}
     warnings = _listify(story_input.get("warnings"), max_items=10, max_len=260)
     improvement_points = _listify(story_input.get("improvement_points"), max_items=10, max_len=260)
+    scanner_selection_trace = _as_dict(story_input.get("scanner_selection_trace"))
+    entry_scanner_context = (
+        entry_summary.get("scanner_context")
+        if isinstance(entry_summary.get("scanner_context"), dict)
+        else {}
+    )
+    news_scanner_contribution = _as_dict(
+        scanner_reason.get("news_scanner_contribution")
+        or scanner_selection_trace.get("news_scanner_contribution")
+        or entry_scanner_context.get("news_scanner_contribution")
+    )
+    why_symbol_bullets = _build_scanner_choice_bullets(scanner_reason, market_context)
+    if news_scanner_contribution:
+        core = news_scanner_contribution.get("core_score_contributions") if isinstance(news_scanner_contribution.get("core_score_contributions"), dict) else {}
+        sentiment_inputs = news_scanner_contribution.get("sentiment_inputs") if isinstance(news_scanner_contribution.get("sentiment_inputs"), dict) else {}
+        theme_trace = news_scanner_contribution.get("theme_alignment_trace") if isinstance(news_scanner_contribution.get("theme_alignment_trace"), dict) else {}
+        news_linkage = news_scanner_contribution.get("news_linkage_trace") if isinstance(news_scanner_contribution.get("news_linkage_trace"), dict) else {}
+        def _core_value(key: str) -> float:
+            row = core.get(key)
+            if isinstance(row, dict):
+                return float(row.get("value") or 0.0)
+            try:
+                return float(row or 0.0)
+            except Exception:
+                return 0.0
+        extra_rows: List[str] = []
+        extra_rows.append(
+            "점수 기여 세부값은 "
+            f"거래대금 {_core_value('trading_value'):+.3f}, "
+            f"모멘텀 {_core_value('momentum'):+.3f}, "
+            f"추세 {_core_value('trend'):+.3f}, "
+            f"테마 가점 {_core_value('theme_boost'):+.3f}, "
+            f"감성 {_core_value('sentiment'):+.3f}였습니다."
+        )
+        extra_rows.append(
+            "감성 입력은 "
+            f"뉴스 {float(sentiment_inputs.get('news_sentiment_score') or 0.0):+.3f}, "
+            f"글로벌 {float(sentiment_inputs.get('global_sentiment_score') or 0.0):+.3f}, "
+            f"혼합 {float(sentiment_inputs.get('blended_sentiment_component') or 0.0):+.3f}, "
+            f"최종 반영 {float(sentiment_inputs.get('weighted_sentiment_score_contribution') or 0.0):+.3f}였습니다."
+        )
+        extra_rows.append(
+            "테마 정렬은 "
+            f"일치 여부 {bool(theme_trace.get('theme_source_matched'))}, "
+            f"테마 가점 {float(theme_trace.get('theme_boost_score_contribution') or 0.0):+.3f}, "
+            f"전략가 테마 {', '.join(_listify(theme_trace.get('strategist_themes'), max_items=4, max_len=60)) or '기록 없음'} 기준으로 반영됐습니다."
+        )
+        extra_rows.append(
+            "뉴스 연계는 "
+            f"종목 헤드라인 {int(float(news_linkage.get('symbol_headline_count') or 0))}건, "
+            f"시장 헤드라인 {int(float(news_linkage.get('market_headline_count') or 0))}건, "
+            f"조회 대상 {', '.join(_listify(news_linkage.get('news_query_targets'), max_items=6, max_len=60)) or '기록 없음'} 기준으로 남았습니다."
+        )
+        existing = set(str(row) for row in why_symbol_bullets)
+        for row in extra_rows:
+            if row not in existing:
+                why_symbol_bullets.append(row)
 
     symbol = _clip(shared_seed.get("symbol"), max_len=32) or _clip(story_input.get("symbol"), max_len=32) or "unknown"
     trade_id = _clip(shared_seed.get("trade_id"), max_len=120) or _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120)
@@ -3051,33 +4902,20 @@ def _fallback_report(
     scanner_choice_summary = _build_scanner_choice_summary(scanner_reason, market_context)
     if str(shared_seed.get("scanner_evidence_status") or "").strip() == "unavailable":
         scanner_choice_summary = "Scanner evidence unavailable for this trade. Selection rationale is reported conservatively."
-    market_context_summary = _clip(market_context.get("summary"), max_len=600)
+    market_context_summary = _build_market_context_summary(market_context, scanner_reason=scanner_reason)
     if str(shared_seed.get("strategist_evidence_status") or "").strip() == "unavailable" and (
         not market_context_summary or _is_low_information_bullet(market_context_summary)
     ):
         market_context_summary = "Strategist evidence unavailable for this trade. Market context is shown as limited."
+    strategist_summary = _build_strategist_summary_section(market_context, scanner_reason)
 
     entry_decision = {
         "summary": (
-            _build_entry_decision_summary(entry_summary, scanner_reason, market_context, action)
+            _build_entry_decision_summary(entry_summary, scanner_reason, market_context, monitor_reason, action)
             if bool(shared_seed.get("entry_exists"))
             else "Entry evidence was insufficient, so entry timing is marked as unavailable."
         ),
-        "bullets": [
-            f"Entry run: {_clip(entry_summary.get('run_id'), max_len=80) or 'not_captured'}",
-            f"Entry time: {_clip(entry_summary.get('ts'), max_len=80) or 'not_captured'}",
-            f"Entry action: {_clip(entry_summary.get('action'), max_len=40) or action}",
-            f"Entry reason: {_clip(entry_summary.get('reason_human'), max_len=220) or 'not_captured'}",
-        ]
-        + (
-            [f"Selection decision: {item}" for item in _listify(scanner_reason.get("why_selected"), max_items=2, max_len=180)]
-            or []
-        )
-        + (
-            [f"Final decision basis: {_clip(scanner_reason.get('selection_basis'), max_len=220)}"]
-            if _clip(scanner_reason.get("selection_basis"), max_len=220)
-            else []
-        ),
+        "bullets": _build_entry_decision_bullets(entry_summary, scanner_reason, market_context, monitor_reason, action),
     }
     hold_count = len(list(holding_summary.get("run_ids") or []))
     holding_story = {
@@ -3085,7 +4923,7 @@ def _fallback_report(
         "bullets": _build_holding_story_bullets(holding_summary, monitor_reason),
     }
     if _clip(shared_seed.get("holding_duration"), max_len=80):
-        holding_story["bullets"] = [f"Holding duration: {_clip(shared_seed.get('holding_duration'), max_len=80)}"] + list(
+        holding_story["bullets"] = [_holding_duration_label(_clip(shared_seed.get('holding_duration'), max_len=80))] + list(
             holding_story.get("bullets") or []
         )
     exit_monitor_context = exit_summary.get("monitor_context") if isinstance(exit_summary.get("monitor_context"), dict) else {}
@@ -3102,23 +4940,22 @@ def _fallback_report(
         "bullets": _build_exit_decision_bullets(exit_summary, exit_monitor_context, status_text=status_text),
     }
     if _clip(shared_seed.get("exit_reason"), max_len=240):
-        exit_decision["bullets"] = [f"Canonical exit reason: {_clip(shared_seed.get('exit_reason'), max_len=240)}"] + list(
+        exit_reason_label = _exit_reason_label(_clip(shared_seed.get("exit_reason"), max_len=240))
+        exit_decision["bullets"] = [f"정규화된 청산 사유는 {exit_reason_label or _clip(shared_seed.get('exit_reason'), max_len=240)}입니다."] + list(
             exit_decision.get("bullets") or []
         )
-    execution_quality = {
-        "summary": (
-            _clip(execution_outcome.get("summary"), max_len=600)
-            or _clip(lifecycle_summary.get("lifecycle_summary_human"), max_len=600)
-            or "Execution quality details were not captured."
-        ),
-        "bullets": _listify(execution_outcome.get("bullets"), max_items=10, max_len=260),
-    }
-    reporter_eval = {
-        "summary": _clip(reporter_status.get("summary"), max_len=600) or "Reporter linkage was not available yet.",
-        "status": _clip(reporter_status.get("status"), max_len=40) or "missing",
-        "grade": _clip(reporter_status.get("grade"), max_len=16) or "N/A",
-        "bullets": _listify(reporter_status.get("bullets"), max_items=8, max_len=260),
-    }
+    execution_quality = _build_execution_quality_section(
+        story_input,
+        execution_outcome,
+        lifecycle_summary,
+    )
+    reporter_eval = _build_reporter_evaluation_section(
+        shared_seed,
+        scanner_reason,
+        monitor_reason,
+        execution_outcome,
+        reporter_status,
+    )
     weaknesses_bullets = warnings + [item for item in improvement_points if item not in warnings]
     full_timeline = [
         row
@@ -3152,11 +4989,22 @@ def _fallback_report(
         },
         "market_context_at_entry": {
             "summary": market_context_summary,
-            "bullets": _build_market_context_bullets(market_context),
+            "bullets": _build_market_context_bullets(market_context, scanner_reason=scanner_reason),
             "regime": _clip(market_context.get("regime"), max_len=40),
             "market_sentiment": _clip(market_context.get("market_sentiment"), max_len=40),
             "playbook": _clip(market_context.get("playbook"), max_len=40),
             "themes": _listify(market_context.get("themes"), max_items=6, max_len=80),
+            "risk_mode": _clip(market_context.get("risk_mode"), max_len=40),
+            "selected_playbook": _clip(market_context.get("selected_playbook"), max_len=40),
+            "preferred_themes": _listify(market_context.get("preferred_themes"), max_items=6, max_len=80),
+            "avoid_themes": _listify(market_context.get("avoid_themes"), max_items=6, max_len=80),
+            "scanner_bias_summary": {
+                "enabled": (market_context.get("scanner_bias_summary") or {}).get("enabled"),
+                "active_biases": _listify((market_context.get("scanner_bias_summary") or {}).get("active_biases"), max_items=6, max_len=80),
+                "bias_strength": _clip((market_context.get("scanner_bias_summary") or {}).get("bias_strength"), max_len=24),
+                "bias_source": _clip((market_context.get("scanner_bias_summary") or {}).get("bias_source"), max_len=80),
+                "summary": _clip((market_context.get("scanner_bias_summary") or {}).get("summary"), max_len=220),
+            },
             "global_sentiment_score": market_context.get("global_sentiment_score"),
             "vix_level": market_context.get("vix_level"),
             "stress_flags": _listify(market_context.get("stress_flags"), max_items=6, max_len=80),
@@ -3180,10 +5028,12 @@ def _fallback_report(
                 max_items=6,
                 max_len=180,
             ),
+            "scanner_linkage_summary": _build_market_scanner_linkage_bullet(market_context, scanner_reason),
         },
+        "strategist_summary": strategist_summary,
         "why_this_symbol_was_chosen": {
             "summary": _clip(scanner_choice_summary or scanner_reason.get("summary"), max_len=600),
-            "bullets": _listify(scanner_reason.get("bullets"), max_items=12, max_len=260),
+            "bullets": _listify(why_symbol_bullets, max_items=16, max_len=260),
             "selected_rank": scanner_reason.get("selected_rank"),
             "universe_size": scanner_reason.get("universe_size"),
             "symbol": _clip(scanner_reason.get("selected_symbol") or story_input.get("symbol"), max_len=32),
@@ -3191,7 +5041,8 @@ def _fallback_report(
             "strategist_candidate_hints": _listify(
                 market_context.get("candidate_hints") or strategist_evidence.get("candidate_hints"), max_items=8, max_len=24
             ),
-            "scanner_selection_trace": _as_dict(story_input.get("scanner_selection_trace")),
+            "scanner_selection_trace": scanner_selection_trace,
+            "news_scanner_contribution": news_scanner_contribution,
         },
         "entry_decision": entry_decision,
         "holding_monitoring_story": {
@@ -3206,8 +5057,8 @@ def _fallback_report(
             "monitor_stop_policy_trace": _as_dict(story_input.get("monitor_stop_policy_trace")),
         },
         "scanner_filters": {
-            "summary": _clip(filters_human.get("summary"), max_len=600),
-            "bullets": _listify(filters_human.get("bullets"), max_items=12, max_len=260),
+            "summary": _build_scanner_filters_summary(filters_human),
+            "bullets": _build_scanner_filters_bullets(filters_human),
         },
         "guard_approval_result": {
             "summary": _clip(guard_reason.get("summary"), max_len=600),
@@ -3316,6 +5167,10 @@ def _failure_report(
             "summary": "AI generation failed before a rendered market-context section was produced.",
             "bullets": [],
         },
+        "strategist_summary": {
+            "summary": "AI generation failed before a rendered strategist-summary section was produced.",
+            "bullets": [],
+        },
         "why_this_symbol_was_chosen": {
             "summary": "AI generation failed before a rendered symbol-selection section was produced.",
             "bullets": [],
@@ -3405,17 +5260,61 @@ def build_separated_ai_trade_report(trade_dir: str, *, model: Optional[str] = No
     """Phase 6-1 Task 4 Compatibility Wrapper."""
     from libs.reporting.trade_read_model import build_trade_read_model
     from libs.reporting.fact_narrative_report import build_separated_report
+    from libs.agent.reporter import run_reporter_agent
+
     try:
         trade_model = build_trade_read_model(str(trade_dir))
     except Exception:
         trade_model = {}
     chosen_model = _resolve_intraday_report_model(trade_model, explicit_model=model)
-    execution_profile = _resolve_intraday_report_execution_profile(trade_model if isinstance(trade_model, dict) else {})
-    return build_separated_report(
-        trade_model=trade_model,
-        model=chosen_model,
-        execution_profile=execution_profile,
+    execution_profile = _resolve_intraday_report_execution_profile(
+        trade_model if isinstance(trade_model, dict) else {}
     )
+    agent_out = run_reporter_agent(
+        str(trade_dir),
+        policy={
+            "model": chosen_model,
+            "execution_profile": execution_profile,
+        },
+    )
+    agent_status = str(agent_out.get("status") or "").strip().lower()
+    narrative_obj = agent_out.get("narrative") if isinstance(agent_out.get("narrative"), dict) else {}
+    narrative_reason = str(narrative_obj.get("reason") or "").strip().lower()
+    degraded_for_contract = (
+        agent_status == "degraded"
+        and (
+            narrative_reason.startswith("trade_read_model_")
+            or not isinstance(agent_out.get("facts"), dict)
+            or not isinstance(agent_out.get("provenance"), dict)
+        )
+    )
+    if degraded_for_contract:
+        return build_separated_report(
+            trade_model=trade_model,
+            model=chosen_model,
+            execution_profile=execution_profile,
+        )
+
+    facts = agent_out.get("facts") if isinstance(agent_out.get("facts"), dict) else {}
+    provenance = agent_out.get("provenance") if isinstance(agent_out.get("provenance"), dict) else {}
+    context = agent_out.get("context") if isinstance(agent_out.get("context"), dict) else {}
+    narrative = narrative_obj
+    trade_fact_payload: Dict[str, Any] = dict(facts)
+    trade_fact_payload.setdefault("facts", dict(facts))
+    trade_fact_payload.setdefault("provenance", dict(provenance))
+    trade_fact_payload.setdefault("context", dict(context))
+    return {
+        "fact_payload": {
+            "trade": trade_fact_payload,
+            "daily": {},
+            "symbol": {},
+        },
+        "narrative": dict(narrative),
+        "reporter_agent": {
+            "status": str(agent_out.get("status") or ""),
+            "metadata": dict(agent_out.get("metadata") or {}),
+        },
+    }
 
 
 def _build_skipped_separated_report(trade_model: Dict[str, Any], *, reason: str) -> Dict[str, Any]:
@@ -3440,6 +5339,7 @@ def _trade_report_output_template() -> Dict[str, Any]:
     return {
         "executive_summary": {"headline": "", "summary": ""},
         "market_context_at_entry": {"summary": "", "bullets": [""]},
+        "strategist_summary": {"summary": "", "bullets": [""]},
         "why_this_symbol_was_chosen": {"summary": "", "bullets": [""]},
         "entry_decision": {"summary": "", "bullets": [""]},
         "holding_monitoring_story": {"summary": "", "bullets": [""]},
@@ -3555,6 +5455,7 @@ def _build_repair_messages(
                 "원본 입력이 영어로 적혀 있어도 그대로 복사하지 말고 한국어로 옮겨 쓰십시오.\n"
                 "핵심 evidence 규칙:\n"
                 "- market_context_human에 headline_count, news_query_count, news_query_targets, key_events_hint가 있으면 market_context_at_entry에 반영하십시오.\n"
+                "- strategist_summary에는 입력 -> 시장 해석 -> 스캐너 반영 -> 종목 연결 순서를 유지하십시오.\n"
                 "- scanner_reason_human에 why_selected, selection_basis, tie_break_rule, top_candidates, runner_ups_lost가 있으면 why_this_symbol_was_chosen과 entry_decision에 반영하십시오.\n"
                 "- monitor_reason_human에 effective_stop_loss_pct, take_profit_pct, active_exit_axis, watch_axes, confirm_required, confirm_count, decision_reason_chain이 있으면 holding_monitoring_story와 exit_decision에 반영하십시오.\n"
                 "- 구체적인 숫자 근거를 모호한 표현으로 바꾸지 마십시오.\n"
@@ -3598,6 +5499,7 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
                 "작성 요구사항:\n"
                 "- global sentiment score, VIX, headline count, query-target count가 있으면 구체적인 숫자를 그대로 반영하십시오.\n"
                 "- 시장 환경 요약에는 headline_count, news_query_count, news_query_targets, key_events_hint를 우선 반영하십시오.\n"
+                "- strategist_summary에는 입력 -> 해석 -> 스캐너 반영 -> 종목 선택 순서로 정리하십시오.\n"
                 "- scanner 후보 수, 선택 종목, runner-up, Kiwoom source mix(top_value, top_volume, sector_theme 등), score breakdown, feature coverage를 설명하십시오.\n"
                 "- 선택 종목 상세 분석에는 why_selected, selection_basis, tie_break_rule, top_candidates, runner_ups_lost를 가능한 한 직접 반영하십시오.\n"
                 "- Entry 상세 근거에서는 generic한 문장을 반복하지 말고 strategist guidance와 scanner ranking이 어떻게 연결됐는지 설명하십시오.\n"
@@ -3722,6 +5624,10 @@ def build_ai_trade_report(
     model: Optional[str] = None,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
+    retry_max_override: Optional[int] = None,
+    timeout_sec_override: Optional[float] = None,
+    hard_timeout_sec_override: Optional[float] = None,
+    local_debug_no_llm: bool = False,
 ) -> Dict[str, Any]:
     if enabled is None:
         applied_policy = story_input.get("applied_policy") if isinstance(story_input.get("applied_policy"), dict) else {}
@@ -3758,7 +5664,10 @@ def build_ai_trade_report(
     day = str(story_input.get("day") or "")
     env_retry_fallback = str(os.getenv("TRADE_REPORT_AI_RETRY_MAX", "") or "").strip()
     execution_slot_source = str(execution_profile.get("policy_source") or "").strip().lower()
-    if execution_slot_source not in {"", "default_execution_profile", "default"}:
+    if retry_max_override is not None:
+        retry_max = max(0, int(float(retry_max_override)))
+        execution_profile_source = "explicit_override"
+    elif execution_slot_source not in {"", "default_execution_profile", "default"}:
         retry_max = max(0, int(float(execution_profile.get("retry_max") or 0)))
         execution_profile_source = "applied_policy"
     elif env_retry_fallback:
@@ -3801,6 +5710,67 @@ def build_ai_trade_report(
         )
         return _attach_report_status_matrix(report, story_input, ai_trade_report_status="skipped")
 
+    temp = float(
+        temperature
+        if temperature is not None
+        else execution_profile.get("temperature") or 0.2
+    )
+    token_budget = (
+        int(max_tokens)
+        if max_tokens is not None
+        else max(600, int(float(execution_profile.get("max_tokens") or 8192)))
+    )
+    timeout_sec = max(
+        1.0,
+        float(timeout_sec_override if timeout_sec_override is not None else execution_profile.get("timeout_sec") or 15.0),
+    )
+    hard_timeout_sec = (
+        max(0.1, float(hard_timeout_sec_override))
+        if hard_timeout_sec_override not in (None, "", 0)
+        else None
+    )
+    retry_backoff_sec = max(0.0, float(execution_profile.get("retry_backoff_sec") or 0.0))
+    execution_observability = build_execution_profile_observability(
+        execution_profile,
+        env_used=(execution_profile_source == "fallback_env"),
+        effective_overrides={
+            "temperature": float(temp),
+            "max_tokens": int(max(600, token_budget)),
+            "timeout_sec": float(timeout_sec),
+            "hard_timeout_sec": float(hard_timeout_sec) if hard_timeout_sec is not None else None,
+            "retry": {
+                "max_attempts": int(retry_max),
+                "backoff_sec": float(retry_backoff_sec),
+            },
+        },
+    )
+    if local_debug_no_llm:
+        report = _fallback_report(
+            story_input,
+            status="ok",
+            mode="local_debug",
+            model=chosen_model,
+            reason="local_debug_no_llm",
+        )
+        report["llm_response_artifact"] = build_llm_response_artifact(
+            component="ai_trade_report",
+            run_id=run_id,
+            trade_id=trade_id,
+            story_id=trade_id,
+            day=day,
+            status="fallback",
+            attempts=[],
+            parsed_output={},
+            model_info={"provider": "OpenRouter", "model": chosen_model or "openrouter/free"},
+            meta={"reason": "local_debug_no_llm", **empty_required_meta, **execution_observability},
+        )
+        return _attach_report_status_matrix(
+            report,
+            story_input,
+            ai_trade_report_status="skipped",
+            deterministic_report_status="ok",
+        )
+
     router = LLMRouter.from_env()
     if router.client is None:
         report = _failure_report(
@@ -3824,31 +5794,6 @@ def build_ai_trade_report(
         )
         return _attach_report_status_matrix(report, story_input, ai_trade_report_status="error")
 
-    temp = float(
-        temperature
-        if temperature is not None
-        else execution_profile.get("temperature") or 0.2
-    )
-    token_budget = (
-        int(max_tokens)
-        if max_tokens is not None
-        else max(600, int(float(execution_profile.get("max_tokens") or 8192)))
-    )
-    timeout_sec = max(1.0, float(execution_profile.get("timeout_sec") or 15.0))
-    retry_backoff_sec = max(0.0, float(execution_profile.get("retry_backoff_sec") or 0.0))
-    execution_observability = build_execution_profile_observability(
-        execution_profile,
-        env_used=(execution_profile_source == "fallback_env"),
-        effective_overrides={
-            "temperature": float(temp),
-            "max_tokens": int(max(600, token_budget)),
-            "timeout_sec": float(timeout_sec),
-            "retry": {
-                "max_attempts": int(retry_max),
-                "backoff_sec": float(retry_backoff_sec),
-            },
-        },
-    )
     retry_token_budget = max(800, token_budget)
     messages = _build_messages(story_input)
     attempts: List[Dict[str, Any]] = []
@@ -3885,7 +5830,13 @@ def build_ai_trade_report(
         needs_korean_repair = False
         t0 = time.perf_counter()
         try:
-            raw = router.chat("trade_report", current_messages, policy=current_policy)
+            raw = _router_chat_with_hard_timeout(
+                router,
+                "trade_report",
+                current_messages,
+                policy=current_policy,
+                hard_timeout_sec=hard_timeout_sec,
+            )
         except Exception as exc:
             final_latency_ms = int((time.perf_counter() - t0) * 1000)
             final_status = classify_llm_exception(exc)
@@ -4306,6 +6257,7 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         mapping = {
             "Executive Summary": "최종 판단 요약",
             "Market Context at Entry": "시장 환경 요약",
+            "Strategist Summary": "전략가 요약",
             "Why This Symbol Was Chosen": "선택된 종목 상세 분석",
             "Entry Decision": "진입 상세 근거",
             "Holding / Monitoring Story": "보유 경과",
@@ -4362,6 +6314,7 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         if isinstance(report.get("market_context"), dict)
         else {}
     )
+    strategist_summary = report.get("strategist_summary") if isinstance(report.get("strategist_summary"), dict) else {}
     why_symbol = (
         report.get("why_this_symbol_was_chosen")
         if isinstance(report.get("why_this_symbol_was_chosen"), dict)
@@ -4435,6 +6388,7 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         lines.append("")
         section_titles = {
             "market_context_at_entry": "시장 환경 요약",
+            "strategist_summary": "전략가 요약",
             "why_this_symbol_was_chosen": "선택된 종목 상세 분석",
             "holding_monitoring_story": "보유 경과",
             "execution_quality": "실행 결과",
@@ -4442,6 +6396,7 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         }
         for section_key in (
             "market_context_at_entry",
+            "strategist_summary",
             "why_this_symbol_was_chosen",
             "holding_monitoring_story",
             "execution_quality",
@@ -4457,6 +6412,119 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
                 fragments.append(f"참조 경로: {artifact_path}")
             lines.append(f"- {section_titles.get(section_key, section_key)} | " + " | ".join(fragments))
         lines.append("")
+    monitor_snapshot_section: List[str] = []
+    if monitor_snapshot:
+        _main_lines = lines
+        lines = []
+        def _to_float_opt(value: Any) -> Optional[float]:
+            try:
+                if value in (None, ""):
+                    return None
+                return float(value)
+            except Exception:
+                return None
+
+        def _axis_family(value: Any) -> str:
+            token = str(value or "").strip().lower().replace(" ", "_")
+            if not token:
+                return "unknown"
+            if token in {
+                "hard_stop",
+                "hard_stop_pct",
+                "adaptive_stop",
+                "adaptive_stop_loss",
+                "adaptive_stop_loss_pct",
+                "effective_stop",
+                "effective_stop_loss",
+                "effective_stop_loss_pct",
+                "stop_loss",
+                "stop_loss_pct",
+            }:
+                return "stop"
+            if token in {"take_profit", "take_profit_pct", "target_profit", "tp"}:
+                return "take_profit"
+            if token in {"trailing_stop", "trailing_stop_pct"}:
+                return "trailing"
+            return "other"
+
+        def _pick_active_stop(snapshot: Dict[str, Any]) -> tuple[str, Optional[float]]:
+            effective = _to_float_opt(snapshot.get("effective_stop_loss_pct"))
+            if effective is not None:
+                return "유효 손절", effective
+            candidates: List[tuple[str, float]] = []
+            for label, key in (
+                ("모니터 adaptive 손절", "adaptive_stop_loss_pct"),
+                ("Hard fail-safe 손절", "hard_stop_pct"),
+                ("기본 손절", "stop_loss_pct"),
+            ):
+                value = _to_float_opt(snapshot.get(key))
+                if value is not None:
+                    candidates.append((label, value))
+            if not candidates:
+                return "", None
+            candidates.sort(key=lambda row: abs(row[1]))
+            return candidates[0]
+
+        trigger_raw = _clip(monitor_snapshot.get("trigger_type"), max_len=80) or _clip(
+            monitor_snapshot.get("active_exit_axis"), max_len=80
+        )
+        trigger_label = _axis_label(trigger_raw)
+        trigger_family = _axis_family(trigger_raw)
+        stop_label, stop_value = _pick_active_stop(monitor_snapshot)
+        take_profit_value = _to_float_opt(monitor_snapshot.get("take_profit_pct"))
+        trailing_value = _to_float_opt(monitor_snapshot.get("trailing_stop_pct"))
+        current_drawdown = _to_float_opt(monitor_snapshot.get("current_drawdown"))
+        peak_drawdown = _to_float_opt(monitor_snapshot.get("peak_drawdown"))
+        current_price = monitor_snapshot.get("current_price")
+        average_price = monitor_snapshot.get("average_price")
+        peak_price = monitor_snapshot.get("peak_price")
+        shared_facts = report.get("shared_facts") if isinstance(report.get("shared_facts"), dict) else {}
+
+        lines.append("## 모니터 스냅샷")
+        lines.append("")
+        lines.append(f"- 현재 포지션 판단은 {_action_label(monitor_snapshot.get('posture'))}입니다.")
+        lines.append(f"- 감지된 신호 유형은 {trigger_label}입니다.")
+        if stop_value is not None:
+            lines.append(f"- 활성 손절 기준은 {_fmt_pct(stop_value)}입니다. (기준: {stop_label or '-'})")
+        if take_profit_value is not None:
+            lines.append(f"- 활성 익절 기준은 {_fmt_pct(take_profit_value)}입니다.")
+        if trailing_value is not None:
+            lines.append(f"- 보조 trailing stop 기준은 {_fmt_pct(trailing_value)}입니다.")
+        if monitor_snapshot.get("exit_triggered"):
+            lines.append(f"- 실제 청산 트리거는 {trigger_label}입니다.")
+            if trigger_family not in {"stop", "take_profit", "trailing"}:
+                lines.append("- 이번 청산은 손절/익절 기준선 충족이 아니라 별도 조건 축에서 발생했습니다.")
+        else:
+            lines.append("- 현재 사이클에서는 청산 신호가 확정되지 않았습니다.")
+        if (
+            current_drawdown is not None
+            and peak_drawdown is not None
+            and abs(float(current_drawdown)) < 1e-9
+            and float(peak_drawdown) < 0.0
+        ):
+            lines.append("- 현재 손익 변동이 0%여도, 장중 고점 대비 하락폭(peak drawdown) 조건으로 청산될 수 있습니다.")
+        elif current_drawdown is not None or peak_drawdown is not None:
+            lines.append(
+                f"- 현재 손익 변동/피크 드로우다운은 {_fmt_pct(current_drawdown)}/{_fmt_pct(peak_drawdown)}입니다."
+            )
+        if current_price not in (None, "") or average_price not in (None, "") or peak_price not in (None, ""):
+            lines.append(
+                f"- 스냅샷 가격(현재/평균/고점)은 {_fmt_price(current_price)} / {_fmt_price(average_price)} / {_fmt_price(peak_price)}입니다."
+            )
+            lines.append("- 위 가격은 모니터 관측값이며, 실제 체결 손익 계산값과 다를 수 있습니다.")
+        pnl = str(shared_facts.get("pnl") or "").strip().lower()
+        pnl_pct = shared_facts.get("pnl_pct")
+        if pnl in {"", "unavailable", "not_available"}:
+            lines.append("- 실현 손익 값은 현재 아티팩트에서 직접 확인되지 않았습니다.")
+        elif pnl_pct not in (None, ""):
+            lines.append(f"- 실현 손익 기준 PnL/PnL%는 {shared_facts.get('pnl')} / {_fmt_pct(pnl_pct)}입니다.")
+        else:
+            lines.append(f"- 실현 손익 기준 PnL은 {shared_facts.get('pnl')}입니다.")
+        if str(monitor_snapshot.get("price_source") or "").strip():
+            lines.append(f"- 가격 기준 소스는 {monitor_snapshot.get('price_source')}입니다.")
+        lines.append("")
+        # Prevent duplicate legacy snapshot rendering below.
+        monitor_snapshot = {}
     if monitor_snapshot:
         lines.append("## 모니터 스냅샷")
         lines.append("")
@@ -4505,6 +6573,34 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
             lines.append(f"- 가격 소스 정책은 {monitor_snapshot.get('price_source_policy')}입니다.")
         lines.append(f"- 청산 신호 발생 여부는 {'예' if monitor_snapshot.get('exit_triggered') else '아니오'}입니다.")
         lines.append("")
+    if '_main_lines' in locals():
+        monitor_snapshot_section = lines
+        lines = _main_lines
+
+    market_context_section = dict(market_context) if isinstance(market_context, dict) else {}
+    strategist_summary_section = dict(strategist_summary) if isinstance(strategist_summary, dict) else {}
+    if not strategist_summary_section:
+        market_bullets = list(market_context_section.get("bullets") or [])
+        strategist_prefixes = ("스캐너 연결 근거는 ", "전략가 핵심 입력은 ", "주요 시장 뉴스는 ")
+        strategist_bullets: List[str] = []
+        strategist_scanner_linkage: List[str] = []
+        remaining_bullets: List[Any] = []
+        for bullet in market_bullets:
+            bullet_text = str(bullet or "").strip()
+            if bullet_text.startswith(strategist_prefixes):
+                if bullet_text.startswith("스캐너 연결 근거는 "):
+                    strategist_scanner_linkage.append(bullet_text)
+                else:
+                    strategist_bullets.append(bullet_text)
+            else:
+                remaining_bullets.append(bullet)
+        strategist_bullets.extend(strategist_scanner_linkage)
+        if strategist_bullets:
+            market_context_section["bullets"] = remaining_bullets
+            strategist_summary_section = {
+                "summary": "전략가 입력과 뉴스 연계 근거를 분리 요약했습니다.",
+                "bullets": strategist_bullets,
+            }
 
     def _section(title: str, section: Dict[str, Any], *, bullet_key: str = "bullets") -> None:
         lines.append(f"## {_section_title(title)}")
@@ -4514,20 +6610,46 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
             lines.append(summary)
             lines.append("")
         bullets = _listify(section.get(bullet_key), max_items=12, max_len=400)
+        seen_rendered: set[str] = set()
+        suppressed_prefixes = (
+            "주요 감시 축은 ",
+            "전략가 baseline 적응형 손절 기준은 ",
+            "전략가 baseline 익절 기준은 ",
+            "전략가 baseline trailing stop 기준은 ",
+            "유효 손절 기준은 ",
+            "손절 기준 축은 ",
+            "목표 수익 실현 기준은 ",
+            "Effective stop:",
+            "Take profit:",
+            "Watch axes:",
+        )
         for bullet in bullets:
+            raw_bullet = str(bullet or "").strip()
+            if raw_bullet.startswith(suppressed_prefixes):
+                continue
             rendered = _render_text(bullet)
             if rendered:
+                if rendered in seen_rendered:
+                    continue
+                # Monitor snapshot section already surfaces these in a compact form.
+                if str(rendered).startswith(suppressed_prefixes):
+                    continue
+                seen_rendered.add(rendered)
                 lines.append(f"- {rendered}")
         if bullets:
             lines.append("")
 
     _section("Executive Summary", executive)
-    _section("Market Context at Entry", market_context)
+    _section("Market Context at Entry", market_context_section or market_context)
+    if strategist_summary_section:
+        _section("Strategist Summary", strategist_summary_section)
     _section("Why This Symbol Was Chosen", why_symbol)
+    _section("Scanner Logic and Filters", scanner_filters)
     _section("Entry Decision", entry_decision)
     _section("Holding / Monitoring Story", holding_story)
     _section("Exit Decision", exit_decision)
-    _section("Scanner Logic and Filters", scanner_filters)
+    if monitor_snapshot_section:
+        lines.extend(monitor_snapshot_section)
     _section("Guard / Approval Result", guard_result)
     _section("Execution Quality", execution_result)
     _section("Reporter Evaluation", reporter_eval)

@@ -617,6 +617,8 @@ def test_existing_live_loop_step_prefers_lock_owner_and_dedupes_runtime_chain(tm
     step = mod._existing_live_loop_step({"root": str(tmp_path), "lock_path": str(lock_path)})
     assert step["step_id"] == "session.live_loop_existing"
     assert step["pid"] == 45678
+    assert step["runtime_owner_pid"] == 45678
+    assert step["logical_instance_count"] == 1
     assert step["lock_owner_pid"] == 45678
     assert step["launcher_pid"] == 40000
     assert step["runtime_chain_pids"] == [40000, 45678]
@@ -645,6 +647,8 @@ def test_existing_live_loop_step_falls_back_to_leaf_when_lock_owner_missing(tmp_
 
     step = mod._existing_live_loop_step({"root": str(tmp_path), "lock_path": str(lock_path)})
     assert step["pid"] == 47000
+    assert step["runtime_owner_pid"] == 47000
+    assert step["logical_instance_count"] == 1
     assert step["launcher_pid"] == 41000
     assert step["command_line_source"] == "deduped_runtime_owner"
 

@@ -19,6 +19,7 @@ _RAW_BLOCKER_EXPLANATIONS: Dict[str, str] = {
     "breakout_not_ready": "돌파 확인 조건 미충족",
     "breakout_ok": "돌파 기본 조건은 충족 방향",
     "breakout_path_ok": "돌파 경로는 허용 범위",
+    "breakout_volume_gate_ok": "돌파 경로 추가 거래량 게이트는 충족 방향",
     "wait_for_confirmation": "추가 확인 신호를 대기 중",
     "volume_confirmation_missing": "거래량 확인 부족",
     "volume_ok": "거래량 기본 조건은 충족 방향",

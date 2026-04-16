@@ -37,6 +37,116 @@ function Write-ControlLog {
   Add-Content -Path $absControlLogPath -Value "$ts start_mock_session $Message" -Encoding UTF8
 }
 
+function Read-LockOwnerPid {
+  param([string]$Path)
+  if (!(Test-Path $Path)) {
+    return 0
+  }
+  try {
+    $obj = Get-Content $Path -Raw | ConvertFrom-Json
+    $owner = [int]($obj.pid)
+    if ($owner -gt 0 -and (Get-Process -Id $owner -ErrorAction SilentlyContinue)) {
+      return $owner
+    }
+  } catch {}
+  return 0
+}
+
+function Get-LoopRows {
+  param(
+    [string]$ResolvedRoot,
+    [string]$AbsLockPath
+  )
+  return @(
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
+      $cmd = [string]$_.CommandLine
+      (
+        ($cmd -like "*scripts/run_m13_live_loop.py*") -or
+        ($cmd -like "*-m scripts.run_m13_live_loop*")
+      ) -and (
+        ($cmd -like "*$AbsLockPath*") -or
+        ($cmd -like "*$ResolvedRoot*")
+      )
+    } | Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine
+  )
+}
+
+function Resolve-RuntimePid {
+  param(
+    [array]$Rows,
+    [int]$LockOwnerPid
+  )
+  if (!$Rows -or $Rows.Count -le 0) {
+    return 0
+  }
+  $byPid = @{}
+  $parentSet = @{}
+  foreach ($r in $Rows) {
+    $pidVal = [int]$r.ProcessId
+    if ($pidVal -le 0) { continue }
+    $byPid[$pidVal] = $r
+    $pp = [int]$r.ParentProcessId
+    if ($pp -gt 0) { $parentSet[$pp] = $true }
+  }
+  if ($LockOwnerPid -gt 0 -and $byPid.ContainsKey($LockOwnerPid)) {
+    return $LockOwnerPid
+  }
+  $leafRows = @($Rows | Where-Object { -not $parentSet.ContainsKey([int]$_.ProcessId) })
+  $selected = $null
+  if ($leafRows.Count -gt 0) {
+    $selected = $leafRows | Sort-Object ProcessId -Descending | Select-Object -First 1
+  } else {
+    $selected = $Rows | Sort-Object ProcessId -Descending | Select-Object -First 1
+  }
+  if ($selected) {
+    return [int]$selected.ProcessId
+  }
+  return 0
+}
+
+function Resolve-RuntimeChainPids {
+  param(
+    [array]$Rows,
+    [int]$RuntimePid
+  )
+  if (!$Rows -or $Rows.Count -le 0 -or $RuntimePid -le 0) {
+    return @()
+  }
+  $byPid = @{}
+  foreach ($r in $Rows) {
+    $pidVal = [int]$r.ProcessId
+    if ($pidVal -gt 0) { $byPid[$pidVal] = $r }
+  }
+  if (-not $byPid.ContainsKey($RuntimePid)) {
+    return @()
+  }
+  $related = @{}
+  $related[$RuntimePid] = $true
+  $cur = $byPid[$RuntimePid]
+  while ($cur) {
+    $pp = [int]$cur.ParentProcessId
+    if ($pp -le 0 -or -not $byPid.ContainsKey($pp)) { break }
+    $related[$pp] = $true
+    $cur = $byPid[$pp]
+  }
+  $changed = $true
+  while ($changed) {
+    $changed = $false
+    foreach ($r in $Rows) {
+      $pidVal = [int]$r.ProcessId
+      $pp = [int]$r.ParentProcessId
+      if ($pidVal -le 0) { continue }
+      if ($related.ContainsKey($pidVal)) { continue }
+      if ($pp -gt 0 -and $related.ContainsKey($pp)) {
+        $related[$pidVal] = $true
+        $changed = $true
+      }
+    }
+  }
+  $pids = @($related.Keys | ForEach-Object { [int]$_ } | Sort-Object)
+  return $pids
+}
+
 if (!(Test-Path $pythonPath)) {
   Write-Error "python_not_found path=$pythonPath"
   exit 3
@@ -58,22 +168,17 @@ if (!(Test-Path $controlDir)) {
   New-Item -ItemType Directory -Path $controlDir -Force | Out-Null
 }
 
-$existingLoop = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Where-Object {
-  $cmd = [string]$_.CommandLine
-  (
-    ($cmd -like "*scripts/run_m13_live_loop.py*") -or
-    ($cmd -like "*-m scripts.run_m13_live_loop*")
-  ) -and (
-    ($cmd -like "*$absLockPath*") -or
-    ($cmd -like "*$resolvedRoot*")
-  )
-} | Select-Object -First 1
-
-if ($existingLoop) {
-  $existingPid = [int]$existingLoop.ProcessId
-  Set-Content -Path $absPidPath -Value ([string]$existingPid) -Encoding ASCII
-  Write-ControlLog "already_running pid=$existingPid"
-  Write-Output "already_running pid=$existingPid"
+$existingRows = Get-LoopRows -ResolvedRoot $resolvedRoot -AbsLockPath $absLockPath
+if ($existingRows.Count -gt 0) {
+  $lockOwnerPid = Read-LockOwnerPid -Path $absLockPath
+  $runtimePid = Resolve-RuntimePid -Rows $existingRows -LockOwnerPid $lockOwnerPid
+  $runtimeChainPids = Resolve-RuntimeChainPids -Rows $existingRows -RuntimePid $runtimePid
+  if ($runtimePid -le 0) {
+    $runtimePid = [int]$existingRows[0].ProcessId
+  }
+  Set-Content -Path $absPidPath -Value ([string]$runtimePid) -Encoding ASCII
+  Write-ControlLog "already_running runtime_pid=$runtimePid lock_owner_pid=$lockOwnerPid raw_process_count=$($existingRows.Count) runtime_chain_pids=$([string]::Join(',', $runtimeChainPids))"
+  Write-Output "already_running runtime_pid=$runtimePid lock_owner_pid=$lockOwnerPid raw_process_count=$($existingRows.Count) logical_instance_count=1"
   exit 0
 }
 
@@ -143,5 +248,14 @@ if (!$alive) {
   exit 4
 }
 
-Write-ControlLog "started pid=$($proc.Id) root=$resolvedRoot sleep_sec=$SleepSec lock=$absLockPath"
-Write-Output "started pid=$($proc.Id) root=$resolvedRoot sleep_sec=$SleepSec lock=$absLockPath pid_path=$absPidPath stdout=$absStdoutPath stderr=$absStderrPath"
+$lockOwnerPid = Read-LockOwnerPid -Path $absLockPath
+$rowsAfterStart = Get-LoopRows -ResolvedRoot $resolvedRoot -AbsLockPath $absLockPath
+$runtimePid = Resolve-RuntimePid -Rows $rowsAfterStart -LockOwnerPid $lockOwnerPid
+if ($runtimePid -le 0) {
+  $runtimePid = [int]$proc.Id
+}
+Set-Content -Path $absPidPath -Value ([string]$runtimePid) -Encoding ASCII
+$runtimeChainPids = Resolve-RuntimeChainPids -Rows $rowsAfterStart -RuntimePid $runtimePid
+
+Write-ControlLog "started launcher_pid=$($proc.Id) runtime_pid=$runtimePid lock_owner_pid=$lockOwnerPid raw_process_count=$($rowsAfterStart.Count) runtime_chain_pids=$([string]::Join(',', $runtimeChainPids)) root=$resolvedRoot sleep_sec=$SleepSec lock=$absLockPath"
+Write-Output "started launcher_pid=$($proc.Id) runtime_pid=$runtimePid lock_owner_pid=$lockOwnerPid raw_process_count=$($rowsAfterStart.Count) logical_instance_count=1 root=$resolvedRoot sleep_sec=$SleepSec lock=$absLockPath pid_path=$absPidPath stdout=$absStdoutPath stderr=$absStderrPath"
