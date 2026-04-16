@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import atexit
 import contextlib
-import hashlib
 import html
 import json
 import os
@@ -70,6 +69,27 @@ from libs.reporting.trade_story_pipeline import (
     safe_int,
     utc_now_iso,
 )
+from libs.reporting.trade_lifecycle_builder import (
+    build_trade_lifecycles as _build_trade_lifecycles_lib,
+    has_substantive_entry_evidence as _has_substantive_entry_evidence_lib,
+    load_existing_open_lifecycle_candidates as _load_existing_open_lifecycle_candidates_lib,
+)
+from libs.reporting.trade_execution_snapshot import (
+    build_execution_details as _build_execution_details_lib,
+    build_execution_snapshot as _build_execution_snapshot_lib,
+    normalize_execution_row as _normalize_execution_row_lib,
+)
+from libs.reporting.trade_bundle_state import (
+    build_ai_trade_report_generation_component as _build_ai_generation_component_lib,
+    build_bundle_health as _build_bundle_health_lib,
+    build_bundle_provenance as _build_bundle_provenance_lib,
+    build_component_fingerprint as _build_component_fingerprint_lib,
+    build_generation_state as _build_generation_state_lib,
+    build_operator_brief_generation_component as _build_operator_brief_generation_component_lib,
+    finalize_bundle_health as _finalize_bundle_health_lib,
+    payload_fingerprint as _payload_fingerprint_lib,
+    stable_json_text as _stable_json_text_lib,
+)
 from libs.runtime.canonical_artifacts import load_run_canonical_artifacts
 
 
@@ -99,6 +119,27 @@ def _is_placeholder_entry_reason(value: Any) -> bool:
         "-",
         "n/a",
     }
+
+
+def _has_report_text_corruption(report: Any) -> bool:
+    if not isinstance(report, dict):
+        return False
+    section_keys = (
+        "market_context",
+        "market_context_at_entry",
+        "strategist_summary",
+        "why_this_symbol_was_chosen",
+        "scanner_filters",
+    )
+    for key in section_keys:
+        section = report.get(key)
+        if not isinstance(section, dict):
+            continue
+        texts: List[str] = [str(section.get("summary") or "")]
+        texts.extend([str(item or "") for item in list(section.get("bullets") or [])])
+        if any("??" in text for text in texts):
+            return True
+    return False
 
 
 def _report_reason_human(code: str) -> str:
@@ -1832,89 +1873,13 @@ def _build_execution_details_from_bundle(
     *,
     context: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    bundle = bundle if isinstance(bundle, dict) else {}
-    context = context if isinstance(context, dict) else {}
-    execution = bundle.get("execution") if isinstance(bundle.get("execution"), dict) else {}
-    executor = bundle.get("executor") if isinstance(bundle.get("executor"), dict) else {}
-    executor_broker_result = executor.get("broker_result") if isinstance(executor.get("broker_result"), dict) else {}
-    order_request = executor.get("order_request_summary") if isinstance(executor.get("order_request_summary"), dict) else {}
-    monitor_context = context.get("monitor_context") if isinstance(context.get("monitor_context"), dict) else {}
-    execution_context = context.get("execution_context") if isinstance(context.get("execution_context"), dict) else {}
-
-    order_status = (
-        _null_if_empty(execution.get("status"))
-        or _null_if_empty(executor_broker_result.get("status"))
-        or _null_if_empty(executor.get("broker_message"))
-        or _null_if_empty(executor.get("final_execution_status"))
-        or _null_if_empty(execution_context.get("status_text"))
-        or _null_if_empty(execution_context.get("summary"))
-    )
-    order_id = (
-        _null_if_empty(execution.get("order_id"))
-        or _null_if_empty(execution.get("ord_no"))
-        or _null_if_empty(executor.get("order_id"))
-        or _null_if_empty(executor_broker_result.get("ord_no"))
-        or _null_if_empty(executor_broker_result.get("order_id"))
-    )
-    
-    if not order_id:
-        for text_field in (
-            executor.get("broker_message"), 
-            execution_context.get("summary"), 
-            execution_context.get("status_text")
-        ):
-            if text_field and isinstance(text_field, str):
-                match = re.search(r"(?:ord_no|order_id|order)\s*[:=]\s*([A-Za-z0-9_]+)", text_field, re.IGNORECASE)
-                if match:
-                    order_id = match.group(1)
-                    break
-
-    execution_mode = (
-        _null_if_empty(executor.get("execution_mode"))
-        or _null_if_empty(executor.get("effective_mode"))
-        or _null_if_empty(executor.get("mode"))
-        or _null_if_empty(execution_context.get("execution_mode"))
-    )
-    broker_env = (
-        _null_if_empty(executor.get("broker_env"))
-        or _null_if_empty(executor_broker_result.get("broker_env"))
-        or _null_if_empty(execution_context.get("broker_env"))
-    )
-    filled_qty = _null_if_empty(
-        execution.get("filled_qty")
-        if execution.get("filled_qty") not in (None, "")
-        else execution.get("qty")
-        if execution.get("qty") not in (None, "")
-        else order_request.get("qty")
-    )
-    avg_price = _null_if_empty(
-        _safe_float(execution.get("avg_price"), None)
-        if execution.get("avg_price") not in (None, "")
-        else _safe_float(execution.get("price"), None)
-        if execution.get("price") not in (None, "")
-        else _safe_float(executor_broker_result.get("avg_price"), None)
-        if executor_broker_result.get("avg_price") not in (None, "")
-        else _safe_float(executor_broker_result.get("price"), None)
-        if executor_broker_result.get("price") not in (None, "")
-        else _safe_float(execution.get("order_price"), None)
-        if execution.get("order_price") not in (None, "")
-        else _safe_float(context.get("price"), None)
-        if context.get("price") not in (None, "")
-        else _safe_float(monitor_context.get("average_price"), None)
-        if monitor_context.get("average_price") not in (None, "")
-        else _safe_float(monitor_context.get("avg_price"), None)
-        if monitor_context.get("avg_price") not in (None, "")
-        else _safe_float(monitor_context.get("current_price"), None)
-    )
-
-    return {
-        "order_status": order_status,
-        "order_id": order_id,
-        "execution_mode": execution_mode,
-        "broker_env": broker_env,
-        "filled_qty": filled_qty,
-        "avg_price": avg_price,
-    }
+    bundle_obj = dict(bundle or {})
+    context_obj = dict(context or {})
+    if not isinstance(context_obj.get("monitor_context"), dict):
+        monitor_payload = bundle_obj.get("monitor") if isinstance(bundle_obj.get("monitor"), dict) else {}
+        if monitor_payload:
+            context_obj["monitor_context"] = dict(monitor_payload)
+    return _build_execution_details_lib(bundle_obj, context=context_obj)
 
 
 def _build_hold_signal_transitions(monitor_context_snapshots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2197,27 +2162,7 @@ def _utc_day(ts: Any) -> str:
 
 
 def _normalize_execution_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(payload, dict):
-        return {"action": "", "symbol": "", "qty": 0, "status": "", "ord_no": ""}
-    order = payload.get("order") if isinstance(payload.get("order"), dict) else {}
-    broker = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
-    response_payload = broker.get("response_payload") if isinstance(broker.get("response_payload"), dict) else {}
-    return {
-        "action": str(payload.get("action") or order.get("action") or "").upper(),
-        "symbol": normalize_symbol(
-            payload.get("symbol") or order.get("symbol") or order.get("stk_cd") or "",
-            allow_test_symbols=True,
-        ),
-        "qty": safe_int(payload.get("qty"), safe_int(order.get("qty"), safe_int(order.get("ord_qty"), 0))),
-        "status": str(
-            payload.get("fill_status_summary")
-            or payload.get("status")
-            or broker.get("broker_message")
-            or response_payload.get("return_msg")
-            or ""
-        ),
-        "ord_no": str(payload.get("ord_no") or broker.get("order_id") or response_payload.get("ord_no") or ""),
-    }
+    return _normalize_execution_row_lib(payload if isinstance(payload, dict) else {})
 
 
 def _latest_execution_day(event_log_path: Path) -> str:
@@ -2898,11 +2843,11 @@ def _lifecycle_matches_target(lifecycle: Dict[str, Any], *, target_run_id: str =
 
 
 def _stable_json_text(payload: Any) -> str:
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return _stable_json_text_lib(payload)
 
 
 def _payload_fingerprint(payload: Any) -> str:
-    return hashlib.sha256(_stable_json_text(payload).encode("utf-8")).hexdigest()
+    return _payload_fingerprint_lib(payload)
 
 
 def _report_generation_state_path(trade_paths: Dict[str, Any]) -> Path:
@@ -2939,26 +2884,16 @@ def _build_component_fingerprint(
     story_input: Dict[str, Any],
     compact_input: Dict[str, Any],
 ) -> Dict[str, Any]:
-    story_hash = _payload_fingerprint(story_input)
-    compact_hash = _payload_fingerprint(compact_input)
-    payload = {
-        "component": str(component or ""),
-        "trade_id": str(trade_id or ""),
-        "run_id": str(run_id or ""),
-        "lifecycle_status": str(lifecycle_status or ""),
-        "story_type": str(story_type or ""),
-        "model": str(model or ""),
-        "story_input_sha256": story_hash,
-        "compact_input_sha256": compact_hash,
-    }
-    return {
-        "fingerprint": _payload_fingerprint(payload),
-        "source_inputs": {
-            "story_input_sha256": story_hash,
-            "compact_input_sha256": compact_hash,
-        },
-        "payload": payload,
-    }
+    return _build_component_fingerprint_lib(
+        component=component,
+        trade_id=trade_id,
+        run_id=run_id,
+        lifecycle_status=lifecycle_status,
+        story_type=story_type,
+        model=model,
+        story_input=story_input,
+        compact_input=compact_input,
+    )
 
 
 def _has_meaningful_payload(payload: Any) -> bool:
@@ -3110,13 +3045,24 @@ def _build_run_snapshots(
             ),
             {},
         )
+        execution_fallback_payload = _normalize_execution_payload(
+            execution_row.get("payload") if isinstance(execution_row.get("payload"), dict) else {}
+        )
         executor_payload, executor_source, _executor_path = _prefer_canonical_payload(
             canonical_sources,
             "executor",
-            _normalize_execution_payload(execution_row.get("payload") if isinstance(execution_row.get("payload"), dict) else {}),
+            execution_fallback_payload,
             fallback_source="event_log",
         )
-        execution = _normalize_execution_payload(executor_payload if isinstance(executor_payload, dict) else {})
+        execution = _build_execution_snapshot_lib(
+            candidates=[
+                execution_row.get("payload") if isinstance(execution_row.get("payload"), dict) else {},
+                executor_payload if isinstance(executor_payload, dict) else {},
+                execution_fallback_payload,
+            ],
+            run_id=run_id,
+            ts=str(execution_row.get("ts") or rows[-1].get("ts") or ""),
+        )
         if isinstance(supervisor_summary, dict) and "supervisor_allow" in supervisor_summary:
             supervisor_summary = {
                 **dict(supervisor_summary),
@@ -3339,43 +3285,8 @@ def _find_existing_trade_id_for_run_ids(
     return str(matches[0][1] or "")
 
 
-def _extract_lifecycle_entry(payload: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(payload, dict):
-        return {}
-    entry = payload.get("entry") if isinstance(payload.get("entry"), dict) else {}
-    if entry:
-        return dict(entry)
-    lifecycle = payload.get("lifecycle") if isinstance(payload.get("lifecycle"), dict) else {}
-    entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
-    return dict(entry)
-
-
-def _extract_lifecycle_exit(payload: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(payload, dict):
-        return {}
-    exit_ctx = payload.get("exit") if isinstance(payload.get("exit"), dict) else {}
-    if exit_ctx:
-        return dict(exit_ctx)
-    lifecycle = payload.get("lifecycle") if isinstance(payload.get("lifecycle"), dict) else {}
-    exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
-    return dict(exit_ctx)
-
-
-def _extract_lifecycle_holding(payload: Dict[str, Any]) -> Dict[str, Any]:
-    if not isinstance(payload, dict):
-        return {}
-    holding = payload.get("hold") if isinstance(payload.get("hold"), dict) else {}
-    if holding:
-        return dict(holding)
-    holding = payload.get("holding") if isinstance(payload.get("holding"), dict) else {}
-    if holding:
-        return dict(holding)
-    lifecycle = payload.get("lifecycle") if isinstance(payload.get("lifecycle"), dict) else {}
-    holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
-    if holding:
-        return dict(holding)
-    hold = lifecycle.get("hold") if isinstance(lifecycle.get("hold"), dict) else {}
-    return dict(hold)
+def _has_substantive_entry_evidence(entry: Dict[str, Any]) -> bool:
+    return _has_substantive_entry_evidence_lib(entry)
 
 
 def _load_existing_open_lifecycle_candidates(
@@ -3383,155 +3294,10 @@ def _load_existing_open_lifecycle_candidates(
     reports_root: Path,
     day: str,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    day_root = Path(reports_root) / "trades" / str(day or "").strip()
-    candidates: Dict[str, List[Dict[str, Any]]] = {}
-    if not day_root.exists():
-        return candidates
-    for trade_dir in day_root.iterdir():
-        if not trade_dir.is_dir():
-            continue
-        lifecycle_path = trade_dir / "lifecycle_bundle.json"
-        if not lifecycle_path.exists():
-            continue
-        payload = _read_json_if_exists(lifecycle_path)
-        if not isinstance(payload, dict) or not payload:
-            continue
-        status = str(payload.get("trade_lifecycle_status") or payload.get("status") or "").strip().lower()
-        if status not in {"open", "partial"}:
-            continue
-        entry_ctx = _extract_lifecycle_entry(payload)
-        if not _has_substantive_entry_evidence(entry_ctx):
-            continue
-        exit_ctx = _extract_lifecycle_exit(payload)
-        if str(exit_ctx.get("run_id") or "").strip():
-            # Closed lifecycle should not be reused.
-            continue
-        symbol = normalize_symbol(
-            payload.get("symbol")
-            or entry_ctx.get("symbol")
-            or (payload.get("execution") or {}).get("symbol")
-            or "",
-            allow_test_symbols=True,
-        )
-        if not symbol:
-            continue
-        holding = _extract_lifecycle_holding(payload)
-        run_ids_all = [str(x or "").strip() for x in list(payload.get("linked_run_ids") or []) if str(x or "").strip()]
-        entry_run_id = str(entry_ctx.get("run_id") or "").strip()
-        if entry_run_id and entry_run_id not in run_ids_all:
-            run_ids_all.append(entry_run_id)
-        for item in list(holding.get("run_ids") or []):
-            rid = str(item or "").strip()
-            if rid and rid not in run_ids_all:
-                run_ids_all.append(rid)
-        candidate = {
-            "trade_id": str(payload.get("trade_id") or trade_dir.name or "").strip(),
-            "symbol": symbol,
-            "status": status,
-            "entry": dict(entry_ctx),
-            "holding": dict(holding),
-            "run_ids_all": run_ids_all,
-            "story_type": str(payload.get("story_type") or "simulation"),
-            "execution_mode_label": str(payload.get("execution_mode_label") or "simulation (mock broker)"),
-            "timeline": [dict(row) for row in list(payload.get("timeline") or []) if isinstance(row, dict)],
-            "warnings": [str(x or "") for x in list(payload.get("warnings") or []) if str(x or "").strip()],
-            "entry_ts_epoch": _to_epoch(entry_ctx.get("ts")) or 0.0,
-        }
-        candidates.setdefault(symbol, []).append(candidate)
-    for symbol, rows in candidates.items():
-        rows.sort(
-            key=lambda row: (
-                _trade_id_sequence(str(row.get("trade_id") or "")),
-                float(row.get("entry_ts_epoch") or 0.0),
-            ),
-            reverse=True,
-        )
-    return candidates
-
-
-def _snapshot_execution_debug(snapshot: Dict[str, Any]) -> Dict[str, Any]:
-    execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
-    return {
-        "execution_symbol": str(snapshot.get("symbol") or execution.get("symbol") or ""),
-        "execution_ts": str(snapshot.get("ts_start") or ""),
-        "execution_side": str(snapshot.get("execution_action") or execution.get("action") or "").upper(),
-        "execution_order_id": str(
-            execution.get("ord_no")
-            or snapshot.get("execution_ord_no")
-            or execution.get("order_id")
-            or ""
-        ),
-        "execution_run_id": str(snapshot.get("run_id") or ""),
-        "execution_filled_qty": safe_int(
-            execution.get("qty")
-            if execution.get("qty") not in (None, "")
-            else snapshot.get("execution_qty"),
-            0,
-        ),
-        "execution_filled_price": (
-            execution.get("price")
-            if execution.get("price") not in (None, "")
-            else snapshot.get("execution_price")
-        ),
-    }
-
-
-def _build_lifecycle_from_seed(
-    *,
-    trade_id: str,
-    symbol: str,
-    day: str,
-    execution_mode_label_text: str,
-    story_type: str,
-) -> Dict[str, Any]:
-    return {
-        "trade_id": trade_id,
-        "symbol": symbol,
-        "day": day,
-        "status": "open",
-        "execution_mode_label": execution_mode_label_text,
-        "story_type": story_type,
-        "entry": {},
-        "holding": {
-            "run_ids": [],
-            "holding_events": [],
-            "posture_history": [],
-            "monitor_updates": [],
-            "noteworthy_changes": [],
-        },
-        "exit": {},
-        "run_ids_all": [],
-        "summary": {},
-        "reporter": {},
-        "timeline": [],
-        "warnings": [],
-    }
-
-
-def _has_substantive_entry_evidence(entry: Dict[str, Any]) -> bool:
-    entry_obj = entry if isinstance(entry, dict) else {}
-    if not entry_obj:
-        return False
-    if str(entry_obj.get("run_id") or "").strip():
-        return True
-    if str(entry_obj.get("ts") or "").strip():
-        return True
-    for key in ("price", "avg_price", "qty"):
-        value = entry_obj.get(key)
-        if value not in (None, "", 0, 0.0):
-            return True
-    scanner_context = entry_obj.get("scanner_context") if isinstance(entry_obj.get("scanner_context"), dict) else {}
-    if str(scanner_context.get("selected_symbol") or "").strip():
-        return True
-    if str(scanner_context.get("summary") or "").strip():
-        return True
-    execution_context = entry_obj.get("execution_context") if isinstance(entry_obj.get("execution_context"), dict) else {}
-    execution_details = entry_obj.get("execution_details") if isinstance(entry_obj.get("execution_details"), dict) else {}
-    if str(execution_context.get("order_status") or execution_details.get("order_status") or "").strip():
-        return True
-    if str(execution_context.get("order_id") or execution_details.get("order_id") or "").strip():
-        return True
-    return False
+    return _load_existing_open_lifecycle_candidates_lib(
+        reports_root=reports_root,
+        day=day,
+    )
 
 
 def _build_trade_lifecycles(
@@ -3541,453 +3307,12 @@ def _build_trade_lifecycles(
     run_bundles: Dict[str, Dict[str, Any]],
     existing_open_lifecycles_by_symbol: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> List[Dict[str, Any]]:
-    symbol_seq: Dict[str, int] = {}
-    active_by_symbol: Dict[str, Dict[str, Any]] = {}
-    out: List[Dict[str, Any]] = []
-    existing_candidates = (
-        existing_open_lifecycles_by_symbol
-        if isinstance(existing_open_lifecycles_by_symbol, dict)
-        else {}
+    return _build_trade_lifecycles_lib(
+        day=day,
+        run_snapshots=run_snapshots,
+        run_bundles=run_bundles,
+        existing_open_lifecycles_by_symbol=existing_open_lifecycles_by_symbol,
     )
-    consumed_existing_open_trade_ids: set[str] = set()
-
-    def _next_trade_id(symbol: str) -> str:
-        key = normalize_symbol(symbol, allow_test_symbols=True) or "UNKNOWN"
-        symbol_seq[key] = int(symbol_seq.get(key, 0) + 1)
-        return _build_trade_id(day, key, symbol_seq[key])
-
-    def _bundle_story_type(bundle: Dict[str, Any]) -> str:
-        story_contract = bundle.get("story_contract") if isinstance(bundle.get("story_contract"), dict) else {}
-        return str(story_contract.get("story_type") or "").strip().lower()
-
-    def _bundle_mode_label(bundle: Dict[str, Any]) -> str:
-        story_contract = bundle.get("story_contract") if isinstance(bundle.get("story_contract"), dict) else {}
-        return str(story_contract.get("execution_mode_label") or "").strip()
-
-    def _infer_story_contract_from_snapshot(snapshot: Dict[str, Any]) -> Tuple[str, str]:
-        execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
-        action = str(snapshot.get("execution_action") or execution.get("action") or "").strip().upper()
-        verdict_allowed = bool(snapshot.get("verdict_allowed"))
-        executor_stub = {
-            "execution_attempted": bool(action),
-            "execution_ok": bool(action) and verdict_allowed,
-        }
-        story_type = _classify_story_type(
-            {
-                "action": action,
-                "symbol": str(snapshot.get("symbol") or execution.get("symbol") or ""),
-                "qty": safe_int(execution.get("qty"), 0),
-            },
-            executor_stub,
-        )
-        mode_label = execution_mode_label(executor_stub)
-        return story_type, mode_label
-
-    def _resolve_story_contract(bundle: Dict[str, Any], snapshot: Dict[str, Any]) -> Tuple[str, str]:
-        bundle_story_type = _bundle_story_type(bundle)
-        bundle_mode_label = _bundle_mode_label(bundle)
-        if bundle_story_type:
-            return bundle_story_type, bundle_mode_label or "decision only"
-        inferred_story_type, inferred_mode_label = _infer_story_contract_from_snapshot(snapshot)
-        return inferred_story_type or "decision_only", inferred_mode_label or "decision only"
-
-    def _entry_context(snapshot: Dict[str, Any], bundle: Dict[str, Any]) -> Dict[str, Any]:
-        execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
-        strategist_payload = bundle.get("strategist") if isinstance(bundle.get("strategist"), dict) else {}
-        strategist_summary_payload = bundle.get("strategist_summary") if isinstance(bundle.get("strategist_summary"), dict) else {}
-        strategist_policy = (
-            strategist_payload.get("policy_selected")
-            if isinstance(strategist_payload.get("policy_selected"), dict)
-            else strategist_summary_payload.get("policy_selected")
-            if isinstance(strategist_summary_payload.get("policy_selected"), dict)
-            else {}
-        )
-        scanner_payload = bundle.get("scanner") if isinstance(bundle.get("scanner"), dict) else {}
-        scanner_source_refs = scanner_payload.get("source_refs") if isinstance(scanner_payload.get("source_refs"), dict) else {}
-        scanner_reason_human = bundle.get("scanner_reason_human") if isinstance(bundle.get("scanner_reason_human"), dict) else {}
-        monitor_reason_human = bundle.get("monitor_reason_human") if isinstance(bundle.get("monitor_reason_human"), dict) else {}
-        scanner_context = dict(scanner_reason_human)
-        if not scanner_context and scanner_payload:
-            scanner_context = {
-                "selected_symbol": str(scanner_payload.get("selected_symbol") or scanner_payload.get("top_stock") or ""),
-                "selected_rank": safe_int(scanner_payload.get("selected_rank"), 0),
-                "selected_score": scanner_payload.get("top_score"),
-                "summary": str(
-                    scanner_payload.get("selection_reason")
-                    or (scanner_payload.get("selected_candidate") or {}).get("why")
-                    or ""
-                ),
-            }
-        monitor_context = dict(monitor_reason_human)
-        if not monitor_context and isinstance(bundle.get("monitor"), dict):
-            monitor_payload = dict(bundle.get("monitor") or {})
-            monitor_context = {
-                "summary": str(monitor_payload.get("monitor_reason") or monitor_payload.get("entry_reason") or ""),
-                "active_exit_axis": str(monitor_payload.get("active_exit_axis") or ""),
-            }
-        entry_price = execution.get("price")
-        if entry_price is None or entry_price == "":
-            entry_price = execution.get("order_price") or execution.get("avg_price")
-        entry_reason = str(
-            scanner_context.get("summary")
-            or monitor_context.get("summary")
-            or snapshot.get("monitor_reason")
-            or ""
-        ).strip()
-        if _is_placeholder_entry_reason(entry_reason):
-            entry_reason = str(
-                (bundle.get("execution_outcome_human") or {}).get("summary")
-                or scanner_context.get("summary")
-                or monitor_context.get("summary")
-                or snapshot.get("execution_reason")
-                or snapshot.get("decision_reason")
-                or snapshot.get("monitor_reason")
-                or "Entry reasoning was not captured."
-            ).strip()
-        playbook = str(
-            strategist_payload.get("playbook")
-            or strategist_summary_payload.get("playbook")
-            or strategist_policy.get("playbook")
-            or scanner_source_refs.get("strategist_playbook")
-            or ""
-        )
-        themes_raw = (
-            strategist_payload.get("themes")
-            or strategist_summary_payload.get("themes")
-            or strategist_policy.get("themes")
-            or []
-        )
-        themes = [str(item or "").strip() for item in list(themes_raw or []) if str(item or "").strip()]
-        return {
-            "run_id": str(snapshot.get("run_id") or ""),
-            "ts": str(snapshot.get("ts_start") or ""),
-            "action": str(execution.get("action") or "BUY"),
-            "price": entry_price,
-            "qty": safe_int(execution.get("qty"), 0),
-            "reason_human": entry_reason,
-            "strategist_context": {
-                "playbook": playbook,
-                "themes": themes[:6],
-                "market_context_summary": str((bundle.get("market_context_human") or {}).get("summary") or ""),
-            },
-            "scanner_context": scanner_context,
-            "monitor_context": monitor_context,
-            "guard_context": dict(bundle.get("guard_reason_human") or {}),
-            "execution_context": dict(bundle.get("execution_outcome_human") or {}),
-        }
-
-    def _exit_context(snapshot: Dict[str, Any], bundle: Dict[str, Any]) -> Dict[str, Any]:
-        execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
-        has_exit_monitor_trace = bool(
-            str(snapshot.get("exit_reason") or "").strip()
-            or str(snapshot.get("monitor_reason") or "").strip()
-        )
-        monitor_context = dict(bundle.get("monitor_reason_human") or {}) if has_exit_monitor_trace else {}
-        return {
-            "run_id": str(snapshot.get("run_id") or ""),
-            "ts": str(snapshot.get("ts_start") or ""),
-            "action": str(execution.get("action") or "SELL"),
-            "price": execution.get("price"),
-            "qty": safe_int(execution.get("qty"), 0),
-            "reason_human": str(
-                (monitor_context or {}).get("summary")
-                or (bundle.get("execution_outcome_human") or {}).get("summary")
-                or snapshot.get("exit_reason")
-                or snapshot.get("monitor_reason")
-                or "Exit reasoning was not captured."
-            ),
-            "monitor_context": monitor_context,
-            "guard_context": dict(bundle.get("guard_reason_human") or {}),
-            "execution_context": dict(bundle.get("execution_outcome_human") or {}),
-        }
-
-    for snapshot in sorted(run_snapshots, key=lambda row: int(row.get("ts_epoch") or 0)):
-        run_id = str(snapshot.get("run_id") or "").strip()
-        symbol = normalize_symbol(snapshot.get("symbol") or "", allow_test_symbols=True)
-        if not run_id or not symbol:
-            continue
-        bundle = run_bundles.get(run_id) if isinstance(run_bundles.get(run_id), dict) else {}
-        action = str(snapshot.get("execution_action") or "").upper()
-        if action == "BUY":
-            if symbol in active_by_symbol and isinstance(active_by_symbol.get(symbol), dict):
-                prev = active_by_symbol[symbol]
-                if str(prev.get("status") or "") == "open":
-                    prev["status"] = "partial"
-                    prev.setdefault("warnings", []).append(
-                        "A new BUY was detected while a previous lifecycle for the same symbol was still open."
-                    )
-                    prev.setdefault("timeline", []).append(
-                        {
-                            "event": "entry_overlap",
-                            "ts": str(snapshot.get("ts_start") or ""),
-                            "description": f"New BUY run {run_id} overlapped existing open lifecycle.",
-                        }
-                    )
-            trade_id = _next_trade_id(symbol)
-            story_type, mode_label = _resolve_story_contract(bundle, snapshot)
-            lifecycle = _build_lifecycle_from_seed(
-                trade_id=trade_id,
-                symbol=symbol,
-                day=day,
-                execution_mode_label_text=mode_label,
-                story_type=story_type,
-            )
-            lifecycle["entry"] = _entry_context(snapshot, bundle)
-            lifecycle["run_ids_all"] = [run_id]
-            lifecycle["timeline"].append(
-                {
-                    "event": "entry",
-                    "ts": str(snapshot.get("ts_start") or ""),
-                    "description": f"Entry BUY was executed by run {run_id}.",
-                }
-            )
-            active_by_symbol[symbol] = lifecycle
-            out.append(lifecycle)
-            continue
-
-        if action == "SELL":
-            attach_debug: Dict[str, Any] = {
-                **_snapshot_execution_debug(snapshot),
-                "matched_open_trade_id": "",
-                "candidate_open_trade_ids": [],
-                "attach_match_reason": "",
-                "new_trade_created_reason": "",
-                "recovered_lifecycle_reason": "",
-            }
-            lifecycle = active_by_symbol.get(symbol)
-            if lifecycle:
-                attach_debug["candidate_open_trade_ids"] = [str(lifecycle.get("trade_id") or "")]
-            if not lifecycle:
-                sell_ts_epoch = float(snapshot.get("ts_epoch") or 0.0)
-                symbol_candidates = [
-                    dict(row)
-                    for row in list(existing_candidates.get(symbol) or [])
-                    if isinstance(row, dict)
-                ]
-                attach_debug["candidate_open_trade_ids"] = [
-                    str(row.get("trade_id") or "")
-                    for row in symbol_candidates
-                    if str(row.get("trade_id") or "").strip()
-                ]
-                matched_candidate: Dict[str, Any] = {}
-                for candidate in symbol_candidates:
-                    candidate_trade_id = str(candidate.get("trade_id") or "").strip()
-                    if candidate_trade_id and candidate_trade_id in consumed_existing_open_trade_ids:
-                        continue
-                    entry_ts_epoch = float(candidate.get("entry_ts_epoch") or 0.0)
-                    if sell_ts_epoch > 0.0 and entry_ts_epoch > 0.0 and entry_ts_epoch > sell_ts_epoch:
-                        continue
-                    matched_candidate = candidate
-                    break
-                if matched_candidate:
-                    lifecycle = _build_lifecycle_from_seed(
-                        trade_id=str(matched_candidate.get("trade_id") or _next_trade_id(symbol)),
-                        symbol=symbol,
-                        day=day,
-                        execution_mode_label_text=str(matched_candidate.get("execution_mode_label") or "simulation (mock broker)"),
-                        story_type=str(matched_candidate.get("story_type") or "simulation"),
-                    )
-                    lifecycle["entry"] = dict(matched_candidate.get("entry") or {})
-                    lifecycle["holding"] = dict(matched_candidate.get("holding") or lifecycle.get("holding") or {})
-                    lifecycle["run_ids_all"] = [
-                        str(x or "").strip()
-                        for x in list(matched_candidate.get("run_ids_all") or [])
-                        if str(x or "").strip()
-                    ]
-                    lifecycle["timeline"] = [dict(row) for row in list(matched_candidate.get("timeline") or []) if isinstance(row, dict)]
-                    lifecycle["warnings"] = [
-                        str(x or "")
-                        for x in list(matched_candidate.get("warnings") or [])
-                        if str(x or "").strip()
-                    ]
-                    lifecycle["status"] = "open"
-                    attach_debug["matched_open_trade_id"] = str(lifecycle.get("trade_id") or "")
-                    attach_debug["attach_match_reason"] = "matched_existing_open_lifecycle_by_symbol_and_time"
-                    attach_debug["recovered_lifecycle_reason"] = "reused_existing_open_lifecycle_artifact"
-                    if str(lifecycle.get("trade_id") or "").strip():
-                        consumed_existing_open_trade_ids.add(str(lifecycle.get("trade_id") or "").strip())
-                    out.append(lifecycle)
-                    active_by_symbol[symbol] = lifecycle
-                else:
-                    trade_id = _next_trade_id(symbol)
-                    story_type, mode_label = _resolve_story_contract(bundle, snapshot)
-                    lifecycle = _build_lifecycle_from_seed(
-                        trade_id=trade_id,
-                        symbol=symbol,
-                        day=day,
-                        execution_mode_label_text=mode_label,
-                        story_type=story_type,
-                    )
-                    lifecycle["status"] = "partial"
-                    attach_debug["new_trade_created_reason"] = "no_active_or_existing_open_lifecycle"
-                    attach_debug["recovered_lifecycle_reason"] = "sell_without_attachable_open_entry"
-                    out.append(lifecycle)
-            lifecycle["exit"] = _exit_context(snapshot, bundle)
-            lifecycle.setdefault("run_ids_all", [])
-            if run_id not in lifecycle["run_ids_all"]:
-                lifecycle["run_ids_all"].append(run_id)
-            lifecycle["timeline"].append(
-                {
-                    "event": "exit",
-                    "ts": str(snapshot.get("ts_start") or ""),
-                    "description": f"Exit SELL was executed by run {run_id}.",
-                }
-            )
-            if lifecycle.get("entry"):
-                lifecycle["status"] = "closed"
-                if not attach_debug.get("attach_match_reason"):
-                    attach_debug["matched_open_trade_id"] = str(lifecycle.get("trade_id") or "")
-                    attach_debug["attach_match_reason"] = "matched_active_open_lifecycle_in_current_pass"
-                resolved_story_type, resolved_mode_label = _resolve_story_contract(bundle, snapshot)
-                if resolved_story_type and resolved_story_type != "decision_only":
-                    lifecycle["story_type"] = resolved_story_type
-                elif str(lifecycle.get("story_type") or "").strip().lower() == "decision_only":
-                    inferred_story_type, inferred_mode_label = _infer_story_contract_from_snapshot(snapshot)
-                    if inferred_story_type and inferred_story_type != "decision_only":
-                        lifecycle["story_type"] = inferred_story_type
-                        if inferred_mode_label:
-                            lifecycle["execution_mode_label"] = inferred_mode_label
-                if resolved_mode_label and resolved_mode_label != "decision only":
-                    lifecycle["execution_mode_label"] = resolved_mode_label
-            else:
-                lifecycle["status"] = "partial"
-                if not attach_debug.get("new_trade_created_reason"):
-                    attach_debug["new_trade_created_reason"] = "entry_missing_after_sell_attach"
-                if not attach_debug.get("recovered_lifecycle_reason"):
-                    attach_debug["recovered_lifecycle_reason"] = "sell_processed_without_substantive_entry"
-            lifecycle.setdefault("lifecycle_attach_debug", [])
-            if isinstance(lifecycle.get("lifecycle_attach_debug"), list):
-                lifecycle["lifecycle_attach_debug"].append(attach_debug)
-            active_by_symbol.pop(symbol, None)
-            continue
-
-        lifecycle = active_by_symbol.get(symbol)
-        if not lifecycle:
-            continue
-        lifecycle.setdefault("run_ids_all", [])
-        if run_id not in lifecycle["run_ids_all"]:
-            lifecycle["run_ids_all"].append(run_id)
-        monitor_reason = str(snapshot.get("monitor_reason") or "")
-        exit_reason = str(snapshot.get("exit_reason") or "")
-        holding_event = {
-            "run_id": run_id,
-            "ts": str(snapshot.get("ts_start") or ""),
-            "posture": str(snapshot.get("posture") or "HOLD"),
-            "monitor_reason": monitor_reason,
-            "exit_reason": exit_reason,
-            "monitor_context": dict(snapshot.get("monitor") or {}),
-            "summary": f"Monitor posture={snapshot.get('posture') or 'HOLD'} reason={monitor_reason or '-'} exit={exit_reason or '-'}",
-        }
-        holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
-        holding.setdefault("run_ids", [])
-        holding.setdefault("holding_events", [])
-        holding.setdefault("posture_history", [])
-        holding.setdefault("monitor_updates", [])
-        if run_id not in holding["run_ids"]:
-            holding["run_ids"].append(run_id)
-        holding["holding_events"].append(holding_event)
-        holding["posture_history"].append({"ts": str(snapshot.get("ts_start") or ""), "posture": str(snapshot.get("posture") or "HOLD")})
-        holding["monitor_updates"].append(monitor_reason or exit_reason or "monitor update captured")
-        lifecycle["holding"] = holding
-        lifecycle["timeline"].append(
-            {
-                "event": "holding",
-                "ts": str(snapshot.get("ts_start") or ""),
-                "description": holding_event["summary"],
-            }
-        )
-
-    for lifecycle in out:
-        entry = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
-        exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
-        holding = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
-        entry_has_execution_evidence = _has_substantive_entry_evidence(entry)
-        entry_ts = _to_epoch(entry.get("ts")) if entry_has_execution_evidence else None
-        end_ts = _to_epoch(exit_ctx.get("ts"))
-        duration_sec: Optional[int] = None
-        if end_ts is None:
-            latest_hold_ts = max((_to_epoch((row or {}).get("ts")) or 0 for row in list(holding.get("holding_events") or [])), default=0)
-            end_ts = latest_hold_ts or entry_ts or 0
-        if entry_ts is not None:
-            duration_sec = int(max(0, (end_ts or 0) - (entry_ts or end_ts or 0)))
-        holding_duration = _format_duration_human(duration_sec) if duration_sec is not None else ""
-        entry_reason_human = str(entry.get("reason_human") or "Entry reason was not captured.")
-        if lifecycle.get("status") == "open":
-            exit_reason_human = "Position is still open; monitor is watching for exit triggers."
-        elif lifecycle.get("status") == "partial" and not exit_ctx:
-            exit_reason_human = "Lifecycle is partial because exit evidence is missing."
-        else:
-            exit_reason_human = str(exit_ctx.get("reason_human") or "Exit reason was not captured.")
-        holding_duration_clause = (
-            f"Holding duration is {holding_duration}. "
-            if holding_duration
-            else "Holding duration is unavailable because entry timing evidence was not captured. "
-        )
-        lifecycle_summary = (
-            f"Trade {lifecycle.get('trade_id')} for {lifecycle.get('symbol')} is {lifecycle.get('status')}. "
-            f"{holding_duration_clause}"
-            f"Entry: {entry_reason_human} "
-            f"Exit: {exit_reason_human}"
-        )
-        operator_conclusion_human = (
-            f"Current lifecycle status is {lifecycle.get('status')}. "
-            f"{'Position remains open and requires monitoring.' if lifecycle.get('status') == 'open' else 'Entry and exit are connected in one lifecycle story.'}"
-            f"{' Entry execution evidence is partially recovered.' if not entry_has_execution_evidence and lifecycle.get('status') != 'open' else ''}"
-        )
-
-        reporter_summary = ""
-        reporter_grade = "N/A"
-        reporter_status = "missing"
-        improvement_points: List[str] = []
-        entry_run_id = str(entry.get("run_id") or "")
-        exit_run_id = str(exit_ctx.get("run_id") or "")
-        entry_bundle = run_bundles.get(entry_run_id) if isinstance(run_bundles.get(entry_run_id), dict) else {}
-        exit_bundle = run_bundles.get(exit_run_id) if isinstance(run_bundles.get(exit_run_id), dict) else {}
-        reporter_human = (
-            entry_bundle.get("reporter_status_human")
-            if isinstance(entry_bundle.get("reporter_status_human"), dict)
-            else exit_bundle.get("reporter_status_human")
-            if isinstance(exit_bundle.get("reporter_status_human"), dict)
-            else {}
-        )
-        if isinstance(reporter_human, dict):
-            reporter_summary = str(reporter_human.get("summary") or "")
-            reporter_grade = str(reporter_human.get("grade") or "N/A")
-            reporter_status = str(reporter_human.get("status") or "missing")
-        if reporter_status != "linked":
-            improvement_points.append("Link same-day reporter analysis to this lifecycle for a complete quality review.")
-        if lifecycle.get("status") == "open":
-            improvement_points.append("Capture additional monitor runs so hold behavior quality can be evaluated.")
-        if not holding.get("run_ids"):
-            improvement_points.append("Holding-phase evidence is thin; preserve more monitor context between entry and exit.")
-        if not entry_has_execution_evidence and lifecycle.get("status") != "open":
-            improvement_points.append("Entry execution evidence is incomplete; preserve BUY linkage for closed-trade diagnosis.")
-
-        lifecycle["summary"] = {
-            "holding_duration": holding_duration,
-            "entry_reason_human": entry_reason_human,
-            "exit_reason_human": exit_reason_human,
-            "lifecycle_summary_human": lifecycle_summary,
-            "operator_conclusion_human": operator_conclusion_human,
-        }
-        lifecycle["reporter"] = {
-            "status_human": reporter_status,
-            "summary": reporter_summary or "Reporter linkage is pending or missing for this lifecycle.",
-            "grade": reporter_grade,
-            "improvement_points": improvement_points[:6],
-        }
-        if str(lifecycle.get("story_type") or "") == "failed_execution":
-            lifecycle["status"] = "failed"
-        lifecycle.setdefault("warnings", [])
-        if lifecycle.get("status") == "partial":
-            lifecycle["warnings"].append("Lifecycle is partial because entry or exit evidence is incomplete.")
-        if lifecycle.get("status") == "open":
-            lifecycle["warnings"].append("Lifecycle is open; no closing SELL execution has been recorded yet.")
-        if not entry_has_execution_evidence and lifecycle.get("status") != "open":
-            lifecycle["warnings"].append("Entry execution evidence is incomplete; lifecycle entry was partially recovered.")
-
-    return out
-
 
 def _resolve_existing_day_artifact(report_dir: Path, prefix: str, day: str) -> Tuple[Path, Path]:
     return report_dir / f"{prefix}_{day}.md", report_dir / f"{prefix}_{day}.json"
@@ -4276,7 +3601,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             dict(trace_out.get("executor") or {}),
             fallback_source="direct_artifact",
         )
-        merged_execution = _normalize_execution_payload({**dict(execution or {}), **dict(executor_payload or {})})
+        merged_execution = _build_execution_snapshot_lib(
+            candidates=[
+                dict(execution or {}),
+                dict(executor_payload or {}),
+            ],
+            run_id=run_id,
+            ts=str((execution or {}).get("ts") or ""),
+        )
         bundle_out: Dict[str, Any] = {
             "schema_version": "live_execution_bundle.v2",
             "artifact_type": "aggregated_execution_bundle",
@@ -5382,6 +4714,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 or "skipped",
                 default="skipped",
             )
+            existing_report_noisy = _has_report_text_corruption(existing_trade_report_artifact)
             fingerprint_match = (
                 str(ai_trade_report_generation_state.get("fingerprint") or "") == ai_trade_report_fingerprint
             )
@@ -5390,6 +4723,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 and existing_ai_status in {"ok", "salvaged", "partial"}
                 and trade_report_json_path.exists()
                 and trade_report_md_path.exists()
+                and not existing_report_noisy
             )
             if existing_report_success and existing_trade_report_artifact:
                 merged_existing = dict(deterministic_report)
@@ -5428,6 +4762,25 @@ def main(argv: Optional[List[str]] = None) -> int:
                     },
                 )
             else:
+                if fingerprint_match and existing_report_noisy:
+                    _log_bundle_event(
+                        event_log_path,
+                        role=role,
+                        event="report_generation_forced_regen_noisy_existing_report",
+                        run_id=str(anchor_run_id or "report-bundle"),
+                        symbol=symbol,
+                        trade_id=trade_id,
+                        payload={
+                            "pid": int(os.getpid()),
+                            "parent_pid": int(os.getppid()),
+                            "role": role,
+                            "component": "ai_trade_report",
+                            "trade_id": trade_id,
+                            "run_id": str(anchor_run_id or ""),
+                            "fingerprint": ai_trade_report_fingerprint,
+                            "reason": "existing_report_contains_text_corruption_markers",
+                        },
+                    )
                 diagnostics["generation_attempted"] = True
                 diagnostics["generation_ts"] = utc_now_iso()
                 ai_trade_report = build_ai_trade_report(
@@ -5544,52 +4897,41 @@ def main(argv: Optional[List[str]] = None) -> int:
         elif ai_trade_report_llm_response_path.exists():
             ai_trade_report_llm_response_written = str(ai_trade_report_llm_response_path)
 
-        generation_components["ai_trade_report"] = {
-            "fingerprint": ai_trade_report_fingerprint,
-            "component": "ai_trade_report",
-            "status": str(diagnostics.get("ai_trade_report_status") or "skipped"),
-            "report_status": str(diagnostics.get("report_status") or ""),
-            "skip_reason": (
-                "fingerprint_match_existing_success"
-                if str(diagnostics.get("report_generation_reason") or "") == "fingerprint_match_existing_success"
-                else ""
-            ),
-            "trade_id": trade_id,
-            "run_id": str(anchor_run_id or ""),
-            "updated_at": utc_now_iso(),
-            "model": str(diagnostics.get("llm_model_used") or configured_report_model or ""),
-            "report_json_path": str(trade_report_json_path),
-            "report_md_path": str(trade_report_md_path),
-            "llm_response_path": str(ai_trade_report_llm_response_path if ai_trade_report_llm_response_written else ""),
-            "source_inputs": dict(ai_trade_report_fingerprint_info.get("source_inputs") or {}),
-        }
-        generation_components["operator_brief"] = {
-            "fingerprint": _payload_fingerprint(
-                {
-                    "component": "operator_brief",
-                    "trade_id": trade_id,
-                    "run_id": str(anchor_run_id or ""),
-                    "brief_json_exists": bool(operator_brief_json_path.exists()),
-                    "brief_md_exists": bool(operator_brief_md_path.exists()),
-                    "brief_llm_exists": bool(brief_llm_response_path.exists()),
-                    "brief_llm_status": str(diagnostics.get("llm_brief_status") or "skipped"),
-                }
-            ),
-            "component": "operator_brief",
-            "status": str(diagnostics.get("llm_brief_status") or "skipped"),
-            "skip_reason": (
-                "existing_artifact_state_reused"
-                if operator_brief_json_path.exists() or operator_brief_md_path.exists() or brief_llm_response_path.exists()
-                else "missing_brief_artifact"
-            ),
-            "trade_id": trade_id,
-            "run_id": str(anchor_run_id or ""),
-            "updated_at": utc_now_iso(),
-            "report_json_path": str(operator_brief_json_path),
-            "report_md_path": str(operator_brief_md_path),
-            "llm_response_path": str(brief_llm_response_path),
-        }
-        generation_state["components"] = generation_components
+        ai_generation_component = _build_ai_generation_component_lib(
+            fingerprint=ai_trade_report_fingerprint,
+            trade_id=trade_id,
+            run_id=str(anchor_run_id or ""),
+            status=str(diagnostics.get("ai_trade_report_status") or "skipped"),
+            report_status=str(diagnostics.get("report_status") or ""),
+            report_generation_reason=str(diagnostics.get("report_generation_reason") or ""),
+            model=str(diagnostics.get("llm_model_used") or configured_report_model or ""),
+            report_json_path=str(trade_report_json_path),
+            report_md_path=str(trade_report_md_path),
+            llm_response_path=str(ai_trade_report_llm_response_path if ai_trade_report_llm_response_written else ""),
+            source_inputs=dict(ai_trade_report_fingerprint_info.get("source_inputs") or {}),
+            updated_at=utc_now_iso(),
+        )
+        operator_brief_generation_component = _build_operator_brief_generation_component_lib(
+            trade_id=trade_id,
+            run_id=str(anchor_run_id or ""),
+            llm_brief_status=str(diagnostics.get("llm_brief_status") or "skipped"),
+            report_json_path=str(operator_brief_json_path),
+            report_md_path=str(operator_brief_md_path),
+            llm_response_path=str(brief_llm_response_path),
+            brief_json_exists=bool(operator_brief_json_path.exists()),
+            brief_md_exists=bool(operator_brief_md_path.exists()),
+            brief_llm_exists=bool(brief_llm_response_path.exists()),
+            updated_at=utc_now_iso(),
+        )
+        generation_state = _build_generation_state_lib(
+            current_state={
+                **dict(generation_state or {}),
+                "components": dict(generation_components or {}),
+            },
+            ai_trade_report_component=ai_generation_component,
+            operator_brief_component=operator_brief_generation_component,
+        )
+        generation_components = dict(generation_state.get("components") or {})
         _write_report_generation_state(generation_state_path, generation_state)
         failure_classification = _build_failure_classification(
             lifecycle=lifecycle,
@@ -5744,54 +5086,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             "ai_trade_report_llm_response_json": bool(ai_trade_report_llm_response_written),
             "brief_llm_response_json": trade_paths["brief_llm_response_json"].exists(),
         }
-        def _source_type(raw_source: Any, source_path: Any) -> str:
-            src = str(raw_source or "").strip().lower()
-            path_text = str(source_path or "").strip()
-            if src == "canonical":
-                return "canonical"
-            if src in {"normalized_trade_artifact", "normalized_trade", "direct_artifact", "direct"}:
-                return "trade"
-            if src in {"event_log"}:
-                return "events"
-            if path_text:
-                return "trade"
-            return "missing"
-        trade_provenance_payload = {
-            "schema_version": "trade_provenance.v1",
-            "trade_id": trade_id,
-            "run_id": anchor_run_id,
-            "day": day,
-            "lifecycle_status": status,
-            "trade_origin": str(recovery_metadata.get("trade_origin") or ""),
-            "lifecycle_completeness": str(recovery_metadata.get("lifecycle_completeness") or ""),
-            "evidence_recovery_used": bool(recovery_metadata.get("evidence_recovery_used")),
-            "recovery_missing_sections": list(recovery_metadata.get("recovery_missing_sections") or []),
-            "recovery_sources": list(recovery_metadata.get("recovery_sources") or []),
-            "entry_strategist_run_id": strategy_anchor_run_id,
-            "strategy_anchor_run_id": strategy_anchor_run_id,
-            "evidence_source": str(trade_story_input.get("evidence_source") or "fallback"),
-            "agent_sources": dict(lifecycle_bundle.get("evidence_provenance") or {}),
-            "section_provenance": dict(section_provenance),
-            "read_precedence": [
-                "normalized_trade_artifact",
-                "canonical_artifact",
-                "event_log",
-                "missing",
-            ],
-            "section_resolution": {
-                str(key): {
-                    "source_type": _source_type((value or {}).get("source"), (value or {}).get("artifact_path")),
-                    "source_path": str((value or {}).get("artifact_path") or ""),
-                    "confidence": str((value or {}).get("confidence") or "low"),
-                }
-                for key, value in dict(section_provenance or {}).items()
-            },
-            "canonical_agent_artifact_paths": {
-                key: str(value or "")
-                for key, value in dict(lifecycle_bundle.get("artifacts") or {}).items()
-                if str(key).startswith("canonical_") and str(key).endswith("_json")
-            },
-        }
+        trade_provenance_payload = _build_bundle_provenance_lib(
+            trade_id=trade_id,
+            run_id=str(anchor_run_id or ""),
+            day=day,
+            lifecycle_status=status,
+            recovery_metadata=recovery_metadata,
+            strategy_anchor_run_id=str(strategy_anchor_run_id or ""),
+            evidence_source=str(trade_story_input.get("evidence_source") or "fallback"),
+            agent_sources=dict(lifecycle_bundle.get("evidence_provenance") or {}),
+            section_provenance=dict(section_provenance),
+            artifacts=dict(lifecycle_bundle.get("artifacts") or {}),
+        )
         phase3_completeness_axes = {
             "strategist_evidence": strategist_evidence_path.exists(),
             "scanner_evidence": scanner_evidence_path.exists(),
@@ -5806,44 +5112,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             if phase3_completeness_axes
             else 0.0
         )
-        trade_health_payload = {
-            "schema_version": "trade_health.v1",
-            "trade_id": trade_id,
-            "run_id": anchor_run_id,
-            "day": day,
-            "lifecycle_status": status,
-            "trade_origin": str(recovery_metadata.get("trade_origin") or ""),
-            "lifecycle_completeness": str(recovery_metadata.get("lifecycle_completeness") or ""),
-            "evidence_recovery_used": bool(recovery_metadata.get("evidence_recovery_used")),
-            "recovery_missing_sections": list(recovery_metadata.get("recovery_missing_sections") or []),
-            "recovery_sources": list(recovery_metadata.get("recovery_sources") or []),
-            "ai_report_diagnostics": dict(diagnostics),
-            "report_generation": dict(trade_report.get("generation") or {}) if isinstance(trade_report, dict) else {},
-            "deterministic_report_status": str(diagnostics.get("deterministic_report_status") or "skipped"),
-            "llm_brief_status": str(diagnostics.get("llm_brief_status") or "skipped"),
-            "ai_trade_report_status": str(diagnostics.get("ai_trade_report_status") or "skipped"),
-            "llm_trade_report_status": str(diagnostics.get("ai_trade_report_status") or "skipped"),
-            "report_generation_status": str(diagnostics.get("report_status") or "skipped"),
-            "operator_brief_status": (
-                str(diagnostics.get("llm_brief_status") or "skipped")
-                if operator_brief_json_path.exists()
-                else "missing"
-            ),
-            "report_generation_reason": str(diagnostics.get("report_generation_reason") or diagnostics.get("report_reason_human") or ""),
-            "missing_sections": phase3_missing_sections
-            + [str(x or "") for x in list(evidence_completeness.get("missing_sections") or []) if str(x or "").strip()],
-            "completeness_score": phase3_completeness_score,
-            "artifact_presence": artifact_presence,
-            "llm_response_status": str(ai_trade_report_llm_artifact.get("status") or ""),
-            "llm_parse_mode": str(ai_trade_report_llm_artifact.get("parse_mode") or ""),
-            "llm_completeness_score": float(ai_trade_report_llm_artifact.get("completeness_score") or 0.0),
-            "llm_required_keys_missing": [str(x or "") for x in list(ai_trade_report_llm_artifact.get("required_keys_missing") or []) if str(x or "").strip()],
-            "evidence_counts": {
-                "strategist_events": int((lifecycle.get("evidence") or {}).get("strategist_event_count") or 0),
-                "scanner_events": int((lifecycle.get("evidence") or {}).get("scanner_event_count") or 0),
-                "monitor_events": int((lifecycle.get("evidence") or {}).get("monitor_event_count") or 0),
-            },
-        }
+        trade_health_payload = _build_bundle_health_lib(
+            trade_id=trade_id,
+            run_id=str(anchor_run_id or ""),
+            day=day,
+            lifecycle_status=status,
+            recovery_metadata=recovery_metadata,
+            diagnostics=dict(diagnostics),
+            report_generation=dict(trade_report.get("generation") or {}) if isinstance(trade_report, dict) else {},
+            evidence_completeness_missing_sections=list(evidence_completeness.get("missing_sections") or []),
+            phase3_missing_sections=phase3_missing_sections,
+            phase3_completeness_score=phase3_completeness_score,
+            artifact_presence=artifact_presence,
+            ai_trade_report_llm_artifact=dict(ai_trade_report_llm_artifact or {}),
+            strategist_event_count=int((lifecycle.get("evidence") or {}).get("strategist_event_count") or 0),
+            scanner_event_count=int((lifecycle.get("evidence") or {}).get("scanner_event_count") or 0),
+            monitor_event_count=int((lifecycle.get("evidence") or {}).get("monitor_event_count") or 0),
+            operator_brief_json_exists=bool(operator_brief_json_path.exists()),
+        )
         resolved_operator_brief_json = str(
             (lifecycle_bundle.get("artifacts") or {}).get("operator_brief_json")
             or operator_brief_json_path
@@ -6106,27 +5392,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             "operator_brief_json": operator_brief_json_path.exists(),
             "operator_brief_md": operator_brief_md_path.exists(),
         }
-        trade_health_payload["artifact_presence"] = artifact_presence
-        trade_health_payload["llm_trade_report_status"] = str(
-            diagnostics.get("ai_trade_report_status")
-            or trade_health_payload.get("ai_trade_report_status")
-            or "skipped"
-        )
-        trade_health_payload["report_generation_status"] = (
-            "available"
-            if artifact_presence["ai_trade_report_json"] or artifact_presence["ai_trade_report_md"]
-            else str(diagnostics.get("report_status") or "skipped")
-        )
-        trade_health_payload["operator_brief_status"] = (
-            str(diagnostics.get("llm_brief_status") or "skipped")
-            if artifact_presence["operator_brief_json"]
-            else "missing"
-        )
-        trade_health_payload["llm_brief_status"] = str(
-            trade_health_payload.get("operator_brief_status") or diagnostics.get("llm_brief_status") or "skipped"
-        )
-        trade_health_payload["ai_trade_report_status"] = str(
-            trade_health_payload.get("llm_trade_report_status") or diagnostics.get("ai_trade_report_status") or "skipped"
+        trade_health_payload = _finalize_bundle_health_lib(
+            trade_health_payload,
+            artifact_presence=artifact_presence,
+            diagnostics=dict(diagnostics),
         )
         write_json(trade_health_path, trade_health_payload)
         write_json(trade_artifact_links_path, trade_artifact_links_payload)
@@ -6337,3 +5606,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

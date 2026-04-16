@@ -1608,7 +1608,7 @@ def _build_market_context_summary(section: Any, *, scanner_reason: Dict[str, Any
     regime = _market_token_label(market.get("regime")) or ""
     market_sentiment = _market_token_label(market.get("market_sentiment")) or ""
     selected_playbook = _market_token_label(market.get("selected_playbook")) or _clip(market.get("selected_playbook"), max_len=40)
-    playbook = _market_token_label(market.get("playbook")) or selected_playbook or "?? ??"
+    playbook = _market_token_label(market.get("playbook")) or selected_playbook or "not_captured"
     themes = _theme_text(market.get("themes") or market.get("preferred_themes"), max_items=3)
     sentiment = _num_opt(market.get("global_sentiment_score"))
     fear_index = market.get("fear_index") if isinstance(market.get("fear_index"), dict) else {}
@@ -1620,47 +1620,47 @@ def _build_market_context_summary(section: Any, *, scanner_reason: Dict[str, Any
     us_indices = _extract_us_indices_snapshot(market.get("key_events") or market.get("key_events_hint"))
     selected_symbol = _clip(scanner.get("selected_symbol"), max_len=24)
 
-    regime_missing = regime in {"", "?? ???? ??", "?? ??"}
-    sentiment_missing = market_sentiment in {"", "?? ???? ??", "?? ??"}
-    playbook_known = playbook not in {"", "?? ???? ??", "?? ??"}
-    themes_known = themes not in {"", "not_captured", "?? ???? ??", "?? ??"}
+    regime_missing = regime in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
+    sentiment_missing = market_sentiment in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
+    playbook_known = playbook not in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
+    themes_known = themes not in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
 
     if regime_missing and sentiment_missing and (playbook_known or themes_known):
         frame_bits: List[str] = []
         if playbook_known:
-            frame_bits.append(f"{playbook} ????")
+            frame_bits.append(f"플레이북 {playbook}")
         if themes_known:
-            frame_bits.append(f"{themes} ???")
-        frame_text = "? ".join(frame_bits) if frame_bits else "?? ???"
+            frame_bits.append(f"핵심 테마 {themes}")
+        frame_text = ", ".join(frame_bits) if frame_bits else "핵심 프레임 미확인"
         sentences: List[str] = [
-            f"?? ??? ?? ?? ?? ???? ???? ???? {frame_text}? ??????."
+            f"시장 상태/심리 직접 캡처는 제한적이지만, {frame_text} 기준으로 정리했습니다."
         ]
     else:
-        regime_text = regime or "?? ??"
+        regime_text = regime or "not_captured"
         sentences = [
-            f"??? {regime_text} ???? ???? ????? {playbook}? ??????."
+            f"시장 상태 {regime_text} 기준에서 플레이북 {playbook}로 운용했습니다."
         ]
 
     metric_bits: List[str] = []
     if sentiment is not None:
-        metric_bits.append(f"??? ?? {sentiment:.3f}")
+        metric_bits.append(f"글로벌 감성 {sentiment:.3f}")
     if vix_level is not None:
         metric_bits.append(f"VIX {vix_level:.2f}")
     if metric_bits:
-        sentences.append(", ".join(metric_bits) + " ???? ??? ???? ??? ??? ?????.")
+        sentences.append(", ".join(metric_bits) + " 입력은 시장 안정성 점검에 반영되었습니다.")
     if us_indices:
         sentences.append(
-            f"?? ??? S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
-            f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}? ?????."
+            f"미국 지수는 S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
+            f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}였습니다."
         )
     if headline_count or query_count:
         sentences.append(
-            f"?? ??? ???? {headline_count}?? ?? ?? {query_count}?? ???? ??? ?? ??? ?? ??????."
+            f"뉴스 입력 {headline_count}건과 조회 대상 {query_count}개를 함께 반영했습니다."
         )
     if themes_known:
-        theme_sentence = f"??? ???? {themes} ??? ???? ??????."
+        theme_sentence = f"핵심 테마는 {themes}로 정리됐습니다."
         if selected_symbol:
-            theme_sentence = f"??? ???? {themes} ??? ???? ????, ? ??? {selected_symbol} ?? ??? ??????."
+            theme_sentence = f"핵심 테마 {themes} 기준에서 {selected_symbol}이 스캐너 연결 종목으로 확인됐습니다."
         sentences.append(theme_sentence)
     return " ".join(sentences[:5]).strip()
 
@@ -1671,7 +1671,7 @@ def _build_market_context_bullets(section: Any, *, scanner_reason: Dict[str, Any
     regime = _market_token_label(data.get("regime")) or ""
     market_sentiment = _market_token_label(data.get("market_sentiment")) or ""
     selected_playbook = _market_token_label(data.get("selected_playbook")) or _clip(data.get("selected_playbook"), max_len=40)
-    playbook = _market_token_label(data.get("playbook")) or selected_playbook or "?? ??"
+    playbook = _market_token_label(data.get("playbook")) or selected_playbook or "not_captured"
     themes = _theme_text(data.get("themes") or data.get("preferred_themes"), max_items=4)
     sentiment = _num_opt(data.get("global_sentiment_score"))
     fear_index = data.get("fear_index") if isinstance(data.get("fear_index"), dict) else {}
@@ -1690,40 +1690,40 @@ def _build_market_context_bullets(section: Any, *, scanner_reason: Dict[str, Any
     targets = ", ".join(_listify(data.get("news_query_targets"), max_items=7, max_len=40))
 
     bullets: List[str] = []
-    regime_missing = regime in {"", "?? ???? ??", "?? ??"}
-    sentiment_missing = market_sentiment in {"", "?? ???? ??", "?? ??"}
-    themes_known = themes not in {"", "not_captured", "?? ???? ??", "?? ??"}
-    if regime_missing and sentiment_missing and (playbook != "?? ??" or themes_known):
+    regime_missing = regime in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
+    sentiment_missing = market_sentiment in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
+    themes_known = themes not in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
+    if regime_missing and sentiment_missing and (playbook != "not_captured" or themes_known):
         bullets.append(
-            f"?? ??? ??? ?? ???? ???, ??? ?? ???? {playbook}, ?? ??? {themes if themes_known else '?? ??'}????."
+            f"시장 상태/심리 직접 캡처는 제한적이며, 플레이북 {playbook}, 핵심 테마 {themes if themes_known else 'not_captured'} 기준으로 해석했습니다."
         )
     else:
         bullets.append(
-            f"?? ??? {regime or '?? ??'}, ?? ??? {market_sentiment or '?? ??'}, ????? {playbook}?? ?? ??? {themes}???."
+            f"시장 상태는 {regime or 'not_captured'}, 시장 심리는 {market_sentiment or 'not_captured'}, 플레이북은 {playbook}, 핵심 테마는 {themes} 기준입니다."
         )
     if sentiment is not None or vix_level is not None:
         metric = []
         if sentiment is not None:
-            metric.append(f"??? ?? {sentiment:.3f}")
+            metric.append(f"글로벌 감성 {sentiment:.3f}")
         if vix_level is not None:
-            change_text = f", ?? ?? {_format_pct_points(vix_change)}" if vix_change is not None else ""
+            change_text = f", 변화율 {_format_pct_points(vix_change)}" if vix_change is not None else ""
             metric.append(f"VIX {vix_level:.2f}{change_text}")
-        bullets.append("??? ? ?? ??? " + ", ".join(metric) + "???.")
+        bullets.append("변동성/심리 입력은 " + ", ".join(metric) + "입니다.")
     if us_indices:
         bullets.append(
-            f"?? ??? S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
-            f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}???."
+            f"미국 지수는 S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
+            f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}였습니다."
         )
     if headline_count or query_count or targets:
         bullets.append(
-            f"?? ??? {headline_count}? ????? {query_count}? ?? ??"
+            f"뉴스 입력은 {headline_count}건 헤드라인, 조회 대상은 {query_count}개"
             + (f" ({targets})" if targets else "")
-            + "? ??????."
+            + "를 반영했습니다."
         )
     if market_titles:
-        bullets.append(f"?? ?? ??? {market_titles}???.")
+        bullets.append(f"주요 시장 뉴스는 {market_titles}입니다.")
     if symbol_title:
-        bullets.append(f"?? ??/?? ??? {symbol_title}???.")
+        bullets.append(f"대표 종목/섹터 뉴스는 {symbol_title}입니다.")
     return _dedupe_list(bullets, max_items=8, max_len=260)
 
 
@@ -1734,7 +1734,7 @@ def _build_strategist_summary_section(
     regime = _market_token_label(market_context.get("regime")) or ""
     market_sentiment = _market_token_label(market_context.get("market_sentiment")) or ""
     selected_playbook = _market_token_label(market_context.get("selected_playbook")) or _clip(market_context.get("selected_playbook"), max_len=40)
-    playbook = _market_token_label(market_context.get("playbook")) or selected_playbook or "?? ??"
+    playbook = _market_token_label(market_context.get("playbook")) or selected_playbook or "not_captured"
     themes = _theme_text(market_context.get("themes") or market_context.get("preferred_themes"), max_items=3)
     risk_mode = _risk_mode_label(market_context.get("risk_mode"))
     preferred_themes = _strategy_constraint_text(market_context.get("preferred_themes"), max_items=4)
@@ -1776,114 +1776,118 @@ def _build_strategist_summary_section(
     )
     theme_linkage = _theme_linkage_label(market_context.get("themes") or market_context.get("preferred_themes"))
 
-    regime_missing = regime in {"", "?? ???? ??", "?? ??"}
-    sentiment_missing = market_sentiment in {"", "?? ???? ??", "?? ??"}
-    themes_known = themes not in {"", "not_captured", "?? ???? ??", "?? ??"}
+    regime_missing = regime in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
+    sentiment_missing = market_sentiment in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
+    themes_known = themes not in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
 
     if regime_missing and sentiment_missing:
         frame_bits: List[str] = []
-        if playbook not in {"", "?? ??", "?? ???? ??"}:
-            frame_bits.append(f"{playbook} ????")
+        if playbook not in {"", "not_captured", "unknown", "직접 캡처되지 않음"}:
+            frame_bits.append(f"플레이북 {playbook}")
         if themes_known:
-            frame_bits.append(f"{themes} ???")
-        frame_text = "? ".join(frame_bits) if frame_bits else "?? ???"
-        summary_parts = [f"???? ?? ?? ????? ??? ?? ???? {frame_text}? ??????."]
+            frame_bits.append(f"핵심 테마 {themes}")
+        frame_text = ", ".join(frame_bits) if frame_bits else "핵심 프레임 미확인"
+        summary_parts = [f"전략가는 시장 상태 직접 캡처가 제한적이어서 {frame_text} 중심으로 정리했습니다."]
     else:
-        summary_parts = [f"???? ??? {regime or '?? ??'}, ?? ??? {market_sentiment or '?? ??'}?? ???? {playbook} ????? {themes} ???? ??????."]
+        summary_parts = [f"전략가는 시장을 {regime or 'not_captured'}, 시장 심리를 {market_sentiment or 'not_captured'}으로 해석했고 {playbook} 플레이북과 {themes} 프레임을 유지했습니다."]
     if not stress_flags:
-        summary_parts.append("??? ???? ??? ?????.")
+        summary_parts.append("뚜렷한 스트레스 신호는 확인되지 않았습니다.")
     if selected_symbol:
-        scanner_sentence = f"? ??? ???? {selected_symbol} ??? ??????."
+        scanner_sentence = f"스캐너 연결 종목은 {selected_symbol}입니다."
         if selected_rank not in (None, "") and selected_score is not None:
-            scanner_sentence = f"? ??? ????? {selected_symbol}? {selected_rank}?, ?? ?? {selected_score:.3f}? ??? ? ??????."
+            scanner_sentence = f"스캐너 연결 종목은 {selected_symbol}이며 순위 {selected_rank}, 점수 {selected_score:.3f}입니다."
         summary_parts.append(scanner_sentence)
     summary = " ".join(summary_parts)
 
     bullets: List[str] = []
     input_bits: List[str] = []
     if sentiment is not None:
-        input_bits.append(f"??? ?? {sentiment:.3f}")
+        input_bits.append(f"글로벌 감성 {sentiment:.3f}")
     if vix_level is not None:
         input_bits.append(f"VIX {vix_level:.2f}")
     if headline_count or query_count:
-        input_bits.append(f"?? {headline_count}?/{query_count}??")
+        input_bits.append(f"뉴스 {headline_count}건/{query_count}대상")
     us_indices = _extract_us_indices_snapshot(market_context.get("key_events") or market_context.get("key_events_hint"))
     if us_indices:
         input_bits.append(
-            f"?? ?? S&P500 {_format_pct_points(us_indices.get('sp500'))}, Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}"
+            f"미국 지수 S&P500 {_format_pct_points(us_indices.get('sp500'))}, Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}"
         )
     if input_bits:
-        bullets.append("?? ??? " + ", ".join(input_bits) + "???.")
+        bullets.append("핵심 입력은 " + ", ".join(input_bits) + "입니다.")
 
     if regime_missing and sentiment_missing:
-        interpretation_bits = [f"???? {playbook}"]
+        interpretation_bits = [f"플레이북 {playbook}"]
         if themes_known:
-            interpretation_bits.append(f"?? ?? {themes}")
-        interpretation_bits.append("???? ?? ??" if not stress_flags else "???? ?? " + ", ".join(stress_flags))
-        bullets.append("?? ??? ?? ????? ?? ?? ?? " + ", ".join(interpretation_bits) + " ???????.")
+            interpretation_bits.append(f"핵심 테마 {themes}")
+        interpretation_bits.append("스트레스 신호 없음" if not stress_flags else "스트레스 신호 " + ", ".join(stress_flags))
+        bullets.append("전략 해석은 " + ", ".join(interpretation_bits) + " 기준이었습니다.")
     else:
-        interpretation_bits = [f"?? ?? {regime}", f"?? ?? {market_sentiment}", f"???? {playbook}", f"?? ?? {themes}"]
+        interpretation_bits = [f"시장 상태 {regime}", f"시장 심리 {market_sentiment}", f"플레이북 {playbook}", f"핵심 테마 {themes}"]
         if stress_flags:
-            interpretation_bits.append("???? ?? " + ", ".join(stress_flags))
+            interpretation_bits.append("스트레스 신호 " + ", ".join(stress_flags))
         else:
-            interpretation_bits.append("???? ?? ??")
-        bullets.append("?? ??? " + ", ".join(interpretation_bits) + " ???????.")
+            interpretation_bits.append("스트레스 신호 없음")
+        bullets.append("전략 해석은 " + ", ".join(interpretation_bits) + " 기준이었습니다.")
 
     if query_targets:
-        bullets.append(f"???? ??? ??? ??? ?????: {query_targets}.")
+        bullets.append(f"전략가가 관찰한 대상은 다음과 같았습니다: {query_targets}.")
     if risk_mode or selected_playbook:
         if risk_mode and selected_playbook:
-            bullets.append(f"??? ?? ??? ??? ?? {risk_mode}???, ?? ????? {selected_playbook}?????.")
+            bullets.append(f"전략가 운용 기준은 리스크 모드 {risk_mode}이었고, 선택 플레이북은 {selected_playbook}이었습니다.")
         elif risk_mode:
-            bullets.append(f"??? ?? ??? ??? ?? {risk_mode}?????.")
+            bullets.append(f"전략가 운용 기준은 리스크 모드 {risk_mode}였습니다.")
         else:
-            bullets.append(f"??? ?? ??? ?? ???? {selected_playbook}?????.")
+            bullets.append(f"전략가 운용 기준에서 선택 플레이북은 {selected_playbook}이었습니다.")
     if preferred_themes or avoid_themes:
         theme_pref_bits: List[str] = []
         if preferred_themes:
-            theme_pref_bits.append(f"?? ?? {preferred_themes}")
+            theme_pref_bits.append(f"선호 테마 {preferred_themes}")
         if avoid_themes:
-            theme_pref_bits.append(f"?? ?? {avoid_themes}")
-        bullets.append("??? ??/?? ??? " + ", ".join(theme_pref_bits) + "?????.")
+            theme_pref_bits.append(f"회피 테마 {avoid_themes}")
+        bullets.append("전략가 선호/회피 기준은 " + ", ".join(theme_pref_bits) + "이었습니다.")
     if scanner_bias:
-        bullets.append(f"??? ????? {scanner_bias} ???????.")
+        bullets.append(f"스캐너 바이어스는 {scanner_bias} 기준이었습니다.")
     if candidate_hints:
-        bullets.append("??? ?? ??? " + ", ".join(candidate_hints) + "???.")
+        bullets.append("전략가 후보 힌트는 " + ", ".join(candidate_hints) + "였습니다.")
     if market_titles or symbol_title:
-        linkage_parts: List[str] = []
-        if market_titles:
-            linkage_parts.append(f"?? ??? {theme_linkage} ??? ????")
-        if symbol_title and selected_symbol:
-            linkage_parts.append(f"?? ??? {selected_symbol} ?? ???? ??????")
-        linkage_line = "?? ?? ??? " + ", ".join(linkage_parts) if linkage_parts else "?? ?? ??? headline ???????."
+        if market_titles and symbol_title and selected_symbol:
+            linkage_line = f"뉴스 연결 해석은 시장 뉴스로 {theme_linkage} 맥락을 확인했고, 종목 뉴스로 {selected_symbol} 선정 근거를 보강했습니다."
+        elif market_titles:
+            linkage_line = f"뉴스 연결 해석은 시장 뉴스로 {theme_linkage} 맥락을 확인했습니다."
+        elif symbol_title and selected_symbol:
+            linkage_line = f"뉴스 연결 해석은 종목 뉴스로 {selected_symbol} 선정 근거를 보강했습니다."
+        else:
+            linkage_line = "뉴스 연결 해석은 headline evidence로 확인됐습니다."
         if selected_sources:
-            linkage_line += f". ? ??? {selected_sources} ??? ??????."
+            linkage_line += f". 선정 소스는 {selected_sources}였습니다."
         evidence_parts: List[str] = []
         if market_titles:
-            evidence_parts.append(f"??: {market_titles}")
+            evidence_parts.append(f"시장: {market_titles}")
         if symbol_title:
-            evidence_parts.append(f"??: {symbol_title}")
+            evidence_parts.append(f"종목: {symbol_title}")
         if evidence_parts:
-            linkage_line += " ?? headline? ??? ????: " + " / ".join(evidence_parts)
+            linkage_line += " 참조 headline: " + " / ".join(evidence_parts)
         bullets.append(linkage_line)
+        if selected_sources:
+            bullets.append(f"이 해석은 {selected_sources} 축으로 연결했습니다.")
     contribution_bits: List[str] = []
     if sentiment_contrib is not None:
-        contribution_bits.append(f"?? ?? {sentiment_contrib:+.3f}")
+        contribution_bits.append(f"감성 기여 {sentiment_contrib:+.3f}")
     if theme_boost is not None:
-        contribution_bits.append(f"?? ?? {theme_boost:+.3f}")
+        contribution_bits.append(f"테마 가점 {theme_boost:+.3f}")
     if selected_sources:
-        contribution_bits.append(f"?? ?? {selected_sources}")
+        contribution_bits.append(f"선정 소스 {selected_sources}")
     if scanner_bias_applied:
-        contribution_bits.append("??? ???? ??")
+        contribution_bits.append("바이어스 적용")
     if contribution_bits:
-        bullets.append("??? ??? " + ", ".join(contribution_bits) + " ???? ??????.")
+        bullets.append("스캐너 반영은 " + ", ".join(contribution_bits) + " 기준으로 정리됐습니다.")
     if selected_symbol:
         symbol_bits = [selected_symbol]
         if selected_rank not in (None, ""):
-            symbol_bits.append(f"{selected_rank}?")
+            symbol_bits.append(f"{selected_rank}위")
         if selected_score is not None:
-            symbol_bits.append(f"?? {selected_score:.3f}")
-        bullets.append("?? ??? " + ", ".join(symbol_bits) + "? ?????.")
+            symbol_bits.append(f"점수 {selected_score:.3f}")
+        bullets.append("종목 연결은 " + ", ".join(symbol_bits) + "로 확인됩니다.")
     return {
         "summary": summary,
         "bullets": _dedupe_list(bullets, max_items=10, max_len=260),
@@ -2239,20 +2243,24 @@ def _build_scanner_candidate_comparison_section(
     market_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     ranked_rows = _scanner_ranked_candidates(scanner_reason)
-    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "?? ??"
+    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "선택 종목 미기록"
     universe = scanner_reason.get("universe_size")
     if not ranked_rows and universe in (None, "", 0):
         return {
-            "summary": "??? ?? ??? ?? ??? candidate list? ??? ?? ??? ???? ?????.",
+            "summary": "스캐너 후보 목록이 비어 있어 후보 비교 근거가 제한적입니다.",
             "bullets": [
-                f"?? ??? {symbol}? ?????, ranked candidate? runner-up trace? ?? ?? ??? ???? ?????.",
+                f"선택 종목은 {symbol}으로 기록됐지만 ranked candidate / runner-up trace가 없어 비교 분석을 생략했습니다.",
             ],
         }
 
     summary = _build_scanner_choice_summary(scanner_reason, market_context)
     bullets = _build_scanner_choice_bullets(scanner_reason, market_context)
     if universe not in (None, "") and ranked_rows:
-        bullets = [f"?? ?? ?? universe? ? {int(float(universe))}?????."] + list(bullets)
+        try:
+            universe_count = int(float(universe))
+        except Exception:
+            universe_count = 0
+        bullets = [f"스캐너 유니버스 후보 수는 {universe_count}개였습니다."] + list(bullets)
     return {
         "summary": summary,
         "bullets": _dedupe_list(bullets, max_items=12, max_len=260),

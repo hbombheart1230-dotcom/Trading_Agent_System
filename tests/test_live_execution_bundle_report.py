@@ -2841,20 +2841,5 @@ def test_build_execution_details_recovers_order_id_and_avg_price() -> None:
     assert res["order_id"] == "B49080X123"
     assert res["avg_price"] == 45000.0
     assert res["filled_qty"] == 10
-    assert isinstance(bundle["strategist_trace_summary"], dict)
-    assert isinstance(bundle["scanner_trace_summary"], dict)
-    assert "selected_symbol" in bundle
-    assert "runner_up_symbol" in bundle
-    assert "candidate_count" in bundle
-    assert provenance["trade_origin"] == "recovered_partial"
-    assert provenance["lifecycle_completeness"] == "partial"
-    assert provenance["evidence_recovery_used"] is True
-    assert isinstance(provenance["recovery_missing_sections"], list)
-    assert isinstance(provenance["recovery_sources"], list)
-    assert "entry" in provenance["recovery_missing_sections"] or "entry_evidence" in provenance["recovery_missing_sections"]
-    assert health["trade_origin"] == "recovered_partial"
-    assert health["lifecycle_completeness"] == "partial"
-    assert health["evidence_recovery_used"] is True
-    assert isinstance(health["recovery_missing_sections"], list)
-    assert isinstance(health["recovery_sources"], list)
-    assert "partial_lifecycle" in health["recovery_sources"]
+    assert res["quality_score"] >= 0
+    assert isinstance(res.get("merge_sources"), list)

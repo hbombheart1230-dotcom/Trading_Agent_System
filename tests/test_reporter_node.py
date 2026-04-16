@@ -17,28 +17,23 @@ def _state() -> dict:
     }
 
 
-def test_reporter_node_defaults_to_single_trade_mode(monkeypatch) -> None:
+def test_reporter_node_defaults_to_bundle_mode(monkeypatch) -> None:
     monkeypatch.delenv("INTRADAY_REPORT_RUNTIME_MODE", raising=False)
-    called = {"single": 0}
+    called = {"bundle": 0}
 
-    def _fake_trade_id(state, *, root=None):  # type: ignore[no-untyped-def]
+    def _fake_bundle(state, *, root=None):  # type: ignore[no-untyped-def]
+        called["bundle"] += 1
         assert state["run_id"] == "run-1"
-        return "TRD_20260415_005930_01"
+        return {"ok": True, "status": "generated", "bundle_used": True}
 
-    def _fake_single(trade_id, *, state, root=None):  # type: ignore[no-untyped-def]
-        called["single"] += 1
-        assert trade_id == "TRD_20260415_005930_01"
-        assert state["run_id"] == "run-1"
-        return {"ok": True, "status": "ok", "trade_id": trade_id}
-
-    monkeypatch.setattr(mod, "build_single_trade_report_id", _fake_trade_id)
-    monkeypatch.setattr(mod, "generate_single_trade_report", _fake_single)
+    monkeypatch.setattr(mod, "generate_intraday_trade_artifacts", _fake_bundle)
 
     out = mod.reporter_node(_state())
-    assert called["single"] == 1
-    assert out["report_runtime_mode"] == "single_trade"
-    assert out["bundle_used"] is False
-    assert out["status"] == "ok"
+    assert called["bundle"] == 1
+    assert out["report_runtime_mode"] == "bundle"
+    assert out["bundle_used"] is True
+    assert out["status"] == "generated"
+    assert out["runtime_mode_forced"] is False
 
 
 def test_reporter_node_can_use_bundle_mode_when_explicit(monkeypatch) -> None:
@@ -56,6 +51,24 @@ def test_reporter_node_can_use_bundle_mode_when_explicit(monkeypatch) -> None:
     assert out["report_runtime_mode"] == "bundle"
     assert out["bundle_used"] is True
     assert out["status"] == "generated"
+    assert out["runtime_mode_forced"] is False
+
+
+def test_reporter_node_forces_bundle_even_when_single_trade_requested(monkeypatch) -> None:
+    monkeypatch.setenv("INTRADAY_REPORT_RUNTIME_MODE", "single_trade")
+    called = {"bundle": 0}
+
+    def _fake_bundle(state, *, root=None):  # type: ignore[no-untyped-def]
+        called["bundle"] += 1
+        return {"ok": True, "status": "generated", "bundle_used": True}
+
+    monkeypatch.setattr(mod, "generate_intraday_trade_artifacts", _fake_bundle)
+
+    out = mod.reporter_node(_state())
+    assert called["bundle"] == 1
+    assert out["report_runtime_mode"] == "bundle"
+    assert out["requested_report_runtime_mode"] == "single_trade"
+    assert out["runtime_mode_forced"] is True
 
 
 def test_commander_runtime_uses_reporter_node_and_keeps_intraday_bundle_reference() -> None:
