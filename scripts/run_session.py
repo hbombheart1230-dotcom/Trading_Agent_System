@@ -110,7 +110,7 @@ def _build_parser(default_env_path: Path) -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-iterations", type=int, default=0)
     parser.add_argument("--fail-on-red", action="store_true")
-    parser.add_argument("--report-dir", default="reports/mock_exam_day")
+    parser.add_argument("--report-dir", default="reports/dev/exam/mock_exam_day")
     parser.add_argument("--state-path", default=os.getenv("STATE_STORE_PATH", "").strip())
     parser.add_argument("--timeout-sec", type=int, default=1800)
     parser.add_argument("--probe", action="store_true", help="Mock intraday only: run one-shot off-hours probe.")

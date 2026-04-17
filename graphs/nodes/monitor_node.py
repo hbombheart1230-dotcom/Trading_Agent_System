@@ -637,6 +637,8 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
         "vol_expansion_ratio": "vol_expansion_ratio",
         "news_shock_threshold": "news_shock_threshold",
         "peak_drawdown_exit_pct": "peak_drawdown_exit_pct",
+        "profit_protection_activation_pct": "profit_protection_activation_pct",
+        "peak_drawdown_mode": "peak_drawdown_mode",
         "vwap_breakdown_pct": "vwap_breakdown_pct",
         "intraday_low_break_pct": "intraday_low_break_pct",
         "trend_strength_floor": "trend_strength_floor",
@@ -653,6 +655,8 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
     vol_exp_raw = str(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "") or "").strip()
     news_shock_raw = str(os.getenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "") or "").strip()
     peak_drawdown_raw = str(os.getenv("EXIT_POLICY_PEAK_DRAWDOWN_EXIT_PCT", "") or "").strip()
+    profit_protection_activation_raw = str(os.getenv("EXIT_POLICY_PROFIT_PROTECTION_ACTIVATION_PCT", "") or "").strip()
+    peak_drawdown_mode_raw = str(os.getenv("EXIT_POLICY_PEAK_DRAWDOWN_MODE", "") or "").strip()
     vwap_breakdown_raw = str(os.getenv("EXIT_POLICY_VWAP_BREAKDOWN_PCT", "") or "").strip()
     intraday_low_break_raw = str(os.getenv("EXIT_POLICY_INTRADAY_LOW_BREAK_PCT", "") or "").strip()
     trend_strength_floor_raw = str(os.getenv("EXIT_POLICY_TREND_STRENGTH_FLOOR", "") or "").strip()
@@ -703,6 +707,12 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
         base = _to_float(out.get("peak_drawdown_exit_pct"))
         x = _to_float(peak_drawdown_raw)
         out["peak_drawdown_exit_pct"] = float(x if x > 0.0 else base)
+    if profit_protection_activation_raw:
+        base = _to_float(out.get("profit_protection_activation_pct"))
+        x = _to_float(profit_protection_activation_raw)
+        out["profit_protection_activation_pct"] = float(x if x > 0.0 else base)
+    if peak_drawdown_mode_raw:
+        out["peak_drawdown_mode"] = str(peak_drawdown_mode_raw or "").strip().lower()
     if vwap_breakdown_raw:
         base = _to_float(out.get("vwap_breakdown_pct"))
         x = _to_float(vwap_breakdown_raw)
@@ -727,6 +737,10 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
         out["eod_flat_cutoff_min"] = int(x if x > 0.0 else base)
     if emergency_raw:
         out["emergency_halt"] = _is_trueish(emergency_raw)
+    if out.get("profit_protection_activation_pct") in (None, ""):
+        out["profit_protection_activation_pct"] = 0.008
+    if out.get("peak_drawdown_mode") in (None, ""):
+        out["peak_drawdown_mode"] = "profit_protection"
     out.setdefault("policy_source", str(out.get("effective_policy_source") or "monitor_exit_policy_effective"))
     out.setdefault("effective_policy_source", str(out.get("policy_source") or "monitor_exit_policy_effective"))
     return out
@@ -925,6 +939,10 @@ def _build_monitor_policy_trace(
             "final_exit_thresholds": dict(exit_info.get("final_exit_thresholds") or {}),
             "exit_threshold_source": str(exit_info.get("exit_threshold_source") or ""),
             "hold_block_reason": str(exit_info.get("hold_block_reason") or ""),
+            "max_runup_pct": exit_info.get("max_runup_pct"),
+            "peak_drawdown_from_peak": exit_info.get("peak_drawdown_from_peak"),
+            "peak_drawdown_armed": bool(exit_info.get("peak_drawdown_armed")),
+            "peak_drawdown_mode": str(exit_info.get("peak_drawdown_mode") or ""),
             "final_peak_drawdown_ratio": exit_info.get("final_peak_drawdown_ratio"),
             "peak_drawdown_source": str(exit_info.get("peak_drawdown_source") or ""),
             "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
@@ -1337,7 +1355,6 @@ def _is_hard_exit_reason(reason: str) -> bool:
         "stop_loss",
         "intraday_low_break",
         "trend_breakdown",
-        "peak_drawdown",
         "vwap_breakdown",
         "volatility_expansion",
         "trailing_stop",
@@ -3087,6 +3104,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 else dict(decision.get("thresholds") or {})
             ),
             "exit_threshold_source": str(decision.get("exit_threshold_source") or ""),
+            "max_runup_pct": decision.get("max_runup_pct"),
+            "peak_drawdown_from_peak": decision.get("peak_drawdown_from_peak"),
+            "peak_drawdown_armed": bool(decision.get("peak_drawdown_armed")),
+            "peak_drawdown_mode": str(decision.get("peak_drawdown_mode") or ""),
             "final_peak_drawdown_ratio": decision.get("final_peak_drawdown_ratio"),
             "peak_drawdown_source": str(decision.get("peak_drawdown_source") or ""),
             "exit_trigger_metric_name": str(decision.get("exit_trigger_metric_name") or ""),
@@ -3435,6 +3456,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "final_exit_thresholds": dict(exit_info.get("final_exit_thresholds") or {}),
         "exit_threshold_source": str(exit_info.get("exit_threshold_source") or ""),
         "hold_block_reason": str(exit_info.get("hold_block_reason") or ""),
+        "max_runup_pct": exit_info.get("max_runup_pct"),
+        "peak_drawdown_from_peak": exit_info.get("peak_drawdown_from_peak"),
+        "peak_drawdown_armed": bool(exit_info.get("peak_drawdown_armed")),
+        "peak_drawdown_mode": str(exit_info.get("peak_drawdown_mode") or ""),
         "final_peak_drawdown_ratio": exit_info.get("final_peak_drawdown_ratio"),
         "peak_drawdown_source": str(exit_info.get("peak_drawdown_source") or ""),
         "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
@@ -3758,6 +3783,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "hold_block_reason": str(exit_info.get("hold_block_reason") or ""),
         "final_exit_thresholds": dict(exit_info.get("final_exit_thresholds") or {}),
         "exit_threshold_source": str(exit_info.get("exit_threshold_source") or ""),
+        "max_runup_pct": exit_info.get("max_runup_pct"),
+        "peak_drawdown_from_peak": exit_info.get("peak_drawdown_from_peak"),
+        "peak_drawdown_armed": bool(exit_info.get("peak_drawdown_armed")),
+        "peak_drawdown_mode": str(exit_info.get("peak_drawdown_mode") or ""),
         "final_peak_drawdown_ratio": exit_info.get("final_peak_drawdown_ratio"),
         "peak_drawdown_source": str(exit_info.get("peak_drawdown_source") or ""),
         "exit_trigger_metric_name": str(exit_info.get("exit_trigger_metric_name") or ""),
@@ -3808,6 +3837,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["final_exit_thresholds"] = dict(exit_info.get("final_exit_thresholds") or {})
         state["monitor_output"]["exit_threshold_source"] = str(exit_info.get("exit_threshold_source") or "")
         state["monitor_output"]["hold_block_reason"] = str(exit_info.get("hold_block_reason") or "")
+        state["monitor_output"]["max_runup_pct"] = exit_info.get("max_runup_pct")
+        state["monitor_output"]["peak_drawdown_from_peak"] = exit_info.get("peak_drawdown_from_peak")
+        state["monitor_output"]["peak_drawdown_armed"] = bool(exit_info.get("peak_drawdown_armed"))
+        state["monitor_output"]["peak_drawdown_mode"] = str(exit_info.get("peak_drawdown_mode") or "")
         state["monitor_output"]["final_peak_drawdown_ratio"] = exit_info.get("final_peak_drawdown_ratio")
         state["monitor_output"]["peak_drawdown_source"] = str(exit_info.get("peak_drawdown_source") or "")
         state["monitor_output"]["exit_trigger_metric_name"] = str(exit_info.get("exit_trigger_metric_name") or "")

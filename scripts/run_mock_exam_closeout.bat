@@ -14,7 +14,7 @@ rem Compatibility wrapper. Official trading runtime entrypoint is scripts/run_se
   --mode mock ^
   --phase closeout ^
   --env-path "%ROOT%\.env" ^
-  --report-dir "%ROOT%\reports\mock_exam_day" ^
+  --report-dir "%ROOT%\reports\dev\exam\mock_exam_day" ^
   --event-log-path "%ROOT%\data\logs\events.jsonl" ^
   %*
 

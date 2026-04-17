@@ -2317,6 +2317,15 @@ def _exit_policy(
     vol_expansion_ratio = _to_float(os.getenv("EXIT_POLICY_VOL_EXPANSION_RATIO", "0.0"), 0.0)
     news_shock_threshold = _to_float(os.getenv("EXIT_POLICY_NEWS_SHOCK_THRESHOLD", "0.0"), 0.0)
     peak_drawdown_exit_pct = _to_float(os.getenv("EXIT_POLICY_PEAK_DRAWDOWN_EXIT_PCT", "0.0"), 0.0)
+    profit_protection_activation_pct = _to_float(
+        os.getenv("EXIT_POLICY_PROFIT_PROTECTION_ACTIVATION_PCT", "0.008"),
+        0.008,
+    )
+    peak_drawdown_mode = str(os.getenv("EXIT_POLICY_PEAK_DRAWDOWN_MODE", "profit_protection") or "profit_protection").strip().lower()
+    confirm_required_for_peak_drawdown = max(
+        1,
+        int(_to_float(os.getenv("EXIT_POLICY_CONFIRM_REQUIRED_FOR_PEAK_DRAWDOWN", "2"), 2.0)),
+    )
     vwap_breakdown_pct = _to_float(os.getenv("EXIT_POLICY_VWAP_BREAKDOWN_PCT", "0.0"), 0.0)
     intraday_low_break_pct = _to_float(os.getenv("EXIT_POLICY_INTRADAY_LOW_BREAK_PCT", "0.0"), 0.0)
     trend_strength_floor = _to_float(os.getenv("EXIT_POLICY_TREND_STRENGTH_FLOOR", "0.0"), 0.0)
@@ -2427,6 +2436,10 @@ def _exit_policy(
     vol_expansion_ratio = _clamp(vol_expansion_ratio, 0.0, 5.0)
     news_shock_threshold = _clamp(news_shock_threshold, 0.0, 1.0)
     peak_drawdown_exit_pct = _clamp(peak_drawdown_exit_pct, 0.0, 0.15)
+    profit_protection_activation_pct = _clamp(profit_protection_activation_pct, 0.0, 0.25)
+    if peak_drawdown_mode not in {"profit_protection", "always_on", "disabled"}:
+        peak_drawdown_mode = "profit_protection"
+        adjustments.append("peak_drawdown_mode:normalized")
     vwap_breakdown_pct = _clamp(vwap_breakdown_pct, 0.0, 0.05)
     intraday_low_break_pct = _clamp(intraday_low_break_pct, 0.0, 0.03)
     trend_strength_floor = _clamp(trend_strength_floor, -1.0, 1.0)
@@ -2438,6 +2451,9 @@ def _exit_policy(
         "vol_expansion_ratio": float(vol_expansion_ratio),
         "news_shock_threshold": float(news_shock_threshold),
         "peak_drawdown_exit_pct": float(peak_drawdown_exit_pct),
+        "profit_protection_activation_pct": float(profit_protection_activation_pct),
+        "peak_drawdown_mode": str(peak_drawdown_mode),
+        "confirm_required_for_peak_drawdown": int(confirm_required_for_peak_drawdown),
         "vwap_breakdown_pct": float(vwap_breakdown_pct),
         "intraday_low_break_pct": float(intraday_low_break_pct),
         "trend_strength_floor": float(trend_strength_floor),

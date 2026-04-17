@@ -124,9 +124,13 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
     events.write_text("", encoding="utf-8")
 
     calls: list[str] = []
+    commands_by_step: dict[str, list[str]] = {}
+    env_by_step: dict[str, dict[str, str]] = {}
 
     def fake_run_subprocess(*, step_id, command, cwd, env=None, timeout_sec=1800):  # type: ignore[no-untyped-def]
         calls.append(str(step_id))
+        commands_by_step[str(step_id)] = [str(x) for x in list(command)]
+        env_by_step[str(step_id)] = dict(env or {})
         return {
             "step_id": step_id,
             "command": list(command),
@@ -180,17 +184,173 @@ def test_closeout_runs_steps_in_order(tmp_path: Path, capsys, monkeypatch):
     assert steps[0]["step_id"] == "closeout.stop_session_loop"
     assert steps[1]["step_id"] == "closeout.backup_liquidation"
     assert steps[1]["mode"] == "noop_already_flat"
+    assert steps[5]["step_id"] == "closeout.decision_story"
+    assert steps[5]["mode"] == "optional_report_disabled"
+    assert steps[5]["skip_reason"] == "disabled_by_default_generate_decision_story_flag_required"
+    assert steps[6]["step_id"] == "closeout.run_cards"
+    assert steps[6]["mode"] == "optional_report_disabled"
+    assert steps[6]["skip_reason"] == "disabled_by_default_generate_run_cards_flag_required"
     assert calls == [
         "closeout.m31_slo_incident",
         "closeout.metrics",
         "closeout.operator_summary",
-        "closeout.decision_story",
-        "closeout.run_cards",
         "closeout.daily",
         "closeout.reporter_analysis",
         "closeout.live_execution_bundles",
         "closeout.report_inventory",
     ]
+    canonical_reports_root = str(mod.ROOT / "reports")
+    assert env_by_step["closeout.metrics"].get("REPORT_DIR") == canonical_reports_root
+    assert env_by_step["closeout.daily"].get("REPORT_DIR") == canonical_reports_root
+
+    m31_cmd = commands_by_step["closeout.m31_slo_incident"]
+    assert "--report-dir" in m31_cmd
+    assert str(mod.ROOT / "reports" / "milestones" / "m31_slo_incident") in m31_cmd
+
+    reporter_cmd = commands_by_step["closeout.reporter_analysis"]
+    assert "--reports-root" in reporter_cmd
+    assert canonical_reports_root in reporter_cmd
+    assert str(mod.ROOT / "reports" / "dev" / "analysis" / "reporter_analysis") in reporter_cmd
+
+    bundle_cmd = commands_by_step["closeout.live_execution_bundles"]
+    assert "--reports-root" in bundle_cmd
+    assert canonical_reports_root in bundle_cmd
+    assert str(mod.ROOT / "reports" / "dev" / "analysis" / "live_execution_bundles") in bundle_cmd
+
+    inventory_cmd = commands_by_step["closeout.report_inventory"]
+    assert "--report-root" in inventory_cmd
+    assert canonical_reports_root in inventory_cmd
+
+
+def test_closeout_can_opt_in_decision_story_and_run_cards(tmp_path: Path, capsys, monkeypatch):
+    env_path = tmp_path / ".env"
+    events = tmp_path / "events.jsonl"
+    report_dir = tmp_path / "reports"
+    state_path = tmp_path / "state.json"
+    _write_env(
+        env_path,
+        {
+            "RUNTIME_PROFILE": "staging",
+            "KIWOOM_MODE": "mock",
+            "APPROVAL_MODE": "manual",
+            "ALLOW_REAL_EXECUTION": "false",
+        },
+    )
+    events.write_text("", encoding="utf-8")
+
+    calls: list[str] = []
+
+    def fake_run_subprocess(*, step_id, command, cwd, env=None, timeout_sec=1800):  # type: ignore[no-untyped-def]
+        calls.append(str(step_id))
+        return {
+            "step_id": step_id,
+            "command": list(command),
+            "cwd": str(cwd),
+            "rc": 0,
+            "ok": True,
+            "stdout_tail": "{}",
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.001,
+        }
+
+    monkeypatch.setattr(
+        mod,
+        "_stop_live_loop_processes",
+        lambda common: {
+            "step_id": "closeout.stop_session_loop",
+            "mode": "process_cleanup",
+            "rc": 0,
+            "ok": True,
+            "stopped_pids": [],
+            "stopped_total": 0,
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.001,
+        },
+    )
+    monkeypatch.setattr(mod, "_run_subprocess", fake_run_subprocess)
+
+    rc = mod.main(
+        [
+            "--phase",
+            "closeout",
+            "--day",
+            "2026-03-09",
+            "--env-path",
+            str(env_path),
+            "--report-dir",
+            str(report_dir),
+            "--state-path",
+            str(state_path),
+            "--event-log-path",
+            str(events),
+            "--generate-decision-story",
+            "--generate-run-cards",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert out["ok"] is True
+    assert "closeout.decision_story" in calls
+    assert "closeout.run_cards" in calls
+
+
+def test_preopen_readiness_writes_to_canonical_milestones_dir(tmp_path: Path, capsys, monkeypatch):
+    env_path = tmp_path / ".env"
+    events = tmp_path / "events.jsonl"
+    report_dir = tmp_path / "reports"
+    _write_env(
+        env_path,
+        {
+            "RUNTIME_PROFILE": "staging",
+            "KIWOOM_MODE": "mock",
+            "APPROVAL_MODE": "manual",
+            "ALLOW_REAL_EXECUTION": "false",
+        },
+    )
+    events.write_text("", encoding="utf-8")
+
+    commands_by_step: dict[str, list[str]] = {}
+
+    def fake_run_subprocess(*, step_id, command, cwd, env=None, timeout_sec=1800):  # type: ignore[no-untyped-def]
+        commands_by_step[str(step_id)] = [str(x) for x in list(command)]
+        return {
+            "step_id": step_id,
+            "command": list(command),
+            "cwd": str(cwd),
+            "rc": 0,
+            "ok": True,
+            "stdout_tail": '{"ok": true}',
+            "stderr_tail": "",
+            "error": "",
+            "duration_sec": 0.001,
+        }
+
+    monkeypatch.setattr(mod, "_run_subprocess", fake_run_subprocess)
+
+    rc = mod.main(
+        [
+            "--phase",
+            "preopen",
+            "--day",
+            "2026-03-09",
+            "--env-path",
+            str(env_path),
+            "--report-dir",
+            str(report_dir),
+            "--event-log-path",
+            str(events),
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    assert rc == 0
+    assert out["ok"] is True
+    readiness_cmd = commands_by_step["preopen.m31_mock_exam_readiness_check"]
+    assert "--report-dir" in readiness_cmd
+    assert str(mod.ROOT / "reports" / "milestones" / "m31_mock_exam_readiness") in readiness_cmd
 
 
 def test_closeout_backup_liquidation_flattens_mock_positions(tmp_path: Path, capsys, monkeypatch):

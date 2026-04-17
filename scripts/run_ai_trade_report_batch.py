@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +11,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.core.settings import load_env_file
+from libs.reporting.intraday_trade_reports import (
+    finalize_ai_report_diagnostics as _finalize_report_diagnostics,
+    normalize_trade_id_filters as _normalize_trade_id_filters,
+    resolve_story_input_for_regeneration as _resolve_story_input_for_regeneration,
+    sync_ai_report_diagnostics as _sync_report_diagnostics,
+    sync_ai_trade_report_generation_state as _sync_report_generation_state,
+)
 from libs.reporting.llm_artifacts import (
     build_compact_input_artifact,
     persist_llm_artifact_refs,
@@ -24,100 +29,6 @@ from libs.reporting.trade_report_ai import (
     build_ai_trade_report_compact_input,
     render_trade_report_markdown,
 )
-from libs.reporting.trade_story_pipeline import build_trade_story_input_from_bundle
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _read_json(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _stable_json_text(payload: Any) -> str:
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _payload_fingerprint(payload: Any) -> str:
-    return hashlib.sha256(_stable_json_text(payload).encode("utf-8")).hexdigest()
-
-
-def _report_generation_state_path(trade_paths: Dict[str, Path]) -> Path:
-    return trade_paths["reports_dir"] / "report_generation_state.json"
-
-
-def _load_report_generation_state(path: Path) -> Dict[str, Any]:
-    payload = _read_json(path)
-    if payload:
-        payload.setdefault("schema_version", "report_generation_state.v1")
-        payload.setdefault("components", {})
-        return payload
-    return {"schema_version": "report_generation_state.v1", "components": {}}
-
-
-def _sync_report_generation_state(
-    trade_paths: Dict[str, Path],
-    *,
-    story_input: Dict[str, Any],
-    compact_input: Dict[str, Any],
-    report: Dict[str, Any],
-    llm_artifact: Dict[str, Any],
-    llm_response_path: str,
-) -> Dict[str, Any]:
-    generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
-    state_path = _report_generation_state_path(trade_paths)
-    state_payload = _load_report_generation_state(state_path)
-    components = state_payload.get("components") if isinstance(state_payload.get("components"), dict) else {}
-    generation_status = str(
-        generation.get("status")
-        or report.get("ai_trade_report_status")
-        or report.get("status")
-        or llm_artifact.get("status")
-        or ""
-    ).strip()
-    model = str(
-        generation.get("model")
-        or llm_artifact.get("model")
-        or ((llm_artifact.get("model_info") or {}) if isinstance(llm_artifact.get("model_info"), dict) else {}).get("model")
-        or ""
-    )
-    report_reason = str(generation.get("reason") or llm_artifact.get("error") or ((llm_artifact.get("meta") or {}) if isinstance(llm_artifact.get("meta"), dict) else {}).get("reason") or "").strip()
-    source_inputs = {
-        "story_input_sha256": _payload_fingerprint(story_input),
-        "compact_input_sha256": _payload_fingerprint(compact_input),
-    }
-    components["ai_trade_report"] = {
-        "fingerprint": _payload_fingerprint(
-            {
-                "component": "ai_trade_report",
-                "trade_id": str(story_input.get("trade_id") or ""),
-                "run_id": str(story_input.get("run_id") or ""),
-                **source_inputs,
-            }
-        ),
-        "component": "ai_trade_report",
-        "status": generation_status,
-        "report_status": "available" if trade_paths["ai_trade_report_json"].exists() else "missing",
-        "skip_reason": "",
-        "trade_id": str(story_input.get("trade_id") or ""),
-        "run_id": str(story_input.get("run_id") or ""),
-        "updated_at": _utc_now_iso(),
-        "model": model,
-        "report_json_path": str(trade_paths["ai_trade_report_json"]),
-        "report_md_path": str(trade_paths["ai_trade_report_md"]),
-        "llm_response_path": str(llm_response_path or ""),
-        "source_inputs": source_inputs,
-    }
-    state_payload["components"] = components
-    write_json(state_path, state_payload)
-    return state_payload
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -135,182 +46,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-debug", action="store_true", help="Skip LLM and render deterministic local-debug report from saved artifacts only.")
     parser.add_argument("--json", action="store_true")
     return parser
-
-
-def _normalize_trade_id_filters(values: Any) -> List[str]:
-    raw_values: List[str] = []
-    if isinstance(values, list):
-        raw_values = [str(value or "") for value in values]
-    elif values not in (None, ""):
-        raw_values = [str(values or "")]
-    out: List[str] = []
-    seen: set[str] = set()
-    for raw in raw_values:
-        for part in str(raw or "").split(","):
-            trade_id = str(part or "").strip()
-            if not trade_id or trade_id in seen:
-                continue
-            out.append(trade_id)
-            seen.add(trade_id)
-    return out
-
-
-def _load_story_input(trade_dir: Path) -> tuple[Dict[str, Any], str]:
-    canonical = trade_dir / "ai_trade_report_input.json"
-    normalized_legacy = trade_dir / "ai_trade_report" / "ai_trade_report_input.json"
-    legacy = trade_dir / "trade_story_input.json"
-    for path in (canonical, normalized_legacy, legacy):
-        payload = _read_json(path)
-        if payload:
-            return payload, str(path)
-    return {}, ""
-
-
-def _story_input_quality_score(story_input: Dict[str, Any]) -> int:
-    if not isinstance(story_input, dict) or not story_input:
-        return 0
-    score = 0
-    if str(story_input.get("status") or "").strip().lower() in {"open", "closed"}:
-        score += 2
-    if str(story_input.get("symbol") or "").strip():
-        score += 1
-    if str(story_input.get("run_id") or "").strip():
-        score += 1
-    scanner_reason_human = (
-        story_input.get("scanner_reason_human")
-        if isinstance(story_input.get("scanner_reason_human"), dict)
-        else {}
-    )
-    scanner_trace = (
-        story_input.get("scanner_selection_trace")
-        if isinstance(story_input.get("scanner_selection_trace"), dict)
-        else {}
-    )
-    selected_symbol = str(
-        story_input.get("selected_symbol")
-        or scanner_reason_human.get("selected_symbol")
-        or scanner_trace.get("selected_symbol")
-        or ""
-    ).strip()
-    if selected_symbol:
-        score += 2
-    candidate_count = (
-        story_input.get("candidate_count")
-        if story_input.get("candidate_count") not in (None, "")
-        else scanner_reason_human.get("candidate_count")
-    )
-    if isinstance(candidate_count, (int, float)) and float(candidate_count) > 0:
-        score += 1
-    if isinstance(scanner_trace.get("ranked_candidates"), list) and len(scanner_trace.get("ranked_candidates") or []) > 0:
-        score += 1
-    if isinstance(story_input.get("monitor_stop_policy_trace"), dict) and story_input.get("monitor_stop_policy_trace"):
-        score += 1
-    if str(story_input.get("entry_summary") or "").strip():
-        score += 1
-    return score
-
-
-def _resolve_story_input_for_regeneration(
-    trade_dir: Path,
-    trade_paths: Dict[str, Path],
-) -> tuple[Dict[str, Any], str, str, int, int]:
-    existing_story_input, existing_path = _load_story_input(trade_dir)
-    existing_score = _story_input_quality_score(existing_story_input)
-    lifecycle_bundle = _read_json(trade_paths["lifecycle_bundle_json"])
-    if not lifecycle_bundle:
-        return existing_story_input, existing_path, "existing_story_input", existing_score, existing_score
-
-    rebuilt_story_input = build_trade_story_input_from_bundle(
-        lifecycle_bundle,
-        existing_story_input=existing_story_input,
-    )
-    rebuilt_score = _story_input_quality_score(rebuilt_story_input)
-    if rebuilt_score >= existing_score and rebuilt_story_input:
-        canonical_path = trade_paths["ai_trade_report_input_json"]
-        if _payload_fingerprint(rebuilt_story_input) != _payload_fingerprint(existing_story_input):
-            write_json(canonical_path, rebuilt_story_input)
-        return (
-            rebuilt_story_input,
-            str(canonical_path),
-            "rebuilt_from_lifecycle_bundle",
-            existing_score,
-            rebuilt_score,
-        )
-    return existing_story_input, existing_path, "existing_story_input", existing_score, rebuilt_score
-
-
-def _report_diagnostics_from_report(report: Dict[str, Any], llm_artifact: Dict[str, Any]) -> Dict[str, Any]:
-    generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
-    generation_status = str(generation.get("status") or llm_artifact.get("status") or "").strip().lower()
-    model = str(generation.get("model") or llm_artifact.get("model") or ((llm_artifact.get("model_info") or {}).get("model")) or "")
-    diagnostics = {
-        "report_status": "failed",
-        "report_reason_code": "llm_generation_failed",
-        "report_reason_human": "AI trade report generation failed.",
-        "generation_attempted": True,
-        "generation_ts": _utc_now_iso(),
-        "story_input_available": True,
-        "report_output_available": True,
-        "report_artifact_available": True,
-        "llm_model_used": model,
-        "last_error_message": str(llm_artifact.get("error") or ""),
-        "next_expected_step": "Inspect the LLM response artifact and retry generation.",
-    }
-    if generation_status in {"ok", "repaired"}:
-        diagnostics.update(
-            {
-                "report_status": "available",
-                "report_reason_code": "",
-                "report_reason_human": "AI trade report was generated successfully.",
-                "next_expected_step": "Open the full report for detailed lifecycle analysis.",
-                "last_error_message": "",
-            }
-        )
-    elif generation_status in {"partial", "salvaged"}:
-        diagnostics.update(
-            {
-                "report_status": "available",
-                "report_reason_code": "llm_generation_salvaged",
-                "report_reason_human": "AI trade report was generated with partial recovery.",
-                "next_expected_step": "Open the report and review completeness metadata before relying on every section.",
-            }
-        )
-    return diagnostics
-
-
-def _sync_report_diagnostics(trade_paths: Dict[str, Path], report: Dict[str, Any], llm_artifact: Dict[str, Any]) -> Dict[str, Any]:
-    diagnostics = _report_diagnostics_from_report(report, llm_artifact)
-    report["ai_report_diagnostics"] = dict(diagnostics)
-
-    for path in (
-        trade_paths["lifecycle_bundle_json"],
-        trade_paths["ai_trade_report_input_json"],
-        trade_paths["trade_health_json"],
-    ):
-        payload = _read_json(path)
-        if not payload:
-            continue
-        payload["ai_report_diagnostics"] = dict(diagnostics)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return diagnostics
-
-
-def _finalize_report_diagnostics(
-    trade_paths: Dict[str, Path],
-    report_json_path: Path,
-    diagnostics: Dict[str, Any],
-) -> None:
-    for path in (
-        report_json_path,
-        trade_paths["lifecycle_bundle_json"],
-        trade_paths["ai_trade_report_input_json"],
-        trade_paths["trade_health_json"],
-    ):
-        payload = _read_json(path)
-        if not payload:
-            continue
-        payload["ai_report_diagnostics"] = dict(diagnostics)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def main(argv: Optional[List[str]] = None) -> int:

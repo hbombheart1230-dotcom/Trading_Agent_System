@@ -157,12 +157,35 @@ def test_exit_policy_peak_drawdown_triggers():
         policy={
             "peak_price": 110.0,
             "peak_drawdown_exit_pct": 0.05,
+            "profit_protection_activation_pct": 0.08,
             "take_profit_pct": 0.0,
         },
     )
     assert out["triggered"] is True
     assert out["reason"] == "peak_drawdown"
+    assert out["peak_drawdown_armed"] is True
+    assert float(out.get("max_runup_pct") or 0.0) >= 0.08
     assert float(out.get("peak_drawdown") or 0.0) <= -0.05
+
+
+def test_exit_policy_peak_drawdown_stays_disarmed_without_runup_activation():
+    out = evaluate_exit_policy(
+        price=97.5,
+        avg_price=100.0,
+        qty=1,
+        policy={
+            "peak_drawdown_exit_pct": 0.02,
+            "profit_protection_activation_pct": 0.008,
+            "take_profit_pct": 0.0,
+            "stop_loss_pct": 0.0,
+            "hard_stop_pct": 0.0,
+        },
+    )
+    assert out["triggered"] is False
+    assert out["reason"] == "hold"
+    assert out["peak_drawdown_armed"] is False
+    assert float(out.get("max_runup_pct") or 0.0) < 0.008
+    assert float(out.get("peak_drawdown_from_peak") or 0.0) <= -0.02
 
 
 def test_exit_policy_vwap_breakdown_triggers_with_profit_protection():
@@ -347,25 +370,28 @@ def test_exit_policy_flags_account_ratio_mark_anomaly_and_falls_back_to_sane_pri
     assert round(float(out.get("pnl_ratio") or 0.0), 4) == -0.03
 
 
-def test_exit_policy_peak_drawdown_triggers_even_without_profitable_peak_buffer():
+def test_exit_policy_peak_drawdown_does_not_trigger_before_profit_protection_activation():
     out = evaluate_exit_policy(
         price=97.5,
         avg_price=100.0,
         qty=1,
         policy={
             "peak_drawdown_exit_pct": 0.02,
+            "profit_protection_activation_pct": 0.01,
             "take_profit_pct": 0.0,
             "stop_loss_pct": 0.0,
             "hard_stop_pct": 0.0,
         },
     )
-    assert out["triggered"] is True
-    assert out["reason"] == "peak_drawdown"
+    assert out["triggered"] is False
+    assert out["reason"] == "hold"
+    assert out["peak_drawdown_armed"] is False
+    assert str(out.get("peak_drawdown_mode") or "") == "profit_protection"
     assert float(out.get("peak_drawdown") or 0.0) <= -0.02
     assert float(out.get("final_peak_drawdown_ratio") or 0.0) <= -0.02
     assert str(out.get("peak_drawdown_source") or "") == "effective_price_vs_peak_price"
-    assert str(out.get("exit_trigger_metric_name") or "") == "peak_drawdown_ratio"
-    assert float(out.get("exit_trigger_metric_value") or 0.0) <= -0.02
-    assert str(out.get("exit_trigger_metric_source") or "") == "effective_price_vs_peak_price"
+    assert str(out.get("exit_trigger_metric_name") or "") == ""
+    assert out.get("exit_trigger_metric_value") in (None, "")
+    assert str(out.get("exit_trigger_metric_source") or "") == ""
     assert isinstance(out.get("final_exit_thresholds"), dict)
     assert str(out.get("exit_threshold_source") or "") != ""

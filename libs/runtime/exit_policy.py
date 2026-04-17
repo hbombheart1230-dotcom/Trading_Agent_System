@@ -363,6 +363,10 @@ def evaluate_exit_policy(
         "triggered": False,
         "reason": "",
         "hold_block_reason": "",
+        "max_runup_pct": None,
+        "peak_drawdown_from_peak": None,
+        "peak_drawdown_armed": False,
+        "peak_drawdown_mode": "",
         "final_peak_drawdown_ratio": None,
         "peak_drawdown_source": "",
         "exit_trigger_metric_name": "",
@@ -417,12 +421,23 @@ def evaluate_exit_policy(
             "vol_expansion_ratio": _clamp_non_negative(_to_float(p.get("vol_expansion_ratio"), 0.0)),
             "news_shock_threshold": _clamp_non_negative(_to_float(p.get("news_shock_threshold"), 0.0)),
             "peak_drawdown_exit_pct": _clamp_non_negative(_to_float(p.get("peak_drawdown_exit_pct"), 0.0)),
+            "profit_protection_activation_pct": _clamp_non_negative(
+                _to_float(
+                    p.get(
+                        "profit_protection_activation_pct",
+                        p.get("peak_drawdown_activation_pct", 0.008),
+                    ),
+                    0.008,
+                )
+            ),
+            "peak_drawdown_mode": str(p.get("peak_drawdown_mode") or "profit_protection").strip().lower(),
             "vwap_breakdown_pct": _clamp_non_negative(_to_float(p.get("vwap_breakdown_pct"), 0.0)),
             "intraday_low_break_pct": _clamp_non_negative(_to_float(p.get("intraday_low_break_pct"), 0.0)),
             "trend_strength_floor": _to_float(p.get("trend_strength_floor"), 0.0),
             "eod_flat_cutoff_min": max(0, int(_to_float(p.get("eod_flat_cutoff_min"), 10))),
         },
     }
+    out["peak_drawdown_mode"] = str(out["thresholds"].get("peak_drawdown_mode") or "profit_protection")
 
     def _finalize(
         triggered: bool | None = None,
@@ -593,12 +608,28 @@ def evaluate_exit_policy(
     if peak_price <= 0.0:
         peak_price = max(apx, px)
     if peak_price > 0.0:
+        max_runup_pct = float((peak_price / apx) - 1.0) if apx > 0.0 else 0.0
         peak_drawdown = float((px / peak_price) - 1.0)
+        peak_drawdown_mode = str(out["thresholds"].get("peak_drawdown_mode") or "profit_protection").strip().lower()
+        if not peak_drawdown_mode:
+            peak_drawdown_mode = "profit_protection"
+        activation_pct = float(out["thresholds"].get("profit_protection_activation_pct") or 0.0)
+        if peak_drawdown_mode in {"disabled", "off", "none"}:
+            peak_drawdown_armed = False
+        elif peak_drawdown_mode in {"profit_protection", "profit-protection"}:
+            peak_drawdown_armed = bool(max_runup_pct >= activation_pct)
+        else:
+            # Backward-compatible fallback for unknown/legacy modes.
+            peak_drawdown_armed = True
+        out["max_runup_pct"] = max_runup_pct
         out["peak_drawdown"] = peak_drawdown
+        out["peak_drawdown_from_peak"] = peak_drawdown
+        out["peak_drawdown_armed"] = bool(peak_drawdown_armed)
+        out["peak_drawdown_mode"] = str(peak_drawdown_mode)
         out["final_peak_drawdown_ratio"] = peak_drawdown
         out["peak_drawdown_source"] = "effective_price_vs_peak_price"
         peak_drawdown_th = float(out["thresholds"]["peak_drawdown_exit_pct"])
-        if peak_drawdown_th > 0.0 and peak_drawdown <= -peak_drawdown_th:
+        if peak_drawdown_th > 0.0 and peak_drawdown_armed and peak_drawdown <= -peak_drawdown_th:
             return _finalize(
                 triggered=True,
                 reason="peak_drawdown",

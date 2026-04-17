@@ -3,6 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from libs.reporting.intraday_trade_reports import (
+    finalize_ai_report_diagnostics,
+    normalize_trade_id_filters,
+    resolve_story_input_for_regeneration,
+    sync_ai_report_diagnostics,
+    sync_ai_trade_report_generation_state,
+)
 from libs.reporting.llm_artifacts import trade_artifact_paths
 from scripts.run_ai_trade_report_batch import (
     _finalize_report_diagnostics,
@@ -20,6 +27,14 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_run_ai_trade_report_batch_reuses_intraday_helper_ownership() -> None:
+    assert _normalize_trade_id_filters is normalize_trade_id_filters
+    assert _resolve_story_input_for_regeneration is resolve_story_input_for_regeneration
+    assert _sync_report_diagnostics is sync_ai_report_diagnostics
+    assert _finalize_report_diagnostics is finalize_ai_report_diagnostics
+    assert _sync_report_generation_state is sync_ai_trade_report_generation_state
 
 
 def test_run_ai_trade_report_batch_syncs_salvaged_diagnostics_to_all_artifacts(tmp_path: Path) -> None:

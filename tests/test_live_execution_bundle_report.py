@@ -5,6 +5,51 @@ import time
 from pathlib import Path
 from datetime import datetime, timezone
 
+from libs.reporting.intraday_trade_reports import (
+    apply_live_bundle_backfill as shared_apply_live_bundle_backfill,
+    apply_ai_trade_report_generation_result as shared_apply_ai_trade_report_generation_result,
+    apply_runtime_diagnostics_context as shared_apply_runtime_diagnostics_context,
+    base_report_diagnostics as shared_base_report_diagnostics,
+    build_live_bundle_backfill_payload as shared_build_live_bundle_backfill_payload,
+    build_live_execution_summary_payload as shared_build_live_execution_summary_payload,
+    build_live_generation_state_payload as shared_build_live_generation_state_payload,
+    build_holding_phase_observability as shared_build_holding_phase_observability,
+    build_same_day_reporter_linkage as shared_build_same_day_reporter_linkage,
+    execute_ai_trade_report_generation as shared_execute_ai_trade_report_generation,
+    load_report_generation_state as shared_load_report_generation_state,
+    plan_live_trade_report_generation as shared_plan_live_trade_report_generation,
+    persist_live_story_input_artifacts as shared_persist_live_story_input_artifacts,
+    report_next_step as shared_report_next_step,
+    report_reason_human as shared_report_reason_human,
+    report_generation_state_path as shared_report_generation_state_path,
+    resolve_trade_report_policy as shared_resolve_trade_report_policy,
+    seed_diagnostics_for_policy as shared_seed_diagnostics_for_policy,
+    write_report_generation_state as shared_write_report_generation_state,
+)
+from libs.reporting.trade_bundle_assembly import (
+    hydrate_live_run_bundle_context as shared_hydrate_live_run_bundle_context,
+    build_live_run_bundle as shared_build_live_run_bundle,
+    apply_final_trade_report_context as shared_apply_final_trade_report_context,
+    apply_entry_exit_holding_enrichment as shared_apply_entry_exit_holding_enrichment,
+    apply_trace_summary_context as shared_apply_trace_summary_context,
+    apply_live_trade_context as shared_apply_live_trade_context,
+    apply_strategy_anchor_metadata as shared_apply_strategy_anchor_metadata,
+    attach_strategy_anchor as shared_attach_strategy_anchor,
+    build_scanner_trace_summary_mirror as shared_build_scanner_trace_summary_mirror,
+    build_execution_details_from_bundle as shared_build_execution_details_from_bundle,
+    build_strategist_trace_summary_mirror as shared_build_strategist_trace_summary_mirror,
+    preferred_run_ids_for_agent as shared_preferred_run_ids_for_agent,
+    resolve_lifecycle_bundle_sources as shared_resolve_lifecycle_bundle_sources,
+)
+from libs.reporting.trade_bundle_persistence import (
+    persist_trade_report_outputs as shared_persist_trade_report_outputs,
+    refresh_trade_report_outputs_if_written as shared_refresh_trade_report_outputs_if_written,
+    persist_trade_llm_artifacts as shared_persist_trade_llm_artifacts,
+    persist_trade_bundle_outputs as shared_persist_trade_bundle_outputs,
+)
+from libs.reporting.trade_bundle_state import (
+    build_live_trade_bundle_payloads as shared_build_live_trade_bundle_payloads,
+)
 import libs.reporting.trade_story_pipeline as story_pipeline
 import scripts.run_live_execution_bundle_report as mod
 
@@ -14,6 +59,77 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     with path.open("w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def test_live_execution_bundle_report_reuses_intraday_generation_state_helpers() -> None:
+    assert mod.apply_ai_trade_report_generation_result is shared_apply_ai_trade_report_generation_result
+    assert mod.apply_runtime_diagnostics_context is shared_apply_runtime_diagnostics_context
+    assert mod.build_live_bundle_backfill_payload is shared_build_live_bundle_backfill_payload
+    assert mod.build_live_execution_summary_payload is shared_build_live_execution_summary_payload
+    assert mod.build_live_generation_state_payload is shared_build_live_generation_state_payload
+    assert mod.execute_ai_trade_report_generation is shared_execute_ai_trade_report_generation
+    assert mod.plan_live_trade_report_generation is shared_plan_live_trade_report_generation
+    assert mod._base_diagnostics is shared_base_report_diagnostics
+    assert mod._report_reason_human is shared_report_reason_human
+    assert mod._report_next_step is shared_report_next_step
+    assert mod._resolve_trade_report_policy is shared_resolve_trade_report_policy
+    assert mod.persist_live_story_input_artifacts is shared_persist_live_story_input_artifacts
+    assert mod.apply_live_bundle_backfill is shared_apply_live_bundle_backfill
+    assert mod._report_generation_state_path is shared_report_generation_state_path
+    assert mod._load_report_generation_state is shared_load_report_generation_state
+    assert mod._write_report_generation_state is shared_write_report_generation_state
+
+    diagnostics, should_attempt = mod._seed_diagnostics_for_policy(
+        lifecycle_status="open",
+        story_type="simulation",
+        report_requested=True,
+        story_input_available=True,
+        model_hint="openrouter/test",
+        generate_on_open=False,
+    )
+    assert should_attempt is False
+    assert diagnostics["report_reason_code"] == "awaiting_exit_for_full_report"
+
+
+def test_live_execution_bundle_report_reuses_intraday_linkage_and_hold_helpers() -> None:
+    assert mod._build_same_day_reporter_linkage is shared_build_same_day_reporter_linkage
+    assert mod._build_holding_phase_observability is shared_build_holding_phase_observability
+
+
+def test_live_execution_bundle_report_reuses_trade_bundle_persistence_helper() -> None:
+    assert mod.persist_trade_report_outputs is shared_persist_trade_report_outputs
+    assert mod.refresh_trade_report_outputs_if_written is shared_refresh_trade_report_outputs_if_written
+    assert mod.persist_trade_llm_artifacts is shared_persist_trade_llm_artifacts
+    assert mod.persist_trade_bundle_outputs is shared_persist_trade_bundle_outputs
+
+
+def test_live_execution_bundle_report_reuses_trade_bundle_state_helper() -> None:
+    assert mod.build_live_trade_bundle_payloads is shared_build_live_trade_bundle_payloads
+
+
+def test_live_execution_bundle_report_reuses_trade_bundle_assembly_helpers() -> None:
+    assert mod.apply_final_trade_report_context is shared_apply_final_trade_report_context
+    assert mod.hydrate_live_run_bundle_context is shared_hydrate_live_run_bundle_context
+    assert mod.build_live_run_bundle is shared_build_live_run_bundle
+    assert mod.apply_entry_exit_holding_enrichment is shared_apply_entry_exit_holding_enrichment
+    assert mod.apply_live_trade_context is shared_apply_live_trade_context
+    assert mod._build_execution_details_from_bundle is shared_build_execution_details_from_bundle
+    assert mod._attach_strategy_anchor is shared_attach_strategy_anchor
+    assert mod._build_strategist_trace_summary_mirror is shared_build_strategist_trace_summary_mirror
+    assert mod._build_scanner_trace_summary_mirror is shared_build_scanner_trace_summary_mirror
+    assert mod.apply_trace_summary_context is shared_apply_trace_summary_context
+    assert mod._preferred_run_ids_for_agent is shared_preferred_run_ids_for_agent
+    assert mod._resolve_lifecycle_bundle_sources is shared_resolve_lifecycle_bundle_sources
+    assert mod.apply_strategy_anchor_metadata is shared_apply_strategy_anchor_metadata
+
+
+def test_live_execution_bundle_report_exposes_inprocess_runner() -> None:
+    assert callable(mod.run_live_execution_bundle_inprocess)
+
+
+def test_live_execution_bundle_report_delegates_main_to_lib_runner() -> None:
+    assert mod.main.__module__ == "libs.reporting.live_execution_bundle_runner"
+    assert mod.run_live_execution_bundle_inprocess.__module__ == "libs.reporting.live_execution_bundle_runner"
 
 
 def _fake_trace(event_log_path, evidence_log_path, report_dir, *, run_id=None, day=None, reports_root=None, max_news_titles=5):  # type: ignore[no-untyped-def]

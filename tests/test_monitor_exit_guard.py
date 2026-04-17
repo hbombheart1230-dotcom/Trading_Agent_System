@@ -2627,11 +2627,12 @@ def test_monitor_hard_stop_triggers_before_wider_adaptive_stop(monkeypatch):
 
 
 def test_monitor_peak_drawdown_exit_uses_persisted_peak(monkeypatch):
-    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
-    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
-    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
-
-    state = _base_state()
+    state = _with_commander_numeric_policy(
+        _base_state(),
+        min_hold_seconds=0,
+        sell_sec=0,
+        confirm_ticks=1,
+    )
     state["selected"]["price"] = 104.0
     state["portfolio_snapshot"] = {
         "cash": 2_000_000.0,
@@ -2652,7 +2653,10 @@ def test_monitor_peak_drawdown_exit_uses_persisted_peak(monkeypatch):
     assert intents[0]["side"] == "SELL"
     exit_info = out.get("monitor_exit") or {}
     assert str(exit_info.get("reason") or "") == "peak_drawdown"
+    assert bool(exit_info.get("hard_exit")) is False
+    assert bool(exit_info.get("peak_drawdown_armed")) is True
     assert float(exit_info.get("peak_drawdown") or 0.0) <= -0.05
+    assert float(exit_info.get("max_runup_pct") or 0.0) >= 0.08
     assert float(exit_info.get("final_peak_drawdown_ratio") or 0.0) <= -0.05
     assert str(exit_info.get("peak_drawdown_source") or "") == "effective_price_vs_peak_price"
     assert str(exit_info.get("exit_trigger_metric_name") or "") == "peak_drawdown_ratio"
@@ -2663,6 +2667,80 @@ def test_monitor_peak_drawdown_exit_uses_persisted_peak(monkeypatch):
     assert str(artifact.get("peak_drawdown_source") or "") == "effective_price_vs_peak_price"
     assert str(artifact.get("exit_trigger_metric_name") or "") == "peak_drawdown_ratio"
     assert float(artifact.get("exit_trigger_metric_value") or 0.0) <= -0.05
+
+
+def test_monitor_peak_drawdown_requires_confirmation_and_does_not_bypass_guard(monkeypatch):
+    state = _with_commander_numeric_policy(
+        _base_state(),
+        min_hold_seconds=0,
+        sell_sec=0,
+        confirm_ticks=2,
+    )
+    state["selected"]["price"] = 104.0
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 900}],
+    }
+    state["persisted_state"] = {
+        "position_peak_price": {"005930": 110.0},
+    }
+    state["policy"] = {
+        "use_exit_policy": True,
+        "peak_drawdown_exit_pct": 0.05,
+        "profit_protection_activation_pct": 0.08,
+        "take_profit_pct": 0.0,
+    }
+
+    out1 = monitor_node(state)
+    assert out1.get("intents") == []
+    exit1 = out1.get("monitor_exit") or {}
+    assert str(exit1.get("reason") or "").startswith("exit_confirmation_pending:")
+    assert "peak_drawdown:exit_confirmation_pending" in str(exit1.get("hold_block_reason") or "")
+    assert bool(exit1.get("hard_exit")) is False
+    assert bool(exit1.get("sell_guard_blocked")) is True
+    assert "exit_confirmation_pending:1/2" in str(exit1.get("sell_guard_reason") or "")
+
+    out2 = monitor_node(out1)
+    intents = out2.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    exit2 = out2.get("monitor_exit") or {}
+    assert str(exit2.get("reason") or "") == "peak_drawdown"
+    assert bool(exit2.get("hard_exit")) is False
+    assert int(exit2.get("exit_confirm_count") or 0) >= 2
+
+
+def test_monitor_peak_drawdown_respects_min_hold_guard(monkeypatch):
+    state = _with_commander_numeric_policy(
+        _base_state(),
+        min_hold_seconds=600,
+        sell_sec=0,
+        confirm_ticks=1,
+    )
+    state["selected"]["price"] = 104.0
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 120}],
+    }
+    state["persisted_state"] = {
+        "position_peak_price": {"005930": 110.0},
+    }
+    state["policy"] = {
+        "use_exit_policy": True,
+        "peak_drawdown_exit_pct": 0.05,
+        "profit_protection_activation_pct": 0.08,
+        "take_profit_pct": 0.0,
+    }
+
+    out = monitor_node(state)
+    assert out.get("intents") == []
+    exit_info = out.get("monitor_exit") or {}
+    assert str(exit_info.get("reason") or "").startswith("sell_guard_min_hold:")
+    assert "peak_drawdown:sell_guard_min_hold" in str(exit_info.get("hold_block_reason") or "")
+    assert bool(exit_info.get("hard_exit")) is False
+    assert bool(exit_info.get("min_hold_blocked")) is True
+    assert bool(exit_info.get("sell_guard_blocked")) is True
+    assert "sell_guard_min_hold" in str(exit_info.get("sell_guard_reason") or "")
 
 
 def test_monitor_vwap_breakdown_exit_uses_feature_signal(monkeypatch):

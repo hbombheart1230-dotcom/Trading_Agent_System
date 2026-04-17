@@ -657,11 +657,27 @@ def _phase_template(name: str) -> Dict[str, Any]:
     return {"phase": name, "ok": False, "failure_reason": "", "steps": []}
 
 
+def _optional_report_step(step_id: str, *, report_name: str, reason: str) -> Dict[str, Any]:
+    return {
+        "step_id": str(step_id),
+        "mode": "optional_report_disabled",
+        "report_name": str(report_name),
+        "rc": 0,
+        "ok": True,
+        "skipped": True,
+        "skip_reason": str(reason),
+        "stdout_tail": "",
+        "stderr_tail": "",
+        "error": "",
+        "duration_sec": 0.0,
+    }
+
+
 def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, Any]:
     out = _phase_template(PHASE_PREOPEN)
     py = str(common["python_path"])
     day = str(common["day"])
-    report_root = Path(common["report_root"])
+    canonical_reports_root = Path(common["canonical_reports_root"])
     event_log_path = Path(common["event_log_path"])
 
     step1 = _run_subprocess(
@@ -738,7 +754,7 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
             "--event-log-path",
             str(event_log_path),
             "--report-dir",
-            str(report_root / "m31_mock_exam_readiness"),
+            str(canonical_reports_root / "milestones" / "m31_mock_exam_readiness"),
             "--allow-offhours",
             "--json",
         ],
@@ -767,7 +783,7 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
                     "--event-log-path",
                     str(event_log_path),
                     "--report-dir",
-                    str(report_root / "m31_mock_exam_readiness"),
+                    str(canonical_reports_root / "milestones" / "m31_mock_exam_readiness"),
                     "--allow-offhours",
                     "--json",
                 ],
@@ -939,8 +955,10 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
     event_log_path = str(common["event_log_path"])
     evidence_log_path = str(common["evidence_log_path"])
     intents_path = str(Path(common["event_log_path"]).with_name("intents.jsonl"))
-    report_root = Path(common["report_root"])
+    canonical_reports_root = Path(common["canonical_reports_root"])
     timeout_sec = int(common["timeout_sec"])
+    generate_decision_story = bool(getattr(args, "generate_decision_story", False))
+    generate_run_cards = bool(getattr(args, "generate_run_cards", False))
     steps: List[Dict[str, Any]] = []
 
     stop_step = _stop_live_loop_processes(common)
@@ -965,7 +983,7 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
                 "--signoff-report-dir",
                 str(ROOT / "reports" / "milestones" / "m30_golive"),
                 "--report-dir",
-                str(report_root / "m31_slo_incident"),
+                str(canonical_reports_root / "milestones" / "m31_slo_incident"),
                 "--day",
                 day,
                 "--json",
@@ -977,7 +995,7 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
 
     metrics_env = os.environ.copy()
     metrics_env["EVENT_LOG_PATH"] = event_log_path
-    metrics_env["REPORT_DIR"] = str(report_root)
+    metrics_env["REPORT_DIR"] = str(canonical_reports_root)
     metrics_env["METRICS_DAY"] = day
     steps.append(
         _run_subprocess(
@@ -998,15 +1016,15 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
                 "--event-log-path",
                 event_log_path,
                 "--metrics-report-dir",
-                str(report_root / "metrics"),
+                str(canonical_reports_root / "metrics"),
                 "--m30-post-golive-dir",
                 str(ROOT / "reports" / "milestones" / "m30_post_golive"),
                 "--m30-golive-dir",
                 str(ROOT / "reports" / "milestones" / "m30_golive"),
                 "--m31-slo-incident-dir",
-                str(report_root / "m31_slo_incident"),
+                str(canonical_reports_root / "milestones" / "m31_slo_incident"),
                 "--report-dir",
-                str(report_root / "operator_summary"),
+                str(canonical_reports_root),
                 "--day",
                 day,
                 "--json",
@@ -1016,47 +1034,65 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
         )
     )
 
-    steps.append(
-        _run_subprocess(
-            step_id="closeout.decision_story",
-            command=[
-                py,
-                str(ROOT / "scripts" / "run_decision_story_report.py"),
-                "--event-log-path",
-                event_log_path,
-                "--report-dir",
-                str(report_root / "decision_story"),
-                "--day",
-                day,
-                "--json",
-            ],
-            cwd=ROOT,
-            timeout_sec=timeout_sec,
+    if generate_decision_story:
+        steps.append(
+            _run_subprocess(
+                step_id="closeout.decision_story",
+                command=[
+                    py,
+                    str(ROOT / "scripts" / "run_decision_story_report.py"),
+                    "--event-log-path",
+                    event_log_path,
+                    "--report-dir",
+                    str(canonical_reports_root / "decision_story"),
+                    "--day",
+                    day,
+                    "--json",
+                ],
+                cwd=ROOT,
+                timeout_sec=timeout_sec,
+            )
         )
-    )
+    else:
+        steps.append(
+            _optional_report_step(
+                "closeout.decision_story",
+                report_name="decision_story",
+                reason="disabled_by_default_generate_decision_story_flag_required",
+            )
+        )
 
-    steps.append(
-        _run_subprocess(
-            step_id="closeout.run_cards",
-            command=[
-                py,
-                str(ROOT / "scripts" / "run_run_card_report.py"),
-                "--event-log-path",
-                event_log_path,
-                "--report-dir",
-                str(report_root / "run_cards"),
-                "--day",
-                day,
-                "--json",
-            ],
-            cwd=ROOT,
-            timeout_sec=timeout_sec,
+    if generate_run_cards:
+        steps.append(
+            _run_subprocess(
+                step_id="closeout.run_cards",
+                command=[
+                    py,
+                    str(ROOT / "scripts" / "run_run_card_report.py"),
+                    "--event-log-path",
+                    event_log_path,
+                    "--report-dir",
+                    str(canonical_reports_root / "run_cards"),
+                    "--day",
+                    day,
+                    "--json",
+                ],
+                cwd=ROOT,
+                timeout_sec=timeout_sec,
+            )
         )
-    )
+    else:
+        steps.append(
+            _optional_report_step(
+                "closeout.run_cards",
+                report_name="run_cards",
+                reason="disabled_by_default_generate_run_cards_flag_required",
+            )
+        )
 
     daily_env = os.environ.copy()
     daily_env["EVENT_LOG_PATH"] = event_log_path
-    daily_env["REPORT_DIR"] = str(report_root)
+    daily_env["REPORT_DIR"] = str(canonical_reports_root)
     daily_env["REPORT_DAY"] = day
     steps.append(
         _run_subprocess(
@@ -1081,9 +1117,9 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
                 "--intents-path",
                 intents_path,
                 "--reports-root",
-                str(report_root),
+                str(canonical_reports_root),
                 "--report-dir",
-                str(report_root / "dev" / "analysis" / "reporter_analysis"),
+                str(canonical_reports_root / "dev" / "analysis" / "reporter_analysis"),
                 "--day",
                 day,
                 "--json",
@@ -1106,9 +1142,9 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
                 "--evidence-log-path",
                 evidence_log_path,
                 "--reports-root",
-                str(report_root),
+                str(canonical_reports_root),
                 "--report-dir",
-                str(report_root / "dev" / "analysis" / "live_execution_bundles"),
+                str(canonical_reports_root / "dev" / "analysis" / "live_execution_bundles"),
                 "--intents-path",
                 intents_path,
                 "--day",
@@ -1127,7 +1163,7 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
                 py,
                 str(ROOT / "scripts" / "run_report_maintenance.py"),
                 "--report-root",
-                str(report_root),
+                str(canonical_reports_root),
                 "--event-log-path",
                 event_log_path,
                 "--apply",
@@ -1214,6 +1250,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--probe-price", type=float, default=70000.0)
     p.add_argument("--probe-cash", type=float, default=2000000.0)
     p.add_argument("--preopen-readiness-day", default=None, help="Override readiness check day for preopen.")
+    p.add_argument(
+        "--generate-decision-story",
+        action="store_true",
+        help="Opt-in closeout generation for reports/decision_story. Disabled by default.",
+    )
+    p.add_argument(
+        "--generate-run-cards",
+        action="store_true",
+        help="Opt-in closeout generation for reports/run_cards. Disabled by default.",
+    )
     p.add_argument("--json", action="store_true")
     return p
 
@@ -1222,6 +1268,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
     day = str(args.day).strip() if args.day else now_kst().strftime("%Y-%m-%d")
     report_root = _resolve_path(str(args.report_dir), "reports/dev/exam/mock_exam_day")
+    canonical_reports_root = _resolve_path(str(os.getenv("REPORTS_ROOT", "reports")), "reports")
     report_root.mkdir(parents=True, exist_ok=True)
     orchestration_dir = report_root / "orchestration"
     orchestration_dir.mkdir(parents=True, exist_ok=True)
@@ -1231,6 +1278,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "day": day,
         "env_path": _resolve_path(str(args.env_path), ".env"),
         "report_root": report_root,
+        "canonical_reports_root": canonical_reports_root,
         "event_log_path": _resolve_path(str(args.event_log_path), "data/logs/events.jsonl"),
         "evidence_log_path": _resolve_path(str(args.evidence_log_path), "data/evidence_ledger/events.jsonl"),
         "state_path": (
@@ -1267,6 +1315,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "event_log_path": str(common["event_log_path"]),
         "state_path": str(common["state_path"]) if common.get("state_path") else "",
         "report_root": str(report_root),
+        "canonical_reports_root": str(canonical_reports_root),
         "phase_result": phase_result,
     }
 

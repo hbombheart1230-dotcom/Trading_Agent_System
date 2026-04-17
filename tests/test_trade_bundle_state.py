@@ -6,6 +6,7 @@ from libs.reporting.trade_bundle_state import (
     build_bundle_provenance,
     build_component_fingerprint,
     build_generation_state,
+    build_live_trade_bundle_payloads,
     build_operator_brief_generation_component,
     build_trade_bundle_state,
     finalize_bundle_health,
@@ -151,3 +152,83 @@ def test_build_bundle_health_and_finalize_keep_required_fields() -> None:
         },
     )
     assert "provenance" in combined and "health" in combined
+
+
+def test_build_live_trade_bundle_payloads_preserves_core_contract_fields(tmp_path) -> None:
+    base = tmp_path / "reports" / "trades" / "2026-04-16" / "TRD_TEST"
+    reports_dir = base / "reports"
+    evidence_dir = base / "evidence"
+    result = build_live_trade_bundle_payloads(
+        day="2026-04-16",
+        trade_id="TRD_TEST",
+        run_id="run-1",
+        symbol="000660",
+        status="closed",
+        lifecycle={
+            "entry": {"run_id": "run-1"},
+            "holding": {"holding_events": []},
+            "exit": {"run_id": "run-2"},
+            "timeline": [],
+            "evidence": {"strategist_event_count": 1, "scanner_event_count": 2, "monitor_event_count": 3},
+        },
+        lifecycle_bundle={"strategist": {}, "scanner": {}, "monitor": {}, "commander": {}, "artifacts": {}, "evidence_provenance": {}},
+        story_input={"selected_symbol": "000660", "candidate_count": 2, "section_provenance": {}},
+        summary_obj={"lifecycle_summary_human": "summary"},
+        diagnostics={"report_status": "available", "llm_brief_status": "skipped", "ai_trade_report_status": "ok"},
+        recovery_metadata={"trade_origin": "normal_lifecycle", "lifecycle_completeness": "complete", "evidence_recovery_used": False},
+        story_contract={"schema_version": "story_contract.v1"},
+        anchor_execution={"action": "SELL"},
+        linked_run_ids=["run-1", "run-2"],
+        same_day_reporter_linkage={"status": "linked_day_fallback"},
+        failure_classification={"reporting_failure": False},
+        execution_details={"order_status": "filled"},
+        entry_execution_details={"order_status": "filled"},
+        exit_execution_details={"order_status": "filled"},
+        holding_phase_observability={"hold_duration": "1m", "hold_duration_sec": 60, "holding_phase_summary": "held", "hold_events_count": 0},
+        strategist_llm_artifact={"status": "ok", "prompt_ref": "p1", "response_ref": "r1"},
+        existing_brief_llm_artifact={"prompt_ref": "bp", "response_ref": "br"},
+        ai_trade_report_llm_artifact={"status": "ok", "prompt_ref": "ap", "response_ref": "ar"},
+        trade_report={"generation": {"status": "ok"}},
+        evidence_completeness_missing_sections=[],
+        phase3_missing_sections=[],
+        phase3_completeness_score=1.0,
+        strategist_event_count=1,
+        scanner_event_count=2,
+        monitor_event_count=3,
+        operator_brief_json_exists=False,
+        lifecycle_bundle_path=base / "lifecycle_bundle.json",
+        entry_artifact_path=base / "entry.json",
+        hold_artifact_path=base / "hold.json",
+        exit_artifact_path=base / "exit.json",
+        story_input_path=base / "ai_trade_report_input.json",
+        story_compact_input_path=base / "ai_trade_report_compact_input.json",
+        trade_report_json_path=reports_dir / "ai_trade_report.json",
+        trade_report_md_path=reports_dir / "ai_trade_report.md",
+        strategist_evidence_path=evidence_dir / "strategist_evidence.json",
+        scanner_evidence_path=evidence_dir / "scanner_evidence.json",
+        monitor_evidence_path=evidence_dir / "monitor_evidence.json",
+        commander_evidence_path=evidence_dir / "commander_evidence.json",
+        strategist_llm_response_path=reports_dir / "strategist_llm_response.json",
+        ai_trade_report_llm_response_path=reports_dir / "ai_trade_report_llm_response.json",
+        brief_llm_response_path=reports_dir / "brief_llm_response.json",
+        operator_brief_json_path=reports_dir / "operator_brief.json",
+        operator_brief_md_path=reports_dir / "operator_brief.md",
+        trade_provenance_path=base / "_provenance.json",
+        trade_health_path=base / "_health.json",
+        trade_artifact_links_path=base / "_artifact_links.json",
+        resolved_operator_brief_json=str(reports_dir / "operator_brief.json"),
+        resolved_operator_brief_md=str(reports_dir / "operator_brief.md"),
+        resolved_brief_llm_response_json=str(reports_dir / "brief_llm_response.json"),
+        trade_report_json_written=str(reports_dir / "ai_trade_report.json"),
+        trade_report_md_written=str(reports_dir / "ai_trade_report.md"),
+        ai_trade_report_llm_response_written=str(reports_dir / "ai_trade_report_llm_response.json"),
+    )
+
+    lifecycle_bundle_payload = result["lifecycle_bundle_payload"]
+    links_payload = result["trade_artifact_links_payload"]
+    assert lifecycle_bundle_payload["trade_lifecycle_status"] == "closed"
+    assert lifecycle_bundle_payload["selected_symbol"] == "000660"
+    assert lifecycle_bundle_payload["candidate_count"] == 2
+    assert links_payload["trade_id"] == "TRD_TEST"
+    assert links_payload["llm_prompt_refs"]["strategist"] == "p1"
+    assert result["trade_health_payload"]["report_generation_status"] == "available"
