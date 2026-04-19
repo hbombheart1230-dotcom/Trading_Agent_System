@@ -25,15 +25,7 @@ def _read_json(path: Path) -> Dict[str, Any]:
 
 
 def _trade_brief_llm_path(trade_dir: Path) -> Path:
-    candidates = [
-        trade_dir / "reports" / "brief_llm_response.json",
-        trade_dir / "brief" / "brief_llm_response.json",
-        trade_dir / "brief_llm_response.json",
-    ]
-    for path in candidates:
-        if path.exists():
-            return path
-    return candidates[0]
+    return trade_dir / "reports" / "brief_llm_response.json"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -99,8 +91,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "model": str(brief.get("model") or ""),
                 "brief_json_path": str(((brief.get("paths") or {}).get("operator_brief_json") or "")),
                 "brief_md_path": str(((brief.get("paths") or {}).get("operator_brief_md") or "")),
-                "brief_input_path": str(trade_dir / "brief" / "brief_input.json"),
-                "brief_compact_input_path": str(trade_dir / "brief" / "brief_compact_input.json"),
+                "brief_input_path": str(trade_dir / "brief_input.json"),
+                "brief_compact_input_path": str(trade_dir / "brief_compact_input.json"),
                 "brief_llm_response_path": str(llm_path) if llm_path.exists() else "",
                 "brief_llm_status": str(llm_artifact.get("status") or ""),
                 "brief_llm_model": str(llm_artifact.get("model") or ((llm_artifact.get("model_info") or {}).get("model")) or ""),

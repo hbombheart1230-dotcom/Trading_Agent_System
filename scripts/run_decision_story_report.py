@@ -16,7 +16,7 @@ from libs.agent.reporter import Reporter
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Generate readable per-run decision stories for operators.")
     p.add_argument("--event-log-path", default="data/logs/events.jsonl")
-    p.add_argument("--report-dir", default="reports/decision_story")
+    p.add_argument("--report-dir", default="reports/dev/manual/decision_story")
     p.add_argument("--day", default=None)
     p.add_argument("--max-runs", type=int, default=120)
     p.add_argument("--all-runs", action="store_true", help="Include non-trade utility runs (default: trade-only).")

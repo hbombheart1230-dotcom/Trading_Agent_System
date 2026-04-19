@@ -104,12 +104,6 @@ def _metrics_report_path(reports_root: Path, day: str) -> Path:
     return reports_root / "metrics" / f"metrics_{day}.json"
 
 
-def _trade_explain_report_path(reports_root: Path, day: str) -> Path:
-    from libs.reporting.trade_explain import official_trade_explain_report_dir
-
-    return official_trade_explain_report_dir(reports_root) / f"trade_explain_{day}.json"
-
-
 def _build_dominant_patterns(
     *,
     route_summary: Mapping[str, Any],
@@ -266,8 +260,6 @@ def build_strategist_feedback_packet(
     if normalized_day:
         if not metrics_payload:
             metrics_payload = _read_json(_metrics_report_path(root, normalized_day))
-        if not trade_explain_payload:
-            trade_explain_payload = _read_json(_trade_explain_report_path(root, normalized_day))
 
     route_summary = _extract_route_summary(row)
     metrics_route_summary = _extract_route_summary(metrics_payload)

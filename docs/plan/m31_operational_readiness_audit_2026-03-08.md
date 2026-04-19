@@ -87,9 +87,9 @@ Result:
 ## 5) Operator Visibility Review
 
 Reports inspected:
-- `reports/operator_summary/operator_summary_2026-03-07.md`
-- `reports/decision_story/decision_story_2026-03-07.md`
-- `reports/run_cards/run_cards_2026-03-07.md`
+- `reports/daily/2026-03-07/operator_summary.md`
+- `reports/dev/manual/decision_story/decision_story_2026-03-07.md`
+- `reports/dev/manual/run_cards/run_cards_2026-03-07.md`
 
 Assessment:
 - Daily summary: operator-friendly, health and actions visible at top.
@@ -185,5 +185,4 @@ From `.env` snapshot during audit:
 - `SYMBOL_ALLOWLIST=005930,000660` (example from observed day; optional operational guard)
 - `MAX_ORDER_NOTIONAL=1000000`
 - `RISK_DAILY_LOSS_LIMIT=0.02`
-
 

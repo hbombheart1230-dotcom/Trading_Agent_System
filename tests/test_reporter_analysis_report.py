@@ -353,6 +353,18 @@ def test_reporter_analysis_persists_compact_strategy_memory(monkeypatch, tmp_pat
     assert rows[0]["strategy_frame_summary"]["playbook_top"]["breakout"] == 1
     assert Path(out["report_json_path"]).exists()
     assert Path(out["report_md_path"]).exists()
+    assert str((out.get("source_reports") or {}).get("trade_explain_json") or "").replace("\\", "/").endswith(
+        f"reports/dev/analysis/trade_explain/trade_explain_{day}.json"
+    )
+    assert str((out.get("source_reports") or {}).get("trade_explain_md") or "").replace("\\", "/").endswith(
+        f"reports/dev/analysis/trade_explain/trade_explain_{day}.md"
+    )
+    assert (out.get("source_reports") or {}).get("decision_story_enabled") is False
+    assert (out.get("source_reports") or {}).get("run_cards_enabled") is False
+    assert str((out.get("source_reports") or {}).get("decision_story_md") or "") == ""
+    assert str((out.get("source_reports") or {}).get("run_cards_md") or "") == ""
+    assert not (reports_root / "decision_story" / f"decision_story_{day}.md").exists()
+    assert not (reports_root / "run_cards" / f"run_cards_{day}.md").exists()
 
 
 def test_reporter_agent_can_run_passive_log_analysis(tmp_path: Path) -> None:

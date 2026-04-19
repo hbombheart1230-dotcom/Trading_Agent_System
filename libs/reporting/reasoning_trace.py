@@ -61,11 +61,30 @@ def build_reasoning_trace_from_summaries(
     strategist_summary: Dict[str, Any],
     scanner_summary: Dict[str, Any],
     monitor_summary: Dict[str, Any],
+    report_section_seeds: Dict[str, Any] | None = None,
     market_context_human: Dict[str, Any] | None = None,
     scanner_reason_human: Dict[str, Any] | None = None,
     monitor_reason_human: Dict[str, Any] | None = None,
     operator_conclusion_human: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    section_seeds = dict(report_section_seeds or {})
+    strategist_seed = section_seeds.get("strategist_summary") if isinstance(section_seeds.get("strategist_summary"), dict) else {}
+    scanner_seed = (
+        section_seeds.get("why_this_symbol_was_chosen")
+        if isinstance(section_seeds.get("why_this_symbol_was_chosen"), dict)
+        else {}
+    )
+    entry_seed = section_seeds.get("entry_decision") if isinstance(section_seeds.get("entry_decision"), dict) else {}
+    monitor_seed = (
+        section_seeds.get("holding_monitoring_story")
+        if isinstance(section_seeds.get("holding_monitoring_story"), dict)
+        else {}
+    )
+    conclusion_seed = (
+        section_seeds.get("final_operator_conclusion")
+        if isinstance(section_seeds.get("final_operator_conclusion"), dict)
+        else {}
+    )
     market_context = dict(market_context_human or {})
     scanner_reason = dict(scanner_reason_human or {})
     monitor_reason = dict(monitor_reason_human or {})
@@ -74,21 +93,31 @@ def build_reasoning_trace_from_summaries(
         "commander_summary": _normalize_summary(
             commander_summary,
             fallback_summary=_first_text(
+                conclusion_seed.get("summary"),
                 operator_conclusion.get("summary"),
                 market_context.get("summary"),
             ),
         ),
         "strategist_summary": _normalize_summary(
             strategist_summary,
-            fallback_summary=_first_text(market_context.get("summary")),
+            fallback_summary=_first_text(
+                strategist_seed.get("summary"),
+                market_context.get("summary"),
+            ),
         ),
         "scanner_summary": _normalize_summary(
             scanner_summary,
-            fallback_summary=_first_text(scanner_reason.get("summary")),
+            fallback_summary=_first_text(
+                scanner_seed.get("summary"),
+                entry_seed.get("summary"),
+                scanner_reason.get("summary"),
+            ),
         ),
         "monitor_summary": _normalize_summary(
             monitor_summary,
             fallback_summary=_first_text(
+                monitor_seed.get("summary"),
+                conclusion_seed.get("summary"),
                 monitor_reason.get("summary"),
                 operator_conclusion.get("summary"),
             ),

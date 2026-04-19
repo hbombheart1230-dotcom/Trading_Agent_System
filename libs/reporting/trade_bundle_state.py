@@ -496,6 +496,34 @@ def build_live_trade_bundle_payloads(
             "recovery_missing_sections": list(recovery_metadata.get("recovery_missing_sections") or []),
             "recovery_sources": list(recovery_metadata.get("recovery_sources") or []),
             "trade_lifecycle_summary": str(summary_obj.get("lifecycle_summary_human") or ""),
+            "strategist": dict(lifecycle_bundle_obj.get("strategist") or {}),
+            "scanner": dict(lifecycle_bundle_obj.get("scanner") or {}),
+            "monitor": dict(lifecycle_bundle_obj.get("monitor") or {}),
+            "commander": dict(lifecycle_bundle_obj.get("commander") or {}),
+            "market_context_human": dict(
+                story_input_obj.get("market_context_human")
+                or lifecycle_bundle_obj.get("market_context_human")
+                or {}
+            ),
+            "scanner_reason_human": dict(
+                story_input_obj.get("scanner_reason_human")
+                or lifecycle_bundle_obj.get("scanner_reason_human")
+                or {}
+            ),
+            "monitor_reason_human": dict(
+                story_input_obj.get("monitor_reason_human")
+                or lifecycle_bundle_obj.get("monitor_reason_human")
+                or {}
+            ),
+            "reporter_status_human": dict(
+                story_input_obj.get("reporter_status_human")
+                or lifecycle_bundle_obj.get("reporter_status_human")
+                or {}
+            ),
+            "strategist_evidence": dict(story_input_obj.get("strategist_evidence") or {}),
+            "strategist_candidate_hints": list(story_input_obj.get("strategist_candidate_hints") or []),
+            "strategist_market_headlines": list(story_input_obj.get("strategist_market_headlines") or []),
+            "strategist_symbol_headlines": list(story_input_obj.get("strategist_symbol_headlines") or []),
             "strategist_trace_summary": dict(story_input_obj.get("strategist_trace_summary") or {}),
             "scanner_trace_summary": dict(story_input_obj.get("scanner_trace_summary") or {}),
             "selected_symbol": str(story_input_obj.get("selected_symbol") or lifecycle_bundle_obj.get("symbol") or ""),

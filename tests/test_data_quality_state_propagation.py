@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from graphs.nodes.scanner_node import scanner_node
 from graphs.nodes.strategist_node import _default_policy, strategist_node
 
@@ -96,3 +98,86 @@ def test_strategist_default_policy_reads_news_sentiment_env(monkeypatch):
     monkeypatch.setenv("M10_USE_NEWS_SENTIMENT", "false")
     p_false = _default_policy({})
     assert bool(p_false.get("use_news_analysis")) is False
+
+
+def test_strategist_preserves_open_position_refresh_context_in_commander_ref():
+    with patch(
+        "graphs.nodes.strategist_node.build_symbol_read_model",
+        return_value={
+            "symbol": "322000",
+            "trade_count": 8,
+            "closed_trade_count": 7,
+            "win_rate": 0.5,
+            "avg_pnl_pct": 0.01,
+            "avg_hold_duration_sec": 360.0,
+            "dominant_playbook": "pullback",
+            "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
+            "dominant_exit_reason": "peak_drawdown",
+            "repeated_failure_pattern": [
+                {"type": "blocker", "value": "below_vwap_reclaim_not_ready", "count": 2},
+            ],
+            "recent_success_pattern": [
+                {"playbook": "pullback", "entry_reason": "pullback_ok", "exit_reason": "take_profit", "count": 2},
+            ],
+            "data_quality": {"data_source": "symbol_memory", "unknown_fields_ratio": 0.0},
+        },
+    ):
+        out = strategist_node(
+            {
+                "universe": ["322000"],
+                "candidate_symbols": ["322000"],
+                "policy": {
+                    "candidate_k": 1,
+                    "use_global_sentiment": False,
+                    "use_news_analysis": False,
+                },
+                "commander_decision": {
+                    "market_regime": "neutral",
+                    "session_bias": "active_selection",
+                    "risk_mode": "balanced",
+                    "command_intent": "REFRESH_STRATEGY_FRAME",
+                    "strategist_invocation": "RUN_REFRESH",
+                    "llm_policy": "allow_context_refresh",
+                    "strategist_refresh_requested": True,
+                    "strategist_refresh_reason": "repeated_hold_monitor_only",
+                    "strategist_refresh_context": {
+                        "refresh_scope": "open_position_monitor_refresh",
+                        "selected_symbol": "322000",
+                        "monitor_reason": "too_extended_from_vwap",
+                        "refresh_summary": "Repeated hold refresh for 322000 after 3 consecutive hold cycles.",
+                        "entry_state": {
+                            "current_blocking_axis": "reclaim_readiness",
+                            "transition_readiness_score": 0.74,
+                            "entry_blockers": ["below_vwap_reclaim_not_ready"],
+                        },
+                        "prior_monitor_entry_policy_summary": {"volume_ratio_min": 0.68},
+                        "current_monitor_entry_policy_summary": {"volume_ratio_min": 0.75},
+                    },
+                    "open_position_refresh_context": {
+                        "refresh_scope": "open_position_monitor_refresh",
+                        "selected_symbol": "322000",
+                        "monitor_reason": "too_extended_from_vwap",
+                        "refresh_summary": "Repeated hold refresh for 322000 after 3 consecutive hold cycles.",
+                        "entry_state": {
+                            "current_blocking_axis": "reclaim_readiness",
+                            "transition_readiness_score": 0.74,
+                            "entry_blockers": ["below_vwap_reclaim_not_ready"],
+                        },
+                    },
+                },
+            }
+        )
+
+    strategist_output = dict(out.get("strategist_output") or {})
+    ref = dict(strategist_output.get("commander_context_ref") or {})
+    assert ref["strategist_refresh_requested"] is True
+    assert ref["strategist_refresh_reason"] == "repeated_hold_monitor_only"
+    assert ref["open_position_refresh_context"]["selected_symbol"] == "322000"
+    assert ref["open_position_refresh_context"]["entry_state"]["current_blocking_axis"] == "reclaim_readiness"
+    assert strategist_output["commander_open_position_refresh_context"]["monitor_reason"] == "too_extended_from_vwap"
+    assert strategist_output["selected_symbol_memory"]["symbol"] == "322000"
+    assert strategist_output["selected_symbol_memory"]["dominant_monitor_blocker"] == "below_vwap_reclaim_not_ready"
+    assert strategist_output["strategic_answers"]["q15_commander_refresh_context"]["selected_symbol"] == "322000"
+    assert strategist_output["strategic_answers"]["q15_commander_refresh_context"]["current_monitor_entry_policy_summary"]["volume_ratio_min"] == 0.75
+    assert strategist_output["strategic_answers"]["q15_commander_refresh_context"]["selected_symbol_memory"]["symbol"] == "322000"
+    assert strategist_output["strategic_answers"]["q15_commander_refresh_context"]["selected_symbol_memory"]["dominant_playbook"] == "pullback"

@@ -186,13 +186,13 @@ Practical meaning:
 
 Status:
 
-- legacy fallback
-- remove after readers stop fallbacking to root-level path
+- deprecated residue
+- moved to `_legacy_backup`
 
 Why:
 
 - canonical path is now `reports/daily/<day>/operator_summary.json|md`
-- some readers still fall back to root-level legacy location
+- root-level legacy location has been removed from active readers and moved to `reports/_legacy_backup/report_surface_cleanup_2026-04-19`
 
 ## Action Plan By Report Family
 
@@ -213,7 +213,8 @@ Why:
 
 - `reports/dev/analysis/trade_explain`
 - `reports/dev/analysis/live_execution_bundles`
-- `reports/operator_summary` (legacy fallback only)
+- `reports/dev/manual/decision_story`
+- `reports/dev/manual/run_cards`
 
 ### Disable by default now
 
@@ -228,4 +229,4 @@ If the goal is to reduce complexity without breaking trade report:
 2. keep `trade_explain` for now
 3. keep `live_execution_bundles` until shared runtime service extraction is complete
 4. disable `run_cards` and `decision_story` by default
-5. later remove legacy `reports/operator_summary` root fallback once readers are simplified
+5. keep manual-only `decision_story` / `run_cards` under `reports/dev/manual/*` and do not recreate top-level legacy roots

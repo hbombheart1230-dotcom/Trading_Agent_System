@@ -34,8 +34,8 @@ The following non-negotiable runtime rules remain unchanged:
 - `daily_report`: `reports/daily/<day>/daily_report.json|md`
 - `operator_summary`: `reports/daily/<day>/operator_summary.json|md`
 - `metrics`: `reports/metrics/metrics_<day>.json|md`
-- `decision_story`: `reports/decision_story/decision_story_<day>.md`
-- `run_cards`: `reports/run_cards/run_cards_<day>.md`
+- `decision_story`: `reports/dev/manual/decision_story/decision_story_<day>.md`
+- `run_cards`: `reports/dev/manual/run_cards/run_cards_<day>.md`
 - `trade_explain`: `reports/dev/analysis/trade_explain/trade_explain_<day>.json|md`
 
 ## Remaining Gaps

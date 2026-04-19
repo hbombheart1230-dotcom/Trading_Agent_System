@@ -63,11 +63,6 @@ def trade_paths_from_bundle(bundle_path: Path, *, day_hint: str = "", trade_id_h
         "legacy_normalized_ai_trade_report_json": trade_root / "ai_trade_report" / "ai_trade_report.json",
         "legacy_normalized_ai_trade_report_md": trade_root / "ai_trade_report" / "ai_trade_report.md",
         "legacy_normalized_ai_trade_report_llm_response_json": trade_root / "ai_trade_report" / "ai_trade_report_llm_response.json",
-        "legacy_normalized_brief_input_json": trade_root / "brief" / "brief_input.json",
-        "legacy_normalized_brief_compact_input_json": trade_root / "brief" / "brief_compact_input.json",
-        "legacy_normalized_brief_json": trade_root / "brief" / "operator_brief.json",
-        "legacy_normalized_brief_md": trade_root / "brief" / "operator_brief.md",
-        "legacy_normalized_brief_llm_response_json": trade_root / "brief" / "brief_llm_response.json",
         "legacy_normalized_trade_lifecycle_json": trade_root / "lifecycle" / "trade_lifecycle.json",
         "legacy_normalized_aggregated_execution_bundle_json": trade_root / "lifecycle" / "aggregated_execution_bundle.json",
         "legacy_normalized_monitor_timeline_json": trade_root / "evidence" / "monitor_timeline.json",
@@ -79,8 +74,6 @@ def trade_paths_from_bundle(bundle_path: Path, *, day_hint: str = "", trade_id_h
         "legacy_trade_report_md": trade_root / "trade_report.md",
         "legacy_trade_lifecycle_json": trade_root / "trade_lifecycle.json",
         "legacy_aggregated_execution_bundle_json": trade_root / "aggregated_execution_bundle.json",
-        "legacy_operator_brief_json": trade_root / "operator_brief.json",
-        "legacy_operator_brief_md": trade_root / "operator_brief.md",
     }
 
 

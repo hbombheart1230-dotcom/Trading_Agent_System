@@ -104,6 +104,7 @@ Target ownership:
 
 - lane owner: `libs/reporting/intraday_trade_reports.py`
 - protected core:
+  - `libs/reporting/trade_read_model.py`
   - `libs/reporting/trade_story_pipeline.py`
   - `libs/reporting/trade_report_ai.py`
   - `libs/reporting/llm_artifacts.py`
@@ -117,6 +118,38 @@ What this means:
 - do not move trade-report core again
 - keep promoting existing lib ownership
 - reduce `scripts/run_live_execution_bundle_report.py` to a thin runtime boundary over time
+- keep `libs/reporting/trade_read_model.py` as the canonical per-trade read-model owner for:
+  - facts
+  - provenance
+  - normalized runtime context
+  - normalized report-section seed surfaces
+  - current section-seed scope:
+- `market_context_at_entry`
+- `strategist_summary`
+- `why_this_symbol_was_chosen`
+- `entry_decision`
+- `holding_monitoring_story`
+- `exit_decision`
+- `scanner_filters`
+- `execution_quality`
+- `guard_approval_result`
+- `reporter_evaluation`
+- `final_operator_conclusion`
+- keep `libs/reporting/trade_story_pipeline.py` as the producer that writes:
+  - `report_section_seeds`
+  - `section_provenance.report_section_provenance_seeds`
+  into trade-story inputs for downstream canonical readers
+- keep `libs/reporting/reasoning_trace.py` aligned to the same canonical section-seed chain:
+  - prefer section-seed summaries as fallback
+  - use raw `*_human` summaries only as secondary fallback
+
+Current completion status:
+
+- the protected trade-report core is now aligned around `trade_story_pipeline.py -> trade_read_model.py -> trade_report_ai.py`
+- `trade_report_ai.py` broad regression coverage is currently passing:
+  - `tests/test_trade_report_ai.py`
+  - `tests/test_trade_report_ai_separated_adapter.py`
+- current trade-report work should focus on preserving this canonical chain and pruning residual legacy surfaces, not adding new reporting owners
 
 ### 2. Daily / Operator / Analysis Lane
 
@@ -295,6 +328,19 @@ Detailed pruning rules stay in the pruning document.
 - `reports/symbols`
 - top-level `reports/operator_summary`
 - top-level `reports/trade_explain`
+
+Current note:
+- `trade_explain` generation is now canonical-only under `reports/dev/analysis/trade_explain`
+- top-level `reports/trade_explain` should be treated as deprecated residue, not an active writer target
+- `operator_summary` generation/reads are now canonical-only under `reports/daily/<day>/operator_summary.json|md`
+- top-level `reports/operator_summary` should be treated as deprecated residue, not an active writer target
+- `decision_story` and `run_cards` remain manual-only surfaces
+- deprecated top-level `reports/operator_summary`, `reports/trade_explain`, `reports/decision_story`, and `reports/run_cards` have been moved to `reports/_legacy_backup/report_surface_cleanup_2026-04-19`
+- default manual generation for `decision_story` / `run_cards` now writes under `reports/dev/manual/decision_story` and `reports/dev/manual/run_cards`
+- `reporter_analysis` and `operator_visibility` internal generation paths for `decision_story` / `run_cards` now also target `reports/dev/manual/*`
+- closeout opt-in generation and phase5 validation bundle generation now also target `reports/dev/manual/*`
+- report maintenance inventory and empty-report warnings now track `decision_story` / `run_cards` under `reports/dev/manual/*`
+- service-layer special handling for `decision_story` / `run_cards`-named roots has been removed
 
 ## Completion Phases
 

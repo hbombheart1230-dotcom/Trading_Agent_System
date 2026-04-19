@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from graphs.nodes.strategist_node import _build_compact_strategist_llm_payload, strategist_node
+from graphs.nodes.strategist_node import _build_compact_strategist_llm_payload, _build_strategist_llm_messages, strategist_node
 from libs.research.strategy_memory_store import save_strategy_feedback
 
 
@@ -859,6 +859,28 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
         "key_events_hint": ["e1", "e2", "e3", "e4", "e5"],
         "themes_hint": ["t1", "t2", "t3", "t4", "t5"],
         "news_query_targets": ["n1", "n2", "n3", "n4", "n5", "n6", "n7", "n8", "n9"],
+        "commander_refresh_context": {
+            "requested": True,
+            "reason": "repeated_hold_monitor_only",
+            "refresh_scope": "open_position_monitor_refresh",
+            "selected_symbol": "000660",
+            "hold_repeat_count_max": 3,
+            "selected_hold_repeat_count": 3,
+            "monitor_reason": "too_extended_from_vwap",
+            "active_exit_axis": "peak_drawdown",
+            "refresh_summary": "Repeated hold refresh for 000660 after 3 consecutive hold cycles. Current blocking axis is reclaim_readiness.",
+            "entry_state": {"current_blocking_axis": "reclaim_readiness", "entry_blockers": ["below_vwap_reclaim_not_ready"]},
+            "prior_monitor_entry_policy_summary": {"volume_ratio_min": 0.68},
+            "current_monitor_entry_policy_summary": {"volume_ratio_min": 0.68},
+            "requires_policy_delta": True,
+            "selected_symbol_memory": {
+                "symbol": "000660",
+                "trade_count": 9,
+                "win_rate": 0.4444,
+                "dominant_playbook": "pullback",
+                "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
+            },
+        },
     }
 
     compact = _build_compact_strategist_llm_payload(payload)
@@ -878,6 +900,227 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
     assert len(compact["key_events_hint"]) == 4
     assert len(compact["themes_hint"]) == 4
     assert len(compact["news_query_targets"]) == 8
+    assert compact["commander_refresh_context"]["requested"] is True
+    assert compact["commander_refresh_context"]["selected_symbol"] == "000660"
+    assert compact["commander_refresh_context"]["requires_policy_delta"] is True
+    assert compact["commander_refresh_context"]["selected_symbol_memory"]["symbol"] == "000660"
+    assert compact["commander_refresh_context"]["selected_symbol_memory"]["dominant_playbook"] == "pullback"
+
+
+def test_build_strategist_llm_messages_enforces_read_model_facts_and_policy_adjustment() -> None:
+    messages = _build_strategist_llm_messages({"read_model_facts": {}, "commander_refresh_context": {}})
+
+    system = str(messages[0]["content"])
+    user = str(messages[1]["content"])
+
+    assert "You MUST use the provided deterministic memory packets as primary constraints" in system
+    assert "You MUST convert those inputs into explicit strategy adjustment directives." in system
+    assert "strategy_adjustment_directives" in user
+    assert "If repeated failure is concentrated in one axis" in user
+    assert '"refresh_action"' in user
+
+
+def test_strategist_llm_payload_includes_commander_refresh_context(monkeypatch):
+    captured = {}
+
+    def fake_run_strategist_frame_llm(*, state, policy, payload):
+        captured["payload"] = dict(payload or {})
+        return ({}, {"status": "disabled", "attempts": 0, "repair_used": False, "reason": "test_capture"})
+
+    monkeypatch.setenv("DRY_RUN", "1")
+    monkeypatch.setattr("graphs.nodes.strategist_node._run_strategist_frame_llm", fake_run_strategist_frame_llm)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["commander_decision"] = {
+        "market_regime": "neutral",
+        "session_bias": "position_management",
+        "risk_mode": "balanced",
+        "command_intent": "REFRESH_STRATEGY_FRAME",
+        "strategist_invocation": "RUN_REFRESH",
+        "llm_policy": "allow_context_refresh",
+        "strategist_refresh_requested": True,
+        "strategist_refresh_reason": "repeated_hold_monitor_only",
+        "strategist_refresh_context": {
+            "prior_monitor_entry_policy_summary": {"volume_ratio_min": 0.68},
+            "current_monitor_entry_policy_summary": {"volume_ratio_min": 0.68},
+        },
+        "open_position_refresh_context": {
+            "refresh_scope": "open_position_monitor_refresh",
+            "selected_symbol": "000660",
+            "hold_repeat_count_max": 3,
+            "selected_hold_repeat_count": 3,
+            "monitor_reason": "too_extended_from_vwap",
+            "active_exit_axis": "peak_drawdown",
+            "refresh_summary": "Repeated hold refresh for 000660 after 3 consecutive hold cycles.",
+            "entry_state": {
+                "current_blocking_axis": "reclaim_readiness",
+                "entry_blockers": ["below_vwap_reclaim_not_ready"],
+            },
+        },
+    }
+    state["reports_root"] = "reports"
+
+    def fake_build_symbol_read_model(trades_root, symbol):
+        assert symbol == "000660"
+        return {
+            "symbol": "000660",
+            "trade_count": 11,
+            "closed_trade_count": 9,
+            "win_rate": 0.5555,
+            "avg_pnl_pct": 0.0123,
+            "avg_hold_duration_sec": 420.0,
+            "dominant_playbook": "pullback",
+            "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
+            "dominant_exit_reason": "peak_drawdown",
+            "repeated_failure_pattern": [
+                {"type": "blocker", "value": "below_vwap_reclaim_not_ready", "count": 3},
+            ],
+            "recent_success_pattern": [
+                {"playbook": "pullback", "entry_reason": "pullback_ok", "exit_reason": "take_profit", "count": 2},
+            ],
+            "data_quality": {"data_source": "symbol_memory", "unknown_fields_ratio": 0.0},
+        }
+
+    monkeypatch.setattr("graphs.nodes.strategist_node.build_symbol_read_model", fake_build_symbol_read_model)
+
+    strategist_node(state)
+
+    llm_payload = dict(captured.get("payload") or {})
+    commander_refresh_context = dict(llm_payload.get("commander_refresh_context") or {})
+    assert commander_refresh_context["requested"] is True
+    assert commander_refresh_context["reason"] == "repeated_hold_monitor_only"
+    assert commander_refresh_context["selected_symbol"] == "000660"
+    assert commander_refresh_context["monitor_reason"] == "too_extended_from_vwap"
+    assert commander_refresh_context["requires_policy_delta"] is True
+    assert commander_refresh_context["selected_symbol_memory"]["symbol"] == "000660"
+    assert commander_refresh_context["selected_symbol_memory"]["dominant_playbook"] == "pullback"
+    assert commander_refresh_context["selected_symbol_memory"]["dominant_monitor_blocker"] == "below_vwap_reclaim_not_ready"
+
+
+def test_strategist_policy_adjustment_surface_tracks_delta(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    out = strategist_node(
+        {
+            "runtime_phase": "session",
+            "candidate_symbols": ["111111", "222222", "333333"],
+            "commander_decision": {
+                "market_regime": "neutral",
+                "session_bias": "position_management",
+                "risk_mode": "balanced",
+                "command_intent": "REFRESH_STRATEGY_FRAME",
+                "strategist_invocation": "RUN_REFRESH",
+                "llm_policy": "allow_context_refresh",
+                "strategist_refresh_requested": True,
+                "strategist_refresh_reason": "repeated_hold_monitor_only",
+                "strategist_refresh_context": {
+                    "prior_monitor_entry_policy_summary": {"volume_ratio_min": 0.68, "pullback_max_pct": 0.07},
+                    "current_monitor_entry_policy_summary": {"volume_ratio_min": 0.68, "pullback_max_pct": 0.07},
+                },
+                "open_position_refresh_context": {
+                    "refresh_scope": "open_position_monitor_refresh",
+                    "selected_symbol": "111111",
+                    "hold_repeat_count_max": 3,
+                    "selected_hold_repeat_count": 3,
+                    "monitor_reason": "too_extended_from_vwap",
+                    "active_exit_axis": "peak_drawdown",
+                    "refresh_summary": "Repeated hold refresh for 111111 after 3 consecutive hold cycles.",
+                    "entry_state": {"current_blocking_axis": "reclaim_readiness", "entry_blockers": ["below_vwap_reclaim_not_ready"]},
+                },
+            },
+            "ai_strategist_output": {
+                "playbook": "pullback",
+                "monitor_entry_policy": {
+                    "volume_ratio_min": 0.75,
+                    "pullback_max_pct": 0.05,
+                },
+                "policy_adjustment": {
+                    "adjustment_required": True,
+                    "dominant_failure_pattern": "repeated_hold_monitor_only",
+                    "addressed_failure_patterns": ["below_vwap_reclaim_not_ready"],
+                },
+                "strategy_adjustment_directives": {
+                    "entry_policy_action": {
+                        "action": "tighten",
+                        "target_fields": ["volume_ratio_min", "pullback_max_pct"],
+                        "reason": "반복 hold 패턴으로 진입 조건을 조입니다",
+                    }
+                },
+                "policy_source": "strategist",
+            },
+        }
+    )
+
+    adjustment = ((out.get("strategist_output") or {}).get("policy_adjustment") or {})
+    assert adjustment.get("adjustment_required") is True
+    assert adjustment.get("hold_refresh_considered") is True
+    assert adjustment.get("delta_count") == 2
+    assert "volume_ratio_min" in list(adjustment.get("delta_fields") or [])
+    assert "pullback_max_pct" in list(adjustment.get("delta_fields") or [])
+    directives = ((out.get("strategist_output") or {}).get("strategy_adjustment_directives") or {})
+    assert ((directives.get("entry_policy_action") or {}).get("action")) == "tighten"
+    assert "volume_ratio_min" in list((directives.get("entry_policy_action") or {}).get("target_fields") or [])
+
+
+def test_strategist_directives_fallback_tracks_memory_and_policy(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    out = strategist_node(
+        {
+            "runtime_phase": "session",
+            "candidate_symbols": ["111111", "222222"],
+            "commander_decision": {
+                "market_regime": "neutral",
+                "session_bias": "position_management",
+                "risk_mode": "balanced",
+                "command_intent": "REFRESH_STRATEGY_FRAME",
+                "strategist_invocation": "RUN_REFRESH",
+                "llm_policy": "allow_context_refresh",
+                "strategist_refresh_requested": True,
+                "strategist_refresh_reason": "repeated_hold_monitor_only",
+                "strategist_refresh_context": {
+                    "prior_monitor_entry_policy_summary": {"volume_ratio_min": 0.68},
+                    "current_monitor_entry_policy_summary": {"volume_ratio_min": 0.68},
+                },
+                "open_position_refresh_context": {
+                    "refresh_scope": "open_position_monitor_refresh",
+                    "selected_symbol": "111111",
+                    "hold_repeat_count_max": 3,
+                    "selected_hold_repeat_count": 3,
+                    "monitor_reason": "too_extended_from_vwap",
+                    "active_exit_axis": "peak_drawdown",
+                    "refresh_summary": "Repeated hold refresh for 111111 after 3 consecutive hold cycles.",
+                    "entry_state": {"current_blocking_axis": "reclaim_readiness", "entry_blockers": ["below_vwap_reclaim_not_ready"]},
+                },
+            },
+            "ai_strategist_output": {
+                "playbook": "breakout",
+                "monitor_entry_policy": {
+                    "volume_ratio_min": 0.75,
+                    "pullback_max_pct": 0.05,
+                },
+                "policy_adjustment": {
+                    "adjustment_required": True,
+                    "dominant_failure_pattern": "below_vwap_reclaim_not_ready",
+                    "addressed_failure_patterns": ["below_vwap_reclaim_not_ready"],
+                },
+                "policy_source": "strategist",
+            },
+            "reports_root": "reports",
+        }
+    )
+    directives = ((out.get("strategist_output") or {}).get("strategy_adjustment_directives") or {})
+    assert ((directives.get("playbook_action") or {}).get("action")) in {"maintain", "prefer", "deprioritize", "switch"}
+    assert ((directives.get("entry_policy_action") or {}).get("action")) == "tighten"
+    assert ((directives.get("monitor_focus_action") or {}).get("action")) == "increase_focus"
+    assert "reclaim" in list((directives.get("monitor_focus_action") or {}).get("target_axes") or [])
+    assert ((directives.get("selected_symbol_bias_action") or {}).get("action")) in {
+        "none",
+        "prefer_pullback",
+        "avoid_breakout",
+        "prefer_reclaim",
+        "avoid_extension",
+    }
+    assert ((directives.get("refresh_action") or {}).get("action")) == "refresh_for_repeated_hold"
 
 
 def test_strategist_frame_llm_max_tokens_falls_back_to_ai_strategist_setting(monkeypatch):

@@ -46,6 +46,31 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                 "payload": {
                     "themes": ["semiconductor", "AI"],
                     "playbook": "breakout",
+                    "strategy_adjustment_directives": {
+                        "playbook_action": {
+                            "action": "maintain",
+                            "target": "breakout",
+                            "reason": "시장 메모리상 추세 플레이북 유지가 타당함",
+                        },
+                        "entry_policy_action": {
+                            "action": "rebalance",
+                            "target_fields": ["volume_ratio_min", "max_extended_from_vwap_pct"],
+                            "reason": "반복 확장 실패 축을 재조정해야 함",
+                        },
+                        "monitor_focus_action": {
+                            "action": "shift_focus",
+                            "target_axes": ["volume", "extension"],
+                            "reason": "거래량 확인과 과확장 축이 핵심임",
+                        },
+                        "selected_symbol_bias_action": {
+                            "action": "avoid_extension",
+                            "reason": "종목 메모리상 추격 진입 성과가 약함",
+                        },
+                        "refresh_action": {
+                            "action": "refresh_for_repeated_hold",
+                            "reason": "반복 hold 시 재평가 필요",
+                        },
+                    },
                     "scanner_bias": "leader",
                     "scanner_priority": ["momentum", "volume_surge"],
                     "candidate_symbols_hint": ["005930", "000660"],
@@ -382,6 +407,8 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert "theme hints expanded" in out["strategist"]["news_query_reasoning"]
     assert out["strategist"]["scanner_source_policy"]["preferred_sources"][0] == "top_change_rate"
     assert out["strategist"]["candidate_symbols_hint"] == ["005930", "000660"]
+    assert out["strategist"]["strategy_adjustment_directives"]["entry_policy_action"]["action"] == "rebalance"
+    assert out["strategist"]["strategy_adjustment_directives"]["monitor_focus_action"]["target_axes"] == ["volume", "extension"]
     assert out["news_symbol_linkage"]["selected_symbol"] == "005930"
     assert out["news_symbol_linkage"]["runner_up_symbol"] == "000660"
     assert out["news_symbol_linkage"]["selected_symbol_in_candidate_hints"] is True
@@ -453,6 +480,8 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert "macro_stress:" in md_body
     assert "news_query_reasoning:" in md_body
     assert "scanner_source_policy:" in md_body
+    assert "strategy_adjustment_directives:" in md_body
+    assert "strategy_adjustment_summary:" in md_body
     assert "## Scanner" in md_body
     assert "condition_search: status=unavailable" in md_body
     assert "## Monitor" in md_body

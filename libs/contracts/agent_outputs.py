@@ -2089,6 +2089,7 @@ def build_executor_output_artifact(
 ) -> Dict[str, Any]:
     execution = _dict(execution)
     order = _dict(order)
+    quote_snapshot = _dict(execution.get("quote_snapshot"))
     symbol = str(execution.get("symbol") or order.get("symbol") or "").strip()
     artifact = _base_output(
         state,
@@ -2109,11 +2110,18 @@ def build_executor_output_artifact(
             "broker_message": _clip(execution.get("broker_message"), max_len=200),
             "ord_no": _clip(execution.get("ord_no"), max_len=64),
             "execution_ok": bool(execution.get("execution_ok", execution.get("allowed"))),
+            "quote_snapshot": quote_snapshot,
+            "best_bid": _safe_float(execution.get("best_bid") if execution.get("best_bid") not in (None, "") else quote_snapshot.get("best_bid")),
+            "best_ask": _safe_float(execution.get("best_ask") if execution.get("best_ask") not in (None, "") else quote_snapshot.get("best_ask")),
+            "spread_bps": _safe_float(execution.get("spread_bps") if execution.get("spread_bps") not in (None, "") else quote_snapshot.get("spread_bps")),
             "order_request_summary": {
                 "action": str(order.get("action") or execution.get("action") or "").strip().upper(),
                 "symbol": symbol,
                 "qty": _safe_int(order.get("qty") or execution.get("qty")),
                 "order_type": _clip(order.get("order_type"), max_len=32),
+                "best_bid": _safe_float(execution.get("best_bid") if execution.get("best_bid") not in (None, "") else quote_snapshot.get("best_bid")),
+                "best_ask": _safe_float(execution.get("best_ask") if execution.get("best_ask") not in (None, "") else quote_snapshot.get("best_ask")),
+                "spread_bps": _safe_float(execution.get("spread_bps") if execution.get("spread_bps") not in (None, "") else quote_snapshot.get("spread_bps")),
             },
             "execution_enabled": bool(execution.get("allowed")),
             "approval_mode": _clip(execution.get("approval_mode"), max_len=32),

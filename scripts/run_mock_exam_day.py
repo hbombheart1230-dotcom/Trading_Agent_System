@@ -535,6 +535,7 @@ def _closeout_backup_liquidation(common: Dict[str, Any]) -> Dict[str, Any]:
         "qty_total_before": 0,
         "symbols_before": [],
         "symbols_after": [],
+        "overnight_carry_anomalies": [],
         "error": "",
         "duration_sec": 0.0,
     }
@@ -560,7 +561,17 @@ def _closeout_backup_liquidation(common: Dict[str, Any]) -> Dict[str, Any]:
             rec = {"symbol": symbol, "qty": qty, "row": dict(row)}
             positions.append(rec)
             decision = overnight_map.get(symbol) if isinstance(overnight_map, dict) else None
-            if isinstance(decision, dict) and bool(decision.get("approved")):
+            if isinstance(decision, dict) and bool(decision.get("anomaly")):
+                out["overnight_carry_anomalies"].append(
+                    {
+                        "symbol": symbol,
+                        "qty": qty,
+                        "anomaly_reason": str(decision.get("anomaly_reason") or ""),
+                        "decision_reason": str(decision.get("reason") or ""),
+                    }
+                )
+                flatten_rows.append(rec)
+            elif isinstance(decision, dict) and bool(decision.get("approved")):
                 carry_rows.append(rec)
             else:
                 flatten_rows.append(rec)
@@ -612,8 +623,13 @@ def _closeout_backup_liquidation(common: Dict[str, Any]) -> Dict[str, Any]:
             "qty_total": int(sum(int(row.get("qty") or 0) for row in flatten_rows) if flatten_rows else out["qty_total_before"]),
             "carry_forward_symbols": list(carry_symbols),
             "flattened_symbols": list(flatten_symbols),
+            "overnight_carry_anomalies": list(out["overnight_carry_anomalies"]),
             "reason": (
-                "overnight_carry_approved"
+                "closeout_flattened_overnight_carry_anomaly"
+                if out["overnight_carry_anomalies"] and not carry_rows
+                else "closeout_respected_overnight_carry_with_anomaly_override"
+                if out["overnight_carry_anomalies"] and carry_rows
+                else "overnight_carry_approved"
                 if carry_rows and not flatten_rows
                 else "closeout_respected_overnight_carry"
                 if carry_rows and flatten_rows
@@ -1044,7 +1060,7 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
                     "--event-log-path",
                     event_log_path,
                     "--report-dir",
-                    str(canonical_reports_root / "decision_story"),
+                    str(canonical_reports_root / "dev" / "manual" / "decision_story"),
                     "--day",
                     day,
                     "--json",
@@ -1072,7 +1088,7 @@ def _run_closeout(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str,
                     "--event-log-path",
                     event_log_path,
                     "--report-dir",
-                    str(canonical_reports_root / "run_cards"),
+                    str(canonical_reports_root / "dev" / "manual" / "run_cards"),
                     "--day",
                     day,
                     "--json",
@@ -1253,12 +1269,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--generate-decision-story",
         action="store_true",
-        help="Opt-in closeout generation for reports/decision_story. Disabled by default.",
+        help="Opt-in closeout generation for reports/dev/manual/decision_story. Disabled by default.",
     )
     p.add_argument(
         "--generate-run-cards",
         action="store_true",
-        help="Opt-in closeout generation for reports/run_cards. Disabled by default.",
+        help="Opt-in closeout generation for reports/dev/manual/run_cards. Disabled by default.",
     )
     p.add_argument("--json", action="store_true")
     return p

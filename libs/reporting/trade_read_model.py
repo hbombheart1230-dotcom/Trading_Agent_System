@@ -89,6 +89,9 @@ def normalize_trade_report_section(
         "bullets": clean_str_list(section.get("bullets"), limit=12, max_len=280),
         "status": trim_text(section.get("status"), max_len=64),
         "grade": trim_text(section.get("grade"), max_len=32),
+        "current_action": trim_text(section.get("current_action"), max_len=32),
+        "watch_next": clean_str_list(section.get("watch_next"), limit=8, max_len=220),
+        "thesis_invalidation": clean_str_list(section.get("thesis_invalidation"), limit=8, max_len=220),
     }
 
 
@@ -243,6 +246,7 @@ def build_trade_report_detail_view(
     market_context_human = bundle.get("market_context_human") if isinstance(bundle.get("market_context_human"), dict) else {}
     scanner_reason_human = bundle.get("scanner_reason_human") if isinstance(bundle.get("scanner_reason_human"), dict) else {}
     filters_human = bundle.get("filters_human") if isinstance(bundle.get("filters_human"), dict) else {}
+    monitor_reason_human = bundle.get("monitor_reason_human") if isinstance(bundle.get("monitor_reason_human"), dict) else {}
     monitor_reason_human = bundle.get("monitor_reason_human") if isinstance(bundle.get("monitor_reason_human"), dict) else {}
     guard_reason_human = bundle.get("guard_reason_human") if isinstance(bundle.get("guard_reason_human"), dict) else {}
     execution_outcome_human = bundle.get("execution_outcome_human") if isinstance(bundle.get("execution_outcome_human"), dict) else {}
@@ -1251,27 +1255,43 @@ def build_trade_read_model(trade_dir: str) -> Dict[str, Any]:
                 return clipped, source_key
         return str(default), "default"
 
-    def _read_json(p: Path) -> Dict[str, Any]:
+    def _read_json(path: Path) -> Dict[str, Any]:
         try:
-            if p.exists():
-                val = json.loads(p.read_text(encoding="utf-8"))
-                return val if isinstance(val, dict) else {}
+            if path.exists():
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                return payload if isinstance(payload, dict) else {}
         except Exception:
             pass
         return {}
 
-    td = Path(str(trade_dir))
-    bundle_path = td / "lifecycle_bundle.json"
-    report_path_normalized = td / "reports" / "ai_trade_report.json"
-    report_path_legacy = td / "ai_trade_report" / "ai_trade_report.json"
+    def _trim_text(value: Any, max_len: int = 255) -> str:
+        return str(value or "").strip()[:max_len]
 
-    bundle = _read_json(bundle_path)
-    report = _read_json(report_path_normalized)
-    report_path_used = report_path_normalized if report else Path()
-    if not report:
-        report = _read_json(report_path_legacy)
-        if report:
-            report_path_used = report_path_legacy
+    def _clean_str_list(value: Any, *, limit: int = 6, max_len: int = 220) -> List[str]:
+        out: List[str] = []
+        if not isinstance(value, list):
+            return out
+        for item in value[:limit]:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            out.append(text[:max_len])
+        return out
+
+    td = Path(str(trade_dir))
+    trade_report_meta = {
+        "trade_root_path": str(td),
+        "trade_story_input_path": "",
+        "trade_lifecycle_json_path": "",
+        "trade_report_json_path": "",
+        "aggregated_bundle_path": "",
+    }
+    report_payloads = load_trade_report_payloads(trade_report_meta, read_json=_read_json)
+    bundle = dict(report_payloads.get("lifecycle_data") or {})
+    report = dict(report_payloads.get("report_data") or {})
+    payload_paths = dict(report_payloads.get("paths") or {})
+    lifecycle_path_used = Path(str(payload_paths.get("lifecycle_path") or ""))
+    report_path_used = Path(str(payload_paths.get("report_path") or ""))
 
     lifecycle = bundle.get("lifecycle") if isinstance(bundle.get("lifecycle"), dict) else {}
     canonical = bundle.get("canonical_agent_artifacts") if isinstance(bundle.get("canonical_agent_artifacts"), dict) else {}
@@ -1279,6 +1299,10 @@ def build_trade_read_model(trade_dir: str) -> Dict[str, Any]:
     evidence_provenance = bundle.get("evidence_provenance") if isinstance(bundle.get("evidence_provenance"), dict) else {}
     same_day_linkage = bundle.get("same_day_reporter_linkage") if isinstance(bundle.get("same_day_reporter_linkage"), dict) else {}
     story_meta = bundle.get("trade_story_input_meta") if isinstance(bundle.get("trade_story_input_meta"), dict) else {}
+    market_context_human = bundle.get("market_context_human") if isinstance(bundle.get("market_context_human"), dict) else {}
+    scanner_reason_human = bundle.get("scanner_reason_human") if isinstance(bundle.get("scanner_reason_human"), dict) else {}
+    filters_human = bundle.get("filters_human") if isinstance(bundle.get("filters_human"), dict) else {}
+    monitor_reason_human = bundle.get("monitor_reason_human") if isinstance(bundle.get("monitor_reason_human"), dict) else {}
     
     commander_art = canonical.get("commander") if isinstance(canonical.get("commander"), dict) else {}
     strategist_art = canonical.get("strategist") if isinstance(canonical.get("strategist"), dict) else {}
@@ -1290,6 +1314,7 @@ def build_trade_read_model(trade_dir: str) -> Dict[str, Any]:
     shared_facts = report_data.get("shared_facts") if isinstance(report_data.get("shared_facts"), dict) else {}
 
     entry_obj = lifecycle.get("entry") if isinstance(lifecycle.get("entry"), dict) else {}
+    holding_obj = lifecycle.get("holding") if isinstance(lifecycle.get("holding"), dict) else {}
     exit_obj = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
 
     entry_ts, entry_ts_source = _pick_with_source(
@@ -1480,7 +1505,7 @@ def build_trade_read_model(trade_dir: str) -> Dict[str, Any]:
         "data_source": facts["data_source"],
         "paths": {
             "trade_root_path": str(td),
-            "lifecycle_bundle_json": str(bundle_path) if bundle_path.exists() else "",
+            "lifecycle_bundle_json": str(lifecycle_path_used) if lifecycle_path_used.exists() else "",
             "ai_trade_report_json": str(report_path_used) if report_path_used.exists() else "",
         },
         "canonical_artifact_paths": canonical_paths,
@@ -1546,6 +1571,125 @@ def build_trade_read_model(trade_dir: str) -> Dict[str, Any]:
         "has_evidence_provenance": bool(evidence_provenance),
         "same_day_reporter_found": bool(same_day_file_found),
     }
+    report_section_seeds = {
+        "market_context_at_entry": normalize_trade_report_section(
+            report_data,
+            "market_context_at_entry",
+            (
+                (entry_obj.get("strategist_context") or {}).get("market_context_summary")
+                if isinstance(entry_obj.get("strategist_context"), dict)
+                else market_context_human.get("summary") or ""
+            ),
+            trim_text=_trim_text,
+            clean_str_list=_clean_str_list,
+        ),
+        "why_this_symbol_was_chosen": normalize_trade_report_section(
+            report_data,
+            "why_this_symbol_was_chosen",
+            entry_obj.get("reason_human") or scanner_reason_human.get("summary") or "",
+            trim_text=_trim_text,
+            clean_str_list=_clean_str_list,
+        ),
+        "strategist_summary": normalize_trade_report_section(
+            report_data,
+            "strategist_summary",
+            (
+                (entry_obj.get("strategist_context") or {}).get("market_context_summary")
+                if isinstance(entry_obj.get("strategist_context"), dict)
+                else market_context_human.get("summary") or ""
+            ),
+            trim_text=_trim_text,
+            clean_str_list=_clean_str_list,
+        ),
+        "entry_decision": normalize_trade_report_section(
+            report_data,
+            "entry_decision",
+            entry_obj.get("reason_human") or scanner_reason_human.get("summary") or "",
+            trim_text=_trim_text,
+            clean_str_list=_clean_str_list,
+        ),
+        "holding_monitoring_story": normalize_trade_report_section(
+            report_data,
+            "holding_monitoring_story",
+            monitor_reason_human.get("summary")
+            or (
+                f"Holding phase captured {len(list(holding_obj.get('run_ids') or []))} runs."
+                if list(holding_obj.get("run_ids") or [])
+                else ""
+            ),
+            trim_text=_trim_text,
+            clean_str_list=_clean_str_list,
+        ),
+        "exit_decision": normalize_trade_report_section(
+            report_data,
+            "exit_decision",
+            (lifecycle.get("exit", {}).get("reason_human") if isinstance(lifecycle.get("exit"), dict) else "")
+            or (
+                bundle.get("execution_outcome_human").get("summary")
+                if isinstance(bundle.get("execution_outcome_human"), dict)
+                else ""
+            )
+            or monitor_reason_human.get("summary")
+            or (
+                "Position is still open; no closing SELL execution has been captured yet."
+                if str(lifecycle.get("status") or "").lower() == "open"
+                else ""
+            ),
+            trim_text=_trim_text,
+            clean_str_list=_clean_str_list,
+        ),
+        "scanner_filters": normalize_trade_report_section(
+            report_data,
+            "scanner_filters",
+            filters_human.get("summary") or "",
+            trim_text=_trim_text,
+            clean_str_list=_clean_str_list,
+        ),
+        "execution_quality": normalize_trade_report_section(
+            report_data,
+            "execution_quality",
+            (
+                bundle.get("execution_outcome_human").get("summary")
+                if isinstance(bundle.get("execution_outcome_human"), dict)
+                else ""
+            ),
+            trim_text=_trim_text,
+            clean_str_list=_clean_str_list,
+        ),
+        "guard_approval_result": normalize_trade_report_section(
+            report_data,
+            "guard_approval_result",
+            (
+                bundle.get("guard_reason_human").get("summary")
+                if isinstance(bundle.get("guard_reason_human"), dict)
+                else ""
+            ),
+            trim_text=_trim_text,
+            clean_str_list=_clean_str_list,
+        ),
+        "reporter_evaluation": normalize_trade_report_section(
+            report_data,
+            "reporter_evaluation",
+            (
+                bundle.get("reporter_status_human").get("summary")
+                if isinstance(bundle.get("reporter_status_human"), dict)
+                else ""
+            ),
+            trim_text=_trim_text,
+            clean_str_list=_clean_str_list,
+        ),
+        "final_operator_conclusion": normalize_trade_report_section(
+            report_data,
+            "final_operator_conclusion",
+            (
+                bundle.get("operator_conclusion_human").get("summary")
+                if isinstance(bundle.get("operator_conclusion_human"), dict)
+                else ""
+            ),
+            trim_text=_trim_text,
+            clean_str_list=_clean_str_list,
+        ),
+    }
 
     context = {
         "scanner_selection_summary": _clip(
@@ -1585,6 +1729,7 @@ def build_trade_read_model(trade_dir: str) -> Dict[str, Any]:
         "same_day_reporter_linkage_status": same_day_status,
         "same_day_reporter_linkage_reason": same_day_reason,
         "data_source_quality": data_source_quality,
+        "report_section_seeds": report_section_seeds,
         "scanner": {
             "summary": _clip(
                 scanner_art.get("summary")

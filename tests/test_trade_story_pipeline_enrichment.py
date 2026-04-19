@@ -334,6 +334,24 @@ def test_monitor_reason_human_prefers_decision_trace_and_surfaces_threshold_gaps
     assert any("Entry blockers:" in row for row in out["bullets"])
 
 
+def test_monitor_reason_human_surfaces_eod_carry_anomaly() -> None:
+    out = build_monitor_reason_human(
+        {
+            "monitor_reason": "hold",
+            "position_age_seconds": 1280,
+            "eod_carry_anomaly": True,
+            "eod_carry_anomaly_reason": "minutes_to_close_missing",
+            "exit_triggered": False,
+        },
+        {"action": "NOOP"},
+    )
+
+    assert "without a valid end-of-day carry decision" in out["summary"]
+    assert out["eod_carry_anomaly"] is True
+    assert out["eod_carry_anomaly_reason"] == "minutes_to_close_missing"
+    assert any("EOD carry anomaly: yes (minutes_to_close_missing)" in row for row in out["bullets"])
+
+
 def test_build_lifecycle_bundle_populates_top_level_summary_fields() -> None:
     out = build_lifecycle_bundle(
         day="2026-03-27",
@@ -426,6 +444,28 @@ def test_build_trade_story_input_derives_provenance_from_canonical_artifacts_whe
     assert out["section_provenance"]["scanner_reason_human"]["source"] == "canonical"
     assert out["section_provenance"]["monitor_reason_human"]["source"] == "canonical"
     assert out["section_provenance"]["execution_outcome_human"]["source"] == "canonical"
+    assert out["report_section_seeds"]["market_context_at_entry"]["summary"] == "Market context was not captured."
+    assert out["report_section_seeds"]["strategist_summary"]["summary"] == "Market context was not captured."
+    assert out["report_section_seeds"]["why_this_symbol_was_chosen"]["summary"] == "Scanner rationale."
+    assert out["report_section_seeds"]["entry_decision"]["summary"] == "Scanner rationale."
+    assert out["report_section_seeds"]["holding_monitoring_story"]["summary"] == "Monitor rationale."
+    assert out["report_section_seeds"]["exit_decision"]["summary"] == "Execution completed."
+    assert out["report_section_seeds"]["scanner_filters"]["summary"] == ""
+    assert out["report_section_seeds"]["execution_quality"]["summary"] == "Execution completed."
+    assert out["report_section_seeds"]["guard_approval_result"]["summary"] == ""
+    assert out["report_section_seeds"]["reporter_evaluation"]["summary"] == "Reporter missing."
+    assert out["report_section_seeds"]["final_operator_conclusion"]["summary"] == "Trade closed."
+    assert out["section_provenance"]["report_section_provenance_seeds"]["market_context_at_entry"]["source"] == "fallback"
+    assert out["section_provenance"]["report_section_provenance_seeds"]["strategist_summary"]["source"] == "fallback"
+    assert out["section_provenance"]["report_section_provenance_seeds"]["why_this_symbol_was_chosen"]["source"] == "canonical"
+    assert out["section_provenance"]["report_section_provenance_seeds"]["entry_decision"]["source"] == "canonical"
+    assert out["section_provenance"]["report_section_provenance_seeds"]["holding_monitoring_story"]["source"] == "canonical"
+    assert out["section_provenance"]["report_section_provenance_seeds"]["exit_decision"]["source"] == "canonical"
+    assert out["section_provenance"]["report_section_provenance_seeds"]["scanner_filters"]["artifact_path"].endswith("scanner.json")
+    assert out["section_provenance"]["report_section_provenance_seeds"]["execution_quality"]["source"] == "canonical"
+    assert out["section_provenance"]["report_section_provenance_seeds"]["guard_approval_result"]["source"] == "fallback"
+    assert out["section_provenance"]["report_section_provenance_seeds"]["reporter_evaluation"]["source"] == "fallback"
+    assert out["section_provenance"]["report_section_provenance_seeds"]["final_operator_conclusion"]["source"] == "canonical"
     assert out["artifacts"]["canonical_scanner_json"].endswith("scanner.json")
     assert out["same_day_reporter_linkage"]["status"] == "missing"
 

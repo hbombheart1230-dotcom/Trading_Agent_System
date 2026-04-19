@@ -96,6 +96,19 @@ def test_trade_story_input_contains_section_provenance() -> None:
     assert section_provenance["market_context_human"]["confidence"] == "high"
     assert section_provenance["monitor_reason_human"]["source"] == "direct_artifact"
     assert section_provenance["guard_reason_human"]["source"] == "event_log"
+    assert section_provenance["report_section_provenance_seeds"]["market_context_at_entry"]["source"] == "canonical"
+    assert section_provenance["report_section_provenance_seeds"]["why_this_symbol_was_chosen"]["artifact_path"].endswith("scanner.json")
+    assert story_input["report_section_seeds"]["market_context_at_entry"]["summary"] == "context"
+    assert story_input["report_section_seeds"]["strategist_summary"]["summary"] == "context"
+    assert story_input["report_section_seeds"]["why_this_symbol_was_chosen"]["summary"] == "scanner"
+    assert story_input["report_section_seeds"]["entry_decision"]["summary"] == "scanner"
+    assert story_input["report_section_seeds"]["holding_monitoring_story"]["summary"] == "monitor"
+    assert story_input["report_section_seeds"]["exit_decision"]["summary"] == "execution"
+    assert story_input["report_section_seeds"]["scanner_filters"]["summary"] == "filters"
+    assert story_input["report_section_seeds"]["execution_quality"]["summary"] == "execution"
+    assert story_input["report_section_seeds"]["guard_approval_result"]["summary"] == "guard"
+    assert story_input["report_section_seeds"]["reporter_evaluation"]["summary"] == "reporter"
+    assert story_input["report_section_seeds"]["final_operator_conclusion"]["summary"] == "conclusion"
 
 
 def test_compute_evidence_completeness_reports_missing_sections() -> None:

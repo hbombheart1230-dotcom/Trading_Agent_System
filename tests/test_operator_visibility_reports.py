@@ -781,7 +781,7 @@ def test_decision_story_and_run_cards_separate_exit_narrative_for_sell_run(tmp_p
 def test_run_cards_prefers_canonical_commander_route_source(tmp_path: Path, capsys) -> None:
     day = "2026-04-08"
     events = tmp_path / "events.jsonl"
-    cards_dir = tmp_path / "run_cards"
+    cards_dir = tmp_path / "dev" / "manual" / "run_cards"
     _write_jsonl(
         events,
         [

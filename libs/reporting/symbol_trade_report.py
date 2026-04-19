@@ -449,6 +449,181 @@ def _pattern_rows(history: List[Dict[str, Any]], *, positive: bool) -> List[str]
     return [name for name, _count in counter.most_common(5)]
 
 
+def _ratio(numerator: float, denominator: float) -> float:
+    if denominator <= 0:
+        return 0.0
+    return numerator / denominator
+
+
+def _derive_playbook_stats(history: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for row in history:
+        playbook = str(row.get("playbook") or "").strip()
+        if not playbook:
+            continue
+        bucket = grouped.setdefault(
+            playbook,
+            {
+                "count": 0,
+                "completed_count": 0,
+                "win_count": 0,
+                "return_values": [],
+            },
+        )
+        bucket["count"] += 1
+        status = str(row.get("status") or "").strip().lower()
+        result_pct = _safe_float(row.get("result_pct"))
+        if status == "closed":
+            bucket["completed_count"] += 1
+            if result_pct is not None:
+                bucket["return_values"].append(result_pct)
+                if result_pct > 0:
+                    bucket["win_count"] += 1
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for playbook, bucket in grouped.items():
+        completed_count = int(bucket.get("completed_count") or 0)
+        return_values = [float(v) for v in list(bucket.get("return_values") or [])]
+        out[playbook] = {
+            "count": int(bucket.get("count") or 0),
+            "win_rate": round(_ratio(float(bucket.get("win_count") or 0), float(completed_count)), 4),
+            "avg_return_pct": round(sum(return_values) / len(return_values), 4) if return_values else 0.0,
+        }
+    return out
+
+
+def _derive_dominant_exit_failure_axis(history: List[Dict[str, Any]]) -> str:
+    counter: Counter[str] = Counter()
+    for row in history:
+        status = str(row.get("status") or "").strip().lower()
+        result_pct = _safe_float(row.get("result_pct"))
+        if status != "closed" or result_pct is None or result_pct >= 0:
+            continue
+        exit_pattern = str(row.get("exit_pattern_type") or "").strip()
+        if exit_pattern and exit_pattern != "unknown":
+            counter[exit_pattern] += 1
+            continue
+        exit_reason = str(row.get("exit_reason") or "").strip()
+        if exit_reason:
+            counter[exit_reason] += 1
+    if not counter:
+        return ""
+    return str(counter.most_common(1)[0][0])
+
+
+def _derive_bias_recommendation(
+    *,
+    avg_return_pct: float,
+    playbook_stats: Dict[str, Dict[str, Any]],
+    repeated_blockers: List[str],
+) -> Dict[str, Any]:
+    prefer_playbook = ""
+    avoid_playbook = ""
+    scanner_bonus = 0.0
+    scanner_penalty = 0.0
+    risk_cap = "normal"
+
+    best_playbook = ""
+    best_return = -10**9
+    worst_playbook = ""
+    worst_return = 10**9
+    for playbook, stats in playbook_stats.items():
+        avg_return = _safe_float((stats or {}).get("avg_return_pct"))
+        if avg_return is None:
+            continue
+        if avg_return > best_return:
+            best_return = avg_return
+            best_playbook = playbook
+        if avg_return < worst_return:
+            worst_return = avg_return
+            worst_playbook = playbook
+
+    if best_playbook and best_return > 0:
+        prefer_playbook = best_playbook
+        scanner_bonus = 0.05 if best_return < 1.0 else 0.08
+
+    if worst_playbook and worst_return < 0:
+        avoid_playbook = worst_playbook
+        scanner_penalty = 0.05 if worst_return > -1.0 else 0.08
+
+    lowered_blockers = {str(x or "").strip().lower() for x in repeated_blockers}
+    if avg_return_pct < 0 or {"confirmed_entry", "breakout_readiness"} & lowered_blockers:
+        risk_cap = "conservative"
+        scanner_penalty = max(scanner_penalty, 0.08 if avg_return_pct < 0 else 0.05)
+
+    return {
+        "scanner_penalty": round(scanner_penalty, 4),
+        "scanner_bonus": round(scanner_bonus, 4),
+        "prefer_playbook": prefer_playbook,
+        "avoid_playbook": avoid_playbook,
+        "risk_cap": risk_cap,
+    }
+
+
+def build_symbol_memory_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized_symbol = str(payload.get("symbol") or "").strip().upper()
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    pattern_insights = payload.get("pattern_insights") if isinstance(payload.get("pattern_insights"), dict) else {}
+    history = payload.get("history_index") if isinstance(payload.get("history_index"), list) else []
+    trade_count = _safe_int(summary.get("trade_count"))
+    completed_trade_count = _safe_int(summary.get("completed_trade_count"))
+    win_count = _safe_int(summary.get("win_count"))
+    avg_return_pct = _safe_float(summary.get("avg_return_pct")) or 0.0
+    avg_hold_seconds = _safe_float(summary.get("avg_hold_seconds")) or 0.0
+    repeated_blockers = _list_text(pattern_insights.get("common_monitor_failures"), limit=5)
+    playbook_stats = _derive_playbook_stats(history)
+    latest_trade = dict(history[-1]) if history else {}
+    dominant_wait_reason = ""
+    wait_distribution = summary.get("wait_reason_distribution") if isinstance(summary.get("wait_reason_distribution"), dict) else {}
+    if wait_distribution:
+        dominant_wait_reason = str(max(wait_distribution.items(), key=lambda item: float(item[1] or 0))[0])
+
+    memory = {
+        "schema_version": "symbol_memory.v1",
+        "symbol": normalized_symbol,
+        "window_label": "rolling_recent",
+        "trade_stats": {
+            "trade_count": trade_count,
+            "completed_trade_count": completed_trade_count,
+            "win_rate": round(_ratio(float(win_count), float(completed_trade_count)), 4),
+            "avg_return_pct": round(avg_return_pct, 4),
+            "avg_hold_seconds": round(avg_hold_seconds, 2),
+        },
+        "playbook_stats": playbook_stats,
+        "pattern_stats": {
+            "successful_entry_patterns": list(pattern_insights.get("successful_entry_patterns") or []),
+            "failed_entry_patterns": list(pattern_insights.get("failed_entry_patterns") or []),
+            "common_monitor_failures": repeated_blockers,
+            "recent_entry_pattern_types": list(pattern_insights.get("recent_entry_pattern_types") or []),
+            "recent_exit_pattern_types": list(pattern_insights.get("recent_exit_pattern_types") or []),
+        },
+        "execution_risk": {
+            "spread_bps_p50": None,
+            "spread_bps_p90": None,
+            "slippage_bps_p50": None,
+            "execution_risk_level": "unknown",
+        },
+        "monitor_patterns": {
+            "repeated_blockers": repeated_blockers,
+            "dominant_wait_reason": dominant_wait_reason,
+            "dominant_exit_failure_axis": _derive_dominant_exit_failure_axis(history),
+            "hold_refresh_count": 0,
+            "hold_refresh_effective_count": 0,
+            "hold_refresh_effective_rate": 0.0,
+        },
+        "bias_recommendation": _derive_bias_recommendation(
+            avg_return_pct=avg_return_pct,
+            playbook_stats=playbook_stats,
+            repeated_blockers=repeated_blockers,
+        ),
+        "latest_snapshot": {
+            "last_trade_id": str(latest_trade.get("trade_id") or ""),
+            "last_status": str(latest_trade.get("last_status") or latest_trade.get("status") or ""),
+        },
+    }
+    return memory
+
+
 def build_symbol_trade_summary(events_path: Path, reports_root: Path, symbol: str) -> Dict[str, Any]:
     normalized_symbol = str(symbol or "").strip().upper()
     history = _build_history_index(reports_root, normalized_symbol)
@@ -666,6 +841,7 @@ def _render_symbol_trade_markdown(payload: Dict[str, Any]) -> str:
 
 def generate_symbol_trade_report(events_path: Path, reports_root: Path, symbol: str) -> Dict[str, Any]:
     payload = build_symbol_trade_summary(events_path, reports_root, symbol)
+    symbol_memory = build_symbol_memory_payload(payload)
     paths = symbol_artifact_paths(reports_root, symbol)
     root_dir = paths["root_dir"]
     root_dir.mkdir(parents=True, exist_ok=True)
@@ -688,6 +864,7 @@ def generate_symbol_trade_report(events_path: Path, reports_root: Path, symbol: 
     daily_index = sorted({str(row.get("date") or "") for row in history_index if str(row.get("date") or "").strip()})
 
     paths["symbol_trade_report_json"].write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    paths["symbol_memory_json"].write_text(json.dumps(symbol_memory, ensure_ascii=False, indent=2), encoding="utf-8")
     paths["trade_history_json"].write_text(json.dumps(history_index, ensure_ascii=False, indent=2), encoding="utf-8")
     paths["latest_snapshot_json"].write_text(json.dumps(latest_snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     paths["daily_index_json"].write_text(json.dumps({"symbol": payload.get("symbol"), "days": daily_index}, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -697,6 +874,7 @@ def generate_symbol_trade_report(events_path: Path, reports_root: Path, symbol: 
         "symbol": str(payload.get("symbol") or ""),
         "report_json_path": str(paths["symbol_trade_report_json"]),
         "report_md_path": str(paths["symbol_trade_report_md"]),
+        "symbol_memory_path": str(paths["symbol_memory_json"]),
         "trade_history_path": str(paths["trade_history_json"]),
         "latest_snapshot_path": str(paths["latest_snapshot_json"]),
         "daily_index_path": str(paths["daily_index_json"]),

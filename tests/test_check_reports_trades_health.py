@@ -34,14 +34,7 @@ def test_audit_reports_trades_health_flags_partial_and_mismatch(tmp_path: Path) 
         },
     )
     _write_json(
-        trade_root / "brief" / "brief_llm_response.json",
-        {
-            "status": "error",
-            "meta": {"reason": "llm_error:The read operation timed out"},
-        },
-    )
-    _write_json(
-        trade_root / "brief_llm_response.json",
+        trade_root / "reports" / "brief_llm_response.json",
         {
             "status": "error",
             "meta": {"reason": "llm_error:The read operation timed out"},
@@ -67,12 +60,12 @@ def test_audit_reports_trades_health_flags_partial_and_mismatch(tmp_path: Path) 
     assert out["llm_status_counts"]["brief:error"] == 1
     assert out["llm_status_counts"]["strategist:synthetic_placeholder"] == 1
     assert out["lifecycle_report_status_counts"]["failed"] == 1
-    assert out["duplicate_counts"]["brief_llm_response:identical"] == 1
     assert out["issue_counts"]["llm_partial"] == 1
     assert out["issue_counts"]["llm_error"] == 1
     assert out["issue_counts"].get("llm_fallback", 0) == 0
     assert out["issue_counts"]["diagnostic_status_mismatch"] == 1
     assert out["issue_counts"]["sidecar_missing"] == 3
+    assert out["duplicate_counts"] == {}
 
 
 def test_audit_reports_trades_health_treats_empty_strategist_fallback_as_placeholder(tmp_path: Path) -> None:

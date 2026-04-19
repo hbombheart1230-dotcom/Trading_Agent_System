@@ -13,6 +13,9 @@ from libs.reporting.llm_artifacts import (
     trade_artifact_paths,
     write_json,
 )
+from libs.reporting.intraday_trade_reports import build_same_day_reporter_linkage
+from libs.reporting.intraday_trade_reports import build_holding_phase_observability
+from libs.reporting.trade_execution_snapshot import build_execution_details
 from libs.reporting.trade_report_ai import (
     build_ai_trade_report,
     build_ai_trade_report_compact_input,
@@ -33,7 +36,7 @@ from libs.reporting.trade_story_pipeline import (
     build_scanner_reason_human,
     build_story_contract,
     build_timeline,
-    build_trade_story_input,
+    build_trade_story_input_from_bundle,
 )
 
 
@@ -142,49 +145,6 @@ def _same_day_reporter_paths(*, root: Path, day: str) -> tuple[Path, Path]:
     )
 
 
-def _build_same_day_reporter_linkage_for_single_trade(
-    *,
-    root: Path,
-    day: str,
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    reporter_js, reporter_md = _same_day_reporter_paths(root=root, day=day)
-    reporter_day_obj = _load_json_dict(reporter_js)
-    json_found = reporter_js.exists()
-    md_found = reporter_md.exists()
-    day_file_found = bool(json_found or md_found)
-    if day_file_found:
-        status = "linked_day_fallback"
-        linkage_source = "day_fallback"
-        linkage_reason = "A same-day reporter analysis file was attached as fallback context for this lifecycle."
-    else:
-        status = "missing"
-        linkage_source = "missing"
-        linkage_reason = "Same-day reporter analysis is not available for this lifecycle yet."
-    linkage = {
-        "schema_version": "same_day_reporter_linkage.v1",
-        "status": status,
-        "linkage_source": linkage_source,
-        "linkage_reason": linkage_reason,
-        "reporter_analysis_day_file_found": day_file_found,
-        "run_link_found": False,
-        "linked_run_ids": [],
-        "reporter_analysis_json_path": str(reporter_js) if json_found else "",
-        "reporter_analysis_md_path": str(reporter_md) if md_found else "",
-        "reporter_analysis_expected_json_path": str(reporter_js),
-        "reporter_analysis_expected_md_path": str(reporter_md),
-        "reporter_analysis_json_found": json_found,
-        "reporter_analysis_md_found": md_found,
-        "reporter_analysis_summary": str(reporter_day_obj.get("ai_summary") or ""),
-        "reporter_analysis_grade": str(reporter_day_obj.get("ai_run_grade") or "N/A"),
-    }
-    reporter_ctx = {
-        "reporter_analysis_day_file_found": day_file_found,
-        "reporter_analysis_found": False,
-        "reporter_analysis_summary": str(reporter_day_obj.get("ai_summary") or ""),
-    }
-    return linkage, reporter_ctx
-
-
 def _build_canonical_context(
     *,
     root: Path,
@@ -281,58 +241,19 @@ def _null_execution_details() -> Dict[str, Any]:
 
 def _execution_details_from_state(state: Dict[str, Any]) -> Dict[str, Any]:
     execution = _execution_payload(state)
-    order = _execution_order(state)
-    payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
-    response_payload = payload.get("response_payload") if isinstance(payload.get("response_payload"), dict) else {}
-    order_status = (
-        execution.get("reason")
-        or execution.get("status")
-        or payload.get("status")
-        or response_payload.get("status")
-        or response_payload.get("return_msg")
-        or None
-    )
-    order_id = (
-        payload.get("order_id")
-        or response_payload.get("ord_no")
-        or response_payload.get("order_id")
-        or execution.get("order_id")
-        or execution.get("ord_no")
-        or None
-    )
-    execution_mode = (
-        execution.get("execution_mode")
-        or execution.get("effective_mode")
-        or payload.get("mode")
-        or None
-    )
-    broker_env = execution.get("broker_env") or payload.get("broker_env") or None
-    filled_qty = (
-        execution.get("filled_qty")
-        or order.get("filled_qty")
-        or payload.get("filled_qty")
-        or response_payload.get("filled_qty")
-        or order.get("qty")
-        or execution.get("qty")
-        or None
-    )
-    avg_price = (
-        order.get("avg_fill_price")
-        or order.get("avg_price")
-        or payload.get("avg_fill_price")
-        or payload.get("fill_price")
-        or response_payload.get("avg_fill_price")
-        or response_payload.get("fill_price")
-        or None
-    )
-    return {
-        "order_status": str(order_status).strip() if order_status not in (None, "") else None,
-        "order_id": str(order_id).strip() if order_id not in (None, "") else None,
-        "execution_mode": str(execution_mode).strip() if execution_mode not in (None, "") else None,
-        "broker_env": str(broker_env).strip() if broker_env not in (None, "") else None,
-        "filled_qty": _safe_int(filled_qty),
-        "avg_price": _safe_float(avg_price),
+    monitor = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
+    synthetic_bundle = {
+        "execution": dict(execution),
+        "executor": dict(execution),
+        "monitor": dict(monitor),
     }
+    return build_execution_details(
+        synthetic_bundle,
+        context={
+            "monitor_context": dict(monitor),
+            "execution_context": dict(execution),
+        },
+    )
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -444,6 +365,7 @@ def _build_trade_report_inputs(
     root: Path,
 ) -> Dict[str, Any]:
     day = _resolve_trade_day(state, root=root)
+    trade_paths = trade_artifact_paths(root / "reports", day, trade_id)
     run_id = str(state.get("run_id") or "").strip()
     symbol = _execution_symbol(state)
     action = _execution_action(state)
@@ -459,11 +381,6 @@ def _build_trade_report_inputs(
     exit_execution_details = dict(execution_details if action == "SELL" else _null_execution_details())
     monitor_snapshot = _build_monitor_snapshot(monitor, symbol=symbol, run_id=run_id, ts=execution_ts)
     hold_duration_sec = _safe_int(monitor.get("position_age_seconds")) or 0
-    holding_summary = (
-        f"Held for approximately {_format_duration(hold_duration_sec)} before the latest {action or 'trade'} decision."
-        if hold_duration_sec > 0
-        else "No intermediate hold evidence was captured in the direct intraday path."
-    )
     entry_reason = str(
         ((scanner.get("selected") or {}) if isinstance(scanner.get("selected"), dict) else {}).get("why")
         or monitor.get("entry_reason")
@@ -486,11 +403,22 @@ def _build_trade_report_inputs(
         "status": str(execution.get("reason") or ""),
         "ord_no": str(execution_details.get("order_id") or ""),
     }
-    same_day_reporter_linkage, reporter_ctx = _build_same_day_reporter_linkage_for_single_trade(
-        root=root,
-        day=day,
+    reporter_js, reporter_md = _same_day_reporter_paths(root=root, day=day)
+    reporter_day_obj = _load_json_dict(reporter_js)
+    same_day_reporter_linkage = build_same_day_reporter_linkage(
+        reporter_obj=reporter_day_obj,
+        reporter_js=reporter_js,
+        reporter_md=reporter_md,
+        entry_run_id="",
+        exit_run_id="",
+        entry_bundle={},
+        exit_bundle={},
     )
-    reporter_day_obj = _load_json_dict(Path(str(same_day_reporter_linkage.get("reporter_analysis_json_path") or ""))) if str(same_day_reporter_linkage.get("reporter_analysis_json_path") or "").strip() else {}
+    reporter_ctx = {
+        "reporter_analysis_day_file_found": bool(same_day_reporter_linkage.get("reporter_analysis_day_file_found")),
+        "reporter_analysis_found": False,
+        "reporter_analysis_summary": str(reporter_day_obj.get("ai_summary") or ""),
+    }
     canonical_context = _build_canonical_context(
         root=root,
         day=day,
@@ -540,11 +468,11 @@ def _build_trade_report_inputs(
         },
         "hold_duration": _format_duration(hold_duration_sec),
         "hold_duration_sec": hold_duration_sec,
-        "holding_phase_summary": holding_summary,
-        "hold_events_count": 1 if hold_duration_sec > 0 else 0,
-        "monitor_context_snapshots": [monitor_snapshot] if hold_duration_sec > 0 else [],
+        "holding_phase_summary": "",
+        "hold_events_count": 0,
+        "monitor_context_snapshots": [],
         "hold_signal_transitions": [],
-        "pre_exit_context_summary": dict(monitor_snapshot) if action == "SELL" else {},
+        "pre_exit_context_summary": {},
         "canonical_agent_artifacts": dict(canonical_context.get("canonical_agent_artifacts") or {}),
         "evidence_provenance": evidence_provenance,
         "artifacts": artifacts,
@@ -656,11 +584,11 @@ def _build_trade_report_inputs(
             "monitor_updates": [str(monitor.get("decision_summary") or "")] if hold_duration_sec > 0 else [],
             "hold_duration": _format_duration(hold_duration_sec),
             "hold_duration_sec": hold_duration_sec,
-            "holding_phase_summary": holding_summary,
-            "hold_events_count": 1 if hold_duration_sec > 0 else 0,
-            "monitor_context_snapshots": [dict(monitor_snapshot)] if hold_duration_sec > 0 else [],
+            "holding_phase_summary": "",
+            "hold_events_count": 0,
+            "monitor_context_snapshots": [],
             "hold_signal_transitions": [],
-            "pre_exit_context_summary": dict(monitor_snapshot) if action == "SELL" else {},
+            "pre_exit_context_summary": {},
         },
         "exit": {
             "available": bool(action == "SELL"),
@@ -687,36 +615,64 @@ def _build_trade_report_inputs(
         "same_day_reporter_linkage": dict(bundle_out.get("same_day_reporter_linkage") or {}),
         "execution_details": dict(execution_details),
     }
+    holding_phase_observability = build_holding_phase_observability(
+        lifecycle,
+        monitor_timeline={},
+    )
+    lifecycle["holding"]["hold_duration"] = holding_phase_observability.get("hold_duration")
+    lifecycle["holding"]["hold_duration_sec"] = holding_phase_observability.get("hold_duration_sec")
+    lifecycle["holding"]["holding_phase_summary"] = holding_phase_observability.get("holding_phase_summary")
+    lifecycle["holding"]["hold_events_count"] = holding_phase_observability.get("hold_events_count")
+    lifecycle["holding"]["monitor_context_snapshots"] = list(
+        holding_phase_observability.get("monitor_context_snapshots") or []
+    )
+    lifecycle["holding"]["hold_signal_transitions"] = list(
+        holding_phase_observability.get("hold_signal_transitions") or []
+    )
+    lifecycle["holding"]["pre_exit_context_summary"] = dict(
+        holding_phase_observability.get("pre_exit_context_summary") or {}
+    )
+    lifecycle["summary"]["holding_duration"] = str(holding_phase_observability.get("hold_duration") or "")
+    bundle_out["hold_duration"] = holding_phase_observability.get("hold_duration")
+    bundle_out["hold_duration_sec"] = holding_phase_observability.get("hold_duration_sec")
+    bundle_out["holding_phase_summary"] = holding_phase_observability.get("holding_phase_summary")
+    bundle_out["hold_events_count"] = holding_phase_observability.get("hold_events_count")
+    bundle_out["monitor_context_snapshots"] = list(
+        holding_phase_observability.get("monitor_context_snapshots") or []
+    )
+    bundle_out["hold_signal_transitions"] = list(
+        holding_phase_observability.get("hold_signal_transitions") or []
+    )
+    bundle_out["pre_exit_context_summary"] = dict(
+        holding_phase_observability.get("pre_exit_context_summary") or {}
+    )
     bundle_out["trade_lifecycle"] = dict(lifecycle)
-    story_input = build_trade_story_input(bundle_out, trade_lifecycle=lifecycle)
-    story_input["report_runtime_mode"] = "intraday_single_trade"
-    story_input["enable_separated_narrative"] = False
-    story_input["skip_separated_report_llm"] = True
+    story_input = build_trade_story_input_from_bundle(
+        bundle_out,
+        trade_lifecycle=lifecycle,
+        existing_story_input={
+            "report_runtime_mode": "intraday_single_trade",
+            "enable_separated_narrative": False,
+            "skip_separated_report_llm": True,
+            "trade_id": trade_id,
+            "day": day,
+            "run_id": run_id,
+        },
+    )
     story_input["applied_policy"] = dict(state.get("applied_policy") or {})
     story_input["commander"] = {
         **dict(commander),
         "applied_policy": dict(state.get("applied_policy") or {}),
     }
     story_input["reporter_policy"] = dict((state.get("applied_policy") or {}).get("reporter") or {})
-    story_input["execution_details"] = dict(execution_details)
-    story_input["entry_execution_details"] = dict(entry_execution_details)
-    story_input["exit_execution_details"] = dict(exit_execution_details)
-    story_input["same_day_reporter_linkage"] = dict(bundle_out.get("same_day_reporter_linkage") or {})
-    story_input["failure_classification"] = dict(bundle_out.get("failure_classification") or {})
-    story_input["hold_duration"] = _format_duration(hold_duration_sec)
-    story_input["hold_duration_sec"] = hold_duration_sec
-    story_input["holding_phase_summary"] = holding_summary
-    story_input["hold_events_count"] = 1 if hold_duration_sec > 0 else 0
-    story_input["monitor_context_snapshots"] = [dict(monitor_snapshot)] if hold_duration_sec > 0 else []
-    story_input["pre_exit_context_summary"] = dict(monitor_snapshot) if action == "SELL" else {}
     artifact_links = {
-        "lifecycle_bundle_json": str((root / "reports" / "trades" / day / trade_id / "lifecycle_bundle.json")),
-        "entry_json": str((root / "reports" / "trades" / day / trade_id / "entry.json")),
-        "hold_json": str((root / "reports" / "trades" / day / trade_id / "hold.json")),
-        "exit_json": str((root / "reports" / "trades" / day / trade_id / "exit.json")),
-        "ai_trade_report_json": str((root / "reports" / "trades" / day / trade_id / "reports" / "ai_trade_report.json")),
-        "ai_trade_report_md": str((root / "reports" / "trades" / day / trade_id / "reports" / "ai_trade_report.md")),
-        "ai_trade_report_llm_response_json": str((root / "reports" / "trades" / day / trade_id / "reports" / "ai_trade_report_llm_response.json")),
+        "lifecycle_bundle_json": str(trade_paths["lifecycle_bundle_json"]),
+        "entry_json": str(trade_paths["entry_json"]),
+        "hold_json": str(trade_paths["hold_json"]),
+        "exit_json": str(trade_paths["exit_json"]),
+        "ai_trade_report_json": str(trade_paths["ai_trade_report_json"]),
+        "ai_trade_report_md": str(trade_paths["ai_trade_report_md"]),
+        "ai_trade_report_llm_response_json": str(trade_paths["ai_trade_report_llm_response_json"]),
     }
     canonical_refs = {
         key: value
@@ -752,6 +708,7 @@ def _build_trade_report_inputs(
         }
     )
     return {
+        "trade_paths": trade_paths,
         "story_input": story_input,
         "lifecycle": lifecycle,
         "lifecycle_bundle": lifecycle_bundle,
@@ -792,13 +749,15 @@ def generate_single_trade_report(
         }
 
     inputs = _build_trade_report_inputs(str(trade_id or "").strip(), state, root=repo_root)
+    trade_paths = inputs.get("trade_paths") if isinstance(inputs.get("trade_paths"), dict) else {}
     story_input = dict(inputs.get("story_input") or {})
     lifecycle = dict(inputs.get("lifecycle") or {})
     lifecycle_bundle = dict(inputs.get("lifecycle_bundle") or {})
     day = _resolve_trade_day(story_input if isinstance(story_input, dict) else state, root=repo_root)
     run_id = str(story_input.get("run_id") or state.get("run_id") or "").strip()
     symbol = str(story_input.get("symbol") or _execution_symbol(state)).strip()
-    trade_paths = trade_artifact_paths(reports_root, day, trade_id)
+    if not trade_paths:
+        trade_paths = trade_artifact_paths(reports_root, day, trade_id)
     trade_paths["trade_root"].mkdir(parents=True, exist_ok=True)
     trade_paths["reports_dir"].mkdir(parents=True, exist_ok=True)
 

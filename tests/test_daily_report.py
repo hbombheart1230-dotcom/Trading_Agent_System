@@ -12,6 +12,8 @@ def test_daily_artifact_paths_use_single_canonical_root(tmp_path: Path) -> None:
     assert paths["root_dir"] == tmp_path / "reports" / "daily" / "2026-03-20"
     assert paths["daily_report_json"] == tmp_path / "reports" / "daily" / "2026-03-20" / "daily_report.json"
     assert paths["operator_summary_json"] == tmp_path / "reports" / "daily" / "2026-03-20" / "operator_summary.json"
+    assert "legacy_operator_summary_json" not in paths
+    assert "legacy_operator_summary_md" not in paths
 
 
 def test_generate_daily_report(tmp_path: Path):

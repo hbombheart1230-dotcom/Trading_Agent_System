@@ -306,11 +306,12 @@ def generate_phase5_validation_bundle(
     daily_md, daily_json = generate_daily_report(event_log_path, reports_root, day=day)
     daily_payload = _read_json(daily_json)
     operator_md, operator_json = generate_operator_daily_summary(event_log_path, reports_root, day=day)
+    manual_dir = reports_root / "dev" / "manual"
     decision_story_md, decision_story = generate_decision_story_report(
-        event_log_path, reports_root / "decision_story", day=day, max_runs=max_runs, trade_only=True
+        event_log_path, manual_dir / "decision_story", day=day, max_runs=max_runs, trade_only=True
     )
     run_cards_md, run_cards = generate_run_card_report(
-        event_log_path, reports_root / "run_cards", day=day, max_runs=max_runs, trade_only=True
+        event_log_path, manual_dir / "run_cards", day=day, max_runs=max_runs, trade_only=True
     )
     trade_explain_md, trade_explain_json, trade_explain = generate_trade_explain_report(
         event_log_path,

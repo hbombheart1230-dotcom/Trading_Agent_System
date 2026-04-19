@@ -34,6 +34,119 @@ def _read_json_dict(path: Path) -> Dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except Exception:
+        return int(default)
+
+
+def _top_counter_keys(mapping: Any, *, limit: int = 3) -> List[str]:
+    if not isinstance(mapping, dict):
+        return []
+    rows: List[tuple[str, float]] = []
+    for key, value in mapping.items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        try:
+            score = float(value)
+        except Exception:
+            score = 0.0
+        rows.append((name, score))
+    rows.sort(key=lambda item: (-item[1], item[0]))
+    return [name for name, _score in rows[: max(1, int(limit))]]
+
+
+def _extract_route_mix_digest(report: Dict[str, Any], reports_root: Path) -> Dict[str, Any]:
+    source_reports = report.get("source_reports") if isinstance(report.get("source_reports"), dict) else {}
+    trade_explain_path_raw = str(source_reports.get("trade_explain_json") or "").strip()
+    trade_explain_path = Path(trade_explain_path_raw) if trade_explain_path_raw else Path()
+    if trade_explain_path and not trade_explain_path.is_absolute():
+        trade_explain_path = Path(reports_root) / trade_explain_path
+    trade_explain_obj = _read_json_dict(trade_explain_path) if str(trade_explain_path) else {}
+    route_summary = trade_explain_obj.get("route_summary") if isinstance(trade_explain_obj.get("route_summary"), dict) else {}
+    route_selected_total = route_summary.get("route_selected_total") if isinstance(route_summary.get("route_selected_total"), dict) else {}
+    route_selected_total = {str(k): _safe_int(v, 0) for k, v in dict(route_selected_total or {}).items() if str(k or "").strip()}
+    total = sum(int(v) for v in route_selected_total.values())
+
+    def _ratio(name: str) -> float:
+        if total <= 0:
+            return 0.0
+        return round(float(_safe_int(route_selected_total.get(name), 0)) / float(total), 4)
+
+    return {
+        "route_selected_total": route_selected_total,
+        "monitor_only_ratio": _ratio("monitor_only"),
+        "cached_strategist_ratio": _ratio("cached_strategist"),
+        "full_cycle_ratio": _ratio("full_cycle"),
+        "route_source": str(route_summary.get("route_source") or ""),
+    }
+
+
+def _load_reporter_analysis_digest(reports_root: Path, day: str) -> Dict[str, Any]:
+    report_path = (
+        Path(reports_root)
+        / "dev"
+        / "analysis"
+        / "reporter_analysis"
+        / f"reporter_analysis_{str(day or '').strip()}.json"
+    )
+    report = _read_json_dict(report_path)
+    if not report:
+        return {
+            "available": False,
+            "status": "missing",
+            "ai_run_grade": "",
+            "ai_summary": "",
+            "top_improvement_suggestions": [],
+            "recommended_actions": [],
+            "dominant_risks": [],
+            "system_health": "",
+            "report_focus_targets": [],
+            "scanner_selection_status": "",
+            "monitor_status": "",
+            "top_monitor_reasons": [],
+            "top_scanner_sources": [],
+            "top_supervisor_blockers": [],
+            "incident_total": 0,
+            "artifact_path": str(report_path),
+        }
+
+    operator_summary = report.get("operator_facing_summary") if isinstance(report.get("operator_facing_summary"), dict) else {}
+    scanner_evaluation = report.get("scanner_evaluation") if isinstance(report.get("scanner_evaluation"), dict) else {}
+    monitor_evaluation = report.get("monitor_evaluation") if isinstance(report.get("monitor_evaluation"), dict) else {}
+    supervisor_activity = report.get("supervisor_activity") if isinstance(report.get("supervisor_activity"), dict) else {}
+    incidents = report.get("incident_postmortem") if isinstance(report.get("incident_postmortem"), dict) else {}
+    route_mix = _extract_route_mix_digest(report, reports_root)
+    recommended_actions = [str(x or "") for x in list(operator_summary.get("recommended_actions") or []) if str(x or "").strip()][:3]
+    dominant_risks = [str(x or "") for x in list((report.get("ai_root_causes") or report.get("improvement_suggestions") or [])) if str(x or "").strip()][:3]
+    top_improvements = [str(x or "") for x in list((report.get("ai_improvement_suggestions") or report.get("improvement_suggestions") or [])) if str(x or "").strip()][:3]
+    return {
+        "available": True,
+        "status": "ok",
+        "ai_run_grade": str(report.get("ai_run_grade") or ""),
+        "ai_summary": str(report.get("ai_summary") or "")[:280],
+        "top_improvement_suggestions": top_improvements,
+        "recommended_actions": recommended_actions,
+        "dominant_risks": dominant_risks,
+        "system_health": str(operator_summary.get("system_health") or "").strip(),
+        "report_focus_targets": [
+            str(x or "").strip()
+            for x in list(report.get("report_focus_targets") or [])
+            if str(x or "").strip()
+        ][:4],
+        "scanner_selection_status": str(scanner_evaluation.get("selection_status") or "").strip(),
+        "monitor_status": str(monitor_evaluation.get("monitor_status") or "").strip(),
+        "top_monitor_reasons": _top_counter_keys(monitor_evaluation.get("monitor_reason_top"), limit=4),
+        "top_scanner_sources": _top_counter_keys(scanner_evaluation.get("candidate_source_top"), limit=3),
+        "top_supervisor_blockers": _top_counter_keys(supervisor_activity.get("blocked_reason_top"), limit=3),
+        "incident_total": int(float(incidents.get("incident_total") or 0)),
+        "route_mix": route_mix,
+        "artifact_path": str(report_path),
+    }
+
+
 def _list_unique(values: List[str], *, limit: int = 8) -> List[str]:
     out: List[str] = []
     for value in values:
@@ -66,6 +179,7 @@ def _recent_patterns_from_playbooks(playbooks: Dict[str, Any], *, success: bool)
 def build_strategy_memory(
     summary: Dict[str, Any],
     playbook_stats: Dict[str, Any],
+    reporter_analysis_digest: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     summary_obj = dict(summary or {})
     playbooks = (
@@ -142,6 +256,7 @@ def build_strategy_memory(
         "recent_failures": [f"playbook:{name}" for name in failure_patterns],
         "recent_success_patterns": [f"playbook:{name}" for name in success_patterns],
         "playbook_performance_snapshot": playbook_performance_snapshot,
+        "reporter_analysis_digest": dict(reporter_analysis_digest or {}),
         "advisory_only": True,
     }
 
@@ -160,9 +275,10 @@ def write_strategy_memory(
         [],
         day=target_day,
     )
+    reporter_digest = _load_reporter_analysis_digest(root, target_day)
     if not playbook_obj.get("playbooks"):
         playbook_obj = write_playbook_stats(root, day=target_day)
-    memory = build_strategy_memory(summary_obj, playbook_obj)
+    memory = build_strategy_memory(summary_obj, playbook_obj, reporter_digest)
     memory["day"] = str(target_day or summary_obj.get("day") or playbook_obj.get("day") or "")
     paths = performance_artifact_paths(root, memory["day"])
     paths["root_dir"].mkdir(parents=True, exist_ok=True)
@@ -207,13 +323,14 @@ def load_strategy_memory_hint(
     summary = _read_json_dict(paths["summary_json"])
     playbook = _read_json_dict(paths["playbook_stats_json"])
     memory = _read_json_dict(paths["strategy_memory_json"])
+    reporter_digest = _load_reporter_analysis_digest(root, target_day)
     if not summary and auto_build:
         summary = write_performance_summary(root, day=target_day)
     if not playbook and auto_build:
         playbook = write_playbook_stats(root, day=target_day)
     if not memory:
         if summary or playbook:
-            memory = build_strategy_memory(summary, playbook)
+            memory = build_strategy_memory(summary, playbook, reporter_digest)
             memory["day"] = target_day
         else:
             memory = {
@@ -225,8 +342,11 @@ def load_strategy_memory_hint(
                 "recent_failures": [],
                 "recent_success_patterns": [],
                 "playbook_performance_snapshot": {},
+                "reporter_analysis_digest": dict(reporter_digest),
                 "advisory_only": True,
             }
+    if not isinstance(memory.get("reporter_analysis_digest"), dict) or not (memory.get("reporter_analysis_digest") or {}):
+        memory["reporter_analysis_digest"] = dict(reporter_digest)
     memory["status"] = "ok" if (memory.get("best_playbooks") or memory.get("worst_playbooks")) else "empty"
     memory["day"] = target_day
     memory.setdefault("advisory_only", True)

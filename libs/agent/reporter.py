@@ -317,7 +317,7 @@ class Reporter:
 
         events_path = self._path(event_log_path)
         root = self._path(report_dir)
-        reports_root = root if root.name != "operator_summary" else root.parent
+        reports_root = root
         md_path, js_path = generate_operator_daily_summary(
             events_path,
             root,
@@ -413,7 +413,7 @@ class Reporter:
         self,
         *,
         event_log_path: str | Path = "data/logs/events.jsonl",
-        report_dir: str | Path = "reports/run_cards",
+        report_dir: str | Path = "reports/dev/manual/run_cards",
         day: Optional[str] = None,
         max_runs: int = 120,
         trade_only: bool = True,
@@ -434,7 +434,7 @@ class Reporter:
             payload=dict(out or {}),
             reporter_input=self._build_reporter_input(
                 mode="run_cards",
-                reports_root=out_dir.parent if out_dir.name == "run_cards" else out_dir,
+                reports_root=out_dir,
                 payload=dict(out or {}),
                 flags={"day": self._normalize_day(day), "trade_only": bool(trade_only)},
             ),
@@ -445,7 +445,7 @@ class Reporter:
         self,
         *,
         event_log_path: str | Path = "data/logs/events.jsonl",
-        report_dir: str | Path = "reports/decision_story",
+        report_dir: str | Path = "reports/dev/manual/decision_story",
         day: Optional[str] = None,
         max_runs: int = 120,
         trade_only: bool = True,
@@ -466,7 +466,7 @@ class Reporter:
             payload=dict(out or {}),
             reporter_input=self._build_reporter_input(
                 mode="decision_story",
-                reports_root=out_dir.parent if out_dir.name == "decision_story" else out_dir,
+                reports_root=out_dir,
                 payload=dict(out or {}),
                 flags={"day": self._normalize_day(day), "trade_only": bool(trade_only)},
             ),

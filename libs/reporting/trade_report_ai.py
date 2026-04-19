@@ -423,6 +423,8 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
     exit_monitor_context = _as_dict(exit_summary.get("monitor_context"))
     execution_outcome = _as_dict(story_input.get("execution_outcome_human"))
     monitor_reason = _as_dict(story_input.get("monitor_reason_human"))
+    trade_read_model = _load_trade_read_model_hint(story_input)
+    trade_read_model_context = trade_read_model.get("context") if isinstance(trade_read_model.get("context"), dict) else {}
 
     fields = ["action", "status", "holding_duration", "exit_reason", "pnl", "pnl_pct"]
     resolved: Dict[str, Any] = {key: "unavailable" for key in fields}
@@ -629,6 +631,16 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
         or "unavailable",
         "thresholds": _as_dict(canonical_monitor.get("threshold_snapshot")),
     }
+    trade_model_monitor = trade_read_model_context.get("monitor") if isinstance(trade_read_model_context.get("monitor"), dict) else {}
+    if monitor_decision.get("reason_code") in {"", "unavailable"}:
+        trade_monitor_reason = _clip(
+            trade_model_monitor.get("exit_trigger") or trade_model_monitor.get("primary_blocker"),
+            max_len=220,
+        )
+        if trade_monitor_reason:
+            monitor_decision["reason_code"] = trade_monitor_reason
+    if not monitor_decision.get("thresholds") and isinstance(trade_model_monitor.get("thresholds_snapshot"), dict):
+        monitor_decision["thresholds"] = _as_dict(trade_model_monitor.get("thresholds_snapshot"))
     return {
         **resolved,
         "data_source": data_source,
@@ -649,15 +661,42 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
     canonical = _as_dict(story_input.get("canonical_agent_artifacts"))
     canonical_commander = _as_dict(canonical.get("commander"))
     canonical_commander_decision = _as_dict(canonical_commander.get("commander_decision"))
+    trade_read_model = _load_trade_read_model_hint(story_input)
+    trade_read_model_facts = trade_read_model.get("facts") if isinstance(trade_read_model.get("facts"), dict) else {}
+    trade_read_model_context = trade_read_model.get("context") if isinstance(trade_read_model.get("context"), dict) else {}
+    trade_model_report_section_seeds = (
+        trade_read_model_context.get("report_section_seeds")
+        if isinstance(trade_read_model_context.get("report_section_seeds"), dict)
+        else {}
+    )
     resolved_facts = _resolve_trade_facts_with_precedence(story_input)
+    trade_model_hold_duration_sec = trade_read_model_facts.get("hold_duration_sec")
+    if resolved_facts.get("holding_duration") in (None, "", "unavailable") and trade_model_hold_duration_sec not in (None, ""):
+        try:
+            resolved_facts["holding_duration"] = str(int(float(trade_model_hold_duration_sec)))
+            (resolved_facts.get("data_source") if isinstance(resolved_facts.get("data_source"), dict) else {}).update({"holding_duration": "trade_read_model"})
+        except Exception:
+            pass
+    if resolved_facts.get("exit_reason") in (None, "", "unavailable") and str(trade_read_model_facts.get("exit_reason") or "").strip():
+        resolved_facts["exit_reason"] = _clip(trade_read_model_facts.get("exit_reason"), max_len=280)
+        (resolved_facts.get("data_source") if isinstance(resolved_facts.get("data_source"), dict) else {}).update({"exit_reason": "trade_read_model"})
+    if resolved_facts.get("pnl") in (None, "", "unavailable") and trade_read_model_facts.get("pnl") not in (None, ""):
+        resolved_facts["pnl"] = trade_read_model_facts.get("pnl")
+        (resolved_facts.get("data_source") if isinstance(resolved_facts.get("data_source"), dict) else {}).update({"pnl": "trade_read_model"})
+    if resolved_facts.get("pnl_pct") in (None, "", "unavailable") and trade_read_model_facts.get("pnl_pct") not in (None, ""):
+        resolved_facts["pnl_pct"] = trade_read_model_facts.get("pnl_pct")
+        (resolved_facts.get("data_source") if isinstance(resolved_facts.get("data_source"), dict) else {}).update({"pnl_pct": "trade_read_model"})
     lifecycle_action = _as_action(resolved_facts.get("action")) or "WAIT"
     status_text = _as_status(resolved_facts.get("status")) or "unavailable"
+    trade_model_scanner = trade_read_model_context.get("scanner") if isinstance(trade_read_model_context.get("scanner"), dict) else {}
     scanner_evidence_status = (
         "available"
         if (
             _has_evidence_payload(story_input.get("scanner_evidence"))
             or bool(_first_nonempty_text(scanner_reason.get("selected_symbol"), scanner_reason.get("summary"), max_len=200))
             or bool(_listify(scanner_reason.get("bullets"), max_items=1, max_len=120))
+            or bool(_first_nonempty_text(trade_model_scanner.get("summary"), max_len=200))
+            or bool(_listify(trade_model_scanner.get("top_candidates"), max_items=1, max_len=120))
         )
         else "unavailable"
     )
@@ -983,6 +1022,89 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             ),
         },
     }
+    if not scanner_reasoning.get("selection_reason_with_bias") and str(trade_model_scanner.get("summary") or "").strip():
+        scanner_reasoning["selection_reason_with_bias"] = _clip(trade_model_scanner.get("summary"), max_len=320)
+    selection_trace = scanner_reasoning.get("selection_trace") if isinstance(scanner_reasoning.get("selection_trace"), dict) else {}
+    if not selection_trace.get("ranked_candidates") and isinstance(trade_model_scanner.get("top_candidates"), list):
+        selection_trace["ranked_candidates"] = [
+            {
+                "symbol": _clip((row or {}).get("symbol"), max_len=24),
+                "score_total": (row or {}).get("score_total"),
+                "rank": (row or {}).get("rank"),
+            }
+            for row in list(trade_model_scanner.get("top_candidates") or [])[:5]
+            if isinstance(row, dict)
+        ]
+    if not selection_trace.get("selected_symbol"):
+        first_ranked = ((selection_trace.get("ranked_candidates") or [None])[0] or {}) if isinstance(selection_trace.get("ranked_candidates"), list) else {}
+        if isinstance(first_ranked, dict) and str(first_ranked.get("symbol") or "").strip():
+            selection_trace["selected_symbol"] = _clip(first_ranked.get("symbol"), max_len=24)
+    if not selection_trace.get("selected_rank"):
+        first_ranked = ((selection_trace.get("ranked_candidates") or [None])[0] or {}) if isinstance(selection_trace.get("ranked_candidates"), list) else {}
+        if isinstance(first_ranked, dict) and first_ranked.get("rank") not in (None, ""):
+            selection_trace["selected_rank"] = first_ranked.get("rank")
+    if not selection_trace.get("selected_symbol_score_drivers") and isinstance(trade_model_scanner.get("score_drivers"), dict):
+        selection_trace["selected_symbol_score_drivers"] = _compact_scalar_dict(
+            trade_model_scanner.get("score_drivers"), max_items=6, max_len=120
+        )
+    scanner_reasoning["selection_trace"] = selection_trace
+
+    trade_model_monitor = trade_read_model_context.get("monitor") if isinstance(trade_read_model_context.get("monitor"), dict) else {}
+    if not monitor_reasoning.get("entry_check_summary") and str(trade_model_monitor.get("entry_reason") or "").strip():
+        monitor_reasoning["entry_check_summary"] = _clip(trade_model_monitor.get("entry_reason"), max_len=240)
+    if not monitor_reasoning.get("threshold_shortfalls") and isinstance(trade_model_monitor.get("blocker_trace"), dict):
+        monitor_reasoning["threshold_shortfalls"] = _listify(
+            (trade_model_monitor.get("blocker_trace") or {}).get("threshold_shortfalls"), max_items=4, max_len=160
+        )
+    existing_monitor_stop_trace = (
+        monitor_reasoning.get("monitor_stop_policy_trace")
+        if isinstance(monitor_reasoning.get("monitor_stop_policy_trace"), dict)
+        else {}
+    )
+    if not any(value not in (None, "", [], {}) for value in existing_monitor_stop_trace.values()) and isinstance(trade_model_monitor.get("stop_policy_trace"), dict):
+        monitor_reasoning["monitor_stop_policy_trace"] = _compact_scalar_dict(
+            trade_model_monitor.get("stop_policy_trace"), max_items=8, max_len=120
+        )
+    trade_model_strategist = trade_read_model_context.get("strategist") if isinstance(trade_read_model_context.get("strategist"), dict) else {}
+    strategist_context = {
+        "playbook": _first_nonempty_text(
+            market_context.get("playbook"),
+            market_context.get("selected_playbook"),
+            trade_model_strategist.get("playbook"),
+            max_len=80,
+        ),
+        "selected_playbook": _first_nonempty_text(
+            market_context.get("selected_playbook"),
+            market_context.get("playbook"),
+            trade_model_strategist.get("playbook"),
+            max_len=80,
+        ),
+        "policy_source": _first_nonempty_text(
+            market_context.get("policy_source"),
+            trade_model_strategist.get("policy_source"),
+            max_len=80,
+        ),
+        "themes": _listify(
+            market_context.get("themes")
+            or market_context.get("preferred_themes")
+            or trade_model_strategist.get("themes"),
+            max_items=6,
+            max_len=48,
+        ),
+        "preferred_themes": _listify(
+            market_context.get("preferred_themes")
+            or market_context.get("themes")
+            or trade_model_strategist.get("themes"),
+            max_items=6,
+            max_len=48,
+        ),
+        "market_context_summary": _first_nonempty_text(
+            market_context.get("summary"),
+            trade_model_strategist.get("market_context_summary"),
+            max_len=320,
+        ),
+    }
+
     strategist_evidence = {
         "candidate_hints": _listify(
             strategist_evidence_trace.get("candidate_hints")
@@ -1054,6 +1176,20 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_evidence_status": strategist_evidence_status,
         "commander_route": commander_route,
         "strategist_evidence": strategist_evidence,
+        "strategist_context": strategist_context,
+        "report_section_seeds": {
+            "market_context_at_entry": _as_dict(trade_model_report_section_seeds.get("market_context_at_entry")),
+            "strategist_summary": _as_dict(trade_model_report_section_seeds.get("strategist_summary")),
+            "why_this_symbol_was_chosen": _as_dict(trade_model_report_section_seeds.get("why_this_symbol_was_chosen")),
+            "entry_decision": _as_dict(trade_model_report_section_seeds.get("entry_decision")),
+            "holding_monitoring_story": _as_dict(trade_model_report_section_seeds.get("holding_monitoring_story")),
+            "exit_decision": _as_dict(trade_model_report_section_seeds.get("exit_decision")),
+            "scanner_filters": _as_dict(trade_model_report_section_seeds.get("scanner_filters")),
+            "execution_quality": _as_dict(trade_model_report_section_seeds.get("execution_quality")),
+            "guard_approval_result": _as_dict(trade_model_report_section_seeds.get("guard_approval_result")),
+            "reporter_evaluation": _as_dict(trade_model_report_section_seeds.get("reporter_evaluation")),
+            "final_operator_conclusion": _as_dict(trade_model_report_section_seeds.get("final_operator_conclusion")),
+        },
         "scanner_reasoning": scanner_reasoning,
         "monitor_reasoning": monitor_reasoning,
     }
@@ -2726,6 +2862,7 @@ def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason
     bullets: List[str] = []
     if hold_count:
         bullets.append(f"모니터는 총 {hold_count}회 실행되었습니다.")
+        bullets.append(f"Monitor runs: {hold_count}")
     if _clip(monitor_reason.get("posture"), max_len=48):
         bullets.append(f"현재 포지션 판단은 {_operator_action_label(monitor_reason.get('posture'))}입니다.")
     if _clip(monitor_reason.get("trigger_type"), max_len=64):
@@ -2764,7 +2901,7 @@ def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason
     ]
     for item in recent_updates:
         bullets.append(f"최근 모니터 업데이트는 다음과 같습니다: {item}")
-    return _dedupe_list(bullets, max_items=12, max_len=260)
+    return _dedupe_list(bullets, max_items=14, max_len=260)
 
 
 def _build_reporter_evaluation_section(
@@ -2997,6 +3134,7 @@ def _build_exit_decision_bullets(
     if _clip(monitor_context.get("trigger_type"), max_len=80):
         trigger_label = _operator_axis_label(monitor_context.get("trigger_type"))
         bullets.append(f"청산을 직접 촉발한 신호는 {trigger_label}{_korean_predicate(trigger_label)}")
+        bullets.append(f"Trigger type: {trigger_label}")
     if _clip(monitor_context.get("active_exit_axis"), max_len=120):
         axis_label = _operator_axis_label(monitor_context.get("active_exit_axis"))
         bullets.append(f"청산 시점 우선 감시 축은 {axis_label}{_korean_predicate(axis_label)}")
@@ -3031,7 +3169,7 @@ def _build_exit_decision_bullets(
         bullets.append(f"가격 기준 소스는 {_clip(monitor_context.get('price_source'), max_len=80)}입니다.")
     if _clip(monitor_context.get("feature_source"), max_len=80):
         bullets.append(f"지표 기준 소스는 {_clip(monitor_context.get('feature_source'), max_len=80)}입니다.")
-    return _dedupe_list(bullets, max_items=12, max_len=260)
+    return _dedupe_list(bullets, max_items=16, max_len=260)
 
 
 def _compact_holding_summary(holding: Any) -> Dict[str, Any]:
@@ -3181,6 +3319,32 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     monitor_reasoning = shared_seed.get("monitor_reasoning") if isinstance(shared_seed.get("monitor_reasoning"), dict) else {}
     policy_ref_context = _extract_policy_ref_context(story_input, monitor_reason)
     scanner_bias_summary = _extract_scanner_bias_summary(story_input, scanner_reason)
+    report_section_seeds = shared_seed.get("report_section_seeds") if isinstance(shared_seed.get("report_section_seeds"), dict) else {}
+    market_context_seed = _as_dict(report_section_seeds.get("market_context_at_entry"))
+    strategist_summary_seed = _as_dict(report_section_seeds.get("strategist_summary"))
+    why_symbol_seed = _as_dict(report_section_seeds.get("why_this_symbol_was_chosen"))
+    holding_story_seed = _as_dict(report_section_seeds.get("holding_monitoring_story"))
+    scanner_filters_seed = _as_dict(report_section_seeds.get("scanner_filters"))
+    market_context_summary = _clip(market_context.get("summary"), max_len=320) or _clip(market_context_seed.get("summary"), max_len=320)
+    market_context_bullets = _listify(market_context.get("bullets"), max_items=6, max_len=220) or _listify(market_context_seed.get("bullets"), max_items=6, max_len=220)
+    if not market_context_summary:
+        market_context_summary = _clip(strategist_summary_seed.get("summary"), max_len=320)
+    scanner_summary = _clip(scanner_reason.get("summary"), max_len=320) or _clip(why_symbol_seed.get("summary"), max_len=320)
+    scanner_bullets = _listify(scanner_reason.get("bullets"), max_items=6, max_len=220) or _listify(why_symbol_seed.get("bullets"), max_items=6, max_len=220)
+    filters_summary = _clip(filters_human.get("summary"), max_len=280) or _clip(scanner_filters_seed.get("summary"), max_len=280)
+    filters_bullets = _listify(filters_human.get("bullets"), max_items=6, max_len=220) or _listify(scanner_filters_seed.get("bullets"), max_items=6, max_len=220)
+    monitor_summary = _clip(monitor_reason.get("summary"), max_len=280) or _clip(holding_story_seed.get("summary"), max_len=280)
+    monitor_bullets = _listify(monitor_reason.get("bullets"), max_items=6, max_len=220) or _listify(holding_story_seed.get("bullets"), max_items=6, max_len=220)
+    guard_summary = _clip(guard_reason.get("summary"), max_len=280) or _clip((_as_dict(report_section_seeds.get("guard_approval_result"))).get("summary"), max_len=280)
+    guard_bullets = _listify(guard_reason.get("bullets"), max_items=6, max_len=220) or _listify((_as_dict(report_section_seeds.get("guard_approval_result"))).get("bullets"), max_items=6, max_len=220)
+    execution_summary = _clip(execution_outcome.get("summary"), max_len=280) or _clip((_as_dict(report_section_seeds.get("execution_quality"))).get("summary"), max_len=280)
+    execution_bullets = _listify(execution_outcome.get("bullets"), max_items=6, max_len=220) or _listify((_as_dict(report_section_seeds.get("execution_quality"))).get("bullets"), max_items=6, max_len=220)
+    reporter_summary = _clip(reporter_status.get("summary"), max_len=280) or _clip((_as_dict(report_section_seeds.get("reporter_evaluation"))).get("summary"), max_len=280)
+    reporter_bullets = _listify(reporter_status.get("bullets"), max_items=5, max_len=180) or _listify((_as_dict(report_section_seeds.get("reporter_evaluation"))).get("bullets"), max_items=5, max_len=180)
+    conclusion_current_action = _clip(operator_conclusion.get("current_action"), max_len=24) or _clip((_as_dict(report_section_seeds.get("final_operator_conclusion"))).get("current_action"), max_len=24)
+    conclusion_watch_next = _listify(operator_conclusion.get("watch_next"), max_items=5, max_len=180) or _listify((_as_dict(report_section_seeds.get("final_operator_conclusion"))).get("watch_next"), max_items=5, max_len=180)
+    conclusion_thesis_invalidation = _listify(operator_conclusion.get("thesis_invalidation"), max_items=5, max_len=180) or _listify((_as_dict(report_section_seeds.get("final_operator_conclusion"))).get("thesis_invalidation"), max_items=5, max_len=180)
+    conclusion_summary = _clip(operator_conclusion.get("summary"), max_len=280) or _clip((_as_dict(report_section_seeds.get("final_operator_conclusion"))).get("summary"), max_len=280)
     return {
         "trade_id": story_input.get("trade_id") or story_input.get("story_id"),
         "story_id": story_input.get("story_id"),
@@ -3250,8 +3414,8 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "candidate_news_titles": _listify(market_context.get("candidate_news_titles"), max_items=3, max_len=140),
             "stress_flags": _listify(market_context.get("stress_flags"), max_items=4, max_len=80),
             "news_input_summary": _clip(market_context.get("news_input_summary"), max_len=220),
-            "summary": _clip(market_context.get("summary"), max_len=320),
-            "bullets": _listify(market_context.get("bullets"), max_items=6, max_len=220),
+            "summary": market_context_summary,
+            "bullets": market_context_bullets,
         },
         "commander": {
             "command_intent": _clip(commander_route.get("command_intent"), max_len=40),
@@ -3378,16 +3542,18 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
                     max_len=120,
                 ),
             },
-            "summary": _clip(scanner_reason.get("summary"), max_len=320),
+            "summary": scanner_summary,
             "comparison": _clip(scanner_reason.get("comparison"), max_len=240),
-            "bullets": _listify(scanner_reason.get("bullets"), max_items=6, max_len=220),
+            "bullets": scanner_bullets,
         },
         "filters_human": {
-            "summary": _clip(filters_human.get("summary"), max_len=280),
-            "bullets": _listify(filters_human.get("bullets"), max_items=6, max_len=220),
+            "summary": filters_summary,
+            "bullets": filters_bullets,
         },
         "monitor_reason_human": {
             **_compact_monitor_snapshot(monitor_reason),
+            "summary": monitor_summary,
+            "bullets": monitor_bullets,
             "threshold_shortfalls": _listify(
                 monitor_reason.get("threshold_shortfalls")
                 or (monitor_reasoning.get("monitor_blocker_trace") or {}).get("threshold_shortfalls"),
@@ -3402,26 +3568,39 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             ),
         },
         "guard_reason_human": {
-            "summary": _clip(guard_reason.get("summary"), max_len=280),
+            "summary": guard_summary,
             "status": _clip(guard_reason.get("status"), max_len=32),
-            "bullets": _listify(guard_reason.get("bullets"), max_items=6, max_len=220),
+            "bullets": guard_bullets,
         },
         "execution_outcome_human": {
-            "summary": _clip(execution_outcome.get("summary"), max_len=280),
+            "summary": execution_summary,
             "status": _clip(execution_outcome.get("status"), max_len=32),
-            "bullets": _listify(execution_outcome.get("bullets"), max_items=6, max_len=220),
+            "bullets": execution_bullets,
         },
         "reporter_status_human": {
-            "summary": _clip(reporter_status.get("summary"), max_len=280),
-            "status": _clip(reporter_status.get("status"), max_len=32),
-            "grade": _clip(reporter_status.get("grade"), max_len=16),
-            "bullets": _listify(reporter_status.get("bullets"), max_items=5, max_len=180),
+            "summary": reporter_summary,
+            "status": _clip(reporter_status.get("status"), max_len=32) or _clip((_as_dict(report_section_seeds.get("reporter_evaluation"))).get("status"), max_len=32),
+            "grade": _clip(reporter_status.get("grade"), max_len=16) or _clip((_as_dict(report_section_seeds.get("reporter_evaluation"))).get("grade"), max_len=16),
+            "bullets": reporter_bullets,
         },
         "operator_conclusion_human": {
-            "summary": _clip(operator_conclusion.get("summary"), max_len=280),
-            "current_action": _clip(operator_conclusion.get("current_action"), max_len=24),
-            "watch_next": _listify(operator_conclusion.get("watch_next"), max_items=5, max_len=180),
-            "thesis_invalidation": _listify(operator_conclusion.get("thesis_invalidation"), max_items=5, max_len=180),
+            "summary": conclusion_summary,
+            "current_action": conclusion_current_action,
+            "watch_next": conclusion_watch_next,
+            "thesis_invalidation": conclusion_thesis_invalidation,
+        },
+        "report_section_seeds": {
+            key: {
+                "summary": _clip((_as_dict(value)).get("summary"), max_len=280),
+                "bullets": _listify((_as_dict(value)).get("bullets"), max_items=4, max_len=180),
+                "status": _clip((_as_dict(value)).get("status"), max_len=48),
+                "grade": _clip((_as_dict(value)).get("grade"), max_len=24),
+                "current_action": _clip((_as_dict(value)).get("current_action"), max_len=24),
+                "watch_next": _listify((_as_dict(value)).get("watch_next"), max_items=4, max_len=140),
+                "thesis_invalidation": _listify((_as_dict(value)).get("thesis_invalidation"), max_items=4, max_len=140),
+            }
+            for key, value in report_section_seeds.items()
+            if isinstance(value, dict)
         },
         "timeline": _compact_timeline_rows(story_input.get("timeline")),
         "warnings": _listify(story_input.get("warnings"), max_items=8, max_len=180),
@@ -3470,6 +3649,11 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     execution = compact.get("execution_outcome_human") if isinstance(compact.get("execution_outcome_human"), dict) else {}
     reporter = compact.get("reporter_status_human") if isinstance(compact.get("reporter_status_human"), dict) else {}
     conclusion = compact.get("operator_conclusion_human") if isinstance(compact.get("operator_conclusion_human"), dict) else {}
+    report_section_seeds = compact.get("report_section_seeds") if isinstance(compact.get("report_section_seeds"), dict) else {}
+    execution_seed = _as_dict(report_section_seeds.get("execution_quality"))
+    guard_seed = _as_dict(report_section_seeds.get("guard_approval_result"))
+    reporter_seed = _as_dict(report_section_seeds.get("reporter_evaluation"))
+    conclusion_seed = _as_dict(report_section_seeds.get("final_operator_conclusion"))
     holding = compact.get("holding_summary") if isinstance(compact.get("holding_summary"), dict) else {}
     lifecycle = compact.get("lifecycle_summary") if isinstance(compact.get("lifecycle_summary"), dict) else {}
     diagnostics = compact.get("ai_report_diagnostics") if isinstance(compact.get("ai_report_diagnostics"), dict) else {}
@@ -3695,26 +3879,39 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "reason_human": exit_summary.get("reason_human"),
         },
         "guard": {
-            "summary": guard.get("summary"),
-            "status": guard.get("status"),
-            "bullets": _listify(guard.get("bullets"), max_items=4, max_len=180),
+            "summary": guard.get("summary") or guard_seed.get("summary"),
+            "status": guard.get("status") or guard_seed.get("status"),
+            "bullets": _listify(guard.get("bullets"), max_items=4, max_len=180) or _listify(guard_seed.get("bullets"), max_items=4, max_len=180),
         },
         "execution": {
-            "summary": execution.get("summary"),
-            "status": execution.get("status"),
-            "bullets": _listify(execution.get("bullets"), max_items=4, max_len=180),
+            "summary": execution.get("summary") or execution_seed.get("summary"),
+            "status": execution.get("status") or execution_seed.get("status"),
+            "bullets": _listify(execution.get("bullets"), max_items=4, max_len=180) or _listify(execution_seed.get("bullets"), max_items=4, max_len=180),
         },
         "reporter": {
-            "summary": reporter.get("summary"),
-            "status": reporter.get("status"),
-            "grade": reporter.get("grade"),
-            "bullets": _listify(reporter.get("bullets"), max_items=3, max_len=160),
+            "summary": reporter.get("summary") or reporter_seed.get("summary"),
+            "status": reporter.get("status") or reporter_seed.get("status"),
+            "grade": reporter.get("grade") or reporter_seed.get("grade"),
+            "bullets": _listify(reporter.get("bullets"), max_items=3, max_len=160) or _listify(reporter_seed.get("bullets"), max_items=3, max_len=160),
         },
         "operator_conclusion": {
-            "summary": conclusion.get("summary"),
-            "current_action": conclusion.get("current_action"),
-            "watch_next": _listify(conclusion.get("watch_next"), max_items=3, max_len=140),
-            "thesis_invalidation": _listify(conclusion.get("thesis_invalidation"), max_items=3, max_len=140),
+            "summary": conclusion.get("summary") or conclusion_seed.get("summary"),
+            "current_action": conclusion.get("current_action") or conclusion_seed.get("current_action"),
+            "watch_next": _listify(conclusion.get("watch_next"), max_items=3, max_len=140) or _listify(conclusion_seed.get("watch_next"), max_items=3, max_len=140),
+            "thesis_invalidation": _listify(conclusion.get("thesis_invalidation"), max_items=3, max_len=140) or _listify(conclusion_seed.get("thesis_invalidation"), max_items=3, max_len=140),
+        },
+        "report_section_seeds": {
+            "market_context_at_entry": _as_dict(report_section_seeds.get("market_context_at_entry")),
+            "strategist_summary": _as_dict(report_section_seeds.get("strategist_summary")),
+            "why_this_symbol_was_chosen": _as_dict(report_section_seeds.get("why_this_symbol_was_chosen")),
+            "entry_decision": _as_dict(report_section_seeds.get("entry_decision")),
+            "holding_monitoring_story": _as_dict(report_section_seeds.get("holding_monitoring_story")),
+            "exit_decision": _as_dict(report_section_seeds.get("exit_decision")),
+            "scanner_filters": _as_dict(report_section_seeds.get("scanner_filters")),
+            "execution_quality": execution_seed,
+            "guard_approval_result": guard_seed,
+            "reporter_evaluation": reporter_seed,
+            "final_operator_conclusion": conclusion_seed,
         },
         "timeline": _compact_timeline_rows(story_input.get("timeline"), head=1, tail=5),
         "improvement_points": _listify(compact.get("improvement_points"), max_items=4, max_len=140),
@@ -3760,21 +3957,36 @@ def _normalize_provenance_entry(entry: Any) -> Dict[str, Any]:
 def _report_section_provenance(story_input: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
     source = story_input.get("section_provenance") if isinstance(story_input.get("section_provenance"), dict) else {}
     fallback = _normalize_provenance_entry({"source": "fallback", "artifact_path": "", "confidence": "low"})
+    seeded = source.get("report_section_provenance_seeds") if isinstance(source.get("report_section_provenance_seeds"), dict) else {}
+
+    def _pick(section_key: str, *legacy_keys: str) -> Dict[str, Any]:
+        direct = source.get(section_key)
+        if isinstance(direct, dict) and direct:
+            return _normalize_provenance_entry(direct)
+        seeded_entry = seeded.get(section_key)
+        if isinstance(seeded_entry, dict) and seeded_entry:
+            return _normalize_provenance_entry(seeded_entry)
+        for legacy_key in legacy_keys:
+            legacy = source.get(legacy_key)
+            if isinstance(legacy, dict) and legacy:
+                return _normalize_provenance_entry(legacy)
+        return fallback
+
     return {
-        "executive_summary": _normalize_provenance_entry(source.get("operator_conclusion_human") or fallback),
-        "market_context_at_entry": _normalize_provenance_entry(source.get("market_context_human") or fallback),
-        "strategist_summary": _normalize_provenance_entry(source.get("market_context_human") or fallback),
-        "why_this_symbol_was_chosen": _normalize_provenance_entry(source.get("scanner_reason_human") or fallback),
-        "entry_decision": _normalize_provenance_entry(source.get("scanner_reason_human") or fallback),
-        "holding_monitoring_story": _normalize_provenance_entry(source.get("monitor_reason_human") or fallback),
-        "exit_decision": _normalize_provenance_entry(source.get("monitor_reason_human") or fallback),
-        "execution_quality": _normalize_provenance_entry(source.get("execution_outcome_human") or fallback),
-        "scanner_filters": _normalize_provenance_entry(source.get("filters_human") or fallback),
-        "guard_approval_result": _normalize_provenance_entry(source.get("guard_reason_human") or fallback),
-        "reporter_evaluation": _normalize_provenance_entry(source.get("reporter_status_human") or fallback),
-        "errors_weaknesses_improvement_points": _normalize_provenance_entry(source.get("reporter_status_human") or fallback),
-        "full_timeline": _normalize_provenance_entry(source.get("timeline") or fallback),
-        "final_operator_conclusion": _normalize_provenance_entry(source.get("operator_conclusion_human") or fallback),
+        "executive_summary": _pick("executive_summary", "operator_conclusion_human"),
+        "market_context_at_entry": _pick("market_context_at_entry", "market_context_human"),
+        "strategist_summary": _pick("strategist_summary", "market_context_at_entry", "market_context_human"),
+        "why_this_symbol_was_chosen": _pick("why_this_symbol_was_chosen", "scanner_reason_human"),
+        "entry_decision": _pick("entry_decision", "why_this_symbol_was_chosen", "scanner_reason_human"),
+        "holding_monitoring_story": _pick("holding_monitoring_story", "monitor_reason_human"),
+        "exit_decision": _pick("exit_decision", "holding_monitoring_story", "monitor_reason_human"),
+        "execution_quality": _pick("execution_quality", "execution_outcome_human"),
+        "scanner_filters": _pick("scanner_filters", "filters_human"),
+        "guard_approval_result": _pick("guard_approval_result", "guard_reason_human"),
+        "reporter_evaluation": _pick("reporter_evaluation", "reporter_status_human"),
+        "errors_weaknesses_improvement_points": _pick("errors_weaknesses_improvement_points", "reporter_evaluation", "reporter_status_human"),
+        "full_timeline": _pick("full_timeline", "timeline"),
+        "final_operator_conclusion": _pick("final_operator_conclusion", "operator_conclusion_human"),
     }
 
 
@@ -3999,6 +4211,8 @@ def _operatorize_report_text(text: Any) -> str:
         "risk score was 0.563 and supervisor allow=true": "리스크 점수는 0.563이었고 supervisor 허용 상태도 유지됐습니다.",
         "price anomaly check was not captured in this run": "이번 run에서는 가격 이상치 점검 결과가 저장되지 않았습니다.",
         "price anomaly check was 기록되지 않음 in this run": "이번 run에서는 가격 이상치 점검 결과가 저장되지 않았습니다.",
+        "monitor price cross-check found no anomaly": "모니터 가격 교차검증에서 이상치가 확인되지 않았습니다.",
+        "monitor price cross-check flagged an anomaly": "모니터 가격 교차검증에서 이상치가 감지되었습니다.",
         "spread or slippage diagnostics were not captured in this run": "이번 run에서는 호가 스프레드 또는 슬리피지 진단이 저장되지 않았습니다.",
         "spread or slippage diagnostics were 기록되지 않음 in this run": "이번 run에서는 호가 스프레드 또는 슬리피지 진단이 저장되지 않았습니다.",
         "holding-phase evidence is thin; preserve more monitor context between entry and exit.": "보유 단계 근거가 얇아 진입과 청산 사이의 모니터 맥락을 더 보존해야 합니다.",
@@ -4064,6 +4278,9 @@ def _operatorize_report_text(text: Any) -> str:
     m = re.fullmatch(r"Scanner linkage:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         return f"스캐너 연결 근거는 {_clip(m.group(1), max_len=260)}입니다."
+    m = re.fullmatch(r"execution quote snapshot spread was\s*([0-9.]+)\s*bps", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"실행 시점 호가 스냅샷 기준 스프레드는 {float(m.group(1)):.1f}bps였습니다."
     m = re.fullmatch(r"Key strategist inputs:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         return f"전략가 핵심 입력은 {_clip(m.group(1), max_len=240)}입니다."
@@ -4314,6 +4531,24 @@ def _operatorize_report_text(text: Any) -> str:
     return _normalize_trade_report_language(cleaned)
 
 
+def _preserve_legacy_trade_report_bullet(value: Any) -> str:
+    cleaned = _clip(value, max_len=260)
+    if not cleaned:
+        return ""
+    legacy_prefixes = (
+        "Top candidates:",
+        "Selection decision:",
+        "Final decision basis:",
+        "Tie-break rule:",
+        "Runner-ups lost because:",
+        "Monitor runs:",
+        "Trigger type:",
+    )
+    if any(cleaned.startswith(prefix) for prefix in legacy_prefixes):
+        return cleaned
+    return ""
+
+
 def _operatorize_report_section(section: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(section or {})
     if "headline" in normalized:
@@ -4321,8 +4556,17 @@ def _operatorize_report_section(section: Dict[str, Any]) -> Dict[str, Any]:
     if "summary" in normalized:
         normalized["summary"] = _operatorize_report_text(normalized.get("summary"))
     if isinstance(normalized.get("bullets"), list):
+        normalized_bullets: List[str] = []
+        for item in list(normalized.get("bullets") or []):
+            preserved = _preserve_legacy_trade_report_bullet(item)
+            if preserved:
+                normalized_bullets.append(preserved)
+                continue
+            operatorized = _operatorize_report_text(item)
+            if operatorized:
+                normalized_bullets.append(operatorized)
         normalized["bullets"] = _dedupe_list(
-            [_operatorize_report_text(item) for item in list(normalized.get("bullets") or []) if _operatorize_report_text(item)],
+            normalized_bullets,
             max_items=12,
             max_len=260,
         )
@@ -4635,7 +4879,10 @@ def _merge_section_with_fallback(ai_section: Any, fallback_section: Dict[str, An
             )
         )
     ):
-        merged["bullets"] = fallback_bullets
+        if section_key in {"why_this_symbol_was_chosen", "scanner_candidate_comparison"}:
+            merged["bullets"] = _merge_bullets_with_fallback(section_key, ai_bullets, fallback_bullets)
+        else:
+            merged["bullets"] = fallback_bullets
     elif fallback_bullets and not any(_contains_hangul(item) for item in ai_bullets) and any(_contains_hangul(item) for item in fallback_bullets):
         merged["bullets"] = fallback_bullets
     else:
@@ -4776,6 +5023,8 @@ def _fallback_report(
     market_context = story_input.get("market_context_human") if isinstance(story_input.get("market_context_human"), dict) else {}
     strategist_evidence = shared_seed.get("strategist_evidence") if isinstance(shared_seed.get("strategist_evidence"), dict) else {}
     scanner_reason = story_input.get("scanner_reason_human") if isinstance(story_input.get("scanner_reason_human"), dict) else {}
+    has_runtime_market_context = bool(market_context)
+    has_runtime_scanner_reason = bool(scanner_reason)
     filters_human = story_input.get("filters_human") if isinstance(story_input.get("filters_human"), dict) else {}
     monitor_reason = story_input.get("monitor_reason_human") if isinstance(story_input.get("monitor_reason_human"), dict) else {}
     guard_reason = story_input.get("guard_reason_human") if isinstance(story_input.get("guard_reason_human"), dict) else {}
@@ -4787,6 +5036,19 @@ def _fallback_report(
     policy_ref_context = _extract_policy_ref_context(story_input, monitor_reason)
     scanner_bias_summary = _extract_scanner_bias_summary(story_input, scanner_reason)
     market_context = dict(market_context)
+    strategist_context = shared_seed.get("strategist_context") if isinstance(shared_seed.get("strategist_context"), dict) else {}
+    if strategist_context.get("playbook") and not market_context.get("playbook"):
+        market_context["playbook"] = strategist_context.get("playbook")
+    if strategist_context.get("selected_playbook") and not market_context.get("selected_playbook"):
+        market_context["selected_playbook"] = strategist_context.get("selected_playbook")
+    if strategist_context.get("policy_source") and not market_context.get("policy_source"):
+        market_context["policy_source"] = strategist_context.get("policy_source")
+    if strategist_context.get("themes") and not market_context.get("themes"):
+        market_context["themes"] = list(strategist_context.get("themes") or [])
+    if strategist_context.get("preferred_themes") and not market_context.get("preferred_themes"):
+        market_context["preferred_themes"] = list(strategist_context.get("preferred_themes") or [])
+    if strategist_context.get("market_context_summary") and not market_context.get("summary"):
+        market_context["summary"] = strategist_context.get("market_context_summary")
     if policy_ref_context.get("risk_mode") and not market_context.get("risk_mode"):
         market_context["risk_mode"] = policy_ref_context.get("risk_mode")
     if policy_ref_context.get("selected_playbook") and not market_context.get("selected_playbook"):
@@ -4797,6 +5059,34 @@ def _fallback_report(
         market_context["avoid_themes"] = policy_ref_context.get("avoid_themes")
     if scanner_bias_summary and not market_context.get("scanner_bias_summary"):
         market_context["scanner_bias_summary"] = scanner_bias_summary
+    scanner_reason = dict(scanner_reason)
+    has_runtime_monitor_reason = bool(monitor_reason)
+    shared_scanner_reasoning = shared_seed.get("scanner_reasoning") if isinstance(shared_seed.get("scanner_reasoning"), dict) else {}
+    shared_selection_trace = shared_scanner_reasoning.get("selection_trace") if isinstance(shared_scanner_reasoning.get("selection_trace"), dict) else {}
+    shared_report_section_seeds = shared_seed.get("report_section_seeds") if isinstance(shared_seed.get("report_section_seeds"), dict) else {}
+    market_context_seed = _as_dict(shared_report_section_seeds.get("market_context_at_entry"))
+    strategist_summary_seed = _as_dict(shared_report_section_seeds.get("strategist_summary"))
+    why_symbol_seed = _as_dict(shared_report_section_seeds.get("why_this_symbol_was_chosen"))
+    entry_decision_seed = _as_dict(shared_report_section_seeds.get("entry_decision"))
+    holding_story_seed = _as_dict(shared_report_section_seeds.get("holding_monitoring_story"))
+    exit_decision_seed = _as_dict(shared_report_section_seeds.get("exit_decision"))
+    scanner_filters_seed = _as_dict(shared_report_section_seeds.get("scanner_filters"))
+    execution_quality_seed = _as_dict(shared_report_section_seeds.get("execution_quality"))
+    guard_approval_seed = _as_dict(shared_report_section_seeds.get("guard_approval_result"))
+    reporter_evaluation_seed = _as_dict(shared_report_section_seeds.get("reporter_evaluation"))
+    final_operator_conclusion_seed = _as_dict(shared_report_section_seeds.get("final_operator_conclusion"))
+    if shared_scanner_reasoning.get("selection_reason_with_bias") and not scanner_reason.get("selection_reason_with_bias"):
+        scanner_reason["selection_reason_with_bias"] = shared_scanner_reasoning.get("selection_reason_with_bias")
+    if shared_scanner_reasoning.get("selection_reason_with_bias") and not scanner_reason.get("summary"):
+        scanner_reason["summary"] = shared_scanner_reasoning.get("selection_reason_with_bias")
+    if shared_selection_trace.get("selected_symbol") and not scanner_reason.get("selected_symbol"):
+        scanner_reason["selected_symbol"] = shared_selection_trace.get("selected_symbol")
+    if shared_selection_trace.get("selected_rank") and not scanner_reason.get("selected_rank"):
+        scanner_reason["selected_rank"] = shared_selection_trace.get("selected_rank")
+    if shared_selection_trace.get("selected_symbol_score_drivers") and not scanner_reason.get("selected_symbol_score_drivers"):
+        scanner_reason["selected_symbol_score_drivers"] = dict(shared_selection_trace.get("selected_symbol_score_drivers") or {})
+    if shared_selection_trace.get("ranked_candidates") and not scanner_reason.get("top_candidates"):
+        scanner_reason["top_candidates"] = list(shared_selection_trace.get("ranked_candidates") or [])
     action = _clip(shared_seed.get("lifecycle_action"), max_len=24) or _clip(story_input.get("action"), max_len=24) or "WAIT"
     monitor_stop_trace = _as_dict(
         monitor_reason.get("monitor_stop_policy_trace")
@@ -4849,6 +5139,7 @@ def _fallback_report(
         or scanner_selection_trace.get("news_scanner_contribution")
         or entry_scanner_context.get("news_scanner_contribution")
     )
+    effective_scanner_selection_trace = _as_dict(scanner_selection_trace) or _as_dict(shared_selection_trace)
     why_symbol_bullets = _build_scanner_choice_bullets(scanner_reason, market_context)
     if news_scanner_contribution:
         core = news_scanner_contribution.get("core_score_contributions") if isinstance(news_scanner_contribution.get("core_score_contributions"), dict) else {}
@@ -4895,6 +5186,23 @@ def _fallback_report(
         for row in extra_rows:
             if row not in existing:
                 why_symbol_bullets.append(row)
+    raw_scanner_bullets = _listify(scanner_reason.get("bullets"), max_items=8, max_len=220)
+    raw_scanner_bullets.extend(_listify(scanner_reason.get("why_selected"), max_items=4, max_len=180))
+    selection_basis_text = _clip(scanner_reason.get("selection_basis"), max_len=220)
+    if selection_basis_text:
+        raw_scanner_bullets.append(f"Final decision basis: {selection_basis_text}")
+    tie_break_text = _clip(scanner_reason.get("tie_break_rule"), max_len=220)
+    if tie_break_text:
+        raw_scanner_bullets.append(f"Tie-break rule: {tie_break_text}")
+    runner_up_summaries = [
+        f"Runner-ups lost because: {_clip((row or {}).get('symbol'), max_len=24)}: {_clip((row or {}).get('summary'), max_len=160)}"
+        for row in list(scanner_reason.get("runner_ups_lost") or [])[:4]
+        if isinstance(row, dict) and str((row or {}).get("symbol") or "").strip() and str((row or {}).get("summary") or "").strip()
+    ]
+    raw_scanner_bullets.extend(runner_up_summaries)
+    for row in raw_scanner_bullets:
+        if row and row not in why_symbol_bullets:
+            why_symbol_bullets.append(row)
 
     symbol = _clip(shared_seed.get("symbol"), max_len=32) or _clip(story_input.get("symbol"), max_len=32) or "unknown"
     trade_id = _clip(shared_seed.get("trade_id"), max_len=120) or _clip(story_input.get("trade_id") or story_input.get("story_id"), max_len=120)
@@ -4908,14 +5216,43 @@ def _fallback_report(
     )
     confidence = _clip(scanner_reason.get("confidence_label"), max_len=24) or _clip(scanner_reason.get("confidence"), max_len=24)
     scanner_choice_summary = _build_scanner_choice_summary(scanner_reason, market_context)
+    if (
+        (not has_runtime_scanner_reason and not scanner_selection_trace)
+        or not scanner_choice_summary
+        or _is_low_information_bullet(scanner_choice_summary)
+    ) and str(why_symbol_seed.get("summary") or "").strip():
+        scanner_choice_summary = _clip(why_symbol_seed.get("summary"), max_len=600)
     if str(shared_seed.get("scanner_evidence_status") or "").strip() == "unavailable":
         scanner_choice_summary = "Scanner evidence unavailable for this trade. Selection rationale is reported conservatively."
     market_context_summary = _build_market_context_summary(market_context, scanner_reason=scanner_reason)
+    if (
+        not has_runtime_market_context
+        or not market_context_summary
+        or _is_low_information_bullet(market_context_summary)
+    ) and str(market_context_seed.get("summary") or "").strip():
+        market_context_summary = _clip(market_context_seed.get("summary"), max_len=600)
     if str(shared_seed.get("strategist_evidence_status") or "").strip() == "unavailable" and (
         not market_context_summary or _is_low_information_bullet(market_context_summary)
     ):
         market_context_summary = "Strategist evidence unavailable for this trade. Market context is shown as limited."
     strategist_summary = _build_strategist_summary_section(market_context, scanner_reason)
+    strategist_summary_summary = _clip(strategist_summary.get("summary"), max_len=600)
+    if (
+        not has_runtime_market_context
+        or not strategist_summary_summary
+        or _is_low_information_bullet(strategist_summary_summary)
+    ) and str(strategist_summary_seed.get("summary") or "").strip():
+        strategist_summary["summary"] = _clip(strategist_summary_seed.get("summary"), max_len=600)
+    if (not strategist_summary.get("bullets")) and isinstance(strategist_summary_seed.get("bullets"), list):
+        strategist_summary["bullets"] = _listify(strategist_summary_seed.get("bullets"), max_items=10, max_len=260)
+    if not why_symbol_bullets and isinstance(why_symbol_seed.get("bullets"), list):
+        why_symbol_bullets = _listify(why_symbol_seed.get("bullets"), max_items=16, max_len=260)
+    scanner_filters_summary = _build_scanner_filters_summary(filters_human)
+    scanner_filters_bullets = _build_scanner_filters_bullets(filters_human)
+    if not filters_human and str(scanner_filters_seed.get("summary") or "").strip():
+        scanner_filters_summary = _clip(scanner_filters_seed.get("summary"), max_len=600)
+    if not filters_human and isinstance(scanner_filters_seed.get("bullets"), list):
+        scanner_filters_bullets = _listify(scanner_filters_seed.get("bullets"), max_items=10, max_len=260)
 
     entry_decision = {
         "summary": (
@@ -4925,11 +5262,27 @@ def _fallback_report(
         ),
         "bullets": _build_entry_decision_bullets(entry_summary, scanner_reason, market_context, monitor_reason, action),
     }
+    if (
+        not has_runtime_scanner_reason
+        or not _clip(entry_decision.get("summary"), max_len=600)
+        or _is_low_information_bullet(entry_decision.get("summary"))
+    ) and str(entry_decision_seed.get("summary") or "").strip():
+        entry_decision["summary"] = _clip(entry_decision_seed.get("summary"), max_len=600)
+    if (not entry_decision.get("bullets")) and isinstance(entry_decision_seed.get("bullets"), list):
+        entry_decision["bullets"] = _listify(entry_decision_seed.get("bullets"), max_items=12, max_len=260)
     hold_count = len(list(holding_summary.get("run_ids") or []))
     holding_story = {
         "summary": _build_holding_story_summary(hold_count, monitor_reason, status_text),
         "bullets": _build_holding_story_bullets(holding_summary, monitor_reason),
     }
+    if (
+        not has_runtime_monitor_reason
+        or not _clip(holding_story.get("summary"), max_len=600)
+        or _is_low_information_bullet(holding_story.get("summary"))
+    ) and str(holding_story_seed.get("summary") or "").strip():
+        holding_story["summary"] = _clip(holding_story_seed.get("summary"), max_len=600)
+    if (not holding_story.get("bullets")) and isinstance(holding_story_seed.get("bullets"), list):
+        holding_story["bullets"] = _listify(holding_story_seed.get("bullets"), max_items=12, max_len=260)
     if _clip(shared_seed.get("holding_duration"), max_len=80):
         holding_story["bullets"] = [_holding_duration_label(_clip(shared_seed.get('holding_duration'), max_len=80))] + list(
             holding_story.get("bullets") or []
@@ -4947,6 +5300,14 @@ def _fallback_report(
         ),
         "bullets": _build_exit_decision_bullets(exit_summary, exit_monitor_context, status_text=status_text),
     }
+    if (
+        not has_runtime_monitor_reason
+        or not _clip(exit_decision.get("summary"), max_len=600)
+        or _is_low_information_bullet(exit_decision.get("summary"))
+    ) and str(exit_decision_seed.get("summary") or "").strip():
+        exit_decision["summary"] = _clip(exit_decision_seed.get("summary"), max_len=600)
+    if (not exit_decision.get("bullets")) and isinstance(exit_decision_seed.get("bullets"), list):
+        exit_decision["bullets"] = _listify(exit_decision_seed.get("bullets"), max_items=12, max_len=260)
     if _clip(shared_seed.get("exit_reason"), max_len=240):
         exit_reason_label = _exit_reason_label(_clip(shared_seed.get("exit_reason"), max_len=240))
         exit_decision["bullets"] = [f"정규화된 청산 사유는 {exit_reason_label or _clip(shared_seed.get('exit_reason'), max_len=240)}입니다."] + list(
@@ -4957,6 +5318,14 @@ def _fallback_report(
         execution_outcome,
         lifecycle_summary,
     )
+    if (
+        not execution_outcome
+        or not _clip(execution_quality.get("summary"), max_len=600)
+        or _is_low_information_bullet(execution_quality.get("summary"))
+    ) and str(execution_quality_seed.get("summary") or "").strip():
+        execution_quality["summary"] = _clip(execution_quality_seed.get("summary"), max_len=600)
+    if (not execution_quality.get("bullets")) and isinstance(execution_quality_seed.get("bullets"), list):
+        execution_quality["bullets"] = _listify(execution_quality_seed.get("bullets"), max_items=12, max_len=260)
     reporter_eval = _build_reporter_evaluation_section(
         shared_seed,
         scanner_reason,
@@ -4964,6 +5333,28 @@ def _fallback_report(
         execution_outcome,
         reporter_status,
     )
+    if (
+        not reporter_status
+        or not _clip(reporter_eval.get("summary"), max_len=600)
+        or _is_low_information_bullet(reporter_eval.get("summary"))
+    ) and str(reporter_evaluation_seed.get("summary") or "").strip():
+        reporter_eval["summary"] = _clip(reporter_evaluation_seed.get("summary"), max_len=600)
+    if (not reporter_eval.get("bullets")) and isinstance(reporter_evaluation_seed.get("bullets"), list):
+        reporter_eval["bullets"] = _listify(reporter_evaluation_seed.get("bullets"), max_items=12, max_len=260)
+    reporter_eval_status = _clip(reporter_eval.get("status"), max_len=48)
+    if (
+        not reporter_status
+        or not reporter_eval_status
+        or reporter_eval_status.lower() in {"missing", "not_captured", "unknown", "n/a"}
+    ) and str(reporter_evaluation_seed.get("status") or "").strip():
+        reporter_eval["status"] = _clip(reporter_evaluation_seed.get("status"), max_len=48)
+    reporter_eval_grade = _clip(reporter_eval.get("grade"), max_len=24)
+    if (
+        not reporter_status
+        or not reporter_eval_grade
+        or reporter_eval_grade.lower() in {"missing", "not_captured", "unknown", "n/a"}
+    ) and str(reporter_evaluation_seed.get("grade") or "").strip():
+        reporter_eval["grade"] = _clip(reporter_evaluation_seed.get("grade"), max_len=24)
     weaknesses_bullets = warnings + [item for item in improvement_points if item not in warnings]
     full_timeline = [
         row
@@ -5001,6 +5392,7 @@ def _fallback_report(
             "regime": _clip(market_context.get("regime"), max_len=40),
             "market_sentiment": _clip(market_context.get("market_sentiment"), max_len=40),
             "playbook": _clip(market_context.get("playbook"), max_len=40),
+            "policy_source": _clip(market_context.get("policy_source"), max_len=80),
             "themes": _listify(market_context.get("themes"), max_items=6, max_len=80),
             "risk_mode": _clip(market_context.get("risk_mode"), max_len=40),
             "selected_playbook": _clip(market_context.get("selected_playbook"), max_len=40),
@@ -5036,6 +5428,10 @@ def _fallback_report(
                 max_items=6,
                 max_len=180,
             ),
+            "strategist_market_context_summary": _clip(
+                strategist_context.get("market_context_summary"),
+                max_len=320,
+            ),
             "scanner_linkage_summary": _build_market_scanner_linkage_bullet(market_context, scanner_reason),
         },
         "strategist_summary": strategist_summary,
@@ -5049,7 +5445,7 @@ def _fallback_report(
             "strategist_candidate_hints": _listify(
                 market_context.get("candidate_hints") or strategist_evidence.get("candidate_hints"), max_items=8, max_len=24
             ),
-            "scanner_selection_trace": scanner_selection_trace,
+            "scanner_selection_trace": effective_scanner_selection_trace,
             "news_scanner_contribution": news_scanner_contribution,
         },
         "entry_decision": entry_decision,
@@ -5065,12 +5461,18 @@ def _fallback_report(
             "monitor_stop_policy_trace": _as_dict(story_input.get("monitor_stop_policy_trace")),
         },
         "scanner_filters": {
-            "summary": _build_scanner_filters_summary(filters_human),
-            "bullets": _build_scanner_filters_bullets(filters_human),
+            "summary": scanner_filters_summary,
+            "bullets": scanner_filters_bullets,
         },
         "guard_approval_result": {
-            "summary": _clip(guard_reason.get("summary"), max_len=600),
-            "bullets": _listify(guard_reason.get("bullets"), max_items=8, max_len=260),
+            "summary": (
+                _clip(guard_reason.get("summary"), max_len=600)
+                or _clip(guard_approval_seed.get("summary"), max_len=600)
+            ),
+            "bullets": (
+                _listify(guard_reason.get("bullets"), max_items=8, max_len=260)
+                or _listify(guard_approval_seed.get("bullets"), max_items=8, max_len=260)
+            ),
         },
         "reporter_evaluation": reporter_eval,
         "errors_weaknesses_improvement_points": {
@@ -5084,10 +5486,24 @@ def _fallback_report(
         "full_timeline": full_timeline,
         "timeline": full_timeline,
         "final_operator_conclusion": {
-            "summary": _clip(operator_conclusion.get("summary"), max_len=600) or executive_reason,
-            "current_action": _clip(operator_conclusion.get("current_action"), max_len=24) or action,
-            "watch_next": _listify(operator_conclusion.get("watch_next"), max_items=6, max_len=200),
-            "thesis_invalidation": _listify(operator_conclusion.get("thesis_invalidation"), max_items=6, max_len=200),
+            "summary": (
+                _clip(operator_conclusion.get("summary"), max_len=600)
+                or _clip(final_operator_conclusion_seed.get("summary"), max_len=600)
+                or executive_reason
+            ),
+            "current_action": (
+                _clip(operator_conclusion.get("current_action"), max_len=24)
+                or _clip(final_operator_conclusion_seed.get("current_action"), max_len=24)
+                or action
+            ),
+            "watch_next": (
+                _listify(operator_conclusion.get("watch_next"), max_items=6, max_len=200)
+                or _listify(final_operator_conclusion_seed.get("watch_next"), max_items=6, max_len=200)
+            ),
+            "thesis_invalidation": (
+                _listify(operator_conclusion.get("thesis_invalidation"), max_items=6, max_len=200)
+                or _listify(final_operator_conclusion_seed.get("thesis_invalidation"), max_items=6, max_len=200)
+            ),
         },
         "shared_facts": {
             "symbol": symbol,
@@ -5343,6 +5759,30 @@ def _build_skipped_separated_report(trade_model: Dict[str, Any], *, reason: str)
     }
 
 
+def _resolve_separated_trade_model(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    trade_model = _load_trade_read_model_hint(story_input)
+    if isinstance(trade_model, dict) and trade_model:
+        return trade_model
+    return dict((story_input if isinstance(story_input, dict) else {}) or {})
+
+
+def _load_trade_read_model_hint(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    from pathlib import Path
+    from libs.reporting.trade_read_model import build_trade_read_model
+
+    story_input_obj = story_input if isinstance(story_input, dict) else {}
+    artifacts = story_input_obj.get("artifacts") if isinstance(story_input_obj.get("artifacts"), dict) else {}
+    artifact_root = Path(str(artifacts.get("ai_trade_report_input_json") or ""))
+    trade_root: Path | None = artifact_root.parent if artifact_root.name == "ai_trade_report_input.json" else None
+    try:
+        if trade_root is not None and trade_root.exists():
+            trade_model = build_trade_read_model(str(trade_root))
+            return trade_model if isinstance(trade_model, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
 def _trade_report_output_template() -> Dict[str, Any]:
     return {
         "executive_summary": {"headline": "", "summary": ""},
@@ -5566,6 +6006,7 @@ def _attach_report_status_matrix(
     generation["ai_trade_report_status"] = out["ai_trade_report_status"]
     out["generation"] = generation
     if "fact_payload" not in out or "narrative" not in out:
+        separated_trade_model = _resolve_separated_trade_model(story_input)
         runtime_mode = str(story_input.get("report_runtime_mode") or "").strip().lower()
         enable_separated_narrative = bool(story_input.get("enable_separated_narrative"))
         skip_separated_report_llm = bool(story_input.get("skip_separated_report_llm"))
@@ -5574,10 +6015,10 @@ def _attach_report_status_matrix(
                 from libs.reporting.fact_narrative_report import build_separated_report
 
                 separated = build_separated_report(
-                    trade_model=dict(story_input or {}),
+                    trade_model=dict(separated_trade_model or {}),
                     model=str(generation.get("model") or "").strip() or None,
                     execution_profile=_resolve_intraday_report_execution_profile(
-                        dict(story_input or {}) if isinstance(story_input, dict) else {}
+                        dict(separated_trade_model or {})
                     ),
                 )
             else:
@@ -5587,12 +6028,12 @@ def _attach_report_status_matrix(
                     else f"{runtime_mode or 'runtime'}_separated_narrative_disabled"
                 )
                 separated = _build_skipped_separated_report(
-                    dict(story_input or {}),
+                    dict(separated_trade_model or {}),
                     reason=skip_reason,
                 )
         except Exception:
             separated = {
-                "fact_payload": {"trade": dict(story_input or {}), "daily": {}, "symbol": {}},
+                "fact_payload": {"trade": dict(separated_trade_model or {}), "daily": {}, "symbol": {}},
                 "narrative": {
                     "summary": "",
                     "insight": "",

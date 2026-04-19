@@ -344,6 +344,24 @@ def _extract_upper_limit_quote_snapshot(state: Dict[str, Any], symbol: str) -> D
     return out
 
 
+def _augment_quote_snapshot_with_spread(snapshot: Dict[str, Any] | None) -> Dict[str, Any]:
+    quote = dict(snapshot or {})
+    best_ask = abs(_coerce_float(quote.get("best_ask"), 0.0))
+    best_bid = abs(_coerce_float(quote.get("best_bid"), 0.0))
+    current_price = abs(_coerce_float(quote.get("current_price"), 0.0))
+    quote["best_ask"] = float(best_ask)
+    quote["best_bid"] = float(best_bid)
+    quote["current_price"] = float(current_price)
+
+    spread_bps = 0.0
+    if best_ask > 0.0 and best_bid > 0.0:
+        mid = (best_ask + best_bid) / 2.0
+        if mid > 0.0:
+            spread_bps = ((best_ask - best_bid) / mid) * 10000.0
+    quote["spread_bps"] = float(spread_bps) if spread_bps > 0.0 else 0.0
+    return quote
+
+
 def _evaluate_upper_limit_buy_guard(state: Dict[str, Any], order: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
     action = str(order.get("action") or "").strip().upper()
     if action != "BUY":
@@ -1273,6 +1291,45 @@ def execute_from_packet(state: dict) -> dict:
     allow_result: Any = None
     portfolio_details: Dict[str, Any] = {}
     strategy_policy_summary: Dict[str, Any] = {}
+
+    def _quote_snapshot_for_order(order_obj: Dict[str, Any]) -> Dict[str, Any]:
+        symbol = _extract_order_symbol(order_obj)
+        if not symbol:
+            return {}
+        quote = _augment_quote_snapshot_with_spread(_extract_upper_limit_quote_snapshot(state, symbol))
+        if not bool(quote.get("quote_present")) and not any(
+            _coerce_float(quote.get(key), 0.0) > 0.0 for key in ("best_bid", "best_ask", "spread_bps")
+        ):
+            return {}
+        return quote
+
+    def _ensure_execution_quote_snapshot(execution_payload: Dict[str, Any]) -> Dict[str, Any]:
+        execution_obj = execution_payload if isinstance(execution_payload, dict) else {}
+        quote_snapshot = execution_obj.get("quote_snapshot") if isinstance(execution_obj.get("quote_snapshot"), dict) else {}
+        if not quote_snapshot:
+            payload_obj = execution_obj.get("payload") if isinstance(execution_obj.get("payload"), dict) else {}
+            quote_snapshot = payload_obj.get("quote_snapshot") if isinstance(payload_obj.get("quote_snapshot"), dict) else {}
+        if not quote_snapshot:
+            quote_snapshot = _quote_snapshot_for_order(order)
+        if not quote_snapshot:
+            return execution_obj
+        quote_snapshot = _augment_quote_snapshot_with_spread(quote_snapshot)
+        execution_obj["quote_snapshot"] = dict(quote_snapshot)
+        for key in ("best_bid", "best_ask", "spread_bps"):
+            value = quote_snapshot.get(key)
+            if value not in (None, "", 0, 0.0):
+                execution_obj[key] = float(_coerce_float(value, 0.0))
+        payload_obj = execution_obj.get("payload") if isinstance(execution_obj.get("payload"), dict) else {}
+        if payload_obj is not None:
+            payload_obj = dict(payload_obj)
+            payload_obj.setdefault("quote_snapshot", dict(quote_snapshot))
+            for key in ("best_bid", "best_ask", "spread_bps"):
+                value = quote_snapshot.get(key)
+                if value not in (None, "", 0, 0.0):
+                    payload_obj.setdefault(key, float(_coerce_float(value, 0.0)))
+            execution_obj["payload"] = payload_obj
+        return execution_obj
+
     def _persist_execution_artifacts(*, supervisor_allowed: bool, supervisor_reason: str, supervisor_details: Dict[str, Any] | None = None) -> None:
         try:
             write_supervisor_artifact(
@@ -1288,6 +1345,7 @@ def execute_from_packet(state: dict) -> dict:
         try:
             execution_payload = state.get("execution") if isinstance(state.get("execution"), dict) else {}
             if execution_payload:
+                _ensure_execution_quote_snapshot(execution_payload)
                 write_executor_artifact(state, execution=execution_payload, order=order)
         except Exception:
             pass

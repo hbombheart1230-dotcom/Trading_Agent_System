@@ -316,7 +316,13 @@ def _build_strategist_input_summary(
         market_news_sample = dict(compact.get("market_news_sample") or {})
     if not candidate_news_sample and isinstance(compact.get("candidate_news_sample"), dict):
         candidate_news_sample = dict(compact.get("candidate_news_sample") or {})
+    market_regime_hint = str(src.get("market_regime_hint") or compact.get("market_regime_hint") or "").strip()
+    market_sentiment_hint = str(src.get("market_sentiment_hint") or compact.get("market_sentiment_hint") or "").strip()
+    playbook_hint = str(src.get("playbook_hint") or compact.get("playbook_hint") or "").strip()
     return {
+        "market_regime_hint": market_regime_hint,
+        "market_sentiment_hint": market_sentiment_hint,
+        "playbook_hint": playbook_hint,
         "global_sentiment_score": _safe_float(global_signal.get("score"), None),
         "vix_level": _safe_float(fear_index.get("level"), _safe_float(macro_moves.get("vix_level"), None)),
         "vix_change_pct": _safe_float(fear_index.get("change_pct"), _safe_float(macro_moves.get("vix_pct"), None)),
@@ -344,6 +350,18 @@ def _enrich_strategist_from_input_summary(
     if not summary:
         return out
     out["input_summary"] = dict(summary)
+    if not str(out.get("market_regime") or "").strip():
+        out["market_regime"] = str(summary.get("market_regime_hint") or "").strip()
+    if not str(out.get("market_sentiment") or "").strip():
+        out["market_sentiment"] = str(summary.get("market_sentiment_hint") or "").strip()
+    if not str(out.get("playbook") or "").strip():
+        out["playbook"] = str(summary.get("playbook_hint") or "").strip()
+    if not list(out.get("themes") or []):
+        out["themes"] = [
+            str(x or "")
+            for x in list(summary.get("themes_hint") or [])
+            if str(x or "").strip()
+        ]
     if out.get("global_sentiment_score") in (None, ""):
         out["global_sentiment_score"] = summary.get("global_sentiment_score")
 
@@ -622,50 +640,124 @@ def _enrich_filters_from_evidence(
     scanner_evidence: Dict[str, Any],
     *,
     selected_symbol: str,
+    monitor_evidence: Optional[Dict[str, Any]] = None,
+    entry_execution_details: Optional[Dict[str, Any]] = None,
+    exit_execution_details: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     out = dict(filters_human or {})
     coverage = _normalized_feature_coverage_from_scanner_evidence(scanner_evidence, selected_symbol=selected_symbol)
-    if not coverage:
-        return out
+    price_anomaly_check: Optional[Dict[str, str]] = None
+    execution_spread_check: Optional[Dict[str, str]] = None
 
-    present = safe_int(coverage.get("present"), 0)
-    total = safe_int(coverage.get("total"), 0)
-    ratio = _safe_float(coverage.get("coverage_ratio"), 0.0) or 0.0
-    if total <= 0:
-        chart_status = "NOT_AVAILABLE"
-        chart_note = "feature snapshot not available"
-    elif ratio >= 0.75:
-        chart_status = "PASS"
-        chart_note = f"{present}/{total} captured chart features"
-    elif ratio >= 0.5:
-        chart_status = "PARTIAL"
-        chart_note = f"{present}/{total} captured chart features"
-    else:
-        chart_status = "FAIL"
-        chart_note = f"{present}/{total} captured chart features"
+    def _visit_monitor_payload(node: Any) -> None:
+        nonlocal price_anomaly_check
+        if price_anomaly_check is not None:
+            return
+        if isinstance(node, dict):
+            if "price_anomaly_flag" in node:
+                flagged = bool(node.get("price_anomaly_flag"))
+                reason = str(node.get("price_anomaly_reason") or "").strip()
+                price_anomaly_check = {
+                    "name": "price anomaly filter",
+                    "status": "FAIL" if flagged else "PASS",
+                    "detail": reason if flagged and reason else ("monitor price cross-check flagged an anomaly" if flagged else "monitor price cross-check found no anomaly"),
+                }
+                return
+            for value in node.values():
+                _visit_monitor_payload(value)
+                if price_anomaly_check is not None:
+                    return
+        elif isinstance(node, list):
+            for value in node:
+                _visit_monitor_payload(value)
+                if price_anomaly_check is not None:
+                    return
+
+    _visit_monitor_payload(monitor_evidence)
+    def _resolve_execution_spread_check() -> Optional[Dict[str, str]]:
+        spread_threshold_bps = 50.0
+        for details in (entry_execution_details, exit_execution_details):
+            if not isinstance(details, dict):
+                continue
+            quote_snapshot = details.get("quote_snapshot") if isinstance(details.get("quote_snapshot"), dict) else {}
+            spread_bps = details.get("spread_bps")
+            if spread_bps in (None, ""):
+                spread_bps = quote_snapshot.get("spread_bps")
+            if spread_bps in (None, ""):
+                continue
+            try:
+                spread_value = float(spread_bps)
+            except Exception:
+                continue
+            return {
+                "name": "spread/slippage filter",
+                "status": "PASS" if spread_value <= spread_threshold_bps else "FAIL",
+                "detail": f"execution quote snapshot spread was {spread_value:.1f} bps",
+            }
+        return None
+
+    execution_spread_check = _resolve_execution_spread_check()
+    present = 0
+    total = 0
+    ratio = 0.0
+    chart_status = "NOT_AVAILABLE"
+    chart_note = "feature snapshot not available"
+    coverage_quality = "missing"
+    chart_available = bool(coverage)
+    if coverage:
+        present = safe_int(coverage.get("present"), 0)
+        total = safe_int(coverage.get("total"), 0)
+        ratio = _safe_float(coverage.get("coverage_ratio"), 0.0) or 0.0
+        coverage_quality = str(coverage.get("quality") or "").strip().lower() or chart_status.lower()
+        if total <= 0:
+            chart_status = "NOT_AVAILABLE"
+            chart_note = "feature snapshot not available"
+        elif ratio >= 0.75:
+            chart_status = "PASS"
+            chart_note = f"{present}/{total} captured chart features"
+        elif ratio >= 0.5:
+            chart_status = "PARTIAL"
+            chart_note = f"{present}/{total} captured chart features"
+        else:
+            chart_status = "FAIL"
+            chart_note = f"{present}/{total} captured chart features"
 
     summary = str(out.get("summary") or "").strip()
-    if summary:
-        summary = re.sub(
-            r"Chart completeness was [^.]*(?:\.)?",
-            f"Chart completeness was {str(coverage.get('quality') or chart_status.lower()).lower()} with {present}/{total} captured features.",
-            summary,
-            flags=re.IGNORECASE,
-        )
-    else:
-        summary = f"Scanner and guard checks were captured. Chart completeness was {str(coverage.get('quality') or chart_status.lower()).lower()} with {present}/{total} captured features."
-    out["summary"] = summary
+    if chart_available:
+        if summary:
+            summary = re.sub(
+                r"Chart completeness was [^.]*(?:\.)?",
+                f"Chart completeness was {coverage_quality} with {present}/{total} captured features.",
+                summary,
+                flags=re.IGNORECASE,
+            )
+        else:
+            summary = f"Scanner and guard checks were captured. Chart completeness was {coverage_quality} with {present}/{total} captured features."
+        out["summary"] = summary
 
     checks = [dict(x) for x in list(out.get("checks") or []) if isinstance(x, dict)]
     updated_checks: List[Dict[str, Any]] = []
     replaced_check = False
+    replaced_price_anomaly = False
+    replaced_spread_check = False
     for check in checks:
-        if str(check.get("name") or "").strip().lower() == "chart completeness filter":
+        check_name = str(check.get("name") or "").strip().lower()
+        if check_name == "chart completeness filter" and chart_available:
             check["status"] = chart_status
             check["detail"] = chart_note
             replaced_check = True
+        elif check_name == "price anomaly filter" and price_anomaly_check is not None:
+            check["status"] = str(price_anomaly_check.get("status") or check.get("status") or "")
+            check["detail"] = str(price_anomaly_check.get("detail") or check.get("detail") or "")
+            replaced_price_anomaly = True
+        elif check_name == "spread/slippage filter" and execution_spread_check is not None:
+            current_status = str(check.get("status") or "").strip().upper()
+            if current_status in {"", "NOT_AVAILABLE", "UNKNOWN"}:
+                check["status"] = str(execution_spread_check.get("status") or check.get("status") or "")
+                check["detail"] = str(execution_spread_check.get("detail") or check.get("detail") or "")
+                replaced_spread_check = True
         updated_checks.append(check)
-    if not replaced_check:
+    if chart_available and not replaced_check:
         updated_checks.append(
             {
                 "name": "chart completeness filter",
@@ -673,22 +765,54 @@ def _enrich_filters_from_evidence(
                 "detail": chart_note,
             }
         )
+    if price_anomaly_check is not None and not replaced_price_anomaly:
+        updated_checks.append(dict(price_anomaly_check))
+    if execution_spread_check is not None and not replaced_spread_check:
+        updated_checks.append(dict(execution_spread_check))
     if updated_checks:
         out["checks"] = updated_checks
 
     bullets = [str(x or "") for x in list(out.get("bullets") or []) if str(x or "").strip()]
     updated_bullets: List[str] = []
     replaced = False
+    replaced_price_bullet = False
+    replaced_spread_bullet = False
     for bullet in bullets:
-        if bullet.lower().startswith("chart completeness filter:"):
+        if bullet.lower().startswith("chart completeness filter:") and chart_available:
             updated_bullets.append(f"chart completeness filter: {chart_status} - {chart_note}")
             replaced = True
+        elif bullet.lower().startswith("price anomaly filter:") and price_anomaly_check is not None:
+            updated_bullets.append(
+                f"price anomaly filter: {price_anomaly_check['status']} - {price_anomaly_check['detail']}"
+            )
+            replaced_price_bullet = True
+        elif bullet.lower().startswith("spread/slippage filter:") and execution_spread_check is not None:
+            current_status = ""
+            match = re.match(r"spread/slippage filter:\s*([A-Z_]+)\s*-", bullet, flags=re.IGNORECASE)
+            if match:
+                current_status = str(match.group(1) or "").strip().upper()
+            if current_status in {"", "NOT_AVAILABLE", "UNKNOWN"}:
+                updated_bullets.append(
+                    f"spread/slippage filter: {execution_spread_check['status']} - {execution_spread_check['detail']}"
+                )
+                replaced_spread_bullet = True
+            else:
+                updated_bullets.append(bullet)
         else:
             updated_bullets.append(bullet)
-    if not replaced:
+    if chart_available and not replaced:
         updated_bullets.append(f"chart completeness filter: {chart_status} - {chart_note}")
+    if price_anomaly_check is not None and not replaced_price_bullet:
+        updated_bullets.append(
+            f"price anomaly filter: {price_anomaly_check['status']} - {price_anomaly_check['detail']}"
+        )
+    if execution_spread_check is not None and not replaced_spread_bullet:
+        updated_bullets.append(
+            f"spread/slippage filter: {execution_spread_check['status']} - {execution_spread_check['detail']}"
+        )
     out["bullets"] = updated_bullets[:8]
-    out["feature_coverage"] = dict(coverage)
+    if coverage:
+        out["feature_coverage"] = dict(coverage)
     return out
 
 
@@ -697,6 +821,7 @@ def _build_strategist_input_artifacts(
     *,
     day: str,
     trade_id: str,
+    reports_root: Path | None = None,
     strategist_evidence: Dict[str, Any] | None = None,
     evidence_rows: List[Dict[str, Any]] | None = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -732,6 +857,23 @@ def _build_strategist_input_artifacts(
     ).strip()
 
     source_stage = str(prompt_row.get("stage") or input_row.get("stage") or "").strip()
+    if not source_input and not compact_input and reports_root is not None and source_run_id:
+        prompt_artifact = _read_json_if_exists(
+            Path(reports_root) / "llm" / str(day or "") / str(source_run_id) / "strategist" / "prompt.json"
+        )
+        prompt_payload = {}
+        if isinstance(prompt_artifact, dict):
+            prompt_payload = (
+                prompt_artifact.get("payload")
+                if isinstance(prompt_artifact.get("payload"), dict)
+                else prompt_artifact.get("user_payload")
+                if isinstance(prompt_artifact.get("user_payload"), dict)
+                else {}
+            )
+            if prompt_payload:
+                source_input = dict(prompt_payload)
+                compact_input = dict(prompt_payload)
+                source_stage = str(prompt_artifact.get("stage") or source_stage or "").strip()
     reconstructed = bool(source_input or compact_input or system_prompt or user_prompt)
     input_artifact = {
         "schema_version": "strategist_input_artifact.v1",
@@ -1820,6 +1962,57 @@ def _resolve_strategist_source_run_ids(
     return sorted(strategist_run_ids), linked_cached_frames
 
 
+def _expand_targeted_run_ids_with_cached_strategist_sources(
+    *,
+    event_rows: List[Dict[str, Any]],
+    targeted_run_ids: Iterable[str],
+) -> Set[str]:
+    out: Set[str] = {
+        str(run_id or "").strip()
+        for run_id in list(targeted_run_ids or [])
+        if str(run_id or "").strip()
+    }
+    if not out:
+        return out
+
+    strategist_frame_rows = [
+        row
+        for row in list(event_rows or [])
+        if str(row.get("agent") or row.get("stage") or "").strip().lower() == "strategist"
+        and _row_event_name(row) == "strategist.decision_frame"
+    ]
+    strategist_frame_rows.sort(key=lambda row: _to_epoch(row.get("ts")) or 0)
+    if not strategist_frame_rows:
+        return out
+
+    fast_path_rows = [
+        row
+        for row in list(event_rows or [])
+        if str(row.get("run_id") or "").strip() in out
+        and _row_event_name(row) == "commander_router.fast_path"
+    ]
+    for fast_path in fast_path_rows:
+        payload = fast_path.get("payload") if isinstance(fast_path.get("payload"), dict) else {}
+        if str(payload.get("path") or "").strip() != "integrated_chain_cached_frame":
+            continue
+        target_run_id = str(fast_path.get("run_id") or "").strip()
+        target_ts = _to_epoch(fast_path.get("ts")) or 0
+        reuse_sec = max(30, safe_int(payload.get("reuse_sec"), 180))
+        candidate_rows = [
+            row
+            for row in strategist_frame_rows
+            if str(row.get("run_id") or "").strip() != target_run_id
+            and (_to_epoch(row.get("ts")) or 0) <= target_ts
+            and target_ts - (_to_epoch(row.get("ts")) or 0) <= reuse_sec + 30
+        ]
+        if not candidate_rows:
+            continue
+        source_run_id = str(candidate_rows[-1].get("run_id") or "").strip()
+        if source_run_id:
+            out.add(source_run_id)
+    return out
+
+
 def _latest_event_payload(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not rows:
         return {}
@@ -2845,6 +3038,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             for row in list(execution_runs or [])
             if str(row.get("run_id") or "").strip()
         )
+        targeted_run_ids = _expand_targeted_run_ids_with_cached_strategist_sources(
+            event_rows=day_event_rows,
+            targeted_run_ids=targeted_run_ids,
+        )
         day_event_rows = _filter_rows_by_run_ids(day_event_rows, targeted_run_ids)
         day_evidence_rows = _filter_rows_by_run_ids(day_evidence_rows, targeted_run_ids)
     if targeted_mode:
@@ -2860,10 +3057,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     daily_paths = daily_artifact_paths(reports_root, day)
     operator_summary_json = daily_paths["operator_summary_json"]
     operator_summary_md = daily_paths["operator_summary_md"]
-    if not operator_summary_json.exists():
-        operator_summary_json = daily_paths["legacy_operator_summary_json"]
-    if not operator_summary_md.exists():
-        operator_summary_md = daily_paths["legacy_operator_summary_md"]
     canonical_trades_root = reports_root / "trades"
     year_part, month_part = (day.split("-") + ["01", "01"])[:2]
 
@@ -3285,9 +3478,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             lifecycle_bundle,
             day=day,
             trade_id=trade_id,
+            reports_root=reports_root,
             strategist_evidence=strategist_evidence,
             evidence_rows=day_evidence_rows,
         )
+        write_json(strategist_input_path, strategist_input_artifact)
+        write_json(strategist_compact_input_path, strategist_compact_input_artifact)
         lifecycle_bundle["strategist"] = _enrich_strategist_from_input_summary(
             lifecycle_bundle.get("strategist") if isinstance(lifecycle_bundle.get("strategist"), dict) else {},
             strategist_input_artifact,
@@ -3305,6 +3501,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             else {},
             scanner_evidence,
         )
+        lifecycle_bundle["scanner_evidence"] = scanner_evidence if isinstance(scanner_evidence, dict) else {}
+        lifecycle_bundle["monitor_evidence"] = monitor_timeline if isinstance(monitor_timeline, dict) else {}
         lifecycle_bundle["filters_human"] = build_filters_human(
             lifecycle_bundle.get("scanner") if isinstance(lifecycle_bundle.get("scanner"), dict) else {},
             lifecycle_bundle.get("strategist") if isinstance(lifecycle_bundle.get("strategist"), dict) else {},
@@ -3321,6 +3519,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 ).get("selected_symbol")
                 or symbol
             ),
+            monitor_evidence=monitor_timeline,
         )
         strategy_anchor_run_id = str(
             ((strategist_input_artifact.get("meta") or {}).get("source_run_id") or "")

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -10,11 +9,6 @@ from typing import Dict, List, Optional
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-
-def _sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
 
 def _iter_trade_dirs(reports_root: Path, day: str) -> List[Path]:
     day_root = reports_root / "trades" / day
@@ -27,40 +21,17 @@ def _sync_trade(trade_dir: Path, *, dry_run: bool = False) -> Dict[str, str]:
     primary = trade_dir / "reports" / "brief_llm_response.json"
     if not primary.exists():
         return {"trade_id": trade_dir.name, "status": "skip_no_primary"}
-
-    legacy_targets = [
-        trade_dir / "brief" / "brief_llm_response.json",
-        trade_dir / "brief_llm_response.json",
-    ]
-    primary_hash = _sha(primary)
-    changed = 0
-    created = 0
-    for target in legacy_targets:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            if _sha(target) == primary_hash:
-                continue
-            if not dry_run:
-                target.write_bytes(primary.read_bytes())
-            changed += 1
-        else:
-            if not dry_run:
-                target.write_bytes(primary.read_bytes())
-            created += 1
-
-    status = "unchanged"
-    if created or changed:
-        status = "synced"
     return {
         "trade_id": trade_dir.name,
-        "status": status,
-        "created": str(created),
-        "changed": str(changed),
+        "status": "canonical_present",
+        "canonical_path": str(primary),
+        "deprecated_legacy_sync": "true",
+        "dry_run": str(bool(dry_run)).lower(),
     }
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="One-time sync of legacy brief LLM artifacts from normalized reports path.")
+    p = argparse.ArgumentParser(description="Deprecated utility: inspect canonical brief LLM artifacts without creating legacy duplicates.")
     p.add_argument("--day", required=True)
     p.add_argument("--reports-root", default="reports")
     p.add_argument("--dry-run", action="store_true")

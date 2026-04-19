@@ -16,7 +16,7 @@ from graphs.pipelines.offhours_validation import run_offhours_validation_once
 from libs.core.settings import load_env_file
 from libs.reporting.agent_pipeline_trace import generate_agent_pipeline_trace_report
 from libs.reporting.reporter_analysis import generate_reporter_analysis_report
-from libs.reporting.trade_explain import generate_trade_explain_report
+from libs.reporting.trade_explain import generate_trade_explain_report, official_trade_explain_report_dir
 
 
 def _resolve_path(raw: str, default_rel: str) -> Path:
@@ -199,7 +199,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     trade_md, trade_js, trade_out = generate_trade_explain_report(
         event_log_path=event_log_path,
-        report_dir=reports_root / "trade_explain",
+        report_dir=official_trade_explain_report_dir(reports_root),
         day=day,
     )
     reporter_md, reporter_js, reporter_out = generate_reporter_analysis_report(

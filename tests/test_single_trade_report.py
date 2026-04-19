@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 import libs.reporting.single_trade_report as single_trade_report
 import libs.reporting.trade_report_ai as trade_report_ai
+from libs.reporting.intraday_trade_reports import build_same_day_reporter_linkage
 from libs.reporting.trade_read_model import build_trade_read_model
 
 
@@ -277,6 +278,10 @@ def test_commander_runtime_restores_intraday_bundle_helper_for_live_reports() ->
     assert "from graphs.nodes.reporter_node import reporter_node" in source
     assert "state = _emit_intraday_trade_report(state)" in source
     assert "generate_single_trade_report(" not in source
+
+
+def test_single_trade_report_reuses_shared_same_day_linkage_helper() -> None:
+    assert single_trade_report.build_same_day_reporter_linkage is build_same_day_reporter_linkage
 
 
 def test_single_trade_report_output_is_readable_by_existing_reader(tmp_path: Path, monkeypatch) -> None:

@@ -13,8 +13,8 @@
   - `reports/milestones/m30_golive/m30_final_golive_signoff_<day>.json`
   - `reports/milestones/m31_slo_incident/m31_slo_incident_<day>.json`
 - Output:
-  - `reports/operator_summary/operator_summary_<day>.md`
-  - `reports/operator_summary/operator_summary_<day>.json`
+  - `reports/daily/<day>/operator_summary.md`
+  - `reports/daily/<day>/operator_summary.json`
 - Sections:
   - Executive Summary
   - System Health Status
@@ -26,7 +26,7 @@
 2. `scripts/run_decision_story_report.py`
 - Input: `events.jsonl` run lifecycle events
 - Output:
-  - `reports/decision_story/decision_story_<day>.md`
+  - `reports/dev/manual/decision_story/decision_story_<day>.md`
 - Per-run story:
   - run_id
   - symbol
@@ -42,7 +42,7 @@
 3. `scripts/run_run_card_report.py`
 - Input: `events.jsonl`
 - Output:
-  - `reports/run_cards/run_cards_<day>.md`
+  - `reports/dev/manual/run_cards/run_cards_<day>.md`
 - Card fields:
   - run_id
   - symbol
@@ -102,4 +102,3 @@ python scripts/run_run_card_report.py --day 2026-03-07 --json
 - recommended_action:
   - Review allowlist, notional limits, and decision thresholds causing frequent guard blocks.
 ```
-

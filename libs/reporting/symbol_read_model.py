@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import json
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
 
+from libs.reporting.llm_artifacts import symbol_artifact_paths
 from libs.reporting.trade_read_model import build_trade_read_model
 
 
@@ -35,6 +37,102 @@ def _is_unknown_quality_field(field_name: str, value: Any) -> bool:
     return False
 
 
+def _read_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _derive_symbol_read_model_from_memory(reports_root: Path, symbol: str) -> Dict[str, Any]:
+    paths = symbol_artifact_paths(reports_root, symbol)
+    memory = _read_json(paths["symbol_memory_json"])
+    if not memory:
+        return {}
+
+    trade_stats = memory.get("trade_stats") if isinstance(memory.get("trade_stats"), dict) else {}
+    playbook_stats = memory.get("playbook_stats") if isinstance(memory.get("playbook_stats"), dict) else {}
+    pattern_stats = memory.get("pattern_stats") if isinstance(memory.get("pattern_stats"), dict) else {}
+    monitor_patterns = memory.get("monitor_patterns") if isinstance(memory.get("monitor_patterns"), dict) else {}
+
+    closed_trade_count = int(_safe_float(trade_stats.get("completed_trade_count"), 0.0))
+    win_rate = _safe_float(trade_stats.get("win_rate"), 0.0)
+    win_count = int(round(closed_trade_count * win_rate))
+    loss_count = max(0, closed_trade_count - win_count)
+
+    dominant_playbook = "unknown"
+    best_count = -1
+    for playbook, stats in playbook_stats.items():
+        count = int(_safe_float((stats or {}).get("count"), 0.0))
+        if count > best_count and str(playbook or "").strip():
+            best_count = count
+            dominant_playbook = str(playbook).strip()
+
+    recent_success_pattern: List[Dict[str, Any]] = []
+    for name in list(pattern_stats.get("successful_entry_patterns") or [])[:3]:
+        text = str(name or "").strip()
+        if not text:
+            continue
+        recent_success_pattern.append(
+            {
+                "playbook": dominant_playbook if dominant_playbook != "unknown" else "",
+                "entry_reason": text,
+                "exit_reason": "unknown",
+                "count": 0,
+            }
+        )
+
+    repeated_failure_pattern: List[Dict[str, Any]] = []
+    for name in list(pattern_stats.get("failed_entry_patterns") or [])[:2]:
+        text = str(name or "").strip()
+        if text:
+            repeated_failure_pattern.append({"type": "entry_pattern", "value": text, "count": 0})
+    for name in list(pattern_stats.get("common_monitor_failures") or [])[:2]:
+        text = str(name or "").strip()
+        if text:
+            repeated_failure_pattern.append({"type": "blocker", "value": text, "count": 0})
+
+    dominant_monitor_blocker = "unknown"
+    blockers = [str(x or "").strip() for x in list(monitor_patterns.get("repeated_blockers") or []) if str(x or "").strip()]
+    if blockers:
+        dominant_monitor_blocker = blockers[0]
+
+    return {
+        "symbol": str(memory.get("symbol") or symbol).strip().upper(),
+        "trade_count": int(_safe_float(trade_stats.get("trade_count"), 0.0)),
+        "closed_trade_count": closed_trade_count,
+        "win_count": win_count,
+        "loss_count": loss_count,
+        "win_rate": win_rate,
+        "total_pnl": 0.0,
+        "avg_pnl": 0.0,
+        "avg_pnl_pct": _safe_float(trade_stats.get("avg_return_pct"), 0.0),
+        "avg_hold_duration_sec": _safe_float(trade_stats.get("avg_hold_seconds"), 0.0),
+        "dominant_playbook": dominant_playbook,
+        "dominant_entry_reason": "unknown",
+        "dominant_exit_reason": str(monitor_patterns.get("dominant_exit_failure_axis") or "unknown"),
+        "dominant_monitor_blocker": dominant_monitor_blocker,
+        "recent_success_pattern": recent_success_pattern,
+        "repeated_failure_pattern": repeated_failure_pattern,
+        "data_quality": {
+            "unknown_fields_ratio": 0.0,
+            "data_source": "symbol_memory",
+        },
+    }
+
+
 def build_symbol_read_model(trades_root: str, symbol: str) -> Dict[str, Any]:
     """
     Phase 6-1 Task 3: Build a deterministic cumulative read model for a specific symbol.
@@ -47,6 +145,11 @@ def build_symbol_read_model(trades_root: str, symbol: str) -> Dict[str, Any]:
     root_path = Path(trades_root)
     if not root_path.exists() or not root_path.is_dir():
         return _empty_symbol_read_model(target_symbol)
+
+    reports_root = root_path.parent if root_path.name.lower() == "trades" else root_path
+    persisted = _derive_symbol_read_model_from_memory(reports_root, target_symbol)
+    if persisted:
+        return persisted
 
     # Find valid trade directories (depth limited for safety, though rglob is used here for simplicity in read-model)
     trade_dirs: List[Path] = []

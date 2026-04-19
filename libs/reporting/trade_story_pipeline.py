@@ -14,6 +14,7 @@ from libs.reporting.strategy_read_model import (
     build_news_symbol_linkage_view,
     build_strategist_feedback_input_view,
 )
+from libs.reporting.trade_read_model import normalize_trade_report_section
 from libs.reporting.trade_report_ai import resolve_shared_trade_facts
 from libs.core.symbols import normalize_symbol
 
@@ -1044,6 +1045,135 @@ def build_section_provenance(bundle_out: Dict[str, Any]) -> Dict[str, Dict[str, 
     }
 
 
+def _section_seed_provenance_entry(section_provenance: Dict[str, Any], key: str) -> Dict[str, str]:
+    entry = section_provenance.get(key) if isinstance(section_provenance.get(key), dict) else {}
+    return {
+        "source": str(entry.get("source") or "fallback"),
+        "artifact_path": str(entry.get("artifact_path") or ""),
+        "confidence": str(entry.get("confidence") or _source_confidence_label(entry.get("source"))),
+    }
+
+
+def build_report_section_seeds(
+    *,
+    market_context_human: Dict[str, Any],
+    scanner_reason_human: Dict[str, Any],
+    filters_human: Dict[str, Any],
+    monitor_reason_human: Dict[str, Any] | None = None,
+    execution_outcome_human: Dict[str, Any] | None = None,
+    guard_reason_human: Dict[str, Any] | None = None,
+    reporter_status_human: Dict[str, Any] | None = None,
+    operator_conclusion_human: Dict[str, Any] | None = None,
+) -> Dict[str, Dict[str, Any]]:
+    report_like = {
+        "market_context_at_entry": dict(market_context_human or {}),
+        "why_this_symbol_was_chosen": dict(scanner_reason_human or {}),
+        "scanner_filters": dict(filters_human or {}),
+        "holding_monitoring_story": dict(monitor_reason_human or {}),
+        "exit_decision": dict(execution_outcome_human or {}),
+        "execution_quality": dict(execution_outcome_human or {}),
+        "guard_approval_result": dict(guard_reason_human or {}),
+        "reporter_evaluation": dict(reporter_status_human or {}),
+        "final_operator_conclusion": dict(operator_conclusion_human or {}),
+    }
+    return {
+        "market_context_at_entry": normalize_trade_report_section(
+            report_like,
+            "market_context_at_entry",
+            str((market_context_human or {}).get("summary") or ""),
+            trim_text=clip,
+            clean_str_list=_list_text,
+        ),
+        "strategist_summary": normalize_trade_report_section(
+            report_like,
+            "strategist_summary",
+            str((market_context_human or {}).get("summary") or ""),
+            trim_text=clip,
+            clean_str_list=_list_text,
+        ),
+        "why_this_symbol_was_chosen": normalize_trade_report_section(
+            report_like,
+            "why_this_symbol_was_chosen",
+            str((scanner_reason_human or {}).get("summary") or ""),
+            trim_text=clip,
+            clean_str_list=_list_text,
+        ),
+        "entry_decision": normalize_trade_report_section(
+            report_like,
+            "entry_decision",
+            str((scanner_reason_human or {}).get("summary") or ""),
+            trim_text=clip,
+            clean_str_list=_list_text,
+        ),
+        "holding_monitoring_story": normalize_trade_report_section(
+            report_like,
+            "holding_monitoring_story",
+            str((monitor_reason_human or {}).get("summary") or ""),
+            trim_text=clip,
+            clean_str_list=_list_text,
+        ),
+        "exit_decision": normalize_trade_report_section(
+            report_like,
+            "exit_decision",
+            str((execution_outcome_human or {}).get("summary") or ""),
+            trim_text=clip,
+            clean_str_list=_list_text,
+        ),
+        "scanner_filters": normalize_trade_report_section(
+            report_like,
+            "scanner_filters",
+            str((filters_human or {}).get("summary") or ""),
+            trim_text=clip,
+            clean_str_list=_list_text,
+        ),
+        "execution_quality": normalize_trade_report_section(
+            report_like,
+            "execution_quality",
+            str((execution_outcome_human or {}).get("summary") or ""),
+            trim_text=clip,
+            clean_str_list=_list_text,
+        ),
+        "guard_approval_result": normalize_trade_report_section(
+            report_like,
+            "guard_approval_result",
+            str((guard_reason_human or {}).get("summary") or ""),
+            trim_text=clip,
+            clean_str_list=_list_text,
+        ),
+        "reporter_evaluation": normalize_trade_report_section(
+            report_like,
+            "reporter_evaluation",
+            str((reporter_status_human or {}).get("summary") or ""),
+            trim_text=clip,
+            clean_str_list=_list_text,
+        ),
+        "final_operator_conclusion": normalize_trade_report_section(
+            report_like,
+            "final_operator_conclusion",
+            str((operator_conclusion_human or {}).get("summary") or ""),
+            trim_text=clip,
+            clean_str_list=_list_text,
+        ),
+    }
+
+
+def build_report_section_provenance_seeds(section_provenance: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    provenance = dict(section_provenance or {})
+    return {
+        "market_context_at_entry": _section_seed_provenance_entry(provenance, "market_context_human"),
+        "strategist_summary": _section_seed_provenance_entry(provenance, "market_context_human"),
+        "why_this_symbol_was_chosen": _section_seed_provenance_entry(provenance, "scanner_reason_human"),
+        "entry_decision": _section_seed_provenance_entry(provenance, "scanner_reason_human"),
+        "holding_monitoring_story": _section_seed_provenance_entry(provenance, "monitor_reason_human"),
+        "exit_decision": _section_seed_provenance_entry(provenance, "execution_outcome_human"),
+        "scanner_filters": _section_seed_provenance_entry(provenance, "filters_human"),
+        "execution_quality": _section_seed_provenance_entry(provenance, "execution_outcome_human"),
+        "guard_approval_result": _section_seed_provenance_entry(provenance, "guard_reason_human"),
+        "reporter_evaluation": _section_seed_provenance_entry(provenance, "reporter_status_human"),
+        "final_operator_conclusion": _section_seed_provenance_entry(provenance, "operator_conclusion_human"),
+    }
+
+
 def slug(value: Any, *, max_len: int = 80) -> str:
     text = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(value or "").strip()).strip("_")
     if not text:
@@ -1802,54 +1932,125 @@ def enrich_filters_from_evidence(
     scanner_evidence: Dict[str, Any],
     *,
     selected_symbol: str,
+    monitor_evidence: Optional[Dict[str, Any]] = None,
+    entry_execution_details: Optional[Dict[str, Any]] = None,
+    exit_execution_details: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     out = dict(filters_human or {})
     coverage = _normalized_feature_coverage_from_scanner_evidence(scanner_evidence, selected_symbol=selected_symbol)
-    if not coverage:
-        return out
+    price_anomaly_check: Optional[Dict[str, str]] = None
+    execution_spread_check: Optional[Dict[str, str]] = None
 
-    present = safe_int(coverage.get("present"), 0)
-    total = safe_int(coverage.get("total"), 0)
-    coverage_quality = str(coverage.get("quality") or "").strip().lower() or "missing"
-    if total <= 0:
-        chart_status = "NOT_AVAILABLE"
-        chart_note = "feature snapshot not available"
-    elif present >= 8:
-        chart_status = "PASS"
-        chart_note = f"{present}/{total} captured chart features"
-    elif present >= 4:
-        chart_status = "PARTIAL"
-        chart_note = f"{present}/{total} captured chart features"
-    else:
-        chart_status = "FAIL"
-        chart_note = f"{present}/{total} captured chart features"
+    def _visit_monitor_payload(node: Any) -> None:
+        nonlocal price_anomaly_check
+        if price_anomaly_check is not None:
+            return
+        if isinstance(node, dict):
+            if "price_anomaly_flag" in node:
+                flagged = bool(node.get("price_anomaly_flag"))
+                reason = str(node.get("price_anomaly_reason") or "").strip()
+                price_anomaly_check = {
+                    "name": "price anomaly filter",
+                    "status": "FAIL" if flagged else "PASS",
+                    "detail": reason if flagged and reason else ("monitor price cross-check flagged an anomaly" if flagged else "monitor price cross-check found no anomaly"),
+                }
+                return
+            for value in node.values():
+                _visit_monitor_payload(value)
+                if price_anomaly_check is not None:
+                    return
+        elif isinstance(node, list):
+            for value in node:
+                _visit_monitor_payload(value)
+                if price_anomaly_check is not None:
+                    return
+
+    _visit_monitor_payload(monitor_evidence)
+
+    def _resolve_execution_spread_check() -> Optional[Dict[str, str]]:
+        spread_threshold_bps = 50.0
+        for details in (entry_execution_details, exit_execution_details):
+            if not isinstance(details, dict):
+                continue
+            quote_snapshot = details.get("quote_snapshot") if isinstance(details.get("quote_snapshot"), dict) else {}
+            spread_bps = details.get("spread_bps")
+            if spread_bps in (None, ""):
+                spread_bps = quote_snapshot.get("spread_bps")
+            if spread_bps in (None, ""):
+                continue
+            spread_value = safe_float(spread_bps, None)
+            if spread_value is None:
+                continue
+            return {
+                "name": "spread/slippage filter",
+                "status": "PASS" if spread_value <= spread_threshold_bps else "FAIL",
+                "detail": f"execution quote snapshot spread was {spread_value:.1f} bps",
+            }
+        return None
+
+    execution_spread_check = _resolve_execution_spread_check()
+    coverage_quality = "missing"
+    present = 0
+    total = 0
+    chart_status = "NOT_AVAILABLE"
+    chart_note = "feature snapshot not available"
+    chart_available = bool(coverage)
+    if coverage:
+        present = safe_int(coverage.get("present"), 0)
+        total = safe_int(coverage.get("total"), 0)
+        coverage_quality = str(coverage.get("quality") or "").strip().lower() or "missing"
+        if total <= 0:
+            chart_status = "NOT_AVAILABLE"
+            chart_note = "feature snapshot not available"
+        elif present >= 8:
+            chart_status = "PASS"
+            chart_note = f"{present}/{total} captured chart features"
+        elif present >= 4:
+            chart_status = "PARTIAL"
+            chart_note = f"{present}/{total} captured chart features"
+        else:
+            chart_status = "FAIL"
+            chart_note = f"{present}/{total} captured chart features"
 
     summary = str(out.get("summary") or "").strip()
-    if summary:
-        summary = re.sub(
-            r"Chart completeness was [^.]*(?:\.)?",
-            f"Chart completeness was {coverage_quality} with {present}/{total} captured features.",
-            summary,
-            flags=re.IGNORECASE,
-        )
-    else:
-        summary = (
-            "Scanner and guard checks were captured. "
-            f"Chart completeness was {coverage_quality} with {present}/{total} captured features."
-        )
-    out["summary"] = summary
+    if chart_available:
+        if summary:
+            summary = re.sub(
+                r"Chart completeness was [^.]*(?:\.)?",
+                f"Chart completeness was {coverage_quality} with {present}/{total} captured features.",
+                summary,
+                flags=re.IGNORECASE,
+            )
+        else:
+            summary = (
+                "Scanner and guard checks were captured. "
+                f"Chart completeness was {coverage_quality} with {present}/{total} captured features."
+            )
+        out["summary"] = summary
 
     checks = [dict(x) for x in list(out.get("checks") or []) if isinstance(x, dict)]
     updated_checks: List[Dict[str, Any]] = []
     replaced_check = False
+    replaced_price_anomaly = False
+    replaced_spread_check = False
     for check in checks:
         name = str(check.get("name") or "").strip().lower()
-        if name == "chart completeness filter":
+        if name == "chart completeness filter" and chart_available:
             check["status"] = chart_status
             check["detail"] = chart_note
             replaced_check = True
+        elif name == "price anomaly filter" and price_anomaly_check is not None:
+            check["status"] = str(price_anomaly_check.get("status") or check.get("status") or "")
+            check["detail"] = str(price_anomaly_check.get("detail") or check.get("detail") or "")
+            replaced_price_anomaly = True
+        elif name == "spread/slippage filter" and execution_spread_check is not None:
+            current_status = str(check.get("status") or "").strip().upper()
+            if current_status in {"", "NOT_AVAILABLE", "UNKNOWN"}:
+                check["status"] = str(execution_spread_check.get("status") or check.get("status") or "")
+                check["detail"] = str(execution_spread_check.get("detail") or check.get("detail") or "")
+                replaced_spread_check = True
         updated_checks.append(check)
-    if not replaced_check:
+    if chart_available and not replaced_check:
         updated_checks.append(
             {
                 "name": "chart completeness filter",
@@ -1857,22 +2058,54 @@ def enrich_filters_from_evidence(
                 "detail": chart_note,
             }
         )
+    if price_anomaly_check is not None and not replaced_price_anomaly:
+        updated_checks.append(dict(price_anomaly_check))
+    if execution_spread_check is not None and not replaced_spread_check:
+        updated_checks.append(dict(execution_spread_check))
     if updated_checks:
         out["checks"] = updated_checks
 
     bullets = [str(x or "") for x in list(out.get("bullets") or []) if str(x or "").strip()]
     updated_bullets: List[str] = []
     replaced = False
+    replaced_price_bullet = False
+    replaced_spread_bullet = False
     for bullet in bullets:
-        if bullet.lower().startswith("chart completeness filter:"):
+        if bullet.lower().startswith("chart completeness filter:") and chart_available:
             updated_bullets.append(f"chart completeness filter: {chart_status} - {chart_note}")
             replaced = True
+        elif bullet.lower().startswith("price anomaly filter:") and price_anomaly_check is not None:
+            updated_bullets.append(
+                f"price anomaly filter: {price_anomaly_check['status']} - {price_anomaly_check['detail']}"
+            )
+            replaced_price_bullet = True
+        elif bullet.lower().startswith("spread/slippage filter:") and execution_spread_check is not None:
+            current_status = ""
+            match = re.match(r"spread/slippage filter:\s*([A-Z_]+)\s*-", bullet, flags=re.IGNORECASE)
+            if match:
+                current_status = str(match.group(1) or "").strip().upper()
+            if current_status in {"", "NOT_AVAILABLE", "UNKNOWN"}:
+                updated_bullets.append(
+                    f"spread/slippage filter: {execution_spread_check['status']} - {execution_spread_check['detail']}"
+                )
+                replaced_spread_bullet = True
+            else:
+                updated_bullets.append(bullet)
         else:
             updated_bullets.append(bullet)
-    if not replaced:
+    if chart_available and not replaced:
         updated_bullets.append(f"chart completeness filter: {chart_status} - {chart_note}")
+    if price_anomaly_check is not None and not replaced_price_bullet:
+        updated_bullets.append(
+            f"price anomaly filter: {price_anomaly_check['status']} - {price_anomaly_check['detail']}"
+        )
+    if execution_spread_check is not None and not replaced_spread_bullet:
+        updated_bullets.append(
+            f"spread/slippage filter: {execution_spread_check['status']} - {execution_spread_check['detail']}"
+        )
     out["bullets"] = updated_bullets[:8]
-    out["feature_coverage"] = dict(coverage)
+    if coverage:
+        out["feature_coverage"] = dict(coverage)
     return out
 
 
@@ -1881,6 +2114,7 @@ def build_filters_human(scanner: Dict[str, Any], strategist: Dict[str, Any], sup
     sources = [str(x or "") for x in list(selected.get("sources") or []) if str(x or "").strip()]
     score_breakdown = selected.get("score_breakdown") if isinstance(selected.get("score_breakdown"), dict) else {}
     components = selected.get("component_snapshot") if isinstance(selected.get("component_snapshot"), dict) else {}
+    feature_snapshot = selected.get("feature_snapshot") if isinstance(selected.get("feature_snapshot"), dict) else {}
     coverage = normalized_feature_coverage(scanner, selected)
     checks: List[Dict[str, str]] = []
 
@@ -1903,6 +2137,16 @@ def build_filters_human(scanner: Dict[str, Any], strategist: Dict[str, Any], sup
         0.0,
     ) > -0.35
     risk_gate = bool(supervisor.get("supervisor_allow")) and safe_float(selected.get("risk_score"), 0.0) <= 1.0
+    spread_bps = selected.get("spread_bps")
+    if spread_bps in (None, ""):
+        spread_bps = feature_snapshot.get("quote_spread_bps")
+    spread_bps = (safe_float(spread_bps, 0.0) if spread_bps not in (None, "") else None)
+    spread_threshold_bps = 50.0
+    spread_status = "NOT_AVAILABLE"
+    spread_detail = "spread or slippage diagnostics were not captured in this run"
+    if spread_bps is not None:
+        spread_status = "PASS" if spread_bps <= spread_threshold_bps else "FAIL"
+        spread_detail = f"scanner quote snapshot spread was {spread_bps:.1f} bps"
 
     add_check("liquidity filter", "PASS" if liquidity_pass else "FAIL", "top value or trading-value input supported the selection")
     add_check("turnover filter", "PASS" if turnover_pass else "FAIL", "top volume or turnover input supported the selection")
@@ -1911,7 +2155,7 @@ def build_filters_human(scanner: Dict[str, Any], strategist: Dict[str, Any], sup
     add_check("sentiment gate", "PASS" if sentiment_gate else "FAIL", f"news/global sentiment contribution was {safe_float(components.get('sentiment_component'), 0.0):.3f}")
     add_check("risk gate", "PASS" if risk_gate else "FAIL", f"risk score was {safe_float(selected.get('risk_score'), 0.0):.3f} and supervisor allow={bool(supervisor.get('supervisor_allow'))}")
     add_check("price anomaly filter", "NOT_AVAILABLE", "price anomaly check was not captured in this run")
-    add_check("spread/slippage filter", "NOT_AVAILABLE", "spread or slippage diagnostics were not captured in this run")
+    add_check("spread/slippage filter", spread_status, spread_detail)
 
     passed = sum(1 for row in checks if row["status"] == "PASS")
     bullets = [f"{row['name']}: {row['status']} - {row['detail']}" for row in checks]
@@ -2109,6 +2353,8 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
     eod_carry_reason = str(monitor.get("eod_carry_reason") or "").strip()
     eod_carry_positive_signals = _list_text(monitor.get("eod_carry_positive_signals"), limit=6, max_len=120)
     eod_carry_blockers = _list_text(monitor.get("eod_carry_blockers"), limit=6, max_len=120)
+    eod_carry_anomaly = bool(monitor.get("eod_carry_anomaly"))
+    eod_carry_anomaly_reason = str(monitor.get("eod_carry_anomaly_reason") or "").strip()
     minutes_to_close = monitor.get("minutes_to_close")
     entry_threshold_gaps: List[str] = []
     if entry_metrics.get("volume_ratio") not in (None, "") and entry_thresholds.get("volume_ratio_min") not in (None, ""):
@@ -2164,6 +2410,11 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
             )
         else:
             summary = f"SELL was triggered because {trigger_type or monitor_reason or 'the exit condition passed'}."
+    elif eod_carry_anomaly:
+        summary = (
+            f"Monitor kept the position without a valid end-of-day carry decision because "
+            f"{eod_carry_anomaly_reason or 'the carry evaluation context was incomplete'}."
+        )
     elif entry_evaluated and not entry_triggered:
         summary = f"Monitor stayed on WAIT because {entry_check_summary or entry_reason or monitor_reason or 'the intraday entry signal was not confirmed'}."
         if entry_threshold_gaps:
@@ -2305,6 +2556,10 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
             bullets.append("Carry positives: " + "; ".join(eod_carry_positive_signals[:4]))
         if eod_carry_blockers:
             bullets.append("Carry blockers: " + "; ".join(eod_carry_blockers[:4]))
+    if eod_carry_anomaly:
+        bullets.append(
+            f"EOD carry anomaly: yes ({eod_carry_anomaly_reason or 'carry evaluation context missing'})"
+        )
     if watch_axes:
         bullets.append("Watch axes: " + ", ".join(watch_axes[:8]))
     if decision_reason_chain:
@@ -2386,6 +2641,8 @@ def build_monitor_reason_human(monitor: Dict[str, Any], execution: Dict[str, Any
         "eod_carry_reason": eod_carry_reason,
         "eod_carry_positive_signals": eod_carry_positive_signals,
         "eod_carry_blockers": eod_carry_blockers,
+        "eod_carry_anomaly": eod_carry_anomaly,
+        "eod_carry_anomaly_reason": eod_carry_anomaly_reason,
         "decision_reason_chain": decision_reason_chain[:6],
         "price_source": price_source,
         "feature_source": feature_source,
@@ -2769,6 +3026,9 @@ def build_trade_story_input(
             filters_human,
             scanner_evidence,
             selected_symbol=str(scanner_reason_human.get("selected_symbol") or (entry.get("scanner_context") or {}).get("selected_symbol") or symbol),
+            monitor_evidence=dict(bundle_out.get("monitor_evidence") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
+            entry_execution_details=dict((entry.get("execution_details") if isinstance(entry.get("execution_details"), dict) else {}) or bundle_out.get("entry_execution_details") or {}),
+            exit_execution_details=dict((exit_ctx.get("execution_details") if isinstance(exit_ctx.get("execution_details"), dict) else {}) or bundle_out.get("exit_execution_details") or {}),
         )
         monitor_reason_human = dict(bundle_out.get("monitor_reason_human") or {})
         guard_reason_human = dict(bundle_out.get("guard_reason_human") or {})
@@ -2920,11 +3180,22 @@ def build_trade_story_input(
             "monitor_blocker_trace",
             dict(monitor_blocker_trace),
         )
+        report_section_seeds = build_report_section_seeds(
+            market_context_human=market_context_human,
+            scanner_reason_human=scanner_reason_human,
+            filters_human=filters_human,
+            monitor_reason_human=monitor_reason_human,
+            execution_outcome_human=execution_outcome_human,
+            guard_reason_human=guard_reason_human,
+            reporter_status_human=reporter_status_human,
+            operator_conclusion_human=operator_conclusion_human,
+        )
         derived_reasoning_trace = build_reasoning_trace_from_summaries(
             commander_summary=dict(bundle_out.get("commander_summary") or {}),
             strategist_summary=dict(bundle_out.get("strategist_summary") or {}),
             scanner_summary=dict(bundle_out.get("scanner_summary") or {}),
             monitor_summary=dict(bundle_out.get("monitor_summary") or {}),
+            report_section_seeds=report_section_seeds,
             market_context_human=market_context_human,
             scanner_reason_human=scanner_reason_human,
             monitor_reason_human=monitor_reason_human,
@@ -3004,6 +3275,10 @@ def build_trade_story_input(
             )
             if commander_source_priority:
                 reasoning_provenance["source_priority"] = list(commander_source_priority)
+        section_provenance_out = dict(section_provenance)
+        section_provenance_out["report_section_provenance_seeds"] = build_report_section_provenance_seeds(
+            section_provenance_out,
+        )
         story_artifacts = dict(bundle_out.get("artifacts") or {})
         if isinstance(lifecycle.get("artifacts"), dict):
             for key, value in dict(lifecycle.get("artifacts") or {}).items():
@@ -3092,7 +3367,8 @@ def build_trade_story_input(
             "artifacts": story_artifacts,
             "canonical_agent_artifacts": canonical_agent_artifacts,
             "evidence_provenance": evidence_provenance,
-            "section_provenance": dict(section_provenance),
+            "section_provenance": section_provenance_out,
+            "report_section_seeds": dict(report_section_seeds),
             "reasoning_trace": dict(reasoning_trace),
             "reasoning_provenance": dict(reasoning_provenance),
             "evidence_source": "canonical" if any(
@@ -3108,11 +3384,22 @@ def build_trade_story_input(
         story_out["strategist_feedback_input"] = build_strategist_feedback_input_view(story_out)
         return story_out
 
+    report_section_seeds = build_report_section_seeds(
+        market_context_human=dict(bundle_out.get("market_context_human") or {}),
+        scanner_reason_human=dict(bundle_out.get("scanner_reason_human") or {}),
+        filters_human=dict(bundle_out.get("filters_human") or {}),
+        monitor_reason_human=dict(bundle_out.get("monitor_reason_human") or {}),
+        execution_outcome_human=dict(bundle_out.get("execution_outcome_human") or {}),
+        guard_reason_human=dict(bundle_out.get("guard_reason_human") or {}),
+        reporter_status_human=dict(bundle_out.get("reporter_status_human") or {}),
+        operator_conclusion_human=dict(bundle_out.get("operator_conclusion_human") or {}),
+    )
     derived_reasoning_trace = build_reasoning_trace_from_summaries(
         commander_summary=dict(bundle_out.get("commander_summary") or {}),
         strategist_summary=dict(bundle_out.get("strategist_summary") or {}),
         scanner_summary=dict(bundle_out.get("scanner_summary") or {}),
         monitor_summary=dict(bundle_out.get("monitor_summary") or {}),
+        report_section_seeds=report_section_seeds,
         market_context_human=dict(bundle_out.get("market_context_human") or {}),
         scanner_reason_human=dict(bundle_out.get("scanner_reason_human") or {}),
         monitor_reason_human=dict(bundle_out.get("monitor_reason_human") or {}),
@@ -3196,6 +3483,14 @@ def build_trade_story_input(
     scanner_reason_human = enrich_scanner_reason_from_evidence(
         dict(bundle_out.get("scanner_reason_human") or {}),
         dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
+    )
+    filters_human = enrich_filters_from_evidence(
+        dict(bundle_out.get("filters_human") or {}),
+        dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
+        selected_symbol=str(((bundle_out.get("scanner_reason_human") or {}).get("selected_symbol")) or ((bundle_out.get("execution") or {}).get("symbol")) or ""),
+        monitor_evidence=dict(bundle_out.get("monitor_evidence") or (bundle_out.get("evidence") or {}).get("monitor") or {}),
+        entry_execution_details=dict(bundle_out.get("entry_execution_details") or {}),
+        exit_execution_details=dict(bundle_out.get("exit_execution_details") or {}),
     )
     monitor_reason_human = dict(bundle_out.get("monitor_reason_human") or {})
     canonical_strategist = (
@@ -3297,6 +3592,10 @@ def build_trade_story_input(
         "monitor_blocker_trace",
         dict(monitor_blocker_trace),
     )
+    section_provenance_out = dict(section_provenance)
+    section_provenance_out["report_section_provenance_seeds"] = build_report_section_provenance_seeds(
+        section_provenance_out,
+    )
     story_out = {
         "schema_version": "trade_story_input.v1",
         "day": str(bundle_out.get("day") or ""),
@@ -3317,11 +3616,7 @@ def build_trade_story_input(
         "execution_mode_label": str(story_contract.get("execution_mode_label") or ""),
         "market_context_human": market_context_human,
         "scanner_reason_human": scanner_reason_human,
-        "filters_human": enrich_filters_from_evidence(
-            dict(bundle_out.get("filters_human") or {}),
-            dict(bundle_out.get("scanner_evidence") or (bundle_out.get("evidence") or {}).get("scanner") or {}),
-            selected_symbol=str(((bundle_out.get("scanner_reason_human") or {}).get("selected_symbol")) or ((bundle_out.get("execution") or {}).get("symbol")) or ""),
-        ),
+        "filters_human": filters_human,
         "monitor_reason_human": monitor_reason_human,
         "guard_reason_human": dict(bundle_out.get("guard_reason_human") or {}),
         "execution_outcome_human": dict(bundle_out.get("execution_outcome_human") or {}),
@@ -3342,7 +3637,8 @@ def build_trade_story_input(
         "monitor_blocker_trace": dict(monitor_blocker_trace),
         "canonical_agent_artifacts": canonical_agent_artifacts,
         "evidence_provenance": evidence_provenance,
-        "section_provenance": dict(section_provenance),
+        "section_provenance": section_provenance_out,
+        "report_section_seeds": dict(report_section_seeds),
         "reasoning_trace": dict(reasoning_trace),
         "reasoning_provenance": dict(reasoning_provenance),
         "evidence_source": "canonical" if any(

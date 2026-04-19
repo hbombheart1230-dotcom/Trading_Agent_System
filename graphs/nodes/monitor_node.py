@@ -1946,6 +1946,8 @@ def _evaluate_overnight_carry_decision(
         "approved": False,
         "action": "not_applicable",
         "reason": "",
+        "anomaly": False,
+        "anomaly_reason": "",
         "minutes_to_close": minutes_to_close,
         "cutoff_min": int(cutoff_min),
         "positive_signals": [],
@@ -1961,6 +1963,9 @@ def _evaluate_overnight_carry_decision(
         "risk_tone": str(frame.get("risk_tone") or ""),
     }
     if qty <= 0 or (not use_eod_flat) or minutes_to_close is None or minutes_to_close < 0.0 or minutes_to_close > float(cutoff_min):
+        if qty > 0 and bool(use_eod_flat) and minutes_to_close is None:
+            out["anomaly"] = True
+            out["anomaly_reason"] = "minutes_to_close_missing"
         return out
 
     out["evaluated"] = True
@@ -3158,6 +3163,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "eod_carry_blockers": list(eod_carry.get("blockers") or []),
             "eod_carry_non_eod_reason": str(eod_carry.get("non_eod_reason") or ""),
             "eod_carry_non_eod_triggered": bool(eod_carry.get("non_eod_triggered")),
+            "eod_carry_anomaly": bool(eod_carry.get("anomaly")),
+            "eod_carry_anomaly_reason": str(eod_carry.get("anomaly_reason") or ""),
             "entry_evaluated": bool(entry_info.get("evaluated")),
             "entry_triggered": bool(entry_info.get("triggered")),
             "entry_reason": str(entry_info.get("reason") or ""),

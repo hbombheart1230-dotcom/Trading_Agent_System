@@ -146,6 +146,26 @@ def test_build_trade_read_model_provenance_and_context_surfaces(tmp_path):
             "canonical_monitor_json": "reports/canonical/2026-04-15/run/monitor.json",
         },
         "canonical_executor_json": "reports/canonical/2026-04-15/run/executor.json",
+        "market_context_human": {
+            "summary": "Strategist framed the tape as neutral for semiconductors.",
+            "bullets": ["global sentiment 0.08"],
+        },
+        "scanner_reason_human": {
+            "summary": "Scanner selected 005930 after comparing ranked candidates.",
+            "bullets": ["Selected rank: #1"],
+        },
+        "filters_human": {
+            "summary": "Scanner filters mostly passed.",
+            "bullets": ["Liquidity filter passed."],
+        },
+        "monitor_reason_human": {
+            "summary": "Monitor confirmed a breakout entry and tracked drawdown controls.",
+            "bullets": ["Watch axes: reclaim, drawdown"],
+        },
+        "execution_outcome_human": {
+            "summary": "Position closed on drawdown control.",
+            "bullets": ["Exit action: SELL"],
+        },
         "evidence_provenance": {
             "scanner": {"source": "canonical"},
             "monitor": {"source": "canonical"},
@@ -168,6 +188,17 @@ def test_build_trade_read_model_provenance_and_context_surfaces(tmp_path):
     assert res["context"]["executor_execution_details"]["order_status"] == "filled"
     assert res["context"]["same_day_reporter_status"] == "missing"
     assert res["context"]["data_source_quality"]["has_canonical_artifacts"] is True
+    assert res["context"]["report_section_seeds"]["market_context_at_entry"]["summary"] == "Strategist framed the tape as neutral for semiconductors."
+    assert res["context"]["report_section_seeds"]["strategist_summary"]["summary"] == "Strategist framed the tape as neutral for semiconductors."
+    assert res["context"]["report_section_seeds"]["why_this_symbol_was_chosen"]["summary"] == "Scanner selected 005930 after comparing ranked candidates."
+    assert res["context"]["report_section_seeds"]["entry_decision"]["summary"] == "Scanner selected 005930 after comparing ranked candidates."
+    assert res["context"]["report_section_seeds"]["holding_monitoring_story"]["summary"] == "Monitor confirmed a breakout entry and tracked drawdown controls."
+    assert res["context"]["report_section_seeds"]["exit_decision"]["summary"] == "Position closed on drawdown control."
+    assert res["context"]["report_section_seeds"]["scanner_filters"]["summary"] == "Scanner filters mostly passed."
+    assert res["context"]["report_section_seeds"]["execution_quality"]["summary"] == "Position closed on drawdown control."
+    assert res["context"]["report_section_seeds"]["guard_approval_result"]["summary"] == ""
+    assert res["context"]["report_section_seeds"]["reporter_evaluation"]["summary"] == ""
+    assert res["context"]["report_section_seeds"]["final_operator_conclusion"]["summary"] == ""
     assert res["context"]["scanner"]["summary"] == "Scanner selected 005930"
     assert res["context"]["monitor"]["exit_trigger"] == "breakout_confirmation"
     assert res["context"]["strategist"]["playbook"] == "unknown"

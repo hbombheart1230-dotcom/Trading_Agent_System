@@ -23,6 +23,7 @@ Default mode is graph_spine for backward compatibility.
 
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Literal, Optional, Tuple
 
@@ -40,6 +41,7 @@ from libs.llm.model_catalog import resolve_execution_profile, resolve_model_prof
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
 from libs.runtime.scanner_policy import normalize_scanner_source_type
 from libs.runtime.canonical_artifacts import write_commander_artifact, write_commander_shadow_artifact
+from libs.runtime.market_hours import MarketHours
 from libs.runtime.resilience_state import ensure_runtime_resilience_state
 
 
@@ -172,6 +174,44 @@ def _runtime_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _runtime_clock_dt_kst(state: Dict[str, Any], *, market_hours: MarketHours | None = None) -> datetime:
+    mh = market_hours or MarketHours()
+    epoch = _coerce_int(state.get("tick_ts"), 0)
+    if epoch <= 0:
+        epoch = _coerce_int(state.get("now_epoch"), 0)
+    if epoch <= 0:
+        epoch = int(time.time())
+    return datetime.fromtimestamp(epoch, tz=mh.tz)
+
+
+def _ensure_market_context_clock_fields(
+    state: Dict[str, Any],
+    *,
+    market_hours: MarketHours | None = None,
+) -> Dict[str, Any]:
+    mh = market_hours or MarketHours()
+    market_context = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    out = dict(market_context or {})
+    if out.get("minutes_to_close") not in (None, ""):
+        state["market_context"] = out
+        return out
+    dt_kst = _runtime_clock_dt_kst(state, market_hours=mh)
+    minutes_to_close: float | None = None
+    if mh.is_open(dt_kst):
+        close_dt = dt_kst.replace(
+            hour=mh.close_time.hour,
+            minute=mh.close_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        minutes_to_close = max(0.0, (close_dt - dt_kst).total_seconds() / 60.0)
+    out["minutes_to_close"] = minutes_to_close
+    out.setdefault("market_clock_source", "runtime_clock")
+    out.setdefault("market_clock_kst", dt_kst.isoformat())
+    state["market_context"] = out
+    return out
+
+
 def _derive_commander_market_regime(state: Dict[str, Any], *, shadow_assessment: Dict[str, Any]) -> tuple[str, bool]:
     direct_regime = str(state.get("market_regime") or "").strip()
     if direct_regime:
@@ -301,6 +341,93 @@ def _summarize_monitor_entry_policy(policy: Dict[str, Any]) -> Dict[str, Any]:
         "policy_source",
     )
     return {key: row.get(key) for key in keys if key in row}
+
+
+def _monitor_entry_policy_delta_fields(previous: Dict[str, Any], current: Dict[str, Any]) -> list[str]:
+    before = dict(previous or {}) if isinstance(previous, dict) else {}
+    after = dict(current or {}) if isinstance(current, dict) else {}
+    ordered_keys: list[str] = []
+    for key in list(before.keys()) + list(after.keys()):
+        text = str(key or "").strip()
+        if text and text not in ordered_keys:
+            ordered_keys.append(text)
+    return [key for key in ordered_keys if before.get(key) != after.get(key)]
+
+
+def _compact_monitor_entry_state_for_refresh(entry_state: Dict[str, Any]) -> Dict[str, Any]:
+    raw = dict(entry_state or {}) if isinstance(entry_state, dict) else {}
+    blockers = [str(x) for x in list(raw.get("entry_blockers") or []) if str(x or "").strip()]
+    return {
+        "triggered": bool(raw.get("triggered")),
+        "current_blocking_axis": str(raw.get("current_blocking_axis") or ""),
+        "transition_readiness_score": raw.get("transition_readiness_score"),
+        "entry_blockers": blockers[:6],
+        "reclaim_distance_to_ready": raw.get("reclaim_distance_to_ready"),
+        "volume_distance_to_ready": raw.get("volume_distance_to_ready"),
+        "breakout_distance_to_ready": raw.get("breakout_distance_to_ready"),
+        "vwap_reclaim_progress": raw.get("vwap_reclaim_progress"),
+        "rebound_progress": raw.get("rebound_progress"),
+        "volume_ratio": raw.get("volume_ratio"),
+        "extended_from_vwap_pct": raw.get("extended_from_vwap_pct"),
+        "breakout_gap_pct": raw.get("breakout_gap_pct"),
+        "reclaim_gate_ok": bool(raw.get("reclaim_gate_ok")),
+        "volume_ok": bool(raw.get("volume_ok")),
+        "breakout_ok": bool(raw.get("breakout_ok")),
+        "confidence_gate_ok": bool(raw.get("confidence_gate_ok")),
+    }
+
+
+def _build_open_position_strategist_refresh_context(override_assessment: Dict[str, Any]) -> Dict[str, Any]:
+    assessment = dict(override_assessment or {}) if isinstance(override_assessment, dict) else {}
+    positions = [dict(x) for x in list(assessment.get("positions") or []) if isinstance(x, dict)]
+    selected_symbol = str(assessment.get("refresh_cooldown_symbol") or "").strip().upper()
+    selected_position = next(
+        (
+            row
+            for row in positions
+            if str(row.get("symbol") or "").strip().upper() == selected_symbol
+        ),
+        positions[0] if positions else {},
+    )
+    entry_state = _compact_monitor_entry_state_for_refresh(selected_position.get("entry_state") or {})
+    entry_blockers = [str(x) for x in list(entry_state.get("entry_blockers") or []) if str(x or "").strip()]
+    summary = (
+        f"Repeated hold refresh for {selected_symbol or 'unknown_symbol'} after "
+        f"{int(selected_position.get('hold_repeat_count') or assessment.get('hold_repeat_count_max') or 0)} "
+        f"consecutive hold cycles."
+    )
+    blocking_axis = str(entry_state.get("current_blocking_axis") or "")
+    if blocking_axis:
+        summary += f" Current blocking axis is {blocking_axis}."
+    if entry_blockers:
+        summary += f" Primary blockers: {', '.join(entry_blockers[:3])}."
+    return {
+        "refresh_scope": "open_position_monitor_refresh",
+        "refresh_summary": summary,
+        "selected_symbol": selected_symbol,
+        "open_position_count": len(positions),
+        "hold_repeat_count_max": int(assessment.get("hold_repeat_count_max") or 0),
+        "selected_hold_repeat_count": int(selected_position.get("hold_repeat_count") or 0),
+        "selected_effective_loss_ratio": selected_position.get("effective_loss_ratio"),
+        "effective_loss_ratio_min": assessment.get("effective_loss_ratio_min"),
+        "price_anomaly_flag": bool(assessment.get("price_anomaly_flag")),
+        "monitor_posture": str(selected_position.get("posture") or ""),
+        "monitor_reason": str(selected_position.get("reason") or ""),
+        "active_exit_axis": str(selected_position.get("active_exit_axis") or ""),
+        "position_qty": int(selected_position.get("qty") or 0),
+        "position_age_seconds": selected_position.get("position_age_seconds"),
+        "entry_state": dict(entry_state),
+        "reason_chain": [str(x) for x in list(assessment.get("reason_chain") or []) if str(x or "").strip()][:8],
+    }
+
+
+def _summarize_monitor_entry_policy_from_strategist_output(strategist_output: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(strategist_output or {}) if isinstance(strategist_output, dict) else {}
+    if not row:
+        return {}
+    temp_state = {"strategist_output": dict(row)}
+    applied = dict((_resolve_commander_applied_policy(temp_state) or {}).get("applied_policy") or {})
+    return _summarize_monitor_entry_policy(applied)
 
 
 def _resolve_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1422,6 +1549,22 @@ def _build_commander_decision(
         if isinstance(state.get("commander_open_position_override"), dict)
         else {}
     )
+    open_position_refresh_context = (
+        dict(state.get("commander_open_position_refresh_context") or {})
+        if isinstance(state.get("commander_open_position_refresh_context"), dict)
+        else dict(commander_override.get("strategist_refresh_context") or {})
+        if isinstance(commander_override.get("strategist_refresh_context"), dict)
+        else {}
+    )
+    if str(commander_override.get("override_action") or "").strip().lower() == "strategist_refresh":
+        strategist_refresh_requested = True
+        strategist_refresh_reason = strategist_refresh_reason or str(
+            commander_override.get("override_reason") or "repeated_hold_monitor_only"
+        )
+        strategist_refresh_context = {
+            **strategist_refresh_context,
+            **open_position_refresh_context,
+        }
     commander_applied_policy_summary = dict(state.get("commander_applied_policy_summary") or {})
     policy_sources = (
         dict(applied_policy.get("policy_sources") or {})
@@ -1450,6 +1593,9 @@ def _build_commander_decision(
             f"{decision_summary} Commander requested fresh strategist context "
             f"before rebuilding the entry frame ({strategist_refresh_reason or 'strategy_refresh'})."
         )
+        refresh_summary = str(open_position_refresh_context.get("refresh_summary") or "").strip()
+        if refresh_summary:
+            decision_summary = f"{decision_summary} {refresh_summary}"
     elif strategist_invocation == "SKIP" and strategist_cache_preferred:
         decision_summary = (
             f"{decision_summary} Commander preferred cached strategist context "
@@ -1587,6 +1733,46 @@ def _build_commander_decision(
         "allow_same_symbol_reentry": True,
         "reentry_score_gap_threshold": 0.03,
     }
+    shadow_runtime = _ensure_commander_shadow_runtime(state)
+    prior_context = dict(shadow_runtime.get("prior_context") or {}) if isinstance(shadow_runtime.get("prior_context"), dict) else {}
+    prior_monitor_entry_policy_summary = (
+        dict(prior_context.get("monitor_entry_policy_summary") or {})
+        if isinstance(prior_context.get("monitor_entry_policy_summary"), dict)
+        else {}
+    )
+    current_monitor_entry_policy_summary = dict(
+        applied_policy_meta.get("monitor_entry_policy_summary")
+        or _summarize_monitor_entry_policy(applied_policy)
+        or {}
+    )
+    if (
+        strategist_refresh_requested
+        and open_position_refresh_context
+        and not current_monitor_entry_policy_summary
+        and prior_monitor_entry_policy_summary
+    ):
+        current_monitor_entry_policy_summary = dict(prior_monitor_entry_policy_summary)
+    strategist_refresh_evaluated = bool(
+        str(commander_override.get("override_action") or "").strip().lower() == "strategist_refresh"
+        or strategist_invocation == "RUN_REFRESH"
+    )
+    strategist_refresh_policy_delta_fields = (
+        _monitor_entry_policy_delta_fields(
+            prior_monitor_entry_policy_summary,
+            current_monitor_entry_policy_summary,
+        )
+        if strategist_refresh_evaluated
+        else []
+    )
+    if strategist_refresh_requested:
+        strategist_refresh_context = {
+            **dict(strategist_refresh_context or {}),
+            "prior_monitor_entry_policy_summary": dict(prior_monitor_entry_policy_summary),
+            "current_monitor_entry_policy_summary": dict(current_monitor_entry_policy_summary),
+        }
+    strategist_refresh_effective = bool(
+        strategist_refresh_evaluated and bool(strategist_refresh_policy_delta_fields)
+    )
 
     return {
         "market_regime": market_regime,
@@ -1620,7 +1806,14 @@ def _build_commander_decision(
         "shadow_assessment_summary": shadow_reason_summary,
         "strategist_refresh_requested": strategist_refresh_requested,
         "strategist_refresh_reason": strategist_refresh_reason,
-        "strategist_refresh_context": strategist_refresh_context,
+        "strategist_refresh_context": dict(strategist_refresh_context),
+        "open_position_refresh_context": dict(open_position_refresh_context),
+        "strategist_refresh_evaluated": strategist_refresh_evaluated,
+        "strategist_refresh_effective": strategist_refresh_effective,
+        "strategist_refresh_policy_delta_fields": list(strategist_refresh_policy_delta_fields),
+        "strategist_refresh_policy_delta_count": int(len(strategist_refresh_policy_delta_fields)),
+        "prior_monitor_entry_policy_summary": dict(prior_monitor_entry_policy_summary),
+        "current_monitor_entry_policy_summary": dict(current_monitor_entry_policy_summary),
         "strategist_cache_preferred": bool(strategist_invocation == "SKIP" and strategist_cache_preferred),
         "strategist_cache_preference_reason": strategist_cache_preference_reason,
         "strategist_cache_preference_context": strategist_cache_preference_context,
@@ -1774,6 +1967,7 @@ def _seed_commander_shadow_prior_context(state: Dict[str, Any], *, prior_cached_
         "vix_level": baseline_fear_index.get("level") if baseline_fear_index.get("level") not in (None, "") else baseline_overlay.get("vix_level"),
         "stress_flags": [str(x or "").strip() for x in list(baseline_overlay.get("stress_flags") or []) if str(x or "").strip()][:8],
         "llm_status": _shadow_text(strategist_llm.get("status") or strategist_llm.get("llm_status"), max_len=40),
+        "monitor_entry_policy_summary": _summarize_monitor_entry_policy_from_strategist_output(baseline_output),
     }
     state["commander_shadow_runtime"] = shadow_runtime
 
@@ -2609,6 +2803,11 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                 "price_anomaly": bool(price_anomaly),
                 "price_anomaly_reason": str(price_anomaly_reason),
                 "hold_repeat_count": int(hold_repeat_count),
+                "posture": str(previous_posture or ""),
+                "reason": str((previous or {}).get("reason") or ""),
+                "active_exit_axis": str((previous or {}).get("active_exit_axis") or ""),
+                "entry_state": _compact_monitor_entry_state_for_refresh((previous or {}).get("entry_state") or {}),
+                "position_age_seconds": row.get("position_age_seconds"),
                 "refresh_cooldown_until": int(refresh_cooldown_until) if refresh_cooldown_until > 0 else None,
                 "refresh_cooldown_remaining_sec": max(0, int(refresh_cooldown_until - now_epoch))
                 if refresh_cooldown_until > now_epoch
@@ -2629,6 +2828,7 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
     refresh_cooldown_symbol = ""
     refresh_cooldown_until = 0
     refresh_cooldown_remaining_sec = 0
+    strategist_refresh_context: Dict[str, Any] = {}
     if override_triggered:
         if anomaly_found:
             override_action = "force_exit_review"
@@ -2662,6 +2862,16 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                 refresh_cooldown_remaining_sec = int(_OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC)
                 if refresh_cooldown_symbol:
                     next_refresh_cooldowns[refresh_cooldown_symbol] = int(refresh_cooldown_until)
+                strategist_refresh_context = _build_open_position_strategist_refresh_context(
+                    {
+                        "refresh_cooldown_symbol": refresh_cooldown_symbol,
+                        "hold_repeat_count_max": max_hold_repeat,
+                        "effective_loss_ratio_min": min_effective_loss_ratio,
+                        "price_anomaly_flag": anomaly_found,
+                        "reason_chain": list(reasons),
+                        "positions": rows_summary,
+                    }
+                )
 
     if next_refresh_cooldowns:
         persisted["commander_open_position_refresh_cooldown_until_by_symbol"] = dict(next_refresh_cooldowns)
@@ -2683,6 +2893,7 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
         "refresh_cooldown_symbol": str(refresh_cooldown_symbol),
         "refresh_cooldown_until": int(refresh_cooldown_until) if refresh_cooldown_until > 0 else None,
         "refresh_cooldown_remaining_sec": int(refresh_cooldown_remaining_sec),
+        "strategist_refresh_context": dict(strategist_refresh_context),
         "policy_source": "commander_open_position_override",
         "positions": rows_summary,
     }
@@ -2755,6 +2966,7 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
         "policy_source": "commander_open_position_override",
     }
     state.pop("force_refresh_strategist", None)
+    state.pop("commander_open_position_refresh_context", None)
     if not enabled:
         payload["reason"] = "disabled"
         return False, payload
@@ -2764,8 +2976,16 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
     override_assessment = _assess_open_position_commander_override(state)
     state["commander_open_position_override"] = dict(override_assessment)
     if bool(override_assessment.get("override_triggered")):
-        if str(override_assessment.get("override_action") or "").strip().lower() == "strategist_refresh":
+        override_action = str(override_assessment.get("override_action") or "").strip().lower()
+        if override_action == "strategist_refresh":
             state["force_refresh_strategist"] = True
+            refresh_context = (
+                dict(override_assessment.get("strategist_refresh_context") or {})
+                if isinstance(override_assessment.get("strategist_refresh_context"), dict)
+                else {}
+            )
+            if refresh_context:
+                state["commander_open_position_refresh_context"] = dict(refresh_context)
         payload.update(
             {
                 "override_triggered": True,
@@ -2782,8 +3002,16 @@ def _should_use_monitor_only_fast_path(state: Dict[str, Any]) -> Tuple[bool, Dic
                 "refresh_cooldown_remaining_sec": int(
                     override_assessment.get("refresh_cooldown_remaining_sec") or 0
                 ),
+                "strategist_refresh_context": dict(
+                    override_assessment.get("strategist_refresh_context") or {}
+                )
+                if isinstance(override_assessment.get("strategist_refresh_context"), dict)
+                else {},
             }
         )
+        if override_action == "force_exit_review":
+            payload["reason"] = "holding_position_force_exit_review_monitor_only"
+            return True, payload
         payload["reason"] = "holding_position_override_full_cycle"
         return False, payload
     if bool(override_assessment.get("override_suppressed")):
@@ -3335,6 +3563,15 @@ def _run_integrated_chain(
         state["path"] = "integrated_chain_monitor_only"
         return state
 
+    state["commander_decision"] = _build_commander_decision(
+        state,
+        mode_value="integrated_chain",
+        phase_value=str(state.get("runtime_phase") or "session"),
+        status_value=str(state.get("runtime_status") or "planning"),
+        path_value="integrated_chain_pre_strategist",
+        reason_text=str(fast_path_payload.get("reason") or ""),
+    )
+
     reused_strategist_cache, cache_payload = _should_use_cached_strategist_from_commander_skip(state)
     if not reused_strategist_cache and str(cache_payload.get("reason") or "").strip() != "commander_requested_refresh":
         reused_strategist_cache, cache_payload = _should_use_cached_strategist_when_flat(state)
@@ -3524,6 +3761,7 @@ def run_commander_runtime(
     Mode selection uses `resolve_runtime_mode(...)`.
     """
     state = ensure_runtime_resilience_state(state)
+    _ensure_market_context_clock_fields(state)
     _reset_commander_shadow_runtime(state)
 
     def _build_commander_decision_frame(

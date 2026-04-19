@@ -171,8 +171,14 @@ def test_build_live_trade_bundle_payloads_preserves_core_contract_fields(tmp_pat
             "timeline": [],
             "evidence": {"strategist_event_count": 1, "scanner_event_count": 2, "monitor_event_count": 3},
         },
-        lifecycle_bundle={"strategist": {}, "scanner": {}, "monitor": {}, "commander": {}, "artifacts": {}, "evidence_provenance": {}},
-        story_input={"selected_symbol": "000660", "candidate_count": 2, "section_provenance": {}},
+        lifecycle_bundle={"strategist": {"playbook": "defensive"}, "scanner": {}, "monitor": {}, "commander": {}, "artifacts": {}, "evidence_provenance": {}, "market_context_human": {"summary": "market summary"}},
+        story_input={
+            "selected_symbol": "000660",
+            "candidate_count": 2,
+            "section_provenance": {},
+            "market_context_human": {"summary": "market summary", "playbook": "defensive"},
+            "strategist_evidence": {"decision_frames": [{"playbook": "defensive"}]},
+        },
         summary_obj={"lifecycle_summary_human": "summary"},
         diagnostics={"report_status": "available", "llm_brief_status": "skipped", "ai_trade_report_status": "ok"},
         recovery_metadata={"trade_origin": "normal_lifecycle", "lifecycle_completeness": "complete", "evidence_recovery_used": False},
@@ -229,6 +235,9 @@ def test_build_live_trade_bundle_payloads_preserves_core_contract_fields(tmp_pat
     assert lifecycle_bundle_payload["trade_lifecycle_status"] == "closed"
     assert lifecycle_bundle_payload["selected_symbol"] == "000660"
     assert lifecycle_bundle_payload["candidate_count"] == 2
+    assert lifecycle_bundle_payload["market_context_human"]["summary"] == "market summary"
+    assert lifecycle_bundle_payload["strategist"]["playbook"] == "defensive"
+    assert lifecycle_bundle_payload["strategist_evidence"]["decision_frames"][0]["playbook"] == "defensive"
     assert links_payload["trade_id"] == "TRD_TEST"
     assert links_payload["llm_prompt_refs"]["strategist"] == "p1"
     assert result["trade_health_payload"]["report_generation_status"] == "available"

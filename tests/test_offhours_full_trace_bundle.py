@@ -128,6 +128,9 @@ def test_offhours_full_trace_bundle_builds_single_run_bundle(tmp_path: Path, cap
     assert out["schema_version"] == "offhours_full_trace_bundle.v1"
     assert out["run_id"] == "run_bundle_1"
     assert "broad market and macro queries" in out["strategist"]["news_query_reasoning"]
+    assert str(out["artifacts"]["trade_explain_json"]).replace("\\", "/").endswith(
+        "reports/dev/analysis/trade_explain/trade_explain_2026-03-12.json"
+    )
     assert out["strategist"]["global_index_moves"]["sp500_pct"] == 0.9
     assert out["scanner"]["top_stock"] == "005930"
     assert out["future_learning"]["improvement_suggestions"] == ["review exit thresholds"]

@@ -34,6 +34,7 @@ from libs.runtime.feature_engine import build_feature_map
 from libs.runtime.scanner_feature_hydration import hydrate_scanner_feature_map
 from libs.runtime.scanner_policy import resolve_scanner_runtime_policy
 from libs.strategies.contracts import coerce_strategist_output
+from libs.reporting.symbol_read_model import build_symbol_read_model
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -101,6 +102,116 @@ def _resolve_scanner_repeat_guard_policy(policy: Dict[str, Any]) -> Dict[str, An
         "streak_threshold": max(2, int(streak_threshold)),
         "streak_penalty": max(0.0, float(streak_penalty)),
         "history_limit": max(5, int(history_limit)),
+    }
+
+
+def _resolve_reports_root(state: Dict[str, Any]) -> Path:
+    raw = str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports"
+    return Path(raw)
+
+
+def _load_symbol_priors(state: Dict[str, Any], candidates: List[Any]) -> Dict[str, Dict[str, Any]]:
+    reports_root = _resolve_reports_root(state)
+    trades_root = reports_root / "trades"
+    out: Dict[str, Dict[str, Any]] = {}
+    if not trades_root.exists():
+        return out
+    for item in list(candidates or [])[:40]:
+        symbol = _norm_symbol(item.get("symbol")) if isinstance(item, dict) else _norm_symbol(item)
+        if not symbol or symbol in out:
+            continue
+        try:
+            model = build_symbol_read_model(str(trades_root), symbol)
+        except Exception:
+            model = {}
+        if isinstance(model, dict) and model:
+            out[symbol] = model
+    return out
+
+
+def _compute_symbol_prior_adjustment(
+    *,
+    symbol_model: Dict[str, Any],
+    playbook: str,
+) -> Dict[str, Any]:
+    if not isinstance(symbol_model, dict) or not symbol_model:
+        return {
+            "adjustment": 0.0,
+            "risk_delta": 0.0,
+            "confidence_delta": 0.0,
+            "reasons": [],
+            "summary": {},
+        }
+
+    adjustment = 0.0
+    risk_delta = 0.0
+    confidence_delta = 0.0
+    reasons: List[str] = []
+    playbook_norm = str(playbook or "").strip().lower()
+
+    if str(symbol_model.get("data_quality", {}).get("data_source") or "").strip() == "symbol_memory":
+        reasons.append("symbol_memory")
+
+    avg_pnl_pct = _to_float(symbol_model.get("avg_pnl_pct"))
+    win_rate = _to_float(symbol_model.get("win_rate"))
+    dominant_playbook = str(symbol_model.get("dominant_playbook") or "").strip().lower()
+    dominant_blocker = str(symbol_model.get("dominant_monitor_blocker") or "").strip()
+    repeated_failures = list(symbol_model.get("repeated_failure_pattern") or [])
+
+    if avg_pnl_pct < 0:
+        adjustment -= 0.08
+        risk_delta += 0.08
+        confidence_delta -= 0.06
+        reasons.append(f"negative_avg_pnl_pct:{avg_pnl_pct:.2f}")
+    elif avg_pnl_pct > 0:
+        adjustment += 0.04
+        confidence_delta += 0.03
+        reasons.append(f"positive_avg_pnl_pct:{avg_pnl_pct:.2f}")
+
+    if win_rate > 0.0 and win_rate < 0.4:
+        adjustment -= 0.05
+        risk_delta += 0.05
+        confidence_delta -= 0.04
+        reasons.append(f"low_win_rate:{win_rate:.2f}")
+    elif win_rate >= 0.6:
+        adjustment += 0.03
+        confidence_delta += 0.02
+        reasons.append(f"strong_win_rate:{win_rate:.2f}")
+
+    if playbook_norm and dominant_playbook and dominant_playbook != "unknown":
+        if playbook_norm == dominant_playbook:
+            adjustment += 0.03
+            reasons.append(f"playbook_fit:{dominant_playbook}")
+        else:
+            adjustment -= 0.04
+            risk_delta += 0.03
+            reasons.append(f"playbook_mismatch:{dominant_playbook}")
+
+    if dominant_blocker and dominant_blocker.lower() != "unknown":
+        risk_delta += 0.03
+        reasons.append(f"dominant_blocker:{dominant_blocker}")
+
+    if repeated_failures:
+        first = repeated_failures[0] if isinstance(repeated_failures[0], dict) else {}
+        failure_type = str(first.get("type") or "").strip()
+        failure_value = str(first.get("value") or "").strip()
+        if failure_value:
+            reasons.append(f"repeated_failure:{failure_type}:{failure_value}")
+
+    adjustment = _clamp(adjustment, -0.15, 0.10)
+    risk_delta = _clamp(risk_delta, 0.0, 0.15)
+    confidence_delta = _clamp(confidence_delta, -0.10, 0.05)
+    return {
+        "adjustment": float(adjustment),
+        "risk_delta": float(risk_delta),
+        "confidence_delta": float(confidence_delta),
+        "reasons": reasons[:6],
+        "summary": {
+            "dominant_playbook": str(symbol_model.get("dominant_playbook") or ""),
+            "dominant_monitor_blocker": str(symbol_model.get("dominant_monitor_blocker") or ""),
+            "avg_pnl_pct": float(avg_pnl_pct),
+            "win_rate": float(win_rate),
+        },
     }
 
 
@@ -255,12 +366,18 @@ def _compact_selected_snapshot(selected: Dict[str, Any] | None) -> Dict[str, Any
         "score_total": _to_float(selected.get("score_total") or selected.get("score") or 0.0),
         "risk_score": _to_float(selected.get("risk_score") or 0.0),
         "confidence": _to_float(selected.get("confidence") or 0.0),
+        "best_bid": features.get("quote_best_bid"),
+        "best_ask": features.get("quote_best_ask"),
+        "spread_bps": features.get("quote_spread_bps"),
         "score_breakdown": dict(selected.get("score_breakdown") or {}),
         "feature_snapshot": {
             "quote_trading_value": features.get("quote_trading_value"),
             "quote_volume": features.get("quote_volume"),
             "intraday_change_pct": features.get("intraday_change_pct"),
             "skill_quote_price": features.get("skill_quote_price"),
+            "quote_best_bid": features.get("quote_best_bid"),
+            "quote_best_ask": features.get("quote_best_ask"),
+            "quote_spread_bps": features.get("quote_spread_bps"),
             "entry_compatibility_score": features.get("entry_compatibility_score"),
             "compatibility_bias": features.get("compatibility_bias"),
             "compatibility_source": features.get("compatibility_source"),
@@ -330,6 +447,9 @@ def _compact_feature_snapshot(row: Dict[str, Any]) -> Dict[str, Any]:
         "skill_quote_price": features.get("skill_quote_price"),
         "quote_trading_value": features.get("quote_trading_value"),
         "quote_volume": features.get("quote_volume"),
+        "quote_best_bid": features.get("quote_best_bid"),
+        "quote_best_ask": features.get("quote_best_ask"),
+        "quote_spread_bps": features.get("quote_spread_bps"),
         "intraday_change_pct": features.get("intraday_change_pct"),
         "entry_compatibility_score": features.get("entry_compatibility_score"),
         "compatibility_bias": features.get("compatibility_bias"),
@@ -1826,12 +1946,18 @@ def _candidate_quote_metrics(
     raw_quote = quote.get("raw") if isinstance(quote.get("raw"), dict) else {}
     raw_rows = raw_quote.get("cntr_infr") if isinstance(raw_quote.get("cntr_infr"), list) else []
     raw_row = raw_rows[0] if raw_rows and isinstance(raw_rows[0], dict) else {}
+    best_ask = _to_float(quote.get("best_ask") or quote.get("ask"))
+    best_bid = _to_float(quote.get("best_bid") or quote.get("bid"))
     if volume <= 0.0:
         volume = _to_float(raw_row.get("acc_trde_qty"))
     if trading_value <= 0.0:
         trading_value = _to_float(raw_row.get("acc_trde_prica"))
     if change_pct == 0.0:
         change_pct = _to_float(raw_row.get("pre_rt"))
+    if best_ask <= 0.0:
+        best_ask = _to_float(raw_row.get("pri_sel_bid_unit") or raw_row.get("sel_1bid"))
+    if best_bid <= 0.0:
+        best_bid = _to_float(raw_row.get("pri_buy_bid_unit") or raw_row.get("buy_1bid"))
 
     halted = False
     if quote.get("halted") is not None:
@@ -1845,10 +1971,19 @@ def _candidate_quote_metrics(
     if str(quote.get("risk_flag") or "").strip().lower() in ("abnormal", "warning", "danger"):
         abnormal = True
 
+    spread_bps = None
+    if best_ask > 0.0 and best_bid > 0.0 and best_ask >= best_bid:
+        mid = (best_ask + best_bid) / 2.0
+        if mid > 0.0:
+            spread_bps = ((best_ask - best_bid) / mid) * 10000.0
+
     return {
         "volume": float(max(0.0, volume)),
         "trading_value": float(max(0.0, trading_value)),
         "change_pct": float(change_pct),
+        "best_ask": float(max(0.0, best_ask)),
+        "best_bid": float(max(0.0, best_bid)),
+        "spread_bps": (float(max(0.0, spread_bps)) if spread_bps is not None else None),
         "halted": bool(halted),
         "abnormal": bool(abnormal),
     }
@@ -2383,6 +2518,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     practical_scale = 1.0 if practical_enabled else 0.0
 
     scan_results: List[Dict[str, Any]] = []
+    symbol_priors = _load_symbol_priors(state, candidates)
 
     for item in candidates:
         candidate_meta: Dict[str, Any] = {}
@@ -2551,6 +2687,11 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             bias_context=compatibility_bias_context,
         )
         compatibility_bias = float(compatibility_result.get("compatibility_bias") or 0.0)
+        symbol_prior_result = _compute_symbol_prior_adjustment(
+            symbol_model=dict(symbol_priors.get(symbol) or {}),
+            playbook=playbook,
+        )
+        symbol_prior_adjustment = float(symbol_prior_result.get("adjustment") or 0.0)
         pre_adjust_score_total = (
             base_score
             + positive_score
@@ -2559,6 +2700,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             + rank_bonus
             - repeat_symbol_penalty
             + scanner_bias_adjustment
+            + symbol_prior_adjustment
         )
         score_total = pre_adjust_score_total + compatibility_bias
 
@@ -2587,6 +2729,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if repeat_symbol_penalty > 0.0:
             adj_conf = _clamp(adj_conf - (0.40 * repeat_symbol_penalty), 0.0, 1.0)
             adj_risk = _clamp(adj_risk + (0.25 * repeat_symbol_penalty), 0.0, 1.0)
+        adj_conf = _clamp(adj_conf + float(symbol_prior_result.get("confidence_delta") or 0.0), 0.0, 1.0)
+        adj_risk = _clamp(adj_risk + float(symbol_prior_result.get("risk_delta") or 0.0), 0.0, 1.0)
 
         score_breakdown = {
             "trading_value": float(practical_w["trading_value"] * trading_value_component),
@@ -2603,6 +2747,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "avoid_theme_penalty": float(-0.20 * avoid_theme_penalty * practical_scale),
             "repeat_symbol_penalty": float(-repeat_symbol_penalty),
             "scanner_bias": float(scanner_bias_adjustment),
+            "symbol_prior": float(symbol_prior_adjustment),
             "entry_compatibility_bias": float(compatibility_bias),
             "risk_penalty": float(-risk_penalty_score),
             "rank_bonus": float(rank_bonus),
@@ -2614,6 +2759,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["bias_adjustment"] = float(scanner_bias_adjustment)
         row["bias_adjustments"] = list(bias_result.get("bias_adjustments") or [])
         row["bias_summary"] = dict(bias_result.get("bias_summary") or {})
+        row["symbol_prior_adjustment"] = float(symbol_prior_adjustment)
+        row["symbol_prior_reasons"] = list(symbol_prior_result.get("reasons") or [])
+        row["symbol_prior_summary"] = dict(symbol_prior_result.get("summary") or {})
         row["entry_compatibility_score"] = float(compatibility_result.get("entry_compatibility_score") or 0.0)
         row["compatibility_bias"] = float(compatibility_bias)
         row["compatibility_components"] = dict(compatibility_result.get("compatibility_components") or {})
@@ -2654,6 +2802,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 {
                     "skill_quote_price": quote_price_num,
                     "skill_open_orders": open_orders,
+                    "quote_best_bid": _to_float(metrics.get("best_bid")),
+                    "quote_best_ask": _to_float(metrics.get("best_ask")),
+                    "quote_spread_bps": metrics.get("spread_bps"),
                     "engine_rsi14": feature_row.get("rsi14"),
                     "engine_ma20_gap": feature_row.get("ma20_gap"),
                     "engine_ma60": feature_row.get("ma60"),
@@ -2969,6 +3120,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_bias_applied": False,
         "scanner_bias_summary": dict(scanner_policy_trace.get("scanner_bias_summary") or {}),
         "candidate_bias_adjustments": [],
+        "candidate_symbol_prior_adjustments": [],
         "selection_reason_with_bias": "",
         "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
         "strategist_fallback_used": bool(scanner_policy_trace.get("strategist_fallback_used")),
@@ -3044,6 +3196,16 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "symbol": str(row.get("symbol") or ""),
             "bias_adjustment": float(_to_float(row.get("bias_adjustment"))),
             "bias_adjustments": list(row.get("bias_adjustments") or []),
+        }
+        for row in list(scan_results_sorted)[:5]
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+    ]
+    candidate_symbol_prior_adjustments = [
+        {
+            "symbol": str(row.get("symbol") or ""),
+            "symbol_prior_adjustment": float(_to_float(row.get("symbol_prior_adjustment"))),
+            "symbol_prior_reasons": list(row.get("symbol_prior_reasons") or []),
+            "symbol_prior_summary": dict(row.get("symbol_prior_summary") or {}),
         }
         for row in list(scan_results_sorted)[:5]
         if isinstance(row, dict) and str(row.get("symbol") or "").strip()
@@ -3131,6 +3293,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_bias_applied": bool(scanner_bias_applied),
         "scanner_bias_summary": dict(scanner_bias_summary),
         "candidate_bias_adjustments": list(candidate_bias_adjustments),
+        "candidate_symbol_prior_adjustments": list(candidate_symbol_prior_adjustments),
         "selection_reason_with_bias": selection_reason_with_bias,
         "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
         "strategist_fallback_used": bool(scanner_policy_trace.get("strategist_fallback_used")),
@@ -3150,6 +3313,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["scanner_output"]["scanner_bias_applied"] = bool(scanner_bias_applied)
         state["scanner_output"]["scanner_bias_summary"] = dict(scanner_bias_summary)
         state["scanner_output"]["candidate_bias_adjustments"] = list(candidate_bias_adjustments)
+        state["scanner_output"]["candidate_symbol_prior_adjustments"] = list(candidate_symbol_prior_adjustments)
         state["scanner_output"]["selection_reason_with_bias"] = selection_reason_with_bias
         state["scanner_output"]["entry_compatibility_score"] = float(_to_float((selected or {}).get("entry_compatibility_score"))) if isinstance(selected, dict) else 0.0
         state["scanner_output"]["compatibility_bias"] = float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0
@@ -3242,6 +3406,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_bias_applied": bool(scanner_bias_applied),
         "scanner_bias_summary": dict(scanner_policy_trace.get("scanner_bias_summary") or {}),
         "candidate_bias_adjustments": list(candidate_bias_adjustments),
+        "candidate_symbol_prior_adjustments": list(candidate_symbol_prior_adjustments),
         "selection_reason_with_bias": selection_reason_with_bias,
         "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
         "strategist_fallback_used": bool(scanner_policy_trace.get("strategist_fallback_used")),

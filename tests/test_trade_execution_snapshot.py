@@ -67,3 +67,27 @@ def test_build_execution_details_keeps_contract_and_additive_fields() -> None:
     assert details["filled_qty"] == 10
     assert details["avg_price"] == 45000.0
     assert "quality_score" in details
+
+
+def test_build_execution_details_keeps_quote_snapshot_fields() -> None:
+    details = build_execution_details(
+        {
+            "executor": {
+                "action": "BUY",
+                "symbol": "005930",
+                "quote_snapshot": {
+                    "best_bid": 70500.0,
+                    "best_ask": 70550.0,
+                    "spread_bps": 7.1,
+                },
+                "best_bid": 70500.0,
+                "best_ask": 70550.0,
+                "spread_bps": 7.1,
+            }
+        }
+    )
+
+    assert details["best_bid"] == 70500.0
+    assert details["best_ask"] == 70550.0
+    assert details["spread_bps"] == 7.1
+    assert details["quote_snapshot"]["spread_bps"] == 7.1

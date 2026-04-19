@@ -6,11 +6,11 @@
 ## Sample Outputs (Generated)
 
 - operator summary:
-  - `reports/operator_summary/operator_summary_2026-03-07.md`
+  - `reports/daily/2026-03-07/operator_summary.md`
 - decision story:
-  - `reports/decision_story/decision_story_2026-03-07.md`
+  - `reports/dev/manual/decision_story/decision_story_2026-03-07.md`
 - run cards:
-  - `reports/run_cards/run_cards_2026-03-07.md`
+  - `reports/dev/manual/run_cards/run_cards_2026-03-07.md`
 
 ## Readability Gaps Found
 

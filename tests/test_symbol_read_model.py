@@ -120,3 +120,53 @@ def test_symbol_read_model_data_quality(tmp_path):
     
     res = build_symbol_read_model(str(trades_root), "AMD")
     assert res["data_quality"]["unknown_fields_ratio"] == pytest.approx(5/6)
+
+
+def test_symbol_read_model_prefers_persisted_symbol_memory(tmp_path):
+    reports_root = tmp_path / "reports"
+    trades_root = reports_root / "trades"
+    trades_root.mkdir(parents=True)
+    symbol_root = reports_root / "symbols" / "AAPL"
+    symbol_root.mkdir(parents=True)
+    (symbol_root / "symbol_memory.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "symbol_memory.v1",
+                "symbol": "AAPL",
+                "trade_stats": {
+                    "trade_count": 7,
+                    "completed_trade_count": 5,
+                    "win_rate": 0.4,
+                    "avg_return_pct": -0.25,
+                    "avg_hold_seconds": 420.0,
+                },
+                "playbook_stats": {
+                    "pullback": {"count": 4, "win_rate": 0.5, "avg_return_pct": 0.2},
+                    "breakout": {"count": 3, "win_rate": 0.0, "avg_return_pct": -0.8},
+                },
+                "pattern_stats": {
+                    "successful_entry_patterns": ["pullback"],
+                    "failed_entry_patterns": ["breakout"],
+                    "common_monitor_failures": ["confirmed_entry"],
+                },
+                "monitor_patterns": {
+                    "repeated_blockers": ["confirmed_entry"],
+                    "dominant_exit_failure_axis": "hard_stop",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    res = build_symbol_read_model(str(trades_root), "AAPL")
+
+    assert res["trade_count"] == 7
+    assert res["closed_trade_count"] == 5
+    assert res["win_count"] == 2
+    assert res["loss_count"] == 3
+    assert res["avg_pnl_pct"] == -0.25
+    assert res["avg_hold_duration_sec"] == 420.0
+    assert res["dominant_playbook"] == "pullback"
+    assert res["dominant_exit_reason"] == "hard_stop"
+    assert res["dominant_monitor_blocker"] == "confirmed_entry"
+    assert res["data_quality"]["data_source"] == "symbol_memory"

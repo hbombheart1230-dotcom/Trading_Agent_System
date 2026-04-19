@@ -4,18 +4,16 @@
 
 - `reports/daily`
 - `reports/metrics`
-- `reports/operator_summary`
-- `reports/decision_story`
-- `reports/run_cards`
 - `reports/reconciliation`
 - `reports/dev`
 - `reports/milestones`
 
-Operators should check the first six directories for day-to-day operations.
+Operators should check the first four directories for day-to-day operations.
 `reports/dev` is for diagnostics, replay, and deep analysis outputs.
 `reports/milestones` is for M30/M31 evidence bundles.
 For daily execution explainability, the official `trade_explain` output lives under `reports/dev/analysis/trade_explain/*`.
 Top-level `reports/trade_explain/*` should be treated as legacy or ad-hoc output, not the canonical operator baseline.
+Top-level `reports/operator_summary/*`, `reports/decision_story/*`, and `reports/run_cards/*` are deprecated residue and have been moved under `reports/_legacy_backup/report_surface_cleanup_2026-04-19/`.
 
 Recommended `reports/dev` layout:
 
@@ -24,6 +22,11 @@ Recommended `reports/dev` layout:
   - `trade_explain`  <- official daily trade-explain output path
   - `reporter_analysis`
   - `ops_diagnostic`
+- `reports/dev/manual`
+  - `decision_story`
+  - `run_cards`
+  - manual-only operator surfaces that should not recreate top-level `reports/decision_story` or `reports/run_cards`
+  - closeout opt-in, validation-bundle, and maintenance/inventory flows should reference these paths
 - `reports/dev/live`
   - `live_summary`
   - `live_watch`

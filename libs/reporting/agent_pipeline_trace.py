@@ -170,6 +170,41 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return obj if isinstance(obj, dict) else {}
 
 
+def _format_strategist_directives_summary(directives: Dict[str, Any]) -> str:
+    if not isinstance(directives, dict) or not directives:
+        return ""
+    parts: List[str] = []
+    for key in (
+        "playbook_action",
+        "entry_policy_action",
+        "monitor_focus_action",
+        "selected_symbol_bias_action",
+        "refresh_action",
+    ):
+        row = directives.get(key) if isinstance(directives.get(key), dict) else {}
+        action = str(row.get("action") or "").strip()
+        if not action:
+            continue
+        target = row.get("target")
+        target_fields = row.get("target_fields") if isinstance(row.get("target_fields"), list) else []
+        target_axes = row.get("target_axes") if isinstance(row.get("target_axes"), list) else []
+        reason = str(row.get("reason") or "").strip()
+        detail = ""
+        if isinstance(target, str) and target.strip():
+            detail = target.strip()
+        elif target_fields:
+            detail = ",".join(str(x).strip() for x in target_fields if str(x).strip())
+        elif target_axes:
+            detail = ",".join(str(x).strip() for x in target_axes if str(x).strip())
+        segment = f"{key}={action}"
+        if detail:
+            segment += f"({detail})"
+        if reason:
+            segment += f": {reason}"
+        parts.append(segment)
+    return " | ".join(parts)
+
+
 def _reporter_analysis_has_run(report_obj: Dict[str, Any], run_id: str) -> bool:
     rid = str(run_id or "").strip()
     if not rid:
@@ -392,6 +427,12 @@ def _build_markdown(out: Dict[str, Any]) -> str:
         lines.append(
             f"- news_sample_titles: `{json.dumps(strategist.get('news_sample_titles') or [], ensure_ascii=False)}`"
         )
+    directives = strategist.get("strategy_adjustment_directives") if isinstance(strategist.get("strategy_adjustment_directives"), dict) else {}
+    directives_summary = _format_strategist_directives_summary(directives)
+    if directives:
+        lines.append(f"- strategy_adjustment_directives: `{json.dumps(directives, ensure_ascii=False)}`")
+    if directives_summary:
+        lines.append(f"- strategy_adjustment_summary: {directives_summary}")
     lines.append("")
     lines.append("## News -> Symbol Linkage")
     lines.append(f"- linkage_strength: **{news_symbol_linkage.get('linkage_strength') or 'unknown'}**")
@@ -760,6 +801,7 @@ def generate_agent_pipeline_trace_report(
             "risk_tone": str(strategist_summary_payload.get("risk_tone") or ""),
             "selected_playbook": str(strategist_summary_payload.get("selected_playbook") or strategist_summary_payload.get("playbook") or ""),
             "strategy_summary": str(strategist_summary_payload.get("strategy_summary") or ""),
+            "strategy_adjustment_directives": dict(strategist_summary_payload.get("strategy_adjustment_directives") or {}),
             "shadow_used": bool(strategist_summary_payload.get("shadow_used")),
             "strategist_fallback_used": bool(strategist_summary_payload.get("strategist_fallback_used")),
             "candidate_symbols_hint": list(news_symbol_linkage.get("candidate_symbols_hint") or []),

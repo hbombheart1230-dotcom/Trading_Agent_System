@@ -447,7 +447,6 @@ def trade_artifact_paths(reports_root: Path, day: str, trade_id: str) -> Dict[st
     # Legacy normalized layout (read fallback only).
     legacy_normalized_strategist_dir = trade_root / "strategist"
     legacy_normalized_ai_report_dir = trade_root / "ai_trade_report"
-    legacy_normalized_brief_dir = trade_root / "brief"
     legacy_normalized_lifecycle_dir = trade_root / "lifecycle"
     return {
         "trade_root": trade_root,
@@ -497,11 +496,6 @@ def trade_artifact_paths(reports_root: Path, day: str, trade_id: str) -> Dict[st
         "legacy_normalized_ai_trade_report_json": legacy_normalized_ai_report_dir / "ai_trade_report.json",
         "legacy_normalized_ai_trade_report_md": legacy_normalized_ai_report_dir / "ai_trade_report.md",
         "legacy_normalized_ai_trade_report_llm_response_json": legacy_normalized_ai_report_dir / "ai_trade_report_llm_response.json",
-        "legacy_normalized_brief_input_json": legacy_normalized_brief_dir / "brief_input.json",
-        "legacy_normalized_brief_compact_input_json": legacy_normalized_brief_dir / "brief_compact_input.json",
-        "legacy_normalized_brief_json": legacy_normalized_brief_dir / "operator_brief.json",
-        "legacy_normalized_brief_md": legacy_normalized_brief_dir / "operator_brief.md",
-        "legacy_normalized_brief_llm_response_json": legacy_normalized_brief_dir / "brief_llm_response.json",
         "legacy_normalized_trade_lifecycle_json": legacy_normalized_lifecycle_dir / "trade_lifecycle.json",
         "legacy_normalized_aggregated_execution_bundle_json": legacy_normalized_lifecycle_dir / "aggregated_execution_bundle.json",
         "legacy_normalized_strategist_evidence_json": evidence_dir / "strategist_evidence.json",
@@ -512,8 +506,6 @@ def trade_artifact_paths(reports_root: Path, day: str, trade_id: str) -> Dict[st
         "legacy_trade_report_md": legacy_root / "trade_report.md",
         "legacy_trade_lifecycle_json": legacy_root / "trade_lifecycle.json",
         "legacy_aggregated_execution_bundle_json": legacy_root / "aggregated_execution_bundle.json",
-        "legacy_operator_brief_json": legacy_root / "operator_brief.json",
-        "legacy_operator_brief_md": legacy_root / "operator_brief.md",
     }
 
 
@@ -534,8 +526,6 @@ def daily_artifact_paths(reports_root: Path, day: str) -> Dict[str, Path]:
         "legacy_daily_md": reports_root / "daily" / f"daily_{normalized_day}.md",
         "root_daily_json": reports_root / f"daily_{normalized_day}.json",
         "root_daily_md": reports_root / f"daily_{normalized_day}.md",
-        "legacy_operator_summary_json": reports_root / "operator_summary" / f"operator_summary_{normalized_day}.json",
-        "legacy_operator_summary_md": reports_root / "operator_summary" / f"operator_summary_{normalized_day}.md",
     }
 
 
@@ -547,6 +537,7 @@ def symbol_artifact_paths(reports_root: Path, symbol: str) -> Dict[str, Path]:
         "root_dir": symbol_root,
         "symbol_trade_report_json": symbol_root / "symbol_trade_report.json",
         "symbol_trade_report_md": symbol_root / "symbol_trade_report.md",
+        "symbol_memory_json": symbol_root / "symbol_memory.json",
         "trade_history_json": symbol_root / "trade_history.json",
         "daily_index_json": symbol_root / "daily_index.json",
         "latest_snapshot_json": symbol_root / "latest_snapshot.json",

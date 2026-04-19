@@ -131,8 +131,6 @@ def _detect_health_warnings(report_root: Path, event_log_path: Optional[Path]) -
     warnings: List[Dict[str, Any]] = []
 
     operator_paths = sorted((report_root / "daily").glob("*/operator_summary.json"))
-    if not operator_paths:
-        operator_paths = sorted((report_root / "operator_summary").glob("operator_summary_*.json"))
     for path in operator_paths:
         obj = _safe_read_json(path)
         if not obj:
@@ -167,7 +165,7 @@ def _detect_health_warnings(report_root: Path, event_log_path: Optional[Path]) -
                     }
                 )
 
-    story_dir = report_root / "decision_story"
+    story_dir = report_root / "dev" / "manual" / "decision_story"
     for path in sorted(story_dir.glob("decision_story_*.md")):
         try:
             text = path.read_text(encoding="utf-8")
@@ -183,7 +181,7 @@ def _detect_health_warnings(report_root: Path, event_log_path: Optional[Path]) -
                 }
             )
 
-    run_cards_dir = report_root / "run_cards"
+    run_cards_dir = report_root / "dev" / "manual" / "run_cards"
     for path in sorted(run_cards_dir.glob("run_cards_*.md")):
         try:
             text = path.read_text(encoding="utf-8")
@@ -226,8 +224,6 @@ def build_report_inventory(report_root: Path, *, event_log_path: Optional[Path] 
             "daily",
             "metrics",
             "symbols",
-            "decision_story",
-            "run_cards",
             "reconciliation",
             "dev",
             "milestones",

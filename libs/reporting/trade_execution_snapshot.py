@@ -50,6 +50,15 @@ def normalize_execution_row(
     response_payload = broker.get("response_payload") if isinstance(broker.get("response_payload"), dict) else {}
     broker_result = raw.get("broker_result") if isinstance(raw.get("broker_result"), dict) else {}
     order_request = raw.get("order_request_summary") if isinstance(raw.get("order_request_summary"), dict) else {}
+    quote_snapshot = (
+        raw.get("quote_snapshot")
+        if isinstance(raw.get("quote_snapshot"), dict)
+        else broker.get("quote_snapshot")
+        if isinstance(broker.get("quote_snapshot"), dict)
+        else order_request.get("quote_snapshot")
+        if isinstance(order_request.get("quote_snapshot"), dict)
+        else {}
+    )
 
     action = str(
         raw.get("action")
@@ -139,6 +148,39 @@ def normalize_execution_row(
 
     resolved_run_id = str(raw.get("run_id") or run_id or "").strip()
     resolved_ts = str(raw.get("ts") or ts or "").strip()
+    best_bid = _null_if_empty(
+        _safe_float(raw.get("best_bid"), None)
+        if raw.get("best_bid") not in (None, "")
+        else _safe_float(broker.get("best_bid"), None)
+        if broker.get("best_bid") not in (None, "")
+        else _safe_float(order_request.get("best_bid"), None)
+        if order_request.get("best_bid") not in (None, "")
+        else _safe_float(quote_snapshot.get("best_bid"), None)
+        if quote_snapshot.get("best_bid") not in (None, "")
+        else None
+    )
+    best_ask = _null_if_empty(
+        _safe_float(raw.get("best_ask"), None)
+        if raw.get("best_ask") not in (None, "")
+        else _safe_float(broker.get("best_ask"), None)
+        if broker.get("best_ask") not in (None, "")
+        else _safe_float(order_request.get("best_ask"), None)
+        if order_request.get("best_ask") not in (None, "")
+        else _safe_float(quote_snapshot.get("best_ask"), None)
+        if quote_snapshot.get("best_ask") not in (None, "")
+        else None
+    )
+    spread_bps = _null_if_empty(
+        _safe_float(raw.get("spread_bps"), None)
+        if raw.get("spread_bps") not in (None, "")
+        else _safe_float(broker.get("spread_bps"), None)
+        if broker.get("spread_bps") not in (None, "")
+        else _safe_float(order_request.get("spread_bps"), None)
+        if order_request.get("spread_bps") not in (None, "")
+        else _safe_float(quote_snapshot.get("spread_bps"), None)
+        if quote_snapshot.get("spread_bps") not in (None, "")
+        else None
+    )
 
     return {
         "action": action,
@@ -150,6 +192,10 @@ def normalize_execution_row(
         "filled_qty": filled_qty,
         "filled_price": filled_price,
         "fill_status": fill_status,
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "spread_bps": spread_bps,
+        "quote_snapshot": dict(quote_snapshot) if quote_snapshot else {},
         "run_id": resolved_run_id,
         "ts": resolved_ts,
         "source": str(source or ""),
@@ -227,11 +273,15 @@ def merge_execution_snapshot_candidates(
 
     merged = dict(normalized_rows[0])
     for row in normalized_rows[1:]:
-        for field in ("action", "symbol", "qty", "status", "ord_no", "order_id", "filled_qty", "filled_price", "fill_status", "run_id", "ts"):
+        for field in ("action", "symbol", "qty", "status", "ord_no", "order_id", "filled_qty", "filled_price", "fill_status", "best_bid", "best_ask", "spread_bps", "run_id", "ts"):
             current = merged.get(field)
             incoming = row.get(field)
             if _null_if_empty(current) in (None, 0, 0.0, "") and _null_if_empty(incoming) not in (None, 0, 0.0, ""):
                 merged[field] = incoming
+        if not isinstance(merged.get("quote_snapshot"), dict) or not merged.get("quote_snapshot"):
+            incoming_quote = row.get("quote_snapshot")
+            if isinstance(incoming_quote, dict) and incoming_quote:
+                merged["quote_snapshot"] = dict(incoming_quote)
 
     merged["quality_score"] = score_execution_snapshot(merged)
     merged["degraded_but_usable"] = _is_snapshot_degraded_but_usable(merged)
@@ -337,6 +387,10 @@ def build_execution_details(
         "avg_price": avg_price,
         "fill_status": _null_if_empty(merged.get("fill_status")),
         "filled_price": _null_if_empty(merged.get("filled_price")),
+        "best_bid": _null_if_empty(merged.get("best_bid")),
+        "best_ask": _null_if_empty(merged.get("best_ask")),
+        "spread_bps": _null_if_empty(merged.get("spread_bps")),
+        "quote_snapshot": dict(merged.get("quote_snapshot") or {}) if isinstance(merged.get("quote_snapshot"), dict) else {},
         "run_id": _null_if_empty(merged.get("run_id")),
         "ts": _null_if_empty(merged.get("ts")),
         "quality_score": int(merged.get("quality_score") or 0),

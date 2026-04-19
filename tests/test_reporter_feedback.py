@@ -68,48 +68,45 @@ def test_strategist_feedback_packet_builds_from_existing_report_layer(tmp_path: 
     assert packet["data_freshness"]["freshness_status"] == "fresh"
 
 
-def test_strategist_feedback_packet_can_fall_back_to_trade_explain_summary(tmp_path: Path) -> None:
+def test_strategist_feedback_packet_can_use_trade_explain_payload_directly(tmp_path: Path) -> None:
     day = "2026-04-08"
     reports_root = tmp_path / "reports"
-    _write_json(
-        reports_root / "dev" / "analysis" / "trade_explain" / f"trade_explain_{day}.json",
-        {
-            "day": day,
+    trade_explain_payload = {
+        "day": day,
+        "generated_at": f"{day}T10:10:00+09:00",
+        "source_run_count": 8,
+        "latest_run_id": "r8",
+        "latest_run_ts": f"{day}T10:09:00+09:00",
+        "route_summary": {
+            "route_source": "canonical_commander_preferred",
+            "route_source_run_count": 8,
+            "route_source_missing_count": 0,
+            "route_source_breakdown": {"canonical_commander": 8},
+            "route_selected_total": {"monitor_only": 5, "full_cycle": 3},
+            "strategy_generation_mode_total": {"fallback": 5, "live_llm": 3},
+            "strategist_fallback_total": 2,
+        },
+        "no_trade_summary": {
+            "dominant_blocker_topN": [
+                {"reason": "below_vwap_reclaim_not_ready", "count": 4},
+                {"reason": "structure_hh_hl", "count": 2},
+            ]
+        },
+        "data_freshness": {
             "generated_at": f"{day}T10:10:00+09:00",
             "source_run_count": 8,
             "latest_run_id": "r8",
             "latest_run_ts": f"{day}T10:09:00+09:00",
-            "route_summary": {
-                "route_source": "canonical_commander_preferred",
-                "route_source_run_count": 8,
-                "route_source_missing_count": 0,
-                "route_source_breakdown": {"canonical_commander": 8},
-                "route_selected_total": {"monitor_only": 5, "full_cycle": 3},
-                "strategy_generation_mode_total": {"fallback": 5, "live_llm": 3},
-                "strategist_fallback_total": 2,
-            },
-            "no_trade_summary": {
-                "dominant_blocker_topN": [
-                    {"reason": "below_vwap_reclaim_not_ready", "count": 4},
-                    {"reason": "structure_hh_hl", "count": 2},
-                ]
-            },
-            "data_freshness": {
-                "generated_at": f"{day}T10:10:00+09:00",
-                "source_run_count": 8,
-                "latest_run_id": "r8",
-                "latest_run_ts": f"{day}T10:09:00+09:00",
-                "freshness_status": "fresh",
-                "stale": False,
-                "stale_reason": "aligned_with_source_window",
-                "source_window_summary": "runs=8",
-            },
+            "freshness_status": "fresh",
+            "stale": False,
+            "stale_reason": "aligned_with_source_window",
+            "source_window_summary": "runs=8",
         },
-    )
+    }
 
     packet = build_strategist_feedback_packet(
-        mode="operator_summary",
-        payload={"day": day},
+        mode="trade_explain",
+        payload=trade_explain_payload,
         reports_root=reports_root,
         day=day,
     )

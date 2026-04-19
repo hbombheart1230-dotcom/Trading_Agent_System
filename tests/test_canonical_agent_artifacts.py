@@ -111,6 +111,49 @@ def test_execute_from_packet_writes_supervisor_and_executor_artifacts(tmp_path: 
     assert executor["run_id"] == "run-4"
 
 
+def test_execute_from_packet_persists_quote_snapshot_in_executor_artifact(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+    monkeypatch.setenv("REPORTS_ROOT", str(tmp_path / "reports"))
+    monkeypatch.setattr(
+        "graphs.nodes.execute_from_packet._extract_upper_limit_quote_snapshot",
+        lambda _state, _symbol: {
+            "symbol": "005930",
+            "quote_present": True,
+            "source": "test.quote",
+            "current_price": 70500.0,
+            "upper_limit_price": 0.0,
+            "best_ask": 70550.0,
+            "best_bid": 70500.0,
+            "change_pct": 1.2,
+            "raw_row_present": True,
+        },
+    )
+    catalog = tmp_path / "api_catalog.jsonl"
+    catalog.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+    state = {
+        "run_id": "run-4b",
+        "started_at": "2026-03-18T00:00:00+00:00",
+        "catalog_path": str(catalog),
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "order_api_id": "ORDER_SUBMIT", "order_type": "market"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    execute_from_packet(state)
+
+    paths = canonical_run_artifact_paths("run-4b", day="2026-03-18", reports_root=tmp_path / "reports")
+    executor = json.loads(paths["executor"].read_text(encoding="utf-8"))
+    assert executor["best_bid"] == 70500.0
+    assert executor["best_ask"] == 70550.0
+    assert float(executor["spread_bps"]) > 0.0
+    assert float(executor["quote_snapshot"]["spread_bps"]) > 0.0
+
+
 def test_commander_runtime_writes_commander_artifact(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("REPORTS_ROOT", str(tmp_path / "reports"))
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from libs.reporting.llm_artifacts import symbol_artifact_paths
 from libs.reporting.symbol_trade_report import build_symbol_trade_summary
+from libs.reporting.symbol_trade_report import build_symbol_memory_payload
 from libs.reporting.symbol_trade_report import generate_symbol_trade_report
 
 
@@ -24,6 +25,7 @@ def test_symbol_artifact_paths_use_canonical_symbol_root(tmp_path: Path) -> None
     paths = symbol_artifact_paths(tmp_path / "reports", "005930")
     assert paths["root_dir"] == tmp_path / "reports" / "symbols" / "005930"
     assert paths["symbol_trade_report_json"] == tmp_path / "reports" / "symbols" / "005930" / "symbol_trade_report.json"
+    assert paths["symbol_memory_json"] == tmp_path / "reports" / "symbols" / "005930" / "symbol_memory.json"
     assert paths["trade_history_json"] == tmp_path / "reports" / "symbols" / "005930" / "trade_history.json"
 
 
@@ -100,9 +102,14 @@ def test_generate_symbol_trade_report_uses_truth_artifacts_not_trade_markdown(tm
     assert payload["history_index"][0]["last_action"] == "SELL"
     assert payload["history_index"][0]["last_status"] == "closed"
     latest_snapshot = json.loads((reports_root / "symbols" / "005930" / "latest_snapshot.json").read_text(encoding="utf-8"))
+    symbol_memory = json.loads((reports_root / "symbols" / "005930" / "symbol_memory.json").read_text(encoding="utf-8"))
     assert latest_snapshot["last_trade_id"] == "TRD_20260320_005930_01"
     assert latest_snapshot["last_action"] == "SELL"
     assert latest_snapshot["last_status"] == "closed"
+    assert symbol_memory["schema_version"] == "symbol_memory.v1"
+    assert symbol_memory["trade_stats"]["trade_count"] == 1
+    assert symbol_memory["playbook_stats"]["pullback"]["count"] == 1
+    assert symbol_memory["bias_recommendation"]["prefer_playbook"] == "pullback"
     assert latest_snapshot["report_path"].endswith("reports\\ai_trade_report.json") or latest_snapshot["report_path"].endswith("reports/ai_trade_report.json")
 
 
@@ -348,3 +355,53 @@ def test_symbol_trade_report_prefers_structured_entry_pattern_for_pattern_rows(t
 
     assert payload["pattern_insights"]["successful_entry_patterns"] == ["breakout"]
     assert payload["pattern_insights"]["failed_entry_patterns"] == ["pullback"]
+
+
+def test_build_symbol_memory_payload_derives_deterministic_bias_fields(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    events_path = tmp_path / "data" / "logs" / "events.jsonl"
+    _write_jsonl(events_path, [])
+    trade_root = reports_root / "trades" / "2026-04-02" / "TRD_20260402_005930_01"
+    _write_json(
+        trade_root / "lifecycle" / "trade_lifecycle.json",
+        {
+            "trade_id": "TRD_20260402_005930_01",
+            "symbol": "005930",
+            "day": "2026-04-02",
+            "status": "closed",
+            "entry": {
+                "run_id": "run-buy",
+                "ts": "2026-04-02T00:10:00+00:00",
+                "strategist_context": {"playbook": "breakout"},
+            },
+            "exit": {
+                "run_id": "run-sell",
+                "ts": "2026-04-02T00:30:00+00:00",
+            },
+            "summary": {
+                "entry_reason_human": "Scanner selected 005930 after breakout move.",
+                "exit_reason_human": "SELL was triggered because hard_stop.",
+            },
+        },
+    )
+    _write_json(
+        trade_root / "reports" / "ai_trade_report.json",
+        {
+            "strategist_feedback_input": {
+                "entry_pattern_type": "breakout",
+                "exit_pattern_type": "hard_stop",
+            },
+            "shared_facts": {"pnl_pct": -1.2},
+        },
+    )
+
+    payload = build_symbol_trade_summary(events_path, reports_root, "005930")
+    memory = build_symbol_memory_payload(payload)
+
+    assert memory["schema_version"] == "symbol_memory.v1"
+    assert memory["trade_stats"]["trade_count"] == 1
+    assert memory["playbook_stats"]["breakout"]["count"] == 1
+    assert memory["pattern_stats"]["failed_entry_patterns"] == ["breakout"]
+    assert memory["monitor_patterns"]["dominant_exit_failure_axis"] == "hard_stop"
+    assert memory["bias_recommendation"]["avoid_playbook"] == "breakout"
+    assert memory["bias_recommendation"]["risk_cap"] == "conservative"

@@ -1739,6 +1739,8 @@ def generate_reporter_analysis_report(
     ai_review_model: Optional[str] = None,
     ai_review_temperature: Optional[float] = None,
     ai_review_max_tokens: int = 900,
+    generate_decision_story: bool = False,
+    generate_run_cards: bool = False,
 ) -> Tuple[Path, Path, Dict[str, Any]]:
     """Generate enhanced reporter analysis from append-only logs.
 
@@ -1746,6 +1748,7 @@ def generate_reporter_analysis_report(
     """
     report_dir.mkdir(parents=True, exist_ok=True)
     root = reports_root or report_dir.parent
+    canonical_reports_root = _canonical_reports_root(root)
     target_day = str(day or _latest_day(event_log_path) or date.today().isoformat())
     reporter_run_id = f"reporter-{target_day}"
 
@@ -1773,30 +1776,39 @@ def generate_reporter_analysis_report(
 
     trade_md, trade_js, trade_obj = generate_trade_explain_report(
         event_log_path,
-        official_trade_explain_report_dir(root.parent.parent) if root.name == "analysis" else root / "trade_explain",
+        official_trade_explain_report_dir(canonical_reports_root),
         day=target_day,
         max_executions=300,
         max_sell_pairs=300,
     )
     op_md, op_js = generate_operator_daily_summary(
         event_log_path,
-        root / "operator_summary",
+        root,
         day=target_day,
         metrics_report_dir=root / "metrics",
         m30_post_golive_dir=root / "milestones" / "m30_post_golive",
         m30_golive_dir=root / "milestones" / "m30_golive",
         m31_slo_incident_dir=root / "m31_slo_incident",
     )
-    ds_md, ds_obj = generate_decision_story_report(
-        event_log_path,
-        root / "decision_story",
-        day=target_day,
-    )
-    rc_md, rc_obj = generate_run_card_report(
-        event_log_path,
-        root / "run_cards",
-        day=target_day,
-    )
+    manual_dir = root / "dev" / "manual"
+    ds_md = manual_dir / "decision_story" / f"decision_story_{target_day}.md"
+    rc_md = manual_dir / "run_cards" / f"run_cards_{target_day}.md"
+    ds_obj: Dict[str, Any] = {"story_total": 0, "generated": False}
+    rc_obj: Dict[str, Any] = {"card_total": 0, "generated": False}
+    if bool(generate_decision_story):
+        ds_md, ds_obj = generate_decision_story_report(
+            event_log_path,
+            manual_dir / "decision_story",
+            day=target_day,
+        )
+        ds_obj = {**dict(ds_obj or {}), "generated": True}
+    if bool(generate_run_cards):
+        rc_md, rc_obj = generate_run_card_report(
+            event_log_path,
+            manual_dir / "run_cards",
+            day=target_day,
+        )
+        rc_obj = {**dict(rc_obj or {}), "generated": True}
 
     op_obj = _read_json(op_js)
     trade_decision = _build_trade_decision_summaries(trade_obj)
@@ -1884,8 +1896,10 @@ def generate_reporter_analysis_report(
             "trade_explain_md": str(trade_md),
             "operator_summary_json": str(op_js),
             "operator_summary_md": str(op_md),
-            "decision_story_md": str(ds_md),
-            "run_cards_md": str(rc_md),
+            "decision_story_enabled": bool(generate_decision_story),
+            "run_cards_enabled": bool(generate_run_cards),
+            "decision_story_md": str(ds_md) if bool(generate_decision_story) and ds_md.exists() else "",
+            "run_cards_md": str(rc_md) if bool(generate_run_cards) and rc_md.exists() else "",
             "decision_story_total": int(ds_obj.get("story_total") or 0),
             "run_card_total": int(rc_obj.get("card_total") or 0),
         },
@@ -1999,3 +2013,9 @@ def generate_reporter_analysis_report(
     js_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     md_path.write_text(_to_markdown(out), encoding="utf-8")
     return md_path, js_path, out
+def _canonical_reports_root(path: Path) -> Path:
+    candidate = Path(path)
+    for parent in (candidate, *candidate.parents):
+        if parent.name == "reports":
+            return parent
+    return candidate

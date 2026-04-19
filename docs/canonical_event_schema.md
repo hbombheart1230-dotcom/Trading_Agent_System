@@ -74,7 +74,7 @@ The richer evidence is now attached to or referenced from:
 - `trade_lifecycle.json`
 - `aggregated_execution_bundle.json`
 - `ai_trade_report_input.json`
-- `brief/brief_input.json`
+- `brief_input.json`
 
 The event log remains authoritative. These files are convenience views over the
 same runtime evidence.

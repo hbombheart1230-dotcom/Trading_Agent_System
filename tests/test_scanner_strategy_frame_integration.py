@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
-from graphs.nodes.scanner_node import _apply_scanner_guidance_weights, _extract_scanner_guidance, scanner_node
+from graphs.nodes.scanner_node import _apply_scanner_guidance_weights, _candidate_quote_metrics, _extract_scanner_guidance, scanner_node
 
 
 class _FakeSkillRunnerQuotes:
@@ -106,6 +107,33 @@ def test_scanner_extract_guidance_reads_strategist_output_contract():
     assert out["scanner_source_policy"]["preferred_sources"] == ["top_change_rate", "condition_search"]
     assert out["trade_aggressiveness"] == "high"
     assert out["risk_tone"] == "aggressive"
+
+
+def test_candidate_quote_metrics_include_spread_bps_from_quote_snapshot():
+    metrics = _candidate_quote_metrics(
+        "005930",
+        skill_quotes={
+            "005930": {
+                "price": 70500,
+                "best_bid": 70500,
+                "best_ask": 70550,
+                "raw": {
+                    "cntr_infr": [
+                        {
+                            "acc_trde_qty": "1234567",
+                            "acc_trde_prica": "89012345678",
+                            "pre_rt": "+2.15",
+                        }
+                    ]
+                },
+            }
+        },
+        state={},
+    )
+
+    assert metrics["best_bid"] == 70500.0
+    assert metrics["best_ask"] == 70550.0
+    assert float(metrics["spread_bps"]) > 0.0
 
 
 def test_scanner_extract_guidance_prefers_strategy_policy_when_present():
@@ -235,6 +263,62 @@ def test_scanner_output_records_commander_context_consumption():
     assert scanner_output.get("strategist_fallback_used") is False
     assert selection_reason.get("selection_basis", {}).get("strategist_plan_consumed") is True
     assert selection_reason.get("strategist_constraints_ref", {}).get("selected_playbook") == "breakout"
+
+
+def test_scanner_applies_symbol_prior_deterministically():
+    state = {
+        "candidates": [
+            {"symbol": "005930", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
+            {"symbol": "000660", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
+        ],
+        "mock_scan_results": {
+            "005930": {"score": 0.80, "risk_score": 0.20, "confidence": 0.80},
+            "000660": {"score": 0.80, "risk_score": 0.20, "confidence": 0.80},
+        },
+        "strategist_output": {
+            "playbook": "breakout",
+            "scanner_priority": ["momentum", "trend_strength"],
+            "trade_aggressiveness": "medium",
+            "risk_tone": "normal",
+        },
+    }
+
+    def _fake_symbol_read_model(_trades_root: str, symbol: str) -> dict:
+        if symbol == "005930":
+            return {
+                "symbol": "005930",
+                "avg_pnl_pct": -0.7,
+                "win_rate": 0.20,
+                "dominant_playbook": "pullback",
+                "dominant_monitor_blocker": "confirmed_entry",
+                "repeated_failure_pattern": [{"type": "entry_pattern", "value": "breakout", "count": 3}],
+                "data_quality": {"data_source": "symbol_memory"},
+            }
+        return {
+            "symbol": "000660",
+            "avg_pnl_pct": 0.4,
+            "win_rate": 0.70,
+            "dominant_playbook": "breakout",
+            "dominant_monitor_blocker": "unknown",
+            "repeated_failure_pattern": [],
+            "data_quality": {"data_source": "symbol_memory"},
+        }
+
+    with patch("graphs.nodes.scanner_node.build_symbol_read_model", side_effect=_fake_symbol_read_model):
+        out = scanner_node(state)
+
+    selected = out.get("selected") or {}
+    scanner_output = out.get("scanner_output") or {}
+    ranked = list(out.get("ranked_candidates") or [])
+
+    assert selected.get("symbol") == "000660"
+    assert ranked[0]["symbol"] == "000660"
+    assert ranked[1]["symbol"] == "005930"
+    assert scanner_output["candidate_symbol_prior_adjustments"][0]["symbol"] == "000660"
+    assert any("playbook_fit:breakout" in reason for reason in scanner_output["candidate_symbol_prior_adjustments"][0]["symbol_prior_reasons"])
+    losing_prior = [row for row in scanner_output["candidate_symbol_prior_adjustments"] if row["symbol"] == "005930"][0]
+    assert losing_prior["symbol_prior_adjustment"] < 0.0
+    assert any("playbook_mismatch:pullback" in reason for reason in losing_prior["symbol_prior_reasons"])
 
 
 def test_scanner_uses_chart_features_when_available():

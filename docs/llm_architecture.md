@@ -80,13 +80,15 @@ Used by:
 
 - Input artifact
   - run detail + canonical trade artifacts
+  - `reports/trades/<day>/<trade_id>/brief_input.json`
+  - `reports/trades/<day>/<trade_id>/brief_compact_input.json`
 - Raw response artifact
-  - `reports/trades/<day>/<trade_id>/brief/brief_llm_response.json`
+  - `reports/trades/<day>/<trade_id>/reports/brief_llm_response.json`
 - Parsed output artifact
   - stored inside the LLM response artifact as `parsed_output`
 - Rendered artifact
-  - `reports/trades/<day>/<trade_id>/brief/operator_brief.json`
-  - `reports/trades/<day>/<trade_id>/brief/operator_brief.md`
+  - `reports/trades/<day>/<trade_id>/reports/operator_brief.json`
+  - `reports/trades/<day>/<trade_id>/reports/operator_brief.md`
 
 ### Daily report
 
@@ -135,4 +137,3 @@ Used by:
 - On terminal failure:
   - saves `daily_report_llm_response.json`
   - returns empty summary text plus failure artifact
-

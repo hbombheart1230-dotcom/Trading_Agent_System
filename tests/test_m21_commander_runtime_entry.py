@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 from graphs.commander_runtime import (
     _assess_open_position_commander_override,
+    _ensure_market_context_clock_fields,
     _run_integrated_chain,
     _should_use_session_closeout_fast_path,
     _hydrate_strategist_output_cache,
@@ -286,6 +287,47 @@ def test_m21_session_closeout_fast_path_activates_inside_eod_cutoff():
     assert payload["minutes_to_close"] == 5
     assert payload["cutoff_min"] == 10
     assert payload["open_position_count"] == 1
+
+
+def test_m21_ensure_market_context_clock_fields_backfills_minutes_to_close_from_tick_ts():
+    state = {
+        "tick_ts": 1776407100,  # 2026-04-17 15:25:00 KST
+        "market_context": {},
+    }
+
+    out = _ensure_market_context_clock_fields(state)
+
+    assert out["market_clock_source"] == "runtime_clock"
+    assert str(out.get("market_clock_kst") or "").startswith("2026-04-17T15:25:00")
+    assert float(out["minutes_to_close"]) == 5.0
+    assert float((state.get("market_context") or {}).get("minutes_to_close")) == 5.0
+
+
+def test_m21_runtime_entry_backfills_market_clock_for_closeout_guard_when_missing():
+    called = {"integrated": 0}
+
+    def integrated_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        called["integrated"] += 1
+        state["path"] = "integrated_chain"
+        return state
+
+    out = run_commander_runtime(
+        {
+            "runtime_mode": "integrated_chain",
+            "runtime_phase": "session",
+            "tick_ts": 1776407100,  # 2026-04-17 15:25:00 KST
+            "applied_policy": {
+                "monitor": {"exit": {"eod_flat": {"enabled": True, "cutoff_min": 10}}},
+            },
+            "portfolio_snapshot": {"positions": [{"symbol": "005930", "qty": 1}]},
+        },
+        integrated_runner=integrated_runner,
+    )
+
+    mc = out.get("market_context") if isinstance(out.get("market_context"), dict) else {}
+    assert float(mc["minutes_to_close"]) == 5.0
+    assert mc["market_clock_source"] == "runtime_clock"
+    assert called["integrated"] == 1
 
 
 def test_m21_integrated_chain_prefers_closeout_guard_over_cached_or_full_cycle(monkeypatch):
@@ -1142,7 +1184,7 @@ def test_m31_integrated_chain_monitor_only_uses_position_strategy_context_when_c
     ]
 
 
-def test_m31_integrated_chain_monitor_only_escalates_to_full_cycle_on_open_position_override(monkeypatch):
+def test_m31_integrated_chain_force_exit_review_stays_monitor_only_with_open_position(monkeypatch):
     calls: list[str] = []
 
     def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1167,15 +1209,6 @@ def test_m31_integrated_chain_monitor_only_escalates_to_full_cycle_on_open_posit
         calls.append("build_risk_context")
         return state
 
-    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
-        calls.append("strategist")
-        state["strategist_output"] = {"playbook": "defensive"}
-        return state
-
-    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
-        calls.append("scanner")
-        return state
-
     def fake_hydrate_monitor_symbol_features(state: Dict[str, Any]) -> Dict[str, Any]:
         calls.append("hydrate_monitor_symbol_features")
         return state
@@ -1193,8 +1226,6 @@ def test_m31_integrated_chain_monitor_only_escalates_to_full_cycle_on_open_posit
 
     monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
     monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
-    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
-    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
     monkeypatch.setattr("graphs.commander_runtime._hydrate_monitor_symbol_features", fake_hydrate_monitor_symbol_features)
     monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
     monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
@@ -1207,15 +1238,14 @@ def test_m31_integrated_chain_monitor_only_escalates_to_full_cycle_on_open_posit
         execute_fn=lambda state: state,
     )
 
-    assert out["path"] == "integrated_chain"
+    assert out["path"] == "integrated_chain_monitor_only"
     assert out["commander_decision"]["override_triggered"] is True
     assert out["commander_decision"]["override_reason"] == "loss_threshold_exceeded"
     assert out["commander_decision"]["override_action"] == "force_exit_review"
+    assert out["commander_decision"]["strategist_skip_reason"] == "open_positions_present"
     assert calls == [
         "build_portfolio_snapshot",
         "build_risk_context",
-        "strategist",
-        "scanner",
         "hydrate_monitor_symbol_features",
         "monitor",
         "decision",
@@ -1338,6 +1368,185 @@ def test_m31_integrated_chain_monitor_only_keeps_fast_path_when_refresh_cooldown
     assert calls == [
         "build_portfolio_snapshot",
         "build_risk_context",
+        "hydrate_monitor_symbol_features",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_repeated_hold_refresh_records_policy_delta(monkeypatch):
+    calls: list[str] = []
+    strategist_decisions: list[Dict[str, Any]] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [
+                {
+                    "symbol": "322000",
+                    "qty": 1,
+                    "avg_price": 100.0,
+                    "current_price": 99.8,
+                    "unrealized_pnl": -0.2,
+                    "position_age_seconds": 240,
+                }
+            ],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        strategist_decisions.append(dict(state.get("commander_decision") or {}))
+        state["strategist_output"] = {
+            "playbook": "defensive",
+            "monitor_guidance": "defensive_exit",
+            "monitor_entry_policy": {
+                "timeframe_minutes": 1,
+                "breakout_lookback": 5,
+                "volume_lookback": 5,
+                "volume_ratio_min": 0.75,
+                "min_extended_from_vwap_pct": -0.01,
+                "max_extended_from_vwap_pct": 0.08,
+                "pullback_min_pct": 0.01,
+                "pullback_max_pct": 0.05,
+                "reclaim_tolerance_pct": 0.002,
+                "breakout_buffer_pct": 0.0,
+                "intent_cooldown_sec": 90,
+                "require_vwap_reclaim": True,
+                "require_rebound": True,
+                "policy_source": "strategist",
+            },
+            "policy_source": "strategist",
+            "policy_validation_status": "ok",
+            "policy_fallback_used": False,
+            "policy_fallback_reason": "",
+            "strategy_policy": {
+                "market_policy": {},
+                "scanner_policy": {},
+                "monitor_policy": {},
+                "decision_policy": {},
+            },
+        }
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        return state
+
+    def fake_hydrate_monitor_symbol_features(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("hydrate_monitor_symbol_features")
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        state["monitor_output"] = {"intent_side": "NOOP"}
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.commander_runtime._hydrate_monitor_symbol_features", fake_hydrate_monitor_symbol_features)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "now_epoch": 1000,
+            "monitor_block_buy_when_open_position": True,
+            "applied_policy": {"commander": {"route": {"monitor_only_when_holding": True}}},
+            "persisted_state": {
+                "monitor_last_state_by_symbol": {
+                    "322000": {
+                        "posture": "hold",
+                        "reason": "too_extended_from_vwap",
+                        "active_exit_axis": "peak_drawdown",
+                        "entry_state": {
+                            "current_blocking_axis": "reclaim_readiness",
+                            "transition_readiness_score": 0.74,
+                            "entry_blockers": [
+                                "below_vwap_reclaim_not_ready",
+                                "volume_confirmation_missing",
+                            ],
+                            "reclaim_distance_to_ready": 0.012,
+                            "volume_distance_to_ready": 0.08,
+                            "breakout_distance_to_ready": 0.003,
+                            "vwap_reclaim_progress": 0.41,
+                            "rebound_progress": 0.22,
+                            "volume_ratio": 0.67,
+                            "extended_from_vwap_pct": -0.018,
+                            "breakout_gap_pct": -0.002,
+                            "reclaim_gate_ok": False,
+                            "volume_ok": False,
+                            "breakout_ok": False,
+                            "confidence_gate_ok": False,
+                        },
+                    }
+                },
+                "commander_open_position_hold_repeat_by_symbol": {"322000": 2},
+                "strategist_output_cache": {
+                    "output": {
+                        "playbook": "defensive",
+                        "monitor_guidance": "defensive_exit",
+                        "monitor_entry_policy": {
+                            "timeframe_minutes": 1,
+                            "breakout_lookback": 5,
+                            "volume_lookback": 5,
+                            "volume_ratio_min": 0.68,
+                            "min_extended_from_vwap_pct": -0.02,
+                            "max_extended_from_vwap_pct": 0.13,
+                            "pullback_min_pct": 0.008,
+                            "pullback_max_pct": 0.07,
+                            "reclaim_tolerance_pct": 0.0015,
+                            "breakout_buffer_pct": 0.0,
+                            "intent_cooldown_sec": 60,
+                            "require_vwap_reclaim": True,
+                            "require_rebound": True,
+                            "policy_source": "strategist",
+                        },
+                    },
+                    "generated_epoch": 700,
+                    "source": "strategist_node",
+                },
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    decision = out["commander_decision"]
+    assert out["path"] == "integrated_chain"
+    assert decision["override_action"] == "strategist_refresh"
+    assert decision["strategist_refresh_evaluated"] is True
+    assert decision["strategist_refresh_effective"] is True
+    assert decision["strategist_refresh_policy_delta_count"] >= 1
+    assert "volume_ratio_min" in list(decision["strategist_refresh_policy_delta_fields"] or [])
+    assert decision["prior_monitor_entry_policy_summary"]["volume_ratio_min"] == 0.68
+    assert decision["current_monitor_entry_policy_summary"]["volume_ratio_min"] == 0.75
+    assert strategist_decisions
+    refresh_ctx = dict(strategist_decisions[0].get("strategist_refresh_context") or {})
+    assert refresh_ctx["refresh_scope"] == "open_position_monitor_refresh"
+    assert refresh_ctx["selected_symbol"] == "322000"
+    assert refresh_ctx["monitor_reason"] == "too_extended_from_vwap"
+    assert refresh_ctx["entry_state"]["current_blocking_axis"] == "reclaim_readiness"
+    assert refresh_ctx["entry_state"]["entry_blockers"][0] == "below_vwap_reclaim_not_ready"
+    assert refresh_ctx["current_monitor_entry_policy_summary"]["volume_ratio_min"] == 0.68
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "strategist",
+        "scanner",
         "hydrate_monitor_symbol_features",
         "monitor",
         "decision",

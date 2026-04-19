@@ -388,8 +388,16 @@ def _story_explanation(story: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _canonical_report_root(report_dir: Path) -> Path:
-    if report_dir.name in {"operator_summary", "daily", "run_cards", "decision_story", "metrics", "trade_explain"}:
+    if report_dir.name in {"operator_summary", "daily", "metrics"}:
         return report_dir.parent
+    if report_dir.name in {"run_cards", "decision_story"}:
+        parent = report_dir.parent
+        if parent.name == "manual" and parent.parent.name == "dev":
+            return parent.parent.parent
+    if report_dir.name == "trade_explain":
+        parent = report_dir.parent
+        if parent.name == "analysis" and parent.parent.name == "dev":
+            return parent.parent.parent
     return report_dir
 
 
@@ -1547,14 +1555,15 @@ def generate_operator_visibility_bundle(
     summary_obj = _read_json(summary_js)
     target_day = str(summary_obj.get("day") or day or "")
 
+    manual_dir = report_root / "dev" / "manual"
     decision_md, decision_obj = generate_decision_story_report(
         events_path,
-        report_root / "decision_story",
+        manual_dir / "decision_story",
         day=target_day or day,
     )
     run_cards_md, run_cards_obj = generate_run_card_report(
         events_path,
-        report_root / "run_cards",
+        manual_dir / "run_cards",
         day=target_day or day,
     )
 
@@ -1569,12 +1578,20 @@ def generate_operator_visibility_bundle(
     }
 
 
+def _operator_brief_trade_model_is_valid(trade_model: Dict[str, Any]) -> bool:
+    if not isinstance(trade_model, dict) or not trade_model:
+        return False
+    facts = trade_model.get("facts") if isinstance(trade_model.get("facts"), dict) else {}
+    provenance = trade_model.get("provenance") if isinstance(trade_model.get("provenance"), dict) else {}
+    return bool(facts) and bool(provenance)
+
+
 def build_separated_operator_brief(trade_dir: str, symbol: str, trades_root: str, *, model: Optional[str] = None) -> Dict[str, Any]:
     """Phase 6-1 Task 4: Fact/Narrative separated operator brief."""
     from libs.reporting.trade_read_model import build_trade_read_model
     from libs.reporting.symbol_read_model import build_symbol_read_model
     from libs.reporting.fact_narrative_report import build_separated_report
-    
+
     try:
         trade_model = build_trade_read_model(str(trade_dir))
     except Exception:
@@ -1583,7 +1600,8 @@ def build_separated_operator_brief(trade_dir: str, symbol: str, trades_root: str
         symbol_model = build_symbol_read_model(str(trades_root), str(symbol))
     except Exception:
         symbol_model = {}
-    llm_scope = trade_model if isinstance(trade_model, dict) and trade_model else symbol_model
+    trade_scope = trade_model if _operator_brief_trade_model_is_valid(trade_model) else {}
+    llm_scope = trade_scope if trade_scope else symbol_model
     chosen_model = normalize_openrouter_model_name(
         str(model or "").strip()
         or str(resolve_policy_llm_slot(llm_scope if isinstance(llm_scope, dict) else {}, "reporter", "intraday", default_profile="fast_free").get("primary") or "").strip()

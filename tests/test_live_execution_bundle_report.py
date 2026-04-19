@@ -344,6 +344,9 @@ def test_flatten_news_titles_handles_count_sample_mapping_with_string_rows() -> 
 
 def test_build_strategist_input_summary_surfaces_news_titles_from_sample_mapping() -> None:
     source_input = {
+        "market_regime_hint": "neutral",
+        "market_sentiment_hint": "neutral",
+        "playbook_hint": "defensive",
         "news_query_targets": ["KOSPI", "US equities"],
         "market_news_sample": {
             "KOSPI": {
@@ -370,8 +373,41 @@ def test_build_strategist_input_summary_surfaces_news_titles_from_sample_mapping
 
     summary = mod._build_strategist_input_summary(source_input, {})
 
+    assert summary["market_regime_hint"] == "neutral"
+    assert summary["market_sentiment_hint"] == "neutral"
+    assert summary["playbook_hint"] == "defensive"
     assert summary["market_news_titles"] == ["KOSPI: KOSPI rebounds on tech strength"]
     assert summary["candidate_news_titles"] == ["000660: SK hynix volatility expands ahead of earnings"]
+
+
+def test_enrich_strategist_from_input_summary_recovers_cached_strategy_hints() -> None:
+    strategist_payload = {}
+    strategist_input_artifact = {
+        "summary": {
+            "market_regime_hint": "neutral",
+            "market_sentiment_hint": "neutral",
+            "playbook_hint": "defensive",
+            "themes_hint": ["broad_market_leaders"],
+            "global_sentiment_score": 0.02,
+            "vix_level": 17.94,
+            "vix_change_pct": -1.26,
+            "vix_level_pressure": 0.0,
+            "headline_count": 60,
+            "market_signal_total": 7,
+            "candidate_signal_total": 5,
+            "news_query_targets": ["KOSPI", "미국 증시"],
+        }
+    }
+
+    enriched = mod._enrich_strategist_from_input_summary(strategist_payload, strategist_input_artifact)
+
+    assert enriched["market_regime"] == "neutral"
+    assert enriched["market_sentiment"] == "neutral"
+    assert enriched["playbook"] == "defensive"
+    assert enriched["themes"] == ["broad_market_leaders"]
+    assert enriched["global_sentiment_score"] == 0.02
+    assert enriched["fear_index"]["level"] == 17.94
+    assert enriched["news_context"]["headline_count"] == 60
 
 
 
@@ -421,6 +457,27 @@ def test_build_filters_human_prefers_normalized_scanner_feature_coverage() -> No
     assert any("chart completeness filter: PASS - 10/12 captured chart features" == bullet for bullet in out["bullets"])
 
 
+def test_build_filters_human_surfaces_spread_bps_when_selected_candidate_captures_quote_snapshot() -> None:
+    scanner = {
+        "selected_candidate": {
+            "symbol": "005930",
+            "sources": ["top_value", "sector_theme"],
+            "risk_score": 0.31,
+            "score_breakdown": {"volume_surge": 0.14, "theme_boost": 0.05},
+            "component_snapshot": {"trading_value_component": 1.0, "sentiment_component": 0.03},
+            "feature_snapshot": {"quote_spread_bps": 7.1},
+        },
+    }
+    strategist = {"themes": ["defensive_large_cap"], "global_sentiment_score": 0.02}
+    supervisor = {"supervisor_allow": True}
+
+    out = story_pipeline.build_filters_human(scanner, strategist, supervisor)
+
+    spread_row = next(row for row in out["checks"] if row["name"] == "spread/slippage filter")
+    assert spread_row["status"] == "PASS"
+    assert "7.1 bps" in spread_row["detail"]
+
+
 def test_scanner_evidence_enrichment_normalizes_chart_coverage() -> None:
     scanner_reason = {
         "selected_symbol": "005930",
@@ -458,13 +515,46 @@ def test_scanner_evidence_enrichment_normalizes_chart_coverage() -> None:
     }
 
     enriched_reason = mod._enrich_scanner_reason_from_evidence(scanner_reason, scanner_evidence)
-    enriched_filters = mod._enrich_filters_from_evidence(filters_human, scanner_evidence, selected_symbol="005930")
+    enriched_filters = mod._enrich_filters_from_evidence(
+        filters_human,
+        scanner_evidence,
+        selected_symbol="005930",
+        monitor_evidence={"cycle_summaries": [{"price_anomaly_flag": False, "price_anomaly_reason": ""}]},
+    )
 
     assert "chart feature coverage 10/12" in enriched_reason["top_reasons"]
     assert "Chart / feature coverage: 10/12" in enriched_reason["bullets"]
     assert "10/12 captured features" in enriched_filters["summary"]
     assert "strong" in enriched_filters["summary"]
     assert "chart completeness filter: PASS - 10/12 captured chart features" in enriched_filters["bullets"]
+    assert any(row["name"] == "price anomaly filter" and row["status"] == "PASS" for row in enriched_filters["checks"])
+    assert any("price anomaly filter: PASS - monitor price cross-check found no anomaly" == bullet for bullet in enriched_filters["bullets"])
+
+
+def test_enrich_filters_from_evidence_falls_back_to_execution_spread_snapshot() -> None:
+    filters_human = {
+        "checks": [
+            {
+                "name": "spread/slippage filter",
+                "status": "NOT_AVAILABLE",
+                "detail": "spread or slippage diagnostics were not captured in this run",
+            }
+        ],
+        "bullets": ["spread/slippage filter: NOT_AVAILABLE - spread or slippage diagnostics were not captured in this run"],
+    }
+
+    enriched_filters = mod._enrich_filters_from_evidence(
+        filters_human,
+        {},
+        selected_symbol="005930",
+        entry_execution_details={
+            "quote_snapshot": {"best_bid": 70500.0, "best_ask": 70550.0, "spread_bps": 7.1},
+            "spread_bps": 7.1,
+        },
+    )
+
+    assert any(row["name"] == "spread/slippage filter" and row["status"] == "PASS" for row in enriched_filters["checks"])
+    assert any("spread/slippage filter: PASS - execution quote snapshot spread was 7.1 bps" == bullet for bullet in enriched_filters["bullets"])
 
 def test_live_execution_bundle_report_builds_trade_lifecycle_with_entry_hold_exit(tmp_path: Path, capsys, monkeypatch) -> None:
     day = "2026-03-16"
@@ -2610,6 +2700,85 @@ def test_build_strategist_input_artifacts_reconstructs_trade_visible_input() -> 
     assert compact_artifact["component"] == "strategist"
     assert compact_artifact["compact_input"]["candidate_symbols_hint"] == ["005930"]
     assert compact_artifact["meta"]["reconstructed_from_evidence_ledger"] is True
+
+
+def test_build_strategist_input_artifacts_falls_back_to_prompt_artifact_for_cached_route(tmp_path: Path) -> None:
+    prompt_path = (
+        tmp_path
+        / "reports"
+        / "llm"
+        / "2026-03-19"
+        / "cached-buy-run"
+        / "strategist"
+        / "prompt.json"
+    )
+    prompt_path.parent.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text(
+        json.dumps(
+            {
+                "stage": "theme_selection",
+                "payload": {
+                    "market_regime_hint": "neutral",
+                    "market_sentiment_hint": "neutral",
+                    "playbook_hint": "defensive",
+                    "themes_hint": ["broad_market_leaders"],
+                    "global_sentiment_signal": {
+                        "score": 0.017,
+                        "fear_index": {"level": 17.94, "change_pct": -1.26, "level_pressure": 0.0},
+                    },
+                    "news_context": {"headline_count": 60, "candidate_signal_total": 5, "market_signal_total": 7},
+                    "news_query_targets": ["KOSPI", "미국 증시"],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    input_artifact, compact_artifact = mod._build_strategist_input_artifacts(
+        {
+            "run_id": "cached-buy-run",
+            "strategist": {},
+        },
+        day="2026-03-19",
+        trade_id="TRD_20260319_000660_01",
+        reports_root=tmp_path / "reports",
+        strategist_evidence={"run_ids": []},
+        evidence_rows=[],
+    )
+
+    assert input_artifact["status"] == "ok"
+    assert input_artifact["summary"]["market_regime_hint"] == "neutral"
+    assert input_artifact["summary"]["playbook_hint"] == "defensive"
+    assert input_artifact["summary"]["headline_count"] == 60
+    assert compact_artifact["compact_input"]["playbook_hint"] == "defensive"
+    assert input_artifact["meta"]["source_stage"] == "theme_selection"
+
+
+def test_expand_targeted_run_ids_with_cached_strategist_sources_includes_prior_frame() -> None:
+    event_rows = [
+        {
+            "ts": "2026-03-19T01:49:30+00:00",
+            "run_id": "strategist-source-run",
+            "event_name": "strategist.decision_frame",
+            "agent": "strategist",
+            "payload": {"playbook": "defensive"},
+        },
+        {
+            "ts": "2026-03-19T01:50:19+00:00",
+            "run_id": "cached-buy-run",
+            "event_name": "commander_router.fast_path",
+            "agent": "commander_router",
+            "payload": {"path": "integrated_chain_cached_frame", "reuse_sec": 180, "reason": "flat_position_cached_strategist"},
+        },
+    ]
+
+    expanded = mod._expand_targeted_run_ids_with_cached_strategist_sources(  # type: ignore[attr-defined]
+        event_rows=event_rows,
+        targeted_run_ids={"cached-buy-run"},
+    )
+
+    assert expanded == {"cached-buy-run", "strategist-source-run"}
 
 
 def test_attach_strategy_anchor_adds_linkage_metadata() -> None:

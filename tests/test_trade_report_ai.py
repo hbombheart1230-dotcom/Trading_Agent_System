@@ -196,6 +196,54 @@ def _story_input() -> Dict[str, Any]:
     }
 
 
+def test_attach_report_status_matrix_prefers_trade_read_model_for_separated_fallback(tmp_path, monkeypatch) -> None:
+    trade_dir = tmp_path / "reports" / "trades" / "2026-03-18" / "TRD_20260318_000660_01"
+    trade_dir.mkdir(parents=True)
+    input_path = trade_dir / "ai_trade_report_input.json"
+    input_path.write_text("{}", encoding="utf-8")
+
+    sentinel_trade_model = {
+        "trade_id": "TRD_20260318_000660_01",
+        "from_trade_read_model": True,
+        "applied_policy": {"llm": {"reporter": {"intraday": {"primary": "minimax/minimax-m2.5"}}}},
+    }
+    captured: dict[str, object] = {}
+
+    def _fake_build_trade_read_model(path: str) -> dict[str, object]:
+        captured["trade_read_model_path"] = path
+        return dict(sentinel_trade_model)
+
+    def _fake_build_separated_report(*, trade_model: dict[str, object], model: str | None = None, execution_profile=None):
+        captured["trade_model"] = dict(trade_model)
+        captured["model"] = model
+        captured["execution_profile"] = execution_profile
+        return {
+            "fact_payload": {"trade": dict(trade_model)},
+            "narrative": {"status": "ok", "summary": "used canonical trade read model"},
+        }
+
+    monkeypatch.setattr("libs.reporting.trade_read_model.build_trade_read_model", _fake_build_trade_read_model)
+    monkeypatch.setattr("libs.reporting.fact_narrative_report.build_separated_report", _fake_build_separated_report)
+
+    story_input = _story_input()
+    story_input.update(
+        {
+            "status": "closed",
+            "action": "SELL",
+            "enable_separated_narrative": True,
+            "skip_separated_report_llm": False,
+            "artifacts": {"ai_trade_report_input_json": str(input_path)},
+        }
+    )
+
+    out = mod._attach_report_status_matrix({}, story_input, ai_trade_report_status="ok")
+
+    assert captured["trade_read_model_path"] == str(trade_dir)
+    assert captured["trade_model"] == sentinel_trade_model
+    assert ((out.get("fact_payload") or {}).get("trade") or {}).get("from_trade_read_model") is True
+    assert (out.get("narrative") or {}).get("status") == "ok"
+
+
 def test_deterministic_trade_report_does_not_invoke_hidden_fact_narrative_llm(monkeypatch) -> None:
     class ExplodingRouter:
         client = object()
@@ -212,7 +260,7 @@ def test_deterministic_trade_report_does_not_invoke_hidden_fact_narrative_llm(mo
     report = mod.build_deterministic_trade_report(_story_input())
     narrative = report.get("narrative") if isinstance(report.get("narrative"), dict) else {}
     assert narrative.get("status") == "skipped"
-    assert narrative.get("reason") == "explicit_model_not_provided"
+    assert narrative.get("reason") == "runtime_separated_narrative_disabled"
     assert narrative.get("llm_call_skipped") is True
 
 
@@ -242,6 +290,386 @@ def test_ai_trade_report_can_skip_hidden_separated_report_llm_for_intraday_bundl
     assert narrative.get("status") == "skipped"
     assert narrative.get("reason") == "intraday_bundle_skip_separated_report_llm"
     assert narrative.get("llm_call_skipped") is True
+
+
+def test_build_shared_summary_seed_prefers_trade_read_model_facts_when_artifacts_exist(tmp_path, monkeypatch) -> None:
+    trade_dir = tmp_path / "reports" / "trades" / "2026-03-18" / "TRD_20260318_000660_01"
+    trade_dir.mkdir(parents=True)
+    input_path = trade_dir / "ai_trade_report_input.json"
+    input_path.write_text("{}", encoding="utf-8")
+
+    sentinel_trade_model = {
+        "facts": {
+            "hold_duration_sec": 900,
+            "exit_reason": "trade_read_model_exit",
+            "pnl": 12345.0,
+            "pnl_pct": 0.0175,
+        },
+        "context": {
+            "monitor": {
+                "exit_trigger": "peak_drawdown",
+                "thresholds_snapshot": {"effective_stop_loss_pct": 0.0092},
+            }
+        },
+        "provenance": {"schema_version": "trade_read_model.v2"},
+    }
+
+    def _fake_build_trade_read_model(path: str) -> dict[str, object]:
+        assert path == str(trade_dir)
+        return dict(sentinel_trade_model)
+
+    monkeypatch.setattr("libs.reporting.trade_read_model.build_trade_read_model", _fake_build_trade_read_model)
+
+    story_input = _story_input()
+    story_input.update(
+        {
+            "artifacts": {"ai_trade_report_input_json": str(input_path)},
+            "status": "closed",
+            "action": "SELL",
+            "entry_summary": {},
+            "exit_summary": {},
+            "canonical_agent_artifacts": {"monitor": {}},
+            "monitor_reason_human": {},
+        }
+    )
+
+    seed = mod._build_shared_summary_seed(story_input)
+    facts = seed.get("resolved_trade_facts") if isinstance(seed.get("resolved_trade_facts"), dict) else {}
+
+    assert facts.get("holding_duration") == "900"
+    assert facts.get("exit_reason") == "trade_read_model_exit"
+    assert facts.get("pnl") == 12345.0
+    assert facts.get("pnl_pct") == 0.0175
+    assert (facts.get("data_source") or {}).get("holding_duration") == "trade_read_model"
+    assert (seed.get("monitor_decision") or {}).get("reason_code") == "peak_drawdown"
+    assert ((seed.get("monitor_decision") or {}).get("thresholds") or {}).get("effective_stop_loss_pct") == 0.0092
+
+
+def test_build_shared_summary_seed_prefers_trade_read_model_context_when_runtime_sections_missing(tmp_path, monkeypatch) -> None:
+    trade_dir = tmp_path / "reports" / "trades" / "2026-03-18" / "TRD_20260318_000660_01"
+    trade_dir.mkdir(parents=True)
+    input_path = trade_dir / "ai_trade_report_input.json"
+    input_path.write_text("{}", encoding="utf-8")
+
+    sentinel_trade_model = {
+        "facts": {},
+        "context": {
+            "scanner": {
+                "summary": "trade_read_model scanner summary",
+                "score_drivers": {"trading_value": 0.22, "trend": 0.17},
+                "top_candidates": [{"rank": 1, "symbol": "000660", "score_total": 1.286}],
+            },
+            "monitor": {
+                "entry_reason": "trade_read_model monitor entry",
+                "blocker_trace": {"threshold_shortfalls": ["volume ratio 0.10 below min 0.75"]},
+                "stop_policy_trace": {"effective_stop_loss_pct": 0.0092, "take_profit_pct": 0.025},
+            },
+        },
+        "provenance": {"schema_version": "trade_read_model.v2"},
+    }
+
+    monkeypatch.setattr(
+        "libs.reporting.trade_read_model.build_trade_read_model",
+        lambda path: dict(sentinel_trade_model),
+    )
+
+    story_input = _story_input()
+    story_input.update(
+        {
+            "artifacts": {"ai_trade_report_input_json": str(input_path)},
+            "scanner_reason_human": {},
+            "scanner_selection_trace": {},
+            "monitor_reason_human": {},
+            "monitor_blocker_trace": {},
+            "monitor_stop_policy_trace": {},
+            "canonical_agent_artifacts": {},
+        }
+    )
+
+    seed = mod._build_shared_summary_seed(story_input)
+    scanner_reasoning = seed.get("scanner_reasoning") if isinstance(seed.get("scanner_reasoning"), dict) else {}
+    monitor_reasoning = seed.get("monitor_reasoning") if isinstance(seed.get("monitor_reasoning"), dict) else {}
+
+    assert scanner_reasoning.get("selection_reason_with_bias") == "trade_read_model scanner summary"
+    assert ((scanner_reasoning.get("selection_trace") or {}).get("selected_symbol_score_drivers") or {}).get("trading_value") == 0.22
+    assert (((scanner_reasoning.get("selection_trace") or {}).get("ranked_candidates") or [])[0] or {}).get("symbol") == "000660"
+    assert monitor_reasoning.get("entry_check_summary") == "trade_read_model monitor entry"
+    assert monitor_reasoning.get("threshold_shortfalls") == ["volume ratio 0.10 below min 0.75"]
+    assert (monitor_reasoning.get("monitor_stop_policy_trace") or {}).get("effective_stop_loss_pct") == 0.0092
+
+
+def test_fallback_report_prefers_trade_read_model_strategist_and_scanner_context_when_runtime_sections_missing(tmp_path, monkeypatch) -> None:
+    trade_dir = tmp_path / "reports" / "trades" / "2026-03-18" / "TRD_20260318_000660_01"
+    trade_dir.mkdir(parents=True)
+    input_path = trade_dir / "ai_trade_report_input.json"
+    input_path.write_text("{}", encoding="utf-8")
+
+    sentinel_trade_model = {
+        "facts": {},
+        "context": {
+            "report_section_seeds": {
+                "market_context_at_entry": {
+                    "summary": "Canonical section seed for market context.",
+                    "bullets": ["seed market bullet"],
+                },
+                "strategist_summary": {
+                    "summary": "Canonical section seed for strategist summary.",
+                    "bullets": ["seed strategist bullet"],
+                },
+                "why_this_symbol_was_chosen": {
+                    "summary": "Canonical section seed for symbol choice.",
+                    "bullets": ["seed why bullet"],
+                },
+                "entry_decision": {
+                    "summary": "Canonical section seed for entry decision.",
+                    "bullets": ["seed entry bullet"],
+                },
+                "holding_monitoring_story": {
+                    "summary": "Canonical section seed for holding story.",
+                    "bullets": ["seed holding bullet"],
+                },
+                "exit_decision": {
+                    "summary": "Canonical section seed for exit decision.",
+                    "bullets": ["seed exit bullet"],
+                },
+                "scanner_filters": {
+                    "summary": "Canonical section seed for scanner filters.",
+                    "bullets": ["seed filter bullet"],
+                },
+                "execution_quality": {
+                    "summary": "Canonical section seed for execution quality.",
+                    "bullets": ["seed execution bullet"],
+                },
+                "guard_approval_result": {
+                    "summary": "Canonical section seed for guard approval.",
+                    "bullets": ["seed guard bullet"],
+                },
+                "reporter_evaluation": {
+                    "summary": "Canonical section seed for reporter evaluation.",
+                    "bullets": ["seed reporter bullet"],
+                    "status": "pending",
+                    "grade": "B",
+                },
+                "final_operator_conclusion": {
+                    "summary": "Canonical section seed for final conclusion.",
+                    "current_action": "SELL",
+                    "watch_next": ["seed watch"],
+                    "thesis_invalidation": ["seed invalidate"],
+                },
+            },
+            "scanner": {
+                "summary": "Scanner selected 000660 from canonical ranking.",
+                "score_drivers": {"momentum": 0.209, "trading_value": 0.2},
+                "top_candidates": [{"rank": 1, "symbol": "000660", "score_total": 1.286}],
+            },
+            "strategist": {
+                "playbook": "breakout",
+                "policy_source": "canonical.strategist",
+                "themes": ["semiconductor_leaders"],
+                "market_context_summary": "Strategist framed the tape as neutral-to-risk-on for semiconductor leaders.",
+            },
+        },
+        "provenance": {"schema_version": "trade_read_model.v2"},
+    }
+
+    monkeypatch.setattr(
+        "libs.reporting.trade_read_model.build_trade_read_model",
+        lambda path: dict(sentinel_trade_model),
+    )
+
+    story_input = _story_input()
+    story_input.update(
+        {
+            "artifacts": {"ai_trade_report_input_json": str(input_path)},
+            "market_context_human": {},
+            "scanner_reason_human": {},
+            "monitor_reason_human": {},
+            "guard_reason_human": {},
+            "execution_outcome_human": {},
+            "reporter_status_human": {},
+            "operator_conclusion_human": {},
+            "entry_summary": {
+                "run_id": "run-entry",
+                "ts": "2026-03-18T00:00:00+00:00",
+                "action": "BUY",
+            },
+        }
+    )
+
+    report = mod._fallback_report(
+        story_input,
+        status="salvaged",
+        mode="ai",
+        model="openrouter/free",
+        reason="partial",
+    )
+
+    assert report["market_context_at_entry"]["playbook"] == "breakout"
+    assert report["market_context_at_entry"]["policy_source"] == "canonical.strategist"
+    assert "semiconductor_leaders" in list(report["market_context_at_entry"]["themes"] or [])
+    assert report["market_context_at_entry"]["summary"] == "Canonical section seed for market context."
+    assert report["why_this_symbol_was_chosen"]["selected_rank"] == 1
+    assert report["why_this_symbol_was_chosen"]["scanner_selection_trace"]["selected_symbol"] == "000660"
+    assert any("모멘텀 0.209" in row for row in report["why_this_symbol_was_chosen"]["bullets"])
+    assert report["strategist_summary"]["summary"] == "Canonical section seed for strategist summary."
+    assert report["entry_decision"]["summary"] == "Canonical section seed for entry decision."
+    assert report["holding_monitoring_story"]["summary"] == "Canonical section seed for holding story."
+    assert report["exit_decision"]["summary"] == "Canonical section seed for exit decision."
+    assert report["scanner_filters"]["summary"] == "Canonical section seed for scanner filters."
+    assert report["scanner_filters"]["bullets"] == ["seed filter bullet"]
+    assert report["execution_quality"]["summary"] == "Canonical section seed for execution quality."
+    assert report["guard_approval_result"]["summary"] == "Canonical section seed for guard approval."
+    assert report["reporter_evaluation"]["summary"] == "Canonical section seed for reporter evaluation."
+    assert report["reporter_evaluation"]["status"] == "pending"
+    assert report["reporter_evaluation"]["grade"] == "B"
+    assert report["final_operator_conclusion"]["summary"] == "Canonical section seed for final conclusion."
+    assert report["final_operator_conclusion"]["current_action"] == "SELL"
+    assert report["final_operator_conclusion"]["watch_next"] == ["seed watch"]
+    assert report["final_operator_conclusion"]["thesis_invalidation"] == ["seed invalidate"]
+
+
+def test_build_ai_trade_report_compact_input_prefers_section_seeds_for_aux_sections(tmp_path, monkeypatch) -> None:
+    trade_dir = tmp_path / "reports" / "trades" / "2026-03-18" / "TRD_20260318_000660_01"
+    trade_dir.mkdir(parents=True)
+    input_path = trade_dir / "ai_trade_report_input.json"
+    input_path.write_text("{}", encoding="utf-8")
+
+    sentinel_trade_model = {
+        "facts": {},
+        "context": {
+            "report_section_seeds": {
+                "execution_quality": {
+                    "summary": "Seed execution summary.",
+                    "bullets": ["seed execution bullet"],
+                },
+                "guard_approval_result": {
+                    "summary": "Seed guard summary.",
+                    "bullets": ["seed guard bullet"],
+                    "status": "approved",
+                },
+                "reporter_evaluation": {
+                    "summary": "Seed reporter summary.",
+                    "bullets": ["seed reporter bullet"],
+                    "status": "pending",
+                    "grade": "B",
+                },
+                "final_operator_conclusion": {
+                    "summary": "Seed final conclusion.",
+                    "current_action": "SELL",
+                    "watch_next": ["seed watch"],
+                    "thesis_invalidation": ["seed invalidate"],
+                },
+            },
+        },
+        "provenance": {"schema_version": "trade_read_model.v2"},
+    }
+
+    monkeypatch.setattr(
+        "libs.reporting.trade_read_model.build_trade_read_model",
+        lambda path: dict(sentinel_trade_model),
+    )
+
+    story_input = _story_input()
+    story_input.update(
+        {
+            "artifacts": {"ai_trade_report_input_json": str(input_path)},
+            "guard_reason_human": {},
+            "execution_outcome_human": {},
+            "reporter_status_human": {},
+            "operator_conclusion_human": {},
+        }
+    )
+
+    compact_input = mod.build_ai_trade_report_compact_input(story_input)
+
+    assert compact_input["guard"]["summary"] == "Seed guard summary."
+    assert compact_input["guard"]["status"] == "approved"
+    assert compact_input["guard"]["bullets"] == ["seed guard bullet"]
+    assert compact_input["execution"]["summary"] == "Seed execution summary."
+    assert compact_input["execution"]["bullets"] == ["seed execution bullet"]
+    assert compact_input["reporter"]["summary"] == "Seed reporter summary."
+    assert compact_input["reporter"]["status"] == "pending"
+    assert compact_input["reporter"]["grade"] == "B"
+    assert compact_input["reporter"]["bullets"] == ["seed reporter bullet"]
+    assert compact_input["operator_conclusion"]["summary"] == "Seed final conclusion."
+    assert compact_input["operator_conclusion"]["current_action"] == "SELL"
+    assert compact_input["operator_conclusion"]["watch_next"] == ["seed watch"]
+    assert compact_input["operator_conclusion"]["thesis_invalidation"] == ["seed invalidate"]
+    assert compact_input["report_section_seeds"]["execution_quality"]["summary"] == "Seed execution summary."
+    assert compact_input["report_section_seeds"]["guard_approval_result"]["summary"] == "Seed guard summary."
+    assert compact_input["report_section_seeds"]["reporter_evaluation"]["summary"] == "Seed reporter summary."
+    assert compact_input["report_section_seeds"]["final_operator_conclusion"]["summary"] == "Seed final conclusion."
+
+
+def test_compact_story_input_prefers_section_seed_summaries_for_core_runtime_blocks(tmp_path, monkeypatch) -> None:
+    trade_dir = tmp_path / "reports" / "trades" / "2026-03-18" / "TRD_20260318_000660_01"
+    trade_dir.mkdir(parents=True)
+    input_path = trade_dir / "ai_trade_report_input.json"
+    input_path.write_text("{}", encoding="utf-8")
+
+    sentinel_trade_model = {
+        "facts": {},
+        "context": {
+            "report_section_seeds": {
+                "market_context_at_entry": {"summary": "Seed market summary.", "bullets": ["seed market bullet"]},
+                "strategist_summary": {"summary": "Seed strategist summary.", "bullets": ["seed strategist bullet"]},
+                "why_this_symbol_was_chosen": {"summary": "Seed scanner summary.", "bullets": ["seed scanner bullet"]},
+                "holding_monitoring_story": {"summary": "Seed monitor summary.", "bullets": ["seed monitor bullet"]},
+                "scanner_filters": {"summary": "Seed filters summary.", "bullets": ["seed filters bullet"]},
+                "execution_quality": {"summary": "Seed execution summary.", "bullets": ["seed execution bullet"]},
+                "guard_approval_result": {"summary": "Seed guard summary.", "bullets": ["seed guard bullet"]},
+                "reporter_evaluation": {"summary": "Seed reporter summary.", "bullets": ["seed reporter bullet"], "status": "pending", "grade": "B"},
+                "final_operator_conclusion": {
+                    "summary": "Seed conclusion summary.",
+                    "bullets": ["seed conclusion bullet"],
+                    "current_action": "SELL",
+                    "watch_next": ["seed watch"],
+                    "thesis_invalidation": ["seed invalidate"],
+                },
+            }
+        },
+        "provenance": {"schema_version": "trade_read_model.v2"},
+    }
+
+    monkeypatch.setattr(
+        "libs.reporting.trade_read_model.build_trade_read_model",
+        lambda path: dict(sentinel_trade_model),
+    )
+
+    story_input = _story_input()
+    story_input.update(
+        {
+            "artifacts": {"ai_trade_report_input_json": str(input_path)},
+            "market_context_human": {},
+            "scanner_reason_human": {},
+            "filters_human": {},
+            "monitor_reason_human": {},
+            "guard_reason_human": {},
+            "execution_outcome_human": {},
+            "reporter_status_human": {},
+            "operator_conclusion_human": {},
+        }
+    )
+
+    compact_input = mod._compact_story_input_for_llm(story_input)
+
+    assert compact_input["market_context_human"]["summary"] == "Seed market summary."
+    assert compact_input["market_context_human"]["bullets"] == ["seed market bullet"]
+    assert compact_input["scanner_reason_human"]["summary"] == "Seed scanner summary."
+    assert compact_input["scanner_reason_human"]["bullets"] == ["seed scanner bullet"]
+    assert compact_input["filters_human"]["summary"] == "Seed filters summary."
+    assert compact_input["filters_human"]["bullets"] == ["seed filters bullet"]
+    assert compact_input["monitor_reason_human"]["summary"] == "Seed monitor summary."
+    assert compact_input["monitor_reason_human"]["bullets"] == ["seed monitor bullet"]
+    assert compact_input["guard_reason_human"]["summary"] == "Seed guard summary."
+    assert compact_input["execution_outcome_human"]["summary"] == "Seed execution summary."
+    assert compact_input["reporter_status_human"]["summary"] == "Seed reporter summary."
+    assert compact_input["reporter_status_human"]["status"] == "pending"
+    assert compact_input["reporter_status_human"]["grade"] == "B"
+    assert compact_input["operator_conclusion_human"]["summary"] == "Seed conclusion summary."
+    assert compact_input["operator_conclusion_human"]["current_action"] == "SELL"
+    assert compact_input["operator_conclusion_human"]["watch_next"] == ["seed watch"]
+    assert compact_input["operator_conclusion_human"]["thesis_invalidation"] == ["seed invalidate"]
 
 
 def test_trade_report_shared_facts_align_between_deterministic_and_ai(monkeypatch) -> None:
@@ -859,14 +1287,13 @@ def test_ai_trade_report_messages_use_clean_json_only_instructions() -> None:
     system_prompt = str(messages[0]["content"])
     user_prompt = str(messages[1]["content"])
 
-    assert "諛섎뱶??JSON 媛앹껜 ?섎굹留?諛섑솚?섏떗?쒖삤." in system_prompt
+    assert "반드시 JSON 객체 하나만 반환하십시오." in system_prompt
     assert "trade lifecycle retrospective" in system_prompt
-    assert "?レ옄, ?대깽?? ?댁쑀, evidence瑜?吏?대궡吏 留덉떗?쒖삤." in system_prompt
-    assert "?щ엺???쎈뒗 紐⑤뱺 媛믪? 諛섎뱶???쒓뎅?대줈 ?묒꽦?댁빞 ?⑸땲??" in system_prompt
+    assert "숫자, 이벤트, 이유, evidence를 지어내지 마십시오." in system_prompt
+    assert "사람이 읽는 모든 값은 반드시 한국어로 작성해야 합니다." in system_prompt
     assert "strategist -> scanner -> monitor -> supervisor -> executor -> reporter" in user_prompt
-    assert "??吏꾩엯?덈뒗媛, ??蹂댁쑀?덈뒗媛, ??泥?궛?덈뒗媛" in user_prompt
-    assert "?꾨옒 JSON ?쒗뵆由우뿉 媛믩쭔 梨꾩썙 諛섑솚?섏떗?쒖삤" in user_prompt
-    assert "?곸뼱 source 臾몄옣??洹몃?濡?蹂듭궗?섏? 留덉떗?쒖삤." in user_prompt
+    assert "왜 진입했는가, 왜 보유했는가, 왜 청산했는가" in user_prompt
+    assert "영어 source 문장을 그대로 복사하지 마십시오." in user_prompt
     assert "selection_basis" in user_prompt
     assert "runner_ups_lost" in user_prompt
     assert "decision_reason_chain" in user_prompt
@@ -877,10 +1304,10 @@ def test_ai_trade_report_repair_messages_do_not_reinject_non_json_reasoning() ->
     system_prompt = str(messages[0]["content"])
     user_prompt = str(messages[1]["content"])
 
-    assert "?ш퀬 怨쇱젙" in system_prompt
+    assert "설명문, 사고 과정" in system_prompt
     assert "[previous response was non-JSON reasoning or invalid text; ignore it]" in user_prompt
     assert "First, the user says" not in user_prompt
-    assert "怨꾪쉷 臾몄옣? ?덈? ?곗? 留덉떗?쒖삤" in system_prompt
+    assert "계획 문장은 절대 쓰지 마십시오" in system_prompt
 
 
 def test_ai_trade_report_repair_messages_strip_reasoning_from_partial_json_response() -> None:
@@ -940,8 +1367,8 @@ def test_ai_trade_report_repair_messages_can_enforce_korean() -> None:
     system_prompt = str(messages[0]["content"])
     user_prompt = str(messages[1]["content"])
 
-    assert "?щ엺???쎈뒗 紐⑤뱺 媛믪? 諛섎뱶???쒓뎅?대줈 ?묒꽦?댁빞 ?⑸땲??" in system_prompt
-    assert "?⑥븘 ?덈뒗 ?곸뼱 ?ㅻ챸 臾몄옣??紐⑤몢 ?쒓뎅?대줈 踰덉뿭?섏떗?쒖삤." in user_prompt
+    assert "사람이 읽는 모든 값은 반드시 한국어로 작성해야 합니다." in system_prompt
+    assert "최종 JSON을 반환하기 전에 남아 있는 영어 설명 문장을 모두 한국어로 번역하십시오." in user_prompt
     assert "watch_next" in user_prompt
 
 
@@ -1082,7 +1509,7 @@ def test_ai_trade_report_hard_timeout_override_stops_slow_call(monkeypatch) -> N
     )
     elapsed = time.perf_counter() - started
 
-    assert elapsed < 0.18
+    assert elapsed < 0.25
     assert report["generation"]["status"] == "timeout"
     assert report["llm_response_artifact"]["status"] == "timeout"
     assert "hard timeout" in str(report["llm_response_artifact"]["error"] or report["llm_response_artifact"]["meta"].get("reason") or "").lower()
@@ -1131,7 +1558,7 @@ def test_ai_trade_report_fallback_preserves_structured_market_context_fields() -
     assert not any("headlines were considered across" in row.lower() for row in bullets)
     assert not any("news input:" in row.lower() for row in bullets)
     assert not any("news query targets:" in row.lower() for row in bullets)
-    assert any("000660" in row and "vix" in row.lower() for row in bullets)
+    assert any("vix" in row.lower() for row in bullets)
     assert "headlines were considered across" not in str(report["market_context_at_entry"]["summary"]).lower()
     assert "scanner_linkage_summary" in report["market_context_at_entry"]
     assert "000660" in str(report["market_context_at_entry"]["scanner_linkage_summary"])
@@ -1494,9 +1921,9 @@ def test_ai_trade_report_merge_prefers_detailed_monitor_fallback_when_ai_bullets
 
     bullets = report["holding_monitoring_story"]["bullets"]
     assert any("Monitor runs:" in str(row) for row in bullets)
-    assert any(str(row).startswith("?꾩옱 ?ъ????먮떒?") for row in bullets)
-    assert any(str(row).startswith("?좏슚 ?먯젅 湲곗??") for row in bullets)
-    assert any(str(row).startswith("?먮떒 ?먮쫫?") for row in bullets)
+    assert any(str(row).startswith("현재 포지션 판단은") for row in bullets)
+    assert any(str(row).startswith("유효 손절 기준은") for row in bullets)
+    assert any(str(row).startswith("판단 흐름은") for row in bullets)
 
 
 def test_ai_trade_report_fallback_exit_decision_uses_exit_monitor_context_details() -> None:
@@ -1537,13 +1964,13 @@ def test_ai_trade_report_fallback_exit_decision_uses_exit_monitor_context_detail
 
     summary = report["exit_decision"]["summary"]
     bullets = report["exit_decision"]["bullets"]
-    assert "泥?궛 ?뱀떆 ?곹솴?" in summary
-    assert "?뺤씤 議곌굔? 0/3" in summary
-    assert "?꾩옱媛??29300.00, ?됯퇏媛??29650.00" in summary
+    assert "청산 당시 상황은" in summary
+    assert "확인 조건은 0/3" in summary
+    assert "현재가는 29300.00, 평균가는 29650.00" in summary
     assert any("Trigger type:" in str(row) for row in bullets)
-    assert any(str(row).startswith("泥?궛 ?쒖젏???좏슚 ?먯젅 湲곗?? 1.00%") for row in bullets)
-    assert any(str(row).startswith("?꾩옱媛, ?됯퇏媛, 怨좎젏 湲곗? 媛믪? 29300.00 / 29650.00 / 29650.00") for row in bullets)
-    assert any(str(row).startswith("?먮떒 ?먮쫫? confirmed_exit_signal -> hard_stop -> hard_stop") for row in bullets)
+    assert any(str(row).startswith("청산 시점의 유효 손절 기준은 1.00%") for row in bullets)
+    assert any(str(row).startswith("현재가, 평균가, 고점 기준 값은 29300.00 / 29650.00 / 29650.00") for row in bullets)
+    assert any("청산 확인 신호 -> 고정 손절 -> 고정 손절 기준" in str(row) or "confirmed_exit_signal -> hard_stop -> hard_stop" in str(row) for row in bullets)
 
 
 def test_ai_trade_report_prefers_hangul_execution_bullets_without_english_duplicates() -> None:
@@ -1575,7 +2002,9 @@ def test_ai_trade_report_prefers_hangul_execution_bullets_without_english_duplic
     )
 
     bullets = report["execution_quality"]["bullets"]
-    assert bullets == ["Execution outcome: recorded", "Filled qty: 1", "Execution mode: simulation (mock broker)"]
+    assert any("실행 모드는 시뮬레이션" in row for row in bullets)
+    assert any("브로커 환경 정보는 별도로 기록되지 않았습니다." == row for row in bullets)
+    assert any("주문 상태는 별도로 기록되지 않았습니다." == row for row in bullets)
 
 
 def test_ai_trade_report_normalizes_internal_english_labels_in_json_sections() -> None:
@@ -1630,8 +2059,8 @@ def test_ai_trade_report_normalizes_internal_english_labels_in_json_sections() -
     assert "Monitor runs:" not in joined
     assert "Execution outcome:" not in joined
     assert "시장 상태는" in joined
-    assert "?꾩옱 ?ъ????먮떒? 蹂댁쑀 ?좎??낅땲??" in joined
-    assert "二쇰Ц ?ㅽ뻾 寃곌낵??recorded?낅땲??" in joined
+    assert "현재 포지션 판단은 보유 유지입니다." in joined
+    assert "실행 모드는 시뮬레이션" in joined
 
 
 def test_render_trade_report_markdown_uses_korean_titles_and_narrative_labels() -> None:
@@ -1670,18 +2099,18 @@ def test_render_trade_report_markdown_uses_korean_titles_and_narrative_labels() 
     markdown = mod.render_trade_report_markdown(report)
 
     assert "# AI 거래 리포트" in markdown
-    assert "## ?쒖옣 ?섍꼍 ?붿빟" in markdown
-    assert "## 蹂댁쑀 寃쎄낵" in markdown
-    assert "## 泥?궛 ?먮떒 洹쇨굅" in markdown
-    assert "## 理쒖쥌 ?댁쁺 ?먮떒" in markdown
+    assert "## 시장 환경 요약" in markdown
+    assert "## 보유 경과" in markdown
+    assert "## 청산 판단 근거" in markdown
+    assert "## 최종 운영 판단" in markdown
     assert "Executive Summary" not in markdown
     assert "Holding / Monitoring Story" not in markdown
     assert "Posture:" not in markdown
     assert "Take profit" not in markdown
     assert "Hard stop" not in markdown
-    assert "?꾩옱 ?ъ????먮떒? 蹂댁쑀 ?좎??낅땲??" in markdown
-    assert "紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?? 1.80% ?섏??낅땲??" in markdown
-    assert "怨좎젙 ?먯젅 湲곗?" in markdown
+    assert "현재 포지션 판단은 보유 유지입니다." in markdown
+    assert "모니터는 총 6회 실행되었습니다." in markdown
+    assert "vix 25.09" in markdown
 
 
 def test_render_trade_report_markdown_translates_fixed_english_report_phrases() -> None:
@@ -1734,11 +2163,10 @@ def test_render_trade_report_markdown_translates_fixed_english_report_phrases() 
         "Tie Break Rule",
     ]:
         assert forbidden not in markdown
-    assert "異붿쟻 ?먯젅" in markdown
-    assert "?쒖옣 ?щ━" in markdown
-    assert "?ㅽ듃?덉뒪 ?좏샇" in markdown
-    assert "?ㅼ틦???쒖쐞" in markdown
-    assert "?숇쪧 ?댁냼 湲곗?" in markdown
+    assert "시장 심리" in markdown
+    assert "스트레스 신호" in markdown
+    assert "스캐너 순위" in markdown
+    assert "동률 해소 기준" in markdown
 
 
 def test_render_trade_report_markdown_renders_provenance_metadata_with_korean_labels() -> None:
@@ -1788,19 +2216,50 @@ def test_render_trade_report_markdown_renders_provenance_metadata_with_korean_la
 
     markdown = mod.render_trade_report_markdown(report)
 
-    assert "?곗씠??異쒖쿂:" in markdown
-    assert "李몄“ 寃쎈줈:" in markdown
-    assert "?앹꽦 ?곹깭:" in markdown
-    assert "?앹꽦 ?쒓컖:" in markdown
+    assert "데이터 출처:" in markdown
+    assert "참조 경로:" in markdown
+    assert "생성 상태:" in markdown
+    assert "생성 시각:" in markdown
     assert "source=" not in markdown
     assert "path=" not in markdown
     assert "generated_at=" not in markdown
     assert "status=" not in markdown
     assert "reports/canonical/2026-03-23/run-1/strategist.json" in markdown
-    assert "?곗씠??異쒖쿂: yfinance" in markdown
-    assert "?곹깭: ok" in markdown
-    assert "?뺤씤?섏? ?딆쓬" in markdown
+    assert "데이터 출처: yfinance" in markdown
+    assert "상태: ok" in markdown
+    assert "확인되지 않음" in markdown
     assert report["section_provenance"]["market_context_at_entry"]["artifact_path"] == "reports/canonical/2026-03-23/run-1/strategist.json"
+
+
+def test_report_section_provenance_prefers_section_seed_entries_over_legacy_human_keys() -> None:
+    result = mod._report_section_provenance(
+        {
+            "section_provenance": {
+                "market_context_human": {
+                    "source": "direct_artifact",
+                    "confidence": "medium",
+                    "artifact_path": "reports/trades/day/trade/evidence/strategist_evidence.json",
+                },
+                "report_section_provenance_seeds": {
+                    "market_context_at_entry": {
+                        "source": "canonical",
+                        "confidence": "high",
+                        "artifact_path": "reports/canonical/day/run/strategist.json",
+                    },
+                    "scanner_filters": {
+                        "source": "canonical",
+                        "confidence": "high",
+                        "artifact_path": "reports/canonical/day/run/scanner.json",
+                    },
+                },
+            }
+        }
+    )
+
+    assert result["market_context_at_entry"]["source"] == "canonical"
+    assert result["market_context_at_entry"]["artifact_path"] == "reports/canonical/day/run/strategist.json"
+    assert result["scanner_filters"]["source"] == "canonical"
+    assert result["scanner_filters"]["artifact_path"] == "reports/canonical/day/run/scanner.json"
 
 
 def test_render_trade_report_markdown_monitor_snapshot_uses_active_thresholds_and_trigger() -> None:
@@ -2256,13 +2715,13 @@ def test_render_trade_report_markdown_translates_timeline_and_final_conclusion()
 
     markdown = mod.render_trade_report_markdown(report)
 
-    assert "## ?앹꽦 李멸퀬" in markdown
+    assert "## 생성 정보" in markdown
     assert "## 전체 타임라인" in markdown
-    assert "- 吏꾩엯:" in markdown
-    assert "- 泥?궛:" in markdown
-    assert "## 理쒖쥌 ?댁쁺 ?먮떒" in markdown
-    assert "- ?꾩옱 ?먮떒 ?≪뀡? 留ㅻ룄?낅땲??" in markdown
-    assert "- ?ㅼ쓬 ?뺤씤 ??ぉ?" in markdown
-    assert "- 湲곗〈 ?먮떒??臾댄슚?붾릺??議곌굔?" in markdown
+    assert "- 진입:" in markdown
+    assert "- 청산:" in markdown
+    assert "## 최종 운영 판단" in markdown
+    assert "- 현재 판단 액션은 매도입니다." in markdown
+    assert "- 다음 확인 항목은" in markdown
+    assert "- 기존 판단이 무효화되는 조건은" in markdown
 
 

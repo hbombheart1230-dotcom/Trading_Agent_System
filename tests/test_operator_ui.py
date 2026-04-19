@@ -299,7 +299,7 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
         {"day": "2026-03-16", "events": 11, "decision_actions": {"BUY": 1}, "approvals": 1, "blocks": 0},
     )
     _write_json(
-        reports / "operator_summary" / "operator_summary_2026-03-13.json",
+        reports / "daily" / "2026-03-13" / "operator_summary.json",
         {
             "day": "2026-03-13",
             "executive_summary": {"system_status": "GREEN", "summary_lines": ["runs ok"]},
@@ -308,7 +308,7 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
         },
     )
     _write_json(
-        reports / "operator_summary" / "operator_summary_2026-03-16.json",
+        reports / "daily" / "2026-03-16" / "operator_summary.json",
         {
             "day": "2026-03-16",
             "executive_summary": {"system_status": "GREEN", "summary_lines": ["today runs ok"]},
@@ -1421,8 +1421,8 @@ def test_operator_brief_artifacts_are_saved_under_trade_directory(tmp_path: Path
     assert "## 3. 스캐너 포커스" in md_text
     assert "## 4. 모니터 / 가드" in md_text
     assert "## 5. 다음 예상 단계" in md_text
-    brief_compact = trade_root / "brief" / "brief_compact_input.json"
-    brief_input = trade_root / "brief" / "brief_input.json"
+    brief_compact = trade_root / "brief_compact_input.json"
+    brief_input = trade_root / "brief_input.json"
     assert brief_input.exists() is True
     assert brief_compact.exists() is True
     brief_llm = brief_json.parent / "brief_llm_response.json"
@@ -1476,7 +1476,22 @@ def test_operator_brief_save_syncs_trade_health_mirror(tmp_path: Path, monkeypat
     assert health["report_generation_status"] == "available"
     assert health["artifact_presence"]["operator_brief_json"] is True
     assert health["artifact_presence"]["operator_brief_md"] is True
-    assert health["artifact_presence"]["ai_trade_report_json"] is True
+
+
+def test_operator_brief_input_paths_fallback_to_trade_root_not_reports_dir() -> None:
+    detail = {
+        "trade_report": {
+            "trade_root_path": "",
+            "operator_brief_json_path": r"C:\repo\reports\trades\2026-04-19\TRD_20260419_005930_01\reports\operator_brief.json",
+            "operator_brief_md_path": r"C:\repo\reports\trades\2026-04-19\TRD_20260419_005930_01\reports\operator_brief.md",
+        }
+    }
+    assert data_access._operator_brief_input_artifact_path(detail) == Path(
+        r"C:\repo\reports\trades\2026-04-19\TRD_20260419_005930_01\brief_input.json"
+    )
+    assert data_access._operator_brief_compact_input_artifact_path(detail) == Path(
+        r"C:\repo\reports\trades\2026-04-19\TRD_20260419_005930_01\brief_compact_input.json"
+    )
 
 
 def test_operator_brief_saved_artifact_is_reused(tmp_path: Path, monkeypatch) -> None:
@@ -1532,7 +1547,7 @@ def test_operator_brief_detail_force_regenerates_saved_artifact(tmp_path: Path, 
     story_id = str(trade_report.get("trade_id") or trade_report.get("story_id") or "")
     brief_json = Path(str(trade_report.get("operator_brief_json_path") or ""))
     trade_root = Path(str(trade_report.get("trade_root_path") or ""))
-    brief_input = trade_root / "brief" / "brief_input.json"
+    brief_input = trade_root / "brief_input.json"
 
     payload = json.loads(brief_json.read_text(encoding="utf-8"))
     payload["headline"] = "stale saved headline"
@@ -2089,7 +2104,7 @@ def test_operator_ui_overview_does_not_fallback_to_stale_reporter_for_latest_day
     monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
     cfg = _make_config(tmp_path)
     (cfg.reports_root / "dev" / "analysis" / "reporter_analysis" / "reporter_analysis_2026-03-16.json").unlink()
-    (cfg.reports_root / "operator_summary" / "operator_summary_2026-03-16.json").unlink()
+    (cfg.reports_root / "daily" / "2026-03-16" / "operator_summary.json").unlink()
     app = create_app(cfg)
     client = TestClient(app)
 

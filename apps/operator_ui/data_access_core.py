@@ -492,8 +492,6 @@ def _read_daily_artifact_day(reports_root: Path, day: str, artifact_name: str) -
         return obj
     if artifact_name == "daily_report":
         return _read_exact_day(reports_root / "daily", "daily", day)
-    if artifact_name == "operator_summary":
-        return _read_exact_day(reports_root / "operator_summary", "operator_summary", day)
     return {}
 
 
@@ -769,8 +767,8 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
         report_json_path = _existing_trade_path(paths, "ai_trade_report_json", "legacy_trade_report_json")
         report_md_path = _existing_trade_path(paths, "ai_trade_report_md", "legacy_trade_report_md")
         story_input_path = _existing_trade_path(paths, "ai_trade_report_input_json", "legacy_trade_story_input_json")
-        operator_brief_json_path = _existing_trade_path(paths, "brief_json", "legacy_operator_brief_json")
-        operator_brief_md_path = _existing_trade_path(paths, "brief_md", "legacy_operator_brief_md")
+        operator_brief_json_path = _existing_trade_path(paths, "brief_json")
+        operator_brief_md_path = _existing_trade_path(paths, "brief_md")
         strategist_llm_response_path = _existing_trade_path(paths, "strategist_llm_response_json")
         ai_trade_report_llm_response_path = _existing_trade_path(paths, "ai_trade_report_llm_response_json")
         brief_llm_response_path = _existing_trade_path(paths, "brief_llm_response_json")
@@ -1180,7 +1178,7 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "path": (
                 str(config.reports_root / "daily" / latest_day / "operator_summary.json")
                 if latest_day and (config.reports_root / "daily" / latest_day / "operator_summary.json").exists()
-                else (str(config.reports_root / "operator_summary" / f"operator_summary_{latest_day}.json") if latest_day else "")
+                else ""
             ),
         },
         "reporter": {
@@ -5389,13 +5387,7 @@ def _operator_brief_artifact_paths(detail: Dict[str, Any]) -> tuple[Path | None,
             parent = path
         brief_json = parent / "reports" / "operator_brief.json"
         brief_md = parent / "reports" / "operator_brief.md"
-        if brief_json.exists() or brief_md.exists():
-            return brief_json, brief_md
-        legacy_json = parent / "brief" / "operator_brief.json"
-        legacy_md = parent / "brief" / "operator_brief.md"
-        if legacy_json.exists() or legacy_md.exists():
-            return legacy_json, legacy_md
-        return parent / "operator_brief.json", parent / "operator_brief.md"
+        return brief_json, brief_md
     return None, None
 
 
@@ -5403,22 +5395,22 @@ def _operator_brief_input_artifact_path(detail: Dict[str, Any]) -> Path | None:
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
     trade_root_path = Path(str(trade_report.get("trade_root_path") or "")).resolve() if str(trade_report.get("trade_root_path") or "").strip() else None
     if trade_root_path is not None:
-        return trade_root_path / "brief" / "brief_input.json"
+        return trade_root_path / "brief_input.json"
     brief_json, _brief_md = _operator_brief_artifact_paths(detail)
     if brief_json is None:
         return None
-    return brief_json.parent / "brief_input.json"
+    return brief_json.parent.parent / "brief_input.json"
 
 
 def _operator_brief_compact_input_artifact_path(detail: Dict[str, Any]) -> Path | None:
     trade_report = detail.get("trade_report") if isinstance(detail.get("trade_report"), dict) else {}
     trade_root_path = Path(str(trade_report.get("trade_root_path") or "")).resolve() if str(trade_report.get("trade_root_path") or "").strip() else None
     if trade_root_path is not None:
-        return trade_root_path / "brief" / "brief_compact_input.json"
+        return trade_root_path / "brief_compact_input.json"
     brief_json, _brief_md = _operator_brief_artifact_paths(detail)
     if brief_json is None:
         return None
-    return brief_json.parent / "brief_compact_input.json"
+    return brief_json.parent.parent / "brief_compact_input.json"
 
 
 def _save_operator_brief_input_artifact(detail: Dict[str, Any], prepared_input: Dict[str, Any], llm_compact_input: Dict[str, Any] | None = None) -> None:

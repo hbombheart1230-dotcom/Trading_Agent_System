@@ -210,6 +210,12 @@ def test_reporting_roles_use_applied_policy_models(monkeypatch):
         assert mock_report.call_args[1]["model"] == "minimax/minimax-m2.5"
         assert mock_report.call_args[1]["execution_profile"]["profile_name"] in {"default_intraday", "concise_review"}
 
+    with patch("libs.reporting.trade_read_model.build_trade_read_model", return_value={"trade_id": "TRD_1"}), patch(
+        "libs.reporting.symbol_read_model.build_symbol_read_model", return_value={"applied_policy": {"llm": {"reporter": {"intraday": {"primary": "openrouter/symbol-model"}}}}}
+    ), patch("libs.reporting.fact_narrative_report.build_separated_report") as mock_report:
+        build_separated_operator_brief("dir", "SYM", "root")
+        assert mock_report.call_args[1]["model"] == "openrouter/symbol-model"
+
     _summary, artifact = summarize_daily_report_with_artifact(
         state={"eod_day": "2026-04-07", "applied_policy": {"llm": {"reporter": {"daily": {"primary": "moonshotai/kimi-k2.5"}}}}},
         policy={},
