@@ -121,7 +121,7 @@ def _load_symbol_priors(state: Dict[str, Any], candidates: List[Any]) -> Dict[st
         if not symbol or symbol in out:
             continue
         try:
-            model = build_symbol_read_model(str(trades_root), symbol)
+            model = build_symbol_read_model(str(trades_root), symbol, persisted_only=True)
         except Exception:
             model = {}
         if isinstance(model, dict) and model:
@@ -596,6 +596,8 @@ def _maybe_hydrate_scanner_skill_results(state: Dict[str, Any], candidates: List
 
     injected_auto = False
     previous_auto = state.get("auto_skill_runner")
+    had_candidates_key = "candidates" in state
+    previous_candidates = state.get("candidates")
     if (
         state.get("skill_runner") is None
         and not callable(state.get("skill_runner_factory"))
@@ -603,11 +605,19 @@ def _maybe_hydrate_scanner_skill_results(state: Dict[str, Any], candidates: List
     ):
         state["auto_skill_runner"] = True
         injected_auto = True
+    # The hydration node resolves market.quote fan-out from `state["candidates"]`.
+    # Scanner often works from a locally built Kiwoom candidate pool, so expose that
+    # pool during hydration instead of silently hydrating an empty symbol list.
+    state["candidates"] = list(candidates or [])
     try:
         return hydrate_skill_results_node(state)
     except Exception:
         return state
     finally:
+        if had_candidates_key:
+            state["candidates"] = previous_candidates
+        else:
+            state.pop("candidates", None)
         if injected_auto:
             if previous_auto is None:
                 state.pop("auto_skill_runner", None)

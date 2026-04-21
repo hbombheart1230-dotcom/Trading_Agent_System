@@ -16,8 +16,8 @@ class RankMode(str, Enum):
     CHANGE_RATE = "change_rate"
 
 
-def _extract_symbols(payload: Any) -> List[str]:
-    """Best-effort extraction of symbol list from Kiwoom rank API payload.
+def _extract_candidate_rows(payload: Any) -> List[Dict[str, Any]]:
+    """Best-effort extraction of rank rows from Kiwoom rank API payload.
 
     Different endpoints may return different shapes. We attempt:
       - payload['output'] list of dicts
@@ -42,24 +42,24 @@ def _extract_symbols(payload: Any) -> List[str]:
                 candidates = v
                 break
 
-    syms: List[str] = []
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
     for row in candidates:
         if not isinstance(row, dict):
             continue
+        normalized_row = dict(row)
+        symbol = ""
         for k in ("stk_cd", "stkcode", "stk_code", "code", "symbol"):
             if k in row and row[k]:
                 s = str(row[k]).strip()
                 if s:
-                    syms.append(s)
+                    symbol = s
                     break
-    # de-dup preserving order
-    seen = set()
-    out: List[str] = []
-    for s in syms:
-        if s in seen:
+        if not symbol or symbol in seen:
             continue
-        seen.add(s)
-        out.append(s)
+        seen.add(symbol)
+        normalized_row["symbol"] = symbol
+        out.append(normalized_row)
     return out
 
 
@@ -103,6 +103,10 @@ class KiwoomRankReader:
         return cls(s, http, token)
 
     def get_top_symbols(self, *, mode: RankMode, topk: int = 5) -> List[str]:
+        rows = self.get_top_rank_rows(mode=mode, topk=topk)
+        return [str(row.get("symbol") or "").strip() for row in rows if str(row.get("symbol") or "").strip()][: max(1, int(topk))]
+
+    def get_top_rank_rows(self, *, mode: RankMode, topk: int = 5) -> List[Dict[str, Any]]:
         tok = self.token.ensure_token(dry_run=False)
         if not tok.token:
             raise RuntimeError(f"Token not available: {tok.action} {tok.reason}")
@@ -156,5 +160,5 @@ class KiwoomRankReader:
         except Exception:
             payload = {}
 
-        syms = _extract_symbols(payload)
-        return syms[: max(1, int(topk))]
+        rows = _extract_candidate_rows(payload)
+        return rows[: max(1, int(topk))]

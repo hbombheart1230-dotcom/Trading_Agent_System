@@ -170,3 +170,87 @@ def test_symbol_read_model_prefers_persisted_symbol_memory(tmp_path):
     assert res["dominant_exit_reason"] == "hard_stop"
     assert res["dominant_monitor_blocker"] == "confirmed_entry"
     assert res["data_quality"]["data_source"] == "symbol_memory"
+
+
+def test_symbol_read_model_prefers_persisted_symbol_trade_report_when_memory_missing(tmp_path, monkeypatch):
+    reports_root = tmp_path / "reports"
+    trades_root = reports_root / "trades"
+    trades_root.mkdir(parents=True)
+    symbol_root = reports_root / "symbols" / "AAPL"
+    symbol_root.mkdir(parents=True)
+    (symbol_root / "symbol_trade_report.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "symbol_trade_report.v1",
+                "symbol": "AAPL",
+                "summary": {
+                    "trade_count": 9,
+                    "completed_trade_count": 6,
+                    "win_count": 3,
+                    "loss_count": 3,
+                    "avg_return_pct": 0.12,
+                    "avg_hold_seconds": 315.0,
+                    "recent_playbooks": ["pullback", "breakout"],
+                    "recent_entry_reasons": ["reclaim_ready", "pullback_reversal"],
+                    "recent_exit_reasons": ["take_profit", "peak_drawdown"],
+                },
+                "pattern_insights": {
+                    "successful_entry_patterns": ["pullback_reversal"],
+                    "failed_entry_patterns": ["breakout"],
+                    "common_monitor_failures": ["confirmed_entry"],
+                },
+                "history_index": [
+                    {"playbook": "pullback", "entry_reason": "reclaim_ready", "exit_reason": "take_profit"},
+                    {"playbook": "pullback", "entry_reason": "reclaim_ready", "exit_reason": "take_profit"},
+                    {"playbook": "breakout", "entry_reason": "breakout_ready", "exit_reason": "peak_drawdown"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def _should_not_scan(_trade_dir: str) -> dict:
+        raise AssertionError("full trade scan should not be used when symbol_trade_report.json exists")
+
+    monkeypatch.setattr("libs.reporting.symbol_read_model.build_trade_read_model", _should_not_scan)
+
+    res = build_symbol_read_model(str(trades_root), "AAPL")
+
+    assert res["trade_count"] == 9
+    assert res["closed_trade_count"] == 6
+    assert res["win_count"] == 3
+    assert res["loss_count"] == 3
+    assert res["win_rate"] == pytest.approx(0.5)
+    assert res["avg_pnl_pct"] == pytest.approx(0.12)
+    assert res["avg_hold_duration_sec"] == pytest.approx(315.0)
+    assert res["dominant_playbook"] == "pullback"
+    assert res["dominant_entry_reason"] == "reclaim_ready"
+    assert res["dominant_exit_reason"] == "take_profit"
+    assert res["dominant_monitor_blocker"] == "confirmed_entry"
+    assert res["data_quality"]["data_source"] == "symbol_trade_report"
+
+
+def test_symbol_read_model_persisted_only_skips_full_trade_scan(tmp_path, monkeypatch):
+    reports_root = tmp_path / "reports"
+    trades_root = reports_root / "trades"
+    trades_root.mkdir(parents=True)
+    _create_mock_trade(trades_root, "TRD_1", "AAPL", {
+        "lifecycle": {
+            "entry": {"reason": "reclaim_ready"},
+            "exit": {"reason": "take_profit", "pnl": 100.0, "pnl_pct": 0.01, "position_age_seconds": 60}
+        },
+        "canonical_agent_artifacts": {
+            "strategist": {"playbook": "breakout"}
+        }
+    })
+
+    def _should_not_scan(_trade_dir: str) -> dict:
+        raise AssertionError("persisted_only should not call build_trade_read_model")
+
+    monkeypatch.setattr("libs.reporting.symbol_read_model.build_trade_read_model", _should_not_scan)
+
+    res = build_symbol_read_model(str(trades_root), "AAPL", persisted_only=True)
+
+    assert res["symbol"] == "AAPL"
+    assert res["trade_count"] == 0
+    assert res["data_quality"]["unknown_fields_ratio"] == 0.0

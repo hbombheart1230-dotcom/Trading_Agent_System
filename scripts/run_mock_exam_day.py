@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from libs.runtime.live_loop_process_query import query_live_loop_processes
+from libs.runtime.runtime_output_helpers import parse_stdout_json, tail_text, to_epoch
 from libs.runtime.market_hours import KST
 from libs.runtime.market_hours import MarketHours
 from libs.runtime.market_hours import now_kst
@@ -71,33 +73,6 @@ def _read_env_file(path: Path) -> Dict[str, str]:
     return out
 
 
-def _tail(s: str, max_chars: int = 4000) -> str:
-    txt = str(s or "")
-    if len(txt) <= max_chars:
-        return txt
-    return txt[-max_chars:]
-
-
-def _parse_stdout_json(stdout_text: str) -> Dict[str, Any]:
-    body = str(stdout_text or "").strip()
-    if not body:
-        return {}
-    try:
-        obj = json.loads(body)
-        return obj if isinstance(obj, dict) else {}
-    except Exception:
-        pass
-    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
-    for line in reversed(lines):
-        try:
-            obj = json.loads(line)
-            if isinstance(obj, dict):
-                return obj
-        except Exception:
-            continue
-    return {}
-
-
 def _parse_kst_datetime(value: str) -> Optional[datetime]:
     raw = str(value or "").strip()
     if not raw:
@@ -112,31 +87,8 @@ def _parse_kst_datetime(value: str) -> Optional[datetime]:
     return dt.astimezone(KST)
 
 
-def _to_epoch(ts: Any) -> Optional[int]:
-    if ts is None:
-        return None
-    if isinstance(ts, (int, float)):
-        return int(ts)
-    s = str(ts).strip()
-    if not s:
-        return None
-    try:
-        return int(float(s))
-    except Exception:
-        pass
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp())
-    except Exception:
-        return None
-
-
 def _utc_day(ts: Any) -> Optional[str]:
-    e = _to_epoch(ts)
+    e = to_epoch(ts)
     if e is None:
         return None
     return datetime.fromtimestamp(e, tz=timezone.utc).strftime("%Y-%m-%d")
@@ -204,13 +156,13 @@ def _run_subprocess(
         )
         out["rc"] = int(cp.returncode)
         out["ok"] = int(cp.returncode) == 0
-        out["stdout_tail"] = _tail(cp.stdout or "")
-        out["stderr_tail"] = _tail(cp.stderr or "")
+        out["stdout_tail"] = tail_text(cp.stdout or "", max_chars=4000)
+        out["stderr_tail"] = tail_text(cp.stderr or "", max_chars=4000)
     except subprocess.TimeoutExpired as ex:
         out["rc"] = 124
         out["ok"] = False
-        out["stdout_tail"] = _tail(ex.stdout or "")
-        out["stderr_tail"] = _tail(ex.stderr or "")
+        out["stdout_tail"] = tail_text(ex.stdout or "", max_chars=4000)
+        out["stderr_tail"] = tail_text(ex.stderr or "", max_chars=4000)
         out["error"] = f"timeout:{int(timeout_sec)}s"
     except Exception as ex:
         out["rc"] = 1
@@ -265,7 +217,7 @@ def _start_live_loop_background(
             out["ok"] = False
             out["error"] = "live_loop_exited_early"
             try:
-                out["stderr_tail"] = _tail(stderr_path.read_text(encoding="utf-8"))
+                out["stderr_tail"] = tail_text(stderr_path.read_text(encoding="utf-8"), max_chars=4000)
             except Exception:
                 out["stderr_tail"] = ""
     except Exception as ex:
@@ -292,73 +244,6 @@ def _start_background_command(
     return out
 
 
-def _query_live_loop_processes(root: Path, lock_path: Path) -> List[Dict[str, Any]]:
-    root_text = str(root.resolve())
-    lock_text = str(lock_path.resolve())
-    command = "\n".join(
-        [
-            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
-            '$rows = Get-CimInstance Win32_Process -Filter "Name=\'python.exe\'" | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine',
-            "if ($rows) { $rows | ConvertTo-Json -Compress }",
-        ]
-    )
-    try:
-        cp = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", command],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
-    except Exception:
-        return []
-    if int(cp.returncode) != 0:
-        return []
-    raw = str(cp.stdout or "").strip()
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except Exception:
-        return []
-    if isinstance(parsed, dict):
-        parsed = [parsed]
-    out: List[Dict[str, Any]] = []
-    for row in parsed if isinstance(parsed, list) else []:
-        if not isinstance(row, dict):
-            continue
-        cmd = str(row.get("CommandLine") or "")
-        exe = str(row.get("ExecutablePath") or "")
-        cmd_lower = cmd.lower()
-        exe_lower = exe.lower()
-        root_lower = root_text.lower()
-        lock_lower = lock_text.lower()
-        matches_session = (
-            (
-                ("scripts/run_session.py" in cmd_lower or "-m scripts.run_session" in cmd_lower)
-                and "--phase intraday" in cmd_lower
-            )
-            or "scripts/run_m13_live_loop.py" in cmd_lower
-            or "-m scripts.run_m13_live_loop" in cmd_lower
-        )
-        matches_scope = (
-            lock_lower in cmd_lower
-            or root_lower in cmd_lower
-            or exe_lower.startswith(root_lower)
-        )
-        if not (matches_session and matches_scope):
-            continue
-        out.append(
-            {
-                "pid": _to_int(row.get("ProcessId"), 0),
-                "parent_pid": _to_int(row.get("ParentProcessId"), 0),
-                "executable_path": exe,
-                "command_line": cmd,
-            }
-        )
-    return [row for row in out if int(row.get("pid") or 0) > 0]
 
 
 def _read_lock_owner_pid(lock_path: Path) -> int:
@@ -427,7 +312,7 @@ def _collect_runtime_chain(rows: List[Dict[str, Any]], *, owner_row: Dict[str, A
 
 def _existing_live_loop_step(common: Dict[str, Any]) -> Dict[str, Any]:
     lock_path = Path(common["lock_path"])
-    rows = _query_live_loop_processes(Path(common["root"]), lock_path)
+    rows = query_live_loop_processes(Path(common["root"]), lock_path)
     if not rows:
         return {}
     owner_pid = _read_lock_owner_pid(lock_path)
@@ -464,7 +349,7 @@ def _existing_live_loop_step(common: Dict[str, Any]) -> Dict[str, Any]:
 
 def _stop_live_loop_processes(common: Dict[str, Any]) -> Dict[str, Any]:
     t0 = time.time()
-    rows = _query_live_loop_processes(Path(common["root"]), Path(common["lock_path"]))
+    rows = query_live_loop_processes(Path(common["root"]), Path(common["lock_path"]))
     out: Dict[str, Any] = {
         "step_id": "closeout.stop_session_loop",
         "mode": "process_cleanup",
@@ -493,7 +378,7 @@ def _stop_live_loop_processes(common: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 out["ok"] = False
                 out["rc"] = int(cp.returncode)
-                stderr_chunks.append(_tail((cp.stdout or "") + "\n" + (cp.stderr or "")))
+                stderr_chunks.append(tail_text((cp.stdout or "") + "\n" + (cp.stderr or ""), max_chars=4000))
         except Exception as ex:
             out["ok"] = False
             out["rc"] = 1
@@ -724,7 +609,7 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
         out["failure_reason"] = "m30_final_signoff_failed"
         return out
 
-    step1_obj = _parse_stdout_json(str(step1.get("stdout_tail") or ""))
+    step1_obj = parse_stdout_json(str(step1.get("stdout_tail") or ""))
     m30_2_signoff = step1_obj.get("m30_2_signoff") if isinstance(step1_obj.get("m30_2_signoff"), dict) else {}
     m30_2_signoff_json_path = str(m30_2_signoff.get("report_json_path") or "").strip()
     if not m30_2_signoff_json_path:
@@ -778,7 +663,7 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
         timeout_sec=int(common["timeout_sec"]),
     )
     out["steps"].append(step3)
-    obj3 = _parse_stdout_json(str(step3.get("stdout_tail") or ""))
+    obj3 = parse_stdout_json(str(step3.get("stdout_tail") or ""))
     readiness_ok = bool(step3.get("ok")) and bool(obj3.get("ok"))
     readiness_day_used = requested_readiness_day
 
@@ -807,7 +692,7 @@ def _run_preopen(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
                 timeout_sec=int(common["timeout_sec"]),
             )
             out["steps"].append(step3b)
-            obj3b = _parse_stdout_json(str(step3b.get("stdout_tail") or ""))
+            obj3b = parse_stdout_json(str(step3b.get("stdout_tail") or ""))
             if bool(step3b.get("ok")) and bool(obj3b.get("ok")):
                 obj3 = obj3b
                 readiness_ok = True
@@ -915,7 +800,7 @@ def _run_session(args: argparse.Namespace, common: Dict[str, Any]) -> Dict[str, 
             timeout_sec=int(common["timeout_sec"]),
         )
         out["steps"].append(step)
-        probe_obj = _parse_stdout_json(str(step.get("stdout_tail") or ""))
+        probe_obj = parse_stdout_json(str(step.get("stdout_tail") or ""))
         out["probe_mode"] = "offhours_session_probe"
         out["probe_result"] = probe_obj
         out["ok"] = bool(step.get("ok")) and bool(probe_obj.get("ok"))

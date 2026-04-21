@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
@@ -8,6 +9,7 @@ from libs.reporting.intraday_trade_reports import (
     build_holding_phase_observability,
     build_same_day_reporter_linkage,
 )
+from libs.reporting.kiwoom_day_trade_truth import attach_broker_day_pnl
 from libs.reporting.trade_execution_snapshot import build_execution_details, build_execution_snapshot
 from libs.reporting.trade_story_pipeline import (
     build_execution_outcome_human,
@@ -29,6 +31,183 @@ from libs.reporting.trade_story_pipeline import (
 from libs.runtime.canonical_artifacts import load_run_canonical_artifacts
 
 
+def _coalesce_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _resolve_trade_day_hint(*values: Any) -> str:
+    for value in values:
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        if len(raw) >= 10 and raw[4] == "-" and raw[7] == "-":
+            return raw[:10].replace("-", "")
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits) >= 8:
+            return digits[:8]
+    return ""
+
+
+def _broker_fill_lookup_enabled(context_obj: Mapping[str, Any]) -> bool:
+    explicit = context_obj.get("broker_fill_lookup_enabled")
+    if explicit is not None:
+        return bool(explicit)
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return False
+    return str(os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower() == "real"
+
+
+def _broker_order_status_payload(dto: Any) -> Dict[str, Any]:
+    return {
+        "order_id": str(getattr(dto, "ord_no", "") or "").strip() or None,
+        "ord_no": str(getattr(dto, "ord_no", "") or "").strip() or None,
+        "symbol": normalize_symbol(getattr(dto, "symbol", "") or "", allow_test_symbols=True),
+        "status": str(getattr(dto, "status", "") or "").strip() or None,
+        "fill_status": str(getattr(dto, "status", "") or "").strip() or None,
+        "filled_qty": getattr(dto, "filled_qty", None),
+        "filled_price": getattr(dto, "filled_price", None),
+        "order_qty": getattr(dto, "order_qty", None),
+        "order_price": getattr(dto, "order_price", None),
+        "side": str(getattr(dto, "side", "") or "").strip() or None,
+        "source": "kiwoom.order_status",
+        "raw": dict(getattr(dto, "raw", {}) or {}),
+    }
+
+
+def _attach_broker_order_status(
+    bundle: Mapping[str, Any] | None,
+    *,
+    context: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    bundle_obj = dict(bundle or {})
+    context_obj = dict(context or {})
+    execution_context = (
+        dict(context_obj.get("execution_context") or {})
+        if isinstance(context_obj.get("execution_context"), dict)
+        else {}
+    )
+    execution_details = (
+        dict(context_obj.get("execution_details") or {})
+        if isinstance(context_obj.get("execution_details"), dict)
+        else {}
+    )
+    bundle_execution_details = (
+        dict(bundle_obj.get("execution_details") or {})
+        if isinstance(bundle_obj.get("execution_details"), dict)
+        else {}
+    )
+    if isinstance(execution_context.get("broker_order_status"), dict) and execution_context.get("broker_order_status"):
+        context_obj["execution_context"] = execution_context
+        return context_obj
+
+    execution = bundle_obj.get("execution") if isinstance(bundle_obj.get("execution"), dict) else {}
+    executor = bundle_obj.get("executor") if isinstance(bundle_obj.get("executor"), dict) else {}
+    broker_result = executor.get("broker_result") if isinstance(executor.get("broker_result"), dict) else {}
+    order_request = executor.get("order_request_summary") if isinstance(executor.get("order_request_summary"), dict) else {}
+
+    order_id = str(
+        _coalesce_non_empty(
+            execution_details.get("order_id"),
+            execution_details.get("ord_no"),
+            bundle_execution_details.get("order_id"),
+            bundle_execution_details.get("ord_no"),
+            execution.get("ord_no"),
+            execution.get("order_id"),
+            broker_result.get("ord_no"),
+            broker_result.get("order_id"),
+            executor.get("ord_no"),
+            executor.get("order_id"),
+            order_request.get("ord_no"),
+            order_request.get("order_id"),
+            execution_context.get("order_id"),
+            execution_context.get("ord_no"),
+        )
+        or ""
+    ).strip()
+    symbol = normalize_symbol(
+        _coalesce_non_empty(
+            context_obj.get("symbol"),
+            execution_details.get("symbol"),
+            bundle_execution_details.get("symbol"),
+            execution.get("symbol"),
+            broker_result.get("symbol"),
+            executor.get("symbol"),
+            order_request.get("symbol"),
+            execution_context.get("symbol"),
+        )
+        or "",
+        allow_test_symbols=True,
+    )
+    side = str(
+        _coalesce_non_empty(
+            context_obj.get("action"),
+            context_obj.get("side"),
+            execution_details.get("action"),
+            execution_details.get("side"),
+            bundle_execution_details.get("action"),
+            bundle_execution_details.get("side"),
+            execution.get("action"),
+            broker_result.get("action"),
+            executor.get("action"),
+            order_request.get("action"),
+            execution_context.get("action"),
+        )
+        or ""
+    ).strip().lower()
+    ord_dt = _resolve_trade_day_hint(
+        context_obj.get("trade_day"),
+        context_obj.get("ts"),
+        execution_details.get("ts"),
+        bundle_execution_details.get("ts"),
+        execution_context.get("ts"),
+        execution.get("ts"),
+        broker_result.get("ts"),
+        executor.get("ts"),
+        bundle_obj.get("ts"),
+    )
+    if not (order_id and symbol and ord_dt):
+        context_obj["execution_context"] = execution_context
+        return context_obj
+
+    reader = context_obj.get("broker_fill_reader")
+    if reader is None:
+        if not _broker_fill_lookup_enabled(context_obj):
+            context_obj["execution_context"] = execution_context
+            return context_obj
+        try:
+            from libs.read.kiwoom_order_fill_reader import KiwoomOrderFillReader
+
+            reader = KiwoomOrderFillReader.from_env()
+        except Exception as exc:
+            execution_context["broker_order_status_error"] = str(exc)
+            context_obj["execution_context"] = execution_context
+            return context_obj
+
+    try:
+        dto = reader.get_order_status(
+            ord_no=order_id,
+            symbol=symbol,
+            ord_dt=ord_dt,
+            side=side or "all",
+        )
+    except Exception as exc:
+        execution_context["broker_order_status_error"] = str(exc)
+        context_obj["execution_context"] = execution_context
+        return context_obj
+
+    payload = _broker_order_status_payload(dto)
+    if (
+        payload.get("order_id") not in (None, "")
+        and any(payload.get(key) not in (None, "", 0) for key in ("filled_qty", "filled_price", "status"))
+    ):
+        execution_context["broker_order_status"] = payload
+    context_obj["execution_context"] = execution_context
+    return context_obj
+
+
 def build_execution_details_from_bundle(
     bundle: Mapping[str, Any] | None,
     *,
@@ -40,6 +219,8 @@ def build_execution_details_from_bundle(
         monitor_payload = bundle_obj.get("monitor") if isinstance(bundle_obj.get("monitor"), dict) else {}
         if monitor_payload:
             context_obj["monitor_context"] = dict(monitor_payload)
+    context_obj = _attach_broker_order_status(bundle_obj, context=context_obj)
+    context_obj = attach_broker_day_pnl(bundle_obj, context=context_obj)
     return build_execution_details(bundle_obj, context=context_obj)
 
 
@@ -1064,8 +1245,21 @@ def apply_live_trade_context(
     entry_bundle: Dict[str, Any],
     exit_bundle: Dict[str, Any],
 ) -> Dict[str, Any]:
-    entry_execution_details = build_execution_details_from_bundle(entry_bundle, context=entry_ctx_live)
-    exit_execution_details = build_execution_details_from_bundle(exit_bundle, context=exit_ctx_live)
+    trade_day = str(lifecycle_bundle.get("day") or "").strip()
+    entry_context = {
+        **dict(entry_ctx_live or {}),
+        "trade_day": trade_day,
+        "broker_fill_lookup_enabled": True,
+        "broker_day_truth_lookup_enabled": True,
+    }
+    exit_context = {
+        **dict(exit_ctx_live or {}),
+        "trade_day": trade_day,
+        "broker_fill_lookup_enabled": True,
+        "broker_day_truth_lookup_enabled": True,
+    }
+    entry_execution_details = build_execution_details_from_bundle(entry_bundle, context=entry_context)
+    exit_execution_details = build_execution_details_from_bundle(exit_bundle, context=exit_context)
     execution_details = dict(exit_execution_details if str(status or "").strip().lower() == "closed" else entry_execution_details)
 
     holding_phase_observability = build_holding_phase_observability(
@@ -1082,9 +1276,11 @@ def apply_live_trade_context(
         exit_bundle=exit_bundle,
     )
 
+    entry_ctx_live = dict(entry_context)
     entry_ctx_live["execution_details"] = dict(entry_execution_details)
     lifecycle["entry"] = entry_ctx_live
     if exit_ctx_live:
+        exit_ctx_live = dict(exit_context)
         exit_ctx_live["execution_details"] = dict(exit_execution_details)
         lifecycle["exit"] = exit_ctx_live
 

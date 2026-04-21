@@ -49,6 +49,14 @@ Use `docs/runtime_memory` for:
 4. `reports_usage_matrix_2026-04-19.md`
 - classifies `reports/*` by runtime role, memory value, and pruning status
 
+5. `strategist_memory_packet_visibility_2026-04-20.md`
+- explains where report-derived packets are actually visible in strategist artifacts
+- distinguishes:
+  - full prompt-payload proof
+  - normalized canonical strategist proof
+  - empty vs populated `selected_symbol_memory`
+- records the current observability gap where some commander refresh runs do not persist matching strategist prompt/canonical artifacts
+
 ## Existing Adapter Layer
 
 Not every related module is a primary runtime-memory owner.

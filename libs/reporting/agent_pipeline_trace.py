@@ -433,6 +433,10 @@ def _build_markdown(out: Dict[str, Any]) -> str:
         lines.append(f"- strategy_adjustment_directives: `{json.dumps(directives, ensure_ascii=False)}`")
     if directives_summary:
         lines.append(f"- strategy_adjustment_summary: {directives_summary}")
+    if strategist.get("memory_packet_visibility"):
+        lines.append(
+            f"- memory_packet_visibility: `{json.dumps(strategist.get('memory_packet_visibility') or {}, ensure_ascii=False)}`"
+        )
     lines.append("")
     lines.append("## News -> Symbol Linkage")
     lines.append(f"- linkage_strength: **{news_symbol_linkage.get('linkage_strength') or 'unknown'}**")
@@ -802,6 +806,7 @@ def generate_agent_pipeline_trace_report(
             "selected_playbook": str(strategist_summary_payload.get("selected_playbook") or strategist_summary_payload.get("playbook") or ""),
             "strategy_summary": str(strategist_summary_payload.get("strategy_summary") or ""),
             "strategy_adjustment_directives": dict(strategist_summary_payload.get("strategy_adjustment_directives") or {}),
+            "memory_packet_visibility": dict(strategist_summary_payload.get("memory_packet_visibility") or {}),
             "shadow_used": bool(strategist_summary_payload.get("shadow_used")),
             "strategist_fallback_used": bool(strategist_summary_payload.get("strategist_fallback_used")),
             "candidate_symbols_hint": list(news_symbol_linkage.get("candidate_symbols_hint") or []),

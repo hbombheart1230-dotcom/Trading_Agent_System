@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from libs.reporting.intraday_trade_reports import (
+    _story_input_quality_score,
     finalize_ai_report_diagnostics,
     normalize_trade_id_filters,
     resolve_story_input_for_regeneration,
@@ -35,6 +36,29 @@ def test_run_ai_trade_report_batch_reuses_intraday_helper_ownership() -> None:
     assert _sync_report_diagnostics is sync_ai_report_diagnostics
     assert _finalize_report_diagnostics is finalize_ai_report_diagnostics
     assert _sync_report_generation_state is sync_ai_trade_report_generation_state
+
+
+def test_story_input_quality_score_penalizes_closed_symbol_mismatch_and_rewards_canonical_monitor() -> None:
+    existing = {
+        "symbol": "005380",
+        "status": "closed",
+        "selected_symbol": "034020",
+        "run_id": "RUN_EXIT",
+        "execution_details": {"filled_price": 537000, "broker_truth_source": "kiwoom.order_status"},
+    }
+    rebuilt = {
+        "symbol": "005380",
+        "status": "closed",
+        "selected_symbol": "034020",
+        "run_id": "RUN_EXIT",
+        "execution_details": {"filled_price": 537000, "broker_truth_source": "kiwoom.order_status"},
+        "canonical_monitor": {
+            "current_price": 536000,
+            "account_pnl_ratio": -0.0108,
+        },
+    }
+
+    assert _story_input_quality_score(rebuilt) > _story_input_quality_score(existing)
 
 
 def test_run_ai_trade_report_batch_syncs_salvaged_diagnostics_to_all_artifacts(tmp_path: Path) -> None:
@@ -237,3 +261,145 @@ def test_run_ai_trade_report_batch_prefers_rebuilt_story_input_when_lifecycle_is
     assert story_input["scanner_reason_human"]["selected_symbol"] == "000660"
     assert story_input["scanner_selection_trace"]["selected_symbol"] == "000660"
     assert len(story_input["scanner_selection_trace"]["ranked_candidates"]) >= 1
+
+
+def test_run_ai_trade_report_batch_rehydrates_broker_truth_from_lifecycle_bundle(tmp_path: Path, monkeypatch) -> None:
+    reports_root = tmp_path / "reports"
+    day = "2026-04-20"
+    trade_id = "TRD_20260420_010820_01"
+    trade_paths = trade_artifact_paths(reports_root, day, trade_id)
+    trade_dir = reports_root / "trades" / day / trade_id
+    trade_dir.mkdir(parents=True, exist_ok=True)
+
+    _write_json(
+        trade_paths["ai_trade_report_input_json"],
+        {
+            "schema_version": "trade_story_input.v2",
+            "trade_id": trade_id,
+            "run_id": "RUN_EXIT",
+            "symbol": "010820",
+            "status": "closed",
+            "action": "SELL",
+            "exit_execution_details": {
+                "order_id": "0174131",
+                "filled_qty": 1,
+                "filled_price": None,
+                "broker_truth_source": None,
+                "broker_day_truth_source": None,
+            },
+        },
+    )
+    _write_json(
+        trade_paths["lifecycle_bundle_json"],
+        {
+            "day": day,
+            "trade_id": trade_id,
+            "run_id": "RUN_EXIT",
+            "symbol": "010820",
+            "trade_lifecycle_status": "closed",
+            "lifecycle": {
+                "entry": {
+                    "run_id": "RUN_ENTRY",
+                    "ts": "2026-04-20T06:04:17+00:00",
+                    "action": "BUY",
+                    "symbol": "010820",
+                    "execution_details": {},
+                },
+                "exit": {
+                    "run_id": "RUN_EXIT",
+                    "ts": "2026-04-20T06:25:18+00:00",
+                    "action": "SELL",
+                    "symbol": "010820",
+                    "execution_details": {
+                        "order_id": "0174131",
+                        "filled_qty": 1,
+                    },
+                },
+                "summary": {
+                    "lifecycle_summary_human": "closed",
+                },
+            },
+            "entry": {
+                "run_id": "RUN_ENTRY",
+                "ts": "2026-04-20T06:04:17+00:00",
+                "action": "BUY",
+                "symbol": "010820",
+                "execution_details": {},
+            },
+            "exit": {
+                "run_id": "RUN_EXIT",
+                "ts": "2026-04-20T06:25:18+00:00",
+                "action": "SELL",
+                "symbol": "010820",
+                "execution_details": {
+                    "order_id": "0174131",
+                    "filled_qty": 1,
+                },
+            },
+            "entry_execution_details": {},
+            "exit_execution_details": {
+                "order_id": "0174131",
+                "filled_qty": 1,
+            },
+            "execution_details": {
+                "order_id": "0174131",
+                "filled_qty": 1,
+            },
+            "market_context_human": {"summary": "market"},
+            "scanner_reason_human": {"summary": "scanner", "selected_symbol": "010820", "selected_rank": 1, "candidate_count": 2},
+            "filters_human": {"summary": "filters"},
+            "monitor_reason_human": {"summary": "monitor"},
+            "guard_reason_human": {"summary": "guard"},
+            "execution_outcome_human": {"summary": "execution"},
+            "reporter_status_human": {"status": "linked_run", "summary": "reporter"},
+            "operator_conclusion_human": {"summary": "conclusion"},
+            "timeline": [],
+            "warnings": [],
+            "scanner_evidence": {},
+            "monitor_timeline": {},
+        },
+    )
+
+    def _fake_rehydrate(bundle: dict) -> dict:
+        out = dict(bundle)
+        truth = {
+            "order_id": "0174131",
+            "filled_qty": 1,
+            "filled_price": 15610,
+            "broker_truth_source": "kiwoom.order_status",
+            "broker_day_truth_source": "kiwoom.ka10077",
+            "broker_day_match_mode": "single_symbol_row",
+            "broker_day_authoritative": True,
+            "broker_realized_pnl": -240.0,
+            "broker_fee": 12,
+            "broker_tax": 8,
+        }
+        exit_ctx = dict(out.get("exit") or {})
+        exit_ctx["execution_details"] = truth
+        out["exit"] = exit_ctx
+        lifecycle = dict(out.get("lifecycle") or {})
+        lifecycle_exit = dict(lifecycle.get("exit") or {})
+        lifecycle_exit["execution_details"] = truth
+        lifecycle["exit"] = lifecycle_exit
+        lifecycle["execution_details"] = truth
+        out["lifecycle"] = lifecycle
+        out["exit_execution_details"] = truth
+        out["execution_details"] = truth
+        return out
+
+    monkeypatch.setattr(
+        "libs.reporting.intraday_trade_reports.rehydrate_lifecycle_bundle_execution_truth",
+        _fake_rehydrate,
+    )
+
+    story_input, story_input_path, source, _, _ = _resolve_story_input_for_regeneration(
+        trade_dir,
+        trade_paths,
+    )
+
+    assert source == "rebuilt_from_lifecycle_bundle"
+    assert story_input_path == str(trade_paths["ai_trade_report_input_json"])
+    assert story_input["exit_execution_details"]["filled_price"] == 15610
+    assert story_input["exit_execution_details"]["broker_truth_source"] == "kiwoom.order_status"
+    persisted = _read_json(trade_paths["ai_trade_report_input_json"])
+    assert persisted["exit_execution_details"]["broker_day_truth_source"] == "kiwoom.ka10077"

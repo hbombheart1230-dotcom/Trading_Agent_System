@@ -16,6 +16,16 @@ from libs.llm.model_catalog import build_execution_profile_observability, resolv
 from libs.llm.model_names import normalize_openrouter_model_name
 from libs.llm.llm_router import LLMRouter
 from libs.reporting.llm_artifacts import build_llm_response_artifact, classify_llm_exception, make_attempt
+from libs.reporting.trade_price_truth import resolve_trade_price_truth
+from libs.reporting.trade_pnl_estimate import infer_exit_fill_pnl_pct_from_account_snapshot
+from libs.reporting.execution_truth_surface import build_execution_truth_bullets
+from libs.reporting.report_truth_surface import build_trade_report_truth_surface
+from libs.reporting.truth_source_labels import (
+    monitor_price_source_label,
+    pnl_truth_source_label,
+    price_truth_source_label,
+    truth_availability_line,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -422,6 +432,7 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
     exit_summary = _as_dict(story_input.get("exit_summary"))
     exit_monitor_context = _as_dict(exit_summary.get("monitor_context"))
     execution_outcome = _as_dict(story_input.get("execution_outcome_human"))
+    execution_details = _as_dict(story_input.get("exit_execution_details")) or _as_dict(story_input.get("execution_details"))
     monitor_reason = _as_dict(story_input.get("monitor_reason_human"))
     trade_read_model = _load_trade_read_model_hint(story_input)
     trade_read_model_context = trade_read_model.get("context") if isinstance(trade_read_model.get("context"), dict) else {}
@@ -429,6 +440,23 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
     fields = ["action", "status", "holding_duration", "exit_reason", "pnl", "pnl_pct"]
     resolved: Dict[str, Any] = {key: "unavailable" for key in fields}
     data_source: Dict[str, str] = {key: "unavailable" for key in fields}
+
+    broker_pnl_source = _first_nonempty_text(
+        execution_details.get("pnl_truth_source"),
+        execution_details.get("broker_day_truth_source"),
+        max_len=80,
+    )
+    if execution_details.get("broker_realized_pnl") not in (None, ""):
+        resolved["pnl"] = execution_details.get("broker_realized_pnl")
+        data_source["pnl"] = broker_pnl_source or "kiwoom_day_trade"
+    if execution_details.get("broker_realized_pnl_pct") not in (None, ""):
+        resolved["pnl_pct"] = execution_details.get("broker_realized_pnl_pct")
+        data_source["pnl_pct"] = broker_pnl_source or "kiwoom_day_trade"
+    inferred_pnl = infer_exit_fill_pnl_pct_from_account_snapshot(story_input)
+    if resolved.get("pnl_pct") in (None, "", "unavailable") and inferred_pnl.get("pnl_pct") not in (None, ""):
+        resolved["pnl_pct"] = inferred_pnl.get("pnl_pct")
+        resolved["pnl_truth_source"] = inferred_pnl.get("pnl_truth_source")
+        data_source["pnl_pct"] = inferred_pnl.get("pnl_truth_source") or "estimate"
 
     # 1) lifecycle / trade_lifecycle.json
     for candidate in (
@@ -643,6 +671,27 @@ def _resolve_trade_facts_with_precedence(story_input: Dict[str, Any]) -> Dict[st
         monitor_decision["thresholds"] = _as_dict(trade_model_monitor.get("thresholds_snapshot"))
     return {
         **resolved,
+        "broker_fee": execution_details.get("broker_fee"),
+        "broker_tax": execution_details.get("broker_tax"),
+        "pnl_truth_source": resolved.get("pnl_truth_source") or broker_pnl_source or "unavailable",
+        "broker_day_truth_source": resolved.get("broker_day_truth_source")
+        if resolved.get("broker_day_truth_source") not in (None, "")
+        else execution_details.get("broker_day_truth_source"),
+        "broker_day_match_mode": resolved.get("broker_day_match_mode")
+        if resolved.get("broker_day_match_mode") not in (None, "")
+        else execution_details.get("broker_day_match_mode"),
+        "broker_day_authoritative": bool(
+            resolved.get("broker_day_authoritative")
+            if resolved.get("broker_day_authoritative") not in (None, "")
+            else execution_details.get("broker_day_authoritative")
+        ),
+        "broker_day_row_count": resolved.get("broker_day_row_count")
+        if resolved.get("broker_day_row_count") not in (None, "")
+        else execution_details.get("broker_day_row_count"),
+        "broker_truth_attempted": bool(execution_details.get("broker_truth_attempted")),
+        "broker_truth_error": execution_details.get("broker_truth_error"),
+        "broker_day_truth_attempted": bool(execution_details.get("broker_day_truth_attempted")),
+        "broker_day_truth_error": execution_details.get("broker_day_truth_error"),
         "data_source": data_source,
         "monitor_decision": monitor_decision,
     }
@@ -670,6 +719,7 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         else {}
     )
     resolved_facts = _resolve_trade_facts_with_precedence(story_input)
+    price_truth = resolve_trade_price_truth(story_input)
     trade_model_hold_duration_sec = trade_read_model_facts.get("hold_duration_sec")
     if resolved_facts.get("holding_duration") in (None, "", "unavailable") and trade_model_hold_duration_sec not in (None, ""):
         try:
@@ -1162,6 +1212,22 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "exit_reason": _clip(resolved_facts.get("exit_reason"), max_len=280) or "unavailable",
         "pnl": resolved_facts.get("pnl"),
         "pnl_pct": resolved_facts.get("pnl_pct"),
+        "broker_fee": resolved_facts.get("broker_fee"),
+        "broker_tax": resolved_facts.get("broker_tax"),
+        "pnl_truth_source": _clip(resolved_facts.get("pnl_truth_source"), max_len=80) or "unavailable",
+        "broker_day_truth_source": _clip(resolved_facts.get("broker_day_truth_source"), max_len=80) or "",
+        "broker_day_match_mode": _clip(resolved_facts.get("broker_day_match_mode"), max_len=40) or "",
+        "broker_day_authoritative": bool(resolved_facts.get("broker_day_authoritative")),
+        "broker_day_row_count": resolved_facts.get("broker_day_row_count"),
+        "broker_truth_attempted": bool(resolved_facts.get("broker_truth_attempted")),
+        "broker_truth_error": _clip(resolved_facts.get("broker_truth_error"), max_len=240) or "",
+        "broker_day_truth_attempted": bool(resolved_facts.get("broker_day_truth_attempted")),
+        "broker_day_truth_error": _clip(resolved_facts.get("broker_day_truth_error"), max_len=240) or "",
+        "broker_fill_price": price_truth.get("broker_fill_price"),
+        "account_mark_price": price_truth.get("account_mark_price"),
+        "monitor_mark_price": price_truth.get("monitor_mark_price"),
+        "price_truth_source": _clip(price_truth.get("price_truth_source"), max_len=40) or "unavailable",
+        "monitor_price_source": _clip(price_truth.get("monitor_price_source"), max_len=120) or "unavailable",
         "monitor_decision": dict(resolved_facts.get("monitor_decision") or {}),
         "resolved_trade_facts": {
             "action": lifecycle_action,
@@ -1170,6 +1236,22 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "exit_reason": _clip(resolved_facts.get("exit_reason"), max_len=280) or "unavailable",
             "pnl": resolved_facts.get("pnl", "unavailable"),
             "pnl_pct": resolved_facts.get("pnl_pct", "unavailable"),
+            "broker_fee": resolved_facts.get("broker_fee"),
+            "broker_tax": resolved_facts.get("broker_tax"),
+            "pnl_truth_source": _clip(resolved_facts.get("pnl_truth_source"), max_len=80) or "unavailable",
+            "broker_day_truth_source": _clip(resolved_facts.get("broker_day_truth_source"), max_len=80) or "",
+            "broker_day_match_mode": _clip(resolved_facts.get("broker_day_match_mode"), max_len=40) or "",
+            "broker_day_authoritative": bool(resolved_facts.get("broker_day_authoritative")),
+            "broker_day_row_count": resolved_facts.get("broker_day_row_count"),
+            "broker_truth_attempted": bool(resolved_facts.get("broker_truth_attempted")),
+            "broker_truth_error": _clip(resolved_facts.get("broker_truth_error"), max_len=240) or "",
+            "broker_day_truth_attempted": bool(resolved_facts.get("broker_day_truth_attempted")),
+            "broker_day_truth_error": _clip(resolved_facts.get("broker_day_truth_error"), max_len=240) or "",
+            "broker_fill_price": price_truth.get("broker_fill_price"),
+            "account_mark_price": price_truth.get("account_mark_price"),
+            "monitor_mark_price": price_truth.get("monitor_mark_price"),
+            "price_truth_source": _clip(price_truth.get("price_truth_source"), max_len=40) or "unavailable",
+            "monitor_price_source": _clip(price_truth.get("monitor_price_source"), max_len=120) or "unavailable",
             "data_source": dict(resolved_facts.get("data_source") or {}),
         },
         "scanner_evidence_status": scanner_evidence_status,
@@ -1206,6 +1288,14 @@ def resolve_shared_trade_facts(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "exit_reason": _clip(resolved.get("exit_reason"), max_len=280) or "unavailable",
         "pnl": resolved.get("pnl", "unavailable"),
         "pnl_pct": resolved.get("pnl_pct", "unavailable"),
+        "broker_fee": resolved.get("broker_fee"),
+        "broker_tax": resolved.get("broker_tax"),
+        "pnl_truth_source": _clip(resolved.get("pnl_truth_source"), max_len=80) or "unavailable",
+        "broker_fill_price": resolved.get("broker_fill_price"),
+        "account_mark_price": resolved.get("account_mark_price"),
+        "monitor_mark_price": resolved.get("monitor_mark_price"),
+        "price_truth_source": _clip(resolved.get("price_truth_source"), max_len=40) or "unavailable",
+        "monitor_price_source": _clip(resolved.get("monitor_price_source"), max_len=120) or "unavailable",
         "data_source": data_source,
         "monitor_decision": _as_dict(shared_seed.get("monitor_decision")),
     }
@@ -1338,6 +1428,22 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
         "exit_reason": resolved_exit_reason,
         "pnl": shared_seed.get("pnl", "unavailable"),
         "pnl_pct": shared_seed.get("pnl_pct", "unavailable"),
+        "broker_fee": shared_seed.get("broker_fee"),
+        "broker_tax": shared_seed.get("broker_tax"),
+        "pnl_truth_source": _clip(shared_seed.get("pnl_truth_source"), max_len=80) or "unavailable",
+        "broker_day_truth_source": _clip(shared_seed.get("broker_day_truth_source"), max_len=80) or "",
+        "broker_day_match_mode": _clip(shared_seed.get("broker_day_match_mode"), max_len=40) or "",
+        "broker_day_authoritative": bool(shared_seed.get("broker_day_authoritative")),
+        "broker_day_row_count": shared_seed.get("broker_day_row_count"),
+        "broker_truth_attempted": bool(shared_seed.get("broker_truth_attempted")),
+        "broker_truth_error": _clip(shared_seed.get("broker_truth_error"), max_len=240) or "",
+        "broker_day_truth_attempted": bool(shared_seed.get("broker_day_truth_attempted")),
+        "broker_day_truth_error": _clip(shared_seed.get("broker_day_truth_error"), max_len=240) or "",
+        "broker_fill_price": shared_seed.get("broker_fill_price"),
+        "account_mark_price": shared_seed.get("account_mark_price"),
+        "monitor_mark_price": shared_seed.get("monitor_mark_price"),
+        "price_truth_source": _clip(shared_seed.get("price_truth_source"), max_len=40) or "unavailable",
+        "monitor_price_source": _clip(shared_seed.get("monitor_price_source"), max_len=120) or "unavailable",
         "data_source": dict(resolved_data_source),
         "resolved_trade_facts": dict(resolved_trade_facts),
         "lifecycle_action": action,
@@ -1347,6 +1453,7 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
         "strategist_evidence_status": _clip(shared_seed.get("strategist_evidence_status"), max_len=24),
         "commander_route": dict(shared_seed.get("commander_route") or {}),
     }
+    out["truth_surface"] = build_trade_report_truth_surface(out.get("shared_facts"))
     sanitized = _sanitize_report_language_fields(out)
     return dict(sanitized) if isinstance(sanitized, dict) else out
 
@@ -2179,6 +2286,33 @@ def _scanner_ranked_candidates(scanner_reason: Dict[str, Any]) -> List[Dict[str,
     return [row for row in list(trace.get("ranked_candidates") or []) if isinstance(row, dict)][:5]
 
 
+def _scanner_selected_row(scanner_reason: Dict[str, Any]) -> Dict[str, Any]:
+    selected_symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24)
+    ranked_rows = _scanner_ranked_candidates(scanner_reason)
+    if selected_symbol:
+        for row in ranked_rows:
+            if _clip(row.get("symbol"), max_len=24) == selected_symbol:
+                return dict(row)
+    return dict(ranked_rows[0]) if ranked_rows else {}
+
+
+def _scanner_monitor_fallback_context(scanner_reason: Dict[str, Any]) -> Dict[str, Any]:
+    trace = scanner_reason.get("scanner_selection_trace") if isinstance(scanner_reason.get("scanner_selection_trace"), dict) else {}
+    return {
+        "used": bool(scanner_reason.get("monitor_fallback_used") or trace.get("monitor_fallback_used")),
+        "scanner_top_pick_symbol": _clip(
+            scanner_reason.get("scanner_top_pick_symbol") or trace.get("scanner_top_pick_symbol"),
+            max_len=24,
+        ),
+        "reason": _operatorize_report_text(
+            scanner_reason.get("monitor_fallback_reason") or trace.get("monitor_fallback_reason")
+        ),
+        "trigger_reason": _operatorize_report_text(
+            scanner_reason.get("monitor_trigger_reason") or trace.get("monitor_trigger_reason")
+        ),
+    }
+
+
 def _scanner_chart_feature_coverage(scanner_reason: Dict[str, Any]) -> Dict[str, Any]:
     trace = scanner_reason.get("scanner_selection_trace") if isinstance(scanner_reason.get("scanner_selection_trace"), dict) else {}
     row = trace.get("chart_feature_coverage") if isinstance(trace.get("chart_feature_coverage"), dict) else {}
@@ -2249,8 +2383,9 @@ def _build_scanner_choice_bullets(
     score_value = _num_opt(scanner_reason.get("selected_score"))
     confidence_value = _num_opt(scanner_reason.get("confidence"))
     ranked_rows = _scanner_ranked_candidates(scanner_reason)
-    selected_row = ranked_rows[0] if ranked_rows else {}
+    selected_row = _scanner_selected_row(scanner_reason)
     selected_risk = _num_opt(selected_row.get("risk_score"))
+    fallback_ctx = _scanner_monitor_fallback_context(scanner_reason)
     basis = _scanner_basis_text(scanner_reason)
     source_text = _scanner_source_text(scanner_reason.get("selected_sources"))
     playbook = _market_token_label(market_context.get("playbook")) or _clip(market_context.get("playbook"), max_len=32)
@@ -2258,6 +2393,13 @@ def _build_scanner_choice_bullets(
     coverage = _scanner_chart_feature_coverage(scanner_reason)
 
     bullets: List[str] = []
+    if fallback_ctx["used"] and fallback_ctx["scanner_top_pick_symbol"]:
+        fallback_line = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}은 모니터 단계에서 막혔고 실제 진입 종목은 {symbol}입니다."
+        if fallback_ctx["reason"]:
+            fallback_line = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}은 {fallback_ctx['reason']} 이유로 막혔고 실제 진입 종목은 {symbol}입니다."
+        bullets.append(fallback_line)
+        if fallback_ctx["trigger_reason"]:
+            bullets.append(f"실제 진입은 {fallback_ctx['trigger_reason']} 조건에서 확정됐습니다.")
     if universe not in (None, "") and rank not in (None, ""):
         bullets.append(f"총 {int(universe)}개 후보를 비교했고 {symbol}이 {rank}위로 선정됐습니다.")
     elif rank not in (None, ""):
@@ -2323,8 +2465,9 @@ def _build_scanner_choice_summary(scanner_reason: Dict[str, Any], market_context
     playbook = _market_token_label(market_context.get("playbook")) or _clip(market_context.get("playbook"), max_len=32)
     confidence_value = _num_opt(scanner_reason.get("confidence"))
     ranked_rows = _scanner_ranked_candidates(scanner_reason)
-    selected_row = ranked_rows[0] if ranked_rows else {}
+    selected_row = _scanner_selected_row(scanner_reason)
     selected_risk = _num_opt(selected_row.get("risk_score"))
+    fallback_ctx = _scanner_monitor_fallback_context(scanner_reason)
     driver_summary = _build_scanner_driver_summary(scanner_reason)
     comparison_bits: List[str] = []
     for row in list(scanner_reason.get("runner_ups") or [])[:2]:
@@ -2339,7 +2482,11 @@ def _build_scanner_choice_summary(scanner_reason: Dict[str, Any], market_context
         if rendered:
             comparison_bits.append(rendered.rstrip("."))
 
-    if universe not in (None, "") and rank == 1:
+    if fallback_ctx["used"] and fallback_ctx["scanner_top_pick_symbol"]:
+        summary = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}이 모니터 단계에서 막힌 뒤 {symbol}이 실제 진입 종목으로 선택됐습니다"
+        if fallback_ctx["reason"]:
+            summary = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}이 {fallback_ctx['reason']} 이유로 막힌 뒤 {symbol}이 실제 진입 종목으로 선택됐습니다"
+    elif universe not in (None, "") and rank == 1:
         summary = f"{symbol}은 총 {int(universe)}개 후보 중 1위로 선정됐습니다"
     elif rank == 1:
         summary = f"{symbol}은 스캐너 후보 중 최종 1순위였습니다"
@@ -2353,7 +2500,12 @@ def _build_scanner_choice_summary(scanner_reason: Dict[str, Any], market_context
     elif universe not in (None, ""):
         summary += f". 비교한 후보는 총 {int(universe)}개였습니다"
     if score_value is not None:
-        summary += f". 종합 점수는 {score_value:.3f}로 가장 높았습니다"
+        if fallback_ctx["used"]:
+            summary += f". 실제 진입 후보의 종합 점수는 {score_value:.3f}였습니다"
+        elif rank == 1:
+            summary += f". 종합 점수는 {score_value:.3f}로 가장 높았습니다"
+        else:
+            summary += f". 종합 점수는 {score_value:.3f}였습니다"
     if basis:
         summary += f". 강했던 축은 {basis} 축이었습니다"
     details: List[str] = []
@@ -2532,11 +2684,19 @@ def _build_entry_decision_summary(
     playbook = _market_token_label(market_context.get("playbook")) or _clip(market_context.get("playbook"), max_len=32)
     confidence_score = _num_opt(entry_scores.get("confidence_score"))
     confidence_threshold = _num_opt(entry_scores.get("confidence_threshold"))
+    fallback_ctx = _scanner_monitor_fallback_context(scanner_reason)
 
     summary_parts: List[str] = []
     if reason_label:
         summary_parts.append(f"진입은 {reason_label} 조건에서 실행됐습니다.")
-    if symbol and rank not in (None, ""):
+    if fallback_ctx["used"] and fallback_ctx["scanner_top_pick_symbol"]:
+        fallback_sentence = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}은 모니터 단계에서 막혔고 {symbol} 진입으로 전환됐습니다."
+        if fallback_ctx["reason"]:
+            fallback_sentence = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}은 {fallback_ctx['reason']} 이유로 막혔고 {symbol} 진입으로 전환됐습니다."
+        if fallback_ctx["trigger_reason"]:
+            fallback_sentence += f" 실제 트리거는 {fallback_ctx['trigger_reason']}였습니다."
+        summary_parts.append(fallback_sentence)
+    elif symbol and rank not in (None, ""):
         summary_parts.append(f"{symbol}이 스캐너 {rank}위 후보로 올라온 뒤 매수로 이어졌습니다.")
     elif symbol:
         summary_parts.append(f"{symbol}에 대한 매수 판단으로 진입이 이어졌습니다.")
@@ -2918,7 +3078,7 @@ def _build_reporter_evaluation_section(
     selected_score = _num_opt(scanner_reason.get("selected_score"))
     confidence = _num_opt(scanner_reason.get("confidence"))
     ranked_rows = _scanner_ranked_candidates(scanner_reason)
-    selected_row = ranked_rows[0] if ranked_rows else {}
+    selected_row = _scanner_selected_row(scanner_reason)
     selected_risk = _num_opt(selected_row.get("risk_score"))
     hold_seconds = int(monitor_reason.get("position_age_seconds") or 0)
     hold_duration = _humanize_duration_text(shared_seed.get("holding_duration"), fallback_seconds=hold_seconds)
@@ -3076,10 +3236,13 @@ def _build_execution_quality_section(
         bullets.append("주문 번호는 별도로 기록되지 않았습니다.")
     if avg_price != "-":
         bullets.append(f"평균 체결가는 {avg_price}였습니다.")
+    for bullet in build_execution_truth_bullets(execution_details=execution_details):
+        if bullet not in bullets:
+            bullets.append(bullet)
 
     return {
         "summary": summary,
-        "bullets": _dedupe_list(bullets, max_items=8, max_len=260),
+        "bullets": _dedupe_list(bullets, max_items=12, max_len=260),
     }
 
 
@@ -5514,6 +5677,22 @@ def _fallback_report(
             "exit_reason": _clip(shared_seed.get("exit_reason"), max_len=280) or "unavailable",
             "pnl": shared_seed.get("pnl", "unavailable"),
             "pnl_pct": shared_seed.get("pnl_pct", "unavailable"),
+            "broker_fee": shared_seed.get("broker_fee"),
+            "broker_tax": shared_seed.get("broker_tax"),
+            "pnl_truth_source": _clip(shared_seed.get("pnl_truth_source"), max_len=80) or "unavailable",
+            "broker_day_truth_source": _clip(shared_seed.get("broker_day_truth_source"), max_len=80) or "",
+            "broker_day_match_mode": _clip(shared_seed.get("broker_day_match_mode"), max_len=40) or "",
+            "broker_day_authoritative": bool(shared_seed.get("broker_day_authoritative")),
+            "broker_day_row_count": shared_seed.get("broker_day_row_count"),
+            "broker_truth_attempted": bool(shared_seed.get("broker_truth_attempted")),
+            "broker_truth_error": _clip(shared_seed.get("broker_truth_error"), max_len=240) or "",
+            "broker_day_truth_attempted": bool(shared_seed.get("broker_day_truth_attempted")),
+            "broker_day_truth_error": _clip(shared_seed.get("broker_day_truth_error"), max_len=240) or "",
+            "broker_fill_price": shared_seed.get("broker_fill_price"),
+            "account_mark_price": shared_seed.get("account_mark_price"),
+            "monitor_mark_price": shared_seed.get("monitor_mark_price"),
+            "price_truth_source": _clip(shared_seed.get("price_truth_source"), max_len=40) or "unavailable",
+            "monitor_price_source": _clip(shared_seed.get("monitor_price_source"), max_len=120) or "unavailable",
             "data_source": dict((_as_dict(shared_seed.get("resolved_trade_facts")).get("data_source"))),
             "resolved_trade_facts": dict(shared_seed.get("resolved_trade_facts") or {}),
             "lifecycle_action": action,
@@ -5524,6 +5703,7 @@ def _fallback_report(
             "commander_route": dict(shared_seed.get("commander_route") or {}),
         },
     }
+    out["truth_surface"] = build_trade_report_truth_surface(out.get("shared_facts"))
     # Backward-compatible aliases used by earlier UI/report consumers.
     out["market_context"] = dict(out.get("market_context_at_entry") or {})
     out["why_this_symbol"] = dict(out.get("why_this_symbol_was_chosen") or {})
@@ -6795,6 +6975,7 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         if isinstance(report.get("execution_result"), dict)
         else {}
     )
+    execution_result = dict(execution_result or {})
     reporter_eval = report.get("reporter_evaluation") if isinstance(report.get("reporter_evaluation"), dict) else {}
     weak_points = (
         report.get("errors_weaknesses_improvement_points")
@@ -6803,6 +6984,13 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
     )
     final_conclusion = report.get("final_operator_conclusion") if isinstance(report.get("final_operator_conclusion"), dict) else {}
     monitor_snapshot = report.get("monitor_snapshot") if isinstance(report.get("monitor_snapshot"), dict) else {}
+    shared_facts = report.get("shared_facts") if isinstance(report.get("shared_facts"), dict) else {}
+    truth_surface = (
+        report.get("truth_surface")
+        if isinstance(report.get("truth_surface"), dict)
+        else build_trade_report_truth_surface(shared_facts)
+    )
+
 
     lines: List[str] = []
     lines.append(f"# AI 거래 리포트 ({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})")
@@ -6830,6 +7018,55 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"- 리포트는 {generation_status} 상태로 정리됐습니다.")
         lines.append(f"- 사유는 {generation.get('reason') or '부분 응답을 복구해 최종 리포트를 구성한 경우입니다.'}입니다.")
+        lines.append("")
+    truth_price = truth_surface.get("price") if isinstance(truth_surface.get("price"), dict) else {}
+    truth_pnl = truth_surface.get("pnl") if isinstance(truth_surface.get("pnl"), dict) else {}
+    truth_availability = truth_surface.get("availability") if isinstance(truth_surface.get("availability"), dict) else {}
+    if truth_surface:
+        lines.append("## Truth Surface")
+        lines.append("")
+        price_truth_source = _clip(truth_price.get("price_truth_source"), max_len=40)
+        monitor_price_source = _clip(truth_price.get("monitor_price_source"), max_len=80)
+        pnl_truth_source = _clip(truth_pnl.get("pnl_truth_source"), max_len=80)
+        if truth_price.get("broker_fill_price") not in (None, ""):
+            lines.append(f"- 브로커 체결 가격은 {_fmt_price(truth_price.get('broker_fill_price'))}입니다.")
+        if truth_price.get("account_mark_price") not in (None, ""):
+            lines.append(f"- 계좌 기준 마크 가격은 {_fmt_price(truth_price.get('account_mark_price'))}입니다.")
+        if truth_price.get("monitor_mark_price") not in (None, ""):
+            lines.append(f"- 종료 직전 모니터 관측 가격은 {_fmt_price(truth_price.get('monitor_mark_price'))}입니다.")
+        if str(truth_pnl.get("value") or "").strip().lower() in {"", "unavailable", "not_available"}:
+            if truth_pnl.get("pct") not in (None, ""):
+                if pnl_truth_source == "broker_fill_account_snapshot_estimate":
+                    lines.append(f"- 브로커 확정 손익 금액은 직접 확인되지 않았고, 브로커 체결가와 계좌 평가손익 기준 추정 손익률은 {_fmt_pct(truth_pnl.get('pct'))}입니다.")
+                else:
+                    lines.append(f"- 브로커 확정 손익 금액은 직접 확인되지 않았고, 손익률은 {_fmt_pct(truth_pnl.get('pct'))}입니다.")
+            else:
+                lines.append("- 브로커 확정 손익은 아직 직접 확인되지 않았습니다.")
+        elif truth_pnl.get("value") not in (None, "") and truth_pnl.get("pct") not in (None, ""):
+            lines.append(f"- 확정 손익은 {truth_pnl.get('value')} / {_fmt_pct(truth_pnl.get('pct'))}입니다.")
+        elif truth_pnl.get("value") not in (None, ""):
+            lines.append(f"- 확정 손익은 {truth_pnl.get('value')}입니다.")
+        if truth_pnl.get("broker_fee") not in (None, "") or truth_pnl.get("broker_tax") not in (None, ""):
+            lines.append(f"- 브로커 수수료/세금은 {truth_pnl.get('broker_fee')} / {truth_pnl.get('broker_tax')}입니다.")
+        if price_truth_source:
+            lines.append(f"- 가격 truth 소스는 {price_truth_source_label(price_truth_source)}입니다.")
+        if pnl_truth_source and pnl_truth_source not in {"", "unavailable"}:
+            lines.append(f"- 손익 truth 소스는 {pnl_truth_source_label(pnl_truth_source)}입니다.")
+        broker_day_match_mode = _clip(truth_pnl.get("broker_day_match_mode"), max_len=40)
+        broker_day_truth_source = _clip(truth_pnl.get("broker_day_truth_source"), max_len=80)
+        broker_day_authoritative = bool(truth_pnl.get("broker_day_authoritative"))
+        if broker_day_match_mode or broker_day_authoritative:
+            match_text = broker_day_match_mode or "unmatched"
+            auth_text = "authoritative" if broker_day_authoritative else "reference_only"
+            if broker_day_truth_source:
+                lines.append(
+                    f"- 브로커 당일 손익 매칭은 {match_text} / {auth_text} 상태이며, 소스는 {pnl_truth_source_label(broker_day_truth_source)}입니다."
+                )
+            else:
+                lines.append(f"- 브로커 당일 손익 매칭은 {match_text} / {auth_text} 상태입니다.")
+        if monitor_price_source:
+            lines.append(f"- 모니터 가격 소스는 {monitor_price_source_label(monitor_price_source)}입니다.")
+        lines.append(f"- {truth_availability_line(truth_availability)}")
         lines.append("")
     section_provenance = report.get("section_provenance") if isinstance(report.get("section_provenance"), dict) else {}
     if section_provenance:
@@ -6927,7 +7164,6 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         current_price = monitor_snapshot.get("current_price")
         average_price = monitor_snapshot.get("average_price")
         peak_price = monitor_snapshot.get("peak_price")
-        shared_facts = report.get("shared_facts") if isinstance(report.get("shared_facts"), dict) else {}
 
         lines.append("## 모니터 스냅샷")
         lines.append("")
@@ -6963,17 +7199,42 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
             lines.append("- 위 가격은 모니터 관측값이며, 실제 체결 손익 계산값과 다를 수 있습니다.")
         pnl = str(shared_facts.get("pnl") or "").strip().lower()
         pnl_pct = shared_facts.get("pnl_pct")
+        broker_fill_price = shared_facts.get("broker_fill_price")
+        account_mark_price = shared_facts.get("account_mark_price")
+        monitor_mark_price = shared_facts.get("monitor_mark_price")
+        price_truth_source = _clip(shared_facts.get("price_truth_source"), max_len=40)
+        pnl_truth_source = _clip(shared_facts.get("pnl_truth_source"), max_len=80)
         if pnl in {"", "unavailable", "not_available"}:
             lines.append("- 실현 손익 값은 현재 아티팩트에서 직접 확인되지 않았습니다.")
         elif pnl_pct not in (None, ""):
             lines.append(f"- 실현 손익 기준 PnL/PnL%는 {shared_facts.get('pnl')} / {_fmt_pct(pnl_pct)}입니다.")
         else:
             lines.append(f"- 실현 손익 기준 PnL은 {shared_facts.get('pnl')}입니다.")
+        if broker_fill_price not in (None, ""):
+            lines.append(f"- 브로커 체결가는 {_fmt_price(broker_fill_price)}입니다.")
+        if account_mark_price not in (None, ""):
+            lines.append(f"- 계좌 기준 마크 가격은 {_fmt_price(account_mark_price)}입니다.")
+        if monitor_mark_price not in (None, ""):
+            lines.append(f"- 종료 직전 모니터 관측 가격은 {_fmt_price(monitor_mark_price)}입니다.")
+        if price_truth_source:
+            lines.append(f"- 가격 truth 소스는 {price_truth_source_label(price_truth_source)}입니다.")
+        if pnl_truth_source and pnl_truth_source not in {"", "unavailable"}:
+            lines.append(f"- 손익 truth 소스는 {pnl_truth_source_label(pnl_truth_source)}입니다.")
         if str(monitor_snapshot.get("price_source") or "").strip():
-            lines.append(f"- 가격 기준 소스는 {monitor_snapshot.get('price_source')}입니다.")
+            lines.append(f"- 가격 기준 소스는 {monitor_price_source_label(monitor_snapshot.get('price_source'))}입니다.")
         lines.append("")
         # Prevent duplicate legacy snapshot rendering below.
         monitor_snapshot = {}
+    execution_truth_bullets = build_execution_truth_bullets(
+        execution_details=execution_result,
+        shared_facts=report.get("shared_facts") if isinstance(report.get("shared_facts"), dict) else {},
+    )
+    if execution_truth_bullets:
+        existing_bullets = _listify(execution_result.get("bullets"), max_items=12, max_len=400)
+        for bullet in execution_truth_bullets:
+            if bullet not in existing_bullets:
+                existing_bullets.append(bullet)
+        execution_result["bullets"] = existing_bullets
     if monitor_snapshot:
         lines.append("## 모니터 스냅샷")
         lines.append("")

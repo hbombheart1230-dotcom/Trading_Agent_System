@@ -12,7 +12,7 @@
 ## Frozen Package Manifest
 
 - manifest path: `config/strategy_v1_exam_baseline.json`
-- operator snapshot path: `configs/exam_strategy_baseline.yaml`
+- operator snapshot path: `config/exam_strategy_baseline.yaml`
 - baseline version: `m31.exam.baseline.2026-03-08`
 
 This manifest locks:

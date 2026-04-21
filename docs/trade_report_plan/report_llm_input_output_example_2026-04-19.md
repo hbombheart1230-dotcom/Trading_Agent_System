@@ -276,3 +276,38 @@ live trade-report 기준 호출 경로는 다음과 같다.
 - 새 판단을 하는 agent가 아니라
 - `trade_read_model`과 canonical section seed를 받아
 - 운영자용 retrospective report를 만드는 adapter다.
+
+
+## 2026-04-20 Update: Execution Truth Visibility
+- `ai_trade_report.md` execution section now explicitly surfaces broker execution truth when available.
+- Operator-facing execution visibility now distinguishes:
+  - broker fill price
+  - broker realized pnl / pnl%
+  - broker fee / tax
+  - price truth source
+  - pnl truth source
+- This is additive to `shared_facts`; execution truth is no longer only implicit in JSON facts.
+
+
+## 2026-04-20 Update: truth_surface
+- `ai_trade_report.json` now includes top-level `truth_surface`.
+- `truth_surface` is a compact operator-facing view derived from `shared_facts`, not a second truth calculator.
+- It groups:
+  - `status`
+  - `price`
+  - `pnl`
+  - `availability`
+- This makes broker/account/monitor truth easier to inspect without traversing the full `shared_facts` object.
+
+## 2026-04-20 Update: Markdown Truth Surface
+- `ai_trade_report.md` now surfaces `truth_surface` near the top of the report.
+- Operators can inspect:
+  - broker fill price
+  - account mark price
+  - monitor mark price
+  - realized pnl / pnl%
+  - fee / tax
+  - price truth source
+  - pnl truth source
+  - truth availability flags
+- This reduces the need to drill into `shared_facts` or only rely on the execution section for factual verification.

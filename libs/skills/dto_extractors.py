@@ -133,27 +133,47 @@ def extract_order_place(side: str, symbol: str, payload: Dict[str, Any]) -> Orde
 
 
 def extract_order_status(ord_no: str, payloads: List[Dict[str, Any]]) -> OrderStatusDTO:
-    # We rely on kt00007 detail row primarily
-    row: Dict[str, Any] = {}
+    # Prefer kt00007 detail row, but fall back to kt00009 summary row when needed.
+    detail_row: Dict[str, Any] = {}
+    summary_row: Dict[str, Any] = {}
     for p in payloads:
-        rows = p.get("acnt_ord_cntr_prps_dtl")
-        if isinstance(rows, list):
-            for r in rows:
+        detail_rows = p.get("acnt_ord_cntr_prps_dtl")
+        if isinstance(detail_rows, list) and not detail_row:
+            for r in detail_rows:
                 if str(r.get("ord_no", "")).strip() == ord_no:
-                    row = r
+                    detail_row = r
                     break
-        if row:
-            break
+        summary_rows = p.get("acnt_ord_cntr_prst_array")
+        if isinstance(summary_rows, list) and not summary_row:
+            for r in summary_rows:
+                if str(r.get("ord_no", "")).strip() == ord_no:
+                    summary_row = r
+                    break
 
-    symbol = _norm_symbol(row.get("stk_cd")) if row else None
-    status = row.get("acpt_tp") if row else None
-    filled_qty = _to_int(row.get("cntr_qty")) if row else None
-    filled_price = _to_int(row.get("cntr_uv")) if row else None
-    order_qty = _to_int(row.get("ord_qty")) if row else None
-    order_price = _to_int(row.get("ord_uv")) if row else None
-    side = row.get("io_tp_nm") if row else None
+    row = detail_row or summary_row
+    symbol = _norm_symbol((detail_row or {}).get("stk_cd") or (summary_row or {}).get("stk_cd")) if row else None
+    status = (
+        (detail_row or {}).get("acpt_tp")
+        or (summary_row or {}).get("acpt_tp")
+        or (summary_row or {}).get("status")
+    ) if row else None
+    filled_qty = _to_int((detail_row or {}).get("cntr_qty"))
+    if filled_qty is None:
+        filled_qty = _to_int((summary_row or {}).get("cntr_qty"))
+    filled_price = _to_int((detail_row or {}).get("cntr_uv"))
+    if filled_price is None:
+        filled_price = _to_int((summary_row or {}).get("cntr_uv"))
+    order_qty = _to_int((detail_row or {}).get("ord_qty"))
+    if order_qty is None:
+        order_qty = _to_int((summary_row or {}).get("ord_qty"))
+    order_price = _to_int((detail_row or {}).get("ord_uv"))
+    if order_price is None:
+        order_price = _to_int((summary_row or {}).get("ord_uv"))
+    side = (detail_row or {}).get("io_tp_nm")
+    if side is None:
+        side = (summary_row or {}).get("io_tp_nm") or (summary_row or {}).get("trde_tp")
 
-    merged_raw = {"payloads": payloads, "matched": row}
+    merged_raw = {"payloads": payloads, "matched_detail": detail_row, "matched_summary": summary_row}
     return OrderStatusDTO(
         ord_no=ord_no,
         symbol=symbol,

@@ -306,6 +306,7 @@ def load_strategy_memory_hint(
     root = Path(reports_root)
     performance_root = root / "performance"
     target_day = str(day or "").strip() or _resolve_latest_day(performance_root)
+    requested_day = target_day
     if not target_day:
         return {
             "schema_version": "strategy_memory.v1",
@@ -323,6 +324,19 @@ def load_strategy_memory_hint(
     summary = _read_json_dict(paths["summary_json"])
     playbook = _read_json_dict(paths["playbook_stats_json"])
     memory = _read_json_dict(paths["strategy_memory_json"])
+    if not auto_build and not (summary or playbook or memory):
+        latest_day = _resolve_latest_day(performance_root)
+        if latest_day and latest_day != target_day:
+            fallback_paths = performance_artifact_paths(root, latest_day)
+            fallback_summary = _read_json_dict(fallback_paths["summary_json"])
+            fallback_playbook = _read_json_dict(fallback_paths["playbook_stats_json"])
+            fallback_memory = _read_json_dict(fallback_paths["strategy_memory_json"])
+            if fallback_summary or fallback_playbook or fallback_memory:
+                target_day = latest_day
+                paths = fallback_paths
+                summary = fallback_summary
+                playbook = fallback_playbook
+                memory = fallback_memory
     reporter_digest = _load_reporter_analysis_digest(root, target_day)
     if not summary and auto_build:
         summary = write_performance_summary(root, day=target_day)
@@ -349,5 +363,8 @@ def load_strategy_memory_hint(
         memory["reporter_analysis_digest"] = dict(reporter_digest)
     memory["status"] = "ok" if (memory.get("best_playbooks") or memory.get("worst_playbooks")) else "empty"
     memory["day"] = target_day
+    if requested_day and requested_day != target_day:
+        memory["requested_day"] = requested_day
+        memory["resolved_day"] = target_day
     memory.setdefault("advisory_only", True)
     return memory

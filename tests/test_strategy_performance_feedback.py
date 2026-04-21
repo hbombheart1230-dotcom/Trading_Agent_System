@@ -406,3 +406,39 @@ def test_strategist_includes_strategy_memory_hints(monkeypatch, tmp_path: Path) 
     assert "monitor_status" in user_prompt
     assert "market_rank" in user_prompt
     assert "monitor_only_ratio" in user_prompt
+
+
+def test_load_strategy_memory_hint_falls_back_to_latest_available_day(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    latest_day = "2026-03-20"
+    missing_day = "2026-03-21"
+    perf_dir = reports_root / "performance" / latest_day
+    perf_dir.mkdir(parents=True, exist_ok=True)
+    (perf_dir / "strategy_memory.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "strategy_memory.v1",
+                "day": latest_day,
+                "status": "ok",
+                "best_playbooks": ["breakout"],
+                "worst_playbooks": ["pullback"],
+                "recent_failures": ["playbook:pullback"],
+                "recent_success_patterns": ["playbook:breakout"],
+                "playbook_performance_snapshot": {},
+                "market_condition_bias": {},
+                "reporter_analysis_digest": {"available": False, "status": "missing"},
+                "advisory_only": True,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_strategy_memory_hint(reports_root=reports_root, day=missing_day, auto_build=False)
+
+    assert loaded.get("status") == "ok"
+    assert loaded.get("day") == latest_day
+    assert loaded.get("requested_day") == missing_day
+    assert loaded.get("resolved_day") == latest_day
+    assert "breakout" in list(loaded.get("best_playbooks") or [])

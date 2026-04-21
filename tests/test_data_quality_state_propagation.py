@@ -145,6 +145,10 @@ def test_strategist_preserves_open_position_refresh_context_in_commander_ref():
                         "selected_symbol": "322000",
                         "monitor_reason": "too_extended_from_vwap",
                         "refresh_summary": "Repeated hold refresh for 322000 after 3 consecutive hold cycles.",
+                        "carry_state": "overnight_open",
+                        "carry_risk_bias": "elevated",
+                        "carry_risk_reason": "overnight_open_needs_confirmation",
+                        "session_open_recovery_assessment": {"evaluated": True, "recovery_state": "mixed"},
                         "entry_state": {
                             "current_blocking_axis": "reclaim_readiness",
                             "transition_readiness_score": 0.74,
@@ -158,6 +162,10 @@ def test_strategist_preserves_open_position_refresh_context_in_commander_ref():
                         "selected_symbol": "322000",
                         "monitor_reason": "too_extended_from_vwap",
                         "refresh_summary": "Repeated hold refresh for 322000 after 3 consecutive hold cycles.",
+                        "carry_state": "overnight_open",
+                        "carry_risk_bias": "elevated",
+                        "carry_risk_reason": "overnight_open_needs_confirmation",
+                        "session_open_recovery_assessment": {"evaluated": True, "recovery_state": "mixed"},
                         "entry_state": {
                             "current_blocking_axis": "reclaim_readiness",
                             "transition_readiness_score": 0.74,
@@ -174,10 +182,13 @@ def test_strategist_preserves_open_position_refresh_context_in_commander_ref():
     assert ref["strategist_refresh_reason"] == "repeated_hold_monitor_only"
     assert ref["open_position_refresh_context"]["selected_symbol"] == "322000"
     assert ref["open_position_refresh_context"]["entry_state"]["current_blocking_axis"] == "reclaim_readiness"
+    assert ref["open_position_refresh_context"]["carry_state"] == "overnight_open"
     assert strategist_output["commander_open_position_refresh_context"]["monitor_reason"] == "too_extended_from_vwap"
+    assert strategist_output["commander_open_position_refresh_context"]["carry_risk_bias"] == "elevated"
     assert strategist_output["selected_symbol_memory"]["symbol"] == "322000"
     assert strategist_output["selected_symbol_memory"]["dominant_monitor_blocker"] == "below_vwap_reclaim_not_ready"
     assert strategist_output["strategic_answers"]["q15_commander_refresh_context"]["selected_symbol"] == "322000"
     assert strategist_output["strategic_answers"]["q15_commander_refresh_context"]["current_monitor_entry_policy_summary"]["volume_ratio_min"] == 0.75
+    assert strategist_output["strategic_answers"]["q15_commander_refresh_context"]["carry_risk_reason"] == "overnight_open_needs_confirmation"
     assert strategist_output["strategic_answers"]["q15_commander_refresh_context"]["selected_symbol_memory"]["symbol"] == "322000"
     assert strategist_output["strategic_answers"]["q15_commander_refresh_context"]["selected_symbol_memory"]["dominant_playbook"] == "pullback"

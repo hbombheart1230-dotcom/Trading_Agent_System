@@ -12,62 +12,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.core.settings import load_env_file
+from libs.runtime.entrypoint_common import first_universe_symbol, resolve_env_path, to_int
+from libs.runtime.session_entry_dispatch import dispatch_entry_implementation
 
 
 PHASE_PREOPEN = "preopen"
 PHASE_INTRADAY = "intraday"
 PHASE_CLOSEOUT = "closeout"
 PHASE_WATCH = "watch"
-
-
-def _first_universe_symbol() -> str:
-    raw = str(os.getenv("UNIVERSE_SYMBOLS", "") or "").strip()
-    if not raw:
-        return ""
-    for part in raw.split(","):
-        symbol = str(part or "").strip()
-        if symbol:
-            return symbol
-    return ""
-
-
-def _to_int(value: Any, default: int) -> int:
-    try:
-        return int(float(value))
-    except Exception:
-        return int(default)
-
-
-def _normalize_tick_pipeline(value: Any) -> str:
-    raw = str(value or "").strip().lower()
-    if raw in ("integrated_chain", "integrated", "chain"):
-        return "integrated_chain"
-    return "legacy_m10"
-
-
-def _resolve_env_path(argv: Optional[List[str]]) -> Path:
-    args = list(argv or [])
-    raw = ""
-    for idx, token in enumerate(args):
-        cur = str(token or "").strip()
-        if not cur:
-            continue
-        if cur.startswith("--env-path="):
-            raw = cur.split("=", 1)[1].strip()
-            break
-        if cur == "--env-path" and idx + 1 < len(args):
-            raw = str(args[idx + 1] or "").strip()
-            break
-    if not raw:
-        raw = str(os.getenv("ENV_PATH", "") or "").strip()
-    if not raw:
-        raw = str(ROOT / ".env")
-    path = Path(raw)
-    if not path.is_absolute():
-        path = ROOT / path
-    return path
-
-
 def _build_parser(default_env_path: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Official trading runtime entrypoint. Commander selects the runtime route by mode and phase."
@@ -80,13 +32,13 @@ def _build_parser(default_env_path: Path) -> argparse.ArgumentParser:
     )
     parser.add_argument("--env-path", default=str(default_env_path))
     parser.add_argument("--day", default=None)
-    parser.add_argument("--symbol", default=os.getenv("SYMBOL", "").strip() or _first_universe_symbol())
+    parser.add_argument("--symbol", default=os.getenv("SYMBOL", "").strip() or first_universe_symbol())
     parser.add_argument(
         "--tick-pipeline",
         choices=["legacy_m10", "integrated_chain"],
         default="integrated_chain",
     )
-    parser.add_argument("--sleep-sec", type=int, default=_to_int(os.getenv("SCAN_INTERVAL_SEC", "60"), 60))
+    parser.add_argument("--sleep-sec", type=int, default=to_int(os.getenv("SCAN_INTERVAL_SEC", "60"), 60))
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--session-hard-gate", action="store_true")
     parser.add_argument("--allow-offhours", action="store_true")
@@ -97,16 +49,16 @@ def _build_parser(default_env_path: Path) -> argparse.ArgumentParser:
     parser.add_argument(
         "--lock-stale-sec",
         type=int,
-        default=_to_int(os.getenv("M13_LIVE_LOCK_STALE_SEC", "1800"), 1800),
+        default=to_int(os.getenv("M13_LIVE_LOCK_STALE_SEC", "1800"), 1800),
     )
     parser.add_argument("--event-log-path", default=os.getenv("EVENT_LOG_PATH", "data/logs/events.jsonl"))
     parser.add_argument("--summary-report-dir", default="reports/live_summary")
     parser.add_argument("--watch-report-dir", default="reports/live_watch")
-    parser.add_argument("--lookback-min", type=int, default=_to_int(os.getenv("LIVE_SUMMARY_LOOKBACK_MIN", "30"), 30))
+    parser.add_argument("--lookback-min", type=int, default=to_int(os.getenv("LIVE_SUMMARY_LOOKBACK_MIN", "30"), 30))
     parser.add_argument(
         "--max-event-lag-sec",
         type=int,
-        default=_to_int(os.getenv("LIVE_WATCH_MAX_EVENT_LAG_SEC", "420"), 420),
+        default=to_int(os.getenv("LIVE_WATCH_MAX_EVENT_LAG_SEC", "420"), 420),
     )
     parser.add_argument("--max-iterations", type=int, default=0)
     parser.add_argument("--fail-on-red", action="store_true")
@@ -335,32 +287,7 @@ def build_execution_plan(args: argparse.Namespace) -> Dict[str, Any]:
 def _dispatch(plan: Dict[str, Any]) -> int:
     implementation_id = str(plan.get("implementation_id") or "").strip()
     argv = [str(x) for x in (plan.get("argv") if isinstance(plan.get("argv"), list) else [])]
-
-    if implementation_id == "m13_live_loop":
-        from scripts.run_m13_live_loop import main as _main
-
-        return int(_main(argv))
-    if implementation_id == "live_session_watch":
-        from scripts.run_live_session_watch import main as _main
-
-        return int(_main(argv))
-    if implementation_id == "mock_exam_day":
-        from scripts.run_mock_exam_day import main as _main
-
-        return int(_main(argv))
-    if implementation_id == "commander_runtime_once":
-        from scripts.run_commander_runtime_once import main as _main
-
-        return int(_main(argv))
-    if implementation_id == "m31_agent_chain_probe":
-        from scripts.run_m31_agent_chain_probe import main as _main
-
-        return int(_main(argv))
-    if implementation_id == "offhours_validation_loop":
-        from scripts.run_offhours_validation_loop import main as _main
-
-        return int(_main(argv))
-    raise SystemExit(f"unsupported implementation_id: {implementation_id}")
+    return dispatch_entry_implementation(implementation_id, argv)
 
 
 def _render_plan_text(plan: Dict[str, Any]) -> str:
@@ -380,7 +307,7 @@ def _render_plan_text(plan: Dict[str, Any]) -> str:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    env_path = _resolve_env_path(argv)
+    env_path = resolve_env_path(ROOT, argv)
     load_env_file(str(env_path))
     parser = _build_parser(env_path)
     args = parser.parse_args(argv)

@@ -111,7 +111,7 @@ def _live_fetch_enabled(state: Dict[str, Any] | None = None) -> bool:
     return bool(runtime_policy.get("live_fetch"))
 
 
-def _fetch_rank_symbols(mode: str, topk: int, *, state: Dict[str, Any] | None = None) -> List[str]:
+def _fetch_rank_rows(mode: str, topk: int, *, state: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     if not _live_fetch_enabled(state):
         return []
     try:
@@ -129,10 +129,38 @@ def _fetch_rank_symbols(mode: str, topk: int, *, state: Dict[str, Any] | None = 
             "change": RankMode.CHANGE_RATE,
         }
         rank_mode = mode_map.get(str(mode or "").strip().lower(), RankMode.VALUE)
-        rows = reader.get_top_symbols(mode=rank_mode, topk=max(1, int(topk)))
-        return _unique_symbols(rows)[: max(1, int(topk))]
+        rows = reader.get_top_rank_rows(mode=rank_mode, topk=max(1, int(topk)))
+        out: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            symbol = _norm_symbol(row.get("symbol") or row.get("stk_cd") or row.get("stkcode") or row.get("stk_code") or row.get("code"))
+            if not symbol or symbol in seen:
+                continue
+            seen.add(symbol)
+            normalized = dict(row)
+            normalized["symbol"] = symbol
+            out.append(normalized)
+        return out[: max(1, int(topk))]
     except Exception:
         return []
+
+
+def _extract_symbols_from_rank_rows(rows: List[Dict[str, Any]]) -> List[str]:
+    out: List[str] = []
+    seen: Set[str] = set()
+    for row in list(rows or []):
+        symbol = _norm_symbol(row.get("symbol")) if isinstance(row, dict) else ""
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        out.append(symbol)
+    return out
+
+
+def _rows_from_symbols(symbols: List[str]) -> List[Dict[str, Any]]:
+    return [{"symbol": sym} for sym in _unique_symbols(symbols)]
 
 
 def get_top_volume_stocks(state: Dict[str, Any], topk: int = 30) -> List[str]:
@@ -142,7 +170,7 @@ def get_top_volume_stocks(state: Dict[str, Any], topk: int = 30) -> List[str]:
     env_rows = _parse_env_symbols("MOCK_TOP_VOLUME_SYMBOLS")
     if env_rows:
         return env_rows[: max(1, int(topk))]
-    return _fetch_rank_symbols("volume", topk=max(1, int(topk)), state=state)
+    return _extract_symbols_from_rank_rows(_fetch_rank_rows("volume", topk=max(1, int(topk)), state=state))
 
 
 def get_top_value_stocks(state: Dict[str, Any], topk: int = 30) -> List[str]:
@@ -152,7 +180,7 @@ def get_top_value_stocks(state: Dict[str, Any], topk: int = 30) -> List[str]:
     env_rows = _parse_env_symbols("MOCK_TOP_VALUE_SYMBOLS")
     if env_rows:
         return env_rows[: max(1, int(topk))]
-    return _fetch_rank_symbols("value", topk=max(1, int(topk)), state=state)
+    return _extract_symbols_from_rank_rows(_fetch_rank_rows("value", topk=max(1, int(topk)), state=state))
 
 
 def get_top_change_rate_stocks(state: Dict[str, Any], topk: int = 30) -> List[str]:
@@ -162,7 +190,37 @@ def get_top_change_rate_stocks(state: Dict[str, Any], topk: int = 30) -> List[st
     env_rows = _parse_env_symbols("MOCK_TOP_CHANGE_SYMBOLS")
     if env_rows:
         return env_rows[: max(1, int(topk))]
-    return _fetch_rank_symbols("change_rate", topk=max(1, int(topk)), state=state)
+    return _extract_symbols_from_rank_rows(_fetch_rank_rows("change_rate", topk=max(1, int(topk)), state=state))
+
+
+def get_top_volume_rows(state: Dict[str, Any], topk: int = 30) -> List[Dict[str, Any]]:
+    injected = _unique_symbols(state.get("mock_top_volume_symbols"))
+    if injected:
+        return _rows_from_symbols(injected[: max(1, int(topk))])
+    env_rows = _parse_env_symbols("MOCK_TOP_VOLUME_SYMBOLS")
+    if env_rows:
+        return _rows_from_symbols(env_rows[: max(1, int(topk))])
+    return _fetch_rank_rows("volume", topk=max(1, int(topk)), state=state)
+
+
+def get_top_value_rows(state: Dict[str, Any], topk: int = 30) -> List[Dict[str, Any]]:
+    injected = _unique_symbols(state.get("mock_top_value_symbols"))
+    if injected:
+        return _rows_from_symbols(injected[: max(1, int(topk))])
+    env_rows = _parse_env_symbols("MOCK_TOP_VALUE_SYMBOLS")
+    if env_rows:
+        return _rows_from_symbols(env_rows[: max(1, int(topk))])
+    return _fetch_rank_rows("value", topk=max(1, int(topk)), state=state)
+
+
+def get_top_change_rate_rows(state: Dict[str, Any], topk: int = 30) -> List[Dict[str, Any]]:
+    injected = _unique_symbols(state.get("mock_top_change_symbols"))
+    if injected:
+        return _rows_from_symbols(injected[: max(1, int(topk))])
+    env_rows = _parse_env_symbols("MOCK_TOP_CHANGE_SYMBOLS")
+    if env_rows:
+        return _rows_from_symbols(env_rows[: max(1, int(topk))])
+    return _fetch_rank_rows("change_rate", topk=max(1, int(topk)), state=state)
 
 
 def get_condition_search_results(state: Dict[str, Any], limit: int = 200) -> List[str]:
@@ -256,14 +314,18 @@ def get_watchlist_candidates(state: Dict[str, Any], limit: int = 200) -> List[st
 def _add_ranked_source(
     rows: Dict[str, Dict[str, Any]],
     *,
-    symbols: List[str],
+    symbols: List[Any],
     source: str,
     weight: float,
     decay: float = 0.02,
 ) -> None:
     w = float(max(0.01, weight))
     d = float(max(0.0, decay))
-    for idx, sym in enumerate(symbols):
+    for idx, item in enumerate(symbols):
+        raw_row = item if isinstance(item, dict) else {}
+        sym = _norm_symbol(raw_row.get("symbol")) if raw_row else _norm_symbol(item)
+        if not sym:
+            continue
         score_add = max(0.05, w - d * float(idx))
         row = rows.setdefault(sym, {"symbol": sym, "score": 0.0, "sources": [], "source_scores": {}})
         row["score"] = float(row.get("score") or 0.0) + score_add
@@ -274,6 +336,35 @@ def _add_ranked_source(
         src_score = row.get("source_scores") if isinstance(row.get("source_scores"), dict) else {}
         src_score[source] = float(src_score.get(source) or 0.0) + score_add
         row["source_scores"] = src_score
+        if raw_row:
+            for key in (
+                "name",
+                "display_name",
+                "issue_name",
+                "symbol_name",
+                "stock_name",
+                "item_name",
+                "security_name",
+                "instrument_name",
+                "kor_name",
+                "hts_kor_isnm",
+                "stk_nm",
+                "isu_nm",
+                "market",
+                "market_type",
+                "market_name",
+                "market_segment",
+                "market_division",
+                "market_category",
+                "exchange",
+                "exchange_name",
+                "board",
+                "board_name",
+                "mkt_tp_nm",
+            ):
+                value = raw_row.get(key)
+                if value not in (None, "") and row.get(key) in (None, ""):
+                    row[key] = value
 
 
 def build_kiwoom_candidate_rows(
@@ -294,9 +385,12 @@ def build_kiwoom_candidate_rows(
     pool_k = max(1, int(top_pool))
     cond_k = max(1, int(condition_limit))
 
-    top_volume = get_top_volume_stocks(state, topk=pool_k) if bool(include_top_volume) else []
-    top_value = get_top_trading_value_stocks(state, topk=pool_k) if bool(include_top_value) else []
-    top_change = get_top_gainers(state, topk=pool_k) if bool(include_change_rate) else []
+    top_volume_rows = get_top_volume_rows(state, topk=pool_k) if bool(include_top_volume) else []
+    top_value_rows = get_top_value_rows(state, topk=pool_k) if bool(include_top_value) else []
+    top_change_rows = get_top_change_rate_rows(state, topk=pool_k) if bool(include_change_rate) else []
+    top_volume = _extract_symbols_from_rank_rows(top_volume_rows)
+    top_value = _extract_symbols_from_rank_rows(top_value_rows)
+    top_change = _extract_symbols_from_rank_rows(top_change_rows)
     baseline_condition_enabled = _is_trueish(os.getenv("KIWOOM_CANDIDATE_ENABLE_CONDITION_SEARCH", "false"))
     condition_meta: Dict[str, Any] = {
         "source": "disabled",
@@ -317,9 +411,9 @@ def build_kiwoom_candidate_rows(
     source_weight_map = dict(source_weights or {})
     rows: Dict[str, Dict[str, Any]] = {}
     if bool(include_top_value) and float(source_weight_map.get("top_value", 2.0)) > 0.0:
-        _add_ranked_source(rows, symbols=top_value, source="top_value", weight=float(source_weight_map.get("top_value", 2.0)), decay=0.02)
+        _add_ranked_source(rows, symbols=top_value_rows or top_value, source="top_value", weight=float(source_weight_map.get("top_value", 2.0)), decay=0.02)
     if bool(include_top_volume) and float(source_weight_map.get("top_volume", 1.7)) > 0.0:
-        _add_ranked_source(rows, symbols=top_volume, source="top_volume", weight=float(source_weight_map.get("top_volume", 1.7)), decay=0.02)
+        _add_ranked_source(rows, symbols=top_volume_rows or top_volume, source="top_volume", weight=float(source_weight_map.get("top_volume", 1.7)), decay=0.02)
     if bool(include_condition_search) and cond_k > 0 and float(source_weight_map.get("condition_search", 2.3)) > 0.0:
         _add_ranked_source(rows, symbols=cond_rows, source="condition_search", weight=float(source_weight_map.get("condition_search", 2.3)), decay=0.01)
     if bool(include_sector_candidates) and float(source_weight_map.get("sector_theme", 1.6)) > 0.0:
@@ -327,7 +421,7 @@ def build_kiwoom_candidate_rows(
     if bool(include_watchlist) and float(source_weight_map.get("operator_watchlist", 0.8)) > 0.0:
         _add_ranked_source(rows, symbols=watch_rows, source="operator_watchlist", weight=float(source_weight_map.get("operator_watchlist", 0.8)), decay=0.01)
     if bool(include_change_rate) and float(source_weight_map.get("top_change_rate", 1.3)) > 0.0:
-        _add_ranked_source(rows, symbols=top_change, source="top_change_rate", weight=float(source_weight_map.get("top_change_rate", 1.3)), decay=0.02)
+        _add_ranked_source(rows, symbols=top_change_rows or top_change, source="top_change_rate", weight=float(source_weight_map.get("top_change_rate", 1.3)), decay=0.02)
 
     out = list(rows.values())
     out.sort(
@@ -354,6 +448,10 @@ def build_kiwoom_candidate_rows(
                 "sources": srcs,
                 "source_scores": dict(row.get("source_scores") or {}),
                 "source_count": len(srcs),
+                "name": str(row.get("name") or row.get("stk_nm") or row.get("isu_nm") or ""),
+                "stk_nm": str(row.get("stk_nm") or ""),
+                "isu_nm": str(row.get("isu_nm") or ""),
+                "mkt_tp_nm": str(row.get("mkt_tp_nm") or ""),
                 "rank_score": float(rank_score),
                 "universe_score": float(universe_score),
                 "trading_value_source_score": _to_float((row.get("source_scores") or {}).get("top_value"), 0.0),

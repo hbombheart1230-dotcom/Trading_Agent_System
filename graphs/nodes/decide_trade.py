@@ -1089,13 +1089,14 @@ def decide_trade(state: dict) -> dict:
         state["strategist"] = strategist
 
     price = market.get("price")
-    cash = portfolio.get("cash", 0)
+    cash = risk.get("capital_available_for_sizing", portfolio.get("cash", 0))
     open_positions = risk.get("open_positions", portfolio.get("open_positions", 0))
 
     features = {
         "symbol": symbol,
         "price": price,
         "cash": cash,
+        "cash_truth_source": risk.get("cash_truth_source", "portfolio.cash"),
         "open_positions": open_positions,
         "daily_pnl_ratio": risk.get("daily_pnl_ratio", 0.0),
     }

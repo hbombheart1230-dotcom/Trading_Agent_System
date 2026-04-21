@@ -29,6 +29,7 @@ from libs.runtime.decision_observability import (
     build_monitor_no_trade_surface,
     build_scanner_monitor_handoff_surface,
 )
+from libs.runtime.monitor_candidate_cascade import build_entry_candidate_cascade_plan
 from libs.runtime.exit_policy import (
     apply_account_pnl_crosscheck_context,
     apply_env_stop_take_fallbacks,
@@ -626,6 +627,21 @@ def _resolve_entry_closeout_window_guard(
 def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, Any]:
     cfg = policy.get("exit_policy") if isinstance(policy.get("exit_policy"), dict) else {}
     out = dict(cfg or {})
+    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
+    applied_exit_cfg = (
+        (((applied_policy.get("monitor") or {}).get("exit")) or {})
+        if isinstance(((applied_policy.get("monitor") or {}).get("exit")), dict)
+        else {}
+    )
+    if isinstance(applied_policy.get("exit_policy"), dict):
+        out.update(dict(applied_policy.get("exit_policy") or {}))
+    applied_exit_policy_overrides = (
+        dict(applied_exit_cfg.get("policy_overrides") or {})
+        if isinstance(applied_exit_cfg.get("policy_overrides"), dict)
+        else {}
+    )
+    if applied_exit_policy_overrides:
+        out.update(applied_exit_policy_overrides)
 
     # Backward-compatible flat policy aliases.
     alias_map = {
@@ -633,6 +649,7 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
         "stop_loss_pct": "stop_loss_pct",
         "take_profit_pct": "take_profit_pct",
         "max_hold_sec": "max_hold_sec",
+        "time_stop_sec": "time_stop_sec",
         "trailing_stop_pct": "trailing_stop_pct",
         "vol_expansion_ratio": "vol_expansion_ratio",
         "news_shock_threshold": "news_shock_threshold",
@@ -640,6 +657,7 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
         "profit_protection_activation_pct": "profit_protection_activation_pct",
         "peak_drawdown_mode": "peak_drawdown_mode",
         "vwap_breakdown_pct": "vwap_breakdown_pct",
+        "vwap_break_requires_profit": "vwap_break_requires_profit",
         "intraday_low_break_pct": "intraday_low_break_pct",
         "trend_strength_floor": "trend_strength_floor",
         "use_eod_flat": "use_eod_flat",
@@ -660,7 +678,6 @@ def _resolve_exit_policy_config(state: Dict[str, Any], policy: Dict[str, Any]) -
     vwap_breakdown_raw = str(os.getenv("EXIT_POLICY_VWAP_BREAKDOWN_PCT", "") or "").strip()
     intraday_low_break_raw = str(os.getenv("EXIT_POLICY_INTRADAY_LOW_BREAK_PCT", "") or "").strip()
     trend_strength_floor_raw = str(os.getenv("EXIT_POLICY_TREND_STRENGTH_FLOOR", "") or "").strip()
-    applied_policy = state.get("applied_policy") if isinstance(state.get("applied_policy"), dict) else {}
     eod_flat_enabled = (
         ((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat") or {}).get("enabled"))
         if isinstance((((applied_policy.get("monitor") or {}).get("exit") or {}).get("eod_flat")), dict)
@@ -1593,6 +1610,11 @@ def _save_current_monitor_state(
 
 
 def _resolve_cash(state: Dict[str, Any]) -> float:
+    risk_context = state.get("risk_context")
+    if isinstance(risk_context, dict):
+        c = _to_float(risk_context.get("capital_available_for_sizing"))
+        if c > 0.0:
+            return c
     snapshot = state.get("portfolio_snapshot")
     if isinstance(snapshot, dict):
         c = _to_float(snapshot.get("cash"))
@@ -2176,6 +2198,15 @@ def _resolve_price_with_source(
             p = _to_float(px)
             if p > 0.0:
                 return p, "market_snapshot"
+
+    minute_rows_by_symbol, minute_meta = extract_minute_ohlcv_by_symbol(state)
+    minute_rows = minute_rows_by_symbol.get(sym) if isinstance(minute_rows_by_symbol, dict) else None
+    if isinstance(minute_rows, list) and minute_rows:
+        latest = minute_rows[-1] if isinstance(minute_rows[-1], dict) else {}
+        close_px = _to_float(latest.get("close"))
+        if close_px > 0.0:
+            source = str((minute_meta or {}).get("source") or "minute_ohlcv_by_symbol").strip() or "minute_ohlcv_by_symbol"
+            return close_px, f"{source}.close"
     return None, "unavailable"
 
 
@@ -2394,6 +2425,217 @@ def _derive_order_lifecycle(order_status: Dict[str, Any] | None) -> Dict[str, An
     }
 
 
+def _evaluate_monitor_entry_candidate(
+    *,
+    state: Dict[str, Any],
+    selected: Dict[str, Any],
+    plan: Dict[str, Any],
+    policy: Dict[str, Any],
+    monitor_policy: Dict[str, Any],
+    strategy_frame: Dict[str, Any],
+    entry_policy_contract: Dict[str, Any],
+    entry_policy_input: Dict[str, Any],
+    entry_policy_origin: str,
+    all_pos_map: Dict[str, Any],
+    open_position_count: int,
+    block_buy_open_position: bool,
+    post_exit_cooldown_sec: int,
+    entry_cooldown_map: Dict[str, Any],
+    now_epoch_for_entry: int,
+) -> Dict[str, Any]:
+    symbol = _norm_symbol(selected.get("symbol"))
+    qty = 1
+    use_position_sizing = _is_trueish(state.get("use_position_sizing")) or _is_trueish(policy.get("use_position_sizing"))
+    if use_position_sizing:
+        px = _resolve_price(state, symbol, selected)
+        cash = _resolve_cash(state)
+        sizing_risk_context = _build_sizing_risk_context(state, selected, symbol)
+        sz = evaluate_position_size(
+            price=px,
+            cash=cash if cash > 0.0 else None,
+            policy=policy.get("position_sizing") if isinstance(policy.get("position_sizing"), dict) else policy,
+            risk_context=sizing_risk_context,
+        )
+        qty = max(0, _to_int(sz.get("qty")))
+        sizing_info: Dict[str, Any] = {
+            "enabled": True,
+            "evaluated": bool(sz.get("evaluated")),
+            "qty": int(qty),
+            "reason": str(sz.get("reason") or ""),
+            "price": sz.get("price"),
+            "cash": sz.get("cash"),
+            "inputs": sz.get("inputs") if isinstance(sz.get("inputs"), dict) else {},
+        }
+    else:
+        sizing_info = {
+            "enabled": False,
+            "evaluated": False,
+            "qty": 1,
+            "reason": "disabled",
+            "price": None,
+            "cash": None,
+            "inputs": {},
+        }
+
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
+    last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
+    closeout_window_guard = _resolve_entry_closeout_window_guard(state, policy)
+    buy_blocked_post_exit_cooldown = False
+    post_exit_cooldown_remaining_sec = 0
+    if (
+        open_position_count <= 0
+        and post_exit_cooldown_sec > 0
+        and last_trade_side == "SELL"
+        and last_trade_epoch > 0
+    ):
+        elapsed = max(0, int(now_epoch_for_entry - last_trade_epoch))
+        remaining = max(0, int(post_exit_cooldown_sec - elapsed))
+        if remaining > 0:
+            buy_blocked_post_exit_cooldown = True
+            post_exit_cooldown_remaining_sec = remaining
+
+    entry_policy = resolve_intraday_entry_policy(entry_policy_input or monitor_policy, frame=strategy_frame)
+    entry_received_policy = MonitorEntryPolicy.from_mapping(entry_policy_input or monitor_policy).to_dict()
+    state = _ensure_monitor_minute_ohlcv_for_symbol(
+        state,
+        symbol=symbol,
+        timeframe_minutes=int(entry_policy.timeframe_minutes or 1),
+        now_epoch=now_epoch_for_entry,
+    )
+    entry_rows = []
+    minute_ohlcv_by_symbol, minute_ohlcv_meta = extract_minute_ohlcv_by_symbol(state)
+    entry_row_source = str((minute_ohlcv_meta or {}).get("source") or "")
+    minute_fetch_meta = (
+        dict(state.get("monitor_minute_ohlcv_fetch") or {})
+        if isinstance(state.get("monitor_minute_ohlcv_fetch"), dict)
+        else {}
+    )
+    entry_scoring_policy = _resolve_monitor_entry_scoring_config(state, policy)
+    if symbol and isinstance(minute_ohlcv_by_symbol.get(symbol), list):
+        entry_rows = list(minute_ohlcv_by_symbol.get(symbol) or [])
+    entry_info = evaluate_intraday_entry_signal(
+        entry_rows,
+        current_price=selected.get("price") if isinstance(selected, dict) else None,
+        features=selected.get("features") if isinstance(selected, dict) and isinstance(selected.get("features"), dict) else {},
+        policy=entry_policy,
+        scoring=entry_scoring_policy,
+        frame=strategy_frame,
+        policy_contract=entry_policy_contract,
+    )
+    entry_info["closeout_window_guard"] = dict(closeout_window_guard)
+    entry_info["minutes_to_close"] = closeout_window_guard.get("minutes_to_close")
+    entry_info["eod_flat_cutoff_min"] = int(closeout_window_guard.get("cutoff_min") or 0)
+    entry_info["closeout_window_active"] = bool(closeout_window_guard.get("active"))
+    entry_info["symbol"] = symbol
+    entry_info["selected_symbol"] = symbol
+    entry_info["applied_policy"] = dict(entry_info.get("applied_policy") or entry_info.get("thresholds") or entry_policy.to_dict())
+    entry_applied_policy = dict(entry_info.get("applied_policy") or {})
+    effective_policy_trace = _build_monitor_effective_policy_trace(
+        received_policy=entry_received_policy,
+        effective_policy=entry_applied_policy,
+        frame=strategy_frame,
+        received_policy_source=entry_policy_origin,
+    )
+    entry_info["received_policy"] = dict(effective_policy_trace.get("received_policy") or {})
+    entry_info["received_policy_source"] = str(effective_policy_trace.get("received_policy_source") or "")
+    entry_info["policy_contract"] = dict(entry_policy_contract)
+    entry_info["effective_policy"] = dict(effective_policy_trace.get("effective_policy") or {})
+    entry_info["effective_policy_source"] = str(effective_policy_trace.get("effective_policy_source") or "")
+    entry_info["effective_policy_source_chain"] = list(effective_policy_trace.get("effective_policy_source_chain") or [])
+    entry_info["policy_adjustments"] = dict(effective_policy_trace.get("policy_adjustments") or {})
+    entry_info["policy_adjustment_summary"] = str(effective_policy_trace.get("policy_adjustment_summary") or "")
+    entry_info["policy_adjustment_reasoning"] = str(effective_policy_trace.get("policy_adjustment_reasoning") or "")
+    entry_info["effective_policy_deltas"] = list(effective_policy_trace.get("effective_policy_deltas") or [])
+    entry_metrics = entry_info.get("metrics") if isinstance(entry_info.get("metrics"), dict) else {}
+    entry_metrics["minute_source_present"] = bool(entry_rows)
+    entry_metrics["minute_source_used"] = entry_row_source or ""
+    latest_candle_ts = None
+    if entry_rows and isinstance(entry_rows[-1], dict):
+        latest_candle_ts = entry_rows[-1].get("ts")
+    entry_metrics["latest_candle_ts"] = latest_candle_ts
+    entry_metrics["minute_snapshot_age_minutes"] = minute_fetch_meta.get("minute_snapshot_age_minutes")
+    entry_metrics["minute_snapshot_was_stale"] = bool(minute_fetch_meta.get("minute_snapshot_was_stale"))
+    entry_metrics["minute_refetch_attempted"] = bool(minute_fetch_meta.get("minute_refetch_attempted"))
+    entry_metrics["minute_refetch_succeeded"] = bool(minute_fetch_meta.get("minute_refetch_succeeded"))
+    entry_metrics["minute_refetch_reason"] = str(minute_fetch_meta.get("minute_refetch_reason") or "")
+    entry_metrics["minute_refetch_trigger_reason"] = str(minute_fetch_meta.get("minute_refetch_trigger_reason") or "")
+    entry_metrics["minute_refetch_failure_reason"] = str(minute_fetch_meta.get("minute_refetch_failure_reason") or "")
+    entry_metrics["minute_refetch_failure_detail"] = str(minute_fetch_meta.get("minute_refetch_failure_detail") or "")
+    entry_metrics["minute_refetch_runner_source"] = str(minute_fetch_meta.get("minute_refetch_runner_source") or "")
+    entry_metrics["minute_refetch_produced_fresh_snapshot"] = bool(
+        minute_fetch_meta.get("minute_refetch_produced_fresh_snapshot")
+    )
+    entry_info["metrics"] = entry_metrics
+    entry_info["minute_source_meta"] = dict(minute_ohlcv_meta or {})
+    entry_info["minute_fetch_meta"] = minute_fetch_meta
+    entry_info["scoring_mode"] = str(entry_info.get("scoring_mode") or "disabled")
+    entry_intent_cooldown_sec = max(0, _to_int((entry_info.get("thresholds") or {}).get("intent_cooldown_sec")))
+    cooldown_until = max(0, _to_int(entry_cooldown_map.get(symbol)))
+    if cooldown_until > 0 and cooldown_until <= now_epoch_for_entry:
+        entry_cooldown_map.pop(symbol, None)
+        cooldown_until = 0
+    if max(0, _to_int((all_pos_map.get(symbol) or {}).get("qty"))) > 0:
+        entry_cooldown_map.pop(symbol, None)
+        cooldown_until = 0
+    entry_info["intent_cooldown_sec"] = int(entry_intent_cooldown_sec)
+    entry_info["intent_cooldown_until"] = int(cooldown_until) if cooldown_until > 0 else None
+
+    entry_guard_blocked = False
+    entry_guard_reason = ""
+    buy_blocked_open_position = False
+    buy_blocked_closeout_window = False
+    if bool(block_buy_open_position) and open_position_count > 0:
+        entry_guard_blocked = True
+        entry_guard_reason = "buy_blocked_open_position"
+        buy_blocked_open_position = True
+    elif bool(closeout_window_guard.get("active")):
+        entry_guard_blocked = True
+        entry_guard_reason = "buy_blocked_closeout_window"
+        buy_blocked_closeout_window = True
+    elif buy_blocked_post_exit_cooldown:
+        entry_guard_blocked = True
+        entry_guard_reason = "post_exit_cooldown"
+    elif entry_intent_cooldown_sec > 0 and cooldown_until > now_epoch_for_entry:
+        entry_guard_blocked = True
+        entry_guard_reason = f"entry_guard_cooldown:{max(0, cooldown_until - now_epoch_for_entry)}s_remaining"
+
+    entry_info["guard_blocked"] = bool(entry_guard_blocked)
+    entry_info["guard_reason"] = str(entry_guard_reason)
+    entry_info["legacy_fallback_used"] = False
+    entry_info["decision"] = "WAIT"
+    entry_info["cascade_candidate"] = str(plan.get("cascade_candidate") or "")
+
+    if symbol and qty > 0 and not entry_guard_blocked and bool(entry_info.get("triggered")):
+        entry_info["intent_submitted"] = True
+        if entry_intent_cooldown_sec > 0:
+            entry_cooldown_map[symbol] = int(now_epoch_for_entry + entry_intent_cooldown_sec)
+            entry_info["intent_cooldown_until"] = int(now_epoch_for_entry + entry_intent_cooldown_sec)
+        entry_info["decision"] = "BUY"
+    else:
+        entry_info["intent_submitted"] = False
+
+    return {
+        "state": state,
+        "selected": selected,
+        "symbol": symbol,
+        "qty": int(qty),
+        "sizing_info": sizing_info,
+        "entry_info": entry_info,
+        "entry_guard_blocked": bool(entry_guard_blocked),
+        "entry_guard_reason": str(entry_guard_reason),
+        "buy_blocked_open_position": bool(buy_blocked_open_position),
+        "buy_blocked_post_exit_cooldown": bool(buy_blocked_post_exit_cooldown),
+        "buy_blocked_closeout_window": bool(buy_blocked_closeout_window),
+        "post_exit_cooldown_remaining_sec": int(post_exit_cooldown_remaining_sec),
+        "entry_received_policy": entry_received_policy,
+        "entry_applied_policy": entry_applied_policy,
+        "effective_policy_trace": effective_policy_trace,
+        "entry_cooldown_map": entry_cooldown_map,
+        "entry_signal_detected": bool(entry_info.get("triggered")),
+    }
+
+
 def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Graph node: Monitor.
 
@@ -2578,172 +2820,127 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "cash": None,
         "inputs": {},
     }
+    scanner_selected_snapshot = dict(selected) if isinstance(selected, dict) else {}
+    entry_candidate_cascade: Dict[str, Any] = {
+        "attempted": False,
+        "eligible": False,
+        "reason": "",
+        "top_pick_symbol": "",
+        "runner_up_symbols": [],
+        "skipped": [],
+        "fallback_used": False,
+        "fallback_to_symbol": "",
+        "fallback_trace": [],
+    }
     if isinstance(selected, dict) and selected.get("symbol"):
-        symbol = _norm_symbol(selected.get("symbol"))
-        qty = 1
-        use_position_sizing = _is_trueish(state.get("use_position_sizing")) or _is_trueish(policy.get("use_position_sizing"))
-        if use_position_sizing:
-            px = _resolve_price(state, symbol, selected)
-            cash = _resolve_cash(state)
-            sizing_risk_context = _build_sizing_risk_context(state, selected, symbol)
-            sz = evaluate_position_size(
-                price=px,
-                cash=cash if cash > 0.0 else None,
-                policy=policy.get("position_sizing") if isinstance(policy.get("position_sizing"), dict) else policy,
-                risk_context=sizing_risk_context,
-            )
-            qty = max(0, _to_int(sz.get("qty")))
-            sizing_info = {
-                "enabled": True,
-                "evaluated": bool(sz.get("evaluated")),
-                "qty": int(qty),
-                "reason": str(sz.get("reason") or ""),
-                "price": sz.get("price"),
-                "cash": sz.get("cash"),
-                "inputs": sz.get("inputs") if isinstance(sz.get("inputs"), dict) else {},
-            }
-        else:
-            sizing_info = {
-                "enabled": False,
-                "evaluated": False,
-                "qty": 1,
-                "reason": "disabled",
-                "price": None,
-                "cash": None,
-                "inputs": {},
-            }
-
-        persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
-        last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
-        last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
-        closeout_window_guard = _resolve_entry_closeout_window_guard(state, policy)
-        if (
-            open_position_count <= 0
-            and post_exit_cooldown_sec > 0
-            and last_trade_side == "SELL"
-            and last_trade_epoch > 0
-        ):
-            elapsed = max(0, int(now_epoch_for_entry - last_trade_epoch))
-            remaining = max(0, int(post_exit_cooldown_sec - elapsed))
-            if remaining > 0:
-                buy_blocked_post_exit_cooldown = True
-                post_exit_cooldown_remaining_sec = remaining
-
-        entry_policy = resolve_intraday_entry_policy(entry_policy_input or monitor_policy, frame=strategy_frame)
-        entry_received_policy = MonitorEntryPolicy.from_mapping(entry_policy_input or monitor_policy).to_dict()
-        state = _ensure_monitor_minute_ohlcv_for_symbol(
-            state,
-            symbol=symbol,
-            timeframe_minutes=int(entry_policy.timeframe_minutes or 1),
-            now_epoch=now_epoch_for_entry,
+        top_pick_result = _evaluate_monitor_entry_candidate(
+            state=state,
+            selected=dict(selected),
+            plan=plan,
+            policy=policy,
+            monitor_policy=monitor_policy,
+            strategy_frame=strategy_frame,
+            entry_policy_contract=entry_policy_contract,
+            entry_policy_input=entry_policy_input,
+            entry_policy_origin=entry_policy_origin,
+            all_pos_map=all_pos_map,
+            open_position_count=open_position_count,
+            block_buy_open_position=block_buy_open_position,
+            post_exit_cooldown_sec=post_exit_cooldown_sec,
+            entry_cooldown_map=entry_cooldown_map,
+            now_epoch_for_entry=now_epoch_for_entry,
         )
-        entry_rows = []
-        minute_ohlcv_by_symbol, minute_ohlcv_meta = extract_minute_ohlcv_by_symbol(state)
-        entry_row_source = str((minute_ohlcv_meta or {}).get("source") or "")
-        minute_fetch_meta = (
-            dict(state.get("monitor_minute_ohlcv_fetch") or {})
-            if isinstance(state.get("monitor_minute_ohlcv_fetch"), dict)
-            else {}
-        )
-        entry_scoring_policy = _resolve_monitor_entry_scoring_config(state, policy)
-        if symbol and isinstance(minute_ohlcv_by_symbol.get(symbol), list):
-            entry_rows = list(minute_ohlcv_by_symbol.get(symbol) or [])
-        entry_info = evaluate_intraday_entry_signal(
-            entry_rows,
-            current_price=selected.get("price") if isinstance(selected, dict) else None,
-            features=selected.get("features") if isinstance(selected, dict) and isinstance(selected.get("features"), dict) else {},
-            policy=entry_policy,
-            scoring=entry_scoring_policy,
-            frame=strategy_frame,
-            policy_contract=entry_policy_contract,
-        )
-        entry_info["closeout_window_guard"] = dict(closeout_window_guard)
-        entry_info["minutes_to_close"] = closeout_window_guard.get("minutes_to_close")
-        entry_info["eod_flat_cutoff_min"] = int(closeout_window_guard.get("cutoff_min") or 0)
-        entry_info["closeout_window_active"] = bool(closeout_window_guard.get("active"))
-        entry_info["symbol"] = symbol
-        entry_info["selected_symbol"] = symbol
-        entry_info["applied_policy"] = dict(entry_info.get("applied_policy") or entry_info.get("thresholds") or entry_policy.to_dict())
-        entry_applied_policy = dict(entry_info.get("applied_policy") or {})
-        effective_policy_trace = _build_monitor_effective_policy_trace(
-            received_policy=entry_received_policy,
-            effective_policy=entry_applied_policy,
-            frame=strategy_frame,
-            received_policy_source=entry_policy_origin,
-        )
-        entry_info["received_policy"] = dict(effective_policy_trace.get("received_policy") or {})
-        entry_info["received_policy_source"] = str(effective_policy_trace.get("received_policy_source") or "")
-        entry_info["policy_contract"] = dict(entry_policy_contract)
-        entry_info["effective_policy"] = dict(effective_policy_trace.get("effective_policy") or {})
-        entry_info["effective_policy_source"] = str(effective_policy_trace.get("effective_policy_source") or "")
-        entry_info["effective_policy_source_chain"] = list(effective_policy_trace.get("effective_policy_source_chain") or [])
-        entry_info["policy_adjustments"] = dict(effective_policy_trace.get("policy_adjustments") or {})
-        entry_info["policy_adjustment_summary"] = str(effective_policy_trace.get("policy_adjustment_summary") or "")
-        entry_info["policy_adjustment_reasoning"] = str(effective_policy_trace.get("policy_adjustment_reasoning") or "")
-        entry_info["effective_policy_deltas"] = list(effective_policy_trace.get("effective_policy_deltas") or [])
-        entry_metrics = entry_info.get("metrics") if isinstance(entry_info.get("metrics"), dict) else {}
-        entry_metrics["minute_source_present"] = bool(entry_rows)
-        entry_metrics["minute_source_used"] = entry_row_source or ""
-        latest_candle_ts = None
-        if entry_rows and isinstance(entry_rows[-1], dict):
-            latest_candle_ts = entry_rows[-1].get("ts")
-        entry_metrics["latest_candle_ts"] = latest_candle_ts
-        entry_metrics["minute_snapshot_age_minutes"] = minute_fetch_meta.get("minute_snapshot_age_minutes")
-        entry_metrics["minute_snapshot_was_stale"] = bool(minute_fetch_meta.get("minute_snapshot_was_stale"))
-        entry_metrics["minute_refetch_attempted"] = bool(minute_fetch_meta.get("minute_refetch_attempted"))
-        entry_metrics["minute_refetch_succeeded"] = bool(minute_fetch_meta.get("minute_refetch_succeeded"))
-        entry_metrics["minute_refetch_reason"] = str(minute_fetch_meta.get("minute_refetch_reason") or "")
-        entry_metrics["minute_refetch_trigger_reason"] = str(minute_fetch_meta.get("minute_refetch_trigger_reason") or "")
-        entry_metrics["minute_refetch_failure_reason"] = str(minute_fetch_meta.get("minute_refetch_failure_reason") or "")
-        entry_metrics["minute_refetch_failure_detail"] = str(minute_fetch_meta.get("minute_refetch_failure_detail") or "")
-        entry_metrics["minute_refetch_runner_source"] = str(minute_fetch_meta.get("minute_refetch_runner_source") or "")
-        entry_metrics["minute_refetch_produced_fresh_snapshot"] = bool(
-            minute_fetch_meta.get("minute_refetch_produced_fresh_snapshot")
-        )
-        entry_info["metrics"] = entry_metrics
-        entry_info["minute_source_meta"] = dict(minute_ohlcv_meta or {})
-        entry_info["minute_fetch_meta"] = minute_fetch_meta
-        entry_info["scoring_mode"] = str(entry_info.get("scoring_mode") or "disabled")
-        entry_signal_detected = bool(entry_info.get("triggered"))
-        entry_intent_cooldown_sec = max(0, _to_int((entry_info.get("thresholds") or {}).get("intent_cooldown_sec")))
-        cooldown_until = max(0, _to_int(entry_cooldown_map.get(symbol)))
-        if cooldown_until > 0 and cooldown_until <= now_epoch_for_entry:
-            entry_cooldown_map.pop(symbol, None)
-            cooldown_until = 0
-        if max(0, _to_int((all_pos_map.get(symbol) or {}).get("qty"))) > 0:
-            entry_cooldown_map.pop(symbol, None)
-            cooldown_until = 0
-        entry_info["intent_cooldown_sec"] = int(entry_intent_cooldown_sec)
-        entry_info["intent_cooldown_until"] = int(cooldown_until) if cooldown_until > 0 else None
+        state = top_pick_result.get("state") if isinstance(top_pick_result.get("state"), dict) else state
+        selected = dict(top_pick_result.get("selected") or selected)
+        sizing_info = dict(top_pick_result.get("sizing_info") or sizing_info)
+        entry_info = dict(top_pick_result.get("entry_info") or entry_info)
+        entry_guard_blocked = bool(top_pick_result.get("entry_guard_blocked"))
+        entry_guard_reason = str(top_pick_result.get("entry_guard_reason") or "")
+        buy_blocked_open_position = bool(top_pick_result.get("buy_blocked_open_position"))
+        buy_blocked_post_exit_cooldown = bool(top_pick_result.get("buy_blocked_post_exit_cooldown"))
+        buy_blocked_closeout_window = bool(top_pick_result.get("buy_blocked_closeout_window"))
+        post_exit_cooldown_remaining_sec = int(top_pick_result.get("post_exit_cooldown_remaining_sec") or 0)
+        entry_received_policy = dict(top_pick_result.get("entry_received_policy") or {})
+        entry_applied_policy = dict(top_pick_result.get("entry_applied_policy") or {})
+        effective_policy_trace = dict(top_pick_result.get("effective_policy_trace") or {})
+        entry_cooldown_map = dict(top_pick_result.get("entry_cooldown_map") or entry_cooldown_map)
+        entry_signal_detected = bool(top_pick_result.get("entry_signal_detected"))
+        symbol = str(top_pick_result.get("symbol") or "")
+        qty = int(top_pick_result.get("qty") or 0)
 
-        if bool(block_buy_open_position) and open_position_count > 0:
-            entry_guard_blocked = True
-            entry_guard_reason = "buy_blocked_open_position"
-            buy_blocked_open_position = True
-        elif bool(closeout_window_guard.get("active")):
-            entry_guard_blocked = True
-            entry_guard_reason = "buy_blocked_closeout_window"
-            buy_blocked_closeout_window = True
-        elif buy_blocked_post_exit_cooldown:
-            entry_guard_blocked = True
-            entry_guard_reason = "post_exit_cooldown"
-        elif entry_intent_cooldown_sec > 0 and cooldown_until > now_epoch_for_entry:
-            entry_guard_blocked = True
-            entry_guard_reason = f"entry_guard_cooldown:{max(0, cooldown_until - now_epoch_for_entry)}s_remaining"
+        cascade_plan = build_entry_candidate_cascade_plan(
+            selected_symbol=symbol,
+            ranked_candidates=[row for row in list(state.get("ranked_candidates") or []) if isinstance(row, dict)],
+            scanner_output=state.get("scanner_output") if isinstance(state.get("scanner_output"), dict) else {},
+            open_position_count=open_position_count,
+            entry_guard_blocked=entry_guard_blocked,
+            entry_triggered=bool(entry_info.get("triggered")),
+            entry_reason=str(entry_info.get("reason") or ""),
+        )
+        entry_candidate_cascade.update(dict(cascade_plan))
+        fallback_trace = list(entry_candidate_cascade.get("fallback_trace") or [])
+        if bool(cascade_plan.get("attempted")):
+            for runner_row in list(cascade_plan.get("runner_rows") or []):
+                if not isinstance(runner_row, dict):
+                    continue
+                runner_symbol = _norm_symbol(runner_row.get("symbol"))
+                if not runner_symbol:
+                    continue
+                runner_selected = _monitor_selected_snapshot_for_symbol(state, runner_symbol, dict(runner_row))
+                runner_result = _evaluate_monitor_entry_candidate(
+                    state=state,
+                    selected=runner_selected,
+                    plan=plan,
+                    policy=policy,
+                    monitor_policy=monitor_policy,
+                    strategy_frame=strategy_frame,
+                    entry_policy_contract=entry_policy_contract,
+                    entry_policy_input=entry_policy_input,
+                    entry_policy_origin=entry_policy_origin,
+                    all_pos_map=all_pos_map,
+                    open_position_count=open_position_count,
+                    block_buy_open_position=block_buy_open_position,
+                    post_exit_cooldown_sec=post_exit_cooldown_sec,
+                    entry_cooldown_map=entry_cooldown_map,
+                    now_epoch_for_entry=now_epoch_for_entry,
+                )
+                state = runner_result.get("state") if isinstance(runner_result.get("state"), dict) else state
+                entry_cooldown_map = dict(runner_result.get("entry_cooldown_map") or entry_cooldown_map)
+                runner_entry = dict(runner_result.get("entry_info") or {})
+                fallback_trace.append(
+                    {
+                        "symbol": runner_symbol,
+                        "triggered": bool(runner_entry.get("triggered")),
+                        "reason": str(runner_entry.get("reason") or ""),
+                        "guard_blocked": bool(runner_result.get("entry_guard_blocked")),
+                    }
+                )
+                if not bool(runner_entry.get("intent_submitted")):
+                    continue
+                entry_candidate_cascade["fallback_used"] = True
+                entry_candidate_cascade["fallback_to_symbol"] = runner_symbol
+                entry_candidate_cascade["fallback_from_symbol"] = symbol
+                selected = dict(runner_result.get("selected") or runner_selected)
+                sizing_info = dict(runner_result.get("sizing_info") or sizing_info)
+                entry_info = runner_entry
+                entry_guard_blocked = bool(runner_result.get("entry_guard_blocked"))
+                entry_guard_reason = str(runner_result.get("entry_guard_reason") or "")
+                buy_blocked_open_position = bool(runner_result.get("buy_blocked_open_position"))
+                buy_blocked_post_exit_cooldown = bool(runner_result.get("buy_blocked_post_exit_cooldown"))
+                buy_blocked_closeout_window = bool(runner_result.get("buy_blocked_closeout_window"))
+                post_exit_cooldown_remaining_sec = int(runner_result.get("post_exit_cooldown_remaining_sec") or 0)
+                entry_received_policy = dict(runner_result.get("entry_received_policy") or {})
+                entry_applied_policy = dict(runner_result.get("entry_applied_policy") or {})
+                effective_policy_trace = dict(runner_result.get("effective_policy_trace") or {})
+                entry_signal_detected = bool(runner_result.get("entry_signal_detected"))
+                symbol = str(runner_result.get("symbol") or runner_symbol)
+                qty = int(runner_result.get("qty") or 0)
+                entry_info["fallback_from_symbol"] = entry_candidate_cascade.get("fallback_from_symbol")
+                entry_info["fallback_to_symbol"] = runner_symbol
+                break
+        entry_candidate_cascade["fallback_trace"] = fallback_trace
 
-        entry_info["guard_blocked"] = bool(entry_guard_blocked)
-        entry_info["guard_reason"] = str(entry_guard_reason)
-        entry_info["legacy_fallback_used"] = False
-
-        if not symbol:
-            intents = []
-        elif qty <= 0:
-            intents = []
-        elif entry_guard_blocked:
-            intents = []
-        elif not bool(entry_info.get("triggered")):
-            intents = []
-        else:
+        if symbol and qty > 0 and not entry_guard_blocked and bool(entry_info.get("intent_submitted")):
             intent = {
                 "symbol": symbol,
                 "side": "BUY",
@@ -2780,6 +2977,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "legacy_entry_decision": str(entry_info.get("legacy_entry_decision") or "WAIT"),
                         "scoring_entry_decision": str(entry_info.get("scoring_entry_decision") or "WAIT"),
                     },
+                    "entry_candidate_cascade": dict(entry_candidate_cascade),
                 },
             }
             if bool(sizing_info.get("enabled")):
@@ -2791,14 +2989,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 }
             if post_exit_cooldown_sec > 0:
                 intent["meta"]["post_exit_cooldown_sec"] = int(post_exit_cooldown_sec)
-            if entry_intent_cooldown_sec > 0:
-                intent["meta"]["entry_intent_cooldown_sec"] = int(entry_intent_cooldown_sec)
+            if int(entry_info.get("intent_cooldown_sec") or 0) > 0:
+                intent["meta"]["entry_intent_cooldown_sec"] = int(entry_info.get("intent_cooldown_sec") or 0)
             intents = [intent]
-            entry_info["intent_submitted"] = True
-            if entry_intent_cooldown_sec > 0:
-                entry_cooldown_map[symbol] = int(now_epoch_for_entry + entry_intent_cooldown_sec)
-                entry_info["intent_cooldown_until"] = int(now_epoch_for_entry + entry_intent_cooldown_sec)
-        entry_info["decision"] = "BUY" if bool(entry_info.get("intent_submitted")) else "WAIT"
+        else:
+            intents = []
     if bool(intents) and block_buy_open_position and open_position_count > 0:
         intents = []
         buy_blocked_open_position = True
@@ -2806,6 +3001,11 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         entry_info["guard_reason"] = "buy_blocked_open_position"
         entry_info["decision"] = "WAIT"
     state["_monitor_entry_cooldown_until"] = entry_cooldown_map
+    if isinstance(selected, dict) and selected.get("symbol"):
+        state["selected"] = dict(selected)
+    if isinstance(scanner_selected_snapshot, dict) and scanner_selected_snapshot:
+        state["scanner_selected_snapshot"] = dict(scanner_selected_snapshot)
+    state["monitor_entry_cascade"] = dict(entry_candidate_cascade)
 
     # Optional M29-2 exit policy (default disabled for backward compatibility).
     use_exit_policy = _resolve_use_exit_policy(state, policy)
@@ -3353,6 +3553,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_legacy_fallback_used": bool(entry_info.get("legacy_fallback_used")),
         "entry_intent_cooldown_sec": int(entry_info.get("intent_cooldown_sec") or 0),
         "entry_intent_cooldown_until": entry_info.get("intent_cooldown_until"),
+        "entry_candidate_cascade": dict(entry_candidate_cascade),
     }
     state["monitor_output"] = {
         "selected_symbol": (selected.get("symbol") if isinstance(selected, dict) else None),
@@ -3381,6 +3582,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 )
             )
         ),
+        "entry_candidate_cascade": dict(entry_candidate_cascade),
     }
     state["monitor_entry"] = dict(entry_info)
     state["monitor_exit"] = exit_info
@@ -3615,13 +3817,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         commander_no_trade_reason_code=commander_decision.get("no_trade_reason_code"),
     )
     scanner_monitor_handoff = build_scanner_monitor_handoff_surface(
-        selected=selected if isinstance(selected, dict) else {},
+        selected=scanner_selected_snapshot if isinstance(scanner_selected_snapshot, dict) else {},
         ranked_candidates=[row for row in list(state.get("ranked_candidates") or []) if isinstance(row, dict)],
         scanner_output=state.get("scanner_output") if isinstance(state.get("scanner_output"), dict) else {},
         final_decision=final_entry_decision,
         no_trade_surface=monitor_no_trade_surface,
         entry_info=entry_info,
     )
+    scanner_monitor_handoff["monitor_selected_symbol"] = str((selected or {}).get("symbol") or "")
+    scanner_monitor_handoff["entry_candidate_cascade"] = dict(entry_candidate_cascade)
     state["monitor_no_trade_surface"] = dict(monitor_no_trade_surface)
     state["scanner_monitor_handoff"] = dict(scanner_monitor_handoff)
     entry_blocker_surface = build_entry_blocker_surface(

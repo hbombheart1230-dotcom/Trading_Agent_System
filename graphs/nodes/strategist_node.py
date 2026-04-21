@@ -37,6 +37,10 @@ from libs.research.evidence_ledger import (
 from libs.research.strategy_feedback_builder import build_recent_strategy_feedback
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.decision_observability import build_strategist_policy_resolution_surface
+from libs.runtime.strategist_packet_visibility import (
+    build_strategist_memory_packet_visibility,
+    summarize_read_model_facts,
+)
 from libs.runtime.monitor_policy import (
     MonitorEntryPolicy,
     build_monitor_entry_policy_bundle,
@@ -52,6 +56,7 @@ from libs.strategies.candidates.market_rank import MarketRankCandidateGenerator
 from libs.strategies.candidates.market_rank import TopPicksCandidateGenerator
 from libs.strategies.universe_builder import build_candidate_universe
 from libs.reporting.trade_read_model import build_trade_read_model
+from libs.reporting.reporter_feedback import build_strategist_feedback_packet
 from libs.reporting.symbol_read_model import build_symbol_read_model
 
 
@@ -628,15 +633,48 @@ def _infer_policy_adjustment_direction(
     return "none"
 
 
+def _symbol_memory_model_has_signal(model: Dict[str, Any]) -> bool:
+    if not isinstance(model, dict) or not model:
+        return False
+    if int(model.get("trade_count") or 0) > 0:
+        return True
+    if int(model.get("closed_trade_count") or 0) > 0:
+        return True
+    if list(model.get("repeated_failure_pattern") or []):
+        return True
+    if list(model.get("recent_success_pattern") or []):
+        return True
+    if str(model.get("dominant_playbook") or "").strip().lower() not in ("", "unknown"):
+        return True
+    if str(model.get("dominant_monitor_blocker") or "").strip().lower() not in ("", "unknown"):
+        return True
+    if str(model.get("dominant_exit_reason") or "").strip().lower() not in ("", "unknown"):
+        return True
+    return False
+
+
 def _build_symbol_refresh_memory_excerpt(
     selected_symbol: str,
     read_model_facts: Dict[str, Any] | None = None,
+    reports_root: str | Path | None = None,
 ) -> Dict[str, Any]:
     symbol = str(selected_symbol or "").strip().upper()
     facts = dict(read_model_facts or {}) if isinstance(read_model_facts, dict) else {}
     symbol_patterns = facts.get("symbol_patterns") if isinstance(facts.get("symbol_patterns"), dict) else {}
     model = dict(symbol_patterns.get(symbol) or {}) if isinstance(symbol_patterns.get(symbol), dict) else {}
-    if not symbol or not model:
+    if not symbol:
+        return {}
+    if not _symbol_memory_model_has_signal(model):
+        root = Path(str(reports_root or "").strip()) if str(reports_root or "").strip() else None
+        if root is not None:
+            trades_root = root / "trades" if root.name.lower() != "trades" else root
+            try:
+                persisted_model = build_symbol_read_model(str(trades_root), symbol, persisted_only=True)
+            except TypeError:
+                persisted_model = build_symbol_read_model(str(trades_root), symbol)
+            if isinstance(persisted_model, dict) and _symbol_memory_model_has_signal(persisted_model):
+                model = dict(persisted_model)
+    if not _symbol_memory_model_has_signal(model):
         return {}
 
     repeated_failure_pattern = []
@@ -688,6 +726,7 @@ def _build_symbol_refresh_memory_excerpt(
 def _build_llm_commander_refresh_context(
     commander_context: Dict[str, Any],
     read_model_facts: Dict[str, Any] | None = None,
+    reports_root: str | Path | None = None,
 ) -> Dict[str, Any]:
     context = dict(commander_context or {}) if isinstance(commander_context, dict) else {}
     open_position_refresh_context = (
@@ -712,6 +751,18 @@ def _build_llm_commander_refresh_context(
         "active_exit_axis": str(open_position_refresh_context.get("active_exit_axis") or ""),
         "refresh_summary": str(open_position_refresh_context.get("refresh_summary") or ""),
         "entry_state": dict(open_position_refresh_context.get("entry_state") or {}),
+        "carry_state": str(open_position_refresh_context.get("carry_state") or context.get("carry_state") or ""),
+        "carry_risk_bias": str(
+            open_position_refresh_context.get("carry_risk_bias") or context.get("carry_risk_bias") or ""
+        ),
+        "carry_risk_reason": str(
+            open_position_refresh_context.get("carry_risk_reason") or context.get("carry_risk_reason") or ""
+        ),
+        "session_open_recovery_assessment": dict(
+            open_position_refresh_context.get("session_open_recovery_assessment")
+            or context.get("session_open_recovery_assessment")
+            or {}
+        ),
         "prior_monitor_entry_policy_summary": dict(
             strategist_refresh_context.get("prior_monitor_entry_policy_summary") or {}
         )
@@ -723,7 +774,11 @@ def _build_llm_commander_refresh_context(
         if isinstance(strategist_refresh_context.get("current_monitor_entry_policy_summary"), dict)
         else {},
         "requires_policy_delta": bool(context.get("strategist_refresh_requested")),
-        "selected_symbol_memory": _build_symbol_refresh_memory_excerpt(selected_symbol, read_model_facts),
+        "selected_symbol_memory": _build_symbol_refresh_memory_excerpt(
+            selected_symbol,
+            read_model_facts,
+            reports_root,
+        ),
     }
 
 
@@ -1193,6 +1248,26 @@ def _compact_recent_strategy_feedback_for_llm(feedback: Any) -> Dict[str, Any]:
 
 
 def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]) -> Dict[str, Any]:
+    def _load_source_packet() -> Dict[str, Any]:
+        src = state.get("strategist_feedback_packet")
+        if not isinstance(src, dict):
+            src = state.get("reporter_feedback_packet")
+        if isinstance(src, dict) and src:
+            return dict(src)
+
+        reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+        day = str(policy.get("reporter_feedback_day") or state.get("day") or _resolve_state_day(state)).strip()
+        try:
+            packet = build_strategist_feedback_packet(
+                mode="strategist_feedback",
+                payload={"day": day},
+                reports_root=reports_root,
+                day=day,
+            )
+        except Exception:
+            return {}
+        return dict(packet or {})
+
     def _normalize_mode(value: Any) -> str:
         mode = str(value or "").strip().lower()
         return mode if mode in {"auto", "enabled", "disabled"} else "auto"
@@ -1275,11 +1350,7 @@ def _load_reporter_feedback_packet(state: Dict[str, Any], policy: Dict[str, Any]
             gate_reason="mode_disabled",
         )
 
-    src = state.get("strategist_feedback_packet")
-    if not isinstance(src, dict):
-        src = state.get("reporter_feedback_packet")
-    if not isinstance(src, dict):
-        src = {}
+    src = _load_source_packet()
     if not src:
         return _empty_feedback_packet(
             mode=feedback_mode,
@@ -3709,6 +3780,7 @@ def _build_strategic_answers(
     recent_strategy_feedback: Dict[str, Any],
     strategy_memory: Dict[str, Any],
     read_model_facts: Dict[str, Any],
+    reports_root: str | Path | None = None,
 ) -> Dict[str, Any]:
     open_position_refresh_context = (
         dict(commander_context.get("open_position_refresh_context") or {})
@@ -3754,6 +3826,18 @@ def _build_strategic_answers(
             "active_exit_axis": str(open_position_refresh_context.get("active_exit_axis") or ""),
             "refresh_summary": str(open_position_refresh_context.get("refresh_summary") or ""),
             "entry_state": dict(open_position_refresh_context.get("entry_state") or {}),
+            "carry_state": str(open_position_refresh_context.get("carry_state") or commander_context.get("carry_state") or ""),
+            "carry_risk_bias": str(
+                open_position_refresh_context.get("carry_risk_bias") or commander_context.get("carry_risk_bias") or ""
+            ),
+            "carry_risk_reason": str(
+                open_position_refresh_context.get("carry_risk_reason") or commander_context.get("carry_risk_reason") or ""
+            ),
+            "session_open_recovery_assessment": dict(
+                open_position_refresh_context.get("session_open_recovery_assessment")
+                or commander_context.get("session_open_recovery_assessment")
+                or {}
+            ),
             "prior_monitor_entry_policy_summary": dict(
                 (commander_context.get("strategist_refresh_context") or {}).get("prior_monitor_entry_policy_summary") or {}
             )
@@ -3767,6 +3851,7 @@ def _build_strategic_answers(
             "selected_symbol_memory": _build_symbol_refresh_memory_excerpt(
                 str(open_position_refresh_context.get("selected_symbol") or ""),
                 read_model_facts,
+                reports_root,
             ),
         },
         "scanner_bias": scanner_bias,
@@ -4321,11 +4406,14 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         recent_strategy_feedback.get("suggested_report_focus"),
         limit=8,
     )
+    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
     read_model_facts = _load_deterministic_read_models(state, candidate_symbols)
+    read_model_facts_summary = summarize_read_model_facts(read_model_facts)
     
     state["recent_strategy_feedback"] = dict(recent_strategy_feedback)
     state["reporter_feedback_packet"] = dict(reporter_feedback_packet)
     state["strategy_memory"] = dict(strategy_memory_advisory)
+    state["read_model_facts_summary"] = dict(read_model_facts_summary)
     pre_llm_commander_context = _build_commander_context_summary(
         commander_decision=state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {},
         runtime_phase=str(state.get("runtime_phase") or "session"),
@@ -4343,7 +4431,11 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "macro_stress_overlay_hint": dict(macro_stress_overlay),
         "market_regime_hint": market_regime,
         "market_sentiment_hint": market_sentiment,
-        "commander_refresh_context": _build_llm_commander_refresh_context(pre_llm_commander_context, read_model_facts),
+        "commander_refresh_context": _build_llm_commander_refresh_context(
+            pre_llm_commander_context,
+            read_model_facts,
+            reports_root,
+        ),
         "read_model_facts": dict(read_model_facts),
         "market_structure_hint": market_structure,
         "playbook_hint": playbook,
@@ -4605,6 +4697,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         recent_strategy_feedback=recent_strategy_feedback,
         strategy_memory=strategy_memory_advisory,
         read_model_facts=dict(read_model_facts),
+        reports_root=reports_root,
     )
     strategist_plan = _build_strategist_plan(
         commander_context=commander_context,
@@ -4847,6 +4940,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["commander_open_position_refresh_context"] = dict(
         commander_context.get("open_position_refresh_context") or {}
     )
+    strategist_output["read_model_facts_summary"] = dict(read_model_facts_summary)
     strategist_output["selected_symbol_memory"] = dict(
         ((strategic_answers.get("q15_commander_refresh_context") or {}).get("selected_symbol_memory") or {})
     )
@@ -4864,6 +4958,10 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["llm_call_trace"] = dict(llm_meta.get("llm_call_trace") or {})
     strategist_output["runtime_theme_map_keys"] = sorted(list((state.get("theme_map") or {}).keys()))
     strategist_output["runtime_sector_map_keys"] = sorted(list((state.get("sector_map") or {}).keys()))
+    strategist_output["memory_packet_visibility"] = build_strategist_memory_packet_visibility(
+        state=state,
+        strategist_output=strategist_output,
+    )
     state["strategist_output"] = strategist_output
     state["strategist_blocked"] = bool(strategist_llm_blocked)
     state["strategist_blocked_reason"] = str(strategist_llm_block_reason or "")
@@ -5090,6 +5188,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "recent_playbook_performance": dict(strategy_memory_advisory.get("playbook_performance_snapshot") or {}),
             "news_query_targets": list(news_query_targets)[:6],
             "news_query_reasoning": news_query_reasoning,
+            "memory_packet_visibility": dict(strategist_output.get("memory_packet_visibility") or {}),
             "llm_frame_status": str(llm_meta.get("status") or "disabled"),
             "llm_frame_applied": bool(llm_overrides),
             "llm_frame_model": str(llm_meta.get("model") or ""),
@@ -5142,6 +5241,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "recent_playbook_performance": dict(strategy_memory_advisory.get("playbook_performance_snapshot") or {}),
             "news_query_targets": list(news_query_targets)[:6],
             "news_query_reasoning": news_query_reasoning,
+            "memory_packet_visibility": dict(strategist_output.get("memory_packet_visibility") or {}),
             "regime_score": float(regime_score),
             "sentiment_score": float(sentiment_score),
             "key_events": list(key_events)[:3],
@@ -5195,6 +5295,7 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "recent_success_patterns": list(strategy_memory_advisory.get("recent_success_patterns") or [])[:3],
                     "recent_playbook_performance": dict(strategy_memory_advisory.get("playbook_performance_snapshot") or {}),
                 },
+                "memory_packet_visibility": dict(strategist_output.get("memory_packet_visibility") or {}),
                 "news_query_targets": list(news_query_targets),
                 "news_query_reasoning": news_query_reasoning,
                 "candidate_symbols": list(state.get("candidate_symbols") or []),

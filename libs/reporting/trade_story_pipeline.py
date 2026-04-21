@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List
 
 from libs.reporting.reasoning_trace import (
@@ -16,6 +18,9 @@ from libs.reporting.strategy_read_model import (
 )
 from libs.reporting.trade_read_model import normalize_trade_report_section
 from libs.reporting.trade_report_ai import resolve_shared_trade_facts
+from libs.reporting.trade_scanner_fallback_anchor import (
+    reanchor_scanner_selection_for_monitor_fallback,
+)
 from libs.core.symbols import normalize_symbol
 
 
@@ -172,6 +177,79 @@ def _derive_evidence_provenance(bundle_out: Dict[str, Any]) -> Dict[str, Any]:
             evidence["reporter"] = "direct_artifact"
 
     return evidence
+
+
+def _safe_read_json_file(path_value: Any) -> Dict[str, Any]:
+    path_text = str(path_value or "").strip()
+    if not path_text:
+        return {}
+    try:
+        path = Path(path_text)
+        if not path.exists() or not path.is_file():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _hydrate_canonical_agent_artifacts(
+    bundle_out: Dict[str, Any],
+    canonical_agent_artifacts: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    hydrated = dict(canonical_agent_artifacts or {})
+    artifacts = bundle_out.get("artifacts") if isinstance(bundle_out.get("artifacts"), dict) else {}
+    for agent in ("commander", "strategist", "scanner", "monitor", "supervisor", "executor"):
+        if isinstance(hydrated.get(agent), dict) and hydrated.get(agent):
+            continue
+        path_key = f"canonical_{agent}_json"
+        payload = _safe_read_json_file(artifacts.get(path_key))
+        if payload:
+            hydrated[agent] = payload
+            hydrated[path_key] = str(artifacts.get(path_key) or "")
+    return hydrated
+
+
+def _resolve_selection_monitor_artifact(
+    bundle_out: Dict[str, Any],
+    canonical_agent_artifacts: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    hydrated = dict(canonical_agent_artifacts or {})
+    monitor_payload = (
+        hydrated.get("monitor")
+        if isinstance(hydrated.get("monitor"), dict)
+        else bundle_out.get("monitor")
+        if isinstance(bundle_out.get("monitor"), dict)
+        else {}
+    )
+    scanner_path = str(
+        hydrated.get("canonical_scanner_json")
+        or ((bundle_out.get("artifacts") or {}).get("canonical_scanner_json"))
+        or ""
+    ).strip()
+    if scanner_path:
+        sibling_monitor = _safe_read_json_file(Path(scanner_path).with_name("monitor.json"))
+        sibling_handoff = sibling_monitor.get("scanner_monitor_handoff") if isinstance(sibling_monitor.get("scanner_monitor_handoff"), dict) else {}
+        sibling_cascade = sibling_handoff.get("entry_candidate_cascade") if isinstance(sibling_handoff.get("entry_candidate_cascade"), dict) else {}
+        if (
+            sibling_handoff.get("scanner_selected_symbol")
+            or sibling_handoff.get("monitor_selected_symbol")
+            or sibling_cascade.get("attempted")
+            or sibling_cascade.get("fallback_used")
+        ):
+            return sibling_monitor
+
+    handoff = monitor_payload.get("scanner_monitor_handoff") if isinstance(monitor_payload.get("scanner_monitor_handoff"), dict) else {}
+    cascade = handoff.get("entry_candidate_cascade") if isinstance(handoff.get("entry_candidate_cascade"), dict) else {}
+    if (
+        handoff.get("scanner_selected_symbol")
+        or handoff.get("monitor_selected_symbol")
+        or cascade.get("attempted")
+        or cascade.get("fallback_used")
+    ):
+        return dict(monitor_payload)
+
+    return dict(monitor_payload)
 
 
 def _headline_text(row: Any) -> str:
@@ -2979,6 +3057,22 @@ def build_trade_story_input_from_bundle(
     return story_input
 
 
+def _compact_canonical_monitor(canonical_monitor: Dict[str, Any] | None) -> Dict[str, Any]:
+    monitor = canonical_monitor if isinstance(canonical_monitor, dict) else {}
+    compact = {
+        "decision_action": monitor.get("decision_action"),
+        "exit_reason": monitor.get("exit_reason"),
+        "current_price": monitor.get("current_price"),
+        "avg_price": monitor.get("avg_price"),
+        "account_pnl_ratio": monitor.get("account_pnl_ratio"),
+        "effective_pnl_ratio": monitor.get("effective_pnl_ratio"),
+        "price_source": monitor.get("price_source"),
+    }
+    if any(value not in (None, "", [], {}) for value in compact.values()):
+        return compact
+    return {}
+
+
 def build_trade_story_input(
     bundle_out: Dict[str, Any],
     *,
@@ -2986,7 +3080,10 @@ def build_trade_story_input(
 ) -> Dict[str, Any]:
     story_contract = bundle_out.get("story_contract") if isinstance(bundle_out.get("story_contract"), dict) else {}
     section_provenance = build_section_provenance(bundle_out)
-    canonical_agent_artifacts = dict(bundle_out.get("canonical_agent_artifacts") or {})
+    canonical_agent_artifacts = _hydrate_canonical_agent_artifacts(
+        bundle_out,
+        dict(bundle_out.get("canonical_agent_artifacts") or {}),
+    )
     evidence_provenance = _derive_evidence_provenance(bundle_out)
     # Reporting layers prefer the canonical reasoning snapshot when it is already
     # mirrored into bundle inputs; otherwise they derive a compatible mirror.
@@ -3007,7 +3104,12 @@ def build_trade_story_input(
         exit_ctx = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
         summary = lifecycle.get("summary") if isinstance(lifecycle.get("summary"), dict) else {}
         reporter = lifecycle.get("reporter") if isinstance(lifecycle.get("reporter"), dict) else {}
-        symbol = str(lifecycle.get("symbol") or (bundle_out.get("execution") or {}).get("symbol") or "")
+        symbol = str(
+            lifecycle.get("symbol")
+            or bundle_out.get("symbol")
+            or (bundle_out.get("execution") or {}).get("symbol")
+            or ""
+        )
         authoritative_status = str(bundle_out.get("trade_lifecycle_status") or lifecycle.get("status") or "open").strip() or "open"
         status = authoritative_status
         entry_action = str(entry.get("action") or (bundle_out.get("execution") or {}).get("action") or "BUY")
@@ -3101,22 +3203,21 @@ def build_trade_story_input(
             if isinstance(bundle_out.get("monitor"), dict)
             else {}
         )
-        selected_symbol = str(
-            scanner_reason_human.get("selected_symbol")
-            or (entry.get("scanner_context") or {}).get("selected_symbol")
-            or canonical_scanner.get("selected_symbol")
-            or canonical_scanner.get("top_stock")
-            or (bundle_out.get("scanner_summary") or {}).get("selected_symbol")
-            or symbol
-            or ""
-        ).strip()
+        selection_monitor = _resolve_selection_monitor_artifact(bundle_out, canonical_agent_artifacts)
+        scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
+        scanner_reason_human, scanner_selection_trace, selected_symbol = reanchor_scanner_selection_for_monitor_fallback(
+            scanner_reason_human=scanner_reason_human,
+            scanner_selection_trace=scanner_selection_trace,
+            scanner_artifact=canonical_scanner,
+            monitor_artifact=selection_monitor,
+            trade_symbol=symbol or str((bundle_out.get("execution") or {}).get("symbol") or ""),
+        )
         strategist_evidence_trace = _build_strategist_evidence_trace(
             canonical_strategist,
             selected_symbol=selected_symbol,
             fallback_market_titles=market_context_human.get("market_news_titles"),
             fallback_candidate_titles=market_context_human.get("candidate_news_titles"),
         )
-        scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
         _attach_news_scanner_contribution(
             scanner_reason_human=scanner_reason_human,
             scanner_selection_trace=scanner_selection_trace,
@@ -3337,6 +3438,7 @@ def build_trade_story_input(
             },
             "market_context_human": market_context_human,
             "scanner_reason_human": scanner_reason_human,
+            "canonical_monitor": _compact_canonical_monitor(canonical_monitor),
             "filters_human": filters_human,
             "monitor_reason_human": monitor_reason_human,
             "guard_reason_human": guard_reason_human,
@@ -3514,21 +3616,21 @@ def build_trade_story_input(
         if isinstance(bundle_out.get("monitor"), dict)
         else {}
     )
-    selected_symbol = str(
-        scanner_reason_human.get("selected_symbol")
-        or canonical_scanner.get("selected_symbol")
-        or canonical_scanner.get("top_stock")
-        or (bundle_out.get("scanner_summary") or {}).get("selected_symbol")
-        or ((bundle_out.get("execution") or {}).get("symbol"))
-        or ""
-    ).strip()
+    selection_monitor = _resolve_selection_monitor_artifact(bundle_out, canonical_agent_artifacts)
+    scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
+    scanner_reason_human, scanner_selection_trace, selected_symbol = reanchor_scanner_selection_for_monitor_fallback(
+        scanner_reason_human=scanner_reason_human,
+        scanner_selection_trace=scanner_selection_trace,
+        scanner_artifact=canonical_scanner,
+        monitor_artifact=selection_monitor,
+        trade_symbol=str((bundle_out.get("execution") or {}).get("symbol") or bundle_out.get("symbol") or ""),
+    )
     strategist_evidence_trace = _build_strategist_evidence_trace(
         canonical_strategist,
         selected_symbol=selected_symbol,
         fallback_market_titles=market_context_human.get("market_news_titles"),
         fallback_candidate_titles=market_context_human.get("candidate_news_titles"),
     )
-    scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
     _attach_news_scanner_contribution(
         scanner_reason_human=scanner_reason_human,
         scanner_selection_trace=scanner_selection_trace,
@@ -3616,6 +3718,7 @@ def build_trade_story_input(
         "execution_mode_label": str(story_contract.get("execution_mode_label") or ""),
         "market_context_human": market_context_human,
         "scanner_reason_human": scanner_reason_human,
+        "canonical_monitor": _compact_canonical_monitor(canonical_monitor),
         "filters_human": filters_human,
         "monitor_reason_human": monitor_reason_human,
         "guard_reason_human": dict(bundle_out.get("guard_reason_human") or {}),

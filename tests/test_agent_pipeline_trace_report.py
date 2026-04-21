@@ -99,6 +99,65 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
                     "monitor_guidance": "hold_through_noise",
                     "risk_tone": "normal",
                     "news_query_reasoning": "risk-on context added leader/risk-appetite market queries; theme hints expanded queries from semiconductor, AI",
+                    "memory_packet_visibility": {
+                        "read_model_facts": {
+                            "present": True,
+                            "recent_trade_count": 5,
+                            "symbol_pattern_count": 2,
+                            "symbols": ["005930", "000660"],
+                            "daily_summary_present": False,
+                        },
+                        "recent_strategy_feedback": {
+                            "present": True,
+                            "status": "ok",
+                            "feedback_window_size": 12,
+                            "strength_count": 1,
+                            "weakness_count": 2,
+                            "suggested_report_focus_count": 2,
+                            "advisory_only": True,
+                        },
+                        "reporter_feedback_packet": {
+                            "present": True,
+                            "available": False,
+                            "status": "auto_ignored",
+                            "consumed": False,
+                            "confidence": "none",
+                            "recommendation_count": 1,
+                        },
+                        "strategy_memory": {
+                            "present": True,
+                            "status": "empty",
+                            "best_playbook_count": 0,
+                            "worst_playbook_count": 1,
+                            "recent_failure_count": 1,
+                            "recent_success_pattern_count": 0,
+                            "reporter_analysis_digest_present": False,
+                        },
+                        "selected_symbol_memory": {
+                            "present": False,
+                            "empty_state": True,
+                            "symbol": "356680",
+                            "trade_count": 0,
+                            "closed_trade_count": 0,
+                            "win_rate": None,
+                            "dominant_playbook": "",
+                            "dominant_monitor_blocker": "",
+                        },
+                        "commander_refresh_context": {
+                            "present": True,
+                            "requested": True,
+                            "reason": "selected_symbol_refresh",
+                            "refresh_scope": "selected_symbol_review",
+                            "selected_symbol": "356680",
+                            "hold_repeat_count_max": 3,
+                            "selected_hold_repeat_count": 1,
+                            "requires_policy_delta": True,
+                            "carry_state": "",
+                            "carry_risk_bias": "",
+                            "carry_risk_reason": "",
+                            "session_open_recovery_evaluated": False,
+                        },
+                    },
                 },
             },
             {
@@ -409,6 +468,9 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert out["strategist"]["candidate_symbols_hint"] == ["005930", "000660"]
     assert out["strategist"]["strategy_adjustment_directives"]["entry_policy_action"]["action"] == "rebalance"
     assert out["strategist"]["strategy_adjustment_directives"]["monitor_focus_action"]["target_axes"] == ["volume", "extension"]
+    assert out["strategist"]["memory_packet_visibility"]["read_model_facts"]["recent_trade_count"] == 5
+    assert out["strategist"]["memory_packet_visibility"]["selected_symbol_memory"]["empty_state"] is True
+    assert out["strategist"]["memory_packet_visibility"]["commander_refresh_context"]["selected_symbol"] == "356680"
     assert out["news_symbol_linkage"]["selected_symbol"] == "005930"
     assert out["news_symbol_linkage"]["runner_up_symbol"] == "000660"
     assert out["news_symbol_linkage"]["selected_symbol_in_candidate_hints"] is True
@@ -482,6 +544,7 @@ def test_agent_pipeline_trace_report_builds_all_agent_sections(tmp_path: Path, c
     assert "scanner_source_policy:" in md_body
     assert "strategy_adjustment_directives:" in md_body
     assert "strategy_adjustment_summary:" in md_body
+    assert "memory_packet_visibility:" in md_body
     assert "## Scanner" in md_body
     assert "condition_search: status=unavailable" in md_body
     assert "## Monitor" in md_body

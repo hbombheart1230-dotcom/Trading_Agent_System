@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List
+import json
 
 import pytest
 
@@ -618,8 +619,55 @@ def test_strategist_reporter_feedback_mode_enabled_consumes_advisory_only(monkey
     assert trace_payload.get("reporter_feedback_mode") == "enabled"
     assert trace_payload.get("reporter_feedback_mode_source") == "commander_applied_policy"
     assert trace_payload.get("reporter_feedback_gate_reason") == "mode_enabled"
-    assert trace_payload.get("reporter_feedback_consumed") is True
-    assert trace_payload.get("reporter_feedback_confidence") == "medium"
+
+
+def test_strategist_reporter_feedback_falls_back_to_metrics_when_state_packet_missing(monkeypatch, tmp_path):
+    reports_root = tmp_path / "reports"
+    day = "2026-03-20"
+    metrics_dir = reports_root / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    (metrics_dir / f"metrics_{day}.json").write_text(
+        json.dumps(
+            {
+                "day": day,
+                "route_selected_total": {"monitor_only": 12, "cached_strategist": 5, "full_cycle": 3},
+                "strategist_fallback_total": 5,
+                "route_source": "canonical_commander_preferred",
+                "route_source_run_count": 20,
+                "route_source_missing_count": 0,
+                "route_source_breakdown": {"canonical_commander": 20},
+                "dominant_blocker_total": {"rebound_ok": 6, "reclaim_gate_ok": 4},
+                "data_freshness": {
+                    "generated_at": "2026-03-20T09:10:00+00:00",
+                    "source_run_count": 20,
+                    "latest_run_id": "report-bundle",
+                    "latest_run_ts": "2026-03-20T09:09:00+00:00",
+                    "freshness_status": "fresh",
+                    "stale": False,
+                    "stale_reason": "aligned_with_source_window",
+                    "source_window_summary": "runs=20",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "false")
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["reports_root"] = str(reports_root)
+    state["day"] = day
+
+    out = strategist_node(state)
+
+    reporter_feedback = out.get("reporter_feedback_packet") or {}
+    assert reporter_feedback.get("available") is True
+    assert reporter_feedback.get("status") == "ok"
+    assert reporter_feedback.get("consumed") is True
+    assert reporter_feedback.get("feedback_gate_reason") == "auto_accepted"
+    assert (reporter_feedback.get("route_analysis") or {}).get("monitor_only_ratio") == 0.6
 
 
 def test_strategist_reporter_feedback_mode_auto_consumes_fresh_relevant_packet(monkeypatch):
@@ -663,6 +711,11 @@ def test_strategist_reporter_feedback_mode_auto_consumes_fresh_relevant_packet(m
     assert reporter_feedback.get("reporter_feedback_mode_source") == "commander_applied_policy"
     assert reporter_feedback.get("consumed") is True
     assert reporter_feedback.get("feedback_gate_reason") == "auto_accepted"
+    trace_rows = [r for r in logger.rows if r.get("stage") == "decision_trace" and r.get("event") == "strategic_frame"]
+    assert len(trace_rows) == 1
+    trace_payload = ((trace_rows[0].get("payload") or {}).get("payload") or {})
+    assert trace_payload.get("reporter_feedback_consumed") is True
+    assert trace_payload.get("reporter_feedback_confidence") == "high"
 
 
 def test_strategist_reporter_feedback_mode_auto_ignores_stale_packet(monkeypatch):
@@ -993,6 +1046,72 @@ def test_strategist_llm_payload_includes_commander_refresh_context(monkeypatch):
     assert commander_refresh_context["selected_symbol"] == "000660"
     assert commander_refresh_context["monitor_reason"] == "too_extended_from_vwap"
     assert commander_refresh_context["requires_policy_delta"] is True
+    assert commander_refresh_context["selected_symbol_memory"]["symbol"] == "000660"
+    assert commander_refresh_context["selected_symbol_memory"]["dominant_playbook"] == "pullback"
+    assert commander_refresh_context["selected_symbol_memory"]["dominant_monitor_blocker"] == "below_vwap_reclaim_not_ready"
+
+
+def test_strategist_refresh_uses_persisted_selected_symbol_memory_when_not_in_read_model_facts(monkeypatch):
+    captured = {}
+
+    def fake_run_strategist_frame_llm(*, state, policy, payload):
+        captured["payload"] = dict(payload or {})
+        return ({}, {"status": "disabled", "attempts": 0, "repair_used": False, "reason": "test_capture"})
+
+    monkeypatch.setenv("DRY_RUN", "1")
+    monkeypatch.setattr("graphs.nodes.strategist_node._run_strategist_frame_llm", fake_run_strategist_frame_llm)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["candidate_symbols"] = ["005930"]
+    state["commander_decision"] = {
+        "market_regime": "neutral",
+        "session_bias": "position_management",
+        "risk_mode": "balanced",
+        "command_intent": "REFRESH_STRATEGY_FRAME",
+        "strategist_invocation": "RUN_REFRESH",
+        "llm_policy": "allow_context_refresh",
+        "strategist_refresh_requested": True,
+        "strategist_refresh_reason": "selected_symbol_refresh",
+        "open_position_refresh_context": {
+            "refresh_scope": "open_position_monitor_refresh",
+            "selected_symbol": "000660",
+            "monitor_reason": "below_vwap_reclaim_not_ready",
+            "refresh_summary": "Selected symbol refresh for 000660.",
+            "entry_state": {"current_blocking_axis": "reclaim_readiness"},
+        },
+    }
+    state["reports_root"] = "reports"
+
+    def fake_build_symbol_read_model(trades_root, symbol, persisted_only=False):
+        if symbol == "000660":
+            return {
+                "symbol": "000660",
+                "trade_count": 11,
+                "closed_trade_count": 9,
+                "win_rate": 0.5555,
+                "avg_pnl_pct": 0.0123,
+                "avg_hold_duration_sec": 420.0,
+                "dominant_playbook": "pullback",
+                "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
+                "dominant_exit_reason": "peak_drawdown",
+                "repeated_failure_pattern": [
+                    {"type": "blocker", "value": "below_vwap_reclaim_not_ready", "count": 3},
+                ],
+                "recent_success_pattern": [
+                    {"playbook": "pullback", "entry_reason": "pullback_ok", "exit_reason": "take_profit", "count": 2},
+                ],
+                "data_quality": {"data_source": "symbol_memory", "unknown_fields_ratio": 0.0},
+            }
+        return {}
+
+    monkeypatch.setattr("graphs.nodes.strategist_node.build_symbol_read_model", fake_build_symbol_read_model)
+
+    strategist_node(state)
+
+    llm_payload = dict(captured.get("payload") or {})
+    commander_refresh_context = dict(llm_payload.get("commander_refresh_context") or {})
+    assert commander_refresh_context["selected_symbol"] == "000660"
     assert commander_refresh_context["selected_symbol_memory"]["symbol"] == "000660"
     assert commander_refresh_context["selected_symbol_memory"]["dominant_playbook"] == "pullback"
     assert commander_refresh_context["selected_symbol_memory"]["dominant_monitor_blocker"] == "below_vwap_reclaim_not_ready"

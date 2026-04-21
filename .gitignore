@@ -4,7 +4,12 @@
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 .pytest-work/
+.pytest-work*/
+pytest-work*/
+data/.pytest*/
+data/pytest-cache-files-*/
 
 # Logs
 logs/

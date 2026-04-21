@@ -316,6 +316,7 @@ def build_execution_details(
     bundle_obj = dict(bundle or {})
     context_obj = dict(context or {})
     execution = bundle_obj.get("execution") if isinstance(bundle_obj.get("execution"), dict) else {}
+    bundle_execution_details = bundle_obj.get("execution_details") if isinstance(bundle_obj.get("execution_details"), dict) else {}
     executor = bundle_obj.get("executor") if isinstance(bundle_obj.get("executor"), dict) else {}
     executor_broker_result = executor.get("broker_result") if isinstance(executor.get("broker_result"), dict) else {}
     order_request = executor.get("order_request_summary") if isinstance(executor.get("order_request_summary"), dict) else {}
@@ -323,19 +324,47 @@ def build_execution_details(
     if not monitor_context and isinstance(bundle_obj.get("monitor"), dict):
         monitor_context = dict(bundle_obj.get("monitor") or {})
     execution_context = context_obj.get("execution_context") if isinstance(context_obj.get("execution_context"), dict) else {}
+    context_execution_details = context_obj.get("execution_details") if isinstance(context_obj.get("execution_details"), dict) else {}
+    broker_order_status = (
+        execution_context.get("broker_order_status")
+        if isinstance(execution_context.get("broker_order_status"), dict)
+        else {}
+    )
+    broker_day_pnl = (
+        execution_context.get("broker_day_pnl")
+        if isinstance(execution_context.get("broker_day_pnl"), dict)
+        else {}
+    )
+    broker_truth_error = _null_if_empty(execution_context.get("broker_order_status_error"))
+    broker_day_truth_error = _null_if_empty(execution_context.get("broker_day_pnl_error"))
+    broker_truth_attempted = bool(
+        context_obj.get("broker_fill_lookup_enabled")
+        or broker_order_status
+        or broker_truth_error
+    )
+    broker_day_truth_attempted = bool(
+        context_obj.get("broker_day_truth_lookup_enabled")
+        or broker_day_pnl
+        or broker_day_truth_error
+    )
 
     merged = merge_execution_snapshot_candidates(
         [
             execution,
+            bundle_execution_details,
             executor_broker_result,
             executor,
             order_request,
+            broker_order_status,
+            context_execution_details,
             execution_context,
         ]
     )
 
     order_status = _null_if_empty(
-        merged.get("fill_status")
+        broker_order_status.get("status")
+        or broker_order_status.get("fill_status")
+        or merged.get("fill_status")
         or execution.get("status")
         or executor_broker_result.get("status")
         or executor.get("broker_message")
@@ -362,12 +391,15 @@ def build_execution_details(
         or execution_context.get("broker_env")
     )
     filled_qty = _null_if_empty(
-        merged.get("filled_qty")
+        broker_order_status.get("filled_qty") if broker_order_status.get("filled_qty") not in (None, "") else (
+            merged.get("filled_qty")
         if merged.get("filled_qty") not in (None, "")
         else order_request.get("qty")
+        )
     )
     avg_price = _null_if_empty(
-        _safe_float(merged.get("filled_price"), None)
+        _safe_float(broker_order_status.get("filled_price"), None) if broker_order_status.get("filled_price") not in (None, "") else (
+            _safe_float(merged.get("filled_price"), None)
         if merged.get("filled_price") not in (None, "")
         else _safe_float(context_obj.get("price"), None)
         if context_obj.get("price") not in (None, "")
@@ -376,6 +408,20 @@ def build_execution_details(
         else _safe_float(monitor_context.get("avg_price"), None)
         if monitor_context.get("avg_price") not in (None, "")
         else _safe_float(monitor_context.get("current_price"), None)
+        )
+    )
+    broker_day_authoritative = bool(broker_day_pnl.get("authoritative"))
+    broker_realized_pnl = _null_if_empty(
+        broker_day_pnl.get("realized_pnl") if broker_day_authoritative else None
+    )
+    broker_realized_pnl_pct = _null_if_empty(
+        broker_day_pnl.get("pnl_ratio") if broker_day_authoritative else None
+    )
+    broker_fee = _null_if_empty(
+        broker_day_pnl.get("fee") if broker_day_authoritative else None
+    )
+    broker_tax = _null_if_empty(
+        broker_day_pnl.get("tax") if broker_day_authoritative else None
     )
 
     return {
@@ -385,14 +431,38 @@ def build_execution_details(
         "broker_env": broker_env,
         "filled_qty": filled_qty,
         "avg_price": avg_price,
-        "fill_status": _null_if_empty(merged.get("fill_status")),
-        "filled_price": _null_if_empty(merged.get("filled_price")),
+        "fill_status": _null_if_empty(
+            broker_order_status.get("fill_status")
+            or broker_order_status.get("status")
+            or merged.get("fill_status")
+        ),
+        "filled_price": _null_if_empty(
+            broker_order_status.get("filled_price")
+            if broker_order_status.get("filled_price") not in (None, "")
+            else merged.get("filled_price")
+        ),
+        "broker_realized_pnl": broker_realized_pnl,
+        "broker_realized_pnl_pct": broker_realized_pnl_pct,
+        "broker_fee": broker_fee,
+        "broker_tax": broker_tax,
+        "pnl_truth_source": _null_if_empty(
+            broker_day_pnl.get("source") if broker_day_authoritative else None
+        ),
+        "broker_day_truth_source": _null_if_empty(broker_day_pnl.get("source")),
+        "broker_day_match_mode": _null_if_empty(broker_day_pnl.get("match_mode")),
+        "broker_day_row_count": _null_if_empty(broker_day_pnl.get("row_count")),
+        "broker_day_authoritative": broker_day_authoritative,
         "best_bid": _null_if_empty(merged.get("best_bid")),
         "best_ask": _null_if_empty(merged.get("best_ask")),
         "spread_bps": _null_if_empty(merged.get("spread_bps")),
         "quote_snapshot": dict(merged.get("quote_snapshot") or {}) if isinstance(merged.get("quote_snapshot"), dict) else {},
         "run_id": _null_if_empty(merged.get("run_id")),
         "ts": _null_if_empty(merged.get("ts")),
+        "broker_truth_source": "kiwoom.order_status" if broker_order_status else None,
+        "broker_truth_attempted": broker_truth_attempted,
+        "broker_truth_error": broker_truth_error,
+        "broker_day_truth_attempted": broker_day_truth_attempted,
+        "broker_day_truth_error": broker_day_truth_error,
         "quality_score": int(merged.get("quality_score") or 0),
         "degraded_but_usable": bool(merged.get("degraded_but_usable")),
         "merge_sources": list(merged.get("merge_sources") or []),

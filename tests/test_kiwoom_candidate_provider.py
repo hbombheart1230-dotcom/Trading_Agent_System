@@ -381,3 +381,34 @@ def test_market_rank_candidate_generator_uses_reader_topk_signature(monkeypatch)
     assert out == ["111111", "222222"]
     assert calls["topk"] == 2
     assert calls["mode"] == "change_rate"
+
+
+def test_build_kiwoom_candidate_rows_preserves_rank_row_name_metadata(monkeypatch):
+    from libs.strategies.candidates import kiwoom_candidate_provider as provider
+
+    monkeypatch.setattr(provider, "_live_fetch_enabled", lambda state=None: True)
+    monkeypatch.setattr(
+        provider,
+        "_fetch_rank_rows",
+        lambda mode, topk, state=None: [
+            {"symbol": "233740", "stk_nm": "KODEX 코스닥150레버리지", "mkt_tp_nm": "ETF"},
+            {"symbol": "005930", "stk_nm": "삼성전자", "mkt_tp_nm": "코스피"},
+        ] if mode == "value" else [],
+    )
+
+    rows, _meta = build_kiwoom_candidate_rows(
+        state={},
+        top_pool=5,
+        condition_limit=10,
+        include_top_value=True,
+        include_top_volume=False,
+        include_change_rate=False,
+        include_condition_search=False,
+        include_sector_candidates=False,
+        include_watchlist=False,
+    )
+
+    by_symbol = {str(row.get("symbol") or ""): row for row in rows}
+    assert by_symbol["233740"]["name"] == "KODEX 코스닥150레버리지"
+    assert by_symbol["233740"]["stk_nm"] == "KODEX 코스닥150레버리지"
+    assert by_symbol["233740"]["mkt_tp_nm"] == "ETF"

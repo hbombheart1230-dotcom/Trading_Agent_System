@@ -878,7 +878,7 @@ def test_existing_live_loop_step_prefers_lock_owner_and_dedupes_runtime_chain(tm
         },
     ]
 
-    monkeypatch.setattr(mod, "_query_live_loop_processes", lambda root, lock: rows)
+    monkeypatch.setattr(mod, "query_live_loop_processes", lambda root, lock: rows)
 
     step = mod._existing_live_loop_step({"root": str(tmp_path), "lock_path": str(lock_path)})
     assert step["step_id"] == "session.live_loop_existing"
@@ -909,7 +909,7 @@ def test_existing_live_loop_step_falls_back_to_leaf_when_lock_owner_missing(tmp_
             "command_line": r"python scripts/run_session.py --mode live --phase intraday",
         },
     ]
-    monkeypatch.setattr(mod, "_query_live_loop_processes", lambda root, lock: rows)
+    monkeypatch.setattr(mod, "query_live_loop_processes", lambda root, lock: rows)
 
     step = mod._existing_live_loop_step({"root": str(tmp_path), "lock_path": str(lock_path)})
     assert step["pid"] == 47000

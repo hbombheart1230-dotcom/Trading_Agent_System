@@ -35,6 +35,7 @@ from libs.reporting.trade_report_runtime_policy import (
     resolve_trade_report_policy,
     seed_diagnostics_for_policy,
 )
+from libs.reporting.trade_regeneration_truth import rehydrate_lifecycle_bundle_execution_truth
 from libs.reporting.trade_story_pipeline import build_trade_story_input_from_bundle, render_bundle_markdown
 
 
@@ -406,10 +407,36 @@ def _load_story_input(trade_dir: Path) -> tuple[Dict[str, Any], str]:
 def _story_input_quality_score(story_input: Dict[str, Any]) -> int:
     if not isinstance(story_input, dict) or not story_input:
         return 0
+
+    def _execution_truth_score(details: Any) -> int:
+        details_obj = details if isinstance(details, dict) else {}
+        local_score = 0
+        if str(details_obj.get("order_id") or "").strip():
+            local_score += 1
+        if details_obj.get("filled_qty") not in (None, ""):
+            local_score += 1
+        if details_obj.get("filled_price") not in (None, ""):
+            local_score += 2
+        if str(details_obj.get("broker_truth_source") or "").strip():
+            local_score += 2
+        if str(details_obj.get("broker_day_truth_source") or "").strip():
+            local_score += 2
+        if str(details_obj.get("broker_day_match_mode") or "").strip():
+            local_score += 1
+        if bool(details_obj.get("broker_day_authoritative")):
+            local_score += 1
+        if details_obj.get("broker_realized_pnl") not in (None, ""):
+            local_score += 2
+        if details_obj.get("broker_fee") not in (None, "") or details_obj.get("broker_tax") not in (None, ""):
+            local_score += 1
+        return local_score
+
     score = 0
-    if str(story_input.get("status") or "").strip().lower() in {"open", "closed"}:
+    status_lower = str(story_input.get("status") or "").strip().lower()
+    trade_symbol = str(story_input.get("symbol") or "").strip()
+    if status_lower in {"open", "closed"}:
         score += 2
-    if str(story_input.get("symbol") or "").strip():
+    if trade_symbol:
         score += 1
     if str(story_input.get("run_id") or "").strip():
         score += 1
@@ -431,6 +458,8 @@ def _story_input_quality_score(story_input: Dict[str, Any]) -> int:
     ).strip()
     if selected_symbol:
         score += 2
+    if status_lower == "closed" and trade_symbol and selected_symbol and trade_symbol != selected_symbol:
+        score -= 2
     candidate_count = (
         story_input.get("candidate_count")
         if story_input.get("candidate_count") not in (None, "")
@@ -442,8 +471,18 @@ def _story_input_quality_score(story_input: Dict[str, Any]) -> int:
         score += 1
     if isinstance(story_input.get("monitor_stop_policy_trace"), dict) and story_input.get("monitor_stop_policy_trace"):
         score += 1
+    canonical_monitor = story_input.get("canonical_monitor") if isinstance(story_input.get("canonical_monitor"), dict) else {}
+    if canonical_monitor:
+        score += 1
+    if canonical_monitor.get("current_price") not in (None, ""):
+        score += 1
+    if canonical_monitor.get("account_pnl_ratio") not in (None, "") or canonical_monitor.get("effective_pnl_ratio") not in (None, ""):
+        score += 1
     if str(story_input.get("entry_summary") or "").strip():
         score += 1
+    score += _execution_truth_score(story_input.get("execution_details"))
+    score += _execution_truth_score(story_input.get("entry_execution_details"))
+    score += _execution_truth_score(story_input.get("exit_execution_details"))
     return score
 
 
@@ -456,6 +495,11 @@ def resolve_story_input_for_regeneration(
     lifecycle_bundle = _read_json(trade_paths["lifecycle_bundle_json"])
     if not lifecycle_bundle:
         return existing_story_input, existing_path, "existing_story_input", existing_score, existing_score
+
+    enriched_lifecycle_bundle = rehydrate_lifecycle_bundle_execution_truth(lifecycle_bundle)
+    if _payload_fingerprint(enriched_lifecycle_bundle) != _payload_fingerprint(lifecycle_bundle):
+        write_json(trade_paths["lifecycle_bundle_json"], enriched_lifecycle_bundle)
+        lifecycle_bundle = enriched_lifecycle_bundle
 
     rebuilt_story_input = build_trade_story_input_from_bundle(
         lifecycle_bundle,

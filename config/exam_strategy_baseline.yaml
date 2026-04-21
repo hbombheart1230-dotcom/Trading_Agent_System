@@ -96,7 +96,7 @@ reproducibility:
     - RUNTIME_PROFILE
     - KIWOOM_MODE
   required_reports:
-    - reports/operator_summary/operator_summary_<day>.md
-    - reports/decision_story/decision_story_<day>.md
-    - reports/run_cards/run_cards_<day>.md
+    - reports/daily/<day>/operator_summary.md
+    - reports/dev/manual/decision_story/decision_story_<day>.md
+    - reports/dev/manual/run_cards/run_cards_<day>.md
     - reports/milestones/m31_mock_exam/m31_mock_exam_<day>.json

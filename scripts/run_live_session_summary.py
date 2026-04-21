@@ -9,150 +9,19 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
-
-
-def _to_epoch(ts: Any) -> Optional[int]:
-    if ts is None:
-        return None
-    if isinstance(ts, (int, float)):
-        return int(ts)
-
-    s = str(ts).strip()
-    if not s:
-        return None
-    try:
-        return int(float(s))
-    except Exception:
-        pass
-
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp())
-    except Exception:
-        return None
-
-
-def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
-    if not path.exists():
-        return []
-
-    def _gen() -> Iterable[Dict[str, Any]]:
-        with path.open("r", encoding="utf-8") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                if isinstance(obj, dict):
-                    yield obj
-
-    return _gen()
-
-
-def _safe_int(v: Any, default: int = 0) -> int:
-    try:
-        return int(float(v))
-    except Exception:
-        return int(default)
-
-
-def _safe_float(v: Any, default: float = 0.0) -> float:
-    try:
-        return float(v)
-    except Exception:
-        return float(default)
-
-
-def _safe_pct(num: float, den: float) -> float:
-    if den <= 0.0:
-        return 0.0
-    return float(num) / float(den)
-
-
-def _broker_code_success(value: Any) -> Optional[bool]:
-    if value is None:
-        return None
-    s = str(value).strip()
-    if not s:
-        return None
-    try:
-        return int(float(s)) == 0
-    except Exception:
-        pass
-    t = s.lower()
-    if t in ("ok", "success", "accepted"):
-        return True
-    if t in ("error", "failed", "rejected"):
-        return False
-    return False
+from libs.runtime.live_session_summary_helpers import (
+    broker_code_success,
+    build_markdown,
+    iter_jsonl,
+    safe_float,
+    safe_int,
+    safe_pct,
+)
+from libs.runtime.runtime_output_helpers import to_epoch
 
 
 def _utc_iso(epoch: int) -> str:
     return datetime.fromtimestamp(int(epoch), tz=timezone.utc).isoformat()
-
-
-def _build_markdown(out: Dict[str, Any]) -> str:
-    ev = out.get("events") if isinstance(out.get("events"), dict) else {}
-    llm = out.get("strategist_llm") if isinstance(out.get("strategist_llm"), dict) else {}
-    dec = out.get("decision") if isinstance(out.get("decision"), dict) else {}
-    exe = out.get("execution") if isinstance(out.get("execution"), dict) else {}
-    ctl = out.get("controls") if isinstance(out.get("controls"), dict) else {}
-
-    lines = [
-        f"# Live Session Summary ({out.get('window_start_utc')} ~ {out.get('window_end_utc')})",
-        "",
-        f"- lookback_min: **{int(out.get('lookback_min') or 0)}**",
-        f"- event_log_path: `{out.get('event_log_path')}`",
-        "",
-        "## Events",
-        "",
-        f"- scanned_total: **{int(ev.get('scanned_total') or 0)}**",
-        f"- window_total: **{int(ev.get('window_total') or 0)}**",
-        f"- missing_ts_total: **{int(ev.get('missing_ts_total') or 0)}**",
-        "",
-        "## Strategist LLM",
-        "",
-        f"- total: **{int(llm.get('total') or 0)}**",
-        f"- ok_total: **{int(llm.get('ok_total') or 0)}**",
-        f"- error_total: **{int(llm.get('error_total') or 0)}**",
-        f"- error_rate: **{float(llm.get('error_rate') or 0.0):.2%}**",
-        f"- latency_avg_ms: **{float(llm.get('latency_avg_ms') or 0.0):.1f}**",
-        "",
-        "## Decisions",
-        "",
-        f"- action_counts: `{json.dumps(dec.get('action_counts') or {}, ensure_ascii=False)}`",
-        f"- strategy_counts: `{json.dumps(dec.get('strategy_counts') or {}, ensure_ascii=False)}`",
-        f"- reason_top: `{json.dumps(dec.get('reason_top') or {}, ensure_ascii=False)}`",
-        "",
-        "## Execution",
-        "",
-        f"- verdict_total: **{int(exe.get('verdict_total') or 0)}**",
-        f"- allowed_total: **{int(exe.get('allowed_total') or 0)}**",
-        f"- blocked_total: **{int(exe.get('blocked_total') or 0)}**",
-        f"- blocked_reason_top: `{json.dumps(exe.get('blocked_reason_top') or {}, ensure_ascii=False)}`",
-        f"- executed_total: **{int(exe.get('executed_total') or 0)}**",
-        f"- executed_broker_success_total: **{int(exe.get('executed_broker_success_total') or 0)}**",
-        f"- executed_broker_fail_total: **{int(exe.get('executed_broker_fail_total') or 0)}**",
-        f"- executed_broker_unknown_total: **{int(exe.get('executed_broker_unknown_total') or 0)}**",
-        f"- executed_broker_code_top: `{json.dumps(exe.get('executed_broker_code_top') or {}, ensure_ascii=False)}`",
-        f"- executed_action_counts: `{json.dumps(exe.get('executed_action_counts') or {}, ensure_ascii=False)}`",
-        f"- executed_notional_total: **{float(exe.get('executed_notional_total') or 0.0):.2f}**",
-        "",
-        "## Controls",
-        "",
-        f"- cooldown_noop_total: **{int(ctl.get('cooldown_noop_total') or 0)}**",
-        f"- exit_policy_sell_total: **{int(ctl.get('exit_policy_sell_total') or 0)}**",
-        f"- insufficient_mock_cash_block_total: **{int(ctl.get('insufficient_mock_cash_block_total') or 0)}**",
-        "",
-    ]
-    return "\n".join(lines)
 
 
 def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
@@ -163,7 +32,7 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
         help="JSONL event log path (default: EVENT_LOG_PATH or data/logs/dev/live/events_live.jsonl).",
     )
     p.add_argument("--report-dir", default="reports/dev/live/live_summary")
-    p.add_argument("--lookback-min", type=int, default=_safe_int(os.getenv("LIVE_SUMMARY_LOOKBACK_MIN"), 30))
+    p.add_argument("--lookback-min", type=int, default=safe_int(os.getenv("LIVE_SUMMARY_LOOKBACK_MIN"), 30))
     p.add_argument("--now-epoch", type=float, default=0.0, help="Override current epoch for deterministic checks/tests.")
     p.add_argument("--json", action="store_true", help="Print full JSON output.")
     return p.parse_args(argv)
@@ -186,9 +55,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     scanned_total = 0
     missing_ts_total = 0
     window_rows: List[Dict[str, Any]] = []
-    for row in _iter_jsonl(event_log_path):
+    for row in iter_jsonl(event_log_path):
         scanned_total += 1
-        e = _to_epoch(row.get("ts"))
+        e = to_epoch(row.get("ts"))
         if e is None:
             missing_ts_total += 1
             continue
@@ -245,7 +114,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             err = str(payload.get("error_type") or "").strip()
             if err:
                 llm_error_type_counts[err] += 1
-            lat = _safe_float(payload.get("latency_ms"), -1.0)
+            lat = safe_float(payload.get("latency_ms"), -1.0)
             if lat >= 0.0:
                 llm_latency_ms.append(lat)
 
@@ -290,8 +159,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             action = str(order.get("action") or "").strip().upper()
             if action:
                 executed_action_counts[action] += 1
-            qty = _safe_float(order.get("qty"), 0.0)
-            px = _safe_float(order.get("price"), 0.0)
+            qty = safe_float(order.get("qty"), 0.0)
+            px = safe_float(order.get("price"), 0.0)
             if qty > 0.0 and px > 0.0:
                 executed_notional_total += qty * px
             rationale = str(order.get("rationale") or "").strip().lower()
@@ -302,7 +171,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             broker_code = str(ex_payload.get("broker_code") or "").strip()
             if broker_code:
                 executed_broker_code_counts[broker_code] += 1
-            broker_ok = _broker_code_success(ex_payload.get("broker_code"))
+            broker_ok = broker_code_success(ex_payload.get("broker_code"))
             if broker_ok is None:
                 if "api_ok" in ex_payload:
                     broker_ok = bool(ex_payload.get("api_ok"))
@@ -314,7 +183,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             elif broker_ok is False:
                 executed_broker_fail_total += 1
 
-    llm_error_rate = _safe_pct(float(llm_error_total), float(llm_total))
+    llm_error_rate = safe_pct(float(llm_error_total), float(llm_total))
     llm_latency_avg_ms = (sum(llm_latency_ms) / float(len(llm_latency_ms))) if llm_latency_ms else 0.0
 
     out: Dict[str, Any] = {
@@ -372,7 +241,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     out["report_md_path"] = str(md_path)
 
     json_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(_build_markdown(out), encoding="utf-8")
+    md_path.write_text(build_markdown(out), encoding="utf-8")
 
     if bool(args.json):
         print(json.dumps(out, ensure_ascii=False))

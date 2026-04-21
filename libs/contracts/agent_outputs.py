@@ -11,6 +11,7 @@ from libs.runtime.decision_observability import (
     build_scanner_monitor_handoff_surface,
     build_strategist_policy_resolution_surface,
 )
+from libs.runtime.strategist_packet_visibility import build_strategist_memory_packet_visibility
 
 
 AGENT_OUTPUT_SCHEMA_VERSION = "agent_output.v1"
@@ -721,6 +722,10 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         market_sentiment=market_sentiment,
         playbook=playbook,
     )
+    memory_packet_visibility = build_strategist_memory_packet_visibility(
+        state=state,
+        strategist_output=strategist_output,
+    )
     decision_frame = _build_strategist_decision_frame(
         state=state,
         strategist_output=strategist_output,
@@ -1029,6 +1034,7 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 max_len=180,
             ),
             "trace_summary": trace_summary,
+            "memory_packet_visibility": memory_packet_visibility,
             "themes": themes,
             "avoid_themes": avoid_themes,
             "llm_metadata_summary": {
@@ -1482,6 +1488,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     entry_detail = _dict(state.get("monitor_entry_decision_detail"))
     exit_detail = _dict(state.get("monitor_exit_decision_detail"))
     selected = _dict(state.get("selected"))
+    scanner_selected_snapshot = _dict(state.get("scanner_selected_snapshot"))
     trace_sources = [
         monitor_output,
         monitor_action,
@@ -1554,13 +1561,14 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     scanner_monitor_handoff = _first_trace_dict("scanner_monitor_handoff")
     if not scanner_monitor_handoff:
         scanner_monitor_handoff = build_scanner_monitor_handoff_surface(
-            selected=selected,
+            selected=scanner_selected_snapshot or selected,
             ranked_candidates=[row for row in list(state.get("ranked_candidates") or []) if isinstance(row, dict)],
             scanner_output=_dict(state.get("scanner_output")),
             final_decision=str(monitor_output.get("intent_side") or "NOOP").strip().upper() or "WAIT",
             no_trade_surface=monitor_no_trade_surface,
             entry_info=entry_info,
         )
+    entry_candidate_cascade = _first_trace_dict("entry_candidate_cascade")
     entry_blocker_surface = _first_trace_dict("entry_blocker_surface")
     if not entry_blocker_surface:
         entry_blocker_surface = build_entry_blocker_surface(
@@ -1599,18 +1607,32 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         _clip(monitor_output.get("entry_exit_reason"), max_len=180),
     ]
     decision_reason_chain = [x for x in decision_reason_chain if x]
-    missing_inputs: List[str] = []
-    if not symbol:
-        missing_inputs.append("selected_symbol_missing")
     entry_reason_code = _clip(
         entry_detail.get("reason")
         or entry_info.get("guard_reason")
         or entry_info.get("reason"),
         max_len=160,
     )
+    entry_metrics_seed = _dict(entry_info.get("metrics"))
+    entry_has_structural_evidence = bool(
+        bool(entry_info.get("evaluated"))
+        or bool(entry_info.get("failed_checks"))
+        or bool(entry_reason_code)
+        or bool(entry_metrics_seed.get("minute_source_present"))
+        or bool(entry_metrics_seed.get("minute_refetch_attempted"))
+        or entry_metrics_seed.get("current_price") not in (None, "")
+        or entry_metrics_seed.get("price") not in (None, "")
+    )
+    missing_inputs: List[str] = []
+    if not symbol:
+        missing_inputs.append("selected_symbol_missing")
     if not bool(entry_info.get("evaluated")) and entry_reason_code in {"minute_candle_missing", "data_incomplete"}:
         missing_inputs.append(entry_reason_code)
-    if exit_info.get("price") in (None, "") and not bool(entry_info.get("triggered")):
+    if (
+        exit_info.get("price") in (None, "")
+        and not bool(entry_info.get("triggered"))
+        and not entry_has_structural_evidence
+    ):
         missing_inputs.append("price_unavailable")
     if intent_side == "BUY":
         decision_phase = "entry"
@@ -1835,6 +1857,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "monitor_rejection_reason_code": _clip(scanner_monitor_handoff.get("monitor_rejection_reason_code"), max_len=120),
             "monitor_rejection_reason_summary": _clip(scanner_monitor_handoff.get("monitor_rejection_reason_summary"), max_len=220),
             "handoff_trace": _listify(scanner_monitor_handoff.get("handoff_trace"), limit=6, max_len=120),
+            "entry_candidate_cascade": dict(entry_candidate_cascade),
             "threshold_snapshot": threshold_snapshot,
             "applied_policy": _dict(entry_info.get("applied_policy")) or _dict(entry_info.get("thresholds")),
             "received_policy": _dict(entry_info.get("received_policy")),
@@ -2292,6 +2315,13 @@ def build_commander_output_artifact(
     runtime_refresh_requested = bool(shadow_runtime.get("pre_buy_refresh_requested"))
     runtime_refresh_reason = _clip(shadow_runtime.get("pre_buy_refresh_reason"), max_len=120)
     runtime_refresh_context = _dict(shadow_runtime.get("pre_buy_refresh_context"))
+    post_scanner_refresh_requested = bool(shadow_runtime.get("post_scanner_refresh_requested"))
+    post_scanner_refresh_reason = _clip(shadow_runtime.get("post_scanner_refresh_reason"), max_len=120)
+    post_scanner_refresh_context = _dict(shadow_runtime.get("post_scanner_refresh_context"))
+    if not post_scanner_refresh_requested and _clip(runtime_fast_path.get("reason"), max_len=120) == "post_scanner_selected_symbol_refresh":
+        post_scanner_refresh_requested = True
+        post_scanner_refresh_reason = _clip(runtime_fast_path.get("strategist_refresh_reason"), max_len=120)
+        post_scanner_refresh_context = {"selected_symbol": _clip(runtime_fast_path.get("selected_symbol"), max_len=32)}
     runtime_cache_reuse_reason = _clip(
         runtime_fast_path.get("reason") if strategist_cache_used else "",
         max_len=120,
@@ -2336,6 +2366,10 @@ def build_commander_output_artifact(
             runtime_transition=state.get("runtime_transition"),
         )
     )
+    observations = {
+        **_dict(commander_decision.get("observations")),
+        **_commander_shadow_observations(state, path=path),
+    }
     
     # Determine actual invocation and strategy source for explicit ownership
     actual_strategist_invocation = shadow_runtime.get("strategist_executed")
@@ -2422,6 +2456,9 @@ def build_commander_output_artifact(
             "runtime_refresh_requested": runtime_refresh_requested,
             "runtime_refresh_reason": runtime_refresh_reason,
             "runtime_refresh_context": runtime_refresh_context,
+            "post_scanner_refresh_requested": post_scanner_refresh_requested,
+            "post_scanner_refresh_reason": post_scanner_refresh_reason,
+            "post_scanner_refresh_context": post_scanner_refresh_context,
             "runtime_cache_reuse_reason": runtime_cache_reuse_reason,
             "runtime_cache_reuse_context": runtime_cache_reuse_context,
             "applied_policy": applied_policy,
@@ -2452,6 +2489,7 @@ def build_commander_output_artifact(
             "scanner_policy_source": scanner_policy_source,
             "execution_policy_source": execution_policy_source,
             "route_observability": dict(route_observability),
+            "observations": observations,
             "route_selected": _clip(route_observability.get("route_selected"), max_len=80),
             "route_reason": _clip(route_observability.get("route_reason"), max_len=220),
             "policy_refresh_reason": _clip(route_observability.get("policy_refresh_reason"), max_len=180),
@@ -2519,6 +2557,7 @@ def _commander_shadow_actual_runtime(state: Dict[str, Any], *, path: str) -> Dic
     execution = _dict(state.get("execution"))
     packet = _dict(state.get("decision_packet"))
     packet_intent = _dict(packet.get("intent"))
+    runtime_fast_path = _dict(state.get("runtime_fast_path"))
 
     strategist_executed_raw = shadow_runtime.get("strategist_executed")
     strategist_executed = strategist_executed_raw if isinstance(strategist_executed_raw, bool) else None
@@ -2574,6 +2613,11 @@ def _commander_shadow_actual_runtime(state: Dict[str, Any], *, path: str) -> Dic
         or execution.get("ok_source"),
         max_len=80,
     )
+    post_scanner_refresh_requested = bool(shadow_runtime.get("post_scanner_refresh_requested"))
+    post_scanner_refresh_reason = _clip(shadow_runtime.get("post_scanner_refresh_reason"), max_len=80)
+    if not post_scanner_refresh_requested and _clip(runtime_fast_path.get("reason"), max_len=80) == "post_scanner_selected_symbol_refresh":
+        post_scanner_refresh_requested = True
+        post_scanner_refresh_reason = _clip(runtime_fast_path.get("strategist_refresh_reason"), max_len=80)
 
     return {
         "strategist_executed": strategist_executed,
@@ -2582,6 +2626,8 @@ def _commander_shadow_actual_runtime(state: Dict[str, Any], *, path: str) -> Dic
         "used_cached_strategist": used_cached_strategist,
         "pre_buy_refresh_requested": bool(shadow_runtime.get("pre_buy_refresh_requested")),
         "pre_buy_refresh_reason": _clip(shadow_runtime.get("pre_buy_refresh_reason"), max_len=80),
+        "post_scanner_refresh_requested": post_scanner_refresh_requested,
+        "post_scanner_refresh_reason": post_scanner_refresh_reason,
         "monitor_decision": monitor_decision or "",
         "executor_action": executor_action or "",
         "executor_status": executor_status,
@@ -2600,6 +2646,13 @@ def _commander_shadow_observations(state: Dict[str, Any], *, path: str) -> Dict[
     monitor = _dict(state.get("monitor"))
     runtime_fast_path = _dict(state.get("runtime_fast_path"))
     stress_flags = _listify(_dict(strategist_output.get("macro_stress_overlay")).get("stress_flags"), limit=6, max_len=60)
+    post_scanner_refresh_requested = bool(shadow_runtime.get("post_scanner_refresh_requested"))
+    post_scanner_refresh_reason = _clip(shadow_runtime.get("post_scanner_refresh_reason"), max_len=80)
+    post_scanner_refresh_selected_symbol = _clip(_dict(shadow_runtime.get("post_scanner_refresh_context")).get("selected_symbol"), max_len=32)
+    if not post_scanner_refresh_requested and _clip(runtime_fast_path.get("reason"), max_len=80) == "post_scanner_selected_symbol_refresh":
+        post_scanner_refresh_requested = True
+        post_scanner_refresh_reason = _clip(runtime_fast_path.get("strategist_refresh_reason"), max_len=80)
+        post_scanner_refresh_selected_symbol = _clip(runtime_fast_path.get("selected_symbol"), max_len=32)
 
     score_total = selected.get("score_total")
     if score_total in (None, ""):
@@ -2620,6 +2673,15 @@ def _commander_shadow_observations(state: Dict[str, Any], *, path: str) -> Dict[
         "market_changed": shadow_runtime.get("market_changed"),
         "signal_strength": signal_strength,
         "risk_score": selected.get("risk_score") if selected.get("risk_score") not in (None, "") else risk_context.get("score"),
+        "capital_available_for_sizing": risk_context.get("capital_available_for_sizing"),
+        "cash_truth_source": _clip(risk_context.get("cash_truth_source"), max_len=80),
+        "cash_truth_available": risk_context.get("cash_truth_available"),
+        "broker_orderable_amount": risk_context.get("broker_orderable_amount"),
+        "broker_withdrawable_cash": risk_context.get("broker_withdrawable_cash"),
+        "broker_deposit": risk_context.get("broker_deposit"),
+        "post_scanner_refresh_requested": post_scanner_refresh_requested,
+        "post_scanner_refresh_reason": post_scanner_refresh_reason,
+        "post_scanner_refresh_selected_symbol": post_scanner_refresh_selected_symbol,
         "macro_stress": float(len(stress_flags)) if stress_flags else (1.0 if bool(_dict(strategist_output.get("macro_stress_overlay")).get("active")) else 0.0),
         "last_llm_status": _clip(strategist_llm.get("status") or strategist_output.get("llm_frame_status"), max_len=40),
         "retry_count_estimate": int(max(0, retry_count_estimate)),

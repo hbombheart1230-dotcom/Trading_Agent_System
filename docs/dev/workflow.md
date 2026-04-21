@@ -10,3 +10,4 @@
 - Single source of truth
 - Additive change only
 - Safety first
+- Follow `docs/dev/code_structure_policy_2026-04-20.md` for script/module boundary rules

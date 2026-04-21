@@ -749,30 +749,104 @@ scanner는 strategist의
 8. 현재 strategist 입력에 실제로 들어가는 report-side source가 무엇인지
 
 ## 10. 바로 다음에 보면 좋은 artifact
-현재 패치가 반영된 새 refresh 런이 하나 생기면 아래 파일 3개를 같이 보면 된다.
+현재 패치가 반영된 새 refresh 런이 하나 생기면 아래 파일 4개를 같이 보면 된다.
 
-1. `reports/canonical/<day>/<run_id>/commander.json`
+중요:
+
+- `reports/trades/<day>/<trade_id>/reports/ai_trade_report.md`는 Strategist input 검증 파일이 아니다.
+- 그 파일은 post-trade report다.
+- Strategist packet 유입 여부는 반드시 `reports/llm/<day>/<run_id>/strategist/prompt.json`부터 확인해야 한다.
+
+즉:
+
+- `ai_trade_report.md` = report lane retrospective
+- `strategist/prompt.json` = strategist prompt payload proof
+- `strategist.json` = normalized strategist output proof
+
+1. `reports/llm/<day>/<run_id>/strategist/prompt.json`
+- 실제 full prompt payload
+- 아래를 직접 확인:
+  - `payload.read_model_facts`
+  - `payload.recent_strategy_feedback`
+  - `payload.reporter_feedback_packet`
+  - `payload.strategy_memory`
+  - `payload.commander_refresh_context.selected_symbol_memory`
+
+2. `reports/canonical/<day>/<run_id>/commander.json`
 - `strategist_refresh_context`
 - `open_position_refresh_context`
 - `strategist_refresh_effective`
 - `strategist_refresh_policy_delta_fields`
 
-2. `reports/canonical/<day>/<run_id>/strategist.json`
+3. `reports/canonical/<day>/<run_id>/strategist.json`
 - `commander_context_ref.open_position_refresh_context`
 - `strategic_answers.q15_commander_refresh_context`
+- `decision_frame.strategy_memory`
+- `decision_frame.reporter_feedback_packet`
 - `monitor_entry_policy`
 - `policy_adjustment`
 - `strategy_adjustment_directives`
 
-3. `reports/canonical/<day>/<run_id>/monitor.json`
+4. `reports/canonical/<day>/<run_id>/monitor.json`
 - `received_policy`
 - `effective_policy`
 
-4. `reports/canonical/<day>/<run_id>/scanner.json`
+5. `reports/canonical/<day>/<run_id>/scanner.json`
 - `selection_summary`
 - `selection_reason.commander_priority_ref`
 - `selection_reason.strategist_constraints_ref`
 - `selection_reason.ranking_factors`
 - `selection_reason.monitor_entry_policy_summary`
 
-이 4개를 같이 보면 “입력은 들어갔는데 output이 그대로였는지”, “output은 바뀌었는데 monitor 적용이 달랐는지”, “scanner 랭킹 프레임에 strategist가 실제로 어떻게 반영됐는지”를 바로 판별할 수 있다.
+이 5개를 같이 보면 아래를 바로 판별할 수 있다.
+
+1. `strategist/prompt.json`
+- packet이 실제로 들어갔는지
+- empty packet인지 populated packet인지
+
+2. `commander.json`
+- refresh를 왜 불렀는지
+- selected symbol / hold state / carry state가 무엇이었는지
+
+3. `strategist.json`
+- packet을 받아서 어떤 normalized frame을 만들었는지
+
+4. `monitor.json`
+- strategist policy delta가 실제 실행 정책으로 반영됐는지
+
+5. `scanner.json`
+- strategist frame이 selection/ranking trace에 실제로 반영됐는지
+
+### 2026-04-20 live note
+
+오늘 신규 selected-symbol 예시에서는:
+
+- `reports/llm/2026-04-20/97394155924e45c98cc772cb83ee164b/strategist/prompt.json`
+  - `payload.commander_refresh_context.selected_symbol = "356680"`
+  - `payload.commander_refresh_context.selected_symbol_memory = {}`
+
+즉 selected symbol refresh 자체는 돌았지만, 해당 종목의 prior history가 없어서 symbol-memory packet은 빈 dict로 들어간다.
+
+반대로 populated shape는 테스트 계약으로 이미 고정돼 있다:
+
+- `tests/test_strategist_frame_llm_integration.py:876`
+- `tests/test_data_quality_state_propagation.py:188`
+
+여기서는 `selected_symbol_memory`가 예를 들어 아래처럼 채워진다.
+
+```json
+{
+  "symbol": "000660",
+  "trade_count": 9,
+  "win_rate": 0.4444,
+  "dominant_playbook": "pullback",
+  "dominant_monitor_blocker": "below_vwap_reclaim_not_ready"
+}
+```
+
+즉 가시성 계약은:
+
+- 이력 없음 -> `{}`
+- 이력 있음 -> compact symbol-memory excerpt
+
+로 이해하면 된다.

@@ -2748,6 +2748,177 @@ def test_monitor_peak_drawdown_requires_confirmation_and_does_not_bypass_guard(m
     assert int(exit2.get("exit_confirm_count") or 0) >= 2
 
 
+def _entry_cascade_test_state() -> dict:
+    return {
+        "plan": {"thesis": "cascade test"},
+        "selected": {"symbol": "AAA", "price": 100.0, "features": {"candidate_symbol": "AAA"}},
+        "ranked_candidates": [
+            {"symbol": "AAA", "price": 100.0, "score_total": 1.0},
+            {"symbol": "BBB", "price": 101.0, "score_total": 0.95},
+            {"symbol": "CCC", "price": 102.0, "score_total": 0.9},
+        ],
+        "scanner_output": {"quote_data_diagnostic": {"zero_quote_metric_symbols": []}},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {"use_exit_policy": False},
+        "tick_ts": 1772850000,
+    }
+
+
+def test_monitor_falls_back_to_runner_up_when_top_pick_waits(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    def _fake_selected(state, symbol, selected, *, position=None):
+        row = dict(selected or {})
+        row["symbol"] = symbol
+        row["price"] = row.get("price") or 100.0
+        row["features"] = {"candidate_symbol": symbol}
+        return row
+
+    def _fake_minute(state, symbol, timeframe_minutes, now_epoch):
+        rows = dict(state.get("minute_ohlcv_by_symbol") or {})
+        rows[str(symbol)] = [{"ts": int(now_epoch), "close": 100.0, "vwap": 99.8, "volume": 1000}]
+        state["minute_ohlcv_by_symbol"] = rows
+        state["monitor_minute_ohlcv_fetch"] = {}
+        return state
+
+    def _fake_entry(rows, current_price, features, policy, scoring, frame, policy_contract):
+        sym = str((features or {}).get("candidate_symbol") or "")
+        base = {
+            "enabled": True,
+            "evaluated": True,
+            "thresholds": {"intent_cooldown_sec": 0},
+            "metrics": {"current_price": current_price},
+            "failed_checks": [],
+            "passed_checks": [],
+            "signal_chain": [],
+            "hard_filter_passed": True,
+            "score_passed": False,
+            "legacy_entry_decision": "WAIT",
+            "scoring_entry_decision": "WAIT",
+        }
+        if sym == "AAA":
+            return {**base, "triggered": False, "reason": "too_extended_from_vwap"}
+        if sym == "BBB":
+            return {
+                **base,
+                "triggered": True,
+                "reason": "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation",
+                "pattern": "breakout",
+                "score_passed": True,
+                "legacy_entry_decision": "BUY",
+                "scoring_entry_decision": "BUY",
+            }
+        return {**base, "triggered": False, "reason": "breakout_not_ready"}
+
+    monkeypatch.setattr("graphs.nodes.monitor_node._monitor_selected_snapshot_for_symbol", _fake_selected)
+    monkeypatch.setattr("graphs.nodes.monitor_node._ensure_monitor_minute_ohlcv_for_symbol", _fake_minute)
+    monkeypatch.setattr("graphs.nodes.monitor_node.evaluate_intraday_entry_signal", _fake_entry)
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
+        lambda state, policy: {"active": False, "minutes_to_close": 120, "cutoff_min": 10},
+    )
+
+    out = monitor_node(_entry_cascade_test_state())
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["symbol"] == "BBB"
+    assert (out.get("selected") or {}).get("symbol") == "BBB"
+    cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
+    assert cascade.get("attempted") is True
+    assert cascade.get("fallback_used") is True
+    assert cascade.get("fallback_from_symbol") == "AAA"
+    assert cascade.get("fallback_to_symbol") == "BBB"
+    handoff = out.get("scanner_monitor_handoff") or {}
+    assert handoff.get("scanner_selected_symbol") == "AAA"
+    assert handoff.get("monitor_selected_symbol") == "BBB"
+
+
+def test_monitor_does_not_fallback_when_open_position_exists(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._monitor_selected_snapshot_for_symbol",
+        lambda state, symbol, selected, *, position=None: {
+            "symbol": symbol,
+            "price": 100.0,
+            "features": {"candidate_symbol": symbol},
+        },
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._ensure_monitor_minute_ohlcv_for_symbol",
+        lambda state, symbol, timeframe_minutes, now_epoch: state,
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
+        lambda state, policy: {"active": False, "minutes_to_close": 120, "cutoff_min": 10},
+    )
+
+    def _fake_entry(rows, current_price, features, policy, scoring, frame, policy_contract):
+        sym = str((features or {}).get("candidate_symbol") or "")
+        if sym == "AAA":
+            return {"enabled": True, "evaluated": True, "triggered": False, "reason": "too_extended_from_vwap", "thresholds": {"intent_cooldown_sec": 0}}
+        return {"enabled": True, "evaluated": True, "triggered": True, "reason": "breakout", "pattern": "breakout", "thresholds": {"intent_cooldown_sec": 0}}
+
+    monkeypatch.setattr("graphs.nodes.monitor_node.evaluate_intraday_entry_signal", _fake_entry)
+
+    state = _entry_cascade_test_state()
+    state["portfolio_snapshot"] = {"cash": 2_000_000.0, "positions": [{"symbol": "ZZZ", "qty": 1, "avg_price": 10.0, "hold_sec": 30}]}
+    out = monitor_node(state)
+
+    assert out.get("intents") == []
+    cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
+    assert cascade.get("attempted") is False
+    assert cascade.get("blocked_reason") == "open_position_present"
+
+
+def test_monitor_skips_zero_quote_metric_runner_up_in_cascade(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    def _fake_selected(state, symbol, selected, *, position=None):
+        return {"symbol": symbol, "price": 100.0, "features": {"candidate_symbol": symbol}}
+
+    monkeypatch.setattr("graphs.nodes.monitor_node._monitor_selected_snapshot_for_symbol", _fake_selected)
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._ensure_monitor_minute_ohlcv_for_symbol",
+        lambda state, symbol, timeframe_minutes, now_epoch: state,
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
+        lambda state, policy: {"active": False, "minutes_to_close": 120, "cutoff_min": 10},
+    )
+
+    def _fake_entry(rows, current_price, features, policy, scoring, frame, policy_contract):
+        sym = str((features or {}).get("candidate_symbol") or "")
+        if sym == "AAA":
+            return {"enabled": True, "evaluated": True, "triggered": False, "reason": "too_extended_from_vwap", "thresholds": {"intent_cooldown_sec": 0}}
+        return {
+            "enabled": True,
+            "evaluated": True,
+            "triggered": True,
+            "reason": "breakout",
+            "pattern": "breakout",
+            "thresholds": {"intent_cooldown_sec": 0},
+        }
+
+    monkeypatch.setattr("graphs.nodes.monitor_node.evaluate_intraday_entry_signal", _fake_entry)
+
+    state = _entry_cascade_test_state()
+    state["scanner_output"] = {"quote_data_diagnostic": {"zero_quote_metric_symbols": ["BBB"]}}
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["symbol"] == "CCC"
+    cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
+    assert cascade.get("fallback_to_symbol") == "CCC"
+    skipped = list(cascade.get("skipped") or [])
+    assert {"symbol": "BBB", "reason": "quote_metrics_missing"} in skipped
+
+
 def test_monitor_peak_drawdown_respects_min_hold_guard(monkeypatch):
     state = _with_commander_numeric_policy(
         _base_state(),
@@ -2876,6 +3047,49 @@ def test_monitor_trend_breakdown_exit_uses_feature_signal(monkeypatch):
     exit_info = out.get("monitor_exit") or {}
     assert str(exit_info.get("reason") or "") == "trend_breakdown"
     assert float(exit_info.get("vwap_distance") or 0.0) == -0.01
+
+
+def test_monitor_exit_policy_prefers_commander_carry_overrides():
+    state = _base_state()
+    state["selected"] = {
+        "symbol": "005930",
+        "price": 99.4,
+        "features": {
+            "engine_trend_strength": -0.11,
+            "engine_vwap_distance": -0.01,
+        },
+    }
+    state["portfolio_snapshot"] = {
+        "cash": 2_000_000.0,
+        "positions": [{"symbol": "005930", "qty": 2, "avg_price": 100.0, "hold_sec": 900}],
+    }
+    state["policy"] = {
+        "use_exit_policy": True,
+        "hard_stop_pct": 0.03,
+        "intraday_low_break_pct": 0.003,
+        "trend_strength_floor": -0.20,
+        "vwap_break_requires_profit": True,
+        "take_profit_pct": 0.0,
+    }
+    state["applied_policy"] = {
+        "monitor": {
+            "exit": {
+                "policy_overrides": {
+                    "vwap_break_requires_profit": False,
+                    "hard_stop_pct": 0.015,
+                    "intraday_low_break_pct": 0.001,
+                    "trend_strength_floor": -0.10,
+                }
+            }
+        }
+    }
+
+    out = monitor_node(state)
+    effective = (out.get("monitor_exit") or {}).get("effective_exit_policy") or {}
+    assert bool(effective.get("vwap_break_requires_profit")) is False
+    assert float(effective.get("hard_stop_pct") or 0.0) == 0.015
+    assert float(effective.get("intraday_low_break_pct") or 0.0) == 0.001
+    assert float(effective.get("trend_strength_floor") or 0.0) == -0.10
 
 
 def test_monitor_extract_frame_reads_strategist_output():

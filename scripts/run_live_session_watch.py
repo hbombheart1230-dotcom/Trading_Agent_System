@@ -6,7 +6,6 @@ import os
 import subprocess
 import sys
 import time
-from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -15,7 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-
+from libs.runtime.entrypoint_common import to_int
+from libs.runtime.live_loop_lock import pid_exists
+from libs.runtime.live_loop_process_query import read_lock_owner_pid
+from libs.runtime.runtime_output_helpers import latest_event_epoch, parse_stdout_json, tail_text
 KST = timezone.utc
 try:
     from zoneinfo import ZoneInfo
@@ -23,131 +25,11 @@ try:
     KST = ZoneInfo("Asia/Seoul")
 except Exception:
     KST = timezone.utc
-
-
-def _to_int(v: Any, default: int = 0) -> int:
-    try:
-        return int(float(v))
-    except Exception:
-        return int(default)
-
-
 def _to_float(v: Any, default: float = 0.0) -> float:
     try:
         return float(v)
     except Exception:
         return float(default)
-
-
-def _to_epoch(ts: Any) -> Optional[int]:
-    if ts is None:
-        return None
-    if isinstance(ts, (int, float)):
-        return int(ts)
-    s = str(ts).strip()
-    if not s:
-        return None
-    try:
-        return int(float(s))
-    except Exception:
-        pass
-    if s.endswith("Z"):
-        s = s[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp())
-    except Exception:
-        return None
-
-
-def _tail(s: str, max_chars: int = 2000) -> str:
-    txt = str(s or "")
-    if len(txt) <= max_chars:
-        return txt
-    return txt[-max_chars:]
-
-
-def _latest_event_epoch(event_log_path: Path, *, max_tail_lines: int = 2000) -> Optional[int]:
-    if not event_log_path.exists():
-        return None
-    tail: deque[str] = deque(maxlen=max(100, int(max_tail_lines)))
-    with event_log_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            tail.append(line)
-    for raw in reversed(tail):
-        line = str(raw or "").strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except Exception:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        e = _to_epoch(obj.get("ts"))
-        if e is not None:
-            return int(e)
-    return None
-
-
-def _pid_exists(pid: int) -> bool:
-    if int(pid or 0) <= 0:
-        return False
-    if os.name == "nt":
-        try:
-            import ctypes
-
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            handle = ctypes.windll.kernel32.OpenProcess(  # type: ignore[attr-defined]
-                PROCESS_QUERY_LIMITED_INFORMATION,
-                False,
-                int(pid),
-            )
-            if handle:
-                ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
-                return True
-            return False
-        except Exception:
-            return False
-    try:
-        os.kill(int(pid), 0)
-    except Exception:
-        return False
-    return True
-
-
-def _read_loop_pid(lock_path: Path) -> int:
-    if not lock_path.exists():
-        return 0
-    try:
-        obj = json.loads(lock_path.read_text(encoding="utf-8"))
-    except Exception:
-        return 0
-    if not isinstance(obj, dict):
-        return 0
-    return _to_int(obj.get("pid"), 0)
-
-
-def _parse_stdout_json(stdout_text: str) -> Dict[str, Any]:
-    body = str(stdout_text or "").strip()
-    if not body:
-        return {}
-    try:
-        obj = json.loads(body)
-        return obj if isinstance(obj, dict) else {}
-    except Exception:
-        pass
-    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
-    for line in reversed(lines):
-        try:
-            obj = json.loads(line)
-            if isinstance(obj, dict):
-                return obj
-        except Exception:
-            continue
-    return {}
 
 
 def _severity_rank(level: str) -> int:
@@ -178,14 +60,14 @@ def evaluate_watch_health(
     llm = summary.get("strategist_llm") if isinstance(summary.get("strategist_llm"), dict) else {}
     execution = summary.get("execution") if isinstance(summary.get("execution"), dict) else {}
 
-    window_total = _to_int(events.get("window_total"), 0)
-    llm_total = _to_int(llm.get("total"), 0)
+    window_total = to_int(events.get("window_total"), 0)
+    llm_total = to_int(llm.get("total"), 0)
     llm_error_rate = _to_float(llm.get("error_rate"), 0.0)
 
-    verdict_total = _to_int(execution.get("verdict_total"), 0)
-    blocked_total = _to_int(execution.get("blocked_total"), 0)
+    verdict_total = to_int(execution.get("verdict_total"), 0)
+    blocked_total = to_int(execution.get("blocked_total"), 0)
     blocked_rate = (float(blocked_total) / float(verdict_total)) if verdict_total > 0 else 0.0
-    exec_fail_total = _to_int(execution.get("executed_broker_fail_total"), 0)
+    exec_fail_total = to_int(execution.get("executed_broker_fail_total"), 0)
 
     if not loop_alive:
         level = _merge_severity(level, "RED")
@@ -311,9 +193,9 @@ def _run_live_summary(
         cp = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=120)
         out["rc"] = int(cp.returncode)
         out["ok"] = int(cp.returncode) == 0
-        out["stdout_tail"] = _tail(cp.stdout or "")
-        out["stderr_tail"] = _tail(cp.stderr or "")
-        out["summary"] = _parse_stdout_json(cp.stdout or "")
+        out["stdout_tail"] = tail_text(cp.stdout or "")
+        out["stderr_tail"] = tail_text(cp.stderr or "")
+        out["summary"] = parse_stdout_json(cp.stdout or "")
     except Exception as ex:
         out["rc"] = 1
         out["ok"] = False
@@ -331,9 +213,9 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     p.add_argument("--summary-report-dir", default="reports/dev/live/live_summary")
     p.add_argument("--watch-report-dir", default="reports/dev/live/live_watch")
     p.add_argument("--lock-path", default=os.getenv("M13_LIVE_LOCK_PATH", "data/state/m13_live_loop.lock"))
-    p.add_argument("--lookback-min", type=int, default=_to_int(os.getenv("LIVE_SUMMARY_LOOKBACK_MIN"), 30))
-    p.add_argument("--sleep-sec", type=int, default=_to_int(os.getenv("LIVE_WATCH_SLEEP_SEC"), 300))
-    p.add_argument("--max-event-lag-sec", type=int, default=_to_int(os.getenv("LIVE_WATCH_MAX_EVENT_LAG_SEC"), 420))
+    p.add_argument("--lookback-min", type=int, default=to_int(os.getenv("LIVE_SUMMARY_LOOKBACK_MIN"), 30))
+    p.add_argument("--sleep-sec", type=int, default=to_int(os.getenv("LIVE_WATCH_SLEEP_SEC"), 300))
+    p.add_argument("--max-event-lag-sec", type=int, default=to_int(os.getenv("LIVE_WATCH_MAX_EVENT_LAG_SEC"), 420))
     p.add_argument("--once", action="store_true", help="Run one check and exit.")
     p.add_argument("--max-iterations", type=int, default=0, help="0 means infinite loop.")
     p.add_argument("--json", action="store_true", help="Print full snapshot JSON per iteration.")
@@ -369,13 +251,13 @@ def _run_once(args: argparse.Namespace) -> Dict[str, Any]:
     )
     summary = summary_run.get("summary") if isinstance(summary_run.get("summary"), dict) else {}
 
-    loop_pid = _read_loop_pid(lock_path)
-    loop_alive = _pid_exists(loop_pid)
+    loop_pid = read_lock_owner_pid(lock_path)
+    loop_alive = pid_exists(loop_pid)
 
-    latest_event_epoch = _latest_event_epoch(event_log_path)
+    latest_event_ts = latest_event_epoch(event_log_path)
     event_lag_sec: Optional[int] = None
-    if latest_event_epoch is not None:
-        event_lag_sec = max(0, int(now_epoch - int(latest_event_epoch)))
+    if latest_event_ts is not None:
+        event_lag_sec = max(0, int(now_epoch - int(latest_event_ts)))
 
     health = evaluate_watch_health(
         summary,

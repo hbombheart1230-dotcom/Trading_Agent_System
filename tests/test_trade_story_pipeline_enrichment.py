@@ -8,6 +8,8 @@ from libs.reporting.trade_story_pipeline import (
     enrich_filters_from_evidence,
     enrich_scanner_reason_from_evidence,
 )
+import json
+from pathlib import Path
 
 
 def test_build_trade_story_input_from_bundle_normalizes_hold_lifecycle_shape() -> None:
@@ -43,6 +45,15 @@ def test_build_trade_story_input_from_bundle_normalizes_hold_lifecycle_shape() -
         },
         "filters_human": {"summary": "filters"},
         "monitor_reason_human": {"summary": "monitor"},
+        "monitor": {
+            "decision_action": "sell",
+            "exit_reason": "peak_drawdown",
+            "current_price": 536000.0,
+            "avg_price": 537000.0,
+            "account_pnl_ratio": -0.0108,
+            "effective_pnl_ratio": -0.0108,
+            "price_source": "position.current_price",
+        },
         "guard_reason_human": {"summary": "guard"},
         "execution_outcome_human": {"summary": "execution"},
         "reporter_status_human": {"status": "linked_run", "summary": "reporter"},
@@ -65,6 +76,231 @@ def test_build_trade_story_input_from_bundle_normalizes_hold_lifecycle_shape() -
     assert out["scanner_reason_human"]["selected_symbol"] == "000660"
     assert out["scanner_selection_trace"]["selected_symbol"] == "000660"
     assert len(out["scanner_selection_trace"]["ranked_candidates"]) >= 1
+    assert out["canonical_monitor"]["account_pnl_ratio"] == -0.0108
+    assert out["canonical_monitor"]["current_price"] == 536000.0
+
+
+def test_build_trade_story_input_from_bundle_loads_canonical_monitor_from_artifact_path(tmp_path: Path) -> None:
+    canonical_monitor = tmp_path / "reports" / "canonical" / "2026-04-21" / "run-1" / "monitor.json"
+    canonical_monitor.parent.mkdir(parents=True, exist_ok=True)
+    canonical_monitor.write_text(
+        json.dumps(
+            {
+                "decision_action": "sell",
+                "exit_reason": "peak_drawdown",
+                "current_price": 536000.0,
+                "avg_price": 537000.0,
+                "account_pnl_ratio": -0.0108,
+                "effective_pnl_ratio": -0.0108,
+                "price_source": "position.current_price",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    bundle_out = {
+        "day": "2026-04-21",
+        "trade_id": "TRD_20260421_005380_01",
+        "run_id": "RUN_EXIT",
+        "symbol": "005380",
+        "trade_lifecycle_status": "closed",
+        "lifecycle": {
+            "entry": {"run_id": "RUN_ENTRY", "action": "BUY", "scanner_context": {"selected_symbol": "034020"}},
+            "exit": {"run_id": "RUN_EXIT", "action": "SELL", "reason_human": "exit ok"},
+        },
+        "artifacts": {
+            "canonical_monitor_json": str(canonical_monitor),
+        },
+        "market_context_human": {"summary": "market"},
+        "scanner_reason_human": {"summary": "scanner", "selected_symbol": "034020"},
+        "filters_human": {"summary": "filters"},
+        "monitor_reason_human": {"summary": "monitor"},
+        "guard_reason_human": {"summary": "guard"},
+        "execution_outcome_human": {"summary": "execution"},
+        "reporter_status_human": {"status": "linked_run", "summary": "reporter"},
+        "operator_conclusion_human": {"summary": "conclusion"},
+        "timeline": [],
+        "warnings": [],
+        "monitor_timeline": {},
+    }
+
+    out = build_trade_story_input_from_bundle(bundle_out)
+
+    assert out["canonical_monitor"]["account_pnl_ratio"] == -0.0108
+    assert out["canonical_monitor"]["current_price"] == 536000.0
+
+
+def test_build_trade_story_input_from_bundle_reanchors_scanner_symbol_for_monitor_fallback_trade() -> None:
+    bundle_out = {
+        "day": "2026-04-21",
+        "trade_id": "TRD_20260421_005380_01",
+        "run_id": "RUN_EXIT",
+        "symbol": "005380",
+        "trade_lifecycle_status": "closed",
+        "lifecycle": {
+            "entry": {"run_id": "RUN_ENTRY", "action": "BUY", "scanner_context": {"selected_symbol": "034020"}},
+            "exit": {"run_id": "RUN_EXIT", "action": "SELL", "reason_human": "exit ok"},
+        },
+        "market_context_human": {"summary": "market"},
+        "scanner_reason_human": {
+            "summary": "Scanner selected 034020.",
+            "selected_symbol": "034020",
+            "selected_rank": 1,
+            "selected_score": 1.703,
+            "top_candidates": [
+                {"rank": 1, "symbol": "034020", "score_total": 1.703, "risk_score": 0.085, "confidence": 0.99},
+                {"rank": 2, "symbol": "036930", "score_total": 1.639, "risk_score": 0.454, "confidence": 0.96},
+                {"rank": 3, "symbol": "005380", "score_total": 1.606, "risk_score": 0.146, "confidence": 0.965},
+            ],
+        },
+        "filters_human": {"summary": "filters"},
+        "monitor_reason_human": {"summary": "monitor"},
+        "monitor": {
+            "decision_action": "buy",
+            "scanner_monitor_handoff": {
+                "scanner_selected_symbol": "034020",
+                "monitor_selected_symbol": "005380",
+                "scanner_rank": 1,
+                "entry_candidate_cascade": {
+                    "fallback_used": True,
+                    "fallback_to_symbol": "005380",
+                    "reason": "breakout_not_ready",
+                    "fallback_trace": [
+                        {"symbol": "005380", "triggered": True, "reason": "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation"}
+                    ],
+                    "runner_rows": [
+                        {
+                            "rank": 3,
+                            "symbol": "005380",
+                            "score_total": 1.606,
+                            "risk_score": 0.146,
+                            "confidence": 0.965,
+                            "score_breakdown": {"trading_value": 0.211, "momentum": 0.208, "trend": 0.155},
+                        }
+                    ],
+                },
+            },
+        },
+        "scanner": {
+            "selected_symbol": "034020",
+            "top_stock": "034020",
+            "ranking_table": [
+                {"rank": 1, "symbol": "034020", "score_total": 1.703, "risk_score": 0.085, "confidence": 0.99},
+                {"rank": 2, "symbol": "036930", "score_total": 1.639, "risk_score": 0.454, "confidence": 0.96},
+                {"rank": 3, "symbol": "005380", "score_total": 1.606, "risk_score": 0.146, "confidence": 0.965},
+            ],
+        },
+        "guard_reason_human": {"summary": "guard"},
+        "execution_outcome_human": {"summary": "execution"},
+        "reporter_status_human": {"status": "linked_run", "summary": "reporter"},
+        "operator_conclusion_human": {"summary": "conclusion"},
+        "timeline": [],
+        "warnings": [],
+        "monitor_timeline": {},
+    }
+
+    out = build_trade_story_input_from_bundle(bundle_out)
+
+    assert out["symbol"] == "005380"
+    assert out["scanner_reason_human"]["selected_symbol"] == "005380"
+    assert out["scanner_reason_human"]["monitor_fallback_used"] is True
+    assert out["scanner_reason_human"]["scanner_top_pick_symbol"] == "034020"
+    assert "034020" in out["scanner_reason_human"]["summary"]
+    assert "005380" in out["scanner_reason_human"]["summary"]
+    assert out["scanner_selection_trace"]["selected_symbol"] == "005380"
+    assert out["scanner_selection_trace"]["monitor_fallback_used"] is True
+    assert out["scanner_selection_trace"]["scanner_top_pick_symbol"] == "034020"
+
+
+def test_build_trade_story_input_from_bundle_prefers_entry_run_monitor_for_fallback_reanchor(tmp_path: Path) -> None:
+    canonical_root = tmp_path / "reports" / "canonical" / "2026-04-21"
+    entry_run = canonical_root / "run-entry"
+    exit_run = canonical_root / "run-exit"
+    entry_run.mkdir(parents=True, exist_ok=True)
+    exit_run.mkdir(parents=True, exist_ok=True)
+    (entry_run / "scanner.json").write_text(
+        json.dumps({"selected_symbol": "034020", "top_stock": "034020"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (entry_run / "monitor.json").write_text(
+        json.dumps(
+            {
+                "scanner_monitor_handoff": {
+                    "scanner_selected_symbol": "034020",
+                    "monitor_selected_symbol": "005380",
+                    "entry_candidate_cascade": {
+                        "fallback_used": True,
+                        "fallback_to_symbol": "005380",
+                        "reason": "breakout_not_ready",
+                        "fallback_trace": [
+                            {
+                                "symbol": "005380",
+                                "triggered": True,
+                                "reason": "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation",
+                            }
+                        ],
+                        "runner_rows": [
+                            {"rank": 3, "symbol": "005380", "score_total": 1.606, "risk_score": 0.146, "confidence": 0.965}
+                        ],
+                    },
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (exit_run / "monitor.json").write_text(
+        json.dumps(
+            {
+                "decision_action": "sell",
+                "current_price": 536000.0,
+                "scanner_monitor_handoff": {
+                    "scanner_selected_symbol": "005380",
+                    "monitor_selected_symbol": "005380",
+                    "entry_candidate_cascade": {
+                        "attempted": False,
+                        "fallback_used": False,
+                        "fallback_to_symbol": "",
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    bundle_out = {
+        "day": "2026-04-21",
+        "trade_id": "TRD_20260421_005380_01",
+        "run_id": "RUN_EXIT",
+        "symbol": "005380",
+        "trade_lifecycle_status": "closed",
+        "lifecycle": {
+            "entry": {"run_id": "run-entry", "action": "BUY", "scanner_context": {"selected_symbol": "034020"}},
+            "exit": {"run_id": "run-exit", "action": "SELL", "reason_human": "exit ok"},
+        },
+        "artifacts": {
+            "canonical_scanner_json": str(entry_run / "scanner.json"),
+            "canonical_monitor_json": str(exit_run / "monitor.json"),
+        },
+        "market_context_human": {"summary": "market"},
+        "scanner_reason_human": {"summary": "scanner", "selected_symbol": "034020", "selected_rank": 1},
+        "filters_human": {"summary": "filters"},
+        "monitor_reason_human": {"summary": "monitor"},
+        "guard_reason_human": {"summary": "guard"},
+        "execution_outcome_human": {"summary": "execution"},
+        "reporter_status_human": {"status": "linked_run", "summary": "reporter"},
+        "operator_conclusion_human": {"summary": "conclusion"},
+        "timeline": [],
+        "warnings": [],
+        "monitor_timeline": {},
+    }
+
+    out = build_trade_story_input_from_bundle(bundle_out)
+
+    assert out["scanner_reason_human"]["selected_symbol"] == "005380"
+    assert out["scanner_reason_human"]["monitor_fallback_used"] is True
+    assert out["scanner_selection_trace"]["selected_symbol"] == "005380"
 
 
 def test_market_context_human_prefers_strategist_input_summary_when_runtime_fields_missing() -> None:

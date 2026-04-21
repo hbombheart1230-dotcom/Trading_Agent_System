@@ -494,6 +494,162 @@ def test_strategist_artifact_records_policy_fallback_metadata() -> None:
     assert artifact["policy_validation_issues"] == ["timeframe_minutes:out_of_bounds:30.0"]
 
 
+def test_strategist_artifact_surfaces_memory_packet_visibility() -> None:
+    state = {
+        "run_id": "run-s1-memory",
+        "started_at": "2026-04-20T09:05:00+00:00",
+        "runtime_phase": "session",
+        "read_model_facts_summary": {
+            "present": True,
+            "recent_trade_count": 5,
+            "symbol_pattern_count": 2,
+            "symbols": ["005930", "000660"],
+            "daily_summary_present": False,
+        },
+        "recent_strategy_feedback": {
+            "status": "ok",
+            "feedback_window_size": 12,
+            "top_recent_strengths": ["s1"],
+            "top_recent_weaknesses": ["w1", "w2"],
+            "suggested_report_focus": ["exit_quality", "scanner_fit"],
+            "advisory_only": True,
+        },
+        "reporter_feedback_packet": {
+            "available": False,
+            "status": "auto_ignored",
+            "consumed": False,
+            "confidence": "none",
+            "recommendation": ["tighten_breakout_confirmation"],
+        },
+        "strategy_memory": {
+            "status": "empty",
+            "best_playbooks": [],
+            "worst_playbooks": ["breakout"],
+            "recent_failures": ["volume_confirmation_failed"],
+            "recent_success_patterns": [],
+        },
+        "strategist_output": {
+            "market_regime": "neutral",
+            "market_sentiment": "neutral",
+            "playbook": "pullback",
+            "themes": ["semiconductor"],
+            "commander_refresh_requested": True,
+            "commander_refresh_reason": "selected_symbol_refresh",
+            "commander_refresh_context": {
+                "requested": True,
+                "reason": "selected_symbol_refresh",
+                "refresh_scope": "selected_symbol_review",
+                "selected_symbol": "356680",
+                "hold_repeat_count_max": 3,
+                "selected_hold_repeat_count": 1,
+                "requires_policy_delta": True,
+                "selected_symbol_memory": {},
+            },
+            "read_model_facts_summary": {
+                "present": True,
+                "recent_trade_count": 5,
+                "symbol_pattern_count": 2,
+                "symbols": ["005930", "000660"],
+                "daily_summary_present": False,
+            },
+            "recent_strategy_feedback": {
+                "status": "ok",
+                "feedback_window_size": 12,
+                "top_recent_strengths": ["s1"],
+                "top_recent_weaknesses": ["w1", "w2"],
+                "suggested_report_focus": ["exit_quality", "scanner_fit"],
+                "advisory_only": True,
+            },
+            "reporter_feedback_packet": {
+                "available": False,
+                "status": "auto_ignored",
+                "source_available": True,
+                "consumed": False,
+                "feedback_gate_reason": "low_confidence",
+                "confidence": "none",
+                "recommendation": ["tighten_breakout_confirmation"],
+            },
+            "strategy_memory": {
+                "status": "empty",
+                "requested_day": "2026-04-20",
+                "day": "2026-04-17",
+                "best_playbooks": [],
+                "worst_playbooks": ["breakout"],
+                "recent_failures": ["volume_confirmation_failed"],
+                "recent_success_patterns": [],
+            },
+            "selected_symbol_memory": {},
+        },
+    }
+
+    artifact = build_strategist_output_artifact(state)
+    visibility = artifact["memory_packet_visibility"]
+    assert visibility["read_model_facts"]["present"] is True
+    assert visibility["read_model_facts"]["recent_trade_count"] == 5
+    assert visibility["read_model_facts"]["symbol_pattern_count"] == 2
+    assert visibility["recent_strategy_feedback"]["feedback_window_size"] == 12
+    assert visibility["recent_strategy_feedback"]["weakness_count"] == 2
+    assert visibility["reporter_feedback_packet"]["status"] == "auto_ignored"
+    assert visibility["reporter_feedback_packet"]["source_available"] is True
+    assert visibility["reporter_feedback_packet"]["feedback_gate_reason"] == "low_confidence"
+    assert visibility["strategy_memory"]["status"] == "empty"
+    assert visibility["strategy_memory"]["requested_day"] == "2026-04-20"
+    assert visibility["strategy_memory"]["resolved_day"] == "2026-04-17"
+    assert visibility["selected_symbol_memory"]["present"] is False
+    assert visibility["selected_symbol_memory"]["empty_state"] is True
+    assert visibility["selected_symbol_memory"]["symbol"] == "356680"
+    assert visibility["commander_refresh_context"]["requested"] is True
+    assert visibility["commander_refresh_context"]["reason"] == "selected_symbol_refresh"
+
+
+def test_strategist_artifact_memory_visibility_prefers_open_position_refresh_context() -> None:
+    state = {
+        "run_id": "run-s1-open-refresh",
+        "started_at": "2026-04-20T09:10:00+00:00",
+        "runtime_phase": "session",
+        "strategist_output": {
+            "market_regime": "neutral",
+            "market_sentiment": "neutral",
+            "playbook": "defensive",
+            "commander_refresh_requested": True,
+            "commander_refresh_reason": "repeated_hold_monitor_only",
+            "commander_refresh_context": {
+                "prior_monitor_entry_policy_summary": {"volume_ratio_min": 0.68},
+                "current_monitor_entry_policy_summary": {"volume_ratio_min": 0.68},
+            },
+            "commander_open_position_refresh_context": {
+                "refresh_scope": "open_position_monitor_refresh",
+                "selected_symbol": "000660",
+                "hold_repeat_count_max": 3,
+                "selected_hold_repeat_count": 3,
+                "carry_state": "overnight_open",
+                "carry_risk_bias": "elevated",
+                "carry_risk_reason": "overnight_open_needs_confirmation",
+                "session_open_recovery_assessment": {"evaluated": True, "recovery_state": "mixed"},
+            },
+            "selected_symbol_memory": {
+                "symbol": "000660",
+                "trade_count": 11,
+                "closed_trade_count": 9,
+                "win_rate": 0.5555,
+                "dominant_playbook": "pullback",
+                "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
+            },
+        },
+    }
+
+    artifact = build_strategist_output_artifact(state)
+    visibility = artifact["memory_packet_visibility"]["commander_refresh_context"]
+    assert visibility["selected_symbol"] == "000660"
+    assert visibility["refresh_scope"] == "open_position_monitor_refresh"
+    assert visibility["hold_repeat_count_max"] == 3
+    assert visibility["selected_hold_repeat_count"] == 3
+    assert visibility["requires_policy_delta"] is True
+    assert visibility["carry_state"] == "overnight_open"
+    assert visibility["carry_risk_bias"] == "elevated"
+    assert visibility["session_open_recovery_evaluated"] is True
+
+
 def test_monitor_artifact_contains_evaluation_and_action_sections() -> None:
     state = {
         "run_id": "run-mon-1",
@@ -774,6 +930,37 @@ def test_monitor_artifact_prefers_entry_reason_when_flat_and_minute_data_missing
     assert "insufficient data" in str(artifact.get("decision_summary") or "").lower()
 
 
+def test_monitor_artifact_does_not_label_structural_wait_as_price_unavailable() -> None:
+    state = {
+        "run_id": "run-mon-structural-wait",
+        "started_at": "2026-04-20T10:00:00+00:00",
+        "runtime_phase": "session",
+        "monitor": {"open_position_count": 0},
+        "monitor_output": {"selected_symbol": "069540", "intent_side": "NOOP", "entry_exit_reason": "still_overextended_after_pullback"},
+        "monitor_entry": {
+            "evaluated": True,
+            "triggered": False,
+            "reason": "still_overextended_after_pullback",
+            "failed_checks": ["extension_ok", "volume_ok", "rebound_ok"],
+            "metrics": {
+                "minute_source_present": True,
+                "minute_source_used": "state.minute_ohlcv_by_symbol",
+                "current_price": 6500.0,
+            },
+        },
+        "monitor_exit": {"symbol": "069540", "price": None, "reason": "no_position", "thresholds": {}, "watch_axes": []},
+        "intents": [],
+    }
+
+    artifact = build_monitor_output_artifact(state)
+    assert artifact.get("decision_phase") == "no_intent"
+    assert artifact.get("primary_reason_code") == "still_overextended_after_pullback"
+    assert artifact.get("decision_status") == "blocked"
+    summary = str(artifact.get("decision_summary") or "")
+    assert summary.startswith("No action:")
+    assert "insufficient data" not in summary.lower()
+
+
 def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
     state = {
         "run_id": "run-cmd-1",
@@ -828,6 +1015,14 @@ def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
         },
         "runtime_fast_path": {"reason": "holding_position_monitor_only"},
         "portfolio_snapshot": {"positions": [{"symbol": "005930"}, {"symbol": "000660"}], "cash": 1000},
+        "risk_context": {
+            "capital_available_for_sizing": 7500000.0,
+            "cash_truth_source": "kiwoom.kt00001",
+            "cash_truth_available": True,
+            "broker_orderable_amount": 7500000.0,
+            "broker_withdrawable_cash": 7600000.0,
+            "broker_deposit": 8000000.0,
+        },
         "portfolio_preflight": {"status": "ok", "blocked": False},
         "monitor": {"open_position_count": 2, "buy_blocked_open_position": True},
         "monitor_output": {"selected_symbol": "005930", "intent_side": "NOOP", "entry_exit_reason": "buy_blocked_open_position"},
@@ -868,6 +1063,13 @@ def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
     assert artifact.get("strategist_cache_preference_reason") == ""
     assert artifact.get("runtime_cache_reuse_reason") == ""
     assert isinstance(artifact.get("commander_decision"), dict)
+    observations = artifact.get("observations") if isinstance(artifact.get("observations"), dict) else {}
+    assert observations.get("capital_available_for_sizing") == 7500000.0
+    assert observations.get("cash_truth_source") == "kiwoom.kt00001"
+    assert observations.get("cash_truth_available") is True
+    assert observations.get("broker_orderable_amount") == 7500000.0
+    assert observations.get("broker_withdrawable_cash") == 7600000.0
+    assert observations.get("broker_deposit") == 8000000.0
     assert artifact.get("policy_source") == "strategist"
     assert artifact.get("policy_validation_status") == "ok"
     assert artifact.get("policy_fallback_used") is False
@@ -924,6 +1126,12 @@ def test_commander_artifact_surfaces_refresh_summary() -> None:
                 "selected_symbol": "034020",
                 "selected_symbol_in_cached_frame": False,
             },
+            "post_scanner_refresh_requested": True,
+            "post_scanner_refresh_reason": "selected_symbol_outside_cached_frame",
+            "post_scanner_refresh_context": {
+                "selected_symbol": "034020",
+                "selected_symbol_in_cached_frame": False,
+            },
             "prior_context": {"selected_symbol": "005930", "playbook": "pullback", "market_regime": "neutral"},
         },
         "runtime_fast_path": {"reason": "commander_requested_refresh"},
@@ -949,6 +1157,13 @@ def test_commander_artifact_surfaces_refresh_summary() -> None:
     assert artifact.get("runtime_refresh_requested") is True
     assert artifact.get("runtime_refresh_reason") == "selected_symbol_outside_cached_frame"
     assert artifact.get("runtime_refresh_context", {}).get("selected_symbol_in_cached_frame") is False
+    assert artifact.get("post_scanner_refresh_requested") is True
+    assert artifact.get("post_scanner_refresh_reason") == "selected_symbol_outside_cached_frame"
+    assert artifact.get("post_scanner_refresh_context", {}).get("selected_symbol") == "034020"
+    observations = artifact.get("observations") if isinstance(artifact.get("observations"), dict) else {}
+    assert observations.get("post_scanner_refresh_requested") is True
+    assert observations.get("post_scanner_refresh_reason") == "selected_symbol_outside_cached_frame"
+    assert observations.get("post_scanner_refresh_selected_symbol") == "034020"
 
 
 def test_commander_artifact_surfaces_cache_reuse_summary() -> None:

@@ -196,6 +196,53 @@ def _story_input() -> Dict[str, Any]:
     }
 
 
+def test_scanner_fallback_trade_summary_reanchors_to_actual_traded_symbol() -> None:
+    scanner_reason = {
+        "selected_symbol": "005380",
+        "selected_rank": 3,
+        "selected_score": 1.606,
+        "confidence": 0.965,
+        "selected_sources": [],
+        "top_candidates": [
+            {"rank": 1, "symbol": "034020", "score_total": 1.703, "risk_score": 0.085, "confidence": 0.99},
+            {"rank": 2, "symbol": "036930", "score_total": 1.639, "risk_score": 0.454, "confidence": 0.96},
+            {"rank": 3, "symbol": "005380", "score_total": 1.606, "risk_score": 0.146, "confidence": 0.965},
+        ],
+        "monitor_fallback_used": True,
+        "scanner_top_pick_symbol": "034020",
+        "monitor_fallback_reason": "breakout not ready",
+        "monitor_trigger_reason": "breakout above recent high with vwap hold and volume confirmation",
+        "scanner_selection_trace": {
+            "selected_symbol": "005380",
+            "selected_rank": 3,
+            "monitor_fallback_used": True,
+            "scanner_top_pick_symbol": "034020",
+        },
+    }
+    market_context = {"playbook": "defensive"}
+    entry_summary = {"reason_human": "breakout_above_recent_high_with_vwap_hold_and_volume_confirmation"}
+    monitor_reason = {
+        "entry_condition_scores": {"confidence_score": 0.55, "confidence_threshold": 0.55},
+        "entry_condition_path": "breakout_path",
+    }
+
+    scanner_summary = mod._build_scanner_choice_summary(scanner_reason, market_context)
+    entry_summary_text = mod._build_entry_decision_summary(
+        entry_summary,
+        scanner_reason,
+        market_context,
+        monitor_reason,
+        "BUY",
+    )
+
+    assert "005380" in scanner_summary
+    assert "034020" in scanner_summary
+    assert "실제 진입 종목" in scanner_summary
+    assert "005380" in entry_summary_text
+    assert "034020" in entry_summary_text
+    assert "전환" in entry_summary_text
+
+
 def test_attach_report_status_matrix_prefers_trade_read_model_for_separated_fallback(tmp_path, monkeypatch) -> None:
     trade_dir = tmp_path / "reports" / "trades" / "2026-03-18" / "TRD_20260318_000660_01"
     trade_dir.mkdir(parents=True)
@@ -396,6 +443,151 @@ def test_build_shared_summary_seed_prefers_trade_read_model_context_when_runtime
     assert monitor_reasoning.get("entry_check_summary") == "trade_read_model monitor entry"
     assert monitor_reasoning.get("threshold_shortfalls") == ["volume ratio 0.10 below min 0.75"]
     assert (monitor_reasoning.get("monitor_stop_policy_trace") or {}).get("effective_stop_loss_pct") == 0.0092
+
+
+def test_build_shared_summary_seed_prefers_broker_truth_from_exit_execution_details() -> None:
+    seed = mod._build_shared_summary_seed(
+        {
+            "trade_id": "TRD_20260420_005930_01",
+            "story_id": "TRD_20260420_005930_01",
+            "symbol": "005930",
+            "action": "SELL",
+            "status": "closed",
+            "monitor_reason_human": {"pnl": -500, "pnl_pct": -0.01},
+            "exit_execution_details": {
+                "broker_realized_pnl": -320.0,
+                "broker_realized_pnl_pct": -0.0064,
+                "broker_fee": 14,
+                "broker_tax": 9,
+                "pnl_truth_source": "kiwoom.ka10077",
+                "broker_day_truth_source": "kiwoom.ka10077",
+                "broker_day_match_mode": "symbol_price_qty",
+                "broker_day_authoritative": True,
+                "broker_day_row_count": 1,
+            },
+        }
+    )
+
+    facts = seed.get("resolved_trade_facts") if isinstance(seed.get("resolved_trade_facts"), dict) else {}
+    data_source = facts.get("data_source") if isinstance(facts.get("data_source"), dict) else {}
+
+    assert facts.get("pnl") == -320.0
+    assert facts.get("pnl_pct") == -0.0064
+    assert facts.get("broker_fee") == 14
+    assert facts.get("broker_tax") == 9
+    assert facts.get("pnl_truth_source") == "kiwoom.ka10077"
+    assert facts.get("broker_day_truth_source") == "kiwoom.ka10077"
+    assert facts.get("broker_day_match_mode") == "symbol_price_qty"
+    assert facts.get("broker_day_authoritative") is True
+    assert facts.get("broker_day_row_count") == 1
+    assert data_source.get("pnl") == "kiwoom.ka10077"
+    assert data_source.get("pnl_pct") == "kiwoom.ka10077"
+
+
+def test_build_shared_summary_seed_infers_pnl_pct_from_exit_fill_and_account_snapshot() -> None:
+    seed = mod._build_shared_summary_seed(
+        {
+            "trade_id": "TRD_20260421_005380_01",
+            "story_id": "TRD_20260421_005380_01",
+            "symbol": "005380",
+            "action": "SELL",
+            "status": "closed",
+            "exit_execution_details": {
+                "filled_price": 537000.0,
+                "filled_qty": 1,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+            "canonical_monitor": {
+                "current_price": 536000.0,
+                "account_pnl_ratio": -0.0108,
+            },
+            "monitor_reason_human": {
+                "current_price": 536000.0,
+                "current_drawdown": -0.0037,
+            },
+        }
+    )
+
+    facts = seed.get("resolved_trade_facts") if isinstance(seed.get("resolved_trade_facts"), dict) else {}
+    assert round(float(facts.get("pnl_pct") or 0.0), 4) == -0.0090
+    assert facts.get("pnl_truth_source") == "broker_fill_account_snapshot_estimate"
+
+
+def test_build_shared_summary_seed_surfaces_price_truth_fields() -> None:
+    seed = mod._build_shared_summary_seed(
+        {
+            "trade_id": "TRD_20260420_005930_02",
+            "story_id": "TRD_20260420_005930_02",
+            "symbol": "005930",
+            "action": "SELL",
+            "status": "closed",
+            "exit_execution_details": {
+                "filled_price": 70100,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+            "monitor_reason_human": {
+                "current_price": 70050,
+                "price_source": "state.minute_ohlcv_by_symbol.close",
+            },
+        }
+    )
+
+    facts = seed.get("resolved_trade_facts") if isinstance(seed.get("resolved_trade_facts"), dict) else {}
+    assert facts.get("broker_fill_price") == 70100.0
+    assert facts.get("monitor_mark_price") == 70050.0
+    assert facts.get("account_mark_price") is None
+    assert facts.get("price_truth_source") == "broker_fill"
+
+
+def test_build_deterministic_trade_report_adds_truth_surface() -> None:
+    report = mod.build_deterministic_trade_report(
+        {
+            "trade_id": "TRD_20260420_005930_03",
+            "story_id": "TRD_20260420_005930_03",
+            "symbol": "005930",
+            "action": "SELL",
+            "status": "closed",
+            "execution_mode_label": "real broker",
+            "exit_execution_details": {
+                "filled_price": 70100.0,
+                "broker_truth_source": "kiwoom.order_status",
+                "broker_realized_pnl": -320.0,
+                "broker_realized_pnl_pct": -0.0064,
+                "broker_fee": 14,
+                "broker_tax": 9,
+                "pnl_truth_source": "kiwoom.ka10077",
+                "broker_day_truth_source": "kiwoom.ka10077",
+                "broker_day_match_mode": "symbol_price_qty",
+                "broker_day_authoritative": True,
+                "broker_day_row_count": 1,
+            },
+            "monitor_reason_human": {
+                "current_price": 70050.0,
+                "price_source": "state.minute_ohlcv_by_symbol.close",
+            },
+        }
+    )
+
+    truth_surface = report.get("truth_surface") if isinstance(report.get("truth_surface"), dict) else {}
+    price = truth_surface.get("price") if isinstance(truth_surface.get("price"), dict) else {}
+    pnl = truth_surface.get("pnl") if isinstance(truth_surface.get("pnl"), dict) else {}
+    availability = truth_surface.get("availability") if isinstance(truth_surface.get("availability"), dict) else {}
+
+    assert price.get("broker_fill_price") == 70100.0
+    assert price.get("monitor_mark_price") == 70050.0
+    assert price.get("price_truth_source") == "broker_fill"
+    assert pnl.get("value") == -320.0
+    assert pnl.get("pct") == -0.0064
+    assert pnl.get("broker_fee") == 14
+    assert pnl.get("broker_tax") == 9
+    assert pnl.get("pnl_truth_source") == "kiwoom.ka10077"
+    assert pnl.get("broker_day_truth_source") == "kiwoom.ka10077"
+    assert pnl.get("broker_day_match_mode") == "symbol_price_qty"
+    assert pnl.get("broker_day_authoritative") is True
+    assert pnl.get("broker_day_row_count") == 1
+    assert availability.get("broker_fill_present") is True
+    assert availability.get("broker_pnl_present") is True
+    assert availability.get("broker_day_authoritative") is True
 
 
 def test_fallback_report_prefers_trade_read_model_strategist_and_scanner_context_when_runtime_sections_missing(tmp_path, monkeypatch) -> None:
@@ -2334,6 +2526,206 @@ def test_render_trade_report_markdown_monitor_snapshot_uses_active_thresholds_an
     assert "Watch axes:" not in markdown
     assert "Effective stop:" not in markdown
     assert "Take profit:" not in markdown
+
+
+def test_render_trade_report_markdown_surfaces_price_truth_fields() -> None:
+    report = {
+        "trade_id": "TRD_20260320_005930_100",
+        "action": "SELL",
+        "symbol": "005930",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {"summary": "context", "bullets": []},
+        "why_this_symbol_was_chosen": {"summary": "why", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+        "shared_facts": {
+            "pnl": -320.0,
+            "pnl_pct": -0.0064,
+            "broker_fill_price": 70100.0,
+            "account_mark_price": 70080.0,
+            "monitor_mark_price": 70050.0,
+            "price_truth_source": "broker_fill",
+            "pnl_truth_source": "kiwoom.ka10077",
+            "broker_day_truth_source": "kiwoom.ka10077",
+            "broker_day_match_mode": "symbol_price_qty",
+            "broker_day_authoritative": True,
+        },
+        "monitor_snapshot": {
+            "posture": "SELL",
+            "trigger_type": "eod_flat",
+            "current_price": 70050.0,
+            "average_price": 69900.0,
+            "exit_triggered": True,
+            "price_source": "state.minute_ohlcv_by_symbol.close",
+        },
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "## Truth Surface" in markdown
+    assert "브로커 체결가는 70100.00입니다." in markdown
+    assert "계좌 기준 마크 가격은 70080.00입니다." in markdown
+    assert "모니터 관측 가격은 70050.00입니다." in markdown
+    assert "가격 truth 소스는 브로커 체결가 기준입니다." in markdown
+    assert "손익 truth 소스는 키움 당일 실현손익 기준(ka10077)입니다." in markdown
+    assert "브로커 당일 손익 매칭은 symbol_price_qty / authoritative 상태이며, 소스는 키움 당일 실현손익 기준(ka10077)입니다." in markdown
+    assert "truth 가용성: 브로커 체결가=있음, 계좌 마크=있음, 모니터 가격=있음, 브로커 손익=있음." in markdown
+
+
+def test_build_execution_quality_section_surfaces_broker_truth_fields() -> None:
+    section = mod._build_execution_quality_section(
+        {
+            "symbol": "005930",
+            "action": "SELL",
+            "execution_mode_label": "real broker",
+            "execution_details": {
+                "filled_qty": 2,
+                "filled_price": 70100.0,
+                "avg_price": 70100.0,
+                "order_status": "recorded",
+                "order_id": "OID-1",
+                "execution_mode": "real",
+                "broker_env": "real",
+                "broker_truth_source": "kiwoom.order_status",
+                "broker_realized_pnl": -320.0,
+                "broker_realized_pnl_pct": -0.0064,
+                "broker_fee": 14,
+                "broker_tax": 9,
+                "pnl_truth_source": "kiwoom.ka10077",
+            },
+        },
+        {"outcome": "recorded", "quantity": 2},
+        {},
+    )
+
+    bullets = section.get("bullets") or []
+    assert "브로커 체결 기준 가격은 70100.00였습니다." in bullets
+    assert "브로커 실현 손익은 -320.0 / -0.64% 기준으로 정리했습니다." in bullets
+    assert "브로커 수수료/세금은 14 / 9였습니다." in bullets
+    assert "체결 truth 소스는 kiwoom.order_status였습니다." in bullets
+    assert "손익 truth 소스는 키움 당일 실현손익 기준(ka10077)으로 확인했습니다." in bullets
+
+
+def test_render_trade_report_markdown_surfaces_execution_truth_fields() -> None:
+    report = {
+        "trade_id": "TRD_20260320_005930_101",
+        "action": "SELL",
+        "symbol": "005930",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {"summary": "context", "bullets": []},
+        "why_this_symbol_was_chosen": {"summary": "why", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+        "shared_facts": {
+            "pnl": -320.0,
+            "pnl_pct": -0.0064,
+            "broker_fee": 14,
+            "broker_tax": 9,
+            "broker_fill_price": 70100.0,
+            "price_truth_source": "broker_fill",
+            "pnl_truth_source": "kiwoom.ka10077",
+        },
+        "monitor_snapshot": {
+            "posture": "SELL",
+            "trigger_type": "eod_flat",
+            "current_price": 70050.0,
+            "average_price": 69900.0,
+            "exit_triggered": True,
+            "price_source": "state.minute_ohlcv_by_symbol.close",
+        },
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "## 실행 결과" in markdown
+    assert "- 브로커 체결 기준 가격은 70100.00였습니다." in markdown
+    assert "- 브로커 실현 손익은 -320.0 / -0.64% 기준으로 정리했습니다." in markdown
+    assert "- 브로커 수수료/세금은 14 / 9였습니다." in markdown
+    assert "- 가격 truth 소스는 브로커 체결가 기준으로 확인했습니다." in markdown
+    assert "- 손익 truth 소스는 키움 당일 실현손익 기준(ka10077)으로 확인했습니다." in markdown
+
+
+def test_render_trade_report_markdown_uses_estimated_pnl_phrase_when_broker_fill_only() -> None:
+    report = {
+        "trade_id": "TRD_20260421_005380_01",
+        "action": "SELL",
+        "symbol": "005380",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {"summary": "context", "bullets": []},
+        "why_this_symbol_was_chosen": {"summary": "why", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+        "shared_facts": {
+            "pnl": "unavailable",
+            "pnl_pct": -0.0090,
+            "broker_fill_price": 537000.0,
+            "monitor_mark_price": 536000.0,
+            "price_truth_source": "broker_fill",
+            "monitor_price_source": "position.current_price",
+            "pnl_truth_source": "broker_fill_account_snapshot_estimate",
+        },
+        "truth_surface": {
+            "price": {
+                "broker_fill_price": 537000.0,
+                "monitor_mark_price": 536000.0,
+                "price_truth_source": "broker_fill",
+                "monitor_price_source": "position.current_price",
+            },
+            "pnl": {
+                "value": "unavailable",
+                "pct": -0.0090,
+                "pnl_truth_source": "broker_fill_account_snapshot_estimate",
+            },
+            "availability": {
+                "broker_fill_present": True,
+                "account_mark_present": False,
+                "monitor_mark_present": True,
+                "broker_pnl_present": True,
+            },
+        },
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "종료 직전 모니터 관측 가격은 536000.00입니다." in markdown
+    assert "브로커 체결가와 계좌 평가손익 기준 추정 손익률은 -0.90%입니다." in markdown
+    assert "손익 truth 소스는 브로커 체결가와 계좌 평가손익 역산 기준입니다." in markdown
 
 
 def test_render_trade_report_markdown_places_monitor_snapshot_and_scanner_comparison_in_requested_order() -> None:

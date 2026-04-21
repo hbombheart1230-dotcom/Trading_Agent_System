@@ -3,10 +3,20 @@ description: 주문번호 기반 상태/체결 조회 (kt00007 + kt00009)
 outputs: OrderStatusDTO
 steps:
   - api_id: kt00007
+    defaults:
+      qry_tp: "2"
+      stk_bond_tp: "1"
+      sell_tp: "0"
+      dmst_stex_tp: "KRX"
     map:
       stk_cd: "{symbol}"
       fr_ord_no: "{ord_no}"
   - api_id: kt00009
+    defaults:
+      mrkt_tp: "0"
+      stk_bond_tp: "1"
+      sell_tp: "0"
+      dmst_stex_tp: "KRX"
     map:
       ord_dt: "{ord_dt}"
       qry_tp: "{qry_tp}"

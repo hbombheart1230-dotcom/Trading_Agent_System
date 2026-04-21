@@ -91,3 +91,66 @@ def test_build_execution_details_keeps_quote_snapshot_fields() -> None:
     assert details["best_ask"] == 70550.0
     assert details["spread_bps"] == 7.1
     assert details["quote_snapshot"]["spread_bps"] == 7.1
+
+
+def test_build_execution_details_prefers_broker_order_status_truth() -> None:
+    details = build_execution_details(
+        {
+            "execution": {"action": "SELL", "symbol": "005930", "qty": 1},
+            "executor": {"broker_message": "accepted ord_no=A2"},
+            "monitor": {"current_price": 70100.0},
+        },
+        context={
+            "execution_context": {
+                "order_id": "A2",
+                "broker_order_status": {
+                    "order_id": "A2",
+                    "filled_qty": 1,
+                    "filled_price": 69900,
+                    "status": "filled",
+                },
+            }
+        },
+    )
+
+    assert details["order_id"] == "A2"
+    assert details["filled_qty"] == 1
+    assert details["filled_price"] == 69900
+    assert details["avg_price"] == 69900.0
+    assert details["fill_status"] == "filled"
+    assert details["broker_truth_source"] == "kiwoom.order_status"
+
+
+def test_build_execution_details_surfaces_authoritative_broker_day_pnl_truth() -> None:
+    details = build_execution_details(
+        {
+            "execution": {"action": "SELL", "symbol": "005930", "qty": 1},
+        },
+        context={
+            "execution_context": {
+                "broker_order_status": {
+                    "order_id": "A3",
+                    "filled_qty": 1,
+                    "filled_price": 70100,
+                    "status": "filled",
+                },
+                "broker_day_pnl": {
+                    "source": "kiwoom.ka10077",
+                    "authoritative": True,
+                    "match_mode": "single_symbol_row",
+                    "row_count": 1,
+                    "realized_pnl": 320.0,
+                    "pnl_ratio": 0.0045,
+                    "fee": 14,
+                    "tax": 9,
+                },
+            }
+        },
+    )
+
+    assert details["broker_realized_pnl"] == 320.0
+    assert details["broker_realized_pnl_pct"] == 0.0045
+    assert details["broker_fee"] == 14
+    assert details["broker_tax"] == 9
+    assert details["pnl_truth_source"] == "kiwoom.ka10077"
+    assert details["broker_day_authoritative"] is True
