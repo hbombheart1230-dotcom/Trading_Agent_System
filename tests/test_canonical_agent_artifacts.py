@@ -8,6 +8,7 @@ from graphs.nodes.execute_from_packet import execute_from_packet
 from graphs.nodes.monitor_node import monitor_node
 from graphs.nodes.scanner_node import scanner_node
 from graphs.nodes.strategist_node import strategist_node
+from libs.core.api_response import ApiResponse
 from libs.runtime.canonical_artifacts import canonical_run_artifact_paths
 
 
@@ -109,6 +110,47 @@ def test_execute_from_packet_writes_supervisor_and_executor_artifacts(tmp_path: 
     assert executor["agent"] == "executor"
     assert supervisor["run_id"] == "run-4"
     assert executor["run_id"] == "run-4"
+
+
+def test_execute_from_packet_writes_executor_ord_no_from_nested_payload(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+    monkeypatch.setenv("REPORTS_ROOT", str(tmp_path / "reports"))
+    catalog = tmp_path / "api_catalog.jsonl"
+    catalog.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            class Result:
+                response = ApiResponse.from_http(
+                    200,
+                    '{"ord_no":"A000123","msg_cd":"0000","msg1":"accepted"}',
+                )
+                meta = {"executor": "real", "url": "https://mockapi.kiwoom.com/api/dostk/ordr"}
+
+            return Result()
+
+    state = {
+        "run_id": "run-4c",
+        "started_at": "2026-03-18T00:00:00+00:00",
+        "catalog_path": str(catalog),
+        "executor": CaptureExecutor(),
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "005930", "qty": 1, "order_api_id": "ORDER_SUBMIT", "order_type": "market"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    execute_from_packet(state)
+
+    paths = canonical_run_artifact_paths("run-4c", day="2026-03-18", reports_root=tmp_path / "reports")
+    executor = json.loads(paths["executor"].read_text(encoding="utf-8"))
+    assert executor["ord_no"] == "A000123"
+    assert executor["broker_message"] == "accepted"
+    assert executor["broker_result"]["ord_no"] == "A000123"
 
 
 def test_execute_from_packet_persists_quote_snapshot_in_executor_artifact(tmp_path: Path, monkeypatch) -> None:

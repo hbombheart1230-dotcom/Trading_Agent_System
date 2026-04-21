@@ -258,6 +258,40 @@ Observed examples:
 Root cause:
 
 - this was not a packet-wiring problem
+
+## New Report Surface
+
+`ai_trade_report` now exposes strategist memory usage directly.
+
+JSON surface:
+
+- `reports/trades/<day>/<trade_id>/reports/ai_trade_report.json`
+  - `memory_surface.status`
+  - `memory_surface.strategy_memory`
+  - `memory_surface.selected_symbol_memory`
+  - `memory_surface.reporter_feedback_packet`
+  - `memory_surface.read_model_facts`
+  - `memory_surface.usage_trace`
+
+Markdown surface:
+
+- `reports/trades/<day>/<trade_id>/reports/ai_trade_report.md`
+  - `## 메모리 사용`
+
+This surface is meant to answer:
+
+- which memory packets were actually present
+- which packets were empty or unavailable
+- whether the selected-symbol memory was populated
+- how strategist output reflected those packets in:
+  - `playbook`
+  - `monitor_guidance`
+  - `scanner_bias`
+
+Important constraint:
+
+- `strategy_memory` is currently shown as an aggregated packet
+- the report explicitly states that daily/weekly/monthly memory is **not** split into separate strategist packets yet
 - it was a **post-scanner refresh orchestration gap**
 - the scanner selected a symbol outside the cached strategist frame
 - Commander marked `RUN_REFRESH`

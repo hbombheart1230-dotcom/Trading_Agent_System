@@ -1,4 +1,5 @@
 from libs.reporting.trade_story_pipeline import (
+    build_execution_outcome_human,
     build_trade_story_input,
     build_trade_story_input_from_bundle,
     build_lifecycle_bundle,
@@ -10,6 +11,148 @@ from libs.reporting.trade_story_pipeline import (
 )
 import json
 from pathlib import Path
+
+
+def test_build_execution_outcome_human_emits_korean_live_execution_summary() -> None:
+    out = build_execution_outcome_human(
+        {
+            "action": "SELL",
+            "symbol": "005380",
+            "qty": 1,
+            "filled_price": 537000,
+            "ord_no": "0123456",
+            "status": "filled",
+        },
+        {"broker_env": "real"},
+        story_type="live_trade",
+        mode_label="real",
+    )
+
+    assert out["summary"] == "005380 1주 매도 주문은 실거래로 체결됐고 체결 기준 가격은 537000.00였습니다."
+    assert "Execution outcome:" not in "\n".join(str(row) for row in out["bullets"])
+    assert any("주문 번호는 0123456였습니다." == row for row in out["bullets"])
+
+
+def test_build_trade_story_input_from_bundle_synthesizes_execution_summary_from_lifecycle() -> None:
+    bundle_out = {
+        "day": "2026-04-21",
+        "trade_id": "TRD_20260421_005380_01",
+        "run_id": "RUN_EXIT",
+        "symbol": "005380",
+        "trade_lifecycle_status": "closed",
+        "lifecycle": {
+            "entry": {
+                "run_id": "RUN_ENTRY",
+                "ts": "2026-04-21T00:10:00+00:00",
+                "action": "BUY",
+                "execution_details": {"order_id": "0100001", "filled_price": 537000},
+                "scanner_context": {"selected_symbol": "005380"},
+            },
+            "hold": {"run_ids": ["RUN_MONITOR_1"]},
+            "exit": {
+                "run_id": "RUN_EXIT",
+                "ts": "2026-04-21T00:11:00+00:00",
+                "action": "SELL",
+                "execution_details": {"order_id": "0100002", "filled_price": 537000},
+            },
+            "summary": {"lifecycle_summary_human": "closed"},
+        },
+        "execution_outcome_human": {},
+        "market_context_human": {"summary": "market"},
+        "scanner_reason_human": {"summary": "scanner", "selected_symbol": "005380"},
+        "filters_human": {"summary": "filters"},
+        "monitor_reason_human": {"summary": "monitor"},
+        "guard_reason_human": {"summary": "guard"},
+        "reporter_status_human": {"status": "linked_run", "summary": "reporter"},
+        "operator_conclusion_human": {"summary": "conclusion"},
+        "timeline": [],
+        "warnings": [],
+        "monitor_timeline": {},
+    }
+
+    out = build_trade_story_input_from_bundle(bundle_out)
+
+    assert out["execution_outcome_human"]["summary"] == "005380 거래는 매수 진입 후 매도 청산까지 기록됐습니다. 브로커 매수가/매도가는 537000.00 / 537000.00였습니다."
+    assert any("진입 주문 번호는 0100001였습니다." == row for row in out["execution_outcome_human"]["bullets"])
+    assert any("청산 주문 번호는 0100002였습니다." == row for row in out["execution_outcome_human"]["bullets"])
+
+
+def test_build_trade_story_input_from_bundle_synthesizes_operator_conclusion_when_placeholder() -> None:
+    bundle_out = {
+        "day": "2026-04-21",
+        "trade_id": "TRD_20260421_005380_01",
+        "run_id": "RUN_EXIT",
+        "symbol": "005380",
+        "trade_lifecycle_status": "closed",
+        "lifecycle": {
+            "entry": {
+                "run_id": "RUN_ENTRY",
+                "ts": "2026-04-21T00:10:00+00:00",
+                "action": "BUY",
+                "execution_details": {"order_id": "0100001", "filled_price": 537000},
+                "scanner_context": {"selected_symbol": "005380"},
+            },
+            "hold": {"run_ids": ["RUN_MONITOR_1"]},
+            "exit": {
+                "run_id": "RUN_EXIT",
+                "ts": "2026-04-21T00:11:00+00:00",
+                "action": "SELL",
+                "execution_details": {"order_id": "0100002", "filled_price": 537000},
+            },
+            "summary": {"lifecycle_summary_human": "closed"},
+        },
+        "execution_outcome_human": {},
+        "market_context_human": {"summary": "market"},
+        "scanner_reason_human": {"summary": "scanner", "selected_symbol": "005380"},
+        "filters_human": {"summary": "filters"},
+        "monitor_reason_human": {"summary": "monitor"},
+        "guard_reason_human": {"summary": "guard"},
+        "reporter_status_human": {"status": "missing", "summary": "reporter"},
+        "operator_conclusion_human": {"summary": "최종 생애주기 결론은 기록되지 않았습니다."},
+        "timeline": [],
+        "warnings": [],
+        "monitor_timeline": {},
+    }
+
+    out = build_trade_story_input_from_bundle(bundle_out)
+
+    assert out["operator_conclusion_human"]["summary"] != "최종 생애주기 결론은 기록되지 않았습니다."
+    assert "005380" in out["operator_conclusion_human"]["summary"]
+    assert out["operator_conclusion_human"]["current_action"] == "SELL"
+    assert out["report_section_seeds"]["final_operator_conclusion"]["summary"] == out["operator_conclusion_human"]["summary"]
+
+
+def test_build_trade_story_input_from_bundle_normalizes_reporter_status_human() -> None:
+    bundle_out = {
+        "day": "2026-04-21",
+        "trade_id": "TRD_20260421_005380_01",
+        "run_id": "RUN_EXIT",
+        "symbol": "005380",
+        "trade_lifecycle_status": "closed",
+        "lifecycle": {
+            "entry": {"run_id": "RUN_ENTRY", "action": "BUY", "scanner_context": {"selected_symbol": "005380"}},
+            "hold": {"run_ids": []},
+            "exit": {"run_id": "RUN_EXIT", "action": "SELL"},
+            "summary": {"lifecycle_summary_human": "closed"},
+        },
+        "reporter_status_human": {
+            "status": "missing",
+            "summary": "Same-day reporter analysis was not generated yet.",
+            "grade": "N/A",
+            "bullets": [
+                "Link same-day reporter analysis to this lifecycle for a complete quality review.",
+                "Holding-phase evidence is thin; preserve more monitor context between entry and exit.",
+            ],
+        },
+    }
+
+    out = build_trade_story_input_from_bundle(bundle_out)
+
+    assert out["reporter_status_human"]["summary"] == "당일 리포터 분석은 아직 생성되지 않았습니다."
+    assert out["reporter_status_human"]["bullets"] == [
+        "동일 일자 리포터 분석이 아직 이 거래 생애주기에 연결되지 않았습니다.",
+        "보유 구간 근거는 제한적이며 진입과 청산 사이 모니터 문맥이 충분하지 않습니다.",
+    ]
 
 
 def test_build_trade_story_input_from_bundle_normalizes_hold_lifecycle_shape() -> None:

@@ -95,6 +95,7 @@ from libs.reporting.trade_execution_snapshot import (
     build_execution_snapshot as _build_execution_snapshot_lib,
     normalize_execution_row as _normalize_execution_row_lib,
 )
+from libs.reporting.trade_fallback_text import lifecycle_conclusion_summary_is_placeholder
 from libs.reporting.trade_bundle_assembly import (
     hydrate_live_run_bundle_context,
     build_live_run_bundle,
@@ -1046,11 +1047,11 @@ def _background_job_lock_path() -> Path | None:
     raw = str(os.getenv("INTRADAY_TRADE_REPORT_JOB_LOCK_PATH") or "").strip()
     if raw:
         return Path(raw)
-    return Path(__file__).resolve().parents[1] / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+    return ROOT / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
 
 
 def _background_job_queue_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "reports" / "runtime" / "intraday_trade_report_bundle.queue.json"
+    return ROOT / "reports" / "runtime" / "intraday_trade_report_bundle.queue.json"
 
 
 def _bundle_role(value: Any = "") -> str:
@@ -1119,7 +1120,7 @@ def _spawn_followup_background_job(
     target_symbol = str(next_request.get("target_symbol") or "").strip()
     if not target_run_id:
         return {}
-    cmd = [sys.executable, str(Path(__file__).resolve())]
+    cmd = [sys.executable, str(ROOT / "scripts" / "run_live_execution_bundle_report.py")]
     if args.env_path:
         cmd.extend(["--env-path", str(args.env_path)])
     cmd.extend(["--event-log-path", str(args.event_log_path)])
@@ -1149,7 +1150,7 @@ def _spawn_followup_background_job(
     try:
         proc = subprocess.Popen(  # noqa: S603
             cmd,
-            cwd=str(Path(__file__).resolve().parents[1]),
+            cwd=str(ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
@@ -3301,6 +3302,52 @@ def main(argv: Optional[List[str]] = None) -> int:
             "story_anchor": f"{anchor_execution.get('action') or 'WAIT'} {symbol or '-'} x{safe_int(anchor_execution.get('qty'), 0)} | trade {trade_id}",
             "warnings": list(lifecycle.get("warnings") or []),
         }
+        lifecycle_execution_outcome_human = dict(exit_execution_context or anchor_bundle.get("execution_outcome_human") or {})
+        if not lifecycle_execution_outcome_human:
+            lifecycle_execution_outcome_human = build_execution_outcome_human(
+                anchor_execution,
+                dict((resolved_bundle_sources.get("agents") or {}).get("executor") or anchor_bundle.get("executor") or {}),
+                story_type=story_type,
+                mode_label=execution_mode_label_text,
+            )
+        lifecycle_reporter_status_human = {
+            "status": str(reporter_obj.get("status_human") or "missing"),
+            "summary": str(reporter_obj.get("summary") or ""),
+            "grade": str(reporter_obj.get("grade") or "N/A"),
+            "bullets": [str(x or "") for x in list(reporter_obj.get("improvement_points") or [])[:6]],
+        }
+        lifecycle_operator_conclusion_human = dict(anchor_bundle.get("operator_conclusion_human") or {})
+        if (
+            not lifecycle_operator_conclusion_human
+            or lifecycle_conclusion_summary_is_placeholder(lifecycle_operator_conclusion_human.get("summary"))
+        ):
+            lifecycle_operator_conclusion_human = build_operator_conclusion_human(
+                execution=anchor_execution,
+                scanner_reason_human=dict(anchor_bundle.get("scanner_reason_human") or entry_ctx.get("scanner_context") or {}),
+                filters_human=dict(anchor_bundle.get("filters_human") or {}),
+                monitor_reason_human=lifecycle_monitor_reason_human,
+                execution_outcome_human=lifecycle_execution_outcome_human,
+                reporter_status_human=lifecycle_reporter_status_human,
+            )
+        if not str(lifecycle_operator_conclusion_human.get("summary") or "").strip():
+            lifecycle_operator_conclusion_human["summary"] = str(summary_obj.get("operator_conclusion_human") or "")
+        if not str(lifecycle_operator_conclusion_human.get("current_action") or "").strip():
+            lifecycle_operator_conclusion_human["current_action"] = str(
+                exit_action or ("HOLD" if status == "open" else anchor_execution.get("action") or "WAIT")
+            )
+        if not list(lifecycle_operator_conclusion_human.get("watch_next") or []):
+            lifecycle_operator_conclusion_human["watch_next"] = [
+                f"생애주기 상태는 {status}입니다.",
+                "모니터 트리거 변화가 있는지 확인해야 합니다.",
+                "거시 환경과 뉴스 흐름 변화가 있는지 확인해야 합니다.",
+            ]
+        if not list(lifecycle_operator_conclusion_human.get("thesis_invalidation") or []):
+            lifecycle_operator_conclusion_human["thesis_invalidation"] = [
+                "손절 기준 이탈",
+                "모니터와 스캐너 판단 발산",
+                "거시 환경의 부정적 전환",
+            ]
+
         lifecycle_bundle: Dict[str, Any] = {
             "schema_version": "live_execution_bundle.v3",
             "artifact_type": "aggregated_execution_bundle",
@@ -3328,19 +3375,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             "filters_human": dict(anchor_bundle.get("filters_human") or {}),
             "monitor_reason_human": lifecycle_monitor_reason_human,
             "guard_reason_human": dict(exit_guard_context or anchor_bundle.get("guard_reason_human") or {}),
-            "execution_outcome_human": dict(exit_execution_context or anchor_bundle.get("execution_outcome_human") or {}),
-            "reporter_status_human": {
-                "status": str(reporter_obj.get("status_human") or "missing"),
-                "summary": str(reporter_obj.get("summary") or ""),
-                "grade": str(reporter_obj.get("grade") or "N/A"),
-                "bullets": [str(x or "") for x in list(reporter_obj.get("improvement_points") or [])[:6]],
-            },
-            "operator_conclusion_human": {
-                "current_action": str(exit_action or ("HOLD" if status == "open" else anchor_execution.get("action") or "WAIT")),
-                "summary": str(summary_obj.get("operator_conclusion_human") or ""),
-                "watch_next": [f"Lifecycle status: {status}", "Monitor trigger changes", "Macro/news shifts"],
-                "thesis_invalidation": ["stop-loss breach", "monitor and scanner divergence", "negative macro regime shift"],
-            },
+            "execution_outcome_human": lifecycle_execution_outcome_human,
+            "reporter_status_human": lifecycle_reporter_status_human,
+            "operator_conclusion_human": lifecycle_operator_conclusion_human,
             "timeline": list(lifecycle.get("timeline") or []),
             "warnings": list(story_contract.get("warnings") or []),
             "lifecycle_attach_debug": [dict(row) for row in list(lifecycle.get("lifecycle_attach_debug") or []) if isinstance(row, dict)],
@@ -3714,6 +3751,27 @@ def main(argv: Optional[List[str]] = None) -> int:
                 },
             )
         if str(generation_plan.get("mode") or "") == "generate_ai":
+            _log_bundle_event(
+                event_log_path,
+                role=role,
+                event="ai_trade_report_generation_started",
+                run_id=str(anchor_run_id or "report-bundle"),
+                symbol=symbol,
+                trade_id=trade_id,
+                payload={
+                    "pid": int(os.getpid()),
+                    "parent_pid": int(os.getppid()),
+                    "role": role,
+                    "component": "ai_trade_report",
+                    "trade_id": trade_id,
+                    "run_id": str(anchor_run_id or ""),
+                    "model": str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else configured_report_model,
+                    "report_requested": bool(report_requested),
+                    "should_attempt_generation": bool(should_attempt_generation),
+                    "story_type": str(story_type or ""),
+                    "lifecycle_status": str(status or ""),
+                },
+            )
             generation_result = execute_ai_trade_report_generation(
                 trade_story_input=dict(trade_story_input or {}),
                 diagnostics=dict(diagnostics),
@@ -3728,6 +3786,35 @@ def main(argv: Optional[List[str]] = None) -> int:
             trade_report = dict(generation_result.get("trade_report") or deterministic_report)
             ai_trade_report_llm_artifact = dict(
                 generation_result.get("ai_trade_report_llm_artifact") or {}
+            )
+            llm_meta = (
+                ai_trade_report_llm_artifact.get("meta")
+                if isinstance(ai_trade_report_llm_artifact.get("meta"), dict)
+                else {}
+            )
+            _log_bundle_event(
+                event_log_path,
+                role=role,
+                event="ai_trade_report_generation_finished",
+                run_id=str(anchor_run_id or "report-bundle"),
+                symbol=symbol,
+                trade_id=trade_id,
+                payload={
+                    "pid": int(os.getpid()),
+                    "parent_pid": int(os.getppid()),
+                    "role": role,
+                    "component": "ai_trade_report",
+                    "trade_id": trade_id,
+                    "run_id": str(anchor_run_id or ""),
+                    "ai_trade_report_status": str(diagnostics.get("ai_trade_report_status") or ""),
+                    "report_status": str(diagnostics.get("report_status") or ""),
+                    "report_reason_code": str(diagnostics.get("report_reason_code") or ""),
+                    "report_generation_reason": str(diagnostics.get("report_generation_reason") or ""),
+                    "llm_status": str(ai_trade_report_llm_artifact.get("llm_status") or ai_trade_report_llm_artifact.get("status") or ""),
+                    "llm_reason": str(llm_meta.get("reason") or ""),
+                    "llm_error": str(ai_trade_report_llm_artifact.get("error") or ""),
+                    "model": str(diagnostics.get("llm_model_used") or configured_report_model or ""),
+                },
             )
 
         report_output_persistence = persist_trade_report_outputs(

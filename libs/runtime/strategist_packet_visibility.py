@@ -87,6 +87,22 @@ def build_strategist_memory_packet_visibility(
         or commander_open_position_refresh_context.get("selected_symbol_memory")
         or commander_refresh_context.get("selected_symbol_memory")
     )
+    memory_packets = _dict(
+        strategist_output.get("memory_packets")
+        or _dict(strategist_output.get("commander_context_ref")).get("memory_packets")
+    )
+    commander_memory_policy = _dict(
+        strategist_output.get("commander_memory_policy")
+        or _dict(strategist_output.get("commander_context_ref")).get("commander_memory_policy")
+    )
+    scanner_memory_bias = _dict(
+        strategist_output.get("scanner_memory_bias")
+        or _dict(strategist_output.get("commander_context_ref")).get("scanner_memory_bias")
+    )
+    monitor_memory_bias = _dict(
+        strategist_output.get("monitor_memory_bias")
+        or _dict(strategist_output.get("commander_context_ref")).get("monitor_memory_bias")
+    )
     selected_symbol = _text(
         commander_open_position_refresh_context.get("selected_symbol")
         or commander_refresh_context.get("selected_symbol")
@@ -172,5 +188,52 @@ def build_strategist_memory_packet_visibility(
             "session_open_recovery_evaluated": bool(
                 _dict(merged_refresh_context.get("session_open_recovery_assessment")).get("evaluated")
             ),
+        },
+        "commander_memory_policy": {
+            "present": bool(commander_memory_policy),
+            "application_mode": _text(commander_memory_policy.get("application_mode"), max_len=24),
+            "active_layers": [_text(x, max_len=16) for x in _list(commander_memory_policy.get("active_layers"))[:4] if _text(x, max_len=16)],
+            "priority_order": [_text(x, max_len=16) for x in _list(commander_memory_policy.get("priority_order"))[:4] if _text(x, max_len=16)],
+            "symbol_memory_override_enabled": bool(commander_memory_policy.get("symbol_memory_override_enabled")),
+            "scanner_bias_enabled": bool(commander_memory_policy.get("scanner_bias_enabled")),
+            "monitor_bias_enabled": bool(commander_memory_policy.get("monitor_bias_enabled")),
+        },
+        "scanner_memory_bias": {
+            "present": bool(scanner_memory_bias),
+            "enabled": bool(scanner_memory_bias.get("enabled")),
+            "active_layers": [_text(x, max_len=16) for x in _list(scanner_memory_bias.get("active_layers"))[:4] if _text(x, max_len=16)],
+            "source_delta_keys": [_text(x, max_len=24) for x in list(_dict(scanner_memory_bias.get("source_weight_delta")).keys())[:4] if _text(x, max_len=24)],
+            "symbol_adjustment_count": len(_dict(scanner_memory_bias.get("symbol_adjustments"))),
+            "bias_source": _text(scanner_memory_bias.get("bias_source"), max_len=40),
+        },
+        "monitor_memory_bias": {
+            "present": bool(monitor_memory_bias),
+            "enabled": bool(monitor_memory_bias.get("enabled")),
+            "active_layers": [_text(x, max_len=16) for x in _list(monitor_memory_bias.get("active_layers"))[:4] if _text(x, max_len=16)],
+            "entry_delta_keys": [_text(x, max_len=64) for x in list(_dict(monitor_memory_bias.get("entry_policy_delta")).keys())[:6] if _text(x, max_len=64)],
+            "risk_posture": _text(monitor_memory_bias.get("risk_posture"), max_len=24),
+            "bias_source": _text(monitor_memory_bias.get("bias_source"), max_len=40),
+        },
+        "memory_packets": {
+            "daily": {
+                "status": _text(_dict(memory_packets.get("daily_strategy_memory")).get("status"), max_len=24),
+                "active": bool(_dict(memory_packets.get("daily_strategy_memory")).get("active")),
+                "best_playbook_count": len(_list(_dict(memory_packets.get("daily_strategy_memory")).get("best_playbooks"))),
+            },
+            "weekly": {
+                "status": _text(_dict(memory_packets.get("weekly_strategy_memory")).get("status"), max_len=24),
+                "active": bool(_dict(memory_packets.get("weekly_strategy_memory")).get("active")),
+            },
+            "monthly": {
+                "status": _text(_dict(memory_packets.get("monthly_strategy_memory")).get("status"), max_len=24),
+                "active": bool(_dict(memory_packets.get("monthly_strategy_memory")).get("active")),
+            },
+            "symbol": {
+                "status": _text(_dict(memory_packets.get("symbol_memory_packet")).get("status"), max_len=24),
+                "active": bool(_dict(memory_packets.get("symbol_memory_packet")).get("active")),
+                "symbol": _text(_dict(memory_packets.get("symbol_memory_packet")).get("symbol"), max_len=24),
+                "override_eligible": bool(_dict(memory_packets.get("symbol_memory_packet")).get("override_eligible")),
+                "trade_count": _safe_int(_dict(memory_packets.get("symbol_memory_packet")).get("trade_count")),
+            },
         },
     }

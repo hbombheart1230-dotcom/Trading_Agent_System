@@ -6,6 +6,7 @@ from typing import Any, Dict
 def build_trade_report_truth_surface(shared_facts: Dict[str, Any] | None) -> Dict[str, Any]:
     facts = shared_facts if isinstance(shared_facts, dict) else {}
     broker_fill_price = facts.get("broker_fill_price")
+    broker_buy_price = facts.get("broker_buy_price")
     account_mark_price = facts.get("account_mark_price")
     monitor_mark_price = facts.get("monitor_mark_price")
     pnl_truth_source = str(facts.get("pnl_truth_source") or "").strip() or "unavailable"
@@ -21,6 +22,7 @@ def build_trade_report_truth_surface(shared_facts: Dict[str, Any] | None) -> Dic
         },
         "price": {
             "broker_fill_price": broker_fill_price,
+            "broker_buy_price": broker_buy_price,
             "account_mark_price": account_mark_price,
             "monitor_mark_price": monitor_mark_price,
             "price_truth_source": facts.get("price_truth_source"),
@@ -41,6 +43,7 @@ def build_trade_report_truth_surface(shared_facts: Dict[str, Any] | None) -> Dic
         },
         "availability": {
             "broker_fill_present": broker_fill_price not in (None, ""),
+            "broker_buy_present": broker_buy_price not in (None, ""),
             "account_mark_present": account_mark_price not in (None, ""),
             "monitor_mark_present": monitor_mark_price not in (None, ""),
             "broker_pnl_present": pnl_truth_source not in {"", "unavailable", "not_available"},

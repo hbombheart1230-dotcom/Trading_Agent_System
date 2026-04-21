@@ -3,6 +3,15 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping
 
 
+def _identity_score(details: Mapping[str, Any] | None) -> int:
+    details_obj = dict(details or {})
+    score = 0
+    for key in ("order_id", "order_status", "filled_qty", "fill_status"):
+        if details_obj.get(key) not in (None, "", [], {}):
+            score += 1
+    return score
+
+
 def _detail_score(details: Mapping[str, Any] | None) -> int:
     details_obj = dict(details or {})
     score = 0
@@ -25,10 +34,32 @@ def _detail_score(details: Mapping[str, Any] | None) -> int:
     return score
 
 
+def _minimal_rebuild_execution_details(details: Mapping[str, Any] | None) -> Dict[str, Any]:
+    details_obj = dict(details or {})
+    out: Dict[str, Any] = {}
+    for key in ("order_id", "order_status", "filled_qty", "fill_status", "symbol", "action", "side", "ts"):
+        if details_obj.get(key) not in (None, "", [], {}):
+            out[key] = details_obj.get(key)
+    return out
+
+
+def _prefer_rebuilt_details(existing: Mapping[str, Any] | None, rebuilt: Mapping[str, Any] | None) -> bool:
+    existing_obj = dict(existing or {})
+    rebuilt_obj = dict(rebuilt or {})
+    if not rebuilt_obj:
+        return False
+    if _identity_score(rebuilt_obj) < _identity_score(existing_obj):
+        return False
+    if _detail_score(rebuilt_obj) >= _detail_score(existing_obj):
+        return True
+    return rebuilt_obj != existing_obj
+
+
 def _rehydrate_side_execution_details(
     side_ctx: Mapping[str, Any] | None,
     *,
     trade_day: str,
+    entry_execution_details: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     from libs.reporting.trade_bundle_assembly import build_execution_details_from_bundle
 
@@ -38,7 +69,7 @@ def _rehydrate_side_execution_details(
             "execution": dict(side_obj.get("execution") or {}),
             "executor": dict(side_obj.get("executor") or {}),
             "monitor": dict(side_obj.get("monitor_context") or {}),
-            "execution_details": dict(side_obj.get("execution_details") or {}),
+            "execution_details": _minimal_rebuild_execution_details(side_obj.get("execution_details")),
         },
         context={
             "trade_day": trade_day,
@@ -48,8 +79,9 @@ def _rehydrate_side_execution_details(
             "broker_fill_lookup_enabled": True,
             "broker_day_truth_lookup_enabled": True,
             "monitor_context": dict(side_obj.get("monitor_context") or {}),
-            "execution_context": dict(side_obj.get("execution_context") or {}),
-            "execution_details": dict(side_obj.get("execution_details") or {}),
+            "execution_context": {},
+            "execution_details": _minimal_rebuild_execution_details(side_obj.get("execution_details")),
+            "entry_execution_details": dict(entry_execution_details or {}),
         },
     )
 
@@ -66,14 +98,23 @@ def rehydrate_lifecycle_bundle_execution_truth(
 
     if entry_ctx:
         rebuilt_entry = _rehydrate_side_execution_details(entry_ctx, trade_day=trade_day)
-        if _detail_score(rebuilt_entry) >= _detail_score(entry_ctx.get("execution_details")):
+        if _prefer_rebuilt_details(entry_ctx.get("execution_details"), rebuilt_entry):
             entry_ctx["execution_details"] = dict(rebuilt_entry)
             bundle_obj["entry"] = entry_ctx
             bundle_obj["entry_execution_details"] = dict(rebuilt_entry)
 
     if exit_ctx:
-        rebuilt_exit = _rehydrate_side_execution_details(exit_ctx, trade_day=trade_day)
-        if _detail_score(rebuilt_exit) >= _detail_score(exit_ctx.get("execution_details")):
+        effective_entry_execution = (
+            dict(bundle_obj.get("entry_execution_details") or {})
+            if isinstance(bundle_obj.get("entry_execution_details"), dict)
+            else dict((entry_ctx.get("execution_details") or {}) if isinstance(entry_ctx.get("execution_details"), dict) else {})
+        )
+        rebuilt_exit = _rehydrate_side_execution_details(
+            exit_ctx,
+            trade_day=trade_day,
+            entry_execution_details=effective_entry_execution,
+        )
+        if _prefer_rebuilt_details(exit_ctx.get("execution_details"), rebuilt_exit):
             exit_ctx["execution_details"] = dict(rebuilt_exit)
             bundle_obj["exit"] = exit_ctx
             bundle_obj["exit_execution_details"] = dict(rebuilt_exit)

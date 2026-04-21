@@ -213,3 +213,35 @@
   - truth-surface visibility is now fixed at the artifact level
   - today’s saved report inputs still did not contain authoritative broker realized-pnl rows
   - next validation target is a day where Kiwoom fill/day-pnl truth is available end-to-end in stored trade report artifacts
+
+## 2026-04-21 Validation Update
+
+- `2026-04-21` stored trade reports now show broker truth end-to-end for executed trades when Kiwoom rows are available.
+- Verified examples:
+  - `reports/trades/2026-04-21/TRD_20260421_005380_01/reports/ai_trade_report.json`
+  - `reports/trades/2026-04-21/TRD_20260421_000660_01/reports/ai_trade_report.json`
+- Current stored truth surface now includes:
+  - `price.broker_buy_price`
+  - `price.broker_fill_price`
+  - `pnl.value`
+  - `pnl.pct`
+  - `pnl.broker_fee`
+  - `pnl.broker_tax`
+  - `pnl.broker_day_truth_source`
+  - `pnl.broker_day_match_mode`
+  - `availability.broker_buy_present`
+  - `availability.broker_pnl_present`
+
+### Entry-side execution truth
+
+- Entry-side `order_id` / `filled_price` is now preserved into:
+  - `lifecycle_bundle.json`
+  - `ai_trade_report_input.json`
+- This closes the previous gap where sell-side broker truth could be rehydrated, but buy-side price had to depend on `ka10077.buy_price` or reverse estimation.
+
+### Remaining runtime check
+
+- Historical/regenerated reports now validate correctly.
+- The remaining operational check is the next live trade:
+  - confirm first-write `ai_trade_report_input.json` already contains entry-side broker truth
+  - confirm no regeneration is required for `broker_buy_price` / `broker_fill_price` / broker pnl truth to appear

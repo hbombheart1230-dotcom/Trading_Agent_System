@@ -6,6 +6,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from libs.core.symbols import normalize_symbol
+from libs.reporting.trade_fallback_text import (
+    ENTRY_REASON_NOT_CAPTURED,
+    EXIT_REASON_NOT_CAPTURED,
+    HOLDING_DURATION_UNAVAILABLE,
+    OPEN_POSITION_WATCHING,
+    PARTIAL_EXIT_EVIDENCE_MISSING,
+)
 from libs.reporting.trade_story_pipeline import classify_story_type as _classify_story_type, execution_mode_label, safe_int
 
 def _is_placeholder_entry_reason(value: Any) -> bool:
@@ -15,6 +22,7 @@ def _is_placeholder_entry_reason(value: Any) -> bool:
         "no_position",
         "entry reasoning was not captured.",
         "entry reasoning was not captured",
+        "진입 이유는 기록되지 않았습니다.",
         "-",
         "n/a",
     }
@@ -339,6 +347,11 @@ def _build_trade_lifecycles(
 
     def _entry_context(snapshot: Dict[str, Any], bundle: Dict[str, Any]) -> Dict[str, Any]:
         execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
+        execution_details = (
+            dict(bundle.get("execution_details") or {})
+            if isinstance(bundle.get("execution_details"), dict)
+            else dict(execution)
+        )
         strategist_payload = bundle.get("strategist") if isinstance(bundle.get("strategist"), dict) else {}
         strategist_summary_payload = bundle.get("strategist_summary") if isinstance(bundle.get("strategist_summary"), dict) else {}
         strategist_policy = (
@@ -420,10 +433,16 @@ def _build_trade_lifecycles(
             "monitor_context": monitor_context,
             "guard_context": dict(bundle.get("guard_reason_human") or {}),
             "execution_context": dict(bundle.get("execution_outcome_human") or {}),
+            "execution_details": execution_details,
         }
 
     def _exit_context(snapshot: Dict[str, Any], bundle: Dict[str, Any]) -> Dict[str, Any]:
         execution = snapshot.get("execution") if isinstance(snapshot.get("execution"), dict) else {}
+        execution_details = (
+            dict(bundle.get("execution_details") or {})
+            if isinstance(bundle.get("execution_details"), dict)
+            else dict(execution)
+        )
         has_exit_monitor_trace = bool(
             str(snapshot.get("exit_reason") or "").strip()
             or str(snapshot.get("monitor_reason") or "").strip()
@@ -445,6 +464,7 @@ def _build_trade_lifecycles(
             "monitor_context": monitor_context,
             "guard_context": dict(bundle.get("guard_reason_human") or {}),
             "execution_context": dict(bundle.get("execution_outcome_human") or {}),
+            "execution_details": execution_details,
         }
 
     for snapshot in sorted(run_snapshots, key=lambda row: int(row.get("ts_epoch") or 0)):
@@ -657,17 +677,17 @@ def _build_trade_lifecycles(
         if entry_ts is not None:
             duration_sec = int(max(0, (end_ts or 0) - (entry_ts or end_ts or 0)))
         holding_duration = _format_duration_human(duration_sec) if duration_sec is not None else ""
-        entry_reason_human = str(entry.get("reason_human") or "Entry reason was not captured.")
+        entry_reason_human = str(entry.get("reason_human") or ENTRY_REASON_NOT_CAPTURED)
         if lifecycle.get("status") == "open":
-            exit_reason_human = "Position is still open; monitor is watching for exit triggers."
+            exit_reason_human = OPEN_POSITION_WATCHING
         elif lifecycle.get("status") == "partial" and not exit_ctx:
-            exit_reason_human = "Lifecycle is partial because exit evidence is missing."
+            exit_reason_human = PARTIAL_EXIT_EVIDENCE_MISSING
         else:
-            exit_reason_human = str(exit_ctx.get("reason_human") or "Exit reason was not captured.")
+            exit_reason_human = str(exit_ctx.get("reason_human") or EXIT_REASON_NOT_CAPTURED)
         holding_duration_clause = (
             f"Holding duration is {holding_duration}. "
             if holding_duration
-            else "Holding duration is unavailable because entry timing evidence was not captured. "
+            else f"{HOLDING_DURATION_UNAVAILABLE} "
         )
         lifecycle_summary = (
             f"Trade {lifecycle.get('trade_id')} for {lifecycle.get('symbol')} is {lifecycle.get('status')}. "

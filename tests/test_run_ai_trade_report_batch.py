@@ -403,3 +403,82 @@ def test_run_ai_trade_report_batch_rehydrates_broker_truth_from_lifecycle_bundle
     assert story_input["exit_execution_details"]["broker_truth_source"] == "kiwoom.order_status"
     persisted = _read_json(trade_paths["ai_trade_report_input_json"])
     assert persisted["exit_execution_details"]["broker_day_truth_source"] == "kiwoom.ka10077"
+
+
+def test_resolve_story_input_for_regeneration_prefers_rebuilt_when_truth_surface_differs_even_if_score_is_lower(tmp_path: Path, monkeypatch) -> None:
+    reports_root = tmp_path / "reports"
+    day = "2026-04-21"
+    trade_id = "TRD_20260421_005930_01"
+    trade_paths = trade_artifact_paths(reports_root, day, trade_id)
+    trade_dir = reports_root / "trades" / day / trade_id
+    trade_dir.mkdir(parents=True, exist_ok=True)
+
+    existing = {
+        "trade_id": trade_id,
+        "symbol": "005930",
+        "status": "closed",
+        "run_id": "RUN_EXIT",
+        "selected_symbol": "005930",
+        "execution_details": {
+            "order_id": "0110847",
+            "filled_price": 218000,
+            "broker_truth_source": "kiwoom.order_status",
+            "broker_day_truth_source": "kiwoom.ka10077",
+            "broker_day_match_mode": "symbol_qty_price_exact",
+            "broker_day_authoritative": True,
+            "broker_realized_pnl": -1706.0,
+            "broker_fee": 1520,
+            "broker_tax": 436,
+        },
+        "canonical_monitor": {
+            "current_price": 218250,
+            "effective_pnl_ratio": -0.0078,
+        },
+    }
+    _write_json(trade_paths["ai_trade_report_input_json"], existing)
+    _write_json(
+        trade_paths["lifecycle_bundle_json"],
+        {
+            "day": day,
+            "trade_id": trade_id,
+            "run_id": "RUN_EXIT",
+            "symbol": "005930",
+            "trade_lifecycle_status": "closed",
+            "execution_details": {"order_id": "0110847", "filled_price": 218000},
+        },
+    )
+
+    rebuilt = {
+        "trade_id": trade_id,
+        "symbol": "005930",
+        "status": "closed",
+        "run_id": "RUN_EXIT",
+        "selected_symbol": "005930",
+        "execution_details": {
+            "order_id": "0110847",
+            "filled_price": 218000,
+            "broker_truth_source": "kiwoom.order_status",
+            "broker_day_truth_source": "kiwoom.ka10077",
+            "broker_day_match_mode": "ambiguous_symbol_rows",
+            "broker_day_authoritative": False,
+        },
+    }
+
+    monkeypatch.setattr(
+        "libs.reporting.intraday_trade_reports.rehydrate_lifecycle_bundle_execution_truth",
+        lambda bundle: dict(bundle),
+    )
+    monkeypatch.setattr(
+        "libs.reporting.intraday_trade_reports.build_trade_story_input_from_bundle",
+        lambda lifecycle_bundle, existing_story_input=None: dict(rebuilt),
+    )
+
+    story_input, story_input_path, source, _, _ = _resolve_story_input_for_regeneration(
+        trade_dir,
+        trade_paths,
+    )
+
+    assert source == "rebuilt_from_lifecycle_bundle"
+    assert story_input_path == str(trade_paths["ai_trade_report_input_json"])
+    assert story_input["execution_details"]["broker_day_match_mode"] == "ambiguous_symbol_rows"
+    assert story_input["execution_details"]["broker_day_authoritative"] is False

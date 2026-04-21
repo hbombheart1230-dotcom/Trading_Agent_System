@@ -31,7 +31,11 @@ from graphs.trading_graph import run_trading_graph
 from graphs.nodes.decide_trade import decide_trade
 from graphs.nodes.execute_from_packet import execute_from_packet
 from libs.contracts.agent_outputs import build_commander_shadow_artifact
+from libs.runtime.commander_memory_policy import build_commander_memory_policy
 from libs.runtime.decision_observability import build_commander_route_observability_surface
+from libs.runtime.monitor_memory_bias import build_monitor_memory_bias, summarize_monitor_memory_bias
+from libs.runtime.scanner_memory_bias import build_scanner_memory_bias, summarize_scanner_memory_bias
+from libs.runtime.memory_packet_loader import load_commander_memory_packets
 from libs.runtime.monitor_policy import (
     build_default_monitor_entry_policy,
     build_monitor_entry_policy_bundle,
@@ -1449,6 +1453,30 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         bias_source="commander_confirmed",
     )
     scanner_bias_summary = summarize_scanner_bias_context(scanner_bias_context)
+    scanner_memory_bias = (
+        dict(commander_decision.get("scanner_memory_bias") or commander_context.get("scanner_memory_bias") or {})
+        if isinstance(commander_decision.get("scanner_memory_bias"), dict)
+        or isinstance(commander_context.get("scanner_memory_bias"), dict)
+        else {}
+    )
+    scanner_memory_bias_summary = (
+        dict(commander_decision.get("scanner_memory_bias_summary") or commander_context.get("scanner_memory_bias_summary") or {})
+        if isinstance(commander_decision.get("scanner_memory_bias_summary"), dict)
+        or isinstance(commander_context.get("scanner_memory_bias_summary"), dict)
+        else {}
+    )
+    monitor_memory_bias = (
+        dict(commander_decision.get("monitor_memory_bias") or commander_context.get("monitor_memory_bias") or {})
+        if isinstance(commander_decision.get("monitor_memory_bias"), dict)
+        or isinstance(commander_context.get("monitor_memory_bias"), dict)
+        else {}
+    )
+    monitor_memory_bias_summary = (
+        dict(commander_decision.get("monitor_memory_bias_summary") or commander_context.get("monitor_memory_bias_summary") or {})
+        if isinstance(commander_decision.get("monitor_memory_bias_summary"), dict)
+        or isinstance(commander_context.get("monitor_memory_bias_summary"), dict)
+        else {}
+    )
     commander_context.update(
         {
             "source": str(commander_context.get("source") or "commander_decision"),
@@ -1519,6 +1547,10 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
             "monitor_entry_policy_summary": dict(policy_meta.get("monitor_entry_policy_summary") or {}),
             "scanner_bias": scanner_bias_context.to_dict(),
             "scanner_bias_summary": dict(scanner_bias_summary),
+            "scanner_memory_bias": dict(scanner_memory_bias),
+            "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
+            "monitor_memory_bias": dict(monitor_memory_bias),
+            "monitor_memory_bias_summary": dict(monitor_memory_bias_summary),
         }
     )
     strategy_policy["commander_context"] = commander_context
@@ -1539,9 +1571,13 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     monitor_policy["policy_validation_invalid_fields"] = list(policy_meta.get("policy_validation_invalid_fields") or [])
     monitor_policy["override_reason"] = str(policy_meta.get("override_reason") or "")
     monitor_policy["applied_policy_source_chain"] = list(policy_meta.get("applied_policy_source_chain") or [])
+    monitor_policy["monitor_memory_bias"] = dict(monitor_memory_bias)
+    monitor_policy["monitor_memory_bias_summary"] = dict(monitor_memory_bias_summary)
     strategy_policy["monitor_policy"] = monitor_policy
     scanner_policy["scanner_bias"] = scanner_bias_context.to_dict()
     scanner_policy["scanner_bias_summary"] = dict(scanner_bias_summary)
+    scanner_policy["scanner_memory_bias"] = dict(scanner_memory_bias)
+    scanner_policy["scanner_memory_bias_summary"] = dict(scanner_memory_bias_summary)
     strategy_policy["scanner_policy"] = scanner_policy
 
     provenance = (
@@ -1597,9 +1633,15 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["policy_provenance"] = dict(provenance)
     strategist_output["scanner_bias_context"] = scanner_bias_context.to_dict()
     strategist_output["scanner_bias_summary"] = dict(scanner_bias_summary)
+    strategist_output["scanner_memory_bias"] = dict(scanner_memory_bias)
+    strategist_output["scanner_memory_bias_summary"] = dict(scanner_memory_bias_summary)
+    strategist_output["monitor_memory_bias"] = dict(monitor_memory_bias)
+    strategist_output["monitor_memory_bias_summary"] = dict(monitor_memory_bias_summary)
     state["strategist_output"] = _normalize_strategist_output_contract(strategist_output)
     state["strategy_policy"] = dict(strategy_policy)
     state["scanner_bias_context"] = scanner_bias_context.to_dict()
+    state["scanner_memory_bias"] = dict(scanner_memory_bias)
+    state["monitor_memory_bias"] = dict(monitor_memory_bias)
     return state
 
 
@@ -1932,6 +1974,37 @@ def _build_commander_decision(
         scanner_mission = "Review carried positions first and keep preopen candidate expansion narrow until carry risk is revalidated."
         monitor_mission = "Prepare session-open carry-risk response for held positions before allowing new entry exploration."
     commander_applied_policy_summary = dict(state.get("commander_applied_policy_summary") or {})
+    memory_packets = load_commander_memory_packets(state=state)
+    commander_memory_policy = build_commander_memory_policy(
+        session_bias=session_bias,
+        memory_packets=memory_packets,
+    )
+    scanner_memory_bias = build_scanner_memory_bias(
+        commander_memory_policy=commander_memory_policy,
+        memory_packets=memory_packets,
+    )
+    scanner_memory_bias_summary = summarize_scanner_memory_bias(scanner_memory_bias)
+    monitor_memory_bias = build_monitor_memory_bias(
+        commander_memory_policy=commander_memory_policy,
+        memory_packets=memory_packets,
+    )
+    monitor_memory_bias_summary = summarize_monitor_memory_bias(monitor_memory_bias)
+    if list(commander_memory_policy.get("active_layers") or []):
+        observations = {
+            **observations,
+            "memory_active_layers": list(commander_memory_policy.get("active_layers") or []),
+            "memory_priority_order": list(commander_memory_policy.get("priority_order") or []),
+            "symbol_memory_override_enabled": bool(commander_memory_policy.get("symbol_memory_override_enabled")),
+            "scanner_memory_bias_enabled": bool(scanner_memory_bias.get("enabled")),
+            "monitor_memory_bias_enabled": bool(monitor_memory_bias.get("enabled")),
+        }
+        source_priority = [*list(source_priority or []), *([] if "commander_memory_policy" in list(source_priority or []) else ["commander_memory_policy"])]
+        source_refs = {
+            **source_refs,
+            "memory_active_layers": list(commander_memory_policy.get("active_layers") or []),
+            "scanner_memory_bias_enabled": bool(scanner_memory_bias.get("enabled")),
+            "monitor_memory_bias_enabled": bool(monitor_memory_bias.get("enabled")),
+        }
     policy_sources = (
         dict(applied_policy.get("policy_sources") or {})
         if isinstance(applied_policy.get("policy_sources"), dict)
@@ -1974,6 +2047,11 @@ def _build_commander_decision(
         )
         if commander_carry_risk_reason:
             decision_summary = f"{decision_summary} Carry reason: {commander_carry_risk_reason}."
+    if list(commander_memory_policy.get("active_layers") or []):
+        decision_summary = (
+            f"{decision_summary} Commander memory policy active layers="
+            f"{', '.join(list(commander_memory_policy.get('active_layers') or []))}."
+        )
         
     strategist_call_decision = strategist_invocation
     strategist_call_reason = strategist_refresh_reason if strategist_refresh_requested else ("normal_cycle" if strategist_invocation == "RUN" else "")
@@ -2193,6 +2271,12 @@ def _build_commander_decision(
         "carry_risk_bias": commander_carry_risk_bias,
         "carry_risk_reason": commander_carry_risk_reason,
         "session_open_recovery_assessment": dict(commander_session_open_recovery),
+        "memory_packets": dict(memory_packets),
+        "commander_memory_policy": dict(commander_memory_policy),
+        "scanner_memory_bias": dict(scanner_memory_bias),
+        "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
+        "monitor_memory_bias": dict(monitor_memory_bias),
+        "monitor_memory_bias_summary": dict(monitor_memory_bias_summary),
         "prior_monitor_entry_policy_summary": dict(prior_monitor_entry_policy_summary),
         "current_monitor_entry_policy_summary": dict(current_monitor_entry_policy_summary),
         "strategist_cache_preferred": bool(strategist_invocation == "SKIP" and strategist_cache_preferred),

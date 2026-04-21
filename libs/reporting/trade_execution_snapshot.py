@@ -316,7 +316,13 @@ def build_execution_details(
     bundle_obj = dict(bundle or {})
     context_obj = dict(context or {})
     execution = bundle_obj.get("execution") if isinstance(bundle_obj.get("execution"), dict) else {}
+    execution_payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
     bundle_execution_details = bundle_obj.get("execution_details") if isinstance(bundle_obj.get("execution_details"), dict) else {}
+    bundle_execution_payload = (
+        bundle_execution_details.get("payload")
+        if isinstance(bundle_execution_details.get("payload"), dict)
+        else {}
+    )
     executor = bundle_obj.get("executor") if isinstance(bundle_obj.get("executor"), dict) else {}
     executor_broker_result = executor.get("broker_result") if isinstance(executor.get("broker_result"), dict) else {}
     order_request = executor.get("order_request_summary") if isinstance(executor.get("order_request_summary"), dict) else {}
@@ -325,6 +331,16 @@ def build_execution_details(
         monitor_context = dict(bundle_obj.get("monitor") or {})
     execution_context = context_obj.get("execution_context") if isinstance(context_obj.get("execution_context"), dict) else {}
     context_execution_details = context_obj.get("execution_details") if isinstance(context_obj.get("execution_details"), dict) else {}
+    execution_context_payload = (
+        execution_context.get("payload")
+        if isinstance(execution_context.get("payload"), dict)
+        else {}
+    )
+    context_execution_details_payload = (
+        context_execution_details.get("payload")
+        if isinstance(context_execution_details.get("payload"), dict)
+        else {}
+    )
     broker_order_status = (
         execution_context.get("broker_order_status")
         if isinstance(execution_context.get("broker_order_status"), dict)
@@ -351,13 +367,17 @@ def build_execution_details(
     merged = merge_execution_snapshot_candidates(
         [
             execution,
+            execution_payload,
             bundle_execution_details,
+            bundle_execution_payload,
             executor_broker_result,
             executor,
             order_request,
             broker_order_status,
             context_execution_details,
+            context_execution_details_payload,
             execution_context,
+            execution_context_payload,
         ]
     )
 
@@ -423,6 +443,23 @@ def build_execution_details(
     broker_tax = _null_if_empty(
         broker_day_pnl.get("tax") if broker_day_authoritative else None
     )
+    broker_buy_price = _null_if_empty(
+        broker_day_pnl.get("buy_price") if broker_day_authoritative else None
+    )
+    broker_day_filled_price = _null_if_empty(
+        broker_day_pnl.get("filled_price") if broker_day_authoritative else None
+    )
+    resolved_filled_price = _null_if_empty(
+        broker_order_status.get("filled_price")
+        if broker_order_status.get("filled_price") not in (None, "")
+        else merged.get("filled_price")
+    )
+    resolved_filled_price_source = "kiwoom.order_status" if resolved_filled_price is not None else None
+    if resolved_filled_price is None:
+        resolved_filled_price = broker_day_filled_price
+        if resolved_filled_price is not None:
+            resolved_filled_price_source = _null_if_empty(broker_day_pnl.get("source"))
+    broker_truth_source = resolved_filled_price_source
 
     return {
         "order_status": order_status,
@@ -436,15 +473,12 @@ def build_execution_details(
             or broker_order_status.get("status")
             or merged.get("fill_status")
         ),
-        "filled_price": _null_if_empty(
-            broker_order_status.get("filled_price")
-            if broker_order_status.get("filled_price") not in (None, "")
-            else merged.get("filled_price")
-        ),
+        "filled_price": resolved_filled_price,
         "broker_realized_pnl": broker_realized_pnl,
         "broker_realized_pnl_pct": broker_realized_pnl_pct,
         "broker_fee": broker_fee,
         "broker_tax": broker_tax,
+        "broker_buy_price": broker_buy_price,
         "pnl_truth_source": _null_if_empty(
             broker_day_pnl.get("source") if broker_day_authoritative else None
         ),
@@ -458,7 +492,7 @@ def build_execution_details(
         "quote_snapshot": dict(merged.get("quote_snapshot") or {}) if isinstance(merged.get("quote_snapshot"), dict) else {},
         "run_id": _null_if_empty(merged.get("run_id")),
         "ts": _null_if_empty(merged.get("ts")),
-        "broker_truth_source": "kiwoom.order_status" if broker_order_status else None,
+        "broker_truth_source": broker_truth_source,
         "broker_truth_attempted": broker_truth_attempted,
         "broker_truth_error": broker_truth_error,
         "broker_day_truth_attempted": broker_day_truth_attempted,

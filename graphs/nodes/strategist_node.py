@@ -1038,7 +1038,7 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
         "You are the Strategist agent for an automated trading system. "
         "You must output a strategic frame only. "
         "Do not select final stock and do not produce order instructions. "
-        "You MUST use the provided deterministic memory packets as primary constraints: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory. "
+        "You MUST use the provided deterministic memory packets as primary constraints: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
         "You MUST convert those inputs into explicit strategy adjustment directives. "
         "Do not merely summarize, restate, or lightly reference the inputs. "
         "Your role is to choose exactly ONE playbook, provide a short rationale, produce a realistic and bounded monitor_entry_policy, and produce explicit strategy_adjustment_directives that indicate what should change, what should be maintained, and why. "
@@ -1107,7 +1107,7 @@ def _build_strategist_llm_messages(payload: Dict[str, Any]) -> List[Dict[str, st
     user = (
         "Use the provided market context, candidate hints, and deterministic memory packets. "
         "The memory packets are not optional background. They are the main basis for strategic adjustment. "
-        "Input packets: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory. "
+        "Input packets: read_model_facts, recent_strategy_feedback, reporter_feedback_packet, strategy_memory, selected_symbol_memory, memory_packets, commander_memory_policy. "
         "Decision requirements: choose exactly ONE playbook, provide a short but concrete rationale, produce a realistic and bounded monitor_entry_policy, and produce strategy_adjustment_directives that clearly state whether to maintain, tighten, relax, rebalance, deprioritize, prefer, or switch, which fields, axes, or playbooks are affected, and why this action is justified by deterministic evidence. "
         "Prefer changing strategy only when deterministic evidence supports it. "
         "Prefer maintaining current baseline when evidence is weak or mixed. "
@@ -1646,6 +1646,53 @@ def _build_compact_strategist_llm_payload(payload: Dict[str, Any]) -> Dict[str, 
         "current_monitor_entry_policy_summary": dict(commander_refresh_context.get("current_monitor_entry_policy_summary") or {}),
         "requires_policy_delta": bool(commander_refresh_context.get("requires_policy_delta")),
         "selected_symbol_memory": dict(commander_refresh_context.get("selected_symbol_memory") or {}),
+    }
+    memory_packets = compact.get("memory_packets") if isinstance(compact.get("memory_packets"), dict) else {}
+    daily_packet = dict(memory_packets.get("daily_strategy_memory") or {})
+    weekly_packet = dict(memory_packets.get("weekly_strategy_memory") or {})
+    monthly_packet = dict(memory_packets.get("monthly_strategy_memory") or {})
+    symbol_packet = dict(memory_packets.get("symbol_memory_packet") or {})
+    compact["memory_packets"] = {
+        "daily_strategy_memory": {
+            "status": str(daily_packet.get("status") or ""),
+            "best_playbooks": [str(x or "") for x in list(daily_packet.get("best_playbooks") or [])[:3] if str(x or "").strip()],
+            "worst_playbooks": [str(x or "") for x in list(daily_packet.get("worst_playbooks") or [])[:3] if str(x or "").strip()],
+        },
+        "weekly_strategy_memory": {
+            "status": str(weekly_packet.get("status") or ""),
+        },
+        "monthly_strategy_memory": {
+            "status": str(monthly_packet.get("status") or ""),
+        },
+        "symbol_memory_packet": {
+            "status": str(symbol_packet.get("status") or ""),
+            "symbol": str(symbol_packet.get("symbol") or ""),
+            "trade_count": int(symbol_packet.get("trade_count") or 0),
+            "override_eligible": bool(symbol_packet.get("override_eligible")),
+        },
+    }
+    commander_memory_policy = compact.get("commander_memory_policy") if isinstance(compact.get("commander_memory_policy"), dict) else {}
+    compact["commander_memory_policy"] = {
+        "application_mode": str(commander_memory_policy.get("application_mode") or ""),
+        "active_layers": [str(x or "") for x in list(commander_memory_policy.get("active_layers") or [])[:4] if str(x or "").strip()],
+        "priority_order": [str(x or "") for x in list(commander_memory_policy.get("priority_order") or [])[:4] if str(x or "").strip()],
+        "symbol_memory_override_enabled": bool(commander_memory_policy.get("symbol_memory_override_enabled")),
+        "scanner_bias_enabled": bool(commander_memory_policy.get("scanner_bias_enabled")),
+        "monitor_bias_enabled": bool(commander_memory_policy.get("monitor_bias_enabled")),
+    }
+    scanner_memory_bias = compact.get("scanner_memory_bias") if isinstance(compact.get("scanner_memory_bias"), dict) else {}
+    compact["scanner_memory_bias"] = {
+        "enabled": bool(scanner_memory_bias.get("enabled")),
+        "active_layers": [str(x or "") for x in list(scanner_memory_bias.get("active_layers") or [])[:4] if str(x or "").strip()],
+        "source_weight_delta": dict(scanner_memory_bias.get("source_weight_delta") or {}),
+        "symbol_adjustment_count": len(dict(scanner_memory_bias.get("symbol_adjustments") or {})),
+    }
+    monitor_memory_bias = compact.get("monitor_memory_bias") if isinstance(compact.get("monitor_memory_bias"), dict) else {}
+    compact["monitor_memory_bias"] = {
+        "enabled": bool(monitor_memory_bias.get("enabled")),
+        "active_layers": [str(x or "") for x in list(monitor_memory_bias.get("active_layers") or [])[:4] if str(x or "").strip()],
+        "entry_policy_delta": dict(monitor_memory_bias.get("entry_policy_delta") or {}),
+        "risk_posture": str(monitor_memory_bias.get("risk_posture") or ""),
     }
     compact["read_model_facts"] = payload.get("read_model_facts", {})
     return compact
@@ -3447,6 +3494,18 @@ def _build_commander_context_summary(
         "open_position_refresh_context": dict(open_position_refresh_context),
         "decision_summary": str(raw.get("decision_summary") or ""),
         "observations": dict(raw.get("observations") or {}) if isinstance(raw.get("observations"), dict) else {},
+        "memory_packets": dict(raw.get("memory_packets") or {}) if isinstance(raw.get("memory_packets"), dict) else {},
+        "commander_memory_policy": dict(raw.get("commander_memory_policy") or {})
+        if isinstance(raw.get("commander_memory_policy"), dict)
+        else {},
+        "scanner_memory_bias": dict(raw.get("scanner_memory_bias") or {}) if isinstance(raw.get("scanner_memory_bias"), dict) else {},
+        "scanner_memory_bias_summary": dict(raw.get("scanner_memory_bias_summary") or {})
+        if isinstance(raw.get("scanner_memory_bias_summary"), dict)
+        else {},
+        "monitor_memory_bias": dict(raw.get("monitor_memory_bias") or {}) if isinstance(raw.get("monitor_memory_bias"), dict) else {},
+        "monitor_memory_bias_summary": dict(raw.get("monitor_memory_bias_summary") or {})
+        if isinstance(raw.get("monitor_memory_bias_summary"), dict)
+        else {},
         "source_priority": [str(x) for x in list(raw.get("source_priority") or []) if str(x or "").strip()][:4],
         "source_refs": dict(raw.get("source_refs") or {}) if isinstance(raw.get("source_refs"), dict) else {},
         "shadow_used": bool(raw.get("shadow_used")),
@@ -4428,6 +4487,10 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "recent_strategy_feedback": dict(recent_strategy_feedback),
         "reporter_feedback_packet": dict(reporter_feedback_packet),
         "strategy_memory": dict(strategy_memory_advisory),
+        "memory_packets": dict(pre_llm_commander_context.get("memory_packets") or {}),
+        "commander_memory_policy": dict(pre_llm_commander_context.get("commander_memory_policy") or {}),
+        "scanner_memory_bias": dict(pre_llm_commander_context.get("scanner_memory_bias") or {}),
+        "monitor_memory_bias": dict(pre_llm_commander_context.get("monitor_memory_bias") or {}),
         "macro_stress_overlay_hint": dict(macro_stress_overlay),
         "market_regime_hint": market_regime,
         "market_sentiment_hint": market_sentiment,
@@ -4928,6 +4991,12 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_refresh_reason": str(commander_context.get("strategist_refresh_reason") or ""),
         "strategist_refresh_context": dict(commander_context.get("strategist_refresh_context") or {}),
         "open_position_refresh_context": dict(commander_context.get("open_position_refresh_context") or {}),
+        "memory_packets": dict(commander_context.get("memory_packets") or {}),
+        "commander_memory_policy": dict(commander_context.get("commander_memory_policy") or {}),
+        "scanner_memory_bias": dict(commander_context.get("scanner_memory_bias") or {}),
+        "scanner_memory_bias_summary": dict(commander_context.get("scanner_memory_bias_summary") or {}),
+        "monitor_memory_bias": dict(commander_context.get("monitor_memory_bias") or {}),
+        "monitor_memory_bias_summary": dict(commander_context.get("monitor_memory_bias_summary") or {}),
         "decision_summary": str(commander_context.get("decision_summary") or ""),
         "source_priority": list(commander_context.get("source_priority") or []),
     }
@@ -4940,6 +5009,12 @@ def strategist_node(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["commander_open_position_refresh_context"] = dict(
         commander_context.get("open_position_refresh_context") or {}
     )
+    strategist_output["memory_packets"] = dict(commander_context.get("memory_packets") or {})
+    strategist_output["commander_memory_policy"] = dict(commander_context.get("commander_memory_policy") or {})
+    strategist_output["scanner_memory_bias"] = dict(commander_context.get("scanner_memory_bias") or {})
+    strategist_output["scanner_memory_bias_summary"] = dict(commander_context.get("scanner_memory_bias_summary") or {})
+    strategist_output["monitor_memory_bias"] = dict(commander_context.get("monitor_memory_bias") or {})
+    strategist_output["monitor_memory_bias_summary"] = dict(commander_context.get("monitor_memory_bias_summary") or {})
     strategist_output["read_model_facts_summary"] = dict(read_model_facts_summary)
     strategist_output["selected_symbol_memory"] = dict(
         ((strategic_answers.get("q15_commander_refresh_context") or {}).get("selected_symbol_memory") or {})

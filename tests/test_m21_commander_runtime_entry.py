@@ -182,6 +182,57 @@ def test_m31_runtime_entry_seeds_commander_decision_for_downstream_agents():
     assert str(captured.get("decision_summary") or "").strip()
 
 
+def test_m31_runtime_entry_surfaces_commander_memory_policy_and_packets() -> None:
+    captured: Dict[str, Any] = {}
+
+    def integrated_runner(state: Dict[str, Any]) -> Dict[str, Any]:
+        captured.update(dict(state.get("commander_decision") or {}))
+        state["path"] = "integrated_chain"
+        state["runtime_status"] = "ok"
+        return state
+
+    out = run_commander_runtime(
+        {
+            "runtime_mode": "integrated_chain",
+            "runtime_phase": "session",
+            "strategy_memory": {
+                "status": "ok",
+                "requested_day": "2026-04-21",
+                "resolved_day": "2026-04-17",
+                "best_playbooks": ["defensive"],
+                "worst_playbooks": ["breakout"],
+                "recent_failures": ["playbook:breakout"],
+                "recent_success_patterns": ["playbook:defensive"],
+                "playbook_performance_snapshot": {"defensive": {"usage_count": 7}},
+            },
+            "selected": {"symbol": "000660"},
+            "selected_symbol_memory": {
+                "symbol": "000660",
+                "trade_count": 7,
+                "closed_trade_count": 5,
+                "win_rate": 0.5714,
+                "dominant_playbook": "pullback",
+                "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
+            },
+        },
+        integrated_runner=integrated_runner,
+    )
+
+    assert out["path"] == "integrated_chain"
+    packets = captured["memory_packets"]
+    policy = captured["commander_memory_policy"]
+    assert packets["daily_strategy_memory"]["status"] == "ok"
+    assert packets["symbol_memory_packet"]["symbol"] == "000660"
+    assert packets["symbol_memory_packet"]["override_eligible"] is True
+    assert policy["application_mode"] == "surface_only"
+    assert policy["active_layers"] == ["daily", "symbol"]
+    assert policy["priority_order"][:2] == ["daily", "symbol"]
+    assert policy["symbol_memory_override_enabled"] is True
+    assert captured["scanner_memory_bias"]["enabled"] is True
+    assert captured["monitor_memory_bias"]["enabled"] is True
+    assert captured["monitor_memory_bias_summary"]["entry_delta_keys"]
+
+
 def test_m31_runtime_entry_integrates_shadow_commander_into_commander_decision():
     captured: Dict[str, Any] = {}
 

@@ -283,7 +283,7 @@ def test_scanner_applies_symbol_prior_deterministically():
         },
     }
 
-    def _fake_symbol_read_model(_trades_root: str, symbol: str) -> dict:
+    def _fake_symbol_read_model(_trades_root: str, symbol: str, persisted_only: bool = False) -> dict:
         if symbol == "005930":
             return {
                 "symbol": "005930",

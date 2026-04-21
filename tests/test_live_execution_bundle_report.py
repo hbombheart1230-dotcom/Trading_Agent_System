@@ -4,6 +4,7 @@ import json
 import time
 from pathlib import Path
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from libs.reporting.intraday_trade_reports import (
     apply_live_bundle_backfill as shared_apply_live_bundle_backfill,
@@ -50,6 +51,7 @@ from libs.reporting.trade_bundle_persistence import (
 from libs.reporting.trade_bundle_state import (
     build_live_trade_bundle_payloads as shared_build_live_trade_bundle_payloads,
 )
+import libs.reporting.live_execution_bundle_runner as runner_mod
 import libs.reporting.trade_story_pipeline as story_pipeline
 import scripts.run_live_execution_bundle_report as mod
 
@@ -130,6 +132,58 @@ def test_live_execution_bundle_report_exposes_inprocess_runner() -> None:
 def test_live_execution_bundle_report_delegates_main_to_lib_runner() -> None:
     assert mod.main.__module__ == "libs.reporting.live_execution_bundle_runner"
     assert mod.run_live_execution_bundle_inprocess.__module__ == "libs.reporting.live_execution_bundle_runner"
+
+
+def test_live_execution_bundle_report_background_job_paths_default_to_repo_root(monkeypatch) -> None:
+    monkeypatch.delenv("INTRADAY_TRADE_REPORT_JOB_LOCK_PATH", raising=False)
+    assert mod._background_job_lock_path() == mod.ROOT / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
+    assert mod._background_job_queue_path() == mod.ROOT / "reports" / "runtime" / "intraday_trade_report_bundle.queue.json"
+
+
+def test_live_execution_bundle_report_spawn_followup_uses_script_wrapper_and_repo_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class DummyProc:
+        pid = 42424
+
+    def fake_popen(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        captured["cmd"] = list(cmd)
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = dict(kwargs.get("env") or {})
+        return DummyProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    args = SimpleNamespace(
+        env_path=".env",
+        event_log_path=tmp_path / "events.jsonl",
+        evidence_log_path=tmp_path / "evidence.jsonl",
+        report_dir=tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles",
+        reports_root=tmp_path / "reports",
+        intents_path=None,
+        day="2026-04-21",
+        trade_report_ai=True,
+        trade_report_ai_model="openrouter/test",
+        trade_report_ai_temperature=None,
+        trade_report_ai_max_tokens=None,
+        json=True,
+    )
+
+    out = mod._spawn_followup_background_job(
+        {"target_run_id": "run-2", "target_symbol": "005930"},
+        args=args,
+        role="intraday_trade_report_bundle",
+        event_log_path=tmp_path / "events.jsonl",
+    )
+
+    assert out["pid"] == 42424
+    cmd = list(captured["cmd"])
+    assert cmd[0].endswith("python.exe") or cmd[0].endswith("python")
+    assert cmd[1] == str(mod.ROOT / "scripts" / "run_live_execution_bundle_report.py")
+    assert captured["cwd"] == str(mod.ROOT)
+    assert captured["env"]["INTRADAY_TRADE_REPORT_PARENT_SPAWN"] == "1"
 
 
 def _fake_trace(event_log_path, evidence_log_path, report_dir, *, run_id=None, day=None, reports_root=None, max_news_titles=5):  # type: ignore[no-untyped-def]
@@ -408,6 +462,110 @@ def test_enrich_strategist_from_input_summary_recovers_cached_strategy_hints() -
     assert enriched["global_sentiment_score"] == 0.02
     assert enriched["fear_index"]["level"] == 17.94
     assert enriched["news_context"]["headline_count"] == 60
+
+
+def test_live_execution_bundle_report_logs_ai_generation_start_and_finish_events(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {
+                    "order": {"action": "BUY", "symbol": "000660", "qty": 1},
+                    "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}},
+                },
+            },
+            {
+                "run_id": "run-2",
+                "ts": f"{day}T00:10:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {
+                    "order": {"action": "SELL", "symbol": "000660", "qty": 1},
+                    "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}},
+                },
+            },
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(runner_mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(runner_mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(runner_mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(runner_mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
+    monkeypatch.setattr(
+        runner_mod,
+        "plan_live_trade_report_generation",
+        lambda **kwargs: {
+            "mode": "generate_ai",
+            "diagnostics": dict(kwargs.get("diagnostics") or {}),
+            "trade_report": dict(kwargs.get("deterministic_report") or {}),
+            "ai_trade_report_llm_artifact": {},
+            "log_events": [],
+        },
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "execute_ai_trade_report_generation",
+        lambda **kwargs: {
+            "diagnostics": {
+                **dict(kwargs.get("diagnostics") or {}),
+                "ai_trade_report_status": "ok",
+                "report_status": "available",
+                "report_reason_code": "ai_generated",
+                "report_generation_reason": "ai_trade_report_generated",
+                "llm_model_used": "openrouter/test",
+            },
+            "trade_report": _fake_ai_trade_report_ok(dict(kwargs.get("trade_story_input") or {})),
+            "ai_trade_report_llm_artifact": {
+                "status": "ok",
+                "llm_status": "ok",
+                "meta": {"reason": "live_ai_ok"},
+            },
+        },
+    )
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--trade-report-ai",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert out["ok"] is True
+    rows = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    started = [row for row in rows if row.get("event") == "ai_trade_report_generation_started"]
+    finished = [row for row in rows if row.get("event") == "ai_trade_report_generation_finished"]
+    assert started
+    assert finished
+    assert started[-1]["payload"]["component"] == "ai_trade_report"
+    assert finished[-1]["payload"]["component"] == "ai_trade_report"
+    assert finished[-1]["payload"]["llm_status"] in {"ok", "fallback"}
 
 
 

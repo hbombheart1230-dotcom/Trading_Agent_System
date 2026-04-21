@@ -86,7 +86,20 @@ def test_hydrate_live_run_bundle_context_prefers_canonical_payloads(tmp_path: Pa
         reports_root=canonical_root,
         day="2026-04-17",
         run_id="run-1",
-        execution_row={"run_id": "run-1", "ts": "2026-04-17T00:00:00+00:00", "action": "BUY", "symbol": "005930"},
+        execution_row={
+            "run_id": "run-1",
+            "ts": "2026-04-17T00:00:00+00:00",
+            "payload": {
+                "allowed": True,
+                "ok": True,
+                "order": {"action": "BUY", "symbol": "005930", "qty": 1},
+                "payload": {
+                    "order_id": "ORD-1",
+                    "response_payload": {"ord_no": "ORD-1", "return_msg": "ok"},
+                    "broker_message": "ok",
+                },
+            },
+        },
         trace_out={"reporter": {"status_human": "linked"}},
         reporter_obj={"ai_summary": "stable", "ai_run_grade": "A"},
         trade_obj={},
@@ -105,7 +118,74 @@ def test_hydrate_live_run_bundle_context_prefers_canonical_payloads(tmp_path: Pa
     assert bundle["strategist"]["playbook"] == "pullback"
     assert bundle["artifacts"]["canonical_scanner_json"] == str(scanner_path)
     assert bundle["evidence_provenance"]["scanner"] == "canonical"
+    assert bundle["execution"]["order_id"] == "ORD-1"
+    assert bundle["execution"]["ord_no"] == "ORD-1"
     assert out["story_type"]
+
+
+def test_apply_live_trade_context_populates_entry_execution_details_from_entry_bundle_order_id(monkeypatch) -> None:
+    class _FakeReader:
+        def get_order_status(self, *, ord_no: str, symbol: str, ord_dt: str, side: str = "all"):
+            assert ord_no == "ORD-BUY-1"
+            assert symbol == "005380"
+            assert ord_dt == "20260421"
+
+            class _Dto:
+                ord_no = "ORD-BUY-1"
+                symbol = "005380"
+                status = "filled"
+                filled_qty = 1
+                filled_price = 537000
+                order_qty = 1
+                order_price = 537000
+                side = "BUY"
+                raw = {}
+
+            return _Dto()
+
+    monkeypatch.setattr(
+        "libs.read.kiwoom_order_fill_reader.KiwoomOrderFillReader.from_env",
+        classmethod(lambda cls: _FakeReader()),
+    )
+
+    out = apply_live_trade_context(
+        lifecycle={
+            "entry": {"run_id": "run-buy", "ts": "2026-04-21T01:55:37+00:00", "action": "BUY", "symbol": "005380"},
+            "exit": {},
+            "holding": {"run_ids": [], "holding_events": [], "posture_history": [], "monitor_updates": []},
+            "timeline": [],
+            "warnings": [],
+            "summary": {},
+            "reporter": {},
+        },
+        lifecycle_bundle={"day": "2026-04-21"},
+        summary_obj={},
+        status="open",
+        monitor_timeline={},
+        reporter_obj={},
+        reporter_js=Path("reporter.json"),
+        reporter_md=Path("reporter.md"),
+        entry_run_id="run-buy",
+        exit_run_id="",
+        entry_ctx_live={"run_id": "run-buy", "ts": "2026-04-21T01:55:37+00:00", "action": "BUY", "symbol": "005380"},
+        exit_ctx_live={},
+        entry_bundle={
+            "execution": {
+                "action": "BUY",
+                "symbol": "005380",
+                "qty": 1,
+                "ord_no": "ORD-BUY-1",
+                "order_id": "ORD-BUY-1",
+                "ts": "2026-04-21T01:55:37+00:00",
+            },
+            "monitor": {},
+        },
+        exit_bundle={},
+    )
+
+    entry_details = out["entry_execution_details"]
+    assert entry_details["order_id"] == "ORD-BUY-1"
+    assert entry_details["filled_price"] == 537000
 
 
 def test_build_execution_details_from_bundle_fetches_broker_order_status() -> None:

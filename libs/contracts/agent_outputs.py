@@ -1691,6 +1691,18 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_adjustments": _dict(entry_info.get("policy_adjustments")),
         "policy_adjustment_summary": _clip(entry_info.get("policy_adjustment_summary"), max_len=220),
         "policy_adjustment_reasoning": _clip(entry_info.get("policy_adjustment_reasoning"), max_len=260),
+        "monitor_memory_bias_applied": bool(entry_info.get("monitor_memory_bias_applied")),
+        "monitor_memory_bias_summary": _dict(entry_info.get("monitor_memory_bias_summary")),
+        "monitor_memory_bias_deltas": [
+            {
+                "field": _clip((row or {}).get("field"), max_len=80),
+                "delta": (row or {}).get("delta"),
+                "from": (row or {}).get("from"),
+                "to": (row or {}).get("to"),
+            }
+            for row in list(entry_info.get("monitor_memory_bias_deltas") or [])[:8]
+            if isinstance(row, dict)
+        ],
         "effective_policy_deltas": [
             {
                 "field": _clip((row or {}).get("field"), max_len=80),
@@ -2112,6 +2124,8 @@ def build_executor_output_artifact(
 ) -> Dict[str, Any]:
     execution = _dict(execution)
     order = _dict(order)
+    execution_payload = _dict(execution.get("payload"))
+    response_payload = _dict(execution_payload.get("response_payload"))
     quote_snapshot = _dict(execution.get("quote_snapshot"))
     symbol = str(execution.get("symbol") or order.get("symbol") or "").strip()
     artifact = _base_output(
@@ -2126,12 +2140,30 @@ def build_executor_output_artifact(
             "allowed": bool(execution.get("allowed")),
             "symbol": symbol,
             "qty": _safe_int(order.get("qty") or execution.get("qty")),
-            "status": _clip(execution.get("status"), max_len=80),
+            "status": _clip(
+                execution.get("status")
+                or execution_payload.get("status")
+                or response_payload.get("return_msg"),
+                max_len=80,
+            ),
             "reason": _clip(execution.get("reason"), max_len=220),
-            "broker_env": _clip(execution.get("broker_env"), max_len=32),
-            "effective_mode": _clip(execution.get("effective_mode"), max_len=64),
-            "broker_message": _clip(execution.get("broker_message"), max_len=200),
-            "ord_no": _clip(execution.get("ord_no"), max_len=64),
+            "broker_env": _clip(execution.get("broker_env") or execution_payload.get("broker_env"), max_len=32),
+            "effective_mode": _clip(execution.get("effective_mode") or execution_payload.get("effective_mode"), max_len=64),
+            "broker_message": _clip(
+                execution.get("broker_message")
+                or execution_payload.get("broker_message")
+                or response_payload.get("return_msg"),
+                max_len=200,
+            ),
+            "ord_no": _clip(
+                execution.get("ord_no")
+                or execution.get("order_id")
+                or execution_payload.get("ord_no")
+                or execution_payload.get("order_id")
+                or response_payload.get("ord_no")
+                or response_payload.get("order_id"),
+                max_len=64,
+            ),
             "execution_ok": bool(execution.get("execution_ok", execution.get("allowed"))),
             "quote_snapshot": quote_snapshot,
             "best_bid": _safe_float(execution.get("best_bid") if execution.get("best_bid") not in (None, "") else quote_snapshot.get("best_bid")),
@@ -2149,13 +2181,36 @@ def build_executor_output_artifact(
             "execution_enabled": bool(execution.get("allowed")),
             "approval_mode": _clip(execution.get("approval_mode"), max_len=32),
             "broker_result": {
-                "status": _clip(execution.get("status"), max_len=80),
-                "broker_message": _clip(execution.get("broker_message"), max_len=200),
-                "ord_no": _clip(execution.get("ord_no"), max_len=64),
-                "effective_mode": _clip(execution.get("effective_mode"), max_len=64),
-                "broker_env": _clip(execution.get("broker_env"), max_len=32),
+                "status": _clip(
+                    execution.get("status")
+                    or execution_payload.get("status")
+                    or response_payload.get("return_msg"),
+                    max_len=80,
+                ),
+                "broker_message": _clip(
+                    execution.get("broker_message")
+                    or execution_payload.get("broker_message")
+                    or response_payload.get("return_msg"),
+                    max_len=200,
+                ),
+                "ord_no": _clip(
+                    execution.get("ord_no")
+                    or execution.get("order_id")
+                    or execution_payload.get("ord_no")
+                    or execution_payload.get("order_id")
+                    or response_payload.get("ord_no")
+                    or response_payload.get("order_id"),
+                    max_len=64,
+                ),
+                "effective_mode": _clip(execution.get("effective_mode") or execution_payload.get("effective_mode"), max_len=64),
+                "broker_env": _clip(execution.get("broker_env") or execution_payload.get("broker_env"), max_len=32),
             },
-            "final_execution_status": _clip(execution.get("status"), max_len=80) or ("allowed" if execution.get("allowed") else "blocked"),
+            "final_execution_status": _clip(
+                execution.get("status")
+                or execution_payload.get("status")
+                or response_payload.get("return_msg"),
+                max_len=80,
+            ) or ("allowed" if execution.get("allowed") else "blocked"),
             "failure_reason": _clip(execution.get("reason"), max_len=220),
             "strategy_policy_summary": _dict(execution.get("strategy_policy_summary")),
         }

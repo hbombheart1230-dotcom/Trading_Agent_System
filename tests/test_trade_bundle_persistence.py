@@ -112,6 +112,60 @@ def test_persist_trade_llm_artifacts_writes_strategist_and_ai_refs(tmp_path: Pat
     assert result["ai_trade_report_llm_response_written"].endswith("ai_trade_report_llm_response.json")
 
 
+def test_persist_trade_llm_artifacts_preserves_existing_live_ai_artifact_on_local_debug_overwrite(
+    tmp_path: Path,
+) -> None:
+    reports_root = tmp_path / "reports"
+    trade_reports_dir = reports_root / "trades" / "2026-04-21" / "TRD_TEST" / "reports"
+    strategist_path = trade_reports_dir / "strategist_llm_response.json"
+    ai_path = trade_reports_dir / "ai_trade_report_llm_response.json"
+    ai_path.parent.mkdir(parents=True, exist_ok=True)
+    ai_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "llm_response_artifact.v1",
+                "component": "ai_trade_report",
+                "status": "ok",
+                "response_text": "live response",
+                "meta": {"reason": "live_llm_ok"},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    persist_trade_llm_artifacts(
+        reports_root=reports_root,
+        day="2026-04-21",
+        strategy_anchor_run_id="run-strat",
+        anchor_run_id="run-ai",
+        strategist_llm_artifact_raw={
+            "schema_version": "llm_response_artifact.v1",
+            "component": "strategist",
+            "status": "ok",
+            "response_text": "strategist raw response",
+            "prompt_text": "strategist prompt",
+        },
+        strategist_llm_response_path=strategist_path,
+        ai_trade_report_llm_artifact={
+            "schema_version": "llm_response_artifact.v1",
+            "component": "ai_trade_report",
+            "status": "fallback",
+            "response_text": "",
+            "meta": {"reason": "local_debug_no_llm"},
+        },
+        ai_trade_report_llm_response_path=ai_path,
+    )
+
+    preserved_path = trade_reports_dir / "ai_trade_report_llm_response.live_preserved.json"
+    assert preserved_path.exists() is True
+    preserved = _read_json(preserved_path)
+    current = _read_json(ai_path)
+    assert preserved["meta"]["reason"] == "live_llm_ok"
+    assert current["meta"]["reason"] == "local_debug_no_llm"
+
+
 def test_persist_trade_report_outputs_writes_report_and_sets_diagnostics(tmp_path: Path) -> None:
     reports_dir = tmp_path / "reports"
     json_path = reports_dir / "ai_trade_report.json"

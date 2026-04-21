@@ -28,6 +28,13 @@ Those remain in:
 - `carry_control_model_2026-04-20.md`
 - `commander_position_management_policy_2026-04-20.md`
 - `carry_control_status_2026-04-20.md`
+- `commander_memory_authority_2026-04-21.md`
+- `scanner_memory_bias_2026-04-21.md`
+- `monitor_memory_bias_2026-04-21.md`
+
+Commander-specific memory control in this folder assumes the packet schema defined in:
+
+- `docs/runtime_memory/memory_packet_schema_2026-04-21.md`
 
 ## Current Position
 
@@ -62,9 +69,22 @@ Implemented additively:
   - decision metadata now shifts to carry-first missions and flow instructions
 - Commander now applies carry-scoped monitor exit-policy overrides
 - preopen can now trigger carry-risk review before new entries
+- Commander now surfaces raw memory packets and `commander_memory_policy`
+- strategist artifacts now surface commander-owned memory visibility
 
 Not implemented yet:
 
 - scanner ranking/scoring driven directly by carry-risk bias
 - stronger direct session-open gap model instead of the current proxy assessment
 - live-effectiveness validation from fresh restarted artifacts
+
+Now implemented:
+
+- deterministic `scanner_memory_bias`
+  - Commander-owned
+  - additive and conservative
+  - surfaced in scanner artifacts and strategist visibility
+- deterministic `monitor_memory_bias`
+  - Commander-owned
+  - currently applies conservative `entry_policy_delta` only
+  - surfaced in monitor artifacts and strategist visibility

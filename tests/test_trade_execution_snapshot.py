@@ -154,3 +154,37 @@ def test_build_execution_details_surfaces_authoritative_broker_day_pnl_truth() -
     assert details["broker_tax"] == 9
     assert details["pnl_truth_source"] == "kiwoom.ka10077"
     assert details["broker_day_authoritative"] is True
+
+
+def test_build_execution_details_uses_authoritative_broker_day_fill_price_when_order_status_missing() -> None:
+    details = build_execution_details(
+        {
+            "execution": {"action": "SELL", "symbol": "047040", "qty": 1},
+        },
+        context={
+            "execution_context": {
+                "broker_order_status": {
+                    "order_id": "A4",
+                    "filled_qty": 1,
+                    "filled_price": None,
+                    "status": None,
+                },
+                "broker_day_pnl": {
+                    "source": "kiwoom.ka10077",
+                    "authoritative": True,
+                    "match_mode": "symbol_qty_exact",
+                    "row_count": 1,
+                    "filled_price": 33650,
+                    "buy_price": 33950,
+                    "realized_pnl": -286.0,
+                    "pnl_ratio": -0.0084,
+                    "fee": 220,
+                    "tax": 66,
+                },
+            }
+        },
+    )
+
+    assert details["filled_price"] == 33650
+    assert details["broker_truth_source"] == "kiwoom.ka10077"
+    assert details["broker_buy_price"] == 33950

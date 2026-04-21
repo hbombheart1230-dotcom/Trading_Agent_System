@@ -8,6 +8,35 @@ from libs.reporting.llm_artifacts import persist_llm_artifact_refs, write_json
 from libs.reporting.trade_bundle_state import finalize_bundle_health
 
 
+def _preserve_existing_llm_artifact(
+    *,
+    current_path: Path,
+    incoming_artifact: Mapping[str, Any] | None,
+) -> None:
+    if not current_path.exists():
+        return
+    try:
+        existing = json.loads(current_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(existing, dict):
+        return
+    incoming = dict(incoming_artifact or {})
+    existing_reason = str(((existing.get("meta") or {}) if isinstance(existing.get("meta"), dict) else {}).get("reason") or "").strip().lower()
+    incoming_reason = str(((incoming.get("meta") or {}) if isinstance(incoming.get("meta"), dict) else {}).get("reason") or "").strip().lower()
+    if incoming_reason != "local_debug_no_llm":
+        return
+    if existing_reason == "local_debug_no_llm":
+        return
+    backup_path = current_path.with_name(f"{current_path.stem}.live_preserved{current_path.suffix}")
+    if backup_path.exists():
+        return
+    try:
+        backup_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        return
+
+
 def persist_trade_llm_artifacts(
     *,
     reports_root: Path,
@@ -37,6 +66,10 @@ def persist_trade_llm_artifacts(
             day=day,
             run_id=str(anchor_run_id or ""),
             component="ai_trade_report",
+        )
+        _preserve_existing_llm_artifact(
+            current_path=ai_trade_report_llm_response_path,
+            incoming_artifact=ai_trade_report_llm_compact,
         )
         ai_trade_report_llm_response_written = str(
             write_json(ai_trade_report_llm_response_path, ai_trade_report_llm_compact)

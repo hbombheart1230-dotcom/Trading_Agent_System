@@ -311,3 +311,15 @@ live trade-report 기준 호출 경로는 다음과 같다.
   - pnl truth source
   - truth availability flags
 - This reduces the need to drill into `shared_facts` or only rely on the execution section for factual verification.
+
+## 2026-04-21 Validation Update
+
+- Stored `ai_trade_report.json` / `ai_trade_report.md` now render buy/sell broker prices directly when entry-side execution truth is available.
+- Verified trade:
+  - `reports/trades/2026-04-21/TRD_20260421_005380_01/reports/ai_trade_report.md`
+- `Truth Surface` now surfaces:
+  - broker buy / sell price pair
+  - broker realized pnl / pnl%
+  - broker fee / tax
+  - broker day match mode / authority state
+- Cascade fallback trades are also re-anchored to the actual traded symbol instead of scanner top1.

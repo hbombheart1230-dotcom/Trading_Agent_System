@@ -934,6 +934,35 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
                 "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
             },
         },
+        "memory_packets": {
+            "daily_strategy_memory": {
+                "status": "ok",
+                "best_playbooks": ["defensive", "pullback"],
+                "worst_playbooks": ["breakout"],
+            },
+            "weekly_strategy_memory": {"status": "unavailable"},
+            "monthly_strategy_memory": {"status": "unavailable"},
+            "symbol_memory_packet": {
+                "status": "ok",
+                "symbol": "000660",
+                "trade_count": 9,
+                "override_eligible": True,
+            },
+        },
+        "commander_memory_policy": {
+            "application_mode": "surface_only",
+            "active_layers": ["daily", "symbol"],
+            "priority_order": ["daily", "symbol", "weekly", "monthly"],
+            "symbol_memory_override_enabled": True,
+            "scanner_bias_enabled": True,
+            "monitor_bias_enabled": True,
+        },
+        "monitor_memory_bias": {
+            "enabled": True,
+            "active_layers": ["daily", "symbol"],
+            "entry_policy_delta": {"volume_ratio_min": 0.03},
+            "risk_posture": "defensive",
+        },
     }
 
     compact = _build_compact_strategist_llm_payload(payload)
@@ -958,6 +987,12 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
     assert compact["commander_refresh_context"]["requires_policy_delta"] is True
     assert compact["commander_refresh_context"]["selected_symbol_memory"]["symbol"] == "000660"
     assert compact["commander_refresh_context"]["selected_symbol_memory"]["dominant_playbook"] == "pullback"
+    assert compact["memory_packets"]["daily_strategy_memory"]["status"] == "ok"
+    assert compact["memory_packets"]["symbol_memory_packet"]["symbol"] == "000660"
+    assert compact["commander_memory_policy"]["application_mode"] == "surface_only"
+    assert compact["commander_memory_policy"]["active_layers"] == ["daily", "symbol"]
+    assert compact["monitor_memory_bias"]["enabled"] is True
+    assert compact["monitor_memory_bias"]["risk_posture"] == "defensive"
 
 
 def test_build_strategist_llm_messages_enforces_read_model_facts_and_policy_adjustment() -> None:

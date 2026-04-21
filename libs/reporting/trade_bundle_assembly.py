@@ -10,6 +10,10 @@ from libs.reporting.intraday_trade_reports import (
     build_same_day_reporter_linkage,
 )
 from libs.reporting.kiwoom_day_trade_truth import attach_broker_day_pnl
+from libs.reporting.trade_fallback_text import (
+    EXIT_REASON_NOT_CAPTURED,
+    entry_reason_missing_in_summary,
+)
 from libs.reporting.trade_execution_snapshot import build_execution_details, build_execution_snapshot
 from libs.reporting.trade_story_pipeline import (
     build_execution_outcome_human,
@@ -595,6 +599,13 @@ def hydrate_live_run_bundle_context(
     operator_summary_md_path: Path,
     bundle_ts: str,
 ) -> Dict[str, Any]:
+    execution_payload = (
+        dict(execution_row.get("payload") or {})
+        if isinstance(execution_row, Mapping) and isinstance(execution_row.get("payload"), dict)
+        else dict(execution_row or {})
+        if isinstance(execution_row, Mapping)
+        else {}
+    )
     canonical_sources = load_run_canonical_artifacts(
         reports_root=reports_root,
         run_id=run_id,
@@ -638,11 +649,11 @@ def hydrate_live_run_bundle_context(
     )
     merged_execution = build_execution_snapshot(
         candidates=[
-            dict(execution_row or {}),
+            execution_payload,
             dict(executor_preferred.get("payload") or {}),
         ],
         run_id=run_id,
-        ts=str((execution_row or {}).get("ts") or ""),
+        ts=str((execution_row or {}).get("ts") or "") if isinstance(execution_row, Mapping) else "",
     )
     bundle_build = build_live_run_bundle(
         day=day,
@@ -1026,9 +1037,9 @@ def apply_entry_exit_holding_enrichment(
         if entry_reason_final:
             summary_obj["entry_reason_human"] = entry_reason_final
             current_lifecycle_summary = str(lifecycle_bundle.get("trade_lifecycle_summary") or "")
-            if "Entry reason was not captured" in current_lifecycle_summary:
+            if entry_reason_missing_in_summary(current_lifecycle_summary):
                 exit_ctx_summary = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
-                exit_reason_final = str(exit_ctx_summary.get("reason_human") or "Exit reason was not captured.").strip()
+                exit_reason_final = str(exit_ctx_summary.get("reason_human") or EXIT_REASON_NOT_CAPTURED).strip()
                 refreshed_lifecycle_summary = (
                     f"Trade {trade_id} for {symbol} is {status}. "
                     f"Entry: {entry_reason_final} "
@@ -1259,6 +1270,7 @@ def apply_live_trade_context(
         "broker_day_truth_lookup_enabled": True,
     }
     entry_execution_details = build_execution_details_from_bundle(entry_bundle, context=entry_context)
+    exit_context["entry_execution_details"] = dict(entry_execution_details)
     exit_execution_details = build_execution_details_from_bundle(exit_bundle, context=exit_context)
     execution_details = dict(exit_execution_details if str(status or "").strip().lower() == "closed" else entry_execution_details)
 

@@ -57,6 +57,32 @@ Use `docs/runtime_memory` for:
   - empty vs populated `selected_symbol_memory`
 - records the current observability gap where some commander refresh runs do not persist matching strategist prompt/canonical artifacts
 
+6. `memory_packet_schema_2026-04-21.md`
+- defines the raw runtime packet split:
+  - `daily_strategy_memory`
+  - `weekly_strategy_memory`
+  - `monthly_strategy_memory`
+  - `symbol_memory_packet`
+- explicitly separates packet structure from commander arbitration and deterministic bias application
+
+Current additive implementation:
+
+- Commander now surfaces raw memory packets in `commander_decision`
+- strategist context/artifacts now surface those packets plus `commander_memory_policy`
+- weekly/monthly packets are placeholders for now
+
+## Commander Link
+
+Runtime memory packets are raw inputs.
+
+Commander owns memory arbitration.
+
+See:
+
+- `docs/commander_control/commander_memory_authority_2026-04-21.md`
+- `docs/commander_control/scanner_memory_bias_2026-04-21.md`
+- `docs/commander_control/monitor_memory_bias_2026-04-21.md`
+
 ## Existing Adapter Layer
 
 Not every related module is a primary runtime-memory owner.

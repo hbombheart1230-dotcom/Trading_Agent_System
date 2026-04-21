@@ -27,6 +27,10 @@ from libs.runtime.asset_universe_policy import apply_asset_universe_filter
 from libs.runtime.canonical_artifacts import write_scanner_artifact
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
+from libs.runtime.scanner_memory_bias import (
+    compute_scanner_memory_bias_adjustment,
+    summarize_scanner_memory_bias,
+)
 from libs.runtime.intraday_monitor_signals import evaluate_intraday_entry_signal, resolve_intraday_entry_policy
 from libs.strategies.candidates.kiwoom_candidate_provider import build_kiwoom_candidate_rows
 from libs.strategies.candidates.fallback_pool import is_static_fallback_pool
@@ -1188,6 +1192,13 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         scanner_bias_context = dict(scanner_policy.get("scanner_bias") or {})
     elif isinstance(strategist_output.get("scanner_bias_context"), dict):
         scanner_bias_context = dict(strategist_output.get("scanner_bias_context") or {})
+    scanner_memory_bias = {}
+    if isinstance(commander_context.get("scanner_memory_bias"), dict):
+        scanner_memory_bias = dict(commander_context.get("scanner_memory_bias") or {})
+    elif isinstance(scanner_policy.get("scanner_memory_bias"), dict):
+        scanner_memory_bias = dict(scanner_policy.get("scanner_memory_bias") or {})
+    elif isinstance(strategist_output.get("scanner_memory_bias"), dict):
+        scanner_memory_bias = dict(strategist_output.get("scanner_memory_bias") or {})
     symbol_constraints = (
         dict(strategist_plan.get("symbol_constraints") or {})
         if isinstance(strategist_plan.get("symbol_constraints"), dict)
@@ -1218,6 +1229,7 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "scanner_bias": str(raw_bias or "").strip().lower(),
         "scanner_bias_context": dict(scanner_bias_context),
+        "scanner_memory_bias": dict(scanner_memory_bias),
         "trade_aggressiveness": strategist_output.get("trade_aggressiveness"),
         "risk_tone": strategist_output.get("risk_tone"),
         "monitor_guidance": strategist_output.get("monitor_guidance"),
@@ -1242,6 +1254,7 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_source_policy",
             "scanner_bias",
             "scanner_bias_context",
+            "scanner_memory_bias",
             "trade_aggressiveness",
             "risk_tone",
             "monitor_guidance",
@@ -1272,6 +1285,7 @@ def _build_scanner_policy_trace(
     scanner_priority: List[str],
     scanner_bias: str,
     scanner_bias_context: Dict[str, Any],
+    scanner_memory_bias: Dict[str, Any],
 ) -> Dict[str, Any]:
     consumed_fields: List[str] = []
     for key in (
@@ -1321,6 +1335,7 @@ def _build_scanner_policy_trace(
         bias_source=str(commander_context.get("policy_source") or "strategist"),
     )
     scanner_bias_summary = summarize_scanner_bias_context(normalized_scanner_bias_context)
+    scanner_memory_bias_summary = summarize_scanner_memory_bias(scanner_memory_bias)
     policy_source = str(
         commander_context.get("policy_source")
         or policy_provenance.get("applied_policy_source")
@@ -1345,6 +1360,8 @@ def _build_scanner_policy_trace(
         ranking_factors.append(f"bias:{scanner_bias}")
     if bool(scanner_bias_summary.get("enabled")):
         ranking_factors.append(f"scanner_bias:{scanner_bias_summary.get('summary')}")
+    if bool(scanner_memory_bias_summary.get("enabled")):
+        ranking_factors.append("memory_bias")
     if playbook:
         ranking_factors.append(f"playbook:{playbook}")
     if str(commander_context.get("scanner_mission") or "").strip():
@@ -1366,6 +1383,8 @@ def _build_scanner_policy_trace(
         summary_parts.append(f"policy_source={policy_source}")
     if bool(scanner_bias_summary.get("enabled")):
         summary_parts.append(f"scanner_bias={str(scanner_bias_summary.get('summary') or '')}")
+    if bool(scanner_memory_bias_summary.get("enabled")):
+        summary_parts.append("memory_bias=commander")
 
     return {
         "commander_context_consumed": commander_context_consumed,
@@ -1378,6 +1397,7 @@ def _build_scanner_policy_trace(
             "consumed_fields": consumed_fields + strategist_consumed_fields,
             "scanner_bias_context": normalized_scanner_bias_context.to_dict(),
             "scanner_bias_summary": dict(scanner_bias_summary),
+            "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
             "summary": " | ".join(summary_parts) if summary_parts else "base_quantitative_ranking",
         },
         "ranking_factors": ranking_factors,
@@ -1387,6 +1407,8 @@ def _build_scanner_policy_trace(
         "monitor_entry_policy_summary": monitor_entry_policy_summary,
         "scanner_bias_context": normalized_scanner_bias_context.to_dict(),
         "scanner_bias_summary": dict(scanner_bias_summary),
+        "scanner_memory_bias": dict(scanner_memory_bias or {}),
+        "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
         "shadow_used": bool(
             commander_context.get("shadow_used")
             if commander_context.get("shadow_used") is not None
@@ -2341,6 +2363,11 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(scanner_guidance.get("scanner_bias_context"), dict)
         else {}
     )
+    scanner_memory_bias = (
+        dict(scanner_guidance.get("scanner_memory_bias") or {})
+        if isinstance(scanner_guidance.get("scanner_memory_bias"), dict)
+        else {}
+    )
     scanner_priority = _normalize_priority_list(scanner_guidance.get("scanner_priority"))
     trade_aggressiveness = str(scanner_guidance.get("trade_aggressiveness") or "").strip().lower()
     risk_tone = str(scanner_guidance.get("risk_tone") or "").strip().lower()
@@ -2373,6 +2400,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         scanner_priority=scanner_priority,
         scanner_bias=scanner_bias,
         scanner_bias_context=scanner_bias_context,
+        scanner_memory_bias=scanner_memory_bias,
     )
     if isinstance(scanner_guidance.get("score_weights"), dict):
         for key, value in dict(scanner_guidance.get("score_weights") or {}).items():
@@ -2679,6 +2707,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             bias_context=scanner_bias_context,
         )
         scanner_bias_adjustment = float(bias_result.get("bias_adjustment") or 0.0)
+        memory_bias_result = compute_scanner_memory_bias_adjustment(
+            symbol=symbol,
+            candidate_sources=list(candidate_meta.get("sources") or []),
+            memory_bias=scanner_memory_bias,
+        )
+        scanner_memory_bias_adjustment = float(memory_bias_result.get("bias_adjustment") or 0.0)
         candidate_rows = []
         raw_minute_rows = minute_rows_by_symbol.get(_norm_symbol(symbol)) if isinstance(minute_rows_by_symbol, dict) else None
         if isinstance(raw_minute_rows, list) and raw_minute_rows:
@@ -2710,6 +2744,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             + rank_bonus
             - repeat_symbol_penalty
             + scanner_bias_adjustment
+            + scanner_memory_bias_adjustment
             + symbol_prior_adjustment
         )
         score_total = pre_adjust_score_total + compatibility_bias
@@ -2757,6 +2792,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "avoid_theme_penalty": float(-0.20 * avoid_theme_penalty * practical_scale),
             "repeat_symbol_penalty": float(-repeat_symbol_penalty),
             "scanner_bias": float(scanner_bias_adjustment),
+            "scanner_memory_bias": float(scanner_memory_bias_adjustment),
             "symbol_prior": float(symbol_prior_adjustment),
             "entry_compatibility_bias": float(compatibility_bias),
             "risk_penalty": float(-risk_penalty_score),
@@ -2769,6 +2805,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["bias_adjustment"] = float(scanner_bias_adjustment)
         row["bias_adjustments"] = list(bias_result.get("bias_adjustments") or [])
         row["bias_summary"] = dict(bias_result.get("bias_summary") or {})
+        row["memory_bias_adjustment"] = float(scanner_memory_bias_adjustment)
+        row["memory_bias_adjustments"] = list(memory_bias_result.get("adjustments") or [])
+        row["memory_bias_summary"] = dict(memory_bias_result.get("summary") or {})
         row["symbol_prior_adjustment"] = float(symbol_prior_adjustment)
         row["symbol_prior_reasons"] = list(symbol_prior_result.get("reasons") or [])
         row["symbol_prior_summary"] = dict(symbol_prior_result.get("summary") or {})
@@ -2885,6 +2924,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "avoid_theme_penalty_component": avoid_theme_penalty,
                     "repeat_symbol_penalty_component": repeat_symbol_penalty,
                     "scanner_bias_adjustment": float(scanner_bias_adjustment),
+                    "scanner_memory_bias_adjustment": float(scanner_memory_bias_adjustment),
+                    "scanner_memory_bias_adjustments": list(memory_bias_result.get("adjustments") or []),
                     "entry_compatibility_score": compatibility_result.get("entry_compatibility_score"),
                     "entry_compatibility_bias": compatibility_result.get("compatibility_bias"),
                     "compatibility_components": dict(compatibility_result.get("compatibility_components") or {}),
@@ -3129,7 +3170,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "quote_data_diagnostic": dict(state.get("scanner_quote_diagnostic") or {}),
         "scanner_bias_applied": False,
         "scanner_bias_summary": dict(scanner_policy_trace.get("scanner_bias_summary") or {}),
+        "scanner_memory_bias_applied": False,
+        "scanner_memory_bias_summary": dict(scanner_policy_trace.get("scanner_memory_bias_summary") or {}),
         "candidate_bias_adjustments": [],
+        "candidate_memory_bias_adjustments": [],
         "candidate_symbol_prior_adjustments": [],
         "selection_reason_with_bias": "",
         "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
@@ -3201,11 +3245,22 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     critical_negative_factors = [f"{str(k)}:{float(_to_float(v)):.3f}" for k, v in selected_score_breakdown.items() if float(_to_float(v)) < 0][:4]
     selection_summary = str((selected or {}).get("why") or "").strip() if isinstance(selected, dict) else ""
     scanner_bias_summary = dict(scanner_policy_trace.get("scanner_bias_summary") or {})
+    scanner_memory_bias_summary = dict(scanner_policy_trace.get("scanner_memory_bias_summary") or {})
     candidate_bias_adjustments = [
         {
             "symbol": str(row.get("symbol") or ""),
             "bias_adjustment": float(_to_float(row.get("bias_adjustment"))),
             "bias_adjustments": list(row.get("bias_adjustments") or []),
+        }
+        for row in list(scan_results_sorted)[:5]
+        if isinstance(row, dict) and str(row.get("symbol") or "").strip()
+    ]
+    candidate_memory_bias_adjustments = [
+        {
+            "symbol": str(row.get("symbol") or ""),
+            "memory_bias_adjustment": float(_to_float(row.get("memory_bias_adjustment"))),
+            "memory_bias_adjustments": list(row.get("memory_bias_adjustments") or []),
+            "memory_bias_summary": dict(row.get("memory_bias_summary") or {}),
         }
         for row in list(scan_results_sorted)[:5]
         if isinstance(row, dict) and str(row.get("symbol") or "").strip()
@@ -3221,11 +3276,21 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(row, dict) and str(row.get("symbol") or "").strip()
     ]
     scanner_bias_applied = any(abs(float(_to_float(row.get("bias_adjustment")))) > 1e-9 for row in list(scan_results_sorted))
+    scanner_memory_bias_applied = any(
+        abs(float(_to_float(row.get("memory_bias_adjustment")))) > 1e-9 for row in list(scan_results_sorted)
+    )
     selection_reason_with_bias = selection_summary
     if scanner_bias_applied:
         bias_text = str(scanner_bias_summary.get("summary") or "scanner_bias").strip() or "scanner_bias"
         selection_reason_with_bias = (
             f"{selection_summary} | bias: {bias_text}" if selection_summary else f"bias applied: {bias_text}"
+        )
+    if scanner_memory_bias_applied:
+        memory_bias_text = "memory_bias=commander"
+        selection_reason_with_bias = (
+            f"{selection_reason_with_bias} | {memory_bias_text}"
+            if selection_reason_with_bias
+            else memory_bias_text
         )
     selected_compatibility_bias = float(_to_float((selected or {}).get("compatibility_bias"))) if isinstance(selected, dict) else 0.0
     selected_expected_block = str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else ""
@@ -3302,7 +3367,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "post_adjust_score_total": float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0,
         "scanner_bias_applied": bool(scanner_bias_applied),
         "scanner_bias_summary": dict(scanner_bias_summary),
+        "scanner_memory_bias_applied": bool(scanner_memory_bias_applied),
+        "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
         "candidate_bias_adjustments": list(candidate_bias_adjustments),
+        "candidate_memory_bias_adjustments": list(candidate_memory_bias_adjustments),
         "candidate_symbol_prior_adjustments": list(candidate_symbol_prior_adjustments),
         "selection_reason_with_bias": selection_reason_with_bias,
         "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
@@ -3322,7 +3390,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["scanner_output"]["rejected_candidates"] = list(runner_up_reasons)
         state["scanner_output"]["scanner_bias_applied"] = bool(scanner_bias_applied)
         state["scanner_output"]["scanner_bias_summary"] = dict(scanner_bias_summary)
+        state["scanner_output"]["scanner_memory_bias_applied"] = bool(scanner_memory_bias_applied)
+        state["scanner_output"]["scanner_memory_bias_summary"] = dict(scanner_memory_bias_summary)
         state["scanner_output"]["candidate_bias_adjustments"] = list(candidate_bias_adjustments)
+        state["scanner_output"]["candidate_memory_bias_adjustments"] = list(candidate_memory_bias_adjustments)
         state["scanner_output"]["candidate_symbol_prior_adjustments"] = list(candidate_symbol_prior_adjustments)
         state["scanner_output"]["selection_reason_with_bias"] = selection_reason_with_bias
         state["scanner_output"]["entry_compatibility_score"] = float(_to_float((selected or {}).get("entry_compatibility_score"))) if isinstance(selected, dict) else 0.0
@@ -3415,7 +3486,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "post_adjust_score_total": float(_to_float((selected or {}).get("post_adjust_score_total") or (selected or {}).get("score_total") or (selected or {}).get("score"))) if isinstance(selected, dict) else 0.0,
         "scanner_bias_applied": bool(scanner_bias_applied),
         "scanner_bias_summary": dict(scanner_policy_trace.get("scanner_bias_summary") or {}),
+        "scanner_memory_bias_applied": bool(scanner_memory_bias_applied),
+        "scanner_memory_bias_summary": dict(scanner_policy_trace.get("scanner_memory_bias_summary") or {}),
         "candidate_bias_adjustments": list(candidate_bias_adjustments),
+        "candidate_memory_bias_adjustments": list(candidate_memory_bias_adjustments),
         "candidate_symbol_prior_adjustments": list(candidate_symbol_prior_adjustments),
         "selection_reason_with_bias": selection_reason_with_bias,
         "shadow_used": bool(scanner_policy_trace.get("shadow_used")),
@@ -3436,8 +3510,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "tie_break_rule": "score_total desc -> confidence desc -> risk_score asc",
         "final_decision_basis": (
             "Scanner selected the highest-ranked candidate after strategist-guided weighting, "
-            "source scoring, risk penalties, and a capped scanner bias adjustment."
-            if scanner_bias_applied
+            "source scoring, risk penalties, and capped scanner/memory bias adjustments."
+            if scanner_bias_applied or scanner_memory_bias_applied
             else "Scanner selected the highest-ranked candidate after strategist-guided weighting, source scoring, and risk penalties."
         ),
         "policy_provenance_ref": dict(scanner_policy_trace.get("policy_provenance_ref") or {}),
@@ -3508,6 +3582,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "recent_scanner_selected_count": int(len(_scanner_recent_selection_history(state))),
             "scanner_bias_applied": bool(scanner_bias_applied),
             "scanner_bias_summary": dict(scanner_bias_summary),
+            "scanner_memory_bias_applied": bool(scanner_memory_bias_applied),
+            "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
         },
     )
 
@@ -3531,7 +3607,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_priority": list(scanner_priority),
             "scanner_bias_applied": bool(scanner_bias_applied),
             "scanner_bias_summary": dict(scanner_bias_summary),
+            "scanner_memory_bias_applied": bool(scanner_memory_bias_applied),
+            "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
             "candidate_bias_adjustments": list(candidate_bias_adjustments),
+            "candidate_memory_bias_adjustments": list(candidate_memory_bias_adjustments),
             "selection_reason_with_bias": selection_reason_with_bias,
             "candidate_source": str(pool_meta.get("candidate_source") or ""),
             "asset_universe_policy": str(pool_meta.get("asset_universe_policy") or ""),

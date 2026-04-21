@@ -199,6 +199,8 @@ def test_scanner_entry_compatibility_bias_can_flip_near_tie(monkeypatch) -> None
 
 
 def test_scanner_compatibility_bias_shrinks_032820_margin_vs_396500(monkeypatch) -> None:
+    monkeypatch.setattr(scanner_mod, "_load_symbol_priors", lambda state, candidates: {})
+
     def _fake_compatibility(*, symbol, feature_row, metrics, candidate_rows, current_price, policy, bias_context=None):
         if symbol == "032820":
             return {
@@ -270,6 +272,8 @@ def test_scanner_compatibility_bias_shrinks_032820_margin_vs_396500(monkeypatch)
 
 
 def test_scanner_output_records_entry_compatibility_trace(monkeypatch) -> None:
+    monkeypatch.setattr(scanner_mod, "_load_symbol_priors", lambda state, candidates: {})
+
     monkeypatch.setattr(
         scanner_mod,
         "_compute_entry_compatibility_signal",

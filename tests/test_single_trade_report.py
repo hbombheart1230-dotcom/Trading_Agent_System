@@ -141,6 +141,8 @@ def test_single_trade_report_generates_without_bundle(tmp_path: Path, monkeypatc
     assert out["trade_id"] == trade_id
     assert out["bundle_used"] is False
     assert call_count["count"] == 1
+    exit_payload = json.loads((trade_root / "exit.json").read_text(encoding="utf-8"))
+    assert exit_payload["execution_details"]["order_id"] == "ORD-1"
     assert (trade_root / "reports" / "ai_trade_report.json").exists()
     assert (trade_root / "reports" / "ai_trade_report.md").exists()
     assert (trade_root / "reports" / "ai_trade_report_llm_response.json").exists()

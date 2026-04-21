@@ -486,6 +486,35 @@ def _story_input_quality_score(story_input: Dict[str, Any]) -> int:
     return score
 
 
+def _execution_truth_surface(details: Any) -> Dict[str, Any]:
+    details_obj = details if isinstance(details, dict) else {}
+    out: Dict[str, Any] = {}
+    for key in (
+        "order_id",
+        "filled_qty",
+        "filled_price",
+        "broker_truth_source",
+        "broker_day_truth_source",
+        "broker_day_match_mode",
+        "broker_day_authoritative",
+        "broker_buy_price",
+        "broker_realized_pnl",
+        "broker_fee",
+        "broker_tax",
+    ):
+        value = details_obj.get(key)
+        if value not in (None, "", [], {}):
+            out[key] = value
+    return out
+
+
+def _truth_surface_differs(existing_story_input: Dict[str, Any], rebuilt_story_input: Dict[str, Any]) -> bool:
+    for key in ("execution_details", "entry_execution_details", "exit_execution_details"):
+        if _execution_truth_surface(existing_story_input.get(key)) != _execution_truth_surface(rebuilt_story_input.get(key)):
+            return True
+    return False
+
+
 def resolve_story_input_for_regeneration(
     trade_dir: Path,
     trade_paths: Dict[str, Path],
@@ -506,7 +535,7 @@ def resolve_story_input_for_regeneration(
         existing_story_input=existing_story_input,
     )
     rebuilt_score = _story_input_quality_score(rebuilt_story_input)
-    if rebuilt_score >= existing_score and rebuilt_story_input:
+    if rebuilt_story_input and (_truth_surface_differs(existing_story_input, rebuilt_story_input) or rebuilt_score >= existing_score):
         canonical_path = trade_paths["ai_trade_report_input_json"]
         if _payload_fingerprint(rebuilt_story_input) != _payload_fingerprint(existing_story_input):
             write_json(canonical_path, rebuilt_story_input)

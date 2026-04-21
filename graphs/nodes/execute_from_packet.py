@@ -1169,6 +1169,46 @@ def _normalize_execution(
     for key, value in exec_meta.items():
         payload.setdefault(key, value)
 
+    response_payload = payload.get("response_payload") if isinstance(payload.get("response_payload"), dict) else {}
+    top_level_order_id = str(
+        payload.get("order_id")
+        or payload.get("ord_no")
+        or response_payload.get("order_id")
+        or response_payload.get("ord_no")
+        or ""
+    ).strip()
+    top_level_broker_message = str(
+        payload.get("broker_message")
+        or response_payload.get("return_msg")
+        or payload.get("error_message")
+        or ""
+    ).strip()
+    top_level_broker_code = str(
+        payload.get("broker_code")
+        or response_payload.get("msg_cd")
+        or response_payload.get("return_code")
+        or payload.get("error_code")
+        or ""
+    ).strip()
+    top_level_filled_price = (
+        payload.get("filled_price")
+        if payload.get("filled_price") not in (None, "")
+        else payload.get("avg_fill_price")
+        if payload.get("avg_fill_price") not in (None, "")
+        else payload.get("avg_price")
+    )
+    top_level_filled_qty = (
+        payload.get("filled_qty")
+        if payload.get("filled_qty") not in (None, "")
+        else payload.get("qty")
+    )
+    top_level_status = str(
+        payload.get("fill_status")
+        or payload.get("status")
+        or response_payload.get("return_msg")
+        or ""
+    ).strip()
+
     ok = bool(allowed)
     ok_source = "allowed_gate"
     if allowed and execution_result is not None:
@@ -1184,6 +1224,17 @@ def _normalize_execution(
         "ok": bool(ok),
         "ok_source": str(ok_source),
         "reason": resolved_reason,
+        "order_id": top_level_order_id,
+        "ord_no": top_level_order_id,
+        "broker_code": top_level_broker_code,
+        "broker_message": top_level_broker_message,
+        "status": top_level_status,
+        "filled_price": top_level_filled_price,
+        "filled_qty": top_level_filled_qty,
+        "execution_mode": str(payload.get("execution_mode") or "").strip(),
+        "kiwoom_mode": str(payload.get("kiwoom_mode") or "").strip(),
+        "broker_env": str(payload.get("broker_env") or "").strip(),
+        "effective_mode": str(payload.get("effective_mode") or "").strip(),
         "order": order,
         "payload": payload,
     }

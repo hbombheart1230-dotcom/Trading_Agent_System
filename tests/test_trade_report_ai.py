@@ -521,6 +521,10 @@ def test_build_shared_summary_seed_surfaces_price_truth_fields() -> None:
             "symbol": "005930",
             "action": "SELL",
             "status": "closed",
+            "entry_execution_details": {
+                "filled_price": 69800,
+                "broker_truth_source": "kiwoom.order_status",
+            },
             "exit_execution_details": {
                 "filled_price": 70100,
                 "broker_truth_source": "kiwoom.order_status",
@@ -534,6 +538,7 @@ def test_build_shared_summary_seed_surfaces_price_truth_fields() -> None:
 
     facts = seed.get("resolved_trade_facts") if isinstance(seed.get("resolved_trade_facts"), dict) else {}
     assert facts.get("broker_fill_price") == 70100.0
+    assert facts.get("broker_buy_price") == 69800.0
     assert facts.get("monitor_mark_price") == 70050.0
     assert facts.get("account_mark_price") is None
     assert facts.get("price_truth_source") == "broker_fill"
@@ -793,6 +798,98 @@ def test_build_ai_trade_report_compact_input_prefers_section_seeds_for_aux_secti
     assert compact_input["report_section_seeds"]["final_operator_conclusion"]["summary"] == "Seed final conclusion."
 
 
+def test_build_ai_trade_report_compact_input_refreshes_placeholder_execution_seed(tmp_path, monkeypatch) -> None:
+    trade_dir = tmp_path / "reports" / "trades" / "2026-03-18" / "TRD_20260318_000660_01"
+    trade_dir.mkdir(parents=True)
+    input_path = trade_dir / "ai_trade_report_input.json"
+    input_path.write_text("{}", encoding="utf-8")
+
+    sentinel_trade_model = {
+        "facts": {},
+        "context": {
+            "report_section_seeds": {
+                "execution_quality": {
+                    "summary": "Execution outcome summary was 기록되지 않음. 체결 기준 가격은 17650.00였습니다.",
+                    "bullets": ["Execution outcome: recorded"],
+                }
+            }
+        },
+        "provenance": {"schema_version": "trade_read_model.v2"},
+    }
+
+    monkeypatch.setattr(
+        "libs.reporting.trade_read_model.build_trade_read_model",
+        lambda path: dict(sentinel_trade_model),
+    )
+
+    story_input = _story_input()
+    story_input.update(
+        {
+            "artifacts": {"ai_trade_report_input_json": str(input_path)},
+            "execution_outcome_human": {
+                "summary": "000660 1주 매도 주문은 실거래로 체결됐고 체결 기준 가격은 17650.00였습니다.",
+                "status": "filled",
+                "bullets": ["주문 번호는 0123456였습니다.", "체결 기준 가격은 17650.00였습니다."],
+            },
+        }
+    )
+
+    compact_input = mod.build_ai_trade_report_compact_input(story_input)
+
+    assert compact_input["execution"]["summary"] == "000660 1주 매도 주문은 실거래로 체결됐고 체결 기준 가격은 17650.00였습니다."
+    assert compact_input["report_section_seeds"]["execution_quality"]["summary"] == "000660 1주 매도 주문은 실거래로 체결됐고 체결 기준 가격은 17650.00였습니다."
+
+
+def test_build_ai_trade_report_compact_input_refreshes_placeholder_reporter_summary(tmp_path, monkeypatch) -> None:
+    trade_dir = tmp_path / "reports" / "trades" / "2026-03-18" / "TRD_20260318_000660_01"
+    trade_dir.mkdir(parents=True)
+    input_path = trade_dir / "ai_trade_report_input.json"
+    input_path.write_text("{}", encoding="utf-8")
+
+    sentinel_trade_model = {
+        "facts": {},
+        "context": {
+            "report_section_seeds": {
+                "reporter_evaluation": {
+                    "summary": "이번 거래는 보유 이후 되밀림 관리가 더 크게 작동한 케이스로 보입니다.",
+                    "bullets": ["seed reporter bullet"],
+                    "status": "pending",
+                    "grade": "B",
+                }
+            }
+        },
+        "provenance": {"schema_version": "trade_read_model.v2"},
+    }
+
+    monkeypatch.setattr(
+        "libs.reporting.trade_read_model.build_trade_read_model",
+        lambda path: dict(sentinel_trade_model),
+    )
+
+    story_input = _story_input()
+    story_input.update(
+        {
+            "artifacts": {"ai_trade_report_input_json": str(input_path)},
+            "reporter_status_human": {
+                "summary": "Same-day reporter analysis was not generated yet.",
+                "status": "missing",
+                "grade": "N/A",
+                "bullets": ["Link same-day reporter analysis to this lifecycle for a complete quality review."],
+            },
+        }
+    )
+
+    compact_input = mod.build_ai_trade_report_compact_input(story_input)
+
+    assert compact_input["reporter"]["summary"] == "이번 거래는 보유 이후 되밀림 관리가 더 크게 작동한 케이스로 보입니다."
+    assert compact_input["reporter"]["status"] == "pending"
+    assert compact_input["reporter"]["grade"] == "B"
+    assert compact_input["reporter"]["bullets"] == ["seed reporter bullet"]
+
+    compact_story_input = mod._compact_story_input_for_llm(story_input)
+    assert compact_story_input["reporter_status_human"]["summary"] == "이번 거래는 보유 이후 되밀림 관리가 더 크게 작동한 케이스로 보입니다."
+
+
 def test_compact_story_input_prefers_section_seed_summaries_for_core_runtime_blocks(tmp_path, monkeypatch) -> None:
     trade_dir = tmp_path / "reports" / "trades" / "2026-03-18" / "TRD_20260318_000660_01"
     trade_dir.mkdir(parents=True)
@@ -862,6 +959,53 @@ def test_compact_story_input_prefers_section_seed_summaries_for_core_runtime_blo
     assert compact_input["operator_conclusion_human"]["current_action"] == "SELL"
     assert compact_input["operator_conclusion_human"]["watch_next"] == ["seed watch"]
     assert compact_input["operator_conclusion_human"]["thesis_invalidation"] == ["seed invalidate"]
+
+
+def test_sparse_story_input_prefers_seed_for_placeholder_reporter_summary(tmp_path, monkeypatch) -> None:
+    trade_dir = tmp_path / "reports" / "trades" / "2026-03-18" / "TRD_20260318_000660_01"
+    trade_dir.mkdir(parents=True)
+    input_path = trade_dir / "ai_trade_report_input.json"
+    input_path.write_text("{}", encoding="utf-8")
+
+    sentinel_trade_model = {
+        "facts": {},
+        "context": {
+            "report_section_seeds": {
+                "reporter_evaluation": {
+                    "summary": "이번 거래는 보유 이후 되밀림 관리가 더 크게 작동한 케이스로 보입니다.",
+                    "bullets": ["seed reporter bullet"],
+                    "status": "pending",
+                    "grade": "B",
+                }
+            }
+        },
+        "provenance": {"schema_version": "trade_read_model.v2"},
+    }
+
+    monkeypatch.setattr(
+        "libs.reporting.trade_read_model.build_trade_read_model",
+        lambda path: dict(sentinel_trade_model),
+    )
+
+    story_input = _story_input()
+    story_input.update(
+        {
+            "artifacts": {"ai_trade_report_input_json": str(input_path)},
+            "reporter_status_human": {
+                "summary": "Same-day reporter analysis was not generated yet.",
+                "status": "missing",
+                "grade": "N/A",
+                "bullets": ["Link same-day reporter analysis to this lifecycle for a complete quality review."],
+            },
+        }
+    )
+
+    sparse_input = mod._sparse_story_input_for_llm(story_input)
+
+    assert sparse_input["reporter"]["summary"] == "이번 거래는 보유 이후 되밀림 관리가 더 크게 작동한 케이스로 보입니다."
+    assert sparse_input["reporter"]["status"] == "pending"
+    assert sparse_input["reporter"]["grade"] == "B"
+    assert sparse_input["reporter"]["bullets"] == ["seed reporter bullet"]
 
 
 def test_trade_report_shared_facts_align_between_deterministic_and_ai(monkeypatch) -> None:
@@ -1964,8 +2108,8 @@ def test_build_reporter_evaluation_section_surfaces_responsibility_split() -> No
     assert any("진입 평가는 진입 후 약 1분 6초 만에 고점 대비 하락폭 청산이 나와" in row for row in section["bullets"])
     assert any("청산 평가는 청산 축이 고점 대비 하락폭으로 명확해" in row for row in section["bullets"])
     assert any("보유 평가는 보유 시간이 1분 6초에 그쳐 중간 악화 흐름을 두껍게 읽기에는 정보가 부족합니다." in row for row in section["bullets"])
-    assert any("당일 reporter 연계 상태는 동일 실행 기록 직접 연계였습니다." in row for row in section["bullets"])
-    assert any("동일 일자 reporter도 과매매 또는 빠른 청산 압력을 시사했습니다." in row for row in section["bullets"])
+    assert any("당일 리포터 연계 상태는 동일 실행 기록 직접 연계였습니다." in row for row in section["bullets"])
+    assert any("동일 일자 리포터도 과매매 또는 빠른 청산 압력을 시사했습니다." in row for row in section["bullets"])
 
 
 def test_holding_duration_label_humanizes_fractional_minutes() -> None:
@@ -2553,6 +2697,7 @@ def test_render_trade_report_markdown_surfaces_price_truth_fields() -> None:
         "shared_facts": {
             "pnl": -320.0,
             "pnl_pct": -0.0064,
+            "broker_buy_price": 69900.0,
             "broker_fill_price": 70100.0,
             "account_mark_price": 70080.0,
             "monitor_mark_price": 70050.0,
@@ -2575,12 +2720,13 @@ def test_render_trade_report_markdown_surfaces_price_truth_fields() -> None:
     markdown = mod.render_trade_report_markdown(report)
 
     assert "## Truth Surface" in markdown
-    assert "브로커 체결가는 70100.00입니다." in markdown
+    assert "브로커 매수가/매도가는 69900.00 / 70100.00입니다." in markdown
     assert "계좌 기준 마크 가격은 70080.00입니다." in markdown
-    assert "모니터 관측 가격은 70050.00입니다." in markdown
+    assert "모니터 관측 가격은 70050.00입니다." not in markdown
     assert "가격 truth 소스는 브로커 체결가 기준입니다." in markdown
     assert "손익 truth 소스는 키움 당일 실현손익 기준(ka10077)입니다." in markdown
     assert "브로커 당일 손익 매칭은 symbol_price_qty / authoritative 상태이며, 소스는 키움 당일 실현손익 기준(ka10077)입니다." in markdown
+    assert "모니터 가격 소스는" not in markdown
     assert "truth 가용성: 브로커 체결가=있음, 계좌 마크=있음, 모니터 가격=있음, 브로커 손익=있음." in markdown
 
 
@@ -2723,9 +2869,130 @@ def test_render_trade_report_markdown_uses_estimated_pnl_phrase_when_broker_fill
 
     markdown = mod.render_trade_report_markdown(report)
 
-    assert "종료 직전 모니터 관측 가격은 536000.00입니다." in markdown
+    assert "종료 직전 모니터 관측 가격은 536000.00입니다." not in markdown
     assert "브로커 체결가와 계좌 평가손익 기준 추정 손익률은 -0.90%입니다." in markdown
     assert "손익 truth 소스는 브로커 체결가와 계좌 평가손익 역산 기준입니다." in markdown
+
+
+def test_render_trade_report_markdown_explains_same_price_round_trip_as_cost_loss() -> None:
+    report = {
+        "trade_id": "TRD_20260421_005380_01",
+        "action": "SELL",
+        "symbol": "005380",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {"summary": "context", "bullets": []},
+        "why_this_symbol_was_chosen": {"summary": "why", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+        "shared_facts": {
+            "pnl": -4813.0,
+            "pnl_pct": -0.0090,
+            "broker_fee": 3740,
+            "broker_tax": 1073,
+            "broker_buy_price": 537000.0,
+            "broker_fill_price": 537000.0,
+            "price_truth_source": "broker_fill",
+            "pnl_truth_source": "kiwoom.ka10077",
+        },
+        "truth_surface": {
+            "price": {
+                "broker_buy_price": 537000.0,
+                "broker_fill_price": 537000.0,
+                "monitor_mark_price": 536000.0,
+                "price_truth_source": "broker_fill",
+                "monitor_price_source": "position.current_price",
+            },
+            "pnl": {
+                "value": -4813.0,
+                "pct": -0.0090,
+                "broker_fee": 3740,
+                "broker_tax": 1073,
+                "pnl_truth_source": "kiwoom.ka10077",
+            },
+            "availability": {
+                "broker_fill_present": True,
+                "broker_buy_present": True,
+                "account_mark_present": False,
+                "monitor_mark_present": True,
+                "broker_pnl_present": True,
+            },
+        },
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "브로커 매수가/매도가는 537000.00 / 537000.00입니다." in markdown
+    assert "매수가와 매도가가 같았고, 손익은 가격 변동이 아니라 수수료와 세금에서 발생했습니다." in markdown
+    assert "모니터 가격 소스는" not in markdown
+
+
+def test_render_trade_report_markdown_discloses_missing_buy_price_when_only_sell_fill_is_recovered() -> None:
+    report = {
+        "trade_id": "TRD_20260421_005930_01",
+        "action": "SELL",
+        "symbol": "005930",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {"summary": "context", "bullets": []},
+        "why_this_symbol_was_chosen": {"summary": "why", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+        "truth_surface": {
+            "price": {
+                "broker_fill_price": 218000.0,
+                "broker_buy_price": None,
+                "monitor_mark_price": 218250.0,
+                "price_truth_source": "broker_fill",
+                "monitor_price_source": "position.current_price",
+            },
+            "pnl": {
+                "value": -1706.0,
+                "pct": -0.0078,
+                "broker_fee": 1520,
+                "broker_tax": 436,
+                "pnl_truth_source": "kiwoom.ka10077",
+                "broker_day_truth_source": "kiwoom.ka10077",
+                "broker_day_match_mode": "symbol_qty_price_exact",
+                "broker_day_authoritative": True,
+            },
+            "availability": {
+                "broker_fill_present": True,
+                "broker_buy_present": False,
+                "account_mark_present": False,
+                "monitor_mark_present": True,
+                "broker_pnl_present": True,
+            },
+        },
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "브로커 체결 가격은 218000.00입니다." in markdown
+    assert "브로커 매수 체결가는 직접 복구되지 않았고, 확정 손익은 키움 당일 실현손익 기준으로만 확인했습니다." in markdown
+    assert "모니터 가격 소스는" not in markdown
 
 
 def test_render_trade_report_markdown_places_monitor_snapshot_and_scanner_comparison_in_requested_order() -> None:
@@ -3078,7 +3345,7 @@ def test_render_trade_report_markdown_normalizes_guard_timeline_and_final_conclu
     assert "- 기존 판단이 무효화되는 조건은 손절 기준 이탈입니다." in markdown
     assert "- 기존 판단이 무효화되는 조건은 모니터와 스캐너 판단 발산입니다." in markdown
     assert "- 기존 판단이 무효화되는 조건은 거시 환경의 부정적 전환입니다." in markdown
-    assert "- 보유 단계 근거가 얇아 진입과 청산 사이의 모니터 맥락을 더 보존해야 합니다." in markdown
+    assert "- 보유 구간 근거는 제한적이며 진입과 청산 사이 모니터 맥락이 충분하지 않습니다." in markdown
 
 
 def test_render_trade_report_markdown_translates_timeline_and_final_conclusion() -> None:

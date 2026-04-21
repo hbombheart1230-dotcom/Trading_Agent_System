@@ -24,6 +24,13 @@ def _safe_int(value: Any, default: Optional[int] = None) -> Optional[int]:
         return default
 
 
+def _normalize_kiwoom_pct_ratio(value: Any) -> Optional[float]:
+    raw = _safe_float(value)
+    if raw is None:
+        return None
+    return raw / 100.0
+
+
 def _resolve_trade_day_hint(*values: Any) -> str:
     for value in values:
         raw = str(value or "").strip()
@@ -35,6 +42,56 @@ def _resolve_trade_day_hint(*values: Any) -> str:
         if len(digits) >= 8:
             return digits[:8]
     return ""
+
+
+def _normalize_execution_side(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    compact = text.replace("_", "").replace("-", "").replace(" ", "")
+    if compact in {"sell", "s"}:
+        return "sell"
+    if compact in {"buy", "b"}:
+        return "buy"
+    if "매도" in text or "sell" in text:
+        return "sell"
+    if "매수" in text or "buy" in text:
+        return "buy"
+    return compact
+
+
+def _trusted_order_fill_price(
+    broker_order_status: Mapping[str, Any],
+    execution_details: Mapping[str, Any],
+    bundle_execution_details: Mapping[str, Any],
+) -> Any:
+    direct = broker_order_status.get("filled_price")
+    if direct not in (None, ""):
+        return direct
+    if execution_details.get("broker_truth_source") == "kiwoom.order_status":
+        trusted = execution_details.get("filled_price")
+        if trusted not in (None, ""):
+            return trusted
+    if bundle_execution_details.get("broker_truth_source") == "kiwoom.order_status":
+        trusted = bundle_execution_details.get("filled_price")
+        if trusted not in (None, ""):
+            return trusted
+    return None
+
+
+def _trusted_entry_fill_price(
+    entry_execution_details: Mapping[str, Any],
+    bundle_entry_execution_details: Mapping[str, Any],
+) -> Any:
+    if entry_execution_details.get("broker_truth_source") == "kiwoom.order_status":
+        trusted = entry_execution_details.get("filled_price")
+        if trusted not in (None, ""):
+            return trusted
+    if bundle_entry_execution_details.get("broker_truth_source") == "kiwoom.order_status":
+        trusted = bundle_entry_execution_details.get("filled_price")
+        if trusted not in (None, ""):
+            return trusted
+    return None
 
 
 def _broker_day_truth_lookup_enabled(context_obj: Mapping[str, Any]) -> bool:
@@ -68,7 +125,7 @@ def _build_match_payload(
         "filled_price": _safe_float(row.get("filled_price")),
         "buy_price": _safe_float(row.get("buy_price")),
         "realized_pnl": _safe_float(row.get("realized_pnl")),
-        "pnl_ratio": _safe_float(row.get("pnl_ratio")),
+        "pnl_ratio": _normalize_kiwoom_pct_ratio(row.get("pnl_ratio")),
         "fee": _safe_int(row.get("fee")),
         "tax": _safe_int(row.get("tax")),
         "source": "kiwoom.ka10077",
@@ -84,6 +141,7 @@ def _match_detail_row(
     symbol: str,
     filled_qty: Any = None,
     filled_price: Any = None,
+    buy_price: Any = None,
 ) -> Dict[str, Any]:
     normalized_symbol = normalize_symbol(symbol, allow_test_symbols=True)
     symbol_rows = [
@@ -97,6 +155,16 @@ def _match_detail_row(
 
     qty_value = _safe_int(filled_qty)
     price_value = _safe_float(filled_price)
+    buy_price_value = _safe_float(buy_price)
+
+    def _exact_buy_sell_qty(row: Mapping[str, Any]) -> bool:
+        return (
+            qty_value is not None
+            and buy_price_value is not None
+            and _safe_int(row.get("filled_qty")) == qty_value
+            and _price_matches(row.get("filled_price"), price_value)
+            and _price_matches(row.get("buy_price"), buy_price_value)
+        )
 
     def _exact_qty_and_price(row: Mapping[str, Any]) -> bool:
         return qty_value is not None and _safe_int(row.get("filled_qty")) == qty_value and _price_matches(row.get("filled_price"), price_value)
@@ -108,6 +176,7 @@ def _match_detail_row(
         return price_value is not None and _price_matches(row.get("filled_price"), price_value)
 
     for match_mode, predicate in (
+        ("symbol_buy_sell_qty_exact", _exact_buy_sell_qty),
         ("symbol_qty_price_exact", _exact_qty_and_price),
         ("symbol_qty_exact", _exact_qty),
         ("symbol_price_exact", _exact_price),
@@ -158,7 +227,7 @@ def _match_account_profit_row(
     return {
         "symbol": normalized_symbol,
         "realized_pnl": _safe_float(row.get("today_sell_pnl")),
-        "pnl_ratio": _safe_float(row.get("pnl_ratio")),
+        "pnl_ratio": _normalize_kiwoom_pct_ratio(row.get("pnl_ratio")),
         "fee": _safe_int(row.get("today_fee")),
         "tax": _safe_int(row.get("today_tax")),
         "source": "kiwoom.ka10085",
@@ -190,6 +259,24 @@ def attach_broker_day_pnl(
         if isinstance(bundle_obj.get("execution_details"), dict)
         else {}
     )
+    entry_execution_details = (
+        dict(context_obj.get("entry_execution_details") or {})
+        if isinstance(context_obj.get("entry_execution_details"), dict)
+        else {}
+    )
+    if not entry_execution_details and isinstance(bundle_obj.get("entry_execution_details"), dict):
+        entry_execution_details = dict(bundle_obj.get("entry_execution_details") or {})
+    bundle_entry_execution_details = (
+        dict(bundle_obj.get("entry_execution_details") or {})
+        if isinstance(bundle_obj.get("entry_execution_details"), dict)
+        else {}
+    )
+    if not bundle_entry_execution_details and isinstance(bundle_obj.get("entry"), dict):
+        bundle_entry_execution_details = (
+            dict((bundle_obj.get("entry") or {}).get("execution_details") or {})
+            if isinstance((bundle_obj.get("entry") or {}).get("execution_details"), dict)
+            else {}
+        )
     if isinstance(execution_context.get("broker_day_pnl"), dict) and execution_context.get("broker_day_pnl"):
         context_obj["execution_context"] = execution_context
         return context_obj
@@ -204,7 +291,7 @@ def attach_broker_day_pnl(
     broker_result = executor.get("broker_result") if isinstance(executor.get("broker_result"), dict) else {}
     order_request = executor.get("order_request_summary") if isinstance(executor.get("order_request_summary"), dict) else {}
 
-    side = str(
+    side = _normalize_execution_side(
         broker_order_status.get("side")
         or context_obj.get("action")
         or context_obj.get("side")
@@ -217,7 +304,7 @@ def attach_broker_day_pnl(
         or order_request.get("action")
         or execution_context.get("action")
         or ""
-    ).strip().lower()
+    )
     if side not in {"sell", "s"}:
         context_obj["execution_context"] = execution_context
         return context_obj
@@ -251,11 +338,15 @@ def attach_broker_day_pnl(
         filled_qty = execution_details.get("filled_qty")
     if filled_qty in (None, ""):
         filled_qty = bundle_execution_details.get("filled_qty")
-    filled_price = broker_order_status.get("filled_price")
-    if filled_price in (None, ""):
-        filled_price = execution_details.get("filled_price")
-    if filled_price in (None, ""):
-        filled_price = bundle_execution_details.get("filled_price")
+    filled_price = _trusted_order_fill_price(
+        broker_order_status,
+        execution_details,
+        bundle_execution_details,
+    )
+    buy_price = _trusted_entry_fill_price(
+        entry_execution_details,
+        bundle_entry_execution_details,
+    )
     reader = context_obj.get("broker_day_pnl_reader")
     if reader is None:
         if not _broker_day_truth_lookup_enabled(context_obj):
@@ -282,6 +373,7 @@ def attach_broker_day_pnl(
         symbol=symbol,
         filled_qty=filled_qty,
         filled_price=filled_price,
+        buy_price=buy_price,
     )
     if (not matched or not bool(matched.get("authoritative"))) and hasattr(reader, "get_account_profit_rate_rows"):
         try:

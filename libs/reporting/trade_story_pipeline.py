@@ -21,6 +21,18 @@ from libs.reporting.trade_report_ai import resolve_shared_trade_facts
 from libs.reporting.trade_scanner_fallback_anchor import (
     reanchor_scanner_selection_for_monitor_fallback,
 )
+from libs.reporting.trade_fallback_text import (
+    EXECUTION_OUTCOME_NOT_CAPTURED,
+    LIFECYCLE_CONCLUSION_NOT_CAPTURED,
+    REPORTER_LINKAGE_NOT_CAPTURED,
+    lifecycle_conclusion_summary_is_placeholder,
+)
+from libs.reporting.trade_execution_outcome_text import (
+    build_execution_outcome_fallback_from_lifecycle,
+    build_execution_outcome_human_payload,
+    execution_outcome_summary_is_placeholder,
+)
+from libs.reporting.trade_reporter_status_text import normalize_reporter_status_human
 from libs.core.symbols import normalize_symbol
 
 
@@ -2755,37 +2767,12 @@ def build_execution_outcome_human(
     story_type: str,
     mode_label: str,
 ) -> Dict[str, Any]:
-    action = str(execution.get("action") or "").upper() or "WAIT"
-    symbol = str(execution.get("symbol") or "").strip() or "unknown"
-    qty = safe_int(execution.get("qty"), 0)
-    status_text = str(execution.get("status") or executor.get("broker_message") or "").strip()
-    if story_type == "simulation":
-        summary = f"{action} order for {symbol} x{qty} was approved and recorded successfully in simulation mode."
-        outcome = "recorded"
-    elif story_type == "failed_execution":
-        summary = f"{action} order for {symbol} x{qty} was attempted but did not complete successfully."
-        outcome = "failed"
-    elif story_type == "live_trade":
-        summary = f"{action} order for {symbol} x{qty} completed as a live broker execution."
-        outcome = "filled"
-    else:
-        summary = f"No broker-side execution was recorded for {symbol} in this story."
-        outcome = "decision_only"
-    bullets = [
-        f"Execution outcome: {outcome}",
-        f"Quantity: {qty}",
-        f"Execution mode: {mode_label}",
-        f"Broker environment: {executor.get('broker_env') or 'not_captured'}",
-        f"Order status: {status_text or 'not_captured'}",
-        f"Order number: {execution.get('ord_no') or 'not_captured'}",
-    ]
-    return {
-        "summary": summary,
-        "outcome": outcome,
-        "quantity": qty,
-        "status_text": status_text,
-        "bullets": bullets,
-    }
+    return build_execution_outcome_human_payload(
+        execution,
+        executor,
+        story_type=story_type,
+        mode_label=mode_label,
+    )
 
 
 def build_reporter_status_human(reporter: Dict[str, Any], reporter_day_obj: Dict[str, Any]) -> Dict[str, Any]:
@@ -2795,32 +2782,32 @@ def build_reporter_status_human(reporter: Dict[str, Any], reporter_day_obj: Dict
     grade = str(reporter_day_obj.get("ai_run_grade") or "N/A").strip()
     if linked:
         status = "linked"
-        reason = "A same-day reporter analysis was linked to this run."
+        reason = "당일 리포터 분석이 이 run에 연결됐습니다."
     elif day_file_found:
         status = "pending"
-        reason = "A same-day reporter file exists, but this run was not linked to a run-specific evaluation yet."
+        reason = "당일 리포터 파일은 있지만 이 run에 대한 개별 평가는 아직 연결되지 않았습니다."
     else:
         status = "missing"
-        reason = "Same-day reporter analysis was not generated yet."
+        reason = "당일 리포터 분석은 아직 생성되지 않았습니다."
     if status == "linked":
         summary = ai_summary or reason
     elif ai_summary:
-        summary = f"{reason} Interim summary: {ai_summary}"
+        summary = f"{reason} 중간 요약: {ai_summary}"
     else:
         summary = reason
     bullets = [
-        f"Reporter status: {status}",
-        f"Reporter reason: {reason}",
-        f"Reporter grade: {grade}",
-        f"Reporter summary: {summary}",
+        f"리포터 상태는 {status}입니다.",
+        f"리포터 판단 사유는 {reason}입니다.",
+        f"리포터 등급은 {grade}입니다.",
+        f"리포터 요약은 {summary}입니다.",
     ]
-    return {
+    return normalize_reporter_status_human({
         "status": status,
         "reason": reason,
         "grade": grade,
         "summary": summary,
         "bullets": bullets,
-    }
+    })
 
 
 def build_operator_conclusion_human(
@@ -2835,24 +2822,30 @@ def build_operator_conclusion_human(
     action = str(execution.get("action") or "").upper() or "WAIT"
     watch_next: List[str] = []
     invalidation: List[str] = [
-        "Negative macro regime shift",
-        "Theme or sector weakening",
-        "Scanner and monitor logic diverging from each other",
+        "거시 환경이 부정적으로 전환되는지 확인해야 합니다.",
+        "테마나 섹터 강도가 약해지는지 확인해야 합니다.",
+        "스캐너와 모니터 판단이 다시 어긋나는지 확인해야 합니다.",
     ]
     if action == "BUY":
-        watch_next.append("Watch the stop-loss and take-profit thresholds on the open position.")
-        watch_next.append("Confirm that the selected theme keeps its relative strength.")
+        summary_prefix = "현재 판단은 진입 유지입니다."
+        watch_next.append("보유 포지션의 손절과 익절 기준이 유지되는지 확인해야 합니다.")
+        watch_next.append("선택된 테마와 종목의 상대 강도가 유지되는지 확인해야 합니다.")
     elif action == "SELL":
-        watch_next.append("Review whether the exit was a valid protection move or avoidable noise.")
-        watch_next.append("Monitor the symbol for any re-entry only after the cooldown and fresh scanner confirmation.")
+        summary_prefix = "현재 판단은 청산 완료입니다."
+        watch_next.append("이번 청산이 방어적으로 타당했는지, 과도한 노이즈 청산은 아니었는지 복기해야 합니다.")
+        watch_next.append("재진입은 쿨다운 이후 새 스캐너 확인이 있을 때만 검토해야 합니다.")
+    elif action == "HOLD":
+        summary_prefix = "현재 판단은 보유 유지입니다."
+        watch_next.append("보유 근거가 약해지는지와 모니터 경고 축 변화를 계속 확인해야 합니다.")
     else:
-        watch_next.append("Wait for a fresh scanner ranking and monitor confirmation.")
+        summary_prefix = "현재 판단은 관망입니다."
+        watch_next.append("새로운 스캐너 순위와 모니터 확인이 나올 때까지 관망해야 합니다.")
     if reporter_status_human.get("status") != "linked":
-        watch_next.append("Follow up once same-day reporter linkage becomes available.")
+        watch_next.append("동일 일자 리포터 분석 연계가 가능해지면 후속 확인이 필요합니다.")
     if "FAIL" in " ".join(row.get("status") or "" for row in list(filters_human.get("checks") or [])):
-        watch_next.append("Check failed or incomplete filters before trusting the next cycle too aggressively.")
+        watch_next.append("실패했거나 비어 있던 필터를 다시 확인하기 전에는 다음 사이클을 공격적으로 해석하면 안 됩니다.")
     summary = (
-        f"Current action is {action}. "
+        f"{summary_prefix} "
         f"{execution_outcome_human.get('summary') or scanner_reason_human.get('summary') or monitor_reason_human.get('summary')}"
     )
     return {
@@ -2974,7 +2967,7 @@ def _normalize_trade_lifecycle_for_story_input(
         else {}
     )
     if not reporter_ctx:
-        reporter_status_human = (
+        reporter_status_human = normalize_reporter_status_human(
             bundle_out.get("reporter_status_human")
             if isinstance(bundle_out.get("reporter_status_human"), dict)
             else {}
@@ -3135,7 +3128,7 @@ def build_trade_story_input(
         monitor_reason_human = dict(bundle_out.get("monitor_reason_human") or {})
         guard_reason_human = dict(bundle_out.get("guard_reason_human") or {})
         execution_outcome_human = dict(bundle_out.get("execution_outcome_human") or {})
-        reporter_status_human = dict(bundle_out.get("reporter_status_human") or {})
+        reporter_status_human = normalize_reporter_status_human(dict(bundle_out.get("reporter_status_human") or {}))
         operator_conclusion_human = dict(bundle_out.get("operator_conclusion_human") or {})
         if not market_context_human:
             market_context_human = {
@@ -3159,9 +3152,23 @@ def build_trade_story_input(
                 ),
                 "bullets": [str(x or "") for x in list(holding.get("monitor_updates") or [])[:8]],
             }
-        if not execution_outcome_human:
+        synthesized_execution_outcome = build_execution_outcome_fallback_from_lifecycle(
+            entry,
+            exit_ctx,
+            status=status,
+            entry_action=entry_action,
+            exit_action=exit_action,
+            symbol=symbol,
+        )
+        if not execution_outcome_human or execution_outcome_summary_is_placeholder(execution_outcome_human.get("summary")):
+            execution_outcome_human = dict(synthesized_execution_outcome)
+        elif not execution_outcome_human.get("bullets"):
+            execution_outcome_human["bullets"] = list(synthesized_execution_outcome.get("bullets") or [])
+        if not str(execution_outcome_human.get("summary") or "").strip():
+            execution_outcome_human = dict(synthesized_execution_outcome)
+        if not str(execution_outcome_human.get("summary") or "").strip():
             execution_outcome_human = {
-                "summary": str(summary.get("lifecycle_summary_human") or "Execution outcome summary was not captured."),
+                "summary": str(summary.get("lifecycle_summary_human") or EXECUTION_OUTCOME_NOT_CAPTURED),
                 "bullets": [
                     f"Lifecycle status: {status}",
                     f"Entry action: {entry_action or 'not_captured'}",
@@ -3171,17 +3178,41 @@ def build_trade_story_input(
         if not reporter_status_human:
             reporter_status_human = {
                 "status": str(reporter.get("status_human") or "missing"),
-                "summary": str(reporter.get("summary") or "Reporter linkage was not captured."),
+                "summary": str(reporter.get("summary") or REPORTER_LINKAGE_NOT_CAPTURED),
                 "grade": str(reporter.get("grade") or "N/A"),
                 "bullets": [str(x or "") for x in list(reporter.get("improvement_points") or [])[:6]],
             }
-        if not operator_conclusion_human:
-            operator_conclusion_human = {
-                "summary": str(summary.get("operator_conclusion_human") or "Lifecycle conclusion was not captured."),
-                "current_action": "HOLD" if status == "open" else lifecycle_action,
-                "watch_next": [f"Lifecycle status is {status}", "Monitor posture changes", "Macro/news regime changes"],
-                "thesis_invalidation": ["stop-loss breach", "monitor/scanner divergence", "negative macro shift"],
-            }
+        reporter_status_human = normalize_reporter_status_human(reporter_status_human)
+        synthesized_operator_conclusion = build_operator_conclusion_human(
+            execution={
+                "action": lifecycle_action,
+                "status": status,
+                "symbol": symbol,
+            },
+            scanner_reason_human=scanner_reason_human,
+            filters_human=filters_human,
+            monitor_reason_human=monitor_reason_human,
+            execution_outcome_human=execution_outcome_human,
+            reporter_status_human=reporter_status_human,
+        )
+        if (
+            not operator_conclusion_human
+            or lifecycle_conclusion_summary_is_placeholder(operator_conclusion_human.get("summary"))
+        ):
+            operator_conclusion_human = dict(synthesized_operator_conclusion)
+        else:
+            if not str(operator_conclusion_human.get("current_action") or "").strip():
+                operator_conclusion_human["current_action"] = str(
+                    synthesized_operator_conclusion.get("current_action") or ("HOLD" if status == "open" else lifecycle_action)
+                )
+            if not list(operator_conclusion_human.get("watch_next") or []):
+                operator_conclusion_human["watch_next"] = list(synthesized_operator_conclusion.get("watch_next") or [])
+            if not list(operator_conclusion_human.get("thesis_invalidation") or []):
+                operator_conclusion_human["thesis_invalidation"] = list(
+                    synthesized_operator_conclusion.get("thesis_invalidation") or []
+                )
+        if not str(operator_conclusion_human.get("summary") or "").strip():
+            operator_conclusion_human["summary"] = str(summary.get("operator_conclusion_human") or LIFECYCLE_CONCLUSION_NOT_CAPTURED)
         canonical_strategist = (
             canonical_agent_artifacts.get("strategist")
             if isinstance(canonical_agent_artifacts.get("strategist"), dict)
@@ -3493,7 +3524,7 @@ def build_trade_story_input(
         monitor_reason_human=dict(bundle_out.get("monitor_reason_human") or {}),
         execution_outcome_human=dict(bundle_out.get("execution_outcome_human") or {}),
         guard_reason_human=dict(bundle_out.get("guard_reason_human") or {}),
-        reporter_status_human=dict(bundle_out.get("reporter_status_human") or {}),
+        reporter_status_human=normalize_reporter_status_human(dict(bundle_out.get("reporter_status_human") or {})),
         operator_conclusion_human=dict(bundle_out.get("operator_conclusion_human") or {}),
     )
     derived_reasoning_trace = build_reasoning_trace_from_summaries(
@@ -3723,7 +3754,7 @@ def build_trade_story_input(
         "monitor_reason_human": monitor_reason_human,
         "guard_reason_human": dict(bundle_out.get("guard_reason_human") or {}),
         "execution_outcome_human": dict(bundle_out.get("execution_outcome_human") or {}),
-        "reporter_status_human": dict(bundle_out.get("reporter_status_human") or {}),
+        "reporter_status_human": normalize_reporter_status_human(dict(bundle_out.get("reporter_status_human") or {})),
         "operator_conclusion_human": dict(bundle_out.get("operator_conclusion_human") or {}),
         "timeline": list(bundle_out.get("timeline") or []),
         "warnings": list(bundle_out.get("warnings") or []),

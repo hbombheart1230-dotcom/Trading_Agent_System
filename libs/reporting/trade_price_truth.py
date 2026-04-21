@@ -23,25 +23,27 @@ def _is_account_price_source(value: Any) -> bool:
     return any(marker in token for marker in ("account", "portfolio", "kt00018"))
 
 
+def _mapping(value: Any) -> Dict[str, Any]:
+    return dict(value or {}) if isinstance(value, Mapping) else {}
+
+
 def resolve_trade_price_truth(story_input: Mapping[str, Any] | None) -> Dict[str, Any]:
     story = dict(story_input or {})
-    execution_details = (
-        dict(story.get("exit_execution_details") or {})
-        if isinstance(story.get("exit_execution_details"), dict)
-        else dict(story.get("execution_details") or {})
-        if isinstance(story.get("execution_details"), dict)
-        else {}
-    )
-    monitor_snapshot = (
-        dict(story.get("monitor_reason_human") or {})
-        if isinstance(story.get("monitor_reason_human"), dict)
-        else {}
-    )
+    execution_details = _mapping(story.get("exit_execution_details")) or _mapping(story.get("execution_details"))
+    entry_execution_details = _mapping(story.get("entry_execution_details"))
+    monitor_snapshot = _mapping(story.get("monitor_reason_human"))
     broker_fill_price = _safe_float(
         execution_details.get("filled_price")
         if execution_details.get("broker_truth_source")
         else None
     )
+    broker_buy_price = _safe_float(
+        execution_details.get("broker_buy_price")
+        if execution_details.get("broker_day_authoritative") or execution_details.get("broker_day_truth_source")
+        else None
+    )
+    if broker_buy_price is None and entry_execution_details.get("broker_truth_source"):
+        broker_buy_price = _safe_float(entry_execution_details.get("filled_price"))
     monitor_current_price = _safe_float(monitor_snapshot.get("current_price"))
     price_source = _source_text(monitor_snapshot.get("price_source"))
 
@@ -59,6 +61,7 @@ def resolve_trade_price_truth(story_input: Mapping[str, Any] | None) -> Dict[str
 
     return {
         "broker_fill_price": broker_fill_price,
+        "broker_buy_price": broker_buy_price,
         "account_mark_price": account_mark_price,
         "monitor_mark_price": monitor_mark_price,
         "price_truth_source": price_truth_source,

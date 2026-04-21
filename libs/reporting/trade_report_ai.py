@@ -19,7 +19,9 @@ from libs.reporting.llm_artifacts import build_llm_response_artifact, classify_l
 from libs.reporting.trade_price_truth import resolve_trade_price_truth
 from libs.reporting.trade_pnl_estimate import infer_exit_fill_pnl_pct_from_account_snapshot
 from libs.reporting.execution_truth_surface import build_execution_truth_bullets
+from libs.reporting.trade_memory_surface import build_trade_report_memory_surface
 from libs.reporting.report_truth_surface import build_trade_report_truth_surface
+from libs.reporting.trade_execution_outcome_text import execution_outcome_summary_is_placeholder
 from libs.reporting.truth_source_labels import (
     monitor_price_source_label,
     pnl_truth_source_label,
@@ -378,6 +380,35 @@ def _is_open_position_placeholder_reason(value: Any) -> bool:
         "포지션이 아직",
     )
     return any(token in text for token in markers)
+
+
+def _reporter_summary_is_placeholder(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    exact_markers = {
+        "same-day reporter analysis was not generated yet.",
+        "a same-day reporter file exists, but this run was not linked to a run-specific evaluation yet.",
+        "a same-day reporter analysis was linked to this run.",
+        "당일 리포터 분석은 아직 생성되지 않았습니다.",
+        "당일 리포터 파일은 있지만 이 run에 대한 개별 평가는 아직 연결되지 않았습니다.",
+        "당일 리포터 분석이 이 run에 연결됐습니다.",
+    }
+    prefix_markers = (
+        "reporter status:",
+        "reporter reason:",
+        "reporter grade:",
+        "reporter summary:",
+        "리포터 상태는",
+        "리포터 판단 사유는",
+        "리포터 등급은",
+        "리포터 요약은",
+        "당일 리포터 연계 상태는",
+    )
+    if lowered in {marker.lower() for marker in exact_markers}:
+        return True
+    return any(lowered.startswith(marker) for marker in prefix_markers)
 
 
 def _present_fact(value: Any) -> bool:
@@ -1224,6 +1255,7 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "broker_day_truth_attempted": bool(resolved_facts.get("broker_day_truth_attempted")),
         "broker_day_truth_error": _clip(resolved_facts.get("broker_day_truth_error"), max_len=240) or "",
         "broker_fill_price": price_truth.get("broker_fill_price"),
+        "broker_buy_price": price_truth.get("broker_buy_price"),
         "account_mark_price": price_truth.get("account_mark_price"),
         "monitor_mark_price": price_truth.get("monitor_mark_price"),
         "price_truth_source": _clip(price_truth.get("price_truth_source"), max_len=40) or "unavailable",
@@ -1248,6 +1280,7 @@ def _build_shared_summary_seed(story_input: Dict[str, Any]) -> Dict[str, Any]:
             "broker_day_truth_attempted": bool(resolved_facts.get("broker_day_truth_attempted")),
             "broker_day_truth_error": _clip(resolved_facts.get("broker_day_truth_error"), max_len=240) or "",
             "broker_fill_price": price_truth.get("broker_fill_price"),
+            "broker_buy_price": price_truth.get("broker_buy_price"),
             "account_mark_price": price_truth.get("account_mark_price"),
             "monitor_mark_price": price_truth.get("monitor_mark_price"),
             "price_truth_source": _clip(price_truth.get("price_truth_source"), max_len=40) or "unavailable",
@@ -1292,6 +1325,7 @@ def resolve_shared_trade_facts(story_input: Dict[str, Any]) -> Dict[str, Any]:
         "broker_tax": resolved.get("broker_tax"),
         "pnl_truth_source": _clip(resolved.get("pnl_truth_source"), max_len=80) or "unavailable",
         "broker_fill_price": resolved.get("broker_fill_price"),
+        "broker_buy_price": resolved.get("broker_buy_price"),
         "account_mark_price": resolved.get("account_mark_price"),
         "monitor_mark_price": resolved.get("monitor_mark_price"),
         "price_truth_source": _clip(resolved.get("price_truth_source"), max_len=40) or "unavailable",
@@ -1440,6 +1474,7 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
         "broker_day_truth_attempted": bool(shared_seed.get("broker_day_truth_attempted")),
         "broker_day_truth_error": _clip(shared_seed.get("broker_day_truth_error"), max_len=240) or "",
         "broker_fill_price": shared_seed.get("broker_fill_price"),
+        "broker_buy_price": shared_seed.get("broker_buy_price"),
         "account_mark_price": shared_seed.get("account_mark_price"),
         "monitor_mark_price": shared_seed.get("monitor_mark_price"),
         "price_truth_source": _clip(shared_seed.get("price_truth_source"), max_len=40) or "unavailable",
@@ -1454,6 +1489,7 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
         "commander_route": dict(shared_seed.get("commander_route") or {}),
     }
     out["truth_surface"] = build_trade_report_truth_surface(out.get("shared_facts"))
+    out["memory_surface"] = build_trade_report_memory_surface(story_input)
     sanitized = _sanitize_report_language_fields(out)
     return dict(sanitized) if isinstance(sanitized, dict) else out
 
@@ -2531,13 +2567,41 @@ def _build_scanner_candidate_comparison_section(
     market_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     ranked_rows = _scanner_ranked_candidates(scanner_reason)
-    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "선택 종목 미기록"
+    runner_ups = [row for row in list(scanner_reason.get("runner_ups") or []) if isinstance(row, dict)]
+    runner_ups_lost = [row for row in list(scanner_reason.get("runner_ups_lost") or []) if isinstance(row, dict)]
+    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "?? ?? ???"
     universe = scanner_reason.get("universe_size")
     if not ranked_rows and universe in (None, "", 0):
+        if runner_ups or runner_ups_lost:
+            bullets: List[str] = []
+            for row in runner_ups[:2]:
+                comp_symbol = _clip(row.get("symbol"), max_len=24)
+                comp_rank = _clip(row.get("rank"), max_len=8) or "?"
+                comp_score = _num_opt(row.get("score_total"))
+                comp_why = _clip(row.get("why"), max_len=160)
+                if not comp_symbol:
+                    continue
+                detail = f"{comp_symbol}? rank {comp_rank}"
+                if comp_score is not None:
+                    detail += f", score {comp_score:.3f}"
+                if comp_why:
+                    detail += f", ?? ??? {comp_why}"
+                bullets.append(detail + "???.")
+            for row in runner_ups_lost[:2]:
+                lost_symbol = _clip(row.get("symbol"), max_len=24)
+                lost_reason = _clip(row.get("summary") or row.get("reason"), max_len=160)
+                if lost_symbol and lost_reason:
+                    bullets.append(f"{lost_symbol} ?? ??? {lost_reason}???.")
+                elif lost_symbol:
+                    bullets.append(f"{lost_symbol}? runner-up ????? ?? ????? ?????.")
+            return {
+                "summary": f"{symbol} ???? runner-up ?? ??? ??? ????.",
+                "bullets": _dedupe_list(bullets, max_items=12, max_len=260),
+            }
         return {
-            "summary": "스캐너 후보 목록이 비어 있어 후보 비교 근거가 제한적입니다.",
+            "summary": "??? ?? ??? ?? ?? ?? ?? ??? ??????.",
             "bullets": [
-                f"선택 종목은 {symbol}으로 기록됐지만 ranked candidate / runner-up trace가 없어 비교 분석을 생략했습니다.",
+                f"?? ??? {symbol}?? ????? ranked candidate / runner-up trace? ?? ?? ??? ??????.",
             ],
         }
 
@@ -2548,12 +2612,11 @@ def _build_scanner_candidate_comparison_section(
             universe_count = int(float(universe))
         except Exception:
             universe_count = 0
-        bullets = [f"스캐너 유니버스 후보 수는 {universe_count}개였습니다."] + list(bullets)
+        bullets = [f"??? ???? ?? ?? {universe_count}?????."] + list(bullets)
     return {
         "summary": summary,
         "bullets": _dedupe_list(bullets, max_items=12, max_len=260),
     }
-
 
 def _has_noisy_trade_report_text(value: Any) -> bool:
     raw = str(value or "").strip().lower()
@@ -3093,7 +3156,7 @@ def _build_reporter_evaluation_section(
     reporter_summary = _clip(reporter_status.get("summary"), max_len=300)
     reporter_summary_lower = reporter_summary.lower()
     if "overtrading" in reporter_summary_lower or "rapid exit pressure" in reporter_summary_lower:
-        reporter_summary = "동일 일자 reporter도 과매매 또는 빠른 청산 압력을 시사했습니다."
+        reporter_summary = "동일 일자 리포터도 과매매 또는 빠른 청산 압력을 시사했습니다."
     same_day_status_label = {
         "linked_run": "동일 실행 기록 직접 연계",
         "linked_trade": "동일 거래 직접 연계",
@@ -3154,7 +3217,7 @@ def _build_reporter_evaluation_section(
     elif execution_summary:
         bullets.append(f"실행 평가는 {execution_summary}")
     if same_day_status:
-        linkage_line = f"당일 reporter 연계 상태는 {same_day_status_label}였습니다."
+        linkage_line = f"당일 리포터 연계 상태는 {same_day_status_label}였습니다."
         bullets.append(linkage_line)
     if reporter_summary:
         bullets.append(reporter_summary)
@@ -3488,6 +3551,14 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     why_symbol_seed = _as_dict(report_section_seeds.get("why_this_symbol_was_chosen"))
     holding_story_seed = _as_dict(report_section_seeds.get("holding_monitoring_story"))
     scanner_filters_seed = _as_dict(report_section_seeds.get("scanner_filters"))
+    execution_quality_seed = _as_dict(report_section_seeds.get("execution_quality"))
+    if _clip(execution_outcome.get("summary"), max_len=280) and execution_outcome_summary_is_placeholder(execution_quality_seed.get("summary")):
+        execution_quality_seed = dict(execution_quality_seed)
+        execution_quality_seed["summary"] = _clip(execution_outcome.get("summary"), max_len=280)
+        if execution_outcome.get("bullets"):
+            execution_quality_seed["bullets"] = _listify(execution_outcome.get("bullets"), max_items=6, max_len=220)
+        if execution_outcome.get("status"):
+            execution_quality_seed["status"] = _clip(execution_outcome.get("status"), max_len=48)
     market_context_summary = _clip(market_context.get("summary"), max_len=320) or _clip(market_context_seed.get("summary"), max_len=320)
     market_context_bullets = _listify(market_context.get("bullets"), max_items=6, max_len=220) or _listify(market_context_seed.get("bullets"), max_items=6, max_len=220)
     if not market_context_summary:
@@ -3500,10 +3571,20 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     monitor_bullets = _listify(monitor_reason.get("bullets"), max_items=6, max_len=220) or _listify(holding_story_seed.get("bullets"), max_items=6, max_len=220)
     guard_summary = _clip(guard_reason.get("summary"), max_len=280) or _clip((_as_dict(report_section_seeds.get("guard_approval_result"))).get("summary"), max_len=280)
     guard_bullets = _listify(guard_reason.get("bullets"), max_items=6, max_len=220) or _listify((_as_dict(report_section_seeds.get("guard_approval_result"))).get("bullets"), max_items=6, max_len=220)
-    execution_summary = _clip(execution_outcome.get("summary"), max_len=280) or _clip((_as_dict(report_section_seeds.get("execution_quality"))).get("summary"), max_len=280)
-    execution_bullets = _listify(execution_outcome.get("bullets"), max_items=6, max_len=220) or _listify((_as_dict(report_section_seeds.get("execution_quality"))).get("bullets"), max_items=6, max_len=220)
-    reporter_summary = _clip(reporter_status.get("summary"), max_len=280) or _clip((_as_dict(report_section_seeds.get("reporter_evaluation"))).get("summary"), max_len=280)
-    reporter_bullets = _listify(reporter_status.get("bullets"), max_items=5, max_len=180) or _listify((_as_dict(report_section_seeds.get("reporter_evaluation"))).get("bullets"), max_items=5, max_len=180)
+    execution_summary = _clip(execution_outcome.get("summary"), max_len=280) or _clip(execution_quality_seed.get("summary"), max_len=280)
+    execution_bullets = _listify(execution_outcome.get("bullets"), max_items=6, max_len=220) or _listify(execution_quality_seed.get("bullets"), max_items=6, max_len=220)
+    reporter_seed = _as_dict(report_section_seeds.get("reporter_evaluation"))
+    if _reporter_summary_is_placeholder(reporter_status.get("summary")) and _clip(reporter_seed.get("summary"), max_len=280):
+        reporter_status = dict(reporter_status)
+        reporter_status["summary"] = _clip(reporter_seed.get("summary"), max_len=280)
+        if reporter_seed.get("bullets"):
+            reporter_status["bullets"] = _listify(reporter_seed.get("bullets"), max_items=5, max_len=180)
+        if reporter_seed.get("status"):
+            reporter_status["status"] = _clip(reporter_seed.get("status"), max_len=32)
+        if reporter_seed.get("grade"):
+            reporter_status["grade"] = _clip(reporter_seed.get("grade"), max_len=24)
+    reporter_summary = _clip(reporter_status.get("summary"), max_len=280) or _clip(reporter_seed.get("summary"), max_len=280)
+    reporter_bullets = _listify(reporter_status.get("bullets"), max_items=5, max_len=180) or _listify(reporter_seed.get("bullets"), max_items=5, max_len=180)
     conclusion_current_action = _clip(operator_conclusion.get("current_action"), max_len=24) or _clip((_as_dict(report_section_seeds.get("final_operator_conclusion"))).get("current_action"), max_len=24)
     conclusion_watch_next = _listify(operator_conclusion.get("watch_next"), max_items=5, max_len=180) or _listify((_as_dict(report_section_seeds.get("final_operator_conclusion"))).get("watch_next"), max_items=5, max_len=180)
     conclusion_thesis_invalidation = _listify(operator_conclusion.get("thesis_invalidation"), max_items=5, max_len=180) or _listify((_as_dict(report_section_seeds.get("final_operator_conclusion"))).get("thesis_invalidation"), max_items=5, max_len=180)
@@ -3762,7 +3843,7 @@ def _compact_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
                 "watch_next": _listify((_as_dict(value)).get("watch_next"), max_items=4, max_len=140),
                 "thesis_invalidation": _listify((_as_dict(value)).get("thesis_invalidation"), max_items=4, max_len=140),
             }
-            for key, value in report_section_seeds.items()
+            for key, value in ({**report_section_seeds, "execution_quality": execution_quality_seed}).items()
             if isinstance(value, dict)
         },
         "timeline": _compact_timeline_rows(story_input.get("timeline")),
@@ -3814,8 +3895,24 @@ def _sparse_story_input_for_llm(story_input: Dict[str, Any]) -> Dict[str, Any]:
     conclusion = compact.get("operator_conclusion_human") if isinstance(compact.get("operator_conclusion_human"), dict) else {}
     report_section_seeds = compact.get("report_section_seeds") if isinstance(compact.get("report_section_seeds"), dict) else {}
     execution_seed = _as_dict(report_section_seeds.get("execution_quality"))
+    if execution.get("summary") and execution_outcome_summary_is_placeholder(execution_seed.get("summary")):
+        execution_seed = dict(execution_seed)
+        execution_seed["summary"] = execution.get("summary")
+        if execution.get("bullets"):
+            execution_seed["bullets"] = _listify(execution.get("bullets"), max_items=4, max_len=180)
+        if execution.get("status"):
+            execution_seed["status"] = execution.get("status")
     guard_seed = _as_dict(report_section_seeds.get("guard_approval_result"))
     reporter_seed = _as_dict(report_section_seeds.get("reporter_evaluation"))
+    if _reporter_summary_is_placeholder(reporter.get("summary")) and _clip(reporter_seed.get("summary"), max_len=220):
+        reporter = dict(reporter)
+        reporter["summary"] = _clip(reporter_seed.get("summary"), max_len=220)
+        if reporter_seed.get("bullets"):
+            reporter["bullets"] = _listify(reporter_seed.get("bullets"), max_items=4, max_len=180)
+        if reporter_seed.get("status"):
+            reporter["status"] = _clip(reporter_seed.get("status"), max_len=24)
+        if reporter_seed.get("grade"):
+            reporter["grade"] = _clip(reporter_seed.get("grade"), max_len=16)
     conclusion_seed = _as_dict(report_section_seeds.get("final_operator_conclusion"))
     holding = compact.get("holding_summary") if isinstance(compact.get("holding_summary"), dict) else {}
     lifecycle = compact.get("lifecycle_summary") if isinstance(compact.get("lifecycle_summary"), dict) else {}
@@ -4294,6 +4391,26 @@ def _normalize_trade_report_language(text: Any) -> str:
     )
 
     replacements = (
+        ("Execution outcome summary was not captured.", "거래 생애주기 실행 요약은 기록되지 않았습니다."),
+        ("Lifecycle conclusion was not captured.", "최종 생애주기 결론은 기록되지 않았습니다."),
+        ("Entry reason was not captured.", "진입 이유는 기록되지 않았습니다."),
+        ("Exit reason was not captured.", "청산 이유는 기록되지 않았습니다."),
+        ("Reporter linkage was not captured.", "리포터 연계 정보는 기록되지 않았습니다."),
+        ("Same-day reporter analysis was not generated yet.", "당일 리포터 분석은 아직 생성되지 않았습니다."),
+        (
+            "A same-day reporter file exists, but this run was not linked to a run-specific evaluation yet.",
+            "당일 리포터 파일은 있지만 이 run에 대한 개별 평가는 아직 연결되지 않았습니다.",
+        ),
+        ("A same-day reporter analysis was linked to this run.", "당일 리포터 분석이 이 run에 연결됐습니다."),
+        ("Interim summary:", "중간 요약:"),
+        ("Reporter status:", "리포터 상태는"),
+        ("Reporter reason:", "리포터 판단 사유는"),
+        ("Reporter grade:", "리포터 등급은"),
+        ("Reporter summary:", "리포터 요약은"),
+        ("Monitor posture changes", "모니터 posture 변화"),
+        ("Macro/news regime changes", "거시 환경 및 뉴스 레짐 변화"),
+        ("Lifecycle status is closed", "생애주기 상태는 closed"),
+        ("Lifecycle status is open", "생애주기 상태는 open"),
         ("Trailing stop", "추적 손절"),
         ("trailing stop", "추적 손절"),
         ("시장 시장 상태은", "시장 상태는"),
@@ -4345,8 +4462,8 @@ def _operatorize_report_text(text: Any) -> str:
         "current lifecycle status is open. entry and exit are still unfolding within one lifecycle story.": "이번 라이프사이클은 아직 진행 중이며, 진입 이후 청산 판단이 이어지고 있습니다.",
         "supervisor approved the order because allowed.": "슈퍼바이저는 주문을 승인했고 가드 판단은 허용이었습니다.",
         "execution quality details were not captured.": "실행 품질 세부 내용은 별도로 기록되지 않았습니다.",
-        "reporter linkage was not available yet.": "Reporter 연계 결과는 아직 연결되지 않았습니다.",
-        "reporter linkage status was recorded separately.": "Reporter 연계 상태는 별도로 기록되어 있습니다.",
+        "reporter linkage was not available yet.": "리포터 연계 결과는 아직 연결되지 않았습니다.",
+        "reporter linkage status was recorded separately.": "리포터 연계 상태는 별도로 기록되어 있습니다.",
         "warnings and missing links were recorded for operator follow-up.": "운영자가 후속 확인해야 할 경고와 누락 링크가 함께 기록되었습니다.",
         "no explicit weaknesses were surfaced beyond the recorded trace.": "기록된 추적 정보 외에 추가 약점은 별도로 확인되지 않았습니다.",
         "ai trade report generation failed after retry attempts. review the saved llm response artifact for details.": "AI 거래 리포트 생성이 재시도 이후에도 완료되지 않았습니다. 저장된 LLM 응답 아티팩트를 함께 확인해 주세요.",
@@ -4358,7 +4475,7 @@ def _operatorize_report_text(text: Any) -> str:
         "ai generation failed before a rendered execution-quality section was produced.": "실행 품질 설명은 생성 도중 중단되어, 저장된 실행 기록을 기준으로 보수적으로 정리했습니다.",
         "ai generation failed and no rendered improvement section is available.": "AI 생성이 중단되어 개선 포인트는 저장된 경고와 오류 기록 중심으로 정리했습니다.",
         "ai generation failed. review lifecycle artifacts and the saved llm response artifact before taking action.": "AI 생성이 중단되었습니다. 다음 조치를 하기 전에 lifecycle 아티팩트와 저장된 LLM 응답을 함께 확인해 주세요.",
-        "link same-day reporter analysis to this lifecycle for a complete quality review.": "같은 날 생성된 reporter 분석을 이 lifecycle에 연결해 전체 품질 평가를 완성해 주세요.",
+        "link same-day reporter analysis to this lifecycle for a complete quality review.": "동일 일자 리포터 분석이 아직 이 거래 생애주기에 연결되지 않았습니다.",
         "selection": "선정 근거를 정리했습니다.",
         "entry": "진입 판단을 정리했습니다.",
         "filters": "스캐너 필터 점검 결과를 정리했습니다.",
@@ -4378,7 +4495,9 @@ def _operatorize_report_text(text: Any) -> str:
         "monitor price cross-check flagged an anomaly": "모니터 가격 교차검증에서 이상치가 감지되었습니다.",
         "spread or slippage diagnostics were not captured in this run": "이번 run에서는 호가 스프레드 또는 슬리피지 진단이 저장되지 않았습니다.",
         "spread or slippage diagnostics were 기록되지 않음 in this run": "이번 run에서는 호가 스프레드 또는 슬리피지 진단이 저장되지 않았습니다.",
-        "holding-phase evidence is thin; preserve more monitor context between entry and exit.": "보유 단계 근거가 얇아 진입과 청산 사이의 모니터 맥락을 더 보존해야 합니다.",
+        "holding-phase evidence is thin; preserve more monitor context between entry and exit.": "보유 구간 근거는 제한적이며 진입과 청산 사이 모니터 맥락이 충분하지 않습니다.",
+        "같은 날 생성된 reporter 분석을 이 lifecycle에 연결해 전체 품질 평가를 완성해 주세요.": "동일 일자 리포터 분석이 아직 이 거래 생애주기에 연결되지 않았습니다.",
+        "보유 단계 근거가 얇아 진입과 청산 사이의 모니터 맥락을 더 보존해야 합니다.": "보유 구간 근거는 제한적이며 진입과 청산 사이 모니터 맥락이 충분하지 않습니다.",
         "monitor trigger changes": "모니터 트리거 변화",
         "macro/news shifts": "거시 환경 및 뉴스 변화",
         "stop-loss breach": "손절 기준 이탈",
@@ -5481,6 +5600,11 @@ def _fallback_report(
         execution_outcome,
         lifecycle_summary,
     )
+    if execution_outcome_summary_is_placeholder(execution_quality_seed.get("summary")) and _clip(execution_quality.get("summary"), max_len=600):
+        execution_quality_seed = dict(execution_quality_seed)
+        execution_quality_seed["summary"] = _clip(execution_quality.get("summary"), max_len=600)
+        if execution_quality.get("bullets"):
+            execution_quality_seed["bullets"] = _listify(execution_quality.get("bullets"), max_items=12, max_len=260)
     if (
         not execution_outcome
         or not _clip(execution_quality.get("summary"), max_len=600)
@@ -5496,6 +5620,14 @@ def _fallback_report(
         execution_outcome,
         reporter_status,
     )
+    if _reporter_summary_is_placeholder(reporter_eval.get("summary")) and _clip(reporter_evaluation_seed.get("summary"), max_len=600):
+        reporter_eval["summary"] = _clip(reporter_evaluation_seed.get("summary"), max_len=600)
+        if reporter_evaluation_seed.get("bullets"):
+            reporter_eval["bullets"] = _listify(reporter_evaluation_seed.get("bullets"), max_items=12, max_len=260)
+        if reporter_evaluation_seed.get("status"):
+            reporter_eval["status"] = _clip(reporter_evaluation_seed.get("status"), max_len=48)
+        if reporter_evaluation_seed.get("grade"):
+            reporter_eval["grade"] = _clip(reporter_evaluation_seed.get("grade"), max_len=24)
     if (
         not reporter_status
         or not _clip(reporter_eval.get("summary"), max_len=600)
@@ -5689,6 +5821,7 @@ def _fallback_report(
             "broker_day_truth_attempted": bool(shared_seed.get("broker_day_truth_attempted")),
             "broker_day_truth_error": _clip(shared_seed.get("broker_day_truth_error"), max_len=240) or "",
             "broker_fill_price": shared_seed.get("broker_fill_price"),
+            "broker_buy_price": shared_seed.get("broker_buy_price"),
             "account_mark_price": shared_seed.get("account_mark_price"),
             "monitor_mark_price": shared_seed.get("monitor_mark_price"),
             "price_truth_source": _clip(shared_seed.get("price_truth_source"), max_len=40) or "unavailable",
@@ -5704,6 +5837,7 @@ def _fallback_report(
         },
     }
     out["truth_surface"] = build_trade_report_truth_surface(out.get("shared_facts"))
+    out["memory_surface"] = build_trade_report_memory_surface(story_input)
     # Backward-compatible aliases used by earlier UI/report consumers.
     out["market_context"] = dict(out.get("market_context_at_entry") or {})
     out["why_this_symbol"] = dict(out.get("why_this_symbol_was_chosen") or {})
@@ -6808,8 +6942,8 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         exact_mapping = {
             "position is still open; no closing sell execution has been captured yet.": "아직 청산 체결이 확인되지 않아 포지션이 열린 상태로 남아 있습니다.",
             "exit reasoning was not captured.": "청산 판단 근거가 충분히 저장되지 않았습니다.",
-            "reporter linkage was not available yet.": "Reporter 연계 결과는 아직 연결되지 않았습니다.",
-            "reporter linkage status was recorded separately.": "Reporter 연계 상태는 별도 메타에 기록되어 있습니다.",
+            "reporter linkage was not available yet.": "리포터 연계 결과는 아직 연결되지 않았습니다.",
+            "reporter linkage status was recorded separately.": "리포터 연계 상태는 별도 메타에 기록되어 있습니다.",
             "the decision path was recorded, but the operator-facing summary is limited.": "의사결정 경로는 기록되었지만 운영자용 요약은 제한적으로만 남아 있습니다.",
             "no timeline entries were captured.": "타임라인 이벤트는 별도로 저장되지 않았습니다.",
             "open trade": "아직 포지션이 열린 상태입니다.",
@@ -6990,6 +7124,7 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         if isinstance(report.get("truth_surface"), dict)
         else build_trade_report_truth_surface(shared_facts)
     )
+    memory_surface = report.get("memory_surface") if isinstance(report.get("memory_surface"), dict) else {}
 
 
     lines: List[str] = []
@@ -7028,11 +7163,17 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         price_truth_source = _clip(truth_price.get("price_truth_source"), max_len=40)
         monitor_price_source = _clip(truth_price.get("monitor_price_source"), max_len=80)
         pnl_truth_source = _clip(truth_pnl.get("pnl_truth_source"), max_len=80)
-        if truth_price.get("broker_fill_price") not in (None, ""):
+        if truth_price.get("broker_buy_price") not in (None, "") and truth_price.get("broker_fill_price") not in (None, ""):
+            lines.append(
+                f"- 브로커 매수가/매도가는 {_fmt_price(truth_price.get('broker_buy_price'))} / {_fmt_price(truth_price.get('broker_fill_price'))}입니다."
+            )
+        elif truth_price.get("broker_fill_price") not in (None, ""):
             lines.append(f"- 브로커 체결 가격은 {_fmt_price(truth_price.get('broker_fill_price'))}입니다.")
+            if bool(truth_pnl.get("broker_day_authoritative")) and truth_pnl.get("broker_day_truth_source") and truth_price.get("broker_buy_price") in (None, ""):
+                lines.append("- 브로커 매수 체결가는 직접 복구되지 않았고, 확정 손익은 키움 당일 실현손익 기준으로만 확인했습니다.")
         if truth_price.get("account_mark_price") not in (None, ""):
             lines.append(f"- 계좌 기준 마크 가격은 {_fmt_price(truth_price.get('account_mark_price'))}입니다.")
-        if truth_price.get("monitor_mark_price") not in (None, ""):
+        if truth_price.get("monitor_mark_price") not in (None, "") and truth_price.get("broker_fill_price") in (None, ""):
             lines.append(f"- 종료 직전 모니터 관측 가격은 {_fmt_price(truth_price.get('monitor_mark_price'))}입니다.")
         if str(truth_pnl.get("value") or "").strip().lower() in {"", "unavailable", "not_available"}:
             if truth_pnl.get("pct") not in (None, ""):
@@ -7048,6 +7189,17 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
             lines.append(f"- 확정 손익은 {truth_pnl.get('value')}입니다.")
         if truth_pnl.get("broker_fee") not in (None, "") or truth_pnl.get("broker_tax") not in (None, ""):
             lines.append(f"- 브로커 수수료/세금은 {truth_pnl.get('broker_fee')} / {truth_pnl.get('broker_tax')}입니다.")
+        same_price_round_trip = False
+        try:
+            same_price_round_trip = (
+                truth_price.get("broker_buy_price") not in (None, "")
+                and truth_price.get("broker_fill_price") not in (None, "")
+                and float(truth_price.get("broker_buy_price")) == float(truth_price.get("broker_fill_price"))
+            )
+        except Exception:
+            same_price_round_trip = False
+        if same_price_round_trip and str(truth_pnl.get("value") or "").strip().lower() not in {"", "unavailable", "not_available"}:
+            lines.append("- 매수가와 매도가가 같았고, 손익은 가격 변동이 아니라 수수료와 세금에서 발생했습니다.")
         if price_truth_source:
             lines.append(f"- 가격 truth 소스는 {price_truth_source_label(price_truth_source)}입니다.")
         if pnl_truth_source and pnl_truth_source not in {"", "unavailable"}:
@@ -7064,9 +7216,95 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
                 )
             else:
                 lines.append(f"- 브로커 당일 손익 매칭은 {match_text} / {auth_text} 상태입니다.")
-        if monitor_price_source:
+        if monitor_price_source and truth_price.get("broker_fill_price") in (None, ""):
             lines.append(f"- 모니터 가격 소스는 {monitor_price_source_label(monitor_price_source)}입니다.")
         lines.append(f"- {truth_availability_line(truth_availability)}")
+        lines.append("")
+    memory_status = memory_surface.get("status") if isinstance(memory_surface.get("status"), dict) else {}
+    memory_strategy = memory_surface.get("strategy_memory") if isinstance(memory_surface.get("strategy_memory"), dict) else {}
+    memory_symbol = memory_surface.get("selected_symbol_memory") if isinstance(memory_surface.get("selected_symbol_memory"), dict) else {}
+    memory_reporter = memory_surface.get("reporter_feedback_packet") if isinstance(memory_surface.get("reporter_feedback_packet"), dict) else {}
+    memory_read_model = memory_surface.get("read_model_facts") if isinstance(memory_surface.get("read_model_facts"), dict) else {}
+    memory_usage = memory_surface.get("usage_trace") if isinstance(memory_surface.get("usage_trace"), dict) else {}
+    if memory_surface:
+        lines.append("## 메모리 사용")
+        lines.append("")
+        lines.append(
+            "- 전략 메모리="
+            f"{'사용' if bool(memory_status.get('strategy_memory_used')) else '미사용'}, "
+            "종목 메모리="
+            f"{'사용' if bool(memory_status.get('selected_symbol_memory_used')) else '미사용'}, "
+            "리포터 피드백="
+            f"{'사용' if bool(memory_status.get('reporter_feedback_used')) else '미사용'}, "
+            "읽기 모델 팩트="
+            f"{'사용' if bool(memory_status.get('read_model_facts_used')) else '미사용'}입니다."
+        )
+        if memory_strategy:
+            best_playbooks = ", ".join(_listify(memory_strategy.get("best_playbooks"), max_items=3, max_len=24))
+            worst_playbooks = ", ".join(_listify(memory_strategy.get("worst_playbooks"), max_items=3, max_len=24))
+            recent_failures = ", ".join(_listify(memory_strategy.get("recent_failures"), max_items=3, max_len=36))
+            lines.append(
+                f"- 전략 메모리는 {'집계형 strategy_memory로 전달됐고' if memory_strategy.get('scope') == 'aggregated_strategy_memory' else '전달됐고'}, "
+                f"status는 {_metadata_value(memory_strategy.get('status') or 'unknown')}입니다."
+            )
+            if memory_strategy.get("requested_day") or memory_strategy.get("resolved_day"):
+                lines.append(
+                    f"- 전략 메모리 요청일/해석일은 {_metadata_value(memory_strategy.get('requested_day') or '-')} / {_metadata_value(memory_strategy.get('resolved_day') or '-') }입니다."
+                )
+            if best_playbooks or worst_playbooks or recent_failures:
+                lines.append(
+                    f"- 전략 메모리상 우세/취약 playbook과 최근 실패 흔적은 {best_playbooks or '없음'} / {worst_playbooks or '없음'} / {recent_failures or '없음'}입니다."
+                )
+        if memory_symbol:
+            symbol_name = _metadata_value(memory_symbol.get("symbol") or symbol or "해당 종목")
+            if bool(memory_symbol.get("present")):
+                symbol_fragments = [f"{symbol_name} 종목 메모리가 들어왔습니다"]
+                trade_count = memory_symbol.get("trade_count")
+                if trade_count not in (None, ""):
+                    symbol_fragments.append(f"과거 거래 {trade_count}건")
+                win_rate = memory_symbol.get("win_rate")
+                if win_rate not in (None, ""):
+                    try:
+                        symbol_fragments.append(f"승률 {float(win_rate) * 100.0:.1f}%")
+                    except Exception:
+                        pass
+                if _clip(memory_symbol.get("dominant_playbook"), max_len=40):
+                    symbol_fragments.append(f"우세 playbook {_metadata_value(memory_symbol.get('dominant_playbook'))}")
+                if _clip(memory_symbol.get("dominant_monitor_blocker"), max_len=60):
+                    symbol_fragments.append(f"주요 blocker {_metadata_value(memory_symbol.get('dominant_monitor_blocker'))}")
+                lines.append("- " + ", ".join(symbol_fragments) + "입니다.")
+            else:
+                lines.append(f"- {symbol_name} 종목 메모리는 비어 있었고, 종목별 과거 이력 제약은 직접 반영되지 않았습니다.")
+        if memory_reporter:
+            if bool(memory_reporter.get("available")) or bool(memory_reporter.get("consumed")):
+                lines.append(
+                    f"- same-day reporter feedback은 {_metadata_value(memory_reporter.get('status') or 'ok')} / "
+                    f"신뢰도 {_metadata_value(memory_reporter.get('confidence') or '-')}로 반영됐습니다."
+                )
+            elif memory_reporter.get("present"):
+                lines.append(
+                    f"- same-day reporter feedback은 {_metadata_value(memory_reporter.get('status') or '미사용')} 상태였고, "
+                    f"gate 사유는 {_metadata_value(memory_reporter.get('feedback_gate_reason') or '확인되지 않음')}이었습니다."
+                )
+        if memory_read_model:
+            if bool(memory_read_model.get("present")):
+                symbol_patterns = ", ".join(_listify(memory_read_model.get("symbols"), max_items=5, max_len=24))
+                daily_flag = "있음" if bool(memory_read_model.get("daily_summary_present")) else "없음"
+                lines.append(
+                    f"- read_model_facts는 최근 거래 {memory_read_model.get('recent_trade_count') or 0}건, "
+                    f"종목 패턴 {memory_read_model.get('symbol_pattern_count') or 0}건, "
+                    f"일일 요약 {daily_flag} 기준으로 들어갔습니다."
+                )
+                if symbol_patterns:
+                    lines.append(f"- read_model_facts 종목 패턴 표본은 {symbol_patterns}입니다.")
+            elif memory_read_model or memory_status.get("read_model_facts_used") is False:
+                lines.append("- read_model_facts는 이번 리포트 입력에서 직접 확인되지 않았습니다.")
+        if _clip(memory_usage.get("playbook"), max_len=40) or _clip(memory_usage.get("monitor_guidance"), max_len=40):
+            lines.append(
+                f"- 전략가 출력에는 playbook={_metadata_value(memory_usage.get('playbook') or '-')}, "
+                f"monitor_guidance={_metadata_value(memory_usage.get('monitor_guidance') or '-')}, "
+                f"scanner_bias={_metadata_value(memory_usage.get('scanner_bias') or '-')}가 남았습니다."
+            )
         lines.append("")
     section_provenance = report.get("section_provenance") if isinstance(report.get("section_provenance"), dict) else {}
     if section_provenance:
@@ -7210,11 +7448,14 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
             lines.append(f"- 실현 손익 기준 PnL/PnL%는 {shared_facts.get('pnl')} / {_fmt_pct(pnl_pct)}입니다.")
         else:
             lines.append(f"- 실현 손익 기준 PnL은 {shared_facts.get('pnl')}입니다.")
-        if broker_fill_price not in (None, ""):
+        broker_buy_price = shared_facts.get("broker_buy_price")
+        if broker_buy_price not in (None, "") and broker_fill_price not in (None, ""):
+            lines.append(f"- 브로커 매수가/매도가는 {_fmt_price(broker_buy_price)} / {_fmt_price(broker_fill_price)}입니다.")
+        elif broker_fill_price not in (None, ""):
             lines.append(f"- 브로커 체결가는 {_fmt_price(broker_fill_price)}입니다.")
         if account_mark_price not in (None, ""):
             lines.append(f"- 계좌 기준 마크 가격은 {_fmt_price(account_mark_price)}입니다.")
-        if monitor_mark_price not in (None, ""):
+        if monitor_mark_price not in (None, "") and broker_fill_price in (None, ""):
             lines.append(f"- 종료 직전 모니터 관측 가격은 {_fmt_price(monitor_mark_price)}입니다.")
         if price_truth_source:
             lines.append(f"- 가격 truth 소스는 {price_truth_source_label(price_truth_source)}입니다.")

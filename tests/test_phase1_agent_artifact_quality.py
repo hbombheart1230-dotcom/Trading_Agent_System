@@ -600,6 +600,8 @@ def test_strategist_artifact_surfaces_memory_packet_visibility() -> None:
     assert visibility["selected_symbol_memory"]["symbol"] == "356680"
     assert visibility["commander_refresh_context"]["requested"] is True
     assert visibility["commander_refresh_context"]["reason"] == "selected_symbol_refresh"
+    assert visibility["commander_memory_policy"]["present"] is False
+    assert visibility["memory_packets"]["daily"]["status"] == ""
 
 
 def test_strategist_artifact_memory_visibility_prefers_open_position_refresh_context() -> None:
@@ -648,6 +650,76 @@ def test_strategist_artifact_memory_visibility_prefers_open_position_refresh_con
     assert visibility["carry_state"] == "overnight_open"
     assert visibility["carry_risk_bias"] == "elevated"
     assert visibility["session_open_recovery_evaluated"] is True
+
+
+def test_strategist_artifact_memory_visibility_includes_commander_memory_policy() -> None:
+    state = {
+        "run_id": "run-s1-memory-policy",
+        "started_at": "2026-04-21T07:10:00+00:00",
+        "runtime_phase": "session",
+        "strategist_output": {
+            "market_regime": "neutral",
+            "market_sentiment": "neutral",
+            "playbook": "defensive",
+            "commander_memory_policy": {
+                "application_mode": "surface_only",
+                "active_layers": ["daily", "symbol"],
+                "priority_order": ["daily", "symbol", "weekly", "monthly"],
+                "symbol_memory_override_enabled": True,
+                "scanner_bias_enabled": True,
+                "monitor_bias_enabled": True,
+            },
+            "scanner_memory_bias": {
+                "enabled": True,
+                "active_layers": ["daily", "symbol"],
+                "source_weight_delta": {"top_value": 0.015, "top_change_rate": -0.02},
+                "symbol_adjustments": {"000660": {"delta": 0.015, "reason": "dominant_playbook:defensive"}},
+                "bias_source": "commander_memory_bias.v1",
+            },
+            "monitor_memory_bias": {
+                "enabled": True,
+                "active_layers": ["daily", "symbol"],
+                "entry_policy_delta": {"volume_ratio_min": 0.03, "max_extended_from_vwap_pct": -0.01},
+                "risk_posture": "defensive",
+                "bias_source": "commander_memory_bias.v1",
+            },
+            "memory_packets": {
+                "daily_strategy_memory": {
+                    "status": "ok",
+                    "active": True,
+                    "best_playbooks": ["defensive"],
+                },
+                "weekly_strategy_memory": {"status": "unavailable", "active": False},
+                "monthly_strategy_memory": {"status": "unavailable", "active": False},
+                "symbol_memory_packet": {
+                    "status": "ok",
+                    "active": True,
+                    "symbol": "000660",
+                    "override_eligible": True,
+                    "trade_count": 8,
+                },
+            },
+        },
+    }
+
+    artifact = build_strategist_output_artifact(state)
+    visibility = artifact["memory_packet_visibility"]
+    assert visibility["commander_memory_policy"]["present"] is True
+    assert visibility["commander_memory_policy"]["application_mode"] == "surface_only"
+    assert visibility["commander_memory_policy"]["active_layers"] == ["daily", "symbol"]
+    assert visibility["scanner_memory_bias"]["present"] is True
+    assert visibility["scanner_memory_bias"]["enabled"] is True
+    assert visibility["scanner_memory_bias"]["active_layers"] == ["daily", "symbol"]
+    assert visibility["scanner_memory_bias"]["source_delta_keys"] == ["top_value", "top_change_rate"]
+    assert visibility["scanner_memory_bias"]["symbol_adjustment_count"] == 1
+    assert visibility["monitor_memory_bias"]["present"] is True
+    assert visibility["monitor_memory_bias"]["enabled"] is True
+    assert visibility["monitor_memory_bias"]["active_layers"] == ["daily", "symbol"]
+    assert visibility["monitor_memory_bias"]["entry_delta_keys"] == ["volume_ratio_min", "max_extended_from_vwap_pct"]
+    assert visibility["monitor_memory_bias"]["risk_posture"] == "defensive"
+    assert visibility["memory_packets"]["daily"]["status"] == "ok"
+    assert visibility["memory_packets"]["symbol"]["symbol"] == "000660"
+    assert visibility["memory_packets"]["symbol"]["override_eligible"] is True
 
 
 def test_monitor_artifact_contains_evaluation_and_action_sections() -> None:

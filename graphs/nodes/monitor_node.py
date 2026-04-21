@@ -40,6 +40,10 @@ from libs.runtime.intraday_monitor_signals import (
     evaluate_intraday_entry_signal,
     resolve_intraday_entry_policy,
 )
+from libs.runtime.monitor_memory_bias import (
+    apply_monitor_memory_bias_to_entry_policy,
+    summarize_monitor_memory_bias,
+)
 from libs.runtime.monitor_policy import (
     MonitorEntryPolicy,
     build_monitor_entry_policy_contract,
@@ -2432,7 +2436,9 @@ def _evaluate_monitor_entry_candidate(
     plan: Dict[str, Any],
     policy: Dict[str, Any],
     monitor_policy: Dict[str, Any],
+    strategy_monitor_policy: Dict[str, Any],
     strategy_frame: Dict[str, Any],
+    commander_context: Dict[str, Any],
     entry_policy_contract: Dict[str, Any],
     entry_policy_input: Dict[str, Any],
     entry_policy_origin: str,
@@ -2495,8 +2501,23 @@ def _evaluate_monitor_entry_candidate(
             buy_blocked_post_exit_cooldown = True
             post_exit_cooldown_remaining_sec = remaining
 
-    entry_policy = resolve_intraday_entry_policy(entry_policy_input or monitor_policy, frame=strategy_frame)
+    monitor_memory_bias = (
+        dict(strategy_monitor_policy.get("monitor_memory_bias") or {})
+        if isinstance(strategy_monitor_policy.get("monitor_memory_bias"), dict) and strategy_monitor_policy.get("monitor_memory_bias")
+        else dict(commander_context.get("monitor_memory_bias") or {})
+        if isinstance(commander_context.get("monitor_memory_bias"), dict) and commander_context.get("monitor_memory_bias")
+        else dict(state.get("monitor_memory_bias") or {})
+        if isinstance(state.get("monitor_memory_bias"), dict)
+        else {}
+    )
+    monitor_memory_bias_summary = summarize_monitor_memory_bias(monitor_memory_bias)
     entry_received_policy = MonitorEntryPolicy.from_mapping(entry_policy_input or monitor_policy).to_dict()
+    monitor_memory_bias_result = apply_monitor_memory_bias_to_entry_policy(
+        entry_policy=entry_policy_input or monitor_policy,
+        monitor_memory_bias=monitor_memory_bias,
+    )
+    entry_policy_input = dict(monitor_memory_bias_result.get("policy") or {})
+    entry_policy = resolve_intraday_entry_policy(entry_policy_input or monitor_policy, frame=strategy_frame)
     state = _ensure_monitor_minute_ohlcv_for_symbol(
         state,
         symbol=symbol,
@@ -2537,6 +2558,25 @@ def _evaluate_monitor_entry_candidate(
         frame=strategy_frame,
         received_policy_source=entry_policy_origin,
     )
+    if bool(monitor_memory_bias_result.get("applied")):
+        source_chain = list(effective_policy_trace.get("effective_policy_source_chain") or [])
+        effective_policy_trace["effective_policy_source_chain"] = (
+            [source_chain[0], "commander_memory_bias", *source_chain[1:]]
+            if source_chain
+            else ["commander_memory_bias", "monitor_effective_policy"]
+        )
+        effective_policy_trace["effective_policy_source"] = "monitor_memory_bias_adjusted"
+        policy_adjustment_summary = str(effective_policy_trace.get("policy_adjustment_summary") or "").strip()
+        effective_policy_trace["policy_adjustment_summary"] = (
+            f"{policy_adjustment_summary} | memory_bias=commander"
+            if policy_adjustment_summary
+            else "commander memory bias adjusted entry policy"
+        )
+        policy_adjustment_reasoning = str(effective_policy_trace.get("policy_adjustment_reasoning") or "").strip()
+        prefix = "Commander-approved memory bias adjusted the entry baseline before strategy-frame normalization."
+        effective_policy_trace["policy_adjustment_reasoning"] = (
+            f"{prefix} {policy_adjustment_reasoning}".strip()
+        )
     entry_info["received_policy"] = dict(effective_policy_trace.get("received_policy") or {})
     entry_info["received_policy_source"] = str(effective_policy_trace.get("received_policy_source") or "")
     entry_info["policy_contract"] = dict(entry_policy_contract)
@@ -2547,6 +2587,10 @@ def _evaluate_monitor_entry_candidate(
     entry_info["policy_adjustment_summary"] = str(effective_policy_trace.get("policy_adjustment_summary") or "")
     entry_info["policy_adjustment_reasoning"] = str(effective_policy_trace.get("policy_adjustment_reasoning") or "")
     entry_info["effective_policy_deltas"] = list(effective_policy_trace.get("effective_policy_deltas") or [])
+    entry_info["monitor_memory_bias_applied"] = bool(monitor_memory_bias_result.get("applied"))
+    entry_info["monitor_memory_bias"] = dict(monitor_memory_bias)
+    entry_info["monitor_memory_bias_summary"] = dict(monitor_memory_bias_summary)
+    entry_info["monitor_memory_bias_deltas"] = list(monitor_memory_bias_result.get("deltas") or [])
     entry_metrics = entry_info.get("metrics") if isinstance(entry_info.get("metrics"), dict) else {}
     entry_metrics["minute_source_present"] = bool(entry_rows)
     entry_metrics["minute_source_used"] = entry_row_source or ""
@@ -2839,7 +2883,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             plan=plan,
             policy=policy,
             monitor_policy=monitor_policy,
+            strategy_monitor_policy=strategy_monitor_policy,
             strategy_frame=strategy_frame,
+            commander_context=commander_context,
             entry_policy_contract=entry_policy_contract,
             entry_policy_input=entry_policy_input,
             entry_policy_origin=entry_policy_origin,
@@ -2893,7 +2939,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     plan=plan,
                     policy=policy,
                     monitor_policy=monitor_policy,
+                    strategy_monitor_policy=strategy_monitor_policy,
                     strategy_frame=strategy_frame,
+                    commander_context=commander_context,
                     entry_policy_contract=entry_policy_contract,
                     entry_policy_input=entry_policy_input,
                     entry_policy_origin=entry_policy_origin,
@@ -3526,6 +3574,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_policy_adjustments": dict(entry_info.get("policy_adjustments") or {}),
         "entry_policy_adjustment_summary": str(entry_info.get("policy_adjustment_summary") or ""),
         "entry_effective_policy_deltas": list(entry_info.get("effective_policy_deltas") or []),
+        "monitor_memory_bias_applied": bool(entry_info.get("monitor_memory_bias_applied")),
+        "monitor_memory_bias_summary": dict(entry_info.get("monitor_memory_bias_summary") or {}),
+        "monitor_memory_bias_deltas": list(entry_info.get("monitor_memory_bias_deltas") or []),
         "entry_thresholds": dict(entry_info.get("thresholds") or {}),
         "entry_passed_checks": list(entry_info.get("passed_checks") or []),
         "entry_failed_checks": list(entry_info.get("failed_checks") or []),
@@ -3650,6 +3701,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     policy_ref["policy_adjustment_summary"] = str(entry_info.get("policy_adjustment_summary") or "")
     policy_ref["policy_adjustment_reasoning"] = str(entry_info.get("policy_adjustment_reasoning") or "")
     policy_ref["effective_policy_deltas"] = list(entry_info.get("effective_policy_deltas") or [])
+    policy_ref["monitor_memory_bias_applied"] = bool(entry_info.get("monitor_memory_bias_applied"))
+    policy_ref["monitor_memory_bias_summary"] = dict(entry_info.get("monitor_memory_bias_summary") or {})
+    policy_ref["monitor_memory_bias_deltas"] = list(entry_info.get("monitor_memory_bias_deltas") or [])
     monitor_policy_trace["policy_ref"] = policy_ref
     pnl_ratio = _to_float(exit_info.get("pnl_ratio")) if exit_info.get("pnl_ratio") not in (None, "") else None
     threshold_snapshot = {
@@ -4067,6 +4121,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["policy_adjustment_summary"] = str(entry_info.get("policy_adjustment_summary") or "")
         state["monitor_output"]["policy_adjustment_reasoning"] = str(entry_info.get("policy_adjustment_reasoning") or "")
         state["monitor_output"]["effective_policy_deltas"] = list(entry_info.get("effective_policy_deltas") or [])
+        state["monitor_output"]["monitor_memory_bias_applied"] = bool(entry_info.get("monitor_memory_bias_applied"))
+        state["monitor_output"]["monitor_memory_bias_summary"] = dict(entry_info.get("monitor_memory_bias_summary") or {})
+        state["monitor_output"]["monitor_memory_bias_deltas"] = list(entry_info.get("monitor_memory_bias_deltas") or [])
         state["monitor_output"]["applied_policy"] = dict(entry_applied_policy)
         state["monitor_output"]["policy_source"] = str((monitor_policy_trace.get("policy_ref") or {}).get("policy_source") or "")
         state["monitor_output"]["policy_validation_status"] = str((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_status") or "")

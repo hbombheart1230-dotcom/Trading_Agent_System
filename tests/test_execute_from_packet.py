@@ -596,6 +596,10 @@ def test_execute_from_packet_extracts_order_id_and_broker_codes_from_response_pa
     assert out["execution"]["allowed"] is True
     assert out["execution"]["ok"] is True
     assert int(p["status_code"]) == 200
+    assert out["execution"]["order_id"] == "A000123"
+    assert out["execution"]["ord_no"] == "A000123"
+    assert out["execution"]["broker_code"] == "0000"
+    assert out["execution"]["broker_message"] == "accepted"
     assert p["order_id"] == "A000123"
     assert p["broker_code"] == "0000"
     assert p["broker_message"] == "accepted"
