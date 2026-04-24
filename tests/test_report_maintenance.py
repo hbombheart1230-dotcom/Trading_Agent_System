@@ -89,3 +89,16 @@ def test_report_inventory_detects_legacy_milestone_dirs(tmp_path: Path) -> None:
     assert item is not None
     assert item["category"] == "legacy_milestone_dir"
     assert item["archive_target"] == str(Path("archive") / "milestones" / "m22_closeout")
+
+
+def test_report_inventory_warns_on_misplaced_trade_day_root(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    misplaced = tmp_path / "2026-03-19" / "TRD_20260319_000660_01"
+    misplaced.mkdir(parents=True)
+
+    inv = build_report_inventory(reports, event_log_path=tmp_path / "missing_events.jsonl")
+
+    warning = next((item for item in inv.get("warnings") or [] if item.get("type") == "misplaced_trade_day_root"), None)
+    assert warning is not None
+    assert warning["path"].endswith(str(Path("2026-03-19")))

@@ -3616,7 +3616,7 @@ def _should_use_session_closeout_fast_path(state: Dict[str, Any]) -> Tuple[bool,
             else None
         )
     )
-    market_context = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    market_context = _ensure_market_context_clock_fields(state)
     raw_minutes_to_close = market_context.get("minutes_to_close")
     minutes_to_close = None if raw_minutes_to_close in (None, "") else float(_runtime_float(raw_minutes_to_close, 0.0))
     active = bool(

@@ -35,7 +35,8 @@ Use `docs/runtime_memory` for:
 - pre-selection strategist memory
 - current canonical surface:
   - `reports/performance/<day>/strategy_memory.json`
-- future weekly / monthly / aggregate extensions can remain under `reports/performance/*`
+- weekly / monthly commander packets now roll up recent `reports/performance/<day>/strategy_memory.json`
+- future richer source / regime aggregates can remain under `reports/performance/*`
 
 2. `symbol_memory_contract_2026-04-19.md`
 - scanner deterministic symbol priors
@@ -69,7 +70,48 @@ Current additive implementation:
 
 - Commander now surfaces raw memory packets in `commander_decision`
 - strategist context/artifacts now surface those packets plus `commander_memory_policy`
-- weekly/monthly packets are placeholders for now
+- weekly/monthly packets now use recent performance-window aggregation
+- symbol memory packet now carries richer quality fields:
+  - `avg_pnl_pct`
+  - `avg_hold_duration_sec`
+  - `data_source`
+  - `unknown_fields_ratio`
+  - `pattern_signal_count`
+  - `evidence_strength`
+  - `last_trade_date`
+  - `recency_days`
+- weekly/monthly packets now expose richer structured sections:
+  - `window`
+  - `sample_quality`
+  - `source_performance`
+  - `source_context`
+  - `failure_patterns`
+  - `execution_risk`
+  - direct `metrics_<day>.json` route/alignment context
+  - direct `reporter_analysis_<day>.json` monitor/scanner/focus context
+  - direct `scanner_evaluation.candidate_source_top` / `avg_top_score` / `avg_candidate_pool_after_filter` / `selection_status`
+  - `recommended_bias_inputs`
+  - `summary_detail`
+- weekly/monthly activation now depends on packet sample quality, not just packet existence
+- symbol override gating is no longer trade-count only:
+  - minimum trade/closed-trade history still applies
+  - commander now also checks symbol memory data quality and pattern coverage before enabling override
+  - commander now also blocks stale symbol memory when last-trade recency exceeds the symbol override age gate
+- weekly/monthly packets may still remain inactive until minimum sample-day and confidence gates are met
+
+Current same-day reporter status:
+
+- strategist feedback packet now falls back to same-day `reports/dev/analysis/reporter_analysis/reporter_analysis_<day>.json`
+- if same-day metrics are still missing, reporter-analysis blocker totals and recommended actions can still populate `reporter_feedback_packet`
+- auto-acceptance now allows blocker-rich same-day reporter-analysis packets even when full route totals are unavailable
+- if same-day `metrics_<day>.json` is missing but raw event logs exist, runtime now generates same-day metrics on demand from `data/logs/events.jsonl` before falling back further
+- if same-day metrics and reporter-analysis are both missing, strategist feedback can now fall back to closed same-day `reports/trades/<day>/*/reports/ai_trade_report.json` aggregation
+
+Immediate next development order:
+
+1. validate same-day reporter feedback on live intraday artifacts
+2. validate first-pass `monitor_memory_bias` hold/exit application on live artifacts
+3. real weekly/monthly source/regime depth beyond current strategy-memory rollup
 
 ## Commander Link
 
@@ -163,3 +205,70 @@ The current implementation direction is:
 5. trade-report adapter
 - `libs/reporting/trade_report_ai.py` should consume `trade_read_model` facts/context/section seeds
 - section-level provenance should prefer section-seed provenance over legacy raw `*_human` provenance
+
+## Current Symbol-Memory Gate
+
+`symbol_memory_packet` is now quality-gated before it can materially move runtime bias.
+
+Current gate inputs:
+
+- trade count / closed-trade count
+- `unknown_fields_ratio`
+- `pattern_signal_count`
+- `evidence_strength`
+- `last_trade_date` -> `recency_days`
+
+Current behavior:
+
+- stale symbol memory is blocked from override
+- weak symbol memory may remain present but only as advisory context
+- approved symbol memory now scales scanner/monitor symbol-side deltas by evidence strength and recency instead of acting as a simple on/off flag
+
+## Current Hold/Exit Bias Status
+
+`monitor_memory_bias` is no longer entry-only.
+
+Current runtime now applies:
+
+- `entry_policy_delta`
+- first-pass `hold_policy_delta`
+- first-pass `exit_policy_delta`
+
+Current hold/exit application is intentionally conservative:
+
+- `hold_policy_delta` currently tightens `confirm_ticks`
+- `exit_policy_delta` currently tightens:
+  - `stop_loss_pct`
+  - `take_profit_pct`
+  - `trailing_stop_pct`
+  - `peak_drawdown_exit_pct`
+  - `vwap_breakdown_pct`
+
+Current strength drivers include:
+
+- daily failure patterns
+- commander `preferred_risk_posture`
+- commander `system_health`
+- commander `monitor_status`
+- commander `monitor_only_ratio`
+- commander `report_focus_targets`
+- symbol memory `evidence_strength`
+- symbol memory `recency_days`
+
+This is implemented, but still needs live validation before any broader widening.
+
+## Next Live Validation
+
+On the next live session, verify all of the following on fresh artifacts:
+
+1. same-day `reporter_feedback_packet` uses direct metrics generation when prebuilt metrics are absent
+2. strategist artifacts show `reporter_feedback_packet.source_reports.metrics = true` or a justified fallback path
+3. monitor artifacts show top-level:
+   - `monitor_memory_bias_applied`
+   - `monitor_memory_bias_hold_applied`
+   - `monitor_memory_bias_exit_applied`
+4. `exit_policy_guard_adjustments` records commander-memory hold/exit adjustments
+5. symbol-memory reasons show:
+   - `symbol_evidence_strength:*`
+   - `symbol_recency_days:*`
+   when symbol-side damping or blocking occurs

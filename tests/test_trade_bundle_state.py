@@ -241,3 +241,113 @@ def test_build_live_trade_bundle_payloads_preserves_core_contract_fields(tmp_pat
     assert links_payload["trade_id"] == "TRD_TEST"
     assert links_payload["llm_prompt_refs"]["strategist"] == "p1"
     assert result["trade_health_payload"]["report_generation_status"] == "available"
+
+
+def test_build_live_trade_bundle_payloads_prefers_richer_exit_execution_details(tmp_path) -> None:
+    base = tmp_path / "reports" / "trades" / "2026-04-22" / "TRD_TEST"
+    reports_dir = base / "reports"
+    evidence_dir = base / "evidence"
+    result = build_live_trade_bundle_payloads(
+        day="2026-04-22",
+        trade_id="TRD_TEST",
+        run_id="run-1",
+        symbol="018470",
+        status="closed",
+        lifecycle={
+            "entry": {"run_id": "run-1"},
+            "holding": {"holding_events": []},
+            "exit": {
+                "run_id": "run-2",
+                "execution_details": {
+                    "order_id": "EXIT-1",
+                    "filled_qty": 1,
+                    "avg_price": 1967.0,
+                    "filled_price": None,
+                    "broker_day_truth_source": "kiwoom.ka10077",
+                    "broker_day_match_mode": "ambiguous_symbol_rows",
+                    "broker_day_row_count": 4,
+                    "broker_day_authoritative": False,
+                },
+            },
+            "timeline": [],
+            "evidence": {"strategist_event_count": 0, "scanner_event_count": 0, "monitor_event_count": 0},
+            "execution_details": {
+                "order_id": "EXIT-1",
+                "filled_qty": 1,
+                "filled_price": None,
+            },
+        },
+        lifecycle_bundle={"strategist": {}, "scanner": {}, "monitor": {}, "commander": {}, "artifacts": {}, "evidence_provenance": {}},
+        story_input={},
+        summary_obj={"lifecycle_summary_human": "summary"},
+        diagnostics={"report_status": "available", "llm_brief_status": "skipped", "ai_trade_report_status": "ok"},
+        recovery_metadata={"trade_origin": "normal_lifecycle", "lifecycle_completeness": "complete", "evidence_recovery_used": False},
+        story_contract={"schema_version": "story_contract.v1"},
+        anchor_execution={"action": "SELL"},
+        linked_run_ids=["run-1", "run-2"],
+        same_day_reporter_linkage={},
+        failure_classification={"reporting_failure": False},
+        execution_details={"order_id": "EXIT-1", "filled_price": 2030.0, "broker_realized_pnl": 49.0},
+        entry_execution_details={"order_id": "ENTRY-1", "filled_price": 1967.0},
+        exit_execution_details={
+            "order_id": "EXIT-1",
+            "filled_qty": 1,
+            "avg_price": 1967.0,
+            "filled_price": 2030.0,
+            "broker_realized_pnl": 49.0,
+            "broker_fee": 10,
+            "broker_tax": 4,
+            "broker_buy_price": 1967.0,
+            "broker_day_truth_source": "kiwoom.ka10077",
+            "broker_day_match_mode": "symbol_qty_exact",
+            "broker_day_row_count": 1,
+            "broker_day_authoritative": True,
+            "broker_truth_source": "kiwoom.ka10077",
+        },
+        holding_phase_observability={"hold_duration": "1m", "hold_duration_sec": 60, "holding_phase_summary": "held", "hold_events_count": 0},
+        strategist_llm_artifact={},
+        existing_brief_llm_artifact={},
+        ai_trade_report_llm_artifact={},
+        trade_report={},
+        evidence_completeness_missing_sections=[],
+        phase3_missing_sections=[],
+        phase3_completeness_score=1.0,
+        strategist_event_count=0,
+        scanner_event_count=0,
+        monitor_event_count=0,
+        operator_brief_json_exists=False,
+        lifecycle_bundle_path=base / "lifecycle_bundle.json",
+        entry_artifact_path=base / "entry.json",
+        hold_artifact_path=base / "hold.json",
+        exit_artifact_path=base / "exit.json",
+        story_input_path=base / "ai_trade_report_input.json",
+        story_compact_input_path=base / "ai_trade_report_compact_input.json",
+        trade_report_json_path=reports_dir / "ai_trade_report.json",
+        trade_report_md_path=reports_dir / "ai_trade_report.md",
+        strategist_evidence_path=evidence_dir / "strategist_evidence.json",
+        scanner_evidence_path=evidence_dir / "scanner_evidence.json",
+        monitor_evidence_path=evidence_dir / "monitor_evidence.json",
+        commander_evidence_path=evidence_dir / "commander_evidence.json",
+        strategist_llm_response_path=reports_dir / "strategist_llm_response.json",
+        ai_trade_report_llm_response_path=reports_dir / "ai_trade_report_llm_response.json",
+        brief_llm_response_path=reports_dir / "brief_llm_response.json",
+        operator_brief_json_path=reports_dir / "operator_brief.json",
+        operator_brief_md_path=reports_dir / "operator_brief.md",
+        trade_provenance_path=base / "_provenance.json",
+        trade_health_path=base / "_health.json",
+        trade_artifact_links_path=base / "_artifact_links.json",
+        resolved_operator_brief_json="",
+        resolved_operator_brief_md="",
+        resolved_brief_llm_response_json="",
+        trade_report_json_written="",
+        trade_report_md_written="",
+        ai_trade_report_llm_response_written="",
+    )
+
+    lifecycle_bundle_payload = result["lifecycle_bundle_payload"]
+    exit_payload = lifecycle_bundle_payload["exit"]
+    assert exit_payload["execution_details"]["filled_price"] == 2030.0
+    assert exit_payload["execution_details"]["broker_day_match_mode"] == "symbol_qty_exact"
+    assert exit_payload["execution_details"]["broker_day_authoritative"] is True
+    assert lifecycle_bundle_payload["exit_execution_details"]["filled_price"] == 2030.0
+    assert lifecycle_bundle_payload["execution_details"]["filled_price"] == 2030.0

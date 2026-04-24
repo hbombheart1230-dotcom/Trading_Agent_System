@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
 
 from libs.runtime.entrypoint_common import to_int
+from libs.runtime.windows_subprocess import run_hidden
 
 
 def read_lock_owner_pid(lock_path: Path) -> int:
@@ -31,7 +31,7 @@ def query_live_loop_processes(root: Path, lock_path: Path) -> List[Dict[str, Any
         ]
     )
     try:
-        cp = subprocess.run(
+        cp = run_hidden(
             ["powershell", "-NoProfile", "-Command", command],
             cwd=str(root),
             capture_output=True,

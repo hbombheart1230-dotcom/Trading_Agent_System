@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from libs.reporting.llm_artifacts import resolve_trade_day_root
+
 
 def _normalize_day(day: Optional[str]) -> str:
     return str(day or "").strip()
@@ -22,6 +24,13 @@ def _read_json(path: Path) -> Dict[str, Any]:
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
     except Exception:
         return default
 
@@ -104,11 +113,159 @@ def _metrics_report_path(reports_root: Path, day: str) -> Path:
     return reports_root / "metrics" / f"metrics_{day}.json"
 
 
+def _reporter_analysis_report_path(reports_root: Path, day: str) -> Path:
+    return reports_root / "dev" / "analysis" / "reporter_analysis" / f"reporter_analysis_{day}.json"
+
+
+def _events_log_candidates(reports_root: Path) -> list[Path]:
+    root = Path(reports_root)
+    return [
+        root.parent / "data" / "logs" / "events.jsonl",
+        root / "data" / "logs" / "events.jsonl",
+    ]
+
+
+def _load_or_generate_metrics_payload(reports_root: Path, day: str) -> Dict[str, Any]:
+    existing = _read_json(_metrics_report_path(reports_root, day))
+    if existing:
+        return existing
+    for events_path in _events_log_candidates(reports_root):
+        if not events_path.exists():
+            continue
+        try:
+            from scripts.generate_metrics_report import generate_metrics_report
+
+            _, js_path = generate_metrics_report(events_path, reports_root / "metrics", day=day)
+        except Exception:
+            continue
+        generated = _read_json(js_path)
+        if generated:
+            return generated
+    return {}
+
+
+def _trade_report_paths(reports_root: Path, day: str) -> list[Path]:
+    trade_root = resolve_trade_day_root(reports_root, day)
+    if not trade_root.exists():
+        return []
+    return sorted(path for path in trade_root.glob("TRD_*/reports/ai_trade_report.json") if path.is_file())
+
+
+def _build_trade_report_feedback_summary(reports_root: Path, day: str) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "trade_count": 0,
+        "closed_trade_count": 0,
+        "win_count": 0,
+        "loss_count": 0,
+        "flat_count": 0,
+        "avg_pnl_pct": 0.0,
+        "same_price_cost_loss_count": 0,
+        "broker_truth_count": 0,
+        "exit_reason_counts": {},
+        "symbols": [],
+    }
+    symbol_counts: Dict[str, int] = {}
+    exit_reason_counts: Dict[str, int] = {}
+    pnl_pct_values: list[float] = []
+
+    for path in _trade_report_paths(reports_root, day):
+        payload = _read_json(path)
+        if not payload:
+            continue
+        summary["trade_count"] += 1
+        truth_surface = dict(payload.get("truth_surface") or {})
+        status = dict(truth_surface.get("status") or {})
+        price = dict(truth_surface.get("price") or {})
+        pnl = dict(truth_surface.get("pnl") or {})
+        availability = dict(truth_surface.get("availability") or {})
+        if str(status.get("status") or "").strip().lower() != "closed":
+            continue
+
+        summary["closed_trade_count"] += 1
+        symbol = str(payload.get("symbol") or status.get("symbol") or "").strip()
+        if symbol:
+            symbol_counts[symbol] = symbol_counts.get(symbol, 0) + 1
+
+        exit_reason = str(status.get("exit_reason") or "").strip()
+        if exit_reason:
+            exit_reason_counts[exit_reason] = exit_reason_counts.get(exit_reason, 0) + 1
+
+        pnl_value = pnl.get("value")
+        pnl_pct = pnl.get("pct")
+        pnl_value_num = _safe_float(pnl_value, 0.0) if pnl_value not in (None, "") else 0.0
+        if pnl_value not in (None, ""):
+            if pnl_value_num > 0.0:
+                summary["win_count"] += 1
+            elif pnl_value_num < 0.0:
+                summary["loss_count"] += 1
+            else:
+                summary["flat_count"] += 1
+        if pnl_pct not in (None, ""):
+            pnl_pct_values.append(_safe_float(pnl_pct, 0.0))
+
+        if bool(availability.get("broker_fill_present")) and bool(availability.get("broker_pnl_present")):
+            summary["broker_truth_count"] += 1
+
+        buy_price = price.get("broker_buy_price")
+        sell_price = price.get("broker_fill_price")
+        fee = _safe_float(pnl.get("broker_fee"), 0.0)
+        tax = _safe_float(pnl.get("broker_tax"), 0.0)
+        if (
+            buy_price not in (None, "")
+            and sell_price not in (None, "")
+            and _safe_float(buy_price, 0.0) == _safe_float(sell_price, 0.0)
+            and pnl_value_num < 0.0
+            and (fee > 0.0 or tax > 0.0)
+        ):
+            summary["same_price_cost_loss_count"] += 1
+
+    if pnl_pct_values:
+        summary["avg_pnl_pct"] = round(sum(pnl_pct_values) / len(pnl_pct_values), 4)
+    summary["exit_reason_counts"] = exit_reason_counts
+    summary["symbols"] = [name for name, _count in sorted(symbol_counts.items(), key=lambda item: (-item[1], item[0]))[:5]]
+    return summary
+
+
+def _extract_reporter_analysis_blocker_totals(payload: Mapping[str, Any] | None) -> Dict[str, int]:
+    row = dict(payload or {})
+    monitor_eval = row.get("monitor_evaluation") if isinstance(row.get("monitor_evaluation"), dict) else {}
+    supervisor = row.get("supervisor_activity") if isinstance(row.get("supervisor_activity"), dict) else {}
+    intent_flow = row.get("intent_flow_analysis") if isinstance(row.get("intent_flow_analysis"), dict) else {}
+    totals: Dict[str, int] = {}
+    for key, value in dict(monitor_eval.get("monitor_reason_top") or {}).items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        totals[name] = totals.get(name, 0) + _safe_int(value, 0)
+    for key, value in dict(supervisor.get("blocked_reason_top") or {}).items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        totals[name] = totals.get(name, 0) + _safe_int(value, 0)
+    for key, value in dict(intent_flow.get("reason_top") or {}).items():
+        name = str(key or "").strip()
+        if not name or name.startswith("monitor:"):
+            continue
+        totals[name] = totals.get(name, 0) + _safe_int(value, 0)
+    return totals
+
+
+def _extract_reporter_analysis_recommendations(payload: Mapping[str, Any] | None) -> list[str]:
+    row = dict(payload or {})
+    operator = row.get("operator_facing_summary") if isinstance(row.get("operator_facing_summary"), dict) else {}
+    direct = [str(x or "").strip() for x in list(row.get("improvement_suggestions") or []) if str(x or "").strip()]
+    if direct:
+        return direct[:4]
+    recommended = [str(x or "").strip() for x in list(operator.get("recommended_actions") or []) if str(x or "").strip()]
+    return recommended[:4]
+
+
 def _build_dominant_patterns(
     *,
     route_summary: Mapping[str, Any],
     blocker_totals: Mapping[str, int],
     freshness: Mapping[str, Any],
+    trade_report_summary: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     patterns: list[dict[str, Any]] = []
     route_total = _safe_total(route_summary.get("route_selected_total") if isinstance(route_summary.get("route_selected_total"), dict) else {})
@@ -155,6 +312,32 @@ def _build_dominant_patterns(
                 "detail": str(freshness.get("source_window_summary") or ""),
             }
         )
+    trade_summary = dict(trade_report_summary or {})
+    closed_trade_count = _safe_int(trade_summary.get("closed_trade_count"), 0)
+    if closed_trade_count > 0:
+        patterns.append(
+            {
+                "name": "same_day_closed_trade_count",
+                "value": closed_trade_count,
+                "detail": f"closed trade reports {closed_trade_count}",
+            }
+        )
+        patterns.append(
+            {
+                "name": "same_day_avg_pnl_pct",
+                "value": trade_summary.get("avg_pnl_pct"),
+                "detail": f"average same-day pnl pct {trade_summary.get('avg_pnl_pct')}",
+            }
+        )
+        cost_loss_count = _safe_int(trade_summary.get("same_price_cost_loss_count"), 0)
+        if cost_loss_count > 0:
+            patterns.append(
+                {
+                    "name": "same_price_cost_loss_ratio",
+                    "value": _ratio(cost_loss_count, closed_trade_count),
+                    "detail": f"same-price cost-loss trades {cost_loss_count}/{closed_trade_count}",
+                }
+            )
     return patterns[:6]
 
 
@@ -194,6 +377,7 @@ def _build_recommendations(
     *,
     route_analysis: Mapping[str, Any],
     blocker_analysis: list[dict[str, Any]],
+    trade_report_summary: Mapping[str, Any] | None = None,
 ) -> list[str]:
     recommendations: list[str] = []
     if float(route_analysis.get("monitor_only_ratio") or 0.0) >= 0.5:
@@ -207,6 +391,16 @@ def _build_recommendations(
             recommendations.append(f"Top blocker is {blocker_name}; inspect whether this gate is dominating no-trade outcomes.")
         if "reclaim" in blocker_name:
             recommendations.append("VWAP reclaim-related failures are prominent; review reclaim readiness evidence before loosening thresholds.")
+    trade_summary = dict(trade_report_summary or {})
+    closed_trade_count = _safe_int(trade_summary.get("closed_trade_count"), 0)
+    if closed_trade_count > 0:
+        same_price_cost_loss_count = _safe_int(trade_summary.get("same_price_cost_loss_count"), 0)
+        win_count = _safe_int(trade_summary.get("win_count"), 0)
+        loss_count = _safe_int(trade_summary.get("loss_count"), 0)
+        if same_price_cost_loss_count > 0:
+            recommendations.append("Same-price round trips produced fee/tax drag; tighten follow-through evidence before repeating quick reversals.")
+        if loss_count > win_count:
+            recommendations.append("Same-day closed trades are loss-heavy; keep defensive entry posture until follow-through quality improves.")
     if not recommendations:
         recommendations.append("Route and blocker mix look balanced; continue observing for stable multi-session patterns before changing strategy.")
     return recommendations[:4]
@@ -216,6 +410,7 @@ def _build_insight_summary(
     *,
     route_analysis: Mapping[str, Any],
     blocker_analysis: list[dict[str, Any]],
+    trade_report_summary: Mapping[str, Any] | None = None,
 ) -> str:
     parts: list[str] = []
     route_total = _safe_total(route_analysis.get("route_selected_total") if isinstance(route_analysis.get("route_selected_total"), dict) else {})
@@ -226,6 +421,15 @@ def _build_insight_summary(
     if blocker_analysis:
         top = blocker_analysis[0]
         parts.append(f"Top blocker is {top.get('blocker')} ({top.get('count')}).")
+    trade_summary = dict(trade_report_summary or {})
+    closed_trade_count = _safe_int(trade_summary.get("closed_trade_count"), 0)
+    if closed_trade_count > 0:
+        win_count = _safe_int(trade_summary.get("win_count"), 0)
+        loss_count = _safe_int(trade_summary.get("loss_count"), 0)
+        avg_pnl_pct = trade_summary.get("avg_pnl_pct")
+        parts.append(
+            f"Same-day closed trade reports show {closed_trade_count} trades with {win_count} wins, {loss_count} losses, avg pnl pct {avg_pnl_pct}."
+        )
     if not parts:
         parts.append("Feedback packet is available but source evidence is limited.")
     return " ".join(parts)
@@ -235,11 +439,24 @@ def _build_confidence(
     *,
     route_analysis: Mapping[str, Any],
     blocker_analysis: list[dict[str, Any]],
+    trade_report_summary: Mapping[str, Any] | None = None,
 ) -> str:
     route_total = _safe_total(route_analysis.get("route_selected_total") if isinstance(route_analysis.get("route_selected_total"), dict) else {})
+    blocker_total = sum(_safe_int(item.get("count"), 0) for item in list(blocker_analysis or []))
+    trade_summary = dict(trade_report_summary or {})
+    closed_trade_count = _safe_int(trade_summary.get("closed_trade_count"), 0)
+    broker_truth_count = _safe_int(trade_summary.get("broker_truth_count"), 0)
     if route_total >= 50 and len(blocker_analysis) >= 3:
         return "high"
     if route_total >= 10:
+        return "medium"
+    if closed_trade_count >= 3 and broker_truth_count >= 2:
+        return "high"
+    if closed_trade_count >= 1 and broker_truth_count >= 1:
+        return "medium"
+    if blocker_total >= 20 and len(blocker_analysis) >= 2:
+        return "high"
+    if blocker_total >= 5 and len(blocker_analysis) >= 1:
         return "medium"
     return "low"
 
@@ -257,19 +474,31 @@ def build_strategist_feedback_packet(
 
     metrics_payload = row if str(mode or "") == "metrics_report" else {}
     trade_explain_payload = row if str(mode or "") == "trade_explain" else {}
+    reporter_analysis_payload = row if str(mode or "") == "reporter_analysis" else {}
     if normalized_day:
         if not metrics_payload:
-            metrics_payload = _read_json(_metrics_report_path(root, normalized_day))
+            metrics_payload = _load_or_generate_metrics_payload(root, normalized_day)
+        if not reporter_analysis_payload:
+            reporter_analysis_payload = _read_json(_reporter_analysis_report_path(root, normalized_day))
+    trade_report_summary = _build_trade_report_feedback_summary(root, normalized_day) if normalized_day else {}
 
     route_summary = _extract_route_summary(row)
     metrics_route_summary = _extract_route_summary(metrics_payload)
     trade_route_summary = _extract_route_summary(trade_explain_payload)
+    reporter_route_summary = _extract_route_summary(reporter_analysis_payload)
     if not route_summary.get("route_selected_total"):
-        route_summary = metrics_route_summary if metrics_route_summary.get("route_selected_total") else trade_route_summary
+        if metrics_route_summary.get("route_selected_total"):
+            route_summary = metrics_route_summary
+        elif trade_route_summary.get("route_selected_total"):
+            route_summary = trade_route_summary
+        else:
+            route_summary = reporter_route_summary
 
     blocker_totals = _extract_blocker_totals(metrics_payload)
     if not blocker_totals:
         blocker_totals = _extract_blocker_totals(trade_explain_payload)
+    if not blocker_totals:
+        blocker_totals = _extract_reporter_analysis_blocker_totals(reporter_analysis_payload)
     if not blocker_totals:
         blocker_totals = _extract_blocker_totals(row)
 
@@ -278,6 +507,8 @@ def build_strategist_feedback_packet(
         freshness = _extract_freshness(metrics_payload) if metrics_payload else freshness
     if not freshness.get("latest_run_id"):
         freshness = _extract_freshness(trade_explain_payload) if trade_explain_payload else freshness
+    if not freshness.get("latest_run_id"):
+        freshness = _extract_freshness(reporter_analysis_payload) if reporter_analysis_payload else freshness
 
     route_analysis = _build_route_analysis(route_summary)
     blocker_analysis = _build_blocker_analysis(blocker_totals)
@@ -285,26 +516,48 @@ def build_strategist_feedback_packet(
         route_summary=route_summary,
         blocker_totals=blocker_totals,
         freshness=freshness,
+        trade_report_summary=trade_report_summary,
     )
-    recommendations = _build_recommendations(route_analysis=route_analysis, blocker_analysis=blocker_analysis)
-    confidence = _build_confidence(route_analysis=route_analysis, blocker_analysis=blocker_analysis)
+    recommendations = _build_recommendations(
+        route_analysis=route_analysis,
+        blocker_analysis=blocker_analysis,
+        trade_report_summary=trade_report_summary,
+    )
+    reporter_analysis_recommendations = _extract_reporter_analysis_recommendations(reporter_analysis_payload)
+    if reporter_analysis_recommendations and not metrics_payload:
+        recommendations = reporter_analysis_recommendations[:4]
+    elif not recommendations or recommendations == ["Route and blocker mix look balanced; continue observing for stable multi-session patterns before changing strategy."]:
+        if reporter_analysis_recommendations:
+            recommendations = reporter_analysis_recommendations[:4]
+    confidence = _build_confidence(
+        route_analysis=route_analysis,
+        blocker_analysis=blocker_analysis,
+        trade_report_summary=trade_report_summary,
+    )
 
     return {
-        "available": bool(route_analysis.get("route_selected_total")) or bool(blocker_analysis),
+        "available": bool(route_analysis.get("route_selected_total")) or bool(blocker_analysis) or _safe_int(trade_report_summary.get("closed_trade_count"), 0) > 0,
         "packet_version": "strategist_feedback.v1",
         "feedback_mode": "deterministic",
         "source_mode": str(mode or ""),
         "source_reports": {
             "metrics": bool(metrics_payload),
             "trade_explain": bool(trade_explain_payload),
+            "reporter_analysis": bool(reporter_analysis_payload),
+            "trade_reports": _safe_int(trade_report_summary.get("closed_trade_count"), 0) > 0,
             "current_payload": bool(row),
         },
-        "insight_summary": _build_insight_summary(route_analysis=route_analysis, blocker_analysis=blocker_analysis),
+        "insight_summary": _build_insight_summary(
+            route_analysis=route_analysis,
+            blocker_analysis=blocker_analysis,
+            trade_report_summary=trade_report_summary,
+        ),
         "dominant_patterns": dominant_patterns,
         "blocker_analysis": blocker_analysis,
         "route_analysis": route_analysis,
         "recommendation": recommendations,
         "confidence": confidence,
         "data_freshness": freshness,
+        "trade_report_analysis": trade_report_summary,
         "runtime_semantics_unchanged": True,
     }

@@ -411,3 +411,24 @@ def test_update_state_adds_reasoning_trace_snapshot(monkeypatch):
     assert out["persisted_state"]["latest_reasoning_trace"] == reasoning_trace
     assert out["persisted_state"]["latest_reasoning_trace_provenance"] == provenance
     assert out["persisted_state"]["latest_reasoning_trace"]["scanner_summary"]["selected_symbol"] == "003280"
+
+
+def test_update_state_remembers_recent_monitor_block_for_no_trade_cycle(monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: 1234.0)
+    state = {
+        "selected": {"symbol": "006340"},
+        "monitor_output": {
+            "action": "NONE",
+            "selected_symbol": "006340",
+            "primary_reason_code": "too_extended_from_vwap",
+        },
+        "persisted_state": {},
+        "execution": {"ok": False, "blocked": True, "reason": "noop"},
+    }
+
+    out = update_state_after_execution(state)
+    rows = list((out.get("persisted_state") or {}).get("recent_monitor_blocks") or [])
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "006340"
+    assert rows[0]["reason"] == "too_extended_from_vwap"
+    assert rows[0]["epoch"] == 1234

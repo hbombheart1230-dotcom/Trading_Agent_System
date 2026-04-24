@@ -2112,6 +2112,66 @@ def test_build_reporter_evaluation_section_surfaces_responsibility_split() -> No
     assert any("동일 일자 리포터도 과매매 또는 빠른 청산 압력을 시사했습니다." in row for row in section["bullets"])
 
 
+def test_build_reporter_evaluation_section_uses_same_day_feedback_packet_when_linkage_is_missing() -> None:
+    section = mod._build_reporter_evaluation_section(
+        {
+            "symbol": "047040",
+            "holding_duration": "48s",
+            "exit_reason": "SELL was triggered because peak_drawdown.",
+        },
+        {
+            "selected_symbol": "047040",
+            "selected_rank": 2,
+            "selected_score": 1.112,
+            "confidence": 0.64,
+            "top_candidates": [],
+        },
+        {
+            "position_age_seconds": 48,
+            "trigger_type": "peak_drawdown",
+        },
+        {
+            "summary": "SELL order for 047040 x1 was approved and recorded successfully in live mode.",
+        },
+        {
+            "status": "missing",
+            "grade": "N/A",
+            "same_day_linkage_status": "missing",
+            "summary": "당일 리포터 분석은 아직 생성되지 않았습니다.",
+        },
+        {
+            "available": True,
+            "consumed": True,
+            "confidence": "high",
+            "source_reports": {
+                "trade_reports": True,
+                "metrics": False,
+                "reporter_analysis": False,
+            },
+            "insight_summary": "Same-day closed trade reports show 3 trades with 1 wins, 2 losses, avg pnl pct -0.003.",
+            "dominant_patterns": [
+                {"name": "same_price_cost_loss_ratio", "detail": "same-price cost-loss trades 2/3", "value": 0.66},
+            ],
+            "recommendation": [
+                "Same-price round trips produced fee/tax drag; tighten follow-through evidence before repeating quick reversals.",
+            ],
+            "trade_report_analysis": {
+                "closed_trade_count": 3,
+                "win_count": 1,
+                "loss_count": 2,
+                "avg_pnl_pct": -0.003,
+            },
+        },
+    )
+
+    assert section["status"] == "ok"
+    assert section["grade"] == "A"
+    assert "당일 reporter feedback은 당일 닫힌 거래 리포트 기준으로 생성됐습니다." in section["summary"]
+    assert "당일 closed trade 3건, 승/패 1/2, 평균 손익률 -0.30%였습니다." in section["summary"]
+    assert any("피드백 생성 소스는 당일 닫힌 거래 리포트입니다." in row for row in section["bullets"])
+    assert any("권고: 동일가 왕복 거래에서 수수료와 세금 손실이 반복돼" in row for row in section["bullets"])
+
+
 def test_holding_duration_label_humanizes_fractional_minutes() -> None:
     assert mod._holding_duration_label("1.1m") == "보유 시간은 1분 6초였습니다."
 
@@ -2723,11 +2783,12 @@ def test_render_trade_report_markdown_surfaces_price_truth_fields() -> None:
     assert "브로커 매수가/매도가는 69900.00 / 70100.00입니다." in markdown
     assert "계좌 기준 마크 가격은 70080.00입니다." in markdown
     assert "모니터 관측 가격은 70050.00입니다." not in markdown
-    assert "가격 truth 소스는 브로커 체결가 기준입니다." in markdown
-    assert "손익 truth 소스는 키움 당일 실현손익 기준(ka10077)입니다." in markdown
-    assert "브로커 당일 손익 매칭은 symbol_price_qty / authoritative 상태이며, 소스는 키움 당일 실현손익 기준(ka10077)입니다." in markdown
+    assert "가격 기준은 브로커 체결가 기준입니다." in markdown
+    assert "손익 기준은 키움 당일 실현손익 기준(ka10077)입니다." in markdown
+    assert "브로커 당일 손익은 확정 기준으로 연결됐고, 소스는 키움 당일 실현손익 기준(ka10077)입니다." in markdown
+    assert "raw 값 부록: broker_day_match_mode=symbol_price_qty" in markdown
     assert "모니터 가격 소스는" not in markdown
-    assert "truth 가용성: 브로커 체결가=있음, 계좌 마크=있음, 모니터 가격=있음, 브로커 손익=있음." in markdown
+    assert "가용성 요약: 브로커 체결가는 확보됐습니다, 계좌 마크는 확인됐습니다, 모니터 가격은 남아 있습니다, 브로커 손익도 확인됐습니다." in markdown
 
 
 def test_build_execution_quality_section_surfaces_broker_truth_fields() -> None:
@@ -2815,6 +2876,175 @@ def test_render_trade_report_markdown_surfaces_execution_truth_fields() -> None:
     assert "- 손익 truth 소스는 키움 당일 실현손익 기준(ka10077)으로 확인했습니다." in markdown
 
 
+def test_render_trade_report_markdown_clarifies_closed_trade_monitor_sections_against_truth_surface() -> None:
+    report = {
+        "trade_id": "TRD_20260423_003280_01",
+        "action": "SELL",
+        "symbol": "003280",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {"summary": "context", "bullets": []},
+        "why_this_symbol_was_chosen": {"summary": "why", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {
+            "summary": "보유 구간은 제한적이어서 저장된 모니터 근거를 기준으로 정리했습니다.",
+            "bullets": [
+                "보유 시간은 0였습니다.",
+                "현재 포지션 판단은 매도입니다.",
+                "포지션 보유 시간은 약 540초입니다.",
+                "현재가, 평균가, 고점 기준 값은 3230.00 / 3320.00 / 3435.00입니다.",
+                "현재 손익 변동과 고점 대비 하락폭은 -5.97% / -입니다.",
+                "가격 기준 소스는 position.current_price입니다.",
+            ],
+        },
+        "exit_decision": {
+            "summary": "고정 손절 기준으로 청산. 청산 당시 상황은 핵심 청산 축은 고정 손절 기준, 확인 조건은 0/1, 현재가는 3230.00, 평균가는 3320.00, 현재 손익 변동은 -5.97%입니다.",
+            "bullets": [
+                "청산 액션은 매도입니다.",
+                "현재가, 평균가, 고점 기준 값은 3230.00 / 3320.00 / 3435.00입니다.",
+                "현재 손익 변동과 고점 대비 하락폭은 -5.97% / -입니다.",
+            ],
+        },
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+        "truth_surface": {
+            "price": {
+                "broker_buy_price": 3320.0,
+                "broker_fill_price": 3235.0,
+                "monitor_mark_price": 3230.0,
+                "price_truth_source": "broker_fill",
+                "monitor_price_source": "position.current_price",
+            },
+            "pnl": {
+                "value": -110.0,
+                "pct": -0.00033,
+                "broker_fee": 20,
+                "broker_tax": 5,
+                "pnl_truth_source": "kiwoom.ka10077",
+            },
+            "availability": {
+                "broker_fill_present": True,
+                "broker_buy_present": True,
+                "monitor_mark_present": True,
+                "broker_pnl_present": True,
+            },
+        },
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "아래 값은 청산 직전 모니터 관측 기준입니다." in markdown
+    assert "청산 직전 모니터 관측가는 3230.00였고 실제 매도 체결가는 3235.00였습니다." in markdown
+    assert "실제 실현손익은 -110.0 / -0.03%였습니다." in markdown
+    assert "보유 시간은 0였습니다." not in markdown
+    assert "청산 직전 모니터 판단은 매도입니다." in markdown
+    assert "청산 직전 모니터 관측값(현재/평균/고점)은 3230.00 / 3320.00 / 3435.00입니다." in markdown
+    assert "청산 직전 모니터 기준 손익 변동/고점 대비 하락폭은 -5.97% / -입니다." in markdown
+
+
+def test_render_trade_report_markdown_partial_sell_uses_structured_fallbacks_and_suppresses_zero_candidate_claims() -> None:
+    report = {
+        "trade_id": "TRD_20260424_006340_01",
+        "action": "SELL",
+        "symbol": "006340",
+        "status": "partial",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "local_debug", "model": "minimax/minimax-m2.5"},
+        "market_context_at_entry": {
+            "summary": "깨진요약??",
+            "bullets": [],
+            "regime": "not_captured",
+            "market_sentiment": "not_captured",
+            "playbook": "not_captured",
+            "selected_playbook": "not_captured",
+            "global_sentiment_score": 0.0,
+            "risk_mode": "balanced",
+            "preferred_themes": ["broad_market_leaders"],
+            "avoid_themes": ["illiquid_microcap", "headline_only_momentum"],
+            "strategist_market_context_summary": "Market regime was not_captured with a not_captured playbook. Global sentiment scored 0.00 and VIX was not_captured.",
+        },
+        "strategist_summary": {"summary": "깨진전략요약??", "bullets": []},
+        "why_this_symbol_was_chosen": {
+            "summary": "깨진선정요약??",
+            "selected_rank": 0,
+            "universe_size": 0,
+            "basis": "combined scanner ranking score",
+            "scanner_selection_trace": {
+                "ranked_candidates": [],
+                "selected_symbol": "",
+                "selected_rank": 0,
+                "selection_reason": "Scanner selected - as rank #1 out of 0 candidates with score 0.000 because it led on combined scanner ranking score.",
+            },
+        },
+        "scanner_filters": {"summary": "", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "깨진청산요약??", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+        "shared_facts": {
+            "action": "SELL",
+            "commander_route": {
+                "applied_policy": {
+                    "interpretation_policy": {
+                        "entry_style": "defensive",
+                        "required_checks": ["reclaim_gate_ok"],
+                        "blockers": ["failed_breakout=confirmed"],
+                        "notes": ["monitor_guidance:defensive_exit", "vwap_reclaim_required"],
+                    }
+                }
+            },
+        },
+        "monitor_snapshot": {
+            "trigger_type": "take_profit",
+            "effective_stop_loss_pct": 0.03,
+            "effective_stop_reason": "hard_stop",
+            "current_price": 8340.0,
+            "average_price": 8140.0,
+            "peak_price": 8340.0,
+        },
+        "truth_surface": {
+            "price": {"broker_fill_price": 8340.0, "price_truth_source": "broker_fill"},
+            "pnl": {"value": 0.0, "pct": 0.0157, "pnl_truth_source": "broker_fill_account_snapshot_estimate"},
+            "availability": {
+                "broker_fill_present": True,
+                "broker_buy_present": False,
+                "account_mark_present": False,
+                "monitor_mark_present": True,
+                "broker_pnl_present": True,
+            },
+        },
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "## 시장 환경 요약" in markdown
+    assert "## 전략가 요약" in markdown
+    assert "글로벌 감성 입력은 0.000이었고" in markdown
+    assert "선호 테마는 시장 대표주 기준으로 정리됐습니다." in markdown
+    assert "회피 테마는 유동성 낮은 초소형주, 헤드라인 추격형 모멘텀 기준으로 정리됐습니다." in markdown
+    assert "전략가는 최종적으로 방어형 전략 프레임을 유지했습니다." in markdown
+    assert "핵심 확인 조건은 VWAP 재회복 확인이었습니다." in markdown
+    assert "경계 신호는 실패 돌파가 확인된 상태였습니다." in markdown
+    assert "스캐너 0위" not in markdown
+    assert "out of 0 candidates" not in markdown
+    assert "저장된 스캐너 후보 표가 없어" in markdown
+    assert "실제 청산 트리거는 목표 수익 실현 기준이었습니다." in markdown
+
+
 def test_render_trade_report_markdown_uses_estimated_pnl_phrase_when_broker_fill_only() -> None:
     report = {
         "trade_id": "TRD_20260421_005380_01",
@@ -2871,7 +3101,171 @@ def test_render_trade_report_markdown_uses_estimated_pnl_phrase_when_broker_fill
 
     assert "종료 직전 모니터 관측 가격은 536000.00입니다." not in markdown
     assert "브로커 체결가와 계좌 평가손익 기준 추정 손익률은 -0.90%입니다." in markdown
-    assert "손익 truth 소스는 브로커 체결가와 계좌 평가손익 역산 기준입니다." in markdown
+    assert "손익 기준은 브로커 체결가와 계좌 평가손익 역산 기준입니다." in markdown
+
+
+def test_render_trade_report_markdown_rewrites_memory_sections_with_active_layers_and_applied_deltas() -> None:
+    report = {
+        "trade_id": "TRD_20260423_003280_01",
+        "action": "SELL",
+        "symbol": "003280",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {"summary": "context", "bullets": []},
+        "why_this_symbol_was_chosen": {"summary": "why", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+        "memory_surface": {
+            "status": {
+                "strategy_memory_used": True,
+                "selected_symbol_memory_used": True,
+                "reporter_feedback_used": True,
+                "read_model_facts_used": False,
+            },
+            "strategy_memory": {
+                "scope": "aggregated_strategy_memory",
+                "status": "ok",
+                "best_playbooks": ["defensive"],
+                "worst_playbooks": ["defensive"],
+                "recent_failures": ["playbook:defensive"],
+            },
+            "commander_memory_policy": {
+                "active_layers": ["daily"],
+                "priority_order": ["daily", "weekly", "monthly", "symbol"],
+                "symbol_memory_override_enabled": False,
+            },
+            "memory_packets": {
+                "daily": {"status": "ok", "active": True},
+                "weekly": {"status": "ok", "active": False, "sample_day_count": 1},
+                "monthly": {"status": "ok", "active": False, "sample_day_count": 1},
+                "symbol": {"status": "ok", "active": True},
+            },
+            "selected_symbol_memory": {
+                "present": True,
+                "symbol": "003280",
+                "trade_count": 4,
+                "win_rate": 0.0,
+                "dominant_playbook": "defensive",
+                "dominant_monitor_blocker": "unknown",
+            },
+            "reporter_feedback_packet": {
+                "present": True,
+                "available": True,
+                "confidence": "high",
+                "source_reports": {"trade_reports": True},
+                "trade_report_analysis": {"closed_trade_count": 11, "win_count": 0, "loss_count": 11, "avg_pnl_pct": -0.0014},
+                "recommendation": ["Same-day closed trades are loss-heavy; keep defensive entry posture until follow-through quality improves."],
+            },
+            "read_model_facts": {"present": False},
+            "usage_trace": {
+                "playbook": "defensive",
+                "monitor_guidance": "defensive_exit",
+                "scanner_bias": "leader",
+            },
+        },
+        "memory_application_surface": {
+            "scanner_memory_bias": {
+                "captured": True,
+                "applied": False,
+                "active_layers": ["daily"],
+                "selected_symbol": "003280",
+                "selected_bias_adjustment": 0.0,
+                "reason": [
+                    "daily_strategy_memory_available",
+                    "daily_best:defensive",
+                    "commander_risk_posture:defensive",
+                ],
+            },
+            "monitor_memory_bias": {
+                "captured": True,
+                "applied": True,
+                "active_layers": ["daily"],
+                "applied_deltas": [
+                    {"field": "breakout_buffer_pct", "from": 0.0015, "to": 0.003, "delta": 0.0015},
+                    {"field": "max_extended_from_vwap_pct", "from": 0.05, "to": 0.045, "delta": -0.005},
+                ],
+                "hold_applied": True,
+                "hold_deltas": [
+                    {"field": "confirm_ticks", "from": 2, "to": 1, "delta": -1.0},
+                ],
+                "exit_applied": True,
+                "exit_deltas": [
+                    {"field": "stop_loss_pct", "from": 0.020, "to": 0.015, "delta": -0.005},
+                    {"field": "peak_drawdown_exit_pct", "from": 0.015, "to": 0.010, "delta": -0.005},
+                ],
+                "risk_posture": "defensive",
+                "effective_policy_source": "monitor_memory_bias_adjusted",
+                "reason": ["commander_risk_posture:defensive", "commander_focus:exit_quality"],
+            },
+        },
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "## 전략가 프롬프트에서 직접 확인된 메모리" in markdown
+    assert "## 거래 설명용 사후 복원 메모리" in markdown
+    assert "전략 메모리 핵심 신호는 우세 전략 프레임은 방어형이었고, 취약 전략 프레임도 방어형이었으며, 최근 실패 흔적은 방어형 전략 프레임 실패였습니다." in markdown
+    assert "raw 값 부록: best_playbooks=defensive, worst_playbooks=defensive, recent_failures=playbook:defensive" in markdown
+    assert "전략가 프롬프트는 003280 종목 메모리를 직접 포함했고, 과거 거래 4건, 승률 0.00%, 우세 전략 프레임은 방어형이었습니다." in markdown
+    assert "전략가 프롬프트에서 직접 확인된 당일 리포터 피드백은 상태는 정상 기록, 신뢰도는 높음 수준이었고, 소스는 당일 닫힌 거래 리포트였습니다." in markdown
+    assert "이 거래는 전략가 프롬프트만으로 대부분 설명돼, 사후 메모리 복원은 크지 않았습니다." in markdown
+    assert "이번 거래 후보 003280에는 메모리 기반 추가 가감점이 없었습니다." in markdown
+    assert "스캐너 쪽은 소스 가중치 변화 상세가 남지 않아, 후보별 가감점만 확인됩니다." in markdown
+    assert "이번 거래에서는 모니터가 당일 메모리를 진입 판단에 직접 반영했습니다." in markdown
+    assert "진입 정책 변화는 breakout_buffer_pct 0.002 -> 0.003 (+0.002), max_extended_from_vwap_pct 0.050 -> 0.045 (-0.005)입니다." in markdown
+    assert "진입 적용 해석: 돌파 확인 버퍼를 키워 추격 진입을 더 보수적으로 막았습니다." in markdown
+    assert "VWAP 기준 과확장 추격 허용 범위를 줄여 현재 가격 부담이 큰 진입을 줄였습니다." in markdown
+    assert "보유 관리 변화는 confirm_ticks 2.000 -> 1.000 (-1.000)입니다." in markdown
+    assert "보유 관리 해석: 경고 후 재확인 조건을 줄여, 보유 포지션을 더 빨리 정리할 수 있게 했습니다." in markdown
+    assert "청산 정책 변화는 stop_loss_pct 0.020 -> 0.015 (-0.005), peak_drawdown_exit_pct 0.015 -> 0.010 (-0.005)입니다." in markdown
+    assert "청산 정책 해석: 손실과 drawdown 기준을 더 타이트하게 잡아, 손상이 확인되면 더 빨리 청산하도록 조정했습니다." in markdown
+    assert "모니터 조정은 지휘관 위험 자세는 방어형이었습니다, 지휘관은 청산 품질 점검을 우선했습니다." in markdown
+    assert "raw tag 부록: commander_risk_posture:defensive, commander_focus:exit_quality" in markdown
+
+
+def test_render_trade_report_markdown_normalizes_raw_english_exit_reason() -> None:
+    report = {
+        "trade_id": "TRD_20260423_047040_01",
+        "action": "SELL",
+        "symbol": "047040",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "openrouter/free"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {"summary": "context", "bullets": []},
+        "strategist_summary": {"summary": "strategist", "bullets": []},
+        "why_this_symbol_was_chosen": {"summary": "why", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {
+            "summary": "SELL was triggered because intraday low break.",
+            "bullets": ["정규화된 청산 사유는 SELL was triggered because intraday low break.입니다."],
+        },
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "SELL was triggered because intraday low break" not in markdown
+    assert "장중 저점 이탈 기준으로 청산" in markdown
 
 
 def test_render_trade_report_markdown_explains_same_price_round_trip_as_cost_loss() -> None:
@@ -2933,6 +3327,8 @@ def test_render_trade_report_markdown_explains_same_price_round_trip_as_cost_los
 
     markdown = mod.render_trade_report_markdown(report)
 
+    assert "<span style=" not in markdown
+    assert "**[확정값]**" in markdown
     assert "브로커 매수가/매도가는 537000.00 / 537000.00입니다." in markdown
     assert "매수가와 매도가가 같았고, 손익은 가격 변동이 아니라 수수료와 세금에서 발생했습니다." in markdown
     assert "모니터 가격 소스는" not in markdown
@@ -3090,6 +3486,147 @@ def test_render_trade_report_markdown_splits_strategist_summary_from_market_cont
     assert idx_key_input >= 0 and idx_market_news >= 0 and idx_scanner_link >= 0
     assert idx_key_input < idx_scanner_link
     assert idx_market_news < idx_scanner_link
+
+
+def test_render_trade_report_markdown_restores_news_from_market_context_human() -> None:
+    report = {
+        "trade_id": "TRD_20260424_098460_02",
+        "action": "SELL",
+        "symbol": "098460",
+        "status": "closed",
+        "story_type": "live trade report",
+        "execution_mode_label": "real broker",
+        "generation": {"status": "ok", "mode": "local_debug", "model": "minimax/minimax-m2.5"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_human": {
+            "summary": "Market regime was neutral with a defensive playbook. Global sentiment scored -0.04 and VIX was 19.31. 60 headlines were considered across 7 targets.",
+            "regime": "neutral",
+            "market_sentiment": "neutral",
+            "playbook": "defensive",
+            "global_sentiment_score": -0.04,
+            "vix_level": 19.31,
+            "headline_count": 60,
+            "news_query_count": 7,
+            "market_news_titles": [
+                "코스피: <b>코스피</b> 6000 탈환 기대감",
+                "코스피: 외인·기관 동반 매수세",
+            ],
+            "candidate_news_titles": [
+                "005930: 삼성전자 실적 개선 기대",
+                "000660: SK하이닉스 수요 회복 기대",
+            ],
+            "news_symbol_linkage": {
+                "linkage_strength": "weak",
+                "selected_symbol": "098460",
+                "runner_up_symbol": "000660",
+                "selected_vs_runner_up": {
+                    "selected_symbol": "098460",
+                    "runner_up_symbol": "000660",
+                    "selected_headline_count": 0,
+                    "runner_up_headline_count": 0,
+                },
+            },
+        },
+        "strategist_market_headlines": [
+            "코스피: <b>코스피</b> 6000 탈환 기대감",
+            "코스피: 외인·기관 동반 매수세",
+        ],
+        "strategist_symbol_headlines": [
+            "005930: 삼성전자 실적 개선 기대",
+            "000660: SK하이닉스 수요 회복 기대",
+        ],
+        "shared_facts": {
+            "commander_route": {
+                "applied_policy": {
+                    "interpretation_policy": {
+                        "entry_style": "defensive",
+                        "notes": ["monitor_guidance:defensive_exit", "vwap_reclaim_required"],
+                        "required_checks": ["reclaim_gate_ok"],
+                        "blockers": ["failed_breakout=confirmed"],
+                    }
+                }
+            }
+        },
+        "why_this_symbol_was_chosen": {"summary": "why", "bullets": []},
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "## 시장 환경 요약" in markdown
+    assert "- 뉴스 입력은 7개 관찰 대상에서 60개 headline을 검토했습니다." in markdown
+    assert "- 참고한 시장 뉴스는 코스피: 코스피 6000 탈환 기대감 / 코스피: 외인·기관 동반 매수세였습니다." in markdown
+    assert "## 전략가 요약" in markdown
+    assert "- 전략가는 시장 뉴스 2건과 후보 뉴스 2건을 함께 확인했습니다." in markdown
+    assert "- 전략가가 후보군 판단에 참고한 뉴스는 005930: 삼성전자 실적 개선 기대 / 000660: SK하이닉스 수요 회복 기대였습니다." in markdown
+    assert "선택 종목 098460과 차순위 000660에 직접 연결된 뉴스는 모두 없어 시장 톤 확인용으로만 활용했습니다." in markdown
+
+
+def test_render_trade_report_markdown_restores_news_from_nested_market_context_fields() -> None:
+    report = {
+        "trade_id": "TRD_20260424_098460_03",
+        "action": "SELL",
+        "symbol": "098460",
+        "status": "closed",
+        "story_type": "live trade report",
+        "execution_mode_label": "real broker",
+        "generation": {"status": "ok", "mode": "local_debug", "model": "minimax/minimax-m2.5"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {
+            "summary": "",
+            "bullets": [],
+            "regime": "neutral",
+            "market_sentiment": "neutral",
+            "playbook": "defensive",
+            "global_sentiment_score": -0.04,
+            "strategist_market_headlines": [
+                "코스피: <b>코스피</b> 6000 탈환 기대감",
+                "코스피: 외인·기관 동반 매수세",
+            ],
+            "strategist_symbol_headlines": [
+                "005930: 삼성전자 실적 개선 기대",
+                "000660: SK하이닉스 수요 회복 기대",
+            ],
+        },
+        "shared_facts": {
+            "commander_route": {
+                "applied_policy": {
+                    "interpretation_policy": {
+                        "entry_style": "defensive",
+                        "notes": [],
+                        "required_checks": [],
+                        "blockers": [],
+                    }
+                }
+            }
+        },
+        "why_this_symbol_was_chosen": {"summary": "why", "bullets": []},
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "- 참고한 시장 뉴스는 코스피: 코스피 6000 탈환 기대감 / 코스피: 외인·기관 동반 매수세였습니다." in markdown
+    assert "- 전략가는 시장 뉴스 2건과 후보 뉴스 2건을 함께 확인했습니다." in markdown
+    assert "- 전략가는 뉴스 입력을 시장 톤 확인과 후보군 보조 비교에 사용했습니다." in markdown
 
 
 def test_build_market_scanner_linkage_bullet_surfaces_numeric_trace() -> None:
@@ -3333,7 +3870,7 @@ def test_render_trade_report_markdown_normalizes_guard_timeline_and_final_conclu
     assert "Supervisor approved the order because Allowed." not in markdown
     assert "Entry BUY was executed by run" not in markdown
     assert "Exit SELL was executed by run" not in markdown
-    assert "이번 라이프사이클은 종결 상태이며, 진입과 청산이 하나의 거래 흐름으로 연결됐습니다." in markdown
+    assert "현재 판단은 청산 완료입니다. 000660 거래는 매수 진입 후 매도 청산까지 기록됐습니다." in markdown
     assert "슈퍼바이저는 주문을 승인했고 가드 판단은 허용이었습니다." in markdown
     assert "승인 모드는 실행 추적에는 별도로 남아 있지 않습니다." in markdown
     assert "- 진입: run abc123에서 매수 진입이 실행됐습니다." in markdown

@@ -10,6 +10,7 @@ Role boundary:
 
 import os
 import time
+from datetime import datetime, timezone
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Dict
@@ -41,6 +42,8 @@ from libs.runtime.intraday_monitor_signals import (
     resolve_intraday_entry_policy,
 )
 from libs.runtime.monitor_memory_bias import (
+    apply_monitor_memory_bias_to_exit_policy,
+    apply_monitor_memory_bias_to_hold_controls,
     apply_monitor_memory_bias_to_entry_policy,
     summarize_monitor_memory_bias,
 )
@@ -49,6 +52,7 @@ from libs.runtime.monitor_policy import (
     build_monitor_entry_policy_contract,
     summarize_monitor_policy_deltas,
 )
+from libs.runtime.market_hours import MarketHours
 from libs.runtime.position_sizing import evaluate_position_size
 from libs.strategies.contracts import coerce_strategist_output
 
@@ -86,6 +90,76 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 def _is_trueish(v: Any) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _monitor_runtime_dt_kst(
+    state: Dict[str, Any],
+    *,
+    market_hours: MarketHours | None = None,
+) -> datetime:
+    mh = market_hours or MarketHours()
+    tick_ts = _to_int(state.get("tick_ts"))
+    if tick_ts > 0:
+        return datetime.fromtimestamp(tick_ts, tz=timezone.utc).astimezone(mh.tz)
+    for key in ("tick_ts_iso", "ts", "now_iso", "started_at"):
+        text = str(state.get(key) or "").strip()
+        if not text:
+            continue
+        normalized = text.replace("Z", "+00:00") if text.endswith("Z") else text
+        try:
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=mh.tz)
+            return dt.astimezone(mh.tz)
+        except Exception:
+            continue
+    return datetime.now(tz=mh.tz)
+
+
+def _ensure_entry_market_context_clock_fields(
+    state: Dict[str, Any],
+    *,
+    market_hours: MarketHours | None = None,
+) -> Dict[str, Any]:
+    mh = market_hours or MarketHours()
+    market_context = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    out = dict(market_context or {})
+    if out.get("minutes_to_close") not in (None, ""):
+        state["market_context"] = out
+        return out
+    dt_kst = _monitor_runtime_dt_kst(state, market_hours=mh)
+    minutes_to_close: float | None = None
+    if mh.is_open(dt_kst):
+        close_dt = dt_kst.replace(
+            hour=mh.close_time.hour,
+            minute=mh.close_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        minutes_to_close = max(0.0, (close_dt - dt_kst).total_seconds() / 60.0)
+    out["minutes_to_close"] = minutes_to_close
+    out.setdefault("market_clock_source", "runtime_clock")
+    out.setdefault("market_clock_kst", dt_kst.isoformat())
+    state["market_context"] = out
+    return out
+
+
+def _resolve_monitor_memory_bias_payload(
+    *,
+    strategy_monitor_policy: Dict[str, Any],
+    commander_context: Dict[str, Any],
+    state: Dict[str, Any],
+) -> Dict[str, Any]:
+    if (
+        isinstance(strategy_monitor_policy.get("monitor_memory_bias"), dict)
+        and strategy_monitor_policy.get("monitor_memory_bias")
+    ):
+        return dict(strategy_monitor_policy.get("monitor_memory_bias") or {})
+    if isinstance(commander_context.get("monitor_memory_bias"), dict) and commander_context.get("monitor_memory_bias"):
+        return dict(commander_context.get("monitor_memory_bias") or {})
+    if isinstance(state.get("monitor_memory_bias"), dict):
+        return dict(state.get("monitor_memory_bias") or {})
+    return {}
 
 
 def _resolve_monitor_skill_runner(state: Dict[str, Any]) -> tuple[Any, str]:
@@ -129,6 +203,158 @@ def _resolve_monitor_skill_runner(state: Dict[str, Any]) -> tuple[Any, str]:
     except Exception:
         source = "auto_runner_error" if auto_requested else "integrated_chain_auto_runner_error"
         return None, source
+
+
+def _fresh_monitor_skill_runner() -> tuple[Any, str]:
+    try:
+        from libs.skills.runner import CompositeSkillRunner
+
+        built = CompositeSkillRunner.from_env()
+        return built, "fresh.composite_skill_runner"
+    except Exception:
+        return None, "fresh_runner_error"
+
+
+def _run_monitor_minute_skill(*, runner: Any, run_id: str, symbol: str, timeframe_minutes: int) -> Dict[str, Any]:
+    raw = runner.run(
+        run_id=run_id,
+        skill="market.minute_ohlcv",
+        args={
+            "symbol": symbol,
+            "timeframe_minutes": max(1, int(timeframe_minutes or 1)),
+            "adjusted_price": "1",
+        },
+    )
+    rec = _monitor_skill_output_to_record(raw)
+    return dict(rec) if isinstance(rec, dict) else {}
+
+
+def _extract_monitor_minute_rows(rec: Dict[str, Any] | None) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    result = rec.get("result") if isinstance(rec, dict) and isinstance(rec.get("result"), dict) else {}
+    data = result.get("data") if isinstance(result, dict) else None
+    rows = data.get("rows") if isinstance(data, dict) and isinstance(data.get("rows"), list) else []
+    normalized_rows = [dict(row) for row in rows if isinstance(row, dict)]
+    return dict(result) if isinstance(result, dict) else {}, normalized_rows
+
+
+def _recover_monitor_minute_rows_from_history(
+    state: Dict[str, Any],
+    *,
+    symbol: str,
+    now_epoch: int,
+    timeframe_minutes: int,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    sym = _norm_symbol(symbol)
+    if not sym:
+        return [], {}
+
+    history_root = state.get("skill_results_history") if isinstance(state.get("skill_results_history"), dict) else {}
+    minute_history = list(history_root.get("market.minute_ohlcv") or [])
+    best_rows: List[Dict[str, Any]] = []
+    best_meta: Dict[str, Any] = {}
+    best_ts = 0
+    for row in reversed(minute_history):
+        if not isinstance(row, dict):
+            continue
+        if _norm_symbol(row.get("symbol")) != sym:
+            continue
+        rec = row.get("record") if isinstance(row.get("record"), dict) else {}
+        _result, normalized_rows = _extract_monitor_minute_rows(rec)
+        if not normalized_rows:
+            continue
+        latest_ts = _latest_row_ts(normalized_rows) or 0
+        if latest_ts <= 0:
+            continue
+        stale_reason = _minute_snapshot_stale_reason(
+            latest_candle_ts=latest_ts,
+            now_epoch=int(now_epoch or 0),
+            timeframe_minutes=int(max(1, int(timeframe_minutes or 1))),
+        )
+        age_minutes = _minute_snapshot_age_minutes(latest_candle_ts=latest_ts, now_epoch=int(now_epoch or 0))
+        # Allow a recent cache fallback even if it is older than the strict live snapshot window.
+        if stale_reason and (age_minutes is None or float(age_minutes) > 15.0):
+            continue
+        if latest_ts > best_ts:
+            best_rows = list(normalized_rows)
+            best_ts = latest_ts
+            best_meta = {
+                "latest_candle_ts": latest_ts,
+                "minute_snapshot_age_minutes": age_minutes,
+                "minute_snapshot_was_stale": bool(stale_reason),
+            }
+    return best_rows, best_meta
+
+
+def _remember_monitor_minute_rows_in_persisted_cache(
+    state: Dict[str, Any],
+    *,
+    symbol: str,
+    rows: List[Dict[str, Any]],
+    latest_candle_ts: Any,
+    timeframe_minutes: int,
+    now_epoch: int,
+) -> None:
+    sym = _norm_symbol(symbol)
+    if not sym or not isinstance(rows, list) or not rows:
+        return
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    cache_root = (
+        dict(persisted.get("recent_minute_ohlcv_by_symbol") or {})
+        if isinstance(persisted.get("recent_minute_ohlcv_by_symbol"), dict)
+        else {}
+    )
+    cache_root[sym] = {
+        "symbol": sym,
+        "rows": [dict(row) for row in rows if isinstance(row, dict)],
+        "latest_candle_ts": _latest_row_ts(rows) if latest_candle_ts in (None, "") else latest_candle_ts,
+        "timeframe_minutes": int(max(1, int(timeframe_minutes or 1))),
+        "stored_epoch": int(now_epoch or 0),
+    }
+    if len(cache_root) > 50:
+        ordered = sorted(
+            cache_root.items(),
+            key=lambda item: int(((item[1] or {}).get("stored_epoch") or 0)),
+            reverse=True,
+        )
+        cache_root = {str(k): v for k, v in ordered[:50]}
+    persisted["recent_minute_ohlcv_by_symbol"] = cache_root
+    state["persisted_state"] = persisted
+
+
+def _recover_monitor_minute_rows_from_persisted_cache(
+    state: Dict[str, Any],
+    *,
+    symbol: str,
+    now_epoch: int,
+    timeframe_minutes: int,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    sym = _norm_symbol(symbol)
+    if not sym:
+        return [], {}
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    cache_root = (
+        dict(persisted.get("recent_minute_ohlcv_by_symbol") or {})
+        if isinstance(persisted.get("recent_minute_ohlcv_by_symbol"), dict)
+        else {}
+    )
+    row = cache_root.get(sym) if isinstance(cache_root.get(sym), dict) else {}
+    rows = [dict(item) for item in list(row.get("rows") or []) if isinstance(item, dict)]
+    if not rows:
+        return [], {}
+    latest_ts = _latest_row_ts(rows) or _latest_row_ts(row.get("rows")) or _latest_row_ts(rows)
+    stale_reason = _minute_snapshot_stale_reason(
+        latest_candle_ts=latest_ts,
+        now_epoch=int(now_epoch or 0),
+        timeframe_minutes=int(max(1, int(timeframe_minutes or 1))),
+    )
+    age_minutes = _minute_snapshot_age_minutes(latest_candle_ts=latest_ts, now_epoch=int(now_epoch or 0))
+    if stale_reason and (age_minutes is None or float(age_minutes) > 15.0):
+        return [], {}
+    return rows, {
+        "latest_candle_ts": latest_ts,
+        "minute_snapshot_age_minutes": age_minutes,
+        "minute_snapshot_was_stale": bool(stale_reason),
+    }
 
 
 def _monitor_skill_output_to_record(out: Any) -> Dict[str, Any]:
@@ -281,6 +507,7 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
     symbol: str,
     timeframe_minutes: int,
     now_epoch: int = 0,
+    prefer_fresh_runner: bool = False,
 ) -> Dict[str, Any]:
     """Hydrate monitor-only minute candles without touching scanner seed OHLCV.
 
@@ -302,6 +529,14 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
             timeframe_minutes=int(max(1, int(timeframe_minutes or 1))),
         )
     if existing_rows and not stale_reason:
+        _remember_monitor_minute_rows_in_persisted_cache(
+            state,
+            symbol=sym,
+            rows=list(existing_rows),
+            latest_candle_ts=existing_latest_candle_ts,
+            timeframe_minutes=int(max(1, int(timeframe_minutes or 1))),
+            now_epoch=int(now_epoch or 0),
+        )
         state["monitor_minute_ohlcv_fetch"] = {
             "source": "state.minute_ohlcv_by_symbol",
             "symbol": sym,
@@ -324,6 +559,10 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
 
     runner, runner_source = _resolve_monitor_skill_runner(state)
     refetch_trigger_reason = "missing_snapshot" if not existing_rows else stale_reason
+    if prefer_fresh_runner:
+        fresh_runner, fresh_runner_source = _fresh_monitor_skill_runner()
+        if fresh_runner is not None and hasattr(fresh_runner, "run"):
+            runner, runner_source = fresh_runner, fresh_runner_source
     if runner is None or not hasattr(runner, "run"):
         state["monitor_minute_ohlcv_fetch"] = {
             "source": "state.minute_ohlcv_by_symbol" if existing_rows else "none",
@@ -348,16 +587,12 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
         return state
 
     run_id = str(state.get("run_id") or "monitor-minute-fetch")
-    raw = runner.run(
+    rec = _run_monitor_minute_skill(
+        runner=runner,
         run_id=run_id,
-        skill="market.minute_ohlcv",
-        args={
-            "symbol": sym,
-            "timeframe_minutes": max(1, int(timeframe_minutes or 1)),
-            "adjusted_price": "1",
-        },
+        symbol=sym,
+        timeframe_minutes=int(max(1, int(timeframe_minutes or 1))),
     )
-    rec = _monitor_skill_output_to_record(raw)
     skill_results = dict(state.get("skill_results") or {}) if isinstance(state.get("skill_results"), dict) else {}
     skill_results["market.minute_ohlcv"] = rec
     skill_results_by_symbol = (
@@ -383,8 +618,124 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
     skill_results_history["market.minute_ohlcv"] = minute_history[-20:]
     state["skill_results_history"] = skill_results_history
 
-    result = rec.get("result") if isinstance(rec.get("result"), dict) else {}
+    result, normalized_rows = _extract_monitor_minute_rows(rec)
+    primary_failure_reason = ""
+    primary_failure_detail = ""
+    runner_used_source = str(runner_source or "")
+    fresh_runner_used = False
+    if str(result.get("action") or "").strip().lower() != "ready" or not normalized_rows:
+        primary_action = str(result.get("action") or "").strip().lower()
+        if primary_action == "ready" and not normalized_rows:
+            primary_failure_reason = "refetch_empty_rows"
+            primary_failure_detail = "refetch_empty_rows"
+        else:
+            primary_failure_reason = str(result.get("action") or "refetch_not_ready")
+            primary_failure_detail = str(result.get("question") or result.get("action") or "refetch_not_ready")
+        fresh_runner, fresh_runner_source = _fresh_monitor_skill_runner()
+        if fresh_runner is not None and hasattr(fresh_runner, "run") and fresh_runner is not runner:
+            fresh_rec = _run_monitor_minute_skill(
+                runner=fresh_runner,
+                run_id=run_id,
+                symbol=sym,
+                timeframe_minutes=int(max(1, int(timeframe_minutes or 1))),
+            )
+            fresh_result, fresh_rows = _extract_monitor_minute_rows(fresh_rec)
+            if str(fresh_result.get("action") or "").strip().lower() == "ready" and fresh_rows:
+                rec = fresh_rec
+                result = fresh_result
+                normalized_rows = fresh_rows
+                runner_used_source = str(fresh_runner_source or "fresh.composite_skill_runner")
+                fresh_runner_used = True
+            else:
+                fresh_action = str(fresh_result.get("action") or "").strip().lower()
+                if fresh_action == "ready" and not fresh_rows:
+                    primary_failure_reason = "refetch_empty_rows"
+                    primary_failure_detail = "refetch_empty_rows"
+                else:
+                    primary_failure_reason = str(fresh_result.get("action") or primary_failure_reason or "refetch_not_ready")
+                    primary_failure_detail = str(
+                        fresh_result.get("question")
+                        or fresh_result.get("action")
+                        or primary_failure_detail
+                        or "refetch_not_ready"
+                    )
+
+    if fresh_runner_used:
+        skill_results["market.minute_ohlcv"] = rec
+        skill_results_by_symbol[sym] = rec
+        skill_results["market.minute_ohlcv_by_symbol"] = skill_results_by_symbol
+        state["skill_results"] = skill_results
+        minute_history = list(skill_results_history.get("market.minute_ohlcv") or [])
+        minute_history.append({"symbol": sym, "record": rec})
+        skill_results_history["market.minute_ohlcv"] = minute_history[-20:]
+        state["skill_results_history"] = skill_results_history
+
     if str(result.get("action") or "").strip().lower() != "ready":
+        history_rows, history_meta = _recover_monitor_minute_rows_from_history(
+            state,
+            symbol=sym,
+            now_epoch=int(now_epoch or 0),
+            timeframe_minutes=int(max(1, int(timeframe_minutes or 1))),
+        )
+        cache_rows: List[Dict[str, Any]] = []
+        cache_meta: Dict[str, Any] = {}
+        if not history_rows:
+            cache_rows, cache_meta = _recover_monitor_minute_rows_from_persisted_cache(
+                state,
+                symbol=sym,
+                now_epoch=int(now_epoch or 0),
+                timeframe_minutes=int(max(1, int(timeframe_minutes or 1))),
+            )
+        if history_rows:
+            minute_root = dict(existing_root or {})
+            minute_root[sym] = list(history_rows)
+            state["minute_ohlcv_by_symbol"] = minute_root
+            state["monitor_minute_ohlcv_fetch"] = {
+                "source": "skill_results_history.minute_ohlcv",
+                "symbol": sym,
+                "timeframe_minutes": int(max(1, int(timeframe_minutes or 1))),
+                "row_count": int(len(history_rows)),
+                "latest_candle_ts": history_meta.get("latest_candle_ts"),
+                "minute_snapshot_age_minutes": history_meta.get("minute_snapshot_age_minutes"),
+                "minute_snapshot_was_stale": bool(history_meta.get("minute_snapshot_was_stale")),
+                "minute_refetch_attempted": True,
+                "minute_refetch_succeeded": False,
+                "minute_refetch_reason": refetch_trigger_reason or "missing_snapshot",
+                "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
+                "minute_refetch_failure_reason": primary_failure_reason or str(result.get("action") or "refetch_not_ready"),
+                "minute_refetch_failure_detail": primary_failure_detail or str(result.get("question") or result.get("action") or "refetch_not_ready"),
+                "minute_refetch_runner_source": runner_used_source,
+                "minute_refetch_fresh_runner_used": bool(fresh_runner_used),
+                "minute_refetch_produced_fresh_snapshot": False,
+                "minute_cache_fallback_used": True,
+                "minute_cache_fallback_source": "skill_results_history.minute_ohlcv",
+            }
+            return state
+        if cache_rows:
+            minute_root = dict(existing_root or {})
+            minute_root[sym] = list(cache_rows)
+            state["minute_ohlcv_by_symbol"] = minute_root
+            state["monitor_minute_ohlcv_fetch"] = {
+                "source": "persisted_state.recent_minute_ohlcv_by_symbol",
+                "symbol": sym,
+                "timeframe_minutes": int(max(1, int(timeframe_minutes or 1))),
+                "row_count": int(len(cache_rows)),
+                "latest_candle_ts": cache_meta.get("latest_candle_ts"),
+                "minute_snapshot_age_minutes": cache_meta.get("minute_snapshot_age_minutes"),
+                "minute_snapshot_was_stale": bool(cache_meta.get("minute_snapshot_was_stale")),
+                "minute_refetch_attempted": True,
+                "minute_refetch_succeeded": False,
+                "minute_refetch_reason": refetch_trigger_reason or "missing_snapshot",
+                "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
+                "minute_refetch_failure_reason": primary_failure_reason or str(result.get("action") or "refetch_not_ready"),
+                "minute_refetch_failure_detail": primary_failure_detail or str(result.get("question") or result.get("action") or "refetch_not_ready"),
+                "minute_refetch_runner_source": runner_used_source,
+                "minute_refetch_fresh_runner_used": bool(fresh_runner_used),
+                "minute_refetch_produced_fresh_snapshot": False,
+                "minute_cache_fallback_used": True,
+                "minute_cache_fallback_source": "persisted_state.recent_minute_ohlcv_by_symbol",
+            }
+            return state
         state["monitor_minute_ohlcv_fetch"] = {
             "source": "state.minute_ohlcv_by_symbol" if existing_rows else "none",
             "symbol": sym,
@@ -400,17 +751,82 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
             "minute_refetch_succeeded": False,
             "minute_refetch_reason": refetch_trigger_reason or "missing_snapshot",
             "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
-            "minute_refetch_failure_reason": str(result.get("action") or "refetch_not_ready"),
-            "minute_refetch_failure_detail": str(result.get("question") or result.get("action") or "refetch_not_ready"),
-            "minute_refetch_runner_source": str(runner_source or ""),
+            "minute_refetch_failure_reason": primary_failure_reason or str(result.get("action") or "refetch_not_ready"),
+            "minute_refetch_failure_detail": primary_failure_detail or str(result.get("question") or result.get("action") or "refetch_not_ready"),
+            "minute_refetch_runner_source": runner_used_source,
+            "minute_refetch_fresh_runner_used": bool(fresh_runner_used),
             "minute_refetch_produced_fresh_snapshot": False,
+            "minute_cache_fallback_used": False,
+            "minute_cache_fallback_source": "",
         }
         return state
 
-    data = result.get("data") if isinstance(result, dict) else None
-    rows = data.get("rows") if isinstance(data, dict) and isinstance(data.get("rows"), list) else []
-    normalized_rows = [dict(row) for row in rows if isinstance(row, dict)]
     if not normalized_rows:
+        history_rows, history_meta = _recover_monitor_minute_rows_from_history(
+            state,
+            symbol=sym,
+            now_epoch=int(now_epoch or 0),
+            timeframe_minutes=int(max(1, int(timeframe_minutes or 1))),
+        )
+        cache_rows: List[Dict[str, Any]] = []
+        cache_meta: Dict[str, Any] = {}
+        if not history_rows:
+            cache_rows, cache_meta = _recover_monitor_minute_rows_from_persisted_cache(
+                state,
+                symbol=sym,
+                now_epoch=int(now_epoch or 0),
+                timeframe_minutes=int(max(1, int(timeframe_minutes or 1))),
+            )
+        if history_rows:
+            minute_root = dict(existing_root or {})
+            minute_root[sym] = list(history_rows)
+            state["minute_ohlcv_by_symbol"] = minute_root
+            state["monitor_minute_ohlcv_fetch"] = {
+                "source": "skill_results_history.minute_ohlcv",
+                "symbol": sym,
+                "timeframe_minutes": int(max(1, int(timeframe_minutes or 1))),
+                "row_count": int(len(history_rows)),
+                "latest_candle_ts": history_meta.get("latest_candle_ts"),
+                "minute_snapshot_age_minutes": history_meta.get("minute_snapshot_age_minutes"),
+                "minute_snapshot_was_stale": bool(history_meta.get("minute_snapshot_was_stale")),
+                "minute_refetch_attempted": True,
+                "minute_refetch_succeeded": False,
+                "minute_refetch_reason": refetch_trigger_reason or "missing_snapshot",
+                "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
+                "minute_refetch_failure_reason": "refetch_empty_rows",
+                "minute_refetch_failure_detail": "refetch_empty_rows",
+                "minute_refetch_runner_source": runner_used_source,
+                "minute_refetch_fresh_runner_used": bool(fresh_runner_used),
+                "minute_refetch_produced_fresh_snapshot": False,
+                "minute_cache_fallback_used": True,
+                "minute_cache_fallback_source": "skill_results_history.minute_ohlcv",
+            }
+            return state
+        if cache_rows:
+            minute_root = dict(existing_root or {})
+            minute_root[sym] = list(cache_rows)
+            state["minute_ohlcv_by_symbol"] = minute_root
+            state["monitor_minute_ohlcv_fetch"] = {
+                "source": "persisted_state.recent_minute_ohlcv_by_symbol",
+                "symbol": sym,
+                "timeframe_minutes": int(max(1, int(timeframe_minutes or 1))),
+                "row_count": int(len(cache_rows)),
+                "latest_candle_ts": cache_meta.get("latest_candle_ts"),
+                "minute_snapshot_age_minutes": cache_meta.get("minute_snapshot_age_minutes"),
+                "minute_snapshot_was_stale": bool(cache_meta.get("minute_snapshot_was_stale")),
+                "minute_refetch_attempted": True,
+                "minute_refetch_succeeded": False,
+                "minute_refetch_reason": refetch_trigger_reason or "missing_snapshot",
+                "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
+                "minute_refetch_failure_reason": "refetch_empty_rows",
+                "minute_refetch_failure_detail": "refetch_empty_rows",
+                "minute_refetch_runner_source": runner_used_source,
+                "minute_refetch_fresh_runner_used": bool(fresh_runner_used),
+                "minute_refetch_produced_fresh_snapshot": False,
+                "minute_cache_fallback_used": True,
+                "minute_cache_fallback_source": "persisted_state.recent_minute_ohlcv_by_symbol",
+            }
+            return state
         state["monitor_minute_ohlcv_fetch"] = {
             "source": "state.minute_ohlcv_by_symbol" if existing_rows else "none",
             "symbol": sym,
@@ -428,8 +844,11 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
             "minute_refetch_trigger_reason": refetch_trigger_reason or "missing_snapshot",
             "minute_refetch_failure_reason": "refetch_empty_rows",
             "minute_refetch_failure_detail": "refetch_empty_rows",
-            "minute_refetch_runner_source": str(runner_source or ""),
+            "minute_refetch_runner_source": runner_used_source,
+            "minute_refetch_fresh_runner_used": bool(fresh_runner_used),
             "minute_refetch_produced_fresh_snapshot": False,
+            "minute_cache_fallback_used": False,
+            "minute_cache_fallback_source": "",
         }
         return state
 
@@ -437,6 +856,14 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
     minute_root[sym] = normalized_rows
     state["minute_ohlcv_by_symbol"] = minute_root
     latest_candle_ts = _latest_row_ts(normalized_rows)
+    _remember_monitor_minute_rows_in_persisted_cache(
+        state,
+        symbol=sym,
+        rows=list(normalized_rows),
+        latest_candle_ts=latest_candle_ts,
+        timeframe_minutes=int(max(1, int(timeframe_minutes or 1))),
+        now_epoch=int(now_epoch or 0),
+    )
     final_stale_reason = _minute_snapshot_stale_reason(
         latest_candle_ts=latest_candle_ts,
         now_epoch=int(now_epoch or 0),
@@ -459,8 +886,11 @@ def _ensure_monitor_minute_ohlcv_for_symbol(
         "minute_refetch_trigger_reason": refetch_trigger_reason,
         "minute_refetch_failure_reason": "",
         "minute_refetch_failure_detail": "",
-        "minute_refetch_runner_source": str(runner_source or ""),
+        "minute_refetch_runner_source": runner_used_source,
+        "minute_refetch_fresh_runner_used": bool(fresh_runner_used),
         "minute_refetch_produced_fresh_snapshot": not bool(final_stale_reason),
+        "minute_cache_fallback_used": False,
+        "minute_cache_fallback_source": "",
         "previous_latest_candle_ts": existing_latest_candle_ts,
     }
     return state
@@ -609,7 +1039,7 @@ def _resolve_entry_closeout_window_guard(
     policy: Dict[str, Any],
 ) -> Dict[str, Any]:
     exit_policy = _resolve_exit_policy_config(state, policy)
-    market_ctx = state.get("market_context") if isinstance(state.get("market_context"), dict) else {}
+    market_ctx = _ensure_entry_market_context_clock_fields(state)
     minutes_to_close = _optional_float(market_ctx.get("minutes_to_close"))
     use_eod_flat = bool(exit_policy.get("use_eod_flat"))
     cutoff_min = int(_to_float(exit_policy.get("eod_flat_cutoff_min") or 10))
@@ -2448,6 +2878,7 @@ def _evaluate_monitor_entry_candidate(
     post_exit_cooldown_sec: int,
     entry_cooldown_map: Dict[str, Any],
     now_epoch_for_entry: int,
+    prefer_fresh_minute_runner: bool = False,
 ) -> Dict[str, Any]:
     symbol = _norm_symbol(selected.get("symbol"))
     qty = 1
@@ -2501,14 +2932,10 @@ def _evaluate_monitor_entry_candidate(
             buy_blocked_post_exit_cooldown = True
             post_exit_cooldown_remaining_sec = remaining
 
-    monitor_memory_bias = (
-        dict(strategy_monitor_policy.get("monitor_memory_bias") or {})
-        if isinstance(strategy_monitor_policy.get("monitor_memory_bias"), dict) and strategy_monitor_policy.get("monitor_memory_bias")
-        else dict(commander_context.get("monitor_memory_bias") or {})
-        if isinstance(commander_context.get("monitor_memory_bias"), dict) and commander_context.get("monitor_memory_bias")
-        else dict(state.get("monitor_memory_bias") or {})
-        if isinstance(state.get("monitor_memory_bias"), dict)
-        else {}
+    monitor_memory_bias = _resolve_monitor_memory_bias_payload(
+        strategy_monitor_policy=strategy_monitor_policy,
+        commander_context=commander_context,
+        state=state,
     )
     monitor_memory_bias_summary = summarize_monitor_memory_bias(monitor_memory_bias)
     entry_received_policy = MonitorEntryPolicy.from_mapping(entry_policy_input or monitor_policy).to_dict()
@@ -2523,6 +2950,7 @@ def _evaluate_monitor_entry_candidate(
         symbol=symbol,
         timeframe_minutes=int(entry_policy.timeframe_minutes or 1),
         now_epoch=now_epoch_for_entry,
+        prefer_fresh_runner=prefer_fresh_minute_runner,
     )
     entry_rows = []
     minute_ohlcv_by_symbol, minute_ohlcv_meta = extract_minute_ohlcv_by_symbol(state)
@@ -2610,6 +3038,8 @@ def _evaluate_monitor_entry_candidate(
     entry_metrics["minute_refetch_produced_fresh_snapshot"] = bool(
         minute_fetch_meta.get("minute_refetch_produced_fresh_snapshot")
     )
+    entry_metrics["minute_cache_fallback_used"] = bool(minute_fetch_meta.get("minute_cache_fallback_used"))
+    entry_metrics["minute_cache_fallback_source"] = str(minute_fetch_meta.get("minute_cache_fallback_source") or "")
     entry_info["metrics"] = entry_metrics
     entry_info["minute_source_meta"] = dict(minute_ohlcv_meta or {})
     entry_info["minute_fetch_meta"] = minute_fetch_meta
@@ -2726,6 +3156,12 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(strategy_frame.get("commander_context"), dict)
         else {}
     )
+    monitor_memory_bias = _resolve_monitor_memory_bias_payload(
+        strategy_monitor_policy=strategy_monitor_policy,
+        commander_context=commander_context,
+        state=state,
+    )
+    monitor_memory_bias_summary = summarize_monitor_memory_bias(monitor_memory_bias)
     strategist_plan = (
         dict(strategy_frame.get("strategist_plan") or {})
         if isinstance(strategy_frame.get("strategist_plan"), dict)
@@ -2792,6 +3228,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     entry_applied_policy: Dict[str, Any] = {}
     entry_received_policy: Dict[str, Any] = {}
     effective_policy_trace: Dict[str, Any] = {}
+    hold_bias_result: Dict[str, Any] = {"controls": {}, "applied": False, "deltas": []}
+    exit_bias_result: Dict[str, Any] = {"policy": {}, "applied": False, "deltas": []}
     entry_symbol = _norm_symbol(selected.get("symbol")) if isinstance(selected, dict) and selected.get("symbol") else ""
     entry_cooldown_map = state.get("_monitor_entry_cooldown_until")
     if not isinstance(entry_cooldown_map, dict):
@@ -2895,6 +3333,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             post_exit_cooldown_sec=post_exit_cooldown_sec,
             entry_cooldown_map=entry_cooldown_map,
             now_epoch_for_entry=now_epoch_for_entry,
+            prefer_fresh_minute_runner=False,
         )
         state = top_pick_result.get("state") if isinstance(top_pick_result.get("state"), dict) else state
         selected = dict(top_pick_result.get("selected") or selected)
@@ -2951,6 +3390,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     post_exit_cooldown_sec=post_exit_cooldown_sec,
                     entry_cooldown_map=entry_cooldown_map,
                     now_epoch_for_entry=now_epoch_for_entry,
+                    prefer_fresh_minute_runner=True,
                 )
                 state = runner_result.get("state") if isinstance(runner_result.get("state"), dict) else state
                 entry_cooldown_map = dict(runner_result.get("entry_cooldown_map") or entry_cooldown_map)
@@ -3099,6 +3539,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         min_hold_sec = int(frame_applied.get("min_hold_sec") or min_hold_sec)
         sell_cooldown_sec = int(frame_applied.get("sell_cooldown_sec") or sell_cooldown_sec)
         confirm_ticks = int(frame_applied.get("confirm_ticks") or confirm_ticks)
+        hold_bias_result = apply_monitor_memory_bias_to_hold_controls(
+            min_hold_sec=min_hold_sec,
+            sell_cooldown_sec=sell_cooldown_sec,
+            confirm_ticks=confirm_ticks,
+            monitor_memory_bias=monitor_memory_bias,
+        )
+        hold_controls = dict(hold_bias_result.get("controls") or {})
+        min_hold_sec = int(hold_controls.get("min_hold_sec") or min_hold_sec)
+        sell_cooldown_sec = int(hold_controls.get("sell_cooldown_sec") or sell_cooldown_sec)
+        confirm_ticks = int(hold_controls.get("confirm_ticks") or confirm_ticks)
         exit_policy_harmonized = _harmonize_exit_policy_with_monitor_guards(
             exit_policy_base=exit_policy_base,
             min_hold_sec=min_hold_sec,
@@ -3134,6 +3584,21 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             or "monitor_effective_exit_policy"
         )
         exit_policy_guard_adjustments.extend(list(exit_policy_strategy.get("adjustments") or []))
+        exit_bias_result = apply_monitor_memory_bias_to_exit_policy(
+            exit_policy=effective_exit_policy_base,
+            monitor_memory_bias=monitor_memory_bias,
+        )
+        effective_exit_policy_base = dict(exit_bias_result.get("policy") or effective_exit_policy_base)
+        if bool(hold_bias_result.get("applied")):
+            for row in list(hold_bias_result.get("deltas") or [])[:6]:
+                exit_policy_guard_adjustments.append(
+                    f"commander_memory_bias_hold:{str((row or {}).get('field') or '')}:{(row or {}).get('from')}->{(row or {}).get('to')}"
+                )
+        if bool(exit_bias_result.get("applied")):
+            for row in list(exit_bias_result.get("deltas") or [])[:6]:
+                exit_policy_guard_adjustments.append(
+                    f"commander_memory_bias_exit:{str((row or {}).get('field') or '')}:{(row or {}).get('from')}->{(row or {}).get('to')}"
+                )
         symbol = _select_exit_symbol(
             selected_symbol,
             pos_map,
@@ -3401,6 +3866,10 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "trade_aggressiveness": str(frame_applied.get("trade_aggressiveness") or ""),
             "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
             "exit_policy_guard_adjustments": list(exit_policy_guard_adjustments),
+            "monitor_memory_bias_hold_applied": bool(hold_bias_result.get("applied")),
+            "monitor_memory_bias_hold_deltas": list(hold_bias_result.get("deltas") or []),
+            "monitor_memory_bias_exit_applied": bool(exit_bias_result.get("applied")),
+            "monitor_memory_bias_exit_deltas": list(exit_bias_result.get("deltas") or []),
             "active_exit_axis": _friendly_exit_axis(str(decision.get("reason") or monitor_reason or "hold")),
             "watch_axes": _monitor_watch_axes(decision.get("thresholds") if isinstance(decision.get("thresholds"), dict) else {}),
             "eod_carry_evaluated": bool(eod_carry.get("evaluated")),

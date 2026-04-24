@@ -8,6 +8,8 @@ _CASCADE_ELIGIBLE_REASONS = {
     "too_extended_from_vwap",
     "breakout_not_ready",
     "volume_insufficient",
+    "below_vwap_reclaim_not_ready",
+    "pullback_below_vwap_reclaim_not_ready",
 }
 
 
@@ -44,6 +46,7 @@ def build_entry_candidate_cascade_plan(
         "top_pick_symbol": selected_sym,
         "runner_up_symbols": [],
         "skipped": [],
+        "warnings": [],
         "fallback_used": False,
         "fallback_to_symbol": "",
     }
@@ -71,10 +74,13 @@ def build_entry_candidate_cascade_plan(
         symbol = normalize_symbol(row.get("symbol") or "")
         if not symbol or symbol == selected_sym:
             continue
+        row_out = dict(row)
         if symbol in missing_quote_symbols:
-            plan["skipped"].append({"symbol": symbol, "reason": "quote_metrics_missing"})
-            continue
-        runner_rows.append(row)
+            row_out["_quote_metrics_missing"] = True
+            plan["warnings"].append(
+                {"symbol": symbol, "reason": "quote_metrics_missing_monitor_fallback_allowed"}
+            )
+        runner_rows.append(row_out)
         if len(runner_rows) >= max(0, int(max_runner_ups)):
             break
 

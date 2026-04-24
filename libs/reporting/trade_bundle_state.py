@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, MutableMapping, Optional
 
+from libs.reporting.trade_execution_truth_merge import merge_preferred_execution_details
 from libs.reporting.trade_story_pipeline import build_lifecycle_bundle, safe_int
 
 
@@ -408,7 +409,10 @@ def build_live_trade_bundle_payloads(
     entry_payload = dict(lifecycle_obj.get("entry") or {})
     holding_payload = dict(lifecycle_obj.get("holding") or {})
     exit_payload = dict(lifecycle_obj.get("exit") or {})
-    entry_payload.setdefault("execution_details", dict(entry_execution_details))
+    entry_payload["execution_details"] = merge_preferred_execution_details(
+        entry_payload.get("execution_details"),
+        entry_execution_details,
+    )
     holding_payload.setdefault("hold_duration", holding_phase_observability.get("hold_duration"))
     holding_payload.setdefault("hold_duration_sec", holding_phase_observability.get("hold_duration_sec"))
     holding_payload.setdefault("holding_phase_summary", holding_phase_observability.get("holding_phase_summary"))
@@ -433,14 +437,20 @@ def build_live_trade_bundle_payloads(
         "hold_evidence_thin",
         bool(holding_phase_observability.get("hold_evidence_thin")),
     )
-    exit_payload.setdefault("execution_details", dict(exit_execution_details))
+    exit_payload["execution_details"] = merge_preferred_execution_details(
+        exit_payload.get("execution_details"),
+        exit_execution_details,
+    )
 
     normalized_lifecycle = dict(lifecycle_obj)
     normalized_lifecycle["entry"] = dict(entry_payload)
     normalized_lifecycle["holding"] = dict(holding_payload)
     normalized_lifecycle["exit"] = dict(exit_payload)
     normalized_lifecycle["summary"] = dict(summary_obj)
-    normalized_lifecycle["execution_details"] = dict(execution_details)
+    normalized_lifecycle["execution_details"] = merge_preferred_execution_details(
+        normalized_lifecycle.get("execution_details"),
+        execution_details,
+    )
     normalized_lifecycle["same_day_reporter_linkage"] = dict(same_day_reporter_linkage)
     normalized_lifecycle["failure_classification"] = dict(failure_classification)
     normalized_lifecycle["run_ids_all"] = [str(x or "") for x in list(linked_run_ids or []) if str(x or "").strip()]

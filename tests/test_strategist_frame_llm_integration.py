@@ -670,6 +670,113 @@ def test_strategist_reporter_feedback_falls_back_to_metrics_when_state_packet_mi
     assert (reporter_feedback.get("route_analysis") or {}).get("monitor_only_ratio") == 0.6
 
 
+def test_strategist_reporter_feedback_falls_back_to_reporter_analysis_when_metrics_missing(monkeypatch, tmp_path):
+    reports_root = tmp_path / "reports"
+    day = "2026-03-20"
+    reporter_dir = reports_root / "dev" / "analysis" / "reporter_analysis"
+    reporter_dir.mkdir(parents=True, exist_ok=True)
+    (reporter_dir / f"reporter_analysis_{day}.json").write_text(
+        json.dumps(
+            {
+                "day": day,
+                "generated_at": "2026-03-20T09:11:00+00:00",
+                "monitor_evaluation": {
+                    "monitor_reason_top": {
+                        "too_extended_from_vwap": 8,
+                        "volume_insufficient": 4,
+                    }
+                },
+                "supervisor_activity": {
+                    "blocked_reason_top": {
+                        "noop_intent_skipped": 11
+                    }
+                },
+                "operator_facing_summary": {
+                    "recommended_actions": [
+                        "Reduce extended-entry tolerance before broadening selection."
+                    ]
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "false")
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["reports_root"] = str(reports_root)
+    state["day"] = day
+
+    out = strategist_node(state)
+
+    reporter_feedback = out.get("reporter_feedback_packet") or {}
+    assert reporter_feedback.get("available") is True
+    assert reporter_feedback.get("status") == "ok"
+    assert reporter_feedback.get("consumed") is True
+    assert reporter_feedback.get("feedback_gate_reason") == "auto_accepted"
+    assert reporter_feedback.get("source_available") is True
+    assert reporter_feedback.get("source_reports", {}).get("reporter_analysis") is True
+    assert (reporter_feedback.get("blocker_analysis") or [])[0]["blocker"] == "noop_intent_skipped"
+
+
+def test_strategist_reporter_feedback_falls_back_to_same_day_trade_reports_when_reports_exist(monkeypatch, tmp_path):
+    reports_root = tmp_path / "reports"
+    day = "2026-04-23"
+    trade_dir = reports_root / "trades" / day / "TRD_20260423_005930_01" / "reports"
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    (trade_dir / "ai_trade_report.json").write_text(
+        json.dumps(
+            {
+                "trade_id": "TRD_20260423_005930_01",
+                "symbol": "005930",
+                "truth_surface": {
+                    "status": {
+                        "symbol": "005930",
+                        "status": "closed",
+                        "exit_reason": "SELL was triggered because peak_drawdown.",
+                    },
+                    "price": {
+                        "broker_buy_price": 224500.0,
+                        "broker_fill_price": 226000.0,
+                    },
+                    "pnl": {
+                        "value": -522.0,
+                        "pct": -0.0023,
+                        "broker_fee": 1570,
+                        "broker_tax": 452,
+                    },
+                    "availability": {
+                        "broker_fill_present": True,
+                        "broker_pnl_present": True,
+                    },
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "false")
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["reports_root"] = str(reports_root)
+    state["day"] = day
+
+    out = strategist_node(state)
+
+    reporter_feedback = out.get("reporter_feedback_packet") or {}
+    assert reporter_feedback.get("available") is True
+    assert reporter_feedback.get("status") == "ok"
+    assert reporter_feedback.get("consumed") is True
+    assert reporter_feedback.get("feedback_gate_reason") == "auto_accepted"
+    assert reporter_feedback.get("source_available") is True
+    assert reporter_feedback.get("source_reports", {}).get("trade_reports") is True
+    assert (reporter_feedback.get("trade_report_analysis") or {}).get("closed_trade_count") == 1
+
+
 def test_strategist_reporter_feedback_mode_auto_consumes_fresh_relevant_packet(monkeypatch):
     monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
     monkeypatch.setenv("DRY_RUN", "false")
@@ -756,7 +863,7 @@ def test_strategist_reporter_feedback_mode_auto_ignores_stale_packet(monkeypatch
     assert reporter_feedback.get("feedback_gate_reason") == "stale"
 
 
-def test_strategist_reporter_feedback_mode_auto_ignores_missing_packet(monkeypatch):
+def test_strategist_reporter_feedback_mode_auto_ignores_missing_packet(monkeypatch, tmp_path):
     monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
     monkeypatch.setenv("DRY_RUN", "false")
     monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterOk)
@@ -769,6 +876,8 @@ def test_strategist_reporter_feedback_mode_auto_ignores_missing_packet(monkeypat
             "reporter_feedback_mode_source": "commander_applied_policy",
         }
     }
+    state["reports_root"] = str(tmp_path / "reports")
+    state["day"] = "2026-04-30"
 
     out = strategist_node(state)
 
@@ -777,10 +886,10 @@ def test_strategist_reporter_feedback_mode_auto_ignores_missing_packet(monkeypat
     assert strategist_output.get("themes") == ["semiconductor", "ai"]
     reporter_feedback = strategist_output.get("reporter_feedback_packet") or {}
     assert reporter_feedback.get("available") is False
-    assert reporter_feedback.get("status") == "missing"
+    assert reporter_feedback.get("status") == "auto_ignored"
     assert reporter_feedback.get("reporter_feedback_mode") == "auto"
     assert reporter_feedback.get("reporter_feedback_mode_source") == "commander_applied_policy"
-    assert reporter_feedback.get("feedback_gate_reason") == "no_packet"
+    assert reporter_feedback.get("feedback_gate_reason") == "source_unavailable"
 
 
 def test_strategist_prefers_commander_canonical_mode_over_state_fallback(monkeypatch):

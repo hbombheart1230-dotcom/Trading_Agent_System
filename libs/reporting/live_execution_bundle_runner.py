@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 from libs.core.settings import load_env_file
 from libs.core.symbols import normalize_symbol
 from libs.llm.model_names import normalize_openrouter_model_name
+from libs.runtime.windows_subprocess import background_creationflags, popen_hidden, run_hidden
 from libs.reporting.agent_pipeline_trace import generate_agent_pipeline_trace_report
 from libs.reporting.intraday_trade_reports import (
     apply_live_bundle_backfill,
@@ -1148,13 +1149,13 @@ def _spawn_followup_background_job(
     env = dict(os.environ)
     env["INTRADAY_TRADE_REPORT_PARENT_SPAWN"] = "1"
     try:
-        proc = subprocess.Popen(  # noqa: S603
+        proc = popen_hidden(  # noqa: S603
             cmd,
+            background=True,
             cwd=str(ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
-            creationflags=_background_creationflags(),
         )
     except Exception as exc:
         _log_bundle_event(
@@ -1183,6 +1184,9 @@ def _spawn_followup_background_job(
             "role": role,
             "queued_run_id": target_run_id,
             "queued_symbol": target_symbol,
+            "spawn_command": list(cmd),
+            "spawn_cwd": str(ROOT),
+            "spawn_creationflags": int(_background_creationflags()),
         },
     )
     return {
@@ -1266,7 +1270,7 @@ def _active_background_process(*, role: str) -> Dict[str, Any]:
                 "Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*run_live_execution_bundle_report.py*' } | "
                 "Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine | ConvertTo-Json -Compress"
             )
-            completed = subprocess.run(
+            completed = run_hidden(
                 ["powershell", "-NoProfile", "-Command", probe],
                 capture_output=True,
                 text=True,
@@ -1317,7 +1321,7 @@ def _active_background_process(*, role: str) -> Dict[str, Any]:
                     "age_sec": max(0.0, float(time.time()) - creation_epoch) if creation_epoch > 0 else None,
                 }
         else:
-            completed = subprocess.run(
+            completed = run_hidden(
                 ["ps", "-eo", "pid=,ppid=,args="],
                 capture_output=True,
                 text=True,
@@ -1394,7 +1398,7 @@ def _terminate_process_tree(pid: int) -> bool:
         return False
     try:
         if os.name == "nt":
-            completed = subprocess.run(
+            completed = run_hidden(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
@@ -1411,10 +1415,7 @@ def _terminate_process_tree(pid: int) -> bool:
 
 
 def _background_creationflags() -> int:
-    flags = 0
-    for name in ("CREATE_NO_WINDOW", "DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
-        flags |= int(getattr(subprocess, name, 0) or 0)
-    return flags
+    return int(background_creationflags())
 
 
 def _lock_timestamp_epoch(payload: Dict[str, Any], *, stale_after_sec: float) -> float:
@@ -3772,21 +3773,52 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "lifecycle_status": str(status or ""),
                 },
             )
-            generation_result = execute_ai_trade_report_generation(
-                trade_story_input=dict(trade_story_input or {}),
-                diagnostics=dict(diagnostics),
-                deterministic_report=dict(deterministic_report),
-                configured_report_model=configured_report_model,
-                ai_report_builder=build_ai_trade_report,
-                model=str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else configured_report_model,
-                temperature=args.trade_report_ai_temperature,
-                max_tokens=args.trade_report_ai_max_tokens,
-            )
-            diagnostics = dict(generation_result.get("diagnostics") or diagnostics)
-            trade_report = dict(generation_result.get("trade_report") or deterministic_report)
-            ai_trade_report_llm_artifact = dict(
-                generation_result.get("ai_trade_report_llm_artifact") or {}
-            )
+            try:
+                generation_result = execute_ai_trade_report_generation(
+                    trade_story_input=dict(trade_story_input or {}),
+                    diagnostics=dict(diagnostics),
+                    deterministic_report=dict(deterministic_report),
+                    configured_report_model=configured_report_model,
+                    ai_report_builder=build_ai_trade_report,
+                    model=str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else configured_report_model,
+                    temperature=args.trade_report_ai_temperature,
+                    max_tokens=args.trade_report_ai_max_tokens,
+                )
+                diagnostics = dict(generation_result.get("diagnostics") or diagnostics)
+                trade_report = dict(generation_result.get("trade_report") or deterministic_report)
+                ai_trade_report_llm_artifact = dict(
+                    generation_result.get("ai_trade_report_llm_artifact") or {}
+                )
+            except Exception as exc:
+                diagnostics = dict(diagnostics or {})
+                diagnostics["ai_trade_report_status"] = "error"
+                diagnostics["report_status"] = "available"
+                diagnostics["report_reason_code"] = "llm_generation_failed"
+                diagnostics["report_reason_human"] = _report_reason_human("llm_generation_failed")
+                diagnostics["report_generation_reason"] = str(diagnostics.get("report_reason_human") or "")
+                diagnostics["next_expected_step"] = _report_next_step("llm_generation_failed")
+                diagnostics["last_error_message"] = _sanitize_error_message(exc)
+                trade_report = dict(deterministic_report)
+                ai_trade_report_llm_artifact = build_llm_response_artifact(
+                    component="ai_trade_report",
+                    run_id=str(anchor_run_id or ""),
+                    trade_id=trade_id,
+                    story_id=trade_id,
+                    day=day,
+                    status="error",
+                    attempts=[],
+                    parsed_output={},
+                    model_info={
+                        "provider": "OpenRouter",
+                        "model": str(args.trade_report_ai_model).strip() if args.trade_report_ai_model else configured_report_model,
+                    },
+                    latency_ms=0,
+                    meta={
+                        "reason_code": "llm_generation_failed",
+                        "reason": _sanitize_error_message(exc),
+                        "exception_class": exc.__class__.__name__,
+                    },
+                )
             llm_meta = (
                 ai_trade_report_llm_artifact.get("meta")
                 if isinstance(ai_trade_report_llm_artifact.get("meta"), dict)

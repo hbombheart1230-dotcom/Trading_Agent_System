@@ -27,6 +27,12 @@ Current limitations:
 - adjustment size is intentionally capped and conservative
 - only a narrow rule set is active
 - `monitor_memory_bias` remains separate and is now implemented in its initial entry-policy-only form
+- Commander `policy_signals` now affect bias strength:
+  - `preferred_risk_posture`
+  - `system_health`
+  - `scanner_status`
+  - `monitor_only_ratio`
+  - `report_focus_targets`
 
 ## Inputs
 
@@ -119,6 +125,35 @@ The adapter may not call an LLM.
 ### Rule 4
 
 Each applied delta must preserve a machine-readable reason.
+
+### Rule 5
+
+Commander posture signals may scale bias strength, but only conservatively.
+
+Examples:
+
+- defensive / RED / scanner-fit pressure:
+  - more positive `top_value`
+  - more negative `top_change_rate`
+- scanner status weak or misaligned:
+  - stronger overextension penalty
+- guard-block focus:
+  - stronger volume-confirmation preference
+
+### Rule 6
+
+Approved `symbol_memory_packet` does not imply full-strength symbol bias.
+
+Current symbol-side scaling inputs:
+
+- `evidence_strength`
+- `recency_days`
+
+Current effect:
+
+- strong and fresh symbol memory keeps full symbol delta
+- moderate or aging symbol memory dampens symbol delta
+- stale symbol memory blocks symbol delta even if a caller misflags symbol override
 
 ## Anti-Pattern
 

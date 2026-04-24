@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from graphs.nodes.monitor_node import monitor_node
 from libs.runtime.monitor_memory_bias import (
+    apply_monitor_memory_bias_to_exit_policy,
+    apply_monitor_memory_bias_to_hold_controls,
     apply_monitor_memory_bias_to_entry_policy,
     build_monitor_memory_bias,
     summarize_monitor_memory_bias,
@@ -35,6 +37,8 @@ def test_build_monitor_memory_bias_surfaces_daily_and_symbol_rules() -> None:
     assert bias["entry_policy_delta"]["breakout_buffer_pct"] > 0.0
     assert bias["entry_policy_delta"]["volume_ratio_min"] > 0.0
     assert bias["entry_policy_delta"]["max_extended_from_vwap_pct"] < 0.0
+    assert bias["hold_policy_delta"]["confirm_ticks"] < 0
+    assert bias["exit_policy_delta"]["stop_loss_pct"] < 0.0
     summary = summarize_monitor_memory_bias(bias)
     assert summary["entry_delta_keys"] == [
         "breakout_buffer_pct",
@@ -69,6 +73,135 @@ def test_apply_monitor_memory_bias_to_entry_policy_clamps_and_marks_adjustments(
     assert float(policy["breakout_buffer_pct"]) == 0.03
     assert "commander_memory_bias" in tuple(policy.get("adjustments") or ())
     assert len(result["deltas"]) == 3
+
+
+def test_apply_monitor_memory_bias_to_hold_controls_reduces_confirm_ticks() -> None:
+    result = apply_monitor_memory_bias_to_hold_controls(
+        min_hold_sec=300,
+        sell_cooldown_sec=120,
+        confirm_ticks=2,
+        monitor_memory_bias={
+            "enabled": True,
+            "hold_policy_delta": {
+                "confirm_ticks": -1,
+            },
+        },
+    )
+
+    assert result["applied"] is True
+    assert result["controls"]["confirm_ticks"] == 1
+    assert result["deltas"] == [{"field": "confirm_ticks", "delta": -1, "from": 2, "to": 1}]
+
+
+def test_apply_monitor_memory_bias_to_exit_policy_tightens_and_clamps() -> None:
+    result = apply_monitor_memory_bias_to_exit_policy(
+        exit_policy={
+            "stop_loss_pct": 0.02,
+            "take_profit_pct": 0.05,
+            "trailing_stop_pct": 0.01,
+            "peak_drawdown_exit_pct": 0.015,
+            "vwap_breakdown_pct": 0.005,
+        },
+        monitor_memory_bias={
+            "enabled": True,
+            "exit_policy_delta": {
+                "stop_loss_pct": -0.01,
+                "take_profit_pct": -0.01,
+                "trailing_stop_pct": -0.005,
+                "peak_drawdown_exit_pct": -0.01,
+                "vwap_breakdown_pct": -0.01,
+            },
+        },
+    )
+
+    policy = result["policy"]
+    assert result["applied"] is True
+    assert float(policy["stop_loss_pct"]) == 0.01
+    assert float(policy["take_profit_pct"]) == 0.04
+    assert float(policy["trailing_stop_pct"]) == 0.005
+    assert float(policy["peak_drawdown_exit_pct"]) == 0.005
+    assert float(policy["vwap_breakdown_pct"]) == 0.0
+    assert len(result["deltas"]) == 5
+
+
+def test_build_monitor_memory_bias_uses_commander_policy_signals_for_extra_tightening() -> None:
+    bias = build_monitor_memory_bias(
+        commander_memory_policy={
+            "active_layers": ["daily"],
+            "monitor_bias_enabled": True,
+            "symbol_memory_override_enabled": False,
+            "policy_signals": {
+                "preferred_risk_posture": "defensive",
+                "system_health": "RED",
+                "monitor_status": "overtrading_risk",
+                "monitor_only_ratio": 0.82,
+                "report_focus_targets": ["exit_quality", "guard_blocks"],
+            },
+        },
+        memory_packets={
+            "daily_strategy_memory": {
+                "active": True,
+                "best_playbooks": ["defensive"],
+                "worst_playbooks": ["breakout"],
+                "recent_failures": ["breakout_chase_failed", "volume_confirmation_failed"],
+            },
+            "symbol_memory_packet": {},
+        },
+    )
+
+    assert bias["enabled"] is True
+    assert bias["risk_posture"] == "defensive"
+    assert float(bias["entry_policy_delta"]["breakout_buffer_pct"]) > 0.002
+    assert float(bias["entry_policy_delta"]["volume_ratio_min"]) > 0.03
+    assert float(bias["entry_policy_delta"]["max_extended_from_vwap_pct"]) < -0.005
+    assert float(bias["exit_policy_delta"]["stop_loss_pct"]) < -0.002
+    assert "commander_monitor_status:overtrading_risk" in list(bias.get("reason") or [])
+
+
+def test_build_monitor_memory_bias_keeps_full_symbol_deltas_for_strong_fresh_memory() -> None:
+    bias = build_monitor_memory_bias(
+        commander_memory_policy={
+            "active_layers": ["symbol"],
+            "monitor_bias_enabled": True,
+            "symbol_memory_override_enabled": True,
+        },
+        memory_packets={
+            "daily_strategy_memory": {},
+            "symbol_memory_packet": {
+                "dominant_playbook": "pullback",
+                "dominant_monitor_blocker": "below_vwap_reclaim_not_ready_and_volume",
+                "evidence_strength": "strong",
+                "recency_days": 1,
+            },
+        },
+    )
+
+    assert float(bias["entry_policy_delta"]["breakout_buffer_pct"]) == 0.0005
+    assert float(bias["entry_policy_delta"]["max_extended_from_vwap_pct"]) == -0.0025
+    assert float(bias["entry_policy_delta"]["volume_ratio_min"]) == 0.02
+    assert "symbol_evidence_strength:strong" in list(bias.get("reason") or [])
+
+
+def test_build_monitor_memory_bias_blocks_symbol_deltas_for_stale_memory_even_if_override_enabled() -> None:
+    bias = build_monitor_memory_bias(
+        commander_memory_policy={
+            "active_layers": ["symbol"],
+            "monitor_bias_enabled": True,
+            "symbol_memory_override_enabled": True,
+        },
+        memory_packets={
+            "daily_strategy_memory": {},
+            "symbol_memory_packet": {
+                "dominant_playbook": "pullback",
+                "dominant_monitor_blocker": "below_vwap_reclaim_not_ready_and_volume",
+                "evidence_strength": "strong",
+                "recency_days": 29,
+            },
+        },
+    )
+
+    assert dict(bias.get("entry_policy_delta") or {}) == {}
+    assert "symbol_recency_blocked" in list(bias.get("reason") or [])
 
 
 def test_monitor_node_applies_commander_monitor_memory_bias(monkeypatch) -> None:

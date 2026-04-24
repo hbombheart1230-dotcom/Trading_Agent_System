@@ -234,3 +234,134 @@ def test_attach_broker_day_pnl_uses_entry_broker_fill_to_disambiguate_same_symbo
     assert broker_day_pnl.get("authoritative") is True
     assert broker_day_pnl.get("match_mode") == "symbol_buy_sell_qty_exact"
     assert broker_day_pnl.get("realized_pnl") == -1956.0
+
+
+def test_attach_broker_day_pnl_uses_monitor_context_buy_estimate_for_repeated_symbol_rows() -> None:
+    class _FakeReader:
+        def get_day_realized_details(self, *, symbol: str = ""):
+            return {
+                "rows": [
+                    {
+                        "symbol": "005930",
+                        "filled_qty": 1,
+                        "filled_price": 218000,
+                        "buy_price": 217750,
+                        "realized_pnl": -1706.0,
+                        "pnl_ratio": -0.0078,
+                        "fee": 1520,
+                        "tax": 436,
+                    },
+                    {
+                        "symbol": "005930",
+                        "filled_qty": 1,
+                        "filled_price": 218000,
+                        "buy_price": 218000,
+                        "realized_pnl": -1956.0,
+                        "pnl_ratio": -0.0090,
+                        "fee": 1520,
+                        "tax": 436,
+                    },
+                ],
+                "source": "kiwoom.ka10077",
+            }
+
+        def get_account_profit_rate_rows(self):
+            return {"rows": [], "source": "kiwoom.ka10085"}
+
+    out = attach_broker_day_pnl(
+        {
+            "execution_details": {
+                "filled_qty": 1,
+                "filled_price": 218000,
+                "broker_truth_source": "kiwoom.order_status",
+            }
+        },
+        context={
+            "trade_day": "2026-04-21",
+            "action": "SELL",
+            "symbol": "005930",
+            "execution_details": {
+                "filled_qty": 1,
+                "filled_price": 218000,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+            "monitor_context": {
+                "current_price": 218000,
+                "account_pnl_ratio": 0.0,
+            },
+            "broker_day_pnl_reader": _FakeReader(),
+            "broker_day_truth_lookup_enabled": True,
+        },
+    )
+
+    broker_day_pnl = ((out.get("execution_context") or {}).get("broker_day_pnl") or {})
+    assert broker_day_pnl.get("authoritative") is True
+    assert broker_day_pnl.get("match_mode") == "symbol_qty_price_estimated_buy_anchor"
+    assert broker_day_pnl.get("buy_price") == 218000.0
+    assert broker_day_pnl.get("estimated_buy_price") == 218000.0
+
+
+def test_attach_broker_day_pnl_uses_monitor_average_price_anchor_for_repeated_symbol_rows() -> None:
+    class _FakeReader:
+        def get_day_realized_details(self, *, symbol: str = ""):
+            return {
+                "rows": [
+                    {
+                        "symbol": "005930",
+                        "filled_qty": 1,
+                        "filled_price": 218000,
+                        "buy_price": 217750,
+                        "realized_pnl": -1706.0,
+                        "pnl_ratio": -0.0078,
+                        "fee": 1520,
+                        "tax": 436,
+                    },
+                    {
+                        "symbol": "005930",
+                        "filled_qty": 1,
+                        "filled_price": 218000,
+                        "buy_price": 218000,
+                        "realized_pnl": -1956.0,
+                        "pnl_ratio": -0.0090,
+                        "fee": 1520,
+                        "tax": 436,
+                    },
+                ],
+                "source": "kiwoom.ka10077",
+            }
+
+        def get_account_profit_rate_rows(self):
+            return {"rows": [], "source": "kiwoom.ka10085"}
+
+    out = attach_broker_day_pnl(
+        {
+            "execution_details": {
+                "filled_qty": 1,
+                "filled_price": 218000,
+                "broker_truth_source": "kiwoom.order_status",
+            }
+        },
+        context={
+            "trade_day": "2026-04-21",
+            "action": "SELL",
+            "symbol": "005930",
+            "execution_details": {
+                "filled_qty": 1,
+                "filled_price": 218000,
+                "broker_truth_source": "kiwoom.order_status",
+            },
+            "monitor_context": {
+                "current_price": 218000,
+                "average_price": 217750,
+            },
+            "broker_day_pnl_reader": _FakeReader(),
+            "broker_day_truth_lookup_enabled": True,
+        },
+    )
+
+    broker_day_pnl = ((out.get("execution_context") or {}).get("broker_day_pnl") or {})
+    assert broker_day_pnl.get("authoritative") is True
+    assert broker_day_pnl.get("match_mode") == "symbol_qty_price_monitor_buy_anchor"
+    assert broker_day_pnl.get("buy_price") == 217750.0
+    assert broker_day_pnl.get("monitor_buy_anchor_source") == "position_average_price"
+    assert broker_day_pnl.get("monitor_buy_anchor_price") == 217750.0

@@ -25,8 +25,20 @@ Commander owns:
 - layer priority order
 - symbol-memory override gate
 - confidence and recency gates
+- support-context readiness gates
 - approval of scanner-memory bias
 - approval of monitor-memory bias
+
+Support-context readiness means Commander may use:
+
+- `route_source`
+- `report_focus_targets`
+- `scanner_status`
+- `monitor_status`
+- regime observation counts
+
+to decide whether a weekly/monthly layer is active enough to influence runtime,
+even when the raw packet exists.
 
 Commander should emit a single policy surface such as:
 

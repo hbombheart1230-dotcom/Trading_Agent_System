@@ -88,3 +88,14 @@ Now implemented:
   - Commander-owned
   - currently applies conservative `entry_policy_delta` only
   - surfaced in monitor artifacts and strategist visibility
+- `commander_memory_policy` now uses packet support context directly
+  - `route_source`
+  - `report_focus_targets`
+  - `scanner_status`
+  - `monitor_status`
+  - `regime observation`
+  when deciding whether weekly/monthly layers are active enough to matter
+  and when surfacing top-level `policy_signals`
+- session closeout buy-block now backfills `minutes_to_close` from runtime KST clock
+  - Commander closeout fast-path no longer depends on prepopulated `market_context.minutes_to_close`
+  - Monitor closeout window guard uses the same runtime-clock fallback, so post-15:20 BUYs are blocked even when market context is sparse

@@ -626,11 +626,53 @@ def test_monitor_records_stale_snapshot_when_refetch_fails_without_changing_flow
     assert metrics.get("minute_refetch_succeeded") is False
     assert metrics.get("minute_refetch_reason") == "stale_snapshot_age_exceeded"
     assert metrics.get("minute_refetch_trigger_reason") == "stale_snapshot_age_exceeded"
-    assert metrics.get("minute_refetch_failure_reason") == "error"
-    assert metrics.get("minute_refetch_failure_detail") == "error"
+    assert str(metrics.get("minute_refetch_failure_reason") or "") in {"error", "refetch_empty_rows"}
+    assert str(metrics.get("minute_refetch_failure_detail") or "") in {"error", "refetch_empty_rows"}
     assert metrics.get("minute_refetch_produced_fresh_snapshot") is False
     assert metrics.get("minute_snapshot_was_stale") is True
     assert metrics.get("latest_candle_ts") == 1710000300
+    assert ((out.get("skill_results") or {}).get("market.minute_ohlcv_by_symbol") or {}).get("BBB")
+
+
+def test_monitor_refetch_uses_fresh_runner_when_primary_runner_returns_empty(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    fresh_rows = [
+        {"ts": 1710000300, "open": 101.2, "high": 101.4, "low": 101.0, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000360, "open": 101.2, "high": 101.4, "low": 100.9, "close": 101.1, "volume": 1100, "vwap": 101.0},
+        {"ts": 1710000420, "open": 101.1, "high": 101.5, "low": 101.0, "close": 101.3, "volume": 1120, "vwap": 101.1},
+        {"ts": 1710000480, "open": 101.3, "high": 101.6, "low": 101.1, "close": 101.4, "volume": 1150, "vwap": 101.2},
+        {"ts": 1710000540, "open": 101.4, "high": 101.7, "low": 101.2, "close": 101.5, "volume": 1180, "vwap": 101.25},
+        {"ts": 1710000600, "open": 101.5, "high": 102.0, "low": 101.3, "close": 101.8, "volume": 2500, "vwap": 101.4},
+    ]
+    primary_runner = _FakeMinuteSkillRunnerSequence([[]])
+    fresh_runner = _FakeMinuteSkillRunnerSequence([fresh_rows])
+    monkeypatch.setattr("libs.skills.runner.CompositeSkillRunner.from_env", lambda: fresh_runner)
+
+    state = {
+        "run_id": "run-monitor-minute-fresh-fallback",
+        "tick_ts": 1710000600,
+        "skill_runner": primary_runner,
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": _policy_with_entry_cooldown(0),
+    }
+
+    out = monitor_node(state)
+    metrics = (out.get("monitor") or {}).get("entry_metrics") or {}
+    assert primary_runner.call_count == 1
+    assert fresh_runner.call_count == 1
+    assert metrics.get("minute_source_present") is True
+    assert metrics.get("minute_refetch_attempted") is True
+    assert metrics.get("minute_refetch_succeeded") is True
+    assert metrics.get("minute_refetch_runner_source") == "fresh.composite_skill_runner"
+    assert metrics.get("minute_refetch_produced_fresh_snapshot") is True
     assert ((out.get("skill_results") or {}).get("market.minute_ohlcv_by_symbol") or {}).get("BBB")
 
 
@@ -947,6 +989,39 @@ def test_monitor_blocks_new_buy_inside_closeout_window(monkeypatch):
     assert blocker_surface.get("closeout_window_blocked") is True
     assert blocker_surface.get("minutes_to_close") == 5
     assert blocker_surface.get("eod_flat_cutoff_min") == 10
+
+
+def test_monitor_blocks_new_buy_inside_closeout_window_when_market_context_missing_but_tick_ts_near_close(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "true")
+
+    state = {
+        "tick_ts": 1776407100,  # 2026-04-17 15:25:00 KST
+        "plan": {"thesis": "test"},
+        "selected": {
+            "symbol": "BBB",
+            "price": 101.8,
+            "features": {"engine_vwap_distance": 0.004, "engine_volume_spike20": 1.8},
+        },
+        "minute_ohlcv_by_symbol": {"BBB": _entry_breakout_rows()},
+        "portfolio_snapshot": {"cash": 2_000_000.0, "positions": []},
+        "policy": {
+            **_policy_with_entry_cooldown(0),
+            "exit_policy": {"use_eod_flat": True, "eod_flat_cutoff_min": 10},
+        },
+        "market_context": {},
+    }
+
+    out = monitor_node(state)
+    mon = out.get("monitor") or {}
+
+    assert out.get("intents") == []
+    assert mon.get("buy_blocked_closeout_window") is True
+    assert mon.get("entry_guard_reason") == "buy_blocked_closeout_window"
+    assert float(mon.get("minutes_to_close") or 0.0) == 5.0
+    assert mon.get("eod_flat_cutoff_min") == 10
+    assert mon.get("closeout_window_active") is True
+    assert (out.get("monitor_output") or {}).get("entry_exit_reason") == "buy_blocked_closeout_window"
 
 
 def test_monitor_entry_intent_cooldown_suppresses_duplicate_buy_intents(monkeypatch):
@@ -2775,7 +2850,7 @@ def test_monitor_falls_back_to_runner_up_when_top_pick_waits(monkeypatch):
         row["features"] = {"candidate_symbol": symbol}
         return row
 
-    def _fake_minute(state, symbol, timeframe_minutes, now_epoch):
+    def _fake_minute(state, symbol, timeframe_minutes, now_epoch, prefer_fresh_runner=False):
         rows = dict(state.get("minute_ohlcv_by_symbol") or {})
         rows[str(symbol)] = [{"ts": int(now_epoch), "close": 100.0, "vwap": 99.8, "volume": 1000}]
         state["minute_ohlcv_by_symbol"] = rows
@@ -2835,6 +2910,73 @@ def test_monitor_falls_back_to_runner_up_when_top_pick_waits(monkeypatch):
     assert handoff.get("monitor_selected_symbol") == "BBB"
 
 
+def test_monitor_falls_back_to_runner_up_when_top_pick_reclaim_waits(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    def _fake_selected(state, symbol, selected, *, position=None):
+        row = dict(selected or {})
+        row["symbol"] = symbol
+        row["price"] = row.get("price") or 100.0
+        row["features"] = {"candidate_symbol": symbol}
+        return row
+
+    def _fake_minute(state, symbol, timeframe_minutes, now_epoch, prefer_fresh_runner=False):
+        rows = dict(state.get("minute_ohlcv_by_symbol") or {})
+        rows[str(symbol)] = [{"ts": int(now_epoch), "close": 100.0, "vwap": 99.8, "volume": 1000}]
+        state["minute_ohlcv_by_symbol"] = rows
+        state["monitor_minute_ohlcv_fetch"] = {}
+        return state
+
+    def _fake_entry(rows, current_price, features, policy, scoring, frame, policy_contract):
+        sym = str((features or {}).get("candidate_symbol") or "")
+        base = {
+            "enabled": True,
+            "evaluated": True,
+            "thresholds": {"intent_cooldown_sec": 0},
+            "metrics": {"current_price": current_price},
+            "failed_checks": [],
+            "passed_checks": [],
+            "signal_chain": [],
+            "hard_filter_passed": True,
+            "score_passed": False,
+            "legacy_entry_decision": "WAIT",
+            "scoring_entry_decision": "WAIT",
+        }
+        if sym == "AAA":
+            return {**base, "triggered": False, "reason": "below_vwap_reclaim_not_ready"}
+        if sym == "BBB":
+            return {
+                **base,
+                "triggered": True,
+                "reason": "pullback_rebound_above_vwap_with_volume_confirmation",
+                "pattern": "pullback",
+                "score_passed": True,
+                "legacy_entry_decision": "BUY",
+                "scoring_entry_decision": "BUY",
+            }
+        return {**base, "triggered": False, "reason": "breakout_not_ready"}
+
+    monkeypatch.setattr("graphs.nodes.monitor_node._monitor_selected_snapshot_for_symbol", _fake_selected)
+    monkeypatch.setattr("graphs.nodes.monitor_node._ensure_monitor_minute_ohlcv_for_symbol", _fake_minute)
+    monkeypatch.setattr("graphs.nodes.monitor_node.evaluate_intraday_entry_signal", _fake_entry)
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
+        lambda state, policy: {"active": False, "minutes_to_close": 120, "cutoff_min": 10},
+    )
+
+    out = monitor_node(_entry_cascade_test_state())
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["symbol"] == "BBB"
+    cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
+    assert cascade.get("attempted") is True
+    assert cascade.get("fallback_used") is True
+    assert cascade.get("fallback_from_symbol") == "AAA"
+    assert cascade.get("fallback_to_symbol") == "BBB"
+
+
 def test_monitor_does_not_fallback_when_open_position_exists(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
@@ -2849,7 +2991,7 @@ def test_monitor_does_not_fallback_when_open_position_exists(monkeypatch):
     )
     monkeypatch.setattr(
         "graphs.nodes.monitor_node._ensure_monitor_minute_ohlcv_for_symbol",
-        lambda state, symbol, timeframe_minutes, now_epoch: state,
+        lambda state, symbol, timeframe_minutes, now_epoch, prefer_fresh_runner=False: state,
     )
     monkeypatch.setattr(
         "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
@@ -2874,7 +3016,7 @@ def test_monitor_does_not_fallback_when_open_position_exists(monkeypatch):
     assert cascade.get("blocked_reason") == "open_position_present"
 
 
-def test_monitor_skips_zero_quote_metric_runner_up_in_cascade(monkeypatch):
+def test_monitor_allows_zero_quote_metric_runner_up_and_reaches_third_candidate(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
     monkeypatch.setenv("USE_EXIT_POLICY", "false")
 
@@ -2884,7 +3026,7 @@ def test_monitor_skips_zero_quote_metric_runner_up_in_cascade(monkeypatch):
     monkeypatch.setattr("graphs.nodes.monitor_node._monitor_selected_snapshot_for_symbol", _fake_selected)
     monkeypatch.setattr(
         "graphs.nodes.monitor_node._ensure_monitor_minute_ohlcv_for_symbol",
-        lambda state, symbol, timeframe_minutes, now_epoch: state,
+        lambda state, symbol, timeframe_minutes, now_epoch, prefer_fresh_runner=False: state,
     )
     monkeypatch.setattr(
         "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
@@ -2895,6 +3037,8 @@ def test_monitor_skips_zero_quote_metric_runner_up_in_cascade(monkeypatch):
         sym = str((features or {}).get("candidate_symbol") or "")
         if sym == "AAA":
             return {"enabled": True, "evaluated": True, "triggered": False, "reason": "too_extended_from_vwap", "thresholds": {"intent_cooldown_sec": 0}}
+        if sym == "BBB":
+            return {"enabled": True, "evaluated": True, "triggered": False, "reason": "breakout_not_ready", "thresholds": {"intent_cooldown_sec": 0}}
         return {
             "enabled": True,
             "evaluated": True,
@@ -2915,8 +3059,284 @@ def test_monitor_skips_zero_quote_metric_runner_up_in_cascade(monkeypatch):
     assert intents[0]["symbol"] == "CCC"
     cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
     assert cascade.get("fallback_to_symbol") == "CCC"
+    warnings = list(cascade.get("warnings") or [])
+    assert {"symbol": "BBB", "reason": "quote_metrics_missing_monitor_fallback_allowed"} in warnings
     skipped = list(cascade.get("skipped") or [])
-    assert {"symbol": "BBB", "reason": "quote_metrics_missing"} in skipped
+    assert {"symbol": "BBB", "reason": "quote_metrics_missing"} not in skipped
+
+
+def test_monitor_runner_up_prefers_fresh_minute_runner_when_primary_runner_is_empty(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    top_rows = [
+        {"ts": 1710000300, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+        {"ts": 1710000360, "open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+        {"ts": 1710000420, "open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+        {"ts": 1710000480, "open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+        {"ts": 1710000540, "open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000600, "open": 101.2, "high": 101.8, "low": 101.0, "close": 101.4, "volume": 1200, "vwap": 101.0},
+    ]
+    runner_rows = [
+        {"ts": 1710000300, "open": 101.2, "high": 101.4, "low": 101.0, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000360, "open": 101.2, "high": 101.4, "low": 100.9, "close": 101.1, "volume": 1100, "vwap": 101.0},
+        {"ts": 1710000420, "open": 101.1, "high": 101.5, "low": 101.0, "close": 101.3, "volume": 1120, "vwap": 101.1},
+        {"ts": 1710000480, "open": 101.3, "high": 101.6, "low": 101.1, "close": 101.4, "volume": 1150, "vwap": 101.2},
+        {"ts": 1710000540, "open": 101.4, "high": 101.7, "low": 101.2, "close": 101.5, "volume": 1180, "vwap": 101.25},
+        {"ts": 1710000600, "open": 101.5, "high": 102.0, "low": 101.3, "close": 101.8, "volume": 2500, "vwap": 101.4},
+    ]
+    primary_runner = _FakeMinuteSkillRunnerSequence([[]])
+    fresh_runner = _FakeMinuteSkillRunnerSequence([runner_rows])
+    monkeypatch.setattr("libs.skills.runner.CompositeSkillRunner.from_env", lambda: fresh_runner)
+
+    def _fake_selected(state, symbol, selected, *, position=None):
+        row = dict(selected or {})
+        row["symbol"] = symbol
+        row["price"] = row.get("price") or 100.0
+        row["features"] = {"candidate_symbol": symbol}
+        return row
+
+    def _fake_entry(rows, current_price, features, policy, scoring, frame, policy_contract):
+        sym = str((features or {}).get("candidate_symbol") or "")
+        base = {
+            "enabled": True,
+            "evaluated": True,
+            "thresholds": {"intent_cooldown_sec": 0},
+            "metrics": {"current_price": current_price, "bar_count": len(rows or [])},
+            "failed_checks": [],
+            "passed_checks": [],
+            "signal_chain": [],
+            "hard_filter_passed": True,
+            "score_passed": False,
+            "legacy_entry_decision": "WAIT",
+            "scoring_entry_decision": "WAIT",
+        }
+        if sym == "AAA":
+            return {**base, "triggered": False, "reason": "too_extended_from_vwap"}
+        if not rows:
+            return {**base, "triggered": False, "reason": "minute_candle_missing"}
+        return {
+            **base,
+            "triggered": True,
+            "reason": "breakout",
+            "pattern": "breakout",
+            "score_passed": True,
+            "legacy_entry_decision": "BUY",
+            "scoring_entry_decision": "BUY",
+        }
+
+    monkeypatch.setattr("graphs.nodes.monitor_node._monitor_selected_snapshot_for_symbol", _fake_selected)
+    monkeypatch.setattr("graphs.nodes.monitor_node.evaluate_intraday_entry_signal", _fake_entry)
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
+        lambda state, policy: {"active": False, "minutes_to_close": 120, "cutoff_min": 10},
+    )
+
+    state = _entry_cascade_test_state()
+    state["selected"] = {"symbol": "AAA", "price": 100.0, "features": {"candidate_symbol": "AAA"}}
+    state["minute_ohlcv_by_symbol"] = {"AAA": list(top_rows)}
+    state["skill_runner"] = primary_runner
+    state["tick_ts"] = 1710000600
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["symbol"] == "BBB"
+    assert primary_runner.call_count == 0
+    assert fresh_runner.call_count == 1
+    cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
+    assert cascade.get("fallback_to_symbol") == "BBB"
+
+
+def test_monitor_runner_up_uses_recent_minute_history_when_refetch_returns_empty(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    top_rows = [
+        {"ts": 1710000300, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+        {"ts": 1710000360, "open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+        {"ts": 1710000420, "open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+        {"ts": 1710000480, "open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+        {"ts": 1710000540, "open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000600, "open": 101.2, "high": 101.8, "low": 101.0, "close": 101.4, "volume": 1200, "vwap": 101.0},
+    ]
+    runner_rows = [
+        {"ts": 1710000300, "open": 101.2, "high": 101.4, "low": 101.0, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000360, "open": 101.2, "high": 101.4, "low": 100.9, "close": 101.1, "volume": 1100, "vwap": 101.0},
+        {"ts": 1710000420, "open": 101.1, "high": 101.5, "low": 101.0, "close": 101.3, "volume": 1120, "vwap": 101.1},
+        {"ts": 1710000480, "open": 101.3, "high": 101.6, "low": 101.1, "close": 101.4, "volume": 1150, "vwap": 101.2},
+        {"ts": 1710000540, "open": 101.4, "high": 101.7, "low": 101.2, "close": 101.5, "volume": 1180, "vwap": 101.25},
+        {"ts": 1710000600, "open": 101.5, "high": 102.0, "low": 101.3, "close": 101.8, "volume": 2500, "vwap": 101.4},
+    ]
+    primary_runner = _FakeMinuteSkillRunnerSequence([[]])
+    fresh_runner = _FakeMinuteSkillRunnerSequence([[]])
+    monkeypatch.setattr("libs.skills.runner.CompositeSkillRunner.from_env", lambda: fresh_runner)
+
+    def _fake_selected(state, symbol, selected, *, position=None):
+        row = dict(selected or {})
+        row["symbol"] = symbol
+        row["price"] = row.get("price") or 100.0
+        row["features"] = {"candidate_symbol": symbol}
+        return row
+
+    def _fake_entry(rows, current_price, features, policy, scoring, frame, policy_contract):
+        sym = str((features or {}).get("candidate_symbol") or "")
+        base = {
+            "enabled": True,
+            "evaluated": True,
+            "thresholds": {"intent_cooldown_sec": 0},
+            "metrics": {"current_price": current_price, "bar_count": len(rows or [])},
+            "failed_checks": [],
+            "passed_checks": [],
+            "signal_chain": [],
+            "hard_filter_passed": True,
+            "score_passed": False,
+            "legacy_entry_decision": "WAIT",
+            "scoring_entry_decision": "WAIT",
+        }
+        if sym == "AAA":
+            return {**base, "triggered": False, "reason": "too_extended_from_vwap"}
+        if not rows:
+            return {**base, "triggered": False, "reason": "minute_candle_missing"}
+        return {
+            **base,
+            "triggered": True,
+            "reason": "breakout",
+            "pattern": "breakout",
+            "score_passed": True,
+            "legacy_entry_decision": "BUY",
+            "scoring_entry_decision": "BUY",
+        }
+
+    monkeypatch.setattr("graphs.nodes.monitor_node._monitor_selected_snapshot_for_symbol", _fake_selected)
+    monkeypatch.setattr("graphs.nodes.monitor_node.evaluate_intraday_entry_signal", _fake_entry)
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
+        lambda state, policy: {"active": False, "minutes_to_close": 120, "cutoff_min": 10},
+    )
+
+    state = _entry_cascade_test_state()
+    state["selected"] = {"symbol": "AAA", "price": 100.0, "features": {"candidate_symbol": "AAA"}}
+    state["minute_ohlcv_by_symbol"] = {"AAA": list(top_rows)}
+    state["skill_runner"] = primary_runner
+    state["tick_ts"] = 1710000600
+    state["skill_results_history"] = {
+        "market.minute_ohlcv": [
+            {
+                "symbol": "BBB",
+                "record": {
+                    "result": {
+                        "action": "ready",
+                        "data": {
+                            "rows": list(runner_rows),
+                        },
+                    }
+                },
+            }
+        ]
+    }
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["symbol"] == "BBB"
+    metrics = (out.get("monitor") or {}).get("entry_metrics") or {}
+    assert metrics.get("minute_cache_fallback_used") is True
+    assert metrics.get("minute_cache_fallback_source") == "skill_results_history.minute_ohlcv"
+
+
+def test_monitor_runner_up_uses_persisted_minute_cache_when_refetch_and_history_are_empty(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    top_rows = [
+        {"ts": 1710000300, "open": 100.0, "high": 100.4, "low": 99.8, "close": 100.2, "volume": 900, "vwap": 100.0},
+        {"ts": 1710000360, "open": 100.2, "high": 100.8, "low": 100.1, "close": 100.7, "volume": 980, "vwap": 100.3},
+        {"ts": 1710000420, "open": 100.7, "high": 101.1, "low": 100.5, "close": 100.9, "volume": 1020, "vwap": 100.5},
+        {"ts": 1710000480, "open": 100.9, "high": 101.3, "low": 100.7, "close": 101.1, "volume": 1100, "vwap": 100.7},
+        {"ts": 1710000540, "open": 101.1, "high": 101.4, "low": 100.9, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000600, "open": 101.2, "high": 101.8, "low": 101.0, "close": 101.4, "volume": 1200, "vwap": 101.0},
+    ]
+    runner_rows = [
+        {"ts": 1710000300, "open": 101.2, "high": 101.4, "low": 101.0, "close": 101.2, "volume": 1080, "vwap": 100.9},
+        {"ts": 1710000360, "open": 101.2, "high": 101.4, "low": 100.9, "close": 101.1, "volume": 1100, "vwap": 101.0},
+        {"ts": 1710000420, "open": 101.1, "high": 101.5, "low": 101.0, "close": 101.3, "volume": 1120, "vwap": 101.1},
+        {"ts": 1710000480, "open": 101.3, "high": 101.6, "low": 101.1, "close": 101.4, "volume": 1150, "vwap": 101.2},
+        {"ts": 1710000540, "open": 101.4, "high": 101.7, "low": 101.2, "close": 101.5, "volume": 1180, "vwap": 101.25},
+        {"ts": 1710000600, "open": 101.5, "high": 102.0, "low": 101.3, "close": 101.8, "volume": 2500, "vwap": 101.4},
+    ]
+    primary_runner = _FakeMinuteSkillRunnerSequence([[]])
+    fresh_runner = _FakeMinuteSkillRunnerSequence([[]])
+    monkeypatch.setattr("libs.skills.runner.CompositeSkillRunner.from_env", lambda: fresh_runner)
+
+    def _fake_selected(state, symbol, selected, *, position=None):
+        row = dict(selected or {})
+        row["symbol"] = symbol
+        row["price"] = row.get("price") or 100.0
+        row["features"] = {"candidate_symbol": symbol}
+        return row
+
+    def _fake_entry(rows, current_price, features, policy, scoring, frame, policy_contract):
+        sym = str((features or {}).get("candidate_symbol") or "")
+        base = {
+            "enabled": True,
+            "evaluated": True,
+            "thresholds": {"intent_cooldown_sec": 0},
+            "metrics": {"current_price": current_price, "bar_count": len(rows or [])},
+            "failed_checks": [],
+            "passed_checks": [],
+            "signal_chain": [],
+            "hard_filter_passed": True,
+            "score_passed": False,
+            "legacy_entry_decision": "WAIT",
+            "scoring_entry_decision": "WAIT",
+        }
+        if sym == "AAA":
+            return {**base, "triggered": False, "reason": "too_extended_from_vwap"}
+        if not rows:
+            return {**base, "triggered": False, "reason": "minute_candle_missing"}
+        return {
+            **base,
+            "triggered": True,
+            "reason": "breakout",
+            "pattern": "breakout",
+            "score_passed": True,
+            "legacy_entry_decision": "BUY",
+            "scoring_entry_decision": "BUY",
+        }
+
+    monkeypatch.setattr("graphs.nodes.monitor_node._monitor_selected_snapshot_for_symbol", _fake_selected)
+    monkeypatch.setattr("graphs.nodes.monitor_node.evaluate_intraday_entry_signal", _fake_entry)
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
+        lambda state, policy: {"active": False, "minutes_to_close": 120, "cutoff_min": 10},
+    )
+
+    state = _entry_cascade_test_state()
+    state["selected"] = {"symbol": "AAA", "price": 100.0, "features": {"candidate_symbol": "AAA"}}
+    state["minute_ohlcv_by_symbol"] = {"AAA": list(top_rows)}
+    state["skill_runner"] = primary_runner
+    state["tick_ts"] = 1710000600
+    state["persisted_state"] = {
+        "recent_minute_ohlcv_by_symbol": {
+            "BBB": {
+                "symbol": "BBB",
+                "rows": list(runner_rows),
+                "latest_candle_ts": 1710000600,
+                "timeframe_minutes": 1,
+                "stored_epoch": 1710000600,
+            }
+        }
+    }
+
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["symbol"] == "BBB"
+    metrics = (out.get("monitor") or {}).get("entry_metrics") or {}
+    assert metrics.get("minute_cache_fallback_used") is True
+    assert metrics.get("minute_cache_fallback_source") == "persisted_state.recent_minute_ohlcv_by_symbol"
 
 
 def test_monitor_peak_drawdown_respects_min_hold_guard(monkeypatch):

@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from libs.reporting.llm_artifacts import list_misplaced_trade_day_roots
+
 
 _OFFHOURS_PREFIX = "offhours_"
 _ROOT_DAILY_RE = re.compile(r"^(?:daily_report_|daily_)(\d{4}-\d{2}-\d{2})\.(md|json)$")
@@ -129,6 +131,16 @@ def _detect_archive_candidates(report_root: Path) -> List[ArchiveCandidate]:
 
 def _detect_health_warnings(report_root: Path, event_log_path: Optional[Path]) -> List[Dict[str, Any]]:
     warnings: List[Dict[str, Any]] = []
+
+    for misplaced_root in list_misplaced_trade_day_roots(report_root):
+        warnings.append(
+            {
+                "severity": "warning",
+                "type": "misplaced_trade_day_root",
+                "path": str(misplaced_root),
+                "detail": f"trade day directory exists outside canonical reports/trades: {misplaced_root.name}",
+            }
+        )
 
     operator_paths = sorted((report_root / "daily").glob("*/operator_summary.json"))
     for path in operator_paths:

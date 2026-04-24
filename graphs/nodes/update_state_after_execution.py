@@ -450,6 +450,36 @@ def _extract_strategy_policy_snapshot(state: dict | None) -> dict:
     return {}
 
 
+def _remember_recent_monitor_block(ps: dict, state: dict, *, now_epoch: int) -> None:
+    monitor_output = state.get("monitor_output") if isinstance(state.get("monitor_output"), dict) else {}
+    if not monitor_output:
+        return
+    action = str(monitor_output.get("action") or "").strip().upper()
+    if action in {"BUY", "SELL"}:
+        return
+    reason = str(
+        monitor_output.get("primary_reason_code")
+        or monitor_output.get("monitor_reason")
+        or monitor_output.get("entry_exit_reason")
+        or monitor_output.get("reason")
+        or ""
+    ).strip()
+    symbol = normalize_symbol(
+        monitor_output.get("selected_symbol")
+        or ((state.get("selected") or {}).get("symbol") if isinstance(state.get("selected"), dict) else "")
+    )
+    if not symbol or not reason:
+        return
+    if reason in {"hold", "no_position", "confirmed_exit_signal", "entry_signal_confirmed"}:
+        return
+    rows = ps.get("recent_monitor_blocks")
+    history = [dict(row) for row in rows] if isinstance(rows, list) else []
+    history.append({"symbol": symbol, "reason": reason, "epoch": int(now_epoch)})
+    history = [row for row in history if isinstance(row, dict) and normalize_symbol(row.get("symbol")) and str(row.get("reason") or "").strip()]
+    history = history[-40:]
+    ps["recent_monitor_blocks"] = history
+
+
 def _build_reasoning_trace_snapshot(state: dict) -> dict:
     commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
     strategy_policy = _extract_strategy_policy_snapshot(state)
@@ -765,6 +795,9 @@ def update_state_after_execution(state: dict) -> dict:
         _apply_mock_fill(ps, ex, state)
     elif not ok and _is_kiwoom_mock_mode():
         _reconcile_mock_sell_reject_no_position(ps, ex)
+
+    if not order_sent:
+        _remember_recent_monitor_block(ps, state, now_epoch=now_epoch)
 
     # Canonical reasoning snapshot for downstream reporting/trace consumers.
     # `state["reasoning_trace"]` is the live-cycle source-of-truth and

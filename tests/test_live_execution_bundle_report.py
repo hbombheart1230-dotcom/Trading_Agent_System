@@ -370,6 +370,10 @@ def _fake_ai_trade_report_ok(story_input: dict, **kwargs):  # type: ignore[no-un
     }
 
 
+def _fake_ai_trade_report_raise(*args, **kwargs):  # type: ignore[no-untyped-def]
+    raise RuntimeError("synthetic_ai_trade_report_failure")
+
+
 def test_flatten_news_titles_handles_count_sample_mapping_with_string_rows() -> None:
     sample = {
         "KOSPI": {
@@ -567,6 +571,103 @@ def test_live_execution_bundle_report_logs_ai_generation_start_and_finish_events
     assert finished[-1]["payload"]["component"] == "ai_trade_report"
     assert finished[-1]["payload"]["llm_status"] in {"ok", "fallback"}
 
+
+
+def test_live_execution_bundle_report_falls_back_to_deterministic_when_ai_generation_raises(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    day = "2026-03-16"
+    event_log = tmp_path / "events.jsonl"
+    evidence_log = tmp_path / "evidence.jsonl"
+    report_dir = tmp_path / "reports" / "dev" / "analysis" / "live_execution_bundles"
+    reports_root = tmp_path / "reports"
+
+    _write_jsonl(
+        event_log,
+        [
+            {
+                "run_id": "run-1",
+                "ts": f"{day}T00:00:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {
+                    "order": {"action": "BUY", "symbol": "000660", "qty": 1},
+                    "payload": {"response_payload": {"ord_no": "A1", "return_msg": "ok"}},
+                },
+            },
+            {
+                "run_id": "run-2",
+                "ts": f"{day}T00:10:01+00:00",
+                "stage": "execute_from_packet",
+                "event": "execution",
+                "payload": {
+                    "order": {"action": "SELL", "symbol": "000660", "qty": 1},
+                    "payload": {"response_payload": {"ord_no": "A2", "return_msg": "ok"}},
+                },
+            },
+        ],
+    )
+    _write_jsonl(evidence_log, [])
+
+    monkeypatch.setattr(runner_mod, "generate_agent_pipeline_trace_report", _fake_trace)
+    monkeypatch.setattr(runner_mod, "generate_trade_explain_report", _fake_trade)
+    monkeypatch.setattr(runner_mod, "generate_reporter_analysis_report", _fake_reporter)
+    monkeypatch.setattr(runner_mod, "build_ai_trade_report", _fake_ai_trade_report_ok)
+    monkeypatch.setattr(runner_mod, "execute_ai_trade_report_generation", _fake_ai_trade_report_raise)
+
+    rc = mod.main(
+        [
+            "--event-log-path",
+            str(event_log),
+            "--evidence-log-path",
+            str(evidence_log),
+            "--report-dir",
+            str(report_dir),
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--trade-report-ai",
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+
+    assert rc == 0
+    assert out["ok"] is True
+    lifecycle = out["bundles"][0]
+    trade_id = str(lifecycle["trade_id"])
+    trade_dir = reports_root / "trades" / day / trade_id
+
+    assert (trade_dir / "ai_trade_report_input.json").exists()
+    assert (trade_dir / "lifecycle_bundle.json").exists()
+    assert (trade_dir / "reports" / "ai_trade_report.json").exists()
+    assert (trade_dir / "reports" / "ai_trade_report.md").exists()
+    assert (trade_dir / "reports" / "ai_trade_report_llm_response.json").exists()
+
+    lifecycle_bundle = json.loads((trade_dir / "lifecycle_bundle.json").read_text(encoding="utf-8"))
+    diagnostics = dict(lifecycle_bundle.get("ai_report_diagnostics") or {})
+    assert diagnostics["report_reason_code"] == "llm_generation_failed"
+    assert diagnostics["ai_trade_report_status"] == "error"
+    assert diagnostics["report_status"] == "available"
+    assert "synthetic_ai_trade_report_failure" in str(diagnostics.get("last_error_message") or "")
+
+    llm_response = json.loads(
+        (trade_dir / "reports" / "ai_trade_report_llm_response.json").read_text(encoding="utf-8")
+    )
+    assert llm_response["status"] == "error"
+    assert llm_response["meta"]["reason_code"] == "llm_generation_failed"
+    assert "synthetic_ai_trade_report_failure" in str(llm_response["meta"]["reason"])
+
+    rows = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+    started = [row for row in rows if row.get("event") == "ai_trade_report_generation_started"]
+    finished = [row for row in rows if row.get("event") == "ai_trade_report_generation_finished"]
+    assert started
+    assert finished
+    assert finished[-1]["payload"]["llm_status"] == "error"
+    assert "synthetic_ai_trade_report_failure" in str(finished[-1]["payload"]["llm_reason"])
 
 
 def test_build_filters_human_prefers_normalized_scanner_feature_coverage() -> None:

@@ -73,6 +73,8 @@ from libs.reporting.llm_artifacts import (
     build_llm_response_artifact,
     canonical_llm_status,
     classify_llm_exception,
+    iter_trade_day_roots,
+    list_misplaced_trade_day_roots,
     make_attempt,
     persist_llm_artifact_refs,
     trade_artifact_paths,
@@ -698,15 +700,22 @@ def _short_run_id(run_id: Any) -> str:
 
 
 def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
-    root = config.reports_root / "trades"
-    if not root.exists():
+    day_roots = iter_trade_day_roots(config.reports_root)
+    if not day_roots:
         return {"by_run_id": {}, "by_story_id": {}}
 
     by_run_id: Dict[str, Dict[str, Any]] = {}
     by_story_id: Dict[str, Dict[str, Any]] = {}
     seen_bundle_paths: set[str] = set()
     bundle_candidates = sorted(
-        list(root.glob("**/lifecycle_bundle.json")) + list(root.glob("**/aggregated_execution_bundle.json")),
+        [
+            path
+            for day_root in day_roots
+            for path in (
+                list(day_root.glob("TRD_*/lifecycle_bundle.json"))
+                + list(day_root.glob("TRD_*/aggregated_execution_bundle.json"))
+            )
+        ],
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -6702,6 +6711,7 @@ def load_health(config: OperatorUIConfig) -> Dict[str, Any]:
     latest_day = _latest_event_day(config.event_log_path)
     operator_summary = _read_daily_artifact_day(config.reports_root, latest_day, "operator_summary")
     reporter = _read_exact_day(config.reports_root / "dev" / "analysis" / "reporter_analysis", "reporter_analysis", latest_day)
+    misplaced_trade_day_roots = list_misplaced_trade_day_roots(config.reports_root)
     if operator_summary:
         executive = operator_summary.get("executive_summary") if isinstance(operator_summary.get("executive_summary"), dict) else {}
         system_status = str(executive.get("system_status") or "UNKNOWN")
@@ -6717,6 +6727,8 @@ def load_health(config: OperatorUIConfig) -> Dict[str, Any]:
         "latest_day": latest_day,
         "system_status": system_status,
         "ai_review_status": ai_review_status,
+        "misplaced_trade_day_root_count": len(misplaced_trade_day_roots),
+        "misplaced_trade_day_roots": [str(path) for path in misplaced_trade_day_roots[:5]],
         "event_log_path": str(config.event_log_path),
         "reports_root": str(config.reports_root),
     }

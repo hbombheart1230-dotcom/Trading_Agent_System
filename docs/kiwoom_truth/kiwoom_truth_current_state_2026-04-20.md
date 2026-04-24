@@ -245,3 +245,32 @@
 - The remaining operational check is the next live trade:
   - confirm first-write `ai_trade_report_input.json` already contains entry-side broker truth
   - confirm no regeneration is required for `broker_buy_price` / `broker_fill_price` / broker pnl truth to appear
+
+## 2026-04-21 Development Start: Ambiguous Day-PnL Tie-Breaker
+
+- Added a conservative repeated-symbol tie-breaker for `ka10077` matching.
+- New rule:
+  - if exact `symbol + filled_qty + filled_price` still leaves multiple rows
+  - and entry-side broker fill is unavailable
+  - runtime may use monitor/account snapshot implied buy basis as a tie-breaker
+  - only when the nearest row is clearly unique
+- New match mode:
+  - `symbol_qty_price_estimated_buy_anchor`
+- This is still deterministic and conservative.
+- It does not promote ambiguous rows unless the estimated buy anchor is materially better than the next candidate.
+
+## 2026-04-21 Post-Close Result
+
+- `2026-04-21` regenerated stored reports now show:
+  - `12/12` trades with `price_truth_source = broker_fill`
+  - `12/12` trades with `broker_day_authoritative = true`
+  - `12/12` trades with `availability.broker_buy_present = true`
+- Added a second repeated-symbol tie-breaker for cases where:
+  - entry-side broker buy fill is missing
+  - exact sell-side row candidates remain multiple
+  - exit monitor still preserves the live position basis via `average_price` / `avg_price`
+- New match mode:
+  - `symbol_qty_price_monitor_buy_anchor`
+- Confirmed recovery example:
+  - `reports/trades/2026-04-21/TRD_20260421_005930_01/reports/ai_trade_report.json`
+  - resolved from `ambiguous_symbol_rows` to authoritative using exit monitor `average_price = 217750`

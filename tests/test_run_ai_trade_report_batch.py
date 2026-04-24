@@ -11,9 +11,12 @@ from libs.reporting.intraday_trade_reports import (
     sync_ai_report_diagnostics,
     sync_ai_trade_report_generation_state,
 )
-from libs.reporting.llm_artifacts import trade_artifact_paths
+from libs.reporting.llm_artifacts import resolve_trade_day_root, trade_artifact_paths
 from scripts.run_ai_trade_report_batch import (
+    _classify_missing_story_input,
     _finalize_report_diagnostics,
+    _mark_partial_trade_artifact,
+    _resolve_output_paths,
     _normalize_trade_id_filters,
     _resolve_story_input_for_regeneration,
     _sync_report_diagnostics,
@@ -36,6 +39,92 @@ def test_run_ai_trade_report_batch_reuses_intraday_helper_ownership() -> None:
     assert _sync_report_diagnostics is sync_ai_report_diagnostics
     assert _finalize_report_diagnostics is finalize_ai_report_diagnostics
     assert _sync_report_generation_state is sync_ai_trade_report_generation_state
+
+
+def test_run_ai_trade_report_batch_uses_separate_local_debug_output_paths(tmp_path: Path) -> None:
+    trade_paths = trade_artifact_paths(tmp_path / "reports", "2026-03-19", "TRD_20260319_000660_01")
+
+    resolved = _resolve_output_paths(trade_paths, True)
+
+    assert resolved["compact_input_path"].name == "ai_trade_report_compact_input.local_debug.json"
+    assert resolved["report_json_path"].name == "ai_trade_report.local_debug.json"
+    assert resolved["report_md_path"].name == "ai_trade_report.local_debug.md"
+    assert resolved["llm_path"].name == "ai_trade_report_llm_response.local_debug.json"
+
+
+def test_run_ai_trade_report_batch_resolves_misplaced_trade_day_root(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    misplaced_day_root = tmp_path / "2026-03-19"
+    misplaced_trade_dir = misplaced_day_root / "TRD_20260319_000660_01"
+    misplaced_trade_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved_day_root = resolve_trade_day_root(reports_root, "2026-03-19")
+    trade_paths = trade_artifact_paths(
+        reports_root,
+        "2026-03-19",
+        "TRD_20260319_000660_01",
+        prefer_existing_day_root=True,
+    )
+
+    assert resolved_day_root == misplaced_day_root
+    assert trade_paths["trade_root"] == misplaced_trade_dir
+
+
+def test_run_ai_trade_report_batch_classifies_partial_trade_artifact_when_only_early_evidence_exists(
+    tmp_path: Path,
+) -> None:
+    reports_root = tmp_path / "reports"
+    trade_paths = trade_artifact_paths(reports_root, "2026-03-19", "TRD_20260319_000660_01")
+    trade_dir = trade_paths["trade_root"]
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(trade_paths["strategist_input_json"], {"schema_version": "strategist_input.v1"})
+    trade_paths["evidence_dir"].mkdir(parents=True, exist_ok=True)
+
+    out = _classify_missing_story_input(trade_dir, trade_paths)
+
+    assert out["partial_trade_artifact"] is True
+    assert out["skip_reason"] == "partial_trade_artifact"
+
+
+def test_run_ai_trade_report_batch_does_not_classify_partial_trade_artifact_when_lifecycle_exists(
+    tmp_path: Path,
+) -> None:
+    reports_root = tmp_path / "reports"
+    trade_paths = trade_artifact_paths(reports_root, "2026-03-19", "TRD_20260319_000660_01")
+    trade_dir = trade_paths["trade_root"]
+    trade_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(trade_paths["lifecycle_bundle_json"], {"schema_version": "trade_lifecycle.v1"})
+
+    out = _classify_missing_story_input(trade_dir, trade_paths)
+
+    assert out["partial_trade_artifact"] is False
+    assert out["skip_reason"] == ""
+
+
+def test_run_ai_trade_report_batch_marks_partial_trade_artifact_in_health_json(
+    tmp_path: Path,
+) -> None:
+    reports_root = tmp_path / "reports"
+    trade_paths = trade_artifact_paths(reports_root, "2026-03-19", "TRD_20260319_000660_01")
+    trade_paths["trade_root"].mkdir(parents=True, exist_ok=True)
+    _write_json(trade_paths["strategist_input_json"], {"schema_version": "strategist_input.v1"})
+    trade_paths["evidence_dir"].mkdir(parents=True, exist_ok=True)
+
+    _mark_partial_trade_artifact(
+        trade_paths,
+        day="2026-03-19",
+        trade_id="TRD_20260319_000660_01",
+        skip_reason="partial_trade_artifact",
+    )
+
+    health = _read_json(trade_paths["trade_health_json"])
+    assert health["schema_version"] == "trade_health.v1"
+    assert health["lifecycle_status"] == "partial"
+    assert health["report_generation_status"] == "skipped"
+    assert health["partial_trade_artifact"] is True
+    assert health["skip_reason"] == "partial_trade_artifact"
+    assert health["artifact_presence"]["strategist_input_json"] is True
+    assert health["artifact_presence"]["lifecycle_bundle_json"] is False
 
 
 def test_story_input_quality_score_penalizes_closed_symbol_mismatch_and_rewards_canonical_monitor() -> None:

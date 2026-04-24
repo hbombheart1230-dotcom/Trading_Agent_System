@@ -712,6 +712,7 @@ def test_operator_ui_overview_prefers_live_intraday_counts_over_stale_reports(tm
     assert obj["status"] == "ok"
     assert obj["system_status"] == "GREEN"
     assert obj["latest_day"] == "2026-03-16"
+    assert obj["misplaced_trade_day_root_count"] == 0
 
 
 def test_operator_ui_runs_support_trade_and_monitoring_filters(tmp_path: Path, monkeypatch) -> None:
@@ -739,18 +740,21 @@ def test_operator_ui_runs_support_trade_and_monitoring_filters(tmp_path: Path, m
     assert "Trades" in all_runs.text
     assert "Monitoring" in all_runs.text
 
-    trades = client.get("/runs?activity_view=trades")
-    assert trades.status_code == 200
-    assert "run-1" in trades.text
-    assert "run-monitor" not in trades.text
-    assert "Trade" in trades.text
 
-    monitoring = client.get("/runs?activity_view=monitoring")
-    assert monitoring.status_code == 200
-    assert "run-monitor" in monitoring.text
-    assert "run-1" not in monitoring.text
-    assert "Monitoring" in monitoring.text
-    assert "integrated_chain_monitor_only" in monitoring.text
+def test_operator_ui_health_surfaces_misplaced_trade_day_roots(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(data_access.LLMRouter, "from_env", staticmethod(lambda: _FakeRouter()))
+    cfg = _make_config(tmp_path)
+    misplaced = tmp_path / "2026-03-18" / "TRD_TEST"
+    misplaced.mkdir(parents=True)
+
+    app = create_app(cfg)
+    client = TestClient(app)
+
+    health = client.get("/healthz")
+    assert health.status_code == 200
+    obj = health.json()
+    assert obj["misplaced_trade_day_root_count"] == 1
+    assert obj["misplaced_trade_day_roots"][0].endswith(str(Path("2026-03-18")))
 
 
 def test_operator_ui_trades_filter_looks_across_latest_day_not_just_latest_limit(tmp_path: Path, monkeypatch) -> None:

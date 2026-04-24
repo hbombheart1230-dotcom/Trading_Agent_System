@@ -223,6 +223,40 @@ def test_trade_read_model_load_operator_brief_detail_payloads_respects_saved_bri
     assert allowed["paths"]["operator_brief_md"].endswith("operator_brief.md")
 
 
+def test_operator_ui_trade_report_index_uses_misplaced_trade_day_root_fallback(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    trade_root = tmp_path / "2026-03-18" / "TRD_TEST"
+    bundle_path = trade_root / "lifecycle_bundle.json"
+    report_path = trade_root / "reports" / "ai_trade_report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "day": "2026-03-18",
+                "trade_id": "TRD_TEST",
+                "run_id": "run-1",
+                "linked_run_ids": ["run-1"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path.write_text(json.dumps({"trade_id": "TRD_TEST"}), encoding="utf-8")
+
+    cfg = data_access.OperatorUIConfig(
+        repo_root=tmp_path,
+        reports_root=reports_root,
+        event_log_path=tmp_path / "data" / "logs" / "events.jsonl",
+        evidence_log_path=tmp_path / "data" / "evidence_ledger" / "events.jsonl",
+        strategy_memory_path=tmp_path / "data" / "strategy_memory" / "daily",
+        operator_ui_cache_path=tmp_path / "data" / "operator_ui" / "brief_cache",
+    )
+
+    index = data_access._trade_report_index(cfg)
+
+    assert "TRD_TEST" in index["by_story_id"]
+    assert index["by_story_id"]["TRD_TEST"]["trade_id"] == "TRD_TEST"
+
+
 def test_trade_read_model_normalize_operator_brief_detail_payload_extracts_sections_and_lists() -> None:
     normalized = normalize_operator_brief_detail_payload(
         {

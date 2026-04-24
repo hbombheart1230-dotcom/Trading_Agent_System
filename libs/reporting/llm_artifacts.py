@@ -7,6 +7,86 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 
+def canonical_trade_day_root(reports_root: Path, day: str) -> Path:
+    return Path(reports_root) / "trades" / str(day or "").strip()
+
+
+def _repo_root_from_reports_root(reports_root: Path) -> Path:
+    root = Path(reports_root)
+    if root.name == "reports":
+        return root.parent
+    return root
+
+
+def _looks_like_trade_day_dir(path: Path) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    try:
+        return any(child.is_dir() and str(child.name or "").startswith("TRD_") for child in path.iterdir())
+    except Exception:
+        return False
+
+
+def misplaced_trade_day_root(reports_root: Path, day: str) -> Path | None:
+    normalized_day = str(day or "").strip()
+    if not normalized_day:
+        return None
+    primary = canonical_trade_day_root(reports_root, normalized_day)
+    repo_root = _repo_root_from_reports_root(reports_root)
+    candidate = repo_root / normalized_day
+    if candidate == primary:
+        return None
+    if not _looks_like_trade_day_dir(candidate):
+        return None
+    return candidate
+
+
+def resolve_trade_day_root(reports_root: Path, day: str) -> Path:
+    primary = canonical_trade_day_root(reports_root, day)
+    if primary.exists():
+        return primary
+    fallback = misplaced_trade_day_root(reports_root, day)
+    if fallback is not None:
+        return fallback
+    return primary
+
+
+def iter_trade_day_roots(reports_root: Path) -> List[Path]:
+    roots: List[Path] = []
+    seen_days: set[str] = set()
+    canonical_root = Path(reports_root) / "trades"
+    if canonical_root.exists():
+        for child in sorted(path for path in canonical_root.iterdir() if path.is_dir()):
+            roots.append(child)
+            seen_days.add(child.name)
+    repo_root = _repo_root_from_reports_root(reports_root)
+    for child in sorted(path for path in repo_root.iterdir() if path.is_dir()):
+        if child.name in seen_days:
+            continue
+        if not _looks_like_trade_day_dir(child):
+            continue
+        roots.append(child)
+    return roots
+
+
+def list_misplaced_trade_day_roots(reports_root: Path) -> List[Path]:
+    repo_root = _repo_root_from_reports_root(reports_root)
+    canonical_root = Path(reports_root) / "trades"
+    canonical_days = {
+        child.name
+        for child in canonical_root.iterdir()
+        if canonical_root.exists() and child.is_dir()
+    } if canonical_root.exists() else set()
+    out: List[Path] = []
+    for child in sorted(path for path in repo_root.iterdir() if path.is_dir()):
+        if child.name in canonical_days:
+            continue
+        if not _looks_like_trade_day_dir(child):
+            continue
+        out.append(child)
+    return out
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -426,9 +506,20 @@ def build_compact_input_artifact(
     }
 
 
-def trade_artifact_paths(reports_root: Path, day: str, trade_id: str) -> Dict[str, Path]:
+def trade_artifact_paths(
+    reports_root: Path,
+    day: str,
+    trade_id: str,
+    *,
+    prefer_existing_day_root: bool = False,
+) -> Dict[str, Path]:
     normalized_day = str(day or "").strip()
-    trade_root = reports_root / "trades" / normalized_day / str(trade_id or "").strip()
+    trade_day_root = (
+        resolve_trade_day_root(reports_root, normalized_day)
+        if prefer_existing_day_root
+        else canonical_trade_day_root(reports_root, normalized_day)
+    )
+    trade_root = trade_day_root / str(trade_id or "").strip()
     legacy_root = reports_root / "trades" / normalized_day[:4] / normalized_day[5:7] / str(trade_id or "").strip()
     # Phase 3 primary structure (operator-facing):
     # reports/trades/<day>/<trade_id>/

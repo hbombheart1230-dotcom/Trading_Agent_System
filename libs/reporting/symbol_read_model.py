@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 from collections import Counter
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -56,6 +57,15 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _date_from_trade_id(value: Any) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"TRD_(\d{8})_", text)
+    if not match:
+        return ""
+    raw = match.group(1)
+    return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+
+
 def _derive_symbol_read_model_from_memory(reports_root: Path, symbol: str) -> Dict[str, Any]:
     paths = symbol_artifact_paths(reports_root, symbol)
     memory = _read_json(paths["symbol_memory_json"])
@@ -66,6 +76,7 @@ def _derive_symbol_read_model_from_memory(reports_root: Path, symbol: str) -> Di
     playbook_stats = memory.get("playbook_stats") if isinstance(memory.get("playbook_stats"), dict) else {}
     pattern_stats = memory.get("pattern_stats") if isinstance(memory.get("pattern_stats"), dict) else {}
     monitor_patterns = memory.get("monitor_patterns") if isinstance(memory.get("monitor_patterns"), dict) else {}
+    latest_snapshot = memory.get("latest_snapshot") if isinstance(memory.get("latest_snapshot"), dict) else {}
 
     closed_trade_count = int(_safe_float(trade_stats.get("completed_trade_count"), 0.0))
     win_rate = _safe_float(trade_stats.get("win_rate"), 0.0)
@@ -120,6 +131,8 @@ def _derive_symbol_read_model_from_memory(reports_root: Path, symbol: str) -> Di
         "avg_pnl": 0.0,
         "avg_pnl_pct": _safe_float(trade_stats.get("avg_return_pct"), 0.0),
         "avg_hold_duration_sec": _safe_float(trade_stats.get("avg_hold_seconds"), 0.0),
+        "last_trade_date": str(latest_snapshot.get("last_trade_date") or ""),
+        "last_status": str(latest_snapshot.get("last_status") or ""),
         "dominant_playbook": dominant_playbook,
         "dominant_entry_reason": "unknown",
         "dominant_exit_reason": str(monitor_patterns.get("dominant_exit_failure_axis") or "unknown"),
@@ -142,6 +155,7 @@ def _derive_symbol_read_model_from_trade_report(reports_root: Path, symbol: str)
     summary = trade_report.get("summary") if isinstance(trade_report.get("summary"), dict) else {}
     pattern_insights = trade_report.get("pattern_insights") if isinstance(trade_report.get("pattern_insights"), dict) else {}
     history_index = trade_report.get("history_index") if isinstance(trade_report.get("history_index"), list) else []
+    latest_snapshot = trade_report.get("latest_snapshot") if isinstance(trade_report.get("latest_snapshot"), dict) else {}
 
     trade_count = int(_safe_float(summary.get("trade_count"), 0.0))
     closed_trade_count = int(_safe_float(summary.get("completed_trade_count"), 0.0))
@@ -209,6 +223,8 @@ def _derive_symbol_read_model_from_trade_report(reports_root: Path, symbol: str)
         "avg_pnl": 0.0,
         "avg_pnl_pct": _safe_float(summary.get("avg_return_pct"), 0.0),
         "avg_hold_duration_sec": _safe_float(summary.get("avg_hold_seconds"), 0.0),
+        "last_trade_date": str(latest_snapshot.get("last_trade_date") or (history_index[-1].get("date") if history_index else "") or ""),
+        "last_status": str(latest_snapshot.get("last_status") or ((history_index[-1].get("last_status") if history_index else "") or (history_index[-1].get("status") if history_index else "")) or ""),
         "dominant_playbook": dominant_playbook,
         "dominant_entry_reason": dominant_entry_reason,
         "dominant_exit_reason": dominant_exit_reason,
@@ -287,6 +303,8 @@ def _empty_symbol_read_model(symbol: str) -> Dict[str, Any]:
         "avg_pnl": 0.0,
         "avg_pnl_pct": 0.0,
         "avg_hold_duration_sec": 0.0,
+        "last_trade_date": "",
+        "last_status": "",
         "dominant_playbook": "unknown",
         "dominant_entry_reason": "unknown",
         "dominant_exit_reason": "unknown",
@@ -313,6 +331,7 @@ def _aggregate_symbol_trades(symbol: str, trades: List[Dict[str, Any]]) -> Dict[
     total_pnl = 0.0
     total_pnl_pct = 0.0
     total_hold_sec = 0
+    last_trade_date = ""
     
     success_patterns_counter = Counter()
     failure_patterns_counter = Counter()
@@ -359,6 +378,9 @@ def _aggregate_symbol_trades(symbol: str, trades: List[Dict[str, Any]]) -> Dict[
         blocker = str(t.get("primary_blocker_if_no_buy") or "unknown")
         if blocker.lower() != "unknown":
             failure_patterns_counter[("blocker", blocker)] += 1
+        candidate_trade_date = str(t.get("trade_date") or t.get("date") or _date_from_trade_id(t.get("trade_id")) or "").strip()
+        if candidate_trade_date and candidate_trade_date > last_trade_date:
+            last_trade_date = candidate_trade_date
 
     # Format success patterns (Top 3)
     recent_success_pattern = []
@@ -382,6 +404,8 @@ def _aggregate_symbol_trades(symbol: str, trades: List[Dict[str, Any]]) -> Dict[
         "avg_pnl": _safe_div(total_pnl, float(closed_trade_count)),
         "avg_pnl_pct": _safe_div(total_pnl_pct, float(closed_trade_count)),
         "avg_hold_duration_sec": _safe_div(float(total_hold_sec), float(closed_trade_count)),
+        "last_trade_date": last_trade_date,
+        "last_status": "",
         "dominant_playbook": _get_dominant(playbooks),
         "dominant_entry_reason": _get_dominant(entry_reasons),
         "dominant_exit_reason": _get_dominant(exit_reasons),

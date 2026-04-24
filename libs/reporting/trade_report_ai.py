@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import ast
 import html
@@ -19,9 +19,11 @@ from libs.reporting.llm_artifacts import build_llm_response_artifact, classify_l
 from libs.reporting.trade_price_truth import resolve_trade_price_truth
 from libs.reporting.trade_pnl_estimate import infer_exit_fill_pnl_pct_from_account_snapshot
 from libs.reporting.execution_truth_surface import build_execution_truth_bullets
+from libs.reporting.trade_memory_application_surface import build_trade_memory_application_surface
 from libs.reporting.trade_memory_surface import build_trade_report_memory_surface
 from libs.reporting.report_truth_surface import build_trade_report_truth_surface
 from libs.reporting.trade_execution_outcome_text import execution_outcome_summary_is_placeholder
+from libs.reporting.trade_reporter_status_text import normalize_reporter_text
 from libs.reporting.truth_source_labels import (
     monitor_price_source_label,
     pnl_truth_source_label,
@@ -31,6 +33,13 @@ from libs.reporting.truth_source_labels import (
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_fullmatch(pattern: str, text: str, *, flags: int = 0):
+    try:
+        return re.fullmatch(pattern, text, flags=flags)
+    except re.error:
+        logger.debug("trade_report_regex_invalid pattern=%r", pattern, exc_info=True)
+        return None
 
 def _resolve_intraday_report_model(source: Dict[str, Any] | None, *, explicit_model: Optional[str] = None) -> str:
     resolved = resolve_policy_llm_slot(source if isinstance(source, dict) else {}, "reporter", "intraday", default_profile="fast_free")
@@ -191,7 +200,7 @@ def _is_low_information_bullet(value: Any) -> bool:
         return True
     if text in {"hold", "wait", "buy", "sell", "noop", "monitor", "monitoring"}:
         return True
-    if len(text) <= 12 and re.fullmatch(r"[a-z_\- ]+", text):
+    if len(text) <= 12 and _safe_fullmatch(r"[a-z_\- ]+", text):
         return True
     return False
 
@@ -228,7 +237,7 @@ AI_TRADE_REPORT_REQUIRED_KEYS = [
 ]
 
 AI_TRADE_REPORT_KOREAN_RULES = (
-    "사람이 읽는 모든 값은 반드시 한국어로 작성해야 합니다. "
+    "?щ엺???쎈뒗 紐⑤뱺 媛믪? 諛섎뱶???쒓뎅?대줈 ?묒꽦?댁빞 ?⑸땲?? "
     "All human-readable sentences must be Korean. "
     "Do not use Japanese or Chinese sentences. "
     "Allowed unchanged tokens: symbol code, ISO timestamp, BUY/SELL/HOLD/WAIT, VIX, "
@@ -242,15 +251,7 @@ def _sanitize_forbidden_scripts_text(text: Any) -> str:
     raw = _clip(text, max_len=2000).strip()
     if not raw:
         return ""
-    replacement_pairs = (
-        ("生命周期", "생명주기"),
-        ("缺失", "누락"),
-        ("不足", "부족"),
-        ("薄薄", "부족"),
-        ("未完了", "미완료"),
-        ("还未", "아직"),
-        ("故事", "스토리"),
-    )
+    replacement_pairs: tuple[tuple[str, str], ...] = ()
     normalized = raw
     for src, dst in replacement_pairs:
         normalized = normalized.replace(src, dst)
@@ -258,7 +259,7 @@ def _sanitize_forbidden_scripts_text(text: Any) -> str:
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
     if cleaned:
         return cleaned
-    return "데이터 부족으로 보수적으로 정리했습니다."
+    return "?곗씠??遺議깆쑝濡?蹂댁닔?곸쑝濡??뺣━?덉뒿?덈떎."
 
 
 def _sanitize_report_language_fields(value: Any) -> Any:
@@ -364,7 +365,7 @@ def _action_from_exit_reason(value: Any) -> str:
     text = str(value or "").strip().lower()
     if not text:
         return ""
-    if "sell" in text or "매도" in text or "청산" in text:
+    if "sell" in text or "留ㅻ룄" in text or "泥?궛" in text:
         return "SELL"
     return ""
 
@@ -377,7 +378,7 @@ def _is_open_position_placeholder_reason(value: Any) -> bool:
         "position is still open",
         "monitor is watching for exit",
         "still open",
-        "포지션이 아직",
+        "?ъ??섏씠 ?꾩쭅",
     )
     return any(token in text for token in markers)
 
@@ -391,20 +392,15 @@ def _reporter_summary_is_placeholder(value: Any) -> bool:
         "same-day reporter analysis was not generated yet.",
         "a same-day reporter file exists, but this run was not linked to a run-specific evaluation yet.",
         "a same-day reporter analysis was linked to this run.",
-        "당일 리포터 분석은 아직 생성되지 않았습니다.",
-        "당일 리포터 파일은 있지만 이 run에 대한 개별 평가는 아직 연결되지 않았습니다.",
-        "당일 리포터 분석이 이 run에 연결됐습니다.",
+        "?뱀씪 由ы룷??遺꾩꽍? ?꾩쭅 ?앹꽦?섏? ?딆븯?듬땲??",
+        "?뱀씪 由ы룷???뚯씪? ?덉?留???run?????媛쒕퀎 ?됯????꾩쭅 ?곌껐?섏? ?딆븯?듬땲??",
+        "?뱀씪 由ы룷??遺꾩꽍????run???곌껐?먯뒿?덈떎.",
     }
     prefix_markers = (
         "reporter status:",
         "reporter reason:",
         "reporter grade:",
         "reporter summary:",
-        "리포터 상태는",
-        "리포터 판단 사유는",
-        "리포터 등급은",
-        "리포터 요약은",
-        "당일 리포터 연계 상태는",
     )
     if lowered in {marker.lower() for marker in exact_markers}:
         return True
@@ -1490,6 +1486,7 @@ def _normalize_trade_report_output(story_input: Dict[str, Any], report: Dict[str
     }
     out["truth_surface"] = build_trade_report_truth_surface(out.get("shared_facts"))
     out["memory_surface"] = build_trade_report_memory_surface(story_input)
+    out["memory_application_surface"] = build_trade_memory_application_surface(story_input)
     sanitized = _sanitize_report_language_fields(out)
     return dict(sanitized) if isinstance(sanitized, dict) else out
 
@@ -1671,11 +1668,11 @@ def _is_market_context_noise_bullet(value: Any) -> bool:
         return True
     if "headlines were considered across" in lowered:
         return True
-    if text.startswith("뉴스 입력 요약은"):
+    if text.startswith("?댁뒪 ?낅젰 ?붿빟?"):
         return True
-    if text.startswith("뉴스 조회 대상은"):
+    if text.startswith("?댁뒪 議고쉶 ??곸?"):
         return True
-    if "관련 헤드라인" in text and "반영" in text:
+    if "愿???ㅻ뱶?쇱씤" in text and "諛섏쁺" in text:
         return True
     return False
 
@@ -1691,7 +1688,7 @@ def _sanitize_market_context_summary(value: Any) -> str:
         flags=re.IGNORECASE,
     )
     cleaned = re.sub(
-        r"[^.]*관련 헤드라인\s*\d+건[^.]*\.?\s*",
+        r"[^.]*愿???ㅻ뱶?쇱씤\s*\d+嫄?^.]*\.?\s*",
         " ",
         cleaned,
     )
@@ -1720,17 +1717,17 @@ def _clean_news_title(value: Any, *, max_len: int = 220) -> str:
 def _market_token_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "neutral": "중립",
-        "bullish": "강세",
-        "bearish": "약세",
-        "pullback": "눌림목",
-        "breakout": "돌파",
-        "trend": "추세",
-        "defensive": "방어적",
-        "risk_off": "위험회피",
-        "risk_on": "위험선호",
-        "not_captured": "직접 캡처되지 않음",
-        "unavailable": "확인 불가",
+        "neutral": "以묐┰",
+        "bullish": "媛뺤꽭",
+        "bearish": "?쎌꽭",
+        "pullback": "?뚮┝紐?",
+        "breakout": "?뚰뙆",
+        "trend": "異붿꽭",
+        "defensive": "諛⑹뼱??",
+        "risk_off": "?꾪뿕?뚰뵾",
+        "risk_on": "?꾪뿕?좏샇",
+        "not_captured": "吏곸젒 罹≪쿂?섏? ?딆쓬",
+        "unavailable": "?뺤씤 遺덇?",
     }
     return mapping.get(raw, _clip(value, max_len=80))
 
@@ -1738,9 +1735,9 @@ def _market_token_label(value: Any) -> str:
 def _theme_token_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "broad_market_leaders": "브로드마켓 리더",
-        "semiconductor_leaders": "반도체 리더",
-        "high_beta_leaders": "고베타 리더",
+        "broad_market_leaders": "釉뚮줈?쒕쭏耳?由щ뜑",
+        "semiconductor_leaders": "諛섎룄泥?由щ뜑",
+        "high_beta_leaders": "怨좊쿋? 由щ뜑",
     }
     return mapping.get(raw, _clip(value, max_len=80))
 
@@ -1749,7 +1746,7 @@ def _theme_text(values: Any, *, max_items: int = 4) -> str:
     labels = [_theme_token_label(item) for item in _listify(values, max_items=max_items, max_len=80)]
     labels = [item for item in labels if item]
     if len(labels) == 2:
-        return f"{labels[0]}와 {labels[1]}"
+        return f"{labels[0]}? {labels[1]}"
     if len(labels) >= 3:
         return ", ".join(labels[:-1]) + f", {labels[-1]}"
     return labels[0] if labels else "not_captured"
@@ -1758,21 +1755,21 @@ def _theme_text(values: Any, *, max_items: int = 4) -> str:
 def _theme_linkage_label(values: Any) -> str:
     theme_values = [str(item or "").strip().lower() for item in _listify(values, max_items=4, max_len=80)]
     if "broad_market_leaders" in theme_values:
-        return "시장 주도 대형주 우위"
+        return "?쒖옣 二쇰룄 ??뺤＜ ?곗쐞"
     if "semiconductor_leaders" in theme_values:
-        return "반도체 리더 우위"
+        return "諛섎룄泥?由щ뜑 ?곗쐞"
     if "high_beta_leaders" in theme_values:
-        return "고베타 리더 우위"
+        return "怨좊쿋? 由щ뜑 ?곗쐞"
     themed = _theme_text(values, max_items=2)
-    return f"{themed} 맥락" if themed and themed != "not_captured" else "시장 맥락"
+    return f"{themed} 留λ씫" if themed and themed != "not_captured" else "?쒖옣 留λ씫"
 
 
 def _risk_mode_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "balanced": "균형형",
-        "conservative": "보수형",
-        "aggressive": "공격형",
+        "balanced": "洹좏삎??",
+        "conservative": "蹂댁닔??",
+        "aggressive": "怨듦꺽??",
     }
     return mapping.get(raw, _clip(value, max_len=80))
 
@@ -1780,14 +1777,14 @@ def _risk_mode_label(value: Any) -> str:
 def _strategy_constraint_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "defensive_assets": "방어 자산",
-        "counter_trend_low_liquidity": "역추세 저유동성",
-        "high_beta_leaders": "고베타 리더",
-        "semiconductor_leaders": "반도체 리더",
-        "broad_market_leaders": "브로드마켓 리더",
-        "illiquid_microcap": "저유동성 소형주",
-        "headline_only_momentum": "헤드라인 추격 모멘텀",
-        "high_gap_speculative": "갭 급등 투기성 종목",
+        "defensive_assets": "諛⑹뼱 ?먯궛",
+        "counter_trend_low_liquidity": "??텛????좊룞??",
+        "high_beta_leaders": "怨좊쿋? 由щ뜑",
+        "semiconductor_leaders": "諛섎룄泥?由щ뜑",
+        "broad_market_leaders": "釉뚮줈?쒕쭏耳?由щ뜑",
+        "illiquid_microcap": "??좊룞???뚰삎二?",
+        "headline_only_momentum": "?ㅻ뱶?쇱씤 異붽꺽 紐⑤찘?",
+        "high_gap_speculative": "媛?湲됰벑 ?ш린??醫낅ぉ",
     }
     return mapping.get(raw, _clip(value, max_len=80))
 
@@ -1805,10 +1802,10 @@ def _strategy_constraint_text(values: Any, *, max_items: int = 4) -> str:
 def _scanner_bias_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "prefer_shallow_pullback_candidates": "얕은 눌림목 후보 선호",
-        "penalize_overextended": "과확장 후보 패널티",
-        "prefer_reclaim_candidates": "재회복 후보 선호",
-        "prefer_volume_confirmation": "거래량 확인 후보 선호",
+        "prefer_shallow_pullback_candidates": "?뺤? ?뚮┝紐??꾨낫 ?좏샇",
+        "penalize_overextended": "怨쇳솗???꾨낫 ?⑤꼸??",
+        "prefer_reclaim_candidates": "?ы쉶蹂??꾨낫 ?좏샇",
+        "prefer_volume_confirmation": "嫄곕옒???뺤씤 ?꾨낫 ?좏샇",
     }
     return mapping.get(raw, _clip(value, max_len=80))
 
@@ -1828,11 +1825,11 @@ def _scanner_bias_text(summary: Any) -> str:
     active = [_scanner_bias_label(item) for item in _listify(active_values, max_items=6, max_len=80)]
     active = [item for item in active if item]
     strength = _clip(data.get("bias_strength"), max_len=24).strip().lower()
-    strength_label = {"low": "낮음", "medium": "중간", "high": "높음"}.get(strength, _clip(strength, max_len=24))
+    strength_label = {"low": "??쓬", "medium": "以묎컙", "high": "?믪쓬"}.get(strength, _clip(strength, max_len=24))
     if active:
         joined = ", ".join(active)
         if strength_label:
-            return f"{joined} (강도 {strength_label})"
+            return f"{joined} (媛뺣룄 {strength_label})"
         return joined
     raw_summary = _clip(data.get("summary"), max_len=220)
     return raw_summary
@@ -1899,47 +1896,47 @@ def _build_market_context_summary(section: Any, *, scanner_reason: Dict[str, Any
     us_indices = _extract_us_indices_snapshot(market.get("key_events") or market.get("key_events_hint"))
     selected_symbol = _clip(scanner.get("selected_symbol"), max_len=24)
 
-    regime_missing = regime in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
-    sentiment_missing = market_sentiment in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
-    playbook_known = playbook not in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
-    themes_known = themes not in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
+    regime_missing = regime in {"", "not_captured", "unknown", "吏곸젒 罹≪쿂?섏? ?딆쓬"}
+    sentiment_missing = market_sentiment in {"", "not_captured", "unknown", "吏곸젒 罹≪쿂?섏? ?딆쓬"}
+    playbook_known = playbook not in {"", "not_captured", "unknown", "吏곸젒 罹≪쿂?섏? ?딆쓬"}
+    themes_known = themes not in {"", "not_captured", "unknown", "吏곸젒 罹≪쿂?섏? ?딆쓬"}
 
     if regime_missing and sentiment_missing and (playbook_known or themes_known):
         frame_bits: List[str] = []
         if playbook_known:
-            frame_bits.append(f"플레이북 {playbook}")
+            frame_bits.append(f"?뚮젅?대턿 {playbook}")
         if themes_known:
-            frame_bits.append(f"핵심 테마 {themes}")
-        frame_text = ", ".join(frame_bits) if frame_bits else "핵심 프레임 미확인"
+            frame_bits.append(f"?듭떖 ?뚮쭏 {themes}")
+        frame_text = ", ".join(frame_bits) if frame_bits else "?듭떖 ?꾨젅??誘명솗??"
         sentences: List[str] = [
-            f"시장 상태/심리 직접 캡처는 제한적이지만, {frame_text} 기준으로 정리했습니다."
+            f"?쒖옣 ?곹깭/?щ━ 吏곸젒 罹≪쿂???쒗븳?곸씠吏留? {frame_text} 湲곗??쇰줈 ?뺣━?덉뒿?덈떎."
         ]
     else:
         regime_text = regime or "not_captured"
         sentences = [
-            f"시장 상태 {regime_text} 기준에서 플레이북 {playbook}로 운용했습니다."
+            f"?쒖옣 ?곹깭 {regime_text} 湲곗??먯꽌 ?뚮젅?대턿 {playbook}濡??댁슜?덉뒿?덈떎."
         ]
 
     metric_bits: List[str] = []
     if sentiment is not None:
-        metric_bits.append(f"글로벌 감성 {sentiment:.3f}")
+        metric_bits.append(f"湲濡쒕쾶 媛먯꽦 {sentiment:.3f}")
     if vix_level is not None:
         metric_bits.append(f"VIX {vix_level:.2f}")
     if metric_bits:
-        sentences.append(", ".join(metric_bits) + " 입력은 시장 안정성 점검에 반영되었습니다.")
+        sentences.append(", ".join(metric_bits) + " ?낅젰? ?쒖옣 ?덉젙???먭???諛섏쁺?섏뿀?듬땲??")
     if us_indices:
         sentences.append(
-            f"미국 지수는 S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
-            f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}였습니다."
+            f"誘멸뎅 吏?섎뒗 S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
+            f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}??듬땲??"
         )
     if headline_count or query_count:
         sentences.append(
-            f"뉴스 입력 {headline_count}건과 조회 대상 {query_count}개를 함께 반영했습니다."
+            f"?댁뒪 ?낅젰 {headline_count}嫄닿낵 議고쉶 ???{query_count}媛쒕? ?④퍡 諛섏쁺?덉뒿?덈떎."
         )
     if themes_known:
-        theme_sentence = f"핵심 테마는 {themes}로 정리됐습니다."
+        theme_sentence = f"?듭떖 ?뚮쭏??{themes}濡??뺣━?먯뒿?덈떎."
         if selected_symbol:
-            theme_sentence = f"핵심 테마 {themes} 기준에서 {selected_symbol}이 스캐너 연결 종목으로 확인됐습니다."
+            theme_sentence = f"?듭떖 ?뚮쭏 {themes} 湲곗??먯꽌 {selected_symbol}???ㅼ틦???곌껐 醫낅ぉ?쇰줈 ?뺤씤?먯뒿?덈떎."
         sentences.append(theme_sentence)
     return " ".join(sentences[:5]).strip()
 
@@ -1969,40 +1966,40 @@ def _build_market_context_bullets(section: Any, *, scanner_reason: Dict[str, Any
     targets = ", ".join(_listify(data.get("news_query_targets"), max_items=7, max_len=40))
 
     bullets: List[str] = []
-    regime_missing = regime in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
-    sentiment_missing = market_sentiment in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
-    themes_known = themes not in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
+    regime_missing = regime in {"", "not_captured", "unknown", "吏곸젒 罹≪쿂?섏? ?딆쓬"}
+    sentiment_missing = market_sentiment in {"", "not_captured", "unknown", "吏곸젒 罹≪쿂?섏? ?딆쓬"}
+    themes_known = themes not in {"", "not_captured", "unknown", "吏곸젒 罹≪쿂?섏? ?딆쓬"}
     if regime_missing and sentiment_missing and (playbook != "not_captured" or themes_known):
         bullets.append(
-            f"시장 상태/심리 직접 캡처는 제한적이며, 플레이북 {playbook}, 핵심 테마 {themes if themes_known else 'not_captured'} 기준으로 해석했습니다."
+            f"?쒖옣 ?곹깭/?щ━ 吏곸젒 罹≪쿂???쒗븳?곸씠硫? ?뚮젅?대턿 {playbook}, ?듭떖 ?뚮쭏 {themes if themes_known else 'not_captured'} 湲곗??쇰줈 ?댁꽍?덉뒿?덈떎."
         )
     else:
         bullets.append(
-            f"시장 상태는 {regime or 'not_captured'}, 시장 심리는 {market_sentiment or 'not_captured'}, 플레이북은 {playbook}, 핵심 테마는 {themes} 기준입니다."
+            f"?쒖옣 ?곹깭??{regime or 'not_captured'}, ?쒖옣 ?щ━??{market_sentiment or 'not_captured'}, ?뚮젅?대턿? {playbook}, ?듭떖 ?뚮쭏??{themes} 湲곗??낅땲??"
         )
     if sentiment is not None or vix_level is not None:
         metric = []
         if sentiment is not None:
-            metric.append(f"글로벌 감성 {sentiment:.3f}")
+            metric.append(f"湲濡쒕쾶 媛먯꽦 {sentiment:.3f}")
         if vix_level is not None:
-            change_text = f", 변화율 {_format_pct_points(vix_change)}" if vix_change is not None else ""
+            change_text = f", 蹂?붿쑉 {_format_pct_points(vix_change)}" if vix_change is not None else ""
             metric.append(f"VIX {vix_level:.2f}{change_text}")
-        bullets.append("변동성/심리 입력은 " + ", ".join(metric) + "입니다.")
+        bullets.append("蹂?숈꽦/?щ━ ?낅젰? " + ", ".join(metric) + "?낅땲??")
     if us_indices:
         bullets.append(
-            f"미국 지수는 S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
-            f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}였습니다."
+            f"誘멸뎅 吏?섎뒗 S&P500 {_format_pct_points(us_indices.get('sp500'))}, "
+            f"Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}??듬땲??"
         )
     if headline_count or query_count or targets:
         bullets.append(
-            f"뉴스 입력은 {headline_count}건 헤드라인, 조회 대상은 {query_count}개"
+            f"?댁뒪 ?낅젰? {headline_count}嫄??ㅻ뱶?쇱씤, 議고쉶 ??곸? {query_count}媛?"
             + (f" ({targets})" if targets else "")
-            + "를 반영했습니다."
+            + "瑜?諛섏쁺?덉뒿?덈떎."
         )
     if market_titles:
-        bullets.append(f"주요 시장 뉴스는 {market_titles}입니다.")
+        bullets.append(f"二쇱슂 ?쒖옣 ?댁뒪??{market_titles}?낅땲??")
     if symbol_title:
-        bullets.append(f"대표 종목/섹터 뉴스는 {symbol_title}입니다.")
+        bullets.append(f"???醫낅ぉ/?뱁꽣 ?댁뒪??{symbol_title}?낅땲??")
     return _dedupe_list(bullets, max_items=8, max_len=260)
 
 
@@ -2055,118 +2052,118 @@ def _build_strategist_summary_section(
     )
     theme_linkage = _theme_linkage_label(market_context.get("themes") or market_context.get("preferred_themes"))
 
-    regime_missing = regime in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
-    sentiment_missing = market_sentiment in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
-    themes_known = themes not in {"", "not_captured", "unknown", "직접 캡처되지 않음"}
+    regime_missing = regime in {"", "not_captured", "unknown", "吏곸젒 罹≪쿂?섏? ?딆쓬"}
+    sentiment_missing = market_sentiment in {"", "not_captured", "unknown", "吏곸젒 罹≪쿂?섏? ?딆쓬"}
+    themes_known = themes not in {"", "not_captured", "unknown", "吏곸젒 罹≪쿂?섏? ?딆쓬"}
 
     if regime_missing and sentiment_missing:
         frame_bits: List[str] = []
-        if playbook not in {"", "not_captured", "unknown", "직접 캡처되지 않음"}:
-            frame_bits.append(f"플레이북 {playbook}")
+        if playbook not in {"", "not_captured", "unknown", "吏곸젒 罹≪쿂?섏? ?딆쓬"}:
+            frame_bits.append(f"?뚮젅?대턿 {playbook}")
         if themes_known:
-            frame_bits.append(f"핵심 테마 {themes}")
-        frame_text = ", ".join(frame_bits) if frame_bits else "핵심 프레임 미확인"
-        summary_parts = [f"전략가는 시장 상태 직접 캡처가 제한적이어서 {frame_text} 중심으로 정리했습니다."]
+            frame_bits.append(f"?듭떖 ?뚮쭏 {themes}")
+        frame_text = ", ".join(frame_bits) if frame_bits else "?듭떖 ?꾨젅??誘명솗??"
+        summary_parts = [f"?꾨왂媛???쒖옣 ?곹깭 吏곸젒 罹≪쿂媛 ?쒗븳?곸씠?댁꽌 {frame_text} 以묒떖?쇰줈 ?뺣━?덉뒿?덈떎."]
     else:
-        summary_parts = [f"전략가는 시장을 {regime or 'not_captured'}, 시장 심리를 {market_sentiment or 'not_captured'}으로 해석했고 {playbook} 플레이북과 {themes} 프레임을 유지했습니다."]
+        summary_parts = [f"?꾨왂媛???쒖옣??{regime or 'not_captured'}, ?쒖옣 ?щ━瑜?{market_sentiment or 'not_captured'}?쇰줈 ?댁꽍?덇퀬 {playbook} ?뚮젅?대턿怨?{themes} ?꾨젅?꾩쓣 ?좎??덉뒿?덈떎."]
     if not stress_flags:
-        summary_parts.append("뚜렷한 스트레스 신호는 확인되지 않았습니다.")
+        summary_parts.append("?쒕졆???ㅽ듃?덉뒪 ?좏샇???뺤씤?섏? ?딆븯?듬땲??")
     if selected_symbol:
-        scanner_sentence = f"스캐너 연결 종목은 {selected_symbol}입니다."
+        scanner_sentence = f"?ㅼ틦???곌껐 醫낅ぉ? {selected_symbol}?낅땲??"
         if selected_rank not in (None, "") and selected_score is not None:
-            scanner_sentence = f"스캐너 연결 종목은 {selected_symbol}이며 순위 {selected_rank}, 점수 {selected_score:.3f}입니다."
+            scanner_sentence = f"?ㅼ틦???곌껐 醫낅ぉ? {selected_symbol}?대ŉ ?쒖쐞 {selected_rank}, ?먯닔 {selected_score:.3f}?낅땲??"
         summary_parts.append(scanner_sentence)
     summary = " ".join(summary_parts)
 
     bullets: List[str] = []
     input_bits: List[str] = []
     if sentiment is not None:
-        input_bits.append(f"글로벌 감성 {sentiment:.3f}")
+        input_bits.append(f"湲濡쒕쾶 媛먯꽦 {sentiment:.3f}")
     if vix_level is not None:
         input_bits.append(f"VIX {vix_level:.2f}")
     if headline_count or query_count:
-        input_bits.append(f"뉴스 {headline_count}건/{query_count}대상")
+        input_bits.append(f"?댁뒪 {headline_count}嫄?{query_count}???")
     us_indices = _extract_us_indices_snapshot(market_context.get("key_events") or market_context.get("key_events_hint"))
     if us_indices:
         input_bits.append(
-            f"미국 지수 S&P500 {_format_pct_points(us_indices.get('sp500'))}, Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}"
+            f"誘멸뎅 吏??S&P500 {_format_pct_points(us_indices.get('sp500'))}, Nasdaq {_format_pct_points(us_indices.get('nasdaq'))}, Dow {_format_pct_points(us_indices.get('dow'))}"
         )
     if input_bits:
-        bullets.append("핵심 입력은 " + ", ".join(input_bits) + "입니다.")
+        bullets.append("?듭떖 ?낅젰? " + ", ".join(input_bits) + "?낅땲??")
 
     if regime_missing and sentiment_missing:
-        interpretation_bits = [f"플레이북 {playbook}"]
+        interpretation_bits = [f"?뚮젅?대턿 {playbook}"]
         if themes_known:
-            interpretation_bits.append(f"핵심 테마 {themes}")
-        interpretation_bits.append("스트레스 신호 없음" if not stress_flags else "스트레스 신호 " + ", ".join(stress_flags))
-        bullets.append("전략 해석은 " + ", ".join(interpretation_bits) + " 기준이었습니다.")
+            interpretation_bits.append(f"?듭떖 ?뚮쭏 {themes}")
+        interpretation_bits.append("?ㅽ듃?덉뒪 ?좏샇 ?놁쓬" if not stress_flags else "?ㅽ듃?덉뒪 ?좏샇 " + ", ".join(stress_flags))
+        bullets.append("?꾨왂 ?댁꽍? " + ", ".join(interpretation_bits) + " 湲곗??댁뿀?듬땲??")
     else:
-        interpretation_bits = [f"시장 상태 {regime}", f"시장 심리 {market_sentiment}", f"플레이북 {playbook}", f"핵심 테마 {themes}"]
+        interpretation_bits = [f"?쒖옣 ?곹깭 {regime}", f"?쒖옣 ?щ━ {market_sentiment}", f"?뚮젅?대턿 {playbook}", f"?듭떖 ?뚮쭏 {themes}"]
         if stress_flags:
-            interpretation_bits.append("스트레스 신호 " + ", ".join(stress_flags))
+            interpretation_bits.append("?ㅽ듃?덉뒪 ?좏샇 " + ", ".join(stress_flags))
         else:
-            interpretation_bits.append("스트레스 신호 없음")
-        bullets.append("전략 해석은 " + ", ".join(interpretation_bits) + " 기준이었습니다.")
+            interpretation_bits.append("?ㅽ듃?덉뒪 ?좏샇 ?놁쓬")
+        bullets.append("?꾨왂 ?댁꽍? " + ", ".join(interpretation_bits) + " 湲곗??댁뿀?듬땲??")
 
     if query_targets:
-        bullets.append(f"전략가가 관찰한 대상은 다음과 같았습니다: {query_targets}.")
+        bullets.append(f"?꾨왂媛媛 愿李고븳 ??곸? ?ㅼ쓬怨?媛숈븯?듬땲?? {query_targets}.")
     if risk_mode or selected_playbook:
         if risk_mode and selected_playbook:
-            bullets.append(f"전략가 운용 기준은 리스크 모드 {risk_mode}이었고, 선택 플레이북은 {selected_playbook}이었습니다.")
+            bullets.append(f"?꾨왂媛 ?댁슜 湲곗?? 由ъ뒪??紐⑤뱶 {risk_mode}?댁뿀怨? ?좏깮 ?뚮젅?대턿? {selected_playbook}?댁뿀?듬땲??")
         elif risk_mode:
-            bullets.append(f"전략가 운용 기준은 리스크 모드 {risk_mode}였습니다.")
+            bullets.append(f"?꾨왂媛 ?댁슜 湲곗?? 由ъ뒪??紐⑤뱶 {risk_mode}??듬땲??")
         else:
-            bullets.append(f"전략가 운용 기준에서 선택 플레이북은 {selected_playbook}이었습니다.")
+            bullets.append(f"?꾨왂媛 ?댁슜 湲곗??먯꽌 ?좏깮 ?뚮젅?대턿? {selected_playbook}?댁뿀?듬땲??")
     if preferred_themes or avoid_themes:
         theme_pref_bits: List[str] = []
         if preferred_themes:
-            theme_pref_bits.append(f"선호 테마 {preferred_themes}")
+            theme_pref_bits.append(f"?좏샇 ?뚮쭏 {preferred_themes}")
         if avoid_themes:
-            theme_pref_bits.append(f"회피 테마 {avoid_themes}")
-        bullets.append("전략가 선호/회피 기준은 " + ", ".join(theme_pref_bits) + "이었습니다.")
+            theme_pref_bits.append(f"?뚰뵾 ?뚮쭏 {avoid_themes}")
+        bullets.append("?꾨왂媛 ?좏샇/?뚰뵾 湲곗?? " + ", ".join(theme_pref_bits) + "?댁뿀?듬땲??")
     if scanner_bias:
-        bullets.append(f"스캐너 바이어스는 {scanner_bias} 기준이었습니다.")
+        bullets.append(f"?ㅼ틦??諛붿씠?댁뒪??{scanner_bias} 湲곗??댁뿀?듬땲??")
     if candidate_hints:
-        bullets.append("전략가 후보 힌트는 " + ", ".join(candidate_hints) + "였습니다.")
+        bullets.append("?꾨왂媛 ?꾨낫 ?뚰듃??" + ", ".join(candidate_hints) + "??듬땲??")
     if market_titles or symbol_title:
         if market_titles and symbol_title and selected_symbol:
-            linkage_line = f"뉴스 연결 해석은 시장 뉴스로 {theme_linkage} 맥락을 확인했고, 종목 뉴스로 {selected_symbol} 선정 근거를 보강했습니다."
+            linkage_line = f"?댁뒪 ?곌껐 ?댁꽍? ?쒖옣 ?댁뒪濡?{theme_linkage} 留λ씫???뺤씤?덇퀬, 醫낅ぉ ?댁뒪濡?{selected_symbol} ?좎젙 洹쇨굅瑜?蹂닿컯?덉뒿?덈떎."
         elif market_titles:
-            linkage_line = f"뉴스 연결 해석은 시장 뉴스로 {theme_linkage} 맥락을 확인했습니다."
+            linkage_line = f"?댁뒪 ?곌껐 ?댁꽍? ?쒖옣 ?댁뒪濡?{theme_linkage} 留λ씫???뺤씤?덉뒿?덈떎."
         elif symbol_title and selected_symbol:
-            linkage_line = f"뉴스 연결 해석은 종목 뉴스로 {selected_symbol} 선정 근거를 보강했습니다."
+            linkage_line = f"?댁뒪 ?곌껐 ?댁꽍? 醫낅ぉ ?댁뒪濡?{selected_symbol} ?좎젙 洹쇨굅瑜?蹂닿컯?덉뒿?덈떎."
         else:
-            linkage_line = "뉴스 연결 해석은 headline evidence로 확인됐습니다."
+            linkage_line = "?댁뒪 ?곌껐 ?댁꽍? headline evidence濡??뺤씤?먯뒿?덈떎."
         if selected_sources:
-            linkage_line += f". 선정 소스는 {selected_sources}였습니다."
+            linkage_line += f". ?좎젙 ?뚯뒪??{selected_sources}??듬땲??"
         evidence_parts: List[str] = []
         if market_titles:
-            evidence_parts.append(f"시장: {market_titles}")
+            evidence_parts.append(f"?쒖옣: {market_titles}")
         if symbol_title:
-            evidence_parts.append(f"종목: {symbol_title}")
+            evidence_parts.append(f"醫낅ぉ: {symbol_title}")
         if evidence_parts:
-            linkage_line += " 참조 headline: " + " / ".join(evidence_parts)
+            linkage_line += " 李몄“ headline: " + " / ".join(evidence_parts)
         bullets.append(linkage_line)
         if selected_sources:
-            bullets.append(f"이 해석은 {selected_sources} 축으로 연결했습니다.")
+            bullets.append(f"???댁꽍? {selected_sources} 異뺤쑝濡??곌껐?덉뒿?덈떎.")
     contribution_bits: List[str] = []
     if sentiment_contrib is not None:
-        contribution_bits.append(f"감성 기여 {sentiment_contrib:+.3f}")
+        contribution_bits.append(f"媛먯꽦 湲곗뿬 {sentiment_contrib:+.3f}")
     if theme_boost is not None:
-        contribution_bits.append(f"테마 가점 {theme_boost:+.3f}")
+        contribution_bits.append(f"?뚮쭏 媛??{theme_boost:+.3f}")
     if selected_sources:
-        contribution_bits.append(f"선정 소스 {selected_sources}")
+        contribution_bits.append(f"?좎젙 ?뚯뒪 {selected_sources}")
     if scanner_bias_applied:
-        contribution_bits.append("바이어스 적용")
+        contribution_bits.append("諛붿씠?댁뒪 ?곸슜")
     if contribution_bits:
-        bullets.append("스캐너 반영은 " + ", ".join(contribution_bits) + " 기준으로 정리됐습니다.")
+        bullets.append("?ㅼ틦??諛섏쁺? " + ", ".join(contribution_bits) + " 湲곗??쇰줈 ?뺣━?먯뒿?덈떎.")
     if selected_symbol:
         symbol_bits = [selected_symbol]
         if selected_rank not in (None, ""):
-            symbol_bits.append(f"{selected_rank}위")
+            symbol_bits.append(f"{selected_rank}??")
         if selected_score is not None:
-            symbol_bits.append(f"점수 {selected_score:.3f}")
-        bullets.append("종목 연결은 " + ", ".join(symbol_bits) + "로 확인됩니다.")
+            symbol_bits.append(f"?먯닔 {selected_score:.3f}")
+        bullets.append("醫낅ぉ ?곌껐? " + ", ".join(symbol_bits) + "濡??뺤씤?⑸땲??")
     return {
         "summary": summary,
         "bullets": _dedupe_list(bullets, max_items=10, max_len=260),
@@ -2203,21 +2200,21 @@ def _build_market_scanner_linkage_bullet(section: Any, scanner_reason: Dict[str,
 
     metric_bits: List[str] = []
     if score_value is not None:
-        metric_bits.append(f"종합 점수 {score_value:.3f}")
+        metric_bits.append(f"醫낇빀 ?먯닔 {score_value:.3f}")
     if sentiment_contrib is not None:
-        metric_bits.append(f"감성 기여 {sentiment_contrib:+.3f}")
+        metric_bits.append(f"媛먯꽦 湲곗뿬 {sentiment_contrib:+.3f}")
     if theme_boost is not None:
-        metric_bits.append(f"테마 가점 {theme_boost:+.3f}")
+        metric_bits.append(f"?뚮쭏 媛??{theme_boost:+.3f}")
     if global_sentiment_value is not None:
-        metric_bits.append(f"글로벌 감성 {global_sentiment_value:.3f}")
+        metric_bits.append(f"湲濡쒕쾶 媛먯꽦 {global_sentiment_value:.3f}")
     if vix_value is not None:
         metric_bits.append(f"VIX {vix_value:.2f}")
 
-    parts: List[str] = [f"종목 {symbol}을 {playbook} 플레이북 기준으로 선정했고"]
+    parts: List[str] = [f"醫낅ぉ {symbol}??{playbook} ?뚮젅?대턿 湲곗??쇰줈 ?좎젙?덇퀬"]
     if metric_bits:
         parts.append(", ".join(metric_bits))
     if source_text:
-        parts.append(f"선정 소스 {source_text}")
+        parts.append(f"?좎젙 ?뚯뒪 {source_text}")
     return "Scanner linkage: " + ", ".join(parts)
 
 
@@ -2232,14 +2229,14 @@ def _scanner_basis_text(scanner_reason: Dict[str, Any]) -> str:
     def _basis_label(value: Any) -> str:
         raw = _clip(value, max_len=120).strip()
         mapping = {
-            "trading value": "거래대금",
-            "theme and sector alignment": "섹터·테마 정렬",
-            "sentiment support": "감성 지원",
-            "top value": "거래대금 상위",
-            "top volume": "거래량 상위",
-            "momentum": "모멘텀",
-            "trend": "추세",
-            "confidence": "신뢰도",
+            "trading value": "嫄곕옒?湲?",
+            "theme and sector alignment": "?뱁꽣쨌?뚮쭏 ?뺣젹",
+            "sentiment support": "媛먯꽦 吏??",
+            "top value": "嫄곕옒?湲??곸쐞",
+            "top volume": "嫄곕옒???곸쐞",
+            "momentum": "紐⑤찘?",
+            "trend": "異붿꽭",
+            "confidence": "?좊ː??",
         }
         return mapping.get(raw.lower(), raw)
 
@@ -2252,11 +2249,11 @@ def _scanner_basis_text(scanner_reason: Dict[str, Any]) -> str:
 def _scanner_source_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "top_value": "거래대금 상위",
-        "top_volume": "거래량 상위",
-        "sector_theme": "섹터·테마 정렬",
-        "sentiment": "감성 반영",
-        "news": "뉴스 반영",
+        "top_value": "嫄곕옒?湲??곸쐞",
+        "top_volume": "嫄곕옒???곸쐞",
+        "sector_theme": "?뱁꽣쨌?뚮쭏 ?뺣젹",
+        "sentiment": "媛먯꽦 諛섏쁺",
+        "news": "?댁뒪 諛섏쁺",
     }
     return mapping.get(raw, _clip(value, max_len=80))
 
@@ -2265,7 +2262,7 @@ def _scanner_source_text(values: Any) -> str:
     labels = [_scanner_source_label(item) for item in _listify(values, max_items=4, max_len=80)]
     labels = [item for item in labels if item]
     if len(labels) == 2:
-        return f"{labels[0]}와 {labels[1]}"
+        return f"{labels[0]}? {labels[1]}"
     if len(labels) >= 3:
         return ", ".join(labels[:-1]) + f", {labels[-1]}"
     return ", ".join(labels)
@@ -2274,22 +2271,22 @@ def _scanner_source_text(values: Any) -> str:
 def _scanner_score_driver_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "trading_value": "거래대금",
-        "momentum": "모멘텀",
-        "trend": "추세",
-        "ma_alignment": "이동평균 정렬",
-        "adx_trend": "ADX 추세",
-        "volume_surge": "거래량 스파이크",
-        "intraday_strength": "장중 강도",
-        "vwap_alignment": "VWAP 정렬",
-        "theme_boost": "테마 가점",
-        "sentiment": "감성",
-        "cross_section_rank": "횡단면 순위",
-        "entry_compatibility_bias": "진입 적합성",
-        "rank_bonus": "순위 가점",
-        "risk_penalty": "리스크 패널티",
-        "repeat_symbol_penalty": "중복 종목 패널티",
-        "scanner_bias": "스캐너 바이어스",
+        "trading_value": "嫄곕옒?湲?",
+        "momentum": "紐⑤찘?",
+        "trend": "異붿꽭",
+        "ma_alignment": "?대룞?됯퇏 ?뺣젹",
+        "adx_trend": "ADX 異붿꽭",
+        "volume_surge": "嫄곕옒???ㅽ뙆?댄겕",
+        "intraday_strength": "?μ쨷 媛뺣룄",
+        "vwap_alignment": "VWAP ?뺣젹",
+        "theme_boost": "?뚮쭏 媛??",
+        "sentiment": "媛먯꽦",
+        "cross_section_rank": "?〓떒硫??쒖쐞",
+        "entry_compatibility_bias": "吏꾩엯 ?곹빀??",
+        "rank_bonus": "?쒖쐞 媛??",
+        "risk_penalty": "由ъ뒪???⑤꼸??",
+        "repeat_symbol_penalty": "以묐났 醫낅ぉ ?⑤꼸??",
+        "scanner_bias": "?ㅼ틦??諛붿씠?댁뒪",
     }
     return mapping.get(raw, _clip(value, max_len=80))
 
@@ -2297,18 +2294,18 @@ def _scanner_score_driver_label(value: Any) -> str:
 def _scanner_chart_feature_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "engine_ma20_gap": "20일선 이격",
-        "engine_ma60": "60일선",
-        "engine_ma120": "120일선",
+        "engine_ma20_gap": "20?쇱꽑 ?닿꺽",
+        "engine_ma60": "60?쇱꽑",
+        "engine_ma120": "120?쇱꽑",
         "engine_adx14": "ADX14",
-        "engine_trend_strength": "추세 강도",
-        "engine_volume_spike20": "20봉 거래량 스파이크",
-        "engine_volatility20": "20봉 변동성",
-        "engine_vwap_distance": "VWAP 이격",
-        "engine_sector_relative_strength": "섹터 상대강도",
-        "engine_cross_section_rank": "횡단면 순위",
-        "engine_regime": "레짐",
-        "engine_signal_score": "신호 점수",
+        "engine_trend_strength": "異붿꽭 媛뺣룄",
+        "engine_volume_spike20": "20遊?嫄곕옒???ㅽ뙆?댄겕",
+        "engine_volatility20": "20遊?蹂?숈꽦",
+        "engine_vwap_distance": "VWAP ?닿꺽",
+        "engine_sector_relative_strength": "?뱁꽣 ?곷?媛뺣룄",
+        "engine_cross_section_rank": "?〓떒硫??쒖쐞",
+        "engine_regime": "?덉쭚",
+        "engine_signal_score": "?좏샇 ?먯닔",
     }
     return mapping.get(raw, _clip(value, max_len=80))
 
@@ -2394,11 +2391,11 @@ def _build_runner_up_comparison(
         gap = selected_score - runner_score
         if gap >= 0:
             parts.append(
-                f"종합 점수 {runner_score:.3f}로 {selected_symbol}({selected_score:.3f})보다 {gap:.3f} 낮았습니다"
+                f"醫낇빀 ?먯닔 {runner_score:.3f}濡?{selected_symbol}({selected_score:.3f})蹂대떎 {gap:.3f} ??븯?듬땲??"
             )
     if runner_risk is not None and selected_risk is not None and runner_risk > selected_risk:
         parts.append(
-            f"리스크 점수 {runner_risk:.3f}로 {selected_symbol}({selected_risk:.3f})보다 높았습니다"
+            f"由ъ뒪???먯닔 {runner_risk:.3f}濡?{selected_symbol}({selected_risk:.3f})蹂대떎 ?믪븯?듬땲??"
         )
     if not parts:
         why_text = _clip(row.get("why") or row.get("summary"), max_len=220)
@@ -2406,14 +2403,14 @@ def _build_runner_up_comparison(
             parts.append(_operatorize_report_text(why_text))
     if not parts:
         return ""
-    return f"{runner_symbol}은 " + ". ".join(parts) + "."
+    return f"{runner_symbol}? " + ". ".join(parts) + "."
 
 
 def _build_scanner_choice_bullets(
     scanner_reason: Dict[str, Any],
     market_context: Dict[str, Any],
 ) -> List[str]:
-    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "선정 종목"
+    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "?좎젙 醫낅ぉ"
     rank = scanner_reason.get("selected_rank")
     universe = scanner_reason.get("universe_size")
     score_value = _num_opt(scanner_reason.get("selected_score"))
@@ -2430,31 +2427,31 @@ def _build_scanner_choice_bullets(
 
     bullets: List[str] = []
     if fallback_ctx["used"] and fallback_ctx["scanner_top_pick_symbol"]:
-        fallback_line = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}은 모니터 단계에서 막혔고 실제 진입 종목은 {symbol}입니다."
+        fallback_line = f"?ㅼ틦??1?쒖쐞 {fallback_ctx['scanner_top_pick_symbol']}? 紐⑤땲???④퀎?먯꽌 留됲삍怨??ㅼ젣 吏꾩엯 醫낅ぉ? {symbol}?낅땲??"
         if fallback_ctx["reason"]:
-            fallback_line = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}은 {fallback_ctx['reason']} 이유로 막혔고 실제 진입 종목은 {symbol}입니다."
+            fallback_line = f"?ㅼ틦??1?쒖쐞 {fallback_ctx['scanner_top_pick_symbol']}? {fallback_ctx['reason']} ?댁쑀濡?留됲삍怨??ㅼ젣 吏꾩엯 醫낅ぉ? {symbol}?낅땲??"
         bullets.append(fallback_line)
         if fallback_ctx["trigger_reason"]:
-            bullets.append(f"실제 진입은 {fallback_ctx['trigger_reason']} 조건에서 확정됐습니다.")
+            bullets.append(f"?ㅼ젣 吏꾩엯? {fallback_ctx['trigger_reason']} 議곌굔?먯꽌 ?뺤젙?먯뒿?덈떎.")
     if universe not in (None, "") and rank not in (None, ""):
-        bullets.append(f"총 {int(universe)}개 후보를 비교했고 {symbol}이 {rank}위로 선정됐습니다.")
+        bullets.append(f"珥?{int(universe)}媛??꾨낫瑜?鍮꾧탳?덇퀬 {symbol}??{rank}?꾨줈 ?좎젙?먯뒿?덈떎.")
     elif rank not in (None, ""):
-        bullets.append(f"{symbol}의 최종 선정 순위는 {rank}위였습니다.")
+        bullets.append(f"{symbol}??理쒖쥌 ?좎젙 ?쒖쐞??{rank}?꾩??듬땲??")
     if score_value is not None:
-        metric_bits = [f"종합 점수 {score_value:.3f}"]
+        metric_bits = [f"醫낇빀 ?먯닔 {score_value:.3f}"]
         if confidence_value is not None:
-            metric_bits.append(f"신뢰도 {confidence_value:.2f}")
+            metric_bits.append(f"?좊ː??{confidence_value:.2f}")
         if selected_risk is not None:
-            metric_bits.append(f"리스크 {selected_risk:.3f}")
-        bullets.append(", ".join(metric_bits) + "로 집계됐습니다.")
+            metric_bits.append(f"由ъ뒪??{selected_risk:.3f}")
+        bullets.append(", ".join(metric_bits) + "濡?吏묎퀎?먯뒿?덈떎.")
     if basis:
-        bullets.append(f"주요 선정 기준은 {basis} 축이었습니다.")
+        bullets.append(f"二쇱슂 ?좎젙 湲곗?? {basis} 異뺤씠?덉뒿?덈떎.")
     if source_text:
-        bullets.append(f"선정에는 {source_text}이 반영됐습니다.")
+        bullets.append(f"?좎젙?먮뒗 {source_text}??諛섏쁺?먯뒿?덈떎.")
     if driver_summary:
-        bullets.append(f"주요 점수 기여는 {driver_summary}였습니다.")
+        bullets.append(f"二쇱슂 ?먯닔 湲곗뿬??{driver_summary}??듬땲??")
     if playbook:
-        bullets.append(f"전략가 플레이북 {playbook}과 정렬된 후보였습니다.")
+        bullets.append(f"?꾨왂媛 ?뚮젅?대턿 {playbook}怨??뺣젹???꾨낫??듬땲??")
     if ranked_rows:
         ranked_text = " / ".join(
             f"#{int(float(row.get('rank') or idx + 1))} {_clip(row.get('symbol'), max_len=24)}({_fmt_num(row.get('score_total'))})"
@@ -2462,7 +2459,7 @@ def _build_scanner_choice_bullets(
             if _clip(row.get("symbol"), max_len=24)
         )
         if ranked_text:
-            bullets.append(f"상위 후보는 {ranked_text} 순이었습니다.")
+            bullets.append(f"?곸쐞 ?꾨낫??{ranked_text} ?쒖씠?덉뒿?덈떎.")
     if coverage:
         present = int(float(coverage.get("present") or 0)) if _num_opt(coverage.get("present")) is not None else 0
         total = int(float(coverage.get("total") or 0)) if _num_opt(coverage.get("total")) is not None else 0
@@ -2471,11 +2468,11 @@ def _build_scanner_choice_bullets(
             for item in _listify(coverage.get("missing_keys"), max_items=4, max_len=80)
             if _scanner_chart_feature_label(item)
         ]
-        coverage_text = f"차트 피처 커버리지는 {present}/{total}였습니다." if present and total else ""
+        coverage_text = f"李⑦듃 ?쇱쿂 而ㅻ쾭由ъ???{present}/{total}??듬땲??" if present and total else ""
         if coverage_text and missing:
-            coverage_text += f" 누락된 항목은 {', '.join(missing)}이었습니다."
+            coverage_text += f" ?꾨씫????ぉ? {', '.join(missing)}?댁뿀?듬땲??"
         elif missing:
-            coverage_text = f"누락된 차트 피처는 {', '.join(missing)}였습니다."
+            coverage_text = f"?꾨씫??李⑦듃 ?쇱쿂??{', '.join(missing)}??듬땲??"
         if coverage_text:
             bullets.append(coverage_text)
     for row in list(scanner_reason.get("runner_ups") or [])[:2]:
@@ -2492,7 +2489,7 @@ def _build_scanner_choice_bullets(
 
 
 def _build_scanner_choice_summary(scanner_reason: Dict[str, Any], market_context: Dict[str, Any]) -> str:
-    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "선정 종목"
+    symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24) or "?좎젙 醫낅ぉ"
     rank = scanner_reason.get("selected_rank")
     universe = scanner_reason.get("universe_size")
     score_value = _num_opt(scanner_reason.get("selected_score"))
@@ -2519,42 +2516,42 @@ def _build_scanner_choice_summary(scanner_reason: Dict[str, Any], market_context
             comparison_bits.append(rendered.rstrip("."))
 
     if fallback_ctx["used"] and fallback_ctx["scanner_top_pick_symbol"]:
-        summary = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}이 모니터 단계에서 막힌 뒤 {symbol}이 실제 진입 종목으로 선택됐습니다"
+        summary = f"?ㅼ틦??1?쒖쐞 {fallback_ctx['scanner_top_pick_symbol']}??紐⑤땲???④퀎?먯꽌 留됲엺 ??{symbol}???ㅼ젣 吏꾩엯 醫낅ぉ?쇰줈 ?좏깮?먯뒿?덈떎"
         if fallback_ctx["reason"]:
-            summary = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}이 {fallback_ctx['reason']} 이유로 막힌 뒤 {symbol}이 실제 진입 종목으로 선택됐습니다"
+            summary = f"?ㅼ틦??1?쒖쐞 {fallback_ctx['scanner_top_pick_symbol']}??{fallback_ctx['reason']} ?댁쑀濡?留됲엺 ??{symbol}???ㅼ젣 吏꾩엯 醫낅ぉ?쇰줈 ?좏깮?먯뒿?덈떎"
     elif universe not in (None, "") and rank == 1:
-        summary = f"{symbol}은 총 {int(universe)}개 후보 중 1위로 선정됐습니다"
+        summary = f"{symbol}? 珥?{int(universe)}媛??꾨낫 以?1?꾨줈 ?좎젙?먯뒿?덈떎"
     elif rank == 1:
-        summary = f"{symbol}은 스캐너 후보 중 최종 1순위였습니다"
+        summary = f"{symbol}? ?ㅼ틦???꾨낫 以?理쒖쥌 1?쒖쐞??듬땲??"
     else:
-        summary = f"{symbol}이 스캐너 후보로 선정됐습니다"
+        summary = f"{symbol}???ㅼ틦???꾨낫濡??좎젙?먯뒿?덈떎"
     if universe not in (None, "") and rank not in (None, ""):
-        if not (rank == 1 and summary.endswith("선정됐습니다")):
-            summary += f". 총 {int(universe)}개 후보 중 {rank}위였습니다"
+        if not (rank == 1 and summary.endswith("?좎젙?먯뒿?덈떎")):
+            summary += f". 珥?{int(universe)}媛??꾨낫 以?{rank}?꾩??듬땲??"
     elif rank not in (None, ""):
-        summary += f". 선정 순위는 {rank}위였습니다"
+        summary += f". ?좎젙 ?쒖쐞??{rank}?꾩??듬땲??"
     elif universe not in (None, ""):
-        summary += f". 비교한 후보는 총 {int(universe)}개였습니다"
+        summary += f". 鍮꾧탳???꾨낫??珥?{int(universe)}媛쒖??듬땲??"
     if score_value is not None:
         if fallback_ctx["used"]:
-            summary += f". 실제 진입 후보의 종합 점수는 {score_value:.3f}였습니다"
+            summary += f". ?ㅼ젣 吏꾩엯 ?꾨낫??醫낇빀 ?먯닔??{score_value:.3f}??듬땲??"
         elif rank == 1:
-            summary += f". 종합 점수는 {score_value:.3f}로 가장 높았습니다"
+            summary += f". 醫낇빀 ?먯닔??{score_value:.3f}濡?媛???믪븯?듬땲??"
         else:
-            summary += f". 종합 점수는 {score_value:.3f}였습니다"
+            summary += f". 醫낇빀 ?먯닔??{score_value:.3f}??듬땲??"
     if basis:
-        summary += f". 강했던 축은 {basis} 축이었습니다"
+        summary += f". 媛뺥뻽??異뺤? {basis} 異뺤씠?덉뒿?덈떎"
     details: List[str] = []
     if sources:
-        details.append(f"선정에는 {sources}이 반영됐습니다")
+        details.append(f"?좎젙?먮뒗 {sources}??諛섏쁺?먯뒿?덈떎")
     if driver_summary:
-        details.append(f"핵심 점수 기여는 {driver_summary}였습니다")
+        details.append(f"?듭떖 ?먯닔 湲곗뿬??{driver_summary}??듬땲??")
     if confidence_value is not None:
-        details.append(f"신뢰도는 {confidence_value:.2f} 수준이었습니다")
+        details.append(f"?좊ː?꾨뒗 {confidence_value:.2f} ?섏??댁뿀?듬땲??")
     if selected_risk is not None:
-        details.append(f"리스크는 {selected_risk:.3f} 수준이었습니다")
+        details.append(f"由ъ뒪?щ뒗 {selected_risk:.3f} ?섏??댁뿀?듬땲??")
     if playbook:
-        details.append(f"전략가 플레이북 {playbook}과도 정렬됐습니다")
+        details.append(f"?꾨왂媛 ?뚮젅?대턿 {playbook}怨쇰룄 ?뺣젹?먯뒿?덈떎")
     if details:
         summary += ". " + ". ".join(details) + "."
     if comparison_bits:
@@ -2649,41 +2646,41 @@ def _has_noisy_trade_report_text(value: Any) -> bool:
 def _scanner_check_name_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "liquidity filter": "유동성 점검",
-        "유동성 필터": "유동성 점검",
-        "turnover filter": "회전율 점검",
-        "회전율 필터": "회전율 점검",
-        "sector/theme alignment": "섹터·테마 정렬 점검",
-        "섹터/테마 정렬": "섹터·테마 정렬 점검",
-        "chart completeness filter": "차트 피처 충실도 점검",
-        "차트 완전성 필터": "차트 피처 충실도 점검",
-        "sentiment gate": "시장 심리 점검",
-        "시장 심리 게이트": "시장 심리 점검",
-        "risk gate": "리스크 점검",
-        "리스크 게이트": "리스크 점검",
-        "price anomaly filter": "가격 이상치 점검",
-        "가격 이상치 필터": "가격 이상치 점검",
-        "spread/slippage filter": "호가 스프레드·슬리피지 점검",
-        "스프레드/슬리피지 필터": "호가 스프레드·슬리피지 점검",
+        "liquidity filter": "?좊룞???먭?",
+        "?좊룞???꾪꽣": "?좊룞???먭?",
+        "turnover filter": "?뚯쟾???먭?",
+        "?뚯쟾???꾪꽣": "?뚯쟾???먭?",
+        "sector/theme alignment": "?뱁꽣쨌?뚮쭏 ?뺣젹 ?먭?",
+        "?뱁꽣/?뚮쭏 ?뺣젹": "?뱁꽣쨌?뚮쭏 ?뺣젹 ?먭?",
+        "chart completeness filter": "李⑦듃 ?쇱쿂 異⑹떎???먭?",
+        "李⑦듃 ?꾩쟾???꾪꽣": "李⑦듃 ?쇱쿂 異⑹떎???먭?",
+        "sentiment gate": "?쒖옣 ?щ━ ?먭?",
+        "?쒖옣 ?щ━ 寃뚯씠??": "?쒖옣 ?щ━ ?먭?",
+        "risk gate": "由ъ뒪???먭?",
+        "由ъ뒪??寃뚯씠??": "由ъ뒪???먭?",
+        "price anomaly filter": "媛寃??댁긽移??먭?",
+        "媛寃??댁긽移??꾪꽣": "媛寃??댁긽移??먭?",
+        "spread/slippage filter": "?멸? ?ㅽ봽?덈뱶쨌?щ━?쇱? ?먭?",
+        "?ㅽ봽?덈뱶/?щ━?쇱? ?꾪꽣": "?멸? ?ㅽ봽?덈뱶쨌?щ━?쇱? ?먭?",
     }
-    return mapping.get(raw, _clip(value, max_len=80) or "스캐너 점검")
+    return mapping.get(raw, _clip(value, max_len=80) or "?ㅼ틦???먭?")
 
 
 def _scanner_check_status_label(value: Any) -> str:
     raw = _clip(value, max_len=40).strip().upper()
     mapping = {
-        "PASS": "통과",
-        "FAIL": "미통과",
-        "NOT_AVAILABLE": "확인 불가",
+        "PASS": "?듦낵",
+        "FAIL": "誘명넻怨?",
+        "NOT_AVAILABLE": "?뺤씤 遺덇?",
     }
-    return mapping.get(raw, _clip(value, max_len=40) or "확인 불가")
+    return mapping.get(raw, _clip(value, max_len=40) or "?뺤씤 遺덇?")
 
 
 def _build_scanner_filters_summary(filters_human: Dict[str, Any]) -> str:
     checks = [row for row in list(filters_human.get("checks") or []) if isinstance(row, dict)]
     feature_coverage = filters_human.get("feature_coverage") if isinstance(filters_human.get("feature_coverage"), dict) else {}
     if not checks:
-        return _clip(filters_human.get("summary"), max_len=600) or "스캐너 후보 비교 근거는 저장된 범위 안에서 제한적으로 확인됩니다."
+        return _clip(filters_human.get("summary"), max_len=600) or "?ㅼ틦???꾨낫 鍮꾧탳 洹쇨굅????λ맂 踰붿쐞 ?덉뿉???쒗븳?곸쑝濡??뺤씤?⑸땲??"
     pass_count = sum(1 for row in checks if str(row.get("status") or "").strip().upper() == "PASS")
     fail_count = sum(1 for row in checks if str(row.get("status") or "").strip().upper() == "FAIL")
     na_count = sum(1 for row in checks if str(row.get("status") or "").strip().upper() == "NOT_AVAILABLE")
@@ -2691,15 +2688,15 @@ def _build_scanner_filters_summary(filters_human: Dict[str, Any]) -> str:
     total = int(float(feature_coverage.get("total") or 0)) if _num_opt(feature_coverage.get("total")) is not None else 0
     quality_raw = _clip(feature_coverage.get("quality"), max_len=40).strip().lower()
     quality = {
-        "strong": "양호",
-        "good": "양호",
-        "moderate": "보통",
-        "weak": "취약",
+        "strong": "?묓샇",
+        "good": "?묓샇",
+        "moderate": "蹂댄넻",
+        "weak": "痍⑥빟",
     }.get(quality_raw, _clip(feature_coverage.get("quality"), max_len=40) or "not_captured")
 
-    summary = f"스캐너 후보 비교에서는 {len(checks)}개 체크 중 통과 {pass_count}개, 미통과 {fail_count}개, 확인 불가 {na_count}개였습니다."
+    summary = f"?ㅼ틦???꾨낫 鍮꾧탳?먯꽌??{len(checks)}媛?泥댄겕 以??듦낵 {pass_count}媛? 誘명넻怨?{fail_count}媛? ?뺤씤 遺덇? {na_count}媛쒖??듬땲??"
     if present and total:
-        summary += f" 차트 피처 커버리지는 {present}/{total}로 {quality} 수준이었습니다."
+        summary += f" 李⑦듃 ?쇱쿂 而ㅻ쾭由ъ???{present}/{total}濡?{quality} ?섏??댁뿀?듬땲??"
     return summary
 
 
@@ -2713,9 +2710,9 @@ def _build_scanner_filters_bullets(filters_human: Dict[str, Any]) -> List[str]:
         status = _scanner_check_status_label(row.get("status"))
         detail = _operatorize_report_text(row.get("detail"))
         if detail:
-            bullets.append(f"{label}은 {status}였습니다. 근거: {detail}")
+            bullets.append(f"{label}? {status}??듬땲?? 洹쇨굅: {detail}")
         else:
-            bullets.append(f"{label}은 {status}였습니다.")
+            bullets.append(f"{label}? {status}??듬땲??")
     return _dedupe_list(bullets, max_items=10, max_len=260)
 
 
@@ -2751,52 +2748,52 @@ def _build_entry_decision_summary(
 
     summary_parts: List[str] = []
     if reason_label:
-        summary_parts.append(f"진입은 {reason_label} 조건에서 실행됐습니다.")
+        summary_parts.append(f"吏꾩엯? {reason_label} 議곌굔?먯꽌 ?ㅽ뻾?먯뒿?덈떎.")
     if fallback_ctx["used"] and fallback_ctx["scanner_top_pick_symbol"]:
-        fallback_sentence = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}은 모니터 단계에서 막혔고 {symbol} 진입으로 전환됐습니다."
+        fallback_sentence = f"?ㅼ틦??1?쒖쐞 {fallback_ctx['scanner_top_pick_symbol']}? 紐⑤땲???④퀎?먯꽌 留됲삍怨?{symbol} 吏꾩엯?쇰줈 ?꾪솚?먯뒿?덈떎."
         if fallback_ctx["reason"]:
-            fallback_sentence = f"스캐너 1순위 {fallback_ctx['scanner_top_pick_symbol']}은 {fallback_ctx['reason']} 이유로 막혔고 {symbol} 진입으로 전환됐습니다."
+            fallback_sentence = f"?ㅼ틦??1?쒖쐞 {fallback_ctx['scanner_top_pick_symbol']}? {fallback_ctx['reason']} ?댁쑀濡?留됲삍怨?{symbol} 吏꾩엯?쇰줈 ?꾪솚?먯뒿?덈떎."
         if fallback_ctx["trigger_reason"]:
-            fallback_sentence += f" 실제 트리거는 {fallback_ctx['trigger_reason']}였습니다."
+            fallback_sentence += f" ?ㅼ젣 ?몃━嫄곕뒗 {fallback_ctx['trigger_reason']}??듬땲??"
         summary_parts.append(fallback_sentence)
     elif symbol and rank not in (None, ""):
-        summary_parts.append(f"{symbol}이 스캐너 {rank}위 후보로 올라온 뒤 매수로 이어졌습니다.")
+        summary_parts.append(f"{symbol}???ㅼ틦??{rank}???꾨낫濡??щ씪????留ㅼ닔濡??댁뼱議뚯뒿?덈떎.")
     elif symbol:
-        summary_parts.append(f"{symbol}에 대한 매수 판단으로 진입이 이어졌습니다.")
+        summary_parts.append(f"{symbol}?????留ㅼ닔 ?먮떒?쇰줈 吏꾩엯???댁뼱議뚯뒿?덈떎.")
     if playbook and triggered_path:
-        if playbook == "눌림목" and triggered_path != "눌림목·거래량 경로":
-            summary_parts.append(f"전략가 플레이북은 {playbook}이었지만 실제 엔트리는 {triggered_path}에서 확정됐습니다.")
+        if playbook == "?뚮┝紐?" and triggered_path != "?뚮┝紐㈑룰굅?섎웾 寃쎈줈":
+            summary_parts.append(f"?꾨왂媛 ?뚮젅?대턿? {playbook}?댁뿀吏留??ㅼ젣 ?뷀듃由щ뒗 {triggered_path}?먯꽌 ?뺤젙?먯뒿?덈떎.")
         else:
-            summary_parts.append(f"실제 엔트리 경로는 {triggered_path}였습니다.")
+            summary_parts.append(f"?ㅼ젣 ?뷀듃由?寃쎈줈??{triggered_path}??듬땲??")
     elif triggered_path:
-        summary_parts.append(f"실제 엔트리 경로는 {triggered_path}였습니다.")
+        summary_parts.append(f"?ㅼ젣 ?뷀듃由?寃쎈줈??{triggered_path}??듬땲??")
     if confidence_score is not None and confidence_threshold is not None:
         if abs(confidence_score - confidence_threshold) <= 1e-6:
             summary_parts.append(
-                f"진입 신뢰도 점수는 {confidence_score:.2f}로 기준 {confidence_threshold:.2f}와 동일했습니다."
+                f"吏꾩엯 ?좊ː???먯닔??{confidence_score:.2f}濡?湲곗? {confidence_threshold:.2f}? ?숈씪?덉뒿?덈떎."
             )
         else:
-            relation = "상회했습니다" if confidence_score > confidence_threshold else "하회했습니다"
+            relation = "?곹쉶?덉뒿?덈떎" if confidence_score > confidence_threshold else "?섑쉶?덉뒿?덈떎"
             summary_parts.append(
-                f"진입 신뢰도 점수는 {confidence_score:.2f}로 기준 {confidence_threshold:.2f}를 {relation}."
+                f"吏꾩엯 ?좊ː???먯닔??{confidence_score:.2f}濡?湲곗? {confidence_threshold:.2f}瑜?{relation}."
             )
     if summary_parts:
         return " ".join(summary_parts)
     scanner_summary = _build_scanner_choice_summary(scanner_reason, market_context)
     if scanner_summary:
         entry_action = _operator_action_label(_clip(entry_summary.get("action"), max_len=24) or action or "BUY")
-        return f"{scanner_summary} 이에 따라 진입 판단은 {entry_action}로 이어졌습니다."
-    return "진입 판단 근거는 저장된 데이터 범위 안에서 충분히 확인되지 않았습니다."
+        return f"{scanner_summary} ?댁뿉 ?곕씪 吏꾩엯 ?먮떒? {entry_action}濡??댁뼱議뚯뒿?덈떎."
+    return "吏꾩엯 ?먮떒 洹쇨굅????λ맂 ?곗씠??踰붿쐞 ?덉뿉??異⑸텇???뺤씤?섏? ?딆븯?듬땲??"
 
 
 def _entry_reason_label(value: Any) -> str:
     raw = _clip(value, max_len=220).strip()
     mapping = {
-        "breakout_above_recent_high_with_vwap_structure_confirmation": "직전 고점 돌파와 VWAP 구조 확인",
-        "breakout_confirmed": "돌파 확인",
-        "pullback_rebound_confirmed": "눌림목 반등 확인",
-        "reclaim_confirmed": "VWAP 재회복 확인",
-        "breakout_vwap_hold": "돌파 후 VWAP 지지 확인",
+        "breakout_above_recent_high_with_vwap_structure_confirmation": "吏곸쟾 怨좎젏 ?뚰뙆? VWAP 援ъ“ ?뺤씤",
+        "breakout_confirmed": "?뚰뙆 ?뺤씤",
+        "pullback_rebound_confirmed": "?뚮┝紐?諛섎벑 ?뺤씤",
+        "reclaim_confirmed": "VWAP ?ы쉶蹂??뺤씤",
+        "breakout_vwap_hold": "?뚰뙆 ??VWAP 吏吏 ?뺤씤",
     }
     if not raw:
         return ""
@@ -2807,11 +2804,12 @@ def _entry_reason_label(value: Any) -> str:
 
 def _exit_reason_label(value: Any) -> str:
     raw = _clip(value, max_len=220).strip()
-    lowered = raw.lower()
+    stripped = re.sub(r"^SELL was triggered because\s*", "", raw, flags=re.IGNORECASE).strip().rstrip(".")
+    lowered = stripped.lower()
     if not raw:
         return ""
     if "peak_drawdown" in lowered:
-        return "고점 대비 하락폭 확대로 청산"
+        return "고점 대비 하락폭 기준으로 청산"
     if "hard_stop" in lowered:
         return "고정 손절 기준으로 청산"
     if "take_profit" in lowered:
@@ -2820,18 +2818,25 @@ def _exit_reason_label(value: Any) -> str:
         return "추적 손절로 청산"
     if "vwap_breakdown" in lowered:
         return "VWAP 이탈로 청산"
-    return raw.replace("_", " ")
+    if "intraday low break" in lowered or "intraday_low_break" in lowered:
+        return "장중 저점 이탈 기준으로 청산"
+    if "below_vwap_reclaim_not_ready" in lowered or "below vwap reclaim not ready" in lowered:
+        return "VWAP 재회복 미완료 기준으로 청산"
+    operatorized = _operatorize_report_text(raw)
+    if operatorized and operatorized != raw:
+        return operatorized
+    return stripped.replace("_", " ")
 
 
 def _decision_chain_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "confirmed_exit_signal": "청산 확인 신호",
-        "peak_drawdown": "고점 대비 하락폭",
-        "breakout_above_recent_high_with_vwap_structure_confirmation": "직전 고점 돌파와 VWAP 구조 확인",
-        "hard_stop": "고정 손절",
-        "vwap_breakdown": "VWAP 이탈",
-        "breakout_path": "돌파 경로",
+        "confirmed_exit_signal": "泥?궛 ?뺤씤 ?좏샇",
+        "peak_drawdown": "怨좎젏 ?鍮??섎씫??",
+        "breakout_above_recent_high_with_vwap_structure_confirmation": "吏곸쟾 怨좎젏 ?뚰뙆? VWAP 援ъ“ ?뺤씤",
+        "hard_stop": "怨좎젙 ?먯젅",
+        "vwap_breakdown": "VWAP ?댄깉",
+        "breakout_path": "?뚰뙆 寃쎈줈",
     }
     return mapping.get(raw, _clip(value, max_len=80))
 
@@ -2842,16 +2847,16 @@ def _humanize_duration_text(value: Any, *, fallback_seconds: Any = None) -> str:
     total_seconds: Optional[int] = None
 
     if text:
-        if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", text):
+        if _safe_fullmatch(r"\d{1,2}:\d{2}:\d{2}", text):
             hours, minutes, seconds = [int(part) for part in text.split(":")]
             total_seconds = hours * 3600 + minutes * 60 + seconds
-        elif re.fullmatch(r"\d{1,2}:\d{2}", text):
+        elif _safe_fullmatch(r"\d{1,2}:\d{2}", text):
             minutes, seconds = [int(part) for part in text.split(":")]
             total_seconds = minutes * 60 + seconds
         else:
-            hour_match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*h", lowered)
-            minute_match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*m", lowered)
-            second_match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*s", lowered)
+            hour_match = _safe_fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*h", lowered)
+            minute_match = _safe_fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*m", lowered)
+            second_match = _safe_fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*s", lowered)
             if hour_match:
                 total_seconds = int(round(float(hour_match.group(1)) * 3600))
             elif minute_match:
@@ -2872,11 +2877,11 @@ def _humanize_duration_text(value: Any, *, fallback_seconds: Any = None) -> str:
     minutes, seconds = divmod(remainder, 60)
     parts: List[str] = []
     if hours:
-        parts.append(f"{hours}시간")
+        parts.append(f"{hours}?쒓컙")
     if minutes:
-        parts.append(f"{minutes}분")
+        parts.append(f"{minutes}遺?")
     if seconds or not parts:
-        parts.append(f"{seconds}초")
+        parts.append(f"{seconds}珥?")
     return " ".join(parts)
 
 
@@ -2884,17 +2889,17 @@ def _holding_duration_label(value: Any) -> str:
     text = _humanize_duration_text(value)
     if not text:
         return ""
-    return f"보유 시간은 {text}였습니다."
+    return f"蹂댁쑀 ?쒓컙? {text}??듬땲??"
 
 
 def _execution_mode_label(value: Any) -> str:
     raw = _clip(value, max_len=120).strip().lower()
     mapping = {
-        "simulation trade report": "시뮬레이션 거래 리포트",
-        "simulation": "시뮬레이션",
-        "simulation (mock broker)": "시뮬레이션 (모의 브로커)",
-        "real": "실거래",
-        "live": "실거래",
+        "simulation trade report": "?쒕??덉씠??嫄곕옒 由ы룷??",
+        "simulation": "?쒕??덉씠??",
+        "simulation (mock broker)": "?쒕??덉씠??(紐⑥쓽 釉뚮줈而?",
+        "real": "?ㅺ굅??",
+        "live": "?ㅺ굅??",
     }
     return mapping.get(raw, _clip(value, max_len=120))
 
@@ -2902,56 +2907,56 @@ def _execution_mode_label(value: Any) -> str:
 def _entry_path_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "breakout_path": "돌파 경로",
-        "pullback_volume_path": "눌림목·거래량 경로",
-        "reclaim_path": "재회복 경로",
+        "breakout_path": "?뚰뙆 寃쎈줈",
+        "pullback_volume_path": "?뚮┝紐㈑룰굅?섎웾 寃쎈줈",
+        "reclaim_path": "?ы쉶蹂?寃쎈줈",
     }
     return mapping.get(raw, _clip(value, max_len=80))
 
 
 def _entry_gate_state_label(value: Any) -> str:
     if value is True:
-        return "통과"
+        return "?듦낵"
     if value is False:
-        return "미통과"
-    return "기록 없음"
+        return "誘명넻怨?"
+    return "湲곕줉 ?놁쓬"
 
 
 def _entry_gate_name_label(value: str) -> str:
     mapping = {
-        "reclaim": "VWAP 재회복",
-        "extension": "과확장 점검",
-        "confidence gate": "신뢰도 게이트",
+        "reclaim": "VWAP ?ы쉶蹂?",
+        "extension": "怨쇳솗???먭?",
+        "confidence gate": "?좊ː??寃뚯씠??",
     }
     return mapping.get(value, value)
 
 
-def _korean_predicate(value: str, *, noun_suffix: str = "입니다.") -> str:
+def _korean_predicate(value: str, *, noun_suffix: str = "?낅땲??") -> str:
     text = str(value or "").strip()
     if not text:
         return noun_suffix
-    tail = "입니다." if noun_suffix == "입니다." else noun_suffix
+    tail = "?낅땲??" if noun_suffix == "?낅땲??" else noun_suffix
     last = text[-1]
     code = ord(last)
     if 0xAC00 <= code <= 0xD7A3:
         has_batchim = (code - 0xAC00) % 28 != 0
-        if tail == "입니다.":
-            return "이었습니다." if has_batchim else "였습니다."
+        if tail == "?낅땲??":
+            return "?댁뿀?듬땲??" if has_batchim else "??듬땲??"
     return tail
 
 
 def _korean_euro_ro(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
-        return "로"
+        return "濡?"
     last = text[-1]
     code = ord(last)
     if 0xAC00 <= code <= 0xD7A3:
         jong = (code - 0xAC00) % 28
         if jong == 0 or jong == 8:
-            return "로"
-        return "으로"
-    return "로"
+            return "濡?"
+        return "?쇰줈"
+    return "濡?"
 
 
 def _build_entry_decision_bullets(
@@ -2962,19 +2967,19 @@ def _build_entry_decision_bullets(
     action: str,
 ) -> List[str]:
     bullets: List[str] = [
-        f"진입 run은 {_clip(entry_summary.get('run_id'), max_len=80) or '기록 없음'}입니다.",
-        f"진입 시각은 {_clip(entry_summary.get('ts'), max_len=80) or '기록 없음'}입니다.",
-        f"진입 액션은 {_operator_action_label(_clip(entry_summary.get('action'), max_len=40) or action)}였습니다.",
+        f"吏꾩엯 run? {_clip(entry_summary.get('run_id'), max_len=80) or '湲곕줉 ?놁쓬'}?낅땲??",
+        f"吏꾩엯 ?쒓컖? {_clip(entry_summary.get('ts'), max_len=80) or '湲곕줉 ?놁쓬'}?낅땲??",
+        f"吏꾩엯 ?≪뀡? {_operator_action_label(_clip(entry_summary.get('action'), max_len=40) or action)}??듬땲??",
     ]
     reason_label = _entry_reason_label(entry_summary.get("reason_human"))
     if reason_label:
-        bullets.append(f"진입 사유는 {reason_label}{_korean_predicate(reason_label)}")
+        bullets.append(f"吏꾩엯 ?ъ쑀??{reason_label}{_korean_predicate(reason_label)}")
 
     symbol = _clip(scanner_reason.get("selected_symbol"), max_len=24)
     rank = scanner_reason.get("selected_rank")
     selected_score = _num_opt(scanner_reason.get("selected_score"))
     if symbol and rank not in (None, "") and selected_score is not None:
-        bullets.append(f"진입 시점 스캐너에서는 {symbol}이 {rank}위, 종합 점수 {selected_score:.3f}였습니다.")
+        bullets.append(f"吏꾩엯 ?쒖젏 ?ㅼ틦?덉뿉?쒕뒗 {symbol}??{rank}?? 醫낇빀 ?먯닔 {selected_score:.3f}??듬땲??")
 
     grouped_trace = (
         monitor_reason.get("entry_grouped_logic_trace")
@@ -2994,9 +2999,9 @@ def _build_entry_decision_bullets(
     if triggered_path or paths_passed:
         parts: List[str] = []
         if triggered_path:
-            parts.append(f"실제 진입 경로는 {triggered_path}였습니다")
+            parts.append(f"?ㅼ젣 吏꾩엯 寃쎈줈??{triggered_path}??듬땲??")
         if paths_passed:
-            parts.append(f"통과 경로는 {', '.join(paths_passed)}였습니다")
+            parts.append(f"?듦낵 寃쎈줈??{', '.join(paths_passed)}??듬땲??")
         bullets.append(". ".join(parts) + ".")
 
     gate_bits: List[str] = []
@@ -3007,7 +3012,7 @@ def _build_entry_decision_bullets(
     if "confidence_gate_ok" in grouped_trace:
         gate_bits.append(f"{_entry_gate_name_label('confidence gate')} {_entry_gate_state_label(grouped_trace.get('confidence_gate_ok'))}")
     if gate_bits:
-        bullets.append("진입 게이트 상태는 " + ", ".join(gate_bits) + "였습니다.")
+        bullets.append("吏꾩엯 寃뚯씠???곹깭??" + ", ".join(gate_bits) + "??듬땲??")
 
     entry_scores = (
         monitor_reason.get("entry_condition_scores")
@@ -3017,7 +3022,7 @@ def _build_entry_decision_bullets(
     confidence_score = _num_opt(entry_scores.get("confidence_score"))
     confidence_threshold = _num_opt(entry_scores.get("confidence_threshold"))
     if confidence_score is not None and confidence_threshold is not None:
-        bullets.append(f"진입 신뢰도 점수는 {confidence_score:.2f}, 기준은 {confidence_threshold:.2f}였습니다.")
+        bullets.append(f"吏꾩엯 ?좊ː???먯닔??{confidence_score:.2f}, 湲곗?? {confidence_threshold:.2f}??듬땲??")
 
     entry_thresholds = (
         monitor_reason.get("entry_thresholds")
@@ -3031,21 +3036,21 @@ def _build_entry_decision_bullets(
     require_rebound = entry_thresholds.get("require_rebound")
     threshold_bits: List[str] = []
     if timeframe not in (None, ""):
-        threshold_bits.append(f"{int(float(timeframe))}분봉")
+        threshold_bits.append(f"{int(float(timeframe))}遺꾨큺")
     if breakout_lookback not in (None, ""):
-        threshold_bits.append(f"돌파 확인 기준 봉 수 {int(float(breakout_lookback))}")
+        threshold_bits.append(f"?뚰뙆 ?뺤씤 湲곗? 遊???{int(float(breakout_lookback))}")
     if volume_ratio_min is not None:
-        threshold_bits.append(f"최소 거래량 비율 {volume_ratio_min:.2f}")
+        threshold_bits.append(f"理쒖냼 嫄곕옒??鍮꾩쑉 {volume_ratio_min:.2f}")
     if require_vwap_reclaim is not None:
-        threshold_bits.append(f"VWAP 재회복 {'필수' if require_vwap_reclaim else '비필수'}")
+        threshold_bits.append(f"VWAP ?ы쉶蹂?{'?꾩닔' if require_vwap_reclaim else '鍮꾪븘??'}")
     if require_rebound is not None:
-        threshold_bits.append(f"반등 확인 {'필수' if require_rebound else '비필수'}")
+        threshold_bits.append(f"諛섎벑 ?뺤씤 {'?꾩닔' if require_rebound else '鍮꾪븘??'}")
     if threshold_bits:
-        bullets.append("적용 정책은 " + ", ".join(threshold_bits) + "였습니다.")
+        bullets.append("?곸슜 ?뺤콉? " + ", ".join(threshold_bits) + "??듬땲??")
 
     playbook = _market_token_label(market_context.get("playbook")) or _clip(market_context.get("playbook"), max_len=32)
     if playbook and triggered_path:
-        bullets.append(f"전략가 플레이북은 {playbook}, 실제 진입 경로는 {triggered_path}였습니다.")
+        bullets.append(f"?꾨왂媛 ?뚮젅?대턿? {playbook}, ?ㅼ젣 吏꾩엯 寃쎈줈??{triggered_path}??듬땲??")
 
     return _dedupe_list(bullets, max_items=10, max_len=260)
 
@@ -3058,13 +3063,13 @@ def _build_holding_story_summary(hold_count: int, monitor_reason: Dict[str, Any]
     confirm_count = monitor_reason.get("confirm_count")
     exit_triggered = bool(monitor_reason.get("exit_triggered"))
     if hold_count > 0:
-        base = f"보유 구간에서는 모니터가 총 {hold_count}회 실행되었고, 마지막 포지션 판단은 {posture}였습니다. 핵심 감시 축은 {axis}{_korean_euro_ro(axis)} 유지됐습니다."
+        base = f"蹂댁쑀 援ш컙?먯꽌??紐⑤땲?곌? 珥?{hold_count}???ㅽ뻾?섏뿀怨? 留덉?留??ъ????먮떒? {posture}??듬땲?? ?듭떖 媛먯떆 異뺤? {axis}{_korean_euro_ro(axis)} ?좎??먯뒿?덈떎."
     else:
-        base = "이번 lifecycle의 보유 구간 기록은 제한적이어서, 저장된 모니터 근거를 중심으로 보수적으로 정리했습니다."
+        base = "?대쾲 lifecycle??蹂댁쑀 援ш컙 湲곕줉? ?쒗븳?곸씠?댁꽌, ??λ맂 紐⑤땲??洹쇨굅瑜?以묒떖?쇰줈 蹂댁닔?곸쑝濡??뺣━?덉뒿?덈떎."
     if confirm_required is not None:
-        base += f" 청산 확인 조건은 {int(confirm_count or 0)}/{int(confirm_required or 0)} 단계로 기록되었습니다."
+        base += f" 泥?궛 ?뺤씤 議곌굔? {int(confirm_count or 0)}/{int(confirm_required or 0)} ?④퀎濡?湲곕줉?섏뿀?듬땲??"
     if status_text.lower() == "open" and not exit_triggered:
-        base += " 아직 확정된 매도 신호는 확인되지 않았습니다."
+        base += " ?꾩쭅 ?뺤젙??留ㅻ룄 ?좏샇???뺤씤?섏? ?딆븯?듬땲??"
     return base
 
 
@@ -3084,38 +3089,38 @@ def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason
     peak_drawdown = _fmt_pct(monitor_reason.get("peak_drawdown"))
     bullets: List[str] = []
     if hold_count:
-        bullets.append(f"모니터는 총 {hold_count}회 실행되었습니다.")
+        bullets.append(f"紐⑤땲?곕뒗 珥?{hold_count}???ㅽ뻾?섏뿀?듬땲??")
         bullets.append(f"Monitor runs: {hold_count}")
     if _clip(monitor_reason.get("posture"), max_len=48):
-        bullets.append(f"현재 포지션 판단은 {_operator_action_label(monitor_reason.get('posture'))}입니다.")
+        bullets.append(f"?꾩옱 ?ъ????먮떒? {_operator_action_label(monitor_reason.get('posture'))}?낅땲??")
     if _clip(monitor_reason.get("trigger_type"), max_len=64):
         trigger_label = _operator_axis_label(monitor_reason.get("trigger_type"))
-        bullets.append(f"보유 중 가장 강하게 감시된 신호는 {trigger_label}{_korean_predicate(trigger_label)}")
+        bullets.append(f"蹂댁쑀 以?媛??媛뺥븯寃?媛먯떆???좏샇??{trigger_label}{_korean_predicate(trigger_label)}")
     if monitor_reason.get("position_age_seconds") not in (None, ""):
-        bullets.append(f"포지션 보유 시간은 약 {int(monitor_reason.get('position_age_seconds') or 0)}초입니다.")
+        bullets.append(f"?ъ???蹂댁쑀 ?쒓컙? ??{int(monitor_reason.get('position_age_seconds') or 0)}珥덉엯?덈떎.")
     if effective_stop != "-":
         stop_reason = _clip(monitor_reason.get("effective_stop_reason"), max_len=64)
-        suffix = f", 기준 축은 {_operator_axis_label(stop_reason)}입니다" if stop_reason else ""
-        bullets.append(f"유효 손절 기준은 {effective_stop} 수준입니다{suffix}.")
+        suffix = f", 기준 축은 {_operator_axis_label(stop_reason)}입니다." if stop_reason else ""
+        bullets.append(f"유효 손절 기준은 {effective_stop}입니다{suffix}")
     if take_profit != "-":
-        bullets.append(f"목표 수익 실현 기준은 {take_profit} 수준입니다.")
+        bullets.append(f"紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?? {take_profit} ?섏??낅땲??")
     if _clip(monitor_reason.get("active_exit_axis"), max_len=80):
         axis_label = _operator_axis_label(monitor_reason.get("active_exit_axis"))
-        bullets.append(f"당시 우선 감시 중이던 청산 축은 {axis_label}{_korean_predicate(axis_label)}")
+        bullets.append(f"?뱀떆 ?곗꽑 媛먯떆 以묒씠??泥?궛 異뺤? {axis_label}{_korean_predicate(axis_label)}")
     if monitor_reason.get("confirm_required") is not None:
-        bullets.append(f"청산 확인 조건은 {int(monitor_reason.get('confirm_count') or 0)}/{int(monitor_reason.get('confirm_required') or 0)} 단계로 기록되었습니다.")
+        bullets.append(f"泥?궛 ?뺤씤 議곌굔? {int(monitor_reason.get('confirm_count') or 0)}/{int(monitor_reason.get('confirm_required') or 0)} ?④퀎濡?湲곕줉?섏뿀?듬땲??")
     if watch_axes:
-        bullets.append(f"주요 감시 축은 {watch_axes}입니다.")
+        bullets.append(f"二쇱슂 媛먯떆 異뺤? {watch_axes}?낅땲??")
     if decision_chain:
-        bullets.append(f"판단 흐름은 {decision_chain} 순서로 이어졌습니다.")
+        bullets.append(f"?먮떒 ?먮쫫? {decision_chain} ?쒖꽌濡??댁뼱議뚯뒿?덈떎.")
     if current_price != "-" or average_price != "-" or peak_price != "-":
-        bullets.append(f"현재가, 평균가, 고점 기준 값은 {current_price} / {average_price} / {peak_price}입니다.")
+        bullets.append(f"?꾩옱媛, ?됯퇏媛, 怨좎젏 湲곗? 媛믪? {current_price} / {average_price} / {peak_price}?낅땲??")
     if current_drawdown != "-" or peak_drawdown != "-":
-        bullets.append(f"현재 손익 변동과 고점 대비 하락폭은 {current_drawdown} / {peak_drawdown}입니다.")
+        bullets.append(f"?꾩옱 ?먯씡 蹂?숆낵 怨좎젏 ?鍮??섎씫??? {current_drawdown} / {peak_drawdown}?낅땲??")
     if _clip(monitor_reason.get("price_source"), max_len=80):
-        bullets.append(f"가격 기준 소스는 {_clip(monitor_reason.get('price_source'), max_len=80)}입니다.")
+        bullets.append(f"媛寃?湲곗? ?뚯뒪??{_clip(monitor_reason.get('price_source'), max_len=80)}?낅땲??")
     if _clip(monitor_reason.get("feature_source"), max_len=80):
-        bullets.append(f"지표 기준 소스는 {_clip(monitor_reason.get('feature_source'), max_len=80)}입니다.")
+        bullets.append(f"吏??湲곗? ?뚯뒪??{_clip(monitor_reason.get('feature_source'), max_len=80)}?낅땲??")
 
     recent_updates = [
         _clip(item, max_len=180)
@@ -3123,7 +3128,7 @@ def _build_holding_story_bullets(holding_summary: Dict[str, Any], monitor_reason
         if str(item or "").strip() and not _is_low_information_bullet(item)
     ]
     for item in recent_updates:
-        bullets.append(f"최근 모니터 업데이트는 다음과 같습니다: {item}")
+        bullets.append(f"理쒓렐 紐⑤땲???낅뜲?댄듃???ㅼ쓬怨?媛숈뒿?덈떎: {item}")
     return _dedupe_list(bullets, max_items=14, max_len=260)
 
 
@@ -3133,10 +3138,17 @@ def _build_reporter_evaluation_section(
     monitor_reason: Dict[str, Any],
     execution_outcome: Dict[str, Any],
     reporter_status: Dict[str, Any],
+    reporter_feedback_packet: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
+    reporter_feedback = dict(reporter_feedback_packet or {})
+    reporter_feedback_available = bool(reporter_feedback.get("available")) or bool(reporter_feedback.get("consumed"))
+    reporter_status_value = _clip(reporter_status.get("status"), max_len=40).lower()
+    if reporter_feedback_available and reporter_status_value in {"", "missing", "pending", "auto_ignored", "source_unavailable", "not_captured", "unknown"}:
+        return _build_reporter_evaluation_from_feedback(reporter_feedback)
+
     status = _clip(reporter_status.get("status"), max_len=40) or "missing"
     grade = _clip(reporter_status.get("grade"), max_len=16) or "N/A"
-    symbol = _clip(scanner_reason.get("selected_symbol") or shared_seed.get("symbol"), max_len=24) or "선정 종목"
+    symbol = _clip(scanner_reason.get("selected_symbol") or shared_seed.get("symbol"), max_len=24) or "?좎젙 醫낅ぉ"
     selected_rank = scanner_reason.get("selected_rank")
     selected_score = _num_opt(scanner_reason.get("selected_score"))
     confidence = _num_opt(scanner_reason.get("confidence"))
@@ -3156,12 +3168,12 @@ def _build_reporter_evaluation_section(
     reporter_summary = _clip(reporter_status.get("summary"), max_len=300)
     reporter_summary_lower = reporter_summary.lower()
     if "overtrading" in reporter_summary_lower or "rapid exit pressure" in reporter_summary_lower:
-        reporter_summary = "동일 일자 리포터도 과매매 또는 빠른 청산 압력을 시사했습니다."
+        reporter_summary = "?숈씪 ?쇱옄 由ы룷?곕룄 怨쇰ℓ留??먮뒗 鍮좊Ⅸ 泥?궛 ?뺣젰???쒖궗?덉뒿?덈떎."
     same_day_status_label = {
-        "linked_run": "동일 실행 기록 직접 연계",
-        "linked_trade": "동일 거래 직접 연계",
-        "linked_day": "당일 묶음 연계",
-        "missing": "미연계",
+        "linked_run": "?숈씪 ?ㅽ뻾 湲곕줉 吏곸젒 ?곌퀎",
+        "linked_trade": "?숈씪 嫄곕옒 吏곸젒 ?곌퀎",
+        "linked_day": "?뱀씪 臾띠쓬 ?곌퀎",
+        "missing": "誘몄뿰怨?",
     }.get(same_day_status, same_day_status)
 
     is_short_hold = hold_seconds > 0 and hold_seconds <= 120
@@ -3170,54 +3182,54 @@ def _build_reporter_evaluation_section(
 
     summary_parts: List[str] = []
     if is_short_hold and peak_drawdown_exit:
-        summary_parts.append("이번 거래는 종목 선정 자체보다 진입 타이밍 부담이 더 크게 드러났습니다.")
+        summary_parts.append("?대쾲 嫄곕옒??醫낅ぉ ?좎젙 ?먯껜蹂대떎 吏꾩엯 ??대컢 遺?댁씠 ???ш쾶 ?쒕윭?ъ뒿?덈떎.")
     elif peak_drawdown_exit:
-        summary_parts.append("이번 거래는 보유 이후 되밀림 관리가 더 크게 작동한 케이스로 보입니다.")
+        summary_parts.append("?대쾲 嫄곕옒??蹂댁쑀 ?댄썑 ?섎?由?愿由ш? ???ш쾶 ?묐룞??耳?댁뒪濡?蹂댁엯?덈떎.")
     else:
-        summary_parts.append("이번 거래는 저장된 근거상 scanner, entry, hold, exit 축을 함께 봐야 합니다.")
+        summary_parts.append("?대쾲 嫄곕옒????λ맂 洹쇨굅??scanner, entry, hold, exit 異뺤쓣 ?④퍡 遊먯빞 ?⑸땲??")
     if selected_rank == 1 and selected_score is not None:
-        scanner_bits = [f"스캐너는 {symbol}을 {selected_rank}위"]
+        scanner_bits = [f"?ㅼ틦?덈뒗 {symbol}??{selected_rank}??"]
         if selected_score is not None:
-            scanner_bits.append(f"종합 점수 {selected_score:.3f}")
+            scanner_bits.append(f"醫낇빀 ?먯닔 {selected_score:.3f}")
         if confidence is not None:
-            scanner_bits.append(f"신뢰도 {confidence:.2f}")
+            scanner_bits.append(f"?좊ː??{confidence:.2f}")
         if selected_risk is not None:
-            scanner_bits.append(f"리스크 {selected_risk:.3f}")
-        summary_parts.append(", ".join(scanner_bits) + "로 올렸고 선정 자체는 크게 흔들리지 않았습니다.")
+            scanner_bits.append(f"由ъ뒪??{selected_risk:.3f}")
+        summary_parts.append(", ".join(scanner_bits) + "濡??щ졇怨??좎젙 ?먯껜???ш쾶 ?붾뱾由ъ? ?딆븯?듬땲??")
     if hold_duration and peak_drawdown_exit:
-        summary_parts.append(f"다만 진입 후 약 {hold_duration} 만에 {trigger_type} 축 청산이 발생해 추가 상승 지속성이 약했습니다.")
+        summary_parts.append(f"?ㅻ쭔 吏꾩엯 ????{hold_duration} 留뚯뿉 {trigger_type} 異?泥?궛??諛쒖깮??異붽? ?곸듅 吏?띿꽦???쏀뻽?듬땲??")
     elif hold_duration:
-        summary_parts.append(f"보유 시간은 약 {hold_duration}로 짧아 hold 단계 해석은 제한적입니다.")
+        summary_parts.append(f"蹂댁쑀 ?쒓컙? ??{hold_duration}濡?吏㏃븘 hold ?④퀎 ?댁꽍? ?쒗븳?곸엯?덈떎.")
     if execution_recorded:
-        summary_parts.append("실행 기록상 주문 자체 문제는 보이지 않았습니다.")
+        summary_parts.append("?ㅽ뻾 湲곕줉??二쇰Ц ?먯껜 臾몄젣??蹂댁씠吏 ?딆븯?듬땲??")
     elif execution_summary:
-        summary_parts.append("실행 기록은 남아 있지만 주문 품질은 추가 확인이 필요합니다.")
+        summary_parts.append("?ㅽ뻾 湲곕줉? ?⑥븘 ?덉?留?二쇰Ц ?덉쭏? 異붽? ?뺤씤???꾩슂?⑸땲??")
 
     bullets: List[str] = []
     if selected_rank not in (None, "") and selected_score is not None:
-        scanner_line = f"종목 선정 평가는 {symbol} {selected_rank}위, 종합 점수 {selected_score:.3f}"
+        scanner_line = f"醫낅ぉ ?좎젙 ?됯???{symbol} {selected_rank}?? 醫낇빀 ?먯닔 {selected_score:.3f}"
         if confidence is not None:
-            scanner_line += f", 신뢰도 {confidence:.2f}"
+            scanner_line += f", ?좊ː??{confidence:.2f}"
         if selected_risk is not None:
-            scanner_line += f", 리스크 {selected_risk:.3f}"
-        scanner_line += "로 종목 선택 자체는 비교적 정상으로 보입니다."
+            scanner_line += f", 由ъ뒪??{selected_risk:.3f}"
+        scanner_line += "濡?醫낅ぉ ?좏깮 ?먯껜??鍮꾧탳???뺤긽?쇰줈 蹂댁엯?덈떎."
         bullets.append(scanner_line)
     if is_short_hold and peak_drawdown_exit:
         bullets.append(
-            f"진입 평가는 진입 후 약 {hold_duration or f'{hold_seconds}초'} 만에 {trigger_type} 청산이 나와, 종목 선정보다 진입 위치 부담이 더 컸던 것으로 읽힙니다."
+            f"吏꾩엯 ?됯???吏꾩엯 ????{hold_duration or f'{hold_seconds}珥?'} 留뚯뿉 {trigger_type} 泥?궛???섏?, 醫낅ぉ ?좎젙蹂대떎 吏꾩엯 ?꾩튂 遺?댁씠 ??而몃뜕 寃껋쑝濡??쏀옓?덈떎."
         )
     elif hold_duration:
-        bullets.append(f"진입·보유 평가는 보유 시간이 {hold_duration}로 짧아 추가 사례 비교가 필요합니다.")
+        bullets.append(f"吏꾩엯쨌蹂댁쑀 ?됯???蹂댁쑀 ?쒓컙??{hold_duration}濡?吏㏃븘 異붽? ?щ? 鍮꾧탳媛 ?꾩슂?⑸땲??")
     if hold_duration:
-        bullets.append(f"보유 평가는 보유 시간이 {hold_duration}에 그쳐 중간 악화 흐름을 두껍게 읽기에는 정보가 부족합니다.")
+        bullets.append(f"蹂댁쑀 ?됯???蹂댁쑀 ?쒓컙??{hold_duration}??洹몄퀜 以묎컙 ?낇솕 ?먮쫫???먭퍖寃??쎄린?먮뒗 ?뺣낫媛 遺議깊빀?덈떎.")
     if trigger_type:
-        bullets.append(f"청산 평가는 청산 축이 {trigger_type}{_korean_euro_ro(trigger_type)} 명확해 청산 규칙 자체는 규칙대로 작동한 것으로 보입니다.")
+        bullets.append(f"泥?궛 ?됯???泥?궛 異뺤씠 {trigger_type}{_korean_euro_ro(trigger_type)} 紐낇솗??泥?궛 洹쒖튃 ?먯껜??洹쒖튃?濡??묐룞??寃껋쑝濡?蹂댁엯?덈떎.")
     if execution_recorded:
-        bullets.append("실행 평가는 주문 승인 및 기록이 남아 있어 실행 누락보다는 전략/타이밍 해석 이슈 쪽에 가깝습니다.")
+        bullets.append("?ㅽ뻾 ?됯???二쇰Ц ?뱀씤 諛?湲곕줉???⑥븘 ?덉뼱 ?ㅽ뻾 ?꾨씫蹂대떎???꾨왂/??대컢 ?댁꽍 ?댁뒋 履쎌뿉 媛源앹뒿?덈떎.")
     elif execution_summary:
-        bullets.append(f"실행 평가는 {execution_summary}")
+        bullets.append(f"?ㅽ뻾 ?됯???{execution_summary}")
     if same_day_status:
-        linkage_line = f"당일 리포터 연계 상태는 {same_day_status_label}였습니다."
+        linkage_line = f"?뱀씪 由ы룷???곌퀎 ?곹깭??{same_day_status_label}??듬땲??"
         bullets.append(linkage_line)
     if reporter_summary:
         bullets.append(reporter_summary)
@@ -3230,13 +3242,101 @@ def _build_reporter_evaluation_section(
     }
 
 
+def _build_reporter_evaluation_from_feedback(reporter_feedback_packet: Dict[str, Any] | None) -> Dict[str, Any]:
+    packet = dict(reporter_feedback_packet or {})
+    confidence = _clip(packet.get("confidence"), max_len=16).lower()
+    confidence_label = {
+        "high": "높음",
+        "medium": "중간",
+        "low": "낮음",
+    }.get(confidence, "확인되지 않음")
+    grade = {
+        "high": "A",
+        "medium": "B",
+        "low": "C",
+    }.get(confidence, "N/A")
+    source_reports = _as_dict(packet.get("source_reports"))
+    trade_summary = _as_dict(packet.get("trade_report_analysis"))
+    insight_summary = normalize_reporter_text(_operatorize_report_text(_clip(packet.get("insight_summary"), max_len=600)))
+    recommendations = [
+        normalize_reporter_text(_operatorize_report_text(item))
+        for item in _listify(packet.get("recommendation"), max_items=4, max_len=220)
+        if str(item or "").strip()
+    ]
+    normalized_recommendations: List[str] = []
+    for raw_item, rendered in zip(_listify(packet.get("recommendation"), max_items=4, max_len=220), recommendations):
+        if raw_item == "Same-price round trips produced fee/tax drag; tighten follow-through evidence before repeating quick reversals.":
+            normalized_recommendations.append("동일가 왕복 거래에서 수수료와 세금 손실이 반복돼, 짧은 반전 재진입 전에는 후속 추세 확인을 더 엄격하게 봐야 합니다.")
+            continue
+        if rendered:
+            normalized_recommendations.append(rendered)
+            continue
+    recommendations = normalized_recommendations
+    dominant_patterns = [
+        _as_dict(item)
+        for item in list(packet.get("dominant_patterns") or [])[:4]
+        if isinstance(item, dict)
+    ]
+    source_labels: List[str] = []
+    if source_reports.get("metrics"):
+        source_labels.append("당일 metrics")
+    if source_reports.get("reporter_analysis"):
+        source_labels.append("당일 reporter 분석")
+    if source_reports.get("trade_reports"):
+        source_labels.append("당일 닫힌 거래 리포트")
+    if not source_labels:
+        source_labels.append("당일 피드백 패킷")
+
+    closed_trade_count = int(trade_summary.get("closed_trade_count") or 0)
+    win_count = int(trade_summary.get("win_count") or 0)
+    loss_count = int(trade_summary.get("loss_count") or 0)
+    avg_pnl_pct = _num_opt(trade_summary.get("avg_pnl_pct"))
+
+    summary_parts: List[str] = [
+        f"당일 reporter feedback은 {', '.join(source_labels)} 기준으로 생성됐습니다."
+    ]
+    if closed_trade_count > 0:
+        trade_bits = [f"당일 closed trade {closed_trade_count}건"]
+        trade_bits.append(f"승/패 {win_count}/{loss_count}")
+        if avg_pnl_pct is not None:
+            trade_bits.append(f"평균 손익률 {_fmt_pct(avg_pnl_pct)}")
+        summary_parts.append(", ".join(trade_bits) + "였습니다.")
+    if insight_summary:
+        summary_parts.append(insight_summary)
+
+    bullets: List[str] = []
+    bullets.append(f"피드백 생성 소스는 {', '.join(source_labels)}입니다.")
+    if closed_trade_count > 0:
+        trade_line = f"당일 closed trade 집계는 {closed_trade_count}건, 승패 {win_count}/{loss_count}"
+        if avg_pnl_pct is not None:
+            trade_line += f", 평균 손익률 {_fmt_pct(avg_pnl_pct)}"
+        trade_line += "입니다."
+        bullets.append(trade_line)
+    for row in dominant_patterns:
+        detail = normalize_reporter_text(_operatorize_report_text(_clip(row.get("detail"), max_len=180)))
+        name = normalize_reporter_text(_operatorize_report_text(_clip(row.get("name"), max_len=40)))
+        if detail:
+            bullets.append(f"주요 패턴: {detail}")
+        elif name:
+            bullets.append(f"주요 패턴: {name}")
+    for item in recommendations:
+        bullets.append(f"권고: {item}")
+
+    return {
+        "summary": " ".join(part for part in summary_parts if str(part or "").strip()).strip(),
+        "status": "ok",
+        "grade": grade,
+        "bullets": _dedupe_list(bullets, max_items=8, max_len=260),
+    }
+
+
 def _build_execution_quality_section(
     story_input: Dict[str, Any],
     execution_outcome: Dict[str, Any],
     lifecycle_summary: Dict[str, Any],
 ) -> Dict[str, Any]:
     execution_details = story_input.get("execution_details") if isinstance(story_input.get("execution_details"), dict) else {}
-    symbol = _clip(story_input.get("symbol"), max_len=24) or "종목"
+    symbol = _clip(story_input.get("symbol"), max_len=24) or "醫낅ぉ"
     action = _operator_action_label(_clip(story_input.get("action"), max_len=24) or "WAIT")
     filled_qty = execution_details.get("filled_qty")
     avg_price = _fmt_price(execution_details.get("avg_price"))
@@ -3248,57 +3348,57 @@ def _build_execution_quality_section(
     outcome = _clip(execution_outcome.get("outcome"), max_len=80)
     quantity = execution_outcome.get("quantity")
     order_status_label = {
-        "allowed": "허용",
-        "approved": "승인",
-        "recorded": "기록 완료",
-        "rejected": "거부",
+        "allowed": "?덉슜",
+        "approved": "?뱀씤",
+        "recorded": "湲곕줉 ?꾨즺",
+        "rejected": "嫄곕?",
     }.get(order_status.lower(), order_status) if order_status else ""
     mode_label = {
-        "real": "실거래",
-        "live": "실거래",
-        "simulation": "시뮬레이션",
+        "real": "?ㅺ굅??",
+        "live": "?ㅺ굅??",
+        "simulation": "?쒕??덉씠??",
     }.get(execution_mode.lower(), execution_mode) if execution_mode else ""
     if execution_mode_label:
         mode_label = _execution_mode_label(execution_mode_label)
 
     summary_parts: List[str] = []
     if outcome == "recorded":
-        qty_text = str(int(quantity)) if quantity not in (None, "") else (str(int(filled_qty)) if filled_qty not in (None, "") else "기록된 수량")
-        summary_parts.append(f"{symbol} {qty_text}주 {action} 주문은 승인 및 기록까지 확인됐습니다.")
+        qty_text = str(int(quantity)) if quantity not in (None, "") else (str(int(filled_qty)) if filled_qty not in (None, "") else "湲곕줉???섎웾")
+        summary_parts.append(f"{symbol} {qty_text}二?{action} 二쇰Ц? ?뱀씤 諛?湲곕줉源뚯? ?뺤씤?먯뒿?덈떎.")
     elif _clip(execution_outcome.get("summary"), max_len=300):
         summary_parts.append(_operatorize_report_text(execution_outcome.get("summary")))
     elif _clip(lifecycle_summary.get("lifecycle_summary_human"), max_len=300):
         summary_parts.append(_operatorize_report_text(lifecycle_summary.get("lifecycle_summary_human")))
     else:
-        summary_parts.append("실행 품질 세부 정보는 제한적으로만 확인됩니다.")
+        summary_parts.append("?ㅽ뻾 ?덉쭏 ?몃? ?뺣낫???쒗븳?곸쑝濡쒕쭔 ?뺤씤?⑸땲??")
     if avg_price != "-":
-        summary_parts.append(f"체결 기준 가격은 {avg_price}였습니다.")
+        summary_parts.append(f"泥닿껐 湲곗? 媛寃⑹? {avg_price}??듬땲??")
     summary = " ".join(summary_parts)
 
     bullets: List[str] = []
     if outcome:
-        outcome_label = {"recorded": "기록 완료", "approved": "승인", "rejected": "거부"}.get(outcome, outcome)
-        bullets.append(f"주문 실행 결과는 {outcome_label}였습니다.")
+        outcome_label = {"recorded": "湲곕줉 ?꾨즺", "approved": "?뱀씤", "rejected": "嫄곕?"}.get(outcome, outcome)
+        bullets.append(f"二쇰Ц ?ㅽ뻾 寃곌낵??{outcome_label}??듬땲??")
     if quantity not in (None, ""):
-        bullets.append(f"주문 수량은 {int(quantity)}주였습니다.")
+        bullets.append(f"二쇰Ц ?섎웾? {int(quantity)}二쇱??듬땲??")
     elif filled_qty not in (None, ""):
-        bullets.append(f"체결 수량은 {int(filled_qty)}주였습니다.")
+        bullets.append(f"泥닿껐 ?섎웾? {int(filled_qty)}二쇱??듬땲??")
     if mode_label:
-        bullets.append(f"실행 모드는 {mode_label}였습니다.")
+        bullets.append(f"?ㅽ뻾 紐⑤뱶??{mode_label}??듬땲??")
     if broker_env:
-        bullets.append(f"브로커 환경은 {broker_env}였습니다.")
+        bullets.append(f"釉뚮줈而??섍꼍? {broker_env}??듬땲??")
     else:
-        bullets.append("브로커 환경 정보는 별도로 기록되지 않았습니다.")
+        bullets.append("釉뚮줈而??섍꼍 ?뺣낫??蹂꾨룄濡?湲곕줉?섏? ?딆븯?듬땲??")
     if order_status_label:
-        bullets.append(f"주문 상태는 {order_status_label}{_korean_euro_ro(order_status_label)} 확인됐습니다.")
+        bullets.append(f"二쇰Ц ?곹깭??{order_status_label}{_korean_euro_ro(order_status_label)} ?뺤씤?먯뒿?덈떎.")
     else:
-        bullets.append("주문 상태는 별도로 기록되지 않았습니다.")
+        bullets.append("二쇰Ц ?곹깭??蹂꾨룄濡?湲곕줉?섏? ?딆븯?듬땲??")
     if order_id:
-        bullets.append(f"주문 번호는 {order_id}였습니다.")
+        bullets.append(f"二쇰Ц 踰덊샇??{order_id}??듬땲??")
     else:
-        bullets.append("주문 번호는 별도로 기록되지 않았습니다.")
+        bullets.append("二쇰Ц 踰덊샇??蹂꾨룄濡?湲곕줉?섏? ?딆븯?듬땲??")
     if avg_price != "-":
-        bullets.append(f"평균 체결가는 {avg_price}였습니다.")
+        bullets.append(f"?됯퇏 泥닿껐媛??{avg_price}??듬땲??")
     for bullet in build_execution_truth_bullets(execution_details=execution_details):
         if bullet not in bullets:
             bullets.append(bullet)
@@ -3318,7 +3418,7 @@ def _build_exit_decision_summary(
     reason = _clip(exit_summary.get("reason_human"), max_len=600)
     reason_label = _exit_reason_label(reason)
     if status_text.lower() == "open":
-        return reason_label or "현재 포지션은 아직 열려 있어 확정된 청산 체결은 기록되지 않았습니다."
+        return reason_label or "?꾩옱 ?ъ??섏? ?꾩쭅 ?대젮 ?덉뼱 ?뺤젙??泥?궛 泥닿껐? 湲곕줉?섏? ?딆븯?듬땲??"
     if reason or reason_label:
         price = _fmt_price(monitor_context.get("current_price"))
         avg_price = _fmt_price(monitor_context.get("average_price"))
@@ -3328,17 +3428,17 @@ def _build_exit_decision_summary(
         confirm_count = monitor_context.get("confirm_count")
         details: List[str] = []
         if axis:
-            details.append(f"핵심 청산 축은 {axis}")
+            details.append(f"?듭떖 泥?궛 異뺤? {axis}")
         if confirm_required is not None:
-            details.append(f"확인 조건은 {int(confirm_count or 0)}/{int(confirm_required or 0)}")
+            details.append(f"?뺤씤 議곌굔? {int(confirm_count or 0)}/{int(confirm_required or 0)}")
         if price != "-" and avg_price != "-":
-            details.append(f"현재가는 {price}, 평균가는 {avg_price}")
+            details.append(f"?꾩옱媛??{price}, ?됯퇏媛??{avg_price}")
         if drawdown != "-":
-            details.append(f"현재 손익 변동은 {drawdown}")
+            details.append(f"?꾩옱 ?먯씡 蹂?숈? {drawdown}")
         if details:
-            return f"{reason_label or reason}. 청산 당시 상황은 " + ", ".join(details) + "입니다."
+            return f"{reason_label or reason}. 泥?궛 ?뱀떆 ?곹솴? " + ", ".join(details) + "?낅땲??"
         return reason_label or reason
-    return "청산 판단 근거는 저장된 데이터 범위 안에서 충분히 확인되지 않았습니다."
+    return "泥?궛 ?먮떒 洹쇨굅????λ맂 ?곗씠??踰붿쐞 ?덉뿉??異⑸텇???뺤씤?섏? ?딆븯?듬땲??"
 
 
 def _build_exit_decision_bullets(
@@ -3352,49 +3452,49 @@ def _build_exit_decision_bullets(
     reason_label = _exit_reason_label(exit_summary.get("reason_human"))
     decision_chain = " -> ".join(_decision_chain_label(item) for item in _listify(monitor_context.get("decision_reason_chain"), max_items=5, max_len=60))
     bullets: List[str] = [
-        f"청산 판단이 기록된 run은 {_clip(exit_summary.get('run_id'), max_len=80) or 'not_captured'}입니다.",
-        f"청산 시각은 {_clip(exit_summary.get('ts'), max_len=80) or 'not_captured'}입니다.",
-        f"청산 액션은 {_operator_action_label(_clip(exit_summary.get('action'), max_len=40) or ('HOLD' if status_text == 'open' else 'not_captured'))}입니다.",
-        f"청산 사유는 {reason_label or ('포지션이 아직 열려 있음' if status_text == 'open' else '기록 없음')}입니다.",
+        f"泥?궛 ?먮떒??湲곕줉??run? {_clip(exit_summary.get('run_id'), max_len=80) or 'not_captured'}?낅땲??",
+        f"泥?궛 ?쒓컖? {_clip(exit_summary.get('ts'), max_len=80) or 'not_captured'}?낅땲??",
+        f"泥?궛 ?≪뀡? {_operator_action_label(_clip(exit_summary.get('action'), max_len=40) or ('HOLD' if status_text == 'open' else 'not_captured'))}?낅땲??",
+        f"泥?궛 ?ъ쑀??{reason_label or ('?ъ??섏씠 ?꾩쭅 ?대젮 ?덉쓬' if status_text == 'open' else '湲곕줉 ?놁쓬')}?낅땲??",
     ]
     if _clip(monitor_context.get("trigger_type"), max_len=80):
         trigger_label = _operator_axis_label(monitor_context.get("trigger_type"))
-        bullets.append(f"청산을 직접 촉발한 신호는 {trigger_label}{_korean_predicate(trigger_label)}")
+        bullets.append(f"泥?궛??吏곸젒 珥됰컻???좏샇??{trigger_label}{_korean_predicate(trigger_label)}")
         bullets.append(f"Trigger type: {trigger_label}")
     if _clip(monitor_context.get("active_exit_axis"), max_len=120):
         axis_label = _operator_axis_label(monitor_context.get("active_exit_axis"))
-        bullets.append(f"청산 시점 우선 감시 축은 {axis_label}{_korean_predicate(axis_label)}")
+        bullets.append(f"泥?궛 ?쒖젏 ?곗꽑 媛먯떆 異뺤? {axis_label}{_korean_predicate(axis_label)}")
     if monitor_context.get("confirm_required") is not None:
-        bullets.append(f"청산 확인 조건은 {int(monitor_context.get('confirm_count') or 0)}/{int(monitor_context.get('confirm_required') or 0)} 단계로 기록되었습니다.")
+        bullets.append(f"泥?궛 ?뺤씤 議곌굔? {int(monitor_context.get('confirm_count') or 0)}/{int(monitor_context.get('confirm_required') or 0)} ?④퀎濡?湲곕줉?섏뿀?듬땲??")
     effective_stop = _fmt_pct(monitor_context.get("effective_stop_loss_pct"))
     if effective_stop != "-":
         stop_reason = _clip(monitor_context.get("effective_stop_reason"), max_len=64)
-        suffix = f", 기준 축은 {_operator_axis_label(stop_reason)}입니다" if stop_reason else ""
-        bullets.append(f"청산 시점의 유효 손절 기준은 {effective_stop} 수준입니다{suffix}.")
+        suffix = f", 기준 축은 {_operator_axis_label(stop_reason)}입니다." if stop_reason else ""
+        bullets.append(f"청산 시점의 유효 손절 기준은 {effective_stop}입니다{suffix}")
     take_profit = _fmt_pct(monitor_context.get("take_profit_pct"))
     if take_profit != "-":
-        bullets.append(f"청산 시점의 목표 수익 실현 기준은 {take_profit} 수준입니다.")
+        bullets.append(f"泥?궛 ?쒖젏??紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?? {take_profit} ?섏??낅땲??")
     current_price = _fmt_price(monitor_context.get("current_price"))
     average_price = _fmt_price(monitor_context.get("average_price"))
     peak_price = _fmt_price(monitor_context.get("peak_price"))
     if current_price != "-" or average_price != "-" or peak_price != "-":
-        bullets.append(f"현재가, 평균가, 고점 기준 값은 {current_price} / {average_price} / {peak_price}입니다.")
+        bullets.append(f"?꾩옱媛, ?됯퇏媛, 怨좎젏 湲곗? 媛믪? {current_price} / {average_price} / {peak_price}?낅땲??")
     current_drawdown = _fmt_pct(monitor_context.get("current_drawdown"))
     peak_drawdown = _fmt_pct(monitor_context.get("peak_drawdown"))
     if current_drawdown != "-" or peak_drawdown != "-":
-        bullets.append(f"현재 손익 변동과 고점 대비 하락폭은 {current_drawdown} / {peak_drawdown}입니다.")
+        bullets.append(f"?꾩옱 ?먯씡 蹂?숆낵 怨좎젏 ?鍮??섎씫??? {current_drawdown} / {peak_drawdown}?낅땲??")
     if not decision_chain:
         decision_chain = reason_label
     if decision_chain:
-        bullets.append(f"판단 흐름은 {decision_chain} 기준으로 이어졌습니다.")
+        bullets.append(f"?먮떒 ?먮쫫? {decision_chain} 湲곗??쇰줈 ?댁뼱議뚯뒿?덈떎.")
     if _clip(guard_context.get("summary"), max_len=220):
-        bullets.append(f"가드 판단 결과는 {_clip(guard_context.get('summary'), max_len=220)}입니다.")
+        bullets.append(f"媛???먮떒 寃곌낵??{_clip(guard_context.get('summary'), max_len=220)}?낅땲??")
     if _clip(execution_context.get("summary"), max_len=220):
-        bullets.append(f"주문 실행 결과는 {_clip(execution_context.get('summary'), max_len=220)}입니다.")
+        bullets.append(f"二쇰Ц ?ㅽ뻾 寃곌낵??{_clip(execution_context.get('summary'), max_len=220)}?낅땲??")
     if _clip(monitor_context.get("price_source"), max_len=80):
-        bullets.append(f"가격 기준 소스는 {_clip(monitor_context.get('price_source'), max_len=80)}입니다.")
+        bullets.append(f"媛寃?湲곗? ?뚯뒪??{_clip(monitor_context.get('price_source'), max_len=80)}?낅땲??")
     if _clip(monitor_context.get("feature_source"), max_len=80):
-        bullets.append(f"지표 기준 소스는 {_clip(monitor_context.get('feature_source'), max_len=80)}입니다.")
+        bullets.append(f"吏??湲곗? ?뚯뒪??{_clip(monitor_context.get('feature_source'), max_len=80)}?낅땲??")
     return _dedupe_list(bullets, max_items=16, max_len=260)
 
 
@@ -4251,22 +4351,22 @@ def _report_section_provenance(story_input: Dict[str, Any]) -> Dict[str, Dict[st
 
 
 def _contains_hangul(value: Any) -> bool:
-    return bool(re.search(r"[가-힣]", str(value or "")))
+    return bool(re.search(r"[媛-??", str(value or "")))
 
 
 def _operator_action_label(value: Any) -> str:
     raw = _clip(value, max_len=80).strip().lower()
     mapping = {
-        "buy": "매수",
-        "sell": "매도",
-        "hold": "보유 유지",
-        "wait": "진입 보류",
-        "noop": "대기",
-        "approve": "승인",
-        "approved": "승인",
-        "allowed": "허용",
-        "yes": "허용",
-        "no": "차단",
+        "buy": "留ㅼ닔",
+        "sell": "留ㅻ룄",
+        "hold": "蹂댁쑀 ?좎?",
+        "wait": "吏꾩엯 蹂대쪟",
+        "noop": "?湲?",
+        "approve": "?뱀씤",
+        "approved": "?뱀씤",
+        "allowed": "?덉슜",
+        "yes": "?덉슜",
+        "no": "李⑤떒",
     }
     return mapping.get(raw, _clip(value, max_len=80) or "-")
 
@@ -4274,22 +4374,22 @@ def _operator_action_label(value: Any) -> str:
 def _operator_axis_label(value: Any) -> str:
     raw = _clip(value, max_len=120).strip().lower()
     mapping = {
-        "peak drawdown": "고점 대비 하락폭",
-        "peak_drawdown": "고점 대비 하락폭",
-        "hard stop": "고정 손절 기준",
-        "hard_stop": "고정 손절 기준",
-        "adaptive stop": "상황 대응형 손절 기준",
-        "adaptive_stop": "상황 대응형 손절 기준",
-        "take profit": "목표 수익 실현 기준",
-        "take_profit": "목표 수익 실현 기준",
-        "trailing stop": "추적 손절 기준",
-        "trailing_stop": "추적 손절 기준",
-        "vwap breakdown": "VWAP 이탈",
-        "intraday low break": "장중 저점 이탈",
-        "trend breakdown": "추세 훼손",
-        "hold": "보유 유지",
-        "wait": "진입 보류",
-        "confirmed_exit_signal": "청산 확인 신호",
+        "peak drawdown": "怨좎젏 ?鍮??섎씫??",
+        "peak_drawdown": "怨좎젏 ?鍮??섎씫??",
+        "hard stop": "怨좎젙 ?먯젅 湲곗?",
+        "hard_stop": "怨좎젙 ?먯젅 湲곗?",
+        "adaptive stop": "?곹솴 ??묓삎 ?먯젅 湲곗?",
+        "adaptive_stop": "?곹솴 ??묓삎 ?먯젅 湲곗?",
+        "take profit": "紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?",
+        "take_profit": "紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?",
+        "trailing stop": "異붿쟻 ?먯젅 湲곗?",
+        "trailing_stop": "異붿쟻 ?먯젅 湲곗?",
+        "vwap breakdown": "VWAP ?댄깉",
+        "intraday low break": "?μ쨷 ????댄깉",
+        "trend breakdown": "異붿꽭 ?쇱넀",
+        "hold": "蹂댁쑀 ?좎?",
+        "wait": "吏꾩엯 蹂대쪟",
+        "confirmed_exit_signal": "泥?궛 ?뺤씤 ?좏샇",
     }
     return mapping.get(raw, _clip(value, max_len=120) or "-")
 
@@ -4297,14 +4397,14 @@ def _operator_axis_label(value: Any) -> str:
 def _operator_filter_label(value: Any) -> str:
     raw = _clip(value, max_len=120).strip().lower()
     mapping = {
-        "liquidity filter": "유동성 점검",
-        "turnover filter": "회전율 점검",
-        "sector/theme alignment": "섹터·테마 정렬 점검",
-        "chart completeness filter": "차트 지표 충실도 점검",
-        "sentiment gate": "시장 심리 점검",
-        "risk gate": "리스크 점검",
-        "price anomaly filter": "가격 이상치 점검",
-        "spread/slippage filter": "호가 스프레드·슬리피지 점검",
+        "liquidity filter": "?좊룞???먭?",
+        "turnover filter": "?뚯쟾???먭?",
+        "sector/theme alignment": "?뱁꽣쨌?뚮쭏 ?뺣젹 ?먭?",
+        "chart completeness filter": "李⑦듃 吏??異⑹떎???먭?",
+        "sentiment gate": "?쒖옣 ?щ━ ?먭?",
+        "risk gate": "由ъ뒪???먭?",
+        "price anomaly filter": "媛寃??댁긽移??먭?",
+        "spread/slippage filter": "?멸? ?ㅽ봽?덈뱶쨌?щ━?쇱? ?먭?",
     }
     return mapping.get(raw, _clip(value, max_len=120) or "-")
 
@@ -4312,9 +4412,9 @@ def _operator_filter_label(value: Any) -> str:
 def _operator_filter_status(value: Any) -> str:
     raw = _clip(value, max_len=40).strip().lower()
     mapping = {
-        "pass": "통과",
-        "fail": "미통과",
-        "not_available": "확인 불가",
+        "pass": "?듦낵",
+        "fail": "誘명넻怨?",
+        "not_available": "?뺤씤 遺덇?",
     }
     return mapping.get(raw, _clip(value, max_len=40) or "-")
 
@@ -4328,9 +4428,9 @@ def _normalize_trade_report_language(text: Any) -> str:
         raw = _clip(value, max_len=240).strip()
         lowered = raw.lower()
         if lowered in {"unknown", "not available", "not_available", "unavailable"}:
-            return "확인되지 않음"
+            return "?뺤씤?섏? ?딆쓬"
         if lowered in {"not captured", "not_captured"}:
-            return "기록되지 않음"
+            return "湲곕줉?섏? ?딆쓬"
         return raw
 
     def _replace_scanner_selection(match: re.Match[str]) -> str:
@@ -4340,8 +4440,8 @@ def _normalize_trade_report_language(text: Any) -> str:
         score = _clip(match.group(4), max_len=32)
         reason = _clip(match.group(5), max_len=220)
         return (
-            f"스캐너는 {total}개 후보 중 {rank}위인 {symbol}을 총점 {score}로 선정했습니다. "
-            f"선정 이유는 {reason}입니다."
+            f"?ㅼ틦?덈뒗 {total}媛??꾨낫 以?{rank}?꾩씤 {symbol}??珥앹젏 {score}濡??좎젙?덉뒿?덈떎. "
+            f"?좎젙 ?댁쑀??{reason}?낅땲??"
         )
 
     def _replace_headlines(match: re.Match[str]) -> str:
@@ -4349,8 +4449,8 @@ def _normalize_trade_report_language(text: Any) -> str:
         targets = _clip(match.group(2), max_len=12)
         detail = _clip(match.group(3), max_len=120)
         if detail:
-            return f"관련 헤드라인 {count}건을 함께 반영했고 총 {targets}개 대상({detail})을 점검했습니다."
-        return f"관련 헤드라인 {count}건을 함께 반영했고 총 {targets}개 대상을 점검했습니다."
+            return f"愿???ㅻ뱶?쇱씤 {count}嫄댁쓣 ?④퍡 諛섏쁺?덇퀬 珥?{targets}媛????{detail})???먭??덉뒿?덈떎."
+        return f"愿???ㅻ뱶?쇱씤 {count}嫄댁쓣 ?④퍡 諛섏쁺?덇퀬 珥?{targets}媛???곸쓣 ?먭??덉뒿?덈떎."
 
     cleaned = re.sub(
         r"Scanner selected ([0-9A-Z]+) as rank #?(\d+) out of (\d+) candidates with score ([0-9.\-]+) because (.+?)(?:\.)?$",
@@ -4366,7 +4466,7 @@ def _normalize_trade_report_language(text: Any) -> str:
     )
     cleaned = re.sub(
         r"Scanner selected the highest-ranked candidate after (.+?)(?:\.)?$",
-        lambda m: f"스캐너는 { _clip(m.group(1), max_len=220) }를 반영해 최상위 후보를 선정했습니다.",
+        lambda m: f"?ㅼ틦?덈뒗 { _clip(m.group(1), max_len=220) }瑜?諛섏쁺??理쒖긽???꾨낫瑜??좎젙?덉뒿?덈떎.",
         cleaned,
         flags=re.IGNORECASE,
     )
@@ -4375,11 +4475,11 @@ def _normalize_trade_report_language(text: Any) -> str:
         key = str(match.group(1) or "").strip().lower()
         value = _normalize_metadata_value(str(match.group(2) or ""))
         label_map = {
-            "source": "데이터 출처",
-            "path": "참조 경로",
-            "model": "사용 모델",
-            "status": "상태",
-            "generated_at": "생성 시각",
+            "source": "?곗씠??異쒖쿂",
+            "path": "李몄“ 寃쎈줈",
+            "model": "?ъ슜 紐⑤뜽",
+            "status": "?곹깭",
+            "generated_at": "?앹꽦 ?쒓컖",
         }
         return f"{label_map.get(key, key)}: {value}"
 
@@ -4391,59 +4491,59 @@ def _normalize_trade_report_language(text: Any) -> str:
     )
 
     replacements = (
-        ("Execution outcome summary was not captured.", "거래 생애주기 실행 요약은 기록되지 않았습니다."),
-        ("Lifecycle conclusion was not captured.", "최종 생애주기 결론은 기록되지 않았습니다."),
-        ("Entry reason was not captured.", "진입 이유는 기록되지 않았습니다."),
-        ("Exit reason was not captured.", "청산 이유는 기록되지 않았습니다."),
-        ("Reporter linkage was not captured.", "리포터 연계 정보는 기록되지 않았습니다."),
-        ("Same-day reporter analysis was not generated yet.", "당일 리포터 분석은 아직 생성되지 않았습니다."),
+        ("Execution outcome summary was not captured.", "嫄곕옒 ?앹븷二쇨린 ?ㅽ뻾 ?붿빟? 湲곕줉?섏? ?딆븯?듬땲??"),
+        ("Lifecycle conclusion was not captured.", "理쒖쥌 ?앹븷二쇨린 寃곕줎? 湲곕줉?섏? ?딆븯?듬땲??"),
+        ("Entry reason was not captured.", "吏꾩엯 ?댁쑀??湲곕줉?섏? ?딆븯?듬땲??"),
+        ("Exit reason was not captured.", "泥?궛 ?댁쑀??湲곕줉?섏? ?딆븯?듬땲??"),
+        ("Reporter linkage was not captured.", "由ы룷???곌퀎 ?뺣낫??湲곕줉?섏? ?딆븯?듬땲??"),
+        ("Same-day reporter analysis was not generated yet.", "?뱀씪 由ы룷??遺꾩꽍? ?꾩쭅 ?앹꽦?섏? ?딆븯?듬땲??"),
         (
             "A same-day reporter file exists, but this run was not linked to a run-specific evaluation yet.",
-            "당일 리포터 파일은 있지만 이 run에 대한 개별 평가는 아직 연결되지 않았습니다.",
+            "?뱀씪 由ы룷???뚯씪? ?덉?留???run?????媛쒕퀎 ?됯????꾩쭅 ?곌껐?섏? ?딆븯?듬땲??",
         ),
-        ("A same-day reporter analysis was linked to this run.", "당일 리포터 분석이 이 run에 연결됐습니다."),
-        ("Interim summary:", "중간 요약:"),
-        ("Reporter status:", "리포터 상태는"),
-        ("Reporter reason:", "리포터 판단 사유는"),
-        ("Reporter grade:", "리포터 등급은"),
-        ("Reporter summary:", "리포터 요약은"),
-        ("Monitor posture changes", "모니터 posture 변화"),
-        ("Macro/news regime changes", "거시 환경 및 뉴스 레짐 변화"),
-        ("Lifecycle status is closed", "생애주기 상태는 closed"),
-        ("Lifecycle status is open", "생애주기 상태는 open"),
-        ("Trailing stop", "추적 손절"),
-        ("trailing stop", "추적 손절"),
-        ("시장 시장 상태은", "시장 상태는"),
-        ("시장 상태은", "시장 상태는"),
-        ("Scanner selected", "스캐너는"),
-        ("Market Sentiment", "시장 심리"),
-        ("Market sentiment", "시장 심리"),
-        ("Stress Flags", "스트레스 신호"),
-        ("Stress flags", "스트레스 신호"),
-        ("Scanner Rank", "스캐너 순위"),
-        ("Scanner Ranking Basis", "스캐너 순위 산정 기준"),
-        ("Tie Break Rule", "동률 해소 기준"),
-        ("Tie-break rule", "동률 해소 기준"),
-        ("Tie Break", "동률 해소"),
-        ("Regime", "시장 상태"),
-        ("playbook", "플레이북"),
-        ("Playbook", "플레이북"),
-        ("headlines were considered", "관련 헤드라인을 함께 반영했습니다"),
-        ("Total Score", "총점"),
-        ("strategist-guided weighting, source scoring, and risk penalties", "전략가 가중치, 소스 점수, 리스크 패널티"),
-        ("it led on trading value, theme and sector alignment", "거래대금과 테마·섹터 정렬에서 앞섰기 때문"),
-        ("breakout_above_recent_high_with_vwap_structure_confirmation", "직전 고점 돌파와 VWAP 구조 확인"),
-        ("breakout_path", "돌파 경로"),
-        ("pullback_volume_path", "눌림목·거래량 경로"),
-        ("candidate signals", "후보 신호"),
-        ("market /", "시장 /"),
-        ("bearish", "약세"),
-        ("bullish", "강세"),
-        ("neutral", "중립"),
-        ("pullback", "눌림목"),
-        ("not captured", "기록되지 않음"),
-        ("not available", "확인되지 않음"),
-        ("unknown", "판단 정보 없음"),
+        ("A same-day reporter analysis was linked to this run.", "?뱀씪 由ы룷??遺꾩꽍????run???곌껐?먯뒿?덈떎."),
+        ("Interim summary:", "以묎컙 ?붿빟:"),
+        ("Reporter status:", "由ы룷???곹깭??"),
+        ("Reporter reason:", "由ы룷???먮떒 ?ъ쑀??"),
+        ("Reporter grade:", "由ы룷???깃툒?"),
+        ("Reporter summary:", "由ы룷???붿빟?"),
+        ("Monitor posture changes", "紐⑤땲??posture 蹂??"),
+        ("Macro/news regime changes", "嫄곗떆 ?섍꼍 諛??댁뒪 ?덉쭚 蹂??"),
+        ("Lifecycle status is closed", "?앹븷二쇨린 ?곹깭??closed"),
+        ("Lifecycle status is open", "?앹븷二쇨린 ?곹깭??open"),
+        ("Trailing stop", "異붿쟻 ?먯젅"),
+        ("trailing stop", "異붿쟻 ?먯젅"),
+        ("?쒖옣 ?쒖옣 ?곹깭?", "?쒖옣 ?곹깭??"),
+        ("?쒖옣 ?곹깭?", "?쒖옣 ?곹깭??"),
+        ("Scanner selected", "?ㅼ틦?덈뒗"),
+        ("Market Sentiment", "?쒖옣 ?щ━"),
+        ("Market sentiment", "?쒖옣 ?щ━"),
+        ("Stress Flags", "?ㅽ듃?덉뒪 ?좏샇"),
+        ("Stress flags", "?ㅽ듃?덉뒪 ?좏샇"),
+        ("Scanner Rank", "?ㅼ틦???쒖쐞"),
+        ("Scanner Ranking Basis", "?ㅼ틦???쒖쐞 ?곗젙 湲곗?"),
+        ("Tie Break Rule", "?숇쪧 ?댁냼 湲곗?"),
+        ("Tie-break rule", "?숇쪧 ?댁냼 湲곗?"),
+        ("Tie Break", "?숇쪧 ?댁냼"),
+        ("Regime", "?쒖옣 ?곹깭"),
+        ("playbook", "?뚮젅?대턿"),
+        ("Playbook", "?뚮젅?대턿"),
+        ("headlines were considered", "愿???ㅻ뱶?쇱씤???④퍡 諛섏쁺?덉뒿?덈떎"),
+        ("Total Score", "珥앹젏"),
+        ("strategist-guided weighting, source scoring, and risk penalties", "?꾨왂媛 媛以묒튂, ?뚯뒪 ?먯닔, 由ъ뒪???⑤꼸??"),
+        ("it led on trading value, theme and sector alignment", "嫄곕옒?湲덇낵 ?뚮쭏쨌?뱁꽣 ?뺣젹?먯꽌 ?욎꽣湲??뚮Ц"),
+        ("breakout_above_recent_high_with_vwap_structure_confirmation", "吏곸쟾 怨좎젏 ?뚰뙆? VWAP 援ъ“ ?뺤씤"),
+        ("breakout_path", "?뚰뙆 寃쎈줈"),
+        ("pullback_volume_path", "?뚮┝紐㈑룰굅?섎웾 寃쎈줈"),
+        ("candidate signals", "?꾨낫 ?좏샇"),
+        ("market /", "?쒖옣 /"),
+        ("bearish", "?쎌꽭"),
+        ("bullish", "媛뺤꽭"),
+        ("neutral", "以묐┰"),
+        ("pullback", "?뚮┝紐?"),
+        ("not captured", "湲곕줉?섏? ?딆쓬"),
+        ("not available", "?뺤씤?섏? ?딆쓬"),
+        ("unknown", "?먮떒 ?뺣낫 ?놁쓬"),
     )
     for src, dst in replacements:
         cleaned = cleaned.replace(src, dst)
@@ -4457,359 +4557,388 @@ def _operatorize_report_text(text: Any) -> str:
         return ""
     lowered = cleaned.lower()
     exact_mapping = {
-        "the decision path was recorded, but the operator-facing summary is limited.": "의사결정 경로는 기록되었지만 운영자용 요약은 제한적으로만 남아 있습니다.",
-        "current lifecycle status is closed. entry and exit are connected in one lifecycle story.": "이번 라이프사이클은 종결 상태이며, 진입과 청산이 하나의 거래 흐름으로 연결됐습니다.",
-        "current lifecycle status is open. entry and exit are still unfolding within one lifecycle story.": "이번 라이프사이클은 아직 진행 중이며, 진입 이후 청산 판단이 이어지고 있습니다.",
-        "supervisor approved the order because allowed.": "슈퍼바이저는 주문을 승인했고 가드 판단은 허용이었습니다.",
-        "execution quality details were not captured.": "실행 품질 세부 내용은 별도로 기록되지 않았습니다.",
-        "reporter linkage was not available yet.": "리포터 연계 결과는 아직 연결되지 않았습니다.",
-        "reporter linkage status was recorded separately.": "리포터 연계 상태는 별도로 기록되어 있습니다.",
-        "warnings and missing links were recorded for operator follow-up.": "운영자가 후속 확인해야 할 경고와 누락 링크가 함께 기록되었습니다.",
-        "no explicit weaknesses were surfaced beyond the recorded trace.": "기록된 추적 정보 외에 추가 약점은 별도로 확인되지 않았습니다.",
-        "ai trade report generation failed after retry attempts. review the saved llm response artifact for details.": "AI 거래 리포트 생성이 재시도 이후에도 완료되지 않았습니다. 저장된 LLM 응답 아티팩트를 함께 확인해 주세요.",
-        "ai generation failed before a rendered market-context section was produced.": "시장 환경 요약은 생성 도중 중단되어, 저장된 근거를 기준으로 보수적으로 정리했습니다.",
-        "ai generation failed before a rendered symbol-selection section was produced.": "종목 선정 설명은 생성 도중 중단되어, 저장된 선정 근거를 기준으로 보수적으로 정리했습니다.",
-        "ai generation failed before a rendered entry-decision section was produced.": "진입 판단 설명은 생성 도중 중단되어, 저장된 진입 근거를 기준으로 보수적으로 정리했습니다.",
-        "ai generation failed before a rendered holding-monitoring section was produced.": "보유 관리 설명은 생성 도중 중단되어, 저장된 모니터 기록을 기준으로 보수적으로 정리했습니다.",
-        "ai generation failed before a rendered exit-decision section was produced.": "청산 판단 설명은 생성 도중 중단되어, 저장된 청산 근거를 기준으로 보수적으로 정리했습니다.",
-        "ai generation failed before a rendered execution-quality section was produced.": "실행 품질 설명은 생성 도중 중단되어, 저장된 실행 기록을 기준으로 보수적으로 정리했습니다.",
-        "ai generation failed and no rendered improvement section is available.": "AI 생성이 중단되어 개선 포인트는 저장된 경고와 오류 기록 중심으로 정리했습니다.",
-        "ai generation failed. review lifecycle artifacts and the saved llm response artifact before taking action.": "AI 생성이 중단되었습니다. 다음 조치를 하기 전에 lifecycle 아티팩트와 저장된 LLM 응답을 함께 확인해 주세요.",
-        "link same-day reporter analysis to this lifecycle for a complete quality review.": "동일 일자 리포터 분석이 아직 이 거래 생애주기에 연결되지 않았습니다.",
-        "selection": "선정 근거를 정리했습니다.",
-        "entry": "진입 판단을 정리했습니다.",
-        "filters": "스캐너 필터 점검 결과를 정리했습니다.",
-        "guard": "승인 및 가드 판단 결과를 정리했습니다.",
-        "execution": "실행 결과를 정리했습니다.",
-        "reporter": "리포터 평가를 정리했습니다.",
-        "none": "추가 보완 포인트는 제한적입니다.",
-        "top value or trading-value input supported the selection": "거래대금 상위 신호가 선정 근거를 뒷받침했습니다.",
-        "top volume or turnover input supported the selection": "회전율 신호는 존재했지만 최종 우위 근거로는 약했습니다.",
-        "theme boost or sector source matched the strategist frame": "테마 가점과 섹터 소스가 전략가 프레임과 맞아떨어졌습니다.",
-        "12/13 captured chart features": "13개 중 12개 차트 피처가 확보됐습니다.",
-        "news/global sentiment contribution was 0.295": "뉴스와 글로벌 감성 기여 합산값은 0.295였습니다.",
-        "risk score was 0.563 and supervisor allow=true": "리스크 점수는 0.563이었고 supervisor 허용 상태도 유지됐습니다.",
-        "price anomaly check was not captured in this run": "이번 run에서는 가격 이상치 점검 결과가 저장되지 않았습니다.",
-        "price anomaly check was 기록되지 않음 in this run": "이번 run에서는 가격 이상치 점검 결과가 저장되지 않았습니다.",
-        "monitor price cross-check found no anomaly": "모니터 가격 교차검증에서 이상치가 확인되지 않았습니다.",
-        "monitor price cross-check flagged an anomaly": "모니터 가격 교차검증에서 이상치가 감지되었습니다.",
-        "spread or slippage diagnostics were not captured in this run": "이번 run에서는 호가 스프레드 또는 슬리피지 진단이 저장되지 않았습니다.",
-        "spread or slippage diagnostics were 기록되지 않음 in this run": "이번 run에서는 호가 스프레드 또는 슬리피지 진단이 저장되지 않았습니다.",
-        "holding-phase evidence is thin; preserve more monitor context between entry and exit.": "보유 구간 근거는 제한적이며 진입과 청산 사이 모니터 맥락이 충분하지 않습니다.",
-        "같은 날 생성된 reporter 분석을 이 lifecycle에 연결해 전체 품질 평가를 완성해 주세요.": "동일 일자 리포터 분석이 아직 이 거래 생애주기에 연결되지 않았습니다.",
-        "보유 단계 근거가 얇아 진입과 청산 사이의 모니터 맥락을 더 보존해야 합니다.": "보유 구간 근거는 제한적이며 진입과 청산 사이 모니터 맥락이 충분하지 않습니다.",
-        "monitor trigger changes": "모니터 트리거 변화",
-        "macro/news shifts": "거시 환경 및 뉴스 변화",
-        "stop-loss breach": "손절 기준 이탈",
-        "monitor and scanner divergence": "모니터와 스캐너 판단 발산",
-        "negative macro regime shift": "거시 환경의 부정적 전환",
-        "guard reason: allowed": "가드 판단 사유는 허용입니다.",
-        "supervisor verdict: approve": "슈퍼바이저 최종 판단은 승인입니다.",
-        "broad_market_leaders": "브로드마켓 리더",
-        "top_value": "거래대금 상위",
-        "top_volume": "거래량 상위",
-        "sector_theme": "섹터·테마 정렬",
+        "the decision path was recorded, but the operator-facing summary is limited.": "?섏궗寃곗젙 寃쎈줈??湲곕줉?섏뿀吏留??댁쁺?먯슜 ?붿빟? ?쒗븳?곸쑝濡쒕쭔 ?⑥븘 ?덉뒿?덈떎.",
+        "current lifecycle status is closed. entry and exit are connected in one lifecycle story.": "?대쾲 ?쇱씠?꾩궗?댄겢? 醫낃껐 ?곹깭?대ŉ, 吏꾩엯怨?泥?궛???섎굹??嫄곕옒 ?먮쫫?쇰줈 ?곌껐?먯뒿?덈떎.",
+        "current lifecycle status is open. entry and exit are still unfolding within one lifecycle story.": "?대쾲 ?쇱씠?꾩궗?댄겢? ?꾩쭅 吏꾪뻾 以묒씠硫? 吏꾩엯 ?댄썑 泥?궛 ?먮떒???댁뼱吏怨??덉뒿?덈떎.",
+        "supervisor approved the order because allowed.": "?덊띁諛붿씠???二쇰Ц???뱀씤?덇퀬 媛???먮떒? ?덉슜?댁뿀?듬땲??",
+        "execution quality details were not captured.": "?ㅽ뻾 ?덉쭏 ?몃? ?댁슜? 蹂꾨룄濡?湲곕줉?섏? ?딆븯?듬땲??",
+        "reporter linkage was not available yet.": "由ы룷???곌퀎 寃곌낵???꾩쭅 ?곌껐?섏? ?딆븯?듬땲??",
+        "reporter linkage status was recorded separately.": "由ы룷???곌퀎 ?곹깭??蹂꾨룄濡?湲곕줉?섏뼱 ?덉뒿?덈떎.",
+        "warnings and missing links were recorded for operator follow-up.": "?댁쁺?먭? ?꾩냽 ?뺤씤?댁빞 ??寃쎄퀬? ?꾨씫 留곹겕媛 ?④퍡 湲곕줉?섏뿀?듬땲??",
+        "no explicit weaknesses were surfaced beyond the recorded trace.": "湲곕줉??異붿쟻 ?뺣낫 ?몄뿉 異붽? ?쎌젏? 蹂꾨룄濡??뺤씤?섏? ?딆븯?듬땲??",
+        "ai trade report generation failed after retry attempts. review the saved llm response artifact for details.": "AI 嫄곕옒 由ы룷???앹꽦???ъ떆???댄썑?먮룄 ?꾨즺?섏? ?딆븯?듬땲?? ??λ맂 LLM ?묐떟 ?꾪떚?⑺듃瑜??④퍡 ?뺤씤??二쇱꽭??",
+        "ai generation failed before a rendered market-context section was produced.": "?쒖옣 ?섍꼍 ?붿빟? ?앹꽦 ?꾩쨷 以묐떒?섏뼱, ??λ맂 洹쇨굅瑜?湲곗??쇰줈 蹂댁닔?곸쑝濡??뺣━?덉뒿?덈떎.",
+        "ai generation failed before a rendered symbol-selection section was produced.": "醫낅ぉ ?좎젙 ?ㅻ챸? ?앹꽦 ?꾩쨷 以묐떒?섏뼱, ??λ맂 ?좎젙 洹쇨굅瑜?湲곗??쇰줈 蹂댁닔?곸쑝濡??뺣━?덉뒿?덈떎.",
+        "ai generation failed before a rendered entry-decision section was produced.": "吏꾩엯 ?먮떒 ?ㅻ챸? ?앹꽦 ?꾩쨷 以묐떒?섏뼱, ??λ맂 吏꾩엯 洹쇨굅瑜?湲곗??쇰줈 蹂댁닔?곸쑝濡??뺣━?덉뒿?덈떎.",
+        "ai generation failed before a rendered holding-monitoring section was produced.": "蹂댁쑀 愿由??ㅻ챸? ?앹꽦 ?꾩쨷 以묐떒?섏뼱, ??λ맂 紐⑤땲??湲곕줉??湲곗??쇰줈 蹂댁닔?곸쑝濡??뺣━?덉뒿?덈떎.",
+        "ai generation failed before a rendered exit-decision section was produced.": "泥?궛 ?먮떒 ?ㅻ챸? ?앹꽦 ?꾩쨷 以묐떒?섏뼱, ??λ맂 泥?궛 洹쇨굅瑜?湲곗??쇰줈 蹂댁닔?곸쑝濡??뺣━?덉뒿?덈떎.",
+        "ai generation failed before a rendered execution-quality section was produced.": "?ㅽ뻾 ?덉쭏 ?ㅻ챸? ?앹꽦 ?꾩쨷 以묐떒?섏뼱, ??λ맂 ?ㅽ뻾 湲곕줉??湲곗??쇰줈 蹂댁닔?곸쑝濡??뺣━?덉뒿?덈떎.",
+        "ai generation failed and no rendered improvement section is available.": "AI ?앹꽦??以묐떒?섏뼱 媛쒖꽑 ?ъ씤?몃뒗 ??λ맂 寃쎄퀬? ?ㅻ쪟 湲곕줉 以묒떖?쇰줈 ?뺣━?덉뒿?덈떎.",
+        "ai generation failed. review lifecycle artifacts and the saved llm response artifact before taking action.": "AI ?앹꽦??以묐떒?섏뿀?듬땲?? ?ㅼ쓬 議곗튂瑜??섍린 ?꾩뿉 lifecycle ?꾪떚?⑺듃? ??λ맂 LLM ?묐떟???④퍡 ?뺤씤??二쇱꽭??",
+        "link same-day reporter analysis to this lifecycle for a complete quality review.": "?숈씪 ?쇱옄 由ы룷??遺꾩꽍???꾩쭅 ??嫄곕옒 ?앹븷二쇨린???곌껐?섏? ?딆븯?듬땲??",
+        "same-price round trips produced fee/tax drag; tighten follow-through evidence before repeating quick reversals.": "?숈씪媛 ?뺣났 嫄곕옒?먯꽌 ?섏닔猷뚯? ?멸툑 ?먯떎??諛섎났?? 吏㏃? 諛섏쟾 ?ъ쭊???꾩뿉???꾩냽 異붿꽭 ?뺤씤?????꾧꺽?섍쾶 遊먯빞 ?⑸땲??",
+        "same-day closed trades are loss-heavy; keep defensive entry posture until follow-through quality improves.": "?뱀씪 ?ロ엺 嫄곕옒 ?먯씡???꾨컲?곸쑝濡??쏀빐 ?꾩냽 異붿꽭 ?뺤씤 ?꾧퉴吏??諛⑹뼱??吏꾩엯 ?먯꽭瑜??좎??댁빞 ?⑸땲??",
+        "selection": "?좎젙 洹쇨굅瑜??뺣━?덉뒿?덈떎.",
+        "entry": "吏꾩엯 ?먮떒???뺣━?덉뒿?덈떎.",
+        "filters": "?ㅼ틦???꾪꽣 ?먭? 寃곌낵瑜??뺣━?덉뒿?덈떎.",
+        "guard": "?뱀씤 諛?媛???먮떒 寃곌낵瑜??뺣━?덉뒿?덈떎.",
+        "execution": "?ㅽ뻾 寃곌낵瑜??뺣━?덉뒿?덈떎.",
+        "reporter": "由ы룷???됯?瑜??뺣━?덉뒿?덈떎.",
+        "none": "異붽? 蹂댁셿 ?ъ씤?몃뒗 ?쒗븳?곸엯?덈떎.",
+        "top value or trading-value input supported the selection": "嫄곕옒?湲??곸쐞 ?좏샇媛 ?좎젙 洹쇨굅瑜??룸컺移⑦뻽?듬땲??",
+        "top volume or turnover input supported the selection": "?뚯쟾???좏샇??議댁옱?덉?留?理쒖쥌 ?곗쐞 洹쇨굅濡쒕뒗 ?쏀뻽?듬땲??",
+        "theme boost or sector source matched the strategist frame": "?뚮쭏 媛?먭낵 ?뱁꽣 ?뚯뒪媛 ?꾨왂媛 ?꾨젅?꾧낵 留욎븘?⑥뼱議뚯뒿?덈떎.",
+        "12/13 captured chart features": "13媛?以?12媛?李⑦듃 ?쇱쿂媛 ?뺣낫?먯뒿?덈떎.",
+        "news/global sentiment contribution was 0.295": "?댁뒪? 湲濡쒕쾶 媛먯꽦 湲곗뿬 ?⑹궛媛믪? 0.295??듬땲??",
+        "risk score was 0.563 and supervisor allow=true": "由ъ뒪???먯닔??0.563?댁뿀怨?supervisor ?덉슜 ?곹깭???좎??먯뒿?덈떎.",
+        "price anomaly check was not captured in this run": "?대쾲 run?먯꽌??媛寃??댁긽移??먭? 寃곌낵媛 ??λ릺吏 ?딆븯?듬땲??",
+        "price anomaly check was 湲곕줉?섏? ?딆쓬 in this run": "?대쾲 run?먯꽌??媛寃??댁긽移??먭? 寃곌낵媛 ??λ릺吏 ?딆븯?듬땲??",
+        "monitor price cross-check found no anomaly": "紐⑤땲??媛寃?援먯감寃利앹뿉???댁긽移섍? ?뺤씤?섏? ?딆븯?듬땲??",
+        "monitor price cross-check flagged an anomaly": "紐⑤땲??媛寃?援먯감寃利앹뿉???댁긽移섍? 媛먯??섏뿀?듬땲??",
+        "spread or slippage diagnostics were not captured in this run": "?대쾲 run?먯꽌???멸? ?ㅽ봽?덈뱶 ?먮뒗 ?щ━?쇱? 吏꾨떒????λ릺吏 ?딆븯?듬땲??",
+        "spread or slippage diagnostics were 湲곕줉?섏? ?딆쓬 in this run": "?대쾲 run?먯꽌???멸? ?ㅽ봽?덈뱶 ?먮뒗 ?щ━?쇱? 吏꾨떒????λ릺吏 ?딆븯?듬땲??",
+        "holding-phase evidence is thin; preserve more monitor context between entry and exit.": "蹂댁쑀 援ш컙 洹쇨굅???쒗븳?곸씠硫?吏꾩엯怨?泥?궛 ?ъ씠 紐⑤땲??留λ씫??異⑸텇?섏? ?딆뒿?덈떎.",
+        "媛숈? ???앹꽦??reporter 遺꾩꽍????lifecycle???곌껐???꾩껜 ?덉쭏 ?됯?瑜??꾩꽦??二쇱꽭??": "?숈씪 ?쇱옄 由ы룷??遺꾩꽍???꾩쭅 ??嫄곕옒 ?앹븷二쇨린???곌껐?섏? ?딆븯?듬땲??",
+        "蹂댁쑀 ?④퀎 洹쇨굅媛 ?뉗븘 吏꾩엯怨?泥?궛 ?ъ씠??紐⑤땲??留λ씫????蹂댁〈?댁빞 ?⑸땲??": "蹂댁쑀 援ш컙 洹쇨굅???쒗븳?곸씠硫?吏꾩엯怨?泥?궛 ?ъ씠 紐⑤땲??留λ씫??異⑸텇?섏? ?딆뒿?덈떎.",
+        "monitor trigger changes": "紐⑤땲???몃━嫄?蹂??",
+        "macro/news shifts": "嫄곗떆 ?섍꼍 諛??댁뒪 蹂??",
+        "stop-loss breach": "?먯젅 湲곗? ?댄깉",
+        "monitor and scanner divergence": "紐⑤땲?곗? ?ㅼ틦???먮떒 諛쒖궛",
+        "negative macro regime shift": "嫄곗떆 ?섍꼍??遺?뺤쟻 ?꾪솚",
+        "guard reason: allowed": "媛???먮떒 ?ъ쑀???덉슜?낅땲??",
+        "supervisor verdict: approve": "?덊띁諛붿씠? 理쒖쥌 ?먮떒? ?뱀씤?낅땲??",
+        "broad_market_leaders": "釉뚮줈?쒕쭏耳?由щ뜑",
+        "top_value": "嫄곕옒?湲??곸쐞",
+        "top_volume": "嫄곕옒???곸쐞",
+        "sector_theme": "?뱁꽣쨌?뚮쭏 ?뺣젹",
     }
     if lowered in exact_mapping:
         return exact_mapping[lowered]
 
-    m = re.fullmatch(r"Market regime:\s*(.+)", cleaned, flags=re.IGNORECASE)
-    if m:
-        return f"시장 상태는 {_clip(m.group(1), max_len=160)}입니다."
-    m = re.fullmatch(r"시장 regime:\s*([^,]+),\s*감성:\s*([^,]+),\s*플레이북:\s*(.+)", cleaned, flags=re.IGNORECASE)
-    if m:
-        return f"시장 상태는 {_clip(m.group(1), max_len=80)}이며, 시장 심리는 {_clip(m.group(2), max_len=80)}이고, 플레이북은 {_clip(m.group(3), max_len=120)}입니다."
-    m = re.fullmatch(r"Global sentiment score:\s*(.+)", cleaned, flags=re.IGNORECASE)
-    if m:
-        return f"글로벌 감성 점수는 {_clip(m.group(1), max_len=120)}입니다."
-    m = re.fullmatch(r"글로벌 감성 점수:\s*(.+)", cleaned, flags=re.IGNORECASE)
-    if m:
-        return f"글로벌 감성 점수는 {_clip(m.group(1), max_len=120)}입니다."
-    m = re.fullmatch(r"VIX:\s*(.+)", cleaned, flags=re.IGNORECASE)
-    if m:
-        return f"VIX 수준은 {_clip(m.group(1), max_len=120)}입니다."
-    m = re.fullmatch(r"VIX 수준:\s*(.+)", cleaned, flags=re.IGNORECASE)
-    if m:
-        return f"VIX 수준은 {_clip(m.group(1), max_len=120)}입니다."
-    m = re.fullmatch(r"News input:\s*(.+)", cleaned, flags=re.IGNORECASE)
-    if m:
-        return f"뉴스 입력 요약은 {_clip(m.group(1), max_len=240)}입니다."
-    m = re.fullmatch(r"News query targets:\s*(.+)", cleaned, flags=re.IGNORECASE)
-    if m:
-        return f"뉴스 조회 대상은 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(
-        r"적용 정책[:：]?\s*timeframe\s*([0-9]+)\s*분,\s*breakout lookback\s*([0-9]+),\s*volume ratio min\s*([0-9.]+)",
+    m = _safe_fullmatch(
+        r"same-day closed trade reports show (\d+) trades with (\d+) wins,\s*(\d+) losses,\s*avg pnl pct\s*([0-9.+\-]+)\.?",
         cleaned,
         flags=re.IGNORECASE,
     )
     if m:
-        return (
-            f"적용 정책은 {int(m.group(1))}분봉, 돌파 확인 기준 봉 수 {int(m.group(2))}, "
-            f"최소 거래량 비율 {float(m.group(3)):.2f}였습니다."
-        )
-    m = re.fullmatch(r"Commander 의도[:：]?\s*([^,]+),\s*라우트[:：]?\s*(.+)", cleaned, flags=re.IGNORECASE)
+        trade_count = int(m.group(1))
+        win_count = int(m.group(2))
+        loss_count = int(m.group(3))
+        avg_pnl_pct = _fmt_pct(m.group(4))
+        return f"?뱀씪 ?ロ엺 嫄곕옒 {trade_count}嫄?湲곗??쇰줈 ????{win_count}/{loss_count}, ?됯퇏 ?먯씡瑜좎? {avg_pnl_pct}??듬땲??"
+
+    m = _safe_fullmatch(r"same-price cost-loss trades\s*(\d+)/(\d+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"Commander 의도는 {_clip(m.group(1), max_len=80)}이고, 선택된 라우트는 {_clip(m.group(2), max_len=120)}입니다."
-    m = re.fullmatch(r"정책 검증 상태[:：]?\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?숈씪媛 ?뺣났 ??鍮꾩슜 ?먯떎 嫄곕옒媛 {m.group(2)}嫄?以?{m.group(1)}嫄댁씠?덉뒿?덈떎."
+
+    m = _safe_fullmatch(
+        r"정규화된 청산 사유는\s+SELL was triggered because\s+(.+?)\.?입니다\.?",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if m:
+        exit_label = _exit_reason_label(m.group(1))
+        if exit_label:
+            return f"정규화된 청산 사유는 {exit_label}입니다."
+
+    m = _safe_fullmatch(r"SELL was triggered because\s+(.+?)\.?", cleaned, flags=re.IGNORECASE)
+    if m:
+        trigger_label = _operator_axis_label(m.group(1))
+        return f"{trigger_label} 湲곗??쇰줈 泥?궛?덉뒿?덈떎."
+
+    m = _safe_fullmatch(r"Market regime:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"?쒖옣 ?곹깭??{_clip(m.group(1), max_len=160)}?낅땲??"
+    m = _safe_fullmatch(r"\\?쒖옣 regime:\s*([^,]+),\s*媛먯꽦:\s*([^,]+),\s*?뚮젅?대턿:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"?쒖옣 ?곹깭??{_clip(m.group(1), max_len=80)}?대ŉ, ?쒖옣 ?щ━??{_clip(m.group(2), max_len=80)}?닿퀬, ?뚮젅?대턿? {_clip(m.group(3), max_len=120)}?낅땲??"
+    m = _safe_fullmatch(r"Global sentiment score:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"湲濡쒕쾶 媛먯꽦 ?먯닔??{_clip(m.group(1), max_len=120)}?낅땲??"
+    m = _safe_fullmatch(r"湲濡쒕쾶 媛먯꽦 ?먯닔:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"湲濡쒕쾶 媛먯꽦 ?먯닔??{_clip(m.group(1), max_len=120)}?낅땲??"
+    m = _safe_fullmatch(r"VIX:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"VIX ?섏?? {_clip(m.group(1), max_len=120)}?낅땲??"
+    m = _safe_fullmatch(r"VIX ?섏?:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"VIX ?섏?? {_clip(m.group(1), max_len=120)}?낅땲??"
+    m = _safe_fullmatch(r"News input:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"?댁뒪 ?낅젰 ?붿빟? {_clip(m.group(1), max_len=240)}?낅땲??"
+    m = _safe_fullmatch(r"News query targets:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"?댁뒪 議고쉶 ??곸? {_clip(m.group(1), max_len=220)}?낅땲??"
+    m = None
+    if m:
+        return (
+            f"?곸슜 ?뺤콉? {int(m.group(1))}遺꾨큺, ?뚰뙆 ?뺤씤 湲곗? 遊???{int(m.group(2))}, "
+            f"理쒖냼 嫄곕옒??鍮꾩쑉 {float(m.group(3)):.2f}??듬땲??"
+        )
+    m = None
+    if m:
+        return f"Commander ?섎룄??{_clip(m.group(1), max_len=80)}?닿퀬, ?좏깮???쇱슦?몃뒗 {_clip(m.group(2), max_len=120)}?낅땲??"
+    m = None
     if m:
         status_text = _clip(m.group(1), max_len=200).replace("(", ", ").replace(")", "")
-        return f"정책 검증 상태는 {status_text}입니다."
-    m = re.fullmatch(r"VWAP 확장 비율 조건[:：]?\s*([^,]+),\s*눌림목 비율[:：]?\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?뺤콉 寃利??곹깭??{status_text}?낅땲??"
+    m = None
     if m:
-        return f"VWAP 확장 허용 범위는 {_clip(m.group(1), max_len=80)}이고, 눌림목 비율 범위는 {_clip(m.group(2), max_len=80)}입니다."
-    m = re.fullmatch(r"Scanner linkage:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"VWAP ?뺤옣 ?덉슜 踰붿쐞??{_clip(m.group(1), max_len=80)}?닿퀬, ?뚮┝紐?鍮꾩쑉 踰붿쐞??{_clip(m.group(2), max_len=80)}?낅땲??"
+    m = _safe_fullmatch(r"Scanner linkage:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"스캐너 연결 근거는 {_clip(m.group(1), max_len=260)}입니다."
-    m = re.fullmatch(r"execution quote snapshot spread was\s*([0-9.]+)\s*bps", cleaned, flags=re.IGNORECASE)
+        return f"?ㅼ틦???곌껐 洹쇨굅??{_clip(m.group(1), max_len=260)}?낅땲??"
+    m = _safe_fullmatch(r"execution quote snapshot spread was\s*([0-9.]+)\s*bps", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"실행 시점 호가 스냅샷 기준 스프레드는 {float(m.group(1)):.1f}bps였습니다."
-    m = re.fullmatch(r"Key strategist inputs:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?ㅽ뻾 ?쒖젏 ?멸? ?ㅻ깄??湲곗? ?ㅽ봽?덈뱶??{float(m.group(1)):.1f}bps??듬땲??"
+    m = _safe_fullmatch(r"Key strategist inputs:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"전략가 핵심 입력은 {_clip(m.group(1), max_len=240)}입니다."
-    m = re.fullmatch(r"Market news titles:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?꾨왂媛 ?듭떖 ?낅젰? {_clip(m.group(1), max_len=240)}?낅땲??"
+    m = _safe_fullmatch(r"Market news titles:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"주요 시장 뉴스는 {_clip(m.group(1), max_len=240)}입니다."
-    m = re.fullmatch(r"Candidate news titles:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"二쇱슂 ?쒖옣 ?댁뒪??{_clip(m.group(1), max_len=240)}?낅땲??"
+    m = _safe_fullmatch(r"Candidate news titles:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"후보 종목 관련 뉴스는 {_clip(m.group(1), max_len=240)}입니다."
-    m = re.fullmatch(r"테마:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?꾨낫 醫낅ぉ 愿???댁뒪??{_clip(m.group(1), max_len=240)}?낅땲??"
+    m = _safe_fullmatch(r"\\?뚮쭏:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"주요 테마는 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(r"적용 테마:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"二쇱슂 ?뚮쭏??{_clip(m.group(1), max_len=220)}?낅땲??"
+    m = _safe_fullmatch(r"\\?곸슜 ?뚮쭏:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"적용된 테마는 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(r"뉴스 분석:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?곸슜???뚮쭏??{_clip(m.group(1), max_len=220)}?낅땲??"
+    m = _safe_fullmatch(r"\\?댁뒪 遺꾩꽍:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"뉴스 분석 범위는 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(r"Universe scanned:\s*(.+)", cleaned, flags=re.IGNORECASE)
-    if m:
-        value = _clip(m.group(1), max_len=80)
-        if value == "not_captured":
-            return "비교한 후보 수는 별도로 기록되지 않았습니다."
-        return f"총 {value}개 후보를 비교했습니다."
-    m = re.fullmatch(r"Selected rank:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?댁뒪 遺꾩꽍 踰붿쐞??{_clip(m.group(1), max_len=220)}?낅땲??"
+    m = _safe_fullmatch(r"Universe scanned:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         value = _clip(m.group(1), max_len=80)
         if value == "not_captured":
-            return "선정 순위 정보는 별도로 기록되지 않았습니다."
-        return f"최종 선정 순위는 {value}입니다."
-    m = re.fullmatch(r"Selected because:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return "鍮꾧탳???꾨낫 ?섎뒗 蹂꾨룄濡?湲곕줉?섏? ?딆븯?듬땲??"
+        return f"珥?{value}媛??꾨낫瑜?鍮꾧탳?덉뒿?덈떎."
+    m = _safe_fullmatch(r"Selected rank:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"선정 이유는 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(r"Top candidates:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        value = _clip(m.group(1), max_len=80)
+        if value == "not_captured":
+            return "?좎젙 ?쒖쐞 ?뺣낫??蹂꾨룄濡?湲곕줉?섏? ?딆븯?듬땲??"
+        return f"理쒖쥌 ?좎젙 ?쒖쐞??{value}?낅땲??"
+    m = _safe_fullmatch(r"Selected because:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"상위 후보는 {_clip(m.group(1), max_len=240)}입니다."
-    m = re.fullmatch(r"Why not others:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?좎젙 ?댁쑀??{_clip(m.group(1), max_len=220)}?낅땲??"
+    m = _safe_fullmatch(r"Top candidates:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"다른 후보가 밀린 이유는 {_clip(m.group(1), max_len=240)}입니다."
-    m = re.fullmatch(r"Selection decision:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?곸쐞 ?꾨낫??{_clip(m.group(1), max_len=240)}?낅땲??"
+    m = _safe_fullmatch(r"Why not others:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"최종 선정 판단은 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(r"Final decision basis:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?ㅻⅨ ?꾨낫媛 諛由??댁쑀??{_clip(m.group(1), max_len=240)}?낅땲??"
+    m = _safe_fullmatch(r"Selection decision:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"최종 결정 기준은 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(r"Tie-break rule:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"理쒖쥌 ?좎젙 ?먮떒? {_clip(m.group(1), max_len=220)}?낅땲??"
+    m = _safe_fullmatch(r"Final decision basis:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"동률 해소 기준은 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(r"동률 해소 기준[:：]?\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"理쒖쥌 寃곗젙 湲곗?? {_clip(m.group(1), max_len=220)}?낅땲??"
+    m = _safe_fullmatch(r"Tie-break rule:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"동률 해소 기준은 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(r"Runner-ups lost because:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"tie-break rule은 {_clip(m.group(1), max_len=220)}입니다."
+    m = None
     if m:
-        return f"차순위 후보가 밀린 이유는 {_clip(m.group(1), max_len=240)}입니다."
-    m = re.fullmatch(r"Selection sources:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"후행 요소 기준은 {_clip(m.group(1), max_len=220)}입니다."
+    m = _safe_fullmatch(r"Runner-ups lost because:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"선정에 반영된 핵심 소스는 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(r"Ranking basis:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"李⑥닚???꾨낫媛 諛由??댁쑀??{_clip(m.group(1), max_len=240)}?낅땲??"
+    m = _safe_fullmatch(r"Selection sources:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"순위 산정 기준은 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(r"Chart / feature coverage:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?좎젙??諛섏쁺???듭떖 ?뚯뒪??{_clip(m.group(1), max_len=220)}?낅땲??"
+    m = _safe_fullmatch(r"Ranking basis:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"차트 및 지표 충실도는 {_clip(m.group(1), max_len=120)}입니다."
-    m = re.fullmatch(r"Entry run:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?쒖쐞 ?곗젙 湲곗?? {_clip(m.group(1), max_len=220)}?낅땲??"
+    m = _safe_fullmatch(r"Chart / feature coverage:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"李⑦듃 諛?吏??異⑹떎?꾨뒗 {_clip(m.group(1), max_len=120)}?낅땲??"
+    m = _safe_fullmatch(r"Entry run:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         value = _clip(m.group(1), max_len=120)
         if value == "not_captured":
-            return "진입 판단이 기록된 run 정보는 남아 있지 않습니다."
-        return f"진입 판단이 기록된 run은 {value}입니다."
-    m = re.fullmatch(r"Entry time:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return "吏꾩엯 ?먮떒??湲곕줉??run ?뺣낫???⑥븘 ?덉? ?딆뒿?덈떎."
+        return f"吏꾩엯 ?먮떒??湲곕줉??run? {value}?낅땲??"
+    m = _safe_fullmatch(r"Entry time:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         value = _clip(m.group(1), max_len=120)
         if value == "not_captured":
-            return "진입 시각은 별도로 기록되지 않았습니다."
-        return f"진입 시각은 {value}입니다."
-    m = re.fullmatch(r"Entry action:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return "吏꾩엯 ?쒓컖? 蹂꾨룄濡?湲곕줉?섏? ?딆븯?듬땲??"
+        return f"吏꾩엯 ?쒓컖? {value}?낅땲??"
+    m = _safe_fullmatch(r"Entry action:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"진입 액션은 {_operator_action_label(m.group(1))}입니다."
-    m = re.fullmatch(r"Entry reason:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"吏꾩엯 ?≪뀡? {_operator_action_label(m.group(1))}?낅땲??"
+    m = _safe_fullmatch(r"Entry reason:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         value = _clip(m.group(1), max_len=240)
         if value == "not_captured":
-            return "진입 판단 사유는 별도로 기록되지 않았습니다."
-        return f"진입 판단 근거는 {value}입니다."
-    m = re.fullmatch(r"보유 기간:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return "吏꾩엯 ?먮떒 ?ъ쑀??蹂꾨룄濡?湲곕줉?섏? ?딆븯?듬땲??"
+        return f"吏꾩엯 ?먮떒 洹쇨굅??{value}?낅땲??"
+    m = _safe_fullmatch(r"蹂댁쑀 湲곌컙:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"보유 기간은 {_clip(m.group(1), max_len=140)}입니다."
-    m = re.fullmatch(r"모니터 실행:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"蹂댁쑀 湲곌컙? {_clip(m.group(1), max_len=140)}?낅땲??"
+    m = _safe_fullmatch(r"紐⑤땲???ㅽ뻾:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"모니터 실행 기록은 {_clip(m.group(1), max_len=180)}입니다."
-    m = re.fullmatch(r"모니터 판단:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"紐⑤땲???ㅽ뻾 湲곕줉? {_clip(m.group(1), max_len=180)}?낅땲??"
+    m = _safe_fullmatch(r"紐⑤땲???먮떒:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"모니터 판단 흐름은 {_clip(m.group(1), max_len=220)}입니다."
-    m = re.fullmatch(r"Monitor runs:\s*(\d+)", cleaned, flags=re.IGNORECASE)
+        return f"紐⑤땲???먮떒 ?먮쫫? {_clip(m.group(1), max_len=220)}?낅땲??"
+    m = _safe_fullmatch(r"Monitor runs:\s*(\d+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"모니터는 총 {m.group(1)}회 실행되었습니다."
-    m = re.fullmatch(r"Posture:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"紐⑤땲?곕뒗 珥?{m.group(1)}???ㅽ뻾?섏뿀?듬땲??"
+    m = _safe_fullmatch(r"Posture:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"현재 포지션 판단은 {_operator_action_label(m.group(1))}입니다."
-    m = re.fullmatch(r"Trigger type:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?꾩옱 ?ъ????먮떒? {_operator_action_label(m.group(1))}?낅땲??"
+    m = _safe_fullmatch(r"Trigger type:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"감지된 핵심 신호는 {_operator_axis_label(m.group(1))}입니다."
-    m = re.fullmatch(r"Position age:\s*(\d+)\s*seconds", cleaned, flags=re.IGNORECASE)
+        return f"媛먯????듭떖 ?좏샇??{_operator_axis_label(m.group(1))}?낅땲??"
+    m = _safe_fullmatch(r"Position age:\s*(\d+)\s*seconds", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"포지션 보유 시간은 약 {m.group(1)}초입니다."
-    m = re.fullmatch(r"Effective stop:\s*([^(]+?)(?:\s*\((.+)\))?", cleaned, flags=re.IGNORECASE)
+        return f"?ъ???蹂댁쑀 ?쒓컙? ??{m.group(1)}珥덉엯?덈떎."
+    m = _safe_fullmatch(r"Effective stop:\s*([^(]+?)(?:\s*\((.+)\))?", cleaned, flags=re.IGNORECASE)
     if m:
         level = _clip(m.group(1), max_len=80)
         reason = _operator_axis_label(m.group(2))
         if reason and reason != "-":
-            return f"유효 손절 기준은 {level} 수준이며, 기준 축은 {reason}입니다."
-        return f"유효 손절 기준은 {level} 수준입니다."
-    m = re.fullmatch(r"Take profit:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"?좏슚 ?먯젅 湲곗?? {level} ?섏??대ŉ, 湲곗? 異뺤? {reason}?낅땲??"
+        return f"?좏슚 ?먯젅 湲곗?? {level} ?섏??낅땲??"
+    m = _safe_fullmatch(r"Take profit:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"목표 수익 실현 기준은 {_clip(m.group(1), max_len=80)} 수준입니다."
-    m = re.fullmatch(r"Active exit axis:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?? {_clip(m.group(1), max_len=80)} ?섏??낅땲??"
+    m = _safe_fullmatch(r"Active exit axis:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"현재 우선 감시 중인 청산 축은 {_operator_axis_label(m.group(1))}입니다."
-    m = re.fullmatch(r"Exit confirmation:\s*(\d+)/(\d+)", cleaned, flags=re.IGNORECASE)
+        return f"?꾩옱 ?곗꽑 媛먯떆 以묒씤 泥?궛 異뺤? {_operator_axis_label(m.group(1))}?낅땲??"
+    m = _safe_fullmatch(r"Exit confirmation:\s*(\d+)/(\d+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"청산 확인 조건은 {m.group(1)}/{m.group(2)} 단계로 기록되었습니다."
-    m = re.fullmatch(r"Watch axes:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"泥?궛 ?뺤씤 議곌굔? {m.group(1)}/{m.group(2)} ?④퀎濡?湲곕줉?섏뿀?듬땲??"
+    m = _safe_fullmatch(r"Watch axes:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         axes = ", ".join(_operator_axis_label(part.strip()) for part in m.group(1).split(","))
-        return f"주요 감시 축은 {axes}입니다."
-    m = re.fullmatch(r"Decision chain:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"二쇱슂 媛먯떆 異뺤? {axes}?낅땲??"
+    m = _safe_fullmatch(r"Decision chain:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"판단 흐름은 {_clip(m.group(1), max_len=220)} 순서로 이어졌습니다."
-    m = re.fullmatch(r"Current price / avg / peak:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?먮떒 ?먮쫫? {_clip(m.group(1), max_len=220)} ?쒖꽌濡??댁뼱議뚯뒿?덈떎."
+    m = _safe_fullmatch(r"Current price / avg / peak:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"현재가, 평균가, 고점 기준 값은 {_clip(m.group(1), max_len=200)}입니다."
-    m = re.fullmatch(r"Current drawdown / peak drawdown:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?꾩옱媛, ?됯퇏媛, 怨좎젏 湲곗? 媛믪? {_clip(m.group(1), max_len=200)}?낅땲??"
+    m = _safe_fullmatch(r"Current drawdown / peak drawdown:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"현재 손익 변동과 고점 대비 하락폭은 {_clip(m.group(1), max_len=200)}입니다."
-    m = re.fullmatch(r"Price source:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?꾩옱 ?먯씡 蹂?숆낵 怨좎젏 ?鍮??섎씫??? {_clip(m.group(1), max_len=200)}?낅땲??"
+    m = _safe_fullmatch(r"Price source:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"가격 기준 소스는 {_clip(m.group(1), max_len=140)}입니다."
-    m = re.fullmatch(r"Feature source:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"媛寃?湲곗? ?뚯뒪??{_clip(m.group(1), max_len=140)}?낅땲??"
+    m = _safe_fullmatch(r"Feature source:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"지표 기준 소스는 {_clip(m.group(1), max_len=140)}입니다."
-    m = re.fullmatch(r"Recent monitor update:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"吏??湲곗? ?뚯뒪??{_clip(m.group(1), max_len=140)}?낅땲??"
+    m = _safe_fullmatch(r"Recent monitor update:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"최근 모니터 업데이트는 다음과 같습니다: {_clip(m.group(1), max_len=240)}"
-    m = re.fullmatch(r"Exit run:\s*(.+)", cleaned, flags=re.IGNORECASE)
-    if m:
-        value = _clip(m.group(1), max_len=120)
-        if value == "not_captured":
-            return "청산 판단이 기록된 run 정보는 남아 있지 않습니다."
-        return f"청산 판단이 기록된 run은 {value}입니다."
-    m = re.fullmatch(r"Exit time:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"理쒓렐 紐⑤땲???낅뜲?댄듃???ㅼ쓬怨?媛숈뒿?덈떎: {_clip(m.group(1), max_len=240)}"
+    m = _safe_fullmatch(r"Exit run:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         value = _clip(m.group(1), max_len=120)
         if value == "not_captured":
-            return "청산 시각은 별도로 기록되지 않았습니다."
-        return f"청산 시각은 {value}입니다."
-    m = re.fullmatch(r"Exit action:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return "泥?궛 ?먮떒??湲곕줉??run ?뺣낫???⑥븘 ?덉? ?딆뒿?덈떎."
+        return f"泥?궛 ?먮떒??湲곕줉??run? {value}?낅땲??"
+    m = _safe_fullmatch(r"Exit time:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"청산 액션은 {_operator_action_label(m.group(1))}입니다."
-    m = re.fullmatch(r"Exit reason:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        value = _clip(m.group(1), max_len=120)
+        if value == "not_captured":
+            return "泥?궛 ?쒓컖? 蹂꾨룄濡?湲곕줉?섏? ?딆븯?듬땲??"
+        return f"泥?궛 ?쒓컖? {value}?낅땲??"
+    m = _safe_fullmatch(r"Exit action:\s*(.+)", cleaned, flags=re.IGNORECASE)
+    if m:
+        return f"泥?궛 ?≪뀡? {_operator_action_label(m.group(1))}?낅땲??"
+    m = _safe_fullmatch(r"Exit reason:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         value = _clip(m.group(1), max_len=240)
         if value in {"position still open", "still open"}:
-            return "현재 포지션은 아직 열려 있어 확정된 청산 사유는 없습니다."
+            return "?꾩옱 ?ъ??섏? ?꾩쭅 ?대젮 ?덉뼱 ?뺤젙??泥?궛 ?ъ쑀???놁뒿?덈떎."
         if value == "not_captured":
-            return "청산 사유는 별도로 기록되지 않았습니다."
-        return f"청산 사유는 {value}입니다."
-    m = re.fullmatch(r"Execution outcome:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return "泥?궛 ?ъ쑀??蹂꾨룄濡?湲곕줉?섏? ?딆븯?듬땲??"
+        return f"泥?궛 ?ъ쑀??{value}?낅땲??"
+    m = _safe_fullmatch(r"Execution outcome:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"주문 실행 결과는 {_clip(m.group(1), max_len=180)}입니다."
-    m = re.fullmatch(r"Quantity:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"二쇰Ц ?ㅽ뻾 寃곌낵??{_clip(m.group(1), max_len=180)}?낅땲??"
+    m = _safe_fullmatch(r"Quantity:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"수량: {_clip(m.group(1), max_len=80)}"
-    m = re.fullmatch(r"수량:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?섎웾: {_clip(m.group(1), max_len=80)}"
+    m = _safe_fullmatch(r"\\?섎웾:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"수량: {_clip(m.group(1), max_len=80)}"
-    m = re.fullmatch(r"Execution mode:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?섎웾: {_clip(m.group(1), max_len=80)}"
+    m = _safe_fullmatch(r"Execution mode:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"실행 모드: {_clip(m.group(1), max_len=120)}"
-    m = re.fullmatch(r"Broker environment:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"?ㅽ뻾 紐⑤뱶: {_clip(m.group(1), max_len=120)}"
+    m = _safe_fullmatch(r"Broker environment:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         value = _clip(m.group(1), max_len=120)
         if value == "not_captured":
-            return "브로커 환경 정보는 별도로 기록되지 않았습니다."
-        return f"브로커 환경은 {value}입니다."
-    m = re.fullmatch(r"Supervisor verdict:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return "釉뚮줈而??섍꼍 ?뺣낫??蹂꾨룄濡?湲곕줉?섏? ?딆븯?듬땲??"
+        return f"釉뚮줈而??섍꼍? {value}?낅땲??"
+    m = _safe_fullmatch(r"Supervisor verdict:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"감독 승인 판단은 {_operator_action_label(m.group(1))}입니다."
-    m = re.fullmatch(r"Supervisor allow:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"媛먮룆 ?뱀씤 ?먮떒? {_operator_action_label(m.group(1))}?낅땲??"
+    m = _safe_fullmatch(r"Supervisor allow:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"주문 허용 여부는 {_operator_action_label(m.group(1))}입니다."
-    m = re.fullmatch(r"Guard reason:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"二쇰Ц ?덉슜 ?щ???{_operator_action_label(m.group(1))}?낅땲??"
+    m = _safe_fullmatch(r"Guard reason:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"가드 판단 사유는 {_clip(m.group(1), max_len=200)}입니다."
-    m = re.fullmatch(r"Action reviewed:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"媛???먮떒 ?ъ쑀??{_clip(m.group(1), max_len=200)}?낅땲??"
+    m = _safe_fullmatch(r"Action reviewed:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"검토한 액션은 {_operator_action_label(m.group(1))}입니다."
-    m = re.fullmatch(r"Symbol reviewed:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"寃?좏븳 ?≪뀡? {_operator_action_label(m.group(1))}?낅땲??"
+    m = _safe_fullmatch(r"Symbol reviewed:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"검토한 종목은 {_clip(m.group(1), max_len=60)}입니다."
-    m = re.fullmatch(r"Approval mode:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"寃?좏븳 醫낅ぉ? {_clip(m.group(1), max_len=60)}?낅땲??"
+    m = _safe_fullmatch(r"Approval mode:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         value = _clip(m.group(1), max_len=120)
         lowered_value = value.lower()
         if lowered_value == "not captured in the execution trace" or (
-            "execution trace" in lowered_value and ("not captured" in lowered_value or "기록되지 않음" in value)
+            "execution trace" in lowered_value and ("not captured" in lowered_value or "湲곕줉?섏? ?딆쓬" in value)
         ):
-            return "승인 모드는 실행 추적에는 별도로 남아 있지 않습니다."
-        return f"승인 모드는 {value}입니다."
-    m = re.fullmatch(r"Lifecycle status:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return "?뱀씤 紐⑤뱶???ㅽ뻾 異붿쟻?먮뒗 蹂꾨룄濡??⑥븘 ?덉? ?딆뒿?덈떎."
+        return f"?뱀씤 紐⑤뱶??{value}?낅땲??"
+    m = _safe_fullmatch(r"Lifecycle status:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
         status_token = _clip(m.group(1), max_len=80).strip().lower()
         status_label = {
-            "closed": "종결",
-            "open": "진행 중",
-            "pending": "대기",
+            "closed": "醫낃껐",
+            "open": "吏꾪뻾 以?",
+            "pending": "?湲?",
         }.get(status_token, _clip(m.group(1), max_len=80))
-        return f"라이프사이클 상태 {status_label}"
-    m = re.fullmatch(r"Entry\s+([A-Z_]+)\s+was executed by run\s+([A-Za-z0-9_-]+)\.?", cleaned, flags=re.IGNORECASE)
+        return f"?쇱씠?꾩궗?댄겢 ?곹깭 {status_label}"
+    m = _safe_fullmatch(r"Entry\s+([A-Z_]+)\s+was executed by run\s+([A-Za-z0-9_-]+)\.?", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"run {_clip(m.group(2), max_len=80)}에서 {_operator_action_label(m.group(1))} 진입이 실행됐습니다."
-    m = re.fullmatch(r"Exit\s+([A-Z_]+)\s+was executed by run\s+([A-Za-z0-9_-]+)\.?", cleaned, flags=re.IGNORECASE)
+        return f"run {_clip(m.group(2), max_len=80)}?먯꽌 {_operator_action_label(m.group(1))} 吏꾩엯???ㅽ뻾?먯뒿?덈떎."
+    m = _safe_fullmatch(r"Exit\s+([A-Z_]+)\s+was executed by run\s+([A-Za-z0-9_-]+)\.?", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"run {_clip(m.group(2), max_len=80)}에서 {_operator_action_label(m.group(1))} 청산이 실행됐습니다."
-    m = re.fullmatch(r"슈퍼바이저 판단:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"run {_clip(m.group(2), max_len=80)}?먯꽌 {_operator_action_label(m.group(1))} 泥?궛???ㅽ뻾?먯뒿?덈떎."
+    m = _safe_fullmatch(r"\\?덊띁諛붿씠? ?먮떒:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"감독 승인 판단은 {_operator_action_label(m.group(1))}입니다."
-    m = re.fullmatch(r"슈퍼바이저 허용:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"媛먮룆 ?뱀씤 ?먮떒? {_operator_action_label(m.group(1))}?낅땲??"
+    m = _safe_fullmatch(r"\\?덊띁諛붿씠? ?덉슜:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"주문 허용 여부는 {_operator_action_label(m.group(1))}입니다."
-    m = re.fullmatch(r"가드 이유:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"二쇰Ц ?덉슜 ?щ???{_operator_action_label(m.group(1))}?낅땲??"
+    m = _safe_fullmatch(r"媛???댁쑀:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"가드 판단 사유는 {_clip(m.group(1), max_len=200)}입니다."
-    m = re.fullmatch(r"검토된 액션:\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"媛???먮떒 ?ъ쑀??{_clip(m.group(1), max_len=200)}?낅땲??"
+    m = _safe_fullmatch(r"寃?좊맂 ?≪뀡:\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"검토한 액션은 {_operator_action_label(m.group(1))}입니다."
-    m = re.fullmatch(r"(.+?):\s*(PASS|FAIL|NOT_AVAILABLE)\s*-\s*(.+)", cleaned, flags=re.IGNORECASE)
+        return f"寃?좏븳 ?≪뀡? {_operator_action_label(m.group(1))}?낅땲??"
+    m = _safe_fullmatch(r"(.+?):\s*(PASS|FAIL|NOT_AVAILABLE)\s*-\s*(.+)", cleaned, flags=re.IGNORECASE)
     if m:
-        return f"{_operator_filter_label(m.group(1))}은 {_operator_filter_status(m.group(2))}였습니다. 근거: {_clip(m.group(3), max_len=220)}"
+        return f"{_operator_filter_label(m.group(1))}? {_operator_filter_status(m.group(2))}??듬땲?? 洹쇨굅: {_clip(m.group(3), max_len=220)}"
 
-    cleaned = cleaned.replace("Hard stop", "고정 손절 기준")
-    cleaned = cleaned.replace("Adaptive stop", "상황 대응형 손절 기준")
-    cleaned = cleaned.replace("Take profit", "목표 수익 실현 기준")
-    cleaned = cleaned.replace("Trailing stop", "추적 손절 기준")
-    cleaned = cleaned.replace("Peak drawdown", "고점 대비 하락폭")
-    cleaned = cleaned.replace("VWAP breakdown", "VWAP 이탈")
-    cleaned = cleaned.replace("Intraday low break", "장중 저점 이탈")
-    cleaned = cleaned.replace("Trend breakdown", "추세 훼손")
+    cleaned = cleaned.replace("Hard stop", "怨좎젙 ?먯젅 湲곗?")
+    cleaned = cleaned.replace("Adaptive stop", "?곹솴 ??묓삎 ?먯젅 湲곗?")
+    cleaned = cleaned.replace("Take profit", "紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?")
+    cleaned = cleaned.replace("Trailing stop", "異붿쟻 ?먯젅 湲곗?")
+    cleaned = cleaned.replace("Peak drawdown", "怨좎젏 ?鍮??섎씫??")
+    cleaned = cleaned.replace("VWAP breakdown", "VWAP ?댄깉")
+    cleaned = cleaned.replace("Intraday low break", "?μ쨷 ????댄깉")
+    cleaned = cleaned.replace("Trend breakdown", "異붿꽭 ?쇱넀")
     return _normalize_trade_report_language(cleaned)
 
 
@@ -4963,79 +5092,79 @@ def _trade_report_priority_bullet_prefixes(section_key: str) -> List[str]:
     if key in {"market_context_at_entry", "market_context"}:
         return [
             "Market regime:",
-            "시장 상태는",
+            "?쒖옣 ?곹깭??",
             "Global sentiment score:",
-            "글로벌 감성 점수는",
+            "湲濡쒕쾶 媛먯꽦 ?먯닔??",
             "VIX",
             "Scanner linkage:",
             "Key strategist inputs:",
-            "전략가 핵심 입력은",
+            "?꾨왂媛 ?듭떖 ?낅젰?",
             "Market news titles:",
-            "주요 시장 뉴스는",
+            "二쇱슂 ?쒖옣 ?댁뒪??",
             "Candidate news titles:",
-            "후보 종목 관련 뉴스는",
+            "?꾨낫 醫낅ぉ 愿???댁뒪??",
         ]
     if key in {"strategist_summary"}:
         return [
-            "핵심 입력은",
-            "전략 해석은",
-            "뉴스 연결 해석은",
-            "스캐너 반영은",
-            "종목 연결은",
+            "?듭떖 ?낅젰?",
+            "?꾨왂 ?댁꽍?",
+            "?댁뒪 ?곌껐 ?댁꽍?",
+            "?ㅼ틦??諛섏쁺?",
+            "醫낅ぉ ?곌껐?",
             "Scanner linkage:",
-            "전략가 핵심 입력은",
-            "주요 시장 뉴스는",
-            "스캐너 연결 근거는",
+            "?꾨왂媛 ?듭떖 ?낅젰?",
+            "二쇱슂 ?쒖옣 ?댁뒪??",
+            "?ㅼ틦???곌껐 洹쇨굅??",
         ]
     if key in {"why_this_symbol_was_chosen", "why_this_symbol", "scanner_candidate_comparison", "entry_decision"}:
         return [
             "Top candidates:",
-            "상위 후보는",
+            "?곸쐞 ?꾨낫??",
             "Why not others:",
-            "다른 후보가 밀린 이유는",
+            "?ㅻⅨ ?꾨낫媛 諛由??댁쑀??",
             "Selection decision:",
-            "최종 선정 판단은",
+            "理쒖쥌 ?좎젙 ?먮떒?",
             "Final decision basis:",
-            "최종 결정 기준은",
+            "理쒖쥌 寃곗젙 湲곗??",
             "Tie-break rule:",
-            "동점 해소 기준은",
+            "?숈젏 ?댁냼 湲곗??",
             "Runner-ups lost because:",
-            "차순위 후보가 밀린 이유는",
+            "李⑥닚???꾨낫媛 諛由??댁쑀??",
             "Selection sources:",
-            "선정에 반영된 핵심 소스는",
+            "?좎젙??諛섏쁺???듭떖 ?뚯뒪??",
             "Ranking basis:",
-            "순위 산정 기준은",
+            "?쒖쐞 ?곗젙 湲곗??",
         ]
     if key in {"holding_monitoring_story", "monitor_trigger_reasoning", "exit_decision"}:
         return [
             "Monitor runs:",
-            "모니터는 총",
+            "紐⑤땲?곕뒗 珥?",
             "Posture:",
-            "현재 포지션 판단은",
+            "?꾩옱 ?ъ????먮떒?",
             "Trigger type:",
-            "감지된 핵심 신호는",
+            "媛먯????듭떖 ?좏샇??",
             "Position age:",
-            "포지션 보유 시간은",
+            "?ъ???蹂댁쑀 ?쒓컙?",
             "Effective stop:",
-            "유효 손절 기준은",
+            "?좏슚 ?먯젅 湲곗??",
             "Take profit:",
-            "목표 수익 실현 기준은",
+            "紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗??",
             "Active exit axis:",
-            "현재 우선 감시 중인 청산 축은",
+            "?꾩옱 ?곗꽑 媛먯떆 以묒씤 泥?궛 異뺤?",
             "Exit confirmation:",
-            "청산 확인 조건은",
+            "泥?궛 ?뺤씤 議곌굔?",
             "Watch axes:",
-            "주요 감시 축은",
+            "二쇱슂 媛먯떆 異뺤?",
             "Decision chain:",
-            "판단 흐름은",
+            "?먮떒 ?먮쫫?",
             "Current price / avg / peak:",
-            "현재가, 평균가, 고점 기준 값은",
+            "?꾩옱媛, ?됯퇏媛, 怨좎젏 湲곗? 媛믪?",
             "Current drawdown / peak drawdown:",
-            "현재 손익 변동과 고점 대비 하락폭은",
+            "?꾩옱 ?먯씡 蹂?숆낵 怨좎젏 ?鍮??섎씫???",
             "Price source:",
-            "가격 기준 소스는",
+            "媛寃?湲곗? ?뚯뒪??",
             "Feature source:",
-            "지표 기준 소스는",
+            "吏??湲곗? ?뚯뒪??",
         ]
     return []
 
@@ -5312,6 +5441,8 @@ def _fallback_report(
     guard_reason = story_input.get("guard_reason_human") if isinstance(story_input.get("guard_reason_human"), dict) else {}
     execution_outcome = story_input.get("execution_outcome_human") if isinstance(story_input.get("execution_outcome_human"), dict) else {}
     reporter_status = story_input.get("reporter_status_human") if isinstance(story_input.get("reporter_status_human"), dict) else {}
+    memory_surface = build_trade_report_memory_surface(story_input)
+    reporter_feedback_packet = _as_dict(memory_surface.get("reporter_feedback_packet"))
     operator_conclusion = (
         story_input.get("operator_conclusion_human") if isinstance(story_input.get("operator_conclusion_human"), dict) else {}
     )
@@ -5438,31 +5569,31 @@ def _fallback_report(
                 return 0.0
         extra_rows: List[str] = []
         extra_rows.append(
-            "점수 기여 세부값은 "
-            f"거래대금 {_core_value('trading_value'):+.3f}, "
-            f"모멘텀 {_core_value('momentum'):+.3f}, "
-            f"추세 {_core_value('trend'):+.3f}, "
-            f"테마 가점 {_core_value('theme_boost'):+.3f}, "
-            f"감성 {_core_value('sentiment'):+.3f}였습니다."
+            "?먯닔 湲곗뿬 ?몃?媛믪? "
+            f"嫄곕옒?湲?{_core_value('trading_value'):+.3f}, "
+            f"紐⑤찘? {_core_value('momentum'):+.3f}, "
+            f"異붿꽭 {_core_value('trend'):+.3f}, "
+            f"?뚮쭏 媛??{_core_value('theme_boost'):+.3f}, "
+            f"媛먯꽦 {_core_value('sentiment'):+.3f}??듬땲??"
         )
         extra_rows.append(
-            "감성 입력은 "
-            f"뉴스 {float(sentiment_inputs.get('news_sentiment_score') or 0.0):+.3f}, "
-            f"글로벌 {float(sentiment_inputs.get('global_sentiment_score') or 0.0):+.3f}, "
-            f"혼합 {float(sentiment_inputs.get('blended_sentiment_component') or 0.0):+.3f}, "
-            f"최종 반영 {float(sentiment_inputs.get('weighted_sentiment_score_contribution') or 0.0):+.3f}였습니다."
+            "媛먯꽦 ?낅젰? "
+            f"?댁뒪 {float(sentiment_inputs.get('news_sentiment_score') or 0.0):+.3f}, "
+            f"湲濡쒕쾶 {float(sentiment_inputs.get('global_sentiment_score') or 0.0):+.3f}, "
+            f"?쇳빀 {float(sentiment_inputs.get('blended_sentiment_component') or 0.0):+.3f}, "
+            f"理쒖쥌 諛섏쁺 {float(sentiment_inputs.get('weighted_sentiment_score_contribution') or 0.0):+.3f}??듬땲??"
         )
         extra_rows.append(
-            "테마 정렬은 "
-            f"일치 여부 {bool(theme_trace.get('theme_source_matched'))}, "
-            f"테마 가점 {float(theme_trace.get('theme_boost_score_contribution') or 0.0):+.3f}, "
-            f"전략가 테마 {', '.join(_listify(theme_trace.get('strategist_themes'), max_items=4, max_len=60)) or '기록 없음'} 기준으로 반영됐습니다."
+            "?뚮쭏 ?뺣젹? "
+            f"?쇱튂 ?щ? {bool(theme_trace.get('theme_source_matched'))}, "
+            f"?뚮쭏 媛??{float(theme_trace.get('theme_boost_score_contribution') or 0.0):+.3f}, "
+            f"?꾨왂媛 ?뚮쭏 {', '.join(_listify(theme_trace.get('strategist_themes'), max_items=4, max_len=60)) or '湲곕줉 ?놁쓬'} 湲곗??쇰줈 諛섏쁺?먯뒿?덈떎."
         )
         extra_rows.append(
-            "뉴스 연계는 "
-            f"종목 헤드라인 {int(float(news_linkage.get('symbol_headline_count') or 0))}건, "
-            f"시장 헤드라인 {int(float(news_linkage.get('market_headline_count') or 0))}건, "
-            f"조회 대상 {', '.join(_listify(news_linkage.get('news_query_targets'), max_items=6, max_len=60)) or '기록 없음'} 기준으로 남았습니다."
+            "?댁뒪 ?곌퀎??"
+            f"醫낅ぉ ?ㅻ뱶?쇱씤 {int(float(news_linkage.get('symbol_headline_count') or 0))}嫄? "
+            f"?쒖옣 ?ㅻ뱶?쇱씤 {int(float(news_linkage.get('market_headline_count') or 0))}嫄? "
+            f"議고쉶 ???{', '.join(_listify(news_linkage.get('news_query_targets'), max_items=6, max_len=60)) or '湲곕줉 ?놁쓬'} 湲곗??쇰줈 ?⑥븯?듬땲??"
         )
         existing = set(str(row) for row in why_symbol_bullets)
         for row in extra_rows:
@@ -5592,7 +5723,7 @@ def _fallback_report(
         exit_decision["bullets"] = _listify(exit_decision_seed.get("bullets"), max_items=12, max_len=260)
     if _clip(shared_seed.get("exit_reason"), max_len=240):
         exit_reason_label = _exit_reason_label(_clip(shared_seed.get("exit_reason"), max_len=240))
-        exit_decision["bullets"] = [f"정규화된 청산 사유는 {exit_reason_label or _clip(shared_seed.get('exit_reason'), max_len=240)}입니다."] + list(
+        exit_decision["bullets"] = [f"?뺢퇋?붾맂 泥?궛 ?ъ쑀??{exit_reason_label or _clip(shared_seed.get('exit_reason'), max_len=240)}?낅땲??"] + list(
             exit_decision.get("bullets") or []
         )
     execution_quality = _build_execution_quality_section(
@@ -5619,6 +5750,7 @@ def _fallback_report(
         monitor_reason,
         execution_outcome,
         reporter_status,
+        reporter_feedback_packet,
     )
     if _reporter_summary_is_placeholder(reporter_eval.get("summary")) and _clip(reporter_evaluation_seed.get("summary"), max_len=600):
         reporter_eval["summary"] = _clip(reporter_evaluation_seed.get("summary"), max_len=600)
@@ -5837,7 +5969,8 @@ def _fallback_report(
         },
     }
     out["truth_surface"] = build_trade_report_truth_surface(out.get("shared_facts"))
-    out["memory_surface"] = build_trade_report_memory_surface(story_input)
+    out["memory_surface"] = memory_surface
+    out["memory_application_surface"] = build_trade_memory_application_surface(story_input)
     # Backward-compatible aliases used by earlier UI/report consumers.
     out["market_context"] = dict(out.get("market_context_at_entry") or {})
     out["why_this_symbol"] = dict(out.get("why_this_symbol_was_chosen") or {})
@@ -6180,49 +6313,49 @@ def _build_repair_messages(
     partial_note = ""
     if str(story_input.get("status") or "").strip().lower() == "partial":
         partial_note = (
-            "\n이 lifecycle은 partial 상태입니다. 일부 entry 또는 holding 근거가 비어 있습니다. "
-            "확인되지 않은 진입 근거는 만들어 쓰지 말고, 저장되지 않았다고 명확히 적으십시오."
+            "\n??lifecycle? partial ?곹깭?낅땲?? ?쇰? entry ?먮뒗 holding 洹쇨굅媛 鍮꾩뼱 ?덉뒿?덈떎. "
+            "?뺤씤?섏? ?딆? 吏꾩엯 洹쇨굅??留뚮뱾???곗? 留먭퀬, ??λ릺吏 ?딆븯?ㅺ퀬 紐낇솗???곸쑝??떆??"
         )
     shape_note = ""
     if sparse:
         shape_note = (
-            "\n이번 단계는 마지막 복구 패스입니다. 각 summary는 2문장 이하로 유지하고, 각 섹션의 bullets는 1개에서 3개만 작성하며, "
-            "full_timeline은 최대 8개 행까지만 유지하십시오."
+            "\n?대쾲 ?④퀎??留덉?留?蹂듦뎄 ?⑥뒪?낅땲?? 媛?summary??2臾몄옣 ?댄븯濡??좎??섍퀬, 媛??뱀뀡??bullets??1媛쒖뿉??3媛쒕쭔 ?묒꽦?섎ŉ, "
+            "full_timeline? 理쒕? 8媛??됯퉴吏留??좎??섏떗?쒖삤."
         )
     language_note = ""
     if enforce_korean:
         language_note = (
-            "\n최종 JSON을 반환하기 전에 남아 있는 영어 설명 문장을 모두 한국어로 번역하십시오. "
-            "JSON 키, 타임스탬프, 숫자, 액션 코드, 종목코드는 그대로 유지하십시오."
+            "\n理쒖쥌 JSON??諛섑솚?섍린 ?꾩뿉 ?⑥븘 ?덈뒗 ?곸뼱 ?ㅻ챸 臾몄옣??紐⑤몢 ?쒓뎅?대줈 踰덉뿭?섏떗?쒖삤. "
+            "JSON ?? ??꾩뒪?ы봽, ?レ옄, ?≪뀡 肄붾뱶, 醫낅ぉ肄붾뱶??洹몃?濡??좎??섏떗?쒖삤."
         )
     return [
         {
             "role": "system",
             "content": (
-                "당신은 AI 거래 리포트 출력을 복구하는 역할입니다. 반드시 JSON 객체 하나만 반환하십시오. "
-                "설명문, 사고 과정, 지시문 반복, markdown, code fence는 모두 금지합니다. "
-                "'먼저', '우선', 'First, I need' 같은 계획 문장은 절대 쓰지 마십시오. JSON 앞에 어떤 텍스트가 있어도 실패입니다. "
-                "출력은 반드시 '{'로 시작하고 '}'로 끝나야 하며, JSON 키는 계약과 정확히 일치해야 합니다. "
+                "?뱀떊? AI 嫄곕옒 由ы룷??異쒕젰??蹂듦뎄?섎뒗 ??븷?낅땲?? 諛섎뱶??JSON 媛앹껜 ?섎굹留?諛섑솚?섏떗?쒖삤. "
+                "?ㅻ챸臾? ?ш퀬 怨쇱젙, 吏?쒕Ц 諛섎났, markdown, code fence??紐⑤몢 湲덉??⑸땲?? "
+                "'癒쇱?', '?곗꽑', 'First, I need' 媛숈? 怨꾪쉷 臾몄옣? ?덈? ?곗? 留덉떗?쒖삤. JSON ?욎뿉 ?대뼡 ?띿뒪?멸? ?덉뼱???ㅽ뙣?낅땲?? "
+                "異쒕젰? 諛섎뱶??'{'濡??쒖옉?섍퀬 '}'濡??앸굹???섎ŉ, JSON ?ㅻ뒗 怨꾩빟怨??뺥솗???쇱튂?댁빞 ?⑸땲?? "
                 f"{AI_TRADE_REPORT_KOREAN_RULES} "
-                "값을 알 수 없으면 추측하지 말고 빈 문자열, 빈 리스트, 또는 null을 사용하십시오."
+                "媛믪쓣 ?????놁쑝硫?異붿륫?섏? 留먭퀬 鍮?臾몄옄?? 鍮?由ъ뒪?? ?먮뒗 null???ъ슜?섏떗?쒖삤."
             ),
         },
         {
             "role": "user",
             "content": (
-                "이전 응답이 요구된 JSON 계약을 만족하지 못했습니다. 유효한 JSON만 다시 생성하십시오.\n"
-                f"출력 템플릿:\n{json.dumps(contract, ensure_ascii=False)}\n"
-                "템플릿 값만 실제 리포트 내용으로 채우고, 키 이름과 중첩 구조는 그대로 유지하십시오."
+                "?댁쟾 ?묐떟???붽뎄??JSON 怨꾩빟??留뚯”?섏? 紐삵뻽?듬땲?? ?좏슚??JSON留??ㅼ떆 ?앹꽦?섏떗?쒖삤.\n"
+                f"異쒕젰 ?쒗뵆由?\n{json.dumps(contract, ensure_ascii=False)}\n"
+                "?쒗뵆由?媛믩쭔 ?ㅼ젣 由ы룷???댁슜?쇰줈 梨꾩슦怨? ???대쫫怨?以묒꺽 援ъ“??洹몃?濡??좎??섏떗?쒖삤."
                 f"{partial_note}{shape_note}{language_note}\n\n"
-                "원본 입력이 영어로 적혀 있어도 그대로 복사하지 말고 한국어로 옮겨 쓰십시오.\n"
-                "핵심 evidence 규칙:\n"
-                "- market_context_human에 headline_count, news_query_count, news_query_targets, key_events_hint가 있으면 market_context_at_entry에 반영하십시오.\n"
-                "- strategist_summary에는 입력 -> 시장 해석 -> 스캐너 반영 -> 종목 연결 순서를 유지하십시오.\n"
-                "- scanner_reason_human에 why_selected, selection_basis, tie_break_rule, top_candidates, runner_ups_lost가 있으면 why_this_symbol_was_chosen과 entry_decision에 반영하십시오.\n"
-                "- monitor_reason_human에 effective_stop_loss_pct, take_profit_pct, active_exit_axis, watch_axes, confirm_required, confirm_count, decision_reason_chain이 있으면 holding_monitoring_story와 exit_decision에 반영하십시오.\n"
-                "- 구체적인 숫자 근거를 모호한 표현으로 바꾸지 마십시오.\n"
-                f"입력:\n{json.dumps(compact_input, ensure_ascii=False)}\n\n"
-                f"이전 응답:\n{previous_response_text}"
+                "?먮낯 ?낅젰???곸뼱濡??곹? ?덉뼱??洹몃?濡?蹂듭궗?섏? 留먭퀬 ?쒓뎅?대줈 ??꺼 ?곗떗?쒖삤.\n"
+                "?듭떖 evidence 洹쒖튃:\n"
+                "- market_context_human??headline_count, news_query_count, news_query_targets, key_events_hint媛 ?덉쑝硫?market_context_at_entry??諛섏쁺?섏떗?쒖삤.\n"
+                "- strategist_summary?먮뒗 ?낅젰 -> ?쒖옣 ?댁꽍 -> ?ㅼ틦??諛섏쁺 -> 醫낅ぉ ?곌껐 ?쒖꽌瑜??좎??섏떗?쒖삤.\n"
+                "- scanner_reason_human??why_selected, selection_basis, tie_break_rule, top_candidates, runner_ups_lost媛 ?덉쑝硫?why_this_symbol_was_chosen怨?entry_decision??諛섏쁺?섏떗?쒖삤.\n"
+                "- monitor_reason_human??effective_stop_loss_pct, take_profit_pct, active_exit_axis, watch_axes, confirm_required, confirm_count, decision_reason_chain???덉쑝硫?holding_monitoring_story? exit_decision??諛섏쁺?섏떗?쒖삤.\n"
+                "- 援ъ껜?곸씤 ?レ옄 洹쇨굅瑜?紐⑦샇???쒗쁽?쇰줈 諛붽씀吏 留덉떗?쒖삤.\n"
+                f"?낅젰:\n{json.dumps(compact_input, ensure_ascii=False)}\n\n"
+                f"?댁쟾 ?묐떟:\n{previous_response_text}"
             ),
         },
     ]
@@ -6234,57 +6367,57 @@ def _build_messages(story_input: Dict[str, Any]) -> List[Dict[str, str]]:
     partial_note = ""
     if str(story_input.get("status") or "").strip().lower() == "partial":
         partial_note = (
-            "이 lifecycle은 partial 상태입니다. 일부 entry 또는 holding 근거가 비어 있습니다. "
-            "확인되지 않은 진입 근거는 만들어 쓰지 말고, 저장되지 않았다고 명확히 적으십시오.\n"
+            "??lifecycle? partial ?곹깭?낅땲?? ?쇰? entry ?먮뒗 holding 洹쇨굅媛 鍮꾩뼱 ?덉뒿?덈떎. "
+            "?뺤씤?섏? ?딆? 吏꾩엯 洹쇨굅??留뚮뱾???곗? 留먭퀬, ??λ릺吏 ?딆븯?ㅺ퀬 紐낇솗???곸쑝??떆??\n"
         )
     return [
         {
             "role": "system",
             "content": (
-                "당신은 트레이딩 시스템의 사후 거래 복기용 AI 거래 리포트를 작성합니다. "
-                "이 문서는 operator_brief 같은 즉시 상황 스냅샷이 아니라 trade lifecycle retrospective입니다. "
-                "반드시 제공된 입력만 사용하고, 숫자, 이벤트, 이유, evidence를 지어내지 마십시오. "
-                "반드시 JSON 객체 하나만 반환하십시오. markdown, JSON 앞 설명문, 분석 문장, code fence는 금지합니다. "
-                "'먼저', '우선', 'First, I need' 같은 계획 문장은 절대 쓰지 마십시오. JSON 앞의 모든 텍스트는 실패입니다. "
-                "출력은 반드시 '{'로 시작하고 '}'로 끝나야 하며, JSON 키는 계약과 정확히 일치해야 합니다. "
+                "?뱀떊? ?몃젅?대뵫 ?쒖뒪?쒖쓽 ?ы썑 嫄곕옒 蹂듦린??AI 嫄곕옒 由ы룷?몃? ?묒꽦?⑸땲?? "
+                "??臾몄꽌??operator_brief 媛숈? 利됱떆 ?곹솴 ?ㅻ깄?룹씠 ?꾨땲??trade lifecycle retrospective?낅땲?? "
+                "諛섎뱶???쒓났???낅젰留??ъ슜?섍퀬, ?レ옄, ?대깽?? ?댁쑀, evidence瑜?吏?대궡吏 留덉떗?쒖삤. "
+                "諛섎뱶??JSON 媛앹껜 ?섎굹留?諛섑솚?섏떗?쒖삤. markdown, JSON ???ㅻ챸臾? 遺꾩꽍 臾몄옣, code fence??湲덉??⑸땲?? "
+                "'癒쇱?', '?곗꽑', 'First, I need' 媛숈? 怨꾪쉷 臾몄옣? ?덈? ?곗? 留덉떗?쒖삤. JSON ?욎쓽 紐⑤뱺 ?띿뒪?몃뒗 ?ㅽ뙣?낅땲?? "
+                "異쒕젰? 諛섎뱶??'{'濡??쒖옉?섍퀬 '}'濡??앸굹???섎ŉ, JSON ?ㅻ뒗 怨꾩빟怨??뺥솗???쇱튂?댁빞 ?⑸땲?? "
                 f"{AI_TRADE_REPORT_KOREAN_RULES} "
-                "값을 알 수 없으면 추측하지 말고 빈 문자열, 빈 리스트, 또는 null을 사용하십시오."
+                "媛믪쓣 ?????놁쑝硫?異붿륫?섏? 留먭퀬 鍮?臾몄옄?? 鍮?由ъ뒪?? ?먮뒗 null???ъ슜?섏떗?쒖삤."
             ),
         },
         {
             "role": "user",
             "content": (
-                "아래 trade story input을 바탕으로 trade lifecycle retrospective AI 거래 리포트를 작성하십시오.\n"
-                "파이프라인 순서는 strategist -> scanner -> monitor -> supervisor -> executor -> reporter를 정확히 따라야 합니다.\n"
-                "이 리포트는 즉시 대응용 snapshot이 아니라 사후 복기 문서입니다.\n"
-                "반드시 다음 질문에 답할 수 있게 작성하십시오: 왜 진입했는가, 왜 보유했는가, 왜 청산했는가, 실행 품질은 어땠는가, 다음에는 무엇을 개선할 것인가.\n"
-                "작성 요구사항:\n"
-                "- global sentiment score, VIX, headline count, query-target count가 있으면 구체적인 숫자를 그대로 반영하십시오.\n"
-                "- 시장 환경 요약에는 headline_count, news_query_count, news_query_targets, key_events_hint를 우선 반영하십시오.\n"
-                "- strategist_summary에는 입력 -> 해석 -> 스캐너 반영 -> 종목 선택 순서로 정리하십시오.\n"
-                "- scanner 후보 수, 선택 종목, runner-up, Kiwoom source mix(top_value, top_volume, sector_theme 등), score breakdown, feature coverage를 설명하십시오.\n"
-                "- 선택 종목 상세 분석에는 why_selected, selection_basis, tie_break_rule, top_candidates, runner_ups_lost를 가능한 한 직접 반영하십시오.\n"
-                "- Entry 상세 근거에서는 generic한 문장을 반복하지 말고 strategist guidance와 scanner ranking이 어떻게 연결됐는지 설명하십시오.\n"
-                "- monitor thresholds와 watch axes, stop, effective stop, 목표 수익 실현 기준, 현재가, price source를 설명하십시오.\n"
-                "- Holding 경과와 Exit 판단 근거에는 active_exit_axis, confirm_required, confirm_count, decision_reason_chain, watch_axes를 가능한 한 직접 반영하십시오.\n"
-                "- supervisor 승인과 executor 결과는 분리해서 설명하십시오.\n"
-                "- reporter linkage가 없으면 그 사실을 한국어로 명확하게 설명하십시오.\n"
-                "- 사람이 읽는 모든 문장은 한국어로 옮겨 쓰고, 영어 source 문장을 그대로 복사하지 마십시오.\n"
-                "- 종목코드, JSON 키, BUY/SELL/HOLD/WAIT 액션 코드, VIX, Kiwoom source id, 타임스탬프는 그대로 유지하십시오.\n"
-                "- deterministic report skeleton은 이미 존재하므로 메타데이터를 다시 만들지 말고 section narrative content만 채우십시오.\n"
-                "- section summary, ranked comparison, monitor reasoning, operator-facing bullets에 집중하십시오.\n"
-                "- strategist evidence fields(candidate hints, market headlines, symbol headlines)가 있으면 시장/전략가 evidence를 별도 문장으로 명확히 설명하십시오.\n"
-                "- scanner_selection_trace가 있으면 strategist hints -> ranked candidates -> selected symbol -> selection reason -> score drivers 순서를 유지하십시오.\n"
-                "- monitor_stop_policy_trace가 있으면 hard fail-safe stop, adaptive stop, effective stop, trailing stop, take profit을 서로 다른 층위로 구분해 설명하십시오.\n"
-                "- adaptive stop이 있으면 stop을 단일 3% 규칙처럼 뭉뚱그리지 말고 실제 active stop을 명시하십시오.\n"
+                "?꾨옒 trade story input??諛뷀깢?쇰줈 trade lifecycle retrospective AI 嫄곕옒 由ы룷?몃? ?묒꽦?섏떗?쒖삤.\n"
+                "?뚯씠?꾨씪???쒖꽌??strategist -> scanner -> monitor -> supervisor -> executor -> reporter瑜??뺥솗???곕씪???⑸땲??\n"
+                "??由ы룷?몃뒗 利됱떆 ??묒슜 snapshot???꾨땲???ы썑 蹂듦린 臾몄꽌?낅땲??\n"
+                "諛섎뱶???ㅼ쓬 吏덈Ц???듯븷 ???덇쾶 ?묒꽦?섏떗?쒖삤: ??吏꾩엯?덈뒗媛, ??蹂댁쑀?덈뒗媛, ??泥?궛?덈뒗媛, ?ㅽ뻾 ?덉쭏? ?대븷?붽?, ?ㅼ쓬?먮뒗 臾댁뾿??媛쒖꽑??寃껋씤媛.\n"
+                "?묒꽦 ?붽뎄?ы빆:\n"
+                "- global sentiment score, VIX, headline count, query-target count媛 ?덉쑝硫?援ъ껜?곸씤 ?レ옄瑜?洹몃?濡?諛섏쁺?섏떗?쒖삤.\n"
+                "- ?쒖옣 ?섍꼍 ?붿빟?먮뒗 headline_count, news_query_count, news_query_targets, key_events_hint瑜??곗꽑 諛섏쁺?섏떗?쒖삤.\n"
+                "- strategist_summary?먮뒗 ?낅젰 -> ?댁꽍 -> ?ㅼ틦??諛섏쁺 -> 醫낅ぉ ?좏깮 ?쒖꽌濡??뺣━?섏떗?쒖삤.\n"
+                "- scanner ?꾨낫 ?? ?좏깮 醫낅ぉ, runner-up, Kiwoom source mix(top_value, top_volume, sector_theme ??, score breakdown, feature coverage瑜??ㅻ챸?섏떗?쒖삤.\n"
+                "- ?좏깮 醫낅ぉ ?곸꽭 遺꾩꽍?먮뒗 why_selected, selection_basis, tie_break_rule, top_candidates, runner_ups_lost瑜?媛?ν븳 ??吏곸젒 諛섏쁺?섏떗?쒖삤.\n"
+                "- Entry ?곸꽭 洹쇨굅?먯꽌??generic??臾몄옣??諛섎났?섏? 留먭퀬 strategist guidance? scanner ranking???대뼸寃??곌껐?먮뒗吏 ?ㅻ챸?섏떗?쒖삤.\n"
+                "- monitor thresholds? watch axes, stop, effective stop, 紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?, ?꾩옱媛, price source瑜??ㅻ챸?섏떗?쒖삤.\n"
+                "- Holding 寃쎄낵? Exit ?먮떒 洹쇨굅?먮뒗 active_exit_axis, confirm_required, confirm_count, decision_reason_chain, watch_axes瑜?媛?ν븳 ??吏곸젒 諛섏쁺?섏떗?쒖삤.\n"
+                "- supervisor ?뱀씤怨?executor 寃곌낵??遺꾨━?댁꽌 ?ㅻ챸?섏떗?쒖삤.\n"
+                "- reporter linkage媛 ?놁쑝硫?洹??ъ떎???쒓뎅?대줈 紐낇솗?섍쾶 ?ㅻ챸?섏떗?쒖삤.\n"
+                "- ?щ엺???쎈뒗 紐⑤뱺 臾몄옣? ?쒓뎅?대줈 ??꺼 ?곌퀬, ?곸뼱 source 臾몄옣??洹몃?濡?蹂듭궗?섏? 留덉떗?쒖삤.\n"
+                "- 醫낅ぉ肄붾뱶, JSON ?? BUY/SELL/HOLD/WAIT ?≪뀡 肄붾뱶, VIX, Kiwoom source id, ??꾩뒪?ы봽??洹몃?濡??좎??섏떗?쒖삤.\n"
+                "- deterministic report skeleton? ?대? 議댁옱?섎?濡?硫뷀??곗씠?곕? ?ㅼ떆 留뚮뱾吏 留먭퀬 section narrative content留?梨꾩슦??떆??\n"
+                "- section summary, ranked comparison, monitor reasoning, operator-facing bullets??吏묒쨷?섏떗?쒖삤.\n"
+                "- strategist evidence fields(candidate hints, market headlines, symbol headlines)媛 ?덉쑝硫??쒖옣/?꾨왂媛 evidence瑜?蹂꾨룄 臾몄옣?쇰줈 紐낇솗???ㅻ챸?섏떗?쒖삤.\n"
+                "- scanner_selection_trace媛 ?덉쑝硫?strategist hints -> ranked candidates -> selected symbol -> selection reason -> score drivers ?쒖꽌瑜??좎??섏떗?쒖삤.\n"
+                "- monitor_stop_policy_trace媛 ?덉쑝硫?hard fail-safe stop, adaptive stop, effective stop, trailing stop, take profit???쒕줈 ?ㅻⅨ 痢듭쐞濡?援щ텇???ㅻ챸?섏떗?쒖삤.\n"
+                "- adaptive stop???덉쑝硫?stop???⑥씪 3% 洹쒖튃泥섎읆 萸됰슧洹몃━吏 留먭퀬 ?ㅼ젣 active stop??紐낆떆?섏떗?쒖삤.\n"
                 f"{partial_note}"
-                "아래 JSON 템플릿에 값만 채워 반환하십시오:\n"
+                "?꾨옒 JSON ?쒗뵆由우뿉 媛믩쭔 梨꾩썙 諛섑솚?섏떗?쒖삤:\n"
                 f"{json.dumps(contract, ensure_ascii=False)}\n"
-                "evidence가 있으면 각 section에 bullets를 3개에서 6개까지 작성하십시오.\n"
-                "summary는 간결하되 운영 판단에 실제로 도움이 되게 쓰십시오.\n"
-                "입력에 ranked comparison detail이 있으면 생략하지 마십시오.\n"
-                "section narrative field 바깥에서 action/symbol/status 메타를 반복하지 마십시오.\n"
-                f"입력:\n{json.dumps(compact_input, ensure_ascii=False)}"
+                "evidence媛 ?덉쑝硫?媛?section??bullets瑜?3媛쒖뿉??6媛쒓퉴吏 ?묒꽦?섏떗?쒖삤.\n"
+                "summary??媛꾧껐?섎릺 ?댁쁺 ?먮떒???ㅼ젣濡??꾩????섍쾶 ?곗떗?쒖삤.\n"
+                "?낅젰??ranked comparison detail???덉쑝硫??앸왂?섏? 留덉떗?쒖삤.\n"
+                "section narrative field 諛붽묑?먯꽌 action/symbol/status 硫뷀?瑜?諛섎났?섏? 留덉떗?쒖삤.\n"
+                f"?낅젰:\n{json.dumps(compact_input, ensure_ascii=False)}"
             ),
         },
     ]
@@ -6860,12 +6993,16 @@ def build_ai_trade_report(
 
 
 def render_trade_report_markdown(report: Dict[str, Any]) -> str:
+    from libs.reporting.trade_report_markdown_clean import render_trade_report_markdown_clean
+
+    return render_trade_report_markdown_clean(report)
+
     def _action_label(value: Any) -> str:
         mapping = {
-            "BUY": "매수",
-            "SELL": "매도",
-            "HOLD": "보유 유지",
-            "WAIT": "진입 보류",
+            "BUY": "留ㅼ닔",
+            "SELL": "留ㅻ룄",
+            "HOLD": "蹂댁쑀 ?좎?",
+            "WAIT": "吏꾩엯 蹂대쪟",
         }
         raw = _clip(value, max_len=64)
         return mapping.get(str(raw or "").strip().upper(), raw or "-")
@@ -6874,26 +7011,26 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         raw = _clip(value, max_len=120)
         lowered = str(raw or "").strip().lower()
         mapping = {
-            "hard stop": "고정 손절 기준",
-            "hard_stop": "고정 손절 기준",
-            "adaptive stop": "상황 대응형 손절 기준",
-            "adaptive_stop": "상황 대응형 손절 기준",
-            "take profit": "목표 수익 실현 기준",
-            "take_profit": "목표 수익 실현 기준",
-            "trailing stop": "추적 손절",
-            "trailing_stop": "추적 손절",
-            "vwap breakdown": "VWAP 이탈",
-            "vwap_breakdown": "VWAP 이탈",
-            "peak drawdown": "고점 대비 하락폭 확대",
-            "peak_drawdown": "고점 대비 하락폭 확대",
-            "prior low break": "직전 저점 이탈",
-            "prior_low_break": "직전 저점 이탈",
-            "intraday low break": "장중 저점 이탈",
-            "intraday_low_break": "장중 저점 이탈",
-            "confirmed_exit_signal": "청산 확인 신호",
-            "defensive exit": "방어형 청산 신호",
-            "defensive_exit": "방어형 청산 신호",
-            "no trigger yet": "아직 청산 신호가 확인되지 않음",
+            "hard stop": "怨좎젙 ?먯젅 湲곗?",
+            "hard_stop": "怨좎젙 ?먯젅 湲곗?",
+            "adaptive stop": "?곹솴 ??묓삎 ?먯젅 湲곗?",
+            "adaptive_stop": "?곹솴 ??묓삎 ?먯젅 湲곗?",
+            "take profit": "紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?",
+            "take_profit": "紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?",
+            "trailing stop": "異붿쟻 ?먯젅",
+            "trailing_stop": "異붿쟻 ?먯젅",
+            "vwap breakdown": "VWAP ?댄깉",
+            "vwap_breakdown": "VWAP ?댄깉",
+            "peak drawdown": "怨좎젏 ?鍮??섎씫???뺣?",
+            "peak_drawdown": "怨좎젏 ?鍮??섎씫???뺣?",
+            "prior low break": "吏곸쟾 ????댄깉",
+            "prior_low_break": "吏곸쟾 ????댄깉",
+            "intraday low break": "?μ쨷 ????댄깉",
+            "intraday_low_break": "?μ쨷 ????댄깉",
+            "confirmed_exit_signal": "泥?궛 ?뺤씤 ?좏샇",
+            "defensive exit": "諛⑹뼱??泥?궛 ?좏샇",
+            "defensive_exit": "諛⑹뼱??泥?궛 ?좏샇",
+            "no trigger yet": "?꾩쭅 泥?궛 ?좏샇媛 ?뺤씤?섏? ?딆쓬",
         }
         return mapping.get(lowered, raw or "-")
 
@@ -6901,14 +7038,14 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         raw = _clip(value, max_len=160)
         lowered = str(raw or "").strip().lower()
         mapping = {
-            "simulation trade report": "시뮬레이션 거래 리포트",
-            "simulation": "시뮬레이션",
-            "live trade report": "실거래 거래 리포트",
-            "integrated_chain": "통합 체인",
-            "simulation (mock broker)": "시뮬레이션 (모의 브로커)",
-            "live": "실거래",
-            "open": "열림",
-            "closed": "종결",
+            "simulation trade report": "?쒕??덉씠??嫄곕옒 由ы룷??",
+            "simulation": "?쒕??덉씠??",
+            "live trade report": "?ㅺ굅??嫄곕옒 由ы룷??",
+            "integrated_chain": "?듯빀 泥댁씤",
+            "simulation (mock broker)": "?쒕??덉씠??(紐⑥쓽 釉뚮줈而?",
+            "live": "?ㅺ굅??",
+            "open": "?대┝",
+            "closed": "醫낃껐",
         }
         return mapping.get(lowered, raw or "-")
 
@@ -6918,13 +7055,13 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         if not raw:
             return ""
         if lowered in {"unknown", "not available", "not_available", "unavailable"}:
-            return "확인되지 않음"
+            return "?뺤씤?섏? ?딆쓬"
         if lowered in {"not captured", "not_captured"}:
-            return "기록되지 않음"
+            return "湲곕줉?섏? ?딆쓬"
         confidence_mapping = {
-            "high": "높음",
-            "medium": "보통",
-            "low": "낮음",
+            "high": "?믪쓬",
+            "medium": "蹂댄넻",
+            "low": "??쓬",
         }
         return confidence_mapping.get(lowered, raw)
 
@@ -6940,132 +7077,132 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
             return ""
         lowered = cleaned.lower()
         exact_mapping = {
-            "position is still open; no closing sell execution has been captured yet.": "아직 청산 체결이 확인되지 않아 포지션이 열린 상태로 남아 있습니다.",
-            "exit reasoning was not captured.": "청산 판단 근거가 충분히 저장되지 않았습니다.",
-            "reporter linkage was not available yet.": "리포터 연계 결과는 아직 연결되지 않았습니다.",
-            "reporter linkage status was recorded separately.": "리포터 연계 상태는 별도 메타에 기록되어 있습니다.",
-            "the decision path was recorded, but the operator-facing summary is limited.": "의사결정 경로는 기록되었지만 운영자용 요약은 제한적으로만 남아 있습니다.",
-            "no timeline entries were captured.": "타임라인 이벤트는 별도로 저장되지 않았습니다.",
-            "open trade": "아직 포지션이 열린 상태입니다.",
-            "hold": "현재 포지션은 계속 보유 중입니다.",
+            "position is still open; no closing sell execution has been captured yet.": "?꾩쭅 泥?궛 泥닿껐???뺤씤?섏? ?딆븘 ?ъ??섏씠 ?대┛ ?곹깭濡??⑥븘 ?덉뒿?덈떎.",
+            "exit reasoning was not captured.": "泥?궛 ?먮떒 洹쇨굅媛 異⑸텇????λ릺吏 ?딆븯?듬땲??",
+            "reporter linkage was not available yet.": "由ы룷???곌퀎 寃곌낵???꾩쭅 ?곌껐?섏? ?딆븯?듬땲??",
+            "reporter linkage status was recorded separately.": "由ы룷???곌퀎 ?곹깭??蹂꾨룄 硫뷀???湲곕줉?섏뼱 ?덉뒿?덈떎.",
+            "the decision path was recorded, but the operator-facing summary is limited.": "?섏궗寃곗젙 寃쎈줈??湲곕줉?섏뿀吏留??댁쁺?먯슜 ?붿빟? ?쒗븳?곸쑝濡쒕쭔 ?⑥븘 ?덉뒿?덈떎.",
+            "no timeline entries were captured.": "??꾨씪???대깽?몃뒗 蹂꾨룄濡???λ릺吏 ?딆븯?듬땲??",
+            "open trade": "?꾩쭅 ?ъ??섏씠 ?대┛ ?곹깭?낅땲??",
+            "hold": "?꾩옱 ?ъ??섏? 怨꾩냽 蹂댁쑀 以묒엯?덈떎.",
         }
         if lowered in exact_mapping:
             return exact_mapping[lowered]
 
-        m = re.fullmatch(r"Monitor runs:\s*(\d+)", cleaned, flags=re.IGNORECASE)
+        m = _safe_fullmatch(r"Monitor runs:\s*(\d+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"모니터 실행 횟수는 {m.group(1)}회였습니다."
-        m = re.fullmatch(r"Posture:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"紐⑤땲???ㅽ뻾 ?잛닔??{m.group(1)}?뚯??듬땲??"
+        m = _safe_fullmatch(r"Posture:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"현재 포지션 판단은 {_action_label(m.group(1))}입니다."
-        m = re.fullmatch(r"Trigger type:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"?꾩옱 ?ъ????먮떒? {_action_label(m.group(1))}?낅땲??"
+        m = _safe_fullmatch(r"Trigger type:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"감지된 신호 유형은 {_axis_label(m.group(1))}입니다."
-        m = re.fullmatch(r"Position age:\s*(\d+)\s*seconds", cleaned, flags=re.IGNORECASE)
+            return f"媛먯????좏샇 ?좏삎? {_axis_label(m.group(1))}?낅땲??"
+        m = _safe_fullmatch(r"Position age:\s*(\d+)\s*seconds", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"포지션 유지 시간은 약 {m.group(1)}초입니다."
-        m = re.fullmatch(r"Effective stop:\s*([^(]+?)(?:\s*\((.+)\))?", cleaned, flags=re.IGNORECASE)
+            return f"?ъ????좎? ?쒓컙? ??{m.group(1)}珥덉엯?덈떎."
+        m = _safe_fullmatch(r"Effective stop:\s*([^(]+?)(?:\s*\((.+)\))?", cleaned, flags=re.IGNORECASE)
         if m:
             level = _clip(m.group(1), max_len=64)
             reason = _axis_label(m.group(2))
             if reason and reason != "-":
-                return f"유효 손절 기준은 {level} 수준이며, 기준 축은 {reason}입니다."
-            return f"유효 손절 기준은 {level} 수준입니다."
-        m = re.fullmatch(r"Take profit:\s*(.+)", cleaned, flags=re.IGNORECASE)
+                return f"?좏슚 ?먯젅 湲곗?? {level} ?섏??대ŉ, 湲곗? 異뺤? {reason}?낅땲??"
+            return f"?좏슚 ?먯젅 湲곗?? {level} ?섏??낅땲??"
+        m = _safe_fullmatch(r"Take profit:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"목표 수익 실현 기준은 {_clip(m.group(1), max_len=80)} 수준입니다."
-        m = re.fullmatch(r"Active exit axis:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?? {_clip(m.group(1), max_len=80)} ?섏??낅땲??"
+        m = _safe_fullmatch(r"Active exit axis:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"현재 우선 감시 중인 청산 축은 {_axis_label(m.group(1))}입니다."
-        m = re.fullmatch(r"Exit confirmation:\s*(\d+)/(\d+)", cleaned, flags=re.IGNORECASE)
+            return f"?꾩옱 ?곗꽑 媛먯떆 以묒씤 泥?궛 異뺤? {_axis_label(m.group(1))}?낅땲??"
+        m = _safe_fullmatch(r"Exit confirmation:\s*(\d+)/(\d+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"청산 확인 조건은 {m.group(1)}/{m.group(2)} 수준으로 집계됐습니다."
-        m = re.fullmatch(r"Watch axes:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"泥?궛 ?뺤씤 議곌굔? {m.group(1)}/{m.group(2)} ?섏??쇰줈 吏묎퀎?먯뒿?덈떎."
+        m = _safe_fullmatch(r"Watch axes:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
             axes = ", ".join(_axis_label(part.strip()) for part in m.group(1).split(","))
-            return f"주요 감시 축은 {axes}입니다."
-        m = re.fullmatch(r"Decision chain:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"二쇱슂 媛먯떆 異뺤? {axes}?낅땲??"
+        m = _safe_fullmatch(r"Decision chain:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"판단 흐름은 {_clip(m.group(1), max_len=200)} 순서로 이어졌습니다."
-        m = re.fullmatch(r"Current price / avg / peak:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"?먮떒 ?먮쫫? {_clip(m.group(1), max_len=200)} ?쒖꽌濡??댁뼱議뚯뒿?덈떎."
+        m = _safe_fullmatch(r"Current price / avg / peak:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"현재가, 평균단가, 장중 고점은 {_clip(m.group(1), max_len=180)}입니다."
-        m = re.fullmatch(r"Current drawdown / peak drawdown:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"?꾩옱媛, ?됯퇏?④?, ?μ쨷 怨좎젏? {_clip(m.group(1), max_len=180)}?낅땲??"
+        m = _safe_fullmatch(r"Current drawdown / peak drawdown:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"현재 손익 변동과 고점 대비 하락폭은 {_clip(m.group(1), max_len=180)}입니다."
-        m = re.fullmatch(r"Price source:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"?꾩옱 ?먯씡 蹂?숆낵 怨좎젏 ?鍮??섎씫??? {_clip(m.group(1), max_len=180)}?낅땲??"
+        m = _safe_fullmatch(r"Price source:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"가격 기준 소스는 {_clip(m.group(1), max_len=120)}입니다."
-        m = re.fullmatch(r"Feature source:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"媛寃?湲곗? ?뚯뒪??{_clip(m.group(1), max_len=120)}?낅땲??"
+        m = _safe_fullmatch(r"Feature source:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"피처 기준 소스는 {_clip(m.group(1), max_len=120)}입니다."
-        m = re.fullmatch(r"Recent monitor update:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"?쇱쿂 湲곗? ?뚯뒪??{_clip(m.group(1), max_len=120)}?낅땲??"
+        m = _safe_fullmatch(r"Recent monitor update:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"최근 모니터 업데이트는 다음과 같습니다: {_clip(m.group(1), max_len=240)}"
-        m = re.fullmatch(r"Exit run:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"理쒓렐 紐⑤땲???낅뜲?댄듃???ㅼ쓬怨?媛숈뒿?덈떎: {_clip(m.group(1), max_len=240)}"
+        m = _safe_fullmatch(r"Exit run:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"청산 판단은 {_clip(m.group(1), max_len=120)} run에서 기록되었습니다."
-        m = re.fullmatch(r"Exit time:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"泥?궛 ?먮떒? {_clip(m.group(1), max_len=120)} run?먯꽌 湲곕줉?섏뿀?듬땲??"
+        m = _safe_fullmatch(r"Exit time:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"청산 판단 시각은 {_clip(m.group(1), max_len=120)}입니다."
-        m = re.fullmatch(r"Exit action:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"泥?궛 ?먮떒 ?쒓컖? {_clip(m.group(1), max_len=120)}?낅땲??"
+        m = _safe_fullmatch(r"Exit action:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"청산 액션은 {_action_label(m.group(1))}로 기록되었습니다."
-        m = re.fullmatch(r"Exit reason:\s*(.+)", cleaned, flags=re.IGNORECASE)
+            return f"泥?궛 ?≪뀡? {_action_label(m.group(1))}濡?湲곕줉?섏뿀?듬땲??"
+        m = _safe_fullmatch(r"Exit reason:\s*(.+)", cleaned, flags=re.IGNORECASE)
         if m:
-            return f"청산 사유는 {_clip(m.group(1), max_len=240)}입니다."
+            return f"泥?궛 ?ъ쑀??{_clip(m.group(1), max_len=240)}?낅땲??"
         return _normalize_trade_report_language(cleaned)
 
     def _section_title(title: str) -> str:
         mapping = {
-            "Executive Summary": "최종 판단 요약",
-            "Market Context at Entry": "시장 환경 요약",
-            "Strategist Summary": "전략가 요약",
-            "Why This Symbol Was Chosen": "선택된 종목 상세 분석",
-            "Entry Decision": "진입 상세 근거",
-            "Holding / Monitoring Story": "보유 경과",
-            "Exit Decision": "청산 판단 근거",
-            "Scanner Logic and Filters": "스캐너 후보 비교",
-            "Guard / Approval Result": "승인 및 가드 판단",
-            "Execution Quality": "실행 결과",
-            "Reporter Evaluation": "결과 평가",
-            "Errors / Weaknesses / Improvement Points": "보완 포인트",
+            "Executive Summary": "理쒖쥌 ?먮떒 ?붿빟",
+            "Market Context at Entry": "?쒖옣 ?섍꼍 ?붿빟",
+            "Strategist Summary": "?꾨왂媛 ?붿빟",
+            "Why This Symbol Was Chosen": "?좏깮??醫낅ぉ ?곸꽭 遺꾩꽍",
+            "Entry Decision": "吏꾩엯 ?곸꽭 洹쇨굅",
+            "Holding / Monitoring Story": "蹂댁쑀 寃쎄낵",
+            "Exit Decision": "泥?궛 ?먮떒 洹쇨굅",
+            "Scanner Logic and Filters": "?ㅼ틦???꾨낫 鍮꾧탳",
+            "Guard / Approval Result": "?뱀씤 諛?媛???먮떒",
+            "Execution Quality": "?ㅽ뻾 寃곌낵",
+            "Reporter Evaluation": "寃곌낵 ?됯?",
+            "Errors / Weaknesses / Improvement Points": "蹂댁셿 ?ъ씤??",
         }
         return mapping.get(title, title)
 
     def _timeline_label(value: Any) -> str:
         mapping = {
-            "entry": "진입",
-            "holding": "보유 관리",
-            "hold": "보유 관리",
-            "monitor": "모니터링",
-            "exit": "청산",
-            "reporter": "평가",
-            "scanner": "스캐너",
-            "strategist": "전략가",
-            "executor": "실행",
-            "supervisor": "승인",
+            "entry": "吏꾩엯",
+            "holding": "蹂댁쑀 愿由?",
+            "hold": "蹂댁쑀 愿由?",
+            "monitor": "紐⑤땲?곕쭅",
+            "exit": "泥?궛",
+            "reporter": "?됯?",
+            "scanner": "?ㅼ틦??",
+            "strategist": "?꾨왂媛",
+            "executor": "?ㅽ뻾",
+            "supervisor": "?뱀씤",
         }
         raw = _clip(value, max_len=64).strip().lower()
-        return mapping.get(raw, _clip(value, max_len=64) or "이벤트")
+        return mapping.get(raw, _clip(value, max_len=64) or "?대깽??")
 
     generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
     generation_status = str(generation.get("status") or "").strip().lower()
     if generation_status not in {"", "ok", "repaired", "partial", "salvaged"}:
         failure = report.get("failure") if isinstance(report.get("failure"), dict) else {}
         lines = [
-            f"# AI 거래 리포트 ({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})",
+            f"# AI 嫄곕옒 由ы룷??({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})",
             "",
-            f"- 대상 거래는 {_action_label(report.get('action'))} {report.get('symbol') or '-'} 기준으로 정리했습니다.",
-            f"- 라이프사이클 상태는 {_meta_label(report.get('status'))}입니다.",
-            f"- 리포트 생성 상태는 {generation.get('status') or '-'}이며 사용 모델은 {generation.get('model') or '-'}입니다.",
+            f"- ???嫄곕옒??{_action_label(report.get('action'))} {report.get('symbol') or '-'} 湲곗??쇰줈 ?뺣━?덉뒿?덈떎.",
+            f"- ?쇱씠?꾩궗?댄겢 ?곹깭??{_meta_label(report.get('status'))}?낅땲??",
+            f"- 由ы룷???앹꽦 ?곹깭??{generation.get('status') or '-'}?대ŉ ?ъ슜 紐⑤뜽? {generation.get('model') or '-'}?낅땲??",
             "",
-            "## 생성 실패 안내",
+            "## ?앹꽦 ?ㅽ뙣 ?덈궡",
             "",
-            f"- 생성 실패 사유는 {failure.get('reason') or generation.get('reason') or '-'}입니다.",
+            f"- ?앹꽦 ?ㅽ뙣 ?ъ쑀??{failure.get('reason') or generation.get('reason') or '-'}?낅땲??",
         ]
         if str(failure.get("error") or "").strip():
-            lines.append(f"- 내부 오류 정보는 {failure.get('error')}입니다.")
+            lines.append(f"- ?대? ?ㅻ쪟 ?뺣낫??{failure.get('error')}?낅땲??")
         lines.append("")
         return "\n".join(lines)
 
@@ -7125,34 +7262,35 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         else build_trade_report_truth_surface(shared_facts)
     )
     memory_surface = report.get("memory_surface") if isinstance(report.get("memory_surface"), dict) else {}
+    closed_trade = str(report.get("status") or "").strip().lower() == "closed"
 
 
     lines: List[str] = []
-    lines.append(f"# AI 거래 리포트 ({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})")
+    lines.append(f"# AI 嫄곕옒 由ы룷??({report.get('trade_id') or report.get('story_id') or report.get('run_id') or 'story'})")
     lines.append("")
-    lines.append(f"- 대상 거래는 {_action_label(report.get('action'))} {report.get('symbol') or '-'} 기준으로 정리했습니다.")
-    lines.append(f"- 라이프사이클 상태는 {_meta_label(report.get('status'))}입니다.")
-    lines.append(f"- 리포트 유형은 {_meta_label(report.get('story_type'))}입니다.")
-    lines.append(f"- 실행 모드는 {_meta_label(report.get('execution_mode_label'))}입니다.")
+    lines.append(f"- ???嫄곕옒??{_action_label(report.get('action'))} {report.get('symbol') or '-'} 湲곗??쇰줈 ?뺣━?덉뒿?덈떎.")
+    lines.append(f"- ?쇱씠?꾩궗?댄겢 ?곹깭??{_meta_label(report.get('status'))}?낅땲??")
+    lines.append(f"- 由ы룷???좏삎? {_meta_label(report.get('story_type'))}?낅땲??")
+    lines.append(f"- ?ㅽ뻾 紐⑤뱶??{_meta_label(report.get('execution_mode_label'))}?낅땲??")
     lines.append("")
-    lines.append("## 생성 정보")
+    lines.append("## ?앹꽦 ?뺣낫")
     lines.append("")
     for meta_line in (
-        _metadata_line("생성 상태", generation.get("status") or "-"),
-        _metadata_line("생성 방식", _meta_label(generation.get("mode"))),
-        _metadata_line("사용 모델", generation.get("model") or "-"),
-        _metadata_line("생성 시각", report.get("generated_at")),
+        _metadata_line("?앹꽦 ?곹깭", generation.get("status") or "-"),
+        _metadata_line("?앹꽦 諛⑹떇", _meta_label(generation.get("mode"))),
+        _metadata_line("?ъ슜 紐⑤뜽", generation.get("model") or "-"),
+        _metadata_line("?앹꽦 ?쒓컖", report.get("generated_at")),
     ):
         if meta_line:
             lines.append(meta_line)
     if str(generation.get("reason") or "").strip():
-        lines.append(f"- 생성 사유: {_render_text(generation.get('reason'))}")
+        lines.append(f"- ?앹꽦 ?ъ쑀: {_render_text(generation.get('reason'))}")
     lines.append("")
     if generation_status in {"repaired", "partial", "salvaged"}:
-        lines.append("## 생성 참고")
+        lines.append("## ?앹꽦 李멸퀬")
         lines.append("")
-        lines.append(f"- 리포트는 {generation_status} 상태로 정리됐습니다.")
-        lines.append(f"- 사유는 {generation.get('reason') or '부분 응답을 복구해 최종 리포트를 구성한 경우입니다.'}입니다.")
+        lines.append(f"- 由ы룷?몃뒗 {generation_status} ?곹깭濡??뺣━?먯뒿?덈떎.")
+        lines.append(f"- ?ъ쑀??{generation.get('reason') or '遺遺??묐떟??蹂듦뎄??理쒖쥌 由ы룷?몃? 援ъ꽦??寃쎌슦?낅땲??'}?낅땲??")
         lines.append("")
     truth_price = truth_surface.get("price") if isinstance(truth_surface.get("price"), dict) else {}
     truth_pnl = truth_surface.get("pnl") if isinstance(truth_surface.get("pnl"), dict) else {}
@@ -7165,30 +7303,30 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         pnl_truth_source = _clip(truth_pnl.get("pnl_truth_source"), max_len=80)
         if truth_price.get("broker_buy_price") not in (None, "") and truth_price.get("broker_fill_price") not in (None, ""):
             lines.append(
-                f"- 브로커 매수가/매도가는 {_fmt_price(truth_price.get('broker_buy_price'))} / {_fmt_price(truth_price.get('broker_fill_price'))}입니다."
+                f"- 釉뚮줈而?留ㅼ닔媛/留ㅻ룄媛??{_fmt_price(truth_price.get('broker_buy_price'))} / {_fmt_price(truth_price.get('broker_fill_price'))}?낅땲??"
             )
         elif truth_price.get("broker_fill_price") not in (None, ""):
-            lines.append(f"- 브로커 체결 가격은 {_fmt_price(truth_price.get('broker_fill_price'))}입니다.")
+            lines.append(f"- 釉뚮줈而?泥닿껐 媛寃⑹? {_fmt_price(truth_price.get('broker_fill_price'))}?낅땲??")
             if bool(truth_pnl.get("broker_day_authoritative")) and truth_pnl.get("broker_day_truth_source") and truth_price.get("broker_buy_price") in (None, ""):
-                lines.append("- 브로커 매수 체결가는 직접 복구되지 않았고, 확정 손익은 키움 당일 실현손익 기준으로만 확인했습니다.")
+                lines.append("- 釉뚮줈而?留ㅼ닔 泥닿껐媛??吏곸젒 蹂듦뎄?섏? ?딆븯怨? ?뺤젙 ?먯씡? ?ㅼ? ?뱀씪 ?ㅽ쁽?먯씡 湲곗??쇰줈留??뺤씤?덉뒿?덈떎.")
         if truth_price.get("account_mark_price") not in (None, ""):
-            lines.append(f"- 계좌 기준 마크 가격은 {_fmt_price(truth_price.get('account_mark_price'))}입니다.")
+            lines.append(f"- 怨꾩쥖 湲곗? 留덊겕 媛寃⑹? {_fmt_price(truth_price.get('account_mark_price'))}?낅땲??")
         if truth_price.get("monitor_mark_price") not in (None, "") and truth_price.get("broker_fill_price") in (None, ""):
-            lines.append(f"- 종료 직전 모니터 관측 가격은 {_fmt_price(truth_price.get('monitor_mark_price'))}입니다.")
+            lines.append(f"- 醫낅즺 吏곸쟾 紐⑤땲??愿痢?媛寃⑹? {_fmt_price(truth_price.get('monitor_mark_price'))}?낅땲??")
         if str(truth_pnl.get("value") or "").strip().lower() in {"", "unavailable", "not_available"}:
             if truth_pnl.get("pct") not in (None, ""):
                 if pnl_truth_source == "broker_fill_account_snapshot_estimate":
-                    lines.append(f"- 브로커 확정 손익 금액은 직접 확인되지 않았고, 브로커 체결가와 계좌 평가손익 기준 추정 손익률은 {_fmt_pct(truth_pnl.get('pct'))}입니다.")
+                    lines.append(f"- 釉뚮줈而??뺤젙 ?먯씡 湲덉븸? 吏곸젒 ?뺤씤?섏? ?딆븯怨? 釉뚮줈而?泥닿껐媛? 怨꾩쥖 ?됯??먯씡 湲곗? 異붿젙 ?먯씡瑜좎? {_fmt_pct(truth_pnl.get('pct'))}?낅땲??")
                 else:
-                    lines.append(f"- 브로커 확정 손익 금액은 직접 확인되지 않았고, 손익률은 {_fmt_pct(truth_pnl.get('pct'))}입니다.")
+                    lines.append(f"- 釉뚮줈而??뺤젙 ?먯씡 湲덉븸? 吏곸젒 ?뺤씤?섏? ?딆븯怨? ?먯씡瑜좎? {_fmt_pct(truth_pnl.get('pct'))}?낅땲??")
             else:
-                lines.append("- 브로커 확정 손익은 아직 직접 확인되지 않았습니다.")
+                lines.append("- 釉뚮줈而??뺤젙 ?먯씡? ?꾩쭅 吏곸젒 ?뺤씤?섏? ?딆븯?듬땲??")
         elif truth_pnl.get("value") not in (None, "") and truth_pnl.get("pct") not in (None, ""):
-            lines.append(f"- 확정 손익은 {truth_pnl.get('value')} / {_fmt_pct(truth_pnl.get('pct'))}입니다.")
+            lines.append(f"- ?뺤젙 ?먯씡? {truth_pnl.get('value')} / {_fmt_pct(truth_pnl.get('pct'))}?낅땲??")
         elif truth_pnl.get("value") not in (None, ""):
-            lines.append(f"- 확정 손익은 {truth_pnl.get('value')}입니다.")
+            lines.append(f"- ?뺤젙 ?먯씡? {truth_pnl.get('value')}?낅땲??")
         if truth_pnl.get("broker_fee") not in (None, "") or truth_pnl.get("broker_tax") not in (None, ""):
-            lines.append(f"- 브로커 수수료/세금은 {truth_pnl.get('broker_fee')} / {truth_pnl.get('broker_tax')}입니다.")
+            lines.append(f"- 釉뚮줈而??섏닔猷??멸툑? {truth_pnl.get('broker_fee')} / {truth_pnl.get('broker_tax')}?낅땲??")
         same_price_round_trip = False
         try:
             same_price_round_trip = (
@@ -7199,11 +7337,11 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         except Exception:
             same_price_round_trip = False
         if same_price_round_trip and str(truth_pnl.get("value") or "").strip().lower() not in {"", "unavailable", "not_available"}:
-            lines.append("- 매수가와 매도가가 같았고, 손익은 가격 변동이 아니라 수수료와 세금에서 발생했습니다.")
+            lines.append("- 留ㅼ닔媛? 留ㅻ룄媛媛 媛숈븯怨? ?먯씡? 媛寃?蹂?숈씠 ?꾨땲???섏닔猷뚯? ?멸툑?먯꽌 諛쒖깮?덉뒿?덈떎.")
         if price_truth_source:
-            lines.append(f"- 가격 truth 소스는 {price_truth_source_label(price_truth_source)}입니다.")
+            lines.append(f"- 媛寃?truth ?뚯뒪??{price_truth_source_label(price_truth_source)}?낅땲??")
         if pnl_truth_source and pnl_truth_source not in {"", "unavailable"}:
-            lines.append(f"- 손익 truth 소스는 {pnl_truth_source_label(pnl_truth_source)}입니다.")
+            lines.append(f"- ?먯씡 truth ?뚯뒪??{pnl_truth_source_label(pnl_truth_source)}?낅땲??")
         broker_day_match_mode = _clip(truth_pnl.get("broker_day_match_mode"), max_len=40)
         broker_day_truth_source = _clip(truth_pnl.get("broker_day_truth_source"), max_len=80)
         broker_day_authoritative = bool(truth_pnl.get("broker_day_authoritative"))
@@ -7212,91 +7350,319 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
             auth_text = "authoritative" if broker_day_authoritative else "reference_only"
             if broker_day_truth_source:
                 lines.append(
-                    f"- 브로커 당일 손익 매칭은 {match_text} / {auth_text} 상태이며, 소스는 {pnl_truth_source_label(broker_day_truth_source)}입니다."
+                    f"- 釉뚮줈而??뱀씪 ?먯씡 留ㅼ묶? {match_text} / {auth_text} ?곹깭?대ŉ, ?뚯뒪??{pnl_truth_source_label(broker_day_truth_source)}?낅땲??"
                 )
             else:
-                lines.append(f"- 브로커 당일 손익 매칭은 {match_text} / {auth_text} 상태입니다.")
+                lines.append(f"- 釉뚮줈而??뱀씪 ?먯씡 留ㅼ묶? {match_text} / {auth_text} ?곹깭?낅땲??")
         if monitor_price_source and truth_price.get("broker_fill_price") in (None, ""):
-            lines.append(f"- 모니터 가격 소스는 {monitor_price_source_label(monitor_price_source)}입니다.")
+            lines.append(f"- 紐⑤땲??媛寃??뚯뒪??{monitor_price_source_label(monitor_price_source)}?낅땲??")
         lines.append(f"- {truth_availability_line(truth_availability)}")
         lines.append("")
+
+    def _bool_label(value: Any) -> str:
+        return "사용" if bool(value) else "미사용"
+
+    def _join_arrow(values: Any, *, max_items: int = 4) -> str:
+        items = _listify(values, max_items=max_items, max_len=24)
+        return " -> ".join(items) if items else "없음"
+
+    def _packet_status_line(name: str, packet: Dict[str, Any]) -> str:
+        status_value = _metadata_value(packet.get("status") or "unavailable") or "확인되지 않음"
+        fragments: List[str] = [status_value]
+        sample_day_count = packet.get("sample_day_count")
+        if sample_day_count not in (None, "") and name in {"weekly", "monthly"}:
+            fragments.append(f"{sample_day_count}days")
+        fragments.append("활성" if bool(packet.get("active")) else "비활성")
+        return f"{name}={', '.join(fragments)}"
+
+    def _memory_layer_explanations(
+        memory_policy: Dict[str, Any],
+        memory_packets: Dict[str, Any],
+    ) -> List[str]:
+        explanations: List[str] = []
+        active_layers = set(_listify(memory_policy.get("active_layers"), max_items=8, max_len=24))
+        for layer_name in ("weekly", "monthly"):
+            packet = memory_packets.get(layer_name) if isinstance(memory_packets.get(layer_name), dict) else {}
+            if not packet:
+                continue
+            if layer_name in active_layers or bool(packet.get("active")):
+                continue
+            sample_day_count = packet.get("sample_day_count")
+            if sample_day_count not in (None, ""):
+                explanations.append(
+                    f"{layer_name} packet은 {sample_day_count}일 샘플이라 이번 거래에서는 보조 참고로만 남았습니다."
+                )
+            else:
+                explanations.append(
+                    f"{layer_name} packet은 존재하지만 commander가 이번 거래의 활성 layer로 채택하지 않았습니다."
+                )
+        return explanations
+
+    def _reporter_feedback_usage_lines(memory_reporter: Dict[str, Any]) -> List[str]:
+        lines_out: List[str] = []
+        if not memory_reporter:
+            return lines_out
+        if not (bool(memory_reporter.get("available")) or bool(memory_reporter.get("consumed"))):
+            if memory_reporter.get("present"):
+                status = _metadata_value(memory_reporter.get("status") or "미사용")
+                gate = _metadata_value(memory_reporter.get("feedback_gate_reason") or "확인되지 않음")
+                lines_out.append(
+                    f"same-day reporter feedback은 {status} 상태였고, gate 사유는 {gate}였습니다."
+                )
+            return lines_out
+
+        source_reports = memory_reporter.get("source_reports") if isinstance(memory_reporter.get("source_reports"), dict) else {}
+        trade_report_analysis = (
+            memory_reporter.get("trade_report_analysis")
+            if isinstance(memory_reporter.get("trade_report_analysis"), dict)
+            else {}
+        )
+        confidence_text = {
+            "high": "높음",
+            "medium": "중간",
+            "low": "낮음",
+        }.get(str(memory_reporter.get("confidence") or "").strip().lower(), _metadata_value(memory_reporter.get("confidence") or "-"))
+        closed_trade_count = trade_report_analysis.get("closed_trade_count")
+        if source_reports.get("trade_reports") and closed_trade_count not in (None, ""):
+            lines_out.append(
+                f"same-day reporter feedback은 당일 닫힌 거래 리포트 {closed_trade_count}건을 묶어 생성했고, 신뢰도는 {confidence_text}입니다."
+            )
+            lines_out.append("이 내용은 이번 거래 단독 평가가 아니라 당일 흐름을 압축한 보조 피드백입니다.")
+        else:
+            status = _metadata_value(memory_reporter.get("status") or "ok")
+            lines_out.append(
+                f"same-day reporter feedback은 {status} 상태이고, 신뢰도는 {confidence_text}입니다."
+            )
+        win_count = trade_report_analysis.get("win_count")
+        loss_count = trade_report_analysis.get("loss_count")
+        avg_pnl_pct = trade_report_analysis.get("avg_pnl_pct")
+        if win_count not in (None, "") or loss_count not in (None, "") or avg_pnl_pct not in (None, ""):
+            lines_out.append(
+                f"reporter 요약은 승/패 {win_count if win_count not in (None, '') else '-'}"
+                f"/{loss_count if loss_count not in (None, '') else '-'}, "
+                f"평균 손익률 {_fmt_pct(avg_pnl_pct)}였습니다."
+            )
+        recommendation = _listify(memory_reporter.get("recommendation"), max_items=2, max_len=140)
+        if recommendation:
+            rendered = [
+                normalize_reporter_text(_operatorize_report_text(item))
+                for item in recommendation
+                if normalize_reporter_text(_operatorize_report_text(item))
+            ]
+            if rendered:
+                lines_out.append(f"reporter 권고는 {' / '.join(rendered)}입니다.")
+        return lines_out
+
+    def _monitor_delta_interpretation(delta_rows: List[Dict[str, Any]]) -> str:
+        notes: List[str] = []
+        for row in delta_rows:
+            if not isinstance(row, dict):
+                continue
+            field = str(row.get("field") or "").strip()
+            try:
+                delta_value = float(row.get("delta"))
+            except Exception:
+                delta_value = None
+            if field == "breakout_buffer_pct" and delta_value is not None and delta_value > 0:
+                notes.append("돌파 확인 버퍼를 키워 추격 진입을 더 보수적으로 막았습니다.")
+            elif field == "max_extended_from_vwap_pct" and delta_value is not None and delta_value < 0:
+                notes.append("VWAP 기준 과확장 추격 허용 범위를 줄여 현재 가격 부담이 큰 진입을 줄였습니다.")
+            elif field == "volume_ratio_min" and delta_value is not None and delta_value > 0:
+                notes.append("거래량 확인 기준을 높여 힘이 약한 종목 진입을 더 엄격하게 걸렀습니다.")
+        return " ".join(notes[:3]).strip()
+
+    def _monitor_hold_exit_interpretation(delta_rows: List[Dict[str, Any]]) -> str:
+        notes: List[str] = []
+        for row in delta_rows:
+            if not isinstance(row, dict):
+                continue
+            field = str(row.get("field") or "").strip()
+            try:
+                delta_value = float(row.get("delta"))
+            except Exception:
+                delta_value = None
+            if field == "confirm_ticks" and delta_value is not None and delta_value < 0:
+                notes.append("보유 중 재확인 틱 수를 줄여 경고 후 정리를 더 빠르게 허용했습니다.")
+            elif field == "stop_loss_pct" and delta_value is not None and delta_value < 0:
+                notes.append("손절 허용 폭을 줄여 손실 구간 정리를 더 빠르게 당겼습니다.")
+            elif field == "take_profit_pct" and delta_value is not None and delta_value < 0:
+                notes.append("익절 목표를 낮춰 수익 구간 청산을 더 이르게 허용했습니다.")
+            elif field == "trailing_stop_pct" and delta_value is not None and delta_value < 0:
+                notes.append("트레일링 스탑 폭을 줄여 이익 반납을 더 빨리 막도록 조정했습니다.")
+            elif field == "peak_drawdown_exit_pct" and delta_value is not None and delta_value < 0:
+                notes.append("고점 대비 하락 허용 폭을 줄여 피크 이후 청산을 더 빠르게 유도했습니다.")
+            elif field == "vwap_breakdown_pct" and delta_value is not None and delta_value < 0:
+                notes.append("VWAP 이탈 허용 폭을 줄여 약세 전환 청산을 더 보수적으로 당겼습니다.")
+        return " ".join(notes[:3]).strip()
+
+    def _format_monitor_delta_parts(delta_rows: List[Dict[str, Any]]) -> List[str]:
+        delta_parts: List[str] = []
+        for row in delta_rows[:6]:
+            if not isinstance(row, dict):
+                continue
+            field = _metadata_value(row.get("field") or "-")
+            before = row.get("from")
+            after = row.get("to")
+            delta = row.get("delta")
+            if before not in (None, "") and after not in (None, ""):
+                if delta not in (None, ""):
+                    try:
+                        delta_parts.append(f"{field} {float(before):.3f} -> {float(after):.3f} ({float(delta):+0.3f})")
+                    except Exception:
+                        delta_parts.append(f"{field} {before} -> {after}")
+                else:
+                    delta_parts.append(f"{field} {before} -> {after}")
+        return delta_parts
+
+    def _monitor_truth_preface(title: str) -> str:
+        if not closed_trade or title not in {"Holding / Monitoring Story", "Exit Decision"}:
+            return ""
+        broker_fill_price = truth_price.get("broker_fill_price")
+        broker_buy_price = truth_price.get("broker_buy_price")
+        monitor_mark_price = truth_price.get("monitor_mark_price")
+        pnl_value = truth_pnl.get("value")
+        pnl_pct = truth_pnl.get("pct")
+        parts: List[str] = ["?꾨옒 媛믪? 泥?궛 吏곸쟾 紐⑤땲??愿痢?湲곗??낅땲??"]
+        if monitor_mark_price not in (None, "") and broker_fill_price not in (None, ""):
+            parts.append(
+                f"泥?궛 吏곸쟾 紐⑤땲??愿痢↔???{_fmt_price(monitor_mark_price)}?怨??ㅼ젣 留ㅻ룄 泥닿껐媛??{_fmt_price(broker_fill_price)}??듬땲??"
+            )
+        elif broker_fill_price not in (None, ""):
+            parts.append(f"?ㅼ젣 留ㅻ룄 泥닿껐媛??{_fmt_price(broker_fill_price)}??듬땲??")
+        if title == "Exit Decision":
+            if broker_buy_price not in (None, "") and broker_fill_price not in (None, ""):
+                parts.append(
+                    f"釉뚮줈而?留ㅼ닔媛/留ㅻ룄媛??{_fmt_price(broker_buy_price)} / {_fmt_price(broker_fill_price)}??듬땲??"
+                )
+            if pnl_value not in (None, "") and pnl_pct not in (None, ""):
+                parts.append(f"?ㅼ젣 ?ㅽ쁽?먯씡? {pnl_value} / {_fmt_pct(pnl_pct)}??듬땲??")
+        parts.append("?ㅼ젣 泥닿껐媛? ?ㅽ쁽?먯씡? ??Truth Surface瑜??곗꽑?⑸땲??")
+        return " ".join(parts)
+
+    def _normalize_section_bullet(title: str, bullet: str) -> str:
+        raw = _operatorize_report_text(bullet) or str(bullet or "").strip()
+        if not raw:
+            return ""
+        if closed_trade and title in {"Holding / Monitoring Story", "Exit Decision"}:
+            if raw == "蹂댁쑀 ?쒓컙? 0??듬땲??":
+                return ""
+            if raw.startswith("媛寃?湲곗? ?뚯뒪??") or raw.startswith("吏??湲곗? ?뚯뒪??"):
+                return ""
+            if raw.startswith("?꾩옱 ?ъ????먮떒? "):
+                return raw.replace("?꾩옱 ?ъ????먮떒? ", "泥?궛 吏곸쟾 紐⑤땲???먮떒? ", 1)
+            if raw.startswith("?꾩옱媛, ?됯퇏媛, 怨좎젏 湲곗? 媛믪? "):
+                return raw.replace("?꾩옱媛, ?됯퇏媛, 怨좎젏 湲곗? 媛믪? ", "泥?궛 吏곸쟾 紐⑤땲??愿痢↔컪(?꾩옱/?됯퇏/怨좎젏)? ", 1)
+            if raw.startswith("?꾩옱 ?먯씡 蹂?숆낵 怨좎젏 ?鍮??섎씫??? "):
+                return raw.replace("?꾩옱 ?먯씡 蹂?숆낵 怨좎젏 ?鍮??섎씫??? ", "泥?궛 吏곸쟾 紐⑤땲??湲곗? ?먯씡 蹂??怨좎젏 ?鍮??섎씫??? ", 1)
+            if title == "Exit Decision" and raw.startswith("泥?궛 ?≪뀡? "):
+                return ""
+        return raw
+
     memory_status = memory_surface.get("status") if isinstance(memory_surface.get("status"), dict) else {}
     memory_strategy = memory_surface.get("strategy_memory") if isinstance(memory_surface.get("strategy_memory"), dict) else {}
+    memory_policy = memory_surface.get("commander_memory_policy") if isinstance(memory_surface.get("commander_memory_policy"), dict) else {}
+    memory_packets = memory_surface.get("memory_packets") if isinstance(memory_surface.get("memory_packets"), dict) else {}
     memory_symbol = memory_surface.get("selected_symbol_memory") if isinstance(memory_surface.get("selected_symbol_memory"), dict) else {}
     memory_reporter = memory_surface.get("reporter_feedback_packet") if isinstance(memory_surface.get("reporter_feedback_packet"), dict) else {}
     memory_read_model = memory_surface.get("read_model_facts") if isinstance(memory_surface.get("read_model_facts"), dict) else {}
     memory_usage = memory_surface.get("usage_trace") if isinstance(memory_surface.get("usage_trace"), dict) else {}
+    memory_application_surface = report.get("memory_application_surface") if isinstance(report.get("memory_application_surface"), dict) else {}
     if memory_surface:
         lines.append("## 메모리 사용")
         lines.append("")
         lines.append(
-            "- 전략 메모리="
-            f"{'사용' if bool(memory_status.get('strategy_memory_used')) else '미사용'}, "
-            "종목 메모리="
-            f"{'사용' if bool(memory_status.get('selected_symbol_memory_used')) else '미사용'}, "
-            "리포터 피드백="
-            f"{'사용' if bool(memory_status.get('reporter_feedback_used')) else '미사용'}, "
-            "읽기 모델 팩트="
-            f"{'사용' if bool(memory_status.get('read_model_facts_used')) else '미사용'}입니다."
+            "- 전략 메모리={strategy}, 종목 메모리={symbol_mem}, 리포터 피드백={reporter}, 읽기 모델 팩트={read_model}입니다.".format(
+                strategy=_bool_label(memory_status.get('strategy_memory_used')),
+                symbol_mem=_bool_label(memory_status.get('selected_symbol_memory_used')),
+                reporter=_bool_label(memory_status.get('reporter_feedback_used')),
+                read_model=_bool_label(memory_status.get('read_model_facts_used')),
+            )
         )
         if memory_strategy:
             best_playbooks = ", ".join(_listify(memory_strategy.get("best_playbooks"), max_items=3, max_len=24))
             worst_playbooks = ", ".join(_listify(memory_strategy.get("worst_playbooks"), max_items=3, max_len=24))
             recent_failures = ", ".join(_listify(memory_strategy.get("recent_failures"), max_items=3, max_len=36))
             lines.append(
-                f"- 전략 메모리는 {'집계형 strategy_memory로 전달됐고' if memory_strategy.get('scope') == 'aggregated_strategy_memory' else '전달됐고'}, "
+                f"- 전략 메모리는 {'집계형 strategy_memory로 전달됐고' if memory_strategy.get('scope') == 'aggregated_strategy_memory' else '입력에 포함됐고'}, "
                 f"status는 {_metadata_value(memory_strategy.get('status') or 'unknown')}입니다."
             )
             if memory_strategy.get("requested_day") or memory_strategy.get("resolved_day"):
                 lines.append(
-                    f"- 전략 메모리 요청일/해석일은 {_metadata_value(memory_strategy.get('requested_day') or '-')} / {_metadata_value(memory_strategy.get('resolved_day') or '-') }입니다."
+                    f"- ?꾨왂 硫붾え由??붿껌???댁꽍?쇱? {_metadata_value(memory_strategy.get('requested_day') or '-')} / {_metadata_value(memory_strategy.get('resolved_day') or '-') }?낅땲??"
                 )
             if best_playbooks or worst_playbooks or recent_failures:
                 lines.append(
                     f"- 전략 메모리상 우세/취약 playbook과 최근 실패 흔적은 {best_playbooks or '없음'} / {worst_playbooks or '없음'} / {recent_failures or '없음'}입니다."
                 )
+        if memory_policy:
+            active_layers = ", ".join(_listify(memory_policy.get("active_layers"), max_items=4, max_len=16))
+            lines.append(
+                f"- commander가 실제 활성화한 메모리 레이어는 {active_layers or '없음'}이고, 우선순위는 {_join_arrow(memory_policy.get('priority_order'))}입니다."
+            )
+            if bool(memory_policy.get("symbol_memory_override_enabled")):
+                lines.append("- symbol memory override gate가 켜져 있어 종목 메모리가 직접 override layer로 승격될 수 있습니다.")
+            else:
+                lines.append("- symbol memory override gate가 꺼져 있어 종목 메모리는 보조 참조로만 사용합니다.")
+        if memory_packets:
+            daily_packet = memory_packets.get("daily") if isinstance(memory_packets.get("daily"), dict) else {}
+            weekly_packet = memory_packets.get("weekly") if isinstance(memory_packets.get("weekly"), dict) else {}
+            monthly_packet = memory_packets.get("monthly") if isinstance(memory_packets.get("monthly"), dict) else {}
+            symbol_packet = memory_packets.get("symbol") if isinstance(memory_packets.get("symbol"), dict) else {}
+            lines.append(
+                "- raw memory packet 상태는 "
+                + ", ".join(
+                    [
+                        _packet_status_line("daily", daily_packet),
+                        _packet_status_line("weekly", weekly_packet),
+                        _packet_status_line("monthly", monthly_packet),
+                        _packet_status_line("symbol", symbol_packet),
+                    ]
+                )
+                + "입니다."
+            )
+            for note in _memory_layer_explanations(memory_policy, memory_packets):
+                lines.append(f"- {note}")
         if memory_symbol:
             symbol_name = _metadata_value(memory_symbol.get("symbol") or symbol or "해당 종목")
             if bool(memory_symbol.get("present")):
-                symbol_fragments = [f"{symbol_name} 종목 메모리가 들어왔습니다"]
                 trade_count = memory_symbol.get("trade_count")
-                if trade_count not in (None, ""):
-                    symbol_fragments.append(f"과거 거래 {trade_count}건")
                 win_rate = memory_symbol.get("win_rate")
+                dominant_playbook = _clip(memory_symbol.get("dominant_playbook"), max_len=40)
+                dominant_blocker = _clip(memory_symbol.get("dominant_monitor_blocker"), max_len=60)
+                blocker_text = (
+                    dominant_blocker
+                    if dominant_blocker and dominant_blocker.lower() not in {"unknown", "확인되지 않음"}
+                    else "명확히 잡히지 않았음"
+                )
+                trade_count_text = trade_count if trade_count not in (None, "") else "-"
+                win_rate_text = "-"
                 if win_rate not in (None, ""):
                     try:
-                        symbol_fragments.append(f"승률 {float(win_rate) * 100.0:.1f}%")
+                        win_rate_text = f"{float(win_rate) * 100.0:.1f}%"
                     except Exception:
                         pass
-                if _clip(memory_symbol.get("dominant_playbook"), max_len=40):
-                    symbol_fragments.append(f"우세 playbook {_metadata_value(memory_symbol.get('dominant_playbook'))}")
-                if _clip(memory_symbol.get("dominant_monitor_blocker"), max_len=60):
-                    symbol_fragments.append(f"주요 blocker {_metadata_value(memory_symbol.get('dominant_monitor_blocker'))}")
-                lines.append("- " + ", ".join(symbol_fragments) + "입니다.")
+                dominant_playbook_text = _metadata_value(dominant_playbook or "-")
+                lines.append(
+                    f"- {symbol_name} 종목 메모리는 과거 거래 {trade_count_text}건, 승률 {win_rate_text}, "
+                    f"우세 playbook {dominant_playbook_text}, 주요 blocker는 {blocker_text}입니다."
+                )
+                if "symbol" not in set(_listify(memory_policy.get("active_layers"), max_items=8, max_len=24)):
+                    lines.append(f"- 이번 거래에서는 commander가 symbol layer를 활성화하지 않아 {symbol_name} 종목 메모리는 보조 참고로만 사용했습니다.")
             else:
-                lines.append(f"- {symbol_name} 종목 메모리는 비어 있었고, 종목별 과거 이력 제약은 직접 반영되지 않았습니다.")
-        if memory_reporter:
-            if bool(memory_reporter.get("available")) or bool(memory_reporter.get("consumed")):
-                lines.append(
-                    f"- same-day reporter feedback은 {_metadata_value(memory_reporter.get('status') or 'ok')} / "
-                    f"신뢰도 {_metadata_value(memory_reporter.get('confidence') or '-')}로 반영됐습니다."
-                )
-            elif memory_reporter.get("present"):
-                lines.append(
-                    f"- same-day reporter feedback은 {_metadata_value(memory_reporter.get('status') or '미사용')} 상태였고, "
-                    f"gate 사유는 {_metadata_value(memory_reporter.get('feedback_gate_reason') or '확인되지 않음')}이었습니다."
-                )
+                lines.append(f"- {symbol_name} 종목 메모리는 비어 있었고 종목별 과거 이력은 직접 반영하지 않았습니다.")
+        for reporter_line in _reporter_feedback_usage_lines(memory_reporter):
+            lines.append(f"- {reporter_line}")
         if memory_read_model:
             if bool(memory_read_model.get("present")):
                 symbol_patterns = ", ".join(_listify(memory_read_model.get("symbols"), max_items=5, max_len=24))
-                daily_flag = "있음" if bool(memory_read_model.get("daily_summary_present")) else "없음"
+                daily_flag = "?덉쓬" if bool(memory_read_model.get("daily_summary_present")) else "?놁쓬"
                 lines.append(
-                    f"- read_model_facts는 최근 거래 {memory_read_model.get('recent_trade_count') or 0}건, "
-                    f"종목 패턴 {memory_read_model.get('symbol_pattern_count') or 0}건, "
-                    f"일일 요약 {daily_flag} 기준으로 들어갔습니다."
+                    f"- read_model_facts??理쒓렐 嫄곕옒 {memory_read_model.get('recent_trade_count') or 0}嫄? "
+                    f"醫낅ぉ ?⑦꽩 {memory_read_model.get('symbol_pattern_count') or 0}嫄? "
+                    f"?쇱씪 ?붿빟 {daily_flag} 湲곗??쇰줈 ?ㅼ뼱媛붿뒿?덈떎."
                 )
                 if symbol_patterns:
-                    lines.append(f"- read_model_facts 종목 패턴 표본은 {symbol_patterns}입니다.")
+                    lines.append(f"- read_model_facts 醫낅ぉ ?⑦꽩 ?쒕낯? {symbol_patterns}?낅땲??")
             elif memory_read_model or memory_status.get("read_model_facts_used") is False:
                 lines.append("- read_model_facts는 이번 리포트 입력에서 직접 확인되지 않았습니다.")
         if _clip(memory_usage.get("playbook"), max_len=40) or _clip(memory_usage.get("monitor_guidance"), max_len=40):
@@ -7306,17 +7672,120 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
                 f"scanner_bias={_metadata_value(memory_usage.get('scanner_bias') or '-')}가 남았습니다."
             )
         lines.append("")
+    if memory_application_surface:
+        scanner_memory_application = (
+            memory_application_surface.get("scanner_memory_bias")
+            if isinstance(memory_application_surface.get("scanner_memory_bias"), dict)
+            else {}
+        )
+        monitor_memory_application = (
+            memory_application_surface.get("monitor_memory_bias")
+            if isinstance(memory_application_surface.get("monitor_memory_bias"), dict)
+            else {}
+        )
+        lines.append("## 메모리 적용 결과")
+        lines.append("")
+        if scanner_memory_application:
+            if bool(scanner_memory_application.get("captured")):
+                scanner_layers = ", ".join(_listify(scanner_memory_application.get("active_layers"), max_items=4, max_len=16))
+                lines.append(f"- 이번 거래에서는 scanner가 {scanner_layers or '없음'} 메모리만 실제로 사용했습니다.")
+                scanner_source_delta = (
+                    scanner_memory_application.get("source_weight_delta")
+                    if isinstance(scanner_memory_application.get("source_weight_delta"), dict)
+                    else {}
+                )
+                if scanner_source_delta:
+                    delta_parts = []
+                    for key, value in list(scanner_source_delta.items())[:6]:
+                        try:
+                            delta_parts.append(f"{_metadata_value(key)} {float(value):+0.3f}")
+                        except Exception:
+                            continue
+                    if delta_parts:
+                        lines.append(f"- scanner source weight delta: {', '.join(delta_parts)}")
+                else:
+                    lines.append("- scanner source-level 가중치 변화는 별도 기록이 없어 후보별 점수 조정만 확인됩니다.")
+                selected_symbol = _metadata_value(scanner_memory_application.get("selected_symbol") or symbol or "-")
+                selected_bias_adjustment = scanner_memory_application.get("selected_bias_adjustment")
+                if selected_bias_adjustment not in (None, ""):
+                    try:
+                        adjustment_value = float(selected_bias_adjustment)
+                        if abs(adjustment_value) < 1e-12:
+                            lines.append(f"- 이번 거래 후보 {selected_symbol}에는 메모리 기반 추가 가점이나 감점이 없었습니다.")
+                        else:
+                            lines.append(
+                                f"- 이번 거래 후보 {selected_symbol}에는 memory bias adjustment {adjustment_value:+0.3f}가 반영됐습니다."
+                            )
+                    except Exception:
+                        pass
+                elif bool(scanner_memory_application.get("applied")):
+                    lines.append("- scanner memory bias???곸슜?먯?留??꾨낫蹂?delta ?섏튂??????λ낯??吏곸젒 ?⑥? ?딆븯?듬땲??")
+                scanner_reason = ", ".join(_listify(scanner_memory_application.get("reason"), max_items=4, max_len=48))
+                if scanner_reason:
+                    lines.append(f"- scanner memory bias 근거는 {scanner_reason}입니다.")
+            else:
+                lines.append("- scanner memory bias의 실제 delta는 이 거래 artifact에 기록되지 않았습니다.")
+        if monitor_memory_application:
+            if bool(monitor_memory_application.get("captured")):
+                monitor_layers = ", ".join(_listify(monitor_memory_application.get("active_layers"), max_items=4, max_len=16))
+                lines.append(f"- 이번 거래에서는 monitor가 {monitor_layers or '없음'} 메모리를 entry policy에서 사용했습니다.")
+                delta_rows = list(monitor_memory_application.get("applied_deltas") or [])
+                if delta_rows:
+                    delta_parts = _format_monitor_delta_parts(delta_rows)
+                    if delta_parts:
+                        lines.append(f"- monitor entry delta: {', '.join(delta_parts)}")
+                        interpretation = _monitor_delta_interpretation(delta_rows)
+                        if interpretation:
+                            lines.append(f"- monitor 적용 해석: {interpretation}")
+                elif bool(monitor_memory_application.get("applied")):
+                    lines.append("- monitor memory bias는 적용됐지만 entry delta 수치는 원문에서 직접 확인되지 않았습니다.")
+                else:
+                    entry_delta_keys = ", ".join(_listify(monitor_memory_application.get("entry_delta_keys"), max_items=6, max_len=40))
+                    if entry_delta_keys:
+                        lines.append(f"- monitor memory bias 요약상 조정 대상 field는 {entry_delta_keys}입니다.")
+                hold_delta_rows = list(monitor_memory_application.get("hold_deltas") or [])
+                if hold_delta_rows:
+                    hold_delta_parts = _format_monitor_delta_parts(hold_delta_rows)
+                    if hold_delta_parts:
+                        lines.append(f"- monitor hold delta: {', '.join(hold_delta_parts)}")
+                        hold_interpretation = _monitor_hold_exit_interpretation(hold_delta_rows)
+                        if hold_interpretation:
+                            lines.append(f"- monitor hold 해석: {hold_interpretation}")
+                elif bool(monitor_memory_application.get("hold_applied")):
+                    lines.append("- monitor hold bias는 적용됐지만 hold delta 수치는 원문에서 직접 확인되지 않았습니다.")
+                exit_delta_rows = list(monitor_memory_application.get("exit_deltas") or [])
+                if exit_delta_rows:
+                    exit_delta_parts = _format_monitor_delta_parts(exit_delta_rows)
+                    if exit_delta_parts:
+                        lines.append(f"- monitor exit delta: {', '.join(exit_delta_parts)}")
+                        exit_interpretation = _monitor_hold_exit_interpretation(exit_delta_rows)
+                        if exit_interpretation:
+                            lines.append(f"- monitor exit 해석: {exit_interpretation}")
+                elif bool(monitor_memory_application.get("exit_applied")):
+                    lines.append("- monitor exit bias는 적용됐지만 exit delta 수치는 원문에서 직접 확인되지 않았습니다.")
+                risk_posture = _metadata_value(monitor_memory_application.get("risk_posture") or "")
+                effective_policy_source = _metadata_value(monitor_memory_application.get("effective_policy_source") or "")
+                if risk_posture or effective_policy_source:
+                    lines.append(
+                        f"- monitor risk posture / effective policy source는 {risk_posture or '-'} / {effective_policy_source or '-'}입니다."
+                    )
+                monitor_reason = ", ".join(_listify(monitor_memory_application.get("reason"), max_items=4, max_len=48))
+                if monitor_reason:
+                    lines.append(f"- monitor 조정 근거는 {monitor_reason}입니다.")
+            else:
+                lines.append("- monitor memory bias의 실제 delta는 이 거래 artifact에 기록되지 않았습니다.")
+        lines.append("")
     section_provenance = report.get("section_provenance") if isinstance(report.get("section_provenance"), dict) else {}
     if section_provenance:
-        lines.append("## 근거 출처")
+        lines.append("## 洹쇨굅 異쒖쿂")
         lines.append("")
         section_titles = {
-            "market_context_at_entry": "시장 환경 요약",
-            "strategist_summary": "전략가 요약",
-            "why_this_symbol_was_chosen": "선택된 종목 상세 분석",
-            "holding_monitoring_story": "보유 경과",
-            "execution_quality": "실행 결과",
-            "reporter_evaluation": "결과 평가",
+            "market_context_at_entry": "?쒖옣 ?섍꼍 ?붿빟",
+            "strategist_summary": "?꾨왂媛 ?붿빟",
+            "why_this_symbol_was_chosen": "?좏깮??醫낅ぉ ?곸꽭 遺꾩꽍",
+            "holding_monitoring_story": "蹂댁쑀 寃쎄낵",
+            "execution_quality": "?ㅽ뻾 寃곌낵",
+            "reporter_evaluation": "寃곌낵 ?됯?",
         }
         for section_key in (
             "market_context_at_entry",
@@ -7328,12 +7797,12 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         ):
             entry = section_provenance.get(section_key) if isinstance(section_provenance.get(section_key), dict) else {}
             fragments = [
-                f"데이터 출처: {_metadata_value(entry.get('source') or 'fallback')}",
-                f"신뢰도: {_metadata_value(entry.get('confidence') or 'low')}",
+                f"?곗씠??異쒖쿂: {_metadata_value(entry.get('source') or 'fallback')}",
+                f"?좊ː?? {_metadata_value(entry.get('confidence') or 'low')}",
             ]
             artifact_path = _metadata_value(entry.get("artifact_path"))
             if artifact_path:
-                fragments.append(f"참조 경로: {artifact_path}")
+                fragments.append(f"李몄“ 寃쎈줈: {artifact_path}")
             lines.append(f"- {section_titles.get(section_key, section_key)} | " + " | ".join(fragments))
         lines.append("")
     monitor_snapshot_section: List[str] = []
@@ -7374,12 +7843,12 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         def _pick_active_stop(snapshot: Dict[str, Any]) -> tuple[str, Optional[float]]:
             effective = _to_float_opt(snapshot.get("effective_stop_loss_pct"))
             if effective is not None:
-                return "유효 손절", effective
+                return "?좏슚 ?먯젅", effective
             candidates: List[tuple[str, float]] = []
             for label, key in (
-                ("모니터 adaptive 손절", "adaptive_stop_loss_pct"),
-                ("Hard fail-safe 손절", "hard_stop_pct"),
-                ("기본 손절", "stop_loss_pct"),
+                ("紐⑤땲??adaptive ?먯젅", "adaptive_stop_loss_pct"),
+                ("Hard fail-safe ?먯젅", "hard_stop_pct"),
+                ("湲곕낯 ?먯젅", "stop_loss_pct"),
             ):
                 value = _to_float_opt(snapshot.get(key))
                 if value is not None:
@@ -7403,38 +7872,38 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         average_price = monitor_snapshot.get("average_price")
         peak_price = monitor_snapshot.get("peak_price")
 
-        lines.append("## 모니터 스냅샷")
+        lines.append("## 紐⑤땲???ㅻ깄??")
         lines.append("")
-        lines.append(f"- 현재 포지션 판단은 {_action_label(monitor_snapshot.get('posture'))}입니다.")
-        lines.append(f"- 감지된 신호 유형은 {trigger_label}입니다.")
+        lines.append(f"- ?꾩옱 ?ъ????먮떒? {_action_label(monitor_snapshot.get('posture'))}?낅땲??")
+        lines.append(f"- 媛먯????좏샇 ?좏삎? {trigger_label}?낅땲??")
         if stop_value is not None:
-            lines.append(f"- 활성 손절 기준은 {_fmt_pct(stop_value)}입니다. (기준: {stop_label or '-'})")
+            lines.append(f"- ?쒖꽦 ?먯젅 湲곗?? {_fmt_pct(stop_value)}?낅땲?? (湲곗?: {stop_label or '-'})")
         if take_profit_value is not None:
-            lines.append(f"- 활성 익절 기준은 {_fmt_pct(take_profit_value)}입니다.")
+            lines.append(f"- ?쒖꽦 ?듭젅 湲곗?? {_fmt_pct(take_profit_value)}?낅땲??")
         if trailing_value is not None:
-            lines.append(f"- 보조 trailing stop 기준은 {_fmt_pct(trailing_value)}입니다.")
+            lines.append(f"- 蹂댁“ trailing stop 湲곗?? {_fmt_pct(trailing_value)}?낅땲??")
         if monitor_snapshot.get("exit_triggered"):
-            lines.append(f"- 실제 청산 트리거는 {trigger_label}입니다.")
+            lines.append(f"- ?ㅼ젣 泥?궛 ?몃━嫄곕뒗 {trigger_label}?낅땲??")
             if trigger_family not in {"stop", "take_profit", "trailing"}:
-                lines.append("- 이번 청산은 손절/익절 기준선 충족이 아니라 별도 조건 축에서 발생했습니다.")
+                lines.append("- ?대쾲 泥?궛? ?먯젅/?듭젅 湲곗???異⑹”???꾨땲??蹂꾨룄 議곌굔 異뺤뿉??諛쒖깮?덉뒿?덈떎.")
         else:
-            lines.append("- 현재 사이클에서는 청산 신호가 확정되지 않았습니다.")
+            lines.append("- ?꾩옱 ?ъ씠?댁뿉?쒕뒗 泥?궛 ?좏샇媛 ?뺤젙?섏? ?딆븯?듬땲??")
         if (
             current_drawdown is not None
             and peak_drawdown is not None
             and abs(float(current_drawdown)) < 1e-9
             and float(peak_drawdown) < 0.0
         ):
-            lines.append("- 현재 손익 변동이 0%여도, 장중 고점 대비 하락폭(peak drawdown) 조건으로 청산될 수 있습니다.")
+            lines.append("- ?꾩옱 ?먯씡 蹂?숈씠 0%?щ룄, ?μ쨷 怨좎젏 ?鍮??섎씫??peak drawdown) 議곌굔?쇰줈 泥?궛?????덉뒿?덈떎.")
         elif current_drawdown is not None or peak_drawdown is not None:
             lines.append(
-                f"- 현재 손익 변동/피크 드로우다운은 {_fmt_pct(current_drawdown)}/{_fmt_pct(peak_drawdown)}입니다."
+                f"- ?꾩옱 ?먯씡 蹂???쇳겕 ?쒕줈?곕떎?댁? {_fmt_pct(current_drawdown)}/{_fmt_pct(peak_drawdown)}?낅땲??"
             )
         if current_price not in (None, "") or average_price not in (None, "") or peak_price not in (None, ""):
             lines.append(
-                f"- 스냅샷 가격(현재/평균/고점)은 {_fmt_price(current_price)} / {_fmt_price(average_price)} / {_fmt_price(peak_price)}입니다."
+                f"- ?ㅻ깄??媛寃??꾩옱/?됯퇏/怨좎젏)? {_fmt_price(current_price)} / {_fmt_price(average_price)} / {_fmt_price(peak_price)}?낅땲??"
             )
-            lines.append("- 위 가격은 모니터 관측값이며, 실제 체결 손익 계산값과 다를 수 있습니다.")
+            lines.append("- ??媛寃⑹? 紐⑤땲??愿痢↔컪?대ŉ, ?ㅼ젣 泥닿껐 ?먯씡 怨꾩궛媛믨낵 ?ㅻ? ???덉뒿?덈떎.")
         pnl = str(shared_facts.get("pnl") or "").strip().lower()
         pnl_pct = shared_facts.get("pnl_pct")
         broker_fill_price = shared_facts.get("broker_fill_price")
@@ -7443,26 +7912,26 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         price_truth_source = _clip(shared_facts.get("price_truth_source"), max_len=40)
         pnl_truth_source = _clip(shared_facts.get("pnl_truth_source"), max_len=80)
         if pnl in {"", "unavailable", "not_available"}:
-            lines.append("- 실현 손익 값은 현재 아티팩트에서 직접 확인되지 않았습니다.")
+            lines.append("- ?ㅽ쁽 ?먯씡 媛믪? ?꾩옱 ?꾪떚?⑺듃?먯꽌 吏곸젒 ?뺤씤?섏? ?딆븯?듬땲??")
         elif pnl_pct not in (None, ""):
-            lines.append(f"- 실현 손익 기준 PnL/PnL%는 {shared_facts.get('pnl')} / {_fmt_pct(pnl_pct)}입니다.")
+            lines.append(f"- ?ㅽ쁽 ?먯씡 湲곗? PnL/PnL%??{shared_facts.get('pnl')} / {_fmt_pct(pnl_pct)}?낅땲??")
         else:
-            lines.append(f"- 실현 손익 기준 PnL은 {shared_facts.get('pnl')}입니다.")
+            lines.append(f"- ?ㅽ쁽 ?먯씡 湲곗? PnL? {shared_facts.get('pnl')}?낅땲??")
         broker_buy_price = shared_facts.get("broker_buy_price")
         if broker_buy_price not in (None, "") and broker_fill_price not in (None, ""):
-            lines.append(f"- 브로커 매수가/매도가는 {_fmt_price(broker_buy_price)} / {_fmt_price(broker_fill_price)}입니다.")
+            lines.append(f"- 釉뚮줈而?留ㅼ닔媛/留ㅻ룄媛??{_fmt_price(broker_buy_price)} / {_fmt_price(broker_fill_price)}?낅땲??")
         elif broker_fill_price not in (None, ""):
-            lines.append(f"- 브로커 체결가는 {_fmt_price(broker_fill_price)}입니다.")
+            lines.append(f"- 釉뚮줈而?泥닿껐媛??{_fmt_price(broker_fill_price)}?낅땲??")
         if account_mark_price not in (None, ""):
-            lines.append(f"- 계좌 기준 마크 가격은 {_fmt_price(account_mark_price)}입니다.")
+            lines.append(f"- 怨꾩쥖 湲곗? 留덊겕 媛寃⑹? {_fmt_price(account_mark_price)}?낅땲??")
         if monitor_mark_price not in (None, "") and broker_fill_price in (None, ""):
-            lines.append(f"- 종료 직전 모니터 관측 가격은 {_fmt_price(monitor_mark_price)}입니다.")
+            lines.append(f"- 醫낅즺 吏곸쟾 紐⑤땲??愿痢?媛寃⑹? {_fmt_price(monitor_mark_price)}?낅땲??")
         if price_truth_source:
-            lines.append(f"- 가격 truth 소스는 {price_truth_source_label(price_truth_source)}입니다.")
+            lines.append(f"- 媛寃?truth ?뚯뒪??{price_truth_source_label(price_truth_source)}?낅땲??")
         if pnl_truth_source and pnl_truth_source not in {"", "unavailable"}:
-            lines.append(f"- 손익 truth 소스는 {pnl_truth_source_label(pnl_truth_source)}입니다.")
+            lines.append(f"- ?먯씡 truth ?뚯뒪??{pnl_truth_source_label(pnl_truth_source)}?낅땲??")
         if str(monitor_snapshot.get("price_source") or "").strip():
-            lines.append(f"- 가격 기준 소스는 {monitor_price_source_label(monitor_snapshot.get('price_source'))}입니다.")
+            lines.append(f"- 媛寃?湲곗? ?뚯뒪??{monitor_price_source_label(monitor_snapshot.get('price_source'))}?낅땲??")
         lines.append("")
         # Prevent duplicate legacy snapshot rendering below.
         monitor_snapshot = {}
@@ -7477,51 +7946,51 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
                 existing_bullets.append(bullet)
         execution_result["bullets"] = existing_bullets
     if monitor_snapshot:
-        lines.append("## 모니터 스냅샷")
+        lines.append("## 紐⑤땲???ㅻ깄??")
         lines.append("")
-        lines.append(f"- 현재 포지션 판단은 {_action_label(monitor_snapshot.get('posture'))}입니다.")
-        lines.append(f"- 감지된 신호 유형은 {_axis_label(monitor_snapshot.get('trigger_type'))}입니다.")
+        lines.append(f"- ?꾩옱 ?ъ????먮떒? {_action_label(monitor_snapshot.get('posture'))}?낅땲??")
+        lines.append(f"- 媛먯????좏샇 ?좏삎? {_axis_label(monitor_snapshot.get('trigger_type'))}?낅땲??")
         if monitor_snapshot.get("hard_stop_pct") not in (None, ""):
-            lines.append(f"- Hard fail-safe 손절 기준은 {_fmt_pct(monitor_snapshot.get('hard_stop_pct'))} 수준입니다.")
+            lines.append(f"- Hard fail-safe ?먯젅 湲곗?? {_fmt_pct(monitor_snapshot.get('hard_stop_pct'))} ?섏??낅땲??")
         if monitor_snapshot.get("strategist_baseline_stop_loss_pct") not in (None, ""):
             lines.append(
-                f"- 전략가 baseline 적응형 손절 기준은 {_fmt_pct(monitor_snapshot.get('strategist_baseline_stop_loss_pct'))} 수준입니다."
+                f"- ?꾨왂媛 baseline ?곸쓳???먯젅 湲곗?? {_fmt_pct(monitor_snapshot.get('strategist_baseline_stop_loss_pct'))} ?섏??낅땲??"
             )
         if monitor_snapshot.get("adaptive_stop_loss_pct") not in (None, ""):
             lines.append(
-                f"- 모니터 active adaptive 손절 기준은 {_fmt_pct(monitor_snapshot.get('adaptive_stop_loss_pct'))} 수준입니다."
+                f"- 紐⑤땲??active adaptive ?먯젅 湲곗?? {_fmt_pct(monitor_snapshot.get('adaptive_stop_loss_pct'))} ?섏??낅땲??"
             )
-        lines.append(f"- 유효 손절 기준은 {_fmt_pct(monitor_snapshot.get('effective_stop_loss_pct'))} 수준입니다.")
-        lines.append(f"- 손절 기준 축은 {_axis_label(monitor_snapshot.get('effective_stop_reason'))}입니다.")
+        lines.append(f"- ?좏슚 ?먯젅 湲곗?? {_fmt_pct(monitor_snapshot.get('effective_stop_loss_pct'))} ?섏??낅땲??")
+        lines.append(f"- ?먯젅 湲곗? 異뺤? {_axis_label(monitor_snapshot.get('effective_stop_reason'))}?낅땲??")
         if monitor_snapshot.get("strategist_baseline_take_profit_pct") not in (None, ""):
             lines.append(
-                f"- 전략가 baseline 익절 기준은 {_fmt_pct(monitor_snapshot.get('strategist_baseline_take_profit_pct'))} 수준입니다."
+                f"- ?꾨왂媛 baseline ?듭젅 湲곗?? {_fmt_pct(monitor_snapshot.get('strategist_baseline_take_profit_pct'))} ?섏??낅땲??"
             )
-        lines.append(f"- 목표 수익 실현 기준은 {_fmt_pct(monitor_snapshot.get('take_profit_pct'))} 수준입니다.")
+        lines.append(f"- 紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?? {_fmt_pct(monitor_snapshot.get('take_profit_pct'))} ?섏??낅땲??")
         if monitor_snapshot.get("strategist_baseline_trailing_stop_pct") not in (None, ""):
             lines.append(
-                f"- 전략가 baseline trailing stop 기준은 {_fmt_pct(monitor_snapshot.get('strategist_baseline_trailing_stop_pct'))} 수준입니다."
+                f"- ?꾨왂媛 baseline trailing stop 湲곗?? {_fmt_pct(monitor_snapshot.get('strategist_baseline_trailing_stop_pct'))} ?섏??낅땲??"
             )
         if monitor_snapshot.get("current_price") not in (None, ""):
-            lines.append(f"- 현재가는 {_fmt_price(monitor_snapshot.get('current_price'))}입니다.")
+            lines.append(f"- ?꾩옱媛??{_fmt_price(monitor_snapshot.get('current_price'))}?낅땲??")
         if monitor_snapshot.get("average_price") not in (None, ""):
-            lines.append(f"- 평균 단가는 {_fmt_price(monitor_snapshot.get('average_price'))}입니다.")
+            lines.append(f"- ?됯퇏 ?④???{_fmt_price(monitor_snapshot.get('average_price'))}?낅땲??")
         if monitor_snapshot.get("peak_price") not in (None, ""):
-            lines.append(f"- 장중 고점은 {_fmt_price(monitor_snapshot.get('peak_price'))}입니다.")
+            lines.append(f"- ?μ쨷 怨좎젏? {_fmt_price(monitor_snapshot.get('peak_price'))}?낅땲??")
         if monitor_snapshot.get("current_drawdown") not in (None, ""):
-            lines.append(f"- 현재 손익 변동은 {_fmt_pct(monitor_snapshot.get('current_drawdown'))}입니다.")
+            lines.append(f"- ?꾩옱 ?먯씡 蹂?숈? {_fmt_pct(monitor_snapshot.get('current_drawdown'))}?낅땲??")
         if monitor_snapshot.get("peak_drawdown") not in (None, ""):
-            lines.append(f"- 고점 대비 하락폭은 {_fmt_pct(monitor_snapshot.get('peak_drawdown'))}입니다.")
+            lines.append(f"- 怨좎젏 ?鍮??섎씫??? {_fmt_pct(monitor_snapshot.get('peak_drawdown'))}?낅땲??")
         if monitor_snapshot.get("vwap_distance") not in (None, ""):
-            lines.append(f"- VWAP 이격은 {_fmt_pct(monitor_snapshot.get('vwap_distance'))}입니다.")
+            lines.append(f"- VWAP ?닿꺽? {_fmt_pct(monitor_snapshot.get('vwap_distance'))}?낅땲??")
         if str(monitor_snapshot.get("active_exit_axis") or "").strip():
-            lines.append(f"- 현재 우선 감시 중인 청산 축은 {_axis_label(monitor_snapshot.get('active_exit_axis'))}입니다.")
+            lines.append(f"- ?꾩옱 ?곗꽑 媛먯떆 以묒씤 泥?궛 異뺤? {_axis_label(monitor_snapshot.get('active_exit_axis'))}?낅땲??")
         for axis in list(monitor_snapshot.get("watch_axes") or [])[:6]:
-            lines.append(f"- 주요 감시 축은 {_axis_label(axis)}입니다.")
-        lines.append(f"- 가격 기준 소스는 {monitor_snapshot.get('price_source') or '-'}입니다.")
-        lines.append(f"- 피처 기준 소스는 {monitor_snapshot.get('feature_source') or '-'}입니다.")
+            lines.append(f"- 二쇱슂 媛먯떆 異뺤? {_axis_label(axis)}?낅땲??")
+        lines.append(f"- 媛寃?湲곗? ?뚯뒪??{monitor_snapshot.get('price_source') or '-'}?낅땲??")
+        lines.append(f"- ?쇱쿂 湲곗? ?뚯뒪??{monitor_snapshot.get('feature_source') or '-'}?낅땲??")
         if str(monitor_snapshot.get('price_source_policy') or '').strip():
-            lines.append(f"- 가격 소스 정책은 {monitor_snapshot.get('price_source_policy')}입니다.")
+            lines.append(f"- 媛寃??뚯뒪 ?뺤콉? {monitor_snapshot.get('price_source_policy')}?낅땲??")
         lines.append(f"- 청산 신호 발생 여부는 {'예' if monitor_snapshot.get('exit_triggered') else '아니오'}입니다.")
         lines.append("")
     if '_main_lines' in locals():
@@ -7532,14 +8001,14 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
     strategist_summary_section = dict(strategist_summary) if isinstance(strategist_summary, dict) else {}
     if not strategist_summary_section:
         market_bullets = list(market_context_section.get("bullets") or [])
-        strategist_prefixes = ("스캐너 연결 근거는 ", "전략가 핵심 입력은 ", "주요 시장 뉴스는 ")
+        strategist_prefixes = ("?ㅼ틦???곌껐 洹쇨굅??", "?꾨왂媛 ?듭떖 ?낅젰? ", "二쇱슂 ?쒖옣 ?댁뒪??")
         strategist_bullets: List[str] = []
         strategist_scanner_linkage: List[str] = []
         remaining_bullets: List[Any] = []
         for bullet in market_bullets:
             bullet_text = str(bullet or "").strip()
             if bullet_text.startswith(strategist_prefixes):
-                if bullet_text.startswith("스캐너 연결 근거는 "):
+                if bullet_text.startswith("?ㅼ틦???곌껐 洹쇨굅??"):
                     strategist_scanner_linkage.append(bullet_text)
                 else:
                     strategist_bullets.append(bullet_text)
@@ -7549,7 +8018,7 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         if strategist_bullets:
             market_context_section["bullets"] = remaining_bullets
             strategist_summary_section = {
-                "summary": "전략가 입력과 뉴스 연계 근거를 분리 요약했습니다.",
+                "summary": "?꾨왂媛 ?낅젰怨??댁뒪 ?곌퀎 洹쇨굅瑜?遺꾨━ ?붿빟?덉뒿?덈떎.",
                 "bullets": strategist_bullets,
             }
 
@@ -7560,25 +8029,31 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         if summary:
             lines.append(summary)
             lines.append("")
+        preface = _monitor_truth_preface(title)
+        if preface:
+            lines.append(preface)
+            lines.append("")
         bullets = _listify(section.get(bullet_key), max_items=12, max_len=400)
         seen_rendered: set[str] = set()
         suppressed_prefixes = (
-            "주요 감시 축은 ",
-            "전략가 baseline 적응형 손절 기준은 ",
-            "전략가 baseline 익절 기준은 ",
-            "전략가 baseline trailing stop 기준은 ",
-            "유효 손절 기준은 ",
-            "손절 기준 축은 ",
-            "목표 수익 실현 기준은 ",
+            "二쇱슂 媛먯떆 異뺤? ",
+            "?꾨왂媛 baseline ?곸쓳???먯젅 湲곗?? ",
+            "?꾨왂媛 baseline ?듭젅 湲곗?? ",
+            "?꾨왂媛 baseline trailing stop 湲곗?? ",
+            "?좏슚 ?먯젅 湲곗?? ",
+            "?먯젅 湲곗? 異뺤? ",
+            "紐⑺몴 ?섏씡 ?ㅽ쁽 湲곗?? ",
             "Effective stop:",
             "Take profit:",
             "Watch axes:",
         )
         for bullet in bullets:
-            raw_bullet = str(bullet or "").strip()
+            raw_bullet = _normalize_section_bullet(title, bullet)
+            if not raw_bullet:
+                continue
             if raw_bullet.startswith(suppressed_prefixes):
                 continue
-            rendered = _render_text(bullet)
+            rendered = _render_text(raw_bullet)
             if rendered:
                 if rendered in seen_rendered:
                     continue
@@ -7606,7 +8081,7 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
     _section("Reporter Evaluation", reporter_eval)
     _section("Errors / Weaknesses / Improvement Points", weak_points)
 
-    lines.append("## 전체 타임라인")
+    lines.append("## ?꾩껜 ??꾨씪??")
     lines.append("")
     timeline = report.get("full_timeline") if isinstance(report.get("full_timeline"), list) else report.get("timeline") if isinstance(report.get("timeline"), list) else []
     if timeline:
@@ -7619,10 +8094,10 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
                 f"- {label}: {description or '-'}"
             )
     else:
-        lines.append("- 타임라인 이벤트는 별도로 저장되지 않았습니다.")
+        lines.append("- ??꾨씪???대깽?몃뒗 蹂꾨룄濡???λ릺吏 ?딆븯?듬땲??")
     lines.append("")
 
-    lines.append("## 최종 운영 판단")
+    lines.append("## 理쒖쥌 ?댁쁺 ?먮떒")
     lines.append("")
     final_summary = _render_text(final_conclusion.get("summary"))
     if final_summary:
@@ -7630,10 +8105,11 @@ def render_trade_report_markdown(report: Dict[str, Any]) -> str:
         lines.append("")
     current_action = _clip(final_conclusion.get("current_action"), max_len=48)
     if current_action:
-        lines.append(f"- 현재 판단 액션은 {_action_label(current_action)}입니다.")
+        lines.append(f"- ?꾩옱 ?먮떒 ?≪뀡? {_action_label(current_action)}?낅땲??")
     for item in _listify(final_conclusion.get("watch_next"), max_items=6, max_len=220):
-        lines.append(f"- 다음 확인 항목은 {_render_text(item)}입니다.")
+        lines.append(f"- ?ㅼ쓬 ?뺤씤 ??ぉ? {_render_text(item)}?낅땲??")
     for item in _listify(final_conclusion.get("thesis_invalidation"), max_items=6, max_len=220):
-        lines.append(f"- 기존 판단이 무효화되는 조건은 {_render_text(item)}입니다.")
+        lines.append(f"- 湲곗〈 ?먮떒??臾댄슚?붾릺??議곌굔? {_render_text(item)}?낅땲??")
     lines.append("")
     return "\n".join(lines)
+

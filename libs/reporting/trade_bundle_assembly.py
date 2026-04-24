@@ -64,6 +64,18 @@ def _broker_fill_lookup_enabled(context_obj: Mapping[str, Any]) -> bool:
     return str(os.getenv("KIWOOM_MODE", "mock") or "mock").strip().lower() == "real"
 
 
+def _normalize_broker_lookup_side(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return "all"
+    compact = text.replace("_", "").replace("-", "").replace(" ", "")
+    if compact in {"sell", "s", "1"} or "매도" in text:
+        return "sell"
+    if compact in {"buy", "b", "2"} or "매수" in text:
+        return "buy"
+    return "all"
+
+
 def _broker_order_status_payload(dto: Any) -> Dict[str, Any]:
     return {
         "order_id": str(getattr(dto, "ord_no", "") or "").strip() or None,
@@ -145,7 +157,7 @@ def _attach_broker_order_status(
         or "",
         allow_test_symbols=True,
     )
-    side = str(
+    side = _normalize_broker_lookup_side(
         _coalesce_non_empty(
             context_obj.get("action"),
             context_obj.get("side"),
@@ -160,7 +172,7 @@ def _attach_broker_order_status(
             execution_context.get("action"),
         )
         or ""
-    ).strip().lower()
+    )
     ord_dt = _resolve_trade_day_hint(
         context_obj.get("trade_day"),
         context_obj.get("ts"),
@@ -203,6 +215,9 @@ def _attach_broker_order_status(
         return context_obj
 
     payload = _broker_order_status_payload(dto)
+    if payload.get("order_id") in (None, ""):
+        payload["order_id"] = order_id
+        payload["ord_no"] = order_id
     if (
         payload.get("order_id") not in (None, "")
         and any(payload.get(key) not in (None, "", 0) for key in ("filled_qty", "filled_price", "status"))

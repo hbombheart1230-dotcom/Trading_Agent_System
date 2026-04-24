@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from libs.core.settings import load_env_file
+from libs.reporting.llm_artifacts import resolve_trade_day_root
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -66,7 +67,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     cfg = dac.OperatorUIConfig.from_env()
     day = str(args.day or "").strip()
-    trade_day_root = cfg.reports_root / "trades" / day
+    trade_day_root = resolve_trade_day_root(cfg.reports_root, day)
     if not trade_day_root.exists():
         out = {"ok": False, "day": day, "error": "trade_day_root_not_found", "path": str(trade_day_root)}
         print(json.dumps(out, ensure_ascii=False) if bool(args.json) else f"ok=false error=trade_day_root_not_found path={trade_day_root}")

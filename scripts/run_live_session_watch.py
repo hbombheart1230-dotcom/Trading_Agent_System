@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -18,6 +17,7 @@ from libs.runtime.entrypoint_common import to_int
 from libs.runtime.live_loop_lock import pid_exists
 from libs.runtime.live_loop_process_query import read_lock_owner_pid
 from libs.runtime.runtime_output_helpers import latest_event_epoch, parse_stdout_json, tail_text
+from libs.runtime.windows_subprocess import run_hidden
 KST = timezone.utc
 try:
     from zoneinfo import ZoneInfo
@@ -190,7 +190,7 @@ def _run_live_summary(
     ]
     out: Dict[str, Any] = {"rc": 1, "ok": False, "stdout_tail": "", "stderr_tail": "", "summary": {}}
     try:
-        cp = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=120)
+        cp = run_hidden(cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=120)
         out["rc"] = int(cp.returncode)
         out["ok"] = int(cp.returncode) == 0
         out["stdout_tail"] = tail_text(cp.stdout or "")

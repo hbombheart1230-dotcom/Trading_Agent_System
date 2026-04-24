@@ -218,15 +218,20 @@ def build_strategist_memory_packet_visibility(
             "daily": {
                 "status": _text(_dict(memory_packets.get("daily_strategy_memory")).get("status"), max_len=24),
                 "active": bool(_dict(memory_packets.get("daily_strategy_memory")).get("active")),
+                "resolved_day": _text(_dict(memory_packets.get("daily_strategy_memory")).get("resolved_day"), max_len=16),
                 "best_playbook_count": len(_list(_dict(memory_packets.get("daily_strategy_memory")).get("best_playbooks"))),
             },
             "weekly": {
                 "status": _text(_dict(memory_packets.get("weekly_strategy_memory")).get("status"), max_len=24),
                 "active": bool(_dict(memory_packets.get("weekly_strategy_memory")).get("active")),
+                "resolved_day": _text(_dict(memory_packets.get("weekly_strategy_memory")).get("resolved_day"), max_len=16),
+                "sample_day_count": _safe_int(_dict(memory_packets.get("weekly_strategy_memory")).get("sample_day_count")),
             },
             "monthly": {
                 "status": _text(_dict(memory_packets.get("monthly_strategy_memory")).get("status"), max_len=24),
                 "active": bool(_dict(memory_packets.get("monthly_strategy_memory")).get("active")),
+                "resolved_day": _text(_dict(memory_packets.get("monthly_strategy_memory")).get("resolved_day"), max_len=16),
+                "sample_day_count": _safe_int(_dict(memory_packets.get("monthly_strategy_memory")).get("sample_day_count")),
             },
             "symbol": {
                 "status": _text(_dict(memory_packets.get("symbol_memory_packet")).get("status"), max_len=24),

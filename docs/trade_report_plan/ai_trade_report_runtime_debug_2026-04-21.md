@@ -96,3 +96,8 @@ background report bundle subprocess가 script wrapper가 아니라 module file�
 - `report bundle stopped`: 아님
 - `observability is sufficient`: 아님
 - `runtime path/lock handling has a bug`: 맞음
+
+## Follow-up
+
+- eporter_evaluation now has a same-day fallback path based on closed same-day trade reports when linked reporter artifacts are absent.
+- The remaining work on this track is live operational verification, not additional report-builder structure.

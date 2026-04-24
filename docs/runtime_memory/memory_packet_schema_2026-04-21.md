@@ -26,16 +26,86 @@ Implemented now:
 - `daily_strategy_memory`
   - sourced from `strategy_memory` or `reports/performance/*`
 - `weekly_strategy_memory`
-  - placeholder packet, not populated yet
+  - populated from recent `reports/performance/<day>/strategy_memory.json` window aggregation
+  - now includes:
+    - `window`
+    - `sample_quality`
+    - `source_performance`
+    - `source_context`
+    - `failure_patterns`
+    - `execution_risk`
+    - `regime_stats`
+    - `recommended_bias_inputs`
 - `monthly_strategy_memory`
-  - placeholder packet, not populated yet
+  - populated from recent `reports/performance/<day>/strategy_memory.json` window aggregation
+  - now includes:
+    - `window`
+    - `sample_quality`
+    - `source_performance`
+    - `source_context`
+    - `failure_patterns`
+    - `execution_risk`
+    - `regime_stats`
+    - `recommended_bias_inputs`
 - `symbol_memory_packet`
   - sourced from selected-symbol / refresh memory when available
+  - now includes:
+    - `trade_count`
+    - `closed_trade_count`
+    - `win_rate`
+    - `avg_pnl_pct`
+    - `avg_hold_duration_sec`
+    - `data_source`
+    - `unknown_fields_ratio`
+    - `pattern_signal_count`
+    - `evidence_strength`
+    - `last_trade_date`
+    - `recency_days`
+    - `override_gate_reason`
 
 Not implemented yet:
 
-- true weekly aggregation builder
-- true monthly aggregation builder
+- stronger direct source-performance aggregation beyond current top-source mention inference
+- richer monthly regime baseline aggregation beyond current strategy-memory rollup plus same-day supporting artifacts
+- same-day reporter timing that feeds intraday strategist cycles before end-of-day metrics land
+
+Current enrichment path:
+
+- base packet row:
+  - `reports/performance/<day>/strategy_memory.json`
+- direct supporting artifacts when present:
+  - `reports/metrics/metrics_<day>.json`
+  - `reports/dev/analysis/reporter_analysis/reporter_analysis_<day>.json`
+
+These supporting artifacts now enrich:
+
+- `source_context.route_source`
+- `source_context.route_selected_total`
+- `source_context.strategist_mode_total`
+- `source_context.alignment_totals`
+- `source_context.report_focus_targets`
+- `source_context.scanner_status`
+- `source_context.monitor_status`
+- `source_performance.*.source_selection_total`
+- `source_performance.*.avg_top_score`
+- `source_performance.*.avg_candidate_pool_after_filter`
+- `source_performance.*.selection_status`
+- `execution_risk` route/focus/status fields
+- `regime_stats.*.observation_count`
+
+Activation gate now:
+
+- packet existence and packet activation are different
+- weekly packet becomes `active=true` only when `sample_day_count >= 2`
+- monthly packet becomes `active=true` only when `sample_day_count >= 3`
+- weekly/monthly also require usable `sample_quality.confidence`
+- below that threshold, the packet is still surfaced for observability, but Commander should not treat it as an active bias layer
+- symbol override gate is also quality-aware:
+  - insufficient trade history still blocks override
+  - stale symbol memory still blocks override
+  - poor `unknown_fields_ratio` blocks override
+  - missing pattern evidence blocks override
+  - `evidence_strength` is surfaced so Commander can explain why symbol memory stayed advisory-only
 
 Implemented:
 

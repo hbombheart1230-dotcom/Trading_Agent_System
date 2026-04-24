@@ -21,6 +21,7 @@ from libs.reporting.intraday_trade_reports import (
 from libs.reporting.llm_artifacts import (
     build_compact_input_artifact,
     persist_llm_artifact_refs,
+    resolve_trade_day_root,
     trade_artifact_paths,
     write_json,
 )
@@ -48,13 +49,101 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _local_debug_artifact_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}.local_debug{path.suffix}")
+
+
+def _resolve_output_paths(trade_paths: Dict[str, Path], local_debug: bool) -> Dict[str, Path]:
+    compact_input_path = trade_paths["ai_trade_report_compact_input_json"]
+    report_json_path = trade_paths["ai_trade_report_json"]
+    report_md_path = trade_paths["ai_trade_report_md"]
+    llm_path = trade_paths["ai_trade_report_llm_response_json"]
+    if not local_debug:
+        return {
+            "compact_input_path": compact_input_path,
+            "report_json_path": report_json_path,
+            "report_md_path": report_md_path,
+            "llm_path": llm_path,
+        }
+    return {
+        "compact_input_path": _local_debug_artifact_path(compact_input_path),
+        "report_json_path": _local_debug_artifact_path(report_json_path),
+        "report_md_path": _local_debug_artifact_path(report_md_path),
+        "llm_path": _local_debug_artifact_path(llm_path),
+    }
+
+
+def _classify_missing_story_input(trade_dir: Path, trade_paths: Dict[str, Path]) -> Dict[str, Any]:
+    lifecycle_markers = (
+        trade_paths["entry_json"],
+        trade_paths["exit_json"],
+        trade_paths["lifecycle_bundle_json"],
+        trade_paths["ai_trade_report_input_json"],
+        trade_paths["trade_artifact_links_json"],
+    )
+    if any(path.exists() for path in lifecycle_markers):
+        return {
+            "partial_trade_artifact": False,
+            "skip_reason": "",
+        }
+
+    early_markers = (
+        trade_paths["strategist_input_json"],
+        trade_paths["strategist_compact_input_json"],
+        trade_paths["strategist_evidence_json"],
+        trade_paths["scanner_evidence_json"],
+        trade_paths["monitor_evidence_json"],
+        trade_paths["commander_evidence_json"],
+    )
+    if any(path.exists() for path in early_markers) or trade_paths["evidence_dir"].exists():
+        return {
+            "partial_trade_artifact": True,
+            "skip_reason": "partial_trade_artifact",
+        }
+
+    return {
+        "partial_trade_artifact": False,
+        "skip_reason": "",
+    }
+
+
+def _mark_partial_trade_artifact(
+    trade_paths: Dict[str, Path],
+    *,
+    day: str,
+    trade_id: str,
+    skip_reason: str,
+) -> None:
+    payload = {
+        "schema_version": "trade_health.v1",
+        "trade_id": str(trade_id or ""),
+        "day": str(day or ""),
+        "lifecycle_status": "partial",
+        "report_generation_status": "skipped",
+        "ai_trade_report_status": "skipped",
+        "llm_trade_report_status": "skipped",
+        "report_generation_reason": "partial trade artifact detected during ai_trade_report batch regeneration",
+        "partial_trade_artifact": True,
+        "skip_reason": str(skip_reason or "partial_trade_artifact"),
+        "artifact_presence": {
+            "entry_json": bool(trade_paths["entry_json"].exists()),
+            "exit_json": bool(trade_paths["exit_json"].exists()),
+            "lifecycle_bundle_json": bool(trade_paths["lifecycle_bundle_json"].exists()),
+            "ai_trade_report_input_json": bool(trade_paths["ai_trade_report_input_json"].exists()),
+            "strategist_input_json": bool(trade_paths["strategist_input_json"].exists()),
+            "evidence_dir": bool(trade_paths["evidence_dir"].exists()),
+        },
+    }
+    write_json(trade_paths["trade_health_json"], payload)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = _build_parser().parse_args(argv)
     load_env_file(str(args.env_path or ".env").strip() or ".env")
 
     reports_root = Path(str(args.reports_root or "reports")).resolve()
     day = str(args.day or "").strip()
-    trade_day_root = reports_root / "trades" / day
+    trade_day_root = resolve_trade_day_root(reports_root, day)
     if not trade_day_root.exists():
         out = {"ok": False, "day": day, "error": "trade_day_root_not_found", "path": str(trade_day_root)}
         print(json.dumps(out, ensure_ascii=False) if bool(args.json) else f"ok=false error=trade_day_root_not_found path={trade_day_root}")
@@ -69,11 +158,32 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     for trade_dir in trade_dirs:
         trade_id = trade_dir.name
-        trade_paths = trade_artifact_paths(reports_root, day, trade_id)
+        trade_paths = trade_artifact_paths(reports_root, day, trade_id, prefer_existing_day_root=True)
+        output_paths = _resolve_output_paths(trade_paths, bool(args.local_debug))
         story_input, story_input_path, story_input_source, story_input_existing_score, story_input_rebuilt_score = (
             _resolve_story_input_for_regeneration(trade_dir, trade_paths)
         )
         if not story_input:
+            missing_input_state = _classify_missing_story_input(trade_dir, trade_paths)
+            if bool(missing_input_state.get("partial_trade_artifact")):
+                _mark_partial_trade_artifact(
+                    trade_paths,
+                    day=day,
+                    trade_id=trade_id,
+                    skip_reason=str(missing_input_state.get("skip_reason") or ""),
+                )
+                rows.append(
+                    {
+                        "trade_id": trade_id,
+                        "ok": True,
+                        "status": "skipped_partial_trade_artifact",
+                        "story_input_path": "",
+                        "story_input_source": "missing",
+                        "skip_reason": str(missing_input_state.get("skip_reason") or ""),
+                        "error": "ai_trade_report_input_not_found",
+                    }
+                )
+                continue
             rows.append(
                 {
                     "trade_id": trade_id,
@@ -86,7 +196,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             continue
 
-        compact_input_path = trade_paths["ai_trade_report_compact_input_json"]
+        compact_input_path = output_paths["compact_input_path"]
         compact_input = build_ai_trade_report_compact_input(story_input)
         compact_artifact = build_compact_input_artifact(
             component="ai_trade_report",
@@ -112,11 +222,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         llm_artifact = report.get("llm_response_artifact") if isinstance(report.get("llm_response_artifact"), dict) else {}
         generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
-        diagnostics = _sync_report_diagnostics(trade_paths, report, llm_artifact)
+        diagnostics = {} if bool(args.local_debug) else _sync_report_diagnostics(trade_paths, report, llm_artifact)
 
-        report_json_path = trade_paths["ai_trade_report_json"]
-        report_md_path = trade_paths["ai_trade_report_md"]
-        llm_path = trade_paths["ai_trade_report_llm_response_json"]
+        report_json_path = output_paths["report_json_path"]
+        report_md_path = output_paths["report_md_path"]
+        llm_path = output_paths["llm_path"]
         llm_response_path = ""
         report_json_path.parent.mkdir(parents=True, exist_ok=True)
         report_json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -131,15 +241,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             write_json(llm_path, llm_compact)
             llm_response_path = str(llm_path)
-        _sync_report_generation_state(
-            trade_paths,
-            story_input=story_input,
-            compact_input=compact_input,
-            report=report,
-            llm_artifact=llm_artifact,
-            llm_response_path=llm_response_path,
-        )
-        _finalize_report_diagnostics(trade_paths, report_json_path, diagnostics)
+        if not bool(args.local_debug):
+            _sync_report_generation_state(
+                trade_paths,
+                story_input=story_input,
+                compact_input=compact_input,
+                report=report,
+                llm_artifact=llm_artifact,
+                llm_response_path=llm_response_path,
+            )
+            _finalize_report_diagnostics(trade_paths, report_json_path, diagnostics)
 
         rows.append(
             {
@@ -162,6 +273,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "llm_error": str(llm_artifact.get("error") or ((llm_artifact.get("meta") or {}).get("reason") or "")),
                 "diagnostic_report_status": str(diagnostics.get("report_status") or ""),
                 "local_debug": bool(args.local_debug),
+                "preserved_live_outputs": bool(args.local_debug),
             }
         )
 

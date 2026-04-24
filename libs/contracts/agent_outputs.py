@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, TypedDict
 
+from libs.runtime.dates import kst_day_str, to_kst
 from libs.runtime.decision_observability import (
     build_entry_blocker_surface,
     build_commander_route_observability_surface,
@@ -477,15 +478,34 @@ def _run_ts(state: Dict[str, Any]) -> str:
     return _utc_now_iso()
 
 
+def _parse_day_from_timestamp(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) == 10 and text[4:5] == "-" and text[7:8] == "-":
+        return text
+    normalized = text.replace("Z", "+00:00") if text.endswith("Z") else text
+    try:
+        return kst_day_str(datetime.fromisoformat(normalized))
+    except Exception:
+        if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+            return text[:10]
+    return ""
+
+
 def _run_day(state: Dict[str, Any]) -> str:
-    for key in ("started_at", "ts", "tick_ts_iso", "now_iso"):
+    for key in ("day", "trade_day", "session_day", "runtime_day"):
         value = str(state.get(key) or "").strip()
-        if len(value) >= 10 and value[4:5] == "-" and value[7:8] == "-":
-            return value[:10]
+        if len(value) == 10 and value[4:5] == "-" and value[7:8] == "-":
+            return value
+    for key in ("started_at", "ts", "tick_ts_iso", "now_iso"):
+        resolved = _parse_day_from_timestamp(str(state.get(key) or "").strip())
+        if resolved:
+            return resolved
     tick_epoch = _safe_int(state.get("tick_ts"), 0)
     if tick_epoch > 0:
-        return datetime.fromtimestamp(tick_epoch, tz=timezone.utc).strftime("%Y-%m-%d")
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return kst_day_str(datetime.fromtimestamp(tick_epoch, tz=timezone.utc))
+    return kst_day_str(to_kst(datetime.now(timezone.utc)))
 
 
 def _base_output(state: Dict[str, Any], *, agent: str, symbol: str = "", status: str = "ok") -> AgentOutput:
@@ -1784,6 +1804,21 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     entry_minute_refetch_runner_source = entry_metrics.get("minute_refetch_runner_source")
     if entry_minute_refetch_runner_source in (None, ""):
         entry_minute_refetch_runner_source = _first_trace_value("entry_minute_refetch_runner_source")
+    monitor_memory_bias_applied = _first_trace_value("monitor_memory_bias_applied")
+    if monitor_memory_bias_applied is None:
+        monitor_memory_bias_applied = threshold_snapshot.get("monitor_memory_bias_applied")
+    if monitor_memory_bias_applied is None:
+        monitor_memory_bias_applied = _dict(policy_trace.get("policy_ref")).get("monitor_memory_bias_applied")
+    monitor_memory_bias_summary = _first_trace_value("monitor_memory_bias_summary")
+    if not isinstance(monitor_memory_bias_summary, dict) or not monitor_memory_bias_summary:
+        monitor_memory_bias_summary = _dict(threshold_snapshot.get("monitor_memory_bias_summary"))
+    if not isinstance(monitor_memory_bias_summary, dict) or not monitor_memory_bias_summary:
+        monitor_memory_bias_summary = _dict(_dict(policy_trace.get("policy_ref")).get("monitor_memory_bias_summary"))
+    monitor_memory_bias_deltas = _first_trace_value("monitor_memory_bias_deltas")
+    if not isinstance(monitor_memory_bias_deltas, list) or not monitor_memory_bias_deltas:
+        monitor_memory_bias_deltas = list(threshold_snapshot.get("monitor_memory_bias_deltas") or [])
+    if not isinstance(monitor_memory_bias_deltas, list) or not monitor_memory_bias_deltas:
+        monitor_memory_bias_deltas = list(_dict(policy_trace.get("policy_ref")).get("monitor_memory_bias_deltas") or [])
     signal_snapshot = {
         "entry_evaluated": bool(entry_info.get("evaluated")),
         "entry_triggered": bool(entry_info.get("triggered")),
@@ -1877,6 +1912,18 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "effective_policy": _dict(entry_info.get("effective_policy")) or _dict(entry_info.get("applied_policy")) or _dict(entry_info.get("thresholds")),
             "effective_policy_source": _clip(entry_info.get("effective_policy_source"), max_len=120),
             "effective_policy_source_chain": _listify(entry_info.get("effective_policy_source_chain"), limit=6, max_len=80),
+            "monitor_memory_bias_applied": bool(monitor_memory_bias_applied) if monitor_memory_bias_applied is not None else None,
+            "monitor_memory_bias_summary": monitor_memory_bias_summary,
+            "monitor_memory_bias_deltas": [
+                {
+                    "field": _clip((row or {}).get("field"), max_len=80),
+                    "delta": (row or {}).get("delta"),
+                    "from": (row or {}).get("from"),
+                    "to": (row or {}).get("to"),
+                }
+                for row in list(monitor_memory_bias_deltas or [])[:8]
+                if isinstance(row, dict)
+            ],
             "policy_adjustments": _dict(entry_info.get("policy_adjustments")),
             "policy_adjustment_summary": _clip(entry_info.get("policy_adjustment_summary"), max_len=220),
             "policy_adjustment_reasoning": _clip(entry_info.get("policy_adjustment_reasoning"), max_len=260),

@@ -4,6 +4,12 @@ import os
 from typing import Any, Dict, List, Mapping, Optional
 
 from libs.core.symbols import normalize_symbol
+from libs.reporting.kiwoom_day_trade_match_estimate import (
+    extract_buy_price_anchor_candidates,
+    infer_buy_price_from_monitor_context,
+    select_best_buy_price_match,
+    select_best_buy_price_match_from_anchors,
+)
 
 
 def _safe_float(value: Any, default: Optional[float] = None) -> Optional[float]:
@@ -142,6 +148,7 @@ def _match_detail_row(
     filled_qty: Any = None,
     filled_price: Any = None,
     buy_price: Any = None,
+    monitor_context: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     normalized_symbol = normalize_symbol(symbol, allow_test_symbols=True)
     symbol_rows = [
@@ -175,6 +182,8 @@ def _match_detail_row(
     def _exact_price(row: Mapping[str, Any]) -> bool:
         return price_value is not None and _price_matches(row.get("filled_price"), price_value)
 
+    exact_qty_price_matches = [row for row in symbol_rows if _exact_qty_and_price(row)]
+
     for match_mode, predicate in (
         ("symbol_buy_sell_qty_exact", _exact_buy_sell_qty),
         ("symbol_qty_price_exact", _exact_qty_and_price),
@@ -190,6 +199,42 @@ def _match_detail_row(
                 match_mode=match_mode,
                 authoritative=True,
             )
+
+    if len(exact_qty_price_matches) > 1:
+        implied_buy_price = infer_buy_price_from_monitor_context(monitor_context=monitor_context)
+        best_estimated = select_best_buy_price_match(
+            exact_qty_price_matches,
+            implied_buy_price=implied_buy_price,
+        )
+        if best_estimated:
+            payload = _build_match_payload(
+                best_estimated["row"],
+                symbol=normalized_symbol,
+                row_count=row_count,
+                match_mode="symbol_qty_price_estimated_buy_anchor",
+                authoritative=True,
+            )
+            payload["estimated_buy_price"] = implied_buy_price
+            payload["estimated_buy_price_diff"] = _safe_float(best_estimated.get("best_diff"))
+            return payload
+
+        anchor_candidates = extract_buy_price_anchor_candidates(monitor_context=monitor_context)
+        best_anchor_match = select_best_buy_price_match_from_anchors(
+            exact_qty_price_matches,
+            anchors=anchor_candidates,
+        )
+        if best_anchor_match:
+            payload = _build_match_payload(
+                best_anchor_match["row"],
+                symbol=normalized_symbol,
+                row_count=row_count,
+                match_mode="symbol_qty_price_monitor_buy_anchor",
+                authoritative=True,
+            )
+            payload["monitor_buy_anchor_source"] = str(best_anchor_match.get("anchor_source") or "")
+            payload["monitor_buy_anchor_price"] = _safe_float(best_anchor_match.get("anchor_price"))
+            payload["monitor_buy_anchor_diff"] = _safe_float(best_anchor_match.get("best_diff"))
+            return payload
 
     if row_count == 1:
         return _build_match_payload(
@@ -374,6 +419,11 @@ def attach_broker_day_pnl(
         filled_qty=filled_qty,
         filled_price=filled_price,
         buy_price=buy_price,
+        monitor_context=(
+            context_obj.get("monitor_context")
+            if isinstance(context_obj.get("monitor_context"), dict)
+            else {}
+        ),
     )
     if (not matched or not bool(matched.get("authoritative"))) and hasattr(reader, "get_account_profit_rate_rows"):
         try:

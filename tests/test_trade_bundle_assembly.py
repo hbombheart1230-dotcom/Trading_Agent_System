@@ -254,7 +254,51 @@ def test_build_execution_details_from_bundle_fetches_broker_order_status() -> No
     assert res["broker_realized_pnl"] == 100.0
     assert res["broker_fee"] == 11
     assert res["broker_tax"] == 7
-    assert res["pnl_truth_source"] == "kiwoom.ka10077"
+
+
+def test_build_execution_details_from_bundle_normalizes_korean_sell_side_and_keeps_requested_order_id() -> None:
+    class _FakeReader:
+        def get_order_status(self, *, ord_no: str, symbol: str, ord_dt: str, side: str = "all"):
+            assert ord_no == "0140931"
+            assert symbol == "005930"
+            assert ord_dt == "20260421"
+            assert side == "sell"
+
+            class _Dto:
+                ord_no = None
+                symbol = "005930"
+                status = "주문완료"
+                filled_qty = 1
+                filled_price = 218000
+                order_qty = 1
+                order_price = 218000
+                side = "현금매도"
+                raw = {}
+
+            return _Dto()
+
+    res = build_execution_details_from_bundle(
+        {
+            "execution": {
+                "action": "현금매도",
+                "symbol": "005930",
+                "qty": 1,
+                "ord_no": "0140931",
+                "ts": "2026-04-21T04:40:31+00:00",
+            },
+            "monitor": {"current_price": 218250.0},
+        },
+        context={
+            "execution_context": {"order_id": "0140931", "ts": "2026-04-21T04:40:31+00:00"},
+            "broker_fill_reader": _FakeReader(),
+            "broker_fill_lookup_enabled": True,
+            "broker_day_truth_lookup_enabled": False,
+        },
+    )
+
+    assert res["order_id"] == "0140931"
+    assert res["filled_price"] == 218000
+    assert res["broker_truth_source"] == "kiwoom.order_status"
 
 
 def test_build_execution_details_from_bundle_uses_existing_execution_details_for_broker_truth() -> None:

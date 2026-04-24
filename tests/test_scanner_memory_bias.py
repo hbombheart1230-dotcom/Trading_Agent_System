@@ -58,6 +58,84 @@ def test_compute_scanner_memory_bias_adjustment_caps_total() -> None:
     assert len(list(out["adjustments"] or [])) == 3
 
 
+def test_build_scanner_memory_bias_uses_commander_policy_signals_for_extra_conservatism() -> None:
+    out = build_scanner_memory_bias(
+        commander_memory_policy={
+            "scanner_bias_enabled": True,
+            "active_layers": ["daily"],
+            "symbol_memory_override_enabled": False,
+            "policy_signals": {
+                "preferred_risk_posture": "defensive",
+                "system_health": "RED",
+                "scanner_status": "misaligned",
+                "monitor_only_ratio": 0.81,
+                "report_focus_targets": ["scanner_fit", "guard_blocks"],
+            },
+        },
+        memory_packets={
+            "daily_strategy_memory": {
+                "best_playbooks": ["pullback"],
+                "worst_playbooks": ["breakout"],
+                "recent_failures": ["breakout_failure", "volume_confirmation_failure"],
+            },
+            "symbol_memory_packet": {},
+        },
+    )
+
+    assert out["enabled"] is True
+    assert float(out["source_weight_delta"]["top_value"]) > 0.015
+    assert float(out["source_weight_delta"]["top_change_rate"]) < -0.02
+    assert out["feature_bias"]["penalize_overextended"] is True
+    assert out["feature_bias"]["prefer_volume_confirmation"] is True
+    assert "commander_risk_posture:defensive" in list(out.get("reason") or [])
+
+
+def test_build_scanner_memory_bias_keeps_full_symbol_delta_for_strong_fresh_memory() -> None:
+    out = build_scanner_memory_bias(
+        commander_memory_policy={
+            "scanner_bias_enabled": True,
+            "active_layers": ["symbol"],
+            "symbol_memory_override_enabled": True,
+        },
+        memory_packets={
+            "daily_strategy_memory": {},
+            "symbol_memory_packet": {
+                "symbol": "005930",
+                "dominant_playbook": "pullback",
+                "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
+                "evidence_strength": "strong",
+                "recency_days": 2,
+            },
+        },
+    )
+
+    assert float(out["symbol_adjustments"]["005930"]["delta"]) == 0.015
+    assert "symbol_evidence_strength:strong" in list(out.get("reason") or [])
+
+
+def test_build_scanner_memory_bias_blocks_symbol_delta_for_stale_memory_even_if_override_enabled() -> None:
+    out = build_scanner_memory_bias(
+        commander_memory_policy={
+            "scanner_bias_enabled": True,
+            "active_layers": ["symbol"],
+            "symbol_memory_override_enabled": True,
+        },
+        memory_packets={
+            "daily_strategy_memory": {},
+            "symbol_memory_packet": {
+                "symbol": "005930",
+                "dominant_playbook": "pullback",
+                "dominant_monitor_blocker": "below_vwap_reclaim_not_ready",
+                "evidence_strength": "strong",
+                "recency_days": 28,
+            },
+        },
+    )
+
+    assert dict(out.get("symbol_adjustments") or {}) == {}
+    assert "symbol_recency_blocked" in list(out.get("reason") or [])
+
+
 def test_scanner_memory_bias_can_flip_near_tie_and_surfaces_artifact_fields() -> None:
     state = {
         "candidates": [

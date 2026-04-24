@@ -1033,6 +1033,48 @@ def test_monitor_artifact_does_not_label_structural_wait_as_price_unavailable() 
     assert "insufficient data" not in summary.lower()
 
 
+def test_monitor_artifact_surfaces_monitor_memory_bias_at_top_level() -> None:
+    state = {
+        "run_id": "run-mon-memory-bias",
+        "started_at": "2026-04-23T09:10:00+09:00",
+        "runtime_phase": "session",
+        "monitor": {"open_position_count": 0},
+        "monitor_output": {"selected_symbol": "005930", "intent_side": "NOOP", "entry_exit_reason": "breakout_not_ready"},
+        "monitor_entry": {
+            "evaluated": True,
+            "triggered": False,
+            "reason": "breakout_not_ready",
+            "monitor_memory_bias_applied": True,
+            "monitor_memory_bias_summary": {"enabled": True, "entry_delta_keys": ["breakout_buffer_pct"]},
+            "monitor_memory_bias_deltas": [{"field": "breakout_buffer_pct", "delta": 0.0015, "from": 0.0, "to": 0.0015}],
+        },
+        "monitor_exit": {"symbol": "005930", "price": 70500, "reason": "no_position", "thresholds": {}, "watch_axes": []},
+        "intents": [],
+    }
+
+    artifact = build_monitor_output_artifact(state)
+    assert artifact.get("monitor_memory_bias_applied") is True
+    assert artifact.get("monitor_memory_bias_summary", {}).get("enabled") is True
+    assert artifact.get("monitor_memory_bias_deltas", [])[0]["field"] == "breakout_buffer_pct"
+
+
+def test_commander_artifact_uses_kst_day_for_utc_boundary_timestamp() -> None:
+    artifact = build_commander_output_artifact(
+        {
+            "run_id": "run-cmd-kst-day",
+            "started_at": "2026-04-22T23:35:00+00:00",
+            "runtime_phase": "preopen",
+            "runtime_status": "preopen_ready",
+            "path": "preopen_strategist",
+        },
+        mode="integrated_chain",
+        phase="preopen",
+        path="preopen_strategist",
+        status="preopen_ready",
+    )
+    assert artifact["day"] == "2026-04-23"
+
+
 def test_commander_artifact_routes_monitor_only_and_tracks_flags() -> None:
     state = {
         "run_id": "run-cmd-1",

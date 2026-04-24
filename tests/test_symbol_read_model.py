@@ -166,6 +166,7 @@ def test_symbol_read_model_prefers_persisted_symbol_memory(tmp_path):
     assert res["loss_count"] == 3
     assert res["avg_pnl_pct"] == -0.25
     assert res["avg_hold_duration_sec"] == 420.0
+    assert res["last_trade_date"] == ""
     assert res["dominant_playbook"] == "pullback"
     assert res["dominant_exit_reason"] == "hard_stop"
     assert res["dominant_monitor_blocker"] == "confirmed_entry"
@@ -223,11 +224,58 @@ def test_symbol_read_model_prefers_persisted_symbol_trade_report_when_memory_mis
     assert res["win_rate"] == pytest.approx(0.5)
     assert res["avg_pnl_pct"] == pytest.approx(0.12)
     assert res["avg_hold_duration_sec"] == pytest.approx(315.0)
+    assert res["last_trade_date"] == ""
     assert res["dominant_playbook"] == "pullback"
     assert res["dominant_entry_reason"] == "reclaim_ready"
     assert res["dominant_exit_reason"] == "take_profit"
     assert res["dominant_monitor_blocker"] == "confirmed_entry"
     assert res["data_quality"]["data_source"] == "symbol_trade_report"
+
+
+def test_symbol_read_model_reads_last_trade_date_from_symbol_memory(tmp_path):
+    reports_root = tmp_path / "reports"
+    trades_root = reports_root / "trades"
+    trades_root.mkdir(parents=True)
+    symbol_root = reports_root / "symbols" / "AAPL"
+    symbol_root.mkdir(parents=True)
+    (symbol_root / "symbol_memory.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "symbol_memory.v1",
+                "symbol": "AAPL",
+                "trade_stats": {
+                    "trade_count": 7,
+                    "completed_trade_count": 5,
+                    "win_rate": 0.4,
+                    "avg_return_pct": -0.25,
+                    "avg_hold_seconds": 420.0,
+                },
+                "playbook_stats": {
+                    "pullback": {"count": 4, "win_rate": 0.5, "avg_return_pct": 0.2},
+                },
+                "pattern_stats": {
+                    "successful_entry_patterns": ["pullback"],
+                    "failed_entry_patterns": ["breakout"],
+                    "common_monitor_failures": ["confirmed_entry"],
+                },
+                "monitor_patterns": {
+                    "repeated_blockers": ["confirmed_entry"],
+                    "dominant_exit_failure_axis": "hard_stop",
+                },
+                "latest_snapshot": {
+                    "last_trade_id": "TRD_20260328_AAPL_01",
+                    "last_trade_date": "2026-03-28",
+                    "last_status": "closed",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    res = build_symbol_read_model(str(trades_root), "AAPL")
+
+    assert res["last_trade_date"] == "2026-03-28"
+    assert res["last_status"] == "closed"
 
 
 def test_symbol_read_model_persisted_only_skips_full_trade_scan(tmp_path, monkeypatch):

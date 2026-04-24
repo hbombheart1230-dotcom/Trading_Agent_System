@@ -618,6 +618,7 @@ def build_symbol_memory_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "latest_snapshot": {
             "last_trade_id": str(latest_trade.get("trade_id") or ""),
+            "last_trade_date": str(latest_trade.get("date") or ""),
             "last_status": str(latest_trade.get("last_status") or latest_trade.get("status") or ""),
         },
     }
@@ -853,6 +854,7 @@ def generate_symbol_trade_report(events_path: Path, reports_root: Path, symbol: 
         "symbol": str(payload.get("symbol") or ""),
         "summary": dict(payload.get("summary") or {}),
         "last_trade_id": str(latest_trade.get("trade_id") or ""),
+        "last_trade_date": str(latest_trade.get("date") or ""),
         "last_action": str(latest_trade.get("last_action") or ""),
         "last_status": str(latest_trade.get("last_status") or latest_trade.get("status") or ""),
         "report_path": str(latest_trade.get("report_path") or ""),

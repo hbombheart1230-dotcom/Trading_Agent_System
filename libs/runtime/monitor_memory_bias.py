@@ -117,3 +117,77 @@ def apply_monitor_memory_bias_to_entry_policy(
         "applied": bool(deltas),
         "deltas": deltas,
     }
+
+
+def apply_monitor_memory_bias_to_hold_controls(
+    *,
+    min_hold_sec: int,
+    sell_cooldown_sec: int,
+    confirm_ticks: int,
+    monitor_memory_bias: Dict[str, Any],
+) -> Dict[str, Any]:
+    baseline = {
+        "min_hold_sec": max(0, int(min_hold_sec or 0)),
+        "sell_cooldown_sec": max(0, int(sell_cooldown_sec or 0)),
+        "confirm_ticks": max(1, int(confirm_ticks or 1)),
+    }
+    row = dict(monitor_memory_bias or {})
+    deltas = []
+    if not bool(row.get("enabled")):
+        return {"controls": dict(baseline), "applied": False, "deltas": deltas}
+    out = dict(baseline)
+    for field, raw_delta in dict(row.get("hold_policy_delta") or {}).items():
+        delta = int(float(raw_delta or 0))
+        before = baseline.get(field)
+        if before is None or delta == 0:
+            continue
+        after = int(before)
+        if field == "confirm_ticks":
+            after = int(_clamp(int(before) + delta, 1, 5))
+        elif field == "sell_cooldown_sec":
+            after = int(_clamp(int(before) + delta, 0, 900))
+        elif field == "min_hold_sec":
+            after = int(_clamp(int(before) + delta, 0, 7200))
+        else:
+            continue
+        if after == int(before):
+            continue
+        out[field] = after
+        deltas.append({"field": str(field), "delta": delta, "from": int(before), "to": int(after)})
+    return {"controls": out, "applied": bool(deltas), "deltas": deltas}
+
+
+def apply_monitor_memory_bias_to_exit_policy(
+    *,
+    exit_policy: Dict[str, Any],
+    monitor_memory_bias: Dict[str, Any],
+) -> Dict[str, Any]:
+    baseline = dict(exit_policy or {})
+    row = dict(monitor_memory_bias or {})
+    deltas = []
+    if not bool(row.get("enabled")):
+        return {"policy": dict(baseline), "applied": False, "deltas": deltas}
+    out = dict(baseline)
+    for field, raw_delta in dict(row.get("exit_policy_delta") or {}).items():
+        delta = float(raw_delta or 0.0)
+        before = baseline.get(field)
+        if before in (None, "") or abs(delta) <= 1e-9:
+            continue
+        after = float(before)
+        if field == "stop_loss_pct":
+            after = _clamp(float(before) + delta, 0.003, 0.10)
+        elif field == "take_profit_pct":
+            after = _clamp(float(before) + delta, 0.0, 0.25)
+        elif field == "trailing_stop_pct":
+            after = _clamp(float(before) + delta, 0.0, 0.15)
+        elif field == "peak_drawdown_exit_pct":
+            after = _clamp(float(before) + delta, 0.0, 0.15)
+        elif field == "vwap_breakdown_pct":
+            after = _clamp(float(before) + delta, 0.0, 0.03)
+        else:
+            continue
+        if abs(after - float(before)) <= 1e-9:
+            continue
+        out[field] = round(after, 6)
+        deltas.append({"field": str(field), "delta": round(delta, 6), "from": float(before), "to": float(after)})
+    return {"policy": out, "applied": bool(deltas), "deltas": deltas}

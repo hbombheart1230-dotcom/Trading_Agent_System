@@ -799,6 +799,37 @@ def test_session_success_starts_background_loop(tmp_path: Path, capsys, monkeypa
     assert "integrated_chain" in cmd
 
 
+def test_start_live_loop_background_uses_hidden_creationflags_on_windows(tmp_path: Path, monkeypatch) -> None:
+    stdout_path = tmp_path / "stdout.log"
+    stderr_path = tmp_path / "stderr.log"
+    captured: dict[str, object] = {}
+
+    class DummyProc:
+        pid = 12345
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def fake_popen(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return DummyProc()
+
+    monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+
+    out = mod._start_live_loop_background(
+        command=["python", "scripts/run_session.py", "--mode", "mock", "--phase", "intraday"],
+        env={},
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+    )
+
+    assert out["ok"] is True
+    assert int(out["pid"]) == 12345
+    assert int(captured["kwargs"]["creationflags"]) == int(mod._background_creationflags())
+
+
 def test_session_reuses_existing_live_loop_when_present(tmp_path: Path, capsys, monkeypatch):
     env_path = tmp_path / ".env"
     events = tmp_path / "events.jsonl"

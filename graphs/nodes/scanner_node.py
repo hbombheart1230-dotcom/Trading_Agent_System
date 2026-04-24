@@ -97,6 +97,16 @@ def _resolve_scanner_repeat_guard_policy(policy: Dict[str, Any]) -> Dict[str, An
         raw_policy.get("history_limit", os.getenv("SCANNER_REPEAT_HISTORY_LIMIT", "40")),
         40,
     )
+    blocker_lookback_sec = _to_int(
+        raw_policy.get("blocker_lookback_sec", os.getenv("SCANNER_REPEAT_BLOCK_LOOKBACK_SEC", "900")),
+        900,
+    )
+    blocker_per_hit_penalty = _to_float(
+        raw_policy.get("blocker_per_hit_penalty", os.getenv("SCANNER_REPEAT_BLOCK_PENALTY", "0.08"))
+    )
+    blocker_max_penalty = _to_float(
+        raw_policy.get("blocker_max_penalty", os.getenv("SCANNER_REPEAT_BLOCK_MAX_PENALTY", "0.18"))
+    )
     return {
         "lookback_sec": max(0, int(lookback_sec)),
         "per_hit_penalty": max(0.0, float(per_hit_penalty)),
@@ -106,6 +116,9 @@ def _resolve_scanner_repeat_guard_policy(policy: Dict[str, Any]) -> Dict[str, An
         "streak_threshold": max(2, int(streak_threshold)),
         "streak_penalty": max(0.0, float(streak_penalty)),
         "history_limit": max(5, int(history_limit)),
+        "blocker_lookback_sec": max(0, int(blocker_lookback_sec)),
+        "blocker_per_hit_penalty": max(0.0, float(blocker_per_hit_penalty)),
+        "blocker_max_penalty": max(0.0, float(blocker_max_penalty)),
     }
 
 
@@ -235,6 +248,23 @@ def _scanner_recent_selection_history(state: Dict[str, Any]) -> List[Dict[str, A
     return out
 
 
+def _scanner_recent_block_history(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    rows = persisted.get("recent_monitor_blocks")
+    if not isinstance(rows, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sym = _norm_symbol(row.get("symbol"))
+        reason = str(row.get("reason") or "").strip()
+        epoch = _to_int(row.get("epoch"), 0)
+        if sym and reason and epoch > 0:
+            out.append({"symbol": sym, "reason": reason, "epoch": epoch})
+    return out
+
+
 def _resolve_now_epoch(state: Dict[str, Any]) -> int:
     for key in ("now_epoch", "ts_epoch", "epoch"):
         value = _to_int(state.get(key), 0)
@@ -294,6 +324,65 @@ def _repeat_symbol_penalty(
         "recent_trade_same_symbol": bool(recent_trade_same_symbol),
         "now_epoch": int(now_epoch),
         "history_count": int(len(history)),
+        "config": cfg,
+    }
+
+
+def _repeat_blocker_cooldown_penalty(
+    state: Dict[str, Any],
+    *,
+    symbol: str,
+    policy: Dict[str, Any],
+) -> Dict[str, Any]:
+    cfg = _resolve_scanner_repeat_guard_policy(policy)
+    now_epoch = _resolve_now_epoch(state)
+    sel = _norm_symbol(symbol)
+    if not sel or cfg["blocker_lookback_sec"] <= 0:
+        return {
+            "penalty": 0.0,
+            "reason": "",
+            "repeat_count": 0,
+            "config": cfg,
+        }
+
+    cutoff = max(0, now_epoch - cfg["blocker_lookback_sec"])
+    history = _scanner_recent_block_history(state)
+    reason_counter: Dict[str, int] = {}
+    for row in history:
+        if row.get("symbol") != sel:
+            continue
+        if _to_int(row.get("epoch"), 0) < cutoff:
+            continue
+        reason = str(row.get("reason") or "").strip()
+        if not reason:
+            continue
+        reason_counter[reason] = int(reason_counter.get(reason, 0)) + 1
+
+    if not reason_counter:
+        return {
+            "penalty": 0.0,
+            "reason": "",
+            "repeat_count": 0,
+            "config": cfg,
+        }
+
+    dominant_reason, repeat_count = max(reason_counter.items(), key=lambda item: item[1])
+    weight = 0.0
+    if dominant_reason == "too_extended_from_vwap":
+        weight = 1.0
+    elif dominant_reason in {"volume_insufficient", "volume_confirmation_missing"}:
+        weight = 0.5
+    elif dominant_reason in {"breakout_not_ready", "below_vwap_reclaim_not_ready", "pullback_below_vwap_reclaim_not_ready"}:
+        weight = 0.35
+
+    penalty = min(
+        cfg["blocker_max_penalty"],
+        float(repeat_count) * cfg["blocker_per_hit_penalty"] * float(weight),
+    )
+    return {
+        "penalty": float(max(0.0, penalty)),
+        "reason": str(dominant_reason),
+        "repeat_count": int(repeat_count),
         "config": cfg,
     }
 
@@ -2672,6 +2761,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
         repeat_penalty_meta = _repeat_symbol_penalty(state, symbol=symbol, policy=policy)
         repeat_symbol_penalty = _to_float(repeat_penalty_meta.get("penalty"))
+        blocker_penalty_meta = _repeat_blocker_cooldown_penalty(state, symbol=symbol, policy=policy)
+        repeat_blocker_penalty = _to_float(blocker_penalty_meta.get("penalty"))
 
         positive_score = (
             practical_w["trading_value"] * trading_value_component
@@ -2743,6 +2834,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             - risk_penalty_score
             + rank_bonus
             - repeat_symbol_penalty
+            - repeat_blocker_penalty
             + scanner_bias_adjustment
             + scanner_memory_bias_adjustment
             + symbol_prior_adjustment
@@ -2774,6 +2866,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if repeat_symbol_penalty > 0.0:
             adj_conf = _clamp(adj_conf - (0.40 * repeat_symbol_penalty), 0.0, 1.0)
             adj_risk = _clamp(adj_risk + (0.25 * repeat_symbol_penalty), 0.0, 1.0)
+        if repeat_blocker_penalty > 0.0:
+            adj_conf = _clamp(adj_conf - (0.35 * repeat_blocker_penalty), 0.0, 1.0)
+            adj_risk = _clamp(adj_risk + (0.20 * repeat_blocker_penalty), 0.0, 1.0)
         adj_conf = _clamp(adj_conf + float(symbol_prior_result.get("confidence_delta") or 0.0), 0.0, 1.0)
         adj_risk = _clamp(adj_risk + float(symbol_prior_result.get("risk_delta") or 0.0), 0.0, 1.0)
 
@@ -2791,6 +2886,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "cross_section_rank": float(0.05 * cross_section_rank_component * practical_scale),
             "avoid_theme_penalty": float(-0.20 * avoid_theme_penalty * practical_scale),
             "repeat_symbol_penalty": float(-repeat_symbol_penalty),
+            "repeat_blocker_penalty": float(-repeat_blocker_penalty),
             "scanner_bias": float(scanner_bias_adjustment),
             "scanner_memory_bias": float(scanner_memory_bias_adjustment),
             "symbol_prior": float(symbol_prior_adjustment),
@@ -2923,6 +3019,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "open_order_penalty_component": open_order_penalty,
                     "avoid_theme_penalty_component": avoid_theme_penalty,
                     "repeat_symbol_penalty_component": repeat_symbol_penalty,
+                    "repeat_blocker_penalty_component": repeat_blocker_penalty,
                     "scanner_bias_adjustment": float(scanner_bias_adjustment),
                     "scanner_memory_bias_adjustment": float(scanner_memory_bias_adjustment),
                     "scanner_memory_bias_adjustments": list(memory_bias_result.get("adjustments") or []),
@@ -2943,6 +3040,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "recent_selection_repeat_count": int(repeat_penalty_meta.get("repeat_count") or 0),
                     "recent_selection_streak_count": int(repeat_penalty_meta.get("streak_count") or 0),
                     "recent_trade_same_symbol": bool(repeat_penalty_meta.get("recent_trade_same_symbol")),
+                    "recent_blocker_repeat_count": int(blocker_penalty_meta.get("repeat_count") or 0),
+                    "recent_blocker_reason": str(blocker_penalty_meta.get("reason") or ""),
                     "news_sentiment_status": str(news_sig.get("status") or "fallback"),
                     "news_sentiment_source": str(news_sig.get("source") or ""),
                     "news_sentiment_reason": str(news_sig.get("reason") or ""),

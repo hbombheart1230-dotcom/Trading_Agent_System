@@ -104,10 +104,12 @@ def test_generate_symbol_trade_report_uses_truth_artifacts_not_trade_markdown(tm
     latest_snapshot = json.loads((reports_root / "symbols" / "005930" / "latest_snapshot.json").read_text(encoding="utf-8"))
     symbol_memory = json.loads((reports_root / "symbols" / "005930" / "symbol_memory.json").read_text(encoding="utf-8"))
     assert latest_snapshot["last_trade_id"] == "TRD_20260320_005930_01"
+    assert latest_snapshot["last_trade_date"] == "2026-03-20"
     assert latest_snapshot["last_action"] == "SELL"
     assert latest_snapshot["last_status"] == "closed"
     assert symbol_memory["schema_version"] == "symbol_memory.v1"
     assert symbol_memory["trade_stats"]["trade_count"] == 1
+    assert symbol_memory["latest_snapshot"]["last_trade_date"] == "2026-03-20"
     assert symbol_memory["playbook_stats"]["pullback"]["count"] == 1
     assert symbol_memory["bias_recommendation"]["prefer_playbook"] == "pullback"
     assert latest_snapshot["report_path"].endswith("reports\\ai_trade_report.json") or latest_snapshot["report_path"].endswith("reports/ai_trade_report.json")

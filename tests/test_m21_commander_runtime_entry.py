@@ -341,6 +341,25 @@ def test_m21_session_closeout_fast_path_activates_inside_eod_cutoff():
     assert payload["open_position_count"] == 1
 
 
+def test_m21_session_closeout_fast_path_backfills_minutes_to_close_from_tick_ts():
+    enabled, payload = _should_use_session_closeout_fast_path(
+        {
+            "runtime_phase": "session",
+            "tick_ts": 1776407100,  # 2026-04-17 15:25:00 KST
+            "market_context": {},
+            "applied_policy": {
+                "monitor": {"exit": {"eod_flat": {"enabled": True, "cutoff_min": 10}}},
+            },
+            "portfolio_snapshot": {"positions": [{"symbol": "000660", "qty": 1}]},
+        }
+    )
+
+    assert enabled is True
+    assert payload["reason"] == "session_closeout_window"
+    assert float(payload["minutes_to_close"]) == 5.0
+    assert payload["cutoff_min"] == 10
+
+
 def test_m21_ensure_market_context_clock_fields_backfills_minutes_to_close_from_tick_ts():
     state = {
         "tick_ts": 1776407100,  # 2026-04-17 15:25:00 KST

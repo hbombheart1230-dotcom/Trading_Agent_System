@@ -37,6 +37,7 @@ from libs.reporting.trade_report_runtime_policy import (
 )
 from libs.reporting.trade_regeneration_truth import rehydrate_lifecycle_bundle_execution_truth
 from libs.reporting.trade_story_pipeline import build_trade_story_input_from_bundle, render_bundle_markdown
+from libs.runtime.windows_subprocess import background_creationflags, popen_hidden, run_hidden
 
 
 def _is_trueish(value: Any) -> bool:
@@ -1097,7 +1098,7 @@ def _active_bundle_process(root: Path) -> Dict[str, Any]:
                 "Where-Object { $_.Name -eq 'python.exe' -and ($_.CommandLine -like '*run_live_execution_bundle_report.py*' -or $_.CommandLine -like '*libs.reporting.live_execution_bundle_runner*') } | "
                 "Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine | ConvertTo-Json -Compress"
             )
-            completed = subprocess.run(
+            completed = run_hidden(
                 ["powershell", "-NoProfile", "-Command", probe],
                 capture_output=True,
                 text=True,
@@ -1136,7 +1137,7 @@ def _active_bundle_process(root: Path) -> Dict[str, Any]:
                     "age_sec": max(0.0, float(time.time()) - creation_epoch) if creation_epoch > 0 else None,
                 }
         else:
-            completed = subprocess.run(
+            completed = run_hidden(
                 ["ps", "-eo", "pid=,args="],
                 capture_output=True,
                 text=True,
@@ -1202,7 +1203,7 @@ def _terminate_process_tree(pid: int) -> bool:
         return False
     try:
         if os.name == "nt":
-            completed = subprocess.run(
+            completed = run_hidden(
                 ["taskkill", "/PID", str(pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
@@ -1375,10 +1376,7 @@ def _run_bundle_sync(argv: List[str]) -> tuple[int, str]:
 
 
 def _background_creationflags() -> int:
-    flags = 0
-    for name in ("CREATE_NO_WINDOW", "DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
-        flags |= int(getattr(subprocess, name, 0) or 0)
-    return flags
+    return int(background_creationflags())
 
 
 def _run_bundle_with_timeout(
@@ -1390,8 +1388,19 @@ def _run_bundle_with_timeout(
     target_symbol: str = "",
 ) -> tuple[int | None, str, int | None]:
     cmd = [sys.executable, "-m", _runner_module_name(), *argv]
+    _log_bundle_event(
+        root,
+        event="report_bundle_subprocess_start",
+        run_id=target_run_id or "runtime-report-bundle",
+        symbol=target_symbol,
+        payload={
+            "spawn_command": list(cmd),
+            "spawn_cwd": str(root),
+            "spawn_mode": "sync_run_hidden",
+        },
+    )
     try:
-        completed = subprocess.run(
+        completed = run_hidden(
             cmd,
             cwd=str(root),
             capture_output=True,
@@ -1401,19 +1410,29 @@ def _run_bundle_with_timeout(
             timeout=max(0.5, float(timeout_sec)),
             check=False,
         )
+        _log_bundle_event(
+            root,
+            event="report_bundle_subprocess_finished",
+            run_id=target_run_id or "runtime-report-bundle",
+            symbol=target_symbol,
+            payload={
+                "returncode": int(completed.returncode or 0),
+                "spawn_mode": "sync_run_hidden",
+            },
+        )
         return int(completed.returncode), str(completed.stdout or "").strip(), None
     except subprocess.TimeoutExpired:
         lock_path = _bundle_job_lock_path(root)
         env = dict(os.environ)
         env["INTRADAY_TRADE_REPORT_JOB_LOCK_PATH"] = str(lock_path)
         env["INTRADAY_TRADE_REPORT_PARENT_SPAWN"] = "1"
-        proc = subprocess.Popen(  # noqa: S603
+        proc = popen_hidden(  # noqa: S603
             cmd,
+            background=True,
             cwd=str(root),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             env=env,
-            creationflags=_background_creationflags(),
         )
         _write_bundle_job_lock(
             lock_path,
@@ -1421,6 +1440,19 @@ def _run_bundle_with_timeout(
             argv=cmd,
             target_run_id=target_run_id,
             target_symbol=target_symbol,
+        )
+        _log_bundle_event(
+            root,
+            event="report_bundle_subprocess_timeout_spawned",
+            run_id=target_run_id or "runtime-report-bundle",
+            symbol=target_symbol,
+            payload={
+                "pid": int(getattr(proc, "pid", 0) or 0),
+                "spawn_command": list(cmd),
+                "spawn_cwd": str(root),
+                "spawn_creationflags": int(_background_creationflags()),
+                "spawn_mode": "background_popen_hidden",
+            },
         )
         return None, "", int(getattr(proc, "pid", 0) or 0)
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import scripts.run_live_session_watch as mod
 from scripts.run_live_session_watch import evaluate_watch_health
 
 
@@ -64,3 +67,24 @@ def test_live_watch_health_red_when_event_lag_exceeds_threshold() -> None:
     )
     assert out["status"] == "RED"
     assert any("event_lag_exceeded" in str(x) for x in out["reasons"])
+
+
+def test_run_live_summary_uses_hidden_runner(monkeypatch) -> None:
+    called: dict[str, object] = {}
+
+    def fake_run_hidden(cmd, **kwargs):  # type: ignore[no-untyped-def]
+        called["cmd"] = list(cmd)
+        called["kwargs"] = dict(kwargs)
+        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(mod, "run_hidden", fake_run_hidden)
+
+    out = mod._run_live_summary(
+        event_log_path=mod.ROOT / "data" / "logs" / "events.jsonl",
+        summary_report_dir=mod.ROOT / "reports" / "dev" / "live" / "live_summary",
+        lookback_min=30,
+    )
+
+    assert out["ok"] is True
+    assert called["cmd"][0].endswith("python.exe") or called["cmd"][0].endswith("python")
+    assert "--json" in called["cmd"]

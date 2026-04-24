@@ -173,6 +173,13 @@ def _run_subprocess(
     return out
 
 
+def _background_creationflags() -> int:
+    flags = 0
+    for name in ("CREATE_NO_WINDOW", "DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+        flags |= int(getattr(subprocess, name, 0) or 0)
+    return flags
+
+
 def _start_live_loop_background(
     *,
     command: Sequence[str],
@@ -205,6 +212,7 @@ def _start_live_loop_background(
                 stdout=out_f,
                 stderr=err_f,
                 text=True,
+                creationflags=_background_creationflags(),
             )
         time.sleep(2.0)
         polled = proc.poll()

@@ -526,3 +526,44 @@ def test_scanner_repeat_guard_penalizes_recently_selected_symbol():
     assert float((rows["AAA"].get("score_breakdown") or {}).get("repeat_symbol_penalty") or 0.0) < 0.0
     assert bool(((rows["AAA"].get("components") or {}).get("recent_trade_same_symbol"))) is True
     assert str(((out.get("persisted_state") or {}).get("recent_scanner_selected") or [])[-1].get("symbol")) == "BBB"
+
+
+def test_scanner_repeat_guard_penalizes_recently_blocked_symbol_with_same_reason():
+    now_epoch = 1_800_000_000
+    state = {
+        "now_epoch": now_epoch,
+        "candidates": [
+            {"symbol": "AAA", "sources": ["top_value"], "source_scores": {"top_value": 2.0}},
+            {"symbol": "BBB", "sources": ["top_value"], "source_scores": {"top_value": 1.0}},
+        ],
+        "mock_scan_results": {
+            "AAA": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
+            "BBB": {"score": 0.50, "risk_score": 0.20, "confidence": 0.80},
+        },
+        "persisted_state": {
+            "recent_monitor_blocks": [
+                {"symbol": "AAA", "reason": "too_extended_from_vwap", "epoch": now_epoch - 60},
+                {"symbol": "AAA", "reason": "too_extended_from_vwap", "epoch": now_epoch - 120},
+                {"symbol": "AAA", "reason": "too_extended_from_vwap", "epoch": now_epoch - 180},
+            ],
+        },
+        "policy": {
+            "enable_practical_scoring": True,
+            "weight_news": 0.0,
+            "weight_global": 0.0,
+            "risk_news_penalty": 0.0,
+            "risk_global_penalty": 0.0,
+            "confidence_news_boost": 0.0,
+            "scanner_repeat_guard": {
+                "blocker_lookback_sec": 900,
+                "blocker_per_hit_penalty": 0.08,
+                "blocker_max_penalty": 0.18,
+            },
+        },
+    }
+
+    out = scanner_node(state)
+    assert (out.get("selected") or {}).get("symbol") == "BBB"
+    rows = {str(r.get("symbol")): r for r in out.get("scan_results", []) if isinstance(r, dict)}
+    assert float((rows["AAA"].get("score_breakdown") or {}).get("repeat_blocker_penalty") or 0.0) < 0.0
+    assert str((rows["AAA"].get("components") or {}).get("recent_blocker_reason") or "") == "too_extended_from_vwap"
