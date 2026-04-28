@@ -162,7 +162,19 @@ def reanchor_scanner_selection_for_monitor_fallback(
         or not scanner_top_pick
         or symbol == scanner_top_pick
     ):
-        effective = str(reason.get("selected_symbol") or symbol or "").strip()
+        effective = str(
+            reason.get("selected_symbol")
+            or trace.get("selected_symbol")
+            or scanner_top_pick
+            or scanner.get("selected_symbol")
+            or scanner.get("top_stock")
+            or symbol
+            or ""
+        ).strip()
+        if effective and not str(reason.get("selected_symbol") or "").strip():
+            reason["selected_symbol"] = effective
+        if effective and not str(trace.get("selected_symbol") or "").strip():
+            trace["selected_symbol"] = effective
         return reason, trace, effective
 
     rows = _candidate_rows(reason, trace, scanner, monitor)

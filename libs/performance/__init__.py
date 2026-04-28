@@ -10,6 +10,7 @@ from .playbook_stats import (
 from .strategy_memory import (
     build_strategy_memory,
     load_strategy_memory_hint,
+    sync_strategy_memory_artifacts,
     write_strategy_memory,
 )
 
@@ -21,5 +22,6 @@ __all__ = [
     "write_playbook_stats",
     "build_strategy_memory",
     "load_strategy_memory_hint",
+    "sync_strategy_memory_artifacts",
     "write_strategy_memory",
 ]

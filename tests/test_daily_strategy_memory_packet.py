@@ -26,6 +26,19 @@ def test_daily_strategy_memory_packet_exposes_common_shape(tmp_path: Path) -> No
                 "defensive": {"usage_count": 3, "win_rate": 0.67, "avg_return": 0.012, "stability_score": 0.8},
                 "breakout": {"usage_count": 1, "win_rate": 0.0, "avg_return": -0.006, "stability_score": 0.1},
             },
+            "pattern_performance_snapshot": {
+                "entry_exit_combos": {
+                    "breakout -> peak_drawdown": {
+                        "trade_count": 2,
+                        "win_rate": 0.0,
+                        "avg_return": -0.01,
+                        "symbols": ["005930"],
+                    }
+                },
+                "problem_patterns": ["entry_exit:breakout->peak_drawdown"],
+                "working_patterns": [],
+                "advisory_only": True,
+            },
             "market_condition_bias": {
                 "regime_bias": {
                     "neutral": {"win_rate": 0.5, "avg_return": 0.003, "trade_count": 4}
@@ -93,6 +106,7 @@ def test_daily_strategy_memory_packet_exposes_common_shape(tmp_path: Path) -> No
     assert packet["sample_quality"]["trade_count"] == 4
     assert packet["source_performance"]["top_value"]["sample_days"] == 1
     assert packet["failure_patterns"]["dominant_failures"][0] == "playbook:breakout"
+    assert packet["pattern_performance_snapshot"]["problem_patterns"] == ["entry_exit:breakout->peak_drawdown"]
     assert packet["execution_risk"]["preferred_risk_posture"] == "defensive"
     assert packet["execution_risk"]["route_source"] == "canonical_commander_preferred"
     assert packet["source_context"]["report_focus_targets"] == ["exit_quality", "guard_blocks"]
@@ -100,3 +114,33 @@ def test_daily_strategy_memory_packet_exposes_common_shape(tmp_path: Path) -> No
     assert packet["recommended_bias_inputs"]["monitor"]["volume_ratio_min_delta"] > 0.0
     assert packet["recommended_bias_inputs"]["commander"]["report_focus_targets"] == ["exit_quality", "guard_blocks"]
     assert packet["summary_detail"]["headline"]
+
+
+def test_daily_strategy_memory_packet_keeps_latest_available_day_visible_but_inactive(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    _write_json(
+        reports_root / "performance" / "2026-04-17" / "strategy_memory.json",
+        {
+            "schema_version": "strategy_memory.v1",
+            "requested_day": "2026-04-24",
+            "resolved_day": "2026-04-17",
+            "day": "2026-04-17",
+            "best_playbooks": ["defensive"],
+            "worst_playbooks": ["defensive"],
+            "recent_failures": ["playbook:defensive"],
+            "playbook_performance_snapshot": {
+                "defensive": {"usage_count": 1, "win_rate": 0.0, "avg_return": -0.0147, "stability_score": 0.17},
+            },
+            "advisory_only": True,
+        },
+    )
+
+    packet = build_daily_strategy_memory_packet(
+        state={"reports_root": str(reports_root), "day": "2026-04-24"}
+    )
+
+    assert packet["status"] == "ok"
+    assert packet["requested_day"] == "2026-04-24"
+    assert packet["resolved_day"] == "2026-04-17"
+    assert packet["sample_quality"]["usable"] is True
+    assert packet["active"] is False

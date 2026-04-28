@@ -13,9 +13,9 @@ def test_report_inventory_detects_offhours_and_legacy_daily(tmp_path: Path) -> N
     reports.mkdir()
     (reports / "offhours_full_trace_demo").mkdir()
     (reports / "offhours_full_trace_demo" / "demo.md").write_text("x", encoding="utf-8")
-    (reports / "daily" / "2026-03-13").mkdir(parents=True)
-    (reports / "daily" / "2026-03-13" / "daily_report.md").write_text("canonical", encoding="utf-8")
-    (reports / "daily" / "2026-03-13" / "daily_report.json").write_text("{}", encoding="utf-8")
+    (reports / "operator_summary" / "daily" / "2026-03-13").mkdir(parents=True)
+    (reports / "operator_summary" / "daily" / "2026-03-13" / "daily_report.md").write_text("canonical", encoding="utf-8")
+    (reports / "operator_summary" / "daily" / "2026-03-13" / "daily_report.json").write_text("{}", encoding="utf-8")
     (reports / "daily_report_2026-03-13.md").write_text("legacy", encoding="utf-8")
     (reports / "daily_report_2026-03-13.json").write_text("{}", encoding="utf-8")
     (reports / "daily_2026-03-13.md").write_text("legacy canonical-name-in-root", encoding="utf-8")
@@ -34,7 +34,7 @@ def test_report_inventory_detects_offhours_and_legacy_daily(tmp_path: Path) -> N
 def test_report_inventory_warns_when_operator_summary_uses_missing_event_path(tmp_path: Path) -> None:
     reports = tmp_path / "reports"
     reports.mkdir()
-    op = reports / "daily" / "2026-03-13"
+    op = reports / "operator_summary" / "daily" / "2026-03-13"
     op.mkdir(parents=True)
     payload = {
         "day": "2026-03-13",

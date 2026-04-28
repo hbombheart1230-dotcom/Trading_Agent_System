@@ -428,6 +428,64 @@ def test_strategist_news_query_targets_expand_theme_and_macro_context(monkeypatc
     assert "AI" in reasoning
 
 
+def test_strategist_news_collection_reuses_kiwoom_theme_component_pool(monkeypatch):
+    captured_queries = []
+
+    def _fake_collect(symbols, **_kwargs):
+        captured_queries.append(list(symbols or []))
+        return {
+            str(s): [{"title": f"{s} headline", "source": "naver", "published_at": "2026-04-28T00:00:00Z"}]
+            for s in list(symbols or [])
+        }
+
+    monkeypatch.setattr("graphs.nodes.strategist_node.collect_news_items", _fake_collect)
+    monkeypatch.setattr(
+        "graphs.nodes.strategist_node.score_news_sentiment_signal",
+        lambda _items, symbols, **_: {
+            str(s): {"score": 0.1, "status": "ok", "source": "mock_news", "reason": "", "ts": 1}
+            for s in list(symbols or [])
+        },
+    )
+    monkeypatch.delenv("KIWOOM_THEME_LIVE_FETCH", raising=False)
+
+    state = {
+        "run_id": "srq-news-theme-components",
+        "candidate_symbols": ["005930"],
+        "mock_theme_groups": [
+            {
+                "thema_grp_cd": "400",
+                "thema_nm": "semiconductor",
+                "stk_num": "5",
+                "flu_rt": "+4.0",
+                "rising_stk_num": "4",
+                "fall_stk_num": "0",
+                "dt_prft_rt": "+12.0",
+            }
+        ],
+        "mock_theme_component_map": {"semiconductor": ["005930", "000660", "042700"]},
+        "policy": {
+            "use_global_sentiment": False,
+            "use_news_analysis": True,
+            "use_universe_builder": False,
+            "strategist_news_query_limit": 10,
+        },
+    }
+
+    out = strategist_node(state)
+    news_policy = out.get("news_collection_policy") or {}
+    strategist_output = out.get("strategist_output") or {}
+
+    assert "semiconductor" in (out.get("news_query_targets") or [])
+    assert news_policy.get("provider") == "naver"
+    assert news_policy.get("post_scanner_requery") is False
+    assert news_policy.get("reuse_policy") == "reuse_pre_scanner_news_pool"
+    assert "000660" in list(news_policy.get("theme_component_symbols_requested") or [])
+    assert "000660" in list(news_policy.get("collection_symbols") or [])
+    assert "000660" in list((out.get("news_sentiment_signal") or {}).keys())
+    assert strategist_output.get("news_collection_policy", {}).get("post_scanner_requery") is False
+    assert captured_queries and "000660" in captured_queries[0]
+
+
 def test_strategist_news_query_targets_become_defensive_when_vix_is_elevated(monkeypatch):
     captured_queries = []
 

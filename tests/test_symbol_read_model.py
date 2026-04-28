@@ -126,7 +126,7 @@ def test_symbol_read_model_prefers_persisted_symbol_memory(tmp_path):
     reports_root = tmp_path / "reports"
     trades_root = reports_root / "trades"
     trades_root.mkdir(parents=True)
-    symbol_root = reports_root / "symbols" / "AAPL"
+    symbol_root = reports_root / "operator_summary" / "symbols" / "AAPL"
     symbol_root.mkdir(parents=True)
     (symbol_root / "symbol_memory.json").write_text(
         json.dumps(
@@ -177,7 +177,7 @@ def test_symbol_read_model_prefers_persisted_symbol_trade_report_when_memory_mis
     reports_root = tmp_path / "reports"
     trades_root = reports_root / "trades"
     trades_root.mkdir(parents=True)
-    symbol_root = reports_root / "symbols" / "AAPL"
+    symbol_root = reports_root / "operator_summary" / "symbols" / "AAPL"
     symbol_root.mkdir(parents=True)
     (symbol_root / "symbol_trade_report.json").write_text(
         json.dumps(
@@ -236,7 +236,7 @@ def test_symbol_read_model_reads_last_trade_date_from_symbol_memory(tmp_path):
     reports_root = tmp_path / "reports"
     trades_root = reports_root / "trades"
     trades_root.mkdir(parents=True)
-    symbol_root = reports_root / "symbols" / "AAPL"
+    symbol_root = reports_root / "operator_summary" / "symbols" / "AAPL"
     symbol_root.mkdir(parents=True)
     (symbol_root / "symbol_memory.json").write_text(
         json.dumps(

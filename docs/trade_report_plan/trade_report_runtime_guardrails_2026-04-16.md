@@ -42,7 +42,8 @@ The real risk is runtime drift between:
 `scripts/run_ai_trade_report_batch.py`
 -> read `lifecycle_bundle.json`
 -> `build_trade_story_input_from_bundle(...)`
--> `build_ai_trade_report(...)`
+-> default: `build_deterministic_trade_report(...)`
+-> optional `--with-llm`: `build_ai_trade_report(...)`
 -> `render_trade_report_markdown(...)`
 -> sync `report_generation_state.json`
 

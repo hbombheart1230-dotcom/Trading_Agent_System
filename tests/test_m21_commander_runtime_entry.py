@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from graphs.commander_runtime import (
+    _attach_commander_applied_policy,
     _assess_open_position_commander_override,
     _ensure_market_context_clock_fields,
     _resolve_commander_behavior_policy,
     _run_integrated_chain,
+    _should_use_cached_strategist_from_commander_skip,
     _should_use_session_closeout_fast_path,
     _hydrate_strategist_output_cache,
     resolve_runtime_mode,
@@ -222,15 +224,186 @@ def test_m31_runtime_entry_surfaces_commander_memory_policy_and_packets() -> Non
     packets = captured["memory_packets"]
     policy = captured["commander_memory_policy"]
     assert packets["daily_strategy_memory"]["status"] == "ok"
+    assert packets["daily_strategy_memory"]["active"] is False
     assert packets["symbol_memory_packet"]["symbol"] == "000660"
     assert packets["symbol_memory_packet"]["override_eligible"] is True
     assert policy["application_mode"] == "surface_only"
-    assert policy["active_layers"] == ["daily", "symbol"]
+    assert policy["active_layers"] == ["symbol"]
     assert policy["priority_order"][:2] == ["daily", "symbol"]
     assert policy["symbol_memory_override_enabled"] is True
     assert captured["scanner_memory_bias"]["enabled"] is True
     assert captured["monitor_memory_bias"]["enabled"] is True
     assert captured["monitor_memory_bias_summary"]["entry_delta_keys"]
+
+
+def test_attach_commander_applied_policy_recomputes_memory_bias_instead_of_using_stale_commander_decision():
+    state = {
+        "day": "2026-04-24",
+        "runtime_phase": "session",
+        "strategy_memory": {
+            "status": "ok",
+            "requested_day": "2026-04-24",
+            "resolved_day": "2026-04-17",
+            "day": "2026-04-17",
+            "best_playbooks": ["defensive"],
+            "worst_playbooks": ["defensive"],
+            "recent_failures": ["playbook:defensive"],
+            "recent_success_patterns": [],
+            "playbook_performance_snapshot": {"defensive": {"usage_count": 1, "win_rate": 0.0}},
+            "market_condition_bias": {
+                "preferred_risk_posture": "defensive",
+                "system_health": "RED",
+                "avg_monitor_only_ratio": 0.7994,
+            },
+        },
+        "commander_decision": {
+            "session_bias": "active_selection",
+            "market_regime": "neutral",
+            "scanner_memory_bias": {
+                "enabled": True,
+                "active_layers": ["daily"],
+                "source_weight_delta": {"top_value": 0.02, "top_change_rate": -0.02},
+            },
+            "scanner_memory_bias_summary": {
+                "enabled": True,
+                "active_layers": ["daily"],
+                "source_delta_keys": ["top_value", "top_change_rate"],
+            },
+            "monitor_memory_bias": {
+                "enabled": True,
+                "active_layers": ["daily"],
+                "entry_policy_delta": {"max_extended_from_vwap_pct": -0.01},
+            },
+            "monitor_memory_bias_summary": {
+                "enabled": True,
+                "active_layers": ["daily"],
+                "entry_delta_keys": ["max_extended_from_vwap_pct"],
+            },
+            "entry_control": {
+                "source": "commander_decision",
+                "mode": "expand_when_market_ok",
+                "max_priority_rank": 8,
+                "max_runner_ups": 7,
+                "allow_dynamic_entry_band": True,
+                "adaptive_max_extended_from_vwap_pct": 0.08,
+            },
+        },
+        "strategist_output": {
+            "playbook": "defensive",
+            "monitor_guidance": "defensive_exit",
+            "risk_tone": "balanced",
+            "trade_aggressiveness": "medium",
+            "monitor_entry_policy": {
+                "enabled": True,
+                "timeframe_minutes": 1,
+                "breakout_lookback": 5,
+                "volume_lookback": 5,
+                "volume_ratio_min": 0.68,
+                "min_extended_from_vwap_pct": -0.02,
+                "max_extended_from_vwap_pct": 0.08,
+                "pullback_min_pct": 0.008,
+                "pullback_max_pct": 0.07,
+                "reclaim_tolerance_pct": 0.0015,
+                "breakout_buffer_pct": 0.0,
+                "intent_cooldown_sec": 60,
+                "require_vwap_reclaim": True,
+                "require_rebound": True,
+                "policy_source": "strategist",
+            },
+            "strategy_policy": {
+                "commander_context": {
+                    "source": "commander_decision",
+                    "session_bias": "active_selection",
+                    "scanner_memory_bias": {"enabled": False, "active_layers": []},
+                    "scanner_memory_bias_summary": {"enabled": False, "active_layers": []},
+                    "monitor_memory_bias": {"enabled": False, "active_layers": []},
+                    "monitor_memory_bias_summary": {"enabled": False, "active_layers": []},
+                },
+                "scanner_policy": {},
+                "monitor_policy": {},
+            },
+        },
+    }
+
+    out = _attach_commander_applied_policy(state)
+    strategist_output = out["strategist_output"]
+    strategy_policy = strategist_output["strategy_policy"]
+    commander_context = strategy_policy["commander_context"]
+
+    assert commander_context["memory_packets"]["daily_strategy_memory"]["active"] is False
+    assert commander_context["commander_memory_policy"]["active_layers"] == []
+    assert commander_context["scanner_memory_bias"]["enabled"] is False
+    assert commander_context["scanner_memory_bias_summary"]["enabled"] is False
+    assert commander_context["monitor_memory_bias"]["enabled"] is False
+    assert strategist_output["scanner_memory_bias_summary"]["enabled"] is False
+    assert strategy_policy["scanner_policy"]["scanner_memory_bias_summary"]["enabled"] is False
+    assert commander_context["commander_horizon_policy"]["owner"] == "commander"
+    assert commander_context["strategist_refresh_context"]["commander_horizon_policy"]["owner"] == "commander"
+    assert strategy_policy["monitor_policy"]["commander_horizon_policy"]["owner"] == "commander"
+    assert commander_context["entry_control"]["mode"] == "expand_when_market_ok"
+    assert strategy_policy["monitor_policy"]["entry_control"]["max_priority_rank"] == 8
+    assert strategy_policy["scanner_policy"]["max_runner_ups"] == 7
+    assert out["commander_applied_policy"]["commander_entry_control"]["adaptive_max_extended_from_vwap_pct"] == 0.08
+    assert out["commander_horizon_policy"]["owner"] == "commander"
+
+
+def test_should_use_cached_strategist_from_commander_skip_rejects_cached_memory_context_mismatch():
+    state = {
+        "day": "2026-04-24",
+        "runtime_phase": "session",
+        "ts": "2026-04-24T13:20:00+09:00",
+        "strategy_memory": {
+            "status": "ok",
+            "requested_day": "2026-04-24",
+            "resolved_day": "2026-04-17",
+            "day": "2026-04-17",
+            "best_playbooks": ["defensive"],
+            "worst_playbooks": ["defensive"],
+            "recent_failures": ["playbook:defensive"],
+            "recent_success_patterns": [],
+            "playbook_performance_snapshot": {"defensive": {"usage_count": 1, "win_rate": 0.0}},
+            "market_condition_bias": {
+                "preferred_risk_posture": "defensive",
+                "system_health": "RED",
+                "avg_monitor_only_ratio": 0.7994,
+            },
+        },
+        "commander_decision": {
+            "session_bias": "active_selection",
+            "strategist_invocation": "SKIP",
+            "llm_policy": "ALLOW",
+        },
+        "persisted_state": {
+            "strategist_output_cache": {
+                "generated_epoch": 1777004000,
+                "source": "unit_test_cache",
+                "output": {
+                    "commander_memory_policy": {
+                        "active_layers": ["daily"],
+                        "scanner_bias_enabled": True,
+                        "monitor_bias_enabled": True,
+                    },
+                    "scanner_memory_bias_summary": {
+                        "enabled": True,
+                        "active_layers": ["daily"],
+                    },
+                    "monitor_memory_bias_summary": {
+                        "enabled": True,
+                        "active_layers": ["daily"],
+                    },
+                },
+            }
+        },
+    }
+
+    use_cache, payload = _should_use_cached_strategist_from_commander_skip(state)
+
+    assert use_cache is False
+    assert payload["reason"] == "cached_memory_context_mismatch"
+    assert payload["cached_active_layers"] == ["daily"]
+    assert payload["current_active_layers"] == []
+    assert payload["cached_scanner_bias_enabled"] is True
+    assert payload["current_scanner_bias_enabled"] is False
 
 
 def test_m31_runtime_entry_integrates_shadow_commander_into_commander_decision():
@@ -1498,6 +1671,119 @@ def test_commander_open_position_override_surfaces_overnight_carry_control():
     assert out["positions"][0]["overnight_carry_approved"] is True
 
 
+def test_commander_open_position_override_derives_carry_from_entry_epoch_map():
+    now_epoch = 1_777_334_789  # 2026-04-28 09:06:29 KST
+    state: Dict[str, Any] = {
+        "now_epoch": now_epoch,
+        "tick_ts": now_epoch,
+        "portfolio_snapshot": {
+            "positions": [
+                {
+                    "symbol": "005930",
+                    "qty": 1,
+                    "avg_price": 100.0,
+                    "current_price": 99.5,
+                    "unrealized_pnl": -0.5,
+                }
+            ]
+        },
+        "persisted_state": {
+            "position_entry_epoch_by_symbol": {"005930": now_epoch - 49_000},
+            "monitor_last_state_by_symbol": {
+                "005930": {
+                    "posture": "hold",
+                    "reason": "below_vwap_reclaim_not_ready",
+                    "active_exit_axis": "vwap_relationship",
+                    "entry_state": {
+                        "current_blocking_axis": "reclaim_readiness",
+                        "entry_blockers": ["below_vwap_reclaim_not_ready"],
+                        "reclaim_gate_ok": False,
+                        "volume_ok": False,
+                    },
+                }
+            },
+        },
+    }
+
+    out = _assess_open_position_commander_override(state)
+
+    assert out["positions"][0]["position_age_seconds"] == 49_000
+    assert out["carry_state"] == "overnight_open"
+    assert out["carry_risk_bias"] == "urgent_exit_review"
+    assert out["carry_risk_reason"] == "reclaim_failed_near_open"
+
+
+def test_commander_open_position_override_derives_carry_from_legacy_last_trade_epoch():
+    now_epoch = 1_777_334_789
+    state: Dict[str, Any] = {
+        "now_epoch": now_epoch,
+        "tick_ts": now_epoch,
+        "portfolio_snapshot": {
+            "positions": [
+                {
+                    "symbol": "010170",
+                    "qty": 1,
+                    "avg_price": 100.0,
+                    "current_price": 92.0,
+                    "unrealized_pnl": -8.0,
+                }
+            ]
+        },
+        "persisted_state": {
+            "last_trade_side": "BUY",
+            "last_trade_epoch": now_epoch - 49_000,
+            "monitor_last_state_by_symbol": {
+                "010170": {
+                    "posture": "hold",
+                    "reason": "below_vwap_reclaim_not_ready",
+                    "active_exit_axis": "vwap_relationship",
+                    "entry_state": {
+                        "current_blocking_axis": "reclaim_readiness",
+                        "entry_blockers": ["below_vwap_reclaim_not_ready"],
+                        "reclaim_gate_ok": False,
+                        "volume_ok": False,
+                    },
+                }
+            },
+        },
+    }
+
+    out = _assess_open_position_commander_override(state)
+
+    assert out["positions"][0]["position_age_seconds"] == 49_000
+    assert out["positions"][0]["carry_state"] == "overnight_open"
+    assert out["positions"][0]["carry_risk_bias"] == "urgent_exit_review"
+
+
+def test_commander_open_position_override_uses_stale_legacy_epoch_for_unmapped_symbols():
+    now_epoch = 1_777_334_789
+    state: Dict[str, Any] = {
+        "now_epoch": now_epoch,
+        "tick_ts": now_epoch,
+        "portfolio_snapshot": {
+            "positions": [
+                {
+                    "symbol": "010170",
+                    "qty": 1,
+                    "avg_price": 100.0,
+                    "current_price": 92.0,
+                    "unrealized_pnl": -8.0,
+                }
+            ]
+        },
+        "persisted_state": {
+            "last_trade_side": "BUY",
+            "last_trade_symbol": "005930",
+            "last_trade_epoch": now_epoch - 49_000,
+        },
+    }
+
+    out = _assess_open_position_commander_override(state)
+
+    assert out["positions"][0]["position_age_seconds"] == 49_000
+    assert out["positions"][0]["carry_state"] == "overnight_open"
+
+
 def test_m31_integrated_chain_monitor_only_keeps_fast_path_when_refresh_cooldown_active(monkeypatch):
     calls: list[str] = []
 
@@ -2129,6 +2415,95 @@ def test_m31_integrated_chain_refreshes_when_selected_symbol_is_outside_cached_f
     ]
 
 
+def test_m31_integrated_chain_refreshes_when_selected_symbol_is_outside_fresh_cached_frame(monkeypatch):
+    calls: list[str] = []
+    strategist_decisions: list[Dict[str, Any]] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        strategist_decisions.append(dict(state.get("commander_decision") or {}))
+        state["strategist_output"] = {"playbook": "fresh_entry_frame", "monitor_guidance": "tight_confirm"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        assert (state.get("strategist_output") or {}).get("playbook") == "fresh_entry_frame"
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "run_id": "run-prebuy-refresh-fresh-frame-gap",
+            "applied_policy": {"commander": {"route": {"cached_strategist_when_flat": True}}},
+            "now_epoch": 1000,
+            "monitor_output": {
+                "selected_symbol": "034020",
+                "intent_side": "NOOP",
+                "entry_exit_reason": "pullback_not_mature",
+            },
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {
+                        "playbook": "cached_frame",
+                        "monitor_guidance": "defensive_exit",
+                        "candidate_symbols_hint": ["005930", "000660"],
+                    },
+                    "generated_epoch": 950,
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    assert out["path"] == "integrated_chain"
+    assert strategist_decisions
+    assert strategist_decisions[0]["strategist_invocation"] == "RUN_REFRESH"
+    assert strategist_decisions[0]["strategist_refresh_requested"] is True
+    assert strategist_decisions[0]["strategist_refresh_reason"] == "selected_symbol_outside_cached_frame"
+    assert strategist_decisions[0]["strategist_refresh_context"]["selected_symbol"] == "034020"
+    assert strategist_decisions[0]["strategist_refresh_context"]["cache_age_sec"] == 50
+    assert strategist_decisions[0]["strategist_refresh_context"]["fresh_cache_signal_override"] is True
+    assert strategist_decisions[0]["strategist_refresh_context"]["cache_freshness_gate_bypassed"] is True
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "strategist",
+        "scanner",
+        "monitor",
+        "decision",
+    ]
+
+
 def test_m31_integrated_chain_reruns_strategist_after_scanner_when_cached_frame_symbol_mismatch(monkeypatch):
     calls: list[str] = []
     strategist_decisions: list[Dict[str, Any]] = []
@@ -2738,6 +3113,184 @@ def test_m31_integrated_chain_respects_commander_refresh_request_over_cache_reus
         "build_portfolio_snapshot",
         "build_risk_context",
         "strategist",
+        "scanner",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_refreshes_when_monitor_became_ready_with_fresh_cache(monkeypatch):
+    calls: list[str] = []
+    strategist_decisions: list[Dict[str, Any]] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        strategist_decisions.append(dict(state.get("commander_decision") or {}))
+        state["strategist_output"] = {"playbook": "fresh_entry_frame", "monitor_guidance": "tight_confirm"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        assert (state.get("strategist_output") or {}).get("playbook") == "fresh_entry_frame"
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "run_id": "run-prebuy-refresh-fresh-ready",
+            "applied_policy": {"commander": {"route": {"cached_strategist_when_flat": True}}},
+            "now_epoch": 1000,
+            "monitor_output": {
+                "selected_symbol": "000660",
+                "intent_side": "NOOP",
+                "entry_became_ready_this_cycle": True,
+                "entry_transition_readiness_score": 0.92,
+                "entry_exit_reason": "pullback_below_vwap_reclaim_not_ready",
+            },
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {
+                        "playbook": "cached_frame",
+                        "monitor_guidance": "defensive_exit",
+                        "candidate_symbols_hint": ["000660", "005930"],
+                    },
+                    "generated_epoch": 950,
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    assert out["path"] == "integrated_chain"
+    assert strategist_decisions
+    assert strategist_decisions[0]["strategist_invocation"] == "RUN_REFRESH"
+    assert strategist_decisions[0]["strategist_refresh_requested"] is True
+    assert strategist_decisions[0]["strategist_refresh_reason"] == "became_ready_this_cycle"
+    assert strategist_decisions[0]["strategist_refresh_context"]["selected_symbol"] == "000660"
+    assert strategist_decisions[0]["strategist_refresh_context"]["cache_age_sec"] == 50
+    assert strategist_decisions[0]["strategist_refresh_context"]["fresh_cache_signal_override"] is True
+    assert strategist_decisions[0]["strategist_refresh_context"]["cache_freshness_gate_bypassed"] is True
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
+        "strategist",
+        "scanner",
+        "monitor",
+        "decision",
+    ]
+
+
+def test_m31_integrated_chain_keeps_cache_when_only_transition_threshold_signal_is_fresh(monkeypatch):
+    calls: list[str] = []
+
+    def fake_build_portfolio_snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_portfolio_snapshot")
+        state["portfolio_snapshot"] = {
+            "cash": 1000.0,
+            "positions": [],
+            "_health": {"reader_ok": True},
+        }
+        return state
+
+    def fake_build_risk_context(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("build_risk_context")
+        return state
+
+    def fake_strategist(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("strategist")
+        state["strategist_output"] = {"playbook": "fresh_entry_frame"}
+        return state
+
+    def fake_scanner(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("scanner")
+        state["selected"] = {"symbol": "000660", "score_total": 0.88}
+        return state
+
+    def fake_monitor(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("monitor")
+        state["intents"] = []
+        return state
+
+    def fake_decision(state: Dict[str, Any]) -> Dict[str, Any]:
+        calls.append("decision")
+        state["decision"] = "hold"
+        return state
+
+    monkeypatch.setenv("COMMANDER_STRATEGIST_CACHE_REUSE_SEC", "600")
+    monkeypatch.setattr("graphs.nodes.build_portfolio_snapshot.build_portfolio_snapshot", fake_build_portfolio_snapshot)
+    monkeypatch.setattr("graphs.nodes.build_risk_context.build_risk_context", fake_build_risk_context)
+    monkeypatch.setattr("graphs.nodes.strategist_node.strategist_node", fake_strategist)
+    monkeypatch.setattr("graphs.nodes.scanner_node.scanner_node", fake_scanner)
+    monkeypatch.setattr("graphs.nodes.monitor_node.monitor_node", fake_monitor)
+    monkeypatch.setattr("graphs.nodes.decision_node.decision_node", fake_decision)
+
+    out = _run_integrated_chain(
+        {
+            "run_id": "run-prebuy-refresh-fresh-threshold",
+            "applied_policy": {"commander": {"route": {"cached_strategist_when_flat": True}}},
+            "now_epoch": 1000,
+            "monitor_output": {
+                "selected_symbol": "000660",
+                "intent_side": "NOOP",
+                "entry_transition_readiness_score": 0.87,
+                "entry_exit_reason": "breakout_not_ready",
+            },
+            "persisted_state": {
+                "strategist_output_cache": {
+                    "output": {
+                        "playbook": "cached_frame",
+                        "monitor_guidance": "defensive_exit",
+                        "candidate_symbols_hint": ["000660", "005930"],
+                    },
+                    "generated_epoch": 950,
+                }
+            },
+        },
+        execute_fn=lambda s: s,
+    )
+
+    refresh_context = (out.get("commander_decision") or {}).get("strategist_refresh_context") or {}
+    assert out["path"] == "integrated_chain_cached_frame"
+    assert (out.get("runtime_fast_path") or {}).get("reason") == "commander_skip_cached_strategist"
+    assert (out.get("commander_shadow_runtime") or {}).get("pre_buy_refresh_requested") is False
+    assert (out.get("commander_decision") or {}).get("strategist_refresh_requested") is False
+    assert (out.get("commander_decision") or {}).get("strategist_refresh_reason") == "transition_readiness_threshold"
+    assert refresh_context.get("reason") == "cache_too_fresh_for_refresh"
+    assert refresh_context.get("fresh_cache_signal_override") is False
+    assert refresh_context.get("cache_freshness_gate_bypassed") is False
+    assert calls == [
+        "build_portfolio_snapshot",
+        "build_risk_context",
         "scanner",
         "monitor",
         "decision",

@@ -12,6 +12,8 @@ _CASCADE_ELIGIBLE_REASONS = {
     "pullback_below_vwap_reclaim_not_ready",
 }
 
+_DEFAULT_MAX_PRIORITY_RANK = 5
+
 
 def _quote_missing_symbols(scanner_output: Mapping[str, Any] | None) -> set[str]:
     if not isinstance(scanner_output, Mapping):
@@ -35,15 +37,19 @@ def build_entry_candidate_cascade_plan(
     entry_guard_blocked: bool,
     entry_triggered: bool,
     entry_reason: str,
-    max_runner_ups: int = 2,
+    max_runner_ups: int = _DEFAULT_MAX_PRIORITY_RANK - 1,
 ) -> Dict[str, Any]:
     selected_sym = normalize_symbol(selected_symbol)
     reason = str(entry_reason or "").strip()
+    max_runner_ups = max(0, int(max_runner_ups))
+    max_priority_rank = max(1, int(max_runner_ups) + 1)
     plan: Dict[str, Any] = {
         "attempted": False,
         "eligible": False,
         "reason": reason,
         "top_pick_symbol": selected_sym,
+        "max_priority_rank": int(max_priority_rank),
+        "max_runner_ups": int(max_runner_ups),
         "runner_up_symbols": [],
         "skipped": [],
         "warnings": [],
@@ -81,7 +87,7 @@ def build_entry_candidate_cascade_plan(
                 {"symbol": symbol, "reason": "quote_metrics_missing_monitor_fallback_allowed"}
             )
         runner_rows.append(row_out)
-        if len(runner_rows) >= max(0, int(max_runner_ups)):
+        if len(runner_rows) >= max_runner_ups:
             break
 
     plan["eligible"] = bool(runner_rows)

@@ -50,6 +50,7 @@ from libs.reporting.llm_artifacts import (
     build_llm_response_artifact,
     canonical_llm_status,
     daily_artifact_paths,
+    persist_llm_artifact_refs,
     split_prompt_text,
     trade_artifact_paths,
     write_json,
@@ -63,7 +64,10 @@ from libs.reporting.trade_report_ai import (
     build_ai_trade_report,
     build_ai_trade_report_compact_input,
     build_deterministic_trade_report,
+    build_trade_summary_input,
+    build_trade_summary_report,
     render_trade_report_markdown,
+    render_trade_summary_markdown_with_evaluation,
 )
 from libs.reporting.trade_story_pipeline import (
     build_commander_evidence,
@@ -125,6 +129,54 @@ from libs.reporting.trade_bundle_persistence import (
     persist_trade_llm_artifacts,
 )
 from libs.runtime.canonical_artifacts import load_run_canonical_artifacts
+
+
+def _runtime_minute_rows_for_symbol(runtime_state: Dict[str, Any], symbol: str) -> List[Dict[str, Any]]:
+    normalized = normalize_symbol(symbol or "", allow_test_symbols=True)
+    candidates = [normalized]
+    if normalized and not normalized.startswith("A"):
+        candidates.append(f"A{normalized}")
+    for root_key in ("recent_minute_ohlcv_by_symbol", "minute_ohlcv_by_symbol", "ohlcv_by_symbol"):
+        root = runtime_state.get(root_key)
+        if not isinstance(root, dict):
+            continue
+        for candidate in candidates:
+            record = root.get(candidate)
+            rows = record.get("rows") if isinstance(record, dict) else record
+            if isinstance(rows, list) and rows:
+                return [dict(row) for row in rows if isinstance(row, dict)]
+    return []
+
+
+def _post_exit_shadow_from_lifecycle(lifecycle: Dict[str, Any], lifecycle_bundle: Dict[str, Any]) -> Dict[str, Any]:
+    lifecycle_exit = lifecycle.get("exit") if isinstance(lifecycle.get("exit"), dict) else {}
+    for candidate in (
+        lifecycle_bundle.get("post_exit_shadow"),
+        lifecycle.get("post_exit_shadow"),
+        lifecycle_exit.get("post_exit_shadow") if isinstance(lifecycle_exit, dict) else {},
+    ):
+        if isinstance(candidate, dict) and candidate:
+            return dict(candidate)
+    return {}
+
+
+def _attach_post_exit_shadow_to_trade_report(
+    trade_report: Dict[str, Any],
+    *,
+    lifecycle: Dict[str, Any],
+    lifecycle_bundle: Dict[str, Any],
+) -> Dict[str, Any]:
+    shadow = _post_exit_shadow_from_lifecycle(lifecycle, lifecycle_bundle)
+    if not shadow:
+        return dict(trade_report or {})
+    out = dict(trade_report or {})
+    out["post_exit_shadow"] = dict(shadow)
+    fact_payload = dict(out.get("fact_payload") or {}) if isinstance(out.get("fact_payload"), dict) else {}
+    fact_trade = dict(fact_payload.get("trade") or {}) if isinstance(fact_payload.get("trade"), dict) else {}
+    fact_trade["post_exit_shadow"] = dict(shadow)
+    fact_payload["trade"] = fact_trade
+    out["fact_payload"] = fact_payload
+    return out
 
 
 def _env_bool(name: str, default: bool = True) -> bool:
@@ -1199,6 +1251,22 @@ def _spawn_followup_background_job(
 def _pid_active(pid: int) -> bool:
     if int(pid or 0) <= 0:
         return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            process_query_limited_information = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(  # type: ignore[attr-defined]
+                process_query_limited_information,
+                False,
+                int(pid),
+            )
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+                return True
+            return False
+        except Exception:
+            return False
     try:
         os.kill(int(pid), 0)
         return True
@@ -2579,12 +2647,19 @@ def _build_run_snapshots(
             execution_fallback_payload,
             fallback_source="event_log",
         )
-        execution = _build_execution_snapshot_lib(
-            candidates=[
-                execution_row.get("payload") if isinstance(execution_row.get("payload"), dict) else {},
+        execution_candidates = [
+            execution_row.get("payload") if isinstance(execution_row.get("payload"), dict) else {},
+            executor_payload if isinstance(executor_payload, dict) else {},
+            execution_fallback_payload,
+        ]
+        if str(executor_source or "").strip().lower() == "canonical":
+            execution_candidates = [
                 executor_payload if isinstance(executor_payload, dict) else {},
+                execution_row.get("payload") if isinstance(execution_row.get("payload"), dict) else {},
                 execution_fallback_payload,
-            ],
+            ]
+        execution = _build_execution_snapshot_lib(
+            candidates=execution_candidates,
             run_id=run_id,
             ts=str(execution_row.get("ts") or rows[-1].get("ts") or ""),
         )
@@ -2617,7 +2692,8 @@ def _build_run_snapshots(
             else candidate_selection.get("selected_symbol")
         )
         symbol = normalize_symbol(
-            execution.get("symbol")
+            (executor_payload.get("symbol") if str(executor_source or "").strip().lower() == "canonical" else "")
+            or execution.get("symbol")
             or selected_symbol
             or scanner_summary.get("selected_symbol")
             or monitor_trace.get("selected_symbol")
@@ -3419,6 +3495,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         story_compact_input_path = trade_paths["ai_trade_report_compact_input_json"]
         trade_report_json_path = trade_paths["ai_trade_report_json"]
         trade_report_md_path = trade_paths["ai_trade_report_md"]
+        trade_summary_input_json_path = trade_paths["ai_trade_summary_input_json"]
+        trade_summary_json_path = trade_paths["ai_trade_summary_json"]
+        trade_summary_md_path = trade_paths["ai_trade_summary_md"]
+        trade_summary_llm_response_path = trade_paths["ai_trade_summary_llm_response_json"]
         operator_brief_json_path = trade_paths["brief_json"]
         operator_brief_md_path = trade_paths["brief_md"]
         brief_llm_response_path = trade_paths["brief_llm_response_json"]
@@ -3617,6 +3697,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             exit_ctx_live=exit_ctx_live,
             entry_bundle=entry_bundle,
             exit_bundle=exit_bundle,
+            post_exit_price_rows=_runtime_minute_rows_for_symbol(runtime_state, symbol),
         )
         lifecycle = dict(live_trade_context.get("lifecycle") or lifecycle)
         lifecycle_bundle = dict(live_trade_context.get("lifecycle_bundle") or lifecycle_bundle)
@@ -3858,6 +3939,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             write_failure_reason_human=_report_reason_human("artifact_write_failed"),
             write_failure_next_step=_report_next_step("artifact_write_failed"),
             error_sanitizer=_sanitize_error_message,
+            trade_summary_input_json_path=trade_summary_input_json_path,
+            summary_input_builder=build_trade_summary_input,
+            trade_summary_md_path=trade_summary_md_path,
+            summary_markdown_renderer=lambda payload: render_trade_summary_markdown_with_evaluation(payload, {}),
         )
         diagnostics = dict(report_output_persistence.get("diagnostics") or diagnostics)
         trade_report_json_written = str(
@@ -3866,6 +3951,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         trade_report_md_written = str(
             report_output_persistence.get("trade_report_md_written") or ""
         )
+        trade_summary_md_written = str(
+            report_output_persistence.get("trade_summary_md_written") or ""
+        )
+        trade_summary_input_json_written = str(
+            report_output_persistence.get("trade_summary_input_json_written") or ""
+        )
+        trade_summary_json_written = ""
+        trade_summary_llm_response_written = ""
         ai_trade_report_llm_response_written = ""
 
         llm_persistence = persist_trade_llm_artifacts(
@@ -3952,6 +4045,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         lifecycle_bundle = dict(final_context.get("lifecycle_bundle") or lifecycle_bundle)
         trade_story_input = dict(final_context.get("trade_story_input") or trade_story_input)
         trade_report = dict(final_context.get("trade_report") or trade_report)
+        trade_report = _attach_post_exit_shadow_to_trade_report(
+            trade_report,
+            lifecycle=lifecycle,
+            lifecycle_bundle=lifecycle_bundle,
+        )
         section_provenance = dict(final_context.get("section_provenance") or {})
         evidence_completeness = dict(final_context.get("evidence_completeness") or {})
         recovery_metadata = dict(final_context.get("recovery_metadata") or {})
@@ -3972,7 +4070,45 @@ def main(argv: Optional[List[str]] = None) -> int:
                 trade_report_json_path=trade_report_json_path,
                 trade_report_md_path=trade_report_md_path,
                 markdown_renderer=render_trade_report_markdown,
+                trade_summary_input_json_path=trade_summary_input_json_path,
+                summary_input_builder=build_trade_summary_input,
+                trade_summary_md_path=trade_summary_md_path,
+                summary_markdown_renderer=lambda payload: render_trade_summary_markdown_with_evaluation(payload, {}),
             )
+            trade_summary_input_payload = build_trade_summary_input(dict(trade_report))
+            trade_summary_report_payload = build_trade_summary_report(
+                trade_summary_input_payload,
+                enabled=bool(report_requested and should_attempt_generation),
+                model=configured_report_model,
+                temperature=0.1,
+                max_tokens=1200,
+            )
+            write_json(trade_summary_input_json_path, trade_summary_input_payload)
+            write_json(trade_summary_json_path, trade_summary_report_payload)
+            trade_summary_json_written = str(trade_summary_json_path)
+            trade_summary_md_path.write_text(
+                render_trade_summary_markdown_with_evaluation(
+                    dict(trade_report),
+                    trade_summary_report_payload,
+                ),
+                encoding="utf-8",
+            )
+            trade_summary_md_written = str(trade_summary_md_path)
+            trade_summary_llm_artifact = (
+                trade_summary_report_payload.get("llm_response_artifact")
+                if isinstance(trade_summary_report_payload.get("llm_response_artifact"), dict)
+                else {}
+            )
+            if trade_summary_llm_artifact:
+                trade_summary_llm_compact = persist_llm_artifact_refs(
+                    artifact=trade_summary_llm_artifact,
+                    reports_root=reports_root,
+                    day=day,
+                    run_id=str(anchor_run_id or ""),
+                    component="ai_trade_summary",
+                )
+                write_json(trade_summary_llm_response_path, trade_summary_llm_compact)
+                trade_summary_llm_response_written = str(trade_summary_llm_response_path)
 
         artifact_presence = {
             "lifecycle_bundle_json": lifecycle_bundle_path.exists(),
@@ -3983,12 +4119,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             "ai_trade_report_compact_input_json": story_compact_input_path.exists(),
             "ai_trade_report_json": bool(trade_report_json_written),
             "ai_trade_report_md": bool(trade_report_md_written),
+            "ai_trade_summary_input_json": bool(trade_summary_input_json_written) or trade_summary_input_json_path.exists(),
+            "ai_trade_summary_json": bool(trade_summary_json_written) or trade_summary_json_path.exists(),
+            "ai_trade_summary_md": bool(trade_summary_md_written) or trade_summary_md_path.exists(),
             "strategist_evidence_json": strategist_evidence_path.exists(),
             "scanner_evidence_json": scanner_evidence_path.exists(),
             "monitor_evidence_json": monitor_evidence_path.exists(),
             "commander_evidence_json": commander_evidence_path.exists(),
             "strategist_llm_response_json": strategist_llm_response_path.exists(),
             "ai_trade_report_llm_response_json": bool(ai_trade_report_llm_response_written),
+            "ai_trade_summary_llm_response_json": bool(trade_summary_llm_response_written) or trade_summary_llm_response_path.exists(),
             "brief_llm_response_json": trade_paths["brief_llm_response_json"].exists(),
         }
         phase3_completeness_axes = {
@@ -4120,6 +4260,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             trade_health_payload=trade_health_payload,
             trade_artifact_links_payload=trade_artifact_links_payload,
             diagnostics=dict(diagnostics),
+            trade_summary_input_json_path=trade_summary_input_json_path,
+            trade_summary_json_path=trade_summary_json_path,
+            trade_summary_md_path=trade_summary_md_path,
+            trade_summary_llm_response_path=trade_summary_llm_response_path,
         )
         artifact_presence = dict(persisted_trade_outputs.get("artifact_presence") or {})
         trade_health_payload = dict(persisted_trade_outputs.get("trade_health_payload") or {})

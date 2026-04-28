@@ -286,6 +286,7 @@ def _build_report_regen_command(
     reports_root: str,
     local_debug: bool,
     hard_timeout_sec: Optional[float],
+    with_llm: bool = False,
 ) -> List[str]:
     command = [
         sys.executable,
@@ -304,6 +305,8 @@ def _build_report_regen_command(
         command.extend(["--hard-timeout-sec", str(hard_timeout_sec)])
     if local_debug:
         command.append("--local-debug")
+    elif with_llm:
+        command.append("--with-llm")
     return command
 
 
@@ -512,6 +515,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     trade_id=trade_id,
                     reports_root=str(args.reports_root or "reports"),
                     local_debug=True,
+                    with_llm=False,
                     hard_timeout_sec=5.0,
                 )
             )
@@ -524,6 +528,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     trade_id=trade_id,
                     reports_root=str(args.reports_root or "reports"),
                     local_debug=False,
+                    with_llm=True,
                     hard_timeout_sec=float(args.llm_hard_timeout_sec or 900.0),
                 )
             )

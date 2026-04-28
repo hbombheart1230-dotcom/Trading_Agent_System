@@ -27,6 +27,21 @@ def test_weekly_strategy_memory_packet_aggregates_recent_days(tmp_path: Path) ->
                     "defensive": {"usage_count": 2, "win_rate": 0.5, "avg_return": 0.01, "stability_score": 0.7},
                     "breakout": {"usage_count": 1, "win_rate": 0.0, "avg_return": -0.003, "stability_score": 0.2},
                 },
+            "pattern_performance_snapshot": {
+                "entry_exit_combos": {
+                    "breakout -> peak_drawdown": {
+                        "trade_count": 1,
+                        "win_count": 0,
+                        "loss_count": 1,
+                        "win_rate": 0.0,
+                        "avg_return": -0.003,
+                        "symbols": ["005930"],
+                    }
+                },
+                "problem_patterns": ["entry_exit:breakout->peak_drawdown"],
+                "working_patterns": [],
+                "advisory_only": True,
+            },
             "market_condition_bias": {
                 "regime_bias": {
                     "neutral": {"win_rate": 0.4, "avg_return": -0.002, "trade_count": 3}
@@ -60,6 +75,21 @@ def test_weekly_strategy_memory_packet_aggregates_recent_days(tmp_path: Path) ->
                     "defensive": {"usage_count": 3, "win_rate": 0.67, "avg_return": 0.012, "stability_score": 0.8},
                     "chase": {"usage_count": 1, "win_rate": 0.0, "avg_return": -0.002, "stability_score": 0.1},
                 },
+            "pattern_performance_snapshot": {
+                "entry_exit_combos": {
+                    "breakout -> peak_drawdown": {
+                        "trade_count": 2,
+                        "win_count": 0,
+                        "loss_count": 2,
+                        "win_rate": 0.0,
+                        "avg_return": -0.005,
+                        "symbols": ["000660"],
+                    }
+                },
+                "problem_patterns": ["entry_exit:breakout->peak_drawdown"],
+                "working_patterns": [],
+                "advisory_only": True,
+            },
             "market_condition_bias": {
                 "regime_bias": {
                     "neutral": {"win_rate": 0.5, "avg_return": 0.001, "trade_count": 4}
@@ -133,6 +163,8 @@ def test_weekly_strategy_memory_packet_aggregates_recent_days(tmp_path: Path) ->
     assert "breakout" in packet["worst_playbooks"]
     assert "playbook:breakout" in packet["recent_failures"]
     assert packet["playbook_performance_snapshot"]["defensive"]["sample_days"] == 2
+    assert packet["pattern_performance_snapshot"]["entry_exit_combos"]["breakout -> peak_drawdown"]["trade_count"] == 3
+    assert packet["pattern_performance_snapshot"]["problem_patterns"] == ["entry_exit:breakout->peak_drawdown"]
     assert packet["memory_type"] == "weekly"
     assert packet["window"]["label"] == "last_5_trading_days"
     assert packet["sample_quality"]["trade_count"] == 7

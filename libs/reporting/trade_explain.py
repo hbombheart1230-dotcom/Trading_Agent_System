@@ -13,6 +13,7 @@ from libs.reporting.report_metadata import (
     build_route_provenance,
     render_data_freshness_markdown,
 )
+from libs.reporting.llm_artifacts import operator_summary_artifact_root
 from libs.reporting.report_source_helpers import (
     build_commander_route_summary,
     epoch_to_iso,
@@ -500,13 +501,14 @@ def _build_sell_pairs_fifo(executions: List[Dict[str, Any]]) -> List[Dict[str, A
 
 
 def _report_inventory(day: str, reports_root: Path) -> List[str]:
+    operator_root = operator_summary_artifact_root(reports_root)
     candidates = [
-        reports_root / "daily" / day / "operator_summary.md",
+        operator_root / "daily" / day / "operator_summary.md",
         reports_root / "decision_story" / f"decision_story_{day}.md",
         reports_root / "run_cards" / f"run_cards_{day}.md",
         reports_root / "metrics" / f"metrics_{day}.md",
-        reports_root / "daily" / day / "daily_report.md",
-        reports_root / "daily" / f"daily_{day}.md",
+        operator_root / "daily" / day / "daily_report.md",
+        operator_root / "daily" / f"daily_{day}.md",
         reports_root / "live_watch" / "live_watch_latest.md",
     ]
     out: List[str] = []

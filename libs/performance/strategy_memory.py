@@ -159,6 +159,95 @@ def _list_unique(values: List[str], *, limit: int = 8) -> List[str]:
     return out
 
 
+def _pattern_stats(src: Dict[str, Any], *, limit: int) -> Dict[str, Any]:
+    rows: List[tuple[str, Dict[str, Any]]] = []
+    for name, payload in dict(src or {}).items():
+        item = payload if isinstance(payload, dict) else {}
+        text = str(name or "").strip()
+        if not text:
+            continue
+        rows.append((text, item))
+    rows.sort(
+        key=lambda row: (
+            -_safe_int(row[1].get("trade_count")),
+            _safe_float(row[1].get("avg_return"), 0.0),
+            row[0],
+        )
+    )
+    out: Dict[str, Any] = {}
+    for name, item in rows[: max(1, int(limit))]:
+        out[name] = {
+            "trade_count": _safe_int(item.get("trade_count")),
+            "win_count": _safe_int(item.get("win_count")),
+            "loss_count": _safe_int(item.get("loss_count")),
+            "win_rate": _safe_float(item.get("win_rate"), 0.0),
+            "avg_return": _safe_float(item.get("avg_return"), 0.0),
+            "max_drawdown": _safe_float(item.get("max_drawdown"), 0.0),
+            "symbols": [str(x or "") for x in list(item.get("symbols") or [])[:8] if str(x or "").strip()],
+        }
+    return out
+
+
+def _rank_pattern_labels(
+    *,
+    prefix: str,
+    stats: Dict[str, Any],
+    success: bool,
+    limit: int,
+) -> List[str]:
+    candidates: List[tuple[str, int, float, float]] = []
+    for name, payload in dict(stats or {}).items():
+        item = payload if isinstance(payload, dict) else {}
+        label = str(name or "").strip()
+        if not label or label == "unknown" or "unknown" in label.split(" -> "):
+            continue
+        trade_count = _safe_int(item.get("trade_count"))
+        win_rate = _safe_float(item.get("win_rate"), 0.0)
+        avg_return = _safe_float(item.get("avg_return"), 0.0)
+        if trade_count <= 0:
+            continue
+        if success and not (win_rate >= 0.5 and avg_return > 0.0):
+            continue
+        if not success and not (win_rate <= 0.4 or avg_return < 0.0):
+            continue
+        candidates.append((f"{prefix}:{label.replace(' -> ', '->')}", trade_count, win_rate, avg_return))
+    if success:
+        candidates.sort(key=lambda row: (-row[3], -row[2], -row[1], row[0]))
+    else:
+        candidates.sort(key=lambda row: (-row[1], row[3], row[2], row[0]))
+    return [label for label, _count, _win_rate, _avg_return in candidates[: max(1, int(limit))]]
+
+
+def _build_pattern_performance_snapshot(summary: Dict[str, Any]) -> Dict[str, Any]:
+    entry_stats = summary.get("per_entry_pattern_stats") if isinstance(summary.get("per_entry_pattern_stats"), dict) else {}
+    exit_stats = summary.get("per_exit_pattern_stats") if isinstance(summary.get("per_exit_pattern_stats"), dict) else {}
+    combo_stats = (
+        summary.get("per_entry_exit_combo_stats")
+        if isinstance(summary.get("per_entry_exit_combo_stats"), dict)
+        else {}
+    )
+    problem_patterns = _list_unique(
+        _rank_pattern_labels(prefix="entry_exit", stats=combo_stats, success=False, limit=4)
+        + _rank_pattern_labels(prefix="exit", stats=exit_stats, success=False, limit=3)
+        + _rank_pattern_labels(prefix="entry", stats=entry_stats, success=False, limit=3),
+        limit=8,
+    )
+    working_patterns = _list_unique(
+        _rank_pattern_labels(prefix="entry_exit", stats=combo_stats, success=True, limit=4)
+        + _rank_pattern_labels(prefix="exit", stats=exit_stats, success=True, limit=3)
+        + _rank_pattern_labels(prefix="entry", stats=entry_stats, success=True, limit=3),
+        limit=8,
+    )
+    return {
+        "entry_pattern_types": _pattern_stats(entry_stats, limit=5),
+        "exit_pattern_types": _pattern_stats(exit_stats, limit=5),
+        "entry_exit_combos": _pattern_stats(combo_stats, limit=7),
+        "problem_patterns": problem_patterns,
+        "working_patterns": working_patterns,
+        "advisory_only": True,
+    }
+
+
 def _recent_patterns_from_playbooks(playbooks: Dict[str, Any], *, success: bool) -> List[str]:
     rows: List[tuple[str, float, float, float]] = []
     for name, payload in dict(playbooks or {}).items():
@@ -227,6 +316,7 @@ def build_strategy_memory(
 
     success_patterns = _recent_patterns_from_playbooks(playbooks, success=True)
     failure_patterns = _recent_patterns_from_playbooks(playbooks, success=False)
+    pattern_performance_snapshot = _build_pattern_performance_snapshot(summary_obj)
     market_condition_bias: Dict[str, Any] = {
         "regime_bias": regime_bias,
         "preferred_regimes": [
@@ -256,6 +346,7 @@ def build_strategy_memory(
         "recent_failures": [f"playbook:{name}" for name in failure_patterns],
         "recent_success_patterns": [f"playbook:{name}" for name in success_patterns],
         "playbook_performance_snapshot": playbook_performance_snapshot,
+        "pattern_performance_snapshot": pattern_performance_snapshot,
         "reporter_analysis_digest": dict(reporter_analysis_digest or {}),
         "advisory_only": True,
     }
@@ -280,11 +371,63 @@ def write_strategy_memory(
         playbook_obj = write_playbook_stats(root, day=target_day)
     memory = build_strategy_memory(summary_obj, playbook_obj, reporter_digest)
     memory["day"] = str(target_day or summary_obj.get("day") or playbook_obj.get("day") or "")
+    memory["status"] = "ok" if (memory.get("best_playbooks") or memory.get("worst_playbooks")) else "empty"
     paths = performance_artifact_paths(root, memory["day"])
     paths["root_dir"].mkdir(parents=True, exist_ok=True)
-    paths["strategy_memory_json"].write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding="utf-8")
     memory["artifact_path"] = str(paths["strategy_memory_json"])
+    paths["strategy_memory_json"].write_text(json.dumps(memory, ensure_ascii=False, indent=2), encoding="utf-8")
     return memory
+
+
+def sync_strategy_memory_artifacts(
+    reports_root: Path,
+    *,
+    day: str,
+    source: str = "operator_daily_summary",
+) -> Dict[str, Any]:
+    root = Path(reports_root)
+    target_day = str(day or "").strip()
+    if not target_day:
+        return {
+            "schema_version": "strategy_memory_sync.v1",
+            "status": "skipped",
+            "reason": "missing_day",
+            "day": "",
+            "source": str(source or ""),
+            "generated_at": _utc_now_iso(),
+        }
+    try:
+        summary = write_performance_summary(root, day=target_day)
+        playbook = write_playbook_stats(root, day=target_day)
+        memory = write_strategy_memory(root, day=target_day, summary=summary, playbook_stats=playbook)
+    except Exception as exc:
+        return {
+            "schema_version": "strategy_memory_sync.v1",
+            "status": "error",
+            "reason": str(exc),
+            "day": target_day,
+            "source": str(source or ""),
+            "generated_at": _utc_now_iso(),
+        }
+    paths = performance_artifact_paths(root, target_day)
+    return {
+        "schema_version": "strategy_memory_sync.v1",
+        "status": "ok",
+        "day": target_day,
+        "source": str(source or ""),
+        "generated_at": _utc_now_iso(),
+        "total_trades": int(float(summary.get("total_trades") or 0)),
+        "playbook_count": len(dict(playbook.get("playbooks") or {})),
+        "strategy_memory_status": str(memory.get("status") or ""),
+        "best_playbooks": list(memory.get("best_playbooks") or []),
+        "worst_playbooks": list(memory.get("worst_playbooks") or []),
+        "artifacts": {
+            "summary_json": str(paths["summary_json"]),
+            "playbook_stats_json": str(paths["playbook_stats_json"]),
+            "symbol_stats_json": str(paths["symbol_stats_json"]),
+            "strategy_memory_json": str(paths["strategy_memory_json"]),
+        },
+    }
 
 
 def _resolve_latest_day(performance_root: Path) -> str:

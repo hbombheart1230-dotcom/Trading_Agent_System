@@ -112,11 +112,18 @@ def _record_path(state: Dict[str, Any], agent: str, path: str) -> None:
     state["canonical_artifacts"] = current
 
 
-def _write_artifact_once(state: Dict[str, Any], *, agent: str, path: Path, payload: Dict[str, Any]) -> str:
+def _write_artifact_once(
+    state: Dict[str, Any],
+    *,
+    agent: str,
+    path: Path,
+    payload: Dict[str, Any],
+    overwrite: bool = False,
+) -> str:
     cache = state.get("_canonical_written_paths") if isinstance(state.get("_canonical_written_paths"), dict) else {}
     cache = dict(cache)
     existing = str(cache.get(str(agent or "").strip()) or "").strip()
-    if existing and existing == str(path) and path.exists():
+    if not overwrite and existing and existing == str(path) and path.exists():
         _record_path(state, agent, str(path))
         state["_canonical_written_paths"] = cache
         return str(path)
@@ -226,7 +233,16 @@ def write_scanner_artifact(state: Dict[str, Any]) -> str:
     if not run_id:
         return ""
     paths = canonical_run_artifact_paths(run_id, day=_resolve_day(state), reports_root=_reports_root(state))
-    path = _write_artifact_once(state, agent="scanner", path=paths["scanner"], payload=build_scanner_output_artifact(state))
+    # Scanner can run twice in one integrated cycle when commander refreshes the
+    # strategist frame after the first scanner selection. The canonical scanner
+    # artifact must reflect the scanner output actually handed to monitor.
+    path = _write_artifact_once(
+        state,
+        agent="scanner",
+        path=paths["scanner"],
+        payload=build_scanner_output_artifact(state),
+        overwrite=True,
+    )
     return path
 
 

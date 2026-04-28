@@ -63,6 +63,10 @@ Used by:
   - stored inside the LLM response artifact as `parsed_output`
 - Rendered artifact
   - strategist output is embedded into lifecycle/bundle artifacts
+- Explanation contract
+  - `docs/strategist_output/strategist_explanation_contract_2026-04-25.md`
+  - strategist owns strategy frame, memory/news interpretation, scanner guidance, and monitor guidance
+  - strategist does not own final symbol selection or order execution
 
 ### AI trade report
 

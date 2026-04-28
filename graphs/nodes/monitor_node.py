@@ -31,6 +31,7 @@ from libs.runtime.decision_observability import (
     build_scanner_monitor_handoff_surface,
 )
 from libs.runtime.monitor_candidate_cascade import build_entry_candidate_cascade_plan
+from libs.runtime.commander_memory_application_trace import build_monitor_commander_memory_application_trace
 from libs.runtime.exit_policy import (
     apply_account_pnl_crosscheck_context,
     apply_env_stop_take_fallbacks,
@@ -54,6 +55,7 @@ from libs.runtime.monitor_policy import (
 )
 from libs.runtime.market_hours import MarketHours
 from libs.runtime.position_sizing import evaluate_position_size
+from libs.runtime.strategy_horizon_feedback import build_exit_vs_strategy_intent
 from libs.strategies.contracts import coerce_strategist_output
 
 
@@ -160,6 +162,66 @@ def _resolve_monitor_memory_bias_payload(
     if isinstance(state.get("monitor_memory_bias"), dict):
         return dict(state.get("monitor_memory_bias") or {})
     return {}
+
+
+def _resolve_commander_entry_control_for_monitor(
+    *,
+    commander_context: Dict[str, Any],
+    strategy_monitor_policy: Dict[str, Any],
+    state: Dict[str, Any],
+) -> Dict[str, Any]:
+    applied_policy = (
+        dict(strategy_monitor_policy.get("applied_policy") or {})
+        if isinstance(strategy_monitor_policy.get("applied_policy"), dict)
+        else {}
+    )
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    scanner_policy = (
+        dict(commander_decision.get("scanner_policy") or {})
+        if isinstance(commander_decision.get("scanner_policy"), dict)
+        else {}
+    )
+    candidates = [
+        commander_context.get("commander_entry_control"),
+        commander_context.get("entry_control"),
+        strategy_monitor_policy.get("commander_entry_control"),
+        strategy_monitor_policy.get("entry_control"),
+        applied_policy.get("commander_entry_control"),
+        applied_policy.get("entry_control"),
+        commander_decision.get("entry_control"),
+        scanner_policy.get("entry_control"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate:
+            return dict(candidate)
+    if scanner_policy.get("max_priority_rank") not in (None, ""):
+        max_priority_rank = int(_clamp(_to_float(scanner_policy.get("max_priority_rank")), 1, 10))
+        return {
+            "schema_version": "commander_entry_control.v1",
+            "source": "commander_decision.scanner_policy",
+            "mode": "scanner_policy_limits",
+            "max_priority_rank": int(max_priority_rank),
+            "max_runner_ups": int(max(0, max_priority_rank - 1)),
+            "allow_dynamic_entry_band": False,
+        }
+    return {}
+
+
+def _resolve_entry_candidate_cascade_config(entry_control: Dict[str, Any]) -> Dict[str, Any]:
+    raw_rank = entry_control.get("max_priority_rank") if isinstance(entry_control, dict) else None
+    raw_runner_ups = entry_control.get("max_runner_ups") if isinstance(entry_control, dict) else None
+    if raw_rank not in (None, ""):
+        max_priority_rank = int(_clamp(_to_float(raw_rank), 1, 10))
+    elif raw_runner_ups not in (None, ""):
+        max_priority_rank = int(_clamp(_to_float(raw_runner_ups) + 1, 1, 10))
+    else:
+        max_priority_rank = 5
+    return {
+        "max_priority_rank": int(max_priority_rank),
+        "max_runner_ups": int(max(0, max_priority_rank - 1)),
+        "source": str((entry_control or {}).get("source") or "default"),
+        "mode": str((entry_control or {}).get("mode") or "default"),
+    }
 
 
 def _resolve_monitor_skill_runner(state: Dict[str, Any]) -> tuple[Any, str]:
@@ -1282,6 +1344,8 @@ def _build_monitor_policy_trace(
         "no_trade_reason_code",
         "llm_policy",
         "source_priority",
+        "entry_control",
+        "commander_entry_control",
     ):
         value = commander_context.get(key)
         if value not in (None, "", [], {}):
@@ -1354,6 +1418,9 @@ def _build_monitor_policy_trace(
             "no_trade_reason_code": no_trade_reason_code,
             "llm_policy": str(commander_context.get("llm_policy") or ""),
             "source_priority": list(commander_context.get("source_priority") or []),
+            "entry_control": dict(commander_context.get("entry_control") or {})
+            if isinstance(commander_context.get("entry_control"), dict)
+            else {},
             "applied_policy": dict(commander_context.get("applied_policy") or {})
             if isinstance(commander_context.get("applied_policy"), dict)
             else dict(monitor_policy.get("applied_policy") or {})
@@ -2175,6 +2242,45 @@ def _position_by_symbol(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _position_hold_seconds(state: Dict[str, Any], symbol: str, position: Dict[str, Any]) -> int:
+    for key in ("hold_sec", "position_age_seconds"):
+        hold_sec = _to_int(position.get(key))
+        if hold_sec > 0:
+            return int(hold_sec)
+
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    now_epoch = _resolve_now_epoch(state)
+    entry_epoch = _to_int(
+        position.get("position_entry_epoch")
+        if position.get("position_entry_epoch") not in (None, "")
+        else position.get("entry_epoch")
+    )
+    entry_map = (
+        persisted.get("position_entry_epoch_by_symbol")
+        if isinstance(persisted.get("position_entry_epoch_by_symbol"), dict)
+        else {}
+    )
+    if entry_epoch <= 0:
+        entry_epoch = _to_int(entry_map.get(_norm_symbol(symbol)))
+    if entry_epoch > 0 and now_epoch > 0:
+        return max(0, int(now_epoch - entry_epoch))
+
+    last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
+    last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
+    last_trade_symbol = _norm_symbol(persisted.get("last_trade_symbol"))
+    if (
+        last_trade_side == "BUY"
+        and last_trade_epoch > 0
+        and (not last_trade_symbol or last_trade_symbol == _norm_symbol(symbol))
+    ):
+        return max(0, int(now_epoch - last_trade_epoch))
+    if last_trade_side == "BUY" and last_trade_epoch > 0:
+        legacy_age = max(0, int(now_epoch - last_trade_epoch))
+        if legacy_age >= 12 * 3600:
+            return int(legacy_age)
+    return 0
+
+
 def _preview_exit_decision_for_symbol(
     *,
     state: Dict[str, Any],
@@ -2214,16 +2320,9 @@ def _preview_exit_decision_for_symbol(
 
     features = selected_for_exit.get("features") if isinstance(selected_for_exit.get("features"), dict) else {}
     feature_source = str(selected_for_exit.get("_monitor_feature_source") or "none")
-    hold_sec = _to_int(position.get("hold_sec"))
+    hold_sec = _position_hold_seconds(state, symbol, position)
     if hold_sec <= 0:
         hold_sec = _to_int(state.get("position_hold_sec"))
-    if hold_sec <= 0:
-        persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
-        last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
-        last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
-        if last_trade_side == "BUY" and last_trade_epoch > 0:
-            now_epoch = _resolve_now_epoch(state)
-            hold_sec = max(0, int(now_epoch - last_trade_epoch))
 
     exit_policy_map = dict(exit_policy_base or {})
     if position.get("peak_price") is not None:
@@ -2519,7 +2618,7 @@ def _select_exit_symbol(
     exit_policy_base: Dict[str, Any] | None = None,
 ) -> str:
     sel = _norm_symbol(selected_symbol)
-    if sel and max(0, _to_int((pos_map.get(sel) or {}).get("qty"))) > 0:
+    if state is None and sel and max(0, _to_int((pos_map.get(sel) or {}).get("qty"))) > 0:
         return sel
 
     held_symbols = [
@@ -2546,7 +2645,7 @@ def _select_exit_symbol(
     selected_raw = selected if isinstance(selected, dict) else {}
     selected_raw_symbol = _norm_symbol(selected_raw.get("symbol"))
     best_symbol = held_symbols[0]
-    best_rank = (-1, -1, -1.0, -1)
+    best_rank = (-1, -1, -1.0, -1, -1)
     for sym in held_symbols:
         pos = dict(pos_map.get(sym) or {})
         selected_for_exit = selected_raw if selected_raw_symbol == sym else {"symbol": sym}
@@ -2560,8 +2659,9 @@ def _select_exit_symbol(
         triggered = 1 if bool(decision.get("triggered")) else 0
         reason_priority = _exit_reason_priority(str(decision.get("reason") or ""))
         pnl_mag = abs(_to_float(decision.get("_pnl_ratio")))
+        selected_bonus = 1 if sym == sel else 0
         qty = max(0, _to_int(decision.get("_qty")))
-        rank = (triggered, reason_priority, pnl_mag, qty)
+        rank = (triggered, reason_priority, pnl_mag, selected_bonus, qty)
         if rank > best_rank:
             best_rank = rank
             best_symbol = sym
@@ -2939,11 +3039,23 @@ def _evaluate_monitor_entry_candidate(
     )
     monitor_memory_bias_summary = summarize_monitor_memory_bias(monitor_memory_bias)
     entry_received_policy = MonitorEntryPolicy.from_mapping(entry_policy_input or monitor_policy).to_dict()
+    commander_entry_control = (
+        dict(commander_context.get("commander_entry_control") or commander_context.get("entry_control") or {})
+        if isinstance(commander_context, dict)
+        else {}
+    )
+    if commander_entry_control:
+        entry_policy_input = dict(entry_policy_input or monitor_policy or {})
+        entry_policy_input["commander_entry_control"] = dict(commander_entry_control)
+        entry_policy_input["entry_control"] = dict(commander_entry_control)
     monitor_memory_bias_result = apply_monitor_memory_bias_to_entry_policy(
         entry_policy=entry_policy_input or monitor_policy,
         monitor_memory_bias=monitor_memory_bias,
     )
     entry_policy_input = dict(monitor_memory_bias_result.get("policy") or {})
+    if commander_entry_control:
+        entry_policy_input["commander_entry_control"] = dict(commander_entry_control)
+        entry_policy_input["entry_control"] = dict(commander_entry_control)
     entry_policy = resolve_intraday_entry_policy(entry_policy_input or monitor_policy, frame=strategy_frame)
     state = _ensure_monitor_minute_ohlcv_for_symbol(
         state,
@@ -2978,6 +3090,8 @@ def _evaluate_monitor_entry_candidate(
     entry_info["closeout_window_active"] = bool(closeout_window_guard.get("active"))
     entry_info["symbol"] = symbol
     entry_info["selected_symbol"] = symbol
+    if commander_entry_control:
+        entry_info["commander_entry_control"] = dict(commander_entry_control)
     entry_info["applied_policy"] = dict(entry_info.get("applied_policy") or entry_info.get("thresholds") or entry_policy.to_dict())
     entry_applied_policy = dict(entry_info.get("applied_policy") or {})
     effective_policy_trace = _build_monitor_effective_policy_trace(
@@ -3019,6 +3133,17 @@ def _evaluate_monitor_entry_candidate(
     entry_info["monitor_memory_bias"] = dict(monitor_memory_bias)
     entry_info["monitor_memory_bias_summary"] = dict(monitor_memory_bias_summary)
     entry_info["monitor_memory_bias_deltas"] = list(monitor_memory_bias_result.get("deltas") or [])
+    entry_memory_application_trace = build_monitor_commander_memory_application_trace(
+        monitor_memory_bias=monitor_memory_bias,
+        entry_result=monitor_memory_bias_result,
+        hold_result={"applied": False, "deltas": []},
+        exit_result={"applied": False, "deltas": []},
+        monitor_memory_bias_summary=monitor_memory_bias_summary,
+        effective_policy_source=str(effective_policy_trace.get("effective_policy_source") or ""),
+        effective_policy_source_chain=list(effective_policy_trace.get("effective_policy_source_chain") or []),
+    )
+    entry_info["commander_memory_application_trace"] = dict(entry_memory_application_trace)
+    entry_info["monitor_memory_application_trace"] = dict(entry_memory_application_trace)
     entry_metrics = entry_info.get("metrics") if isinstance(entry_info.get("metrics"), dict) else {}
     entry_metrics["minute_source_present"] = bool(entry_rows)
     entry_metrics["minute_source_used"] = entry_row_source or ""
@@ -3156,6 +3281,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(strategy_frame.get("commander_context"), dict)
         else {}
     )
+    commander_entry_control = _resolve_commander_entry_control_for_monitor(
+        commander_context=commander_context,
+        strategy_monitor_policy=strategy_monitor_policy,
+        state=state,
+    )
+    if commander_entry_control:
+        commander_context["entry_control"] = dict(commander_entry_control)
+        commander_context["commander_entry_control"] = dict(commander_entry_control)
+        strategy_frame["commander_context"] = commander_context
     monitor_memory_bias = _resolve_monitor_memory_bias_payload(
         strategy_monitor_policy=strategy_monitor_policy,
         commander_context=commander_context,
@@ -3201,6 +3335,9 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         ),
     )
     entry_policy_input: Dict[str, Any] = dict(entry_policy_contract.get("selected_policy") or {})
+    if commander_entry_control:
+        entry_policy_input["commander_entry_control"] = dict(commander_entry_control)
+        entry_policy_input["entry_control"] = dict(commander_entry_control)
     entry_policy_origin = str(entry_policy_contract.get("selected_source") or "monitor_policy")
     buy_blocked_open_position = False
     buy_blocked_post_exit_cooldown = False
@@ -3278,6 +3415,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "no_trade_reason_code": str(commander_context.get("no_trade_reason_code") or ""),
                     "llm_policy": str(commander_context.get("llm_policy") or ""),
                     "source_priority": list(commander_context.get("source_priority") or []),
+                    "entry_control": dict(commander_entry_control),
                 },
                 "strategist_plan": {
                     "selected_playbook": str(strategist_plan.get("selected_playbook") or ""),
@@ -3303,11 +3441,16 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "inputs": {},
     }
     scanner_selected_snapshot = dict(selected) if isinstance(selected, dict) else {}
+    entry_cascade_config = _resolve_entry_candidate_cascade_config(commander_entry_control)
     entry_candidate_cascade: Dict[str, Any] = {
         "attempted": False,
         "eligible": False,
         "reason": "",
         "top_pick_symbol": "",
+        "max_priority_rank": int(entry_cascade_config.get("max_priority_rank") or 5),
+        "max_runner_ups": int(entry_cascade_config.get("max_runner_ups") or 4),
+        "control_source": str(entry_cascade_config.get("source") or "default"),
+        "control_mode": str(entry_cascade_config.get("mode") or "default"),
         "runner_up_symbols": [],
         "skipped": [],
         "fallback_used": False,
@@ -3361,6 +3504,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             entry_guard_blocked=entry_guard_blocked,
             entry_triggered=bool(entry_info.get("triggered")),
             entry_reason=str(entry_info.get("reason") or ""),
+            max_runner_ups=int(entry_cascade_config.get("max_runner_ups") or 4),
         )
         entry_candidate_cascade.update(dict(cascade_plan))
         fallback_trace = list(entry_candidate_cascade.get("fallback_trace") or [])
@@ -3395,11 +3539,42 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 state = runner_result.get("state") if isinstance(runner_result.get("state"), dict) else state
                 entry_cooldown_map = dict(runner_result.get("entry_cooldown_map") or entry_cooldown_map)
                 runner_entry = dict(runner_result.get("entry_info") or {})
+                runner_metrics = (
+                    dict(runner_entry.get("metrics") or {})
+                    if isinstance(runner_entry.get("metrics"), dict)
+                    else {}
+                )
+                runner_scores = (
+                    dict(runner_entry.get("condition_scores") or {})
+                    if isinstance(runner_entry.get("condition_scores"), dict)
+                    else {}
+                )
                 fallback_trace.append(
                     {
                         "symbol": runner_symbol,
                         "triggered": bool(runner_entry.get("triggered")),
                         "reason": str(runner_entry.get("reason") or ""),
+                        "primary_failure_axis": str(runner_entry.get("primary_failure_axis") or ""),
+                        "transition_readiness_score": runner_entry.get("transition_readiness_score")
+                        or runner_metrics.get("transition_readiness_score")
+                        or runner_scores.get("transition_readiness_score"),
+                        "vwap_distance": runner_metrics.get("vwap_distance"),
+                        "max_extended_from_vwap_pct": (
+                            (runner_entry.get("thresholds") or {}).get("max_extended_from_vwap_pct")
+                            if isinstance(runner_entry.get("thresholds"), dict)
+                            else None
+                        ),
+                        "volume_ratio": runner_metrics.get("volume_ratio"),
+                        "breakout_ok": runner_metrics.get("breakout_ok"),
+                        "pullback_ok": runner_metrics.get("pullback_ok"),
+                        "extension_ok": runner_metrics.get("extension_ok"),
+                        "confidence_score": runner_scores.get("confidence_score")
+                        or runner_metrics.get("confidence_score"),
+                        "confidence_threshold": runner_scores.get("confidence_threshold")
+                        or runner_metrics.get("confidence_threshold"),
+                        "minute_source_present": runner_metrics.get("minute_source_present"),
+                        "minute_refetch_succeeded": runner_metrics.get("minute_refetch_succeeded"),
+                        "minute_cache_fallback_used": runner_metrics.get("minute_cache_fallback_used"),
                         "guard_blocked": bool(runner_result.get("entry_guard_blocked")),
                     }
                 )
@@ -3519,6 +3694,8 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "monitor_reason": "hold",
         "emergency_exit": False,
     }
+    hold_bias_result: Dict[str, Any] = {"applied": False, "deltas": []}
+    exit_bias_result: Dict[str, Any] = {"applied": False, "deltas": []}
     selected_snapshot = dict(selected) if isinstance(selected, dict) else {}
     selected_symbol = _norm_symbol(selected_snapshot.get("symbol"))
     has_open_position_for_exit = any(
@@ -3628,11 +3805,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         hold_sec = _to_int(decision.get("_hold_sec"))
         now_epoch = _resolve_now_epoch(state)
         if hold_sec <= 0:
-            persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
-            last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
-            last_trade_epoch = _to_int(persisted.get("last_trade_epoch"))
-            if last_trade_side == "BUY" and last_trade_epoch > 0:
-                hold_sec = max(0, int(now_epoch - last_trade_epoch))
+            hold_sec = _position_hold_seconds(state, symbol, pos)
         eod_carry = _evaluate_overnight_carry_decision(
             state=state,
             symbol=symbol,
@@ -3916,6 +4089,13 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "entry_intent_cooldown_sec": int(entry_info.get("intent_cooldown_sec") or 0),
             "entry_intent_cooldown_until": entry_info.get("intent_cooldown_until"),
         }
+        sell_would_submit = bool(exit_signal_detected) and not bool(sell_guard_blocked) and qty > 0
+        exit_vs_strategy_intent = build_exit_vs_strategy_intent(
+            state=state,
+            exit_info=exit_info,
+            sell_submitted=sell_would_submit,
+        )
+        exit_info["exit_vs_strategy_intent"] = dict(exit_vs_strategy_intent)
         if bool(exit_signal_detected) and not bool(sell_guard_blocked) and qty > 0:
             intents = [
                 {
@@ -3954,9 +4134,27 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         "trade_aggressiveness": str(frame_applied.get("trade_aggressiveness") or ""),
                         "strategy_frame_adjustments": list(frame_applied.get("adjustments") or []),
                         "exit_policy_guard_adjustments": list(exit_policy_guard_adjustments),
+                        "exit_vs_strategy_intent": dict(exit_vs_strategy_intent),
                     },
                 }
             ]
+
+    commander_memory_application_trace = build_monitor_commander_memory_application_trace(
+        monitor_memory_bias=monitor_memory_bias,
+        entry_result={
+            "applied": bool(entry_info.get("monitor_memory_bias_applied")),
+            "deltas": list(entry_info.get("monitor_memory_bias_deltas") or []),
+        },
+        hold_result=hold_bias_result,
+        exit_result=exit_bias_result,
+        monitor_memory_bias_summary=monitor_memory_bias_summary,
+        effective_policy_source=str(entry_info.get("effective_policy_source") or ""),
+        effective_policy_source_chain=list(entry_info.get("effective_policy_source_chain") or []),
+    )
+    entry_info["commander_memory_application_trace"] = dict(commander_memory_application_trace)
+    entry_info["monitor_memory_application_trace"] = dict(commander_memory_application_trace)
+    exit_info["commander_memory_application_trace"] = dict(commander_memory_application_trace)
+    exit_info["monitor_memory_application_trace"] = dict(commander_memory_application_trace)
 
     order_status, order_status_meta = extract_order_status(state)
     order_lifecycle = _derive_order_lifecycle(order_status)
@@ -3980,6 +4178,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "exit_evaluated": bool(exit_info.get("evaluated")),
         "exit_triggered": bool(exit_info.get("triggered")),
         "exit_reason": str(exit_info.get("reason") or ""),
+        "exit_vs_strategy_intent": dict(exit_info.get("exit_vs_strategy_intent") or {}),
         "exit_pnl_ratio": exit_info.get("pnl_ratio"),
         "exit_raw_pnl_ratio": exit_info.get("raw_pnl_ratio"),
         "exit_effective_pnl_ratio": exit_info.get("effective_pnl_ratio"),
@@ -4040,12 +4239,20 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_effective_policy": dict(entry_info.get("effective_policy") or entry_applied_policy),
         "entry_effective_policy_source": str(entry_info.get("effective_policy_source") or ""),
         "entry_effective_policy_source_chain": list(entry_info.get("effective_policy_source_chain") or []),
+        "commander_entry_control": dict(entry_info.get("commander_entry_control") or {}),
         "entry_policy_adjustments": dict(entry_info.get("policy_adjustments") or {}),
         "entry_policy_adjustment_summary": str(entry_info.get("policy_adjustment_summary") or ""),
         "entry_effective_policy_deltas": list(entry_info.get("effective_policy_deltas") or []),
         "monitor_memory_bias_applied": bool(entry_info.get("monitor_memory_bias_applied")),
+        "monitor_memory_bias": dict(entry_info.get("monitor_memory_bias") or {}),
         "monitor_memory_bias_summary": dict(entry_info.get("monitor_memory_bias_summary") or {}),
         "monitor_memory_bias_deltas": list(entry_info.get("monitor_memory_bias_deltas") or []),
+        "monitor_memory_bias_hold_applied": bool(exit_info.get("monitor_memory_bias_hold_applied")),
+        "monitor_memory_bias_hold_deltas": list(exit_info.get("monitor_memory_bias_hold_deltas") or []),
+        "monitor_memory_bias_exit_applied": bool(exit_info.get("monitor_memory_bias_exit_applied")),
+        "monitor_memory_bias_exit_deltas": list(exit_info.get("monitor_memory_bias_exit_deltas") or []),
+        "commander_memory_application_trace": dict(commander_memory_application_trace),
+        "monitor_memory_application_trace": dict(commander_memory_application_trace),
         "entry_thresholds": dict(entry_info.get("thresholds") or {}),
         "entry_passed_checks": list(entry_info.get("passed_checks") or []),
         "entry_failed_checks": list(entry_info.get("failed_checks") or []),
@@ -4103,6 +4310,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
         ),
         "entry_candidate_cascade": dict(entry_candidate_cascade),
+        "exit_vs_strategy_intent": dict(exit_info.get("exit_vs_strategy_intent") or {}),
     }
     state["monitor_entry"] = dict(entry_info)
     state["monitor_exit"] = exit_info
@@ -4171,8 +4379,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
     policy_ref["policy_adjustment_reasoning"] = str(entry_info.get("policy_adjustment_reasoning") or "")
     policy_ref["effective_policy_deltas"] = list(entry_info.get("effective_policy_deltas") or [])
     policy_ref["monitor_memory_bias_applied"] = bool(entry_info.get("monitor_memory_bias_applied"))
+    policy_ref["monitor_memory_bias"] = dict(entry_info.get("monitor_memory_bias") or {})
     policy_ref["monitor_memory_bias_summary"] = dict(entry_info.get("monitor_memory_bias_summary") or {})
     policy_ref["monitor_memory_bias_deltas"] = list(entry_info.get("monitor_memory_bias_deltas") or [])
+    policy_ref["monitor_memory_bias_hold_applied"] = bool(exit_info.get("monitor_memory_bias_hold_applied"))
+    policy_ref["monitor_memory_bias_hold_deltas"] = list(exit_info.get("monitor_memory_bias_hold_deltas") or [])
+    policy_ref["monitor_memory_bias_exit_applied"] = bool(exit_info.get("monitor_memory_bias_exit_applied"))
+    policy_ref["monitor_memory_bias_exit_deltas"] = list(exit_info.get("monitor_memory_bias_exit_deltas") or [])
+    policy_ref["commander_memory_application_trace"] = dict(commander_memory_application_trace)
+    policy_ref["monitor_memory_application_trace"] = dict(commander_memory_application_trace)
     monitor_policy_trace["policy_ref"] = policy_ref
     pnl_ratio = _to_float(exit_info.get("pnl_ratio")) if exit_info.get("pnl_ratio") not in (None, "") else None
     threshold_snapshot = {
@@ -4529,6 +4744,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "sell_submitted": bool(sell_submitted),
         "sell_skipped_reason": sell_skipped_reason,
         "final_reason": current_reason,
+        "exit_vs_strategy_intent": dict(exit_info.get("exit_vs_strategy_intent") or {}),
         "policy_ref": dict(monitor_policy_trace.get("policy_ref") or {}),
         "exit_trigger_basis": dict(monitor_policy_trace.get("exit_trigger_basis") or {}),
         "commander_context_consumed": bool(monitor_policy_trace.get("commander_context_consumed")),
@@ -4568,6 +4784,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["entry_blockers"] = list(monitor_policy_trace.get("entry_blockers") or [])
         state["monitor_output"]["timing_assessment"] = dict(monitor_policy_trace.get("timing_assessment") or {})
         state["monitor_output"]["exit_trigger_basis"] = dict(monitor_policy_trace.get("exit_trigger_basis") or {})
+        state["monitor_output"]["exit_vs_strategy_intent"] = dict(exit_info.get("exit_vs_strategy_intent") or {})
         state["monitor_output"]["final_exit_thresholds"] = dict(exit_info.get("final_exit_thresholds") or {})
         state["monitor_output"]["exit_threshold_source"] = str(exit_info.get("exit_threshold_source") or "")
         state["monitor_output"]["hold_block_reason"] = str(exit_info.get("hold_block_reason") or "")
@@ -4591,8 +4808,15 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["monitor_output"]["policy_adjustment_reasoning"] = str(entry_info.get("policy_adjustment_reasoning") or "")
         state["monitor_output"]["effective_policy_deltas"] = list(entry_info.get("effective_policy_deltas") or [])
         state["monitor_output"]["monitor_memory_bias_applied"] = bool(entry_info.get("monitor_memory_bias_applied"))
+        state["monitor_output"]["monitor_memory_bias"] = dict(entry_info.get("monitor_memory_bias") or {})
         state["monitor_output"]["monitor_memory_bias_summary"] = dict(entry_info.get("monitor_memory_bias_summary") or {})
         state["monitor_output"]["monitor_memory_bias_deltas"] = list(entry_info.get("monitor_memory_bias_deltas") or [])
+        state["monitor_output"]["monitor_memory_bias_hold_applied"] = bool(exit_info.get("monitor_memory_bias_hold_applied"))
+        state["monitor_output"]["monitor_memory_bias_hold_deltas"] = list(exit_info.get("monitor_memory_bias_hold_deltas") or [])
+        state["monitor_output"]["monitor_memory_bias_exit_applied"] = bool(exit_info.get("monitor_memory_bias_exit_applied"))
+        state["monitor_output"]["monitor_memory_bias_exit_deltas"] = list(exit_info.get("monitor_memory_bias_exit_deltas") or [])
+        state["monitor_output"]["commander_memory_application_trace"] = dict(commander_memory_application_trace)
+        state["monitor_output"]["monitor_memory_application_trace"] = dict(commander_memory_application_trace)
         state["monitor_output"]["applied_policy"] = dict(entry_applied_policy)
         state["monitor_output"]["policy_source"] = str((monitor_policy_trace.get("policy_ref") or {}).get("policy_source") or "")
         state["monitor_output"]["policy_validation_status"] = str((monitor_policy_trace.get("policy_ref") or {}).get("policy_validation_status") or "")
@@ -4701,6 +4925,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "entry_check_summary": str(monitor_policy_trace.get("entry_check_summary") or ""),
         "entry_blockers": list(monitor_policy_trace.get("entry_blockers") or []),
         "exit_trigger_basis": dict(monitor_policy_trace.get("exit_trigger_basis") or {}),
+        "exit_vs_strategy_intent": dict(exit_info.get("exit_vs_strategy_intent") or {}),
         "entry_transition_trace": dict(entry_info.get("entry_transition_trace") or {}),
         "hard_filter_passed": bool(entry_info.get("hard_filter_passed")),
         "hard_filter_fail_reasons": list(entry_info.get("hard_filter_fail_reasons") or []),
@@ -4772,6 +4997,7 @@ def monitor_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "sell_guard_reason": str(exit_info.get("sell_guard_reason") or ""),
             "exit_policy_guard_adjustments": list(exit_info.get("exit_policy_guard_adjustments") or []),
             "exit_symbol_fallback": bool(exit_info.get("exit_symbol_fallback")),
+            "exit_vs_strategy_intent": dict(exit_info.get("exit_vs_strategy_intent") or {}),
             "playbook": str(exit_info.get("playbook") or ""),
             "monitor_guidance": str(exit_info.get("monitor_guidance") or ""),
             "risk_tone": str(exit_info.get("risk_tone") or ""),

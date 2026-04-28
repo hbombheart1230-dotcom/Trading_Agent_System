@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -46,6 +47,22 @@ def _first_dict(*values: Any) -> Dict[str, Any]:
     return {}
 
 
+def _load_json_artifact(path_value: Any) -> Dict[str, Any]:
+    path_text = str(path_value or "").strip()
+    if not path_text:
+        return {}
+    path = Path(path_text)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    try:
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
 def _join_text(values: Any, *, max_items: int = 3, max_len: int = 32) -> str:
     items: List[str] = []
     for value in _list(values):
@@ -58,13 +75,128 @@ def _join_text(values: Any, *, max_items: int = 3, max_len: int = 32) -> str:
     return ", ".join(items)
 
 
+def _strategy_anchor_artifacts(container: Any) -> Dict[str, Any]:
+    obj = _dict(container)
+    direct = _dict(obj.get("artifacts"))
+    anchor = _dict(obj.get("strategy_anchor"))
+    anchor_artifacts = _dict(anchor.get("artifacts"))
+    return _first_dict(anchor_artifacts, direct)
+
+
+def _strategist_input_artifact_paths(story_input: Dict[str, Any]) -> List[str]:
+    paths: List[str] = []
+
+    def _append(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text not in paths:
+            paths.append(text)
+
+    for container in (
+        story_input,
+        story_input.get("artifacts"),
+        story_input.get("paths"),
+        story_input.get("strategy_anchor"),
+        story_input.get("market_context_human"),
+        story_input.get("scanner_reason_human"),
+        story_input.get("monitor_reason_human"),
+        story_input.get("filters_human"),
+    ):
+        obj = _dict(container)
+        _append(obj.get("strategist_input_json"))
+        artifacts = _strategy_anchor_artifacts(obj)
+        _append(artifacts.get("strategist_input_json"))
+    return paths
+
+
+def _resolve_strategist_input_artifact(story_input: Dict[str, Any]) -> Dict[str, Any]:
+    direct = _dict(story_input.get("strategist_input"))
+    if direct:
+        return direct
+    for path in _strategist_input_artifact_paths(story_input):
+        payload = _load_json_artifact(path)
+        if payload:
+            return payload
+    return {}
+
+
+def _symbol_pattern_memory(symbol: str, read_model_facts: Dict[str, Any]) -> Dict[str, Any]:
+    normalized_symbol = str(symbol or "").strip()
+    if not normalized_symbol:
+        return {}
+    symbol_patterns = _dict(read_model_facts.get("symbol_patterns"))
+    pattern = _dict(symbol_patterns.get(normalized_symbol))
+    if not pattern:
+        return {}
+    trade_count = _safe_int(pattern.get("trade_count"))
+    if trade_count <= 0:
+        return {}
+    return {
+        "symbol": str(pattern.get("symbol") or normalized_symbol).strip(),
+        "trade_count": trade_count,
+        "closed_trade_count": _safe_int(pattern.get("closed_trade_count")),
+        "win_rate": _safe_float(pattern.get("win_rate")),
+        "dominant_playbook": str(pattern.get("dominant_playbook") or "").strip(),
+        "dominant_monitor_blocker": str(pattern.get("dominant_monitor_blocker") or "").strip(),
+        "override_eligible": trade_count >= 5 and _safe_int(pattern.get("closed_trade_count")) >= 3,
+        "source": "prompt_read_model_symbol_patterns",
+    }
+
+
+def _packet_symbol_memory(symbol: str, memory_packets: Dict[str, Any]) -> Dict[str, Any]:
+    packet = _dict(memory_packets.get("symbol_memory_packet"))
+    packet_symbol = str(packet.get("symbol") or "").strip()
+    if not packet or (symbol and packet_symbol and packet_symbol != str(symbol).strip()):
+        return {}
+    if not packet_symbol and _safe_int(packet.get("trade_count")) <= 0:
+        return {}
+    return dict(packet)
+
+
+def _read_model_recent_trade_count(read_model_facts: Dict[str, Any], visibility: Dict[str, Any]) -> int:
+    explicit = read_model_facts.get("recent_trade_count")
+    if explicit not in (None, ""):
+        return _safe_int(explicit)
+    recent_trades = _list(read_model_facts.get("recent_trades"))
+    if recent_trades:
+        return len(recent_trades)
+    return _safe_int(visibility.get("recent_trade_count"))
+
+
+def _read_model_symbol_pattern_count(read_model_facts: Dict[str, Any], visibility: Dict[str, Any]) -> int:
+    explicit = read_model_facts.get("symbol_pattern_count")
+    if explicit not in (None, ""):
+        return _safe_int(explicit)
+    symbol_patterns = _dict(read_model_facts.get("symbol_patterns"))
+    if symbol_patterns:
+        return len(symbol_patterns)
+    return _safe_int(visibility.get("symbol_pattern_count"))
+
+
+def _read_model_symbols(read_model_facts: Dict[str, Any], visibility: Dict[str, Any]) -> List[Any]:
+    symbols = _list(read_model_facts.get("symbols") or visibility.get("symbols"))
+    if symbols:
+        return symbols
+    symbol_patterns = _dict(read_model_facts.get("symbol_patterns"))
+    return list(symbol_patterns.keys())
+
+
+def _read_model_daily_summary_present(read_model_facts: Dict[str, Any], visibility: Dict[str, Any]) -> bool:
+    if read_model_facts.get("daily_summary_present") not in (None, ""):
+        return bool(read_model_facts.get("daily_summary_present"))
+    if read_model_facts.get("daily_summary") not in (None, "", {}, []):
+        return True
+    return bool(visibility.get("daily_summary_present"))
+
+
 def _nested_memory_sources(
     story_input: Dict[str, Any],
-) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     reasoning_trace = _dict(story_input.get("reasoning_trace"))
     commander_summary = _dict(reasoning_trace.get("commander_summary"))
     strategist_summary = _dict(reasoning_trace.get("strategist_summary"))
     llm_output = _dict(strategist_summary.get("llm_parsed_output"))
+    strategist_input_artifact = _resolve_strategist_input_artifact(story_input)
+    strategist_source_input = _dict(strategist_input_artifact.get("source_input"))
     strategist_evidence = _dict(story_input.get("strategist_evidence"))
     decision_frames = _list(strategist_evidence.get("decision_frames"))
     first_frame = decision_frames[0] if decision_frames and isinstance(decision_frames[0], dict) else {}
@@ -74,7 +206,7 @@ def _nested_memory_sources(
         strategist_summary.get("memory_packet_visibility"),
         commander_summary.get("memory_packet_visibility"),
     )
-    return commander_summary, strategist_summary, llm_output, frame_payload, visibility
+    return commander_summary, strategist_summary, llm_output, frame_payload, visibility, strategist_source_input
 
 
 def _resolve_day(source: Dict[str, Any], commander_summary: Dict[str, Any]) -> str:
@@ -194,35 +326,54 @@ def _build_fallback_memory_context(
 
 def build_trade_report_memory_surface(story_input: Dict[str, Any] | None) -> Dict[str, Any]:
     source = story_input if isinstance(story_input, dict) else {}
-    commander_summary, strategist_summary, llm_output, frame_payload, visibility = _nested_memory_sources(source)
+    commander_summary, strategist_summary, llm_output, frame_payload, visibility, strategist_source_input = _nested_memory_sources(source)
+    commander_refresh_context = _dict(strategist_source_input.get("commander_refresh_context"))
 
     strategy_memory = _first_dict(
         frame_payload.get("strategy_memory"),
+        strategist_source_input.get("strategy_memory"),
         llm_output.get("strategy_memory"),
     )
     reporter_feedback = _first_dict(
         frame_payload.get("reporter_feedback_packet"),
+        strategist_source_input.get("reporter_feedback_packet"),
         llm_output.get("reporter_feedback_packet"),
     )
     selected_symbol_memory = _first_dict(
         frame_payload.get("selected_symbol_memory"),
+        strategist_source_input.get("selected_symbol_memory"),
+        commander_refresh_context.get("selected_symbol_memory"),
         llm_output.get("selected_symbol_memory"),
     )
     read_model_facts = _first_dict(
         frame_payload.get("read_model_facts"),
+        strategist_source_input.get("read_model_facts"),
         llm_output.get("read_model_facts"),
     )
     memory_packets = _first_dict(
         frame_payload.get("memory_packets"),
+        strategist_source_input.get("memory_packets"),
         llm_output.get("memory_packets"),
         commander_summary.get("memory_packets"),
     )
     commander_memory_policy = _first_dict(
         frame_payload.get("commander_memory_policy"),
+        strategist_source_input.get("commander_memory_policy"),
         llm_output.get("commander_memory_policy"),
         strategist_summary.get("commander_memory_policy"),
         commander_summary.get("commander_memory_policy"),
     )
+    symbol_hint = _text(
+        source.get("symbol")
+        or source.get("selected_symbol")
+        or commander_refresh_context.get("selected_symbol"),
+        max_len=24,
+    )
+    if not selected_symbol_memory:
+        selected_symbol_memory = _first_dict(
+            _packet_symbol_memory(symbol_hint, memory_packets),
+            _symbol_pattern_memory(symbol_hint, read_model_facts),
+        )
 
     prompt_strategy_memory = dict(strategy_memory or {})
     prompt_reporter_feedback = dict(reporter_feedback or {})
@@ -269,9 +420,24 @@ def build_trade_report_memory_surface(story_input: Dict[str, Any] | None) -> Dic
         or symbol_packet.get("symbol"),
         max_len=24,
     )
-    playbook = _text(llm_output.get("playbook") or strategist_summary.get("playbook"), max_len=40)
-    monitor_guidance = _text(llm_output.get("monitor_guidance"), max_len=40)
-    scanner_bias = _text(llm_output.get("scanner_bias"), max_len=40)
+    playbook = _text(
+        llm_output.get("playbook")
+        or frame_payload.get("playbook")
+        or strategist_summary.get("playbook")
+        or strategist_source_input.get("playbook_hint"),
+        max_len=40,
+    )
+    monitor_guidance = _text(
+        llm_output.get("monitor_guidance")
+        or frame_payload.get("monitor_guidance")
+        or _dict(frame_payload.get("entry_plan")).get("monitor_guidance")
+        or _dict(frame_payload.get("exit_plan")).get("monitor_guidance"),
+        max_len=40,
+    )
+    scanner_bias = _text(
+        llm_output.get("scanner_bias") or frame_payload.get("scanner_bias"),
+        max_len=40,
+    )
 
     prompt_strategy_present = bool(prompt_strategy_memory) or bool(strategy_visibility.get("present"))
     prompt_selected_present = bool(prompt_selected_symbol_memory) or bool(selected_visibility.get("present"))
@@ -345,22 +511,10 @@ def build_trade_report_memory_surface(story_input: Dict[str, Any] | None) -> Dic
     prompt_reporter_recommendations = _list(prompt_reporter_feedback.get("recommendation"))
     prompt_reporter_insight_summary = _text(prompt_reporter_feedback.get("insight_summary"), max_len=220)
 
-    prompt_read_model_recent_trade_count = _safe_int(
-        prompt_read_model_facts.get("recent_trade_count")
-        if prompt_read_model_facts
-        else read_model_visibility.get("recent_trade_count")
-    )
-    prompt_read_model_symbol_pattern_count = _safe_int(
-        prompt_read_model_facts.get("symbol_pattern_count")
-        if prompt_read_model_facts
-        else read_model_visibility.get("symbol_pattern_count")
-    )
-    prompt_read_model_symbols = _list(prompt_read_model_facts.get("symbols") or read_model_visibility.get("symbols"))
-    prompt_read_model_daily_summary_present = bool(
-        prompt_read_model_facts.get("daily_summary_present")
-        if prompt_read_model_facts
-        else read_model_visibility.get("daily_summary_present")
-    )
+    prompt_read_model_recent_trade_count = _read_model_recent_trade_count(prompt_read_model_facts, read_model_visibility)
+    prompt_read_model_symbol_pattern_count = _read_model_symbol_pattern_count(prompt_read_model_facts, read_model_visibility)
+    prompt_read_model_symbols = _read_model_symbols(prompt_read_model_facts, read_model_visibility)
+    prompt_read_model_daily_summary_present = _read_model_daily_summary_present(prompt_read_model_facts, read_model_visibility)
 
     prompt_active_layers = _list(
         prompt_commander_memory_policy.get("active_layers") or policy_visibility.get("active_layers")
@@ -424,10 +578,10 @@ def build_trade_report_memory_surface(story_input: Dict[str, Any] | None) -> Dic
         max_len=40,
     )
 
-    read_model_recent_trade_count = _safe_int(read_model_visibility.get("recent_trade_count"))
-    read_model_symbol_pattern_count = _safe_int(read_model_visibility.get("symbol_pattern_count"))
-    read_model_symbols = _list(read_model_visibility.get("symbols"))
-    read_model_daily_summary_present = bool(read_model_visibility.get("daily_summary_present"))
+    read_model_recent_trade_count = _read_model_recent_trade_count(read_model_facts, read_model_visibility)
+    read_model_symbol_pattern_count = _read_model_symbol_pattern_count(read_model_facts, read_model_visibility)
+    read_model_symbols = _read_model_symbols(read_model_facts, read_model_visibility)
+    read_model_daily_summary_present = _read_model_daily_summary_present(read_model_facts, read_model_visibility)
 
     reporter_status = _text(
         reporter_feedback.get("status") or reporter_visibility.get("status"),

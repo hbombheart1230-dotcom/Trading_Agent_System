@@ -563,8 +563,16 @@ def sync_ai_trade_report_generation_state(
     state_path = report_generation_state_path(trade_paths)
     state_payload = load_report_generation_state(state_path)
     components = state_payload.get("components") if isinstance(state_payload.get("components"), dict) else {}
+    generation_mode = str(generation.get("mode") or "").strip().lower()
+    declared_ai_status = str(
+        report.get("ai_trade_report_status")
+        or generation.get("ai_trade_report_status")
+        or ""
+    ).strip()
     generation_status = str(
-        generation.get("status")
+        declared_ai_status
+        if generation_mode in {"deterministic", "local_debug"} and declared_ai_status
+        else generation.get("status")
         or report.get("ai_trade_report_status")
         or report.get("status")
         or llm_artifact.get("status")
@@ -592,7 +600,7 @@ def sync_ai_trade_report_generation_state(
         "component": "ai_trade_report",
         "status": generation_status,
         "report_status": "available" if trade_paths["ai_trade_report_json"].exists() else "missing",
-        "skip_reason": "",
+        "skip_reason": "deterministic_no_llm" if generation_status == "skipped" and generation_mode == "deterministic" else "",
         "trade_id": str(story_input.get("trade_id") or ""),
         "run_id": str(story_input.get("run_id") or ""),
         "updated_at": _utc_now_iso(),
@@ -918,11 +926,31 @@ def build_live_execution_summary_payload(
 def _report_diagnostics_from_report(report: Dict[str, Any], llm_artifact: Dict[str, Any]) -> Dict[str, Any]:
     generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
     generation_status = str(generation.get("status") or llm_artifact.get("status") or "").strip().lower()
+    generation_mode = str(generation.get("mode") or "").strip().lower()
+    declared_ai_status = str(
+        report.get("ai_trade_report_status")
+        or generation.get("ai_trade_report_status")
+        or ""
+    ).strip().lower()
     model = str(generation.get("model") or llm_artifact.get("model") or ((llm_artifact.get("model_info") or {}).get("model")) or "")
+    deterministic_only = generation_mode in {"deterministic", "local_debug"} or (
+        declared_ai_status == "skipped" and generation_status in {"ok", "skipped", ""}
+    )
+    if deterministic_only:
+        ai_trade_report_status = "skipped"
+    elif generation_status in {"ok", "repaired"}:
+        ai_trade_report_status = "ok"
+    elif generation_status in {"partial", "salvaged"}:
+        ai_trade_report_status = "partial"
+    elif generation_status in {"skipped", "disabled"}:
+        ai_trade_report_status = "skipped"
+    else:
+        ai_trade_report_status = "error"
     diagnostics = {
         "report_status": "failed",
         "report_reason_code": "llm_generation_failed",
         "report_reason_human": "AI trade report generation failed.",
+        "report_generation_reason": "AI trade report generation failed.",
         "generation_attempted": True,
         "generation_ts": _utc_now_iso(),
         "story_input_available": True,
@@ -931,13 +959,41 @@ def _report_diagnostics_from_report(report: Dict[str, Any], llm_artifact: Dict[s
         "llm_model_used": model,
         "last_error_message": str(llm_artifact.get("error") or ""),
         "next_expected_step": "Inspect the LLM response artifact and retry generation.",
+        "deterministic_report_status": str(
+            report.get("deterministic_report_status")
+            or generation.get("deterministic_report_status")
+            or "ok"
+        ),
+        "llm_brief_status": str(report.get("llm_brief_status") or generation.get("llm_brief_status") or "skipped"),
+        "ai_trade_report_status": ai_trade_report_status,
+        "llm_response_status": str(llm_artifact.get("status") or ""),
+        "llm_parse_mode": str(llm_artifact.get("parse_mode") or ""),
+        "llm_completeness_score": float(llm_artifact.get("completeness_score") or 0.0),
+        "llm_required_keys_missing": [
+            str(x or "")
+            for x in list(llm_artifact.get("required_keys_missing") or [])
+            if str(x or "").strip()
+        ],
     }
-    if generation_status in {"ok", "repaired"}:
+    if deterministic_only:
+        diagnostics.update(
+            {
+                "report_status": "available",
+                "report_reason_code": "deterministic_only",
+                "report_reason_human": "Deterministic report was generated without AI expansion.",
+                "report_generation_reason": "Deterministic report was generated without AI expansion.",
+                "generation_attempted": False,
+                "next_expected_step": "Review deterministic report sections and evidence linkage.",
+                "last_error_message": "",
+            }
+        )
+    elif generation_status in {"ok", "repaired"}:
         diagnostics.update(
             {
                 "report_status": "available",
                 "report_reason_code": "",
                 "report_reason_human": "AI trade report was generated successfully.",
+                "report_generation_reason": "AI trade report was generated successfully.",
                 "next_expected_step": "Open the full report for detailed lifecycle analysis.",
                 "last_error_message": "",
             }
@@ -948,10 +1004,40 @@ def _report_diagnostics_from_report(report: Dict[str, Any], llm_artifact: Dict[s
                 "report_status": "available",
                 "report_reason_code": "llm_generation_salvaged",
                 "report_reason_human": "AI trade report was generated with partial recovery.",
+                "report_generation_reason": "AI trade report was generated with partial recovery.",
                 "next_expected_step": "Open the report and review completeness metadata before relying on every section.",
             }
         )
     return diagnostics
+
+
+def _apply_ai_report_diagnostics_summary(payload: Dict[str, Any], diagnostics: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(payload or {})
+    diagnostics_obj = dict(diagnostics or {})
+    ai_status = str(diagnostics_obj.get("ai_trade_report_status") or "").strip()
+    report_status = str(diagnostics_obj.get("report_status") or "").strip()
+    if ai_status:
+        out["ai_trade_report_status"] = ai_status
+        out["llm_trade_report_status"] = ai_status
+    if report_status:
+        out["report_generation_status"] = report_status
+    for key in (
+        "deterministic_report_status",
+        "llm_brief_status",
+        "llm_response_status",
+        "llm_parse_mode",
+        "llm_completeness_score",
+        "llm_required_keys_missing",
+    ):
+        if key in diagnostics_obj:
+            out[key] = diagnostics_obj.get(key)
+    if diagnostics_obj.get("report_generation_reason") or diagnostics_obj.get("report_reason_human"):
+        out["report_generation_reason"] = str(
+            diagnostics_obj.get("report_generation_reason")
+            or diagnostics_obj.get("report_reason_human")
+            or ""
+        )
+    return out
 
 
 def sync_ai_report_diagnostics(
@@ -961,6 +1047,7 @@ def sync_ai_report_diagnostics(
 ) -> Dict[str, Any]:
     diagnostics = _report_diagnostics_from_report(report, llm_artifact)
     report["ai_report_diagnostics"] = dict(diagnostics)
+    report.update(_apply_ai_report_diagnostics_summary(report, diagnostics))
 
     for path in (
         trade_paths["lifecycle_bundle_json"],
@@ -971,6 +1058,7 @@ def sync_ai_report_diagnostics(
         if not payload:
             continue
         payload["ai_report_diagnostics"] = dict(diagnostics)
+        payload = _apply_ai_report_diagnostics_summary(payload, diagnostics)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return diagnostics
 
@@ -990,6 +1078,7 @@ def finalize_ai_report_diagnostics(
         if not payload:
             continue
         payload["ai_report_diagnostics"] = dict(diagnostics)
+        payload = _apply_ai_report_diagnostics_summary(payload, diagnostics)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -1054,6 +1143,22 @@ def _enqueue_bundle_request(
 def _pid_active(pid: int) -> bool:
     if int(pid or 0) <= 0:
         return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            process_query_limited_information = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(  # type: ignore[attr-defined]
+                process_query_limited_information,
+                False,
+                int(pid),
+            )
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+                return True
+            return False
+        except Exception:
+            return False
     try:
         os.kill(int(pid), 0)
         return True

@@ -264,6 +264,7 @@ def test_build_commands_include_runtime_replay_flags() -> None:
         reports_root="reports",
         local_debug=False,
         hard_timeout_sec=900.0,
+        with_llm=True,
     )
 
     repair_text = " ".join(repair)
@@ -279,4 +280,5 @@ def test_build_commands_include_runtime_replay_flags() -> None:
     assert "--local-debug" in report_text
     assert "--hard-timeout-sec 5.0" in report_text
     assert "--local-debug" not in llm_text
+    assert "--with-llm" in llm_text
     assert "--hard-timeout-sec 900.0" in llm_text

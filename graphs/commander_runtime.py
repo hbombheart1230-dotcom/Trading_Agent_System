@@ -39,11 +39,13 @@ from libs.runtime.memory_packet_loader import load_commander_memory_packets
 from libs.runtime.monitor_policy import (
     build_default_monitor_entry_policy,
     build_monitor_entry_policy_bundle,
+    extract_monitor_entry_policy_mapping,
     normalize_monitor_entry_policy,
 )
 from libs.llm.model_catalog import resolve_execution_profile, resolve_model_profile
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
 from libs.runtime.scanner_policy import normalize_scanner_source_type
+from libs.runtime.strategy_horizon_feedback import build_commander_horizon_policy
 from libs.runtime.canonical_artifacts import write_commander_artifact, write_commander_shadow_artifact
 from libs.runtime.market_hours import MarketHours
 from libs.runtime.resilience_state import ensure_runtime_resilience_state
@@ -55,6 +57,13 @@ RuntimePhase = Literal["preopen", "session", "closeout"]
 
 _PRE_BUY_STRATEGIST_REFRESH_MIN_CACHE_AGE_SEC = 120
 _PRE_BUY_STRATEGIST_REFRESH_READINESS_THRESHOLD = 0.80
+_PRE_BUY_STRATEGIST_REFRESH_FORCE_SIGNALS = frozenset(
+    {
+        "selected_symbol_outside_cached_frame",
+        "prior_cycle_buy_intent",
+        "became_ready_this_cycle",
+    }
+)
 _OPEN_POSITION_STRATEGIST_REFRESH_COOLDOWN_SEC = 900
 _COMMANDER_OWNED_POLICY_FIELDS = [
     "universe.asset_type",
@@ -83,6 +92,7 @@ _COMMANDER_OWNED_SCANNER_POLICY_FIELDS = [
     "scanner.fallback.block_static_when_empty",
     "scanner.kiwoom.live_fetch",
     "scanner.kiwoom.include_change_rate",
+    "scanner.policy.market_representative_guard",
 ]
 _COMMANDER_OWNED_NUMERIC_POLICY_FIELDS = [
     "execution.cooldowns.post_exit_sec",
@@ -119,6 +129,27 @@ _COMMANDER_OWNED_LLM_EXECUTION_POLICY_FIELDS = [
     "llm.reporter.daily.execution_profile.temperature",
     "llm.reporter.daily.execution_profile.max_tokens",
 ]
+_ENTRY_CONTROL_POOL_EXPAND_BLOCKERS = frozenset(
+    {
+        "too_extended_from_vwap",
+        "still_overextended_after_pullback",
+        "breakout_not_ready",
+        "below_vwap_reclaim_not_ready",
+        "pullback_below_vwap_reclaim_not_ready",
+        "reclaim_not_ready",
+        "volume_confirmation_missing",
+        "volume_insufficient",
+        "volume_missing",
+        "entry_wait",
+        "wait_for_confirmation",
+    }
+)
+_ENTRY_CONTROL_DYNAMIC_BAND_BLOCKERS = frozenset(
+    {
+        "too_extended_from_vwap",
+        "still_overextended_after_pullback",
+    }
+)
 
 
 def _merge_nested_policy_dict(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -168,7 +199,17 @@ def _coerce_int(value: Any, default: int = 0) -> int:
 
 
 def _runtime_now_epoch(state: Dict[str, Any]) -> int:
-    return _coerce_int(state.get("now_epoch"), int(time.time()))
+    explicit_epoch = _coerce_int(state.get("now_epoch"), 0)
+    if explicit_epoch > 0:
+        return explicit_epoch
+    raw_ts = str(state.get("ts") or "").strip()
+    if raw_ts:
+        try:
+            stamped = raw_ts[:-1] + "+00:00" if raw_ts.endswith("Z") else raw_ts
+            return int(datetime.fromisoformat(stamped).timestamp())
+        except Exception:
+            pass
+    return int(time.time())
 
 
 def _runtime_float(value: Any, default: float = 0.0) -> float:
@@ -413,6 +454,41 @@ def _derive_carry_state(
     if overnight_approved or age_sec >= 12 * 3600:
         return "overnight_open"
     return "same_session"
+
+
+def _resolve_position_age_seconds(state: Dict[str, Any], row: Dict[str, Any], symbol: str) -> int | None:
+    for key in ("position_age_seconds", "hold_sec"):
+        age = _coerce_int(row.get(key), 0)
+        if age > 0:
+            return int(age)
+
+    now_epoch = _runtime_now_epoch(state)
+    entry_epoch = _coerce_int(
+        row.get("position_entry_epoch")
+        if row.get("position_entry_epoch") not in (None, "")
+        else row.get("entry_epoch"),
+        0,
+    )
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    if entry_epoch <= 0 and isinstance(persisted.get("position_entry_epoch_by_symbol"), dict):
+        entry_epoch = _coerce_int((persisted.get("position_entry_epoch_by_symbol") or {}).get(symbol), 0)
+    if entry_epoch > 0 and now_epoch > 0:
+        return max(0, int(now_epoch - entry_epoch))
+    last_trade_side = str(persisted.get("last_trade_side") or "").strip().upper()
+    last_trade_symbol = str(persisted.get("last_trade_symbol") or "").strip().upper()
+    last_trade_epoch = _coerce_int(persisted.get("last_trade_epoch"), 0)
+    if (
+        last_trade_side == "BUY"
+        and last_trade_epoch > 0
+        and now_epoch > 0
+        and (not last_trade_symbol or last_trade_symbol == str(symbol or "").strip().upper())
+    ):
+        return max(0, int(now_epoch - last_trade_epoch))
+    if last_trade_side == "BUY" and last_trade_epoch > 0 and now_epoch > 0:
+        legacy_age = max(0, int(now_epoch - last_trade_epoch))
+        if legacy_age >= 12 * 3600:
+            return int(legacy_age)
+    return None
 
 
 def _build_session_open_recovery_assessment(
@@ -1395,6 +1471,15 @@ def _attach_commander_reporter_feedback_policy(
 def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     policy_meta = _resolve_commander_applied_policy(state)
     applied_policy = dict(policy_meta.get("applied_policy") or {})
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    commander_entry_control = (
+        dict(commander_decision.get("entry_control") or {})
+        if isinstance(commander_decision.get("entry_control"), dict)
+        else {}
+    )
+    if commander_entry_control:
+        applied_policy["commander_entry_control"] = dict(commander_entry_control)
+        applied_policy["entry_control"] = dict(commander_entry_control)
     state["commander_applied_policy"] = dict(applied_policy)
     state["commander_applied_policy_meta"] = dict(policy_meta)
     state["monitor_entry_policy"] = dict(applied_policy)
@@ -1435,12 +1520,40 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(strategy_policy.get("scanner_policy"), dict)
         else {}
     )
-    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
     commander_context = (
         dict(strategy_policy.get("commander_context") or {})
         if isinstance(strategy_policy.get("commander_context"), dict)
         else {}
     )
+    memory_packets = {}
+    commander_memory_policy = {}
+    try:
+        memory_packets = load_commander_memory_packets(state=state)
+        commander_memory_policy = build_commander_memory_policy(
+            session_bias=str(
+                commander_decision.get("session_bias")
+                or commander_context.get("session_bias")
+                or state.get("session_bias")
+                or state.get("runtime_phase")
+                or "session"
+            ),
+            memory_packets=memory_packets,
+        )
+    except Exception:
+        memory_packets = (
+            dict(commander_context.get("memory_packets") or {})
+            if isinstance(commander_context.get("memory_packets"), dict)
+            else dict(commander_decision.get("memory_packets") or {})
+            if isinstance(commander_decision.get("memory_packets"), dict)
+            else {}
+        )
+        commander_memory_policy = (
+            dict(commander_context.get("commander_memory_policy") or {})
+            if isinstance(commander_context.get("commander_memory_policy"), dict)
+            else dict(commander_decision.get("commander_memory_policy") or {})
+            if isinstance(commander_decision.get("commander_memory_policy"), dict)
+            else {}
+        )
     raw_scanner_bias_context = {}
     if isinstance(commander_context.get("scanner_bias"), dict):
         raw_scanner_bias_context = dict(commander_context.get("scanner_bias") or {})
@@ -1453,30 +1566,46 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         bias_source="commander_confirmed",
     )
     scanner_bias_summary = summarize_scanner_bias_context(scanner_bias_context)
-    scanner_memory_bias = (
-        dict(commander_decision.get("scanner_memory_bias") or commander_context.get("scanner_memory_bias") or {})
-        if isinstance(commander_decision.get("scanner_memory_bias"), dict)
-        or isinstance(commander_context.get("scanner_memory_bias"), dict)
-        else {}
-    )
-    scanner_memory_bias_summary = (
-        dict(commander_decision.get("scanner_memory_bias_summary") or commander_context.get("scanner_memory_bias_summary") or {})
-        if isinstance(commander_decision.get("scanner_memory_bias_summary"), dict)
-        or isinstance(commander_context.get("scanner_memory_bias_summary"), dict)
-        else {}
-    )
-    monitor_memory_bias = (
-        dict(commander_decision.get("monitor_memory_bias") or commander_context.get("monitor_memory_bias") or {})
-        if isinstance(commander_decision.get("monitor_memory_bias"), dict)
-        or isinstance(commander_context.get("monitor_memory_bias"), dict)
-        else {}
-    )
-    monitor_memory_bias_summary = (
-        dict(commander_decision.get("monitor_memory_bias_summary") or commander_context.get("monitor_memory_bias_summary") or {})
-        if isinstance(commander_decision.get("monitor_memory_bias_summary"), dict)
-        or isinstance(commander_context.get("monitor_memory_bias_summary"), dict)
-        else {}
-    )
+    try:
+        scanner_memory_bias = build_scanner_memory_bias(
+            commander_memory_policy=commander_memory_policy,
+            memory_packets=memory_packets,
+        )
+        scanner_memory_bias_summary = summarize_scanner_memory_bias(scanner_memory_bias)
+        monitor_memory_bias = build_monitor_memory_bias(
+            commander_memory_policy=commander_memory_policy,
+            memory_packets=memory_packets,
+        )
+        monitor_memory_bias_summary = summarize_monitor_memory_bias(monitor_memory_bias)
+    except Exception:
+        scanner_memory_bias = (
+            dict(commander_context.get("scanner_memory_bias") or {})
+            if isinstance(commander_context.get("scanner_memory_bias"), dict)
+            else dict(commander_decision.get("scanner_memory_bias") or {})
+            if isinstance(commander_decision.get("scanner_memory_bias"), dict)
+            else {}
+        )
+        scanner_memory_bias_summary = (
+            dict(commander_context.get("scanner_memory_bias_summary") or {})
+            if isinstance(commander_context.get("scanner_memory_bias_summary"), dict)
+            else dict(commander_decision.get("scanner_memory_bias_summary") or {})
+            if isinstance(commander_decision.get("scanner_memory_bias_summary"), dict)
+            else {}
+        )
+        monitor_memory_bias = (
+            dict(commander_context.get("monitor_memory_bias") or {})
+            if isinstance(commander_context.get("monitor_memory_bias"), dict)
+            else dict(commander_decision.get("monitor_memory_bias") or {})
+            if isinstance(commander_decision.get("monitor_memory_bias"), dict)
+            else {}
+        )
+        monitor_memory_bias_summary = (
+            dict(commander_context.get("monitor_memory_bias_summary") or {})
+            if isinstance(commander_context.get("monitor_memory_bias_summary"), dict)
+            else dict(commander_decision.get("monitor_memory_bias_summary") or {})
+            if isinstance(commander_decision.get("monitor_memory_bias_summary"), dict)
+            else {}
+        )
     commander_context.update(
         {
             "source": str(commander_context.get("source") or "commander_decision"),
@@ -1533,6 +1662,8 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
                 if commander_decision.get("strategist_fallback_used") is not None
                 else commander_context.get("strategist_fallback_used")
             ),
+            "memory_packets": dict(memory_packets),
+            "commander_memory_policy": dict(commander_memory_policy),
             "applied_policy": dict(applied_policy),
             "policy_source": str(policy_meta.get("policy_source") or ""),
             "policy_validation_status": str(policy_meta.get("policy_validation_status") or ""),
@@ -1545,6 +1676,8 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
             "override_reason": str(policy_meta.get("override_reason") or ""),
             "applied_policy_source_chain": list(policy_meta.get("applied_policy_source_chain") or []),
             "monitor_entry_policy_summary": dict(policy_meta.get("monitor_entry_policy_summary") or {}),
+            "entry_control": dict(commander_entry_control),
+            "commander_entry_control": dict(commander_entry_control),
             "scanner_bias": scanner_bias_context.to_dict(),
             "scanner_bias_summary": dict(scanner_bias_summary),
             "scanner_memory_bias": dict(scanner_memory_bias),
@@ -1553,6 +1686,57 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
             "monitor_memory_bias_summary": dict(monitor_memory_bias_summary),
         }
     )
+    horizon_proposal = {}
+    if isinstance(strategist_output.get("strategist_horizon_proposal"), dict):
+        horizon_proposal = dict(strategist_output.get("strategist_horizon_proposal") or {})
+    elif isinstance(strategist_output.get("strategy_horizon_feedback"), dict):
+        horizon_proposal = dict(strategist_output.get("strategy_horizon_feedback") or {})
+    elif isinstance((strategy_policy.get("monitor_policy") or {}).get("strategy_horizon_feedback"), dict):
+        horizon_proposal = dict((strategy_policy.get("monitor_policy") or {}).get("strategy_horizon_feedback") or {})
+    commander_horizon_policy = build_commander_horizon_policy(
+        horizon_proposal,
+        commander_context=commander_context,
+        memory_packets=memory_packets,
+        runtime_phase=str(state.get("runtime_phase") or commander_context.get("session_bias") or ""),
+        live_validation_mode=True,
+        source="commander_applied_policy",
+    )
+    horizon_context = {
+        "owner": "commander",
+        "strategy_horizon": str(commander_horizon_policy.get("strategy_horizon") or ""),
+        "source_strategy_horizon": str(commander_horizon_policy.get("source_strategy_horizon") or ""),
+        "observability_only": True,
+        "do_not_force_hold": True,
+        "decision_reason": str(commander_horizon_policy.get("decision_reason") or ""),
+    }
+    strategist_refresh_context = (
+        dict(commander_context.get("strategist_refresh_context") or {})
+        if isinstance(commander_context.get("strategist_refresh_context"), dict)
+        else {}
+    )
+    strategist_refresh_context["commander_horizon_policy"] = dict(commander_horizon_policy)
+    strategist_refresh_context["horizon_context"] = dict(horizon_context)
+    commander_context["strategist_refresh_context"] = strategist_refresh_context
+    open_position_refresh_context = (
+        dict(commander_context.get("open_position_refresh_context") or {})
+        if isinstance(commander_context.get("open_position_refresh_context"), dict)
+        else {}
+    )
+    if open_position_refresh_context:
+        open_position_refresh_context["commander_horizon_policy"] = dict(commander_horizon_policy)
+        open_position_refresh_context["horizon_context"] = dict(horizon_context)
+        commander_context["open_position_refresh_context"] = open_position_refresh_context
+    commander_context["commander_horizon_policy"] = dict(commander_horizon_policy)
+    commander_context["horizon_context"] = dict(horizon_context)
+    commander_decision = dict(commander_decision)
+    commander_decision["commander_horizon_policy"] = dict(commander_horizon_policy)
+    commander_decision["horizon_context"] = dict(horizon_context)
+    state["commander_decision"] = commander_decision
+    state["commander_horizon_policy"] = dict(commander_horizon_policy)
+    merged_applied_policy = dict(state.get("applied_policy") or {}) if isinstance(state.get("applied_policy"), dict) else {}
+    merged_applied_policy["horizon"] = dict(commander_horizon_policy)
+    merged_applied_policy["commander_horizon_policy"] = dict(commander_horizon_policy)
+    state["applied_policy"] = merged_applied_policy
     strategy_policy["commander_context"] = commander_context
 
     monitor_policy = (
@@ -1573,11 +1757,23 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     monitor_policy["applied_policy_source_chain"] = list(policy_meta.get("applied_policy_source_chain") or [])
     monitor_policy["monitor_memory_bias"] = dict(monitor_memory_bias)
     monitor_policy["monitor_memory_bias_summary"] = dict(monitor_memory_bias_summary)
+    monitor_policy["commander_horizon_policy"] = dict(commander_horizon_policy)
+    monitor_policy["horizon_policy"] = dict(commander_horizon_policy)
+    if commander_entry_control:
+        monitor_policy["entry_control"] = dict(commander_entry_control)
+        monitor_policy["commander_entry_control"] = dict(commander_entry_control)
     strategy_policy["monitor_policy"] = monitor_policy
+    strategy_policy["commander_horizon_policy"] = dict(commander_horizon_policy)
+    if commander_entry_control:
+        strategy_policy["entry_control"] = dict(commander_entry_control)
     scanner_policy["scanner_bias"] = scanner_bias_context.to_dict()
     scanner_policy["scanner_bias_summary"] = dict(scanner_bias_summary)
     scanner_policy["scanner_memory_bias"] = dict(scanner_memory_bias)
     scanner_policy["scanner_memory_bias_summary"] = dict(scanner_memory_bias_summary)
+    if commander_entry_control:
+        scanner_policy["entry_control"] = dict(commander_entry_control)
+        scanner_policy["max_priority_rank"] = int(commander_entry_control.get("max_priority_rank") or 5)
+        scanner_policy["max_runner_ups"] = int(commander_entry_control.get("max_runner_ups") or 4)
     strategy_policy["scanner_policy"] = scanner_policy
 
     provenance = (
@@ -1616,6 +1812,9 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
         "strategist_refresh_requested": bool(commander_context.get("strategist_refresh_requested")),
         "strategist_refresh_reason": str(commander_context.get("strategist_refresh_reason") or ""),
         "strategist_refresh_context": dict(commander_context.get("strategist_refresh_context") or {}),
+        "commander_horizon_policy": dict(commander_horizon_policy),
+        "horizon_context": dict(horizon_context),
+        "entry_control": dict(commander_entry_control),
         "carry_state": str(commander_context.get("carry_state") or ""),
         "carry_risk_bias": str(commander_context.get("carry_risk_bias") or ""),
         "carry_risk_reason": str(commander_context.get("carry_risk_reason") or ""),
@@ -1637,6 +1836,10 @@ def _attach_commander_applied_policy(state: Dict[str, Any]) -> Dict[str, Any]:
     strategist_output["scanner_memory_bias_summary"] = dict(scanner_memory_bias_summary)
     strategist_output["monitor_memory_bias"] = dict(monitor_memory_bias)
     strategist_output["monitor_memory_bias_summary"] = dict(monitor_memory_bias_summary)
+    strategist_output["commander_horizon_policy"] = dict(commander_horizon_policy)
+    strategist_output["horizon_context"] = dict(horizon_context)
+    if commander_entry_control:
+        strategist_output["commander_entry_control"] = dict(commander_entry_control)
     state["strategist_output"] = _normalize_strategist_output_contract(strategist_output)
     state["strategy_policy"] = dict(strategy_policy)
     state["scanner_bias_context"] = scanner_bias_context.to_dict()
@@ -1664,6 +1867,142 @@ def _resolve_commander_route_toggle(
     if state.get(state_key) is not None:
         return _is_trueish(state.get(state_key)), "state_fallback"
     return bool(default), "default"
+
+
+def _extract_commander_policy_vwap_ceiling(applied_policy: Dict[str, Any]) -> float:
+    raw_policy = (
+        extract_monitor_entry_policy_mapping(applied_policy)
+        if isinstance(applied_policy, dict)
+        else {}
+    )
+    raw_value = raw_policy.get(
+        "max_extended_from_vwap_pct",
+        raw_policy.get("entry_max_extended_from_vwap_pct"),
+    )
+    value = _runtime_float(raw_value, 0.0)
+    return float(value if value > 0.0 else 0.08)
+
+
+def _build_commander_entry_control(
+    *,
+    market_regime: str,
+    risk_mode: str,
+    open_position_count: int,
+    preflight: Dict[str, Any],
+    stress_flags: list[Any],
+    resilience: Dict[str, Any],
+    monitor_feedback: Dict[str, Any],
+    applied_policy: Dict[str, Any],
+) -> Dict[str, Any]:
+    blocker = str(monitor_feedback.get("dominant_blocker") or "").strip().lower()
+    failure_streak = max(0, _coerce_int(monitor_feedback.get("failure_streak"), 0))
+    near_ready = bool(monitor_feedback.get("near_ready_flag"))
+    avg_distance = _runtime_float(monitor_feedback.get("avg_distance_to_ready"), 0.0)
+    regime = str(market_regime or "").strip().lower()
+    mode = str(risk_mode or "").strip().lower()
+    market_supportive = (
+        mode in {"balanced", "offensive"}
+        and regime in {"", "neutral", "risk_on"}
+        and not bool(stress_flags)
+        and not str(resilience.get("degrade_mode") or "").strip()
+        and not bool(preflight.get("blocked"))
+    )
+    expandable_blocker = blocker in _ENTRY_CONTROL_POOL_EXPAND_BLOCKERS
+    repeated_block = bool(blocker and failure_streak >= 3)
+    base: Dict[str, Any] = {
+        "schema_version": "commander_entry_control.v1",
+        "source": "commander_decision",
+        "mode": "baseline",
+        "decision": "preserve_default_entry_scope",
+        "market_regime": regime or str(market_regime or ""),
+        "risk_mode": mode or str(risk_mode or ""),
+        "market_supportive": bool(market_supportive),
+        "dominant_blocker": blocker,
+        "failure_streak": int(failure_streak),
+        "near_ready_flag": bool(near_ready),
+        "avg_distance_to_ready": float(avg_distance),
+        "max_priority_rank": 5,
+        "max_runner_ups": 4,
+        "allow_dynamic_entry_band": False,
+        "adaptive_max_extended_from_vwap_pct": None,
+        "max_extended_from_vwap_pct_cap": 0.10,
+        "scan_aggressiveness_floor": 0.0,
+        "reason": "baseline_entry_scope",
+    }
+    if int(open_position_count) > 0:
+        base.update(
+            {
+                "mode": "position_management_no_entry_expansion",
+                "decision": "preserve_existing_position_focus",
+                "reason": "open_position_present",
+            }
+        )
+        return base
+    if bool(preflight.get("blocked")) or mode == "blocked":
+        base.update(
+            {
+                "mode": "blocked_no_entry_expansion",
+                "decision": "preserve_blocked_entry_scope",
+                "reason": "preflight_or_runtime_blocked",
+            }
+        )
+        return base
+    if repeated_block and not market_supportive:
+        base.update(
+            {
+                "mode": "preserve_defensive_no_trade_ok",
+                "decision": "preserve_conservative_entry_scope",
+                "reason": "market_or_risk_mode_not_supportive_for_entry_expansion",
+            }
+        )
+        return base
+    if repeated_block and not expandable_blocker:
+        base.update(
+            {
+                "mode": "preserve_guardrail_no_trade_ok",
+                "decision": "preserve_non_expandable_guardrail",
+                "reason": f"dominant_blocker_not_expandable:{blocker}",
+            }
+        )
+        return base
+    if repeated_block and market_supportive and expandable_blocker:
+        max_priority_rank = 10 if failure_streak >= 5 else 8
+        scan_floor = 0.10 if failure_streak >= 5 else 0.05
+        base.update(
+            {
+                "mode": "expand_when_market_ok",
+                "decision": "expand_candidate_pool",
+                "max_priority_rank": int(max_priority_rank),
+                "max_runner_ups": int(max_priority_rank - 1),
+                "scan_aggressiveness_floor": float(scan_floor),
+                "reason": (
+                    f"market_supportive_repeated_blocker:{blocker}:"
+                    f"streak={failure_streak}"
+                ),
+            }
+        )
+        if blocker in _ENTRY_CONTROL_DYNAMIC_BAND_BLOCKERS:
+            received_ceiling = _extract_commander_policy_vwap_ceiling(applied_policy)
+            target_floor = 0.10 if failure_streak >= 5 and (near_ready or avg_distance >= 0.70) else 0.08
+            target = min(0.10, max(0.05, target_floor))
+            base.update(
+                {
+                    "decision": "expand_candidate_pool_and_dynamic_entry_band",
+                    "allow_dynamic_entry_band": True,
+                    "adaptive_max_extended_from_vwap_pct": round(float(target), 6),
+                    "received_max_extended_from_vwap_pct": round(float(received_ceiling), 6),
+                }
+            )
+        return base
+    if repeated_block:
+        base.update(
+            {
+                "mode": "observe_repeated_blocker",
+                "decision": "preserve_default_entry_scope",
+                "reason": f"repeated_blocker_observed:{blocker}",
+            }
+        )
+    return base
 
 
 def _build_commander_decision(
@@ -1989,6 +2328,57 @@ def _build_commander_decision(
         memory_packets=memory_packets,
     )
     monitor_memory_bias_summary = summarize_monitor_memory_bias(monitor_memory_bias)
+    horizon_proposal = {}
+    if isinstance(strategist_output.get("strategist_horizon_proposal"), dict):
+        horizon_proposal = dict(strategist_output.get("strategist_horizon_proposal") or {})
+    elif isinstance(strategist_output.get("strategy_horizon_feedback"), dict):
+        horizon_proposal = dict(strategist_output.get("strategy_horizon_feedback") or {})
+    commander_horizon_policy = build_commander_horizon_policy(
+        horizon_proposal,
+        commander_context={
+            "runtime_phase": str(phase_value or ""),
+            "market_regime": market_regime,
+            "session_bias": session_bias,
+            "risk_mode": risk_mode,
+            "strategist_refresh_requested": strategist_refresh_requested,
+            "strategist_refresh_reason": strategist_refresh_reason,
+            "carry_state": commander_carry_state,
+            "carry_risk_bias": commander_carry_risk_bias,
+            "commander_memory_policy": dict(commander_memory_policy),
+        },
+        memory_packets=memory_packets,
+        runtime_phase=str(phase_value or ""),
+        live_validation_mode=True,
+        source="commander_decision",
+    )
+    horizon_context = {
+        "owner": "commander",
+        "strategy_horizon": str(commander_horizon_policy.get("strategy_horizon") or ""),
+        "source_strategy_horizon": str(commander_horizon_policy.get("source_strategy_horizon") or ""),
+        "observability_only": True,
+        "do_not_force_hold": True,
+        "decision_reason": str(commander_horizon_policy.get("decision_reason") or ""),
+    }
+    strategist_refresh_context = {
+        **dict(strategist_refresh_context or {}),
+        "commander_horizon_policy": dict(commander_horizon_policy),
+        "horizon_context": dict(horizon_context),
+    }
+    if open_position_refresh_context:
+        open_position_refresh_context = {
+            **dict(open_position_refresh_context or {}),
+            "commander_horizon_policy": dict(commander_horizon_policy),
+            "horizon_context": dict(horizon_context),
+        }
+    observations = {
+        **observations,
+        "horizon_owner": "commander",
+        "commander_horizon": str(commander_horizon_policy.get("strategy_horizon") or ""),
+        "source_strategy_horizon": str(commander_horizon_policy.get("source_strategy_horizon") or ""),
+    }
+    applied_policy = dict(applied_policy)
+    applied_policy["horizon"] = dict(commander_horizon_policy)
+    applied_policy["commander_horizon_policy"] = dict(commander_horizon_policy)
     if list(commander_memory_policy.get("active_layers") or []):
         observations = {
             **observations,
@@ -2153,6 +2543,16 @@ def _build_commander_decision(
         "near_ready_flag": bool(near_ready_flag),
         "avg_distance_to_ready": float(avg_distance_to_ready),
     }
+    entry_control = _build_commander_entry_control(
+        market_regime=market_regime,
+        risk_mode=risk_mode,
+        open_position_count=open_position_count,
+        preflight=preflight,
+        stress_flags=stress_flags,
+        resilience=resilience,
+        monitor_feedback=monitor_feedback,
+        applied_policy=applied_policy,
+    )
 
     adaptive_policy = {
         "entry_bias_adjustment": 0.0,
@@ -2161,29 +2561,91 @@ def _build_commander_decision(
         "scan_aggressiveness": 0.0,
     }
     policy_adjustment_trace = []
+    adaptive_feedback_allowed = str(entry_control.get("mode") or "") not in {
+        "blocked_no_entry_expansion",
+        "position_management_no_entry_expansion",
+        "preserve_defensive_no_trade_ok",
+        "preserve_guardrail_no_trade_ok",
+    }
 
-    if monitor_feedback["dominant_blocker"] and monitor_feedback["failure_streak"] >= 3:
+    if monitor_feedback["dominant_blocker"] and monitor_feedback["failure_streak"] >= 3 and adaptive_feedback_allowed:
         adaptive_policy["entry_bias_adjustment"] += 0.02
         adaptive_policy["scan_aggressiveness"] += 0.05
         policy_adjustment_trace.append(f"failure_streak>={monitor_feedback['failure_streak']} for {monitor_feedback['dominant_blocker']} -> increased entry_bias_adjustment and scan_aggressiveness")
+    elif monitor_feedback["dominant_blocker"] and monitor_feedback["failure_streak"] >= 3:
+        policy_adjustment_trace.append(
+            f"failure_streak>={monitor_feedback['failure_streak']} for {monitor_feedback['dominant_blocker']} "
+            f"-> preserved entry scope because entry_control={entry_control.get('mode')}"
+        )
 
-    if monitor_feedback["near_ready_flag"]:
+    if monitor_feedback["near_ready_flag"] and adaptive_feedback_allowed:
         adaptive_policy["entry_bias_adjustment"] += 0.015
         adaptive_policy["reentry_penalty_adjustment"] -= 0.02
         policy_adjustment_trace.append("near_ready_flag=True -> increased entry_bias_adjustment, decreased reentry_penalty_adjustment")
 
-    if monitor_feedback["failure_streak"] >= 5:
+    if monitor_feedback["failure_streak"] >= 5 and adaptive_feedback_allowed:
         adaptive_policy["diversification_adjustment"] += 0.03
         policy_adjustment_trace.append(f"failure_streak>={monitor_feedback['failure_streak']} -> increased diversification_adjustment")
+    if adaptive_feedback_allowed:
+        adaptive_policy["scan_aggressiveness"] = max(
+            float(adaptive_policy["scan_aggressiveness"]),
+            float(entry_control.get("scan_aggressiveness_floor") or 0.0),
+        )
+    if str(entry_control.get("mode") or "") != "baseline":
+        policy_adjustment_trace.append(
+            f"entry_control={entry_control.get('mode')} -> {entry_control.get('reason')}"
+        )
 
     scanner_policy = {
         "avoid_recent_symbol": False,
         "recent_symbol_penalty": round(max(0.0, 0.05 + adaptive_policy["reentry_penalty_adjustment"]), 6),
         "diversification_bias": round(max(0.0, 0.02 + adaptive_policy["diversification_adjustment"]), 6),
         "entry_bias_cap": round(max(0.0, 0.0 + adaptive_policy["entry_bias_adjustment"]), 6),
+        "scan_aggressiveness": round(max(0.0, adaptive_policy["scan_aggressiveness"]), 6),
         "allow_same_symbol_reentry": True,
         "reentry_score_gap_threshold": 0.03,
+        "market_representative_guard": {
+            "enabled": True,
+            "symbols": ["005930", "000660"],
+            "penalty": 0.04,
+            "max_penalty": 0.12,
+            "near_tie_gap": 0.06,
+            "top_value_dominance_min": 0.55,
+            "weak_confirmation_max": 1,
+            "strong_confirmation_min": 2,
+            "bypass_when_strong_confirmation": True,
+            "apply_when_top_value_only": True,
+            "policy_source": "commander_default",
+        },
+        "max_priority_rank": int(entry_control.get("max_priority_rank") or 5),
+        "max_runner_ups": int(entry_control.get("max_runner_ups") or 4),
+        "entry_control": dict(entry_control),
     }
+    observations = {
+        **observations,
+        "entry_control_mode": str(entry_control.get("mode") or ""),
+        "entry_control_decision": str(entry_control.get("decision") or ""),
+        "entry_control_reason": str(entry_control.get("reason") or ""),
+        "entry_control_max_priority_rank": int(entry_control.get("max_priority_rank") or 5),
+        "entry_control_dynamic_band": bool(entry_control.get("allow_dynamic_entry_band")),
+    }
+    source_refs = {
+        **source_refs,
+        "entry_control": {
+            "source": "commander_decision.monitor_feedback",
+            "dominant_blocker": str(entry_control.get("dominant_blocker") or ""),
+            "failure_streak": int(entry_control.get("failure_streak") or 0),
+            "market_supportive": bool(entry_control.get("market_supportive")),
+            "mode": str(entry_control.get("mode") or ""),
+        },
+    }
+    if "commander_entry_control" not in list(source_priority or []):
+        source_priority = [*list(source_priority or []), "commander_entry_control"]
+    if str(entry_control.get("mode") or "") not in {"", "baseline"}:
+        decision_summary = (
+            f"{decision_summary} Entry control {entry_control.get('mode')} "
+            f"because {entry_control.get('reason')}."
+        )
     shadow_runtime = _ensure_commander_shadow_runtime(state)
     prior_context = dict(shadow_runtime.get("prior_context") or {}) if isinstance(shadow_runtime.get("prior_context"), dict) else {}
     prior_monitor_entry_policy_summary = (
@@ -2242,6 +2704,7 @@ def _build_commander_decision(
         "scanner_policy": dict(scanner_policy),
         "monitor_feedback": dict(monitor_feedback),
         "adaptive_policy": dict(adaptive_policy),
+        "entry_control": dict(entry_control),
         "policy_adjustment_trace": list(policy_adjustment_trace),
         "command_intent": command_intent,
         "strategist_invocation": strategist_invocation,
@@ -2277,6 +2740,8 @@ def _build_commander_decision(
         "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
         "monitor_memory_bias": dict(monitor_memory_bias),
         "monitor_memory_bias_summary": dict(monitor_memory_bias_summary),
+        "commander_horizon_policy": dict(commander_horizon_policy),
+        "horizon_context": dict(horizon_context),
         "prior_monitor_entry_policy_summary": dict(prior_monitor_entry_policy_summary),
         "current_monitor_entry_policy_summary": dict(current_monitor_entry_policy_summary),
         "strategist_cache_preferred": bool(strategist_invocation == "SKIP" and strategist_cache_preferred),
@@ -3271,11 +3736,12 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                     else 0,
                 }
             )
+        position_age_seconds = _resolve_position_age_seconds(state, row, symbol)
         carry_control = _assess_position_carry_control(
             state=state,
             symbol=symbol,
             hold_repeat_count=int(hold_repeat_count),
-            position_age_seconds=row.get("position_age_seconds"),
+            position_age_seconds=position_age_seconds,
             effective_loss_ratio=effective_loss_ratio,
             monitor_reason=previous_reason,
             active_exit_axis=previous_active_exit_axis,
@@ -3301,7 +3767,7 @@ def _assess_open_position_commander_override(state: Dict[str, Any]) -> Dict[str,
                 "reason": str(previous_reason or ""),
                 "active_exit_axis": str(previous_active_exit_axis or ""),
                 "entry_state": _compact_monitor_entry_state_for_refresh(previous_entry_state),
-                "position_age_seconds": row.get("position_age_seconds"),
+                "position_age_seconds": position_age_seconds,
                 "refresh_cooldown_until": int(refresh_cooldown_until) if refresh_cooldown_until > 0 else None,
                 "refresh_cooldown_remaining_sec": max(0, int(refresh_cooldown_until - now_epoch))
                 if refresh_cooldown_until > now_epoch
@@ -3650,6 +4116,107 @@ def _strategist_cache_payload(state: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _assess_cached_strategist_memory_context(state: Dict[str, Any], cached_output: Dict[str, Any]) -> Dict[str, Any]:
+    output = dict(cached_output or {}) if isinstance(cached_output, dict) else {}
+    cached_strategy_policy = (
+        dict(output.get("strategy_policy") or {})
+        if isinstance(output.get("strategy_policy"), dict)
+        else {}
+    )
+    cached_commander_context = (
+        dict(cached_strategy_policy.get("commander_context") or {})
+        if isinstance(cached_strategy_policy.get("commander_context"), dict)
+        else {}
+    )
+    cached_policy = (
+        dict(output.get("commander_memory_policy") or {})
+        if isinstance(output.get("commander_memory_policy"), dict)
+        else dict(cached_commander_context.get("commander_memory_policy") or {})
+        if isinstance(cached_commander_context.get("commander_memory_policy"), dict)
+        else {}
+    )
+    cached_scanner_summary = (
+        dict(output.get("scanner_memory_bias_summary") or {})
+        if isinstance(output.get("scanner_memory_bias_summary"), dict)
+        else dict(cached_commander_context.get("scanner_memory_bias_summary") or {})
+        if isinstance(cached_commander_context.get("scanner_memory_bias_summary"), dict)
+        else {}
+    )
+    cached_monitor_summary = (
+        dict(output.get("monitor_memory_bias_summary") or {})
+        if isinstance(output.get("monitor_memory_bias_summary"), dict)
+        else dict(cached_commander_context.get("monitor_memory_bias_summary") or {})
+        if isinstance(cached_commander_context.get("monitor_memory_bias_summary"), dict)
+        else {}
+    )
+    cached_context_available = bool(cached_policy or cached_scanner_summary or cached_monitor_summary)
+    current_layers: list[str] = []
+    current_scanner_enabled = False
+    current_monitor_enabled = False
+    try:
+        current_packets = load_commander_memory_packets(state=state)
+        current_policy = build_commander_memory_policy(
+            session_bias=str(
+                ((state.get("commander_decision") or {}).get("session_bias"))
+                or state.get("session_bias")
+                or state.get("runtime_phase")
+                or "session"
+            ),
+            memory_packets=current_packets,
+        )
+        current_layers = [str(x or "") for x in list(current_policy.get("active_layers") or []) if str(x or "").strip()][:4]
+        current_scanner_enabled = bool(current_policy.get("scanner_bias_enabled"))
+        current_monitor_enabled = bool(current_policy.get("monitor_bias_enabled"))
+    except Exception:
+        pass
+    cached_layers = [
+        str(x or "")
+        for x in list(
+            cached_policy.get("active_layers")
+            or cached_scanner_summary.get("active_layers")
+            or cached_monitor_summary.get("active_layers")
+            or []
+        )[:4]
+        if str(x or "").strip()
+    ]
+    cached_scanner_enabled = bool(
+        cached_scanner_summary.get("enabled")
+        if cached_scanner_summary.get("enabled") is not None
+        else cached_policy.get("scanner_bias_enabled")
+    )
+    cached_monitor_enabled = bool(
+        cached_monitor_summary.get("enabled")
+        if cached_monitor_summary.get("enabled") is not None
+        else cached_policy.get("monitor_bias_enabled")
+    )
+    if not cached_context_available:
+        return {
+            "mismatch": False,
+            "cached_memory_context_available": False,
+            "cached_active_layers": list(cached_layers),
+            "current_active_layers": list(current_layers),
+            "cached_scanner_bias_enabled": False,
+            "current_scanner_bias_enabled": bool(current_scanner_enabled),
+            "cached_monitor_bias_enabled": False,
+            "current_monitor_bias_enabled": bool(current_monitor_enabled),
+        }
+    mismatch = (
+        cached_layers != current_layers
+        or cached_scanner_enabled != current_scanner_enabled
+        or cached_monitor_enabled != current_monitor_enabled
+    )
+    return {
+        "mismatch": bool(mismatch),
+        "cached_memory_context_available": True,
+        "cached_active_layers": list(cached_layers),
+        "current_active_layers": list(current_layers),
+        "cached_scanner_bias_enabled": bool(cached_scanner_enabled),
+        "current_scanner_bias_enabled": bool(current_scanner_enabled),
+        "cached_monitor_bias_enabled": bool(cached_monitor_enabled),
+        "current_monitor_bias_enabled": bool(current_monitor_enabled),
+    }
+
+
 def _assess_cached_strategist_reuse_preference(state: Dict[str, Any]) -> Dict[str, Any]:
     enabled, policy_source = _resolve_commander_route_toggle(
         state,
@@ -3692,6 +4259,11 @@ def _assess_cached_strategist_reuse_preference(state: Dict[str, Any]) -> Dict[st
         return payload
     if age_sec > reuse_sec:
         payload["reason"] = "cache_stale"
+        return payload
+    memory_context = _assess_cached_strategist_memory_context(state, cached_output)
+    payload.update({k: v for k, v in memory_context.items() if k != "mismatch"})
+    if bool(memory_context.get("mismatch")):
+        payload["reason"] = "cached_memory_context_mismatch"
         return payload
     payload["preferred"] = True
     payload["reason"] = "commander_preferred_cached_strategist"
@@ -3812,6 +4384,8 @@ def _assess_pre_buy_strategist_refresh_need(
         "cache_source": str(cache_payload.get("source") or ""),
         "cached_output_present": bool(cached_output),
         "refresh_signal": signal,
+        "fresh_cache_signal_override": bool(signal in _PRE_BUY_STRATEGIST_REFRESH_FORCE_SIGNALS),
+        "cache_freshness_gate_bypassed": False,
         "reason": "",
     }
     if open_position_count > 0:
@@ -3829,8 +4403,10 @@ def _assess_pre_buy_strategist_refresh_need(
         payload["reason"] = "selected_symbol_missing"
         return payload
     if cache_age_sec < min_cache_age_sec:
-        payload["reason"] = "cache_too_fresh_for_refresh"
-        return payload
+        if not signal or signal not in _PRE_BUY_STRATEGIST_REFRESH_FORCE_SIGNALS:
+            payload["reason"] = "cache_too_fresh_for_refresh"
+            return payload
+        payload["cache_freshness_gate_bypassed"] = True
     if not signal:
         payload["reason"] = "no_pre_buy_refresh_signal"
         return payload
@@ -3896,6 +4472,11 @@ def _should_use_cached_strategist_when_flat(state: Dict[str, Any]) -> Tuple[bool
     if age_sec > reuse_sec:
         payload["reason"] = "cache_stale"
         return False, payload
+    memory_context = _assess_cached_strategist_memory_context(state, output)
+    payload.update({k: v for k, v in memory_context.items() if k != "mismatch"})
+    if bool(memory_context.get("mismatch")):
+        payload["reason"] = "cached_memory_context_mismatch"
+        return False, payload
     payload["reason"] = "flat_position_cached_strategist"
     return True, payload
 
@@ -3953,6 +4534,11 @@ def _should_use_cached_strategist_from_commander_skip(state: Dict[str, Any]) -> 
         return False, payload
     if age_sec > reuse_sec:
         payload["reason"] = "cache_stale"
+        return False, payload
+    memory_context = _assess_cached_strategist_memory_context(state, output)
+    payload.update({k: v for k, v in memory_context.items() if k != "mismatch"})
+    if bool(memory_context.get("mismatch")):
+        payload["reason"] = "cached_memory_context_mismatch"
         return False, payload
     payload["reason"] = "commander_skip_cached_strategist"
     return True, payload
@@ -4158,6 +4744,7 @@ def _run_integrated_chain(
         shadow_runtime["post_scanner_refresh_reason"] = ""
         shadow_runtime["post_scanner_refresh_context"] = {}
         state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase="session")
+        state = _attach_commander_applied_policy(state)
         state = strategist_node(state)
         shadow_runtime["strategist_executed"] = True
         shadow_runtime["strategist_called"] = True
@@ -4229,6 +4816,7 @@ def _run_integrated_chain(
                 },
             )
             state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase="session")
+            state = _attach_commander_applied_policy(state)
             state = strategist_node(state)
             shadow_runtime["strategist_executed"] = True
             shadow_runtime["strategist_called"] = True
@@ -4302,6 +4890,7 @@ def _run_preopen_phase(state: Dict[str, Any]) -> Dict[str, Any]:
         reason_text="",
     )
     state = _attach_commander_reporter_feedback_policy(state, selected_route="full_cycle", phase="preopen")
+    state = _attach_commander_applied_policy(state)
     state = strategist_node(state)
     if _strategist_frame_blocked(state):
         return _apply_strategist_block(state, phase="preopen")

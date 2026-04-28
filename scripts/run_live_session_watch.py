@@ -271,12 +271,18 @@ def _run_once(args: argparse.Namespace) -> Dict[str, Any]:
     latest_md_path = watch_report_dir / "live_watch_latest.md"
     snapshot_json_path = watch_report_dir / f"live_watch_snapshot_{watch_day}.json"
 
+    summary_rc = summary_run.get("rc")
+    try:
+        summary_rc_int = int(summary_rc)
+    except Exception:
+        summary_rc_int = 1
+
     snapshot: Dict[str, Any] = {
         "schema_version": "live_watch.v1",
         "ts_utc": ts_utc,
         "ts_kst": ts_kst,
         "event_log_path": str(event_log_path),
-        "summary_rc": int(summary_run.get("rc") or 1),
+        "summary_rc": summary_rc_int,
         "summary_ok": bool(summary_run.get("ok")),
         "summary_stderr_tail": str(summary_run.get("stderr_tail") or ""),
         "summary_stdout_tail": str(summary_run.get("stdout_tail") or ""),

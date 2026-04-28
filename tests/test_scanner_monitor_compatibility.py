@@ -247,6 +247,10 @@ def test_scanner_compatibility_bias_shrinks_032820_margin_vs_396500(monkeypatch)
     state = _base_state()
     state.update(
         {
+            # This case isolates entry-compatibility re-ranking. 396500 can be
+            # classified as an ETF by the remote asset resolver, so disable the
+            # common-stock-only universe filter here.
+            "asset_universe_type": "all_assets",
             "candidates": [
                 {"symbol": "032820", "sources": ["sector_theme"], "source_scores": {"top_value": 1.0}},
                 {"symbol": "396500", "sources": ["sector_theme"], "source_scores": {"top_value": 1.0}},
@@ -269,6 +273,47 @@ def test_scanner_compatibility_bias_shrinks_032820_margin_vs_396500(monkeypatch)
     assert ranked[1]["symbol"] == "032820"
     assert float(ranked[1]["pre_adjust_score_total"]) > float(ranked[0]["pre_adjust_score_total"])
     assert float(ranked[1]["post_adjust_score_total"]) < float(ranked[0]["post_adjust_score_total"])
+
+
+def test_entry_compatibility_penalizes_too_extended_candidates(monkeypatch) -> None:
+    def _fake_eval(candidate_rows, **kwargs):
+        return {
+            "evaluated": True,
+            "triggered": False,
+            "reason": "too_extended_from_vwap",
+            "threshold_margins": {
+                "extended_from_vwap_pct": {"actual": 0.09, "min": -0.02, "max": 0.05},
+                "volume_ratio": {"actual": 1.20, "min": 0.68},
+                "breakout_gap_pct": {"actual": 0.01, "min": 0.0},
+            },
+            "condition_scores": {},
+            "metrics": {
+                "extended_from_vwap_pct": 0.09,
+                "volume_ratio": 1.20,
+                "breakout_gap_pct": 0.01,
+            },
+        }
+
+    monkeypatch.setattr(scanner_mod, "evaluate_intraday_entry_signal", _fake_eval)
+
+    out = scanner_mod._compute_entry_compatibility_signal(
+        symbol="000660",
+        feature_row={},
+        metrics={},
+        candidate_rows=[{"symbol": "000660"}],
+        current_price=100,
+        policy={
+            "volume_ratio_min": 0.68,
+            "min_extended_from_vwap_pct": -0.02,
+            "max_extended_from_vwap_pct": 0.05,
+        },
+        bias_context={"bias_scale": 0.10},
+    )
+
+    assert out["expected_monitor_block_reason"] == "too_extended_from_vwap"
+    assert float(out["entry_compatibility_score"]) < 0.5
+    assert float(out["compatibility_bias"]) < 0.0
+    assert float(out["compatibility_components"]["vwap_proximity_score"]) < 1.0
 
 
 def test_scanner_output_records_entry_compatibility_trace(monkeypatch) -> None:

@@ -388,7 +388,11 @@ def _story_explanation(story: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _canonical_report_root(report_dir: Path) -> Path:
-    if report_dir.name in {"operator_summary", "daily", "metrics"}:
+    if report_dir.name == "operator_summary":
+        return report_dir
+    if report_dir.name == "daily" and report_dir.parent.name == "operator_summary":
+        return report_dir.parent
+    if report_dir.name in {"daily", "metrics"}:
         return report_dir.parent
     if report_dir.name in {"run_cards", "decision_story"}:
         parent = report_dir.parent

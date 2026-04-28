@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from graphs.nodes.scanner_node import scanner_node
+from libs.contracts.agent_outputs import build_scanner_output_artifact
 from libs.runtime.scanner_memory_bias import (
     build_scanner_memory_bias,
     compute_scanner_memory_bias_adjustment,
@@ -188,3 +189,12 @@ def test_scanner_memory_bias_can_flip_near_tie_and_surfaces_artifact_fields() ->
     scanner_output = out.get("scanner_output") or {}
     assert scanner_output.get("scanner_memory_bias_applied") is True
     assert (scanner_output.get("scanner_memory_bias_summary") or {}).get("enabled") is True
+    trace = scanner_output.get("commander_memory_application_trace") or {}
+    assert trace.get("agent") == "scanner"
+    assert trace.get("applied") is True
+    assert trace.get("selected_symbol") == "AAA"
+    assert float(trace.get("selected_source_delta") or 0.0) > 0.0
+
+    artifact = build_scanner_output_artifact(out)
+    assert artifact.get("scanner_memory_bias_applied") is True
+    assert (artifact.get("commander_memory_application_trace") or {}).get("applied") is True

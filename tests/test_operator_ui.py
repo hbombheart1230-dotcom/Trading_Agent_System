@@ -291,15 +291,15 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
     cache = tmp_path / "data" / "operator_ui" / "brief_cache"
 
     _write_json(
-        reports / "daily" / "daily_2026-03-13.json",
+        reports / "operator_summary" / "daily" / "daily_2026-03-13.json",
         {"day": "2026-03-13", "events": 10, "decision_actions": {"BUY": 1, "SELL": 1}, "approvals": 2, "blocks": 1},
     )
     _write_json(
-        reports / "daily" / "daily_2026-03-16.json",
+        reports / "operator_summary" / "daily" / "daily_2026-03-16.json",
         {"day": "2026-03-16", "events": 11, "decision_actions": {"BUY": 1}, "approvals": 1, "blocks": 0},
     )
     _write_json(
-        reports / "daily" / "2026-03-13" / "operator_summary.json",
+        reports / "operator_summary" / "daily" / "2026-03-13" / "operator_summary.json",
         {
             "day": "2026-03-13",
             "executive_summary": {"system_status": "GREEN", "summary_lines": ["runs ok"]},
@@ -308,7 +308,7 @@ def _make_config(tmp_path: Path) -> OperatorUIConfig:
         },
     )
     _write_json(
-        reports / "daily" / "2026-03-16" / "operator_summary.json",
+        reports / "operator_summary" / "daily" / "2026-03-16" / "operator_summary.json",
         {
             "day": "2026-03-16",
             "executive_summary": {"system_status": "GREEN", "summary_lines": ["today runs ok"]},
@@ -2108,7 +2108,7 @@ def test_operator_ui_overview_does_not_fallback_to_stale_reporter_for_latest_day
     monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "stepfun/step-3.5-flash:free")
     cfg = _make_config(tmp_path)
     (cfg.reports_root / "dev" / "analysis" / "reporter_analysis" / "reporter_analysis_2026-03-16.json").unlink()
-    (cfg.reports_root / "daily" / "2026-03-16" / "operator_summary.json").unlink()
+    (cfg.reports_root / "operator_summary" / "daily" / "2026-03-16" / "operator_summary.json").unlink()
     app = create_app(cfg)
     client = TestClient(app)
 

@@ -25,6 +25,7 @@ from graphs.nodes.skill_contracts import (
 from libs.research.evidence_ledger import record_decision_bridge, record_raw_input
 from libs.runtime.asset_universe_policy import apply_asset_universe_filter
 from libs.runtime.canonical_artifacts import write_scanner_artifact
+from libs.runtime.commander_memory_application_trace import build_scanner_commander_memory_application_trace
 from libs.runtime.decision_trace import append_decision_trace
 from libs.runtime.scanner_bias import normalize_scanner_bias_context, summarize_scanner_bias_context
 from libs.runtime.scanner_memory_bias import (
@@ -574,6 +575,282 @@ def _candidate_theme_match(row: Dict[str, Any]) -> Any:
     return bool(_to_float(components.get("theme_boost_component")) > 0.0)
 
 
+def _policy_float(value: Any, default: float) -> float:
+    if value in (None, ""):
+        return float(default)
+    return float(_to_float(value))
+
+
+def _policy_int(value: Any, default: int) -> int:
+    if value in (None, ""):
+        return int(default)
+    return int(_to_int(value, default))
+
+
+def _policy_bool(value: Any, default: bool = False) -> bool:
+    if value in (None, ""):
+        return bool(default)
+    if isinstance(value, bool):
+        return bool(value)
+    return _is_trueish(value)
+
+
+def _normalize_symbol_list(value: Any) -> List[str]:
+    raw_values: List[Any]
+    if isinstance(value, str):
+        raw_values = [part.strip() for part in value.split(",")]
+    elif isinstance(value, (list, tuple, set)):
+        raw_values = list(value)
+    else:
+        raw_values = []
+    out: List[str] = []
+    seen = set()
+    for raw in raw_values:
+        symbol = _norm_symbol(raw)
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        out.append(symbol)
+    return out
+
+
+def _resolve_market_representative_guard_policy(raw_policy: Any) -> Dict[str, Any]:
+    raw = dict(raw_policy or {}) if isinstance(raw_policy, Mapping) else {}
+    symbols = _normalize_symbol_list(
+        raw.get("symbols")
+        or raw.get("market_representative_symbols")
+        or raw.get("representative_symbols")
+    )
+    enabled = _policy_bool(raw.get("enabled"), False) and bool(symbols)
+    penalty = max(0.0, _policy_float(raw.get("penalty"), 0.04))
+    max_penalty = max(penalty, _policy_float(raw.get("max_penalty"), 0.12))
+    return {
+        "enabled": bool(enabled),
+        "symbols": symbols,
+        "penalty": float(min(penalty, max_penalty)),
+        "max_penalty": float(max_penalty),
+        "near_tie_gap": max(0.0, _policy_float(raw.get("near_tie_gap"), 0.06)),
+        "top_value_dominance_min": _clamp(
+            _policy_float(raw.get("top_value_dominance_min"), 0.55),
+            0.0,
+            1.0,
+        ),
+        "weak_confirmation_max": max(0, _policy_int(raw.get("weak_confirmation_max"), 1)),
+        "strong_confirmation_min": max(1, _policy_int(raw.get("strong_confirmation_min"), 2)),
+        "bypass_when_strong_confirmation": _policy_bool(
+            raw.get("bypass_when_strong_confirmation"),
+            True,
+        ),
+        "apply_when_top_value_only": _policy_bool(raw.get("apply_when_top_value_only"), True),
+        "policy_source": str(raw.get("policy_source") or "commander"),
+    }
+
+
+def _market_representative_confirmation_sources(row: Dict[str, Any]) -> List[str]:
+    candidate = row.get("candidate") if isinstance(row.get("candidate"), dict) else {}
+    score_breakdown = row.get("score_breakdown") if isinstance(row.get("score_breakdown"), dict) else {}
+    components = row.get("components") if isinstance(row.get("components"), dict) else {}
+    sources = {str(x or "").strip().lower() for x in list(candidate.get("sources") or []) if str(x or "").strip()}
+    confirmations: List[str] = []
+
+    def add(name: str, condition: bool) -> None:
+        if condition and name not in confirmations:
+            confirmations.append(name)
+
+    add(
+        "theme",
+        "sector_theme" in sources
+        or _to_float(score_breakdown.get("theme_boost")) > 0.0
+        or _to_float(components.get("theme_boost_component")) > 0.0,
+    )
+    add(
+        "momentum",
+        "top_change_rate" in sources
+        or _to_float(score_breakdown.get("momentum")) >= 0.03
+        or _to_float(components.get("momentum_component")) >= 0.25,
+    )
+    add(
+        "trend",
+        _to_float(score_breakdown.get("trend")) >= 0.03
+        or _to_float(components.get("trend_component")) >= 0.25,
+    )
+    add(
+        "news",
+        _to_float(score_breakdown.get("sentiment")) >= 0.01
+        or _to_float(components.get("sentiment_component")) >= 0.15
+        or _to_float(components.get("news_sentiment")) >= 0.15,
+    )
+    add(
+        "volume",
+        "top_volume" in sources
+        or _to_float(score_breakdown.get("volume_surge")) >= 0.02
+        or _to_float(components.get("volume_surge_component")) >= 0.20,
+    )
+    add(
+        "intraday_strength",
+        _to_float(score_breakdown.get("intraday_strength")) >= 0.03
+        or _to_float(components.get("intraday_strength_component")) >= 0.25,
+    )
+    return confirmations
+
+
+def _market_representative_top_value_dominance(row: Dict[str, Any], *, threshold: float) -> bool:
+    candidate = row.get("candidate") if isinstance(row.get("candidate"), dict) else {}
+    score_breakdown = row.get("score_breakdown") if isinstance(row.get("score_breakdown"), dict) else {}
+    components = row.get("components") if isinstance(row.get("components"), dict) else {}
+    sources = {str(x or "").strip().lower() for x in list(candidate.get("sources") or []) if str(x or "").strip()}
+    source_scores = candidate.get("source_scores") if isinstance(candidate.get("source_scores"), dict) else {}
+    top_value_component = _to_float(components.get("trading_value_component"))
+    if top_value_component <= 0.0 and source_scores.get("top_value") not in (None, ""):
+        top_value_component = _norm01(_to_float(source_scores.get("top_value")), 0.0, 2.0)
+    if sources and sources.issubset({"top_value"}):
+        return top_value_component >= min(0.10, float(threshold))
+    trading_value_score = max(0.0, _to_float(score_breakdown.get("trading_value")))
+    positive_scores = [
+        max(0.0, _to_float(score_breakdown.get(key)))
+        for key in (
+            "momentum",
+            "trend",
+            "volume_surge",
+            "intraday_strength",
+            "theme_boost",
+            "sentiment",
+            "cross_section_rank",
+        )
+    ]
+    strongest_non_value = max(positive_scores) if positive_scores else 0.0
+    return bool(
+        top_value_component >= float(threshold)
+        and trading_value_score > 0.0
+        and trading_value_score >= strongest_non_value
+    )
+
+
+def _apply_market_representative_guard(
+    rows: List[Dict[str, Any]],
+    *,
+    raw_policy: Any,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    policy = _resolve_market_representative_guard_policy(raw_policy)
+    meta: Dict[str, Any] = {
+        "enabled": bool(policy.get("enabled")),
+        "applied": False,
+        "policy": dict(policy),
+        "symbol": "",
+        "penalty": 0.0,
+        "score_gap": 0.0,
+        "top_value_dominance": False,
+        "confirmation_sources": [],
+        "before_top": [],
+        "after_top": [],
+        "skipped_reason": "",
+        "reason": "",
+    }
+    if not bool(policy.get("enabled")):
+        meta["skipped_reason"] = "disabled"
+        return rows, meta
+    if len(rows or []) < 2:
+        meta["skipped_reason"] = "insufficient_candidates"
+        return rows, meta
+
+    symbols = set(str(x or "").strip() for x in list(policy.get("symbols") or []) if str(x or "").strip())
+    top = rows[0]
+    runner_up = rows[1]
+    top_symbol = _norm_symbol(top.get("symbol"))
+    meta["before_top"] = [
+        {"symbol": str((row or {}).get("symbol") or ""), "score_total": float(_to_float((row or {}).get("score_total") or (row or {}).get("score")))}
+        for row in rows[:3]
+        if isinstance(row, dict)
+    ]
+    if top_symbol not in symbols:
+        meta["symbol"] = top_symbol
+        meta["skipped_reason"] = "top_not_market_representative"
+        meta["after_top"] = list(meta["before_top"])
+        return rows, meta
+
+    top_score = _to_float(top.get("score_total") if top.get("score_total") is not None else top.get("score"))
+    runner_score = _to_float(
+        runner_up.get("score_total") if runner_up.get("score_total") is not None else runner_up.get("score")
+    )
+    score_gap = max(0.0, top_score - runner_score)
+    confirmations = _market_representative_confirmation_sources(top)
+    top_value_dominant = _market_representative_top_value_dominance(
+        top,
+        threshold=float(policy.get("top_value_dominance_min") or 0.55),
+    )
+    meta.update(
+        {
+            "symbol": top_symbol,
+            "score_gap": float(score_gap),
+            "top_value_dominance": bool(top_value_dominant),
+            "confirmation_sources": list(confirmations),
+        }
+    )
+    if bool(policy.get("bypass_when_strong_confirmation")) and len(confirmations) >= int(policy.get("strong_confirmation_min") or 2):
+        meta["skipped_reason"] = "strong_confirmation"
+        meta["after_top"] = list(meta["before_top"])
+        return rows, meta
+    if not top_value_dominant:
+        meta["skipped_reason"] = "not_top_value_dominant"
+        meta["after_top"] = list(meta["before_top"])
+        return rows, meta
+    if len(confirmations) > int(policy.get("weak_confirmation_max") or 1):
+        meta["skipped_reason"] = "confirmation_not_weak"
+        meta["after_top"] = list(meta["before_top"])
+        return rows, meta
+    if score_gap > float(policy.get("near_tie_gap") or 0.0):
+        meta["skipped_reason"] = "score_gap_exceeded"
+        meta["after_top"] = list(meta["before_top"])
+        return rows, meta
+
+    base_penalty = float(policy.get("penalty") or 0.0)
+    prior_penalty = max(0.0, -_to_float(top.get("symbol_prior_adjustment")))
+    penalty = min(float(policy.get("max_penalty") or base_penalty), base_penalty + prior_penalty)
+    if penalty <= 0.0:
+        meta["skipped_reason"] = "zero_penalty"
+        meta["after_top"] = list(meta["before_top"])
+        return rows, meta
+
+    adjusted_top = dict(top)
+    adjusted_score = top_score - penalty
+    adjusted_top["score_total"] = float(adjusted_score)
+    adjusted_top["score"] = float(adjusted_score)
+    score_breakdown = dict(adjusted_top.get("score_breakdown") or {})
+    score_breakdown["market_representative_guard"] = -float(penalty)
+    adjusted_top["score_breakdown"] = score_breakdown
+    adjusted_top["market_representative_guard_applied"] = True
+    adjusted_top["market_representative_guard_penalty"] = float(penalty)
+    adjusted_top["market_representative_guard_reason"] = (
+        f"{top_symbol} top_value-dominant near-tie with weak confirmation"
+    )
+    adjusted_top["market_representative_confirmation_sources"] = list(confirmations)
+    adjusted_rows = [adjusted_top, *list(rows[1:])]
+    adjusted_rows.sort(
+        key=lambda r: (
+            float(r.get("score_total") or 0.0),
+            float(r.get("confidence") or 0.0),
+            -float(r.get("risk_score") or 0.0),
+        ),
+        reverse=True,
+    )
+    meta.update(
+        {
+            "applied": True,
+            "penalty": float(penalty),
+            "reason": str(adjusted_top.get("market_representative_guard_reason") or ""),
+            "after_top": [
+                {
+                    "symbol": str((row or {}).get("symbol") or ""),
+                    "score_total": float(_to_float((row or {}).get("score_total") or (row or {}).get("score"))),
+                }
+                for row in adjusted_rows[:3]
+                if isinstance(row, dict)
+            ],
+        }
+    )
+    return adjusted_rows, meta
+
+
 def _ranking_table_rows(rows: List[Dict[str, Any]], *, max_rows: int = 5) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for idx, row in enumerate(list(rows or [])[: max(0, int(max_rows))], start=1):
@@ -954,12 +1231,53 @@ def _extract_themes(state: Dict[str, Any]) -> List[str]:
             seen.add(t)
             out.append(t)
 
+    scanner_guidance = state.get("scanner_guidance")
+    if isinstance(scanner_guidance, dict):
+        add_many(scanner_guidance.get("selected_themes"))
+    add_many(state.get("selected_themes"))
     add_many(state.get("themes"))
     add_many(state.get("top_themes"))
     strategist_output = state.get("strategist_output")
     if isinstance(strategist_output, dict):
+        add_many(strategist_output.get("selected_themes"))
         add_many(strategist_output.get("themes"))
     return out
+
+
+def _extract_selected_themes(state: Dict[str, Any]) -> Tuple[List[str], str]:
+    out: List[str] = []
+    seen = set()
+
+    def add_many(values: Any, source: str) -> str:
+        if not isinstance(values, list):
+            return ""
+        added_source = ""
+        for row in values:
+            if isinstance(row, dict):
+                raw = row.get("theme") or row.get("theme_name") or row.get("name")
+            else:
+                raw = row
+            t = str(raw or "").strip().lower()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+            added_source = added_source or source
+        return added_source
+
+    source = ""
+    scanner_guidance = state.get("scanner_guidance")
+    if isinstance(scanner_guidance, dict):
+        source = add_many(scanner_guidance.get("selected_themes"), "scanner_guidance.selected_themes") or source
+        strategy = scanner_guidance.get("theme_strategy") if isinstance(scanner_guidance.get("theme_strategy"), dict) else {}
+        source = add_many(strategy.get("selected_themes"), "scanner_guidance.theme_strategy") or source
+    source = add_many(state.get("selected_themes"), "state.selected_themes") or source
+    strategist_output = state.get("strategist_output")
+    if isinstance(strategist_output, dict):
+        source = add_many(strategist_output.get("selected_themes"), "strategist_output.selected_themes") or source
+        strategy = strategist_output.get("theme_strategy") if isinstance(strategist_output.get("theme_strategy"), dict) else {}
+        source = add_many(strategy.get("selected_themes"), "strategist_output.theme_strategy") or source
+    return out, source
 
 
 def _extract_avoid_themes(state: Dict[str, Any]) -> List[str]:
@@ -1130,6 +1448,80 @@ def _resolve_strict_kiwoom_only(state: Dict[str, Any], policy: Dict[str, Any]) -
     return bool((resolve_scanner_runtime_policy(state, policy) or {}).get("strict_only"))
 
 
+def _resolve_scan_aggressiveness(state: Dict[str, Any]) -> float:
+    commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
+    scanner_policy = commander_decision.get("scanner_policy") if isinstance(commander_decision.get("scanner_policy"), dict) else {}
+    if scanner_policy.get("scan_aggressiveness") not in (None, ""):
+        return max(0.0, _to_float(scanner_policy.get("scan_aggressiveness")))
+    adaptive_policy = commander_decision.get("adaptive_policy") if isinstance(commander_decision.get("adaptive_policy"), dict) else {}
+    return max(0.0, _to_float(adaptive_policy.get("scan_aggressiveness")))
+
+
+def _normalize_scanner_blocker_family(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text or text in {"mixed", "none"}:
+        return ""
+    if text in {"buy_blocked_open_position", "open_position_blocked"}:
+        return "open_position_guard"
+    if text.startswith("entry_guard_cooldown") or "cooldown" in text:
+        return "cooldown_guard"
+    if text in {
+        "pullback_not_mature",
+        "pullback_mature",
+        "pullback_ok",
+        "pullback_structure_ok",
+        "pullback_volume_path_ok",
+        "pullback_below_vwap_reclaim_not_ready",
+    } or "pullback" in text:
+        return "pullback_timing"
+    if "extend" in text or "overextended" in text:
+        return "overextension_guard"
+    if text in {
+        "below_vwap_reclaim_not_ready",
+        "vwap_reclaim_ok",
+        "reclaim_gate_ok",
+        "vwap_hold_ok",
+    } or "reclaim" in text or "vwap" in text:
+        return "reclaim_readiness"
+    if text in {"volume_confirmation_missing", "volume_insufficient", "volume_ok"} or "volume" in text:
+        return "volume_confirmation"
+    if text in {
+        "breakout_not_ready",
+        "breakout_ok",
+        "breakout_path_ok",
+        "wait_for_confirmation",
+    } or "breakout" in text or "confirmation" in text:
+        return "breakout_confirmation"
+    if text in {"rebound_ok"} or "rebound" in text:
+        return "rebound_confirmation"
+    if text in {"structure_hh_hl", "chart_structure_guard"} or "structure" in text:
+        return "structure_confirmation"
+    if text in {"confidence_gate_ok"} or "confidence" in text:
+        return "confidence_gate"
+    if text.startswith("risk_") or text == "risk_blocked":
+        return "risk_guard"
+    if text == "unknown":
+        return "unknown"
+    return "other"
+
+
+def _candidate_blocker_families(row: Mapping[str, Any]) -> List[str]:
+    if not isinstance(row, Mapping):
+        return []
+    out: List[str] = []
+    seen = set()
+    for raw in (
+        row.get("expected_monitor_block_reason"),
+        row.get("dominant_block_reason"),
+    ):
+        family = _normalize_scanner_blocker_family(raw)
+        if not family or family in {"unknown", "other"} or family in seen:
+            continue
+        seen.add(family)
+        out.append(family)
+    return out
+
+
 def _resolve_candidate_limit(state: Dict[str, Any], policy: Dict[str, Any]) -> int:
     raw = policy.get("candidate_k", policy.get("candidate_topk"))
     if raw not in (None, ""):
@@ -1298,6 +1690,7 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         raw_bias = str(raw_bias.get("style") or "")
     base = {
         "themes": list(strategist_output.get("themes") or []),
+        "selected_themes": list(strategist_output.get("selected_themes") or []),
         "avoid_themes": list(strategist_output.get("avoid_themes") or []),
         "playbook": str(
             strategist_output.get("playbook")
@@ -1322,6 +1715,15 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         "trade_aggressiveness": strategist_output.get("trade_aggressiveness"),
         "risk_tone": strategist_output.get("risk_tone"),
         "monitor_guidance": strategist_output.get("monitor_guidance"),
+        "theme_source": strategist_output.get("theme_source"),
+        "theme_source_status": strategist_output.get("theme_source_status"),
+        "theme_strength_packet": dict(strategist_output.get("theme_strength_packet") or {})
+        if isinstance(strategist_output.get("theme_strength_packet"), dict)
+        else {},
+        "available_themes": list(strategist_output.get("available_themes") or []),
+        "theme_strategy": dict(strategist_output.get("theme_strategy") or {})
+        if isinstance(strategist_output.get("theme_strategy"), dict)
+        else {},
         "score_weights": dict(scanner_policy.get("score_weights") or {}),
         "filters": dict(scanner_policy.get("filters") or {}),
         "ranking_rules": dict(scanner_policy.get("ranking_rules") or {}),
@@ -1337,6 +1739,7 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
         out = dict(base)
         for key in (
             "themes",
+            "selected_themes",
             "avoid_themes",
             "playbook",
             "scanner_priority",
@@ -1347,6 +1750,11 @@ def _extract_scanner_guidance(state: Dict[str, Any]) -> Dict[str, Any]:
             "trade_aggressiveness",
             "risk_tone",
             "monitor_guidance",
+            "theme_source",
+            "theme_source_status",
+            "theme_strength_packet",
+            "available_themes",
+            "theme_strategy",
             "score_weights",
             "filters",
             "ranking_rules",
@@ -1888,6 +2296,7 @@ def _compute_entry_compatibility_signal(
     volume_threshold = thresholds.get("volume_ratio") if isinstance(thresholds.get("volume_ratio"), dict) else {}
     breakout_gap_pct = breakout_gap_threshold.get("actual")
     min_extended = extended_threshold.get("min")
+    max_extended = extended_threshold.get("max")
     volume_min = volume_threshold.get("min")
     below_vwap = bool(vwap_distance is not None and _to_float(vwap_distance) < 0.0)
 
@@ -1900,11 +2309,15 @@ def _compute_entry_compatibility_signal(
             volume_ratio = feature_row.get("volume_spike20")
         breakout_gap_pct = None
         min_extended = policy.get("min_extended_from_vwap_pct") if hasattr(policy, "get") else None
+        max_extended = policy.get("max_extended_from_vwap_pct") if hasattr(policy, "get") else None
         volume_min = policy.get("volume_ratio_min") if hasattr(policy, "get") else None
         below_vwap = bool(vwap_distance is not None and _to_float(vwap_distance) < 0.0)
+    elif max_extended in (None, "") and hasattr(policy, "get"):
+        max_extended = policy.get("max_extended_from_vwap_pct")
 
     vwap_distance_num = float(_to_float(vwap_distance)) if vwap_distance not in (None, "") else None
     vwap_distance_abs = abs(vwap_distance_num) if vwap_distance_num is not None else None
+    max_extended_num = float(_to_float(max_extended)) if max_extended not in (None, "") else None
     reclaim_proximity = _calc_reclaim_proximity(
         actual=vwap_distance_num,
         minimum=float(min_extended) if min_extended not in (None, "") else None,
@@ -1914,6 +2327,14 @@ def _compute_entry_compatibility_signal(
         if vwap_distance_num is not None
         else 0.5
     )
+    overextension_score = 1.0
+    if vwap_distance_num is not None and max_extended_num is not None and max_extended_num > 0.0:
+        overextension_score = _clamp(
+            1.0 - max(0.0, vwap_distance_num - max_extended_num) / max(0.02, max_extended_num),
+            0.0,
+            1.0,
+        )
+        vwap_proximity_score = min(vwap_proximity_score, overextension_score)
     volume_readiness_score = 0.5
     if volume_ratio not in (None, ""):
         volume_floor = max(_to_float(volume_min), 1e-6)
@@ -1940,7 +2361,18 @@ def _compute_entry_compatibility_signal(
             soft_penalty += 0.05
     if vwap_distance_num is not None and vwap_distance_num < -0.07:
         soft_penalty += 0.03
+    if (
+        vwap_distance_num is not None
+        and max_extended_num is not None
+        and max_extended_num > 0.0
+        and vwap_distance_num > max_extended_num
+    ):
+        soft_penalty += min(0.12, 0.04 + (vwap_distance_num - max_extended_num))
+    if str(result.get("reason") or "").strip() == "too_extended_from_vwap":
+        soft_penalty += 0.04
     compatibility_score_post_penalty = max(0.0, compatibility_score_pre_penalty - soft_penalty)
+    if str(result.get("reason") or "").strip() == "too_extended_from_vwap":
+        compatibility_score_post_penalty = min(compatibility_score_post_penalty, 0.35)
     dominant_block_reason = str((bias_context or {}).get("dominant_block_reason") or "mixed")
     dominant_block_reason_ratio = float(_to_float((bias_context or {}).get("dominant_block_reason_ratio")))
     bias_scale = float(_to_float((bias_context or {}).get("bias_scale") or 0.10))
@@ -2188,6 +2620,57 @@ def _reduce_candidates_by_practical_filters(
     }
 
 
+def _filter_mock_broker_restricted_candidates(
+    rows: List[Any],
+    *,
+    state: Dict[str, Any],
+) -> Tuple[List[Any], Dict[str, Any]]:
+    persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
+    restricted = persisted.get("mock_broker_restricted_symbols") if isinstance(persisted.get("mock_broker_restricted_symbols"), dict) else {}
+    if not restricted:
+        return list(rows), {
+            "mock_broker_restricted_filter_applied": False,
+            "mock_broker_restricted_excluded_count": 0,
+            "mock_broker_restricted_excluded_symbols": [],
+            "mock_broker_restricted_exclusions": [],
+            "candidate_pool_after_mock_broker_restricted_filter": int(len(rows)),
+        }
+
+    restricted_by_symbol: Dict[str, Dict[str, Any]] = {}
+    for key, raw in restricted.items():
+        record = raw if isinstance(raw, dict) else {}
+        symbol = _norm_symbol(record.get("symbol") or key)
+        if symbol:
+            restricted_by_symbol[symbol] = dict(record)
+
+    kept: List[Any] = []
+    exclusions: List[Dict[str, Any]] = []
+    for row in rows:
+        symbol = _norm_symbol(row.get("symbol") if isinstance(row, dict) else row)
+        record = restricted_by_symbol.get(symbol)
+        if not record:
+            kept.append(row)
+            continue
+        exclusions.append(
+            {
+                "symbol": symbol,
+                "exclusion_reason": "mock_broker_restricted_symbol",
+                "broker_code": str(record.get("broker_code") or ""),
+                "broker_message": str(record.get("broker_message") or "")[:200],
+                "detected_date": str(record.get("detected_date") or ""),
+                "reason": str(record.get("reason") or ""),
+            }
+        )
+
+    return kept, {
+        "mock_broker_restricted_filter_applied": bool(exclusions),
+        "mock_broker_restricted_excluded_count": int(len(exclusions)),
+        "mock_broker_restricted_excluded_symbols": [row["symbol"] for row in exclusions],
+        "mock_broker_restricted_exclusions": exclusions[:20],
+        "candidate_pool_after_mock_broker_restricted_filter": int(len(kept)),
+    }
+
+
 def _norm01(x: float, lo: float, hi: float) -> float:
     if hi <= lo:
         return 0.0
@@ -2214,6 +2697,7 @@ def _build_kiwoom_candidates(
     if source_policy.get("condition_limit") is not None:
         condition_limit = max(0, int(source_policy.get("condition_limit") or 0))
     scanner_runtime_policy = resolve_scanner_runtime_policy(state, policy)
+    scan_aggressiveness = _resolve_scan_aggressiveness(state)
     include_change_rate = _resolve_include_change_rate(state, policy)
     if source_policy.get("include_change_rate") is not None:
         include_change_rate = bool(source_policy.get("include_change_rate"))
@@ -2223,7 +2707,48 @@ def _build_kiwoom_candidates(
     include_condition_search = bool(source_policy.get("include_condition_search", True))
     include_sector_candidates = bool(source_policy.get("include_sector_candidates", True))
     include_watchlist = bool(source_policy.get("include_watchlist", True))
+    base_candidate_limit = int(candidate_limit)
+    base_top_pool = int(top_pool)
+    base_condition_limit = int(condition_limit)
+    aggressive_source_expansion_used = False
+    aggressive_source_expansion_slots = 0
+    aggressive_source_expansion_sources: List[str] = []
+    if scan_aggressiveness > 0.0:
+        aggressive_source_expansion_used = True
+        aggressive_source_expansion_slots = max(
+            2,
+            int(round(1.0 + min(3.0, float(scan_aggressiveness) * 40.0))),
+        )
+        candidate_limit = max(candidate_limit, base_candidate_limit + aggressive_source_expansion_slots)
+        top_pool = max(top_pool, candidate_limit + aggressive_source_expansion_slots)
+        condition_limit = max(condition_limit, top_pool + aggressive_source_expansion_slots)
+        include_change_rate = True
+        include_condition_search = True
+        include_watchlist = True
+        aggressive_source_expansion_sources = [
+            "condition_search",
+            "operator_watchlist",
+            "top_change_rate",
+            "strategist_backfill",
+        ]
+        expanded_weights = dict(source_policy.get("source_weights") or {})
+        expanded_weights["condition_search"] = max(2.8, float(_to_float(expanded_weights.get("condition_search"))))
+        expanded_weights["operator_watchlist"] = max(1.4, float(_to_float(expanded_weights.get("operator_watchlist"))))
+        expanded_weights["top_change_rate"] = max(1.5, float(_to_float(expanded_weights.get("top_change_rate"))))
+        source_policy = dict(source_policy)
+        source_policy.update(
+            {
+                "include_change_rate": True,
+                "include_condition_search": True,
+                "include_watchlist": True,
+                "top_candidate_pool": int(top_pool),
+                "condition_limit": int(condition_limit),
+                "source_weights": expanded_weights,
+            }
+        )
 
+    selected_themes, selected_theme_source = _extract_selected_themes(state)
+    themes_for_universe = list(selected_themes) if selected_themes else _extract_themes(state)
     rows, meta = build_kiwoom_candidate_rows(
         state=state,
         top_pool=top_pool,
@@ -2232,13 +2757,13 @@ def _build_kiwoom_candidates(
         include_top_value=include_top_value,
         include_top_volume=include_top_volume,
         include_condition_search=include_condition_search,
-        themes=_extract_themes(state),
+        themes=themes_for_universe,
         include_sector_candidates=include_sector_candidates,
         include_watchlist=include_watchlist,
         source_weights=dict(source_policy.get("source_weights") or {}),
     )
     raw_kiwoom_count = int(len(rows))
-    themes = _extract_themes(state)
+    themes = list(themes_for_universe)
     avoid_themes = _extract_avoid_themes(state)
     theme_symbol_index = _extract_theme_symbol_index(state, policy)
     rows, filter_meta = _apply_theme_filter(
@@ -2257,12 +2782,16 @@ def _build_kiwoom_candidates(
     rows = rows[:candidate_limit]
     backfill_count = 0
     backfill_skipped = ""
-    if raw_kiwoom_count > 0 and len(rows) < candidate_limit and not _resolve_strict_kiwoom_only(state, policy):
+    strict_kiwoom_only = _resolve_strict_kiwoom_only(state, policy)
+    relaxed_strict_mode = bool(strict_kiwoom_only and scan_aggressiveness > 0.0)
+    backfill_allowed = raw_kiwoom_count > 0 and len(rows) < candidate_limit and (not strict_kiwoom_only or relaxed_strict_mode)
+    if backfill_allowed:
         strategist_candidates = _extract_strategist_candidates(state)
         if strategist_candidates and _resolve_block_static_fallback(state, policy) and is_static_fallback_pool(strategist_candidates):
             strategist_candidates = []
             backfill_skipped = "static_fallback_blocked"
         existing = {_norm_symbol(r.get("symbol")) for r in rows if isinstance(r, dict)}
+        strategist_backfill_score = 0.10 + min(0.10, float(scan_aggressiveness))
         for cand in strategist_candidates:
             if isinstance(cand, dict):
                 sym = _norm_symbol(cand.get("symbol"))
@@ -2277,7 +2806,7 @@ def _build_kiwoom_candidates(
                     "symbol": sym,
                     "why": why,
                     "sources": ["strategist_backfill"],
-                    "source_scores": {"strategist_backfill": 0.10},
+                    "source_scores": {"strategist_backfill": strategist_backfill_score},
                     "source_count": 1,
                     "rank_score": 0.0,
                     "universe_score": 0.0,
@@ -2295,6 +2824,8 @@ def _build_kiwoom_candidates(
     meta_out.update(
         {
             "themes": list(themes),
+            "selected_themes": list(selected_themes),
+            "selected_theme_source": str(selected_theme_source or ""),
             "avoid_themes": list(avoid_themes),
             "candidate_limit": int(candidate_limit),
             "candidate_count": int(len(rows)),
@@ -2310,6 +2841,15 @@ def _build_kiwoom_candidates(
             "backfill_used": bool(backfill_count > 0),
             "backfill_count": int(backfill_count),
             "backfill_skipped_reason": str(backfill_skipped or ""),
+            "scan_aggressiveness": float(scan_aggressiveness),
+            "strict_mode_relaxed_by_scan_aggressiveness": bool(relaxed_strict_mode and backfill_count > 0),
+            "candidate_limit_base": int(base_candidate_limit),
+            "candidate_limit_effective": int(candidate_limit),
+            "top_candidate_pool_base": int(base_top_pool),
+            "condition_limit_base": int(base_condition_limit),
+            "aggressive_source_expansion_used": bool(aggressive_source_expansion_used),
+            "aggressive_source_expansion_slots": int(aggressive_source_expansion_slots),
+            "aggressive_source_expansion_sources": list(aggressive_source_expansion_sources),
         }
     )
     return rows, meta_out
@@ -2410,6 +2950,140 @@ def _resolve_scanner_candidates(state: Dict[str, Any], policy: Dict[str, Any]) -
         }
     )
     return [], empty_meta
+
+
+def _merge_mock_compatibility_override(
+    base: Dict[str, Any],
+    *,
+    override: Any,
+) -> Dict[str, Any]:
+    if not isinstance(override, Mapping):
+        return dict(base or {})
+    merged = dict(base or {})
+    for key in (
+        "entry_compatibility_score",
+        "compatibility_bias",
+        "dominant_block_reason_ratio",
+        "bias_scale",
+        "soft_penalty",
+        "compatibility_score_pre_penalty",
+        "compatibility_score_post_penalty",
+        "vwap_distance_abs",
+        "reclaim_proximity",
+        "volume_ratio",
+        "breakout_gap_pct",
+    ):
+        if override.get(key) not in (None, ""):
+            merged[key] = float(_to_float(override.get(key)))
+    for key in (
+        "expected_monitor_block_reason",
+        "dominant_block_reason",
+        "compatibility_source",
+        "triggered_path",
+    ):
+        if override.get(key) not in (None, ""):
+            merged[key] = str(override.get(key) or "")
+    if override.get("is_below_vwap") is not None:
+        merged["is_below_vwap"] = bool(override.get("is_below_vwap"))
+    if isinstance(override.get("paths_passed"), list):
+        merged["paths_passed"] = list(override.get("paths_passed") or [])
+    if isinstance(override.get("compatibility_components"), Mapping):
+        merged["compatibility_components"] = dict(override.get("compatibility_components") or {})
+    return merged
+
+
+def _apply_blocker_family_concentration_overlay(
+    rows: List[Dict[str, Any]],
+    *,
+    scan_aggressiveness: float,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    meta = {
+        "applied": False,
+        "family": "",
+        "penalty": 0.0,
+        "candidate_count": 0,
+        "top3_symbols_before": [],
+        "top3_symbols_after": [],
+        "alternative_symbols": [],
+        "selection_vetoed": False,
+        "selection_veto_reason": "",
+    }
+    ranked_rows = [dict(row) for row in list(rows or []) if isinstance(row, dict)]
+    if len(ranked_rows) < 3:
+        return ranked_rows, meta
+
+    top3_rows = ranked_rows[:3]
+    top3_family_sets = [set(_candidate_blocker_families(row)) for row in top3_rows]
+    if any(not family_set for family_set in top3_family_sets):
+        return ranked_rows, meta
+
+    common_families = set.intersection(*top3_family_sets) if top3_family_sets else set()
+    common_families = {family for family in common_families if family}
+    if not common_families:
+        return ranked_rows, meta
+
+    family_counter: Counter[str] = Counter()
+    for row in ranked_rows:
+        for family in _candidate_blocker_families(row):
+            family_counter[family] += 1
+    concentrated_family = sorted(common_families, key=lambda family: (-family_counter.get(family, 0), family))[0]
+
+    affected_rows = [row for row in ranked_rows if concentrated_family in _candidate_blocker_families(row)]
+    alternative_rows = [row for row in ranked_rows if concentrated_family not in _candidate_blocker_families(row)]
+    meta.update(
+        {
+            "applied": True,
+            "family": str(concentrated_family),
+            "candidate_count": int(len(affected_rows)),
+            "top3_symbols_before": [str((row or {}).get("symbol") or "") for row in top3_rows],
+            "alternative_symbols": [str((row or {}).get("symbol") or "") for row in alternative_rows[:5]],
+        }
+    )
+    if not alternative_rows:
+        meta["selection_vetoed"] = True
+        meta["selection_veto_reason"] = "blocker_family_concentration_no_alternative"
+        meta["top3_symbols_after"] = list(meta.get("top3_symbols_before") or [])
+        return ranked_rows, meta
+
+    third_score = float(_to_float(top3_rows[2].get("score_total") or top3_rows[2].get("score")))
+    best_alternative_score = max(
+        float(_to_float((row or {}).get("score_total") or (row or {}).get("score")))
+        for row in alternative_rows
+    )
+    base_penalty = 0.04 + min(0.02, max(0.0, float(scan_aggressiveness)))
+    required_penalty = max(0.0, third_score - best_alternative_score + 0.001)
+    penalty = min(0.15, max(base_penalty, required_penalty))
+
+    adjusted_rows: List[Dict[str, Any]] = []
+    for row in ranked_rows:
+        row_copy = dict(row)
+        families = _candidate_blocker_families(row_copy)
+        if concentrated_family in families:
+            score_before = float(_to_float(row_copy.get("score_total") or row_copy.get("score")))
+            score_after = score_before - penalty
+            row_copy["score_total"] = float(score_after)
+            row_copy["score"] = float(score_after)
+            row_copy["blocker_family_concentration_penalty_applied"] = float(penalty)
+            row_copy["blocker_family_concentration_family"] = str(concentrated_family)
+        adjusted_rows.append(row_copy)
+
+    adjusted_rows.sort(
+        key=lambda r: (
+            float(r.get("score_total") or 0.0),
+            float(r.get("confidence") or 0.0),
+            -float(r.get("risk_score") or 0.0),
+        ),
+        reverse=True,
+    )
+    post_top3_rows = adjusted_rows[:3]
+    meta["penalty"] = float(penalty)
+    meta["top3_symbols_after"] = [str((row or {}).get("symbol") or "") for row in post_top3_rows]
+    if len(post_top3_rows) >= 3 and all(
+        concentrated_family in _candidate_blocker_families(row) for row in post_top3_rows
+    ):
+        meta["selection_vetoed"] = True
+        meta["selection_veto_reason"] = "blocker_family_concentration_unresolved"
+    return adjusted_rows, meta
 
 
 def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -2575,6 +3249,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "candidate_source": str(pool_meta.get("candidate_source") or ""),
                 "strategist_guidance": {
                     "themes": list(scanner_guidance.get("themes") or []),
+                    "selected_themes": list(scanner_guidance.get("selected_themes") or []),
                     "avoid_themes": list(scanner_guidance.get("avoid_themes") or []),
                     "playbook": playbook,
                     "scanner_bias": scanner_bias,
@@ -2583,6 +3258,23 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "scanner_source_policy": dict(scanner_guidance.get("scanner_source_policy") or {}),
                     "trade_aggressiveness": trade_aggressiveness,
                     "risk_tone": risk_tone,
+                    "theme_source": str(scanner_guidance.get("theme_source") or ""),
+                    "theme_source_status": str(scanner_guidance.get("theme_source_status") or ""),
+                    "available_themes": list(scanner_guidance.get("available_themes") or [])[:8],
+                    "theme_strategy": dict(scanner_guidance.get("theme_strategy") or {})
+                    if isinstance(scanner_guidance.get("theme_strategy"), dict)
+                    else {},
+                    "theme_strength_packet_summary": {
+                        "source": str((scanner_guidance.get("theme_strength_packet") or {}).get("source") or "")
+                        if isinstance(scanner_guidance.get("theme_strength_packet"), dict)
+                        else "",
+                        "status": str((scanner_guidance.get("theme_strength_packet") or {}).get("status") or "")
+                        if isinstance(scanner_guidance.get("theme_strength_packet"), dict)
+                        else "",
+                        "top_themes": list((scanner_guidance.get("theme_strength_packet") or {}).get("top_themes") or [])[:5]
+                        if isinstance(scanner_guidance.get("theme_strength_packet"), dict)
+                        else [],
+                    },
                 },
                 "commander_context": scanner_policy_trace.get("commander_priority_ref"),
                 "strategist_plan": scanner_policy_trace.get("strategist_constraints_ref"),
@@ -2628,6 +3320,24 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     candidates = list(asset_filtered_candidates)
     pool_meta = dict(pool_meta)
     pool_meta.update(dict(asset_policy_meta))
+
+    restricted_filtered_candidates, restricted_meta = _filter_mock_broker_restricted_candidates(
+        candidates,
+        state=state,
+    )
+    candidates = list(restricted_filtered_candidates)
+    pool_meta.update(dict(restricted_meta))
+    if int(restricted_meta.get("mock_broker_restricted_excluded_count") or 0) > 0:
+        _emit_scanner_event(
+            state,
+            name="mock_broker_restricted_symbol_exclusions",
+            payload={
+                "excluded_candidate_count": int(restricted_meta.get("mock_broker_restricted_excluded_count") or 0),
+                "excluded_symbols": list(restricted_meta.get("mock_broker_restricted_excluded_symbols") or []),
+                "exclusions": list(restricted_meta.get("mock_broker_restricted_exclusions") or []),
+                "candidate_pool_after_filter": int(restricted_meta.get("candidate_pool_after_mock_broker_restricted_filter") or 0),
+            },
+        )
 
     # Practical pool reduction before scoring.
     reduced_candidates, reduction_meta = _reduce_candidates_by_practical_filters(
@@ -2681,6 +3391,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         base_score = _to_float(row.get("score") or 0.0)
         base_risk = _to_float(row.get("risk_score") or 0.35)
         base_conf = _to_float(row.get("confidence") or 0.55)
+        row["raw_score"] = float(base_score)
+        row["base_score"] = float(base_score)
         candidate_rank_score = _clamp(_to_float(candidate_meta.get("rank_score") or 0.0), -1.0, 1.0)
         candidate_universe_score = _clamp(_to_float(candidate_meta.get("universe_score") or 0.0), 0.0, 10.0)
         source_scores = dict(candidate_meta.get("source_scores") or {})
@@ -2821,6 +3533,30 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             policy=compatibility_policy,
             bias_context=compatibility_bias_context,
         )
+        mock_row = mock_by_sym.get(symbol) if isinstance(mock_by_sym.get(symbol), Mapping) else {}
+        mock_compatibility_override = mock_row.get("compatibility_override") if isinstance(mock_row.get("compatibility_override"), Mapping) else {}
+        if not mock_compatibility_override and isinstance(mock_row, Mapping):
+            top_level_override = {
+                key: mock_row.get(key)
+                for key in (
+                    "entry_compatibility_score",
+                    "compatibility_bias",
+                    "expected_monitor_block_reason",
+                    "dominant_block_reason",
+                    "dominant_block_reason_ratio",
+                    "bias_scale",
+                    "soft_penalty",
+                    "compatibility_score_pre_penalty",
+                    "compatibility_score_post_penalty",
+                )
+                if mock_row.get(key) not in (None, "")
+            }
+            if top_level_override:
+                mock_compatibility_override = top_level_override
+        compatibility_result = _merge_mock_compatibility_override(
+            compatibility_result,
+            override=mock_compatibility_override,
+        )
         compatibility_bias = float(compatibility_result.get("compatibility_bias") or 0.0)
         symbol_prior_result = _compute_symbol_prior_adjustment(
             symbol_model=dict(symbol_priors.get(symbol) or {}),
@@ -2902,6 +3638,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         row["bias_adjustments"] = list(bias_result.get("bias_adjustments") or [])
         row["bias_summary"] = dict(bias_result.get("bias_summary") or {})
         row["memory_bias_adjustment"] = float(scanner_memory_bias_adjustment)
+        row["memory_bias_source_delta"] = float(memory_bias_result.get("source_delta") or 0.0)
+        row["memory_bias_symbol_delta"] = float(memory_bias_result.get("symbol_delta") or 0.0)
         row["memory_bias_adjustments"] = list(memory_bias_result.get("adjustments") or [])
         row["memory_bias_summary"] = dict(memory_bias_result.get("summary") or {})
         row["symbol_prior_adjustment"] = float(symbol_prior_adjustment)
@@ -3022,6 +3760,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "repeat_blocker_penalty_component": repeat_blocker_penalty,
                     "scanner_bias_adjustment": float(scanner_bias_adjustment),
                     "scanner_memory_bias_adjustment": float(scanner_memory_bias_adjustment),
+                    "scanner_memory_bias_source_delta": float(memory_bias_result.get("source_delta") or 0.0),
+                    "scanner_memory_bias_symbol_delta": float(memory_bias_result.get("symbol_delta") or 0.0),
                     "scanner_memory_bias_adjustments": list(memory_bias_result.get("adjustments") or []),
                     "entry_compatibility_score": compatibility_result.get("entry_compatibility_score"),
                     "entry_compatibility_bias": compatibility_result.get("compatibility_bias"),
@@ -3067,6 +3807,12 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # ---- [NEW: Commander Policy Overlay] ----
     commander_decision = state.get("commander_decision") if isinstance(state.get("commander_decision"), dict) else {}
     commander_scanner_policy = commander_decision.get("scanner_policy") if isinstance(commander_decision.get("scanner_policy"), dict) else {}
+    enforce_blocker_family_veto = _is_trueish(
+        commander_scanner_policy.get(
+            "enforce_blocker_family_selection_veto",
+            os.getenv("SCANNER_ENFORCE_BLOCKER_FAMILY_SELECTION_VETO", "false"),
+        )
+    )
     
     avoid_recent_symbol = _is_trueish(commander_scanner_policy.get("avoid_recent_symbol", False))
     recent_symbol_penalty = _to_float(commander_scanner_policy.get("recent_symbol_penalty", 0.0))
@@ -3093,6 +3839,20 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     diversification_applied = False
     diversification_bonus_value = 0.0
     score_adjustment_trace = []
+    market_representative_guard_meta = {
+        "enabled": False,
+        "applied": False,
+        "policy": {},
+        "symbol": "",
+        "penalty": 0.0,
+        "score_gap": 0.0,
+        "top_value_dominance": False,
+        "confirmation_sources": [],
+        "before_top": [],
+        "after_top": [],
+        "skipped_reason": "",
+        "reason": "",
+    }
 
     if entry_bias_cap > 0.0:
         for r in scan_results_sorted:
@@ -3135,9 +3895,51 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
         scan_results_sorted.sort(key=lambda r: (float(r.get("score_total") or 0.0), float(r.get("confidence") or 0.0), -float(r.get("risk_score") or 0.0)), reverse=True)
 
+    scan_results_sorted, market_representative_guard_meta = _apply_market_representative_guard(
+        scan_results_sorted,
+        raw_policy=commander_scanner_policy.get("market_representative_guard"),
+    )
+    if bool(market_representative_guard_meta.get("applied")):
+        score_adjustment_trace.append(
+            "market_representative_guard "
+            f"{str(market_representative_guard_meta.get('symbol') or '')} "
+            f"-{float(_to_float(market_representative_guard_meta.get('penalty'))):.3f}"
+        )
+
+    blocker_family_overlay_meta = {
+        "applied": False,
+        "family": "",
+        "penalty": 0.0,
+        "candidate_count": 0,
+        "top3_symbols_before": [],
+        "top3_symbols_after": [],
+        "alternative_symbols": [],
+        "selection_vetoed": False,
+        "selection_veto_reason": "",
+    }
+    scan_results_sorted, blocker_family_overlay_meta = _apply_blocker_family_concentration_overlay(
+        scan_results_sorted,
+        scan_aggressiveness=float(_to_float(pool_meta.get("scan_aggressiveness"))),
+    )
+    if bool(blocker_family_overlay_meta.get("applied")):
+        score_adjustment_trace.append(
+            "blocker_family_concentration "
+            f"{str(blocker_family_overlay_meta.get('family') or '')} "
+            f"-{float(_to_float(blocker_family_overlay_meta.get('penalty'))):.3f}"
+        )
+    if bool(blocker_family_overlay_meta.get("selection_vetoed")):
+        score_adjustment_trace.append(
+            f"selection_veto:{str(blocker_family_overlay_meta.get('selection_veto_reason') or '')}"
+        )
+        if not enforce_blocker_family_veto:
+            score_adjustment_trace.append("selection_veto_observed_not_enforced")
+
     ranking_after_policy = [{"symbol": r.get("symbol"), "score_total": r.get("score_total")} for r in scan_results_sorted]
 
     selected = scan_results_sorted[0] if scan_results_sorted else None
+    selection_veto_enforced = bool(blocker_family_overlay_meta.get("selection_vetoed")) and bool(enforce_blocker_family_veto)
+    if selection_veto_enforced:
+        selected = None
     now_epoch = _resolve_now_epoch(state)
     if isinstance(selected, dict):
         _remember_selected_symbol(state, str(selected.get("symbol") or ""), now_epoch=now_epoch, policy=policy)
@@ -3161,6 +3963,7 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "expected_monitor_block_reason": str(r.get("expected_monitor_block_reason") or ""),
             "dominant_block_reason": str(r.get("dominant_block_reason") or ""),
             "dominant_block_reason_ratio": float(_to_float(r.get("dominant_block_reason_ratio"))),
+            "blocker_families": list(_candidate_blocker_families(r)),
             "bias_scale": float(_to_float(r.get("bias_scale"))),
             "soft_penalty": float(_to_float(r.get("soft_penalty"))),
             "compatibility_score_pre_penalty": float(_to_float(r.get("compatibility_score_pre_penalty"))),
@@ -3168,6 +3971,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "compatibility_trace": dict(r.get("compatibility_trace") or {}),
             "pre_adjust_score_total": float(_to_float(r.get("pre_adjust_score_total"))),
             "post_adjust_score_total": float(_to_float(r.get("post_adjust_score_total") or r.get("score_total") or r.get("score"))),
+            "market_representative_guard_applied": bool(r.get("market_representative_guard_applied")),
+            "market_representative_guard_penalty": float(_to_float(r.get("market_representative_guard_penalty"))),
+            "market_representative_guard_reason": str(r.get("market_representative_guard_reason") or ""),
+            "market_representative_confirmation_sources": list(r.get("market_representative_confirmation_sources") or []),
         }
         for r in scan_results_sorted
         if isinstance(r, dict)
@@ -3187,7 +3994,9 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "top_stock": state["top_stock"] or None,
         "primary_watch_symbol": state["top_stock"] or None,
         "score": (
-            float(selected.get("score"))
+            float(selected.get("raw_score"))
+            if isinstance(selected, dict) and selected.get("raw_score") is not None
+            else float(selected.get("score"))
             if isinstance(selected, dict) and selected.get("score") is not None
             else None
         ),
@@ -3221,12 +4030,33 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "backfill_used": bool(pool_meta.get("backfill_used")),
         "backfill_count": int(pool_meta.get("backfill_count") or 0),
         "backfill_skipped_reason": str(pool_meta.get("backfill_skipped_reason") or ""),
+        "scan_aggressiveness": float(_to_float(pool_meta.get("scan_aggressiveness"))),
+        "strict_mode_relaxed_by_scan_aggressiveness": bool(pool_meta.get("strict_mode_relaxed_by_scan_aggressiveness")),
+        "candidate_limit_base": int(pool_meta.get("candidate_limit_base") or 0),
+        "candidate_limit_effective": int(pool_meta.get("candidate_limit_effective") or 0),
+        "aggressive_source_expansion_used": bool(pool_meta.get("aggressive_source_expansion_used")),
+        "aggressive_source_expansion_slots": int(pool_meta.get("aggressive_source_expansion_slots") or 0),
+        "aggressive_source_expansion_sources": list(pool_meta.get("aggressive_source_expansion_sources") or []),
         "score_weights": dict(practical_w),
         "source_mix": dict(pool_meta.get("pool_source_mix") or {}),
+        "theme_source": str(scanner_guidance.get("theme_source") or ""),
+        "theme_source_status": str(scanner_guidance.get("theme_source_status") or ""),
+        "selected_themes": list(pool_meta.get("selected_themes") or []),
+        "selected_theme_source": str(pool_meta.get("selected_theme_source") or ""),
+        "available_themes": list(scanner_guidance.get("available_themes") or [])[:8],
+        "theme_strategy": dict(scanner_guidance.get("theme_strategy") or {})
+        if isinstance(scanner_guidance.get("theme_strategy"), dict)
+        else {},
+        "theme_strength_packet": dict(scanner_guidance.get("theme_strength_packet") or {})
+        if isinstance(scanner_guidance.get("theme_strength_packet"), dict)
+        else {},
         "asset_universe_policy": str(pool_meta.get("asset_universe_policy") or ""),
         "asset_universe_policy_source": str(pool_meta.get("asset_universe_policy_source") or ""),
         "excluded_candidate_count_by_asset_policy": int(pool_meta.get("asset_policy_excluded_count") or 0),
         "excluded_candidates_by_asset_policy": list(pool_meta.get("asset_policy_exclusions") or []),
+        "excluded_candidate_count_by_mock_broker_restricted": int(pool_meta.get("mock_broker_restricted_excluded_count") or 0),
+        "excluded_candidates_by_mock_broker_restricted": list(pool_meta.get("mock_broker_restricted_exclusions") or []),
+        "mock_broker_restricted_filter_applied": bool(pool_meta.get("mock_broker_restricted_filter_applied")),
         "asset_detection_stats": dict(pool_meta.get("asset_detection_stats") or {}),
         "unknown_asset_candidate_count": int(pool_meta.get("unknown_asset_candidate_count") or 0),
         "total_candidates_before_filter": int(pool_meta.get("total_candidates_before_filter") or 0),
@@ -3286,6 +4116,21 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "diversification_applied": bool(diversification_applied),
         "diversification_bonus_value": float(diversification_bonus_value),
         "entry_bias_cap_applied": bool((selected or {}).get("entry_bias_cap_applied") if isinstance(selected, dict) else False),
+        "market_representative_guard_enabled": bool(market_representative_guard_meta.get("enabled")),
+        "market_representative_guard_applied": bool(market_representative_guard_meta.get("applied")),
+        "market_representative_guard_policy": dict(market_representative_guard_meta.get("policy") or {}),
+        "market_representative_guard_symbol": str(market_representative_guard_meta.get("symbol") or ""),
+        "market_representative_guard_penalty": float(_to_float(market_representative_guard_meta.get("penalty"))),
+        "market_representative_guard_score_gap": float(_to_float(market_representative_guard_meta.get("score_gap"))),
+        "market_representative_guard_reason": str(
+            market_representative_guard_meta.get("reason")
+            or market_representative_guard_meta.get("skipped_reason")
+            or ""
+        ),
+        "market_representative_guard_top_value_dominance": bool(market_representative_guard_meta.get("top_value_dominance")),
+        "market_representative_guard_confirmation_sources": list(market_representative_guard_meta.get("confirmation_sources") or []),
+        "market_representative_guard_before_top": list(market_representative_guard_meta.get("before_top") or []),
+        "market_representative_guard_after_top": list(market_representative_guard_meta.get("after_top") or []),
         "raw_entry_compatibility_bias": float(
             _to_float((selected or {}).get("raw_entry_compatibility_bias")) if isinstance(selected, dict) else 0.0
         ),
@@ -3295,6 +4140,16 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "adjusted_score_total": float(_to_float((selected or {}).get("score_total"))) if isinstance(selected, dict) else 0.0,
         "ranking_before_policy": ranking_before_policy,
         "ranking_after_policy": ranking_after_policy,
+        "blocker_family_concentration_applied": bool(blocker_family_overlay_meta.get("applied")),
+        "blocker_family_concentration_family": str(blocker_family_overlay_meta.get("family") or ""),
+        "blocker_family_concentration_penalty": float(_to_float(blocker_family_overlay_meta.get("penalty"))),
+        "blocker_family_concentration_candidate_count": int(blocker_family_overlay_meta.get("candidate_count") or 0),
+        "blocker_family_concentration_top3_before": list(blocker_family_overlay_meta.get("top3_symbols_before") or []),
+        "blocker_family_concentration_top3_after": list(blocker_family_overlay_meta.get("top3_symbols_after") or []),
+        "blocker_family_concentration_alternative_symbols": list(blocker_family_overlay_meta.get("alternative_symbols") or []),
+        "selection_vetoed": bool(blocker_family_overlay_meta.get("selection_vetoed")),
+        "selection_veto_enforced": bool(selection_veto_enforced),
+        "selection_veto_reason": str(blocker_family_overlay_meta.get("selection_veto_reason") or ""),
     }
 
     # Provide a normalized risk snapshot for Decision Node.
@@ -3343,6 +4198,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     critical_positive_factors = [f"{str(k)}:{float(_to_float(v)):.3f}" for k, v in selected_score_breakdown.items() if float(_to_float(v)) > 0][:4]
     critical_negative_factors = [f"{str(k)}:{float(_to_float(v)):.3f}" for k, v in selected_score_breakdown.items() if float(_to_float(v)) < 0][:4]
     selection_summary = str((selected or {}).get("why") or "").strip() if isinstance(selected, dict) else ""
+    if bool(blocker_family_overlay_meta.get("selection_vetoed")):
+        selection_summary = str(blocker_family_overlay_meta.get("selection_veto_reason") or "blocker_family_concentration_veto")
     scanner_bias_summary = dict(scanner_policy_trace.get("scanner_bias_summary") or {})
     scanner_memory_bias_summary = dict(scanner_policy_trace.get("scanner_memory_bias_summary") or {})
     candidate_bias_adjustments = [
@@ -3358,6 +4215,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         {
             "symbol": str(row.get("symbol") or ""),
             "memory_bias_adjustment": float(_to_float(row.get("memory_bias_adjustment"))),
+            "memory_bias_source_delta": float(_to_float(row.get("memory_bias_source_delta"))),
+            "memory_bias_symbol_delta": float(_to_float(row.get("memory_bias_symbol_delta"))),
             "memory_bias_adjustments": list(row.get("memory_bias_adjustments") or []),
             "memory_bias_summary": dict(row.get("memory_bias_summary") or {}),
         }
@@ -3377,6 +4236,25 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
     scanner_bias_applied = any(abs(float(_to_float(row.get("bias_adjustment")))) > 1e-9 for row in list(scan_results_sorted))
     scanner_memory_bias_applied = any(
         abs(float(_to_float(row.get("memory_bias_adjustment")))) > 1e-9 for row in list(scan_results_sorted)
+    )
+    selected_memory_bias_result = {
+        "bias_adjustment": float(_to_float((selected or {}).get("memory_bias_adjustment"))) if isinstance(selected, dict) else 0.0,
+        "source_delta": float(_to_float((selected or {}).get("memory_bias_source_delta"))) if isinstance(selected, dict) else 0.0,
+        "symbol_delta": float(_to_float((selected or {}).get("memory_bias_symbol_delta"))) if isinstance(selected, dict) else 0.0,
+        "adjustments": list((selected or {}).get("memory_bias_adjustments") or []) if isinstance(selected, dict) else [],
+    }
+    commander_memory_application_trace = build_scanner_commander_memory_application_trace(
+        scanner_memory_bias=scanner_memory_bias,
+        selected_symbol=selected_symbol,
+        candidate_sources=(
+            list(((selected or {}).get("candidate") or {}).get("sources") or [])
+            if isinstance(selected, dict) and isinstance((selected or {}).get("candidate"), dict)
+            else []
+        ),
+        selected_memory_bias_result=selected_memory_bias_result,
+        candidate_memory_bias_adjustments=candidate_memory_bias_adjustments,
+        scanner_memory_bias_summary=scanner_memory_bias_summary,
+        scanner_memory_bias_applied=bool(scanner_memory_bias_applied),
     )
     selection_reason_with_bias = selection_summary
     if scanner_bias_applied:
@@ -3405,6 +4283,24 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
     if score_adjustment_trace:
         selection_reason_with_bias += f" | overlay: {', '.join(score_adjustment_trace)}"
+    if bool(blocker_family_overlay_meta.get("selection_vetoed")):
+        veto_text = (
+            (
+                "selection veto enforced due to blocker family concentration"
+                if selection_veto_enforced
+                else "selection veto observed but not enforced due to blocker family concentration"
+            )
+            + (
+                f" ({str(blocker_family_overlay_meta.get('family') or '')})"
+                if str(blocker_family_overlay_meta.get("family") or "").strip()
+                else ""
+            )
+        )
+        selection_reason_with_bias = (
+            f"{selection_reason_with_bias} | {veto_text}"
+            if selection_reason_with_bias
+            else veto_text
+        )
     runner_up_reasons: List[Dict[str, Any]] = []
     if len(scan_results_sorted) > 1 and isinstance(selected, dict):
         selected_score = float(_to_float(selected.get("score_total") or selected.get("score")))
@@ -3457,6 +4353,30 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
         "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
         "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),
+        "market_representative_guard_enabled": bool(market_representative_guard_meta.get("enabled")),
+        "market_representative_guard_applied": bool(market_representative_guard_meta.get("applied")),
+        "market_representative_guard_policy": dict(market_representative_guard_meta.get("policy") or {}),
+        "market_representative_guard_symbol": str(market_representative_guard_meta.get("symbol") or ""),
+        "market_representative_guard_penalty": float(_to_float(market_representative_guard_meta.get("penalty"))),
+        "market_representative_guard_score_gap": float(_to_float(market_representative_guard_meta.get("score_gap"))),
+        "market_representative_guard_reason": str(
+            market_representative_guard_meta.get("reason")
+            or market_representative_guard_meta.get("skipped_reason")
+            or ""
+        ),
+        "market_representative_guard_top_value_dominance": bool(market_representative_guard_meta.get("top_value_dominance")),
+        "market_representative_guard_confirmation_sources": list(market_representative_guard_meta.get("confirmation_sources") or []),
+        "market_representative_guard_before_top": list(market_representative_guard_meta.get("before_top") or []),
+        "market_representative_guard_after_top": list(market_representative_guard_meta.get("after_top") or []),
+        "blocker_family_concentration_applied": bool(blocker_family_overlay_meta.get("applied")),
+        "blocker_family_concentration_family": str(blocker_family_overlay_meta.get("family") or ""),
+        "blocker_family_concentration_penalty": float(_to_float(blocker_family_overlay_meta.get("penalty"))),
+        "blocker_family_concentration_top3_before": list(blocker_family_overlay_meta.get("top3_symbols_before") or []),
+        "blocker_family_concentration_top3_after": list(blocker_family_overlay_meta.get("top3_symbols_after") or []),
+        "blocker_family_concentration_alternative_symbols": list(blocker_family_overlay_meta.get("alternative_symbols") or []),
+        "selection_vetoed": bool(blocker_family_overlay_meta.get("selection_vetoed")),
+        "selection_veto_enforced": bool(selection_veto_enforced),
+        "selection_veto_reason": str(blocker_family_overlay_meta.get("selection_veto_reason") or ""),
         "bias_scale": float(_to_float((selected or {}).get("bias_scale") or compatibility_bias_context.get("bias_scale"))),
         "soft_penalty": float(_to_float((selected or {}).get("soft_penalty"))) if isinstance(selected, dict) else 0.0,
         "compatibility_score_pre_penalty": float(_to_float((selected or {}).get("compatibility_score_pre_penalty"))) if isinstance(selected, dict) else 0.0,
@@ -3467,7 +4387,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_bias_applied": bool(scanner_bias_applied),
         "scanner_bias_summary": dict(scanner_bias_summary),
         "scanner_memory_bias_applied": bool(scanner_memory_bias_applied),
+        "scanner_memory_bias": dict(scanner_memory_bias),
         "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
+        "commander_memory_application_trace": dict(commander_memory_application_trace),
+        "scanner_memory_application_trace": dict(commander_memory_application_trace),
         "candidate_bias_adjustments": list(candidate_bias_adjustments),
         "candidate_memory_bias_adjustments": list(candidate_memory_bias_adjustments),
         "candidate_symbol_prior_adjustments": list(candidate_symbol_prior_adjustments),
@@ -3490,7 +4413,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["scanner_output"]["scanner_bias_applied"] = bool(scanner_bias_applied)
         state["scanner_output"]["scanner_bias_summary"] = dict(scanner_bias_summary)
         state["scanner_output"]["scanner_memory_bias_applied"] = bool(scanner_memory_bias_applied)
+        state["scanner_output"]["scanner_memory_bias"] = dict(scanner_memory_bias)
         state["scanner_output"]["scanner_memory_bias_summary"] = dict(scanner_memory_bias_summary)
+        state["scanner_output"]["commander_memory_application_trace"] = dict(commander_memory_application_trace)
+        state["scanner_output"]["scanner_memory_application_trace"] = dict(commander_memory_application_trace)
         state["scanner_output"]["candidate_bias_adjustments"] = list(candidate_bias_adjustments)
         state["scanner_output"]["candidate_memory_bias_adjustments"] = list(candidate_memory_bias_adjustments)
         state["scanner_output"]["candidate_symbol_prior_adjustments"] = list(candidate_symbol_prior_adjustments)
@@ -3501,6 +4427,30 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         state["scanner_output"]["expected_monitor_block_reason"] = str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else ""
         state["scanner_output"]["dominant_block_reason"] = str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "")
         state["scanner_output"]["dominant_block_reason_ratio"] = float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio")))
+        state["scanner_output"]["market_representative_guard_enabled"] = bool(market_representative_guard_meta.get("enabled"))
+        state["scanner_output"]["market_representative_guard_applied"] = bool(market_representative_guard_meta.get("applied"))
+        state["scanner_output"]["market_representative_guard_policy"] = dict(market_representative_guard_meta.get("policy") or {})
+        state["scanner_output"]["market_representative_guard_symbol"] = str(market_representative_guard_meta.get("symbol") or "")
+        state["scanner_output"]["market_representative_guard_penalty"] = float(_to_float(market_representative_guard_meta.get("penalty")))
+        state["scanner_output"]["market_representative_guard_score_gap"] = float(_to_float(market_representative_guard_meta.get("score_gap")))
+        state["scanner_output"]["market_representative_guard_reason"] = str(
+            market_representative_guard_meta.get("reason")
+            or market_representative_guard_meta.get("skipped_reason")
+            or ""
+        )
+        state["scanner_output"]["market_representative_guard_top_value_dominance"] = bool(market_representative_guard_meta.get("top_value_dominance"))
+        state["scanner_output"]["market_representative_guard_confirmation_sources"] = list(market_representative_guard_meta.get("confirmation_sources") or [])
+        state["scanner_output"]["market_representative_guard_before_top"] = list(market_representative_guard_meta.get("before_top") or [])
+        state["scanner_output"]["market_representative_guard_after_top"] = list(market_representative_guard_meta.get("after_top") or [])
+        state["scanner_output"]["blocker_family_concentration_applied"] = bool(blocker_family_overlay_meta.get("applied"))
+        state["scanner_output"]["blocker_family_concentration_family"] = str(blocker_family_overlay_meta.get("family") or "")
+        state["scanner_output"]["blocker_family_concentration_penalty"] = float(_to_float(blocker_family_overlay_meta.get("penalty")))
+        state["scanner_output"]["blocker_family_concentration_top3_before"] = list(blocker_family_overlay_meta.get("top3_symbols_before") or [])
+        state["scanner_output"]["blocker_family_concentration_top3_after"] = list(blocker_family_overlay_meta.get("top3_symbols_after") or [])
+        state["scanner_output"]["blocker_family_concentration_alternative_symbols"] = list(blocker_family_overlay_meta.get("alternative_symbols") or [])
+        state["scanner_output"]["selection_vetoed"] = bool(blocker_family_overlay_meta.get("selection_vetoed"))
+        state["scanner_output"]["selection_veto_enforced"] = bool(selection_veto_enforced)
+        state["scanner_output"]["selection_veto_reason"] = str(blocker_family_overlay_meta.get("selection_veto_reason") or "")
         state["scanner_output"]["bias_scale"] = float(_to_float((selected or {}).get("bias_scale") or compatibility_bias_context.get("bias_scale")))
         state["scanner_output"]["soft_penalty"] = float(_to_float((selected or {}).get("soft_penalty")))
         state["scanner_output"]["compatibility_score_pre_penalty"] = float(_to_float((selected or {}).get("compatibility_score_pre_penalty")))
@@ -3538,6 +4488,22 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "fallback_reason": str(pool_meta.get("fallback_reason") or ""),
             "backfill_used": bool(pool_meta.get("backfill_used")),
             "backfill_count": int(pool_meta.get("backfill_count") or 0),
+            "scan_aggressiveness": float(_to_float(pool_meta.get("scan_aggressiveness"))),
+            "strict_mode_relaxed_by_scan_aggressiveness": bool(pool_meta.get("strict_mode_relaxed_by_scan_aggressiveness")),
+            "aggressive_source_expansion_used": bool(pool_meta.get("aggressive_source_expansion_used")),
+            "aggressive_source_expansion_sources": list(pool_meta.get("aggressive_source_expansion_sources") or []),
+            "market_representative_guard_applied": bool(market_representative_guard_meta.get("applied")),
+            "market_representative_guard_symbol": str(market_representative_guard_meta.get("symbol") or ""),
+            "market_representative_guard_reason": str(
+                market_representative_guard_meta.get("reason")
+                or market_representative_guard_meta.get("skipped_reason")
+                or ""
+            ),
+            "blocker_family_concentration_applied": bool(blocker_family_overlay_meta.get("applied")),
+            "blocker_family_concentration_family": str(blocker_family_overlay_meta.get("family") or ""),
+            "selection_vetoed": bool(blocker_family_overlay_meta.get("selection_vetoed")),
+            "selection_veto_enforced": bool(selection_veto_enforced),
+            "selection_veto_reason": str(blocker_family_overlay_meta.get("selection_veto_reason") or ""),
         },
     )
     candidate_ranking_table_payload = {
@@ -3576,6 +4542,25 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "expected_monitor_block_reason": str((selected or {}).get("expected_monitor_block_reason") or "") if isinstance(selected, dict) else "",
         "dominant_block_reason": str((selected or {}).get("dominant_block_reason") or compatibility_bias_context.get("dominant_block_reason") or "") if isinstance(selected, dict) else str(compatibility_bias_context.get("dominant_block_reason") or ""),
         "dominant_block_reason_ratio": float(_to_float((selected or {}).get("dominant_block_reason_ratio") or compatibility_bias_context.get("dominant_block_reason_ratio"))),
+        "market_representative_guard_enabled": bool(market_representative_guard_meta.get("enabled")),
+        "market_representative_guard_applied": bool(market_representative_guard_meta.get("applied")),
+        "market_representative_guard_symbol": str(market_representative_guard_meta.get("symbol") or ""),
+        "market_representative_guard_penalty": float(_to_float(market_representative_guard_meta.get("penalty"))),
+        "market_representative_guard_reason": str(
+            market_representative_guard_meta.get("reason")
+            or market_representative_guard_meta.get("skipped_reason")
+            or ""
+        ),
+        "market_representative_guard_confirmation_sources": list(market_representative_guard_meta.get("confirmation_sources") or []),
+        "blocker_family_concentration_applied": bool(blocker_family_overlay_meta.get("applied")),
+        "blocker_family_concentration_family": str(blocker_family_overlay_meta.get("family") or ""),
+        "blocker_family_concentration_penalty": float(_to_float(blocker_family_overlay_meta.get("penalty"))),
+        "blocker_family_concentration_top3_before": list(blocker_family_overlay_meta.get("top3_symbols_before") or []),
+        "blocker_family_concentration_top3_after": list(blocker_family_overlay_meta.get("top3_symbols_after") or []),
+        "blocker_family_concentration_alternative_symbols": list(blocker_family_overlay_meta.get("alternative_symbols") or []),
+        "selection_vetoed": bool(blocker_family_overlay_meta.get("selection_vetoed")),
+        "selection_veto_enforced": bool(selection_veto_enforced),
+        "selection_veto_reason": str(blocker_family_overlay_meta.get("selection_veto_reason") or ""),
         "bias_scale": float(_to_float((selected or {}).get("bias_scale") or compatibility_bias_context.get("bias_scale"))),
         "soft_penalty": float(_to_float((selected or {}).get("soft_penalty"))) if isinstance(selected, dict) else 0.0,
         "compatibility_score_pre_penalty": float(_to_float((selected or {}).get("compatibility_score_pre_penalty"))) if isinstance(selected, dict) else 0.0,
@@ -3586,7 +4571,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "scanner_bias_applied": bool(scanner_bias_applied),
         "scanner_bias_summary": dict(scanner_policy_trace.get("scanner_bias_summary") or {}),
         "scanner_memory_bias_applied": bool(scanner_memory_bias_applied),
+        "scanner_memory_bias": dict(scanner_memory_bias),
         "scanner_memory_bias_summary": dict(scanner_policy_trace.get("scanner_memory_bias_summary") or {}),
+        "commander_memory_application_trace": dict(commander_memory_application_trace),
+        "scanner_memory_application_trace": dict(commander_memory_application_trace),
         "candidate_bias_adjustments": list(candidate_bias_adjustments),
         "candidate_memory_bias_adjustments": list(candidate_memory_bias_adjustments),
         "candidate_symbol_prior_adjustments": list(candidate_symbol_prior_adjustments),
@@ -3660,6 +4648,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "strict_kiwoom_only": bool(pool_meta.get("strict_kiwoom_only")),
             "backfill_used": bool(pool_meta.get("backfill_used")),
             "backfill_count": int(pool_meta.get("backfill_count") or 0),
+            "scan_aggressiveness": float(_to_float(pool_meta.get("scan_aggressiveness"))),
+            "strict_mode_relaxed_by_scan_aggressiveness": bool(pool_meta.get("strict_mode_relaxed_by_scan_aggressiveness")),
+            "aggressive_source_expansion_used": bool(pool_meta.get("aggressive_source_expansion_used")),
+            "aggressive_source_expansion_sources": list(pool_meta.get("aggressive_source_expansion_sources") or []),
             "top_stock": state.get("top_stock"),
             "top_score": top_score,
             "scanner_selected_symbol": selected_symbol,
@@ -3683,6 +4675,18 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_bias_summary": dict(scanner_bias_summary),
             "scanner_memory_bias_applied": bool(scanner_memory_bias_applied),
             "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
+            "market_representative_guard_applied": bool(market_representative_guard_meta.get("applied")),
+            "market_representative_guard_symbol": str(market_representative_guard_meta.get("symbol") or ""),
+            "market_representative_guard_reason": str(
+                market_representative_guard_meta.get("reason")
+                or market_representative_guard_meta.get("skipped_reason")
+                or ""
+            ),
+            "blocker_family_concentration_applied": bool(blocker_family_overlay_meta.get("applied")),
+            "blocker_family_concentration_family": str(blocker_family_overlay_meta.get("family") or ""),
+            "selection_vetoed": bool(blocker_family_overlay_meta.get("selection_vetoed")),
+            "selection_veto_enforced": bool(selection_veto_enforced),
+            "selection_veto_reason": str(blocker_family_overlay_meta.get("selection_veto_reason") or ""),
         },
     )
 
@@ -3707,7 +4711,10 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_bias_applied": bool(scanner_bias_applied),
             "scanner_bias_summary": dict(scanner_bias_summary),
             "scanner_memory_bias_applied": bool(scanner_memory_bias_applied),
+            "scanner_memory_bias": dict(scanner_memory_bias),
             "scanner_memory_bias_summary": dict(scanner_memory_bias_summary),
+            "commander_memory_application_trace": dict(commander_memory_application_trace),
+            "scanner_memory_application_trace": dict(commander_memory_application_trace),
             "candidate_bias_adjustments": list(candidate_bias_adjustments),
             "candidate_memory_bias_adjustments": list(candidate_memory_bias_adjustments),
             "selection_reason_with_bias": selection_reason_with_bias,
@@ -3725,6 +4732,20 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "recent_scanner_selected_count": int(len(_scanner_recent_selection_history(state))),
             "top_candidates": top_candidates_summary,
             "selected_symbol": state.get("top_stock") or None,
+            "aggressive_source_expansion_used": bool(pool_meta.get("aggressive_source_expansion_used")),
+            "aggressive_source_expansion_sources": list(pool_meta.get("aggressive_source_expansion_sources") or []),
+            "market_representative_guard_applied": bool(market_representative_guard_meta.get("applied")),
+            "market_representative_guard_symbol": str(market_representative_guard_meta.get("symbol") or ""),
+            "market_representative_guard_reason": str(
+                market_representative_guard_meta.get("reason")
+                or market_representative_guard_meta.get("skipped_reason")
+                or ""
+            ),
+            "blocker_family_concentration_applied": bool(blocker_family_overlay_meta.get("applied")),
+            "blocker_family_concentration_family": str(blocker_family_overlay_meta.get("family") or ""),
+            "selection_vetoed": bool(blocker_family_overlay_meta.get("selection_vetoed")),
+            "selection_veto_enforced": bool(selection_veto_enforced),
+            "selection_veto_reason": str(blocker_family_overlay_meta.get("selection_veto_reason") or ""),
             "score_breakdown_summary": (
                 dict(selected.get("score_breakdown") or {})
                 if isinstance(selected, dict)
@@ -3743,6 +4764,8 @@ def scanner_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "candidate_source": str(pool_meta.get("candidate_source") or ""),
                 "theme_filter_applied": bool(pool_meta.get("theme_filter_applied")),
                 "scanner_source_policy": dict(pool_meta.get("scanner_source_policy") or {}),
+                "aggressive_source_expansion_used": bool(pool_meta.get("aggressive_source_expansion_used")),
+                "aggressive_source_expansion_sources": list(pool_meta.get("aggressive_source_expansion_sources") or []),
             },
             parsed_output={
                 "selected_symbol": state.get("top_stock") or None,

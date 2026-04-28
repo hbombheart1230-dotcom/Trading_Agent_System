@@ -90,7 +90,7 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
         m31_dir / f"m31_slo_incident_{day}.json",
         {"ok": True, "failure_total": 0},
     )
-    daily_dir = tmp_path / "daily" / day
+    daily_dir = out_dir / "daily" / day
     daily_dir.mkdir(parents=True, exist_ok=True)
     _write_json(
         daily_dir / "daily_report.json",
@@ -182,8 +182,8 @@ def test_operator_daily_summary_script_generates_red_status(tmp_path: Path, caps
     assert any("Chart structure guard active: applied 1 times" in line for line in obj["executive_summary"]["summary_lines"])
     assert Path(obj["report_json_path"]).exists()
     assert Path(obj["report_md_path"]).exists()
-    assert Path(obj["report_json_path"]) == tmp_path / "daily" / day / "operator_summary.json"
-    assert Path(obj["report_md_path"]) == tmp_path / "daily" / day / "operator_summary.md"
+    assert Path(obj["report_json_path"]) == tmp_path / "operator_summary" / "daily" / day / "operator_summary.json"
+    assert Path(obj["report_md_path"]) == tmp_path / "operator_summary" / "daily" / day / "operator_summary.md"
     assert obj["route_summary"]["route_source"] == "canonical_commander_preferred"
     assert obj["data_freshness"]["freshness_status"] == "fresh"
     assert obj["route_provenance"]["route_source"] == "canonical_commander_preferred"
@@ -518,7 +518,7 @@ def test_operator_daily_summary_supports_new_decision_trace_events(tmp_path: Pat
     assert obj["trading_activity_summary"]["run_total"] == 1
     assert obj["trading_activity_summary"]["decision_action_counts"]["BUY"] == 1
     assert obj["trading_activity_summary"]["strategy_counts"]["defensive"] == 1
-    assert Path(obj["report_json_path"]) == tmp_path / "daily" / day / "operator_summary.json"
+    assert Path(obj["report_json_path"]) == tmp_path / "operator_summary" / "daily" / day / "operator_summary.json"
 
 
 def test_m13_eod_report_auto_attaches_operator_visibility_bundle(tmp_path: Path, monkeypatch) -> None:

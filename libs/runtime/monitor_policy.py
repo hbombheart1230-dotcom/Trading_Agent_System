@@ -777,6 +777,10 @@ def normalize_monitor_entry_policy(
         value = source_mapping.get(field_name)
         parsed = _to_int(value, int(default_value)) if isinstance(default_value, int) else _to_float(value, float(default_value))
         lower, upper = bounds.get(field_name, (float("-inf"), float("inf")))
+        if field_name == "min_extended_from_vwap_pct" and parsed > upper:
+            normalized[field_name] = float(upper)
+            issues.append(f"{field_name}:clamped_to_upper_bound:{parsed}->{upper}")
+            continue
         if parsed < lower or parsed > upper:
             normalized[field_name] = default_value
             invalid_fields.append(field_name)

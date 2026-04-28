@@ -24,7 +24,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--include-legacy-root-daily",
         action="store_true",
-        help="Also archive root-level daily_report_<day> files when canonical reports/daily files exist.",
+        help="Also archive root-level daily_report_<day> files when canonical reports/operator_summary/daily files exist.",
     )
     p.add_argument(
         "--include-legacy-milestones",

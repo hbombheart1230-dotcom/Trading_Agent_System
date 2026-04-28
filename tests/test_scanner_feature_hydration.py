@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 from libs.runtime.scanner_feature_hydration import hydrate_scanner_feature_map
 
 
@@ -76,3 +79,51 @@ def test_hydrate_scanner_feature_map_keeps_existing_fast_path_without_refresh():
     assert out["AAA"]["engine_trend_strength"] == 0.2
     rows = state["ohlcv_by_symbol"]["AAA"]
     assert rows[-1]["close"] == 100.0
+
+
+def test_hydrate_scanner_feature_map_caches_yfinance_empty_seed(monkeypatch):
+    calls = {"count": 0}
+
+    class FakeTicker:
+        def __init__(self, ticker):
+            self.ticker = ticker
+
+        def history(self, *, period, interval):
+            calls["count"] += 1
+            return SimpleNamespace(empty=True)
+
+    monkeypatch.setitem(sys.modules, "yfinance", SimpleNamespace(Ticker=FakeTicker))
+
+    state = {
+        "now_epoch": 1_777_256_000,
+        "ohlcv_by_symbol": {},
+        "market_context": {},
+    }
+    policy = {
+        "scanner_feature_min_rows": 40,
+        "scanner_feature_series_max_rows": 60,
+        "scanner_feature_seed_with_yf": True,
+        "scanner_feature_seed_negative_cache_sec": 3600,
+    }
+
+    hydrate_scanner_feature_map(
+        state=state,
+        candidates=[{"symbol": "209640"}],
+        skill_quotes={"209640": {"symbol": "209640", "price": 1000.0}},
+        policy=policy,
+        refresh_existing=True,
+    )
+    assert calls["count"] == 1
+    assert state["_scanner_feature_seed_negative_cache"]["209640"]["source"] == "yfinance_empty"
+
+    state["now_epoch"] += 60
+    _, _, errors = hydrate_scanner_feature_map(
+        state=state,
+        candidates=[{"symbol": "209640"}],
+        skill_quotes={"209640": {"symbol": "209640", "price": 1000.0}},
+        policy=policy,
+        refresh_existing=True,
+    )
+
+    assert calls["count"] == 1
+    assert "seed:209640:yfinance_empty_cached" in errors

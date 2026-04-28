@@ -128,6 +128,26 @@ def _fetch_seed_rows(symbol: str, *, policy: Dict[str, Any], state: Dict[str, An
     if not _is_trueish(enabled):
         return [], "disabled"
 
+    now_epoch = _to_int(state.get("now_epoch"), int(time.time()))
+    negative_cache = (
+        dict(state.get("_scanner_feature_seed_negative_cache") or {})
+        if isinstance(state.get("_scanner_feature_seed_negative_cache"), dict)
+        else {}
+    )
+    negative_cache_sec = max(
+        300,
+        _to_int(
+            policy.get("scanner_feature_seed_negative_cache_sec")
+            or os.getenv("SCANNER_FEATURE_SEED_NEGATIVE_CACHE_SEC", "21600"),
+            21600,
+        ),
+    )
+    cached_negative = negative_cache.get(symbol) if isinstance(negative_cache.get(symbol), dict) else {}
+    cached_epoch = _to_int(cached_negative.get("epoch"), 0)
+    cached_source = str(cached_negative.get("source") or "").strip()
+    if cached_source and cached_epoch > 0 and (now_epoch - cached_epoch) < negative_cache_sec:
+        return [], f"{cached_source}_cached"
+
     try:
         import yfinance as yf  # type: ignore
     except Exception:
@@ -143,8 +163,25 @@ def _fetch_seed_rows(symbol: str, *, policy: Dict[str, Any], state: Dict[str, An
     try:
         hist = yf.Ticker(ticker).history(period=period, interval=interval)
     except Exception:
+        if _is_trueish(policy.get("scanner_feature_seed_cache_yf_errors", os.getenv("SCANNER_FEATURE_SEED_CACHE_YF_ERRORS", "true"))):
+            negative_cache[symbol] = {
+                "epoch": int(now_epoch),
+                "source": "yfinance_error",
+                "ticker": ticker,
+                "period": period,
+                "interval": interval,
+            }
+            state["_scanner_feature_seed_negative_cache"] = negative_cache
         return [], "yfinance_error"
     if hist is None or getattr(hist, "empty", True):
+        negative_cache[symbol] = {
+            "epoch": int(now_epoch),
+            "source": "yfinance_empty",
+            "ticker": ticker,
+            "period": period,
+            "interval": interval,
+        }
+        state["_scanner_feature_seed_negative_cache"] = negative_cache
         return [], "yfinance_empty"
 
     rows: List[Dict[str, Any]] = []

@@ -15,6 +15,8 @@ from libs.reporting.trade_fallback_text import (
     entry_reason_missing_in_summary,
 )
 from libs.reporting.trade_execution_snapshot import build_execution_details, build_execution_snapshot
+from libs.reporting.trade_memory_application_surface import build_trade_memory_application_surface
+from libs.reporting.trade_memory_surface import build_trade_report_memory_surface
 from libs.reporting.trade_story_pipeline import (
     build_execution_outcome_human,
     build_filters_human,
@@ -33,6 +35,10 @@ from libs.reporting.trade_story_pipeline import (
     safe_int,
 )
 from libs.runtime.canonical_artifacts import load_run_canonical_artifacts
+from libs.runtime.strategy_horizon_feedback import (
+    build_post_exit_shadow_placeholder,
+    update_post_exit_shadow_with_price_observations,
+)
 
 
 def _coalesce_non_empty(*values: Any) -> Any:
@@ -1270,6 +1276,7 @@ def apply_live_trade_context(
     exit_ctx_live: Dict[str, Any],
     entry_bundle: Dict[str, Any],
     exit_bundle: Dict[str, Any],
+    post_exit_price_rows: List[Mapping[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     trade_day = str(lifecycle_bundle.get("day") or "").strip()
     entry_context = {
@@ -1368,6 +1375,23 @@ def apply_live_trade_context(
         "same_day_linkage_reason": str(same_day_reporter_linkage.get("linkage_reason") or ""),
         "same_day_linkage_source": str(same_day_reporter_linkage.get("linkage_source") or ""),
     }
+    post_exit_shadow = build_post_exit_shadow_placeholder(
+        lifecycle_bundle=lifecycle_bundle,
+        lifecycle=lifecycle,
+        status=status,
+        exit_execution_details=exit_execution_details,
+    )
+    if post_exit_shadow and post_exit_price_rows:
+        post_exit_shadow = update_post_exit_shadow_with_price_observations(
+            post_exit_shadow,
+            minute_rows=list(post_exit_price_rows),
+        )
+    if post_exit_shadow:
+        lifecycle["post_exit_shadow"] = dict(post_exit_shadow)
+        if isinstance(lifecycle.get("exit"), dict):
+            lifecycle["exit"]["post_exit_shadow"] = dict(post_exit_shadow)
+        lifecycle_bundle["post_exit_shadow"] = dict(post_exit_shadow)
+        lifecycle_bundle["post_exit_shadow_status"] = str(post_exit_shadow.get("status") or "pending")
 
     return {
         "entry_execution_details": entry_execution_details,
@@ -1630,6 +1654,9 @@ def apply_final_trade_report_context(
         has_substantive_entry_evidence_fn=has_substantive_entry_evidence_fn,
     )
     trade_story_input_obj.update(recovery_metadata)
+    if trade_report_obj:
+        trade_report_obj["memory_surface"] = build_trade_report_memory_surface(trade_story_input_obj)
+        trade_report_obj["memory_application_surface"] = build_trade_memory_application_surface(trade_story_input_obj)
 
     return {
         "lifecycle": lifecycle_obj,

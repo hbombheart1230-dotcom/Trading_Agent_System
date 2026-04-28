@@ -23,10 +23,10 @@ def test_generate_phase5_validation_bundle_builds_index_with_existing_helpers(mo
     _write_json(latest_run / "commander.json", {"ok": True})
     _write_json(latest_run / "monitor.json", {"ok": True})
 
-    daily_md = reports_root / "daily" / "2026-04-03" / "daily_report.md"
-    daily_json = reports_root / "daily" / "2026-04-03" / "daily_report.json"
-    operator_md = reports_root / "daily" / "2026-04-03" / "operator_summary.md"
-    operator_json = reports_root / "daily" / "2026-04-03" / "operator_summary.json"
+    daily_md = reports_root / "operator_summary" / "daily" / "2026-04-03" / "daily_report.md"
+    daily_json = reports_root / "operator_summary" / "daily" / "2026-04-03" / "daily_report.json"
+    operator_md = reports_root / "operator_summary" / "daily" / "2026-04-03" / "operator_summary.md"
+    operator_json = reports_root / "operator_summary" / "daily" / "2026-04-03" / "operator_summary.json"
     decision_story_md = reports_root / "dev" / "manual" / "decision_story" / "decision_story_2026-04-03.md"
     run_cards_md = reports_root / "dev" / "manual" / "run_cards" / "run_cards_2026-04-03.md"
     trade_explain_md = reports_root / "dev" / "analysis" / "trade_explain" / "trade_explain_2026-04-03.md"
@@ -173,7 +173,7 @@ def test_generate_phase5_validation_bundle_builds_index_with_existing_helpers(mo
         return ["005930"]
 
     def fake_generate_symbol_trade_report(*args, **kwargs):
-        symbol_root = reports_root / "symbols" / "005930"
+        symbol_root = reports_root / "operator_summary" / "symbols" / "005930"
         symbol_root.mkdir(parents=True, exist_ok=True)
         (symbol_root / "symbol_trade_report.json").write_text("{}", encoding="utf-8")
         (symbol_root / "symbol_trade_report.md").write_text("# symbol\n", encoding="utf-8")

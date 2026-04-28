@@ -566,6 +566,10 @@ def trade_artifact_paths(
         # Operator-facing summary reports.
         "ai_trade_report_json": reports_dir / "ai_trade_report.json",
         "ai_trade_report_md": reports_dir / "ai_trade_report.md",
+        "ai_trade_summary_input_json": reports_dir / "ai_trade_summary_input.json",
+        "ai_trade_summary_json": reports_dir / "ai_trade_summary.json",
+        "ai_trade_summary_md": reports_dir / "ai_trade_summary.md",
+        "ai_trade_summary_llm_response_json": reports_dir / "ai_trade_summary_llm_response.json",
         "brief_json": reports_dir / "operator_brief.json",
         "brief_md": reports_dir / "operator_brief.md",
         # Deprecated compatibility files (read fallback only).
@@ -600,36 +604,79 @@ def trade_artifact_paths(
     }
 
 
+def operator_summary_artifact_root(reports_root: Path) -> Path:
+    """Canonical operator-facing report root.
+
+    Passing either `reports` or `reports/operator_summary` should resolve to
+    the same active operator-summary surface without double nesting.
+    """
+    root = Path(reports_root)
+    if root.name == "operator_summary":
+        return root
+    if root.name in {"daily", "weekly", "monthly", "symbols"} and root.parent.name == "operator_summary":
+        return root.parent
+    return root / "operator_summary"
+
+
 def daily_artifact_paths(reports_root: Path, day: str) -> Dict[str, Path]:
-    """Canonical daily reporting paths under reports/daily/YYYY-MM-DD/."""
+    """Canonical daily reporting paths under reports/operator_summary/daily/YYYY-MM-DD/."""
     normalized_day = str(day or "").strip()
-    daily_root = reports_root / "daily" / normalized_day
+    operator_root = operator_summary_artifact_root(reports_root)
+    daily_root = operator_root / "daily" / normalized_day
     return {
         "root_dir": daily_root,
         "daily_root": daily_root,
         "daily_report_json": daily_root / "daily_report.json",
         "daily_report_md": daily_root / "daily_report.md",
+        "daily_summary_json": daily_root / "daily_summary.json",
+        "daily_summary_md": daily_root / "daily_summary.md",
         "daily_report_llm_response_json": daily_root / "daily_report_llm_response.json",
         "operator_summary_json": daily_root / "operator_summary.json",
         "operator_summary_md": daily_root / "operator_summary.md",
         "trade_index_json": daily_root / "trade_index.json",
-        "legacy_daily_json": reports_root / "daily" / f"daily_{normalized_day}.json",
-        "legacy_daily_md": reports_root / "daily" / f"daily_{normalized_day}.md",
-        "root_daily_json": reports_root / f"daily_{normalized_day}.json",
-        "root_daily_md": reports_root / f"daily_{normalized_day}.md",
+        "legacy_daily_json": operator_root / "daily" / f"daily_{normalized_day}.json",
+        "legacy_daily_md": operator_root / "daily" / f"daily_{normalized_day}.md",
+        "root_daily_json": operator_root / f"daily_{normalized_day}.json",
+        "root_daily_md": operator_root / f"daily_{normalized_day}.md",
     }
 
 
 def symbol_artifact_paths(reports_root: Path, symbol: str) -> Dict[str, Path]:
-    """Canonical symbol-history reporting paths under reports/symbols/<SYMBOL>/."""
+    """Canonical symbol-history reporting paths under reports/operator_summary/symbols/<SYMBOL>/."""
     normalized_symbol = str(symbol or "").strip().upper()
-    symbol_root = reports_root / "symbols" / normalized_symbol
+    symbol_root = operator_summary_artifact_root(reports_root) / "symbols" / normalized_symbol
     return {
         "root_dir": symbol_root,
         "symbol_trade_report_json": symbol_root / "symbol_trade_report.json",
         "symbol_trade_report_md": symbol_root / "symbol_trade_report.md",
+        "symbol_summary_json": symbol_root / "symbol_summary.json",
+        "symbol_summary_md": symbol_root / "symbol_summary.md",
         "symbol_memory_json": symbol_root / "symbol_memory.json",
         "trade_history_json": symbol_root / "trade_history.json",
         "daily_index_json": symbol_root / "daily_index.json",
         "latest_snapshot_json": symbol_root / "latest_snapshot.json",
+    }
+
+
+def weekly_artifact_paths(reports_root: Path, week: str) -> Dict[str, Path]:
+    """Canonical operator weekly summary paths under reports/operator_summary/weekly/YYYY-Www/."""
+    normalized_week = str(week or "").strip()
+    weekly_root = operator_summary_artifact_root(reports_root) / "weekly" / normalized_week
+    return {
+        "root_dir": weekly_root,
+        "weekly_root": weekly_root,
+        "weekly_summary_json": weekly_root / "weekly_summary.json",
+        "weekly_summary_md": weekly_root / "weekly_summary.md",
+    }
+
+
+def monthly_artifact_paths(reports_root: Path, month: str) -> Dict[str, Path]:
+    """Canonical operator monthly summary paths under reports/operator_summary/monthly/YYYY-MM/."""
+    normalized_month = str(month or "").strip()
+    monthly_root = operator_summary_artifact_root(reports_root) / "monthly" / normalized_month
+    return {
+        "root_dir": monthly_root,
+        "monthly_root": monthly_root,
+        "monthly_summary_json": monthly_root / "monthly_summary.json",
+        "monthly_summary_md": monthly_root / "monthly_summary.md",
     }

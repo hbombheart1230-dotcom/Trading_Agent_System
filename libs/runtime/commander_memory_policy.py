@@ -39,6 +39,8 @@ def _packet_quality(packet: Dict[str, Any]) -> Dict[str, Any]:
     execution_risk = dict(row.get("execution_risk") or {})
     source_context = dict(row.get("source_context") or {})
     regime_stats = dict(row.get("regime_stats") or {})
+    operator_summary = dict(row.get("operator_summary") or {})
+    operator_metrics = dict(operator_summary.get("metrics") or {})
     regime_observation_total = sum(
         _safe_int((payload or {}).get("observation_count"))
         for payload in regime_stats.values()
@@ -69,6 +71,12 @@ def _packet_quality(packet: Dict[str, Any]) -> Dict[str, Any]:
         "unknown_fields_ratio": round(_safe_float(row.get("unknown_fields_ratio")), 4) if row.get("unknown_fields_ratio") is not None else 0.0,
         "pattern_signal_count": _safe_int(row.get("pattern_signal_count")),
         "evidence_strength": _text(row.get("evidence_strength")),
+        "operator_summary_available": bool(operator_summary.get("available")),
+        "operator_summary_path": _text(operator_summary.get("artifact_path")),
+        "operator_trade_count": _safe_int(operator_metrics.get("trade_count")),
+        "operator_closed_trade_count": _safe_int(operator_metrics.get("closed_trade_count")),
+        "operator_win_rate": round(_safe_float(operator_metrics.get("win_rate")), 4),
+        "operator_avg_return_pct": round(_safe_float(operator_metrics.get("avg_return_pct")), 4),
         "preferred_regimes": [
             name
             for name, payload in sorted(
@@ -200,6 +208,10 @@ def build_commander_memory_policy(
         rationale.append(f"symbol_memory_gate:{str(symbol.get('override_gate_reason') or 'inactive')}")
     if not rationale:
         rationale.append("surface_only_no_memory_override")
+    for name in ("daily", "weekly", "monthly", "symbol"):
+        quality = dict(layer_quality.get(name) or {})
+        if bool(quality.get("operator_summary_available")):
+            rationale.append(f"{name}_operator_summary_available")
     policy_signals = _build_policy_signals(layer_quality, active_layers)
     return {
         "schema_version": "commander.memory_policy.v1",

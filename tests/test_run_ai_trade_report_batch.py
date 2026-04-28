@@ -12,15 +12,19 @@ from libs.reporting.intraday_trade_reports import (
     sync_ai_trade_report_generation_state,
 )
 from libs.reporting.llm_artifacts import resolve_trade_day_root, trade_artifact_paths
+from libs.reporting.trade_report_ai import build_deterministic_trade_report
 from scripts.run_ai_trade_report_batch import (
+    _build_parser,
     _classify_missing_story_input,
     _finalize_report_diagnostics,
+    _resolve_generation_mode,
     _mark_partial_trade_artifact,
     _resolve_output_paths,
     _normalize_trade_id_filters,
     _resolve_story_input_for_regeneration,
     _sync_report_diagnostics,
     _sync_report_generation_state,
+    main as _run_batch_main,
 )
 
 
@@ -50,6 +54,20 @@ def test_run_ai_trade_report_batch_uses_separate_local_debug_output_paths(tmp_pa
     assert resolved["report_json_path"].name == "ai_trade_report.local_debug.json"
     assert resolved["report_md_path"].name == "ai_trade_report.local_debug.md"
     assert resolved["llm_path"].name == "ai_trade_report_llm_response.local_debug.json"
+
+
+def test_run_ai_trade_report_batch_defaults_to_deterministic_no_llm() -> None:
+    args = _build_parser().parse_args(["--day", "2026-03-19"])
+
+    assert args.with_llm is False
+    assert _resolve_generation_mode(args) == "deterministic"
+
+
+def test_run_ai_trade_report_batch_can_opt_into_llm() -> None:
+    args = _build_parser().parse_args(["--day", "2026-03-19", "--with-llm"])
+
+    assert args.with_llm is True
+    assert _resolve_generation_mode(args) == "llm"
 
 
 def test_run_ai_trade_report_batch_resolves_misplaced_trade_day_root(tmp_path: Path) -> None:
@@ -195,12 +213,157 @@ def test_run_ai_trade_report_batch_syncs_salvaged_diagnostics_to_all_artifacts(t
         assert diag["report_output_available"] is True
 
 
+def test_run_ai_trade_report_batch_syncs_deterministic_regen_as_skipped_ai_status(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    trade_id = "TRD_20260319_000660_01"
+    trade_paths = trade_artifact_paths(reports_root, "2026-03-19", trade_id)
+
+    for key in (
+        "lifecycle_bundle_json",
+        "ai_trade_report_input_json",
+        "trade_health_json",
+    ):
+        _write_json(trade_paths[key], {"schema_version": "test.v1"})
+
+    story_input = {"trade_id": trade_id, "run_id": "RUN_DETERMINISTIC", "symbol": "000660"}
+    report = build_deterministic_trade_report(story_input)
+
+    diagnostics = _sync_report_diagnostics(trade_paths, report, {})
+    _write_json(trade_paths["ai_trade_report_json"], report)
+    _finalize_report_diagnostics(trade_paths, trade_paths["ai_trade_report_json"], diagnostics)
+
+    assert diagnostics["report_status"] == "available"
+    assert diagnostics["report_reason_code"] == "deterministic_only"
+    assert diagnostics["generation_attempted"] is False
+    assert diagnostics["ai_trade_report_status"] == "skipped"
+
+    payload = _read_json(trade_paths["trade_health_json"])
+    assert payload["report_generation_status"] == "available"
+    assert payload["ai_trade_report_status"] == "skipped"
+    assert payload["llm_trade_report_status"] == "skipped"
+
+
+def test_run_ai_trade_report_batch_updates_top_level_health_status_after_success(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    trade_paths = trade_artifact_paths(reports_root, "2026-03-19", "TRD_20260319_000660_01")
+
+    for key in (
+        "lifecycle_bundle_json",
+        "ai_trade_report_input_json",
+        "trade_health_json",
+    ):
+        _write_json(
+            trade_paths[key],
+            {
+                "schema_version": "test.v1",
+                "ai_trade_report_status": "error",
+                "llm_trade_report_status": "error",
+                "llm_response_status": "error",
+            },
+        )
+
+    report = {
+        "trade_id": "TRD_20260319_000660_01",
+        "ai_trade_report_status": "ok",
+        "deterministic_report_status": "ok",
+        "llm_brief_status": "skipped",
+        "generation": {
+            "status": "ok",
+            "mode": "ai",
+            "model": "openrouter/test-model",
+            "ai_trade_report_status": "ok",
+        },
+    }
+    llm_artifact = {
+        "status": "ok",
+        "model": "openrouter/test-model",
+        "parse_mode": "full",
+        "completeness_score": 1.0,
+    }
+
+    diagnostics = _sync_report_diagnostics(trade_paths, report, llm_artifact)
+    _write_json(trade_paths["ai_trade_report_json"], report)
+    _finalize_report_diagnostics(trade_paths, trade_paths["ai_trade_report_json"], diagnostics)
+
+    for key in (
+        "ai_trade_report_json",
+        "lifecycle_bundle_json",
+        "ai_trade_report_input_json",
+        "trade_health_json",
+    ):
+        payload = _read_json(trade_paths[key])
+        assert payload["ai_trade_report_status"] == "ok"
+        assert payload["llm_trade_report_status"] == "ok"
+        assert payload["llm_response_status"] == "ok"
+        assert payload["llm_parse_mode"] == "full"
+        assert payload["llm_completeness_score"] == 1.0
+        assert payload["report_generation_status"] == "available"
+        assert payload["ai_report_diagnostics"]["report_status"] == "available"
+
+
 def test_run_ai_trade_report_batch_normalizes_multiple_trade_id_filters() -> None:
     values = _normalize_trade_id_filters(
         ["TRD_1", "TRD_2,TRD_3", "TRD_2", "", "  TRD_4  "]
     )
 
     assert values == ["TRD_1", "TRD_2", "TRD_3", "TRD_4"]
+
+
+def test_run_ai_trade_report_batch_default_regeneration_does_not_call_llm(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    import scripts.run_ai_trade_report_batch as batch_mod
+
+    reports_root = tmp_path / "reports"
+    day = "2026-03-19"
+    trade_id = "TRD_20260319_000660_01"
+    trade_paths = trade_artifact_paths(reports_root, day, trade_id)
+    trade_paths["trade_root"].mkdir(parents=True, exist_ok=True)
+    _write_json(
+        trade_paths["ai_trade_report_input_json"],
+        {
+            "schema_version": "trade_story_input.v2",
+            "trade_id": trade_id,
+            "run_id": "RUN_DEFAULT_NO_LLM",
+            "day": day,
+            "symbol": "000660",
+            "status": "closed",
+        },
+    )
+
+    def exploding_builder(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("default batch regeneration must not call report LLM")
+
+    monkeypatch.setattr(batch_mod, "build_ai_trade_report", exploding_builder)
+
+    rc = _run_batch_main(
+        [
+            "--reports-root",
+            str(reports_root),
+            "--day",
+            day,
+            "--trade-id",
+            trade_id,
+            "--json",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out.strip())
+    report = _read_json(trade_paths["ai_trade_report_json"])
+
+    assert rc == 0
+    assert out["ok"] is True
+    assert out["rows"][0]["generation_mode_requested"] == "deterministic"
+    assert out["rows"][0]["llm_enabled"] is False
+    assert out["rows"][0]["llm_status"] == "fallback"
+    assert report["generation"]["mode"] == "deterministic"
+    assert report["ai_trade_report_status"] == "skipped"
+    assert trade_paths["ai_trade_report_md"].exists() is True
+    assert trade_paths["ai_trade_report_llm_response_json"].exists() is True
+    llm_marker = _read_json(trade_paths["ai_trade_report_llm_response_json"])
+    assert llm_marker["status"] == "fallback"
+    assert llm_marker["meta"]["reason"] == "deterministic_no_llm"
 
 
 def test_run_ai_trade_report_batch_syncs_generation_state_without_clobbering_other_components(tmp_path: Path) -> None:

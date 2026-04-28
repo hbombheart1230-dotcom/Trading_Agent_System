@@ -37,6 +37,16 @@
 - section seed producer: `libs/reporting/trade_story_pipeline.py`
 - narrative adapter / LLM caller: `libs/reporting/trade_report_ai.py`
 
+2026-04-25 update:
+- Batch regeneration is deterministic by default and does not call the report LLM.
+- Live closed-trade first-write still calls the report LLM through `run_live_execution_bundle_report.py --trade-report-ai`.
+- Use `scripts/run_ai_trade_report_batch.py --with-llm` only when the optional operator-facing retrospective narrative is needed.
+- The LLM output is not a memory source. Future memory must come from deterministic artifacts and explicit memory/application traces.
+- The reporter must consume structured strategist output directly and must not reconstruct a different strategist rationale.
+- `strategist_output` is now passed into the report LLM compact input with `strategy_thesis`, `memory_usage_trace`, `news_usage_trace`, `scanner_handoff`, and `monitor_handoff`.
+- The report LLM must not say the strategist selected the final symbol. Scanner ranking/selection evidence owns `why_this_symbol_was_chosen`.
+- Memory reporting is phase-separated. The report must distinguish strategist-input memory policy, scanner memory application, monitor memory application, and latest commander memory state.
+
 ## 2. 호출 경로
 live trade-report 기준 호출 경로는 다음과 같다.
 
@@ -90,6 +100,16 @@ live trade-report 기준 호출 경로는 다음과 같다.
   "status": "closed",
   "story_type": "simulation",
   "execution_mode_label": "simulation (mock broker)",
+  "strategist_output": {
+    "strategy_thesis": {...},
+    "strategy_delta_trace": {...},
+    "memory_usage_trace": {...},
+    "news_usage_trace": {...},
+    "scanner_handoff": {...},
+    "monitor_handoff": {...},
+    "responsibility_boundary": {...},
+    "direct_consumption_rule": "Use these strategist fields as the strategist rationale. Do not infer final symbol selection from strategist output."
+  },
   "entry_summary": {...},
   "holding_summary": {...},
   "exit_summary": {...},
@@ -323,3 +343,18 @@ live trade-report 기준 호출 경로는 다음과 같다.
   - broker fee / tax
   - broker day match mode / authority state
 - Cascade fallback trades are also re-anchored to the actual traded symbol instead of scanner top1.
+
+## 2026-04-27 Update: Memory Application Phase Split
+
+- `ai_trade_report.md` now renders the deterministic memory application section as four separate phase lines:
+  - strategist input phase
+  - scanner application phase
+  - monitor application phase
+  - latest commander state
+- This prevents a common misread where strategist prompt `active_layers=[]` and later monitor `entry/exit applied=true` appear contradictory.
+- The renderer prefers an applied nested `commander_memory_application_trace` when a canonical monitor artifact contains both early disabled traces and later applied traces.
+- The LLM may summarize this section, but it must not merge phase-specific facts into a single memory state.
+- Representative validation:
+  - `reports/trades/2026-04-27/TRD_20260427_005930_05`
+  - scanner memory application remained disabled at scanner phase
+  - monitor memory application later used `symbol` layer for entry/exit policy adjustment

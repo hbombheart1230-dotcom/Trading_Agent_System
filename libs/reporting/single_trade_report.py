@@ -19,7 +19,10 @@ from libs.reporting.trade_execution_snapshot import build_execution_details
 from libs.reporting.trade_report_ai import (
     build_ai_trade_report,
     build_ai_trade_report_compact_input,
+    build_trade_summary_input,
+    build_trade_summary_report,
     render_trade_report_markdown,
+    render_trade_summary_markdown_with_evaluation,
 )
 from libs.reporting.trade_story_pipeline import (
     _build_monitor_blocker_trace,
@@ -792,6 +795,28 @@ def generate_single_trade_report(
         render_trade_report_markdown(report),
         encoding="utf-8",
     )
+    summary_input = build_trade_summary_input(report)
+    summary_report = build_trade_summary_report(summary_input, enabled=True)
+    write_json(trade_paths["ai_trade_summary_input_json"], summary_input)
+    write_json(trade_paths["ai_trade_summary_json"], summary_report)
+    trade_paths["ai_trade_summary_md"].write_text(
+        render_trade_summary_markdown_with_evaluation(report, summary_report),
+        encoding="utf-8",
+    )
+    summary_llm_artifact = (
+        summary_report.get("llm_response_artifact")
+        if isinstance(summary_report.get("llm_response_artifact"), dict)
+        else {}
+    )
+    if summary_llm_artifact:
+        summary_llm_compact = persist_llm_artifact_refs(
+            artifact=summary_llm_artifact,
+            reports_root=reports_root,
+            day=day,
+            run_id=run_id,
+            component="ai_trade_summary",
+        )
+        write_json(trade_paths["ai_trade_summary_llm_response_json"], summary_llm_compact)
     llm_written = ""
     if llm_artifact:
         compact_llm = persist_llm_artifact_refs(

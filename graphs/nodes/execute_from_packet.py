@@ -1222,6 +1222,7 @@ def _normalize_execution(
     verdict = {
         "allowed": bool(allowed),
         "ok": bool(ok),
+        "execution_ok": bool(ok),
         "ok_source": str(ok_source),
         "reason": resolved_reason,
         "order_id": top_level_order_id,

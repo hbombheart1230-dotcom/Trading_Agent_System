@@ -438,6 +438,27 @@ def test_intraday_trade_reports_plan_live_trade_report_generation_reuses_matchin
     assert plan["log_events"][0]["event"] == "report_generation_skipped_fingerprint_match"
 
 
+def test_intraday_trade_reports_plan_live_first_write_generates_ai(tmp_path: Path) -> None:
+    plan = plan_live_trade_report_generation(
+        should_attempt_generation=True,
+        report_requested=True,
+        diagnostics={"llm_model_used": "openrouter/test"},
+        deterministic_report={"headline": "deterministic"},
+        existing_trade_report_artifact={},
+        existing_ai_trade_report_llm_artifact={},
+        ai_trade_report_generation_state={},
+        ai_trade_report_fingerprint="fp-live-1",
+        trade_report_json_path=tmp_path / "ai_trade_report.json",
+        trade_report_md_path=tmp_path / "ai_trade_report.md",
+        configured_report_model="openrouter/test",
+        existing_report_noisy=False,
+    )
+
+    assert plan["mode"] == "generate_ai"
+    assert plan["diagnostics"]["generation_attempted"] is True
+    assert plan["diagnostics"].get("ai_trade_report_status", "skipped") == "skipped"
+
+
 def test_intraday_trade_reports_apply_ai_trade_report_generation_result_preserves_deterministic_on_failure() -> None:
     result = apply_ai_trade_report_generation_result(
         diagnostics={"generation_attempted": True},
@@ -611,6 +632,8 @@ def test_intraday_trade_reports_queues_background_job_after_timeout(tmp_path: Pa
     assert popen_calls
     flat_cmd = " ".join(popen_calls[0])
     assert "-m libs.reporting.live_execution_bundle_runner" in flat_cmd
+    assert "--trade-report-ai" in flat_cmd
+    assert "--no-trade-report-ai" not in flat_cmd
     assert "--max-runs" not in flat_cmd
     assert "--target-run-id run-timeout" in flat_cmd
     assert "--target-symbol 069500" in flat_cmd
@@ -625,6 +648,7 @@ def test_intraday_trade_reports_dedupes_when_background_job_is_already_running(t
     monkeypatch.setenv("INTENTS_PATH", str(root / "data" / "logs" / "intents.jsonl"))
     monkeypatch.setenv("ENV_PATH", str(root / ".env"))
     monkeypatch.setattr("libs.reporting.intraday_trade_reports._root_dir", lambda: root)
+    monkeypatch.setattr("libs.reporting.intraday_trade_reports._active_bundle_process", lambda _root: {})
 
     lock_path = root / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -729,6 +753,7 @@ def test_intraday_trade_reports_removes_stale_lock_then_queues_background_job(tm
     monkeypatch.setenv("INTENTS_PATH", str(root / "data" / "logs" / "intents.jsonl"))
     monkeypatch.setenv("ENV_PATH", str(root / ".env"))
     monkeypatch.setattr("libs.reporting.intraday_trade_reports._root_dir", lambda: root)
+    monkeypatch.setattr("libs.reporting.intraday_trade_reports._active_bundle_process", lambda _root: {})
 
     lock_path = root / "reports" / "runtime" / "intraday_trade_report_bundle.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)

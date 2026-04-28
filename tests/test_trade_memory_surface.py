@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict
 
 from libs.reporting.trade_memory_surface import build_trade_report_memory_surface
@@ -111,13 +112,113 @@ def test_build_trade_report_memory_surface_summarizes_packets() -> None:
     assert surface["reporter_feedback_packet"]["trade_report_analysis"]["closed_trade_count"] == 3
     assert surface["reporter_feedback_packet"]["recommendation"][0].startswith("Same-price round trips")
     assert surface["prompt_proven"]["status"]["strategy_memory_present"] is True
-    assert surface["prompt_proven"]["status"]["selected_symbol_memory_present"] is False
+    assert surface["prompt_proven"]["status"]["selected_symbol_memory_present"] is True
+    assert surface["prompt_proven"]["selected_symbol_memory"]["symbol"] == "005380"
+    assert surface["prompt_proven"]["selected_symbol_memory"]["trade_count"] == 4
     assert surface["prompt_proven"]["reporter_feedback_packet"]["available"] is True
-    assert surface["reconstructed_trade_context"]["status"]["selected_symbol_memory_rebuilt"] is True
+    assert surface["reconstructed_trade_context"]["status"]["selected_symbol_memory_rebuilt"] is False
     assert surface["reconstructed_trade_context"]["status"]["reporter_feedback_rebuilt"] is False
     assert surface["usage_trace"]["playbook"] == "defensive"
     assert any("메모리 우선순위와 활성 layer 결정권은 commander가 가졌고" in note for note in surface["usage_trace"]["notes"])
     assert any("raw memory packet 상태는" in note for note in surface["usage_trace"]["notes"])
+
+
+def test_build_trade_report_memory_surface_reads_saved_strategist_input_source_input(tmp_path) -> None:
+    strategist_input_path = tmp_path / "strategist_input.json"
+    strategist_input_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "strategist_input_artifact.v1",
+                "source_input": {
+                    "strategy_memory": {
+                        "status": "ok",
+                        "requested_day": "2026-04-27",
+                        "resolved_day": "2026-04-17",
+                        "best_playbooks": ["defensive"],
+                    },
+                    "memory_packets": {
+                        "daily_strategy_memory": {"status": "ok", "active": False, "resolved_day": "2026-04-17"},
+                        "weekly_strategy_memory": {"status": "ok", "active": False, "sample_day_count": 1},
+                        "monthly_strategy_memory": {"status": "ok", "active": False, "sample_day_count": 1},
+                        "symbol_memory_packet": {"status": "unavailable", "active": False, "symbol": "", "trade_count": 0},
+                    },
+                    "commander_memory_policy": {
+                        "application_mode": "surface_only",
+                        "active_layers": [],
+                        "priority_order": ["daily", "weekly", "monthly", "symbol"],
+                        "scanner_bias_enabled": False,
+                        "monitor_bias_enabled": False,
+                        "symbol_memory_override_enabled": False,
+                    },
+                    "reporter_feedback_packet": {
+                        "available": True,
+                        "status": "ok",
+                        "consumed": True,
+                        "confidence": "medium",
+                        "source_reports": {"trade_reports": True, "current_payload": True},
+                        "recommendation": ["Keep defensive entry posture."],
+                        "trade_report_analysis": {"closed_trade_count": 1, "win_count": 0, "loss_count": 1},
+                    },
+                    "read_model_facts": {
+                        "recent_trades": [{"trade_id": "TRD_1"}],
+                        "daily_summary": {"available": True},
+                        "symbol_patterns": {
+                            "005930": {
+                                "symbol": "005930",
+                                "trade_count": 38,
+                                "closed_trade_count": 28,
+                                "win_rate": 0.0,
+                                "dominant_playbook": "pullback",
+                                "dominant_monitor_blocker": "unknown",
+                            }
+                        },
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    story_input = {
+        "symbol": "005930",
+        "market_context_human": {
+            "strategy_anchor": {
+                "artifacts": {
+                    "strategist_input_json": str(strategist_input_path),
+                }
+            }
+        },
+        "strategist_evidence": {
+            "decision_frames": [
+                {
+                    "payload": {
+                        "playbook": "defensive",
+                        "monitor_guidance": "defensive_exit",
+                        "scanner_bias": "leader",
+                    }
+                }
+            ]
+        },
+    }
+
+    surface = build_trade_report_memory_surface(story_input)
+
+    assert surface["prompt_proven"]["status"]["strategy_memory_present"] is True
+    assert surface["prompt_proven"]["status"]["memory_packets_present"] is True
+    assert surface["prompt_proven"]["status"]["commander_memory_policy_present"] is True
+    assert surface["prompt_proven"]["status"]["reporter_feedback_present"] is True
+    assert surface["prompt_proven"]["status"]["reporter_feedback_consumed"] is True
+    assert surface["prompt_proven"]["status"]["read_model_facts_present"] is True
+    assert surface["prompt_proven"]["status"]["selected_symbol_memory_present"] is True
+    assert surface["prompt_proven"]["selected_symbol_memory"]["symbol"] == "005930"
+    assert surface["prompt_proven"]["selected_symbol_memory"]["trade_count"] == 38
+    assert surface["prompt_proven"]["read_model_facts"]["recent_trade_count"] == 1
+    assert surface["prompt_proven"]["read_model_facts"]["symbol_pattern_count"] == 1
+    assert surface["prompt_proven"]["commander_memory_policy"]["application_mode"] == "surface_only"
+    assert surface["usage_trace"]["playbook"] == "defensive"
+    assert surface["usage_trace"]["monitor_guidance"] == "defensive_exit"
+    assert surface["usage_trace"]["scanner_bias"] == "leader"
+    assert surface["reconstructed_trade_context"]["status"]["memory_packets_rebuilt"] is False
 
 
 def test_build_trade_report_memory_surface_falls_back_to_runtime_packets() -> None:
@@ -337,7 +438,8 @@ def test_render_trade_report_markdown_surfaces_memory_audit_sections() -> None:
 
     assert "## 전략가 프롬프트에서 직접 확인된 메모리" in markdown
     assert "## 거래 설명용 사후 복원 메모리" in markdown
-    assert "전략가 프롬프트에서는 전략 메모리 확인, 당일 리포터 피드백 확인, 읽기 모델 요약 미확인, 종목 메모리 미확인이 직접 확인됐습니다." in markdown
-    assert "지휘관은 실제 반영 레이어를 당일, 종목으로 두고, 우선순위는 당일 -> 종목 -> 주간 -> 월간으로 정해 전략가에 직접 넘겼습니다." in markdown
-    assert "프롬프트에 직접 남은 메모리 묶음 상태는 당일=정상 기록, 활성, 주간=정상 기록, 1days, 보조 참고, 월간=정상 기록, 1days, 보조 참고, 종목=확인되지 않음, 보조 참고입니다." in markdown
+    assert "[포함 여부] 전략 메모리=확인, 메모리 패킷=확인, 지휘관 정책=확인, 종목 메모리=미확인, 리포터 피드백=확인, 읽기 모델=미확인." in markdown
+    assert "[지휘관 정책] 활성 레이어=당일, 종목; 우선순위=당일 -> 종목 -> 주간 -> 월간; 적용 모드=surface_only." in markdown
+    assert "[메모리 패킷] 당일=정상 기록, 활성; 주간=정상 기록, 1days, 보조 참고; 월간=정상 기록, 1days, 보조 참고; 종목=확인되지 않음, 보조 참고." in markdown
+    assert "전략가는 최종적으로" not in markdown
     assert "이 거래는 전략가 프롬프트만으로 대부분 설명돼, 사후 메모리 복원은 크지 않았습니다." in markdown

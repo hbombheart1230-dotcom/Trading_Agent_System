@@ -19,6 +19,13 @@ runtime ownership into libs/graphs modules.
 - `process_launch_modes_2026-04-19.md`
   - how the runtime is actually started today
   - which wrappers are compatibility helpers
+- `live_validation_checklist_2026-04-28.md`
+  - preopen live/mock readiness checks
+  - first 30-minute validation criteria across runtime, commander, memory, strategist, Kiwoom truth, horizon, and trade report
+- `current_validation_status_2026-04-28.md`
+  - current live artifact validation matrix
+  - code/document matching map
+  - remaining live checks and development checklist
 
 ## Current Position
 

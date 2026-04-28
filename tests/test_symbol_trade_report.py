@@ -23,10 +23,10 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 def test_symbol_artifact_paths_use_canonical_symbol_root(tmp_path: Path) -> None:
     paths = symbol_artifact_paths(tmp_path / "reports", "005930")
-    assert paths["root_dir"] == tmp_path / "reports" / "symbols" / "005930"
-    assert paths["symbol_trade_report_json"] == tmp_path / "reports" / "symbols" / "005930" / "symbol_trade_report.json"
-    assert paths["symbol_memory_json"] == tmp_path / "reports" / "symbols" / "005930" / "symbol_memory.json"
-    assert paths["trade_history_json"] == tmp_path / "reports" / "symbols" / "005930" / "trade_history.json"
+    assert paths["root_dir"] == tmp_path / "reports" / "operator_summary" / "symbols" / "005930"
+    assert paths["symbol_trade_report_json"] == tmp_path / "reports" / "operator_summary" / "symbols" / "005930" / "symbol_trade_report.json"
+    assert paths["symbol_memory_json"] == tmp_path / "reports" / "operator_summary" / "symbols" / "005930" / "symbol_memory.json"
+    assert paths["trade_history_json"] == tmp_path / "reports" / "operator_summary" / "symbols" / "005930" / "trade_history.json"
 
 
 def test_generate_symbol_trade_report_uses_truth_artifacts_not_trade_markdown(tmp_path: Path) -> None:
@@ -101,8 +101,9 @@ def test_generate_symbol_trade_report_uses_truth_artifacts_not_trade_markdown(tm
     assert payload["history_index"][0]["trade_id"] == "TRD_20260320_005930_01"
     assert payload["history_index"][0]["last_action"] == "SELL"
     assert payload["history_index"][0]["last_status"] == "closed"
-    latest_snapshot = json.loads((reports_root / "symbols" / "005930" / "latest_snapshot.json").read_text(encoding="utf-8"))
-    symbol_memory = json.loads((reports_root / "symbols" / "005930" / "symbol_memory.json").read_text(encoding="utf-8"))
+    latest_snapshot = json.loads((reports_root / "operator_summary" / "symbols" / "005930" / "latest_snapshot.json").read_text(encoding="utf-8"))
+    symbol_memory = json.loads((reports_root / "operator_summary" / "symbols" / "005930" / "symbol_memory.json").read_text(encoding="utf-8"))
+    symbol_summary = json.loads((reports_root / "operator_summary" / "symbols" / "005930" / "symbol_summary.json").read_text(encoding="utf-8"))
     assert latest_snapshot["last_trade_id"] == "TRD_20260320_005930_01"
     assert latest_snapshot["last_trade_date"] == "2026-03-20"
     assert latest_snapshot["last_action"] == "SELL"
@@ -112,6 +113,8 @@ def test_generate_symbol_trade_report_uses_truth_artifacts_not_trade_markdown(tm
     assert symbol_memory["latest_snapshot"]["last_trade_date"] == "2026-03-20"
     assert symbol_memory["playbook_stats"]["pullback"]["count"] == 1
     assert symbol_memory["bias_recommendation"]["prefer_playbook"] == "pullback"
+    assert symbol_summary["schema_version"] == "operator_symbol_summary.v1"
+    assert symbol_summary["metrics"]["trade_count"] == 1
     assert latest_snapshot["report_path"].endswith("reports\\ai_trade_report.json") or latest_snapshot["report_path"].endswith("reports/ai_trade_report.json")
 
 

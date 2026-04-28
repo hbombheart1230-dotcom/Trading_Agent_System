@@ -36,6 +36,17 @@ def _to_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    if not text:
+        return bool(default)
+    return text in {"1", "true", "yes", "y", "on"}
+
+
 def _clamp_score(value: float) -> float:
     try:
         return float(max(0.0, min(1.0, float(value))))
@@ -1405,6 +1416,34 @@ def _classify_series_quality(
     }
 
 
+def _extract_commander_entry_control(
+    policy: Mapping[str, Any] | MonitorEntryPolicy | None,
+    frame: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    candidates: list[Any] = []
+    if isinstance(policy, Mapping):
+        raw_policy = extract_monitor_entry_policy_mapping(policy)
+        candidates.extend(
+            [
+                raw_policy.get("commander_entry_control"),
+                raw_policy.get("entry_control"),
+            ]
+        )
+    if isinstance(frame, Mapping):
+        commander_context = frame.get("commander_context")
+        if isinstance(commander_context, Mapping):
+            candidates.extend(
+                [
+                    commander_context.get("commander_entry_control"),
+                    commander_context.get("entry_control"),
+                ]
+            )
+    for candidate in candidates:
+        if isinstance(candidate, Mapping):
+            return dict(candidate or {})
+    return {}
+
+
 def resolve_intraday_entry_policy(
     policy: Mapping[str, Any] | MonitorEntryPolicy | None = None,
     *,
@@ -1412,6 +1451,7 @@ def resolve_intraday_entry_policy(
 ) -> MonitorEntryPolicy:
     resolved = policy if isinstance(policy, MonitorEntryPolicy) else MonitorEntryPolicy.from_mapping(policy)
     adjustments: List[str] = []
+    entry_control = _extract_commander_entry_control(policy, frame)
     playbook = str((frame or {}).get("playbook") or "").strip().lower()
     guidance = str((frame or {}).get("monitor_guidance") or "").strip().lower()
     risk_tone = str((frame or {}).get("risk_tone") or "").strip().lower()
@@ -1517,6 +1557,22 @@ def resolve_intraday_entry_policy(
             max_extended_from_vwap_pct=min(0.08, float(resolved.max_extended_from_vwap_pct) + 0.005),
         )
         adjustments.append("trade_aggressiveness:high")
+
+    if _to_bool(entry_control.get("allow_dynamic_entry_band"), False):
+        raw_target = entry_control.get(
+            "adaptive_max_extended_from_vwap_pct",
+            entry_control.get("max_extended_from_vwap_pct"),
+        )
+        target = _to_float(raw_target, 0.0)
+        cap = _to_float(entry_control.get("max_extended_from_vwap_pct_cap"), 0.10)
+        cap = max(float(resolved.max_extended_from_vwap_pct), min(0.12, max(0.03, cap)))
+        next_max_extended = min(cap, max(float(resolved.max_extended_from_vwap_pct), target))
+        if next_max_extended > float(resolved.max_extended_from_vwap_pct):
+            resolved = replace(
+                resolved,
+                max_extended_from_vwap_pct=round(float(next_max_extended), 6),
+            )
+            adjustments.append("commander_entry_control:dynamic_entry_band")
 
     return replace(resolved, adjustments=tuple(adjustments))
 

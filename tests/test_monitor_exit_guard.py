@@ -221,6 +221,45 @@ def test_monitor_exit_requires_confirmation_ticks(monkeypatch):
     assert out2["monitor_exit"]["triggered"] is True
 
 
+def test_monitor_sell_records_exit_vs_strategy_intent_without_changing_sell_decision(monkeypatch):
+    state = _with_commander_numeric_policy(_base_state(), min_hold_seconds=0, sell_sec=0, confirm_ticks=1)
+    state["commander_horizon_policy"] = {
+        "schema_version": "commander_horizon_policy.v1",
+        "owner": "commander",
+        "observability_only": True,
+        "allow_behavior_change": False,
+        "do_not_force_hold": True,
+        "strategy_horizon": "intraday",
+        "source_strategy_horizon": "1_2day_swing",
+        "expected_hold_window": {"min_sec": 300, "target_sec": 1800, "max_sec": 14400},
+        "source_expected_hold_window": {"min_sec": 3600, "target_sec": 86400, "max_sec": 172800},
+        "decision_reason": "test_commander_policy",
+    }
+    state["strategist_output"] = {
+        "strategy_horizon_feedback": {
+            "strategy_horizon": "1_2day_swing",
+            "expected_hold_window": {"min_sec": 3600, "target_sec": 86400, "max_sec": 172800},
+        }
+    }
+
+    out = monitor_node(state)
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    assert out["monitor_exit"]["triggered"] is True
+    exit_vs_strategy = out["monitor_exit"]["exit_vs_strategy_intent"]
+    assert exit_vs_strategy["observability_only"] is True
+    assert exit_vs_strategy["horizon_owner"] == "commander"
+    assert exit_vs_strategy["strategy_horizon"] == "intraday"
+    assert exit_vs_strategy["source_strategy_horizon"] == "1_2day_swing"
+    assert exit_vs_strategy["early_exit_flag"] is True
+    assert exit_vs_strategy["exit_alignment"] == "early_unproven"
+    assert out["monitor_output"]["exit_vs_strategy_intent"] == exit_vs_strategy
+    assert intents[0]["meta"]["exit_vs_strategy_intent"] == exit_vs_strategy
+    artifact = build_monitor_output_artifact(out)
+    assert artifact["exit_vs_strategy_intent"] == exit_vs_strategy
+
+
 def test_monitor_exit_cooldown_suppresses_duplicate_sell_intents(monkeypatch):
     base = _with_commander_numeric_policy(_base_state(), min_hold_seconds=0, sell_sec=300, confirm_ticks=1)
     base["tick_ts"] = 1772850000
@@ -1757,6 +1796,33 @@ def test_monitor_selects_held_symbol_with_triggered_exit_among_multiple_position
     assert bool(exit_info.get("exit_symbol_fallback")) is True
 
 
+def test_monitor_checks_all_held_symbols_even_when_selected_symbol_is_held(monkeypatch):
+    monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
+    monkeypatch.setenv("SELL_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("MONITOR_EXIT_CONFIRM_TICKS", "1")
+
+    state = {
+        "plan": {"thesis": "test"},
+        "selected": {"symbol": "CCC"},
+        "portfolio_snapshot": {
+            "cash": 2_000_000.0,
+            "positions": [
+                {"symbol": "CCC", "qty": 5, "avg_price": 100.0, "current_price": 100.0, "hold_sec": 900},
+                {"symbol": "AAA", "qty": 2, "avg_price": 100.0, "current_price": 88.0, "hold_sec": 900},
+            ],
+        },
+        "policy": {"use_exit_policy": True, "stop_loss_pct": 0.05, "take_profit_pct": 0.20},
+    }
+
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["side"] == "SELL"
+    assert intents[0]["symbol"] == "AAA"
+    assert (out.get("monitor_exit") or {}).get("reason") == "stop_loss"
+
+
 def test_monitor_ignores_invalid_live_like_positions(monkeypatch):
     monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "true")
     monkeypatch.setenv("MIN_HOLD_SECONDS", "0")
@@ -3063,6 +3129,133 @@ def test_monitor_allows_zero_quote_metric_runner_up_and_reaches_third_candidate(
     assert {"symbol": "BBB", "reason": "quote_metrics_missing_monitor_fallback_allowed"} in warnings
     skipped = list(cascade.get("skipped") or [])
     assert {"symbol": "BBB", "reason": "quote_metrics_missing"} not in skipped
+
+
+def test_monitor_entry_candidate_cascade_reaches_fifth_priority_candidate(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    def _fake_selected(state, symbol, selected, *, position=None):
+        return {"symbol": symbol, "price": 100.0, "features": {"candidate_symbol": symbol}}
+
+    monkeypatch.setattr("graphs.nodes.monitor_node._monitor_selected_snapshot_for_symbol", _fake_selected)
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._ensure_monitor_minute_ohlcv_for_symbol",
+        lambda state, symbol, timeframe_minutes, now_epoch, prefer_fresh_runner=False: state,
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
+        lambda state, policy: {"active": False, "minutes_to_close": 120, "cutoff_min": 10},
+    )
+
+    def _fake_entry(rows, current_price, features, policy, scoring, frame, policy_contract):
+        sym = str((features or {}).get("candidate_symbol") or "")
+        if sym == "AAA":
+            return {"enabled": True, "evaluated": True, "triggered": False, "reason": "too_extended_from_vwap", "thresholds": {"intent_cooldown_sec": 0}}
+        if sym in {"BBB", "CCC", "DDD"}:
+            return {"enabled": True, "evaluated": True, "triggered": False, "reason": "breakout_not_ready", "thresholds": {"intent_cooldown_sec": 0}}
+        return {
+            "enabled": True,
+            "evaluated": True,
+            "triggered": True,
+            "reason": "breakout",
+            "pattern": "breakout",
+            "thresholds": {"intent_cooldown_sec": 0},
+        }
+
+    monkeypatch.setattr("graphs.nodes.monitor_node.evaluate_intraday_entry_signal", _fake_entry)
+
+    state = _entry_cascade_test_state()
+    state["ranked_candidates"] = [
+        {"symbol": "AAA", "price": 100.0, "score_total": 1.00},
+        {"symbol": "BBB", "price": 101.0, "score_total": 0.99},
+        {"symbol": "CCC", "price": 102.0, "score_total": 0.98},
+        {"symbol": "DDD", "price": 103.0, "score_total": 0.97},
+        {"symbol": "EEE", "price": 104.0, "score_total": 0.96},
+    ]
+
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["symbol"] == "EEE"
+    cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
+    assert cascade.get("attempted") is True
+    assert cascade.get("max_priority_rank") == 5
+    assert cascade.get("max_runner_ups") == 4
+    assert cascade.get("runner_up_symbols") == ["BBB", "CCC", "DDD", "EEE"]
+    assert cascade.get("fallback_to_symbol") == "EEE"
+    fallback_trace = list(cascade.get("fallback_trace") or [])
+    assert len(fallback_trace) == 4
+    assert "transition_readiness_score" in fallback_trace[0]
+    assert "minute_source_present" in fallback_trace[0]
+
+
+def test_monitor_entry_candidate_cascade_uses_commander_priority_expansion(monkeypatch):
+    monkeypatch.setenv("MONITOR_BLOCK_BUY_WHEN_OPEN_POSITION", "false")
+    monkeypatch.setenv("USE_EXIT_POLICY", "false")
+
+    def _fake_selected(state, symbol, selected, *, position=None):
+        return {"symbol": symbol, "price": 100.0, "features": {"candidate_symbol": symbol}}
+
+    monkeypatch.setattr("graphs.nodes.monitor_node._monitor_selected_snapshot_for_symbol", _fake_selected)
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._ensure_monitor_minute_ohlcv_for_symbol",
+        lambda state, symbol, timeframe_minutes, now_epoch, prefer_fresh_runner=False: state,
+    )
+    monkeypatch.setattr(
+        "graphs.nodes.monitor_node._resolve_entry_closeout_window_guard",
+        lambda state, policy: {"active": False, "minutes_to_close": 120, "cutoff_min": 10},
+    )
+
+    def _fake_entry(rows, current_price, features, policy, scoring, frame, policy_contract):
+        sym = str((features or {}).get("candidate_symbol") or "")
+        if sym == "AAA":
+            return {"enabled": True, "evaluated": True, "triggered": False, "reason": "too_extended_from_vwap", "thresholds": {"intent_cooldown_sec": 0}}
+        if sym in {"BBB", "CCC", "DDD", "EEE", "FFF"}:
+            return {"enabled": True, "evaluated": True, "triggered": False, "reason": "breakout_not_ready", "thresholds": {"intent_cooldown_sec": 0}}
+        return {
+            "enabled": True,
+            "evaluated": True,
+            "triggered": True,
+            "reason": "breakout",
+            "pattern": "breakout",
+            "thresholds": {"intent_cooldown_sec": 0},
+        }
+
+    monkeypatch.setattr("graphs.nodes.monitor_node.evaluate_intraday_entry_signal", _fake_entry)
+
+    state = _entry_cascade_test_state()
+    state["commander_decision"] = {
+        "entry_control": {
+            "source": "commander_decision",
+            "mode": "expand_when_market_ok",
+            "max_priority_rank": 7,
+            "max_runner_ups": 6,
+            "allow_dynamic_entry_band": False,
+        }
+    }
+    state["ranked_candidates"] = [
+        {"symbol": "AAA", "price": 100.0, "score_total": 1.00},
+        {"symbol": "BBB", "price": 101.0, "score_total": 0.99},
+        {"symbol": "CCC", "price": 102.0, "score_total": 0.98},
+        {"symbol": "DDD", "price": 103.0, "score_total": 0.97},
+        {"symbol": "EEE", "price": 104.0, "score_total": 0.96},
+        {"symbol": "FFF", "price": 105.0, "score_total": 0.95},
+        {"symbol": "GGG", "price": 106.0, "score_total": 0.94},
+    ]
+
+    out = monitor_node(state)
+
+    intents = out.get("intents") or []
+    assert len(intents) == 1
+    assert intents[0]["symbol"] == "GGG"
+    cascade = (out.get("monitor_output") or {}).get("entry_candidate_cascade") or {}
+    assert cascade.get("attempted") is True
+    assert cascade.get("max_priority_rank") == 7
+    assert cascade.get("max_runner_ups") == 6
+    assert cascade.get("fallback_to_symbol") == "GGG"
+    assert cascade.get("control_mode") == "expand_when_market_ok"
 
 
 def test_monitor_runner_up_prefers_fresh_minute_runner_when_primary_runner_is_empty(monkeypatch):

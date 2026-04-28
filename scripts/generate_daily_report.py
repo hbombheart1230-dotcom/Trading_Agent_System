@@ -18,6 +18,7 @@ from libs.reporting.operator_visibility import (
     build_operator_daily_summary_payload,
     build_operator_summary_snapshot_from_payload,
 )
+from libs.reporting.operator_period_summary import generate_operator_daily_summary_artifact
 from libs.reporting.report_metadata import (
     build_data_freshness,
     build_route_provenance,
@@ -364,6 +365,11 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
         md_path.write_text(md_text, encoding="utf-8")
         js_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         paths["trade_index_json"].write_text(json.dumps(trade_index, ensure_ascii=False, indent=2), encoding="utf-8")
+        generate_operator_daily_summary_artifact(
+            reports_root=out_dir,
+            day=day,
+            daily_report_payload=payload,
+        )
         return md_path, js_path
 
     day = day or sorted({r["_day"] for r in rows})[-1]
@@ -568,6 +574,11 @@ def generate_daily_report(events_path: Path, out_dir: Path, day: str | None = No
     md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     js_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     paths["trade_index_json"].write_text(json.dumps(trade_index, ensure_ascii=False, indent=2), encoding="utf-8")
+    generate_operator_daily_summary_artifact(
+        reports_root=out_dir,
+        day=day,
+        daily_report_payload=summary,
+    )
     return md_path, js_path
 
 def main() -> None:

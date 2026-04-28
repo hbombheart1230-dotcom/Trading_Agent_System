@@ -69,6 +69,23 @@ def _normalize_mock_positions(raw):  # type: ignore[no-untyped-def]
         )
         if current_price > 0.0:
             out[-1]["current_price"] = float(current_price)
+        entry_epoch = _as_int(
+            row.get("position_entry_epoch")
+            if row.get("position_entry_epoch") not in (None, "")
+            else row.get("entry_epoch"),
+            0,
+        )
+        if entry_epoch > 0:
+            out[-1]["position_entry_epoch"] = int(entry_epoch)
+        hold_sec = _as_int(
+            row.get("hold_sec")
+            if row.get("hold_sec") not in (None, "")
+            else row.get("position_age_seconds"),
+            0,
+        )
+        if hold_sec > 0:
+            out[-1]["hold_sec"] = int(hold_sec)
+            out[-1]["position_age_seconds"] = int(hold_sec)
     return out
 
 
@@ -88,6 +105,25 @@ def _normalize_position_peak_price(raw, open_symbols=None):  # type: ignore[no-u
         peak = _as_float(value, 0.0)
         if peak > 0.0:
             out[symbol] = float(peak)
+    return out
+
+
+def _normalize_position_entry_epoch_map(raw, open_symbols=None):  # type: ignore[no-untyped-def]
+    out = {}
+    allowed = None
+    if isinstance(open_symbols, (list, set, tuple)):
+        allowed = {normalize_symbol(sym) for sym in open_symbols if normalize_symbol(sym)}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        symbol = normalize_symbol(key)
+        if not symbol:
+            continue
+        if allowed is not None and symbol not in allowed:
+            continue
+        epoch = _as_int(value, 0)
+        if epoch > 0:
+            out[symbol] = int(epoch)
     return out
 
 
@@ -228,9 +264,15 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
     by_symbol = {str(r.get("symbol")): dict(r) for r in pos if isinstance(r, dict)}
     peak_map = _normalize_position_peak_price(ps.get("position_peak_price"), by_symbol.keys())
     strategy_context_map = _normalize_position_strategy_context(ps.get("position_strategy_context"), by_symbol.keys())
+    entry_epoch_map = _normalize_position_entry_epoch_map(ps.get("position_entry_epoch_by_symbol"), by_symbol.keys())
+    for sym, row in by_symbol.items():
+        row_epoch = _as_int(row.get("position_entry_epoch"), 0)
+        if row_epoch > 0 and _as_int(entry_epoch_map.get(sym), 0) <= 0:
+            entry_epoch_map[sym] = int(row_epoch)
     cur = dict(by_symbol.get(symbol) or {"symbol": symbol, "qty": 0, "avg_price": 0.0, "unrealized_pnl": 0.0})
     cash = _ensure_mock_cash(ps)
     realized_total = _as_float(ps.get("mock_realized_pnl"), 0.0)
+    now_epoch = _as_int(time.time(), 0)
 
     if action == "BUY":
         prev_qty = _as_int(cur.get("qty"), 0)
@@ -247,6 +289,8 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
         cur["qty"] = new_qty
         cur["avg_price"] = float(weighted_avg)
         by_symbol[symbol] = cur
+        if prev_qty <= 0 or _as_int(entry_epoch_map.get(symbol), 0) <= 0:
+            entry_epoch_map[symbol] = int(now_epoch)
         next_peak = max(_as_float(peak_map.get(symbol), 0.0), float(weighted_avg), float(price))
         if next_peak > 0.0:
             peak_map[symbol] = float(next_peak)
@@ -273,11 +317,19 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
             by_symbol.pop(symbol, None)
             peak_map.pop(symbol, None)
             strategy_context_map.pop(symbol, None)
+            entry_epoch_map.pop(symbol, None)
         else:
             cur["qty"] = new_qty
             by_symbol[symbol] = cur
 
     final_positions = [v for v in by_symbol.values() if _as_int(v.get("qty"), 0) > 0]
+    final_symbols = [row.get("symbol") for row in final_positions]
+    final_entry_epoch_map = _normalize_position_entry_epoch_map(entry_epoch_map, final_symbols)
+    for row in final_positions:
+        sym = normalize_symbol(row.get("symbol"))
+        entry_epoch = _as_int(final_entry_epoch_map.get(sym), 0)
+        if entry_epoch > 0:
+            row["position_entry_epoch"] = int(entry_epoch)
     ps["mock_positions"] = final_positions
     ps["open_positions"] = len(final_positions)
     ps["mock_cash"] = float(cash)
@@ -295,6 +347,10 @@ def _apply_mock_fill(ps: dict, ex: dict, state: dict | None = None) -> None:
         ps["position_strategy_context"] = final_strategy_context_map
     else:
         ps.pop("position_strategy_context", None)
+    if final_entry_epoch_map:
+        ps["position_entry_epoch_by_symbol"] = final_entry_epoch_map
+    else:
+        ps.pop("position_entry_epoch_by_symbol", None)
 
 
 def _extract_trade_side(ex: dict) -> str:
@@ -743,6 +799,18 @@ def update_state_after_execution(state: dict) -> dict:
     )
     if not ps["position_strategy_context"]:
         ps.pop("position_strategy_context", None)
+    ps["position_entry_epoch_by_symbol"] = _normalize_position_entry_epoch_map(
+        ps.get("position_entry_epoch_by_symbol"),
+        [row.get("symbol") for row in ps.get("mock_positions") or []],
+    )
+    if ps["position_entry_epoch_by_symbol"]:
+        for row in ps.get("mock_positions") or []:
+            symbol = normalize_symbol(row.get("symbol"))
+            entry_epoch = _as_int(ps["position_entry_epoch_by_symbol"].get(symbol), 0)
+            if entry_epoch > 0:
+                row["position_entry_epoch"] = int(entry_epoch)
+    else:
+        ps.pop("position_entry_epoch_by_symbol", None)
     last_trade_symbol = normalize_symbol(ps.get("last_trade_symbol"))
     if last_trade_symbol:
         ps["last_trade_symbol"] = last_trade_symbol

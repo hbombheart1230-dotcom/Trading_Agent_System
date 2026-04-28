@@ -23,6 +23,24 @@ def payload_fingerprint(payload: Any) -> str:
     return hashlib.sha256(stable_json_text(payload).encode("utf-8")).hexdigest()
 
 
+_AI_REPORT_FINGERPRINT_IGNORED_STORY_KEYS = {
+    "ai_report_diagnostics",
+    "evidence_provenance",
+    "evidence_recovery_used",
+    "lifecycle_completeness",
+    "reasoning_provenance",
+    "recovery_sources",
+    "section_provenance",
+}
+
+
+def _normalize_story_input_for_fingerprint(payload: Mapping[str, Any] | None) -> Dict[str, Any]:
+    out = dict(payload or {})
+    for key in _AI_REPORT_FINGERPRINT_IGNORED_STORY_KEYS:
+        out.pop(key, None)
+    return out
+
+
 def build_component_fingerprint(
     *,
     component: str,
@@ -34,7 +52,7 @@ def build_component_fingerprint(
     story_input: Mapping[str, Any] | None,
     compact_input: Mapping[str, Any] | None,
 ) -> Dict[str, Any]:
-    story_hash = payload_fingerprint(dict(story_input or {}))
+    story_hash = payload_fingerprint(_normalize_story_input_for_fingerprint(story_input))
     compact_hash = payload_fingerprint(dict(compact_input or {}))
     payload = {
         "component": str(component or ""),

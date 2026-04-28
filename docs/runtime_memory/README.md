@@ -66,10 +66,22 @@ Use `docs/runtime_memory` for:
   - `symbol_memory_packet`
 - explicitly separates packet structure from commander arbitration and deterministic bias application
 
+7. `operator_summary_memory_linkage_2026-04-28.md`
+- defines how operator-facing summary JSON is attached to runtime memory packets
+- keeps existing strategy-memory gates and deterministic bias sources intact
+- exposes the same curated summaries to strategist prompt context, artifacts, and commander quality diagnostics
+
 Current additive implementation:
 
 - Commander now surfaces raw memory packets in `commander_decision`
 - strategist context/artifacts now surface those packets plus `commander_memory_policy`
+- strategist context/artifacts now surface deterministic `memory_usage_trace`
+  - records `visible`
+  - records `used`
+  - records `used=false` reason
+  - records symbol `gate_reason`
+  - records layer `effect`
+  - records scanner/monitor memory-bias application summaries
 - weekly/monthly packets now use recent performance-window aggregation
 - symbol memory packet now carries richer quality fields:
   - `avg_pnl_pct`
@@ -92,6 +104,26 @@ Current additive implementation:
   - direct `scanner_evaluation.candidate_source_top` / `avg_top_score` / `avg_candidate_pool_after_filter` / `selection_status`
   - `recommended_bias_inputs`
   - `summary_detail`
+- daily/weekly/monthly/symbol memory packets now also attach `operator_summary`
+  - source:
+    - `reports/operator_summary/daily/<YYYY-MM-DD>/daily_summary.json`
+    - `reports/operator_summary/weekly/<YYYY-Www>/weekly_summary.json`
+    - `reports/operator_summary/monthly/<YYYY-MM>/monthly_summary.json`
+    - `reports/operator_summary/symbols/<SYMBOL>/symbol_summary.json`
+  - this is a supplemental curated summary surface, not a replacement for `reports/performance/<day>/strategy_memory.json`
+  - commander surfaces summary metrics in `layer_quality`, but summary presence alone does not activate scanner/monitor memory bias
+- daily operator-summary generation now also refreshes:
+  - `reports/performance/<YYYY-MM-DD>/summary.json`
+  - `reports/performance/<YYYY-MM-DD>/playbook_stats.json`
+  - `reports/performance/<YYYY-MM-DD>/symbol_stats.json`
+  - `reports/performance/<YYYY-MM-DD>/strategy_memory.json`
+- performance memory now stores pattern-level stats:
+  - `per_entry_pattern_stats`
+  - `per_exit_pattern_stats`
+  - `per_entry_reason_stats`
+  - `per_exit_reason_stats`
+  - `per_entry_exit_combo_stats`
+  - `strategy_memory.pattern_performance_snapshot`
 - weekly/monthly activation now depends on packet sample quality, not just packet existence
 - symbol override gating is no longer trade-count only:
   - minimum trade/closed-trade history still applies
@@ -109,9 +141,10 @@ Current same-day reporter status:
 
 Immediate next development order:
 
-1. validate same-day reporter feedback on live intraday artifacts
-2. validate first-pass `monitor_memory_bias` hold/exit application on live artifacts
-3. real weekly/monthly source/regime depth beyond current strategy-memory rollup
+1. validate `memory_usage_trace` on fresh live strategist/canonical artifacts
+2. validate same-day reporter feedback on live intraday artifacts
+3. validate first-pass `monitor_memory_bias` hold/exit application on live artifacts
+4. real weekly/monthly source/regime depth beyond current strategy-memory rollup
 
 ## Commander Link
 
@@ -272,3 +305,23 @@ On the next live session, verify all of the following on fresh artifacts:
    - `symbol_evidence_strength:*`
    - `symbol_recency_days:*`
    when symbol-side damping or blocking occurs
+
+## Current Live Validation Snapshot
+
+As of `2026-04-28 12:38 KST`, the latest inspected monitor-only live artifact verifies part of the memory path:
+
+- `monitor_memory_bias_applied=true`
+- `monitor_memory_bias_exit_applied=true`
+- `monitor_memory_bias_hold_applied=false`
+- Commander horizon policy records memory context for daily and symbol layers
+- selected symbol memory for `000660` is visible as an observation, but behavior change remains disabled by horizon policy
+
+Still not live-verified in the latest run:
+
+- fresh strategist `memory_usage_trace`
+- same-day reporter feedback packet consumption in a fresh strategist artifact
+- scanner-side memory bias in a fresh scanner artifact after the current open position is closed
+
+Cross-folder status:
+
+- `docs/runtime_entrypoint/current_validation_status_2026-04-28.md`

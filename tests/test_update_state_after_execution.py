@@ -68,6 +68,8 @@ def test_update_state_mock_buy_updates_mock_positions(monkeypatch):
     assert ps["mock_cash"] == 1860000.0
     assert ps["mock_realized_pnl"] == 0.0
     assert ps["position_peak_price"] == {"005930": 70000.0}
+    assert ps["position_entry_epoch_by_symbol"] == {"005930": 1234}
+    assert ps["mock_positions"][0]["position_entry_epoch"] == 1234
     assert ((ps.get("position_strategy_context") or {}).get("005930") or {}).get("output", {}).get("playbook") == "defensive"
     assert ps["last_trade_side"] == "BUY"
     assert ps["last_trade_epoch"] == 1234
@@ -103,6 +105,7 @@ def test_update_state_mock_sell_closes_position(monkeypatch):
             "position_strategy_context": {
                 "005930": {"output": {"playbook": "defensive"}, "generated_epoch": 1200, "source": "buy_execution"}
             },
+            "position_entry_epoch_by_symbol": {"005930": 1000},
             "mock_cash": 1860000.0,
             "mock_realized_pnl": 0.0,
         },
@@ -119,6 +122,7 @@ def test_update_state_mock_sell_closes_position(monkeypatch):
     assert ps["mock_positions"] == []
     assert ps.get("position_peak_price") in ({}, None)
     assert ps.get("position_strategy_context") in ({}, None)
+    assert ps.get("position_entry_epoch_by_symbol") in ({}, None)
     assert ps["mock_cash"] == 2000400.0
     assert ps["mock_realized_pnl"] == 400.0
     assert ps["last_trade_side"] == "SELL"
@@ -253,6 +257,7 @@ def test_update_state_mock_partial_sell_preserves_existing_position_peak(monkeyp
             "last_order_epoch": 10,
             "mock_positions": [{"symbol": "005930", "qty": 3, "avg_price": 70000.0, "unrealized_pnl": 0.0}],
             "position_peak_price": {"005930": 71500.0},
+            "position_entry_epoch_by_symbol": {"005930": 1000},
             "mock_cash": 1790000.0,
             "mock_realized_pnl": 0.0,
         },
@@ -269,6 +274,7 @@ def test_update_state_mock_partial_sell_preserves_existing_position_peak(monkeyp
     assert ps["open_positions"] == 1
     assert ps["mock_positions"][0]["qty"] == 2
     assert ps["position_peak_price"] == {"005930": 71500.0}
+    assert ps["position_entry_epoch_by_symbol"] == {"005930": 1000}
 
 
 def test_update_state_mock_buy_stores_position_strategy_context(monkeypatch):

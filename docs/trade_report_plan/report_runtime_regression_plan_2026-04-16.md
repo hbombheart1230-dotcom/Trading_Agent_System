@@ -82,6 +82,7 @@ The report must answer:
 - why we held
 - why we exited
 - what failed: scanner, entry, hold, exit, or execution
+- which memory phase is being described: strategist input, scanner application, monitor application, or latest commander state
 
 This axis is not about fluent writing alone. It is about operational usefulness.
 
@@ -161,6 +162,7 @@ Required checks:
 - `ai_trade_report.md`
 - provenance state
 - reporter linkage state
+- memory application phase lines
 
 ## Golden Acceptance Rules
 
@@ -173,16 +175,19 @@ For closed trades, fail the test if any of the following is true:
 - `candidate_count == 0` when scanner evidence exists
 - `hold_duration == "00:00:00"` caused by missing entry timing
 - all major section provenance values collapse to fallback
+- `실제로 적용된 결정론적 메모리 bias` collapses strategist prompt policy, scanner application, monitor application, and latest commander policy into one ambiguous line
+- scanner `not_applied` and monitor `applied` traces in the same trade are rendered as a contradiction instead of phase-separated runtime facts
 
 ## Runtime Execution Policy For Validation
 
 When validating report quality during development:
 
 1. run targeted bundle repair or replay first
-2. regenerate report in `local_debug` mode to inspect deterministic output quickly
-3. run at least one real LLM acceptance pass after deterministic output is acceptable
+2. regenerate the canonical report with the default deterministic no-LLM mode
+3. use `local_debug` only when a non-destructive `.local_debug` comparison artifact is needed
+4. run a real LLM acceptance pass with `--with-llm` only after deterministic output is acceptable
 
-Credit minimization is not the primary goal here. Runtime parity and acceptance confidence are more important.
+Credit minimization is the default batch/manual regeneration policy. Live closed-trade first-write still uses the report LLM, and runtime parity plus acceptance confidence still require small curated `--with-llm` checks after major report changes.
 
 ## Immediate Next Steps
 
@@ -190,4 +195,3 @@ Credit minimization is not the primary goal here. Runtime parity and acceptance 
 2. Add replay-driven regression tests for representative lifecycle patterns
 3. Add acceptance assertions for the full artifact chain
 4. Run real LLM acceptance checks on a small curated trade set after major report changes
-

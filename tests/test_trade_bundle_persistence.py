@@ -170,6 +170,8 @@ def test_persist_trade_report_outputs_writes_report_and_sets_diagnostics(tmp_pat
     reports_dir = tmp_path / "reports"
     json_path = reports_dir / "ai_trade_report.json"
     md_path = reports_dir / "ai_trade_report.md"
+    summary_input_path = reports_dir / "ai_trade_summary_input.json"
+    summary_path = reports_dir / "ai_trade_summary.md"
     json_path.parent.mkdir(parents=True, exist_ok=True)
 
     result = persist_trade_report_outputs(
@@ -183,6 +185,10 @@ def test_persist_trade_report_outputs_writes_report_and_sets_diagnostics(tmp_pat
         trade_report_json_path=json_path,
         trade_report_md_path=md_path,
         markdown_renderer=lambda payload: f"# {payload['headline']}\n",
+        trade_summary_input_json_path=summary_input_path,
+        summary_input_builder=lambda payload: {"summary_source": payload["headline"]},
+        trade_summary_md_path=summary_path,
+        summary_markdown_renderer=lambda payload: f"# summary {payload['headline']}\n",
         write_failure_reason_human="write failed",
         write_failure_next_step="retry",
         error_sanitizer=lambda exc: str(exc),
@@ -193,18 +199,26 @@ def test_persist_trade_report_outputs_writes_report_and_sets_diagnostics(tmp_pat
     assert payload["headline"] == "report"
     assert payload["deterministic_report_status"] == "ok"
     assert md_path.exists() is True
+    assert _read_json(summary_input_path) == {"summary_source": "report"}
+    assert summary_path.read_text(encoding="utf-8") == "# summary report\n"
     assert diagnostics["report_output_available"] is True
     assert diagnostics["report_artifact_available"] is True
     assert result["trade_report_json_written"].endswith("ai_trade_report.json")
+    assert result["trade_summary_input_json_written"].endswith("ai_trade_summary_input.json")
+    assert result["trade_summary_md_written"].endswith("ai_trade_summary.md")
 
 
 def test_refresh_trade_report_outputs_if_written_overwrites_with_new_payload(tmp_path: Path) -> None:
     reports_dir = tmp_path / "reports"
     json_path = reports_dir / "ai_trade_report.json"
     md_path = reports_dir / "ai_trade_report.md"
+    summary_input_path = reports_dir / "ai_trade_summary_input.json"
+    summary_path = reports_dir / "ai_trade_summary.md"
     json_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.write_text(json.dumps({"headline": "old"}, ensure_ascii=False), encoding="utf-8")
     md_path.write_text("# old\n", encoding="utf-8")
+    summary_input_path.write_text(json.dumps({"summary_source": "old"}, ensure_ascii=False), encoding="utf-8")
+    summary_path.write_text("# old summary\n", encoding="utf-8")
 
     result = refresh_trade_report_outputs_if_written(
         trade_report={"headline": "new", "ai_report_diagnostics": {"report_status": "available"}},
@@ -212,9 +226,15 @@ def test_refresh_trade_report_outputs_if_written_overwrites_with_new_payload(tmp
         trade_report_json_path=json_path,
         trade_report_md_path=md_path,
         markdown_renderer=lambda payload: f"# {payload['headline']}\n",
+        trade_summary_input_json_path=summary_input_path,
+        summary_input_builder=lambda payload: {"summary_source": payload["headline"]},
+        trade_summary_md_path=summary_path,
+        summary_markdown_renderer=lambda payload: f"# summary {payload['headline']}\n",
     )
 
     payload = _read_json(json_path)
     assert result["refreshed"] is True
     assert payload["headline"] == "new"
+    assert _read_json(summary_input_path) == {"summary_source": "new"}
+    assert summary_path.read_text(encoding="utf-8") == "# summary new\n"
     assert "available" in json.dumps(payload, ensure_ascii=False)

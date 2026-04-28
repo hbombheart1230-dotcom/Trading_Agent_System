@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
+from libs.runtime.operator_summary_memory import load_operator_period_summary_for_state
 from libs.runtime.strategy_memory_support_artifacts import (
     resolve_monitor_status,
     resolve_report_focus_targets,
@@ -144,11 +145,109 @@ def _collect_playbook_snapshot(rows: Iterable[Mapping[str, Any]], *, limit: int)
     return out
 
 
+def _collect_pattern_section(
+    rows: Iterable[Mapping[str, Any]],
+    section: str,
+    *,
+    limit: int,
+) -> Dict[str, Any]:
+    aggregate: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        snapshot = row.get("pattern_performance_snapshot") if isinstance(row.get("pattern_performance_snapshot"), dict) else {}
+        section_rows = snapshot.get(section) if isinstance(snapshot.get(section), dict) else {}
+        for name, payload in section_rows.items():
+            item = payload if isinstance(payload, dict) else {}
+            text = str(name or "").strip()
+            if not text:
+                continue
+            trade_count = _safe_int(item.get("trade_count"))
+            target = aggregate.setdefault(
+                text,
+                {
+                    "sample_days": 0,
+                    "trade_count": 0,
+                    "win_count": 0,
+                    "loss_count": 0,
+                    "weighted_avg_return_sum": 0.0,
+                    "max_drawdown": 0.0,
+                    "symbols": set(),
+                },
+            )
+            target["sample_days"] = _safe_int(target.get("sample_days")) + 1
+            target["trade_count"] = _safe_int(target.get("trade_count")) + trade_count
+            target["win_count"] = _safe_int(target.get("win_count")) + _safe_int(item.get("win_count"))
+            target["loss_count"] = _safe_int(target.get("loss_count")) + _safe_int(item.get("loss_count"))
+            target["weighted_avg_return_sum"] = _safe_float(target.get("weighted_avg_return_sum")) + (
+                _safe_float(item.get("avg_return")) * float(max(trade_count, 1))
+            )
+            target["max_drawdown"] = max(_safe_float(target.get("max_drawdown")), _safe_float(item.get("max_drawdown")))
+            symbols = target.get("symbols")
+            if isinstance(symbols, set):
+                for symbol in list(item.get("symbols") or []):
+                    text_symbol = str(symbol or "").strip().upper()
+                    if text_symbol:
+                        symbols.add(text_symbol)
+    ranked = sorted(
+        aggregate.items(),
+        key=lambda item: (
+            -_safe_int(item[1].get("trade_count")),
+            _safe_float(item[1].get("weighted_avg_return_sum")) / float(max(_safe_int(item[1].get("trade_count")), 1)),
+            item[0],
+        ),
+    )
+    out: Dict[str, Any] = {}
+    for name, stats in ranked[: max(1, int(limit))]:
+        trade_count = max(_safe_int(stats.get("trade_count")), 0)
+        avg_return = _safe_float(stats.get("weighted_avg_return_sum")) / float(max(trade_count, 1))
+        out[name] = {
+            "sample_days": _safe_int(stats.get("sample_days")),
+            "trade_count": trade_count,
+            "win_count": _safe_int(stats.get("win_count")),
+            "loss_count": _safe_int(stats.get("loss_count")),
+            "win_rate": round(float(_safe_int(stats.get("win_count"))) / float(trade_count), 6) if trade_count else 0.0,
+            "avg_return": round(avg_return, 6),
+            "max_drawdown": round(_safe_float(stats.get("max_drawdown")), 6),
+            "symbols": sorted(list(stats.get("symbols") or []))[:8],
+        }
+    return out
+
+
+def _collect_pattern_labels(rows: Iterable[Mapping[str, Any]], key: str, *, limit: int) -> List[str]:
+    counts: Dict[str, int] = {}
+    for row in rows:
+        snapshot = row.get("pattern_performance_snapshot") if isinstance(row.get("pattern_performance_snapshot"), dict) else {}
+        for item in list(snapshot.get(key) or []):
+            text = str(item or "").strip()
+            if text and "unknown" not in text:
+                counts[text] = counts.get(text, 0) + 1
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return [name for name, _count in ordered[: max(1, int(limit))]]
+
+
+def _collect_pattern_snapshot(rows: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
+    row_list = [dict(row) for row in rows]
+    return {
+        "entry_pattern_types": _collect_pattern_section(row_list, "entry_pattern_types", limit=5),
+        "exit_pattern_types": _collect_pattern_section(row_list, "exit_pattern_types", limit=5),
+        "entry_exit_combos": _collect_pattern_section(row_list, "entry_exit_combos", limit=7),
+        "problem_patterns": _collect_pattern_labels(row_list, "problem_patterns", limit=8),
+        "working_patterns": _collect_pattern_labels(row_list, "working_patterns", limit=8),
+        "advisory_only": True,
+    }
+
+
 def _safe_int(value: Any) -> int:
     try:
         return int(float(value))
     except Exception:
         return 0
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return 0.0
 
 
 def _normalize_summary_detail(summary: Any) -> Dict[str, Any]:
@@ -205,6 +304,7 @@ def _base_unavailable_packet(
         "recent_failures": [],
         "recent_success_patterns": [],
         "playbook_performance_snapshot": {},
+        "pattern_performance_snapshot": {},
         "playbook_stats": {},
         "source_performance": {},
         "failure_patterns": {
@@ -308,6 +408,7 @@ def normalize_window_strategy_memory_packet(
         "sample_quality": sample_quality,
         "contributing_days": contributing_days,
         "playbook_stats": dict(packet.get("playbook_stats") or packet.get("playbook_performance_snapshot") or {}),
+        "pattern_performance_snapshot": dict(packet.get("pattern_performance_snapshot") or {}),
         "source_performance": dict(packet.get("source_performance") or {}),
         "failure_patterns": dict(packet.get("failure_patterns") or {}),
         "execution_risk": dict(packet.get("execution_risk") or {}),
@@ -331,24 +432,32 @@ def build_window_strategy_memory_packet(
 ) -> Dict[str, Any]:
     reports_root = resolve_reports_root(state)
     requested_day = resolve_state_day(state)
+    operator_summary = load_operator_period_summary_for_state(
+        reports_root=reports_root,
+        state=state,
+        layer=layer,
+    )
     rows = load_strategy_memory_window_rows(
         reports_root=reports_root,
         end_day=requested_day,
         max_days=max_days,
     )
     if not rows:
-        return _base_unavailable_packet(
+        packet = _base_unavailable_packet(
             layer=layer,
             requested_day=requested_day,
             max_days=max_days,
             min_required_days=min_required_days,
         )
+        packet["operator_summary"] = operator_summary
+        return packet
     contributing_days = [str(row.get("day") or "").strip() for row in rows if str(row.get("day") or "").strip()]
     best_playbooks = _tally_items(rows, "best_playbooks", limit=3)
     worst_playbooks = _tally_items(rows, "worst_playbooks", limit=3)
     recent_failures = _tally_items(rows, "recent_failures", limit=4)
     recent_success_patterns = _tally_items(rows, "recent_success_patterns", limit=4)
     playbook_snapshot = _collect_playbook_snapshot(rows, limit=4)
+    pattern_snapshot = _collect_pattern_snapshot(rows)
     sample_quality = build_sample_quality(
         rows=rows,
         requested_day=requested_day,
@@ -417,6 +526,7 @@ def build_window_strategy_memory_packet(
         "recent_failures": recent_failures,
         "recent_success_patterns": recent_success_patterns,
         "playbook_performance_snapshot": playbook_snapshot,
+        "pattern_performance_snapshot": pattern_snapshot,
         "playbook_stats": playbook_snapshot,
         "source_performance": source_performance,
         "failure_patterns": failure_patterns,
@@ -445,6 +555,7 @@ def build_window_strategy_memory_packet(
             "system_health": str(execution_risk.get("system_health") or ""),
         },
         "recommended_bias_inputs": recommended_bias_inputs,
+        "operator_summary": operator_summary,
         "summary": summary_detail["headline"],
         "summary_detail": summary_detail,
         "advisory_only": True,

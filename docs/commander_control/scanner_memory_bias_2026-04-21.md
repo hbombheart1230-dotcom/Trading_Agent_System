@@ -18,9 +18,22 @@ Current runtime now does all of the following:
 - Scanner applies additive deterministic score deltas
 - Scanner artifact surfaces:
   - `scanner_memory_bias_applied`
+  - `scanner_memory_bias`
   - `scanner_memory_bias_summary`
   - `candidate_memory_bias_adjustments`
   - `selection_reason_with_bias`
+  - `commander_memory_application_trace`
+
+The application trace is the preferred inspection field when checking whether
+Commander memory actually affected scanner ranking. It records:
+
+- capture/enabled/applied state
+- skipped reason when not applied
+- selected symbol
+- selected candidate sources
+- matching source delta keys
+- selected source and symbol deltas
+- selected bias adjustments
 
 Current limitations:
 

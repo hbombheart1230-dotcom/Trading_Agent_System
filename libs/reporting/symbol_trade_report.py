@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from libs.reporting.llm_artifacts import symbol_artifact_paths
+from libs.reporting.operator_period_summary import generate_operator_symbol_summary_artifact
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -871,11 +872,19 @@ def generate_symbol_trade_report(events_path: Path, reports_root: Path, symbol: 
     paths["latest_snapshot_json"].write_text(json.dumps(latest_snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     paths["daily_index_json"].write_text(json.dumps({"symbol": payload.get("symbol"), "days": daily_index}, ensure_ascii=False, indent=2), encoding="utf-8")
     paths["symbol_trade_report_md"].write_text(_render_symbol_trade_markdown(payload), encoding="utf-8")
+    summary_md, summary_json, _summary_payload = generate_operator_symbol_summary_artifact(
+        reports_root=reports_root,
+        symbol=symbol,
+        symbol_trade_report_payload=payload,
+        symbol_memory_payload=symbol_memory,
+    )
 
     return {
         "symbol": str(payload.get("symbol") or ""),
         "report_json_path": str(paths["symbol_trade_report_json"]),
         "report_md_path": str(paths["symbol_trade_report_md"]),
+        "symbol_summary_json_path": str(summary_json),
+        "symbol_summary_md_path": str(summary_md),
         "symbol_memory_path": str(paths["symbol_memory_json"]),
         "trade_history_path": str(paths["trade_history_json"]),
         "latest_snapshot_path": str(paths["latest_snapshot_json"]),

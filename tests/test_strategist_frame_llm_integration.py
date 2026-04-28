@@ -6,7 +6,12 @@ import json
 
 import pytest
 
-from graphs.nodes.strategist_node import _build_compact_strategist_llm_payload, _build_strategist_llm_messages, strategist_node
+from graphs.nodes.strategist_node import (
+    _build_commander_context_summary,
+    _build_compact_strategist_llm_payload,
+    _build_strategist_llm_messages,
+    strategist_node,
+)
 from libs.research.strategy_memory_store import save_strategy_feedback
 
 
@@ -180,6 +185,26 @@ class _FakeRouterHintOnlyProse(_FakeRouterOk):
         )
 
 
+class _FakeRouterThemeConstraint(_FakeRouterOk):
+    @staticmethod
+    def from_env() -> "_FakeRouterThemeConstraint":
+        return _FakeRouterThemeConstraint()
+
+    def chat(self, role: str, messages: List[Dict[str, Any]], *, policy: Dict[str, Any] | None = None) -> str:
+        return (
+            '{"market_regime":"risk_on","market_sentiment":"bullish",'
+            '"themes":["invented_theme","semiconductor"],'
+            '"selected_themes":["invented_theme","battery"],'
+            '"theme_strategy":{"selection_mode":"kiwoom_api_constrained","selected_themes":['
+            '{"theme":"invented_theme","playbook_overlay":"momentum","scanner_directive":"rank components","reason":"bad"},'
+            '{"theme":"battery","playbook_overlay":"momentum","scanner_directive":"rank components","reason":"valid"}]},'
+            '"avoid_themes":["high_gap_speculative"],"playbook":"breakout","scanner_bias":"momentum",'
+            '"scanner_priority":["momentum","trend_strength","trading_value"],'
+            '"trade_aggressiveness":"high","risk_tone":"aggressive","monitor_guidance":"hold_through_noise",'
+            '"report_focus":["theme_accuracy","exit_quality"]}'
+        )
+
+
 def _base_state(logger: _MemoryLogger) -> Dict[str, Any]:
     return {
         "run_id": "strategist-llm-test",
@@ -218,10 +243,134 @@ def test_strategist_frame_llm_overrides_are_applied(monkeypatch):
     assert "semiconductor" in list(out.get("theme_map", {}).keys())
     assert "ai" in list(out.get("sector_map", {}).keys())
     assert out.get("theme_map", {}).get("semiconductor") == ["005930", "000660", "035420"]
-
     llm_rows = [r for r in logger.rows if r.get("stage") == "strategist_llm" and r.get("event") == "result"]
     assert len(llm_rows) == 1
     assert bool((llm_rows[0].get("payload") or {}).get("ok")) is True
+
+
+def test_strategist_selected_themes_are_constrained_to_kiwoom_available_themes(monkeypatch):
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "true")
+    monkeypatch.setenv("DRY_RUN", "false")
+    monkeypatch.setenv("AI_STRATEGIST_MODEL", "minimax/minimax-m2.5")
+    monkeypatch.setattr("graphs.nodes.strategist_node.LLMRouter", _FakeRouterThemeConstraint)
+
+    logger = _MemoryLogger()
+    state = _base_state(logger)
+    state["mock_theme_groups"] = [
+        {
+            "thema_grp_cd": "400",
+            "thema_nm": "semiconductor",
+            "stk_num": "5",
+            "flu_rt": "+4.0",
+            "rising_stk_num": "4",
+            "fall_stk_num": "0",
+            "dt_prft_rt": "+12.0",
+        },
+        {
+            "thema_grp_cd": "401",
+            "thema_nm": "battery",
+            "stk_num": "5",
+            "flu_rt": "+3.0",
+            "rising_stk_num": "3",
+            "fall_stk_num": "1",
+            "dt_prft_rt": "+8.0",
+        },
+    ]
+    state["mock_theme_component_map"] = {
+        "semiconductor": ["005930", "000660"],
+        "battery": ["373220"],
+    }
+
+    out = strategist_node(state)
+    strategist_output = out.get("strategist_output") or {}
+
+    assert "invented_theme" not in strategist_output.get("selected_themes")
+    assert strategist_output.get("selected_themes")[:2] == ["battery", "semiconductor"]
+    assert strategist_output.get("theme_strategy", {}).get("selection_mode") == "kiwoom_api_constrained"
+    assert out.get("scanner_guidance", {}).get("selected_themes")[:2] == ["battery", "semiconductor"]
+
+
+def test_build_commander_context_summary_recomputes_stale_daily_memory_from_state() -> None:
+    state = {
+        "day": "2026-04-24",
+        "runtime_phase": "session",
+        "strategy_memory": {
+            "status": "ok",
+            "requested_day": "2026-04-24",
+            "resolved_day": "2026-04-17",
+            "day": "2026-04-17",
+            "best_playbooks": ["defensive"],
+            "worst_playbooks": ["defensive"],
+            "recent_failures": ["playbook:defensive"],
+            "recent_success_patterns": [],
+            "playbook_performance_snapshot": {
+                "defensive": {
+                    "usage_count": 1,
+                    "win_rate": 0.0,
+                }
+            },
+            "market_condition_bias": {
+                "preferred_risk_posture": "defensive",
+                "system_health": "RED",
+                "avg_monitor_only_ratio": 0.7994,
+            },
+        },
+    }
+    commander_decision = {
+        "market_regime": "neutral",
+        "session_bias": "active_selection",
+        "risk_mode": "defensive",
+        "memory_packets": {
+            "daily_strategy_memory": {
+                "status": "ok",
+                "active": True,
+                "requested_day": "2026-04-24",
+                "resolved_day": "2026-04-17",
+            }
+        },
+        "commander_memory_policy": {
+            "application_mode": "surface_only",
+            "active_layers": ["daily"],
+            "scanner_bias_enabled": True,
+            "monitor_bias_enabled": True,
+        },
+        "scanner_memory_bias": {
+            "enabled": True,
+            "active_layers": ["daily"],
+            "source_weight_delta": {"top_value": 0.02},
+        },
+        "scanner_memory_bias_summary": {
+            "enabled": True,
+            "active_layers": ["daily"],
+        },
+        "monitor_memory_bias": {
+            "enabled": True,
+            "active_layers": ["daily"],
+            "entry_policy_delta": {"max_extended_from_vwap_pct": -0.01},
+        },
+        "monitor_memory_bias_summary": {
+            "enabled": True,
+            "active_layers": ["daily"],
+        },
+    }
+
+    context = _build_commander_context_summary(
+        state=state,
+        commander_decision=commander_decision,
+        runtime_phase="session",
+        market_regime="neutral",
+        playbook="defensive",
+    )
+
+    assert context["memory_packets"]["daily_strategy_memory"]["requested_day"] == "2026-04-24"
+    assert context["memory_packets"]["daily_strategy_memory"]["resolved_day"] == "2026-04-17"
+    assert context["memory_packets"]["daily_strategy_memory"]["active"] is False
+    assert context["commander_memory_policy"]["active_layers"] == []
+    assert context["commander_memory_policy"]["scanner_bias_enabled"] is False
+    assert context["scanner_memory_bias"]["enabled"] is False
+    assert context["scanner_memory_bias_summary"]["enabled"] is False
+    assert context["monitor_memory_bias"]["enabled"] is False
+    assert context["monitor_memory_bias_summary"]["enabled"] is False
 
 
 def test_strategist_frame_llm_parse_error_falls_back_to_deterministic(monkeypatch):
@@ -1096,6 +1245,8 @@ def test_build_compact_strategist_llm_payload_trims_memory_and_news() -> None:
     assert compact["commander_refresh_context"]["requires_policy_delta"] is True
     assert compact["commander_refresh_context"]["selected_symbol_memory"]["symbol"] == "000660"
     assert compact["commander_refresh_context"]["selected_symbol_memory"]["dominant_playbook"] == "pullback"
+    assert compact["strategy_refresh_trace_input"]["post_scanner_refresh"]["selected_symbol"] == "000660"
+    assert compact["strategy_refresh_trace_input"]["final_application"]["requires_policy_delta"] is True
     assert compact["memory_packets"]["daily_strategy_memory"]["status"] == "ok"
     assert compact["memory_packets"]["symbol_memory_packet"]["symbol"] == "000660"
     assert compact["commander_memory_policy"]["application_mode"] == "surface_only"
@@ -1115,6 +1266,8 @@ def test_build_strategist_llm_messages_enforces_read_model_facts_and_policy_adju
     assert "strategy_adjustment_directives" in user
     assert "If repeated failure is concentrated in one axis" in user
     assert '"refresh_action"' in user
+    assert "strategy_refresh_trace" in user
+    assert "1st/base frame" in system
 
 
 def test_strategist_llm_payload_includes_commander_refresh_context(monkeypatch):

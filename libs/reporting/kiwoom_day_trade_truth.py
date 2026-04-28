@@ -183,6 +183,51 @@ def _match_detail_row(
         return price_value is not None and _price_matches(row.get("filled_price"), price_value)
 
     exact_qty_price_matches = [row for row in symbol_rows if _exact_qty_and_price(row)]
+    exact_qty_matches = [row for row in symbol_rows if _exact_qty(row)]
+
+    def _match_buy_anchor(
+        candidates: List[Dict[str, Any]],
+        *,
+        estimated_mode: str,
+        monitor_mode: str,
+    ) -> Dict[str, Any]:
+        if len(candidates) <= 1:
+            return {}
+        implied_buy_price = infer_buy_price_from_monitor_context(monitor_context=monitor_context)
+        best_estimated = select_best_buy_price_match(
+            candidates,
+            implied_buy_price=implied_buy_price,
+        )
+        if best_estimated:
+            payload = _build_match_payload(
+                best_estimated["row"],
+                symbol=normalized_symbol,
+                row_count=row_count,
+                match_mode=estimated_mode,
+                authoritative=True,
+            )
+            payload["estimated_buy_price"] = implied_buy_price
+            payload["estimated_buy_price_diff"] = _safe_float(best_estimated.get("best_diff"))
+            return payload
+
+        anchor_candidates = extract_buy_price_anchor_candidates(monitor_context=monitor_context)
+        best_anchor_match = select_best_buy_price_match_from_anchors(
+            candidates,
+            anchors=anchor_candidates,
+        )
+        if best_anchor_match:
+            payload = _build_match_payload(
+                best_anchor_match["row"],
+                symbol=normalized_symbol,
+                row_count=row_count,
+                match_mode=monitor_mode,
+                authoritative=True,
+            )
+            payload["monitor_buy_anchor_source"] = str(best_anchor_match.get("anchor_source") or "")
+            payload["monitor_buy_anchor_price"] = _safe_float(best_anchor_match.get("anchor_price"))
+            payload["monitor_buy_anchor_diff"] = _safe_float(best_anchor_match.get("best_diff"))
+            return payload
+        return {}
 
     for match_mode, predicate in (
         ("symbol_buy_sell_qty_exact", _exact_buy_sell_qty),
@@ -200,41 +245,22 @@ def _match_detail_row(
                 authoritative=True,
             )
 
-    if len(exact_qty_price_matches) > 1:
-        implied_buy_price = infer_buy_price_from_monitor_context(monitor_context=monitor_context)
-        best_estimated = select_best_buy_price_match(
-            exact_qty_price_matches,
-            implied_buy_price=implied_buy_price,
-        )
-        if best_estimated:
-            payload = _build_match_payload(
-                best_estimated["row"],
-                symbol=normalized_symbol,
-                row_count=row_count,
-                match_mode="symbol_qty_price_estimated_buy_anchor",
-                authoritative=True,
-            )
-            payload["estimated_buy_price"] = implied_buy_price
-            payload["estimated_buy_price_diff"] = _safe_float(best_estimated.get("best_diff"))
-            return payload
+    anchored_match = _match_buy_anchor(
+        exact_qty_price_matches,
+        estimated_mode="symbol_qty_price_estimated_buy_anchor",
+        monitor_mode="symbol_qty_price_monitor_buy_anchor",
+    )
+    if anchored_match:
+        return anchored_match
 
-        anchor_candidates = extract_buy_price_anchor_candidates(monitor_context=monitor_context)
-        best_anchor_match = select_best_buy_price_match_from_anchors(
-            exact_qty_price_matches,
-            anchors=anchor_candidates,
+    if price_value is None:
+        anchored_match = _match_buy_anchor(
+            exact_qty_matches,
+            estimated_mode="symbol_qty_estimated_buy_anchor",
+            monitor_mode="symbol_qty_monitor_buy_anchor",
         )
-        if best_anchor_match:
-            payload = _build_match_payload(
-                best_anchor_match["row"],
-                symbol=normalized_symbol,
-                row_count=row_count,
-                match_mode="symbol_qty_price_monitor_buy_anchor",
-                authoritative=True,
-            )
-            payload["monitor_buy_anchor_source"] = str(best_anchor_match.get("anchor_source") or "")
-            payload["monitor_buy_anchor_price"] = _safe_float(best_anchor_match.get("anchor_price"))
-            payload["monitor_buy_anchor_diff"] = _safe_float(best_anchor_match.get("best_diff"))
-            return payload
+        if anchored_match:
+            return anchored_match
 
     if row_count == 1:
         return _build_match_payload(

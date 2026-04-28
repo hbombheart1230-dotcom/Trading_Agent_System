@@ -492,6 +492,13 @@ def _build_news_scanner_contribution_trace(
         limit=8,
         max_len=80,
     )
+    decision_frame = strategist.get("decision_frame") if isinstance(strategist.get("decision_frame"), dict) else {}
+    theme_packet = strategist.get("theme_strength_packet") if isinstance(strategist.get("theme_strength_packet"), dict) else {}
+    if not theme_packet and isinstance(decision_frame.get("theme_strength_packet"), dict):
+        theme_packet = dict(decision_frame.get("theme_strength_packet") or {})
+    theme_source = str(strategist.get("theme_source") or theme_packet.get("source") or "").strip()
+    theme_status = str(strategist.get("theme_source_status") or theme_packet.get("status") or "").strip()
+    theme_reason = str(strategist.get("theme_source_reason") or theme_packet.get("reason") or "").strip()
 
     return {
         "selected_score_total": safe_float(selected_score, 0.0),
@@ -507,6 +514,11 @@ def _build_news_scanner_contribution_trace(
             "theme_boost_score_contribution": safe_float(score_breakdown.get("theme_boost"), 0.0),
             "theme_source_matched": ("sector_theme" in selected_sources) or safe_float(score_breakdown.get("theme_boost"), 0.0) > 0.0,
             "strategist_themes": _list_text(strategist.get("themes"), limit=6, max_len=80),
+            "theme_source": theme_source,
+            "theme_source_status": theme_status,
+            "theme_source_reason": theme_reason,
+            "top_themes": _list_text(theme_packet.get("top_themes"), limit=6, max_len=80),
+            "theme_scores": dict(theme_packet.get("theme_scores") or {}) if isinstance(theme_packet.get("theme_scores"), dict) else {},
         },
         "news_linkage_trace": {
             "news_query_targets": query_targets,
@@ -591,7 +603,10 @@ def _attach_news_scanner_contribution(
             "Theme linkage: "
             f"matched={bool(theme_trace.get('theme_source_matched'))}, "
             f"theme_boost={safe_float(theme_trace.get('theme_boost_score_contribution'), 0.0):+.3f}, "
-            f"themes={', '.join(_list_text(theme_trace.get('strategist_themes'), limit=4, max_len=60)) or 'none captured'}"
+            f"themes={', '.join(_list_text(theme_trace.get('strategist_themes'), limit=4, max_len=60)) or 'none captured'}, "
+            f"source={theme_trace.get('theme_source') or 'not_captured'}, "
+            f"status={theme_trace.get('theme_source_status') or 'not_captured'}, "
+            f"reason={theme_trace.get('theme_source_reason') or 'not_captured'}"
         )
     if not any(row.startswith("Sentiment input trace:") for row in bullets):
         sentiment_inputs = news_scanner_contribution.get("sentiment_inputs") if isinstance(news_scanner_contribution.get("sentiment_inputs"), dict) else {}
@@ -1417,6 +1432,15 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
     sentiment_state = str(llm_parsed.get("market_sentiment") or strategist.get("market_sentiment") or strategist.get("global_sentiment_status") or "not_captured")
     playbook = str(strategist.get("playbook") or llm_parsed.get("playbook") or "not_captured")
     themes = [str(x or "") for x in list(strategist.get("themes") or []) if str(x or "").strip()][:4]
+    decision_frame = strategist.get("decision_frame") if isinstance(strategist.get("decision_frame"), dict) else {}
+    theme_packet = strategist.get("theme_strength_packet") if isinstance(strategist.get("theme_strength_packet"), dict) else {}
+    if not theme_packet and isinstance(decision_frame.get("theme_strength_packet"), dict):
+        theme_packet = dict(decision_frame.get("theme_strength_packet") or {})
+    theme_source = str(strategist.get("theme_source") or theme_packet.get("source") or "").strip()
+    theme_status = str(strategist.get("theme_source_status") or theme_packet.get("status") or "").strip()
+    theme_reason = str(strategist.get("theme_source_reason") or theme_packet.get("reason") or "").strip()
+    theme_top = _list_text(theme_packet.get("top_themes"), limit=6, max_len=80)
+    theme_scores = dict(theme_packet.get("theme_scores") or {}) if isinstance(theme_packet.get("theme_scores"), dict) else {}
     global_sentiment_score = strategist.get("global_sentiment_score")
     if global_sentiment_score in (None, ""):
         global_sentiment_score = input_summary.get("global_sentiment_score")
@@ -1529,6 +1553,15 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
         f"Defensive mode: {'enabled' if defensive_mode else 'not enabled'}",
         f"News input: {news_summary}",
     ]
+    if theme_packet or theme_source or theme_status or theme_reason:
+        bullets.append(
+            "Kiwoom theme packet: "
+            f"source={theme_source or 'not_captured'}, "
+            f"status={theme_status or 'not_captured'}, "
+            f"reason={theme_reason or 'not_captured'}, "
+            f"top_themes={', '.join(theme_top) if theme_top else 'none'}, "
+            f"score_count={len(theme_scores)}"
+        )
     if query_targets:
         bullets.append(f"News query targets: {', '.join(query_targets)}")
     if key_events_hint:
@@ -1544,6 +1577,12 @@ def build_market_context_human(strategist: Dict[str, Any]) -> Dict[str, Any]:
         "market_sentiment": sentiment_state,
         "playbook": playbook,
         "themes": themes,
+        "theme_strength_packet": theme_packet,
+        "theme_source": theme_source,
+        "theme_source_status": theme_status,
+        "theme_source_reason": theme_reason,
+        "theme_strength_top_themes": theme_top,
+        "theme_strength_scores": theme_scores,
         "global_sentiment_score": global_sentiment_score,
         "global_sentiment_signal": global_sentiment_signal,
         "vix_level": vix_level,
@@ -1719,7 +1758,10 @@ def build_scanner_reason_human(scanner: Dict[str, Any], strategist: Dict[str, An
         "Theme linkage: "
         f"matched={bool(theme_trace.get('theme_source_matched'))}, "
         f"theme_boost={safe_float(theme_trace.get('theme_boost_score_contribution'), 0.0):+.3f}, "
-        f"themes={', '.join(_list_text(theme_trace.get('strategist_themes'), limit=4, max_len=60)) or 'none captured'}"
+        f"themes={', '.join(_list_text(theme_trace.get('strategist_themes'), limit=4, max_len=60)) or 'none captured'}, "
+        f"source={theme_trace.get('theme_source') or 'not_captured'}, "
+        f"status={theme_trace.get('theme_source_status') or 'not_captured'}, "
+        f"reason={theme_trace.get('theme_source_reason') or 'not_captured'}"
     )
     news_linkage = news_scanner_contribution.get("news_linkage_trace") if isinstance(news_scanner_contribution.get("news_linkage_trace"), dict) else {}
     if safe_int(news_linkage.get("symbol_headline_count"), 0) > 0 or safe_int(news_linkage.get("market_headline_count"), 0) > 0:
@@ -3234,6 +3276,32 @@ def build_trade_story_input(
             if isinstance(bundle_out.get("monitor"), dict)
             else {}
         )
+        strategy_horizon_feedback = (
+            dict(bundle_out.get("strategy_horizon_feedback") or {})
+            if isinstance(bundle_out.get("strategy_horizon_feedback"), dict)
+            else dict(canonical_strategist.get("strategy_horizon_feedback") or {})
+            if isinstance(canonical_strategist.get("strategy_horizon_feedback"), dict)
+            else {}
+        )
+        exit_vs_strategy_intent = (
+            dict(bundle_out.get("exit_vs_strategy_intent") or {})
+            if isinstance(bundle_out.get("exit_vs_strategy_intent"), dict)
+            else dict(canonical_monitor.get("exit_vs_strategy_intent") or {})
+            if isinstance(canonical_monitor.get("exit_vs_strategy_intent"), dict)
+            else dict((exit_ctx.get("monitor_context") or {}).get("exit_vs_strategy_intent") or {})
+            if isinstance(exit_ctx.get("monitor_context"), dict)
+            and isinstance((exit_ctx.get("monitor_context") or {}).get("exit_vs_strategy_intent"), dict)
+            else {}
+        )
+        post_exit_shadow = (
+            dict(bundle_out.get("post_exit_shadow") or {})
+            if isinstance(bundle_out.get("post_exit_shadow"), dict)
+            else dict(lifecycle.get("post_exit_shadow") or {})
+            if isinstance(lifecycle.get("post_exit_shadow"), dict)
+            else dict(exit_ctx.get("post_exit_shadow") or {})
+            if isinstance(exit_ctx.get("post_exit_shadow"), dict)
+            else {}
+        )
         selection_monitor = _resolve_selection_monitor_artifact(bundle_out, canonical_agent_artifacts)
         scanner_selection_trace = _build_scanner_selection_trace(scanner_reason_human, canonical_scanner)
         scanner_reason_human, scanner_selection_trace, selected_symbol = reanchor_scanner_selection_for_monitor_fallback(
@@ -3470,6 +3538,15 @@ def build_trade_story_input(
             "market_context_human": market_context_human,
             "scanner_reason_human": scanner_reason_human,
             "canonical_monitor": _compact_canonical_monitor(canonical_monitor),
+            "strategy_horizon_feedback": dict(strategy_horizon_feedback),
+            "strategy_horizon": str(
+                bundle_out.get("strategy_horizon")
+                or canonical_strategist.get("strategy_horizon")
+                or strategy_horizon_feedback.get("strategy_horizon")
+                or ""
+            ),
+            "exit_vs_strategy_intent": dict(exit_vs_strategy_intent),
+            "post_exit_shadow": dict(post_exit_shadow),
             "filters_human": filters_human,
             "monitor_reason_human": monitor_reason_human,
             "guard_reason_human": guard_reason_human,

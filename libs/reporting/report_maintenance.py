@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from libs.reporting.llm_artifacts import list_misplaced_trade_day_roots
+from libs.reporting.llm_artifacts import list_misplaced_trade_day_roots, operator_summary_artifact_root
 
 
 _OFFHOURS_PREFIX = "offhours_"
@@ -117,12 +117,15 @@ def _detect_archive_candidates(report_root: Path) -> List[ArchiveCandidate]:
                 continue
             day = m.group(1)
             ext = m.group(2)
-            canonical = report_root / "daily" / day / f"daily_report.{ext}"
+            canonical = operator_summary_artifact_root(report_root) / "daily" / day / f"daily_report.{ext}"
             if canonical.exists():
                 out.append(
                     ArchiveCandidate(
                         rel_path=name,
-                        reason=f"legacy root-level daily report duplicated by canonical reports/daily/{day}/daily_report.{ext}",
+                        reason=(
+                            "legacy root-level daily report duplicated by canonical "
+                            f"reports/operator_summary/daily/{day}/daily_report.{ext}"
+                        ),
                         category="legacy_root_daily",
                     )
                 )
@@ -142,7 +145,7 @@ def _detect_health_warnings(report_root: Path, event_log_path: Optional[Path]) -
             }
         )
 
-    operator_paths = sorted((report_root / "daily").glob("*/operator_summary.json"))
+    operator_paths = sorted((operator_summary_artifact_root(report_root) / "daily").glob("*/operator_summary.json"))
     for path in operator_paths:
         obj = _safe_read_json(path)
         if not obj:

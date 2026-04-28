@@ -4,6 +4,7 @@ from pathlib import Path
 from libs.contracts.agent_outputs import AGENT_VALIDATION_SCHEMA_VERSION, validate_artifact
 from libs.runtime.canonical_artifacts import (
     llm_run_artifact_paths,
+    write_scanner_artifact,
     write_llm_artifact_bundle,
     write_strategist_artifact,
 )
@@ -72,6 +73,40 @@ def test_write_strategist_artifact_is_write_once_per_agent_path(tmp_path: Path) 
     assert path == second_path
     assert first_payload["playbook"] == "breakout"
     assert second_payload["playbook"] == "breakout"
+
+
+def test_write_scanner_artifact_overwrites_after_post_scanner_refresh(tmp_path: Path) -> None:
+    reports_root = tmp_path / "reports"
+    state = {
+        "run_id": "run-scanner-refresh",
+        "started_at": "2026-03-18T01:02:03+00:00",
+        "runtime_phase": "session",
+        "reports_root": str(reports_root),
+        "selected": {"symbol": "AAA", "score_total": 1.0, "score_breakdown": {"momentum": 0.2}},
+        "ranked_candidates": [
+            {"symbol": "AAA", "score_total": 1.0, "score_breakdown": {"momentum": 0.2}},
+            {"symbol": "BBB", "score_total": 0.9, "score_breakdown": {"momentum": 0.1}},
+        ],
+        "scanner_output": {"top_stock": "AAA", "selection_summary": "first_scan"},
+    }
+
+    path = Path(write_scanner_artifact(state))
+    first_payload = json.loads(path.read_text(encoding="utf-8"))
+
+    state["selected"] = {"symbol": "CCC", "score_total": 1.2, "score_breakdown": {"volume": 0.3}}
+    state["ranked_candidates"] = [
+        {"symbol": "CCC", "score_total": 1.2, "score_breakdown": {"volume": 0.3}},
+        {"symbol": "DDD", "score_total": 1.1, "score_breakdown": {"volume": 0.2}},
+    ]
+    state["scanner_output"] = {"top_stock": "CCC", "selection_summary": "post_scanner_refresh"}
+
+    second_path = Path(write_scanner_artifact(state))
+    second_payload = json.loads(second_path.read_text(encoding="utf-8"))
+
+    assert path == second_path
+    assert first_payload["selected_symbol"] == "AAA"
+    assert second_payload["selected_symbol"] == "CCC"
+    assert second_payload["top_ranked_symbols"][:2] == ["CCC", "DDD"]
 
 
 def test_llm_bundle_writes_to_normalized_reports_llm_path(tmp_path: Path) -> None:

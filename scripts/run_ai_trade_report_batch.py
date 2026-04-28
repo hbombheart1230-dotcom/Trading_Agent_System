@@ -20,6 +20,7 @@ from libs.reporting.intraday_trade_reports import (
 )
 from libs.reporting.llm_artifacts import (
     build_compact_input_artifact,
+    build_llm_response_artifact,
     persist_llm_artifact_refs,
     resolve_trade_day_root,
     trade_artifact_paths,
@@ -27,8 +28,12 @@ from libs.reporting.llm_artifacts import (
 )
 from libs.reporting.trade_report_ai import (
     build_ai_trade_report,
+    build_deterministic_trade_report,
     build_ai_trade_report_compact_input,
+    build_trade_summary_input,
+    build_trade_summary_report,
     render_trade_report_markdown,
+    render_trade_summary_markdown_with_evaluation,
 )
 
 
@@ -38,15 +43,27 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reports-root", default="reports")
     parser.add_argument("--day", required=True)
     parser.add_argument("--trade-id", action="append", default=[], help="Optional trade_id filter. Repeat the flag to process multiple trades.")
+    llm = parser.add_mutually_exclusive_group()
+    llm.add_argument("--with-llm", dest="with_llm", action="store_true", help="Opt in to LLM narrative generation during regeneration.")
+    llm.add_argument("--no-llm", dest="with_llm", action="store_false", help="Regenerate deterministic artifacts without calling the report LLM. This is the default.")
+    parser.set_defaults(with_llm=False)
     parser.add_argument("--model", default="", help="Optional model override.")
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--max-tokens", type=int, default=None)
     parser.add_argument("--retry-max", type=int, default=None, help="Override trade_report retry count for this run.")
     parser.add_argument("--timeout-sec", type=float, default=None, help="Override provider timeout_sec policy for this run.")
     parser.add_argument("--hard-timeout-sec", type=float, default=None, help="Apply a wall-clock timeout to each trade_report LLM call.")
-    parser.add_argument("--local-debug", action="store_true", help="Skip LLM and render deterministic local-debug report from saved artifacts only.")
+    parser.add_argument("--local-debug", action="store_true", help="Skip LLM and render deterministic .local_debug artifacts without overwriting canonical report files.")
     parser.add_argument("--json", action="store_true")
     return parser
+
+
+def _resolve_generation_mode(args: argparse.Namespace) -> str:
+    if bool(getattr(args, "local_debug", False)):
+        return "local_debug"
+    if bool(getattr(args, "with_llm", False)):
+        return "llm"
+    return "deterministic"
 
 
 def _local_debug_artifact_path(path: Path) -> Path:
@@ -57,18 +74,30 @@ def _resolve_output_paths(trade_paths: Dict[str, Path], local_debug: bool) -> Di
     compact_input_path = trade_paths["ai_trade_report_compact_input_json"]
     report_json_path = trade_paths["ai_trade_report_json"]
     report_md_path = trade_paths["ai_trade_report_md"]
+    summary_input_json_path = trade_paths["ai_trade_summary_input_json"]
+    summary_json_path = trade_paths["ai_trade_summary_json"]
+    summary_md_path = trade_paths["ai_trade_summary_md"]
+    summary_llm_path = trade_paths["ai_trade_summary_llm_response_json"]
     llm_path = trade_paths["ai_trade_report_llm_response_json"]
     if not local_debug:
         return {
             "compact_input_path": compact_input_path,
             "report_json_path": report_json_path,
             "report_md_path": report_md_path,
+            "summary_input_json_path": summary_input_json_path,
+            "summary_json_path": summary_json_path,
+            "summary_md_path": summary_md_path,
+            "summary_llm_path": summary_llm_path,
             "llm_path": llm_path,
         }
     return {
         "compact_input_path": _local_debug_artifact_path(compact_input_path),
         "report_json_path": _local_debug_artifact_path(report_json_path),
         "report_md_path": _local_debug_artifact_path(report_md_path),
+        "summary_input_json_path": _local_debug_artifact_path(summary_input_json_path),
+        "summary_json_path": _local_debug_artifact_path(summary_json_path),
+        "summary_md_path": _local_debug_artifact_path(summary_md_path),
+        "summary_llm_path": _local_debug_artifact_path(summary_llm_path),
         "llm_path": _local_debug_artifact_path(llm_path),
     }
 
@@ -138,8 +167,12 @@ def _mark_partial_trade_artifact(
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    if bool(args.local_debug) and bool(args.with_llm):
+        parser.error("--local-debug cannot be combined with --with-llm.")
     load_env_file(str(args.env_path or ".env").strip() or ".env")
+    generation_mode = _resolve_generation_mode(args)
 
     reports_root = Path(str(args.reports_root or "reports")).resolve()
     day = str(args.day or "").strip()
@@ -209,10 +242,65 @@ def main(argv: Optional[List[str]] = None) -> int:
             compact_input=compact_input,
         )
         write_json(compact_input_path, compact_artifact)
-        report = build_ai_trade_report(
-            story_input,
-            enabled=True,
-            model=str(args.model or "").strip() or None,
+        if generation_mode == "llm":
+            report = build_ai_trade_report(
+                story_input,
+                enabled=True,
+                model=str(args.model or "").strip() or None,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+                retry_max_override=args.retry_max,
+                timeout_sec_override=args.timeout_sec,
+                hard_timeout_sec_override=args.hard_timeout_sec,
+                local_debug_no_llm=False,
+            )
+        elif generation_mode == "local_debug":
+            report = build_ai_trade_report(
+                story_input,
+                enabled=True,
+                model=str(args.model or "").strip() or None,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+                retry_max_override=args.retry_max,
+                timeout_sec_override=args.timeout_sec,
+                hard_timeout_sec_override=args.hard_timeout_sec,
+                local_debug_no_llm=True,
+            )
+        else:
+            report = build_deterministic_trade_report(story_input)
+            report["llm_response_artifact"] = build_llm_response_artifact(
+                component="ai_trade_report",
+                run_id=str(story_input.get("run_id") or ""),
+                trade_id=trade_id,
+                story_id=str(story_input.get("story_id") or trade_id),
+                day=day,
+                status="fallback",
+                attempts=[],
+                parsed_output={},
+                model_info={"provider": "OpenRouter", "model": ""},
+                meta={"reason": "deterministic_no_llm"},
+            )
+        llm_artifact = report.get("llm_response_artifact") if isinstance(report.get("llm_response_artifact"), dict) else {}
+        generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
+        diagnostics = {} if bool(args.local_debug) else _sync_report_diagnostics(trade_paths, report, llm_artifact)
+
+        report_json_path = output_paths["report_json_path"]
+        report_md_path = output_paths["report_md_path"]
+        summary_input_json_path = output_paths["summary_input_json_path"]
+        summary_json_path = output_paths["summary_json_path"]
+        summary_md_path = output_paths["summary_md_path"]
+        summary_llm_path = output_paths["summary_llm_path"]
+        llm_path = output_paths["llm_path"]
+        llm_response_path = ""
+        summary_llm_response_path = ""
+        report_json_path.parent.mkdir(parents=True, exist_ok=True)
+        report_json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_md_path.write_text(render_trade_report_markdown(report), encoding="utf-8")
+        summary_input = build_trade_summary_input(report)
+        summary_report = build_trade_summary_report(
+            summary_input,
+            enabled=generation_mode == "llm",
+            model=args.model or None,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
             retry_max_override=args.retry_max,
@@ -220,17 +308,30 @@ def main(argv: Optional[List[str]] = None) -> int:
             hard_timeout_sec_override=args.hard_timeout_sec,
             local_debug_no_llm=bool(args.local_debug),
         )
-        llm_artifact = report.get("llm_response_artifact") if isinstance(report.get("llm_response_artifact"), dict) else {}
-        generation = report.get("generation") if isinstance(report.get("generation"), dict) else {}
-        diagnostics = {} if bool(args.local_debug) else _sync_report_diagnostics(trade_paths, report, llm_artifact)
-
-        report_json_path = output_paths["report_json_path"]
-        report_md_path = output_paths["report_md_path"]
-        llm_path = output_paths["llm_path"]
-        llm_response_path = ""
-        report_json_path.parent.mkdir(parents=True, exist_ok=True)
-        report_json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        report_md_path.write_text(render_trade_report_markdown(report), encoding="utf-8")
+        summary_input_json_path.write_text(
+            json.dumps(summary_input, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        summary_json_path.write_text(json.dumps(summary_report, ensure_ascii=False, indent=2), encoding="utf-8")
+        summary_md_path.write_text(
+            render_trade_summary_markdown_with_evaluation(report, summary_report),
+            encoding="utf-8",
+        )
+        summary_llm_artifact = (
+            summary_report.get("llm_response_artifact")
+            if isinstance(summary_report.get("llm_response_artifact"), dict)
+            else {}
+        )
+        if summary_llm_artifact:
+            summary_llm_compact = persist_llm_artifact_refs(
+                artifact=summary_llm_artifact,
+                reports_root=reports_root,
+                day=day,
+                run_id=str(story_input.get("run_id") or ""),
+                component="ai_trade_summary",
+            )
+            write_json(summary_llm_path, summary_llm_compact)
+            summary_llm_response_path = str(summary_llm_path)
         if llm_artifact:
             llm_compact = persist_llm_artifact_refs(
                 artifact=llm_artifact,
@@ -266,12 +367,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                 "ai_trade_report_compact_input_path": str(compact_input_path),
                 "ai_trade_report_json_path": str(report_json_path),
                 "ai_trade_report_md_path": str(report_md_path),
+                "ai_trade_summary_input_json_path": str(summary_input_json_path),
+                "ai_trade_summary_json_path": str(summary_json_path),
+                "ai_trade_summary_md_path": str(summary_md_path),
+                "ai_trade_summary_llm_response_path": summary_llm_response_path,
                 "ai_trade_report_llm_response_path": llm_response_path,
                 "llm_status": str(llm_artifact.get("status") or ""),
                 "llm_parse_mode": str(llm_artifact.get("parse_mode") or ""),
                 "llm_completeness_score": float(llm_artifact.get("completeness_score") or 0.0),
                 "llm_error": str(llm_artifact.get("error") or ((llm_artifact.get("meta") or {}).get("reason") or "")),
                 "diagnostic_report_status": str(diagnostics.get("report_status") or ""),
+                "generation_mode_requested": generation_mode,
+                "llm_enabled": generation_mode == "llm",
                 "local_debug": bool(args.local_debug),
                 "preserved_live_outputs": bool(args.local_debug),
             }

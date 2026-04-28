@@ -88,7 +88,16 @@ def test_m18_strategist_generates_monitor_entry_policy_baseline(monkeypatch):
     assert "required_checks" in strategist_output["monitor_entry_policy"]["interpretation_policy"]
     assert isinstance(strategist_output.get("policy_rationale"), str)
     assert isinstance(strategist_output.get("market_regime_summary"), str)
+    assert strategist_output["strategy_horizon_feedback"]["observability_only"] is True
+    assert strategist_output["strategist_horizon_proposal"]["observability_only"] is True
+    assert strategist_output["commander_horizon_policy"]["owner"] == "commander"
+    assert strategist_output["commander_horizon_policy"]["observability_only"] is True
+    assert strategist_output["commander_horizon_policy"]["do_not_force_hold"] is True
+    assert strategist_output["strategy_horizon"] in {"scalp", "intraday"}
+    assert strategist_output["strategy_horizon_feedback"]["monitor_handoff"]["do_not_force_hold"] is True
     assert isinstance(monitor_policy.get("entry_policy"), dict)
+    assert monitor_policy["strategy_horizon_feedback"]["observability_only"] is True
+    assert monitor_policy["commander_horizon_policy"]["owner"] == "commander"
     assert monitor_policy["entry_policy"]["volume_ratio_min"] == 0.68
     assert monitor_policy["entry_policy"]["threshold_policy"]["volume_ratio_min"] == 0.68
     assert monitor_policy["entry_policy"]["interpretation_policy"]["entry_style"] == strategist_output.get("playbook")
@@ -186,3 +195,34 @@ def test_m18_strategist_partial_monitor_entry_policy_marks_partial_normalized(mo
     assert policy["volume_ratio_min"] == 0.72
     assert policy["pullback_min_pct"] == 0.01
     assert policy["timeframe_minutes"] == 1
+
+
+def test_m18_strategist_clamps_positive_min_extended_without_invalid_fallback(monkeypatch):
+    monkeypatch.setenv("DRY_RUN", "1")
+    out = strategist_node(
+        {
+            "runtime_phase": "session",
+            "candidate_symbols": ["111111", "222222", "333333"],
+            "ai_strategist_output": {
+                "playbook": "pullback",
+                "monitor_entry_policy": {
+                    "volume_ratio_min": 0.72,
+                    "min_extended_from_vwap_pct": 0.0015,
+                },
+                "policy_rationale": "Clamp an over-strict positive lower VWAP extension bound.",
+                "policy_source": "strategist",
+            },
+        }
+    )
+
+    strategist_output = out.get("strategist_output") or {}
+    policy = strategist_output.get("monitor_entry_policy") or {}
+
+    assert strategist_output.get("policy_validation_status") == "partial_normalized"
+    assert strategist_output.get("policy_fallback_used") is False
+    assert list(strategist_output.get("policy_validation_invalid_fields") or []) == []
+    assert policy["min_extended_from_vwap_pct"] == 0.0
+    assert any(
+        "min_extended_from_vwap_pct:clamped_to_upper_bound" in str(issue)
+        for issue in list(strategist_output.get("policy_validation_issues") or [])
+    )

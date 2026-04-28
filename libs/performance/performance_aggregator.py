@@ -24,6 +24,14 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _dict(value: Any) -> Dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _read_json_dict(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
@@ -122,6 +130,86 @@ def _extract_symbol(bundle: Dict[str, Any]) -> str:
     return str(value or "").strip().upper()
 
 
+def _classify_entry_pattern(reason: Any) -> str:
+    text = _text(reason).lower()
+    if not text:
+        return ""
+    if "pullback" in text or "rebound" in text:
+        return "pullback"
+    if "breakout" in text or "recent_high" in text:
+        return "breakout"
+    if "reversal" in text:
+        return "reversal"
+    if "reclaim" in text or "vwap" in text:
+        return "vwap_reclaim"
+    return ""
+
+
+def _classify_exit_pattern(reason: Any) -> str:
+    text = _text(reason).lower()
+    if not text:
+        return ""
+    if "peak_drawdown" in text:
+        return "peak_drawdown"
+    if "hard_stop" in text:
+        return "hard_stop"
+    if "take_profit" in text or "profit" in text:
+        return "take_profit"
+    if "intraday_low_break" in text:
+        return "intraday_low_break"
+    if "time" in text:
+        return "time_exit"
+    if "no_position" in text:
+        return "no_position"
+    return ""
+
+
+def _extract_entry_reason(bundle: Dict[str, Any]) -> str:
+    feedback = _dict(bundle.get("strategist_feedback_input"))
+    lifecycle = _dict(bundle.get("lifecycle"))
+    entry = _dict(bundle.get("entry")) or _dict(lifecycle.get("entry"))
+    return _text(
+        feedback.get("entry_reason")
+        or bundle.get("entry_reason")
+        or entry.get("reason_human")
+        or entry.get("summary")
+    )
+
+
+def _extract_exit_reason(bundle: Dict[str, Any]) -> str:
+    feedback = _dict(bundle.get("strategist_feedback_input"))
+    lifecycle = _dict(bundle.get("lifecycle"))
+    exit_row = _dict(bundle.get("exit")) or _dict(lifecycle.get("exit"))
+    trade_outcome = _dict(bundle.get("trade_outcome"))
+    return _text(
+        feedback.get("exit_reason")
+        or bundle.get("exit_reason")
+        or trade_outcome.get("exit_reason")
+        or exit_row.get("reason_human")
+        or exit_row.get("summary")
+    )
+
+
+def _extract_entry_pattern_type(bundle: Dict[str, Any]) -> str:
+    feedback = _dict(bundle.get("strategist_feedback_input"))
+    reason = _extract_entry_reason(bundle)
+    return _text(
+        feedback.get("entry_pattern_type")
+        or bundle.get("entry_pattern_type")
+        or _classify_entry_pattern(reason)
+    ).lower()
+
+
+def _extract_exit_pattern_type(bundle: Dict[str, Any]) -> str:
+    feedback = _dict(bundle.get("strategist_feedback_input"))
+    reason = _extract_exit_reason(bundle)
+    return _text(
+        feedback.get("exit_pattern_type")
+        or bundle.get("exit_pattern_type")
+        or _classify_exit_pattern(reason)
+    ).lower()
+
+
 def _trade_row(bundle: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "trade_id": str(bundle.get("trade_id") or ""),
@@ -129,6 +217,10 @@ def _trade_row(bundle: Dict[str, Any]) -> Dict[str, Any]:
         "symbol": _extract_symbol(bundle),
         "playbook": _extract_playbook(bundle),
         "market_regime": _extract_market_regime(bundle),
+        "entry_reason": _extract_entry_reason(bundle),
+        "exit_reason": _extract_exit_reason(bundle),
+        "entry_pattern_type": _extract_entry_pattern_type(bundle),
+        "exit_pattern_type": _extract_exit_pattern_type(bundle),
         "return": _extract_return_value(bundle),
         "pnl": _extract_pnl_value(bundle),
         "bundle_path": str(bundle.get("_bundle_path") or ""),
@@ -190,6 +282,7 @@ def _aggregate_group(rows: List[Dict[str, Any]], key: str) -> Dict[str, Dict[str
         values = _score_series(group_rows)
         wins = sum(1 for row in group_rows if _is_win(row) is True)
         losses = sum(1 for row in group_rows if _is_win(row) is False)
+        symbols = sorted({str(row.get("symbol") or "").strip().upper() for row in group_rows if str(row.get("symbol") or "").strip()})
         out[name] = {
             "trade_count": int(len(group_rows)),
             "win_count": int(wins),
@@ -198,8 +291,19 @@ def _aggregate_group(rows: List[Dict[str, Any]], key: str) -> Dict[str, Dict[str
             "avg_return": round(sum(values) / len(values), 6) if values else 0.0,
             "profit_factor": _compute_profit_factor(values),
             "max_drawdown": _compute_max_drawdown(values),
+            "symbols": symbols[:12],
         }
     return out
+
+
+def _aggregate_entry_exit_combo_stats(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    combo_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        entry = str(row.get("entry_pattern_type") or "").strip() or "unknown"
+        exit_pattern = str(row.get("exit_pattern_type") or "").strip() or "unknown"
+        combo = f"{entry} -> {exit_pattern}"
+        combo_rows.append({**row, "entry_exit_combo": combo})
+    return _aggregate_group(combo_rows, "entry_exit_combo")
 
 
 def aggregate_performance_from_bundles(
@@ -233,6 +337,11 @@ def aggregate_performance_from_bundles(
         "per_symbol_stats": _aggregate_group(rows, "symbol"),
         "per_playbook_stats": _aggregate_group(rows, "playbook"),
         "per_market_regime_stats": _aggregate_group(rows, "market_regime"),
+        "per_entry_pattern_stats": _aggregate_group(rows, "entry_pattern_type"),
+        "per_exit_pattern_stats": _aggregate_group(rows, "exit_pattern_type"),
+        "per_entry_reason_stats": _aggregate_group(rows, "entry_reason"),
+        "per_exit_reason_stats": _aggregate_group(rows, "exit_reason"),
+        "per_entry_exit_combo_stats": _aggregate_entry_exit_combo_stats(rows),
         "source": {
             "bundle_count": int(len(rows)),
             "reports_root": str(reports_root) if reports_root is not None else "",
@@ -244,6 +353,10 @@ def aggregate_performance_from_bundles(
                 "symbol": str(row.get("symbol") or ""),
                 "playbook": str(row.get("playbook") or ""),
                 "market_regime": str(row.get("market_regime") or ""),
+                "entry_pattern_type": str(row.get("entry_pattern_type") or ""),
+                "exit_pattern_type": str(row.get("exit_pattern_type") or ""),
+                "entry_reason": str(row.get("entry_reason") or ""),
+                "exit_reason": str(row.get("exit_reason") or ""),
                 "return": row.get("return"),
                 "pnl": row.get("pnl"),
             }
@@ -302,4 +415,3 @@ def write_performance_summary(
         "symbol_stats_json": str(paths["symbol_stats_json"]),
     }
     return payload
-

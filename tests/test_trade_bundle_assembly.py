@@ -438,7 +438,24 @@ def test_apply_live_trade_context_enables_broker_truth_lookup_for_live_bundle() 
     class _FakeDayPnlReader:
         def get_day_realized_details(self, *, symbol: str = ""):
             assert symbol == "000660"
-            return {"rows": []}
+            return {
+                "rows": [
+                    {
+                        "symbol": "000660",
+                        "filled_qty": 1,
+                        "filled_price": 1218000,
+                        "buy_price": 1215000,
+                        "realized_pnl": 3000,
+                        "pnl_ratio": 0.0025,
+                        "fee": 20,
+                        "tax": 10,
+                    }
+                ],
+                "source": "kiwoom.ka10077",
+            }
+
+        def get_account_profit_rate_rows(self):
+            return {"rows": [], "source": "kiwoom.ka10085"}
 
     out = apply_live_trade_context(
         lifecycle={"entry": {}, "exit": {}, "holding": {}},
@@ -456,6 +473,19 @@ def test_apply_live_trade_context_enables_broker_truth_lookup_for_live_bundle() 
             "action": "SELL",
             "symbol": "000660",
             "ts": "2026-04-21T00:44:10+00:00",
+            "monitor_context": {
+                "exit_vs_strategy_intent": {
+                    "schema_version": "exit_vs_strategy_intent.v1",
+                    "horizon_owner": "commander",
+                    "strategy_horizon": "intraday",
+                    "commander_horizon_policy": {
+                        "schema_version": "commander_horizon_policy.v1",
+                        "owner": "commander",
+                        "strategy_horizon": "intraday",
+                        "observability_only": True,
+                    },
+                }
+            },
             "broker_fill_reader": _FakeReader(),
             "broker_day_pnl_reader": _FakeDayPnlReader(),
         },
@@ -467,8 +497,31 @@ def test_apply_live_trade_context_enables_broker_truth_lookup_for_live_bundle() 
             },
             "monitor": {"current_price": 1219000.0},
         },
+        post_exit_price_rows=[
+            {
+                "ts": "20260421005000",
+                "close": 1220000.0,
+                "high": 1225000.0,
+                "low": 1217000.0,
+                "volume": 1000,
+            }
+        ],
     )
 
     assert out["exit_execution_details"]["order_id"] == "0056037"
     assert out["exit_execution_details"]["filled_price"] == 1218000
     assert out["exit_execution_details"]["broker_truth_source"] == "kiwoom.order_status"
+    assert out["exit_execution_details"]["broker_day_authoritative"] is True
+    assert out["exit_execution_details"]["broker_day_truth_source"] == "kiwoom.ka10077"
+    assert out["exit_execution_details"]["broker_day_match_mode"] == "symbol_qty_price_exact"
+    assert out["exit_execution_details"]["broker_realized_pnl"] == 3000.0
+    assert out["lifecycle_bundle"]["exit_execution_details"]["broker_realized_pnl"] == 3000.0
+    assert out["lifecycle"]["exit"]["execution_details"]["broker_day_authoritative"] is True
+    assert out["lifecycle_bundle"]["post_exit_shadow"]["status"] == "pending"
+    assert out["lifecycle_bundle"]["post_exit_shadow"]["symbol"] == "000660"
+    assert out["lifecycle_bundle"]["post_exit_shadow"]["horizon_owner"] == "commander"
+    assert out["lifecycle_bundle"]["post_exit_shadow"]["commander_horizon_policy"]["owner"] == "commander"
+    assert out["lifecycle_bundle"]["post_exit_shadow"]["price_observation_status"] == "observed"
+    assert out["lifecycle_bundle"]["post_exit_shadow"]["checkpoints"]["+5m"]["price"] == 1220000.0
+    assert out["lifecycle_bundle"]["post_exit_shadow"]["checkpoints"]["EOD"]["status"] == "pending"
+    assert out["lifecycle"]["exit"]["post_exit_shadow"]["observability_only"] is True

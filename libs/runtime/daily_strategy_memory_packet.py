@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from libs.performance.strategy_memory import load_strategy_memory_hint
+from libs.runtime.operator_summary_memory import load_operator_daily_summary, resolve_operator_summary_day
 from libs.runtime.strategy_memory_support_artifacts import (
     resolve_monitor_status,
     resolve_report_focus_targets,
@@ -44,10 +45,12 @@ def _read_json_dict(path: Path) -> Dict[str, Any]:
 
 
 def build_daily_strategy_memory_packet(*, state: Dict[str, Any]) -> Dict[str, Any]:
+    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+    operator_day = resolve_operator_summary_day(state) or _resolve_state_day(state)
+    operator_summary = load_operator_daily_summary(reports_root=reports_root, day=operator_day)
     src = state.get("strategy_memory") if isinstance(state.get("strategy_memory"), dict) else {}
     source = "state.strategy_memory"
     if not src:
-        reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
         try:
             src = load_strategy_memory_hint(
                 reports_root=reports_root,
@@ -63,11 +66,11 @@ def build_daily_strategy_memory_packet(*, state: Dict[str, Any]) -> Dict[str, An
                 "source": "reports.performance.strategy_memory",
                 "active": False,
                 "error": str(exc),
+                "operator_summary": operator_summary,
                 "advisory_only": True,
             }
     row = dict(src or {})
     if row:
-        reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
         resolved_day = str(row.get("resolved_day") or row.get("day") or _resolve_state_day(state)).strip()
         row["support_metrics"] = _read_json_dict(reports_root / "metrics" / f"metrics_{resolved_day}.json")
         row["support_reporter_analysis"] = _read_json_dict(
@@ -128,13 +131,19 @@ def build_daily_strategy_memory_packet(*, state: Dict[str, Any]) -> Dict[str, An
         source_performance=source_performance,
         execution_risk=execution_risk,
     )
+    is_same_day = bool(requested_day and resolved_day and requested_day == resolved_day)
+    active = (
+        status == "ok"
+        and is_same_day
+        and bool(sample_quality.get("usable"))
+    )
     return {
         "schema_version": "commander.memory_packet.v1",
         "memory_type": "daily",
         "layer": "daily",
         "status": status,
         "source": source,
-        "active": status in {"ok", "empty"},
+        "active": active,
         "requested_day": requested_day,
         "resolved_day": resolved_day,
         "window_days": 1,
@@ -152,6 +161,7 @@ def build_daily_strategy_memory_packet(*, state: Dict[str, Any]) -> Dict[str, An
         "recent_failures": recent_failures,
         "recent_success_patterns": recent_success_patterns,
         "playbook_performance_snapshot": dict(row.get("playbook_performance_snapshot") or {}),
+        "pattern_performance_snapshot": dict(row.get("pattern_performance_snapshot") or {}),
         "playbook_stats": dict(row.get("playbook_performance_snapshot") or {}),
         "source_performance": source_performance,
         "failure_patterns": failure_patterns,
@@ -164,6 +174,7 @@ def build_daily_strategy_memory_packet(*, state: Dict[str, Any]) -> Dict[str, An
             "regime_stats": regime_stats,
         },
         "recommended_bias_inputs": recommended_bias_inputs,
+        "operator_summary": operator_summary,
         "summary": summary_detail["headline"],
         "summary_detail": summary_detail,
         "advisory_only": bool(row.get("advisory_only", True)),

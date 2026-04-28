@@ -161,7 +161,10 @@ def test_reporter_input_and_output_contract_builders_smoke() -> None:
     )
     reporter_output = ReporterOutput(
         report_type="daily_report",
-        output_paths={"json": "reports/daily/2026-04-08/daily_report.json", "md": "reports/daily/2026-04-08/daily_report.md"},
+        output_paths={
+            "json": "reports/operator_summary/daily/2026-04-08/daily_report.json",
+            "md": "reports/operator_summary/daily/2026-04-08/daily_report.md",
+        },
         generated_at="2026-04-08T01:02:00+00:00",
         data_freshness={"freshness_status": "fresh"},
         route_provenance={"route_source": "canonical_commander_preferred"},

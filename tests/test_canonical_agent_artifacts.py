@@ -153,6 +153,51 @@ def test_execute_from_packet_writes_executor_ord_no_from_nested_payload(tmp_path
     assert executor["broker_result"]["ord_no"] == "A000123"
 
 
+def test_execute_from_packet_writes_executor_execution_ok_false_on_broker_reject(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("EXECUTION_MODE", "mock")
+    monkeypatch.setenv("REPORTS_ROOT", str(tmp_path / "reports"))
+    catalog = tmp_path / "api_catalog.jsonl"
+    catalog.write_text(
+        '{"api_id":"ORDER_SUBMIT","title":"order","method":"POST","path":"/orders","params":{},"_flags":{"callable":true}}\n',
+        encoding="utf-8",
+    )
+
+    class CaptureExecutor:
+        def execute(self, req):  # type: ignore[no-untyped-def]
+            class Result:
+                response = ApiResponse.from_http(
+                    200,
+                    '{"return_code":20,"return_msg":"restricted symbol"}',
+                )
+                meta = {"executor": "real", "url": "https://mockapi.kiwoom.com/api/dostk/ordr"}
+
+            return Result()
+
+    state = {
+        "run_id": "run-4d",
+        "started_at": "2026-03-18T00:00:00+00:00",
+        "catalog_path": str(catalog),
+        "executor": CaptureExecutor(),
+        "decision_packet": {
+            "intent": {"action": "BUY", "symbol": "226340", "qty": 1, "order_api_id": "ORDER_SUBMIT", "order_type": "market"},
+            "risk": {"open_positions": 0},
+            "exec_context": {},
+        },
+    }
+
+    out = execute_from_packet(state)
+
+    assert out["execution"]["ok"] is False
+    assert out["execution"]["execution_ok"] is False
+    assert out["execution"]["reason"] == "broker_rejected:20"
+
+    paths = canonical_run_artifact_paths("run-4d", day="2026-03-18", reports_root=tmp_path / "reports")
+    executor = json.loads(paths["executor"].read_text(encoding="utf-8"))
+    assert executor["execution_ok"] is False
+    assert executor["failure_reason"] == "broker_rejected:20"
+    assert executor["ord_no"] == ""
+
+
 def test_execute_from_packet_persists_quote_snapshot_in_executor_artifact(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("EXECUTION_MODE", "mock")
     monkeypatch.setenv("REPORTS_ROOT", str(tmp_path / "reports"))

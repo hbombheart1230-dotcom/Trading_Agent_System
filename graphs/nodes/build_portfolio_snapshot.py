@@ -70,6 +70,84 @@ def _normalize_positions(raw: object) -> list[dict]:
         )
         if current_price > 0.0:
             out[-1]["current_price"] = float(current_price)
+        entry_epoch = _safe_int(
+            row.get("position_entry_epoch")
+            if row.get("position_entry_epoch") not in (None, "")
+            else row.get("entry_epoch"),
+            0,
+        )
+        if entry_epoch > 0:
+            out[-1]["position_entry_epoch"] = int(entry_epoch)
+        hold_sec = _safe_int(
+            row.get("hold_sec")
+            if row.get("hold_sec") not in (None, "")
+            else row.get("position_age_seconds"),
+            0,
+        )
+        if hold_sec > 0:
+            out[-1]["hold_sec"] = int(hold_sec)
+            out[-1]["position_age_seconds"] = int(hold_sec)
+    return out
+
+
+def _normalize_position_entry_epoch_map(raw: object, open_symbols: object = None) -> dict[str, int]:
+    out: dict[str, int] = {}
+    allowed = None
+    if isinstance(open_symbols, (list, set, tuple)):
+        allowed = {normalize_symbol(sym) for sym in open_symbols if normalize_symbol(sym)}
+    if not isinstance(raw, dict):
+        return out
+    for key, value in raw.items():
+        symbol = normalize_symbol(key)
+        if not symbol:
+            continue
+        if allowed is not None and symbol not in allowed:
+            continue
+        epoch = _safe_int(value, 0)
+        if epoch > 0:
+            out[symbol] = int(epoch)
+    return out
+
+
+def _apply_position_entry_epoch_map(rows: list[dict], epoch_map: dict[str, int]) -> list[dict]:
+    out: list[dict] = []
+    for raw_row in rows:
+        if not isinstance(raw_row, dict):
+            continue
+        row = dict(raw_row)
+        symbol = normalize_symbol(row.get("symbol"))
+        epoch = _safe_int(epoch_map.get(symbol), 0)
+        if epoch > 0:
+            row["position_entry_epoch"] = int(epoch)
+        out.append(row)
+    return out
+
+
+def _merge_position_metadata(base_rows: list[dict], source_rows: list[dict]) -> list[dict]:
+    metadata: dict[str, dict] = {}
+    for raw_row in source_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        symbol = normalize_symbol(raw_row.get("symbol"))
+        if not symbol:
+            continue
+        meta = {}
+        for key in ("position_entry_epoch", "hold_sec", "position_age_seconds"):
+            if raw_row.get(key) not in (None, ""):
+                meta[key] = raw_row.get(key)
+        if meta:
+            metadata[symbol] = meta
+
+    out: list[dict] = []
+    for raw_row in base_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        row = dict(raw_row)
+        symbol = normalize_symbol(row.get("symbol"))
+        for key, value in (metadata.get(symbol) or {}).items():
+            if row.get(key) in (None, ""):
+                row[key] = value
+        out.append(row)
     return out
 
 
@@ -195,9 +273,19 @@ def build_portfolio_snapshot(state: dict) -> dict:
     if mock_mode:
         persisted = state.get("persisted_state") if isinstance(state.get("persisted_state"), dict) else {}
         persisted_positions = _normalize_positions((persisted or {}).get("mock_positions"))
+        entry_epoch_map = _normalize_position_entry_epoch_map(
+            (persisted or {}).get("position_entry_epoch_by_symbol"),
+            [row.get("symbol") for row in persisted_positions],
+        )
+        if entry_epoch_map:
+            persisted_positions = _apply_position_entry_epoch_map(persisted_positions, entry_epoch_map)
         if isinstance(persisted, dict):
             persisted["mock_positions"] = list(persisted_positions)
             persisted["open_positions"] = len(persisted_positions)
+            if entry_epoch_map:
+                persisted["position_entry_epoch_by_symbol"] = dict(entry_epoch_map)
+            else:
+                persisted.pop("position_entry_epoch_by_symbol", None)
             normalized_last_trade_symbol = normalize_symbol((persisted or {}).get("last_trade_symbol"))
             if normalized_last_trade_symbol:
                 persisted["last_trade_symbol"] = normalized_last_trade_symbol
@@ -223,6 +311,7 @@ def build_portfolio_snapshot(state: dict) -> dict:
         # authoritative even when empty. This keeps local state aligned when an
         # operator manually exits or when local mock ledger drifts.
         if reader_authoritative:
+            snapshot_positions = _merge_position_metadata(snapshot_positions, persisted_positions)
             snapshot["positions"] = snapshot_positions
             health["positions_source"] = (
                 "reader_positions_authoritative"

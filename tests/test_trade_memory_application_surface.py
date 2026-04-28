@@ -107,6 +107,82 @@ def test_build_trade_memory_application_surface_reads_canonical_bias_artifacts(t
     assert surface["monitor_memory_bias"]["effective_policy_source"] == "monitor_memory_bias_adjusted"
 
 
+def test_build_trade_memory_application_surface_prefers_applied_nested_monitor_trace(tmp_path: Path) -> None:
+    monitor_path = tmp_path / "monitor.json"
+    monitor_path.write_text(
+        json.dumps(
+            {
+                "threshold_snapshot": {
+                    "monitor_memory_bias_applied": False,
+                    "monitor_memory_bias_summary": {
+                        "enabled": False,
+                        "active_layers": [],
+                        "risk_posture": "neutral",
+                    },
+                    "commander_memory_application_trace": {
+                        "schema_version": "commander_memory_application_trace.v1",
+                        "agent": "monitor",
+                        "enabled": False,
+                        "applied": False,
+                        "entry_applied": False,
+                        "hold_applied": False,
+                        "exit_applied": False,
+                        "not_applied_reason": "bias_disabled",
+                        "active_layers": [],
+                    },
+                },
+                "entry_decision_details": [
+                    {
+                        "payload": {
+                            "policy_ref": {
+                                "commander_memory_application_trace": {
+                                    "schema_version": "commander_memory_application_trace.v1",
+                                    "agent": "monitor",
+                                    "enabled": True,
+                                    "applied": True,
+                                    "entry_applied": True,
+                                    "hold_applied": False,
+                                    "exit_applied": True,
+                                    "not_applied_reason": "",
+                                    "active_layers": ["symbol"],
+                                    "risk_posture": "defensive",
+                                    "entry_deltas": [
+                                        {"field": "breakout_buffer_pct", "delta": 0.001, "from": 0.0, "to": 0.001}
+                                    ],
+                                    "exit_deltas": [
+                                        {"field": "peak_drawdown_exit_pct", "delta": -0.002, "from": 0.005, "to": 0.003}
+                                    ],
+                                }
+                            }
+                        }
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    surface = build_trade_memory_application_surface(
+        {
+            "symbol": "005930",
+            "artifacts": {
+                "canonical_monitor_json": str(monitor_path),
+            },
+        }
+    )
+
+    monitor = surface["monitor_memory_bias"]
+    assert monitor["captured"] is True
+    assert monitor["enabled"] is True
+    assert monitor["applied"] is True
+    assert monitor["exit_applied"] is True
+    assert monitor["active_layers"] == ["symbol"]
+    assert monitor["not_applied_reason"] == ""
+    assert monitor["applied_deltas"][0]["field"] == "breakout_buffer_pct"
+    assert monitor["exit_deltas"][0]["field"] == "peak_drawdown_exit_pct"
+
+
 def test_render_trade_report_markdown_surfaces_memory_application_section() -> None:
     report = {
         "trade_id": "TRD_20260421_005380_01",
@@ -132,11 +208,39 @@ def test_render_trade_report_markdown_surfaces_memory_application_section() -> N
         "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
         "shared_facts": {"symbol": "005380", "trade_id": "TRD_20260421_005380_01", "action": "SELL", "status": "closed"},
         "truth_surface": {"status": {}, "price": {}, "pnl": {}, "availability": {}},
-        "memory_surface": {"status": {}, "strategy_memory": {}, "commander_memory_policy": {}, "memory_packets": {}, "selected_symbol_memory": {}, "reporter_feedback_packet": {}, "read_model_facts": {}, "usage_trace": {}},
+        "memory_surface": {
+            "status": {},
+            "strategy_memory": {},
+            "commander_memory_policy": {
+                "present": True,
+                "application_mode": "surface_only",
+                "active_layers": ["daily"],
+                "priority_order": ["daily", "weekly", "monthly", "symbol"],
+                "scanner_bias_enabled": True,
+                "monitor_bias_enabled": True,
+                "symbol_memory_override_enabled": False,
+            },
+            "memory_packets": {},
+            "selected_symbol_memory": {},
+            "reporter_feedback_packet": {},
+            "read_model_facts": {},
+            "usage_trace": {},
+            "prompt_proven": {
+                "commander_memory_policy": {
+                    "application_mode": "surface_only",
+                    "active_layers": [],
+                    "priority_order": ["daily", "weekly", "monthly", "symbol"],
+                    "scanner_bias_enabled": False,
+                    "monitor_bias_enabled": False,
+                    "symbol_memory_override_enabled": False,
+                }
+            },
+        },
         "memory_application_surface": {
             "status": {"scanner_captured": True, "monitor_captured": True, "any_captured": True},
             "scanner_memory_bias": {
                 "captured": True,
+                "enabled": True,
                 "applied": True,
                 "active_layers": ["daily"],
                 "source_weight_delta": {"top_value": 0.1, "top_change_rate": -0.25},
@@ -146,6 +250,7 @@ def test_render_trade_report_markdown_surfaces_memory_application_section() -> N
             },
             "monitor_memory_bias": {
                 "captured": True,
+                "enabled": True,
                 "applied": True,
                 "active_layers": ["daily"],
                 "applied_deltas": [{"field": "volume_ratio_min", "delta": 0.05, "from": 0.68, "to": 0.73}],
@@ -158,6 +263,11 @@ def test_render_trade_report_markdown_surfaces_memory_application_section() -> N
     markdown = render_trade_report_markdown(report)
 
     assert "## 실제로 적용된 결정론적 메모리 bias" in markdown
+    assert "[전략가 입력 시점] 활성 레이어=-; 우선순위=당일 -> 주간 -> 월간 -> 종목; scanner bias=꺼짐; monitor bias=꺼짐" in markdown
+    assert "[스캐너 적용 시점] captured=켜짐; enabled=켜짐; applied=적용됨; active_layers=당일" in markdown
+    assert "[모니터 적용 시점] captured=켜짐; enabled=켜짐; entry=적용됨; hold=미적용; exit=미적용; active_layers=당일" in markdown
+    assert "[최신 커맨더 상태] 활성 레이어=당일; 우선순위=당일 -> 주간 -> 월간 -> 종목; scanner bias=켜짐; monitor bias=켜짐" in markdown
+    assert "[시점 차이] 최신 커맨더 상태는 전략가 프롬프트 이후 실행/복원 기준이라 전략가 입력 시점과 다를 수 있습니다." in markdown
     assert "스캐너 메모리 가중치는 실제 후보 점수에 적용된 상태이며, 실제 반영 레이어는 당일입니다." in markdown
     assert "스캐너 소스 가중치 변화는 top_value +0.100, top_change_rate -0.250입니다." in markdown
     assert "이번 거래 후보 005380에는 메모리 기반 가감점 +0.006이 반영됐습니다." in markdown

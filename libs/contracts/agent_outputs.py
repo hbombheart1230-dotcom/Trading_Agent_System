@@ -12,6 +12,11 @@ from libs.runtime.decision_observability import (
     build_scanner_monitor_handoff_surface,
     build_strategist_policy_resolution_surface,
 )
+from libs.runtime.commander_memory_application_trace import (
+    build_monitor_commander_memory_application_trace,
+    build_scanner_commander_memory_application_trace,
+)
+from libs.runtime.strategist_explanation import build_strategist_explanation_fields
 from libs.runtime.strategist_packet_visibility import build_strategist_memory_packet_visibility
 
 
@@ -210,9 +215,33 @@ def _build_strategist_decision_frame(
 ) -> Dict[str, Any]:
     event_payload = _dict(state.get("strategist_decision_frame"))
     if event_payload:
-        return dict(event_payload)
+        out = dict(event_payload)
+        theme_packet = _dict(strategist_output.get("theme_strength_packet"))
+        if theme_packet and not _dict(out.get("theme_strength_packet")):
+            out["theme_strength_packet"] = theme_packet
+        if not out.get("theme_source") and (theme_packet.get("source") or strategist_output.get("theme_source")):
+            out["theme_source"] = _clip(strategist_output.get("theme_source") or theme_packet.get("source"), max_len=80)
+        if not out.get("theme_source_status") and (theme_packet.get("status") or strategist_output.get("theme_source_status")):
+            out["theme_source_status"] = _clip(
+                strategist_output.get("theme_source_status") or theme_packet.get("status"),
+                max_len=80,
+            )
+        if not out.get("theme_source_reason") and (theme_packet.get("reason") or strategist_output.get("theme_source_reason")):
+            out["theme_source_reason"] = _clip(
+                strategist_output.get("theme_source_reason") or theme_packet.get("reason"),
+                max_len=160,
+            )
+        if not out.get("available_themes") and isinstance(strategist_output.get("available_themes"), list):
+            out["available_themes"] = list(strategist_output.get("available_themes") or [])[:8]
+        if not out.get("selected_themes") and isinstance(strategist_output.get("selected_themes"), list):
+            out["selected_themes"] = _listify(strategist_output.get("selected_themes"), limit=5, max_len=80)
+        if not out.get("theme_strategy") and isinstance(strategist_output.get("theme_strategy"), dict):
+            out["theme_strategy"] = _dict(strategist_output.get("theme_strategy"))
+        return out
     strategy_policy_summary = _dict(strategist_output.get("strategy_policy_summary"))
     strategy_memory = _dict(strategist_output.get("strategy_memory"))
+    theme_packet = _dict(strategist_output.get("theme_strength_packet"))
+    theme_strength = _dict(strategist_output.get("theme_strength")) or _dict(theme_packet.get("theme_scores"))
     reason_chain = _listify(
         strategist_output.get("reason_chain")
         or _dict(strategy_policy_summary.get("market_policy")).get("reason_chain"),
@@ -224,6 +253,7 @@ def _build_strategist_decision_frame(
         "market_sentiment": market_sentiment,
         "playbook": playbook,
         "themes": list(themes),
+        "selected_themes": _listify(strategist_output.get("selected_themes"), limit=5, max_len=80),
         "avoid_themes": list(avoid_themes),
         "scanner_bias": _clip(strategist_output.get("scanner_bias"), max_len=80),
         "scanner_priority": _listify(strategist_output.get("scanner_priority"), limit=8, max_len=80),
@@ -234,6 +264,21 @@ def _build_strategist_decision_frame(
         "strategy_memory": strategy_memory,
         "reason_chain": reason_chain,
         "strategy_policy_summary": strategy_policy_summary,
+        "theme_strength": theme_strength,
+        "theme_strength_packet": theme_packet,
+        "available_themes": list(strategist_output.get("available_themes") or [])[:8]
+        if isinstance(strategist_output.get("available_themes"), list)
+        else [],
+        "theme_strategy": _dict(strategist_output.get("theme_strategy")),
+        "theme_source": _clip(strategist_output.get("theme_source") or theme_packet.get("source"), max_len=80),
+        "theme_source_status": _clip(
+            strategist_output.get("theme_source_status") or theme_packet.get("status"),
+            max_len=80,
+        ),
+        "theme_source_reason": _clip(
+            strategist_output.get("theme_source_reason") or theme_packet.get("reason"),
+            max_len=160,
+        ),
     }
 
 
@@ -755,12 +800,35 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         themes=themes,
         avoid_themes=avoid_themes,
     )
+    theme_strength_packet = _dict(strategist_output.get("theme_strength_packet")) or _dict(
+        decision_frame.get("theme_strength_packet")
+    )
+    theme_strength = _dict(strategist_output.get("theme_strength")) or _dict(
+        theme_strength_packet.get("theme_scores")
+    )
+    theme_source = _clip(strategist_output.get("theme_source") or theme_strength_packet.get("source"), max_len=80)
+    theme_source_status = _clip(
+        strategist_output.get("theme_source_status") or theme_strength_packet.get("status"),
+        max_len=80,
+    )
+    theme_source_reason = _clip(
+        strategist_output.get("theme_source_reason") or theme_strength_packet.get("reason"),
+        max_len=160,
+    )
+    theme_source_fallback_used = bool(
+        strategist_output.get("theme_source_fallback_used")
+        if strategist_output.get("theme_source_fallback_used") is not None
+        else theme_strength_packet.get("fallback_used")
+    )
     news_evidence_ranked = _build_strategist_news_evidence_ranked(
         state=state,
         strategist_output=strategist_output,
         news_context=news_context,
         market_news_context=market_news_context,
         candidate_news_context=candidate_news_context,
+    )
+    news_collection_policy = _dict(strategist_output.get("news_collection_policy")) or _dict(
+        state.get("news_collection_policy")
     )
     global_sentiment_signal = _build_global_sentiment_signal_payload(
         state=state,
@@ -809,6 +877,18 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
     exit_plan = _dict(strategist_output.get("exit_plan"))
     if not exit_plan:
         exit_plan = _dict(strategist_plan.get("exit_plan"))
+    strategy_horizon_feedback = _dict(strategist_output.get("strategy_horizon_feedback"))
+    if not strategy_horizon_feedback:
+        strategy_horizon_feedback = _dict(_dict(strategy_policy.get("monitor_policy")).get("strategy_horizon_feedback"))
+    strategist_horizon_proposal = _dict(strategist_output.get("strategist_horizon_proposal")) or dict(strategy_horizon_feedback)
+    commander_horizon_policy = (
+        _dict(strategist_output.get("commander_horizon_policy"))
+        or _dict(_dict(strategy_policy.get("monitor_policy")).get("commander_horizon_policy"))
+        or _dict(strategy_policy.get("commander_horizon_policy"))
+    )
+    horizon_context = _dict(strategist_output.get("horizon_context")) or _dict(
+        _dict(strategy_policy.get("monitor_policy")).get("horizon_context")
+    )
     strategy_summary = _clip(
         strategist_output.get("strategy_summary")
         or strategist_plan.get("strategy_summary")
@@ -840,6 +920,20 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         strategist_llm=strategist_llm,
         commander_context=commander_context,
     )
+    explanation_fields = build_strategist_explanation_fields(
+        strategist_output={
+            **dict(strategist_output),
+            "news_evidence_ranked": news_evidence_ranked,
+        },
+        state=state,
+        news_evidence_ranked=news_evidence_ranked,
+    )
+    strategy_thesis_text = _clip(
+        strategist_output.get("news_query_reasoning")
+        or strategist_output.get("monitor_guidance")
+        or summary,
+        max_len=500,
+    )
     artifact.update(
         {
             "market_regime": market_regime,
@@ -856,12 +950,8 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "vix_pressure": fear_index.get("level_pressure"),
                 "stress_flags": list(macro_overlay.get("stress_flags") or []),
             },
-            "strategy_thesis": _clip(
-                strategist_output.get("news_query_reasoning")
-                or strategist_output.get("monitor_guidance")
-                or summary,
-                max_len=500,
-            ),
+            "strategy_thesis": dict(explanation_fields.get("strategy_thesis") or {}),
+            "strategy_thesis_text": strategy_thesis_text,
             "playbook": playbook,
             "policy_selected": {
                 "strategy_policy": _dict(strategist_output.get("strategy_policy")),
@@ -880,6 +970,7 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "news_context": {
                 "summary": _clip(news_context.get("summary") or strategist_output.get("news_query_reasoning"), max_len=400),
                 "news_query_targets": list(strategist_output.get("news_query_targets") or [])[:12],
+                "news_collection_policy": news_collection_policy,
                 "market_news_context": market_news_context,
                 "candidate_news_context": candidate_news_context,
                 "key_events": list(strategist_output.get("key_events") or [])[:10],
@@ -888,7 +979,17 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "market_regime": market_regime,
                 "market_sentiment": market_sentiment,
                 "themes": themes,
+                "selected_themes": _listify(strategist_output.get("selected_themes"), limit=5, max_len=80),
                 "avoid_themes": avoid_themes,
+                "theme_strength": theme_strength,
+                "theme_strength_packet": theme_strength_packet,
+                "available_themes": list(strategist_output.get("available_themes") or [])[:8]
+                if isinstance(strategist_output.get("available_themes"), list)
+                else [],
+                "theme_strategy": _dict(strategist_output.get("theme_strategy")),
+                "theme_source": theme_source,
+                "theme_source_status": theme_source_status,
+                "theme_source_reason": theme_source_reason,
                 "playbook": playbook,
                 "scanner_bias": _clip(strategist_output.get("scanner_bias"), max_len=80),
                 "scanner_priority": _listify(strategist_output.get("scanner_priority"), limit=8, max_len=80),
@@ -923,8 +1024,21 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 ),
             },
             "decision_frame": decision_frame,
+            "theme_strength": theme_strength,
+            "theme_strength_packet": theme_strength_packet,
+            "available_themes": list(strategist_output.get("available_themes") or [])[:8]
+            if isinstance(strategist_output.get("available_themes"), list)
+            else [],
+            "selected_themes": _listify(strategist_output.get("selected_themes"), limit=5, max_len=80),
+            "theme_strategy": _dict(strategist_output.get("theme_strategy")),
+            "theme_source": theme_source,
+            "theme_source_status": theme_source_status,
+            "theme_source_reason": theme_source_reason,
+            "theme_source_fallback_used": theme_source_fallback_used,
+            "theme_fallback_used": theme_source_fallback_used,
             "candidate_symbols_hint": candidate_symbols_hint,
             "news_evidence_ranked": news_evidence_ranked,
+            "news_collection_policy": news_collection_policy,
             "global_sentiment_signal": global_sentiment_signal,
             "fear_index": fear_index,
             "stress_flags": _listify(macro_overlay.get("stress_flags"), limit=8, max_len=80),
@@ -1009,6 +1123,22 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 else commander_context.get("strategist_fallback_used")
             ),
             "selected_playbook": selected_playbook,
+            "strategy_horizon_feedback": dict(strategy_horizon_feedback),
+            "strategist_horizon_proposal": dict(strategist_horizon_proposal),
+            "commander_horizon_policy": dict(commander_horizon_policy),
+            "horizon_context": dict(horizon_context),
+            "strategy_horizon": _clip(
+                strategist_output.get("strategy_horizon") or strategy_horizon_feedback.get("strategy_horizon"),
+                max_len=40,
+            ),
+            "expected_hold_window": _dict(
+                strategist_output.get("expected_hold_window")
+                or strategy_horizon_feedback.get("expected_hold_window")
+            ),
+            "exit_guidance": _dict(
+                strategist_output.get("exit_guidance")
+                or strategy_horizon_feedback.get("exit_guidance")
+            ),
             "candidate_hypotheses": candidate_hypotheses,
             "symbol_plan": symbol_plan,
             "entry_plan": entry_plan,
@@ -1024,6 +1154,15 @@ def build_strategist_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "policy_fallback_reason": policy_fallback_reason,
             "policy_validation_issues": policy_validation_issues,
             "policy_resolution": dict(policy_resolution),
+            "strategy_delta_trace": dict(explanation_fields.get("strategy_delta_trace") or {}),
+            "strategy_refresh_trace": dict(explanation_fields.get("strategy_refresh_trace") or {}),
+            "memory_usage_trace": dict(explanation_fields.get("memory_usage_trace") or {}),
+            "news_usage_trace": dict(explanation_fields.get("news_usage_trace") or {}),
+            "scanner_handoff": dict(explanation_fields.get("scanner_handoff") or {}),
+            "monitor_handoff": dict(explanation_fields.get("monitor_handoff") or {}),
+            "conflict_analysis": dict(explanation_fields.get("conflict_analysis") or {}),
+            "trade_permission_frame": dict(explanation_fields.get("trade_permission_frame") or {}),
+            "responsibility_boundary": dict(explanation_fields.get("responsibility_boundary") or {}),
             "llm_attempted": bool(policy_resolution.get("llm_attempted")),
             "llm_ok": bool(policy_resolution.get("llm_ok")),
             "strategy_memory_snapshot": _dict(strategist_output.get("strategy_memory_snapshot")),
@@ -1127,6 +1266,9 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "theme_match": _safe_float(row.get("theme_match")),
                 "feature_coverage": _safe_float(row.get("feature_coverage")),
                 "status": _clip(row.get("status"), max_len=40) or "active",
+                "market_representative_guard_applied": bool(row.get("market_representative_guard_applied")),
+                "market_representative_guard_penalty": _safe_float(row.get("market_representative_guard_penalty"), 0.0),
+                "market_representative_guard_reason": _clip(row.get("market_representative_guard_reason"), max_len=160),
                 "asset_class_detected": _clip(row.get("asset_class_detected"), max_len=80),
                 "detection_source": _clip(row.get("detection_source"), max_len=40),
                 "excluded_by_asset_policy": bool(row.get("excluded_by_asset_policy")),
@@ -1214,6 +1356,46 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         or candidate_selection_reason.get("candidate_bias_adjustments"),
         limit=5,
     )
+    scanner_memory_bias = _dict(
+        scanner_output.get("scanner_memory_bias")
+        or candidate_selection_reason.get("scanner_memory_bias")
+    )
+    scanner_memory_bias_summary = _dict(
+        scanner_output.get("scanner_memory_bias_summary")
+        or candidate_selection_reason.get("scanner_memory_bias_summary")
+    )
+    scanner_memory_bias_applied = bool(
+        scanner_output.get("scanner_memory_bias_applied")
+        if scanner_output.get("scanner_memory_bias_applied") is not None
+        else candidate_selection_reason.get("scanner_memory_bias_applied")
+    )
+    candidate_memory_bias_adjustments = _dict_list(
+        scanner_output.get("candidate_memory_bias_adjustments")
+        or candidate_selection_reason.get("candidate_memory_bias_adjustments"),
+        limit=5,
+    )
+    selected_memory_bias_result = {
+        "bias_adjustment": selected.get("memory_bias_adjustment"),
+        "source_delta": selected.get("memory_bias_source_delta"),
+        "symbol_delta": selected.get("memory_bias_symbol_delta"),
+        "adjustments": list(selected.get("memory_bias_adjustments") or []),
+    }
+    commander_memory_application_trace = _dict(
+        scanner_output.get("commander_memory_application_trace")
+        or scanner_output.get("scanner_memory_application_trace")
+        or candidate_selection_reason.get("commander_memory_application_trace")
+        or candidate_selection_reason.get("scanner_memory_application_trace")
+    )
+    if not commander_memory_application_trace:
+        commander_memory_application_trace = build_scanner_commander_memory_application_trace(
+            scanner_memory_bias=scanner_memory_bias,
+            selected_symbol=symbol,
+            candidate_sources=list(selected_candidate.get("sources") or []),
+            selected_memory_bias_result=selected_memory_bias_result,
+            candidate_memory_bias_adjustments=candidate_memory_bias_adjustments,
+            scanner_memory_bias_summary=scanner_memory_bias_summary,
+            scanner_memory_bias_applied=bool(scanner_memory_bias_applied),
+        )
     selection_reason_with_bias = _clip(
         scanner_output.get("selection_reason_with_bias")
         or candidate_selection_reason.get("selection_reason_with_bias")
@@ -1346,6 +1528,15 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "asset_universe_policy_source": _clip(scanner_output.get("asset_universe_policy_source") or pool_meta.get("asset_universe_policy_source"), max_len=80),
                 "excluded_candidate_count_by_asset_policy": _safe_int(scanner_output.get("excluded_candidate_count_by_asset_policy") or pool_meta.get("asset_policy_excluded_count")),
                 "excluded_candidates_by_asset_policy": _dict_list(scanner_output.get("excluded_candidates_by_asset_policy") or pool_meta.get("asset_policy_exclusions"), limit=20),
+                "excluded_candidate_count_by_mock_broker_restricted": _safe_int(
+                    scanner_output.get("excluded_candidate_count_by_mock_broker_restricted")
+                    or pool_meta.get("mock_broker_restricted_excluded_count")
+                ),
+                "excluded_candidates_by_mock_broker_restricted": _dict_list(
+                    scanner_output.get("excluded_candidates_by_mock_broker_restricted")
+                    or pool_meta.get("mock_broker_restricted_exclusions"),
+                    limit=20,
+                ),
                 "asset_detection_stats": _dict(scanner_output.get("asset_detection_stats") or pool_meta.get("asset_detection_stats")),
                 "unknown_asset_candidate_count": _safe_int(scanner_output.get("unknown_asset_candidate_count") or pool_meta.get("unknown_asset_candidate_count")),
                 "total_candidates_before_filter": _safe_int(scanner_output.get("total_candidates_before_filter") or pool_meta.get("total_candidates_before_filter")),
@@ -1374,6 +1565,7 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "asset_universe_policy": _clip(scanner_output.get("asset_universe_policy"), max_len=80),
                 "asset_universe_policy_source": _clip(scanner_output.get("asset_universe_policy_source"), max_len=80),
                 "excluded_candidate_count_by_asset_policy": _safe_int(scanner_output.get("excluded_candidate_count_by_asset_policy")),
+                "excluded_candidate_count_by_mock_broker_restricted": _safe_int(scanner_output.get("excluded_candidate_count_by_mock_broker_restricted")),
                 "asset_detection_stats": _dict(scanner_output.get("asset_detection_stats")),
                 "unknown_asset_candidate_count": _safe_int(scanner_output.get("unknown_asset_candidate_count")),
                 "total_candidates_before_filter": _safe_int(scanner_output.get("total_candidates_before_filter")),
@@ -1413,6 +1605,12 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "scanner_bias_context": _dict(scanner_output.get("scanner_bias_context")),
             "scanner_bias_applied": scanner_bias_applied,
             "scanner_bias_summary": scanner_bias_summary,
+            "scanner_memory_bias_applied": scanner_memory_bias_applied,
+            "scanner_memory_bias": scanner_memory_bias,
+            "scanner_memory_bias_summary": scanner_memory_bias_summary,
+            "candidate_memory_bias_adjustments": candidate_memory_bias_adjustments,
+            "commander_memory_application_trace": commander_memory_application_trace,
+            "scanner_memory_application_trace": commander_memory_application_trace,
             "candidate_bias_adjustments": candidate_bias_adjustments,
             "selection_reason_with_bias": selection_reason_with_bias,
             "selection_reason": selection_summary,
@@ -1439,6 +1637,16 @@ def build_scanner_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "diversification_applied": bool(scanner_output.get("diversification_applied")),
             "diversification_bonus_value": float(scanner_output.get("diversification_bonus_value") or 0.0),
             "entry_bias_cap_applied": bool(scanner_output.get("entry_bias_cap_applied")),
+            "market_representative_guard_enabled": bool(scanner_output.get("market_representative_guard_enabled")),
+            "market_representative_guard_applied": bool(scanner_output.get("market_representative_guard_applied")),
+            "market_representative_guard_policy": _dict(scanner_output.get("market_representative_guard_policy")),
+            "market_representative_guard_symbol": _clip(scanner_output.get("market_representative_guard_symbol"), max_len=16),
+            "market_representative_guard_penalty": float(scanner_output.get("market_representative_guard_penalty") or 0.0),
+            "market_representative_guard_score_gap": float(scanner_output.get("market_representative_guard_score_gap") or 0.0),
+            "market_representative_guard_reason": _clip(scanner_output.get("market_representative_guard_reason"), max_len=200),
+            "market_representative_guard_confirmation_sources": list(scanner_output.get("market_representative_guard_confirmation_sources") or []),
+            "market_representative_guard_before_top": list(scanner_output.get("market_representative_guard_before_top") or []),
+            "market_representative_guard_after_top": list(scanner_output.get("market_representative_guard_after_top") or []),
             "raw_entry_compatibility_bias": float(scanner_output.get("raw_entry_compatibility_bias") or 0.0),
             "effective_entry_compatibility_bias": float(scanner_output.get("effective_entry_compatibility_bias") or 0.0),
             "adjusted_score_total": float(scanner_output.get("adjusted_score_total") or 0.0),
@@ -1515,6 +1723,9 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         monitor_evaluation,
         entry_detail,
         exit_detail,
+        monitor,
+        entry_info,
+        exit_info,
     ]
 
     def _first_trace_dict(key: str) -> Dict[str, Any]:
@@ -1567,6 +1778,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         "shadow_used": _first_trace_bool("shadow_used"),
         "strategist_fallback_used": _first_trace_bool("strategist_fallback_used"),
     }
+    exit_vs_strategy_intent = _first_trace_dict("exit_vs_strategy_intent")
     monitor_no_trade_surface = _first_trace_dict("no_trade_surface")
     if not monitor_no_trade_surface:
         commander_decision = _dict(state.get("commander_decision"))
@@ -1712,6 +1924,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         "policy_adjustment_summary": _clip(entry_info.get("policy_adjustment_summary"), max_len=220),
         "policy_adjustment_reasoning": _clip(entry_info.get("policy_adjustment_reasoning"), max_len=260),
         "monitor_memory_bias_applied": bool(entry_info.get("monitor_memory_bias_applied")),
+        "monitor_memory_bias": _dict(entry_info.get("monitor_memory_bias")),
         "monitor_memory_bias_summary": _dict(entry_info.get("monitor_memory_bias_summary")),
         "monitor_memory_bias_deltas": [
             {
@@ -1723,6 +1936,8 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             for row in list(entry_info.get("monitor_memory_bias_deltas") or [])[:8]
             if isinstance(row, dict)
         ],
+        "commander_memory_application_trace": _dict(entry_info.get("commander_memory_application_trace")),
+        "monitor_memory_application_trace": _dict(entry_info.get("monitor_memory_application_trace")),
         "effective_policy_deltas": [
             {
                 "field": _clip((row or {}).get("field"), max_len=80),
@@ -1819,6 +2034,49 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
         monitor_memory_bias_deltas = list(threshold_snapshot.get("monitor_memory_bias_deltas") or [])
     if not isinstance(monitor_memory_bias_deltas, list) or not monitor_memory_bias_deltas:
         monitor_memory_bias_deltas = list(_dict(policy_trace.get("policy_ref")).get("monitor_memory_bias_deltas") or [])
+    monitor_memory_bias = _first_trace_dict("monitor_memory_bias")
+    if not monitor_memory_bias:
+        monitor_memory_bias = _dict(threshold_snapshot.get("monitor_memory_bias"))
+    if not monitor_memory_bias:
+        monitor_memory_bias = _dict(_dict(policy_trace.get("policy_ref")).get("monitor_memory_bias"))
+    monitor_memory_bias_hold_applied = _first_trace_value("monitor_memory_bias_hold_applied")
+    if monitor_memory_bias_hold_applied is None:
+        monitor_memory_bias_hold_applied = _dict(policy_trace.get("policy_ref")).get("monitor_memory_bias_hold_applied")
+    monitor_memory_bias_hold_deltas = _first_trace_value("monitor_memory_bias_hold_deltas")
+    if not isinstance(monitor_memory_bias_hold_deltas, list) or not monitor_memory_bias_hold_deltas:
+        monitor_memory_bias_hold_deltas = list(_dict(policy_trace.get("policy_ref")).get("monitor_memory_bias_hold_deltas") or [])
+    monitor_memory_bias_exit_applied = _first_trace_value("monitor_memory_bias_exit_applied")
+    if monitor_memory_bias_exit_applied is None:
+        monitor_memory_bias_exit_applied = _dict(policy_trace.get("policy_ref")).get("monitor_memory_bias_exit_applied")
+    monitor_memory_bias_exit_deltas = _first_trace_value("monitor_memory_bias_exit_deltas")
+    if not isinstance(monitor_memory_bias_exit_deltas, list) or not monitor_memory_bias_exit_deltas:
+        monitor_memory_bias_exit_deltas = list(_dict(policy_trace.get("policy_ref")).get("monitor_memory_bias_exit_deltas") or [])
+    commander_memory_application_trace = _first_trace_dict("commander_memory_application_trace")
+    if not commander_memory_application_trace:
+        commander_memory_application_trace = _first_trace_dict("monitor_memory_application_trace")
+    if not commander_memory_application_trace:
+        commander_memory_application_trace = _dict(threshold_snapshot.get("commander_memory_application_trace"))
+    if not commander_memory_application_trace:
+        commander_memory_application_trace = _dict(_dict(policy_trace.get("policy_ref")).get("commander_memory_application_trace"))
+    if not commander_memory_application_trace:
+        commander_memory_application_trace = build_monitor_commander_memory_application_trace(
+            monitor_memory_bias=monitor_memory_bias,
+            entry_result={
+                "applied": bool(monitor_memory_bias_applied),
+                "deltas": list(monitor_memory_bias_deltas or []),
+            },
+            hold_result={
+                "applied": bool(monitor_memory_bias_hold_applied),
+                "deltas": list(monitor_memory_bias_hold_deltas or []),
+            },
+            exit_result={
+                "applied": bool(monitor_memory_bias_exit_applied),
+                "deltas": list(monitor_memory_bias_exit_deltas or []),
+            },
+            monitor_memory_bias_summary=monitor_memory_bias_summary,
+            effective_policy_source=_clip(entry_info.get("effective_policy_source"), max_len=120),
+            effective_policy_source_chain=_listify(entry_info.get("effective_policy_source_chain"), limit=8, max_len=80),
+        )
     signal_snapshot = {
         "entry_evaluated": bool(entry_info.get("evaluated")),
         "entry_triggered": bool(entry_info.get("triggered")),
@@ -1874,6 +2132,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "decision_action": decision_action,
             "decision_status": decision_status,
             "decision_summary": decision_summary,
+            "exit_vs_strategy_intent": dict(exit_vs_strategy_intent),
             "primary_reason_code": primary_reason_code,
             "primary_reason_text": _clip(primary_reason_code.replace("_", " "), max_len=220),
             "secondary_reason_codes": secondary_reason_codes,
@@ -1913,6 +2172,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
             "effective_policy_source": _clip(entry_info.get("effective_policy_source"), max_len=120),
             "effective_policy_source_chain": _listify(entry_info.get("effective_policy_source_chain"), limit=6, max_len=80),
             "monitor_memory_bias_applied": bool(monitor_memory_bias_applied) if monitor_memory_bias_applied is not None else None,
+            "monitor_memory_bias": monitor_memory_bias,
             "monitor_memory_bias_summary": monitor_memory_bias_summary,
             "monitor_memory_bias_deltas": [
                 {
@@ -1924,6 +2184,30 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 for row in list(monitor_memory_bias_deltas or [])[:8]
                 if isinstance(row, dict)
             ],
+            "monitor_memory_bias_hold_applied": bool(monitor_memory_bias_hold_applied) if monitor_memory_bias_hold_applied is not None else None,
+            "monitor_memory_bias_hold_deltas": [
+                {
+                    "field": _clip((row or {}).get("field"), max_len=80),
+                    "delta": (row or {}).get("delta"),
+                    "from": (row or {}).get("from"),
+                    "to": (row or {}).get("to"),
+                }
+                for row in list(monitor_memory_bias_hold_deltas or [])[:8]
+                if isinstance(row, dict)
+            ],
+            "monitor_memory_bias_exit_applied": bool(monitor_memory_bias_exit_applied) if monitor_memory_bias_exit_applied is not None else None,
+            "monitor_memory_bias_exit_deltas": [
+                {
+                    "field": _clip((row or {}).get("field"), max_len=80),
+                    "delta": (row or {}).get("delta"),
+                    "from": (row or {}).get("from"),
+                    "to": (row or {}).get("to"),
+                }
+                for row in list(monitor_memory_bias_exit_deltas or [])[:8]
+                if isinstance(row, dict)
+            ],
+            "commander_memory_application_trace": commander_memory_application_trace,
+            "monitor_memory_application_trace": commander_memory_application_trace,
             "policy_adjustments": _dict(entry_info.get("policy_adjustments")),
             "policy_adjustment_summary": _clip(entry_info.get("policy_adjustment_summary"), max_len=220),
             "policy_adjustment_reasoning": _clip(entry_info.get("policy_adjustment_reasoning"), max_len=260),
@@ -1979,6 +2263,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "entry_blockers": list(policy_trace.get("entry_blockers") or []),
                 "timing_assessment": dict(policy_trace.get("timing_assessment") or {}),
                 "exit_trigger_basis": dict(policy_trace.get("exit_trigger_basis") or {}),
+                "exit_vs_strategy_intent": dict(exit_vs_strategy_intent),
                 "commander_context_consumed": policy_trace.get("commander_context_consumed"),
                 "consumed_fields": list(policy_trace.get("consumed_fields") or []),
                 "flow_instruction_applied": policy_trace.get("flow_instruction_applied"),
@@ -2038,6 +2323,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "action_reason_human": _clip(monitor_output.get("entry_exit_reason") or exit_info.get("monitor_reason") or exit_info.get("reason"), max_len=240),
                 "decision_reason_chain": decision_reason_chain,
                 "active_exit_axis": _clip(exit_info.get("active_exit_axis"), max_len=120),
+                "exit_vs_strategy_intent": dict(exit_vs_strategy_intent),
                 "confidence": _safe_float(entry_info.get("confidence"), 0.0),
                 "triggered_rules": triggered_rules,
                 "blocked_rules": blocked_rules[:8],
@@ -2060,6 +2346,7 @@ def build_monitor_output_artifact(state: Dict[str, Any]) -> Dict[str, Any]:
                 "exit_triggered": bool(exit_info.get("triggered")),
                 "sell_guard_blocked": bool(exit_info.get("sell_guard_blocked")),
                 "sell_guard_reason": _clip(exit_info.get("sell_guard_reason"), max_len=180),
+                "exit_vs_strategy_intent": dict(exit_vs_strategy_intent),
             },
             "evidence_refs": {
                 "event_names": [
@@ -2175,11 +2462,17 @@ def build_executor_output_artifact(
     response_payload = _dict(execution_payload.get("response_payload"))
     quote_snapshot = _dict(execution.get("quote_snapshot"))
     symbol = str(execution.get("symbol") or order.get("symbol") or "").strip()
+    if "execution_ok" in execution:
+        execution_ok = bool(execution.get("execution_ok"))
+    elif "ok" in execution:
+        execution_ok = bool(execution.get("ok"))
+    else:
+        execution_ok = bool(execution.get("allowed"))
     artifact = _base_output(
         state,
         agent="executor",
         symbol=symbol,
-        status="ok" if bool(execution.get("allowed")) and bool(execution.get("execution_ok", True)) else "error",
+        status="ok" if bool(execution.get("allowed")) and execution_ok else "error",
     )
     artifact.update(
         {
@@ -2211,7 +2504,7 @@ def build_executor_output_artifact(
                 or response_payload.get("order_id"),
                 max_len=64,
             ),
-            "execution_ok": bool(execution.get("execution_ok", execution.get("allowed"))),
+            "execution_ok": execution_ok,
             "quote_snapshot": quote_snapshot,
             "best_bid": _safe_float(execution.get("best_bid") if execution.get("best_bid") not in (None, "") else quote_snapshot.get("best_bid")),
             "best_ask": _safe_float(execution.get("best_ask") if execution.get("best_ask") not in (None, "") else quote_snapshot.get("best_ask")),
@@ -2430,6 +2723,13 @@ def build_commander_output_artifact(
     )
     runtime_cache_reuse_context = _dict(runtime_fast_path) if strategist_cache_used else {}
     applied_policy = _dict(commander_decision.get("applied_policy"))
+    commander_horizon_policy = (
+        _dict(commander_decision.get("commander_horizon_policy"))
+        or _dict(state.get("commander_horizon_policy"))
+        or _dict(applied_policy.get("horizon"))
+        or _dict(applied_policy.get("commander_horizon_policy"))
+    )
+    horizon_context = _dict(commander_decision.get("horizon_context")) or _dict(state.get("horizon_context"))
     policy_source = _clip(commander_decision.get("policy_source"), max_len=120)
     policy_validation_status = _clip(commander_decision.get("policy_validation_status"), max_len=80)
     policy_fallback_used = bool(commander_decision.get("policy_fallback_used"))
@@ -2564,6 +2864,8 @@ def build_commander_output_artifact(
             "runtime_cache_reuse_reason": runtime_cache_reuse_reason,
             "runtime_cache_reuse_context": runtime_cache_reuse_context,
             "applied_policy": applied_policy,
+            "commander_horizon_policy": commander_horizon_policy,
+            "horizon_context": horizon_context,
             "policy_source": policy_source,
             "policy_validation_status": policy_validation_status,
             "policy_fallback_used": policy_fallback_used,

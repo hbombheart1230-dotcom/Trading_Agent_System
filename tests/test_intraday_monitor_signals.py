@@ -134,6 +134,29 @@ def test_intraday_entry_rejects_overextended_breakout() -> None:
     assert "extension_ok" in list(out.get("failed_checks") or [])
 
 
+def test_commander_entry_control_widens_defensive_vwap_band_only_when_allowed() -> None:
+    base = resolve_intraday_entry_policy(
+        {"max_extended_from_vwap_pct": 0.10},
+        frame={"playbook": "defensive"},
+    )
+    widened = resolve_intraday_entry_policy(
+        {
+            "max_extended_from_vwap_pct": 0.10,
+            "commander_entry_control": {
+                "allow_dynamic_entry_band": True,
+                "adaptive_max_extended_from_vwap_pct": 0.08,
+                "max_extended_from_vwap_pct_cap": 0.10,
+            },
+        },
+        frame={"playbook": "defensive"},
+    )
+
+    assert base.max_extended_from_vwap_pct == 0.05
+    assert widened.max_extended_from_vwap_pct == 0.08
+    assert "playbook:defensive" in list(widened.adjustments)
+    assert "commander_entry_control:dynamic_entry_band" in list(widened.adjustments)
+
+
 def test_intraday_entry_allows_breakout_path_without_strict_volume_confirmation() -> None:
     rows = _rows_breakout()
     rows[-1]["volume"] = 900

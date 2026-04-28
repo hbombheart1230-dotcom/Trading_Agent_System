@@ -510,6 +510,13 @@ def test_scanner_reason_human_surfaces_top_candidates_and_runner_up_deltas() -> 
         {
             "playbook": "breakout",
             "themes": ["broad_market_leaders"],
+            "theme_strength_packet": {
+                "source": "unavailable",
+                "status": "unavailable",
+                "reason": "kiwoom_theme_live_fetch_disabled",
+                "top_themes": [],
+                "theme_scores": {},
+            },
             "news_query_targets": ["KOSPI", "US indices"],
             "news_evidence_ranked": {
                 "market_news_ranked": [{"title": "KOSPI advanced on institutional flows."}],
@@ -528,8 +535,10 @@ def test_scanner_reason_human_surfaces_top_candidates_and_runner_up_deltas() -> 
     assert any("Why not others:" in row for row in out["bullets"])
     assert any("Core score contributions:" in row for row in out["bullets"])
     assert any("Sentiment input trace:" in row for row in out["bullets"])
+    assert any("status=unavailable" in row and "kiwoom_theme_live_fetch_disabled" in row for row in out["bullets"])
     assert out["news_scanner_contribution"]["core_score_contributions"]["sentiment"]["value"] == 0.018
     assert out["news_scanner_contribution"]["theme_alignment_trace"]["theme_source_matched"] is True
+    assert out["news_scanner_contribution"]["theme_alignment_trace"]["theme_source_status"] == "unavailable"
     assert out["scanner_selection_trace"]["news_scanner_contribution"]["news_linkage_trace"]["symbol_headline_count"] >= 0
 
 

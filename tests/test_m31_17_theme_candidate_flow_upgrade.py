@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from graphs.nodes.monitor_node import monitor_node
 from graphs.nodes.scanner_node import scanner_node
-from graphs.nodes.strategist_node import strategist_node
+from graphs.nodes.strategist_node import _neutralize_ambiguous_playbook_memory, strategist_node
 
 
 def test_m31_17_strategist_outputs_themes_and_candidates_contract(monkeypatch):
@@ -39,6 +39,7 @@ def test_m31_17_strategist_outputs_themes_and_candidates_contract(monkeypatch):
         "strategic_answers",
     ):
         assert key in strategist_output
+
     assert strategist_output["market_regime"] in ("risk_on", "neutral", "risk_off")
     assert strategist_output["market_sentiment"] in ("bullish", "neutral", "bearish")
     assert strategist_output["playbook"] in ("breakout", "pullback", "reversal", "defensive")
@@ -59,6 +60,21 @@ def test_m31_17_strategist_outputs_themes_and_candidates_contract(monkeypatch):
     assert strategist_output["runtime_sector_map_keys"] == ["ai", "semiconductor"]
     assert out.get("theme_map", {}).get("semiconductor") == ["005930", "000660", "042700", "058470"]
     assert out.get("sector_map", {}).get("ai") == ["005930", "000660", "042700", "058470"]
+
+
+def test_m31_17_ambiguous_best_worst_playbook_memory_is_not_directional():
+    memory = _neutralize_ambiguous_playbook_memory(
+        {
+            "best_playbooks": ["defensive"],
+            "worst_playbooks": ["defensive"],
+            "advisory_only": True,
+        }
+    )
+
+    assert memory["best_playbooks"] == []
+    assert memory["worst_playbooks"] == []
+    assert memory["directional_bias_usable"] is False
+    assert "ambiguous_playbook_performance:best_worst_overlap" in memory["memory_quality_flags"]
 
 
 def test_m31_17_scanner_accepts_strategist_output_and_emits_top_stock():
@@ -305,6 +321,158 @@ def test_m31_17_llm_override_themes_enable_sector_theme_candidates(monkeypatch):
 
     assert int(source_mix.get("sector_theme") or 0) == 3
     assert out.get("top_stock") == "AAA"
+
+
+def test_m31_17_kiwoom_theme_packet_drives_themes_and_sector_candidates(monkeypatch):
+    monkeypatch.delenv("KIWOOM_THEME_LIVE_FETCH", raising=False)
+    base = strategist_node(
+        {
+            "candidate_symbols": ["005930", "000660", "373220"],
+            "mock_theme_groups": [
+                {
+                    "thema_grp_cd": "319",
+                    "thema_nm": "semiconductor",
+                    "stk_num": "4",
+                    "flu_rt": "+4.0",
+                    "rising_stk_num": "3",
+                    "fall_stk_num": "0",
+                    "dt_prft_rt": "+12.0",
+                },
+                {
+                    "thema_grp_cd": "401",
+                    "thema_nm": "battery",
+                    "stk_num": "5",
+                    "flu_rt": "+1.0",
+                    "rising_stk_num": "1",
+                    "fall_stk_num": "2",
+                    "dt_prft_rt": "+2.0",
+                },
+            ],
+            "mock_theme_component_map": {
+                "semiconductor": ["005930", "000660"],
+                "battery": ["373220"],
+            },
+            "policy": {
+                "use_global_sentiment": False,
+                "use_news_analysis": False,
+                "use_universe_builder": False,
+            },
+        }
+    )
+
+    strategist_output = base.get("strategist_output") or {}
+    assert strategist_output["themes"][0] == "semiconductor"
+    assert strategist_output["selected_themes"][0] == "semiconductor"
+    assert strategist_output["theme_strategy"]["selection_mode"] == "kiwoom_api_constrained"
+    assert strategist_output["theme_source"] == "state_mock"
+    assert strategist_output["theme_source_status"] == "ok"
+    assert base.get("theme_map", {}).get("semiconductor")[:2] == ["005930", "000660"]
+
+    base["mock_scan_results"] = {
+        "005930": {"score": 0.82, "risk_score": 0.20, "confidence": 0.86},
+        "000660": {"score": 0.75, "risk_score": 0.20, "confidence": 0.84},
+        "373220": {"score": 0.70, "risk_score": 0.20, "confidence": 0.82},
+    }
+    base["mock_top_value_symbols"] = []
+    base["mock_top_volume_symbols"] = []
+    base["mock_top_change_symbols"] = []
+    base["mock_condition_symbols"] = []
+
+    out = scanner_node(base)
+    scanner_output = out.get("scanner_output") or {}
+    source_mix = scanner_output.get("source_mix") or {}
+
+    assert int(source_mix.get("sector_theme") or 0) >= 2
+    assert scanner_output["selected_themes"][0] == "semiconductor"
+    assert scanner_output["selected_theme_source"] in {
+        "scanner_guidance.selected_themes",
+        "strategist_output.selected_themes",
+        "state.selected_themes",
+    }
+    assert scanner_output["theme_source_status"] == "ok"
+    assert out.get("top_stock") in {"005930", "000660", "373220"}
+
+
+def test_m31_17_commander_scanner_live_fetch_drives_strategist_theme_packet(monkeypatch):
+    monkeypatch.delenv("KIWOOM_THEME_LIVE_FETCH", raising=False)
+    monkeypatch.delenv("KIWOOM_THEME_FETCH_COMPONENTS", raising=False)
+    monkeypatch.setenv("PYTEST_ALLOW_LIVE_KIWOOM_FETCH", "true")
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "false")
+
+    class _FakeThemeReader:
+        @staticmethod
+        def from_env():
+            return _FakeThemeReader()
+
+        def get_theme_groups(self, *, limit=20, date_tp="10", stex_tp="1"):
+            return [
+                {
+                    "theme_code": "319",
+                    "theme_name": "semiconductor",
+                    "stock_count": 4,
+                    "rising_count": 3,
+                    "falling_count": 0,
+                    "change_rate": 4.0,
+                    "period_return": 12.0,
+                }
+            ]
+
+        def get_theme_components(self, *, theme_code, limit=100, stex_tp="1"):
+            assert theme_code == "319"
+            return [
+                {"symbol": "005930", "name": "Samsung", "change_rate": 2.5},
+                {"symbol": "000660", "name": "SK Hynix", "change_rate": 3.0},
+            ]
+
+    monkeypatch.setattr("libs.read.kiwoom_theme_reader.KiwoomThemeReader", _FakeThemeReader)
+
+    out = strategist_node(
+        {
+            "candidate_symbols": ["005930", "000660", "373220"],
+            "applied_policy": {
+                "scanner": {
+                    "kiwoom": {
+                        "live_fetch": True,
+                    }
+                }
+            },
+            "policy": {
+                "use_global_sentiment": False,
+                "use_news_analysis": False,
+                "use_universe_builder": False,
+            },
+        }
+    )
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output["theme_source"] == "kiwoom_live"
+    assert strategist_output["theme_source_status"] == "ok"
+    assert strategist_output["selected_themes"][0] == "semiconductor"
+    assert out.get("theme_map", {}).get("semiconductor") == ["005930", "000660"]
+
+
+def test_m31_17_unavailable_theme_packet_does_not_select_broad_market_fallback(monkeypatch):
+    monkeypatch.delenv("KIWOOM_THEME_LIVE_FETCH", raising=False)
+    monkeypatch.delenv("KIWOOM_THEME_FETCH_COMPONENTS", raising=False)
+    monkeypatch.delenv("PYTEST_ALLOW_LIVE_KIWOOM_FETCH", raising=False)
+    monkeypatch.setenv("STRATEGIST_FRAME_USE_LLM", "false")
+
+    out = strategist_node(
+        {
+            "candidate_symbols": ["005930", "000660", "005380"],
+            "policy": {
+                "use_global_sentiment": False,
+                "use_news_analysis": False,
+                "use_universe_builder": False,
+            },
+        }
+    )
+
+    strategist_output = out.get("strategist_output") or {}
+    assert strategist_output["theme_source_status"] == "unavailable"
+    assert strategist_output["selected_themes"] == []
+    assert (strategist_output.get("theme_strategy") or {}).get("selection_mode") == "fallback"
+    assert (strategist_output.get("theme_strategy") or {}).get("selected_theme_names") == []
 
 
 def test_m31_17_monitor_sell_cooldown_env_alias_is_supported(monkeypatch):

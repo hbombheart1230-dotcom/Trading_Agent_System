@@ -50,6 +50,33 @@ def test_commander_memory_policy_surfaces_layer_quality_and_thin_window_rational
     assert "symbol_memory_gate:insufficient_trade_count" in policy["rationale"]
 
 
+def test_commander_memory_policy_does_not_activate_stale_daily_memory() -> None:
+    policy = build_commander_memory_policy(
+        session_bias="active_selection",
+        memory_packets={
+            "daily_strategy_memory": {
+                "status": "ok",
+                "active": False,
+                "sample_day_count": 1,
+                "sample_quality": {
+                    "usable": True,
+                    "confidence": 0.62,
+                    "trade_count": 1,
+                    "max_age_days": 7,
+                },
+            },
+            "weekly_strategy_memory": {},
+            "monthly_strategy_memory": {},
+            "symbol_memory_packet": {},
+        },
+    )
+
+    assert policy["active_layers"] == []
+    assert policy["scanner_bias_enabled"] is False
+    assert policy["monitor_bias_enabled"] is False
+    assert "daily_memory_available" in policy["rationale"]
+
+
 def test_commander_memory_policy_uses_support_context_for_weekly_activation_and_signals() -> None:
     policy = build_commander_memory_policy(
         session_bias="active_selection",

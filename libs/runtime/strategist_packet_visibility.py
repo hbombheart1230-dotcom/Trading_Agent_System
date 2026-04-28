@@ -32,6 +32,20 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _operator_summary_visibility(packet: Dict[str, Any]) -> Dict[str, Any]:
+    summary = _dict(packet.get("operator_summary"))
+    metrics = _dict(summary.get("metrics"))
+    return {
+        "available": bool(summary.get("available")),
+        "status": _text(summary.get("status"), max_len=24),
+        "artifact_path": _text(summary.get("artifact_path"), max_len=160),
+        "trade_count": _safe_int(metrics.get("trade_count")),
+        "closed_trade_count": _safe_int(metrics.get("closed_trade_count")),
+        "win_rate": _safe_float(metrics.get("win_rate")),
+        "avg_return_pct": _safe_float(metrics.get("avg_return_pct")),
+    }
+
+
 def summarize_read_model_facts(read_model_facts: Any) -> Dict[str, Any]:
     facts = _dict(read_model_facts)
     recent_trades = _list(facts.get("recent_trades"))
@@ -220,18 +234,21 @@ def build_strategist_memory_packet_visibility(
                 "active": bool(_dict(memory_packets.get("daily_strategy_memory")).get("active")),
                 "resolved_day": _text(_dict(memory_packets.get("daily_strategy_memory")).get("resolved_day"), max_len=16),
                 "best_playbook_count": len(_list(_dict(memory_packets.get("daily_strategy_memory")).get("best_playbooks"))),
+                "operator_summary": _operator_summary_visibility(_dict(memory_packets.get("daily_strategy_memory"))),
             },
             "weekly": {
                 "status": _text(_dict(memory_packets.get("weekly_strategy_memory")).get("status"), max_len=24),
                 "active": bool(_dict(memory_packets.get("weekly_strategy_memory")).get("active")),
                 "resolved_day": _text(_dict(memory_packets.get("weekly_strategy_memory")).get("resolved_day"), max_len=16),
                 "sample_day_count": _safe_int(_dict(memory_packets.get("weekly_strategy_memory")).get("sample_day_count")),
+                "operator_summary": _operator_summary_visibility(_dict(memory_packets.get("weekly_strategy_memory"))),
             },
             "monthly": {
                 "status": _text(_dict(memory_packets.get("monthly_strategy_memory")).get("status"), max_len=24),
                 "active": bool(_dict(memory_packets.get("monthly_strategy_memory")).get("active")),
                 "resolved_day": _text(_dict(memory_packets.get("monthly_strategy_memory")).get("resolved_day"), max_len=16),
                 "sample_day_count": _safe_int(_dict(memory_packets.get("monthly_strategy_memory")).get("sample_day_count")),
+                "operator_summary": _operator_summary_visibility(_dict(memory_packets.get("monthly_strategy_memory"))),
             },
             "symbol": {
                 "status": _text(_dict(memory_packets.get("symbol_memory_packet")).get("status"), max_len=24),
@@ -239,6 +256,7 @@ def build_strategist_memory_packet_visibility(
                 "symbol": _text(_dict(memory_packets.get("symbol_memory_packet")).get("symbol"), max_len=24),
                 "override_eligible": bool(_dict(memory_packets.get("symbol_memory_packet")).get("override_eligible")),
                 "trade_count": _safe_int(_dict(memory_packets.get("symbol_memory_packet")).get("trade_count")),
+                "operator_summary": _operator_summary_visibility(_dict(memory_packets.get("symbol_memory_packet"))),
             },
         },
     }

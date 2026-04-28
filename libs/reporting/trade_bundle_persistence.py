@@ -95,12 +95,18 @@ def persist_trade_report_outputs(
     write_failure_reason_human: str,
     write_failure_next_step: str,
     error_sanitizer: Callable[[Any], str],
+    trade_summary_input_json_path: Path | None = None,
+    summary_input_builder: Callable[[Dict[str, Any]], Dict[str, Any]] | None = None,
+    trade_summary_md_path: Path | None = None,
+    summary_markdown_renderer: Callable[[Dict[str, Any]], str] | None = None,
 ) -> Dict[str, Any]:
     diagnostics_out = dict(diagnostics or {})
     diagnostics_out["report_output_available"] = False
     diagnostics_out["report_artifact_available"] = False
     trade_report_json_written = ""
     trade_report_md_written = ""
+    trade_summary_input_json_written = ""
+    trade_summary_md_written = ""
     try:
         trade_report_payload = dict(trade_report or {})
         trade_report_payload.setdefault(
@@ -123,6 +129,18 @@ def persist_trade_report_outputs(
             markdown_renderer(trade_report_payload),
             encoding="utf-8",
         )
+        if trade_summary_input_json_path is not None and summary_input_builder is not None:
+            trade_summary_input_json_path.write_text(
+                json.dumps(summary_input_builder(trade_report_payload), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            trade_summary_input_json_written = str(trade_summary_input_json_path)
+        if trade_summary_md_path is not None and summary_markdown_renderer is not None:
+            trade_summary_md_path.write_text(
+                summary_markdown_renderer(trade_report_payload),
+                encoding="utf-8",
+            )
+            trade_summary_md_written = str(trade_summary_md_path)
         trade_report_json_written = str(trade_report_json_path)
         trade_report_md_written = str(trade_report_md_path)
         diagnostics_out["report_output_available"] = True
@@ -143,6 +161,8 @@ def persist_trade_report_outputs(
         "diagnostics": diagnostics_out,
         "trade_report_json_written": trade_report_json_written,
         "trade_report_md_written": trade_report_md_written,
+        "trade_summary_input_json_written": trade_summary_input_json_written,
+        "trade_summary_md_written": trade_summary_md_written,
     }
 
 
@@ -153,6 +173,10 @@ def refresh_trade_report_outputs_if_written(
     trade_report_json_path: Path,
     trade_report_md_path: Path,
     markdown_renderer: Callable[[Dict[str, Any]], str],
+    trade_summary_input_json_path: Path | None = None,
+    summary_input_builder: Callable[[Dict[str, Any]], Dict[str, Any]] | None = None,
+    trade_summary_md_path: Path | None = None,
+    summary_markdown_renderer: Callable[[Dict[str, Any]], str] | None = None,
 ) -> Dict[str, Any]:
     if not str(trade_report_json_written or "").strip():
         return {"refreshed": False}
@@ -165,6 +189,16 @@ def refresh_trade_report_outputs_if_written(
         markdown_renderer(trade_report_payload),
         encoding="utf-8",
     )
+    if trade_summary_input_json_path is not None and summary_input_builder is not None:
+        trade_summary_input_json_path.write_text(
+            json.dumps(summary_input_builder(trade_report_payload), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    if trade_summary_md_path is not None and summary_markdown_renderer is not None:
+        trade_summary_md_path.write_text(
+            summary_markdown_renderer(trade_report_payload),
+            encoding="utf-8",
+        )
     return {"refreshed": True}
 
 
@@ -198,6 +232,10 @@ def persist_trade_bundle_outputs(
     trade_health_payload: MutableMapping[str, Any],
     trade_artifact_links_payload: Mapping[str, Any],
     diagnostics: Mapping[str, Any],
+    trade_summary_input_json_path: Path | None = None,
+    trade_summary_json_path: Path | None = None,
+    trade_summary_md_path: Path | None = None,
+    trade_summary_llm_response_path: Path | None = None,
 ) -> Dict[str, Any]:
     write_json(entry_artifact_path, dict(entry_payload or {}))
     write_json(hold_artifact_path, dict(holding_payload or {}))
@@ -214,12 +252,16 @@ def persist_trade_bundle_outputs(
         "ai_trade_report_compact_input_json": story_compact_input_path.exists(),
         "ai_trade_report_json": trade_report_json_path.exists(),
         "ai_trade_report_md": trade_report_md_path.exists(),
+        "ai_trade_summary_input_json": bool(trade_summary_input_json_path and trade_summary_input_json_path.exists()),
+        "ai_trade_summary_json": bool(trade_summary_json_path and trade_summary_json_path.exists()),
+        "ai_trade_summary_md": bool(trade_summary_md_path and trade_summary_md_path.exists()),
         "strategist_evidence_json": strategist_evidence_path.exists(),
         "scanner_evidence_json": scanner_evidence_path.exists(),
         "monitor_evidence_json": monitor_evidence_path.exists(),
         "commander_evidence_json": commander_evidence_path.exists(),
         "strategist_llm_response_json": strategist_llm_response_path.exists(),
         "ai_trade_report_llm_response_json": ai_trade_report_llm_response_path.exists(),
+        "ai_trade_summary_llm_response_json": bool(trade_summary_llm_response_path and trade_summary_llm_response_path.exists()),
         "brief_llm_response_json": brief_llm_response_path.exists(),
         "operator_brief_json": operator_brief_json_path.exists(),
         "operator_brief_md": operator_brief_md_path.exists(),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from graphs.nodes.monitor_node import monitor_node
+from libs.contracts.agent_outputs import build_monitor_output_artifact
 from libs.runtime.monitor_memory_bias import (
     apply_monitor_memory_bias_to_exit_policy,
     apply_monitor_memory_bias_to_hold_controls,
@@ -308,5 +309,15 @@ def test_monitor_node_applies_commander_monitor_memory_bias(monkeypatch) -> None
     assert "commander_memory_bias" in list(monitor.get("entry_effective_policy_source_chain") or [])
     assert output.get("effective_policy_source") == "monitor_memory_bias_adjusted"
     assert output.get("monitor_memory_bias_applied") is True
+    trace = output.get("commander_memory_application_trace") or {}
+    assert trace.get("agent") == "monitor"
+    assert trace.get("entry_applied") is True
+    assert trace.get("hold_applied") is False
+    assert trace.get("exit_applied") is False
+    assert "volume_ratio_min" in list(trace.get("entry_delta_keys") or [])
     assert any((row or {}).get("field") == "volume_ratio_min" for row in memory_deltas)
     assert float((captured.get("policy") or {}).get("volume_ratio_min") or 0.0) == float(effective_policy.get("volume_ratio_min") or 0.0)
+
+    artifact = build_monitor_output_artifact(out)
+    assert artifact.get("monitor_memory_bias_applied") is True
+    assert (artifact.get("commander_memory_application_trace") or {}).get("entry_applied") is True

@@ -31,6 +31,8 @@ Those remain in:
 - `commander_memory_authority_2026-04-21.md`
 - `scanner_memory_bias_2026-04-21.md`
 - `monitor_memory_bias_2026-04-21.md`
+- `entry_participation_control_2026-04-27.md`
+- `market_representative_guard_2026-04-28.md`
 
 Commander-specific memory control in this folder assumes the packet schema defined in:
 
@@ -86,8 +88,13 @@ Now implemented:
   - surfaced in scanner artifacts and strategist visibility
 - deterministic `monitor_memory_bias`
   - Commander-owned
-  - currently applies conservative `entry_policy_delta` only
+  - applies conservative `entry_policy_delta`, first-pass `hold_policy_delta`, and first-pass `exit_policy_delta`
   - surfaced in monitor artifacts and strategist visibility
+- `commander_memory_application_trace`
+  - surfaced by scanner and monitor runtime outputs
+  - surfaced in canonical scanner/monitor artifacts
+  - records whether Commander-approved memory bias was captured, enabled, applied, or skipped
+  - records selected scanner symbol/source deltas and monitor entry/hold/exit deltas
 - `commander_memory_policy` now uses packet support context directly
   - `route_source`
   - `report_focus_targets`
@@ -99,3 +106,48 @@ Now implemented:
 - session closeout buy-block now backfills `minutes_to_close` from runtime KST clock
   - Commander closeout fast-path no longer depends on prepopulated `market_context.minutes_to_close`
   - Monitor closeout window guard uses the same runtime-clock fallback, so post-15:20 BUYs are blocked even when market context is sparse
+
+## Entry Participation Control
+
+Commander owns the entry participation decision when repeated monitor blocks occur:
+
+- If market context is supportive (`risk_on` or `neutral`, no stress/degrade/preflight block) and the same expandable blocker repeats, Commander emits `entry_control.mode=expand_when_market_ok`.
+- `expand_when_market_ok` expands monitor runner-up search beyond the default Top-5 and raises scanner scan aggressiveness; for repeated VWAP overextension it can also allow a bounded dynamic VWAP entry band.
+- If the market is defensive, blocked, degraded, or an open position is active, Commander emits a preserve mode such as `preserve_defensive_no_trade_ok`, `blocked_no_entry_expansion`, or `position_management_no_entry_expansion`.
+- Monitor still owns the final entry gate. Commander expansion only broadens the reviewed pool and, when explicitly allowed, widens the dynamic band; it does not force a BUY.
+
+Detailed contract:
+
+- `docs/commander_control/entry_participation_control_2026-04-27.md`
+
+## Market Representative Guard
+
+Commander also owns representative-stock concentration control:
+
+- If Top-1 is a configured market representative such as `005930` or `000660`, and the edge is mostly `top_value` with weak confirmation, Scanner applies a small Commander-authorized penalty.
+- Strong theme, volume, momentum, trend, news, or intraday confirmation bypasses the guard.
+- This is not a ban list and does not lower entry thresholds. It only prevents trading-value-only near-ties from repeatedly selecting the same broad-market leaders.
+- The guard is configured from Commander policy, not environment variables.
+
+Detailed contract:
+
+- `docs/commander_control/market_representative_guard_2026-04-28.md`
+
+## Current Live Validation Snapshot
+
+As of `2026-04-28 12:38 KST`, the latest live canonical commander artifact verifies:
+
+- route: `monitor_only`
+- reason: open `000660` position / position-management path
+- strategist invocation: skipped for monitor-only path
+- Commander-owned scanner fields include `scanner.policy.market_representative_guard`
+- Commander horizon policy is present and remains observability-only
+
+Not live-verified in the latest run:
+
+- representative-stock guard application in `scanner.json`, because no fresh scanner pass is emitted while holding
+- entry-control expansion in a flat market-supportive state, because the current state is open-position management
+
+Cross-folder status:
+
+- `docs/runtime_entrypoint/current_validation_status_2026-04-28.md`

@@ -182,9 +182,21 @@ Current live-validation targets:
 - top-level `monitor_memory_bias_applied`
 - top-level `monitor_memory_bias_hold_applied`
 - top-level `monitor_memory_bias_exit_applied`
+- top-level `commander_memory_application_trace`
 - `exit_policy_guard_adjustments` entries for:
   - `commander_memory_bias_hold:*`
   - `commander_memory_bias_exit:*`
+
+`commander_memory_application_trace` is the preferred inspection field when
+checking whether Commander memory actually affected monitor behavior. It records:
+
+- capture/enabled/applied state
+- skipped reason when not applied
+- entry/hold/exit applied flags
+- entry/hold/exit delta keys
+- entry/hold/exit concrete deltas
+- effective policy source and source chain
+- risk posture and raw reasons
 
 ## Anti-Pattern
 

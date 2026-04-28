@@ -64,7 +64,7 @@ def test_commander_can_invoke_intraday_reporter_hook_without_touching_decision_p
             "route_override_authority": False,
             "threshold_override_authority": False,
             "report_type": "operator_summary",
-            "output_paths": {"json": "reports/daily/2026-04-08/operator_summary.json"},
+            "output_paths": {"json": "reports/operator_summary/daily/2026-04-08/operator_summary.json"},
         }
 
     def integrated_runner(state: Dict[str, Any]) -> Dict[str, Any]:

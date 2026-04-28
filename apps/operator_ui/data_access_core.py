@@ -73,6 +73,7 @@ from libs.reporting.llm_artifacts import (
     build_llm_response_artifact,
     canonical_llm_status,
     classify_llm_exception,
+    daily_artifact_paths,
     iter_trade_day_roots,
     list_misplaced_trade_day_roots,
     make_attempt,
@@ -488,11 +489,20 @@ def _read_exact_day(path: Path, prefix: str, day: str) -> Dict[str, Any]:
 def _read_daily_artifact_day(reports_root: Path, day: str, artifact_name: str) -> Dict[str, Any]:
     if not day:
         return {}
-    canonical = reports_root / "daily" / day / f"{artifact_name}.json"
+    paths = daily_artifact_paths(reports_root, day)
+    canonical = Path(paths.get(f"{artifact_name}_json") or "")
     obj = _read_json(canonical)
     if obj:
         return obj
+    legacy_canonical = reports_root / "daily" / day / f"{artifact_name}.json"
+    obj = _read_json(legacy_canonical)
+    if obj:
+        return obj
     if artifact_name == "daily_report":
+        for key in ("legacy_daily_json", "root_daily_json"):
+            obj = _read_json(Path(paths.get(key) or ""))
+            if obj:
+                return obj
         return _read_exact_day(reports_root / "daily", "daily", day)
     return {}
 
@@ -714,6 +724,10 @@ def _trade_report_index(config: OperatorUIConfig) -> Dict[str, Dict[str, Any]]:
             for path in (
                 list(day_root.glob("TRD_*/lifecycle_bundle.json"))
                 + list(day_root.glob("TRD_*/aggregated_execution_bundle.json"))
+                + list(day_root.glob("*/lifecycle_bundle.json"))
+                + list(day_root.glob("*/aggregated_execution_bundle.json"))
+                + list(day_root.glob("*/*/lifecycle_bundle.json"))
+                + list(day_root.glob("*/*/aggregated_execution_bundle.json"))
             )
         ],
         key=lambda p: p.stat().st_mtime,
@@ -1162,6 +1176,14 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
         "reconciled_total": sum(1 for row in sync_runs_today if str((row.get("portfolio_sync") or {}).get("status") or "") == "reconciled"),
         "alert_total": sum(1 for row in sync_runs_today if str((row.get("portfolio_sync") or {}).get("status") or "") in {"mismatch", "reader_error"}),
     }
+    daily_paths = daily_artifact_paths(config.reports_root, latest_day) if latest_day else {}
+    daily_report_path = Path(daily_paths.get("daily_report_json") or "") if daily_paths else Path()
+    legacy_operator_daily_path = Path(daily_paths.get("legacy_daily_json") or "") if daily_paths else Path()
+    root_operator_daily_path = Path(daily_paths.get("root_daily_json") or "") if daily_paths else Path()
+    legacy_daily_report_path = config.reports_root / "daily" / latest_day / "daily_report.json" if latest_day else Path()
+    flat_daily_report_path = config.reports_root / "daily" / f"daily_{latest_day}.json" if latest_day else Path()
+    operator_summary_path = Path(daily_paths.get("operator_summary_json") or "") if daily_paths else Path()
+    legacy_operator_summary_path = config.reports_root / "daily" / latest_day / "operator_summary.json" if latest_day else Path()
 
     return {
         "latest_day": latest_day,
@@ -1171,9 +1193,21 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "approvals": _safe_int(daily.get("approvals"), 0),
             "blocks": _safe_int(daily.get("blocks"), 0),
             "path": (
-                str(config.reports_root / "daily" / latest_day / "daily_report.json")
-                if latest_day and (config.reports_root / "daily" / latest_day / "daily_report.json").exists()
-                else (str(config.reports_root / "daily" / f"daily_{latest_day}.json") if latest_day else "")
+                str(daily_report_path)
+                if latest_day and daily_report_path.exists()
+                else (
+                    str(legacy_operator_daily_path)
+                    if latest_day and legacy_operator_daily_path.exists()
+                    else (
+                        str(root_operator_daily_path)
+                        if latest_day and root_operator_daily_path.exists()
+                        else (
+                            str(legacy_daily_report_path)
+                            if latest_day and legacy_daily_report_path.exists()
+                            else (str(flat_daily_report_path) if latest_day and flat_daily_report_path.exists() else "")
+                        )
+                    )
+                )
             ),
         },
         "operator_summary": {
@@ -1185,9 +1219,13 @@ def load_overview(config: OperatorUIConfig) -> Dict[str, Any]:
             "executions_total": _safe_int(trading.get("executions_total"), 0),
             "blocked_total": _safe_int(trading.get("blocked_total"), 0),
             "path": (
-                str(config.reports_root / "daily" / latest_day / "operator_summary.json")
-                if latest_day and (config.reports_root / "daily" / latest_day / "operator_summary.json").exists()
-                else ""
+                str(operator_summary_path)
+                if latest_day and operator_summary_path.exists()
+                else (
+                    str(legacy_operator_summary_path)
+                    if latest_day and legacy_operator_summary_path.exists()
+                    else ""
+                )
             ),
         },
         "reporter": {

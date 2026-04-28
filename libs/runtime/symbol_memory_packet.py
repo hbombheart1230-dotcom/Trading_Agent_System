@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 from datetime import date
+from pathlib import Path
 from typing import Any, Dict
+
+from libs.runtime.operator_summary_memory import load_operator_symbol_summary
 
 
 def _safe_int(value: Any) -> int:
@@ -120,6 +124,14 @@ def _resolve_symbol_memory(state: Dict[str, Any]) -> tuple[str, Dict[str, Any], 
 
 def build_symbol_memory_packet(*, state: Dict[str, Any]) -> Dict[str, Any]:
     symbol, row, source = _resolve_symbol_memory(state)
+    reports_root = Path(str(state.get("reports_root") or os.getenv("REPORTS_ROOT", "reports")).strip() or "reports")
+    operator_summary = load_operator_symbol_summary(reports_root=reports_root, symbol=symbol) if symbol else {
+        "available": False,
+        "status": "no_symbol",
+        "layer": "symbol",
+        "key": "",
+        "artifact_path": "",
+    }
     trade_count = _safe_int(row.get("trade_count"))
     closed_trade_count = _safe_int(row.get("closed_trade_count"))
     reference_day = _resolve_reference_day(state)
@@ -176,5 +188,6 @@ def build_symbol_memory_packet(*, state: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "override_eligible": override_eligible,
         "override_gate_reason": override_gate_reason,
+        "operator_summary": operator_summary,
         "advisory_only": True,
     }

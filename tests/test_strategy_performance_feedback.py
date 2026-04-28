@@ -24,6 +24,10 @@ def _write_bundle(
     market_regime: str,
     return_pct: float,
     pnl: float,
+    entry_pattern_type: str = "",
+    exit_pattern_type: str = "",
+    entry_reason: str = "",
+    exit_reason: str = "",
 ) -> Path:
     trade_dir = reports_root / "trades" / day / trade_id
     trade_dir.mkdir(parents=True, exist_ok=True)
@@ -36,6 +40,12 @@ def _write_bundle(
         "lifecycle": {"entry": {"symbol": symbol}, "hold": [], "exit": {"symbol": symbol}},
         "strategist_summary": {"playbook": playbook, "market_regime": market_regime},
         "trade_outcome": {"return_pct": return_pct, "pnl": pnl},
+        "strategist_feedback_input": {
+            "entry_pattern_type": entry_pattern_type,
+            "exit_pattern_type": exit_pattern_type,
+            "entry_reason": entry_reason,
+            "exit_reason": exit_reason,
+        },
     }
     path = trade_dir / "lifecycle_bundle.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -54,6 +64,10 @@ def test_performance_aggregation_correctness(tmp_path: Path) -> None:
         market_regime="risk_on",
         return_pct=1.5,
         pnl=1200.0,
+        entry_pattern_type="breakout",
+        exit_pattern_type="take_profit",
+        entry_reason="breakout_above_recent_high",
+        exit_reason="SELL was triggered because take_profit.",
     )
     _write_bundle(
         reports_root,
@@ -64,6 +78,10 @@ def test_performance_aggregation_correctness(tmp_path: Path) -> None:
         market_regime="neutral",
         return_pct=-0.8,
         pnl=-500.0,
+        entry_pattern_type="pullback",
+        exit_pattern_type="hard_stop",
+        entry_reason="pullback_rebound",
+        exit_reason="SELL was triggered because hard_stop.",
     )
     _write_bundle(
         reports_root,
@@ -74,6 +92,10 @@ def test_performance_aggregation_correctness(tmp_path: Path) -> None:
         market_regime="risk_on",
         return_pct=0.6,
         pnl=400.0,
+        entry_pattern_type="breakout",
+        exit_pattern_type="peak_drawdown",
+        entry_reason="breakout_above_recent_high",
+        exit_reason="SELL was triggered because peak_drawdown.",
     )
 
     summary = aggregate_performance_from_reports_root(reports_root, day=day)
@@ -81,6 +103,9 @@ def test_performance_aggregation_correctness(tmp_path: Path) -> None:
     assert round(float(summary["win_rate"]), 6) == round(2.0 / 3.0, 6)
     assert "breakout" in (summary.get("per_playbook_stats") or {})
     assert (summary.get("per_symbol_stats") or {}).get("005930", {}).get("trade_count") == 1
+    assert (summary.get("per_entry_pattern_stats") or {}).get("breakout", {}).get("trade_count") == 2
+    assert (summary.get("per_exit_pattern_stats") or {}).get("hard_stop", {}).get("loss_count") == 1
+    assert (summary.get("per_entry_exit_combo_stats") or {}).get("pullback -> hard_stop", {}).get("avg_return") == -0.8
 
     persisted = write_performance_summary(reports_root, day=day, summary=summary)
     assert Path((persisted.get("artifacts") or {}).get("summary_json") or "").exists()
@@ -200,6 +225,18 @@ def test_strategy_memory_generation(tmp_path: Path) -> None:
     summary = {
         "schema_version": "performance_summary.v1",
         "day": day,
+        "per_entry_pattern_stats": {
+            "breakout": {"trade_count": 3, "win_count": 2, "loss_count": 1, "win_rate": 0.666667, "avg_return": 0.4},
+            "pullback": {"trade_count": 2, "win_count": 0, "loss_count": 2, "win_rate": 0.0, "avg_return": -0.5},
+        },
+        "per_exit_pattern_stats": {
+            "take_profit": {"trade_count": 2, "win_count": 2, "loss_count": 0, "win_rate": 1.0, "avg_return": 0.8},
+            "hard_stop": {"trade_count": 3, "win_count": 0, "loss_count": 3, "win_rate": 0.0, "avg_return": -0.6},
+        },
+        "per_entry_exit_combo_stats": {
+            "breakout -> take_profit": {"trade_count": 2, "win_count": 2, "loss_count": 0, "win_rate": 1.0, "avg_return": 0.8, "symbols": ["005930"]},
+            "pullback -> hard_stop": {"trade_count": 2, "win_count": 0, "loss_count": 2, "win_rate": 0.0, "avg_return": -0.5, "symbols": ["000660"]},
+        },
         "per_market_regime_stats": {
             "risk_on": {"avg_return": 1.2, "win_rate": 0.8, "trade_count": 4},
             "risk_off": {"avg_return": -0.6, "win_rate": 0.2, "trade_count": 3},
@@ -218,6 +255,10 @@ def test_strategy_memory_generation(tmp_path: Path) -> None:
     assert "pullback" in (memory.get("worst_playbooks") or [])
     assert (memory.get("market_condition_bias") or {}).get("preferred_regimes")
     assert "breakout" in (memory.get("playbook_performance_snapshot") or {})
+    pattern_snapshot = memory.get("pattern_performance_snapshot") or {}
+    assert "pullback -> hard_stop" in (pattern_snapshot.get("entry_exit_combos") or {})
+    assert "entry_exit:pullback->hard_stop" in (pattern_snapshot.get("problem_patterns") or [])
+    assert "entry_exit:breakout->take_profit" in (pattern_snapshot.get("working_patterns") or [])
 
     persisted = write_strategy_memory(reports_root, day=day, summary=summary, playbook_stats=playbook)
     assert Path(str(persisted.get("artifact_path") or "")).exists()

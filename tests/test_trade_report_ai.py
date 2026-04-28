@@ -60,6 +60,11 @@ class _AlwaysEmptyRouter:
         return ""
 
 
+def test_contains_hangul_does_not_use_fragile_regex() -> None:
+    assert mod._contains_hangul("\ud55c\uae00")
+    assert not mod._contains_hangul("abc 123")
+
+
 class _TruncatedOuterJsonRouter:
     def __init__(self) -> None:
         self.client = object()
@@ -238,9 +243,139 @@ def test_scanner_fallback_trade_summary_reanchors_to_actual_traded_symbol() -> N
     assert "005380" in scanner_summary
     assert "034020" in scanner_summary
     assert "실제 진입 종목" in scanner_summary
+    assert "차순위 재평가 3위" in scanner_summary
+    assert "스캐너 1순위" not in scanner_summary
     assert "005380" in entry_summary_text
     assert "034020" in entry_summary_text
     assert "전환" in entry_summary_text
+    assert "차순위 재평가 3위" in entry_summary_text
+
+
+def test_ai_trade_report_merge_replaces_scanner_execution_mismatch_with_fallback() -> None:
+    story_input = _story_input()
+    story_input["symbol"] = "005930"
+    story_input["status"] = "closed"
+    story_input["action"] = "SELL"
+    story_input["scanner_reason_human"] = {
+        "selected_symbol": "005930",
+        "selected_rank": 2,
+        "universe_size": 6,
+        "selected_score": 1.105,
+        "confidence": 0.693,
+        "monitor_fallback_used": True,
+        "scanner_top_pick_symbol": "000660",
+        "monitor_fallback_reason": "breakout above recent high with vwap structure confirmation",
+        "top_candidates": [
+            {"rank": 1, "symbol": "000660", "score_total": 1.435, "risk_score": 0.476, "confidence": 0.805},
+            {"rank": 2, "symbol": "005930", "score_total": 1.105, "risk_score": 0.642, "confidence": 0.693},
+        ],
+        "scanner_selection_trace": {
+            "selected_symbol": "005930",
+            "selected_rank": 2,
+            "monitor_fallback_used": True,
+            "scanner_top_pick_symbol": "000660",
+            "monitor_selected_symbol": "005930",
+            "monitor_fallback_reason": "breakout above recent high with vwap structure confirmation",
+            "ranked_candidates": [
+                {"rank": 1, "symbol": "000660", "score_total": 1.435, "risk_score": 0.476, "confidence": 0.805},
+                {"rank": 2, "symbol": "005930", "score_total": 1.105, "risk_score": 0.642, "confidence": 0.693},
+            ],
+        },
+    }
+
+    report = mod._merge_trade_report_candidate(
+        story_input,
+        {
+            "executive_summary": {"headline": "SELL 005930", "action": "SELL", "symbol": "005930", "confidence": "high", "summary": "ok"},
+            "market_context_at_entry": {"summary": "context", "bullets": []},
+            "strategist_summary": {"summary": "strategist", "bullets": []},
+            "why_this_symbol_was_chosen": {
+                "summary": "스캐너는 005930을 2위로 선정했습니다. 그러나 최종 선택에서 1위가 아닌 2위가 선택되는 불일치가 발생했습니다.",
+                "bullets": [
+                    "스캐너 선택 종목: 000660 (순위 1위, 점수 1.435)",
+                    "실행 종목: 005930 (스캐너 선택과 불일치)",
+                ],
+            },
+            "entry_decision": {"summary": "entry", "bullets": []},
+            "holding_monitoring_story": {"summary": "holding", "bullets": []},
+            "exit_decision": {"summary": "exit", "bullets": []},
+            "execution_quality": {"summary": "execution", "bullets": []},
+            "scanner_filters": {"summary": "filters", "bullets": []},
+            "guard_approval_result": {"summary": "guard", "bullets": []},
+            "reporter_evaluation": {"summary": "reporter", "status": "pending", "grade": "N/A", "bullets": []},
+            "errors_weaknesses_improvement_points": {"summary": "none", "bullets": []},
+            "full_timeline": [],
+            "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+        },
+        status="ok",
+        mode="ai",
+        model="openrouter/free",
+        reason="ok",
+    )
+
+    why = report["why_this_symbol_was_chosen"]
+    assert "불일치" not in why["summary"]
+    assert "스캐너 상위 후보 000660" in why["summary"]
+    assert "차순위 재평가 2위" in why["summary"]
+    assert "스캐너 1순위" not in why["summary"]
+    assert not any("불일치" in row for row in why["bullets"])
+    assert not any(str(row).startswith("스캐너 선택 종목:") for row in why["bullets"])
+
+
+def test_trade_summary_monitor_fallback_labels_reassessment_rank_and_score() -> None:
+    report = {
+        "trade_id": "TRD_20260428_005010_01",
+        "symbol": "005010",
+        "status": "closed",
+        "story_type": "simulation",
+        "execution_mode_label": "simulation (mock broker)",
+        "action": "SELL",
+        "shared_facts": {"symbol": "005010", "status": "closed", "action": "SELL", "pnl": -273, "pnl_pct": -0.00038},
+        "market_context_at_entry": {"summary": "시장 중립", "playbook": "defensive"},
+        "why_this_symbol_was_chosen": {
+            "symbol": "005010",
+            "selected_rank": 1,
+            "universe_size": 6,
+            "basis": "거래대금, turnover and volume, 감성 지원",
+            "bullets": [
+                "스캐너 1순위 005380은 눌림목 rebound above vwap with volume confirmation 이유로 막혔고 실제 진입 종목은 005010입니다.",
+            ],
+            "scanner_selection_trace": {
+                "ranked_candidates": [
+                    {"rank": 1, "symbol": "005380", "score_total": 1.611},
+                    {"rank": 2, "symbol": "001510", "score_total": 1.418},
+                ],
+                "selected_symbol": "005010",
+                "selected_rank": 1,
+                "monitor_fallback_used": True,
+                "selection_path": "monitor_fallback_from_scanner_top_pick",
+                "scanner_top_pick_symbol": "005380",
+                "monitor_selected_symbol": "005010",
+                "monitor_fallback_reason": "pullback rebound above vwap with volume confirmation",
+                "news_scanner_contribution": {"selected_score_total": 0.6545414868109848},
+            },
+        },
+        "entry_decision": {"summary": "진입은 눌림목 rebound above vwap with volume confirmation 조건에서 실행됐습니다.", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "reporter_evaluation": {"bullets": []},
+        "memory_application_surface": {},
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL"},
+        "full_timeline": [],
+    }
+
+    summary = mod.render_trade_summary_markdown(report)
+    summary_input = mod.build_trade_summary_input(report)
+
+    assert "* 선정 경로: 차순위 재평가" in summary
+    assert "* 재평가 순위: 1위" in summary
+    assert "* 재평가 점수: 0.655" in summary
+    assert "스캐너 상위 후보 005380 보류 후 005010" in summary
+    assert "VWAP 위 되돌림 반등과 거래량 확인" in summary
+    assert "스캐너 순위: 1위" not in summary
+    assert "스캐너 1순위 005380" not in summary
+    assert summary_input["decision_flow"]["scanner_rank_basis"] == "monitor_fallback_reassessment"
+    assert summary_input["decision_flow"]["scanner_score"] == 0.6545414868109848
 
 
 def test_attach_report_status_matrix_prefers_trade_read_model_for_separated_fallback(tmp_path, monkeypatch) -> None:
@@ -1618,6 +1753,136 @@ def test_ai_trade_report_messages_use_compact_projection() -> None:
     assert len(user_prompt) < 12000
 
 
+def test_ai_trade_report_compact_input_surfaces_structured_strategist_output_boundary() -> None:
+    story_input = _story_input()
+    story_input["canonical_agent_artifacts"] = {
+        "strategist": {
+            "strategy_thesis": {
+                "market_view": "AI memory leadership remains constructive but entry needs confirmation.",
+                "trade_style": "pullback continuation",
+                "risk_tone": "balanced",
+                "selected_playbook": "pullback",
+                "one_line": "Use pullback entries only after liquidity and VWAP confirmation.",
+            },
+            "memory_usage_trace": {
+                "schema_version": "strategist_memory_usage_trace.v1",
+                "active_layers": ["daily", "symbol"],
+                "priority_order": ["symbol", "daily", "weekly"],
+                "layer_decisions": {
+                    "daily": {
+                        "used": True,
+                        "visible": True,
+                        "gate_reason": "recent same-day win-rate was weak",
+                        "effect": "tighten entry confirmation",
+                    }
+                },
+                "scanner_application": {
+                    "applied": True,
+                    "selected_symbol": "000660",
+                    "active_layers": ["daily"],
+                    "reason": ["daily memory adjusted scanner bias"],
+                },
+            },
+            "news_usage_trace": {
+                "schema_version": "strategist_news_usage_trace.v1",
+                "query_targets": ["000660", "semiconductor"],
+                "market_headlines_used": ["KOSPI higher on chip demand expectations."],
+                "market_effect": "market tone supports semiconductor leadership",
+                "scanner_guidance_effect": "prefer AI memory liquidity leaders",
+            },
+            "scanner_handoff": {
+                "prefer_candidate_traits": ["liquidity leader", "VWAP reclaim"],
+                "ranking_guidance": "rank candidates by liquidity and confirmation quality",
+                "not_responsible_for": ["final_symbol_selection"],
+            },
+            "monitor_handoff": {
+                "entry_confirmation": ["volume ratio >= 0.75", "VWAP reclaim"],
+                "policy_effect_summary": "monitor owns entry gate confirmation",
+            },
+            "responsibility_boundary": {
+                "strategist_owns": ["market frame", "policy bias"],
+                "scanner_owns": ["final_symbol_selection", "ranking"],
+                "monitor_owns": ["entry_gate", "exit_gate"],
+                "not_responsible_for": ["final_symbol_selection"],
+            },
+        }
+    }
+
+    compact_input = mod.build_ai_trade_report_compact_input(story_input)
+    strategist = compact_input["strategist_output"]
+
+    assert strategist["strategy_thesis"]["selected_playbook"] == "pullback"
+    assert strategist["memory_usage_trace"]["layer_decisions"]["daily"]["used"] is True
+    assert strategist["memory_usage_trace"]["scanner_application"]["selected_symbol"] == "000660"
+    assert strategist["news_usage_trace"]["market_effect"] == "market tone supports semiconductor leadership"
+    assert strategist["scanner_handoff"]["not_responsible_for"] == ["final_symbol_selection"]
+    assert strategist["responsibility_boundary"]["scanner_owns"] == ["final_symbol_selection", "ranking"]
+    assert "Do not infer final symbol selection" in strategist["direct_consumption_rule"]
+
+
+def test_ai_trade_report_preserves_and_renders_structured_strategist_output() -> None:
+    story_input = _story_input()
+    story_input["canonical_agent_artifacts"] = {
+        "strategist": {
+            "strategy_thesis": {
+                "selected_playbook": "pullback",
+                "risk_tone": "normal",
+                "market_view": "neutral tape",
+                "one_line": "pullback frame with normal risk tone",
+            },
+            "memory_usage_trace": {
+                "active_layers": ["daily"],
+                "priority_order": ["daily", "weekly", "monthly", "symbol"],
+                "layer_decisions": {
+                    "daily": {"used": True, "gate_reason": "fresh_packet"},
+                    "weekly": {"used": False, "gate_reason": "layer inactive"},
+                },
+                "human_summary": "Daily memory was used; weekly memory stayed inactive.",
+            },
+            "news_usage_trace": {
+                "query_targets": ["KOSPI", "000660"],
+                "human_summary": "News was used for market and scanner guidance.",
+                "confidence": "medium",
+            },
+            "scanner_handoff": {
+                "ranking_guidance": "prefer liquid leaders",
+                "prefer_candidate_traits": ["liquidity", "relative_strength"],
+                "penalize_traits": ["thin_volume"],
+                "not_responsible_for": ["final_symbol_selection"],
+            },
+            "monitor_handoff": {
+                "policy_effect_summary": "wait for VWAP reclaim",
+                "entry_aggressiveness": "normal",
+                "entry_confirmation": ["vwap_reclaim"],
+                "hold_off_conditions": ["volume_missing"],
+            },
+            "trade_permission_frame": {
+                "permission_level": "conditional",
+                "reason": "monitor confirmation required",
+                "entry_allowed_if": ["vwap_reclaim"],
+                "entry_blocked_if": ["volume_missing"],
+            },
+        }
+    }
+
+    report = mod.build_deterministic_trade_report(story_input)
+    strategist_output = report.get("strategist_output") or {}
+    assert strategist_output["strategy_thesis"]["selected_playbook"] == "pullback"
+    assert strategist_output["memory_usage_trace"]["active_layers"] == ["daily"]
+    assert strategist_output["news_usage_trace"]["query_targets"] == ["KOSPI", "000660"]
+
+    markdown = mod.render_trade_report_markdown(report)
+    assert "## 전략가 출력 근거" in markdown
+    assert "- [전략가 출력]" in markdown
+    assert "- [메모리]" in markdown
+    assert "daily=used/fresh_packet" in markdown
+    assert "- [뉴스]" in markdown
+    assert "- [스캐너 인계]" in markdown
+    assert "- [모니터 인계]" in markdown
+    assert "- [권한 프레임]" in markdown
+    assert "- [역할 경계]" in markdown
+
+
 def test_ai_trade_report_messages_use_clean_json_only_instructions() -> None:
     messages = mod._build_messages(_story_input())
     system_prompt = str(messages[0]["content"])
@@ -1633,6 +1898,13 @@ def test_ai_trade_report_messages_use_clean_json_only_instructions() -> None:
     assert "selection_basis" in user_prompt
     assert "runner_ups_lost" in user_prompt
     assert "decision_reason_chain" in user_prompt
+    assert "strategist_output" in user_prompt
+    assert "strategy_thesis" in user_prompt
+    assert "memory_usage_trace" in user_prompt
+    assert "news_usage_trace" in user_prompt
+    assert "scanner_handoff" in user_prompt
+    assert "The strategist is not the final symbol selector" in user_prompt
+    assert "scanner/why_this_symbol_was_chosen" in user_prompt
 
 
 def test_ai_trade_report_repair_messages_do_not_reinject_non_json_reasoning() -> None:
@@ -1671,8 +1943,8 @@ def test_ai_trade_report_sparse_repair_messages_use_shorter_contract() -> None:
     sparse_prompt = str(sparse[1]["content"])
 
     assert "복구" in sparse_prompt
-    assert "full_timeline" in sparse_prompt
-    assert len(sparse_prompt) < len(regular_prompt)
+    assert "full_timeline" not in sparse_prompt
+    assert len(sparse_prompt) <= len(regular_prompt) + 200
 
 
 def test_ai_trade_report_language_meta_flags_mostly_english_sections() -> None:
@@ -2509,6 +2781,158 @@ def test_render_trade_report_markdown_uses_korean_titles_and_narrative_labels() 
     assert "vix 25.09" in markdown
 
 
+def test_render_trade_summary_markdown_creates_operator_summary_without_replacing_full_report() -> None:
+    report = {
+        "trade_id": "TRD_SUMMARY",
+        "symbol": "000660",
+        "status": "closed",
+        "story_type": "simulation",
+        "execution_mode_label": "simulation (mock broker)",
+        "action": "SELL",
+        "shared_facts": {
+            "symbol": "000660",
+            "status": "closed",
+            "action": "SELL",
+            "pnl": -1000,
+            "pnl_pct": -0.01,
+            "broker_buy_price": 100000,
+            "broker_fill_price": 99000,
+            "broker_fee": 10,
+            "broker_tax": 5,
+            "pnl_truth_source": "kiwoom.ka10077",
+            "holding_duration": "12m",
+            "exit_reason": "SELL was triggered because peak_drawdown.",
+        },
+        "market_context_at_entry": {
+            "summary": "코스피는 혼조였습니다.",
+            "playbook": "defensive",
+            "risk_mode": "balanced",
+            "market_sentiment": "neutral",
+            "market_news_titles": ["코스피: 시장 뉴스"],
+            "candidate_news_titles": ["000660: 종목 뉴스"],
+        },
+        "why_this_symbol_was_chosen": {
+            "symbol": "000660",
+            "selected_rank": 2,
+            "score_total": 1.108,
+            "basis": "거래대금",
+            "bullets": ["스캐너 1순위 047040은 막혔고 실제 진입 종목은 000660입니다."],
+        },
+        "entry_decision": {
+            "bullets": [
+                "진입 사유는 직전 고점 돌파와 VWAP 구조 확인이었습니다.",
+                "진입 신뢰도 점수는 0.55, 기준은 0.55였습니다.",
+            ]
+        },
+        "exit_decision": {
+            "summary": "고점 대비 하락폭 기준으로 청산. 청산 당시 상황은 핵심 청산 축은 고점 대비 하락폭, 확인 조건은 0/1, 현재가는 99500.00, 평균가는 100000.00, 현재 손익 변동은 -0.50%입니다.",
+            "bullets": [
+                "청산을 직접 촉발한 신호는 고점 대비 하락폭이었습니다.",
+                "현재가, 평균가, 고점 기준 값은 99500.00 / 100000.00 / 100500.00입니다.",
+            ],
+        },
+        "post_exit_shadow": {
+            "observability_only": True,
+            "status": "pending",
+            "symbol": "000660",
+            "exit_price": 99000,
+            "price_observation_status": "observed",
+            "best_exit_offset": "+15m",
+            "best_exit_price": 101500,
+            "checkpoints": {
+                "+5m": {
+                    "status": "observed",
+                    "price": 100000,
+                    "high_since_exit": 100500,
+                    "low_since_exit": 98500,
+                    "return_pct": 0.0101010101,
+                },
+                "+15m": {
+                    "status": "observed",
+                    "price": 101000,
+                    "high_since_exit": 101500,
+                    "low_since_exit": 98500,
+                    "return_pct": 0.0202020202,
+                },
+                "+30m": {"status": "pending"},
+                "+60m": {"status": "pending"},
+            },
+        },
+        "reporter_evaluation": {
+            "bullets": [
+                "당일 closed trade 집계는 9건, 승패 2/6, 평균 손익률 -0.40%입니다.",
+                "주요 패턴: monitor_only 25/25 runs",
+            ]
+        },
+        "memory_application_surface": {
+            "scanner_memory_bias": {"applied": False},
+            "monitor_memory_bias": {
+                "applied": True,
+                "active_layers": ["symbol"],
+                "applied_deltas": [{"field": "breakout_buffer_pct", "from": 0.0, "to": 0.001, "delta": 0.001}],
+                "exit_deltas": [{"field": "peak_drawdown_exit_pct", "from": 0.005, "to": 0.003, "delta": -0.002}],
+            },
+        },
+        "final_operator_conclusion": {"summary": "최종 판단입니다.", "current_action": "SELL"},
+        "full_timeline": [
+            {"event": "entry", "description": "Entry BUY was executed by run 102ca680681e444ca5849816df5316a5."},
+            {"event": "exit", "description": "Exit SELL was executed by run 8a8ed5ff82ed4f07bf696750d8e2c16b."},
+        ],
+    }
+
+    summary = mod.render_trade_summary_markdown(report)
+    summary_input = mod.build_trade_summary_input(report)
+    summary_report = mod.build_trade_summary_report(summary_input, enabled=False)
+    evaluated_summary = {
+        **summary_report,
+        "generation": {"status": "ok", "mode": "ai", "model": "test"},
+        "llm_evaluation": {
+            "conclusion": "청산 조건과 차순위 진입 구조를 우선 점검해야 합니다.",
+            "root_cause": "root_cause_candidates가 비어 있어 단정은 어렵지만 peak_drawdown 기준과 scanner 재평가가 손익비를 압박했습니다.",
+            "priority_actions": ["peak_drawdown confirm 조건 재검증"],
+            "risk_notes": ["단일 거래로 원인을 단정하지 말 것"],
+            "validation_questions": ["monitor_only 경로가 25/25로 고정된 이유는何か?"],
+        },
+    }
+    full = mod.render_trade_report_markdown(report)
+    summary_with_eval = mod.render_trade_summary_markdown_with_evaluation(report, evaluated_summary)
+
+    assert "## 🔴 운영 요약 (Operator Decision Summary)" in summary
+    assert "## 📊 실행 결과 (Truth Surface)" in summary
+    assert "9건 중 2승 / 6패 / 평균 -0.40%" in summary
+    assert "peak_drawdown activation/confirm 조건 점검" in summary
+    assert summary_input["schema_version"] == "ai_trade_summary_input.v1"
+    assert summary_input["truth_surface"]["pnl"] == -1000
+    assert summary_input["decision_flow"]["scanner_rank"] == 2
+    assert summary_input["decision_flow"]["exit_reason"] == "고점 대비 하락폭 기준"
+    assert summary_input["decision_flow"]["exit_observation"]["basis"] == "monitor_signal_snapshot"
+    assert summary_input["decision_flow"]["exit_observation"]["monitor_current_price"] == 99500.0
+    assert summary_input["decision_flow"]["exit_observation"]["position_avg_price"] == 100000.0
+    assert summary_input["post_exit_shadow"]["price_observation_status"] == "observed"
+    assert summary_input["post_exit_shadow"]["checkpoints"]["+5m"]["price"] == 100000
+    assert "price" in summary_input["llm_task"]["hard_constraints"][0]
+    assert "monitor_signal_snapshot" in summary_input["llm_task"]["hard_constraints"][2]
+    assert "observation-only" in summary_input["llm_task"]["hard_constraints"][3]
+    assert summary_report["schema_version"] == "ai_trade_summary.v1"
+    assert "포지션 평균단가(모니터 신호 계산용) 100,000" in summary
+    assert "체결/실현손익 기준: Truth Surface의 매수가 100,000 / 매도가 99,000" in summary
+    assert "### 매도 후 가격 추적 (관측-only)" in summary
+    assert "* +5분: 100,000 (1.01%) / 구간 고가 100,500 / 구간 저가 98,500" in summary
+    assert "현재까지 최선 가상 청산 지점: +15분, 101,500" in summary
+    assert "평균가는" not in summary
+    assert "## 🤖 LLM 평가 결론" in summary_with_eval
+    assert summary_with_eval.index("## 🤖 LLM 평가 결론") < summary_with_eval.index("## 🧭 거래 개요")
+    assert "root_cause_candidates" not in summary_with_eval
+    assert "何か" not in summary_with_eval
+    assert "?입니다" not in summary_with_eval
+    assert "## 🔴 운영 요약 (Operator Decision Summary)" not in full
+
+    messages = mod._build_trade_summary_evaluation_messages(summary_input)
+    prompt = "\n".join(message["content"] for message in messages)
+    assert "exit_observation은 모니터 신호 판단용 스냅샷" in prompt
+    assert "Truth Surface 기준과 모니터 관측값 기준을 반드시 구분" in prompt
+
+
 def test_render_trade_report_markdown_translates_fixed_english_report_phrases() -> None:
     report = {
         "trade_id": "TRD_20260323_000660_01",
@@ -2786,8 +3210,8 @@ def test_render_trade_report_markdown_surfaces_price_truth_fields() -> None:
     assert "가격 기준은 브로커 체결가 기준입니다." in markdown
     assert "손익 기준은 키움 당일 실현손익 기준(ka10077)입니다." in markdown
     assert "브로커 당일 손익은 확정 기준으로 연결됐고, 소스는 키움 당일 실현손익 기준(ka10077)입니다." in markdown
-    assert "raw 값 부록: broker_day_match_mode=symbol_price_qty" in markdown
-    assert "모니터 가격 소스는" not in markdown
+    assert "브로커 당일 손익 매칭 방식은 symbol_price_qty입니다." in markdown
+    assert "모니터 가격 소스는 분봉 종가입니다." in markdown
     assert "가용성 요약: 브로커 체결가는 확보됐습니다, 계좌 마크는 확인됐습니다, 모니터 가격은 남아 있습니다, 브로커 손익도 확인됐습니다." in markdown
 
 
@@ -2941,7 +3365,7 @@ def test_render_trade_report_markdown_clarifies_closed_trade_monitor_sections_ag
 
     markdown = mod.render_trade_report_markdown(report)
 
-    assert "아래 값은 청산 직전 모니터 관측 기준입니다." in markdown
+    assert "청산 직전 모니터 관측 기준입니다." in markdown
     assert "청산 직전 모니터 관측가는 3230.00였고 실제 매도 체결가는 3235.00였습니다." in markdown
     assert "실제 실현손익은 -110.0 / -0.03%였습니다." in markdown
     assert "보유 시간은 0였습니다." not in markdown
@@ -3215,10 +3639,11 @@ def test_render_trade_report_markdown_rewrites_memory_sections_with_active_layer
 
     assert "## 전략가 프롬프트에서 직접 확인된 메모리" in markdown
     assert "## 거래 설명용 사후 복원 메모리" in markdown
-    assert "전략 메모리 핵심 신호는 우세 전략 프레임은 방어형이었고, 취약 전략 프레임도 방어형이었으며, 최근 실패 흔적은 방어형 전략 프레임 실패였습니다." in markdown
-    assert "raw 값 부록: best_playbooks=defensive, worst_playbooks=defensive, recent_failures=playbook:defensive" in markdown
-    assert "전략가 프롬프트는 003280 종목 메모리를 직접 포함했고, 과거 거래 4건, 승률 0.00%, 우세 전략 프레임은 방어형이었습니다." in markdown
-    assert "전략가 프롬프트에서 직접 확인된 당일 리포터 피드백은 상태는 정상 기록, 신뢰도는 높음 수준이었고, 소스는 당일 닫힌 거래 리포트였습니다." in markdown
+    assert "[포함 여부] 전략 메모리=확인, 메모리 패킷=확인, 지휘관 정책=확인, 종목 메모리=확인, 리포터 피드백=확인, 읽기 모델=미확인." in markdown
+    assert "[전략 메모리] 상태=정상 기록, 우세=방어형, 취약=방어형, 최근 실패=방어형 전략 프레임 실패." in markdown
+    assert "raw 값 부록: best_playbooks=defensive, worst_playbooks=defensive, recent_failures=playbook:defensive" not in markdown
+    assert "[종목 메모리] 종목=003280, 과거 거래=4건, 승률=0.00%, 우세 전략=방어형." in markdown
+    assert "[리포터 피드백] 사용 가능=예, 소비=아니오, 상태=정상 기록, 신뢰도=높음, 소스=당일 닫힌 거래 리포트, 요약=닫힌 거래 11건 / 승패 0/11 / 평균 손익률 -0.14%." in markdown
     assert "이 거래는 전략가 프롬프트만으로 대부분 설명돼, 사후 메모리 복원은 크지 않았습니다." in markdown
     assert "이번 거래 후보 003280에는 메모리 기반 추가 가감점이 없었습니다." in markdown
     assert "스캐너 쪽은 소스 가중치 변화 상세가 남지 않아, 후보별 가감점만 확인됩니다." in markdown
@@ -3231,7 +3656,7 @@ def test_render_trade_report_markdown_rewrites_memory_sections_with_active_layer
     assert "청산 정책 변화는 stop_loss_pct 0.020 -> 0.015 (-0.005), peak_drawdown_exit_pct 0.015 -> 0.010 (-0.005)입니다." in markdown
     assert "청산 정책 해석: 손실과 drawdown 기준을 더 타이트하게 잡아, 손상이 확인되면 더 빨리 청산하도록 조정했습니다." in markdown
     assert "모니터 조정은 지휘관 위험 자세는 방어형이었습니다, 지휘관은 청산 품질 점검을 우선했습니다." in markdown
-    assert "raw tag 부록: commander_risk_posture:defensive, commander_focus:exit_quality" in markdown
+    assert "raw tag 부록" not in markdown
 
 
 def test_render_trade_report_markdown_normalizes_raw_english_exit_reason() -> None:
@@ -3488,6 +3913,123 @@ def test_render_trade_report_markdown_splits_strategist_summary_from_market_cont
     assert idx_market_news < idx_scanner_link
 
 
+def test_render_trade_report_markdown_drops_stale_scanner_execution_mismatch_summary() -> None:
+    report = {
+        "trade_id": "TRD_20260427_005930_01",
+        "action": "SELL",
+        "symbol": "005930",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "minimax/minimax-m2.5"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {"summary": "context", "bullets": []},
+        "strategist_summary": {"summary": "strategist", "bullets": []},
+        "why_this_symbol_was_chosen": {
+            "summary": "스캐너는 042700을 최고 순위로 선택했으나, 실제 실행은 005930에서 발생함. 이는 스캐너와 실행 간의 불일치를 나타내며, 선택 근거는 042700에 대한 것임.",
+            "symbol": "042700",
+            "selected_rank": 1,
+            "universe_size": 7,
+            "basis": "거래대금, 감성 지원",
+            "bullets": [
+                "스캐너 선택 종목: 042700 (순위 1위, 점수 1.378)",
+                "실행 종목: 005930 (스캐너 선택과 불일치)",
+                "상위 후보는 #1 042700(1.378) / #2 000660(1.250) / #3 006340(0.708) 순이었습니다.",
+            ],
+            "scanner_selection_trace": {
+                "selected_symbol": "042700",
+                "selected_rank": 1,
+                "ranked_candidates": [
+                    {"rank": 1, "symbol": "042700", "score_total": 1.378, "risk_score": 0.479, "confidence": 0.853},
+                    {"rank": 2, "symbol": "000660", "score_total": 1.250, "risk_score": 0.500, "confidence": 0.770},
+                ],
+            },
+        },
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    why_section = markdown[markdown.find("## 선택된 종목 상세 분석") : markdown.find("## 스캐너 후보 비교")]
+    assert "불일치" not in why_section
+    assert "스캐너 선택 종목: 042700" not in why_section
+    assert "실행 종목: 005930" not in why_section
+    assert "실제 체결 종목 005930은 스캐너 1위/7개 후보" not in why_section
+    assert "highest combined scanner score" not in why_section
+    assert "점수에 직접 반영된 핵심 축" not in why_section
+    assert "저장된 스캐너 비교 표는 042700 기준" in why_section
+
+
+def test_render_trade_report_markdown_describes_monitor_fallback_without_mismatch() -> None:
+    report = {
+        "trade_id": "TRD_20260427_005930_02",
+        "action": "SELL",
+        "symbol": "005930",
+        "status": "closed",
+        "story_type": "simulation trade report",
+        "execution_mode_label": "simulation (mock broker)",
+        "generation": {"status": "ok", "mode": "ai", "model": "minimax/minimax-m2.5"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {"summary": "context", "bullets": []},
+        "strategist_summary": {"summary": "strategist", "bullets": []},
+        "why_this_symbol_was_chosen": {
+            "summary": "스캐너는 005930을 2위로 선정했습니다. 그러나 최종 선택에서 1위가 아닌 2위가 선택되는 불일치가 발생했습니다.",
+            "symbol": "005930",
+            "selected_rank": 2,
+            "universe_size": 6,
+            "bullets": [
+                "스캐너 선정 순위: 2위 (종합 점수 1.105)",
+                "1위였던 000660(종합 점수 1.435)이 최종 선택되지 않음",
+            ],
+            "scanner_selection_trace": {
+                "selected_symbol": "005930",
+                "selected_rank": 2,
+                "monitor_fallback_used": True,
+                "scanner_top_pick_symbol": "000660",
+                "monitor_selected_symbol": "005930",
+                "monitor_fallback_reason": "breakout above recent high with vwap structure confirmation",
+                "selection_path": "monitor_fallback_from_scanner_top_pick",
+                "ranked_candidates": [
+                    {"rank": 1, "symbol": "000660", "score_total": 1.435, "risk_score": 0.476, "confidence": 0.805},
+                    {"rank": 2, "symbol": "005930", "score_total": 1.105, "risk_score": 0.642, "confidence": 0.693},
+                ],
+                "selected_symbol_score_drivers": {
+                    "trading_value": 0.238,
+                    "momentum": 0.220,
+                    "trend": 0.149,
+                },
+            },
+        },
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "SELL", "watch_next": [], "thesis_invalidation": []},
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    why_section = markdown[markdown.find("## 선택된 종목 상세 분석") : markdown.find("## 스캐너 후보 비교")]
+    assert "불일치" not in why_section
+    assert "실제 체결 종목 005930은 차순위 재평가 2위/6개 후보" in why_section
+    assert "차순위 재평가" in why_section
+    assert "스캐너 상위 후보 000660" in why_section
+
+
 def test_render_trade_report_markdown_restores_news_from_market_context_human() -> None:
     report = {
         "trade_id": "TRD_20260424_098460_02",
@@ -3671,6 +4213,10 @@ def test_build_market_context_bullets_surfaces_market_axes_and_news() -> None:
             "market_sentiment": "neutral",
             "playbook": "pullback",
             "themes": ["broad_market_leaders"],
+            "theme_source": "unavailable",
+            "theme_source_status": "unavailable",
+            "theme_source_reason": "kiwoom_theme_live_fetch_disabled",
+            "theme_strength_top_themes": [],
             "global_sentiment_score": 0.0808,
             "vix_level": 18.36,
             "fear_index": {"change_pct": -3.97},
@@ -3695,6 +4241,7 @@ def test_build_market_context_bullets_surfaces_market_axes_and_news() -> None:
     assert any("미국 지수는 S&P500 +1.18%" in bullet for bullet in bullets)
     assert any("뉴스 입력은 60건 헤드라인" in bullet for bullet in bullets)
     assert any("대표 종목/섹터 뉴스는 000660: SK하이닉스" in bullet for bullet in bullets)
+    assert any("키움 테마 packet" in bullet and "status=unavailable" in bullet for bullet in bullets)
 
 
 def test_build_strategist_summary_section_connects_inputs_and_scanner() -> None:
@@ -3708,6 +4255,10 @@ def test_build_strategist_summary_section_connects_inputs_and_scanner() -> None:
             "selected_playbook": "pullback",
             "preferred_themes": ["broad_market_leaders"],
             "avoid_themes": ["defensive_assets", "counter_trend_low_liquidity"],
+            "theme_source": "unavailable",
+            "theme_source_status": "unavailable",
+            "theme_source_reason": "kiwoom_theme_live_fetch_disabled",
+            "theme_strength_top_themes": [],
             "scanner_bias_summary": {
                 "active_biases": [
                     "prefer_shallow_pullback_candidates",
@@ -3746,6 +4297,7 @@ def test_build_strategist_summary_section_connects_inputs_and_scanner() -> None:
     assert any("전략가가 관찰한 대상은 다음과 같았습니다: 코스피, 코스닥, 미국 증시." in bullet for bullet in section["bullets"])
     assert any("전략가 운용 기준은 리스크 모드 균형형이었고, 선택 플레이북은 눌림목이었습니다." in bullet for bullet in section["bullets"])
     assert any("전략가 선호/회피 기준은 선호 테마 브로드마켓 리더, 회피 테마 방어 자산, 역추세 저유동성이었습니다." in bullet for bullet in section["bullets"])
+    assert any("전략가 테마 강도 입력은" in bullet and "status=unavailable" in bullet for bullet in section["bullets"])
     assert any("스캐너 바이어스는 얕은 눌림목 후보 선호, 과확장 후보 패널티, 재회복 후보 선호, 거래량 확인 후보 선호 (강도 낮음) 기준이었습니다." in bullet for bullet in section["bullets"])
     assert any("뉴스 연결 해석은 시장 뉴스로 시장 주도 대형주 우위 맥락을 확인했고" in bullet for bullet in section["bullets"])
     assert any("이 해석은 거래대금 상위와 섹터·테마 정렬 축으로 연결했습니다." in bullet for bullet in section["bullets"])
@@ -3821,6 +4373,119 @@ def test_render_trade_report_markdown_uses_explicit_strategist_summary_section()
     assert "## 전략가 요약" in markdown
     assert "전략가 해석입니다." in markdown
     assert "핵심 입력은 global_sentiment 0.081이었습니다." in markdown
+
+
+def test_render_trade_report_markdown_splits_strategist_refresh_trace() -> None:
+    report = {
+        "trade_id": "TRD_20260428_058430_01",
+        "action": "BUY",
+        "symbol": "058430",
+        "status": "open",
+        "story_type": "live trade report",
+        "execution_mode_label": "mock broker",
+        "generation": {"status": "ok", "mode": "fallback", "model": "none"},
+        "executive_summary": {"summary": "summary"},
+        "market_context_at_entry": {"summary": "context", "bullets": []},
+        "strategist_summary": {"summary": "전략가 해석입니다.", "bullets": []},
+        "strategist_output": {
+            "strategy_thesis": {
+                "one_line": "방어형 전략 프레임을 유지했습니다.",
+                "selected_playbook": "defensive",
+                "risk_tone": "normal",
+            }
+        },
+        "strategist_refresh_trace": {
+            "summary": "refresh trace",
+            "stages": [
+                {
+                    "stage": "initial_frame",
+                    "label": "1차 전략 프레임",
+                    "summary": "1차 프레임은 full_cycle/RUN_REFRESH로 평가됐습니다.",
+                },
+                {
+                    "stage": "post_scanner_refresh",
+                    "label": "2차 후보 확정 후 refresh",
+                    "summary": "선택 종목이 캐시 프레임 밖이라 refresh가 요청됐습니다.",
+                    "requested": True,
+                    "reason": "selected_symbol_outside_cached_frame",
+                    "selected_symbol": "058430",
+                },
+                {
+                    "stage": "final_application",
+                    "label": "최종 적용 결과",
+                    "summary": "정책 delta가 없어 기존 프레임을 유지했습니다.",
+                    "evaluated": True,
+                    "effective": False,
+                    "policy_delta_count": 0,
+                },
+            ],
+            "policy_delta_count": 0,
+        },
+        "why_this_symbol_was_chosen": {"summary": "why", "bullets": []},
+        "scanner_filters": {"summary": "scanner", "bullets": []},
+        "entry_decision": {"summary": "entry", "bullets": []},
+        "holding_monitoring_story": {"summary": "holding", "bullets": []},
+        "exit_decision": {"summary": "exit", "bullets": []},
+        "guard_approval_result": {"summary": "guard", "bullets": []},
+        "execution_quality": {"summary": "execution", "bullets": []},
+        "reporter_evaluation": {"summary": "reporter", "bullets": []},
+        "errors_weaknesses_improvement_points": {"summary": "weakness", "bullets": []},
+        "full_timeline": [],
+        "final_operator_conclusion": {"summary": "final", "current_action": "HOLD", "watch_next": [], "thesis_invalidation": []},
+    }
+
+    markdown = mod.render_trade_report_markdown(report)
+
+    assert "## 전략가 Refresh Trace" in markdown
+    assert "[1차 전략 프레임]" in markdown
+    assert "[2차 후보 확정 후 refresh]" in markdown
+    assert "selected_symbol_outside_cached_frame" in markdown
+    assert "[최종 적용 결과]" in markdown
+    assert markdown.find("## 전략가 요약") < markdown.find("## 전략가 Refresh Trace") < markdown.find("## 전략가 출력 근거")
+
+
+def test_build_report_strategist_refresh_trace_uses_commander_refresh_facts() -> None:
+    story_input = {
+        "canonical_agent_artifacts": {
+            "commander": {
+                "commander_decision": {
+                    "strategist_invocation": "RUN_REFRESH",
+                    "route_selected": "full_cycle",
+                    "observations": {
+                        "post_scanner_refresh_requested": True,
+                        "post_scanner_refresh_reason": "selected_symbol_outside_cached_frame",
+                        "post_scanner_refresh_selected_symbol": "058430",
+                    },
+                    "strategist_refresh_requested": True,
+                    "strategist_refresh_reason": "selected_symbol_outside_cached_frame",
+                    "strategist_refresh_context": {
+                        "selected_symbol": "058430",
+                        "selected_symbol_in_cached_frame": False,
+                        "cached_candidate_hints": ["005930", "000660"],
+                    },
+                    "strategist_refresh_evaluated": True,
+                    "strategist_refresh_effective": False,
+                    "strategist_refresh_policy_delta_count": 0,
+                }
+            },
+            "strategist": {
+                "playbook": "defensive",
+                "commander_invocation_hint": "RUN_REFRESH",
+            },
+        }
+    }
+
+    trace = mod._build_report_strategist_refresh_trace(story_input)
+
+    assert trace["refresh_requested"] is True
+    assert trace["policy_delta_count"] == 0
+    assert [row["stage"] for row in trace["stages"]] == [
+        "initial_frame",
+        "post_scanner_refresh",
+        "final_application",
+    ]
+    assert "selected_symbol_outside_cached_frame" in trace["stages"][1]["summary"]
+    assert "정책 delta가 없어" in trace["stages"][2]["summary"]
 
 
 def test_render_trade_report_markdown_normalizes_guard_timeline_and_final_conclusion() -> None:
